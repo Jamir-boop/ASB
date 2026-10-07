@@ -2,6 +2,15 @@
 
 ASB has its own release series. The retained Agent Mission Control releases are recorded separately below.
 
+## ASB 1.1.0 - 2026-10-07
+
+- Added remote Claude Code rows from approved local session-list/watch cache bodies. Kept cursor-linked source scope, explicit cached worker state, validated existing-session links, local-twin dedupe, and bounded reads. Partial cache coverage is reported; no credentials or remote requests are used.
+- Fixed Claude root execution while explicitly linked background Agents remain active. Added child counts, current group timing, and completion attention after the group finishes. Stale or missing child signals give Unknown; interruption and error do not add completion attention.
+- Kept Claude lifecycle recovery and child reads in the existing bounded cache and six-read concurrency limit.
+- Native provider warnings now hide after five seconds. Repeated polls do not show the same warning again; dashboard fetch errors stay visible until a successful refresh.
+
+See [ASB 1.1.0 release notes](docs/releases/v1.1.0.md) for downloads, upgrades, and cache limits.
+
 ## ASB 1.0.0
 
 The first public ASB release provides one native GNOME window for local Codex and Claude Desktop Code chats.

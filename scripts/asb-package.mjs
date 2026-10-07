@@ -17,7 +17,7 @@ export const RUNTIME_FILES = [
   'public/switchboard.html', 'public/switchboard.css', 'public/switchboard.js', 'public/icon.svg',
   'assets/icons/local.asb.AgentSwitchBoard.svg', 'assets/icons/asb-claude-symbolic.svg', 'assets/icons/asb-openai-symbolic.svg',
   'assets/icons/README.md', 'assets/icons/ASB-disc-provenance.md',
-  'src/switchboard.mjs', 'src/server.mjs', 'src/codex-data.mjs', 'src/claude-data.mjs', 'src/insights.mjs',
+  'src/switchboard.mjs', 'src/server.mjs', 'src/codex-data.mjs', 'src/claude-data.mjs', 'src/claude-remote-data.mjs', 'src/insights.mjs',
   'src/governance.mjs', 'src/thread-classification.mjs', 'src/token-usage.mjs', 'src/dashboard.mjs', 'src/cindy-data.mjs',
   'src/opencode-data.mjs', 'src/model-services.mjs', 'src/cindy-safe-storage.mjs', 'src/grok-quota.mjs',
   'src/bailian-quota-bridge.mjs', 'src/quota-history.mjs', 'src/notifications.mjs', 'src/pending-summary.mjs',

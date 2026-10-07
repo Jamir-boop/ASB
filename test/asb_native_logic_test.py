@@ -129,6 +129,82 @@ class NativeLogicChecks(unittest.TestCase):
         callback(*args)
         self.assertEqual(requests[-1][1], "/api/dashboard?force=1")
 
+    def test_provider_warning_expires_once_and_old_timers_cannot_hide_new_notices(self):
+        timers = {}
+        def timeout(interval, callback):
+            identity = len(timers) + 1
+            timers[identity] = (interval, callback)
+            return identity
+        glib = SimpleNamespace(timeout_add=timeout, source_remove=Mock())
+        window = object.__new__(Window)
+        window.closed = window.refresh_queued = window.snapshot_pending = False
+        window.dashboard, window.signature = {}, []
+        window.refresh_interval_ms, window.timer, window.clock_interval = 5000, 99, 60
+        window.notice_timer, window.notice_generation, window.provider_notice = None, 0, ""
+        window.notice = SimpleNamespace(set_label=Mock(), set_visible=Mock())
+        window.refresh_button = SimpleNamespace(set_sensitive=Mock())
+        window.sync_unread_setting = window.update_clock = Mock()
+        def apply(message, interval=5000):
+            window.apply_dashboard({"providers": [{"message": message}], "threads": [],
+                                    "refreshIntervalMs": interval}, None)
+        with patch.dict(SCOPE, {"GLib": glib}):
+            apply("Partial remote cache")
+            first = window.notice_timer
+            self.assertEqual(timers[first][0], 5000)
+            for interval in (2000, 2000, 5000, 5000):
+                apply("Partial remote cache", interval)
+                self.assertEqual(window.notice_timer, first)
+            window.notice.set_visible.assert_called_once_with(True)
+            self.assertFalse(timers[first][1]())
+            self.assertIsNone(window.notice_timer)
+            for interval in (2000, 5000):
+                apply("Partial remote cache", interval)
+                self.assertIsNone(window.notice_timer)
+                window.notice.set_visible.assert_called_with(False)
+
+            apply("Another warning")
+            replaced = window.notice_timer
+            apply("Partial remote cache")
+            current = window.notice_timer
+            glib.source_remove.assert_any_call(replaced)
+            window.notice.set_visible.reset_mock()
+            self.assertFalse(timers[replaced][1]())
+            self.assertFalse(timers[first][1]())
+            self.assertEqual(window.notice_timer, current)
+            window.notice.set_visible.assert_not_called()
+
+            window.apply_dashboard(None, "Cannot load sessions")
+            glib.source_remove.assert_any_call(current)
+            self.assertIsNone(window.notice_timer)
+            window.notice.set_visible.reset_mock()
+            self.assertFalse(timers[current][1]())
+            window.notice.set_visible.assert_not_called()
+            window.apply_dashboard(None, "Cannot load sessions")
+            window.notice.set_label.assert_called_with("Cannot load sessions")
+            window.notice.set_visible.assert_called_with(True)
+            apply("Partial remote cache")
+            self.assertIsNone(window.notice_timer)
+            window.notice.set_visible.assert_called_with(False)
+            apply("")
+            apply("Partial remote cache")
+            current = window.notice_timer
+            self.assertIsNotNone(current)
+            self.assertFalse(timers[current][1]())
+            window.notice.set_visible.assert_called_with(False)
+
+            apply("Close warning")
+            closing = window.notice_timer
+            window.events, window.get_display, window.css = Mock(), Mock(), object()
+            window.clock_timer = window.geometry_idle = window.surface_signal = window.context_menu = None
+            window.focus_widgets = {}
+            with patch.dict(SCOPE, {"Gtk": SimpleNamespace(StyleContext=Mock())}):
+                self.assertFalse(window.on_close())
+            glib.source_remove.assert_any_call(closing)
+            self.assertIsNone(window.notice_timer)
+            window.notice.set_visible.reset_mock()
+            self.assertFalse(timers[closing][1]())
+            window.notice.set_visible.assert_not_called()
+
     def test_changed_row_fields_keep_content_and_copy_mutable_source(self):
         window = object.__new__(Window)
         window.view, window.update_row_text = "compact", Mock()

@@ -1,0 +1,248 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, writeFile, readFile, utimes, rm } from 'node:fs/promises';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { createHash } from 'node:crypto';
+import * as zlib from 'node:zlib';
+import { loadClaudeRemoteThreads, parseClaudeRemoteBody, claudeRemoteDeepLink, getClaudeRemoteCacheStats,
+  invalidateClaudeRemoteData, isClaudeRemoteCacheEvent } from '../src/claude-remote-data.mjs';
+import { loadSwitchboardDashboard, buildSwitchboardDashboard, openSwitchboardThread, PendingTracker,
+  switchboardWatchPaths } from '../src/switchboard.mjs';
+
+const now = Date.parse('2026-10-07T14:00:00Z');
+const localId = 'local_123e4567-e89b-12d3-a456-426614174000';
+const cursor = (time) => Buffer.from(String(BigInt(time) * 1_000_000n)).toString('base64');
+const row = (id = 'cse_01Example', extra = {}) => ({ id, title: 'Remote task', created_at: new Date(now - 10_000).toISOString(),
+  updated_at: new Date(now).toISOString(), last_event_at: new Date(now).toISOString(),
+  environment_kind: 'bridge', connection_status: 'connected', status: 'active', worker_status: 'running', unread: true, ...extra });
+const frame = (event, data, id = '') => `event: ${event}\n${id ? `id: ${id}\n` : ''}data: ${JSON.stringify(data)}\n\n`;
+const watch = (rows, time = now) => rows.map((value) => frame('added', value)).join('') + frame('sync', {}, cursor(time));
+
+async function temp(t) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'asb-remote-test-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+async function cacheFile(appDir, key, body, { incomplete = false, mtimeMs = now } = {}) {
+  const root = path.join(appDir, 'Cache', 'Cache_Data');
+  await mkdir(root, { recursive: true });
+  const keyBytes = Buffer.from(key);
+  const header = Buffer.alloc(24); header.writeBigUInt64LE(0xfcfb6d1ba7725c30n); header.writeUInt32LE(5, 8); header.writeUInt32LE(keyBytes.length, 12);
+  const footer = Buffer.alloc(24); footer.writeBigUInt64LE(0xf4fa6f45970d41d8n);
+  const headers = Buffer.from('HTTP/1.1 200 OK\0set-cookie: forbidden-cookie\0authorization: forbidden-token\0');
+  const tail = Buffer.alloc(24); tail.writeBigUInt64LE(0xf4fa6f45970d41d8n); tail.writeUInt32LE(2, 8); tail.writeUInt32LE(headers.length, 16);
+  const encoded = Buffer.isBuffer(body) ? body : zlib.gzipSync(Buffer.from(body));
+  const bytes = incomplete ? Buffer.concat([header, keyBytes, encoded.subarray(0, -8), Buffer.alloc(4096)])
+    : Buffer.concat([header, keyBytes, encoded, footer, headers, createHash('sha256').update(keyBytes).digest(), tail]);
+  const name = `${createHash('sha1').update(keyBytes).digest().subarray(0, 8).reverse().toString('hex')}_0`;
+  const file = path.join(root, name);
+  await writeFile(file, bytes); await utimes(file, mtimeMs / 1000, mtimeMs / 1000);
+  return file;
+}
+
+test('remote parser projects metadata, follows complete SSE frames, and bounds ID routes', () => {
+  const value = row('cse_01Safe', { config: { sources: [{ type: 'git', url: 'https://github.com/example/orchid.git' },
+    { type: 'git', url: 'https://token@github.com/example/private.git' }] },
+  participants: [{ account_id: 'forbidden-account' }], external_metadata: { pending_action: { input: 'forbidden-question' } } });
+  const parsed = parseClaudeRemoteBody(zlib.gzipSync(watch([value]) + frame('changed', { ...value, title: 'Newest' })
+    + 'event: changed\ndata: {"id":"cse_01Safe","title":"half-written"'));
+  assert.equal(parsed.records.get(value.id).title, 'Newest');
+  assert.equal(parsed.records.get(value.id).projectName, 'orchid');
+  assert.equal(parsed.observedAtMs, now);
+  assert.equal(JSON.stringify([...parsed.records.values()]).includes('forbidden'), false);
+  assert.equal(claudeRemoteDeepLink(value.id), 'claude://code/cse_01Safe');
+  for (const id of ['local_legacy', 'cse_x?prompt=bad', 'session_/../new', `cse_${'a'.repeat(129)}`, 'https://example.com']) {
+    assert.equal(claudeRemoteDeepLink(id), '');
+  }
+  assert.equal(parseClaudeRemoteBody(Buffer.alloc(8 * 1024 * 1024 + 1)), null);
+  const bomb = zlib.gzipSync(Buffer.alloc(17 * 1024 * 1024, 0x61));
+  assert.equal(parseClaudeRemoteBody(bomb), null);
+});
+
+test('newest cursor chain excludes old login streams and applies changes and deletions', async (t) => {
+  const appDir = await temp(t);
+  await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions?limit=100', JSON.stringify({
+    data: [row('cse_01Retained'), row('cse_01Removed')], resume_token: cursor(now - 2000),
+  }), { mtimeMs: now - 2000 });
+  await cacheFile(appDir, `1/0/https://claude.ai/v1/code/sessions/watch?resume_token=${encodeURIComponent(cursor(now - 2000))}`,
+    frame('changed', row('cse_01Retained', { worker_status: 'idle', title: 'Latest title' }))
+      + frame('removed', { id: 'cse_01Removed' }) + frame('sync', {}, cursor(now)));
+  await cacheFile(appDir, `1/0/https://claude.ai/v1/code/sessions/watch?resume_token=${encodeURIComponent(cursor(now - 9000))}`,
+    watch([row('cse_01OldLogin')], now - 8000), { mtimeMs: now - 8000 });
+  const result = await loadClaudeRemoteThreads({ appDir, nowMs: now });
+  assert.equal(result.partial, false);
+  assert.deepEqual(result.threads.map((thread) => thread.externalId), ['cse_01Retained']);
+  assert.equal(result.threads[0].title, 'Latest title');
+  assert.equal(buildSwitchboardDashboard(result.threads, [], now).threads[0].state, 'idle');
+  const later = await cacheFile(appDir, `1/0/https://claude.ai/v1/code/sessions/watch?resume_token=${encodeURIComponent(cursor(now + 1000))}`,
+    watch([row('cse_01CurrentOnly')], now + 2000), { mtimeMs: now + 2000 });
+  const current = await loadClaudeRemoteThreads({ appDir, nowMs: now + 2000 });
+  assert.equal(current.partial, true);
+  assert.deepEqual(current.threads.map((thread) => thread.externalId), ['cse_01CurrentOnly']);
+  assert.equal(isClaudeRemoteCacheEvent(path.dirname(later), path.basename(later), 'change'), true);
+});
+
+test('open gzip watch entries are read without a closed footer and unrelated writes reuse the key index', async (t) => {
+  const appDir = await temp(t);
+  const file = await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions/watch?exclude_tags=-', watch([row()]), { incomplete: true });
+  await cacheFile(appDir, '1/0/https://claude.ai/api/oauth/organizations/private/oauth_tokens', JSON.stringify({ token: 'forbidden-auth' }));
+  const first = await loadClaudeRemoteThreads({ appDir, nowMs: now });
+  assert.equal(first.threads.length, 1);
+  const before = getClaudeRemoteCacheStats();
+  await loadClaudeRemoteThreads({ appDir, nowMs: now + 1 });
+  const warm = getClaudeRemoteCacheStats();
+  assert.equal(warm.keyReads, before.keyReads);
+  assert.equal(warm.bodyReads, before.bodyReads);
+  assert.equal(warm.directoryReads, before.directoryReads);
+  const unrelated = await cacheFile(appDir, '1/0/https://claude.ai/api/account', '{}');
+  assert.equal(isClaudeRemoteCacheEvent(path.dirname(file), path.basename(unrelated), 'change'), false);
+  await loadClaudeRemoteThreads({ appDir, nowMs: now + 2 });
+  const after = getClaudeRemoteCacheStats();
+  assert.equal(after.keyReads - warm.keyReads, 1);
+  assert.equal(after.bodyReads, warm.bodyReads);
+  invalidateClaudeRemoteData({ filePath: file });
+  await loadClaudeRemoteThreads({ appDir, nowMs: now + 3 });
+  assert.equal(getClaudeRemoteCacheStats().bodyReads - after.bodyReads, 1);
+  assert.equal(JSON.stringify(first).includes('forbidden'), false);
+});
+
+test('remote states require explicit fresh metadata; cloud does not require a bridge connection', async (t) => {
+  const appDir = await temp(t);
+  const values = [row('cse_01Running'), row('cse_01Waiting', { worker_status: 'requires_action' }),
+    row('cse_01Idle', { worker_status: 'idle' }), row('cse_01Unknown', { worker_status: 'WORKER_STATUS_UNSPECIFIED' }),
+    row('cse_01Disconnected', { connection_status: 'disconnected' }),
+    row('cse_01Cloud', { environment_kind: 'anthropic_cloud', connection_status: undefined }),
+    row('cse_01Archived', { status: 'archived', worker_status: 'idle' })];
+  await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions/watch', watch(values));
+  const result = await loadClaudeRemoteThreads({ appDir, nowMs: now });
+  const board = buildSwitchboardDashboard(result.threads, [], now);
+  const rows = Object.fromEntries(board.threads.map((value) => [value.externalId, value]));
+  assert.deepEqual(values.map((value) => rows[value.id].state), ['working', 'waiting', 'idle', 'unknown', 'unknown', 'working', 'idle']);
+  assert.equal(rows.cse_01Archived.archived, true);
+  assert.equal(rows.cse_01Running.workingSinceMs, 0);
+  assert.equal(rows.cse_01Running.cwd, '');
+  assert.equal(rows.cse_01Running.projectName, 'No project');
+  assert.equal(board.refreshIntervalMs, 2000);
+  const stale = buildSwitchboardDashboard(result.threads, [], now + 7 * 3_600_000);
+  assert.ok(stale.threads.every((value) => value.state === 'unknown' && value.nativeUnread === null));
+  assert.equal(stale.refreshIntervalMs, 5000);
+  const tracker = new PendingTracker(false);
+  await tracker.observe(board);
+  assert.equal(rows.cse_01Running.pending, false);
+  assert.equal(rows.cse_01Idle.pending, true);
+  await tracker.markUnread(rows.cse_01Running.id); tracker.apply(rows.cse_01Running);
+  assert.equal(rows.cse_01Running.state, 'working'); assert.equal(rows.cse_01Running.pending, true);
+  await tracker.setPinned(rows.cse_01Running.id, true); tracker.apply(rows.cse_01Running);
+  assert.equal(rows.cse_01Running.pinned, true);
+});
+
+test('default source merges local aliases, retains each source on failure, and validates remote opens', async (t) => {
+  const appDir = await temp(t);
+  await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions/watch', watch([row('session_01Twin'), row('cse_01Remote')]));
+  const scan = () => loadSwitchboardDashboard({ nowMs: now, loadCodex: async () => ({ threads: [] }), claudeOptions: { appDir, projectFiles: new Map() } });
+  const remoteOnly = await scan();
+  assert.equal(remoteOnly.threads.length, 2); assert.equal(remoteOnly.providers[1].status, 'warning');
+  const localDir = path.join(appDir, 'claude-code-sessions'); await mkdir(localDir);
+  await writeFile(path.join(localDir, `${localId}.json`), JSON.stringify({ sessionId: localId, title: 'Local task', bridgeSessionIds: ['session_01Twin'] }));
+  const mixed = await scan();
+  assert.equal(mixed.threads.length, 2);
+  assert.deepEqual(new Set(mixed.threads.map((value) => value.externalId)), new Set([localId, 'cse_01Remote']));
+  assert.equal(JSON.stringify(mixed).includes('bridgeSessionIds'), false);
+  const remote = mixed.threads.find((value) => value.externalId === 'cse_01Remote');
+  const calls = [];
+  assert.equal((await openSwitchboardThread(remote, { platform: 'linux', runCommand: async (...args) => { calls.push(args); return {}; } })).opened, true);
+  assert.deepEqual(calls[0].slice(0, 2), ['xdg-open', ['claude://code/cse_01Remote']]);
+  await assert.rejects(openSwitchboardThread({ ...remote, appDeepLink: 'claude://code/new?prompt=bad' }), /no direct desktop link/);
+  assert.ok(switchboardWatchPaths({ appDir }).some((entry) => entry.path === path.join(appDir, 'Cache', 'Cache_Data')));
+  await rm(path.join(appDir, 'Cache', 'Cache_Data'), { recursive: true });
+  await writeFile(path.join(appDir, 'Cache', 'Cache_Data'), 'not a directory');
+  const localOnly = await scan();
+  assert.equal(localOnly.threads.length, 1); assert.equal(localOnly.threads[0].externalId, localId);
+  assert.equal(localOnly.providers[1].status, 'warning');
+  const injected = await loadSwitchboardDashboard({ nowMs: now, loadCodex: async () => ({ threads: [] }), loadClaude: async () => ({ threads: [] }) });
+  assert.equal(injected.threads.length, 0);
+});
+
+test('zstd list responses use the built-in decoder when available', { skip: !zlib.zstdCompressSync }, () => {
+  const value = { data: [row('cse_01Zstd')], resume_token: cursor(now) };
+  const parsed = parseClaudeRemoteBody(zlib.zstdCompressSync(Buffer.from(JSON.stringify(value))), { kind: 'list' });
+  assert.equal(parsed.records.size, 1); assert.equal(parsed.observedAtMs, now);
+});
+
+test('partial keys retry, changed targets revalidate their key, and source order wins after a deletion', async (t) => {
+  const appDir = await temp(t);
+  const key = '1/0/https://claude.ai/v1/code/sessions/watch?exclude_tags=-';
+  const file = await cacheFile(appDir, key, watch([row('cse_01Recovered')]));
+  await writeFile(file, Buffer.alloc(10));
+  assert.equal((await loadClaudeRemoteThreads({ appDir, nowMs: now })).threads.length, 0);
+  await cacheFile(appDir, key, watch([row('cse_01Recovered')]));
+  assert.equal((await loadClaudeRemoteThreads({ appDir, nowMs: now })).threads.length, 1);
+  const buffer = Buffer.alloc(500); await writeFile(file, buffer);
+  assert.equal((await loadClaudeRemoteThreads({ appDir, nowMs: now })).threads.length, 0);
+  await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions?limit=100', JSON.stringify({
+    data: [row('cse_01Readded', { title: 'Before removal', updated_at: new Date(now - 2000).toISOString() })], resume_token: cursor(now - 1000),
+  }), { mtimeMs: now - 1000 });
+  await cacheFile(appDir, `1/0/https://claude.ai/v1/code/sessions/watch?resume_token=${encodeURIComponent(cursor(now - 1000))}`,
+    frame('removed', { id: 'cse_01Readded' }) + frame('added', row('cse_01Readded', { title: 'After re-add', updated_at: new Date(now - 3000).toISOString() }))
+      + frame('changed', row('cse_01Readded', { title: 'Event receipt', updated_at: new Date(now - 3000).toISOString() }), cursor(now)));
+  const result = await loadClaudeRemoteThreads({ appDir, nowMs: now });
+  assert.equal(result.threads[0].title, 'Event receipt');
+  assert.equal(result.partial, false);
+});
+
+test('the newest cache target beyond 512 entries is selected and future or invalid receipts are rejected', async (t) => {
+  const appDir = await temp(t);
+  for (let index = 0; index < 513; index += 1) await cacheFile(appDir,
+    `1/0/https://claude.ai/v1/code/sessions/watch?resume_token=${encodeURIComponent(cursor(now - index - 1))}`,
+    watch([row(`cse_${index}`)], now - index - 1), { mtimeMs: now - index - 1 });
+  const newest = await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions/watch?include_trigger_sessions=true', watch([row('cse_01Newest')]));
+  assert.equal((await loadClaudeRemoteThreads({ appDir, nowMs: now })).threads[0].externalId, 'cse_01Newest');
+  await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions/watch?include_trigger_sessions=true', watch([row('cse_01Future')], now + 1));
+  const future = await loadClaudeRemoteThreads({ appDir, nowMs: now });
+  assert.ok(future.threads.every((value) => value.externalId !== 'cse_01Future'));
+  await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions/watch?include_trigger_sessions=true',
+    frame('added', row('cse_01Invalid')) + frame('sync', {}, 'invalid-cursor'));
+  const invalid = await loadClaudeRemoteThreads({ appDir, nowMs: now });
+  assert.ok(invalid.threads.every((value) => value.externalId !== 'cse_01Invalid'));
+  assert.ok(getClaudeRemoteCacheStats().responseEntries <= 32 * 512);
+  assert.ok(getClaudeRemoteCacheStats().sessionEntries <= 32 * 5000);
+  assert.equal(isClaudeRemoteCacheEvent(path.dirname(newest), path.basename(newest), 'change'), true);
+});
+
+test('stable-file checks cover writes during discovery and response key validation', async (t) => {
+  const appDir = await temp(t);
+  const filePath = await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions/watch', watch([row('cse_01Race')]));
+  const complete = await readFile(filePath);
+  const open = fs.open;
+  let mode = 'discovery', keyReads = 0, changed = false, watchedPath = filePath;
+  fs.open = async (...args) => {
+    const file = await open(...args);
+    if (args[0] !== watchedPath) return file;
+    const read = file.read.bind(file);
+    file.read = async (...readArgs) => {
+      const result = await read(...readArgs);
+      if (!changed && mode === 'discovery' && readArgs[3] === 0 && result.bytesRead === 10) {
+        changed = true; await writeFile(watchedPath, complete);
+      }
+      if (mode === 'response' && readArgs[3] === 24 && ++keyReads === 2) {
+        const invalid = Buffer.from(complete); invalid.fill(0, 0, 24);
+        await writeFile(watchedPath, invalid);
+      }
+      return result;
+    };
+    return file;
+  };
+  try {
+    await writeFile(filePath, Buffer.alloc(10));
+    await loadClaudeRemoteThreads({ appDir, nowMs: now });
+    assert.equal((await loadClaudeRemoteThreads({ appDir, nowMs: now })).threads.length, 1);
+    const other = await temp(t);
+    const otherPath = await cacheFile(other, '1/0/https://claude.ai/v1/code/sessions/watch', watch([row('cse_01Race')]));
+    mode = 'response'; keyReads = 0; watchedPath = otherPath;
+    assert.equal((await loadClaudeRemoteThreads({ appDir: other, nowMs: now })).threads.length, 0);
+    assert.equal(keyReads, 2);
+  } finally { fs.open = open; }
+});

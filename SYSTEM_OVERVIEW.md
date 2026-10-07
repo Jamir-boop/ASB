@@ -1,6 +1,6 @@
 # ASB system overview
 
-ASB `1.0.0` is a local switch board for existing Codex and Claude Desktop Code chats. Its main view is a small native GNOME window. It observes local files and opens the original app. It makes no model calls.
+ASB `1.1.0` is a local switch board for existing Codex and Claude Desktop Code chats, including remote Code sessions observed in Claude's local cache. Its main view is a small native GNOME window. It observes local files and opens the original app. It makes no model calls.
 
 Read [README.md](README.md) for installation, [ASB.md](ASB.md) for controls, and [Privacy](docs/PRIVACY.md) for data access. ASB uses its own version series. Agent Mission Control `0.6.0` is the upstream base, not the ASB release version.
 
@@ -31,6 +31,7 @@ Python 3 needs PyGObject, GTK `>=4.10`, and Libadwaita `>=1.4`. Node.js `>=22.13
 | `src/server.mjs` | Shared HTTP server, ASB route restrictions, snapshots, and source events. |
 | `src/codex-data.mjs` | Read-only Codex database, names, lifecycle, questions, and matched native read marks. |
 | `src/claude-data.mjs` | Claude Desktop Code metadata and matched local transcript signals. |
+| `src/claude-remote-data.mjs` | Approved cached remote session metadata, cursor-linked updates, and explicit worker state. |
 | `src/insights.mjs` | Shared thread normalization and root/descendant grouping. |
 | `scripts/asb-desktop.mjs` | Native launcher and owned child-process cleanup. |
 | `scripts/asb-native.py` | Native rows, filters, search, layout, theme, input, and local label clock. |
@@ -50,6 +51,7 @@ ASB loads both sources independently. One failed source does not remove the othe
 | Codex | Latest `~/.codex/state_N.sqlite`, `session_index.jsonl`, `.codex-global-state.json`, and matched `sessions/**/rollout-*.jsonl`. |
 | Claude Desktop Code on Linux | `$XDG_CONFIG_HOME/Claude/claude-code-sessions/local_*.json`, or `~/.config/Claude/claude-code-sessions/local_*.json`. |
 | Claude transcript signals | Matched JSONL files under `~/.claude/projects`. |
+| Claude remote Code | Session-list and watch response bodies in Claude's `Cache/Cache_Data`. |
 
 Root chats are the list unit. Explicit workers and subagents stay grouped under the root. ASB omits `subagent` and `guardian_review` source rows. Each source has a 5000-record limit. ASB does not discover orphan Codex rollouts outside the database. Archived rows are available but hidden by default.
 
@@ -57,18 +59,27 @@ Codex names prefer `session_index.thread_name`, then the stored title. Claude me
 
 - `codex://threads/<uuid>`
 - `claude://code/continue?session=local_<uuid>`
+- `claude://code/<validated cse_ or session_ ID>`
 
 The source apps must register their URL handlers. ASB does not create chats or run a CLI resume command for its open action.
+
+Remote cache reads accept only production `https://claude.ai/v1/code/sessions` and `/watch` response bodies. HTTP headers, credentials, transcript-event endpoints, and raw account/config fields are not used. Completed cache entries use Chromium stream boundaries; open gzip watches use their partial body and zero-filled reserved tail. ASB selects the newest response and exact cursor-linked continuations, not a union of old login streams. Missing full-list metadata produces a source warning and only observed rows. Cache delay, eviction, and offline periods can limit coverage. No remote request is made. Local bridge aliases deduplicate matching remote rows and stay outside the view payload.
+
+Remote execution requires a response observation within six hours plus explicit worker/session state. Server sync receipt cursors provide observation time; file modification time is a fallback for an approved body write. Bridge sessions also need an explicit connected state. Cloud sessions do not need that bridge field. Unknown, stale, or disconnected records give Unknown. Remote Working has no inferred start time. Folders stay empty; safe Git source names can identify a project. Fresh cached unread marks use the same ASB attention rules as other native marks.
 
 ## Execution and attention
 
 Execution uses Working, Waiting, Idle, and Unknown. A root is not Working only because it is unarchived. Open task/request signals require activity within six hours. Source signals can lag or survive a crash; old open signals become Unknown.
 
+Claude Desktop Code and CLI readers include child files under the matched root transcript in the child count. An async Agent launch must link its returned agent ID to that exact root's child file. Recent child request, thinking, and tool events keep the root Working after its own response ends. Child completion, interruption, and error events close that work. Unrelated children cannot change execution. Missing linked lifecycle gives Unknown unless the root has current work. Stale child work cannot set a fresh root's timer start.
+
 Current synchronous questions can block execution in Waiting. Async questions add attention while Working or Idle remains visible. Matching answers, failure, abort, or cancellation resolve the question. Real human input supersedes old questions. Automatic goal continuation, context, and partial answers do not. Question and answer bodies stay outside ASB view payloads.
 
 Pending is separate from execution. It can come from a current user action, question attention, an Idle native unread mark, a newly observed completion, or a manual ASB Unread mark. A native unread dot alone does not make a Working or Unknown chat Pending.
 
-Native Codex unread needs a creator identity and exact local host match. Missing or unmatched metadata gives Unknown read status. Identity fields stay outside the API. Claude has no reliable native unread source. Its ASB completion mark requires an observed Working-to-Idle change and a new completion. Historical Idle rows do not gain a completion mark on first load. Abort and cancellation do not create completion marks.
+Native Codex unread needs a creator identity and exact local host match. Missing or unmatched metadata gives Unknown read status. Identity fields stay outside the API. Local Claude chats have no reliable native unread source. Their ASB completion mark requires an observed Working-to-Idle change and a new completion. Historical Idle rows do not gain a completion mark on first load. Abort and cancellation do not create completion marks.
+
+Claude completion is held until the root and its linked child work end. The last successful group completion can then add attention. A final interruption or error cannot add completion attention. Child IDs, prompts, and transcript paths stay outside the ASB view.
 
 Read, Unread, pins, and pin order belong only to ASB. A successful open acknowledges ASB attention by default. It does not change execution or answer a question. Failed opens preserve attention. Persistent unread retains attention until Read, even after source Read/resolution or successful opens. It is off by default.
 
@@ -84,6 +95,7 @@ All clients share one tracker. Tracking uses the complete scanned list before fi
 - View/width changes preserve filters, search, pins, focus, and the outer frame. Keyboard focus reveals off-screen rows. Ordinary refresh preserves scroll position.
 - Dark colors apply only to ASB. Custom colors must pass background and contrast checks. No global GNOME setting changes.
 - Working time uses a stable source start (`workingSinceMs`) and a local two-second clock. Idle age labels update once a minute. Label updates do not read sources.
+- Provider warnings hide after five seconds. The same warning stays hidden until it changes or clears. Dashboard fetch errors stay visible until a successful refresh.
 
 The application ID is `local.asb.AgentSwitchBoard`. The toolbar uses ASB's own disc icon. Codex and Claude row icons identify the original apps. The installer adds only ASB's launcher and icon. It adds no auto-start entry.
 
@@ -97,7 +109,9 @@ Client reads do not overlap and retain at most one requested follow-up. Forced r
 
 ASB reader mode omits token, quota, artifact, model-service, and governance work. Metadata fingerprints reuse unchanged records. Source events can invalidate caches even when file stats do not change. Codex and Claude signal caches have 5000-entry limits. The Claude directory index has a 32-root limit.
 
-Codex tails start at 64 KiB and grow to 256 KiB. Lifecycle and question recovery can scan full logs with bounded memory and append checkpoints held in memory. Claude transcript tails have an 8 MiB limit and use six concurrent reads. Retained history can still make cold reads slow. ASB writes no transcript or work-metric cache.
+The remote reader keeps at most 32 cache roots, 50,000 classified file names per root, 512 response entries, and 5000 projected session records per root. Six concurrent readers inspect new keys and changed approved bodies. Encoded bodies are limited to 8 MiB and decoded bodies to 16 MiB. Unrelated cache writes do not reread old keys or bodies. Built-in zstd decoding is optional; gzip watch reads work on older supported Node.js versions.
+
+Codex tails start at 64 KiB and grow to 256 KiB. Lifecycle and question recovery can scan full logs with bounded memory and append checkpoints held in memory. Claude transcript tails have an 8 MiB limit and use six concurrent reads. Larger Claude logs recover lifecycle and Agent links with bounded memory and an append checkpoint in the same signal cache. Unchanged child logs use cached signals. Retained history can still make cold reads slow. ASB writes no transcript or work-metric cache.
 
 ## API and trust boundary
 
@@ -127,7 +141,7 @@ npm run build
 
 The first two commands do not launch the ASB window. Native widget tests are separate and need a GTK display with synthetic fixtures. Use them only when UI testing is in scope. Do not use real session stores for public media or test captures.
 
-The build produces `asb_1.0.0_all.deb`, `asb-1.0.0-linux.tar.gz`, and `SHA256SUMS` in `dist/`. The portable root is `asb-1.0.0/` with `./install.sh`. Public demo assets use synthetic session names and folders. Remotion build dependencies are separate from the ASB runtime.
+The build produces `asb_1.1.0_all.deb`, `asb-1.1.0-linux.tar.gz`, and `SHA256SUMS` in `dist/`. The portable root is `asb-1.1.0/` with `./install.sh`. Public demo assets use synthetic session names and folders. Remotion build dependencies are separate from the ASB runtime.
 
 ## Retained upstream
 

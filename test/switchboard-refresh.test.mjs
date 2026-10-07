@@ -126,6 +126,22 @@ test('healthy watchers reuse clean active scans and reconcile missed events at f
   assert.equal(f.loads(), 2);
 });
 
+test('a missing optional remote cache preserves local watch coverage and retries discovery', async (t) => {
+  const f = await fixture(t);
+  const remote = f.paths.find((entry) => entry.optional);
+  assert.ok(remote);
+  await rm(remote.path, { recursive: true });
+  assert.equal((await f.scan()).performance.dashboard.watchCoverage, true);
+  await f.clock.advance(2_000);
+  await f.scan();
+  assert.equal(f.loads(), 1);
+  await mkdir(remote.path, { recursive: true });
+  await f.clock.advance(3_000);
+  await until(() => f.watches.some((entry) => entry.target === remote.path && !entry.watcher.closed));
+  assert.equal((await f.scan()).performance.dashboard.watchCoverage, true);
+  assert.equal(f.loads(), 2);
+});
+
 test('source bursts coalesce, cap busy scans, and emit only metadata', async (t) => {
   const f = await fixture(t);
   await f.scan();
@@ -198,14 +214,14 @@ test('watch failures use active fallback, retry missing stores, and follow atomi
   assert.equal(f.loads(), 2);
   fail = false;
   await f.clock.advance(3_000);
-  await until(() => f.watches.length === 4);
+  await until(() => f.watches.length === f.paths.length);
   const old = f.watches[0];
   await rename(old.target, `${old.target}-old`);
   await mkdir(old.target);
   for (const spec of f.paths) if (spec.path.startsWith(`${old.target}${path.sep}`)) await mkdir(spec.path, { recursive: true });
   await f.clock.advance(5_000);
   assert.equal(old.watcher.closed, true);
-  assert.ok(f.watches.length > 4);
+  assert.ok(f.watches.length > f.paths.length);
   const claudePath = f.paths.find((item) => item.source === 'claude').path;
   await rm(claudePath, { recursive: true });
   await f.clock.advance(5_000);

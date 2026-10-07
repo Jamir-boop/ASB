@@ -1,8 +1,8 @@
 # ASB user guide
 
-ASB lists local Codex and Claude Desktop Code chats. Select a row to open that chat in its original app. The Linux native window uses GTK and Libadwaita. ASB makes no model calls and does not send prompts.
+ASB lists Codex and Claude Desktop Code chats. It also lists remote Code sessions observed in Claude's local cache. Select a row to open that chat in its original app. The Linux native window uses GTK and Libadwaita. ASB makes no model calls and does not send prompts.
 
-See [README.md](README.md) for v1.0.0 packages and runtime requirements.
+See [README.md](README.md) for v1.1.0 packages and runtime requirements.
 
 ## Layout and search
 
@@ -33,13 +33,15 @@ ASB does not import or write pins in the original apps.
 
 An unarchived chat is not proof that it is Working. An open task with no activity for six hours becomes Unknown. Source writes, cold scans, and app crashes can delay or limit the evidence.
 
+A Claude root stays Working while a recent child Agent linked by its launch is active, even after the root response ends. The child count includes files under that root. Only linked child lifecycle changes execution. A linked child with missing or stale signals can give Unknown. The completion dot waits for the group to finish; interruption and error do not add a completion dot.
+
 Working time uses the current task or request start, when known. A local two-second clock updates the text without reading the source again. Compact shows the duration beside Working. Comfortable shows it at the right. Missing starts and other states have no running timer. Below one hour, the label includes seconds. Longer durations show hours and minutes.
 
 **Pending** means attention, not an execution state. A row keeps its Working, Waiting, Idle, or Unknown label beside its dot.
 
 - Codex native unread marks use only the identity and local host that match its SQLite creator metadata. Missing, corrupt, or unmatched read data means Unknown read status. ASB does not read credentials to find the identity.
 - A native unread dot can appear while Codex is Working. Native unread alone does not put a Working or Unknown row in Pending-only.
-- Claude has no reliable native unread mark. ASB can add a completion dot when it observes a Working-to-Idle change with a new completion. This dot is an ASB observation. The first scan does not mark historical Idle chats Pending.
+- Local Claude chats have no reliable native unread mark. Cached remote records can provide an unread mark. ASB can also add a completion dot when it observes a Working-to-Idle change with a new completion. This dot is an ASB observation. The first scan does not mark historical Idle chats Pending.
 - Current synchronous `request_user_input` questions can show Waiting. Async questions add attention while the real Working or Idle state stays visible. Real human input supersedes old questions. ASB sends no question or answer text to the view.
 
 ## Read and Unread
@@ -80,7 +82,7 @@ The initial window is about 420×900 pixels. Closing it stops the backend that t
 
 The optional browser view starts with `npm start` at [http://127.0.0.1:4629/](http://127.0.0.1:4629/). Both modes bind only to `127.0.0.1`. `HOST` does not change the address.
 
-Codex must handle `codex://threads/<id>`. Claude Desktop must handle `claude://code/continue?session=local_<uuid>`. Invalid Claude local IDs remain visible with the open action disabled. Opens run in the background. **Opening…** appears in the row; a failure adds details to its tooltip.
+Codex must handle `codex://threads/<id>`. Claude Desktop must handle `claude://code/continue?session=local_<uuid>` for local chats and `claude://code/<id>` for validated `cse_` or `session_` remote IDs. Invalid Claude local IDs remain visible with the open action disabled. Opens run in the background. **Opening…** appears in the row; a failure adds details to its tooltip.
 
 ## Refresh and data limits
 
@@ -89,6 +91,8 @@ Both clients poll every two seconds while any unarchived root chat is Working, o
 Reads do not overlap. Polling remains the fallback when a watcher or event stream fails. Rows stay keyed by chat ID and update in place. Activity alone does not rewrite ASB state.
 
 ASB reads the latest `~/.codex/state_N.sqlite` in read-only mode, `session_index.jsonl`, matched `.codex-global-state.json` read marks, and rollout lifecycle signals. On Linux, Claude metadata comes from `$XDG_CONFIG_HOME/Claude/claude-code-sessions` or `~/.config/Claude/claude-code-sessions`. Only `local_*.json` metadata is used. Matched transcripts come from `~/.claude/projects`.
+
+Remote Code metadata comes from approved session-list and watch response bodies in Claude's `Cache/Cache_Data`. ASB uses the newest cached response and exact cursor-linked updates. A watch without a full list contains only observed sessions; the source warning states this limit. The cache can be incomplete or old, including while Claude is closed. ASB does not fetch the remote list. Working and Waiting require an explicit worker state and a response observation within six hours. Missing state or a disconnected Remote Control bridge gives Unknown. Cloud sessions do not need a bridge connection. Remote work has no inferred start time or local folder; a safe cached Git repository name can identify the project.
 
 Root chats are the list unit. Internal subagents stay grouped under their root. Reads are limited to 5000 records per source. ASB does not include orphan Codex rollouts that are absent from its local database.
 

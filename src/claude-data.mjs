@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process';
-import { promises as fs } from 'node:fs';
+import { createReadStream, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { createInterface } from 'node:readline';
 import * as zlib from 'node:zlib';
 import { enrichThreadRuntime } from './insights.mjs';
 import {
@@ -28,6 +29,7 @@ const DEFAULT_FILE_INDEX_CACHE_TTL_MS = 30_000;
 const DEFAULT_JSONL_SIGNAL_CACHE_LIMIT = 512;
 const MAX_ASB_SESSION_COUNT = 5000;
 const DEFAULT_SIGNAL_CONCURRENCY = 6;
+const CLAUDE_ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 const CLAUDE_DESKTOP_CODE_DEFAULT_TITLE = 'General coding session';
 const LOW_SIGNAL_USER_MESSAGE = /^(\.|继续|继续吧|你继续|你继续吧|好的|好的好的|可以|可以的|行|ok|okay|收到|嗯|嗯嗯)$/iu;
 const UUID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -447,7 +449,75 @@ function initialSignals(todayStartMs = 0) {
     latestEventAtMs: null,
     pendingToolsById: new Map(),
     pendingToolAtMs: 0,
+    lifecycle: initialClaudeLifecycle(),
   };
+}
+
+function initialClaudeLifecycle() {
+  return { running: null, startedAtMs: 0, activityAtMs: 0, eventAtMs: 0, kind: '', finalAtMs: 0,
+    agents: new Map(), agentTools: new Map() };
+}
+
+function applyClaudeLifecycle(lifecycle, event, timestampMs) {
+  if (!timestampMs) return;
+  const content = event.message?.content;
+  const text = contentText(content).trim();
+  const result = event.toolUseResult;
+  if (event.type === 'user' && result?.isAsync === true && result.status === 'async_launched'
+    && /^[A-Za-z0-9_-]+$/.test(String(result.agentId || ''))) {
+    const toolId = Array.isArray(content) ? content.find((item) => item?.type === 'tool_result')?.tool_use_id : '';
+    const tool = lifecycle.agentTools.get(toolId);
+    if (tool) rememberBounded(lifecycle.agents, result.agentId, {
+      launchedAtMs: timestampMs, startedAtMs: tool.startedAtMs,
+      requestStartedAtMs: tool.requestStartedAtMs, endedAtMs: 0, kind: '',
+    }, MAX_ASB_SESSION_COUNT);
+  }
+  if (event.type === 'user' && text.startsWith('<task-notification>')) {
+    const agentId = text.match(/<task-id>([^<]+)<\/task-id>/)?.[1];
+    const status = text.match(/<status>([^<]+)<\/status>/)?.[1];
+    const agent = lifecycle.agents.get(agentId);
+    if (agent && timestampMs >= agent.launchedAtMs && ['completed', 'failed', 'cancelled', 'aborted'].includes(status)) {
+      agent.endedAtMs = timestampMs;
+      agent.kind = status === 'completed' ? 'task_complete' : status === 'failed' ? 'failed' : 'cancelled';
+    }
+    return;
+  }
+  if (timestampMs < lifecycle.eventAtMs) return;
+  const kind = event.type === 'system' ? event.subtype : event.type;
+  const stopReason = String(firstPresent(event.message?.stop_reason, event.message?.stopReason,
+    event.stop_reason, event.stopReason) || '').toLowerCase();
+  const interrupted = event.type === 'user' && /^\[Request interrupted by user(?: for tool use)?\]$/.test(text);
+  const cancelled = interrupted || ['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled', 'aborted', 'interrupted'].includes(kind)
+    || (event.type === 'result' && ['interrupted', 'cancelled', 'aborted'].includes(event.terminal_reason));
+  const failed = event.type === 'result' && event.is_error;
+  const completed = event.type === 'result' || kind === 'stop_hook_summary' || kind === 'task_complete'
+    || (event.type === 'assistant' && ['end_turn', 'stop_sequence', 'max_tokens', 'refusal'].includes(stopReason));
+  if (cancelled || failed || completed) {
+    lifecycle.running = false;
+    lifecycle.eventAtMs = timestampMs;
+    lifecycle.kind = cancelled ? 'cancelled' : failed ? 'failed' : 'task_complete';
+    lifecycle.finalAtMs = cancelled || failed ? 0 : timestampMs;
+    return;
+  }
+  const humanStart = event.type === 'user' && !event.isMeta && isMeaningfulUserText(text);
+  const activeAssistant = event.type === 'assistant' && (stopReason === 'tool_use'
+    || (Array.isArray(content) && content.some((item) => ['thinking', 'tool_use'].includes(item?.type))));
+  if (humanStart || kind === 'task_started' || activeAssistant) {
+    if (humanStart || lifecycle.running !== true) lifecycle.startedAtMs = timestampMs;
+    lifecycle.running = true;
+    lifecycle.kind = 'task_started';
+    lifecycle.eventAtMs = timestampMs;
+  }
+  if (lifecycle.running === true && ['user', 'assistant'].includes(event.type)) lifecycle.activityAtMs = timestampMs;
+  if (kind === 'task_started') lifecycle.activityAtMs = timestampMs;
+  if (event.type === 'assistant' && Array.isArray(content)) {
+    for (const tool of content) {
+      if (tool?.type === 'tool_use' && ['Agent', 'Task'].includes(tool.name) && tool.id) {
+        rememberBounded(lifecycle.agentTools, tool.id, { startedAtMs: timestampMs,
+          requestStartedAtMs: lifecycle.startedAtMs }, MAX_ASB_SESSION_COUNT);
+      }
+    }
+  }
 }
 
 function rememberTimestamp(signals, timestampMs) {
@@ -570,6 +640,11 @@ export function parseClaudeJsonlSignals(jsonlText = '', { todayStartMs = 0, asbM
 
     const timestampMs = timestampToMs(event.timestamp || event._audit_timestamp);
     rememberTimestamp(signals, timestampMs);
+    applyClaudeLifecycle(signals.lifecycle, event, timestampMs);
+    if (signals.lifecycle.eventAtMs === timestampMs && ['cancelled', 'failed'].includes(signals.lifecycle.kind)) {
+      signals.pendingToolsById.clear();
+      signals.pendingToolAtMs = 0;
+    }
     if (!asbMode) for (const candidate of rateLimitCandidates(event)) {
       rememberRateLimits(signals, candidate, timestampMs);
     }
@@ -823,6 +898,9 @@ async function indexedFiles(root, predicate, { onReadError = null, refreshStats 
 }
 
 export function invalidateClaudeData({ filePath = '', index = false } = {}) {
+  for (const [key, cached] of claudeJsonlSignalCache) {
+    if (!filePath || key.startsWith(`${filePath}\0`) || key.startsWith(`${filePath}${path.sep}`)) cached.invalidated = true;
+  }
   if (!filePath) {
     claudeMetadataCache.clear();
     claudeFileIndexCache.clear();
@@ -1040,6 +1118,13 @@ function baseClaudeThread({
     latestAgentFinalAtMs: signals?.latestAgentFinalAtMs || null,
     latestUserMessageAtMs: signals?.latestUserMessageAtMs || null,
     latestMessageKind: signals?.latestMessageKind || '',
+    lifecycleRunning: signals?.lifecycleRunning,
+    agentRunning: signals?.lifecycleRunning === true,
+    agentStartedAtMs: signals?.agentStartedAtMs || null,
+    agentActivityAtMs: signals?.agentActivityAtMs || null,
+    latestLifecycleAtMs: signals?.latestLifecycleAtMs || null,
+    latestLifecycleKind: signals?.latestLifecycleKind || '',
+    childWorkUnknown: Boolean(signals?.childWorkUnknown),
     firstUserMessage: signals?.firstUserMessage || '',
     latestUserMessage: signals?.latestUserMessage || '',
     latestMeaningfulUserMessage: signals?.latestMeaningfulUserMessage || '',
@@ -1116,6 +1201,7 @@ export function normalizeClaudeCodeCliSession({
 export function normalizeClaudeDesktopCodeSession(session, {
   signals = {},
   stat = {},
+  subagentStats = {},
 } = {}, nowMs = Date.now()) {
   const externalId = String(session.sessionId || session.id || '');
   const cliSessionId = String(session.cliSessionId || '');
@@ -1154,9 +1240,13 @@ export function normalizeClaudeDesktopCodeSession(session, {
     extra: {
       appDeepLink,
       cliSessionId,
+      bridgeSessionIds: Array.isArray(session.bridgeSessionIds)
+        ? session.bridgeSessionIds.filter((id) => typeof id === 'string' && /^(?:cse|session)_[A-Za-z0-9_-]{1,128}$/.test(id)) : [],
       permissionMode: session.permissionMode || '',
       completedTurns: coerceNumber(session.completedTurns),
       transcriptActivityAtMs: coerceNumber(signals.latestEventAtMs) || null,
+      embeddedSubagentCount: coerceNumber(subagentStats?.count),
+      embeddedSubagentUpdatedAtMs: coerceNumber(subagentStats?.updatedAtMs) || null,
     },
   }, nowMs);
 }
@@ -1231,6 +1321,7 @@ async function readSignalsForFile(filePath, {
     const cached = signalCache?.get(cacheKey);
     if (
       cached
+      && !cached.invalidated
       && sameFileSignature(cached.signature, signature)
     ) {
       claudeCacheMetrics.jsonlSignalHits += 1;
@@ -1242,10 +1333,16 @@ async function readSignalsForFile(filePath, {
       await readTailText(filePath, maxBytes, fileStat),
       parseOptions,
     );
+    let lifecycleOffset;
+    if (fileStat.size > maxBytes) {
+      const recovery = await scanClaudeLifecycle(filePath, fileStat, cached);
+      signals.lifecycle = recovery.lifecycle;
+      lifecycleOffset = recovery.offset;
+    }
     rememberBounded(
       signalCache,
       cacheKey,
-      { signature, signals },
+      { signature, signals, lifecycleOffset },
       cacheLimit,
       claudeCacheMetrics,
       'jsonlSignalWrites',
@@ -1255,6 +1352,79 @@ async function readSignalsForFile(filePath, {
   } catch {
     return parseClaudeJsonlSignals('', { todayStartMs, asbMode });
   }
+}
+
+async function scanClaudeLifecycle(filePath, stat, cached) {
+  const previous = cached?.signature;
+  const append = Number.isFinite(cached?.lifecycleOffset) && previous.ino === stat.ino && previous.dev === stat.dev
+    && stat.size > previous.size;
+  const lifecycle = append ? structuredClone(cached.signals.lifecycle) : initialClaudeLifecycle();
+  const start = append ? cached.lifecycleOffset : 0;
+  const input = createReadStream(filePath, { encoding: 'utf8', start, end: stat.size - 1 });
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  let lastLine = '', suffix = '';
+  input.on('data', (chunk) => { suffix = chunk.slice(-2); });
+  try {
+    for await (const line of lines) {
+      lastLine = line;
+      try {
+        const event = JSON.parse(line);
+        applyClaudeLifecycle(lifecycle, event, timestampToMs(event.timestamp || event._audit_timestamp));
+      } catch {
+        // Ignore partial or corrupt records, as in the transcript parser.
+      }
+    }
+  } finally {
+    lines.close();
+    input.destroy();
+  }
+  claudeCacheMetrics.jsonlSignalBytesRead += stat.size - start;
+  return { lifecycle, offset: /[\r\n]$/.test(suffix) ? stat.size : stat.size - Buffer.byteLength(lastLine) };
+}
+
+async function readClaudeRootSignals(entry, subagents, options) {
+  const signals = await readSignalsForFile(entry.filePath, { ...options, stat: options.asbMode ? null : entry.stat });
+  const root = signals.lifecycle;
+  const childrenById = new Map((subagents || []).map((child) => [path.basename(child.filePath, '.jsonl'), child]));
+  const work = [root];
+  let unknown = false;
+  let updatedAtMs = Math.max(0, ...(subagents || []).map((child) => coerceNumber(child.stat?.mtimeMs)));
+  for (const [agentId, link] of root.agents) {
+    if (link.endedAtMs) {
+      work.push({ running: false, eventAtMs: link.endedAtMs, kind: link.kind,
+        finalAtMs: link.kind === 'task_complete' ? link.endedAtMs : 0 });
+      continue;
+    }
+    const child = childrenById.get(`agent-${agentId}`);
+    const childSignals = child ? await readSignalsForFile(child.filePath, {
+      ...options, stat: options.asbMode ? null : child.stat,
+    }) : null;
+    const lifecycle = childSignals?.lifecycle;
+    updatedAtMs = Math.max(updatedAtMs, coerceNumber(childSignals?.latestEventAtMs));
+    if (!lifecycle || lifecycle.running === null || lifecycle.eventAtMs < link.startedAtMs) {
+      unknown = true;
+      continue;
+    }
+    work.push({ ...lifecycle, startedAtMs: link.requestStartedAtMs || lifecycle.startedAtMs || link.startedAtMs });
+  }
+  const active = work.filter((item) => item.running === true);
+  const recent = active.filter((item) => coerceNumber(item.activityAtMs) > 0
+    && (options.nowMs || Date.now()) - item.activityAtMs <= CLAUDE_ACTIVITY_WINDOW_MS);
+  const latestEnd = work.filter((item) => item.running === false).sort((a, b) => b.eventAtMs - a.eventAtMs)[0];
+  const running = active.length ? true : unknown ? undefined : root.running;
+  return {
+    signals: { ...signals,
+      lifecycleRunning: running,
+      childWorkUnknown: unknown,
+      agentStartedAtMs: recent.length ? Math.min(...recent.map((item) => item.startedAtMs).filter(Boolean)) : 0,
+      agentActivityAtMs: active.length ? Math.max(...active.map((item) => item.activityAtMs)) : 0,
+      latestLifecycleAtMs: active.length ? Math.max(...active.map((item) => item.eventAtMs)) : latestEnd?.eventAtMs || 0,
+      latestLifecycleKind: active.length ? 'task_started' : latestEnd?.kind || '',
+      latestAgentFinalAtMs: active.length || unknown ? 0 : latestEnd?.kind === 'task_complete'
+        ? Math.max(...work.map((item) => item.finalAtMs || 0)) : signals.latestAgentFinalAtMs,
+    },
+    subagentStats: { count: subagents?.length || 0, updatedAtMs },
+  };
 }
 
 function mergeClaudeUsageCacheSignals(signals = {}, usageCache = null) {
@@ -1288,7 +1458,7 @@ async function indexClaudeProjectFiles(
       return cached.files;
     }
     claudeCacheMetrics.projectIndexMisses += 1;
-    const indexed = new Map(files.map((entry) => [path.basename(entry.filePath, '.jsonl'), entry]));
+    const indexed = indexClaudeTranscripts(files);
     rememberBounded(claudeProjectIndexCacheByDir, projectsDir, { files: indexed, sourceFiles: files }, 32,
       claudeCacheMetrics, 'projectIndexWrites');
     return indexed;
@@ -1302,7 +1472,7 @@ async function indexClaudeProjectFiles(
   claudeCacheMetrics.projectIndexMisses += 1;
 
   const files = await walkFiles(projectsDir, (_filePath, name) => name.endsWith('.jsonl'));
-  const indexed = new Map(files.map((entry) => [path.basename(entry.filePath, '.jsonl'), entry]));
+  const indexed = indexClaudeTranscripts(files);
   if (ttlMs > 0) {
     claudeProjectIndexCacheByDir.set(projectsDir, {
       files: indexed,
@@ -1368,15 +1538,20 @@ function claudeSubagentParentSessionId(filePath = '') {
   return path.basename(path.dirname(parentDir));
 }
 
-function claudeSubagentStats(entries) {
+function indexClaudeTranscripts(entries) {
+  return new Map(entries.map((entry) => [claudeSubagentParentSessionId(entry.filePath)
+    ? entry.filePath : path.basename(entry.filePath, '.jsonl'), entry]));
+}
+
+function claudeSubagentsByRoot(entries) {
   const bySession = new Map();
   for (const entry of entries) {
     const parentSessionId = claudeSubagentParentSessionId(entry.filePath);
     if (!parentSessionId) continue;
-    const current = bySession.get(parentSessionId) || { count: 0, updatedAtMs: 0 };
-    current.count += 1;
-    current.updatedAtMs = Math.max(current.updatedAtMs, coerceNumber(entry.stat?.mtimeMs));
-    bySession.set(parentSessionId, current);
+    const rootPath = `${path.dirname(path.dirname(entry.filePath))}.jsonl`;
+    const current = bySession.get(rootPath) || [];
+    current.push(entry);
+    bySession.set(rootPath, current);
   }
   return bySession;
 }
@@ -1395,16 +1570,15 @@ export async function loadClaudeCodeCliThreads({
   const candidates = projectFiles
     ? [...projectFiles.values()]
     : await walkFiles(projectsDir, (_filePath, name) => name.endsWith('.jsonl'));
-  const subagentsBySession = claudeSubagentStats(candidates);
+  const subagentsBySession = claudeSubagentsByRoot(candidates);
   const files = recentEntries(
     candidates.filter((entry) => !claudeSubagentParentSessionId(entry.filePath)),
     maxCount,
   );
-  const parsed = await Promise.all(files.map(async (entry) => ({
+  const parsed = await mapWithConcurrency(files, DEFAULT_SIGNAL_CONCURRENCY, async (entry) => ({
     ...entry,
-    signals: await readSignalsForFile(entry.filePath, { todayStartMs, maxBytes, stat: entry.stat }),
-    subagentStats: subagentsBySession.get(path.basename(entry.filePath, '.jsonl')) || null,
-  })));
+    ...await readClaudeRootSignals(entry, subagentsBySession.get(entry.filePath), { todayStartMs, maxBytes, nowMs }),
+  }));
   const threads = parsed
     .map((entry) => normalizeClaudeCodeCliSession(entry, nowMs))
     .filter((thread) => (
@@ -1461,16 +1635,20 @@ export async function loadClaudeDesktopCodeThreads({
   const desktopUsageCache = asbMode ? null : usageCache === undefined
     ? await readClaudeUsageCache({ appDir, cacheTtlMs: usageCacheTtlMs, nowMs }).catch(() => null)
     : usageCache;
+  const subagentsBySession = claudeSubagentsByRoot(indexedProjectFiles.values());
   const parsed = await mapWithConcurrency(files, signalConcurrency, async (entry) => {
     try {
       const session = await readJsonFile(entry.filePath, entry.stat);
       const projectFile = indexedProjectFiles.get(String(session.cliSessionId || ''));
-      const signals = projectFile
-        ? await readSignalsForFile(projectFile.filePath, { todayStartMs, maxBytes, stat: asbMode ? null : projectFile.stat, asbMode, signalCacheLimit })
-        : parseClaudeJsonlSignals('', { todayStartMs, asbMode });
+      const rootSignals = projectFile
+        ? await readClaudeRootSignals(projectFile, subagentsBySession.get(projectFile.filePath), {
+          todayStartMs, maxBytes, asbMode, signalCacheLimit, nowMs,
+        })
+        : { signals: parseClaudeJsonlSignals('', { todayStartMs, asbMode }) };
       return {
         session,
-        signals: mergeClaudeUsageCacheSignals(signals, desktopUsageCache),
+        ...rootSignals,
+        signals: mergeClaudeUsageCacheSignals(rootSignals.signals, desktopUsageCache),
         stat: entry.stat,
       };
     } catch {

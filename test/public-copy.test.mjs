@@ -311,19 +311,20 @@ test('documents concise ASB installation, video, privacy limits, and retained mo
     readFile(new URL('../scripts/capture-mock-screenshot.mjs', import.meta.url), 'utf8'),
     readFile(new URL('../scripts/mock-dashboard-data.mjs', import.meta.url), 'utf8'),
   ]);
+  const version = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version;
 
   assert.match(readme, /!\[[^\]]*\]\(docs\/media\/asb-banner\.png\)/);
-  assert.match(readme, /native GNOME switcher for your local Codex and Claude Desktop Code chats/);
+  assert.match(readme, /native GNOME switcher for your Codex and Claude Desktop Code chats/);
   assert.match(readme, /Select a chat to open it in its original app/);
   assert.match(readme, /^https:\/\/github\.com\/user-attachments\/assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/mi);
   assert.match(privacy, /banner and Remotion demo use synthetic chats and folders/);
   assert.match(privacy, /not a capture of local conversations/);
-  assert.match(readme, /\[Download v1\.0\.0\]\(https:\/\/github\.com\/Jamir-boop\/ASB\/releases\/tag\/v1\.0\.0\)/);
-  assert.match(readme, /\[Release notes\]\(docs\/releases\/v1\.0\.0\.md\)/);
-  assert.match(readme, /https:\/\/github\.com\/Jamir-boop\/ASB\/releases\/download\/v1\.0\.0\/asb_1\.0\.0_all\.deb/);
-  assert.match(readme, /https:\/\/github\.com\/Jamir-boop\/ASB\/releases\/download\/v1\.0\.0\/asb-1\.0\.0-linux\.tar\.gz/);
-  assert.match(readme, /sudo apt install \.\/asb_1\.0\.0_all\.deb/);
-  assert.match(readme, /tar -xzf asb-1\.0\.0-linux\.tar\.gz/);
+  assert.ok(readme.includes(`[Download v${version}](https://github.com/Jamir-boop/ASB/releases/tag/v${version})`));
+  assert.ok(readme.includes(`[Release notes](docs/releases/v${version}.md)`));
+  assert.ok(readme.includes(`https://github.com/Jamir-boop/ASB/releases/download/v${version}/asb_${version}_all.deb`));
+  assert.ok(readme.includes(`https://github.com/Jamir-boop/ASB/releases/download/v${version}/asb-${version}-linux.tar.gz`));
+  assert.ok(readme.includes(`sudo apt install ./asb_${version}_all.deb`));
+  assert.ok(readme.includes(`tar -xzf asb-${version}-linux.tar.gz`));
   assert.match(readme, /Node\.js `>=20` \(`sqlite3` below `22\.13`\)/);
   assert.match(readme, /Python 3 with PyGObject, GTK `>=4\.10`, Libadwaita `>=1\.4`, and `xdg-utils`/);
   assert.match(readme, /working `codex:` and `claude:` URL handlers/);

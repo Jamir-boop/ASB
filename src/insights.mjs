@@ -295,6 +295,8 @@ function quotaSummary(threads, { codexResetCredits = null } = {}) {
 }
 
 function currentTurnStartedAtMs(thread) {
+  if (['claude-code-cli', 'claude-desktop-code'].includes(thread.provider)
+    && (thread.lifecycleRunning === false || (thread.childWorkUnknown && thread.lifecycleRunning !== true))) return 0;
   if (thread.agentRunning || thread.isAgentRunning) {
     return coerceNumber(
       thread.currentTurnStartedAtMs
@@ -326,6 +328,10 @@ function currentTurnActivityAtMs(thread) {
 }
 
 function hasActiveCurrentTurn(thread, nowMs) {
+  if (['claude-code-cli', 'claude-desktop-code'].includes(thread.provider) && thread.lifecycleRunning === true) {
+    const activityAtMs = coerceNumber(thread.agentActivityAtMs);
+    return activityAtMs > 0 && Math.max(0, nowMs - activityAtMs) <= RUNNING_ACTIVITY_WINDOW_MS;
+  }
   const activityAtMs = currentTurnActivityAtMs(thread);
   return activityAtMs > 0 && Math.max(0, nowMs - activityAtMs) <= RUNNING_ACTIVITY_WINDOW_MS;
 }

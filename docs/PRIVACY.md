@@ -12,6 +12,7 @@ This document covers `npm start`, `npm run desktop`, and the packaged `asb` laun
 - Matched `~/.codex/sessions/**/rollout-*.jsonl` lifecycle, activity, completion, and question signals.
 - Claude Desktop Code `local_*.json` metadata under `$XDG_CONFIG_HOME/Claude/claude-code-sessions`, or `~/.config/Claude/claude-code-sessions` on Linux.
 - Associated Claude transcripts under `~/.claude/projects` for lifecycle and completion signals.
+- Approved Claude session-list and watch response bodies in `Cache/Cache_Data` for remote Code metadata. The reader uses only `https://claude.ai/v1/code/sessions` and `/watch`, with validated cache boundaries and bounded decoding. It does not use HTTP headers, cookies, authentication endpoints, or remote transcript-event bodies.
 - ASB's own local state, layout, and theme settings.
 
 Log readers can examine message and tool events in memory to identify state. The ASB view receives no question body, answer text, raw transcript, or credential. ASB does not write to original app stores.
@@ -21,6 +22,8 @@ Log readers can examine message and tool events in memory to identify state. The
 Chat IDs, names, folders, app names, archive state, execution state and reason, update time, working time, subagent count, app links, and ASB attention/pin marks can appear in the local API or view. These fields can still identify private work. Use synthetic data for public media and reports.
 
 Working, Waiting, Idle, and Unknown are local observations. A completion dot is not proof of unread state in the original app. Read/Unread and pins belong only to ASB.
+
+Remote cache observations can be incomplete or old. ASB uses the newest response and exact cursor-linked updates, and warns when no full list is cached. It does not fetch sessions or use a login. Remote records can supply an observed unread mark and explicit worker state. Missing or stale state gives Unknown. Raw participants, account IDs, configuration, bridge aliases, and action bodies stay outside the view payload.
 
 ## What ASB writes
 

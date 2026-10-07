@@ -3,7 +3,9 @@ import os from 'node:os';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadCodexDashboard, invalidateCodexData } from './codex-data.mjs';
-import { loadClaudeDesktopCodeThreads, defaultClaudeAppDir, invalidateClaudeData } from './claude-data.mjs';
+import { defaultClaudeAppDir, invalidateClaudeData } from './claude-data.mjs';
+import { loadSwitchboardClaudeThreads, claudeRemoteDeepLink, claudeRemoteStatus,
+  invalidateClaudeRemoteData, isClaudeRemoteCacheEvent } from './claude-remote-data.mjs';
 import { normalizeDashboardThreads } from './insights.mjs';
 import { createServer, openThreadInProvider } from './server.mjs';
 
@@ -28,6 +30,8 @@ export function switchboardWatchPaths({ homeDir = os.homedir(), appDir = default
       acceptEvent: directoryOrFile(/^rollout-.*\.jsonl$/) },
     { path: path.join(appDir, 'claude-code-sessions'), source: 'claude', recursive: true,
       acceptEvent: directoryOrFile(/^local_.*\.json$/) },
+    { path: path.join(appDir, 'Cache', 'Cache_Data'), source: 'claude', optional: true,
+      acceptEvent: (filename, event) => isClaudeRemoteCacheEvent(path.join(appDir, 'Cache', 'Cache_Data'), filename, event) },
     { path: projectsDir, source: 'claude', recursive: true, acceptEvent: directoryOrFile(/\.jsonl$/) },
   ];
 }
@@ -41,6 +45,7 @@ export function isSwitchboardRoot(thread) {
 }
 
 export function switchboardStatus(thread, nowMs = Date.now()) {
+  if (thread.source === 'claude-remote-cache') return claudeRemoteStatus(thread, nowMs);
   const questionAt = Number(thread.latestBlockingQuestionAtMs || 0);
   if (thread.userQuestionBlocking && questionAt >= Number(thread.latestLifecycleAtMs || 0)
     && nowMs - questionAt <= ACTIVITY_WINDOW_MS) {
@@ -55,6 +60,7 @@ export function switchboardStatus(thread, nowMs = Date.now()) {
       ? { state: 'working', reason: 'The local log has an open task.' }
       : { state: 'unknown', reason: 'The last task has no recent signal.' };
   }
+  if (thread.childWorkUnknown) return { state: 'unknown', reason: 'A linked child has no current task signal.' };
   const userAt = Number(thread.latestUserMessageAtMs || 0);
   const finalAt = Number(thread.latestAgentFinalAtMs || 0);
   if (finalAt && finalAt >= userAt) return { state: 'idle', reason: 'The last response ended.' };
@@ -76,9 +82,11 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
       const validClaude = thread.provider === 'claude-desktop-code'
         && String(thread.externalId).startsWith('local_') && UUID.test(String(thread.externalId).slice(6));
       const appDeepLink = validCodex ? `codex://threads/${thread.id}`
-        : validClaude ? `claude://code/continue?session=${encodeURIComponent(thread.externalId)}` : '';
+        : validClaude ? `claude://code/continue?session=${encodeURIComponent(thread.externalId)}`
+          : thread.provider === 'claude-desktop-code' && thread.source === 'claude-remote-cache'
+            ? claudeRemoteDeepLink(thread.externalId) : '';
       const status = switchboardStatus(thread, nowMs);
-      const startedAtMs = Number(isCodex && thread.lifecycleRunning === true ? thread.agentStartedAtMs
+      const startedAtMs = Number(thread.lifecycleRunning === true ? thread.agentStartedAtMs
         : thread.provider === 'claude-desktop-code' ? thread.latestUserMessageAtMs : 0);
       const row = {
         id: thread.id,
@@ -87,16 +95,17 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
         providerLabel: isCodex ? 'Codex' : 'Claude Desktop Code',
         title: thread.title || 'Untitled session',
         cwd: thread.cwd || '',
-        projectName: thread.cwd ? path.basename(thread.cwd) || thread.cwd : 'No project',
+        projectName: thread.cwd ? path.basename(thread.cwd) || thread.cwd
+          : thread.source === 'claude-remote-cache' ? thread.projectName || 'No project' : 'No project',
         archived: Boolean(thread.archived),
         updatedAtMs: Number(thread.groupUpdatedAtMs || thread.updatedAtMs || 0),
         subagentCount: Number(thread.subagentCount || 0),
         ...status,
         workingSinceMs: status.state === 'working' && Number.isFinite(startedAtMs) ? Math.max(0, startedAtMs) : 0,
-        nativeUnread: thread.nativeUnread ?? null,
-        readStatus: thread.readStatus || 'unknown',
+        nativeUnread: thread.source === 'claude-remote-cache' && status.state === 'unknown' ? null : thread.nativeUnread ?? null,
+        readStatus: thread.source === 'claude-remote-cache' && status.state === 'unknown' ? 'unknown' : thread.readStatus || 'unknown',
         questionPending: Boolean(thread.awaitingUserInput),
-        completionAtMs: ['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled'].includes(thread.latestLifecycleKind) ? 0
+        completionAtMs: ['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled', 'failed'].includes(thread.latestLifecycleKind) ? 0
           : Math.max(thread.latestLifecycleKind === 'task_complete' ? Number(thread.latestLifecycleAtMs || 0) : 0,
             Number(thread.latestAgentFinalAtMs || 0)),
         canOpen: Boolean(appDeepLink),
@@ -107,8 +116,9 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
     }),
   };
   const expiries = normalizedThreads.filter(isSwitchboardRoot).flatMap((thread) => [thread.latestBlockingQuestionAtMs,
+    thread.source === 'claude-remote-cache' ? thread.remoteObservedAtMs : 0,
     thread.lifecycleRunning === true ? thread.agentActivityAtMs || thread.latestLifecycleAtMs : 0,
-    thread.provider === 'claude-desktop-code' ? thread.transcriptActivityAtMs : 0])
+    thread.provider === 'claude-desktop-code' && thread.lifecycleRunning == null ? thread.transcriptActivityAtMs : 0])
     .map((value) => Number(value || 0) + ACTIVITY_WINDOW_MS + 1).filter((value) => value > nowMs);
   Object.defineProperty(board, 'nextStatusCheckAtMs', { value: expiries.length ? Math.min(...expiries) : Infinity });
   board.refreshIntervalMs = switchboardRefreshInterval(board);
@@ -118,7 +128,7 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
 export async function loadSwitchboardDashboard({
   nowMs = Date.now(),
   loadCodex = loadCodexDashboard,
-  loadClaude = loadClaudeDesktopCodeThreads,
+  loadClaude = loadSwitchboardClaudeThreads,
   codexOptions = {},
   claudeOptions = {},
 } = {}) {
@@ -146,8 +156,8 @@ export async function loadSwitchboardDashboard({
       : provider?.status === 'warning' ? 'warning' : provider?.installed === false ? 'missing' : 'ready';
     return {
       id: ids[index], label: labels[index], status,
-      message: status === 'error' ? `Cannot read ${labels[index]} sessions. Check the local session store.`
-        : status === 'warning' ? `Some ${labels[index]} session files cannot be read.` : '',
+        message: status === 'error' ? `Cannot read ${labels[index]} sessions. Check the local session store.`
+          : status === 'warning' ? provider?.message || `Some ${labels[index]} session files cannot be read.` : '',
     };
   });
   return buildSwitchboardDashboard(results.flatMap((result) => result.status === 'fulfilled' ? result.value.threads || [] : []), providers, nowMs);
@@ -158,7 +168,9 @@ export async function openSwitchboardThread(thread, options = {}) {
     && thread.appDeepLink === `codex://threads/${thread.id}`)
     || (thread.provider === 'claude-desktop-code' && UUID.test(String(thread.externalId).slice(6))
       && thread.externalId.startsWith('local_')
-      && thread.appDeepLink === `claude://code/continue?session=${encodeURIComponent(thread.externalId)}`);
+      && thread.appDeepLink === `claude://code/continue?session=${encodeURIComponent(thread.externalId)}`)
+    || (thread.provider === 'claude-desktop-code' && Boolean(claudeRemoteDeepLink(thread.externalId))
+      && thread.appDeepLink === claudeRemoteDeepLink(thread.externalId));
   if (!thread.canOpen || !valid) throw new Error('This session has no direct desktop link.');
   return openThreadInProvider(thread, options);
 }
@@ -337,7 +349,10 @@ export function createSwitchboardServer(options = {}) {
     dashboardEventMinIntervalMs: 0,
     dashboardWatchDebounceMs: 250,
     dashboardWatchPaths: switchboardWatchPaths(),
-    dashboardSourceChanged: (source, hint) => source === 'codex' ? invalidateCodexData(hint) : invalidateClaudeData(hint),
+    dashboardSourceChanged: (source, hint) => {
+      if (source === 'codex') invalidateCodexData(hint);
+      else { invalidateClaudeData(hint); invalidateClaudeRemoteData(hint); }
+    },
     ...options,
     switchboardOnly: true,
     loadDashboard: async () => {

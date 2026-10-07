@@ -379,6 +379,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.refresh_force_queued = False
         self.refresh_interval_ms = 5000
         self.clock_interval = self.clock_timer = None
+        self.notice_timer, self.notice_generation, self.provider_notice = None, 0, ""
         self.opening, self.focus_widgets = set(), {}
         self.open_errors = {}
         self.context_menu = None
@@ -700,9 +701,27 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         except OSError:
             self.theme_error.set_label("Cannot reset the ASB theme. Check its config folder.")
 
-    def set_notice(self, text):
+    def set_notice(self, text, temporary=False):
+        if temporary:
+            previous, self.provider_notice = self.provider_notice, text
+            if text == previous:
+                if self.notice_timer:
+                    return
+                text = ""
+        if self.notice_timer:
+            GLib.source_remove(self.notice_timer)
+            self.notice_timer = None
+        self.notice_generation += 1
         self.notice.set_label(text)
         self.notice.set_visible(bool(text))
+        if text and temporary:
+            generation = self.notice_generation
+            def hide():
+                if not self.closed and generation == self.notice_generation:
+                    self.notice_timer = None
+                    self.notice.set_visible(False)
+                return False
+            self.notice_timer = GLib.timeout_add(5000, hide)
 
     def tick(self):
         if not self.closed:
@@ -746,7 +765,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             GLib.source_remove(self.timer)
             self.timer = GLib.timeout_add(interval, self.tick)
         self.sync_unread_setting(dashboard.get("persistentUnread", False))
-        self.set_notice(" ".join(provider.get("message", "") for provider in dashboard.get("providers", []) if provider.get("message")))
+        self.set_notice(" ".join(provider.get("message", "") for provider in dashboard.get("providers", []) if provider.get("message")), temporary=True)
         signature = dashboard.get("threads", [])
         if signature != self.signature:
             self.signature = signature
@@ -1400,7 +1419,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def on_close(self, *_args):
         self.closed = True
         self.events.close()
-        for name in ("timer", "clock_timer", "geometry_idle"):
+        for name in ("timer", "clock_timer", "geometry_idle", "notice_timer"):
             source = getattr(self, name)
             if source:
                 GLib.source_remove(source)

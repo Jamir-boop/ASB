@@ -12,7 +12,7 @@ import {
   getClaudeCacheStats, invalidateClaudeData, loadClaudeDesktopCodeThreads, parseClaudeJsonlSignals,
 } from '../src/claude-data.mjs';
 import { buildDashboard, normalizeDashboardThreads } from '../src/insights.mjs';
-import { createSwitchboardServer } from '../src/switchboard.mjs';
+import { buildSwitchboardDashboard, createSwitchboardServer } from '../src/switchboard.mjs';
 
 const nowMs = Date.parse('2026-10-07T12:00:00Z');
 const jsonl = (records) => `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
@@ -314,6 +314,55 @@ test('Claude ASB bounds parse concurrency and caches more than 512 sessions', as
     assert.equal(after.metadata.bytesRead, before.metadata.bytesRead);
     assert.ok(after.jsonlSignals.entries <= after.jsonlSignals.limit && after.jsonlSignals.limit <= 5000);
   } finally { fs.open = originalOpen; }
+});
+
+test('Claude recovers linked child lifecycle outside the tail and reuses append checkpoints', async (t) => {
+  const directory = await temporaryDirectory(t);
+  const fixture = await claudeFixture(directory, 'child-history');
+  const rootDir = path.dirname(fixture.transcriptPath);
+  const childDir = path.join(rootDir, 'session-child-history', 'subagents');
+  const childPath = path.join(childDir, 'agent-background.jsonl');
+  const event = (type, offset, extra) => ({ type, timestamp: new Date(nowMs + offset).toISOString(), ...extra });
+  await fs.mkdir(childDir, { recursive: true });
+  await fs.writeFile(fixture.transcriptPath, jsonl([
+    event('user', -1000, { message: { content: 'Start a background task.' } }),
+    event('assistant', -900, { message: { content: [{ type: 'tool_use', id: 'launch', name: 'Agent', input: { run_in_background: true } }] } }),
+    event('user', -899, { message: { content: [{ type: 'tool_result', tool_use_id: 'launch' }] },
+      toolUseResult: { isAsync: true, status: 'async_launched', agentId: 'background' } }),
+    event('assistant', -800, { message: { stop_reason: 'end_turn', content: 'Launched.' } }),
+    event('progress', -700, { data: 'x'.repeat(2048) }),
+  ]));
+  await fs.writeFile(childPath, jsonl([
+    event('assistant', -600, { message: { content: [{ type: 'thinking' }] } }),
+    event('progress', -500, { data: 'x'.repeat(2048) }),
+  ]));
+  const options = { appDir: fixture.appDir, projectsDir: fixture.projectsDir, nowMs,
+    asbMode: true, usageCache: null, maxBytes: 256 };
+  const scan = async () => buildSwitchboardDashboard((await loadClaudeDesktopCodeThreads(options)).threads, [], nowMs);
+  assert.equal((await scan()).threads[0].state, 'working');
+  const before = getClaudeCacheStats().jsonlSignals;
+  assert.equal((await scan()).threads[0].workingSinceMs, nowMs - 1000);
+  assert.equal(getClaudeCacheStats().jsonlSignals.bytesRead, before.bytesRead);
+  const terminal = jsonl([event('result', 100, { terminal_reason: 'completed' })]);
+  const half = Math.floor(terminal.length / 2);
+  await fs.appendFile(childPath, terminal.slice(0, half));
+  assert.equal((await scan()).threads[0].state, 'working');
+  await fs.appendFile(childPath, terminal.slice(half));
+  const completed = await scan();
+  assert.equal(completed.threads[0].state, 'idle');
+  assert.equal(completed.threads[0].completionAtMs, nowMs + 100);
+  assert.ok(getClaudeCacheStats().jsonlSignals.bytesRead - before.bytesRead < 1024);
+  const completeReads = getClaudeCacheStats().jsonlSignals.bytesRead;
+  assert.equal((await scan()).threads[0].state, 'idle');
+  assert.equal(getClaudeCacheStats().jsonlSignals.bytesRead, completeReads);
+  const originalStat = fs.stat;
+  const frozenStat = await fs.stat(childPath);
+  t.mock.method(fs, 'stat', async (filePath, ...args) => filePath === childPath ? frozenStat : originalStat(filePath, ...args));
+  const contents = await fs.readFile(childPath, 'utf8');
+  await fs.writeFile(childPath, contents.replace('completed', 'cancelled'));
+  assert.equal((await scan()).threads[0].completionAtMs, nowMs + 100);
+  invalidateClaudeData({ filePath: childPath });
+  assert.equal((await scan()).threads[0].completionAtMs, 0);
 });
 
 test('narrow normalization matches dashboard relationships and default Claude usage stays enabled', () => {

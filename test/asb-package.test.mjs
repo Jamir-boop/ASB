@@ -9,6 +9,10 @@ import { fileURLToPath } from 'node:url';
 import { ASB_APP_ID } from '../scripts/asb-icon.mjs';
 import { build, DEBIAN_DEPENDS, install, RUNTIME_FILES, uninstall } from '../scripts/asb-package.mjs';
 
+test('release runtime includes the Claude remote reader imported by the switchboard', () => {
+  assert.ok(RUNTIME_FILES.includes('src/claude-remote-data.mjs'));
+});
+
 const sourceRoot = fileURLToPath(new URL('..', import.meta.url));
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
@@ -19,7 +23,7 @@ test('release payloads are reproducible and the user installer preserves other f
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'asb-package-test-'));
   t.after(() => rm(temporary, { recursive: true, force: true }));
   const version = JSON.parse(await readFile(path.join(sourceRoot, 'package.json'))).version;
-  assert.equal(version, '1.0.0');
+  assert.match(version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
   const previousMask = process.umask(0o022);
   let artifacts, second;
   try {

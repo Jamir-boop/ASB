@@ -1591,7 +1591,9 @@ export function createServer({
               await attachDirectories(spec.path, spec);
             }
           }
-        } catch { covered = false; }
+        } catch (error) {
+          if (!(spec.optional && error.code === 'ENOENT')) covered = false;
+        }
       }
       for (const [targetPath, entry] of adaptiveWatchers) {
         if (!desired.has(targetPath) || dashboardClosed) { entry.watcher.close?.(); adaptiveWatchers.delete(targetPath); }

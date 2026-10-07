@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, stat, utimes } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
-import { defaultClaudeAppDir, normalizeClaudeDesktopCodeSession, loadClaudeDesktopCodeThreads, parseClaudeJsonlSignals } from '../src/claude-data.mjs';
+import { buildDashboard } from '../src/insights.mjs';
+import { defaultClaudeAppDir, normalizeClaudeDesktopCodeSession, loadClaudeDesktopCodeThreads, loadClaudeCodeCliThreads, parseClaudeJsonlSignals } from '../src/claude-data.mjs';
 import { loadCodexDashboard, readThreads, discoverCodexStateDatabase, parseRolloutSignals, readRolloutSignals, getCodexCacheStats, codexNativeReadStatus } from '../src/codex-data.mjs';
 import { buildSwitchboardDashboard, createSwitchboardServer, loadSwitchboardDashboard, openSwitchboardThread, switchboardStatus, PendingTracker } from '../src/switchboard.mjs';
 
@@ -57,6 +58,7 @@ test('Claude recursively reads local metadata, keeps archives, and deduplicates 
   await mkdir(sessions, { recursive: true });
   await writeFile(path.join(sessions, 'local_one.json'), JSON.stringify({ sessionId: localId, cliSessionId: id, title: 'Older', lastActivityAt: now - 1000 }));
   await writeFile(path.join(sessions, 'local_two.json'), JSON.stringify({ sessionId: localId, cliSessionId: id, title: 'Newest', isArchived: true, lastActivityAt: now + 100_000 }));
+  for (const filename of ['local_one.json', 'local_two.json']) await utimes(path.join(sessions, filename), now / 1000, now / 1000);
   await writeFile(path.join(sessions, 'ignored.json'), JSON.stringify({ sessionId: 'private', cliSessionId: 'other' }));
   const result = await loadClaudeDesktopCodeThreads({ appDir: path.join(dir, 'app'), projectFiles: new Map(), usageCache: null, nowMs: now });
   assert.equal(result.threads.length, 1);
@@ -150,6 +152,137 @@ test('ASB refreshes Claude transcript stats and discovers newly created transcri
   await writeFile(transcript, jsonl([{ type: 'result', timestamp: new Date(now + 1_001).toISOString() }]) + '\n', { flag: 'a' });
   assert.equal((await scan(now + 1_999)).threads[0].state, 'idle');
   assert.equal((await scan(now + 2_000)).threads[0].state, 'idle');
+});
+
+test('Claude roots include only explicitly linked child work and observe its final completion', async (t) => {
+  const dir = await temp(t);
+  const appDir = path.join(dir, 'app');
+  const projectsDir = path.join(dir, 'projects');
+  const projectDir = path.join(projectsDir, 'project');
+  const subagents = path.join(projectDir, id, 'subagents');
+  const rootPath = path.join(projectDir, `${id}.jsonl`);
+  const childPath = path.join(subagents, 'agent-linked.jsonl');
+  const event = (type, offset, extra) => ({ type, timestamp: new Date(now + offset).toISOString(), ...extra });
+  const launch = (agentId, offset) => [
+    event('assistant', offset, { message: { content: [{ type: 'tool_use', id: agentId, name: 'Agent', input: { run_in_background: true } }] } }),
+    event('user', offset + 1, { message: { content: [{ type: 'tool_result', tool_use_id: agentId }] },
+      toolUseResult: { isAsync: true, status: 'async_launched', agentId } }),
+  ];
+  const final = (offset) => event('assistant', offset, { message: { stop_reason: 'end_turn', content: 'Complete.' } });
+  await mkdir(path.join(appDir, 'claude-code-sessions'), { recursive: true });
+  await mkdir(subagents, { recursive: true });
+  await writeFile(path.join(appDir, 'claude-code-sessions', `${localId}.json`), JSON.stringify({ sessionId: localId, cliSessionId: id }));
+  await writeFile(rootPath, jsonl([
+    event('user', -10_000, { message: { content: 'Start the work.' } }), ...launch('linked', -9_000), final(-8_000),
+  ]) + '\n');
+  await writeFile(childPath, jsonl([
+    event('assistant', -7_000, { sessionId: id, isSidechain: true, agentId: 'linked',
+      message: { content: [{ type: 'thinking', thinking: 'private child body' }] } }),
+    event('user', -6_000, { message: { content: [{ type: 'tool_result', tool_use_id: 'child-tool', content: 'private result' }] } }),
+  ]) + '\n');
+  await writeFile(path.join(subagents, 'agent-unrelated.jsonl'), jsonl([
+    event('assistant', -1_000, { message: { content: [{ type: 'tool_use', name: 'Bash' }] } }),
+  ]) + '\n');
+  const otherSubagents = path.join(projectsDir, 'other-project', id, 'subagents');
+  await mkdir(otherSubagents, { recursive: true });
+  await writeFile(path.join(otherSubagents, 'agent-linked.jsonl'), jsonl([
+    event('assistant', -1_000, { sessionId: id, message: { content: [{ type: 'thinking' }] } }),
+  ]) + '\n');
+  const scan = async (time = now) => buildSwitchboardDashboard((await loadClaudeDesktopCodeThreads({
+    appDir, projectsDir, nowMs: time, asbMode: true, usageCache: null,
+  })).threads, [], time);
+  const tracker = new PendingTracker(false);
+  const active = await tracker.observe(await scan());
+  assert.equal(active.threads.length, 1);
+  assert.equal(active.threads[0].subagentCount, 2);
+  assert.equal(active.threads[0].state, 'working');
+  assert.equal(active.threads[0].workingSinceMs, now - 10_000);
+  assert.equal(active.threads[0].completionAtMs, 0);
+  assert.equal(active.threads[0].pending, false);
+  assert.equal(active.nextStatusCheckAtMs, now - 6_000 + 6 * 3_600_000 + 1);
+  assert.equal((await scan(now + 7 * 3_600_000)).threads[0].state, 'unknown');
+  assert.doesNotMatch(JSON.stringify(active), /agent-linked|private child body|private result|subagents/);
+  const cli = await loadClaudeCodeCliThreads({ projectsDir, nowMs: now, runCommand: async () => ({ stdout: 'Claude Code' }) });
+  assert.equal(cli.threads.length, 1);
+  assert.equal(cli.threads[0].lifecycleRunning, true);
+  assert.equal(cli.threads[0].embeddedSubagentCount, 2);
+  await tracker.markUnread(active.threads[0].id);
+  const unreadWorking = await tracker.observe(await scan());
+  assert.equal(unreadWorking.threads[0].state, 'working');
+  assert.equal(unreadWorking.threads[0].pendingSource, 'manual-unread');
+  await tracker.acknowledge(active.threads[0].id);
+  await writeFile(childPath, jsonl([final(100)]) + '\n', { flag: 'a' });
+  const complete = await tracker.observe(await scan(now + 100));
+  assert.equal(complete.threads[0].state, 'idle');
+  assert.equal(complete.threads[0].completionAtMs, now + 100);
+  assert.equal(complete.threads[0].completionAttention, true);
+  assert.equal((await scan(now + 101)).threads[0].state, 'idle');
+  await tracker.acknowledge(active.threads[0].id);
+  await writeFile(rootPath, jsonl([
+    event('user', 200, { message: { content: 'Start the next task.' } }), ...launch('later', 210),
+  ]) + '\n', { flag: 'a' });
+  assert.equal((await scan(now + 220)).threads[0].state, 'working');
+  await writeFile(rootPath, jsonl([final(230)]) + '\n', { flag: 'a' });
+  assert.equal((await scan(now + 240)).threads[0].state, 'unknown');
+  const laterPath = path.join(subagents, 'agent-later.jsonl');
+  await writeFile(laterPath, jsonl([event('assistant', 250, { message: { content: [{ type: 'tool_use', name: 'Bash' }], stop_reason: 'tool_use' } })]) + '\n');
+  const discovered = await tracker.observe(await scan(now + 250));
+  assert.equal(discovered.threads[0].state, 'working');
+  assert.equal(discovered.threads[0].subagentCount, 3);
+  assert.equal(discovered.threads[0].workingSinceMs, now + 200);
+  for (const terminal of [{ type: 'result', terminal_reason: 'interrupted' }, { type: 'result', is_error: true }]) {
+    await writeFile(laterPath, jsonl([event(terminal.type, 300, terminal)]) + '\n');
+    const cancelled = await tracker.observe(await scan(now + 300));
+    assert.equal(cancelled.threads[0].state, 'idle');
+    assert.equal(cancelled.threads[0].completionAtMs, 0);
+    assert.equal(cancelled.threads[0].pending, false);
+  }
+});
+
+test('stale Claude child work does not replace a fresh root start or keep a cancelled request Waiting', async (t) => {
+  const dir = await temp(t);
+  const appDir = path.join(dir, 'app');
+  const projectsDir = path.join(dir, 'projects');
+  const childDir = path.join(projectsDir, id, 'subagents');
+  const rootPath = path.join(projectsDir, `${id}.jsonl`);
+  const event = (type, offset, extra) => ({ type, timestamp: new Date(now + offset).toISOString(), ...extra });
+  const old = -7 * 3_600_000;
+  await mkdir(path.join(appDir, 'claude-code-sessions'), { recursive: true });
+  await mkdir(childDir, { recursive: true });
+  await writeFile(path.join(appDir, 'claude-code-sessions', `${localId}.json`), JSON.stringify({ sessionId: localId, cliSessionId: id }));
+  await writeFile(rootPath, jsonl([
+    event('user', old - 100, { message: { content: 'Run the old work.' } }),
+    event('assistant', old, { message: { content: [{ type: 'tool_use', id: 'old-launch', name: 'Agent' }] } }),
+    event('user', old + 1, { message: { content: [{ type: 'tool_result', tool_use_id: 'old-launch' }] },
+      toolUseResult: { isAsync: true, status: 'async_launched', agentId: 'old' } }),
+    event('assistant', old + 2, { message: { stop_reason: 'end_turn', content: 'Launched.' } }),
+    event('user', -100, { message: { content: 'Run the fresh work.' } }),
+  ]) + '\n');
+  await writeFile(path.join(childDir, 'agent-old.jsonl'), jsonl([
+    event('assistant', old + 3, { message: { content: [{ type: 'thinking' }] } }),
+  ]) + '\n');
+  const scan = async () => buildSwitchboardDashboard((await loadClaudeDesktopCodeThreads({
+    appDir, projectsDir, nowMs: now, asbMode: true, usageCache: null,
+  })).threads, [], now);
+  const active = (await scan()).threads[0];
+  assert.equal(active.state, 'working');
+  assert.equal(active.workingSinceMs, now - 100);
+  await writeFile(rootPath, jsonl([event('assistant', -50, { message: { stop_reason: 'end_turn', content: 'Fresh work done.' } })]) + '\n', { flag: 'a' });
+  assert.equal((await scan()).threads[0].state, 'unknown');
+  const cli = await loadClaudeCodeCliThreads({ projectsDir, nowMs: now, runCommand: async () => ({ stdout: 'Claude Code' }) });
+  assert.notEqual(cli.threads[0].status, 'running');
+  assert.equal(cli.threads[0].currentTurnStartedAtMs, null);
+  assert.notEqual(buildDashboard(cli.threads, now).threads[0].status, 'running');
+  await writeFile(path.join(childDir, 'agent-old.jsonl'), jsonl([event('result', -20, { terminal_reason: 'interrupted' })]) + '\n', { flag: 'a' });
+  assert.equal((await scan()).threads[0].state, 'idle');
+  await writeFile(rootPath, jsonl([
+    event('user', -10, { message: { content: 'Start a request with a question.' } }),
+    event('assistant', -5, { message: { content: [{ type: 'tool_use', id: 'ask', name: 'AskUserQuestion' }] } }),
+    event('user', -1, { message: { content: '[Request interrupted by user]' } }),
+  ]) + '\n', { flag: 'a' });
+  const cancelled = (await scan()).threads[0];
+  assert.equal(cancelled.state, 'idle');
+  assert.equal(cancelled.completionAtMs, 0);
 });
 
 test('ASB shares concurrent loads and uses the active fallback clock without forced scans', async (t) => {
