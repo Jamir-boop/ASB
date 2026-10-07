@@ -1,5 +1,13 @@
 # ASB publication record and checklist
 
+## Latest publication
+
+ASB [1.1.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.1.0) was published on `2026-10-07` (Lima). Its source and tag use commit [84b5dee](https://github.com/Jamir-boop/ASB/commit/84b5deed74a446eec794fc706418030b2d616cec).
+
+- Uploaded `asb_1.1.0_all.deb`, `asb-1.1.0-linux.tar.gz`, and `SHA256SUMS`. All three downloaded hashes matched the local files.
+- Local checks passed 419 Node tests and seven pure native logic checks. [CI](https://github.com/Jamir-boop/ASB/actions/runs/37687682053) passed on Node.js `22.13.0` and `24`.
+- A disposable per-user upgrade from `1.0.0` to `1.1.0` kept layout, theme, pins, and unread state. The packaged runtime check passed. No UI tests or Debian `apt install` were run.
+
 ASB [1.0.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.0.0) was published on `2026-10-07` in the public [Jamir-boop/ASB](https://github.com/Jamir-boop/ASB) repository. The initial code commit is [552c3da](https://github.com/Jamir-boop/ASB/commit/552c3da). The source workspace had no Git repository when preparation began; inherited upstream Git history was not imported.
 
 ## Verified publication
