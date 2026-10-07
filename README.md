@@ -16,9 +16,7 @@
 
 ## Demo
 
-![ASB animated demo with synthetic sessions](docs/media/asb-demo.gif)
-
-[Watch or download the MP4](https://github.com/Jamir-boop/ASB/releases/download/v1.0.0/asb-demo.mp4).
+https://github.com/user-attachments/assets/c85742f4-d1b0-4ffc-9497-144069fec36b
 
 The demo is a scripted Remotion animation with synthetic sessions and folders. It illustrates the controls; it is not a recording of private chats or a performance test. Its source is in [demo/](demo/).
 
