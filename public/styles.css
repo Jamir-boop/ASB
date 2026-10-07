@@ -4131,27 +4131,6 @@ body[data-view="search"] .search-field > span {
   height: 7px;
 }
 
-.search-result-side-meta {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  min-width: 0;
-  color: var(--muted);
-  font-family: Menlo, Monaco, Consolas, monospace;
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1.35;
-}
-
-.search-result-side-meta span {
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .search-result-side .action-button.primary {
   align-self: end;
   width: 100%;
@@ -4560,20 +4539,6 @@ body[data-view="search"] .search-field > span {
   font-weight: 700;
 }
 
-.thread-title-line {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 5px 8px;
-  min-width: 0;
-}
-
-.thread-title-line .thread-title {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 100%;
-}
-
 .thread-content-shell {
   display: grid;
   align-content: center;
@@ -4683,18 +4648,6 @@ body[data-view="search"] .search-field > span {
   line-height: 1.35;
 }
 
-.thread-mention {
-  display: -webkit-box;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--steel);
-  font-size: 13px;
-  line-height: 1.45;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-}
-
 .thread-signal-band {
   display: grid;
   gap: 7px;
@@ -4707,9 +4660,7 @@ body[data-view="search"] .search-field > span {
 }
 
 .thread-title mark,
-.thread-mention mark,
-.search-result-title mark,
-.search-match mark {
+.search-result-title mark {
   border-radius: 2px;
   padding: 0 1px;
   color: #111111;
@@ -4759,41 +4710,6 @@ body[data-view="search"] .search-field > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.search-match {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  margin-top: 0;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.search-match span {
-  flex: 0 0 auto;
-  border: 1px solid rgba(44, 111, 187, 0.26);
-  border-radius: 999px;
-  padding: 1px 6px;
-  color: var(--blue);
-  font-family: Menlo, Monaco, Consolas, monospace;
-  font-size: 10px;
-  font-style: normal;
-  font-weight: 700;
-}
-
-.search-match em {
-  display: -webkit-box;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--steel);
-  font-style: normal;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
 }
 
 .project-history-summary {
@@ -5776,10 +5692,6 @@ body[data-view="search"] .search-field > span {
   }
 
   .search-result-side-head {
-    grid-column: 1;
-  }
-
-  .search-result-side-meta {
     grid-column: 1;
   }
 

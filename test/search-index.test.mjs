@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
+import { execFile } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { PassThrough, Writable } from 'node:stream';
+import { Writable } from 'node:stream';
+import { promisify } from 'node:util';
 import { createSearchIndex } from '../src/search-index.mjs';
+
+const execFileAsync = promisify(execFile);
 
 async function tempDb() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-search-index-'));
@@ -20,12 +23,12 @@ function recordSqliteCommands({ stallFirstCall = false } = {}) {
     resolveFirstCallStarted = resolve;
   });
   const runCommand = (command, args) => {
-    const child = new EventEmitter();
-    const stdout = new PassThrough();
-    const stderr = new PassThrough();
+    const child = {};
+    let resolveCommand;
+    const result = new Promise((resolve) => {
+      resolveCommand = resolve;
+    });
     let input = '';
-    child.stdout = stdout;
-    child.stderr = stderr;
     child.stdin = new Writable({
       write(chunk, encoding, callback) {
         input += chunk.toString();
@@ -33,11 +36,7 @@ function recordSqliteCommands({ stallFirstCall = false } = {}) {
       },
       final(callback) {
         calls.push({ command, args, input });
-        const close = () => {
-          stdout.end(args.includes('-json') ? '[]' : '');
-          stderr.end('');
-          child.emit('close', 0);
-        };
+        const close = () => resolveCommand({ stdout: args.includes('-json') ? '[]' : '', stderr: '' });
         if (stallFirstCall && calls.length === 1) {
           releaseFirstCall = close;
           resolveFirstCallStarted();
@@ -47,7 +46,7 @@ function recordSqliteCommands({ stallFirstCall = false } = {}) {
         callback();
       },
     });
-    return child;
+    return Object.assign(result, { child });
   };
 
   return {
@@ -59,9 +58,11 @@ function recordSqliteCommands({ stallFirstCall = false } = {}) {
 }
 
 function brokenSqliteInputCommand() {
-  const child = new EventEmitter();
-  child.stdout = new PassThrough();
-  child.stderr = new PassThrough();
+  const child = {};
+  let resolveCommand;
+  const result = new Promise((resolve) => {
+    resolveCommand = resolve;
+  });
   child.stdin = new Writable({
     write(chunk, encoding, callback) {
       callback();
@@ -70,10 +71,10 @@ function brokenSqliteInputCommand() {
       const error = new Error('write EPIPE');
       error.code = 'EPIPE';
       callback(error);
-      setImmediate(() => child.emit('close', 1));
+      setImmediate(() => resolveCommand({ stdout: '', stderr: '' }));
     },
   });
-  return child;
+  return Object.assign(result, { child });
 }
 
 function thread(overrides = {}) {
@@ -126,7 +127,7 @@ test('starts sqlite commands with bail and busy timeout safeguards', async () =>
   assert.equal(calls[0].args[timeoutCommandIndex + 1], '.timeout 5000');
 });
 
-test('reports a failed index when sqlite closes its input pipe', async () => {
+test('reports a failed index when sqlite closes its input pipe and exits successfully', async () => {
   const searchIndex = createSearchIndex({
     databasePath: await tempDb(),
     runCommand: brokenSqliteInputCommand,
@@ -136,6 +137,39 @@ test('reports a failed index when sqlite closes its input pipe', async () => {
 
   assert.equal(status.available, false);
   assert.equal(status.error, 'write EPIPE');
+});
+
+test('preserves sqlite stderr and exit-code errors', async () => {
+  for (const stderr of ['sqlite failure\n', '']) {
+    const index = createSearchIndex({
+      databasePath: await tempDb(),
+      runCommand: () => execFileAsync(process.execPath, ['-e', `
+        process.stdin.resume();
+        process.stdin.on('end', () => {
+          process.stderr.write(${JSON.stringify(stderr)});
+          process.exitCode = 7;
+        });
+      `]),
+    });
+
+    await assert.rejects(index.indexDashboard(), {
+      message: stderr.trim() || 'sqlite3 exited with code 7',
+      exitCode: 7,
+      stderr,
+    });
+  }
+});
+
+test('indexes and queries SQL input and output larger than the execFile default limit', async () => {
+  const index = createSearchIndex({ databasePath: await tempDb() });
+  const message = 'large sqlite text '.repeat(70_000);
+  await index.indexDashboard({ threads: [thread({ latestUserMessage: message })] });
+
+  const result = await index.searchThreads({ query: 'large sqlite' });
+
+  assert.equal(result.total, 1);
+  assert.equal(result.items[0].latestUserMessage, message);
+  assert.equal((await index.projectHistory()).items[0].threadCount, 1);
 });
 
 test('coalesces concurrent search index initialization', async () => {

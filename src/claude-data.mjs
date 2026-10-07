@@ -5,6 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { createInterface } from 'node:readline';
 import * as zlib from 'node:zlib';
+import { rememberBounded, sameFileSignature, statSignature } from './data-cache.mjs';
 import { enrichThreadRuntime } from './insights.mjs';
 import {
   addTokenBreakdowns,
@@ -93,33 +94,6 @@ function coerceNumber(value, fallback = 0) {
 function nonNegativeInteger(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? Math.floor(number) : fallback;
-}
-
-function rememberBounded(cache, key, value, limit, metrics = null, writeKey = '', evictionKey = '') {
-  if (!cache || limit <= 0) return;
-  if (metrics && writeKey) metrics[writeKey] = coerceNumber(metrics[writeKey]) + 1;
-  if (cache.has(key)) cache.delete(key);
-  cache.set(key, value);
-  while (cache.size > limit) {
-    const oldestKey = cache.keys().next().value;
-    cache.delete(oldestKey);
-    if (metrics && evictionKey) metrics[evictionKey] = coerceNumber(metrics[evictionKey]) + 1;
-  }
-}
-
-function statSignature(stat) {
-  return {
-    size: Number(stat?.size || 0),
-    mtimeMs: Number(stat?.mtimeMs || 0),
-    ctimeMs: Number(stat?.ctimeMs || 0),
-    dev: Number(stat?.dev || 0),
-    ino: Number(stat?.ino || 0),
-  };
-}
-
-function sameFileSignature(a, b) {
-  return a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs
-    && a.dev === b.dev && a.ino === b.ino;
 }
 
 export function getClaudeCacheStats() {

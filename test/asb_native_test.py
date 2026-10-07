@@ -502,10 +502,9 @@ class WidgetCheck(unittest.TestCase):
                 self.assertEqual(model.get_item_attribute_value(1, "action", None).get_string(), "win.pin")
                 menu.popdown()
                 self.drain()
-            marked = []
-            window.mark_unread = marked.append
-            window.activate_action("win.mark-unread", asb.GLib.Variant("s", "unknown"))
-            self.assertEqual(marked, ["unknown"])
+            with patch.object(window, "session_action") as action:
+                window.activate_action("win.mark-unread", asb.GLib.Variant("s", "unknown"))
+                action.assert_called_once_with("unknown", "mark-unread")
             window.close()
             self.drain(.03)
 
@@ -673,7 +672,7 @@ class WidgetCheck(unittest.TestCase):
                 self.assertEqual((window.window_handle.get_height(), window.scroll.get_height()), geometry)
 
                 window.loading = True
-                window.mark_unread("sample-15")
+                window.row_action(None, asb.GLib.Variant("s", "sample-15"), "mark-unread")
                 calls[-1][1]({"marked": True}, None)
                 self.assertTrue(window.refresh_queued)
                 count = len(calls)

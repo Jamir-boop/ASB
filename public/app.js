@@ -784,20 +784,6 @@ function tokenUsageMarkup(thread) {
   `;
 }
 
-function searchMatchMarkup(thread, query = currentSearchQuery()) {
-  const match = thread?.match;
-  if (!match?.field && !match?.snippet) return '';
-
-  const label = match.label || match.field || 'match';
-  const snippet = match.snippet || '';
-  return `
-    <div class="search-match">
-      <span>${escapeHtml(label)}</span>
-      ${snippet ? `<em>${highlightSearchTerm(snippet, query, 220)}</em>` : ''}
-    </div>
-  `;
-}
-
 function secondsUntil(timestamp) {
   if (!timestamp) return 0;
   return Math.max(0, Math.ceil((Number(timestamp) - Date.now()) / 1000));
@@ -1628,23 +1614,6 @@ function displayThreadTitle(thread) {
   return compactSignal(thread?.title || '未命名任务', 140) || '未命名任务';
 }
 
-function threadTitleMarkup(thread, query = currentSearchQuery()) {
-  const isSubagent = isSubagentThread(thread);
-  const subagentCount = Number(thread?.subagentCount || 0);
-  const badges = [
-    isSubagent ? 'Sub' : '',
-    !isSubagent && subagentCount > 0 ? 'Host' : '',
-    !isSubagent && subagentCount > 0 ? `${subagentCount} Sub` : '',
-  ].filter(Boolean);
-
-  return `
-    <div class="thread-title-line">
-      <span class="thread-title">${highlightSearchTerm(displayThreadTitle(thread), query, 140)}</span>
-      ${badges.map((badge) => `<span class="thread-kind-badge">${escapeHtml(badge)}</span>`).join('')}
-    </div>
-  `;
-}
-
 function threadKindBadgesMarkup(thread) {
   const isSubagent = isSubagentThread(thread);
   const subagentCount = Number(thread?.subagentCount || 0);
@@ -1696,13 +1665,6 @@ function threadMention(thread, query = currentSearchQuery()) {
     field: 'recent user',
     text: '暂无可展示的聊天内容',
   };
-}
-
-function threadMentionMarkup(thread, query = currentSearchQuery()) {
-  const mention = threadMention(thread, query);
-  return `
-    <div class="thread-mention">${highlightSearchTerm(mention.text, query, 220)}</div>
-  `;
 }
 
 function threadSupportMetaItems(thread) {
@@ -1823,12 +1785,6 @@ function threadPrimaryModuleMarkup(thread, {
   `;
 }
 
-function searchConversationPreview(thread, query = currentSearchQuery()) {
-  return searchConversationPreviewSegments(thread, query)
-    .map((segment) => segment.text)
-    .join(' ');
-}
-
 function searchSpeakerForField(field = '') {
   return field === 'agent output' ? 'agent' : 'user';
 }
@@ -1917,16 +1873,6 @@ function threadAttachmentSource(thread) {
     || '';
 }
 
-function searchResultSideMetaMarkup(thread) {
-  return `
-    <div class="search-result-side-meta">
-      <span>${escapeHtml(providerLabel(thread))}</span>
-      <span aria-hidden="true">|</span>
-      <span>${escapeHtml(thread.model || '未知模型')}</span>
-    </div>
-  `;
-}
-
 function searchResultRowMarkup(thread, { query = currentSearchQuery(), isSelected = false } = {}) {
   const openDisabled = canOpenThread(thread) ? '' : ' disabled';
   const artifactModule = threadArtifactModuleMarkup(thread);
@@ -1942,22 +1888,6 @@ function searchResultRowMarkup(thread, { query = currentSearchQuery(), isSelecte
       ${threadSideMarkup(thread, openDisabled)}
     </article>
   `;
-}
-
-function threadMetaItems(thread) {
-  const relationship = threadRelationshipLabel(thread);
-  const host = isSubagentThread(thread) ? hostThreadLabel(thread) : '';
-  const turnDuration = currentTurnDuration(thread);
-
-  return [
-    relationship,
-    host ? `Host: ${host}` : '',
-    providerLabel(thread),
-    thread.projectName,
-    thread.model || '未知模型',
-    relativeTime(thread.updatedAtMs),
-    turnDuration ? `本轮 ${turnDuration}` : '',
-  ].filter(Boolean);
 }
 
 function arrangeThreadRows(threads) {
@@ -5067,12 +4997,6 @@ async function loadDashboard({ silent = false, force = false } = {}) {
       loadDashboard({ silent: pending.silent, force: pending.force });
     }
   }
-}
-
-async function loadNotifications() {
-  const response = await fetch('/api/notifications', { cache: 'no-store' });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  setNotifications(await response.json());
 }
 
 function currentPendingSummaryCounts() {

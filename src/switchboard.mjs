@@ -3,11 +3,12 @@ import os from 'node:os';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadCodexDashboard, invalidateCodexData } from './codex-data.mjs';
-import { defaultClaudeAppDir, invalidateClaudeData } from './claude-data.mjs';
+import { defaultClaudeAppDir, invalidateClaudeData, openClaudeThread } from './claude-data.mjs';
 import { loadSwitchboardClaudeThreads, claudeRemoteDeepLink, claudeRemoteStatus,
   invalidateClaudeRemoteData, isClaudeRemoteCacheEvent } from './claude-remote-data.mjs';
 import { normalizeDashboardThreads } from './insights.mjs';
-import { createServer, openThreadInProvider } from './server.mjs';
+import { createAsbServer } from './asb-server.mjs';
+import { openThreadInCodex } from './session-opener.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
@@ -172,7 +173,7 @@ export async function openSwitchboardThread(thread, options = {}) {
     || (thread.provider === 'claude-desktop-code' && Boolean(claudeRemoteDeepLink(thread.externalId))
       && thread.appDeepLink === claudeRemoteDeepLink(thread.externalId));
   if (!thread.canOpen || !valid) throw new Error('This session has no direct desktop link.');
-  return openThreadInProvider(thread, options);
+  return thread.provider === 'codex' ? openThreadInCodex(thread, options) : openClaudeThread(thread, options);
 }
 
 export class PendingTracker {
@@ -344,7 +345,7 @@ export function createSwitchboardServer(options = {}) {
   const tracker = options.pendingTracker || new PendingTracker(options.pendingStatePath);
   const load = options.loadDashboard || loadSwitchboardDashboard;
   const open = options.openThread || openSwitchboardThread;
-  return createServer({
+  return createAsbServer({
     dashboardAdaptiveRefresh: true,
     dashboardEventMinIntervalMs: 0,
     dashboardWatchDebounceMs: 250,
@@ -354,7 +355,6 @@ export function createSwitchboardServer(options = {}) {
       else { invalidateClaudeData(hint); invalidateClaudeRemoteData(hint); }
     },
     ...options,
-    switchboardOnly: true,
     loadDashboard: async () => {
       const dashboard = await tracker.observe(await load());
       dashboard.refreshIntervalMs = switchboardRefreshInterval(dashboard);
@@ -383,8 +383,6 @@ export function createSwitchboardServer(options = {}) {
       }
       return result;
     },
-    reviewStore: null,
-    searchIndex: null,
     notificationCenter: null,
     monitorNotifications: false,
   });

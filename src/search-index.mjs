@@ -1,12 +1,14 @@
-import { spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import {
   addTokenBreakdowns,
   tokenBreakdownWithFallbackTotal,
 } from './token-usage.mjs';
 
+const execFileAsync = promisify(execFile);
 const DEFAULT_INDEX_PATH = path.join(os.homedir(), '.agent-mission-control', 'search-index.sqlite');
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -121,54 +123,39 @@ function ftsQuery(query = '') {
     .join(' AND ');
 }
 
-function runSql(databasePath, sql, { json = false, runCommand = spawn } = {}) {
-  return new Promise((resolve, reject) => {
-    const args = [
-      '-bail',
-      '-cmd',
-      `.timeout ${SQLITE_BUSY_TIMEOUT_MS}`,
-      ...(json ? ['-json'] : []),
-      databasePath,
-    ];
-    const child = runCommand('sqlite3', args, { stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    let streamError = null;
-    let settled = false;
+async function runSql(databasePath, sql, { json = false, runCommand = execFileAsync } = {}) {
+  const args = [
+    '-bail',
+    '-cmd',
+    `.timeout ${SQLITE_BUSY_TIMEOUT_MS}`,
+    ...(json ? ['-json'] : []),
+    databasePath,
+  ];
+  const command = runCommand('sqlite3', args, { maxBuffer: Infinity });
+  const child = command.child;
+  let streamError = null;
+  const rememberStreamError = (error) => {
+    streamError ||= error;
+  };
+  child.stdin.once('error', rememberStreamError);
+  child.stdout?.once('error', rememberStreamError);
+  child.stderr?.once('error', rememberStreamError);
+  child.stdin.end(`${sql.trim()}\n`);
 
-    child.stdout?.setEncoding('utf8');
-    child.stderr?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr?.on('data', (chunk) => {
-      stderr += chunk;
-    });
-    child.once('error', (error) => {
-      if (settled) return;
-      settled = true;
-      reject(error);
-    });
-    const rememberStreamError = (error) => {
-      streamError ||= error;
-    };
-    child.stdin?.once('error', rememberStreamError);
-    child.stdout?.once('error', rememberStreamError);
-    child.stderr?.once('error', rememberStreamError);
-    child.once('close', (code) => {
-      if (settled) return;
-      settled = true;
-      if (code === 0 && !streamError) {
-        resolve(stdout);
-        return;
-      }
-      const error = new Error(stderr.trim() || streamError?.message || `sqlite3 exited with code ${code}`);
-      error.exitCode = code;
-      error.stderr = stderr;
-      reject(error);
-    });
-    child.stdin.end(`${sql.trim()}\n`);
+  const { stdout, stderr } = await command.catch((error) => {
+    if (typeof error.code === 'number' || error.signal) {
+      error.message = error.stderr.trim() || streamError?.message || `sqlite3 exited with code ${error.code}`;
+      error.exitCode = error.code;
+    }
+    throw error;
   });
+  if (streamError) {
+    const error = new Error(stderr.trim() || streamError.message);
+    error.exitCode = 0;
+    error.stderr = stderr;
+    throw error;
+  }
+  return stdout;
 }
 
 async function querySql(databasePath, sql, options = {}) {
@@ -511,7 +498,7 @@ async function readFtsScores(databasePath, query, runCommand) {
 export function createSearchIndex({
   databasePath = DEFAULT_INDEX_PATH,
   now = Date.now,
-  runCommand = spawn,
+  runCommand = execFileAsync,
 } = {}) {
   let initialized = false;
   let initPromise = null;

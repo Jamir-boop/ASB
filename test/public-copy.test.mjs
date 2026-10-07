@@ -311,7 +311,9 @@ test('documents concise ASB installation, video, privacy limits, and retained mo
     readFile(new URL('../scripts/capture-mock-screenshot.mjs', import.meta.url), 'utf8'),
     readFile(new URL('../scripts/mock-dashboard-data.mjs', import.meta.url), 'utf8'),
   ]);
-  const version = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version;
+  const download = readme.match(/\[Download v(\d+\.\d+\.\d+)\]/);
+  assert.ok(download, 'README should name the published download version');
+  const version = download[1];
 
   assert.match(readme, /!\[[^\]]*\]\(docs\/media\/asb-banner\.png\)/);
   assert.match(readme, /native GNOME switcher for your Codex and Claude Desktop Code chats/);
@@ -321,10 +323,15 @@ test('documents concise ASB installation, video, privacy limits, and retained mo
   assert.match(privacy, /not a capture of local conversations/);
   assert.ok(readme.includes(`[Download v${version}](https://github.com/Jamir-boop/ASB/releases/tag/v${version})`));
   assert.ok(readme.includes(`[Release notes](docs/releases/v${version}.md)`));
+  const releaseNotes = await readFile(new URL(`../docs/releases/v${version}.md`, import.meta.url), 'utf8');
+  assert.ok(releaseNotes.startsWith(`# ASB ${version}\n`));
+  assert.ok(readme.includes(`https://github.com/Jamir-boop/ASB/releases/download/v${version}/SHA256SUMS`));
   assert.ok(readme.includes(`https://github.com/Jamir-boop/ASB/releases/download/v${version}/asb_${version}_all.deb`));
   assert.ok(readme.includes(`https://github.com/Jamir-boop/ASB/releases/download/v${version}/asb-${version}-linux.tar.gz`));
   assert.ok(readme.includes(`sudo apt install ./asb_${version}_all.deb`));
   assert.ok(readme.includes(`tar -xzf asb-${version}-linux.tar.gz`));
+  assert.ok(readme.includes(`cd asb-${version}\n`));
+  assert.ok(guide.includes(`for v${version} packages`));
   assert.match(readme, /Node\.js `>=20` \(`sqlite3` below `22\.13`\)/);
   assert.match(readme, /Python 3 with PyGObject, GTK `>=4\.10`, Libadwaita `>=1\.4`, and `xdg-utils`/);
   assert.match(readme, /working `codex:` and `claude:` URL handlers/);
@@ -1209,12 +1216,12 @@ test('renders recent thread rows with the same detail style as search results', 
     readFile(new URL('../public/styles.css', import.meta.url), 'utf8'),
   ]);
 
-  assert.match(app, /function threadMention\(thread/);
+  assert.match(app, /function searchResultExcerptMarkup\(thread/);
   assert.match(app, /function threadProjectRailMarkup\(thread\)/);
   assert.match(app, /function threadPrimaryModuleMarkup\(thread/);
   assert.match(app, /function threadResultDetailMarkup\(thread/);
   assert.match(app, /function threadSideMarkup\(thread/);
-  assert.match(app, /class="thread-mention"/);
+  assert.match(app, /class="search-result-heading"/);
   assert.doesNotMatch(app, /class="thread-content-type"/);
   assert.doesNotMatch(app, /class="thread-ide-name"/);
   assert.match(app, /class="thread-side-provider"/);
@@ -1238,6 +1245,9 @@ test('renders recent thread rows with the same detail style as search results', 
   assert.match(projectRailSource, /statusMarkup\(thread\.status\)/);
   assert.match(projectRailSource, /class="thread-project-label"/);
   assert.doesNotMatch(resultDetailSource, /class="thread-status-inline"/);
+  assert.match(resultDetailSource, /threadKindBadgesMarkup\(thread\)/);
+  assert.match(resultDetailSource, /threadSupportMetaItems\(thread\)/);
+  assert.match(resultDetailSource, /searchResultExcerptMarkup\(thread, query\)/);
   assert.match(app, /class="thread-side"/);
   assert.match(app, /class="thread-side-metrics"/);
   assert.match(app, /class="thread-token-inline"/);
@@ -1255,7 +1265,7 @@ test('renders recent thread rows with the same detail style as search results', 
   assert.match(styles, /\.thread-side\s*\{[\s\S]*grid-column:\s*4;/);
   assert.match(styles, /\.thread-side-provider\s*\{[\s\S]*text-overflow:\s*ellipsis;/);
   assert.match(styles, /\.thread-side \.action-button\.primary\s*\{[\s\S]*min-width:\s*92px;[\s\S]*min-height:\s*44px;/);
-  assert.match(styles, /\.thread-mention\s*\{[\s\S]*-webkit-line-clamp:\s*2;/);
+  assert.match(styles, /\.search-result-message\s*\{[\s\S]*-webkit-line-clamp:\s*2;/);
   assert.match(styles, /@media \(max-width: 1180px\)[\s\S]*\.thread-row\.has-artifacts \.thread-main,[\s\S]*\.search-result-row\.has-artifacts \.search-result-main[\s\S]*grid-column:\s*auto;/);
   assert.match(styles, /@media \(max-width: 720px\)[\s\S]*\.thread-side \.row-actions\s*\{[\s\S]*justify-content:\s*stretch;[\s\S]*width:\s*100%;/);
   assert.match(styles, /@media \(max-width: 720px\)[\s\S]*\.thread-side \.action-button\.primary\s*\{[\s\S]*width:\s*100%;[\s\S]*min-width:\s*0;/);
@@ -1268,24 +1278,19 @@ test('summarizes local file mentions by file name and type in previews', async (
   const escapeEnd = app.indexOf('\nfunction formatTokens', escapeStart);
   const searchHelperStart = app.indexOf('function escapeRegExp');
   const searchHelperEnd = app.indexOf('\nfunction hasActiveSearchQuery', searchHelperStart);
-  const mentionStart = app.indexOf('function threadMentionCandidates');
-  const mentionEnd = app.indexOf('\nfunction threadSupportMetaItems', mentionStart);
-  const searchPreviewStart = app.indexOf('function searchConversationPreview');
-  const searchPreviewEnd = app.indexOf('\nfunction searchResultExcerptMarkup', searchPreviewStart);
+  const rendererStart = app.indexOf('function isSubagentThread');
+  const rendererEnd = app.indexOf('\nfunction threadAttachmentSource', rendererStart);
   const compactStart = app.indexOf('function compactSignal');
   const compactEnd = app.indexOf('\nfunction formatTimestamp', compactStart);
   const recentStart = app.indexOf('function recentUserSignal');
   const recentEnd = app.indexOf('\nfunction recentAgentSignal', recentStart);
-  const titleStart = app.indexOf('function displayThreadTitle');
-  const titleEnd = app.indexOf('\nfunction threadTitleMarkup', titleStart);
 
   assert.notEqual(escapeStart, -1);
   assert.notEqual(searchHelperStart, -1);
-  assert.notEqual(mentionStart, -1);
-  assert.notEqual(searchPreviewStart, -1);
+  assert.notEqual(rendererStart, -1);
+  assert.notEqual(rendererEnd, -1);
   assert.notEqual(compactStart, -1);
   assert.notEqual(recentStart, -1);
-  assert.notEqual(titleStart, -1);
 
   const filePrompt = [
     '# Files mentioned by the user:',
@@ -1301,27 +1306,36 @@ test('summarizes local file mentions by file name and type in previews', async (
     latestUserMessage: filePrompt,
     firstUserMessage: filePrompt,
     lastAgentMessage: '已收到图片。',
+    projectName: '<Project>',
+    updatedAtMs: 1,
+    pinned: true,
+    subagentCount: 2,
   };
   const context = {
     html: '',
+    subagentHtml: '',
     title: '',
     recent: '',
     searchPreview: '',
   };
 
   vm.runInNewContext(`
+    const timeFormat = { format() { return '6/17 12:00'; } };
+    function currentTurnDuration() { return '1s'; }
     ${app.slice(escapeStart, escapeEnd)}
     ${app.slice(compactStart, compactEnd)}
     ${app.slice(searchHelperStart, searchHelperEnd)}
-    ${app.slice(mentionStart, mentionEnd)}
-    ${app.slice(searchPreviewStart, searchPreviewEnd)}
+    ${app.slice(rendererStart, rendererEnd)}
     ${app.slice(recentStart, recentEnd)}
-    ${app.slice(titleStart, titleEnd)}
     const thread = ${JSON.stringify(thread)};
-    html = threadMentionMarkup(thread, '');
+    html = threadResultDetailMarkup(thread, { query: '图片' });
+    subagentHtml = threadResultDetailMarkup({
+      ...thread, parentThreadId: 'host-1', parentThreadTitle: '<Host>', agentRole: '<worker>',
+      title: '<script>attachment</script>', firstUserMessage: '<script>attachment</script>',
+    }, { query: 'attachment', showMeta: false });
     title = displayThreadTitle(thread);
     recent = recentUserSignal(thread);
-    searchPreview = searchConversationPreview(thread, '');
+    searchPreview = searchResultExcerptMarkup(thread, '图片');
   `, context);
 
   for (const rendered of [context.html, context.title, context.recent, context.searchPreview]) {
@@ -1331,6 +1345,24 @@ test('summarizes local file mentions by file name and type in previews', async (
     assert.doesNotMatch(rendered, /\/var\/folders/);
     assert.doesNotMatch(rendered, /My request for Codex/);
   }
+  assert.match(context.html, /class="search-result-heading"/);
+  assert.match(context.html, /class="thread-kind-badge">置顶<\/span>/);
+  assert.match(context.html, /class="thread-kind-badge">Host<\/span>/);
+  assert.match(context.html, /class="thread-kind-badge">2 Sub<\/span>/);
+  assert.match(context.html, /Host · 2 Sub/);
+  assert.match(context.html, /本轮 1s/);
+  assert.match(context.html, /&lt;Project&gt;/);
+  assert.match(context.html, /6\/17 12:00/);
+  assert.match(context.subagentHtml, /class="thread-kind-badge">Sub<\/span>/);
+  assert.match(context.subagentHtml, /Sub · &lt;worker&gt;/);
+  assert.match(context.subagentHtml, /title="&lt;Host&gt;">Host: &lt;Host&gt;/);
+  assert.doesNotMatch(context.subagentHtml, /class="search-result-meta"/);
+  for (const rendered of [context.html, context.searchPreview]) {
+    assert.match(rendered, /<mark>图片<\/mark>/);
+  }
+  assert.match(context.subagentHtml, /<mark>attachment<\/mark>/);
+  assert.match(context.subagentHtml, /&lt;script&gt;/);
+  assert.doesNotMatch(context.subagentHtml, /<script>/);
 });
 
 test('shows first user input before non-initial recalled chat in search previews', async () => {
@@ -1694,13 +1726,14 @@ test('renders artifact module inside search result rows', async () => {
   const searchHelperStart = app.indexOf('function escapeRegExp');
   const searchHelperEnd = app.indexOf('\nfunction hasActiveSearchQuery', searchHelperStart);
   const previewStart = app.indexOf('function threadKindBadgesMarkup');
-  const previewEnd = app.indexOf('\nfunction threadMetaItems', previewStart);
+  const previewEnd = app.indexOf('\nfunction arrangeThreadRows', previewStart);
   const artifactStart = app.indexOf('function localFilePreviewUrl');
   const artifactEnd = app.indexOf('\nfunction formatTimestamp', artifactStart);
 
   assert.notEqual(escapeStart, -1);
   assert.notEqual(searchHelperStart, -1);
   assert.notEqual(previewStart, -1);
+  assert.notEqual(previewEnd, -1);
   assert.notEqual(artifactStart, -1);
 
   const thread = {
@@ -1914,8 +1947,8 @@ test('renders search result match metadata and project history', async () => {
     readFile(new URL('../public/styles.css', import.meta.url), 'utf8'),
   ]);
 
-  assert.match(app, /function searchMatchMarkup\(thread, query/);
-  assert.match(app, /function searchConversationPreview\(thread, query/);
+  assert.match(app, /function threadResultDetailMarkup\(thread/);
+  assert.match(app, /function threadKindBadgesMarkup\(thread/);
   assert.match(app, /function searchSpeakerForField\(field/);
   assert.match(app, /function searchTextSegment\(text, speaker/);
   assert.match(app, /function searchConversationPreviewSegments\(thread, query/);
@@ -1925,7 +1958,7 @@ test('renders search result match metadata and project history', async () => {
   assert.match(app, /function searchSpeakerLabel\(speaker/);
   assert.match(app, /function searchSpeakerClass\(speaker/);
   assert.match(app, /function searchResultExcerptMarkup\(thread/);
-  assert.match(app, /function searchResultSideMetaMarkup\(thread\)/);
+  assert.match(app, /function threadSupportMetaItems\(thread\)/);
   assert.match(app, /function searchResultRowMarkup\(thread/);
   assert.match(app, /function threadPrimaryModuleMarkup\(thread/);
   assert.match(app, /class="search-result-excerpt"/);
@@ -1938,7 +1971,8 @@ test('renders search result match metadata and project history', async () => {
   assert.match(app, /class="thread-detail-button"/);
   assert.match(app, /class="search-result-row/);
   assert.match(app, /class="search-hit-line"/);
-  assert.match(app, /searchResultMetaItems\(thread\)\.map\(.*\)\.join\('<span aria-hidden="true">\\|<\/span>'\)/s);
+  assert.match(app, /const metaItems = showMeta \? searchResultMetaItems\(thread\) : \[\];/);
+  assert.match(app, /metaItems\.map\(.*\)\.join\('<span aria-hidden="true">\|<\/span>'\)/);
   assert.match(app, /async function loadProjectHistory/);
   assert.match(app, /fetch\(`\/api\/projects\/history\?\$\{params\.toString\(\)\}`/);
   assert.match(app, /renderProjectHistory\(state\.search\.projectHistory/);
@@ -1957,7 +1991,7 @@ test('renders search result match metadata and project history', async () => {
 
 test('uses yellow marker styling for highlighted search terms', async () => {
   const styles = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
-  const markerBlock = styles.match(/\.thread-title mark,[\s\S]*?\.search-match mark\s*\{(?<body>[^}]*)\}/)?.groups?.body || '';
+  const markerBlock = styles.match(/\.thread-title mark,\s*\.search-result-title mark\s*\{(?<body>[^}]*)\}/)?.groups?.body || '';
 
   assert.match(markerBlock, /background:\s*#fff200;/);
   assert.match(markerBlock, /color:\s*#111111;/);
@@ -2156,7 +2190,7 @@ test('marks notifications done optimistically without a full notification refres
   const updateStart = app.indexOf('async function updateNotification');
   const updateEnd = app.indexOf('async function markNotificationDone', updateStart);
   const loadStart = app.indexOf('async function loadDashboard');
-  const loadEnd = app.indexOf('async function loadNotifications', loadStart);
+  const loadEnd = app.indexOf('\nfunction currentPendingSummaryCounts', loadStart);
   const doneSource = app.slice(doneStart, doneEnd);
   const updateSource = app.slice(updateStart, updateEnd);
   const loadSource = app.slice(loadStart, loadEnd);
@@ -2165,14 +2199,16 @@ test('marks notifications done optimistically without a full notification refres
   assert.notEqual(doneEnd, -1);
   assert.notEqual(updateStart, -1);
   assert.notEqual(updateEnd, -1);
+  assert.notEqual(loadStart, -1);
+  assert.notEqual(loadEnd, -1);
   assert.match(doneSource, /markNotificationDoneLocally\(notificationId\)/);
   assert.ok(
     doneSource.indexOf('markNotificationDoneLocally(notificationId)')
       < doneSource.indexOf('await updateNotification(notificationId'),
     'Done clicks should update the visible inbox before waiting on persistence',
   );
-  assert.doesNotMatch(updateSource, /loadNotifications\(/);
-  assert.doesNotMatch(loadSource, /loadNotifications\(/);
+  assert.doesNotMatch(updateSource, /fetch\(['"]\/api\/notifications['"]/);
+  assert.doesNotMatch(loadSource, /fetch\(['"]\/api\/notifications['"]/);
 });
 
 test('offers privacy-limited thread summary copy from the detail panel', async () => {
@@ -3194,7 +3230,7 @@ test('keeps auto refresh from rerendering while review form is focused', async (
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const activeStart = app.indexOf('function hasActiveReviewInteraction');
   const loadStart = app.indexOf('async function loadDashboard');
-  const loadEnd = app.indexOf('\nasync function loadNotifications', loadStart);
+  const loadEnd = app.indexOf('\nfunction currentPendingSummaryCounts', loadStart);
 
   assert.notEqual(activeStart, -1);
   assert.notEqual(loadStart, -1);
@@ -3260,7 +3296,7 @@ test('keeps auto refresh from rerendering while review form is focused', async (
 test('refreshes the open review input preview after dashboard refresh', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const loadStart = app.indexOf('async function loadDashboard');
-  const loadEnd = app.indexOf('\nasync function loadNotifications', loadStart);
+  const loadEnd = app.indexOf('\nfunction currentPendingSummaryCounts', loadStart);
 
   assert.notEqual(loadStart, -1);
   assert.notEqual(loadEnd, -1);

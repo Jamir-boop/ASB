@@ -2,6 +2,18 @@
 
 ASB has its own release series. The retained Agent Mission Control releases are recorded separately below.
 
+## ASB 1.1.1 - Unreleased
+
+Cleanup scope:
+
+- Isolate ASB server and opener paths. Exclude the legacy server from ASB packages and share existing snapshot and watcher logic.
+- Remove seven dead browser helpers and unused CSS.
+- Share Codex and Claude cache and file-signature helpers.
+- Use standard SQLite process handling with `promisify(execFile)`. Keep SQL input and errors unchanged.
+- Simplify native Read/Unread action routing. Keep existing features and privacy limits.
+
+Published downloads remain on `1.1.0`. This source version has no release or tag.
+
 ## ASB 1.1.0 - 2026-10-07
 
 - Added remote Claude Code rows from approved local session-list/watch cache bodies. Kept cursor-linked source scope, explicit cached worker state, validated existing-session links, local-twin dedupe, and bounded reads. Partial cache coverage is reported; no credentials or remote requests are used.

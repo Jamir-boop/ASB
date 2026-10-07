@@ -66,6 +66,27 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(actions({"nativeUnread": True, "nativeAttention": False})[0], ("Unread", "mark-unread"))
         self.assertEqual([action for _, action in actions({"pinned": True})], ["mark-unread", "unpin", "pin-up", "pin-down"])
 
+    def test_row_actions_keep_the_target_and_post_to_the_session_route(self):
+        window = object.__new__(Window)
+        window.base = "http://127.0.0.1:1"
+        target = SimpleNamespace(get_string=lambda: "known/session")
+        request, dispatch = Mock(), Mock()
+        with patch.dict(SCOPE, {"request_async": request, "GLib": SimpleNamespace(idle_add=dispatch)}):
+            for name, action, body in (("mark-read", "mark-read", None),
+                                      ("mark-unread", "mark-unread", None),
+                                      ("pin", "pin", None), ("unpin", "unpin", None),
+                                      ("pin-up", "move-pin", {"direction": "up"}),
+                                      ("pin-down", "move-pin", {"direction": "down"})):
+                with self.subTest(action=name):
+                    request.reset_mock()
+                    window.row_action(None, target, name)
+                    request.assert_called_once()
+                    base, route, callback, actual_dispatch, method, actual_body = request.call_args.args
+                    self.assertEqual((base, route, actual_dispatch, method, actual_body),
+                                     (window.base, "/api/threads/known%2Fsession/" + action,
+                                      dispatch, "POST", body))
+                    self.assertTrue(callable(callback))
+
     def test_timestamp_update_reuses_rows_and_columns_order_change_reuses_rows(self):
         SCOPE["Gtk"] = SimpleNamespace(ListBox=Box, SelectionMode=SimpleNamespace(NONE=0), Align=SimpleNamespace(START=0))
         SCOPE["GLib"] = SimpleNamespace(idle_add=lambda *_args: 1)

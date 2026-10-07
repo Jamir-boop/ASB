@@ -1,6 +1,8 @@
 # ASB system overview
 
-ASB `1.1.0` is a local switch board for existing Codex and Claude Desktop Code chats, including remote Code sessions observed in Claude's local cache. Its main view is a small native GNOME window. It observes local files and opens the original app. It makes no model calls.
+ASB source `1.1.1` is unreleased. Published downloads remain on `1.1.0`.
+
+ASB is a local switch board for existing Codex and Claude Desktop Code chats, including remote Code sessions observed in Claude's local cache. Its main view is a small native GNOME window. It observes local files and opens the original app. It makes no model calls.
 
 Read [README.md](README.md) for installation, [ASB.md](ASB.md) for controls, and [Privacy](docs/PRIVACY.md) for data access. ASB uses its own version series. Agent Mission Control `0.6.0` is the upstream base, not the ASB release version.
 
@@ -8,7 +10,7 @@ Read [README.md](README.md) for installation, [ASB.md](ASB.md) for controls, and
 
 ```text
 scripts/asb-desktop.mjs
-  -> src/switchboard.mjs, loopback HTTP server
+  -> src/switchboard.mjs, loopback HTTP server through src/asb-server.mjs
   -> scripts/asb-native.py, GTK/Libadwaita window
        -> local dashboard, event, open, and ASB state APIs
 
@@ -23,12 +25,18 @@ The launcher creates its own server and Python child. It stops them when the win
 
 Python 3 needs PyGObject, GTK `>=4.10`, and Libadwaita `>=1.4`. Node.js `>=22.13` uses built-in SQLite with read-only connections. Older supported Node.js (`>=20`) uses `sqlite3 -readonly`. ASB's runtime has no external npm dependencies. Development tests use Node.js `>=22.13` and need the SQLite CLI for some upstream fixtures.
 
+ASB and the retained upstream server share `DashboardSnapshot` in `src/dashboard-snapshot.mjs` for snapshots, source events, watchers, caches, and request coalescing. They also share local HTTP utilities, Codex open helpers, and provider cache helpers. The ASB package excludes `src/server.mjs` and its upstream-only dashboard, quota, notification, review, and search modules. Those files remain in the source repository.
+
 ## Main files
 
 | File | Responsibility |
 | --- | --- |
 | `src/switchboard.mjs` | ASB source selection, state, attention, pins, open validation, and server entry. |
-| `src/server.mjs` | Shared HTTP server, ASB route restrictions, snapshots, and source events. |
+| `src/asb-server.mjs` | Restricted ASB HTTP server for native and browser clients. |
+| `src/dashboard-snapshot.mjs` | Shared snapshots, source events, watchers, caches, and request coalescing. |
+| `src/local-http.mjs` | Shared JSON and static-file HTTP utilities. |
+| `src/session-opener.mjs` | Shared Codex app opens and response fields. |
+| `src/data-cache.mjs` | Shared provider cache helpers. |
 | `src/codex-data.mjs` | Read-only Codex database, names, lifecycle, questions, and matched native read marks. |
 | `src/claude-data.mjs` | Claude Desktop Code metadata and matched local transcript signals. |
 | `src/claude-remote-data.mjs` | Approved cached remote session metadata, cursor-linked updates, and explicit worker state. |
@@ -115,7 +123,7 @@ Codex tails start at 64 KiB and grow to 256 KiB. Lifecycle and question recovery
 
 ## API and trust boundary
 
-ASB uses the shared server with `switchboardOnly: true`. It allows the view assets, dashboard, source events, known-session open, ASB Read/Unread, pins, pin movement, and Persistent unread settings. Other upstream APIs are not exposed.
+ASB uses `createAsbServer` from `src/asb-server.mjs`. It allows the view assets, dashboard, source events, known-session open, ASB Read/Unread, pins, pin movement, and Persistent unread settings. Other upstream APIs are not exposed.
 
 Actions require the local Host and a matching Origin. Session IDs must be in the scanned list. Read/Unread and pin/unpin accept an empty JSON object. Persistent unread accepts only a `persistentUnread` boolean. Pin movement accepts `up`/`down`, or a known pinned target with `before`/`after`. The client cannot submit arbitrary commands, paths, or URLs.
 
@@ -141,12 +149,12 @@ npm run build
 
 The first two commands do not launch the ASB window. Native widget tests are separate and need a GTK display with synthetic fixtures. Use them only when UI testing is in scope. Do not use real session stores for public media or test captures.
 
-The build produces `asb_1.1.0_all.deb`, `asb-1.1.0-linux.tar.gz`, and `SHA256SUMS` in `dist/`. The portable root is `asb-1.1.0/` with `./install.sh`. Public demo assets use synthetic session names and folders. Remotion build dependencies are separate from the ASB runtime.
+The source build produces `asb_1.1.1_all.deb`, `asb-1.1.1-linux.tar.gz`, and `SHA256SUMS` in `dist/`. The portable root is `asb-1.1.1/` with `./install.sh`. These are unreleased build names. Public demo assets use synthetic session names and folders. Remotion build dependencies are separate from the ASB runtime.
 
 ## Retained upstream
 
 ASB is based on Agent Mission Control `0.6.0` by forxidian. The original MIT license and release history remain. The retained `src/server.mjs` entry is the broader upstream dashboard. `npm start` now launches ASB, not that dashboard.
 
-The upstream path includes OpenCode, Cindy, Cowork, tokens, quota, artifacts, notifications, search, Prompt Pack, and review jobs. It can read login credentials and make quota requests; explicit review jobs can call model CLIs. These behaviors are outside the ASB runtime contract. ASB constructs no review store, search index, or notification center and disables the upstream network/credential paths.
+The upstream path includes OpenCode, Cindy, Cowork, tokens, quota, artifacts, notifications, search, Prompt Pack, and review jobs. It can read login credentials and make quota requests; explicit review jobs can call model CLIs. These behaviors are outside the ASB runtime contract. ASB constructs no review store, search index, or notification center. Its launch path uses the ASB server and reader mode, which disables auth and quota reads.
 
 See [docs/upstream/README.md](docs/upstream/README.md), [upstream privacy](docs/upstream/PRIVACY.md), and the separate upstream section in [CHANGELOG.md](CHANGELOG.md). Do not copy upstream settings or feature claims into the ASB UI without a new design and privacy review.

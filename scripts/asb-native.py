@@ -1331,15 +1331,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if gesture:
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
 
-    def mark_unread(self, identity):
-        self.session_action(identity, "mark-unread")
-
     def row_action(self, _action, target, name):
         identity = target.get_string()
         if name in ("pin-up", "pin-down"):
             self.session_action(identity, "move-pin", {"direction": "up" if name == "pin-up" else "down"})
-        elif name == "mark-unread":
-            self.mark_unread(identity)
         else:
             self.session_action(identity, name)
 

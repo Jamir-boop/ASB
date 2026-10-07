@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +15,25 @@ test('release runtime includes the Claude remote reader imported by the switchbo
 
 const sourceRoot = fileURLToPath(new URL('..', import.meta.url));
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const upstreamOnlyFiles = ['server', 'dashboard', 'cindy-data', 'opencode-data', 'model-services', 'cindy-safe-storage',
+  'grok-quota', 'bailian-quota-bridge', 'quota-history', 'notifications', 'pending-summary', 'review-content',
+  'review-jobs', 'review-prompts', 'review-runners', 'search-index'].map((name) => `src/${name}.mjs`);
+const newRuntimeFiles = ['asb-server', 'dashboard-snapshot', 'local-http', 'session-opener', 'data-cache'].map((name) => `src/${name}.mjs`);
+
+test('ASB payload imports are complete without the retained upstream server modules', async () => {
+  for (const file of upstreamOnlyFiles) assert.ok(!RUNTIME_FILES.includes(file), file);
+  for (const file of newRuntimeFiles) assert.ok(RUNTIME_FILES.includes(file), file);
+  for (const file of RUNTIME_FILES.filter((name) => name.endsWith('.mjs'))) {
+    const source = await readFile(path.join(sourceRoot, file), 'utf8');
+    for (const match of source.matchAll(/\bfrom\s+['"]([^'"]+)['"]|\bimport\s*\(\s*['"]([^'"]+)['"]|\bimport\s+['"]([^'"]+)['"]/g)) {
+      const specifier = match[1] || match[2] || match[3];
+      if (specifier.startsWith('node:')) continue;
+      assert.ok(specifier.startsWith('.'), `${file}: ${specifier}`);
+      const dependency = path.posix.normalize(path.posix.join(path.posix.dirname(file), specifier));
+      assert.ok(RUNTIME_FILES.includes(dependency), `${file}: missing ${dependency}`);
+    }
+  }
+});
 
 test('release payloads are reproducible and the user installer preserves other files and ASB state', async (t) => {
   if (process.platform !== 'linux') return t.skip('Linux packaging check.');
@@ -42,6 +61,13 @@ test('release payloads are reproducible and the user installer preserves other f
   assert.equal(depends, `Depends: ${DEBIAN_DEPENDS}`);
   const extracted = path.join(temporary, 'deb');
   execFileSync('dpkg-deb', ['-x', artifacts[0], extracted]);
+  const portable = path.join(temporary, 'portable');
+  await mkdir(portable);
+  execFileSync('tar', ['-xzf', artifacts[1], '-C', portable]);
+  for (const payload of [path.join(extracted, 'usr/lib/asb'), path.join(portable, `asb-${version}`)]) {
+    for (const file of upstreamOnlyFiles) await assert.rejects(lstat(path.join(payload, file)), { code: 'ENOENT' });
+    execFileSync(process.execPath, ['--input-type=module', '-e', 'await import("./src/switchboard.mjs"); await import("./scripts/asb-package.mjs");'], { cwd: payload, stdio: 'pipe' });
+  }
   assert.match(await readFile(path.join(extracted, 'usr/bin/asb'), 'utf8'), /export ASB_SYSTEM_INSTALL=1/);
   assert.equal((await lstat(path.join(extracted, 'usr/bin/asb'))).mode & 0o777, 0o755);
   assert.equal(sha256(await readFile(path.join(extracted, 'usr/share/icons/hicolor/scalable/apps', `${ASB_APP_ID}.svg`))), 'c5c9c4472ef283ef8c3eaa1ff3f4758f5e52bb642ed91a3997b36f0a27bf41a0');
@@ -98,4 +124,60 @@ test('release payloads are reproducible and the user installer preserves other f
   await writeFile(desktop, 'User replacement\n');
   assert.ok((await uninstall(options)).kept.includes(desktop));
   assert.equal(await readFile(desktop, 'utf8'), 'User replacement\n');
+});
+
+test('legacy release hashes permit verified upgrades and removal while edited releases and settings stay intact', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'asb-legacy-package-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const oldSource = path.join(temporary, 'source');
+  for (const file of RUNTIME_FILES) {
+    await mkdir(path.dirname(path.join(oldSource, file)), { recursive: true });
+    await copyFile(path.join(sourceRoot, file), path.join(oldSource, file));
+  }
+  const oldVersion = '0.0.1';
+  const metadata = JSON.parse(await readFile(path.join(oldSource, 'package.json'), 'utf8'));
+  await writeFile(path.join(oldSource, 'package.json'), JSON.stringify({ ...metadata, version: oldVersion }));
+  const options = { dataDir: path.join(temporary, 'home/.local/share'), binDir: path.join(temporary, 'home/.local/bin'),
+    check: async () => ({ nodeExecutable: process.execPath, pythonExecutable: '/usr/bin/python3' }) };
+  const old = await install({ ...options, sourceRoot: oldSource });
+  const manifestPath = path.join(options.dataDir, 'asb/install.json');
+  const seedLegacy = async () => {
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    const hashes = manifest.releases[oldVersion];
+    for (const file of newRuntimeFiles) { await rm(path.join(old.directory, file)); delete hashes[file]; }
+    for (const file of upstreamOnlyFiles) {
+      const bytes = Buffer.from(`Legacy managed file: ${file}\n`);
+      await writeFile(path.join(old.directory, file), bytes);
+      hashes[file] = sha256(bytes);
+    }
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+  };
+  const saved = {
+    'home/.config/asb/layout.json': '{"view":"comfortable"}\n',
+    'home/.config/asb/theme.json': '{"background":"#202020"}\n',
+    'home/.local/state/asb/pending.json': '{"pins":["saved"],"manualUnread":["saved"]}\n',
+  };
+  for (const [name, bytes] of Object.entries(saved)) {
+    await mkdir(path.dirname(path.join(temporary, name)), { recursive: true });
+    await writeFile(path.join(temporary, name), bytes);
+  }
+  await seedLegacy();
+  await install({ ...options, sourceRoot: oldSource });
+  for (const file of upstreamOnlyFiles) await assert.rejects(lstat(path.join(old.directory, file)), { code: 'ENOENT' });
+  for (const file of newRuntimeFiles) assert.ok((await lstat(path.join(old.directory, file))).isFile());
+  await seedLegacy();
+  await writeFile(path.join(old.directory, 'src/server.mjs'), 'User edit\n');
+  await assert.rejects(install({ ...options, sourceRoot: oldSource }), /edited release file/);
+  assert.equal(await readFile(path.join(old.directory, 'src/server.mjs'), 'utf8'), 'User edit\n');
+  const current = await install({ ...options, sourceRoot });
+  assert.notEqual(current.directory, old.directory);
+  const result = await uninstall(options);
+  assert.ok(result.kept.includes(old.directory));
+  await assert.rejects(lstat(current.directory), { code: 'ENOENT' });
+  assert.equal(await readFile(path.join(old.directory, 'src/server.mjs'), 'utf8'), 'User edit\n');
+  for (const [name, bytes] of Object.entries(saved)) assert.equal(await readFile(path.join(temporary, name), 'utf8'), bytes);
+  await writeFile(path.join(old.directory, 'src/server.mjs'), 'Legacy managed file: src/server.mjs\n');
+  assert.deepEqual((await uninstall(options)).kept, []);
+  await assert.rejects(lstat(old.directory), { code: 'ENOENT' });
+  for (const [name, bytes] of Object.entries(saved)) assert.equal(await readFile(path.join(temporary, name), 'utf8'), bytes);
 });
