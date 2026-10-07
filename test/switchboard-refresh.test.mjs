@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, mkdir, rename, rm } from 'node:fs/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { buildSwitchboardDashboard, createSwitchboardServer, switchboardWatchPaths } from '../src/switchboard.mjs';
@@ -10,9 +11,10 @@ import { buildSwitchboardDashboard, createSwitchboardServer, switchboardWatchPat
 const epoch = Date.parse('2026-10-07T14:00:00Z');
 const settle = () => new Promise(setImmediate);
 async function until(predicate) {
-  for (let attempt = 0; attempt < 500; attempt += 1) {
+  const deadline = performance.now() + 5_000;
+  while (performance.now() < deadline) {
     if (predicate()) return;
-    await settle();
+    await delay(5);
   }
   assert.fail('Expected asynchronous work to finish.');
 }
