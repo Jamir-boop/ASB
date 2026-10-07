@@ -1,6 +1,14 @@
-# ASB publication plan
+# ASB publication record and checklist
 
-ASB `1.0.0` will be published as a public Linux release at [Jamir-boop/ASB](https://github.com/Jamir-boop/ASB). The source workspace had no Git repository when this release preparation began. A fresh initial commit is planned; inherited upstream Git history is not present.
+ASB [1.0.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.0.0) was published on `2026-10-07` in the public [Jamir-boop/ASB](https://github.com/Jamir-boop/ASB) repository. The initial code commit is [552c3da](https://github.com/Jamir-boop/ASB/commit/552c3da). The source workspace had no Git repository when preparation began; inherited upstream Git history was not imported.
+
+## Verified publication
+
+- Both Linux installers, the MP4, and `SHA256SUMS` were uploaded. Remote hashes matched the local files.
+- Independent checks passed 405 Node tests and six pure native logic checks. CI passed on Node.js `22.13.0` and `24`.
+- Per-user portable installation and launch passed. Settings hashes stayed unchanged.
+- Debian package format, dependencies, reproducibility, and the Node.js `20` + SQLite CLI reader passed checks. Debian `apt install` and `apt remove` were not run.
+- No UI tests were run.
 
 ## Release contents
 
@@ -11,17 +19,17 @@ ASB `1.0.0` will be published as a public Linux release at [Jamir-boop/ASB](http
 
 Generated packages and development dependency folders stay outside source control. No local agent store, real session capture, credential, or installation manifest belongs in the public export.
 
-## Before the initial publication
+## Before each release
 
-1. Review every file selected for the initial commit. Scan for private titles, account IDs, machine paths, keys, cookies, logs, databases, and real session data. `.gitignore` does not remove data from Git history.
+1. Review every file selected for the release. Scan for private titles, account IDs, machine paths, keys, cookies, logs, databases, and real session data. `.gitignore` does not remove data from Git history.
 2. Run `npm test` and `python3 test/asb_native_logic_test.py`. Record the actual results. Do not copy historical upstream check counts into ASB release notes.
 3. Run `npm run build`. Check archive members, Debian metadata, runtime requirements, and `SHA256SUMS`. Check package installation with disposable local paths before installing for the current user.
 4. Check public media for synthetic data and verify README links. The Remotion animation is a presentation, not a native UI test.
-5. Create the fresh Git history with a Conventional Commit. Examine all reachable history before the first push. Confirm that the unchanged MIT license and upstream credit are present.
-6. Create the public GitHub repository, push `main`, and publish tag `v1.0.0` with the package and media assets. Review the remote files and downloaded checksums.
+5. Use Conventional Commits. Examine the diff and all reachable Git history before publication. Confirm that the unchanged MIT license and upstream credit are present.
+6. Push the reviewed `main` commit and publish the versioned tag with package and media assets. Review the remote files and downloaded checksums.
 
-Publication status must come from the actual GitHub result. This plan does not state that a repository, tag, release, or install check has already succeeded.
+Record publication status and check results only after verification.
 
 ## Repository settings
 
-Use `main` as the default branch. Enable Issues and private vulnerability reporting when available. Add required test checks to branch protection when CI is configured.
+Use `main` as the default branch. Enable Issues and private vulnerability reporting when available. Require CI test checks in branch protection when configured.
