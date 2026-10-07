@@ -302,26 +302,36 @@ test('declares an installable PWA shell without caching local API payloads', asy
   assert.match(serviceWorker, /event\.request\.mode === 'navigate'/);
 });
 
-test('documents ASB release media, install links, privacy limits, and retained mock assets', async () => {
-  const [readme, changelog, screenshotScript, mockDashboardData] = await Promise.all([
+test('documents concise ASB installation, video, privacy limits, and retained mock assets', async () => {
+  const [readme, guide, privacy, changelog, screenshotScript, mockDashboardData] = await Promise.all([
     readFile(new URL('../README.md', import.meta.url), 'utf8'),
+    readFile(new URL('../ASB.md', import.meta.url), 'utf8'),
+    readFile(new URL('../docs/PRIVACY.md', import.meta.url), 'utf8'),
     readFile(new URL('../CHANGELOG.md', import.meta.url), 'utf8'),
     readFile(new URL('../scripts/capture-mock-screenshot.mjs', import.meta.url), 'utf8'),
     readFile(new URL('../scripts/mock-dashboard-data.mjs', import.meta.url), 'utf8'),
   ]);
 
   assert.match(readme, /!\[[^\]]*\]\(docs\/media\/asb-banner\.png\)/);
-  assert.match(readme, /!\[[^\]]*\]\(docs\/media\/asb-demo\.gif\)/);
-  assert.match(readme, /scripted Remotion animation with synthetic sessions and folders/);
-  assert.match(readme, /not a recording of private chats or a performance test/);
+  assert.match(readme, /native GNOME switcher for your local Codex and Claude Desktop Code chats/);
+  assert.match(readme, /Select a chat to open it in its original app/);
+  assert.match(readme, /^https:\/\/github\.com\/user-attachments\/assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/mi);
+  assert.match(privacy, /banner and Remotion demo use synthetic chats and folders/);
+  assert.match(privacy, /not a capture of local conversations/);
   assert.match(readme, /\[Download v1\.0\.0\]\(https:\/\/github\.com\/Jamir-boop\/ASB\/releases\/tag\/v1\.0\.0\)/);
   assert.match(readme, /\[Release notes\]\(docs\/releases\/v1\.0\.0\.md\)/);
   assert.match(readme, /https:\/\/github\.com\/Jamir-boop\/ASB\/releases\/download\/v1\.0\.0\/asb_1\.0\.0_all\.deb/);
   assert.match(readme, /https:\/\/github\.com\/Jamir-boop\/ASB\/releases\/download\/v1\.0\.0\/asb-1\.0\.0-linux\.tar\.gz/);
   assert.match(readme, /sudo apt install \.\/asb_1\.0\.0_all\.deb/);
   assert.match(readme, /tar -xzf asb-1\.0\.0-linux\.tar\.gz/);
-  assert.match(readme, /http:\/\/127\.0\.0\.1:4629\//);
-  assert.match(readme, /Both launch modes bind only to `127\.0\.0\.1`/);
+  assert.match(readme, /Node\.js `>=20` \(`sqlite3` below `22\.13`\)/);
+  assert.match(readme, /Python 3 with PyGObject, GTK `>=4\.10`, Libadwaita `>=1\.4`, and `xdg-utils`/);
+  assert.match(readme, /working `codex:` and `claude:` URL handlers/);
+  assert.match(readme, /## Install on Linux/);
+  assert.match(readme, /\[User guide\]\(ASB\.md\).*\[Privacy\]\(docs\/PRIVACY\.md\).*\[Source setup\]\(ASB\.md#start-and-stop\).*\[Contributing\]\(CONTRIBUTING\.md\)/);
+  assert.match(readme, /\[MIT license\]\(LICENSE\)/);
+  assert.match(guide, /http:\/\/127\.0\.0\.1:4629\//);
+  assert.match(guide, /Both modes bind only to `127\.0\.0\.1`/);
   assert.match(readme, /Agent Mission Control 0\.6\.0\]\(https:\/\/github\.com\/forxidian\/agent-mission-control\/releases\/tag\/v0\.6\.0\) by \*\*forxidian\*\*/);
   assert.match(changelog, /docs\/assets\/agent-mission-control-model-services-ui\.png/);
   assert.match(changelog, /完全由虚构 mock 数据生成/);
