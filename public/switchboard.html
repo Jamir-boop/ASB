@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f2f0ea">
+  <title>ASB · Agent Switch Board</title>
+  <link rel="stylesheet" href="/switchboard.css">
+  <script src="/switchboard.js" type="module"></script>
+</head>
+<body>
+  <main class="switchboard">
+    <header class="topbar">
+      <div><h1>ASB</h1><p>Agent Switch Board</p></div>
+      <button id="refresh" type="button" aria-label="Refresh sessions" title="Refresh sessions"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 5v5h-5M20 10a8 8 0 1 0 0 5"/></svg></button>
+    </header>
+    <div class="controls">
+      <label class="search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><input id="search" type="search" placeholder="Search sessions or projects" aria-label="Search sessions or projects" autocomplete="off"></label>
+      <div class="filters">
+        <label><span class="sr-only">App</span><select id="app" aria-label="App"><option value="all">All apps</option><option value="codex">Codex</option><option value="claude-desktop-code">Claude Desktop Code</option></select></label>
+        <label><span class="sr-only">Status</span><select id="status" aria-label="Status"><option value="all">All states</option><option value="working">Working</option><option value="waiting">Waiting</option><option value="idle">Idle</option><option value="unknown">Unknown</option></select></label>
+        <label class="archive"><input id="archive" type="checkbox">Archived</label>
+      </div>
+    </div>
+    <div class="list-meta"><p id="count">Loading sessions…</p><time id="updated"></time></div>
+    <p id="notice" role="status" aria-live="polite"></p>
+    <div id="sessions" aria-busy="true"></div>
+    <footer>Local sessions. Select a session to open its app.</footer>
+  </main>
+</body>
+</html>

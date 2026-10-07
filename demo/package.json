@@ -1,0 +1,20 @@
+{
+  "name": "asb-release-demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "render": "node render.mjs",
+    "poster": "node render.mjs --stills",
+    "check": "node --test src/story.test.mjs"
+  },
+  "devDependencies": {
+    "@remotion/bundler": "4.0.534",
+    "@remotion/renderer": "4.0.534",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "remotion": "4.0.534"
+  },
+  "engines": {"node": ">=22"}
+}

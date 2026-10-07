@@ -1,0 +1,33 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  node-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version:
+          - 22.13.0
+          - 24
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - run: npm test
+      - run: python3 test/asb_native_logic_test.py
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        if: matrix.node-version == '24'
+        with:
+          name: asb-linux
+          path: |
+            dist/asb_*_all.deb
+            dist/asb-*-linux.tar.gz
+            dist/SHA256SUMS

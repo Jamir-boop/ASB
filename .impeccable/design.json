@@ -1,0 +1,446 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-07T11:57:10Z",
+  "title": "Design System: ASB",
+  "extensions": {
+    "platform": {
+      "name": "Linux GNOME",
+      "toolkit": [
+        "GTK4",
+        "Libadwaita"
+      ],
+      "windowClass": "Adw.ApplicationWindow",
+      "applicationClass": "Adw.Application",
+      "nativeOnly": true,
+      "formatLimit": "The Impeccable platform enum and HTML specimen format do not represent GTK. Native component details are stored here; no web platform or HTML component is implied."
+    },
+    "source": {
+      "ui": "scripts/asb-native.py",
+      "backend": "src/switchboard.mjs",
+      "checks": "test/asb_native_test.py",
+      "surfaceBrief": ".impeccable/briefs/column-flow.md",
+      "mockCaptureDirectory": ".impeccable/review/horizontal/"
+    },
+    "typographyMeta": {
+      "body": {
+        "displayName": "Session title",
+        "purpose": "Single-line session rows. Inherit the GTK font family."
+      },
+      "label": {
+        "displayName": "Session state",
+        "purpose": "Text state at the end of each row. Inherit the GTK font family."
+      }
+    },
+    "gnomeColorRoles": {
+      "background": {
+        "lookup": "window_bg_color",
+        "purpose": "Native dark window background."
+      },
+      "text": {
+        "lookup": "window_fg_color",
+        "purpose": "Native window foreground."
+      },
+      "accent": {
+        "lookup": "accent_color",
+        "purpose": "Pending text and unread dots."
+      },
+      "divider": {
+        "css": "@borders",
+        "purpose": "Vertical divider between columns."
+      },
+      "working": {
+        "gtkStyleClass": "success",
+        "purpose": "Working label in GNOME mode."
+      },
+      "waiting": {
+        "gtkStyleClass": "warning",
+        "purpose": "Waiting label in GNOME mode."
+      },
+      "muted": {
+        "gtkStyleClass": "dim-label",
+        "purpose": "Idle and Unknown labels without Pending attention, plus captions."
+      }
+    },
+    "customPalette": {
+      "keys": [
+        "background",
+        "text",
+        "accent",
+        "muted",
+        "divider"
+      ],
+      "format": "#RRGGBB",
+      "savedMode": "custom",
+      "path": "$XDG_CONFIG_HOME/asb/theme.json",
+      "fallbackPath": "~/.config/asb/theme.json",
+      "maximumBackgroundLuminance": 0.12,
+      "minimumContrast": {
+        "textBackground": 4.5,
+        "mutedBackground": 4.5,
+        "accentBackground": 4.5,
+        "textHighlight": 4.5,
+        "mutedHighlight": 4.5,
+        "accentHighlight": 4.5,
+        "dividerBackground": 1.5
+      },
+      "highlight": {
+        "method": "Mix encoded RGB channels, then round each channel.",
+        "backgroundFraction": 0.85,
+        "accentFraction": 0.15
+      },
+      "editorSeed": {
+        "source": "Current GNOME role lookups.",
+        "accentFallback": "Use foreground if accent contrast against background is below 4.5:1.",
+        "mutedForegroundFraction": 0.72,
+        "dividerForegroundFraction": 0.3,
+        "note": "These fractions seed the custom editor. They do not change GNOME colors."
+      },
+      "behavior": {
+        "apply": "Validate, atomically save, then apply in the current ASB window.",
+        "pickerChange": "Does not apply until Apply theme is activated.",
+        "reset": "Delete the custom file and restore GNOME roles.",
+        "invalidInput": "Show the error; retain the applied theme and saved file.",
+        "invalidSavedTheme": "Show the error and retain GNOME mode.",
+        "globalSettings": "Never modified."
+      }
+    },
+    "layout": {
+      "defaultWindow": {
+        "width": 420,
+        "height": 900,
+        "unit": "px"
+      },
+      "columnsFormula": "max(1, (available_width + 12) // (column_width + 12))",
+      "capacityFormula": "max(1, (available_height - 4) // selected_row_height)",
+      "measurement": "The Gtk.ScrolledWindow allocation, not whole-window size.",
+      "columnWidth": "Equal width across the horizontal strip.",
+      "columnGap": "{spacing.column-gap}",
+      "flow": "Down each column, then across; needed columns continue left to right without vertical pages or empty trailing columns.",
+      "horizontalScroll": true,
+      "checkedWindowWidths": [
+        320,
+        360,
+        680,
+        1040
+      ],
+      "checkedColumnCounts": [
+        1,
+        2,
+        4
+      ],
+      "note": "Checked sizes are evidence, not fixed window breakpoints.",
+      "checkedShortWindow": {
+        "width": 1080,
+        "height": 248,
+        "defaultColumns": 4,
+        "columnsAt160px": 6,
+        "comfortableFullRows": 3
+      },
+      "sharedColumnWidth": {
+        "default": 240,
+        "minimum": 160,
+        "maximum": 600,
+        "unit": "px",
+        "controls": [
+          "Native divider drag",
+          "Accessible Gtk.SpinButton"
+        ],
+        "save": "After drag end or menu value change.",
+        "path": "$XDG_CONFIG_HOME/asb/layout.json",
+        "fallbackPath": "~/.config/asb/layout.json",
+        "reset": "240px; remove saved width and preserve optional view.",
+        "narrow360px": "One default column, or two at 160px."
+      },
+      "toolbar": {
+        "gtkClass": "Gtk.WindowHandle",
+        "windowControls": "Gtk.WindowControls with close",
+        "visibleTitleRow": false,
+        "visibleFooter": false,
+        "pendingAndCount": "Inline at 680px or wider; second short row below.",
+        "filters": "Native Codex/Claude/Pending toggle pills, inline at680px or secondary row below; count ellipsizes at320px.",
+        "settingsDismissal": "Keep focus in open popup during repack. Native autohide and one root outside-click hit test dismiss it; restore remembered row after close."
+      },
+      "views": {
+        "default": "compact",
+        "compact": {
+          "rowHeight": 22,
+          "title": "Single line; end ellipsis."
+        },
+        "comfortable": {
+          "rowHeight": 68,
+          "direction": "Workspace first: provider/folder/quiet pin, fixed32px two-line title, dot/state left and relative age right."
+        },
+        "persistence": "Optional view in ASB layout.json; width-only means Compact; width/reset preserves view."
+      },
+      "verticalScroll": false,
+      "wheel": "Native scroll controller maps ordinary wheel Y to horizontal adjustment; trackpad X and Shift-wheel remain usable."
+    },
+    "focus": {
+      "default": "Native GTK focus treatment.",
+      "customOutline": "Palette accent.",
+      "customEntryFocus": "Inset 1px accent border.",
+      "customRowFocus": "Validated highlight surface.",
+      "restore": "Preserve focused session ID and clamped horizontal position. Normal refresh keeps user position; keyboard, mode changes and resize reveal focused rows.",
+      "keyboard": {
+        "Up": "Previous sorted row.",
+        "Down": "Next sorted row.",
+        "Left": "Subtract one column capacity.",
+        "Right": "Add one column capacity.",
+        "Home": "First sorted row.",
+        "End": "Last sorted row.",
+        "Enter": "Activate a row with a valid desktop link.",
+        "Menu or Shift+F10": "Open the native row menu.",
+        "Printable row typing": "Focus search and enter the character from any non-editable area; preserve modified shortcuts and editable/popup/control keys.",
+        "Escape": "Close native popup first; otherwise clear query/prefix and preserve explicit filters."
+      }
+    },
+    "nativeComponents": [
+      {
+        "name": "Session row",
+        "gtkClass": "Gtk.ListBoxRow",
+        "refersTo": "session-row",
+        "minimumHeight": "22px Compact /68px Comfortable",
+        "contentGap": "{spacing.row-gap}",
+        "horizontalInset": "{spacing.row-inset}",
+        "content": [
+          "Provider mark",
+          "Single-line title",
+          "Optional unread dot",
+          "Text state"
+        ],
+        "titleOverflow": "Pango.EllipsizeMode.END",
+        "activation": "Single click or Enter opens a valid desktop link; missing links disable activation.",
+        "tooltip": [
+          "Full title",
+          "Folder",
+          "Provider",
+          "State and age",
+          "State reason",
+          "Read-marker source",
+          "Pin or missing-link details when applicable"
+        ],
+        "opening": "Opening… replaces only title; restore current title on completion. Inline tooltip/description for failures.",
+        "comfortableContent": [
+          "Gray provider mark",
+          "Folder basename and optional quiet ASB pin",
+          "Fixed32px two-line title",
+          "Dot + actual state left",
+          "Relative age right, ellipsized as needed"
+        ],
+        "sharedBehavior": "Same opening label, tooltip, accessible name, focus, row menu and pin drag."
+      },
+      {
+        "name": "Provider mark",
+        "gtkClass": "Gtk.Image",
+        "refersTo": "provider-mark",
+        "icons": {
+          "codex": "asb-openai-symbolic",
+          "claude-desktop-code": "asb-claude-symbolic"
+        },
+        "opacity": 0.65,
+        "assetDirectory": "assets/icons/",
+        "purpose": "Gray provider identity; the row accessible name contains the full provider name."
+      },
+      {
+        "name": "Unread dot",
+        "gtkClass": "Gtk.Box",
+        "refersTo": "unread-dot",
+        "minimumWidth": "7px",
+        "minimumHeight": "7px",
+        "color": "GNOME accent or custom palette accent.",
+        "purpose": "Current unacknowledged ASB attention, independent of execution. Native/manual/completion/question sources stay distinct."
+      },
+      {
+        "name": "Search and filters",
+        "gtkClasses": [
+          "Gtk.SearchEntry",
+          "Gtk.DropDown",
+          "Gtk.CheckButton",
+          "Gtk.ToggleButton"
+        ],
+        "pendingSwitch": "Pending toggle pill in main toolbar; accessible name Pending only.",
+        "menu": [
+          "App",
+          "Status",
+          "Show archived sessions",
+          "Persistent unread",
+          "Theme"
+        ],
+        "count": "Filtered session count and filtered Pending count.",
+        "prefixes": {
+          "Claude": [
+            "cl:",
+            "claude:"
+          ],
+          "Codex": [
+            "cx:",
+            "codex:"
+          ],
+          "behavior": "Case-insensitive; optional spaces; prefix temporarily overrides app filter; unknown prefix stays literal."
+        },
+        "states": {
+          "control": "Gtk.CheckButton set in native popover",
+          "default": "All four states",
+          "clear": "No selected states hides all sessions.",
+          "summary": "All states or N states"
+        }
+      },
+      {
+        "name": "Theme editor",
+        "gtkClass": "Gtk.ColorDialogButton",
+        "fields": [
+          "Background",
+          "Text",
+          "Accent",
+          "Muted",
+          "Divider"
+        ],
+        "accessibleNamePattern": "<Field> color",
+        "actions": [
+          "Apply theme",
+          "Reset to GNOME"
+        ],
+        "colorAlpha": false
+      },
+      {
+        "name": "Session row menu",
+        "gtkClass": "Gtk.PopoverMenu",
+        "action": "Read or Unread from current ASB dot",
+        "entry": "Right-click, Menu, or Shift+F10.",
+        "scope": "ASB state only; pin order comes first and remains global across filters.",
+        "actions": [
+          "Read if unread or questionAttention; otherwise Unread",
+          "Pin or Unpin",
+          "Move pin earlier",
+          "Move pin later"
+        ],
+        "activation": "Defer popup unparent until GTK completes action activation."
+      }
+    ],
+    "statePresentation": {
+      "priority": [
+        "ASB pins in saved order",
+        "Unpinned Pending or Waiting attention",
+        "Working",
+        "Idle",
+        "Unknown"
+      ],
+      "withinGroup": [
+        "Newest updatedAtMs first",
+        "ID tie-break"
+      ],
+      "pinsAffectOrder": true,
+      "idlePendingLabel": "Idle; Pending attention is shown by the dot, not a task state.",
+      "manualUnread": "Add the dot and Pending attention; preserve Working, Waiting, and Unknown labels.",
+      "waiting": "Keep Waiting text; include in Pending attention.",
+      "customStateColor": "Working, Waiting, and Pending share accent; text labels remain distinct.",
+      "nativeUnread": "Dot for a new native unread episode. Local ASB acknowledgment suppresses it until a real Read-to-Unread cycle or new completion; source read truth remains unchanged.",
+      "pinScope": "ASB-owned only; original-app pins are not imported.",
+      "userQuestion": "Current synchronous question can block Waiting; async request adds attention without masking Working/Idle. Human resumption supersedes old requests. Goal/context continuation and partial replies preserve them. ASB open acknowledges local attention without resolving source input.",
+      "readAcknowledgment": "Default successful open clears local manual, completion, native and question attention. Read always clears local attention. Neither changes execution or original stores.",
+      "persistentUnread": "Off by default. When on, retain ASB attention across source read/resolution and opens. Read clears it. Disabling retains existing dots and restores acknowledgment on open."
+    },
+    "verificationLimits": [
+      "Native captures use mock sessions.",
+      "The current code checks custom background and highlight contrast and supplies field-specific color-control names.",
+      "This record does not claim a complete assistive-technology audit.",
+      "Performance changes use syntax and pure logic checks. No native widget or screenshot check ran for this change."
+    ],
+    "appIdentity": {
+      "applicationId": "local.asb.AgentSwitchBoard",
+      "iconName": "local.asb.AgentSwitchBoard",
+      "toolbarSize": "16px",
+      "source": "Palatine MarkB disc; copied unchanged.",
+      "registration": "Scoped per-user hicolor icon and desktop entry; preserve conflicting user launchers."
+    },
+    "pinReorder": {
+      "gtkClasses": [
+        "Gtk.DragSource",
+        "Gtk.DropTarget"
+      ],
+      "accepted": "Only an active local ASB pin drag onto another known ASB pin.",
+      "placement": "Before/after based on row midpoint.",
+      "keyboard": "Move pin earlier/later in row menu.",
+      "persistence": "pinnedOrder in ASB pending.json; preserve hidden pins."
+    },
+    "filterPills": {
+      "gtkClass": "Gtk.ToggleButton",
+      "providers": [
+        "codex",
+        "claude-desktop-code"
+      ],
+      "selection": "One set shared with app menu. No selected provider or both means all; one means that provider.",
+      "pending": "AND filter using existing ASB attention.",
+      "prefix": "Temporarily overrides selected apps while present."
+    },
+    "persistentUnread": {
+      "control": "Gtk.CheckButton in existing menu",
+      "help": "Use Read in the row menu to clear dots.",
+      "scope": "Shared ASB tracker state, separate from layout/theme.",
+      "route": "POST /api/settings/unread with persistentUnread boolean",
+      "readRoute": "POST /api/threads/:id/mark-read with empty object",
+      "synchronization": "Dashboard sync does not write; disable during request, restore value and show error on failure.",
+      "presentation": "retainedUnread has a 7px dot and an ASB-specific tooltip/accessibility cue; current state stays visible."
+    },
+    "refresh": {
+      "workingSeconds": 2,
+      "idleSeconds": 5,
+      "scope": "Any unarchived root Working session in the complete scanned list before filters. Keep the same cadence when another app has focus.",
+      "intervalField": "dashboard.refreshIntervalMs",
+      "events": "Local /api/events dashboard events with version/reason/provider flags only. No filenames or content. Connected is not a dirty hint.",
+      "nativeEventReader": "Background stdlib HTTP stream. Close interrupts its socket read. EOF or failure retries in five seconds. Polling remains available.",
+      "cleanSnapshotReconcileMs": 5000,
+      "sourceDebounceMs": 250,
+      "activeScanMinimumMs": 2000,
+      "watchRecoveryMs": 5000,
+      "fallback": "Watch failure uses two seconds while Working and five seconds when idle. Missing/unsupported watch paths retry or use directory discovery.",
+      "behavior": "One read in flight and at most one pending follow-up. Source hints do not force scans. Keyed rows update fields in place; only visible IDs, order, packing, or view changes repack rows. Activity alone does not rewrite tracker state.",
+      "geometry": "Gdk.Surface layout signal with one queued idle check. No permanent frame callback.",
+      "rowLifetime": "Disconnect handlers and remove controllers when a row leaves the view."
+    },
+    "workingTime": {
+      "source": "Stable workingSinceMs from the current source task/request; 0 means unavailable.",
+      "compact": "Duration beside Working.",
+      "comfortable": "Replace relative age with duration in the right metadata label.",
+      "format": "Seconds/minutes below one hour; hours/minutes after one hour.",
+      "update": "Local two-second clock updates label, tooltip, and accessible text without I/O. Stop the fast clock when the full unarchived list has no Working session; refresh idle age once a minute.",
+      "unavailable": "Keep current state and normal age; never invent a start."
+    }
+  },
+  "components": [],
+  "narrative": {
+    "northStar": "Column Flow",
+    "overview": "ASB is a native GNOME session index with default Compact and chosen Workspace-first Comfortable. Both fill down-column/across in a horizontal strip with shared session behavior. Outer borders remain unchanged.",
+    "keyCharacteristics": [
+      "Native GTK4 and Libadwaita controls.",
+      "Dark mode only within ASB.",
+      "Dense single-line rows.",
+      "Down each column, then across.",
+      "Text labels for state and attention."
+    ],
+    "rules": [
+      {
+        "name": "The Local Theme Rule",
+        "body": "Apply colors only to ASB. Never change GNOME settings to match a preview.",
+        "section": "colors"
+      },
+      {
+        "name": "The Whole Row Rule",
+        "body": "Keep the provider mark, title, optional dot, and state together on one line.",
+        "section": "layout"
+      }
+    ],
+    "dos": [
+      "Do use native GNOME controls and semantic colors.",
+      "Do keep a text label for each state.",
+      "Do retain one-line rows and full tooltip details.",
+      "Do validate custom colors before saving or applying them."
+    ],
+    "donts": [
+      "Don't add a browser or webview to the native window.",
+      "Don't treat all historical Idle sessions as Pending.",
+      "Don't replace Working, Waiting, or Unknown with Pending.",
+      "Don't pin a machine-specific theme, font, or accent as an ASB requirement."
+    ]
+  }
+}

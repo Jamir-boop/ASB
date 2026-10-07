@@ -1,0 +1,31 @@
+{
+  "name": "agent-switch-board",
+  "description": "Local sidebar for existing Codex and Claude Desktop Code sessions.",
+  "version": "1.0.0",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "agent",
+    "codex",
+    "opencode",
+    "claude",
+    "dashboard"
+  ],
+  "scripts": {
+    "menubar": "swift scripts/macos-pending-island.swift",
+    "mock": "node scripts/mock-dashboard-server.mjs",
+    "screenshot:mock": "node scripts/capture-mock-screenshot.mjs",
+    "start": "node src/switchboard.mjs",
+    "test": "node --test",
+    "desktop": "node scripts/asb-desktop.mjs",
+    "build": "node scripts/asb-package.mjs build",
+    "install:user": "node scripts/asb-package.mjs install",
+    "uninstall:user": "node scripts/asb-package.mjs uninstall",
+    "check:runtime": "node scripts/asb-package.mjs check",
+    "test:asb": "node --test test/switchboard.test.mjs",
+    "test:native": "python3 -m unittest discover -s test -p asb_native_test.py -v"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

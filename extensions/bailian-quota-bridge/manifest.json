@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Agent Mission Control · 百炼额度桥接",
+  "version": "0.1.0",
+  "description": "从已登录的阿里云百炼控制台读取脱敏额度，并同步到本机 Agent Mission Control。",
+  "permissions": [
+    "alarms",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://bailian.console.aliyun.com/*",
+    "http://127.0.0.1:4629/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://bailian.console.aliyun.com/*"
+      ],
+      "js": [
+        "extract.js",
+        "content-script.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "刷新百炼额度"
+  }
+}
