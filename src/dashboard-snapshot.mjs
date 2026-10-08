@@ -40,6 +40,7 @@ export class DashboardSnapshot {
     monitorNotifications = false,
     notificationScanIntervalMs = 20_000,
   } = {}) {
+    const getWatchPaths = async () => typeof dashboardWatchPaths === 'function' ? await dashboardWatchPaths() : dashboardWatchPaths || [];
     let dashboardLoadPromise = null;
     let notificationRefreshPromise = null;
     let dashboardCache = null;
@@ -286,7 +287,7 @@ export class DashboardSnapshot {
     };
 
     const createDashboardWatchers = async () => {
-      for (const entry of dashboardWatchPaths || []) {
+      for (const entry of await getWatchPaths()) {
         const spec = typeof entry === 'string' ? { path: entry, recursive: false } : entry;
         const targetPath = spec?.path;
         if (!targetPath) continue;
@@ -328,8 +329,9 @@ export class DashboardSnapshot {
     const reconcileAdaptiveWatchers = () => {
       if (dashboardWatchReconcilePromise || dashboardClosed) return dashboardWatchReconcilePromise;
       dashboardWatchReconcilePromise = (async () => {
+        const watchPaths = await getWatchPaths();
         const desired = new Set();
-        let covered = Boolean(dashboardWatchPaths?.length);
+        let covered = Boolean(watchPaths.length);
         const attach = async (targetPath, spec, recursive) => {
           if (dashboardClosed) return false;
           const info = await stat(targetPath);
@@ -337,11 +339,11 @@ export class DashboardSnapshot {
           desired.add(targetPath);
           const signature = `${info.dev}:${info.ino}`;
           const previous = adaptiveWatchers.get(targetPath);
-          if (previous?.signature === signature) return true;
+          if (previous?.signature === signature && previous?.spec?.source === spec.source) return true;
           previous?.watcher.close?.();
           adaptiveWatchers.delete(targetPath);
           const watcher = watchDashboardPath(targetPath, { recursive }, (event, filename) => sourceChanged(spec, event, filename, targetPath));
-          adaptiveWatchers.set(targetPath, { watcher, signature });
+          adaptiveWatchers.set(targetPath, { watcher, signature, spec });
           watcher.on?.('error', () => {
             if (adaptiveWatchers.get(targetPath)?.watcher !== watcher) return;
             watcher.close?.();
@@ -356,9 +358,10 @@ export class DashboardSnapshot {
           const entries = await readdir(targetPath, { withFileTypes: true });
           for (const entry of entries) if (entry.isDirectory()) await attachDirectories(path.join(targetPath, entry.name), spec);
         };
-        for (const entry of dashboardWatchPaths || []) {
+        for (const entry of watchPaths) {
           const spec = typeof entry === 'string' ? { path: entry } : entry;
           if (!spec?.path) continue;
+          if (spec.recursive && adaptiveWatchers.get(spec.path)?.spec?.manualRecursive) spec.manualRecursive = true;
           try {
             if (spec.recursive && spec.manualRecursive) await attachDirectories(spec.path, spec);
             else {
@@ -496,9 +499,9 @@ export class DashboardSnapshot {
         return;
       },
       attach: (server) => {
-        if (dashboardAdaptiveRefresh && dashboardWatchPaths?.length) {
+        if (dashboardAdaptiveRefresh && (typeof dashboardWatchPaths === 'function' || dashboardWatchPaths?.length)) {
           server.once('listening', retryAdaptiveWatchers);
-        } else if (dashboardWatchPaths?.length) {
+        } else if (typeof dashboardWatchPaths === 'function' || dashboardWatchPaths?.length) {
           createDashboardWatchers().catch((error) => {
             console.warn('Dashboard watcher setup failed:', error instanceof Error ? error.message : String(error));
           });

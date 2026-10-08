@@ -426,6 +426,148 @@ test('native SQLite works without the CLI, preserves desktop name/pin, and reads
   await assert.rejects(stat(path.join(dir, 'missing.sqlite')), { code: 'ENOENT' });
 });
 
+test('Codex roots read linked nested lifecycle, hold completion, and ignore archived or unrelated work', async (t) => {
+  const dir = await temp(t);
+  const dbPath = path.join(dir, 'state_9.sqlite');
+  const childId = id.replace(/0$/, '1');
+  const nestedId = id.replace(/0$/, '2');
+  const archivedId = id.replace(/0$/, '3');
+  const unrelatedId = id.replace(/0$/, '4');
+  const orphanId = id.replace(/0$/, '5');
+  const internalId = id.replace(/0$/, '6');
+  const rollout = (identity) => path.join(dir, `rollout-private-child-${identity}.jsonl`);
+  const event = (type, offset) => ({ timestamp: new Date(now + offset).toISOString(), payload: { type } });
+  const append = (identity, events) => writeFile(rollout(identity), jsonl(events) + '\n', { flag: 'a' });
+  const database = codexDatabase(dbPath);
+  const insert = database.prepare('insert into threads (id, source, cwd, title, thread_source, archived, updated_at_ms, rollout_path) values (?, ?, ?, ?, ?, ?, ?, ?)');
+  const childSource = (parent) => JSON.stringify({ subagent: { thread_spawn: { parent_thread_id: parent } } });
+  for (const [identity, source, archived] of [[id, 'vscode', 0], [childId, childSource(id), 0],
+    [nestedId, childSource(childId), 0], [archivedId, childSource(id), 1],
+    [unrelatedId, childSource('absent-root'), 0], [internalId, 'subagent', 0]]) {
+    insert.run(identity, source, identity === id ? '/work/ASB' : '/private-child-folder',
+      identity === id ? 'Root' : 'private child title', identity === id ? 'user' : 'subagent', archived, now, rollout(identity));
+  }
+  database.close();
+  await append(id, [event('task_started', -10_000), event('task_complete', -8_000)]);
+  await append(childId, [event('task_started', -7_000), event('task_complete', -6_000)]);
+  await append(nestedId, [event('task_started', -5_000), { timestamp: new Date(now - 4_000).toISOString(),
+    type: 'response_item', payload: { type: 'function_call', name: 'exec_command', arguments: 'private child prompt' } }]);
+  for (const identity of [archivedId, unrelatedId, orphanId, internalId]) await append(identity, [event('task_started', -1_000)]);
+  const beforeDatabase = await readFile(dbPath);
+  const scan = (time = now) => loadSwitchboardDashboard({ nowMs: time,
+    codexOptions: { databasePath: dbPath, sessionsDir: dir, sessionIndexPath: path.join(dir, 'missing-index'),
+      globalStatePath: path.join(dir, 'missing-state'), fetchImpl: () => assert.fail('Network call') },
+    loadClaude: async () => ({ threads: [] }),
+  });
+  const tracker = new PendingTracker(false);
+  const beforeMetrics = getCodexCacheStats().rolloutSignals;
+  const active = await tracker.observe(await scan());
+  assert.equal(active.threads.length, 1);
+  assert.equal(active.threads[0].state, 'working');
+  assert.equal(active.threads[0].workingSinceMs, now - 5_000);
+  assert.equal(active.threads[0].completionAtMs, 0);
+  assert.equal(active.threads[0].pending, false);
+  assert.equal(active.refreshIntervalMs, 2_000);
+  assert.equal(active.nextStatusCheckAtMs, now - 4_000 + 6 * 3_600_000 + 1);
+  assert.doesNotMatch(JSON.stringify(active), /private child|private-child|absent-root/);
+  for (const identity of [childId, nestedId, archivedId, unrelatedId, orphanId, internalId]) assert.ok(!JSON.stringify(active).includes(identity));
+  const afterMetrics = getCodexCacheStats().rolloutSignals;
+  assert.equal(afterMetrics.misses - beforeMetrics.misses, 3);
+  assert.equal((await scan(now + 2_000)).threads[0].workingSinceMs, now - 5_000);
+  assert.equal(getCodexCacheStats().rolloutSignals.bytesRead, afterMetrics.bytesRead);
+  assert.ok(getCodexCacheStats().rolloutSignals.hits >= afterMetrics.hits + 3);
+  const stale = await scan(now + 7 * 3_600_000);
+  assert.equal(stale.threads[0].state, 'unknown');
+  assert.equal(stale.threads[0].workingSinceMs, 0);
+  assert.equal(stale.threads[0].completionAtMs, 0);
+  await append(nestedId, [event('task_complete', 100)]);
+  const complete = await tracker.observe(await scan(now + 100));
+  assert.equal(complete.threads[0].state, 'idle');
+  assert.equal(complete.threads[0].completionAtMs, now + 100);
+  assert.equal(complete.threads[0].completionAttention, true);
+  assert.equal(complete.refreshIntervalMs, 5_000);
+  await tracker.acknowledge(id);
+  await append(nestedId, [event('task_started', 200)]);
+  await tracker.observe(await scan(now + 200));
+  await append(id, [event('task_started', 210), event('task_complete', 220)]);
+  const rootEnded = await tracker.observe(await scan(now + 220));
+  assert.equal(rootEnded.threads[0].state, 'working');
+  assert.equal(rootEnded.threads[0].completionAtMs, 0);
+  assert.equal(rootEnded.threads[0].pending, false);
+  await append(nestedId, [event('turn_cancelled', 230)]);
+  const cancelled = await tracker.observe(await scan(now + 230));
+  assert.equal(cancelled.threads[0].state, 'idle');
+  assert.equal(cancelled.threads[0].completionAtMs, 0);
+  assert.equal(cancelled.threads[0].pending, false);
+  await append(nestedId, [event('task_started', 240)]);
+  await tracker.observe(await scan(now + 240));
+  await append(nestedId, [event('task_complete', 250)]);
+  const afterCancellation = await tracker.observe(await scan(now + 250));
+  assert.equal(afterCancellation.threads[0].completionAtMs, now + 250);
+  assert.equal(afterCancellation.threads[0].completionAttention, true);
+  await tracker.acknowledge(id);
+  await rm(rollout(nestedId));
+  const missing = await scan(now + 300);
+  assert.equal(missing.threads[0].state, 'unknown');
+  assert.equal(missing.threads[0].completionAtMs, 0);
+  await writeFile(rollout(childId), jsonl([event('task_started', -7 * 3_600_000)]) + '\n');
+  await append(id, [event('task_started', 310)]);
+  const fresh = await scan(now + 310);
+  assert.equal(fresh.threads[0].state, 'working');
+  assert.equal(fresh.threads[0].workingSinceMs, now + 310);
+  await append(id, [event('task_complete', 320)]);
+  assert.equal((await scan(now + 320)).threads[0].state, 'unknown');
+  await append(nestedId, [event('task_complete', 330)]);
+  assert.equal((await scan(now + 330)).threads[0].state, 'unknown');
+  await append(childId, [event('task_cancelled', 340)]);
+  const lastCancelled = await tracker.observe(await scan(now + 340));
+  assert.equal(lastCancelled.threads[0].state, 'idle');
+  assert.equal(lastCancelled.threads[0].completionAtMs, 0);
+  assert.equal(lastCancelled.threads[0].pending, false);
+  assert.deepEqual(await readFile(dbPath), beforeDatabase);
+});
+
+test('Codex group timing expires each open member and preserves root question and read signals', async () => {
+  const root = { id, provider: 'codex', lifecycleRunning: true, agentStartedAtMs: now - 100,
+    agentActivityAtMs: now, latestLifecycleAtMs: now - 100, latestLifecycleKind: 'task_started', nativeUnread: false, readStatus: 'read' };
+  const child = { id: 'child', provider: 'codex', isSubagent: true, parentThreadId: id,
+    lifecycleRunning: true, agentStartedAtMs: now - 6 * 3_600_000, agentActivityAtMs: now - 6 * 3_600_000 + 100,
+    latestLifecycleAtMs: now - 6 * 3_600_000, latestLifecycleKind: 'task_started', nativeUnread: true };
+  const beforeExpiry = buildSwitchboardDashboard([root, child], [], now);
+  assert.equal(beforeExpiry.threads[0].workingSinceMs, child.agentStartedAtMs);
+  assert.equal(beforeExpiry.nextStatusCheckAtMs, now + 101);
+  const afterExpiry = buildSwitchboardDashboard([root, child], [], now + 101);
+  assert.equal(afterExpiry.threads[0].state, 'working');
+  assert.equal(afterExpiry.threads[0].workingSinceMs, root.agentStartedAtMs);
+  assert.equal(afterExpiry.threads[0].nativeUnread, false);
+  assert.equal(afterExpiry.threads[0].readStatus, 'read');
+  const currentQuestion = { ...root, awaitingUserInput: true, userQuestionBlocking: true,
+    latestUserQuestionAtMs: now - 50, latestBlockingQuestionAtMs: now - 50 };
+  const endedChild = { ...child, lifecycleRunning: false, latestLifecycleAtMs: now - 10, latestLifecycleKind: 'task_complete' };
+  assert.equal(buildSwitchboardDashboard([currentQuestion, endedChild], [], now).threads[0].state, 'waiting');
+  const tracker = new PendingTracker(false);
+  const asyncQuestion = await tracker.observe(buildSwitchboardDashboard([{ ...currentQuestion, userQuestionBlocking: false }, child], [], now));
+  assert.equal(asyncQuestion.threads[0].state, 'working');
+  assert.equal(asyncQuestion.threads[0].pendingSource, 'user-question');
+  assert.equal(asyncQuestion.threads[0].completionAtMs, 0);
+  const childQuestion = { ...child, agentStartedAtMs: now - 20, agentActivityAtMs: now - 10, latestLifecycleAtMs: now - 20,
+    awaitingUserInput: true, userQuestionBlocking: true, latestUserQuestionAtMs: now - 10, latestBlockingQuestionAtMs: now - 10 };
+  const idleRoot = { ...root, lifecycleRunning: false, latestLifecycleAtMs: now - 30, latestLifecycleKind: 'task_complete' };
+  const missingActivity = buildSwitchboardDashboard([idleRoot,
+    { ...child, agentActivityAtMs: 0, latestLifecycleAtMs: 0, agentStartedAtMs: 0 }], [], now);
+  assert.equal(missingActivity.threads[0].state, 'unknown');
+  assert.equal(missingActivity.threads[0].workingSinceMs, 0);
+  assert.equal(missingActivity.nextStatusCheckAtMs, Infinity);
+  const blockedGroup = await new PendingTracker(false).observe(buildSwitchboardDashboard([idleRoot, childQuestion], [], now));
+  assert.equal(blockedGroup.threads[0].state, 'waiting');
+  assert.equal(blockedGroup.threads[0].pendingSource, 'user-question');
+  assert.equal(buildSwitchboardDashboard([root, childQuestion], [], now).threads[0].state, 'working');
+  const childAsyncGroup = await new PendingTracker(false).observe(buildSwitchboardDashboard([idleRoot,
+    { ...childQuestion, userQuestionBlocking: false }], [], now));
+  assert.equal(childAsyncGroup.threads[0].state, 'working');
+  assert.equal(childAsyncGroup.threads[0].pendingSource, 'user-question');
+});
+
 test('ASB allows only its view, session reads, and same-origin stored-session opens', async (t) => {
   const calls = [];
   const server = createSwitchboardServer({ pendingStatePath: false, loadDashboard: async () => ({ providers: [], threads: [{ id, provider: 'codex', canOpen: true, appDeepLink: `codex://threads/${id}` }] }),

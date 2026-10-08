@@ -2,7 +2,7 @@
 
 This isolated Remotion project renders the ASB `1.0.0` release media. Its packages are development dependencies in this directory. ASB does not load them at runtime.
 
-The film is an authored interface simulation with synthetic session titles and folders. It is not a screen recording. The last app window illustrates a handoff to an existing Codex session. The demo does not read local provider stores, open real sessions, call models, or change user settings.
+The local film shows four clicks between existing sample Codex and Claude Desktop Code chats. It uses a small ASB window beside overlapping app windows. Each app keeps its selected chat, project, static conversation history, and empty composer. This is an illustrated desktop, not a screen recording. It reads no provider stores, opens no real chats, and makes no model calls. The user reference screenshots supplied layout only; their private text and assets are not in the film.
 
 ## Render
 
@@ -11,8 +11,16 @@ Use Node.js 22 or later, Chromium, and FFmpeg. Install and render from this dire
 ```bash
 npm ci
 npm run check
-npm run render
+npm run render -- --video-only
 ```
+
+To render the 22-second app switching video locally, use:
+
+```bash
+npm run render -- --video-only
+```
+
+This writes `out/asb-demo-app-switching.mp4`. It leaves the prior `out/asb-demo-session-switching.mp4` and the published assets unchanged. Add `--stills` to render twelve preview frames instead of the video. The completed video was also decoded to before-click, Opening, and opened-chat frames in `out/app-switching-review/`.
 
 The default browser path is `/usr/bin/chromium`. To use another installed browser or FFmpeg path:
 
@@ -27,28 +35,28 @@ REMOTION_BROWSER_EXECUTABLE=/absolute/path/to/chromium FFMPEG_EXECUTABLE=/absolu
 | File | Format |
 | --- | --- |
 | [Banner](../docs/media/asb-banner.png) | 1600 × 680 PNG |
-| [Demo](../docs/media/asb-demo.mp4) | 24 seconds, 1280 × 720, 30 fps, H.264, silent |
-| [README demo](../docs/media/asb-demo.gif) | 24 seconds, 960 × 540, 12 fps, looping GIF |
+| [Published demo](../docs/media/asb-demo.mp4) | 24 seconds, 1280 × 720, 30 fps, H.264, silent |
+| [Published README demo](../docs/media/asb-demo.gif) | 24 seconds, 960 × 540, 12 fps, looping GIF |
+| Prior local session handoff video, `out/asb-demo-session-switching.mp4` | 28.5 seconds, 1280 × 720, 30 fps, H.264, silent |
+| Local app switching video, `out/asb-demo-app-switching.mp4` | 22 seconds, 1280 × 720, 30 fps, H.264, silent |
 | [Video poster](../docs/media/asb-demo-poster.png) | 1280 × 720 PNG |
 
 The GIF uses a 128-color palette to limit its download size. Use the MP4 for full motion quality. Use the static banner or poster when animation is unsuitable.
 
 ## Story
 
-| Seconds | Example |
-| --- | --- |
-| 0–2 | ASB and the approved disc |
-| 2–5 | Codex and Claude Desktop Code in one local list |
-| 5–7 | Working, Idle, and Waiting with separate unread dots |
-| 7–10.5 | Compact, Comfortable, and horizontal columns as the window narrows |
-| 10.5–14 | `cl:` and `cx:` search |
-| 14–16 | Claude and Pending pills |
-| 16–19.5 | ASB pin and drag order |
-| 19.5–21 | Read clears a local dot and keeps Idle |
-| 21–22.5 | Open the existing session in its original app |
-| 22.5–24 | ASB release close |
+The whole film shows desktop session switching. There is no control tutorial or full-screen brand sequence.
 
-The native list simulation follows the row heights, column packing, toolbar, state, search, and attention rules in [ASB.md](../ASB.md) and [DESIGN.md](../DESIGN.md). It uses one fixed GNOME-like dark sample palette. The real app inherits GNOME colors or the user's validated ASB colors.
+| Click time | Result |
+| --- | --- |
+| 2.0 seconds | ASB opens `Atlas docs` in the Claude Code view, under `atlas`. |
+| 7.2 seconds | ASB raises Codex and selects `Relay cache`, under `relay`. |
+| 12.4 seconds | ASB raises Claude and selects `Orchid index`, under `orchid`. |
+| 17.6 seconds | ASB raises Codex and returns to `Harbor API`, under `harbor`. |
+
+Each click shows inline **Opening…** for 0.6 seconds. The app then comes forward with the exact chat selected in its sidebar and header. Its existing messages remain static. No prompt is typed or submitted. ASB stays reachable because it sits beside the app windows; the scene does not imply an Always on Top feature.
+
+The ASB list uses the existing Compact row height, toolbar, sort order, and open acknowledgment rules. The sample palette stays fixed. The original app windows use the sidebar structure from the user references. A small `sample sessions · illustrated desktop` label stays visible.
 
 ## Asset origin and licenses
 
@@ -65,4 +73,4 @@ The sample palette is `#111113` (ground), `#242424` (window), `#343434` (control
 
 ## Checks
 
-`npm run check` verifies the synthetic story rules: a Working native dot does not become Pending, provider prefixes filter correctly, pin order changes in ASB, menu actions match the current dot, Read keeps Idle, and each frame has unique valid sessions. The banner and story frames were inspected together. The visual correction batch fixed the banner spacing, menu cursor positions, and the narrow toolbar. A separate review corrected the pin menu's Read label and kept the focused session visible after Read, with the true sort order. This is media verification, not an application UI test.
+`npm run check` proves four alternating provider and specific chat matches, their title and project, the inline opening state, the 660-frame duration, and the absence of UI tour phases. The preview frames were inspected in one batch. Final review frames and the contact sheet come from the completed MP4. FFprobe verifies format, duration, frame count, and the absence of audio. A full FFmpeg decode checks the complete video. These are media checks, not application UI tests.

@@ -1,6 +1,6 @@
 # ASB system overview
 
-The current ASB source version is `1.2.0`. See the [publication record](docs/OPEN_SOURCE_PLAN.md) for verified release status.
+The current ASB source version is `1.3.0`. See the [publication record](docs/OPEN_SOURCE_PLAN.md) for verified release status.
 
 ASB is a local switch board for existing Codex and Claude Desktop Code chats, including remote Code sessions observed in Claude's local cache. Its main view is a small native GNOME window. It observes local files and opens the original app. It makes no model calls.
 
@@ -15,6 +15,7 @@ scripts/asb-desktop.mjs
        -> local dashboard, event, open, and ASB state APIs
 
 src/switchboard.mjs
+  -> src/app-sources.mjs, local profile registry
   -> src/codex-data.mjs, ASB reader mode
   -> src/claude-data.mjs, ASB reader mode
   -> src/insights.mjs, root grouping and normalization
@@ -27,13 +28,14 @@ Python 3 needs PyGObject, GTK `>=4.10`, and Libadwaita `>=1.4`. Node.js `>=22.13
 
 ASB and the retained upstream server share `DashboardSnapshot` in `src/dashboard-snapshot.mjs` for snapshots, source events, watchers, caches, and request coalescing. They also share local HTTP utilities, Codex open helpers, and provider cache helpers. The ASB package excludes `src/server.mjs` and its upstream-only dashboard, quota, notification, review, and search modules. Those files remain in the source repository.
 
-The package contains 31 runtime files, down from 42 in ASB `1.1.0`.
+The current package whitelist contains 32 runtime files, including the app-source registry. ASB `1.2.0` shipped 31, down from 42 in ASB `1.1.0`.
 
 ## Main files
 
 | File | Responsibility |
 | --- | --- |
 | `src/switchboard.mjs` | ASB source selection, state, attention, pins, open validation, and server entry. |
+| `src/app-sources.mjs` | App-source registration, validation, profile colors, and local settings. |
 | `src/asb-server.mjs` | Restricted ASB HTTP server for native and browser clients. |
 | `src/dashboard-snapshot.mjs` | Shared snapshots, source events, watchers, caches, and request coalescing. |
 | `src/local-http.mjs` | Shared JSON and static-file HTTP utilities. |
@@ -54,7 +56,7 @@ The package contains 31 runtime files, down from 42 in ASB `1.1.0`.
 
 ## Sources and list scope
 
-ASB loads both sources independently. One failed source does not remove the other source's rows.
+ASB loads enabled app sources independently. One failed source does not remove another source's rows. The default sources use these paths:
 
 | Source | Read path |
 | --- | --- |
@@ -62,6 +64,18 @@ ASB loads both sources independently. One failed source does not remove the othe
 | Claude Desktop Code on Linux | `$XDG_CONFIG_HOME/Claude/claude-code-sessions/local_*.json`, or `~/.config/Claude/claude-code-sessions/local_*.json`. |
 | Claude transcript signals | Matched JSONL files under `~/.claude/projects`. |
 | Claude remote Code | Session-list and watch response bodies in Claude's `Cache/Cache_Data`. |
+
+### App-source registry
+
+`src/app-sources.mjs` stores up to eight sources in `~/.config/asb/sources.json`, with owner-only `0600` access. XDG config overrides apply. Each source has a stable ID, provider, label, color, dot visibility, data folder, installed launcher, and enabled flag. Claude can also set a transcript folder. The two default sources stay registered; users can edit or disable them. Additional sources can be removed. The same physical store cannot be registered twice.
+
+A Codex source reads its `CODEX_HOME` folder with the same relative files as the default source. A Claude source reads its app profile folder, including `claude-code-sessions` and `Cache/Cache_Data`; its transcript folder defaults to `~/.claude/projects`. This supports separate profiles that use one app binary with isolated `CODEX_HOME` and Electron profile folders. On the first registry read, when `sources.json` is absent, ASB registers the known ChatGPT Personal profile only if its local store and installed launcher are present. ASB does not change logins, credentials, app data, or default URL handlers. ChatGPT-labeled sources expose local Codex coding chats; ordinary ChatGPT cloud chat history is outside this source.
+
+Default sources keep their existing row IDs. Additional sources prefix row and parent IDs with the stable source ID, while `externalId` keeps the original app ID for opens. Equal app IDs in different stores remain separate. Rows provide `sourceId`, `sourceLabel`, read-only `sourceColor`, and `sourceShowMarker`. The compatibility fields `sourceNumber` and `sourceCount` remain metadata; numbers are not visible. Numbers start at one per provider in registry order, including disabled sources. Removal can change numbers, but source IDs define identity. Colors do not merge sources or chats. Disabling or removing a source does not delete ASB attention, pins, unread marks, or settings.
+
+Source settings schema `1` accepts optional `color` as a six-digit hex value and saves it in lowercase. Old settings without a color get a stable default from the source ID. An edit that omits `color` keeps the existing color. Dark picker colors also save; native rendering adjusts only the displayed color to keep 3:1 contrast on the current base and hover backgrounds. Optional boolean `showMarker` defaults to true for old settings. An edit that omits it keeps the existing value. False hides only the profile dot in both views; color, source reads, opens, state, unread, and pins stay unchanged. The native editor uses explicit Save and shows save success or errors.
+
+Additional profiles need a supported installed launcher path. ASB sends that launcher one validated app URI through detached `spawn`, without a shell. The launched app runs independently after dispatch; ASB does not wait for or stop it. Default sources can leave the launcher empty to use the existing URL handler. Each profile's files and directories use the shared debounced watchers and existing polling fallback.
 
 Root chats are the list unit. Explicit workers and subagents stay grouped under the root. ASB omits `subagent` and `guardian_review` source rows. Each source has a 5000-record limit. ASB does not discover orphan Codex rollouts outside the database. Archived rows are available but hidden by default.
 
@@ -71,9 +85,11 @@ Codex names prefer `session_index.thread_name`, then the stored title. Claude me
 - `claude://code/continue?session=local_<uuid>`
 - `claude://code/<validated cse_ or session_ ID>`
 
-The source apps must register their URL handlers. ASB does not create chats or run a CLI resume command for its open action.
+Default app opens use the source apps' registered URL handlers. Registered profile launchers receive the same validated links. ASB does not create chats or run a CLI resume command for its open action.
 
-Remote cache reads accept only production `https://claude.ai/v1/code/sessions` and `/watch` response bodies. HTTP headers, credentials, transcript-event endpoints, and raw account/config fields are not used. Completed cache entries use Chromium stream boundaries; open gzip watches use their partial body and zero-filled reserved tail. ASB selects the newest response and exact cursor-linked continuations, not a union of old login streams. Missing full-list metadata produces a source warning and only observed rows. Cache delay, eviction, and offline periods can limit coverage. No remote request is made. Local bridge aliases deduplicate matching remote rows and stay outside the view payload.
+Remote cache reads accept only production `https://claude.ai/v1/code/sessions` and `/watch` response bodies. HTTP headers, credentials, transcript-event endpoints, and raw account/config fields are not used. Completed cache entries use Chromium stream boundaries; open gzip watches use their partial body and zero-filled reserved tail. ASB selects the newest response and exact cursor-linked continuations, not a union of old login streams. Missing full-list metadata produces a source warning and only observed rows. Cache delay, eviction, and offline periods can limit coverage. No remote request is made.
+
+Local bridge aliases deduplicate matching remote rows. For bridge records, validated `session_<token>` and `cse_<token>` links use the same identity. ASB keeps the local row, folder, and direct-open link. Invalid aliases and aliases with more than one local owner cannot remove a remote row. Cloud rows require an exact stored alias. Titles and times do not establish identity. Aliases stay outside the view payload.
 
 Remote execution requires a response observation within six hours plus explicit worker/session state. Server sync receipt cursors provide observation time; file modification time is a fallback for an approved body write. Bridge sessions also need an explicit connected state. Cloud sessions do not need that bridge field. Unknown, stale, or disconnected records give Unknown. Remote Working has no inferred start time. Folders stay empty; safe Git source names can identify a project. Fresh cached unread marks use the same ASB attention rules as other native marks.
 
@@ -81,15 +97,19 @@ Remote execution requires a response observation within six hours plus explicit 
 
 Execution uses Working, Waiting, Idle, and Unknown. A root is not Working only because it is unarchived. Open task/request signals require activity within six hours. Source signals can lag or survive a crash; old open signals become Unknown.
 
+Codex roots include unarchived descendants with explicit database links, including nested subagents. The existing bounded rollout cache reads their lifecycle. A recent open child task keeps the root Working after the root's own task ends. Only recent open members set the current start time. Missing or stale child lifecycle gives Unknown unless another member has current work. Archived, unrelated, and orphan rollouts do not change root execution.
+
 Claude Desktop Code and CLI readers include child files under the matched root transcript in the child count. An async Agent launch must link its returned agent ID to that exact root's child file. Recent child request, thinking, and tool events keep the root Working after its own response ends. Child completion, interruption, and error events close that work. Unrelated children cannot change execution. Missing linked lifecycle gives Unknown unless the root has current work. Stale child work cannot set a fresh root's timer start.
 
 Current synchronous questions can block execution in Waiting. Async questions add attention while Working or Idle remains visible. Matching answers, failure, abort, or cancellation resolve the question. Real human input supersedes old questions. Automatic goal continuation, context, and partial answers do not. Question and answer bodies stay outside ASB view payloads.
+
+Linked Codex child questions add root attention. A current synchronous child question gives Waiting when no recent open member can continue. The root's own current synchronous question keeps its Waiting priority. Native read status still comes from the root. ASB Read acknowledges group attention without changing source questions or read marks.
 
 Pending is separate from execution. It can come from a current user action, question attention, an Idle native unread mark, a newly observed completion, or a manual ASB Unread mark. A native unread dot alone does not make a Working or Unknown chat Pending.
 
 Native Codex unread needs a creator identity and exact local host match. Missing or unmatched metadata gives Unknown read status. Identity fields stay outside the API. Local Claude chats have no reliable native unread source. Their ASB completion mark requires an observed Working-to-Idle change and a new completion. Historical Idle rows do not gain a completion mark on first load. Abort and cancellation do not create completion marks.
 
-Claude completion is held until the root and its linked child work end. The last successful group completion can then add attention. A final interruption or error cannot add completion attention. Child IDs, prompts, and transcript paths stay outside the ASB view.
+Codex and Claude completion is held until the root and its linked child work end. The last successful group completion can then add attention. A final interruption or error cannot add completion attention. Child IDs, prompts, and transcript paths stay outside the ASB view.
 
 Read, Unread, pins, and pin order belong only to ASB. A successful open acknowledges ASB attention by default. It does not change execution or answer a question. Failed opens preserve attention. Persistent unread retains attention until Read, even after source Read/resolution or successful opens. It is off by default.
 
@@ -98,16 +118,21 @@ All clients share one tracker. Tracking uses the complete scanned list before fi
 ## Native view contract
 
 - Compact is the default with 22-pixel rows. Comfortable uses 68-pixel rows with the folder first and a two-line title.
+- Comfortable uses C Restore on hover: only Idle rows without visible ASB unread/question attention or Pending use quiet title/folder/state/age text. Pinned rows use the same rule; provider marks and controls keep their strength. Hover/focus restores normal text. Source read metadata cannot override ASB acknowledgment. Quiet colors derive from the active palette and keep 4.5:1 contrast on background and highlight. Compact is unchanged.
 - Comfortable uses the approved C Corner pair: a top-right Read dot beside Pin/Unpin. Pin appears on row hover or keyboard focus; a pinned control stays visible. Both use the existing ASB state APIs and stay separate from opening the chat. Saved pin order, drag reorder, and row menus remain available.
 - Comfortable actions use 24-pixel circular targets in an unmeasured overlay. Folder and title reserve 62 pixels at the right, including the content inset. State and time remain in the footer. Compact and the outer frame keep their existing layout.
+- Comfortable paints one shared hover highlight behind cards and actions, across columns. One native animation uses 200 ms for movement and 100 ms for arrival/leave, aligned with the approved command-palette motion reference; rapid targets start from the current painted bounds. GNOME colors stay dynamic; custom colors use the existing highlight mix. GNOME animations off gives immediate feedback. Repacking, filters, resize, scroll, unmap, and close clear it. Hover makes no source reads and adds no permanent frame loop. Compact and keyboard focus keep their existing feedback.
 - A successful Read clears only ASB attention and shows a check for 1.6 seconds. It works with either Persistent unread setting. Failure keeps the dot. Row identity, view, feedback generation, and current attention guard against stale results or new unread marks. Read does not change execution, original-app read state, or source question resolution.
 - While a row action is pending, its controls keep pointer sensitivity but lose their action bindings. They report `BUSY` and `DISABLED` to accessibility APIs. The confirmation has no Read action binding. Pointer and keyboard activation cannot open the row through these controls.
 - Rows flow down each column, then across. The list scrolls horizontally. Height sets row capacity; shared width sets visible columns.
+- Wheel scrolling uses one native 180 ms exponential ease-out animation. Same-direction input adds to a clamped target; reversal starts from the visible position. Trackpad input stays direct and cancels wheel motion. GNOME animations off gives immediate feedback. Bounds, layout/filter/view changes, external scroll changes, unmap, and close cancel old targets. Unchanged refresh preserves active scroll; frames make no source reads and add no permanent loop.
 - ASB pins come first in saved order. Other rows follow Pending, Working, Idle, then Unknown.
-- Codex, Claude, and Pending pills share the menu filters. State choices can be combined. Search prefixes temporarily take priority over app selection.
+- Codex and Claude pills share the app menu filter. Working alone selects only Working through the state menu; turning it off restores all states. It is active only for that single-state selection. Working plus Pending shows Working or rows with Pending or visible ASB unread/question attention. Other state selections keep Pending as an AND filter. Provider, search, and archive checks still restrict the union; prefixes temporarily take priority over app selection.
 - Typing from a row starts search. Escape clears the query and prefix. Row menus have mouse and keyboard access; pin movement has a keyboard alternative.
+- **App sources…** in the existing menu opens a native table and one editor. The table shows Enabled, name/app, session folder, launcher, and chat count/status. Add, Save, Remove, Cancel, Refresh, native path pickers, and a Color picker with four muted presets manage local registration. Default sources cannot be removed.
+- The approved Soft dot sits at the lower-left of the existing provider icon in both views. Its 6px solid fill and 1px background rim make an 8px circle. This passive, unmeasured overlay appears only when that provider has multiple registered sources. Codex and Claude use the same rule; legacy or single-source rows hide it. Source names remain in search, tooltips, and accessible descriptions, so color is not the only identifier. Row geometry, borders, and provider pills stay unchanged.
 - View/width changes preserve filters, search, pins, focus, and the outer frame. Keyboard focus reveals off-screen rows. Ordinary refresh preserves scroll position.
-- Dark colors apply only to ASB. Custom colors must pass background and contrast checks. No global GNOME setting changes.
+- Dark colors apply only to ASB. A color picker change selects Custom colors; Apply checks and saves the palette for the next start. Any valid six-digit divider color is accepted, including the background color. Dark background and text contrast checks stay in place. Loading or resetting pickers keeps the intended mode. Reset removes the saved custom theme and selects GNOME colors. Validation and save errors keep the previous theme. No global GNOME setting changes.
 - Working time uses a stable source start (`workingSinceMs`) and a local two-second clock. Idle age labels update once a minute. Label updates do not read sources.
 - Provider warnings hide after five seconds. The same warning stays hidden until it changes or clears. Dashboard fetch errors stay visible until a successful refresh.
 
@@ -117,7 +142,7 @@ The application ID is `local.asb.AgentSwitchBoard`. The toolbar uses ASB's own d
 
 Native and web clients poll every two seconds while any unarchived root is Working, otherwise every five seconds. This uses the full list before filters and continues when ASB loses focus. The clean server snapshot has a five-second TTL. With two-second polling, reconciliation can occur on the next tick after about six seconds. Cold scans and source write delay can take longer.
 
-Source watchers send only a version, reason, and provider flags. They send no paths or content. Events are grouped for 250 milliseconds. Active scans start no more than once per two seconds. Missing directories and watch failures retry every five seconds. Older recursive-watch support uses directory watches and periodic discovery. Polling remains the fallback.
+Source watchers send only a version, reason, and provider flags. They send no paths or content. Registered source folders and registry changes use these same watchers. Events are grouped for 250 milliseconds. Active scans start no more than once per two seconds. Missing directories and watch failures retry every five seconds. Older recursive-watch support uses directory watches and periodic discovery. Polling remains the fallback; profile registration adds no permanent fast poll.
 
 Client reads do not overlap and retain at most one requested follow-up. Forced refresh waits for an existing read. Native rows remain keyed by ID and update in place. Layout signals replace permanent frame checks; removed rows disconnect their controllers.
 
@@ -129,9 +154,17 @@ Codex tails start at 64 KiB and grow to 256 KiB. Lifecycle and question recovery
 
 ## API and trust boundary
 
-ASB uses `createAsbServer` from `src/asb-server.mjs`. It allows the view assets, dashboard, source events, known-session open, ASB Read/Unread, pins, pin movement, and Persistent unread settings. Other upstream APIs are not exposed.
+ASB uses `createAsbServer` from `src/asb-server.mjs`. It allows the view assets, dashboard, source events, app-source settings, known-session open, ASB Read/Unread, pins, pin movement, and Persistent unread settings. Other upstream APIs are not exposed.
 
-Actions require the local Host and a matching Origin. Session IDs must be in the scanned list. Read/Unread and pin/unpin accept an empty JSON object. Persistent unread accepts only a `persistentUnread` boolean. Pin movement accepts `up`/`down`, or a known pinned target with `before`/`after`. The client cannot submit arbitrary commands, paths, or URLs.
+Actions require the local Host and a matching Origin. Session IDs must be in the scanned list. Read/Unread and pin/unpin accept an empty JSON object. Persistent unread accepts only a `persistentUnread` boolean. Pin movement accepts `up`/`down`, or a known pinned target with `before`/`after`. Session actions accept no client commands, paths, or URLs.
+
+| App-source route | Contract |
+| --- | --- |
+| `GET /api/sources` | Registered sources, colors, compatibility profile metadata, chat counts/status, and the eight-source limit. |
+| `POST /api/sources` | `{source: {...}}` with full `provider`, `label`, `dataDir`, `launcher`, and `enabled` fields. Include `id` to edit; omit it to add. Optional `color` uses `#RRGGBB`; optional `showMarker` is boolean. Claude can include `projectsDir`. |
+| `POST /api/sources/<id>/remove` | Empty JSON object; default source removal is rejected. |
+
+Providers are `codex` and `claude-desktop-code`. Paths must be absolute local paths; additional launchers must be supported installed executables. Source updates reject raw command, argument, environment, and unknown fields. They use the same Host and Origin protection as session actions.
 
 ## Local writes
 
@@ -140,6 +173,7 @@ Actions require the local Host and a matching Origin. Session IDs must be in the
 | `~/.local/state/asb/pending.json` | ASB attention, pins, and Persistent unread. |
 | `~/.config/asb/layout.json` | Width and view. |
 | `~/.config/asb/theme.json` | Custom colors. |
+| `~/.config/asb/sources.json` | App-source IDs, labels, colors, dot visibility, paths, launchers, and enabled flags, with owner-only access. |
 | `~/.local/share/applications/local.asb.AgentSwitchBoard.desktop` | Per-user launcher. |
 | `~/.local/share/icons/hicolor/scalable/apps/local.asb.AgentSwitchBoard.svg` | Per-user app icon. |
 
@@ -155,9 +189,9 @@ npm run build
 
 The first two commands do not launch the ASB window. Native widget tests are separate and need a GTK display with synthetic fixtures. Use them only when UI testing is in scope. Do not use real session stores for public media or test captures.
 
-The source build produces `asb_1.2.0_all.deb`, `asb-1.2.0-linux.tar.gz`, and `SHA256SUMS` in `dist/`. The portable root is `asb-1.2.0/` with `./install.sh`. See [release notes](docs/releases/v1.2.0.md) for upgrades and check limits. Public demo assets use synthetic session names and folders. Remotion build dependencies are separate from the ASB runtime.
+The source build produces `asb_1.3.0_all.deb`, `asb-1.3.0-linux.tar.gz`, and `SHA256SUMS` in `dist/`. The portable root is `asb-1.3.0/` with `./install.sh`. See [release notes](docs/releases/v1.3.0.md) for upgrades and check limits. Public demo assets use synthetic session names and folders. The current demo source shows four app switches; the existing README video link stays unchanged. Remotion build dependencies are separate from the ASB runtime.
 
-The Corner pair review covers code and logic only. No native UI tests or new native screenshots were run for this change. Native pixel fidelity remains unverified.
+The current release review covers code and logic only. No native UI tests, new native screenshots, or Debian `apt install` were run for this release preparation. Native pixel fidelity remains unverified. See the [publication record](docs/OPEN_SOURCE_PLAN.md) for verified release checks.
 
 ## Retained upstream
 

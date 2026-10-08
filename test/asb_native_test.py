@@ -183,7 +183,7 @@ class DataChecks(unittest.TestCase):
             before = path.read_bytes()
             for invalid in ({**CUSTOM, "text": "#222222"}, {**CUSTOM, "background": "#ffffff"},
                             {**CUSTOM, "accent": "red"}, {**CUSTOM, "extra": "#ffffff"},
-                            {**CUSTOM, "muted": "#222222"}, {**CUSTOM, "divider": "#171c22"}):
+                            {**CUSTOM, "muted": "#222222"}, {**CUSTOM, "divider": "#12345"}):
                 with self.assertRaises(ValueError):
                     asb.write_theme(path, invalid)
                 self.assertEqual(path.read_bytes(), before)

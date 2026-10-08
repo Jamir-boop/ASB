@@ -2,21 +2,27 @@
 
 ASB lists Codex and Claude Desktop Code chats. It also lists remote Code sessions observed in Claude's local cache. Select a row to open that chat in its original app. The Linux native window uses GTK and Libadwaita. ASB makes no model calls and does not send prompts.
 
-See [README.md](README.md) for v1.2.0 packages and runtime requirements.
+See [README.md](README.md) for v1.3.0 packages and runtime requirements.
 
 ## Layout and search
 
 **Compact** is the default. It has one 22-pixel line per chat. **Comfortable** has 68-pixel rows, with the app and folder above a two-line title. Both views read down each column, then across from left to right. Window height sets the row count. More chats continue to the right. Use the mouse wheel, trackpad, or Shift-wheel to scroll horizontally.
 
+Mouse-wheel scrolling slows to its target in 180 ms. Repeated wheel input adds distance; reverse input starts from the visible position. Trackpad scrolling stays direct. With GNOME animations off, wheel scrolling is immediate.
+
+In Comfortable, one hover highlight moves between cards and columns in 200 ms. It fades in or out in 100 ms. Cards stay fixed. With GNOME animations off, the highlight changes immediately. Compact keeps its static hover.
+
+Comfortable uses quiet title, folder, state, and age text for Idle chats with no ASB unread dot or Pending attention. Hover or keyboard focus restores normal text. Pins and provider marks keep their normal strength. Source read status does not change this rule.
+
 Drag a column divider to change the width of all columns. The menu also has **Column width** (160–600 pixels) and **Reset width**. The default is 240 pixels. A view change keeps your search, filters, pins, and focused chat. Keyboard navigation reveals a focused row when it is outside the visible area.
 
-Search names or folders. A leading `cl:` or `claude:` selects Claude. A leading `cx:` or `codex:` selects Codex. Prefixes ignore case and permit spaces. A prefix alone lists that app. A prefix takes priority over the app filter while it is present. The other filters still apply. Unknown prefixes remain literal search text.
+Search names, folders, or app-source names. A leading `cl:` or `claude:` selects Claude. A leading `cx:` or `codex:` selects Codex. Prefixes ignore case and permit spaces. A prefix alone lists that app. A prefix takes priority over the app filter while it is present. The other filters still apply. Unknown prefixes remain literal search text.
 
 Type from a chat row to enter search. Escape clears the search and its prefix. Explicit filters stay set. Native popups and Ctrl/Alt/Super shortcuts keep their normal keys.
 
 ## Filters and pins
 
-Use the **Codex**, **Claude**, and **Pending** toolbar pills. No selected app means all apps; both app pills mean their union. The menu uses the same app selection. The state menu has independent **Working**, **Waiting**, **Idle**, and **Unknown** choices. **All states** selects all. **Clear states** hides all rows until you select a state. Archived chats are hidden by default.
+Use the **Codex**, **Claude**, **Pending**, and **Working** toolbar pills. No selected app means all apps; both app pills mean their union. The menu uses the same app selection. **Working** alone selects only Working; turn it off to restore all states. It shares the state menu and is active only when Working is the sole selected state. **Pending** alone shows Pending chats. Together, **Working** and **Pending** show Working or chats with Pending or an ASB unread dot. App, search, and archive filters still apply. The state menu has independent **Working**, **Waiting**, **Idle**, and **Unknown** choices. Other state combinations keep Pending as an AND filter. **All states** selects all. **Clear states** hides all rows until you select a state. Archived chats are hidden by default.
 
 ASB pins come first in their saved order. Unpinned chats follow: Pending, Working, Idle, then Unknown. Right-click a row, or use Menu or Shift+F10, to **Pin** or **Unpin** it. Drag a pinned row onto another pin to change the order. **Move pin earlier** and **Move pin later** provide the same control from the keyboard. Hidden pins keep their place in the saved order.
 
@@ -62,17 +68,42 @@ All ASB clients share this attention and pin state. Filters do not limit what th
 
 ## Theme and local settings
 
-ASB uses dark mode only in its own window. **GNOME colors** uses your current background, text, and accent colors. **Custom colors** lets you set background, text, accent, muted text, and divider colors. **Apply theme** checks the dark background and text contrast, then saves. **Reset to GNOME** removes the custom theme. ASB does not change global GNOME settings.
+ASB uses dark mode only in its own window. **GNOME colors** uses your current background, text, and accent colors. **Custom colors** lets you set background, text, accent, muted text, and divider colors. Divider color has no contrast limit. Changing a color selects **Custom colors**. Select **Apply theme** to check the dark background and text contrast, apply the colors, and save them for the next start. A validation or save error keeps the previous theme. **Reset to GNOME** removes the custom theme and resets the pickers. ASB does not change global GNOME settings.
 
 | File | Contents |
 | --- | --- |
 | `$XDG_STATE_HOME/asb/pending.json` | Attention history, Read/Unread marks, pins, and Persistent unread. |
 | `$XDG_CONFIG_HOME/asb/layout.json` | Column width and selected view. |
 | `$XDG_CONFIG_HOME/asb/theme.json` | Custom colors. |
+| `$XDG_CONFIG_HOME/asb/sources.json` | App-source names, colors, dot visibility, folders, launchers, and enabled flags. |
 
-With no XDG override, state uses `~/.local/state` and config uses `~/.config`. A width-only layout file loads Compact. Reset width keeps the selected view. The attention state file has owner-only access.
+With no XDG override, state uses `~/.local/state` and config uses `~/.config`. A width-only layout file loads Compact. Reset width keeps the selected view. The attention and source settings files have owner-only access.
 
 The application ID is `local.asb.AgentSwitchBoard`. Per-user installation registers only ASB's own launcher and icon. It creates no auto-start entry. See [icon provenance](assets/icons/ASB-disc-provenance.md).
+
+## App sources
+
+Open **App sources…** in the menu to add or edit local Codex and Claude profiles. The native table shows Enabled, name/app, session folder, **Open with**, and chat count/status. Select a source to edit it, or choose **Add**. Use **Choose…** for folders and the installed app launcher, then **Save**. **Cancel** discards form edits; **Refresh** reloads the table. ASB supports eight registered sources, including the two defaults.
+
+| Field | Select |
+| --- | --- |
+| App | Codex or Claude Desktop Code. |
+| Name | A short profile name, such as Work. |
+| Profile color | The source marker color, with a picker and four muted presets. |
+| Show profile dot | Show or hide this profile's dot. Its saved color stays available. |
+| Session folder (Codex) | That profile's `CODEX_HOME`, such as `~/.codex-work`, with `state_N.sqlite`. |
+| Session folder (Claude) | That app profile's folder, such as `~/.config/Claude-Work`, with `claude-code-sessions` or `Cache`. |
+| Open with | The supported installed launcher that opens this profile. Default sources can use the default app link handler. |
+| Transcript folder (Claude) | That profile's local transcript folder; empty uses `~/.claude/projects`. |
+| Enabled | Include this source in ASB reads and the chat list. |
+
+The default Codex and Claude sources can be edited or disabled, but not removed. **Remove** unregisters an additional source. Disable and Remove do not delete source files or saved ASB attention, pins, unread marks, and settings. One store cannot be added twice. A missing or failed source does not hide other profiles.
+
+A second ChatGPT/Codex login needs its own local profile data and installed profile launcher. Profiles can share one app binary if their `CODEX_HOME` and Electron profile folders are separate. On first use, when `sources.json` is absent, ASB registers the known ChatGPT Personal profile if its local store and launcher exist. ASB does not sign in, copy credentials, or change the original apps' URL handlers. A ChatGPT-labeled source shows local Codex coding chats, not ordinary ChatGPT cloud chat history. Use the same source table for additional Claude instances.
+
+When an app has multiple registered sources, a Soft dot appears at the lower-left of its icon in both views. It uses the source color and has no action. Clear **Show profile dot**, then **Save**, to hide only this profile's dot. This keeps the source enabled, its saved color, and its state and unread marks. Legacy rows and apps with one registered source hide it. Profile numbers are not visible. The source name remains in the tooltip, accessible description, and search. The Codex and Claude pills still select all sources for that app.
+
+Choose **Profile color** in the source editor, then **Save**. The presets are Slate blue (`#8296b4`), Clay (`#b28f80`), Plum (`#a28caa`), and Sage (`#899e91`). ASB saves any valid six-digit hex color, including dark colors. The display can lighten the marker to keep 3:1 contrast without changing the saved color. A successful save shows **Saved**; an error keeps the form for correction. Old source settings get a stable default color and show the dot. Color identifies the source only; it does not change state, unread marks, chat identity, or original app styles.
 
 ## Start and stop
 
@@ -86,7 +117,7 @@ The initial window is about 420×900 pixels. Closing it stops the backend that t
 
 The optional browser view starts with `npm start` at [http://127.0.0.1:4629/](http://127.0.0.1:4629/). Both modes bind only to `127.0.0.1`. `HOST` does not change the address.
 
-Codex must handle `codex://threads/<id>`. Claude Desktop must handle `claude://code/continue?session=local_<uuid>` for local chats and `claude://code/<id>` for validated `cse_` or `session_` remote IDs. Invalid Claude local IDs remain visible with the open action disabled. Opens run in the background. **Opening…** appears in the row; a failure adds details to its tooltip.
+Default Codex opens use `codex://threads/<id>`. Default Claude opens use `claude://code/continue?session=local_<uuid>` for local chats and `claude://code/<id>` for validated `cse_` or `session_` remote IDs. The apps must handle these links. An additional source's installed launcher receives the validated link for that profile. Invalid Claude local IDs remain visible with the open action disabled. Opens run in the background. **Opening…** appears in the row; a failure adds details to its tooltip.
 
 ## Refresh and data limits
 
@@ -94,7 +125,7 @@ Both clients poll every two seconds while any unarchived root chat is Working, o
 
 Reads do not overlap. Polling remains the fallback when a watcher or event stream fails. Rows stay keyed by chat ID and update in place. Activity alone does not rewrite ASB state.
 
-ASB reads the latest `~/.codex/state_N.sqlite` in read-only mode, `session_index.jsonl`, matched `.codex-global-state.json` read marks, and rollout lifecycle signals. On Linux, Claude metadata comes from `$XDG_CONFIG_HOME/Claude/claude-code-sessions` or `~/.config/Claude/claude-code-sessions`. Only `local_*.json` metadata is used. Matched transcripts come from `~/.claude/projects`.
+By default, ASB reads the latest `~/.codex/state_N.sqlite` in read-only mode, `session_index.jsonl`, matched `.codex-global-state.json` read marks, and rollout lifecycle signals. On Linux, Claude metadata comes from `$XDG_CONFIG_HOME/Claude/claude-code-sessions` or `~/.config/Claude/claude-code-sessions`. Only `local_*.json` metadata is used. Matched transcripts come from `~/.claude/projects`. Registered profiles use their selected folders and the same readers, source-change events, and polling fallback.
 
 Remote Code metadata comes from approved session-list and watch response bodies in Claude's `Cache/Cache_Data`. ASB uses the newest cached response and exact cursor-linked updates. A watch without a full list contains only observed sessions; the source warning states this limit. The cache can be incomplete or old, including while Claude is closed. ASB does not fetch the remote list. Working and Waiting require an explicit worker state and a response observation within six hours. Missing state or a disconnected Remote Control bridge gives Unknown. Cloud sessions do not need a bridge connection. Remote work has no inferred start time or local folder; a safe cached Git repository name can identify the project.
 

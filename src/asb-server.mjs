@@ -5,6 +5,7 @@ import { resumeCommandForResponse } from './session-opener.mjs';
 
 export function createAsbServer({
   markUnreadThread = null, markReadThread = null, setUnreadSettings = null, pinThread = null,
+  listSources = null, updateSource = null, removeSource = null,
   notificationCenter = null,
   publicDir = DEFAULT_PUBLIC_DIR, ...snapshotOptions
 } = {}) {
@@ -22,10 +23,13 @@ export function createAsbServer({
     }
     const localAction = url.pathname.match(/^\/api\/threads\/([^/]+)\/(mark-unread|mark-read|pin|unpin|move-pin)$/);
     const unreadSettingsRoute = url.pathname === '/api/settings/unread';
+    const sourcesRoute = url.pathname === '/api/sources' && Boolean(listSources);
+    const removeSourceMatch = removeSource && url.pathname.match(/^\/api\/sources\/([a-z0-9][a-z0-9-]{0,79})\/remove$/);
     const eventRoute = url.pathname === '/api/events';
-    const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute;
+    const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute
+      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch);
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
-    const readRoute = url.pathname === '/api/dashboard' || eventRoute || staticRoutes.includes(url.pathname);
+    const readRoute = url.pathname === '/api/dashboard' || eventRoute || (sourcesRoute && request.method === 'GET') || staticRoutes.includes(url.pathname);
     if (!readRoute && !actionRoute) {
       sendJson(response, 404, { error: 'Route is not available in ASB.' });
       return;
@@ -48,6 +52,26 @@ export function createAsbServer({
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
     response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    if (sourcesRoute || removeSourceMatch) {
+      try {
+        if (actionRoute) {
+          const body = await readJsonBody(request);
+          if (!body || typeof body !== 'object' || Array.isArray(body)
+            || Object.keys(body).join(',') !== (removeSourceMatch ? '' : 'source')) {
+            sendJson(response, 400, { error: 'Invalid app source action.' });
+            return;
+          }
+          if (removeSourceMatch) await removeSource(removeSourceMatch[1]);
+          else await updateSource(body.source);
+          invalidateDashboard('asb-sources');
+        }
+        const dashboard = await dashboardForRequest({ force: actionRoute });
+        sendJson(response, 200, { ...(actionRoute ? { changed: true } : {}), ...await listSources(dashboard) });
+      } catch (error) {
+        sendJson(response, error.statusCode || 500, { error: error.statusCode === 400 ? error.message : 'Cannot update ASB app sources.' });
+      }
+      return;
+    }
     if (unreadSettingsRoute) {
       try {
         const body = await readJsonBody(request);

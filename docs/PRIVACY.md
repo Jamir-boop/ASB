@@ -14,12 +14,13 @@ This document covers `npm start`, `npm run desktop`, and the packaged `asb` laun
 - Associated Claude transcripts under `~/.claude/projects` for lifecycle and completion signals.
 - Approved Claude session-list and watch response bodies in `Cache/Cache_Data` for remote Code metadata. The reader uses only `https://claude.ai/v1/code/sessions` and `/watch`, with validated cache boundaries and bounded decoding. It does not use HTTP headers, cookies, authentication endpoints, or remote transcript-event bodies.
 - ASB's own local state, layout, and theme settings.
+- Registered app profiles use their selected local folders and the same readers. ASB also reads its own `sources.json` registration file. A ChatGPT-labeled source covers local Codex coding chats, not ordinary ChatGPT cloud chat history.
 
 Log readers can examine message and tool events in memory to identify state. The ASB view receives no question body, answer text, raw transcript, or credential. ASB does not write to original app stores.
 
 ## What ASB displays locally
 
-Chat IDs, names, folders, app names, archive state, execution state and reason, update time, working time, subagent count, app links, and ASB attention/pin marks can appear in the local API or view. These fields can still identify private work. Use synthetic data for public media and reports.
+Chat IDs, names, folders, app names, source IDs/names/colors, archive state, execution state and reason, update time, working time, subagent count, app links, and ASB attention/pin marks can appear in the local API or view. Compatibility profile numbers remain API metadata and are not visible. The source table also shows registered data and launcher paths, enabled flags, and chat count/status. These fields can still identify private work. Use synthetic data for public media and reports.
 
 Working, Waiting, Idle, and Unknown are local observations. A completion dot is not proof of unread state in the original app. Read/Unread and pins belong only to ASB.
 
@@ -32,20 +33,23 @@ Remote cache observations can be incomplete or old. ASB uses the newest response
 | `~/.local/state/asb/pending.json` | Chat IDs, completion/read/question acknowledgment values, manual/retained attention, pin order, and Persistent unread. |
 | `~/.config/asb/layout.json` | Column width and selected view. |
 | `~/.config/asb/theme.json` | Custom colors. |
+| `~/.config/asb/sources.json` | Registered source IDs, app names, profile labels/colors, local data/transcript folders, installed launcher paths, and enabled flags. |
 | `~/.local/share/applications/local.asb.AgentSwitchBoard.desktop` | ASB's per-user desktop entry. |
 | `~/.local/share/icons/hicolor/scalable/apps/local.asb.AgentSwitchBoard.svg` | ASB's app icon. |
 
-`XDG_STATE_HOME`, `XDG_CONFIG_HOME`, and `XDG_DATA_HOME` override these base folders. The Pending state file has owner-only access. It stores no chat title, message body, or question text. Per-user installation also copies the app into ASB's own data folder and creates `~/.local/bin/asb`. The launcher contains local runtime and install paths. The installation manifest records versions and managed file hashes.
+`XDG_STATE_HOME`, `XDG_CONFIG_HOME`, and `XDG_DATA_HOME` override these base folders. The Pending state and source settings files have owner-only access; `sources.json` uses `0600`. They store no chat title, message body, or question text. First use can register the known ChatGPT Personal profile when `sources.json` is absent and its local store and installed launcher exist. Disabling or removing a source keeps its files and saved ASB marks/settings. Per-user installation also copies the app into ASB's own data folder and creates `~/.local/bin/asb`. The launcher contains local runtime and install paths. The installation manifest records versions and managed file hashes.
 
 ASB writes no search index, review job, notification store, quota history, token cache, or transcript checkpoint. Its source readers keep bounded caches in memory.
+
+Source colors are ASB settings in the same schema `1` file. They change only the local identity marker, not original app styles, data, sign-ins, or attention state. Source IDs remain the identity; color does not merge chats. Source names remain available in tooltips, search, and accessible descriptions.
 
 ## Local API and app opens
 
 ASB binds only to `127.0.0.1`. `HOST` cannot change that. The native window and optional browser view use this local API. Source events contain a version, reason, and provider flags, with no file paths or content. Watchers do not upload files.
 
-Session actions require the local Host, a matching Origin, a known session ID, and validated request fields. The client cannot supply arbitrary commands or URLs. Other local programs under your account can still access local metadata.
+Session actions require the local Host, a matching Origin, a known session ID, and validated request fields. Source changes use the same Host and Origin protection and accept only source settings. Local paths and installed app launchers are validated. Raw commands, arguments, environment fields, and arbitrary URLs are rejected. Other local programs under your account can still access local metadata.
 
-Selecting a row asks the system to open a validated `codex:` or `claude:` app link. The original app can make its own network requests under its own settings. ASB does not send it a prompt, answer a question, cancel a task, or change its read state.
+Selecting a row opens a validated `codex:` or `claude:` app link. Default sources use the existing URL handler. A registered profile can use its installed launcher; ASB passes one validated URI through detached `spawn`, without a shell. The launched app runs independently after dispatch; ASB does not wait for or stop it. ASB does not change sign-ins, credentials, app data, or default handlers. The original app can make its own network requests under its own settings. ASB does not send it a prompt, answer a question, cancel a task, or change its read state.
 
 ## Public release media
 

@@ -2,6 +2,27 @@
 
 ASB has its own release series. The retained Agent Mission Control releases are recorded separately below.
 
+## ASB 1.3.0 - 2026-10-08
+
+- Removed the theme divider contrast limit. Any valid six-digit divider color now applies and saves, including the background color. Dark background and text contrast checks stay in place.
+- Fixed theme picker changes being discarded while GNOME colors was selected. A user color change now selects Custom colors; Apply validates, applies, and saves with visible feedback. Loading and reset keep their intended mode, and invalid colors or save errors keep the previous theme.
+- Added native smooth horizontal wheel scrolling in both views, with a 180 ms ease-out, repeated-input accumulation, immediate reversal, and clamped targets. Trackpad input stays direct; GNOME animations off and external scroll/layout changes stop wheel motion.
+- Fixed duplicate Claude Desktop Code rows when local bridge aliases use `session_` and remote cache IDs use `cse_` for the same token. Kept local folders and open links, separate chats, and remote rows with invalid or ambiguous links.
+- Added a native Working pill after Pending. It shares the state menu and restores all states when off. Working alone selects Working; Working plus Pending shows Working or Pending/unread chats. App, search, and archive filters still apply. Empty-result text uses the available width.
+- Added one shared Comfortable hover highlight that glides between cards and columns in 200 ms and fades in 100 ms. It uses native animation, keeps card positions and actions, respects GNOME animations off, and clears when the list changes.
+- Added C Restore on hover for Comfortable Idle-read text. Title, folder, state, and age use quiet palette roles without reducing contrast below 4.5:1; hover/focus restores normal text. Pinned Idle-read rows follow the same rule, while provider marks and controls retain their strength.
+- Fixed Codex root execution while explicitly linked nested subagents have current work. Kept bounded cached reads, group timing, child question attention, and completion attention after the group ends. Stale or missing child lifecycle gives Unknown; cancellation does not add completion attention.
+- Added a native **App sources…** table and editor for up to eight Codex/Claude profiles, with validated local folders, installed launchers, enable/disable, counts/status, and owner-only source settings. When source settings are absent, first use registers the known ChatGPT Personal coding profile only if its local store and installed launcher are present. Ordinary ChatGPT cloud chat history is outside this source. Separate stores keep separate chat IDs and open targets; original app data and sign-ins stay unchanged.
+- Fixed registered app launchers being killed after five seconds. ASB now returns after a detached app spawn succeeds, keeps launch errors visible, and leaves the app running when ASB closes.
+- Added the approved Soft dot at the lower-left of existing provider icons when that app has multiple registered sources. Codex and Claude use the same passive 6px fill with a 1px background rim. Source names remain in tooltips, accessible descriptions, and search. Profile numbers are not visible; row dimensions, actions, and existing filters stay unchanged.
+- Added a source Color picker with muted Slate blue, Clay, Plum, and Sage presets. Optional source colors save in the owner-only schema `1` settings; old records get stable defaults and edits without a color keep the existing value. Contrast checks keep markers distinct from the base and hover backgrounds. Source IDs, state/unread colors, saved marks, and original app data stay unchanged.
+- Fixed dark profile colors being rejected on Save. Any valid six-digit hex color now saves; the displayed dot keeps 3:1 contrast without changing that color. Save success and errors stay visible in the editor.
+- Added **Show profile dot** for each source. Turning it off hides only that profile's passive dot in both views and keeps its color for later use. Old settings show the dot; edits that omit the new flag retain its value.
+- Added the app-source registry to the explicit package whitelist, bringing the current runtime to 32 files. Profile files and registration changes use the existing source watchers and polling fallback.
+- Updated the synthetic demo source to show four switches between sample Codex and Claude Desktop Code chats. The existing README video link is unchanged.
+
+See [ASB 1.3.0 release notes](docs/releases/v1.3.0.md) for downloads, upgrades, and check limits. No native UI tests, new native screenshots, or Debian `apt install` were run for this release preparation. See the [publication record](docs/OPEN_SOURCE_PLAN.md) for verified release checks.
+
 ## ASB 1.2.0 - 2026-10-07
 
 - Added the approved C Corner pair to Comfortable cards: a top-right Read dot beside Pin/Unpin, visible pins on hover/focus, and persistent pinned controls. Actions use the existing ASB APIs, saved pin order, drag reorder, and row menus.

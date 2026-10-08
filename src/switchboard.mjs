@@ -2,17 +2,20 @@ import path from 'node:path';
 import os from 'node:os';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { loadCodexDashboard, invalidateCodexData } from './codex-data.mjs';
+import { loadCodexDashboard, invalidateCodexData, discoverCodexStateDatabase } from './codex-data.mjs';
 import { defaultClaudeAppDir, invalidateClaudeData, openClaudeThread } from './claude-data.mjs';
 import { loadSwitchboardClaudeThreads, claudeRemoteDeepLink, claudeRemoteStatus,
   invalidateClaudeRemoteData, isClaudeRemoteCacheEvent } from './claude-remote-data.mjs';
 import { normalizeDashboardThreads } from './insights.mjs';
 import { createAsbServer } from './asb-server.mjs';
 import { openThreadInCodex } from './session-opener.mjs';
+import { AppSourceRegistry, numberAppSources, validateSourceLauncher } from './app-sources.mjs';
+import { spawn } from 'node:child_process';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 const QUESTION_AT = Symbol('ASB question timestamp');
+const SOURCE_DIR = Symbol('ASB session store');
 const READ_FIELDS = ['questionSeen', 'questionAck', 'nativeAt', 'nativeAck', 'nativeSeen'];
 const RETAINED_SOURCES = ['native-unread', 'observed-completion', 'user-question'];
 
@@ -55,9 +58,11 @@ export function switchboardStatus(thread, nowMs = Date.now()) {
   if (thread.awaitingPermission || thread.pendingToolCount || thread.awaitingReview) {
     return { state: 'waiting', reason: 'A user action is required.' };
   }
+  if (thread.groupChildWaiting) return { state: 'waiting', reason: 'A linked child is waiting for an answer.' };
   if (thread.lifecycleRunning === false) return { state: 'idle', reason: 'The last task ended.' };
   if (thread.lifecycleRunning === true) {
-    return nowMs - Number(thread.agentActivityAtMs || thread.latestLifecycleAtMs) <= ACTIVITY_WINDOW_MS
+    const activityAtMs = Number(thread.agentActivityAtMs ?? thread.latestLifecycleAtMs);
+    return activityAtMs > 0 && nowMs - activityAtMs <= ACTIVITY_WINDOW_MS
       ? { state: 'working', reason: 'The local log has an open task.' }
       : { state: 'unknown', reason: 'The last task has no recent signal.' };
   }
@@ -72,17 +77,54 @@ export function switchboardStatus(thread, nowMs = Date.now()) {
   return { state: 'unknown', reason: 'No current task signal is available.' };
 }
 
+function codexGroupLifecycle(thread, byId, nowMs) {
+  if (!['codex', 'codex-cli'].includes(thread.provider)) return thread;
+  const children = thread.descendantThreadIds.map((id) => byId.get(id))
+    .filter((child) => child && !child.archived && ['codex', 'codex-cli'].includes(child.provider));
+  if (!children.length) return thread;
+  const work = [thread, ...children];
+  const active = work.filter((member) => member.lifecycleRunning === true);
+  const recent = active.filter((member) => Number(member.agentActivityAtMs || member.latestLifecycleAtMs) > 0
+    && nowMs - Number(member.agentActivityAtMs || member.latestLifecycleAtMs) <= ACTIVITY_WINDOW_MS);
+  const starts = recent.map((member) => Number(member.agentStartedAtMs || 0)).filter((value) => value > 0);
+  const blocked = (member) => member.userQuestionBlocking
+    && Number(member.latestBlockingQuestionAtMs || 0) >= Number(member.latestLifecycleAtMs || 0)
+    && nowMs - Number(member.latestBlockingQuestionAtMs || 0) <= ACTIVITY_WINDOW_MS;
+  const blockedChildren = children.filter(blocked);
+  const expirySignals = [...recent.map((member) => Number(member.agentActivityAtMs || member.latestLifecycleAtMs)),
+    ...blockedChildren.map((member) => Number(member.latestBlockingQuestionAtMs || 0))];
+  const unknown = children.some((child) => child.lifecycleRunning == null);
+  const latestEnd = work.filter((member) => member.lifecycleRunning === false)
+    .sort((a, b) => Number(b.latestLifecycleAtMs || 0) - Number(a.latestLifecycleAtMs || 0))[0];
+  return { ...thread,
+    lifecycleRunning: active.length ? true : unknown ? undefined : thread.lifecycleRunning,
+    childWorkUnknown: unknown,
+    groupChildWaiting: blockedChildren.length > 0 && !recent.some((member) => !blocked(member)),
+    awaitingUserInput: work.some((member) => member.awaitingUserInput),
+    latestUserQuestionAtMs: Math.max(0, ...work.filter((member) => member.awaitingUserInput).map((member) => Number(member.latestUserQuestionAtMs || 0))),
+    agentStartedAtMs: starts.length ? Math.min(...starts) : 0,
+    agentActivityAtMs: active.length ? Math.max(...active.map((member) => Number(member.agentActivityAtMs || member.latestLifecycleAtMs || 0))) : 0,
+    groupStatusActivityAtMs: expirySignals.length ? Math.min(...expirySignals) : 0,
+    groupCompletionAtMs: active.length || unknown || ['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled', 'failed'].includes(latestEnd?.latestLifecycleKind) ? 0
+      : Math.max(0, ...work.map((member) => Math.max(member.latestLifecycleKind === 'task_complete' ? Number(member.latestLifecycleAtMs || 0) : 0,
+        Number(member.latestAgentFinalAtMs || 0)))),
+  };
+}
+
 export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.now()) {
   const normalizedThreads = normalizeDashboardThreads(threads, nowMs);
+  const byId = new Map(normalizedThreads.map((thread) => [thread.id, thread]));
+  const roots = normalizedThreads.filter(isSwitchboardRoot).map((thread) => codexGroupLifecycle(thread, byId, nowMs));
   const board = {
     generatedAtMs: nowMs,
     providers,
-    threads: normalizedThreads.filter(isSwitchboardRoot).map((thread) => {
+    threads: roots.map((thread) => {
       const isCodex = ['codex', 'codex-cli'].includes(thread.provider);
-      const validCodex = isCodex && UUID.test(thread.id);
+      const externalId = thread.externalId || thread.id;
+      const validCodex = isCodex && UUID.test(externalId);
       const validClaude = thread.provider === 'claude-desktop-code'
         && String(thread.externalId).startsWith('local_') && UUID.test(String(thread.externalId).slice(6));
-      const appDeepLink = validCodex ? `codex://threads/${thread.id}`
+      const appDeepLink = validCodex ? `codex://threads/${externalId}`
         : validClaude ? `claude://code/continue?session=${encodeURIComponent(thread.externalId)}`
           : thread.provider === 'claude-desktop-code' && thread.source === 'claude-remote-cache'
             ? claudeRemoteDeepLink(thread.externalId) : '';
@@ -91,7 +133,10 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
         : thread.provider === 'claude-desktop-code' ? thread.latestUserMessageAtMs : 0);
       const row = {
         id: thread.id,
-        externalId: thread.externalId,
+        externalId,
+        ...(thread.sourceId ? { sourceId: thread.sourceId, sourceLabel: thread.sourceLabel,
+          sourceNumber: thread.sourceNumber, sourceCount: thread.sourceCount, sourceColor: thread.sourceColor,
+          sourceShowMarker: thread.sourceShowMarker } : {}),
         provider: isCodex ? 'codex' : thread.provider,
         providerLabel: isCodex ? 'Codex' : 'Claude Desktop Code',
         title: thread.title || 'Untitled session',
@@ -106,19 +151,20 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
         nativeUnread: thread.source === 'claude-remote-cache' && status.state === 'unknown' ? null : thread.nativeUnread ?? null,
         readStatus: thread.source === 'claude-remote-cache' && status.state === 'unknown' ? 'unknown' : thread.readStatus || 'unknown',
         questionPending: Boolean(thread.awaitingUserInput),
-        completionAtMs: ['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled', 'failed'].includes(thread.latestLifecycleKind) ? 0
+        completionAtMs: thread.groupCompletionAtMs ?? (['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled', 'failed'].includes(thread.latestLifecycleKind) ? 0
           : Math.max(thread.latestLifecycleKind === 'task_complete' ? Number(thread.latestLifecycleAtMs || 0) : 0,
-            Number(thread.latestAgentFinalAtMs || 0)),
-        canOpen: Boolean(appDeepLink),
+            Number(thread.latestAgentFinalAtMs || 0))),
+        canOpen: Boolean(appDeepLink) && thread.sourceCanOpen !== false,
         appDeepLink,
       };
       Object.defineProperty(row, QUESTION_AT, { value: Number(thread.latestUserQuestionAtMs || 0) });
+      if (thread.sourceDataDir) Object.defineProperty(row, SOURCE_DIR, { value: thread.sourceDataDir });
       return row;
     }),
   };
-  const expiries = normalizedThreads.filter(isSwitchboardRoot).flatMap((thread) => [thread.latestBlockingQuestionAtMs,
+  const expiries = roots.flatMap((thread) => [thread.latestBlockingQuestionAtMs, thread.groupStatusActivityAtMs,
     thread.source === 'claude-remote-cache' ? thread.remoteObservedAtMs : 0,
-    thread.lifecycleRunning === true ? thread.agentActivityAtMs || thread.latestLifecycleAtMs : 0,
+    thread.lifecycleRunning === true ? thread.agentActivityAtMs ?? thread.latestLifecycleAtMs : 0,
     thread.provider === 'claude-desktop-code' && thread.lifecycleRunning == null ? thread.transcriptActivityAtMs : 0])
     .map((value) => Number(value || 0) + ACTIVITY_WINDOW_MS + 1).filter((value) => value > nowMs);
   Object.defineProperty(board, 'nextStatusCheckAtMs', { value: expiries.length ? Math.min(...expiries) : Infinity });
@@ -132,10 +178,27 @@ export async function loadSwitchboardDashboard({
   loadClaude = loadSwitchboardClaudeThreads,
   codexOptions = {},
   claudeOptions = {},
+  sources = null,
 } = {}) {
-  const results = await Promise.allSettled([
-    loadCodex({
-      ...codexOptions, nowMs,
+  const inputs = sources ? numberAppSources(sources) : [
+    { id: 'codex', provider: 'codex', label: 'Codex', enabled: true },
+    { id: 'claude-desktop-code', provider: 'claude-desktop-code', label: 'Claude Desktop Code', enabled: true },
+  ];
+  const results = await Promise.allSettled(inputs.map(async (source) => {
+    if (!source.enabled) return null;
+    let sourceOptions = {};
+    if (sources) {
+      if (!(await fs.stat(source.dataDir)).isDirectory()) throw new Error('The source path is not a directory.');
+      sourceOptions = source.provider === 'codex' ? {
+        databasePath: await discoverCodexStateDatabase(source.dataDir),
+        sessionsDir: path.join(source.dataDir, 'sessions'),
+        sessionIndexPath: path.join(source.dataDir, 'session_index.jsonl'),
+        globalStatePath: path.join(source.dataDir, '.codex-global-state.json'),
+      } : { appDir: source.dataDir, projectsDir: source.projectsDir || path.join(os.homedir(), '.claude', 'projects') };
+      if (source.provider === 'codex' && loadCodex === loadCodexDashboard) await fs.stat(sourceOptions.databasePath);
+    }
+    return source.provider === 'codex' ? loadCodex({
+      ...codexOptions, ...sourceOptions, nowMs,
       codexResetCreditsEnabled: false,
       codexNativeReadEnabled: true,
       workMetricCachePath: false,
@@ -146,33 +209,59 @@ export async function loadSwitchboardDashboard({
       initialRolloutBytes: 64 * 1024,
       maxRolloutBytes: 256 * 1024,
       asbMode: true,
-    }),
-    loadClaude({ fileIndexCacheTtlMs: 1_000, ...claudeOptions, nowMs, maxCount: 5000, usageCache: null, strictMetadataRead: true, asbMode: true }),
-  ]);
-  const labels = ['Codex', 'Claude Desktop Code'];
-  const ids = ['codex', 'claude-desktop-code'];
+    }) : loadClaude({ fileIndexCacheTtlMs: 1_000, ...claudeOptions, ...sourceOptions,
+      nowMs, maxCount: 5000, usageCache: null, strictMetadataRead: true, asbMode: true });
+  }));
   const providers = results.map((result, index) => {
-    const provider = result.status === 'fulfilled' ? result.value.provider : null;
-    const status = result.status !== 'fulfilled' || provider?.status === 'error' ? 'error'
-      : provider?.status === 'warning' ? 'warning' : provider?.installed === false ? 'missing' : 'ready';
-    return {
-      id: ids[index], label: labels[index], status,
-        message: status === 'error' ? `Cannot read ${labels[index]} sessions. Check the local session store.`
-          : status === 'warning' ? provider?.message || `Some ${labels[index]} session files cannot be read.` : '',
-    };
+    const source = inputs[index];
+    const provider = result.status === 'fulfilled' ? result.value?.provider : null;
+    const missingLauncher = sources && !source.builtin && !source.launcher;
+    const status = !source.enabled ? 'disabled' : missingLauncher ? 'error'
+      : sources && result.status === 'rejected' && result.reason?.code === 'ENOENT' ? 'missing'
+      : result.status !== 'fulfilled' || provider?.status === 'error' ? 'error'
+        : provider?.status === 'warning' ? 'warning' : provider?.installed === false ? 'missing' : 'ready';
+    return { id: source.id, label: source.label, status,
+      message: status === 'error' && missingLauncher ? `Select an installed app launcher for ${source.label}.`
+        : status === 'error' ? `Cannot read ${source.label} sessions. Check the local session store.`
+        : status === 'warning' ? provider?.message || `Some ${source.label} session files cannot be read.` : '' };
   });
-  return buildSwitchboardDashboard(results.flatMap((result) => result.status === 'fulfilled' ? result.value.threads || [] : []), providers, nowMs);
+  const threads = results.flatMap((result, index) => {
+    if (result.status !== 'fulfilled' || !result.value) return [];
+    const source = inputs[index];
+    return (result.value.threads || []).map((thread) => {
+      if (!sources) return thread;
+      const scope = (id) => id && !source.builtin ? `${source.id}:${id}` : id;
+      return { ...thread, id: scope(thread.id), parentThreadId: scope(thread.parentThreadId),
+        externalId: thread.externalId || thread.id, sourceId: source.id, sourceLabel: source.label,
+        sourceNumber: source.sourceNumber, sourceCount: source.sourceCount, sourceColor: source.color,
+        sourceShowMarker: source.showMarker,
+        sourceCanOpen: source.builtin || Boolean(source.launcher), sourceDataDir: source.dataDir };
+    });
+  });
+  return buildSwitchboardDashboard(threads, providers, nowMs);
 }
 
 export async function openSwitchboardThread(thread, options = {}) {
-  const valid = (thread.provider === 'codex' && UUID.test(thread.id)
-    && thread.appDeepLink === `codex://threads/${thread.id}`)
+  const externalId = thread.externalId || thread.id;
+  const valid = (thread.provider === 'codex' && UUID.test(externalId)
+    && thread.appDeepLink === `codex://threads/${externalId}`)
     || (thread.provider === 'claude-desktop-code' && UUID.test(String(thread.externalId).slice(6))
       && thread.externalId.startsWith('local_')
       && thread.appDeepLink === `claude://code/continue?session=${encodeURIComponent(thread.externalId)}`)
     || (thread.provider === 'claude-desktop-code' && Boolean(claudeRemoteDeepLink(thread.externalId))
       && thread.appDeepLink === claudeRemoteDeepLink(thread.externalId));
   if (!thread.canOpen || !valid) throw new Error('This session has no direct desktop link.');
+  if (options.launcher) {
+    const launcher = await validateSourceLauncher(options.launcher);
+    const launchOptions = { detached: true, stdio: 'ignore' };
+    if (options.runCommand) await options.runCommand(launcher, [thread.appDeepLink], launchOptions);
+    else await new Promise((resolve, reject) => {
+      const app = spawn(launcher, [thread.appDeepLink], launchOptions);
+      app.once('error', reject);
+      app.once('spawn', () => { app.unref(); resolve(); });
+    });
+    return { opened: true, method: `${thread.provider}-source-launcher` };
+  }
   return thread.provider === 'codex' ? openThreadInCodex(thread, options) : openClaudeThread(thread, options);
 }
 
@@ -345,21 +434,38 @@ export function createSwitchboardServer(options = {}) {
   const tracker = options.pendingTracker || new PendingTracker(options.pendingStatePath);
   const load = options.loadDashboard || loadSwitchboardDashboard;
   const open = options.openThread || openSwitchboardThread;
+  const registry = options.sourceRegistry || new AppSourceRegistry(options.sourceRegistryOptions);
+  const registeredLoad = !options.loadDashboard || Boolean(options.sourceRegistry);
+  const sourceWatchPaths = async () => {
+    const sources = await registry.read();
+    return [
+      ...(registry.configPath ? [{ path: path.dirname(registry.configPath), optional: true,
+        acceptEvent: (filename) => !filename || filename === path.basename(registry.configPath) }] : []),
+      ...sources.filter((source) => source.enabled).flatMap((source) => switchboardWatchPaths(
+        source.provider === 'codex' ? { codexDir: source.dataDir }
+          : { appDir: source.dataDir, projectsDir: source.projectsDir }).filter((spec) =>
+            spec.source === (source.provider === 'codex' ? 'codex' : 'claude'))),
+    ];
+  };
   return createAsbServer({
     dashboardAdaptiveRefresh: true,
     dashboardEventMinIntervalMs: 0,
     dashboardWatchDebounceMs: 250,
-    dashboardWatchPaths: switchboardWatchPaths(),
+    dashboardWatchPaths: registeredLoad ? sourceWatchPaths : switchboardWatchPaths(),
     dashboardSourceChanged: (source, hint) => {
       if (source === 'codex') invalidateCodexData(hint);
       else { invalidateClaudeData(hint); invalidateClaudeRemoteData(hint); }
     },
     ...options,
     loadDashboard: async () => {
-      const dashboard = await tracker.observe(await load());
+      const dashboard = await tracker.observe(await load(registeredLoad ? { sources: await registry.read() } : undefined));
+      if (registeredLoad && registry.warning) dashboard.providers.push({ id: 'asb-sources', label: 'ASB', status: 'warning', message: registry.warning });
       dashboard.refreshIntervalMs = switchboardRefreshInterval(dashboard);
       return dashboard;
     },
+    listSources: (dashboard) => registry.report(dashboard),
+    updateSource: async (source) => { await registry.update(source); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); },
+    removeSource: async (id) => { await registry.remove(id); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); },
     markUnreadThread: async (thread) => {
       await tracker.markUnread(thread.id);
       tracker.apply(thread);
@@ -376,7 +482,13 @@ export function createSwitchboardServer(options = {}) {
       return order;
     },
     openThread: async (thread) => {
-      const result = await open(thread);
+      const source = registeredLoad ? (await registry.read()).find((item) => item.id === thread.sourceId && item.enabled) : null;
+      if (registeredLoad && !source) throw new Error('This session source is no longer enabled.');
+      if (source && !source.builtin && !source.launcher) throw new Error('This app profile needs its own installed app launcher.');
+      if (source && (source.provider !== thread.provider || thread[SOURCE_DIR] && source.dataDir !== thread[SOURCE_DIR])) {
+        throw new Error('This session source changed. Refresh ASB before opening it.');
+      }
+      const result = await open(thread, source ? { launcher: source.launcher } : {});
       if (result.opened && !tracker.persistentUnread) {
         await tracker.acknowledge(thread.id);
         tracker.apply(thread);

@@ -22,6 +22,52 @@ COMFORTABLE_ROW_HEIGHT = 68
 DEFAULT_COLUMN_WIDTH = 240
 APP_ID = "local.asb.AgentSwitchBoard"
 STATES = ("working", "waiting", "idle", "unknown")
+SOURCE_PROVIDERS = ("codex", "claude-desktop-code")
+SOURCE_COLOR_PRESETS = (("Slate blue", "#8296b4"), ("Clay", "#b28f80"), ("Plum", "#a28caa"), ("Sage", "#899e91"))
+
+
+def source_marker_color(row):
+    count = row.get("sourceCount")
+    if type(count) is not int or count <= 1 or row.get("sourceShowMarker", True) is not True:
+        return ""
+    try:
+        return validate_source_color(row.get("sourceColor"))
+    except ValueError:
+        return ""
+
+
+def source_form_body(provider, name, data_dir, launcher, enabled, identity="", projects_dir="", color=None, show_marker=None):
+    if provider not in SOURCE_PROVIDERS or type(enabled) is not bool:
+        raise ValueError("Choose an app and its Enabled setting.")
+    if not isinstance(name, str) or not name.strip() or len(name) > 80 or re.search(r"[\x00-\x1f\x7f]", name):
+        raise ValueError("Name must have 1–80 characters with no control characters.")
+    if identity and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", identity):
+        raise ValueError("The app source ID is not valid. Refresh the source list.")
+    source = {"provider": provider, "label": name.strip(), "enabled": enabled}
+    for key, title, value, optional in (("dataDir", "Session folder", data_dir, False),
+                                       ("launcher", "Open with", launcher, True),
+                                       ("projectsDir", "Transcript folder", projects_dir, True)):
+        if key == "projectsDir" and provider != "claude-desktop-code":
+            continue
+        if not isinstance(value, str) or re.search(r"[\x00-\x1f\x7f]", value):
+            raise ValueError(f"{title} must have no control characters.")
+        value = os.path.expanduser(value.strip())
+        if not value and optional:
+            if key == "launcher":
+                source[key] = ""
+            continue
+        if not Path(value).is_absolute():
+            raise ValueError(f"{title} must be an absolute local path. You can use ~/.")
+        source[key] = value
+    if identity:
+        source["id"] = identity
+    if color is not None:
+        source["color"] = validate_source_color(color)
+    if show_marker is not None:
+        if type(show_marker) is not bool:
+            raise ValueError("Choose the Show profile dot setting.")
+        source["showMarker"] = show_marker
+    return {"source": source}
 
 
 def refresh_interval(dashboard):
@@ -55,13 +101,14 @@ def provider_query(query, app="all"):
 def filtered_rows(dashboard, query="", app="all", state="all", archived=False, pending_only=False):
     query, app = provider_query(query, app)
     states = set(STATES) if state == "all" else {state} if isinstance(state, str) else set(state)
+    working_or_unread = pending_only and states == {"working"}
     rows = [row for row in dashboard.get("threads", [])
             if (archived or not row.get("archived"))
             and (app == "all" or row.get("provider") == app)
-            and row.get("state") in states
-            and (not pending_only or row.get("pending"))
+            and ((row.get("state") == "working" or row.get("pending") or row.get("unread") or row.get("questionAttention"))
+                 if working_or_unread else row.get("state") in states and (not pending_only or row.get("pending")))
             and (not query or query in "\n".join(str(row.get(key, "")) for key in
-                 ("title", "projectName", "cwd", "providerLabel")).casefold())]
+                 ("title", "projectName", "cwd", "providerLabel", "sourceLabel")).casefold())]
     def bucket(row):
         if row.get("pending") or row.get("state") == "waiting":
             return 0
@@ -94,9 +141,36 @@ def contrast(first, second):
     return (light + .05) / (dark + .05)
 
 
-def highlight_color(colors):
-    return "#" + "".join(f"{round(int(colors['background'][start:start + 2], 16) * .85 + int(colors['accent'][start:start + 2], 16) * .15):02x}"
+def mix_color(background, foreground, fraction):
+    return "#" + "".join(f"{round(int(background[start:start + 2], 16) * (1 - fraction) + int(foreground[start:start + 2], 16) * fraction):02x}"
                          for start in (1, 3, 5))
+
+
+def validate_source_color(value):
+    if not isinstance(value, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+        raise ValueError("Profile color must use a #RRGGBB value.")
+    return value.lower()
+
+
+def display_source_color(color, surfaces):
+    for percent in range(101):
+        displayed = mix_color(color, "#ffffff", percent / 100)
+        if all(contrast(displayed, surface) >= 3 for surface in surfaces):
+            return displayed
+    return ""
+
+
+def highlight_color(colors):
+    return mix_color(colors["background"], colors["accent"], .15)
+
+
+def quiet_color(colors, key, fraction, highlight):
+    surfaces = (colors["background"], highlight)
+    for percent in range(round(fraction * 100), 101):
+        color = mix_color(colors["background"], colors[key], percent / 100)
+        if all(contrast(color, surface) >= 4.5 for surface in surfaces):
+            return color, percent / 100
+    return colors[key], 1
 
 
 def validate_theme(value):
@@ -110,8 +184,6 @@ def validate_theme(value):
         for surface, color in (("background", value["background"]), ("highlight", highlight_color(value))):
             if contrast(value[key], color) < 4.5:
                 raise ValueError(f"{key.capitalize()} needs at least 4.5:1 contrast with the {surface}.")
-    if contrast(value["divider"], value["background"]) < 1.5:
-        raise ValueError("Divider needs at least 1.5:1 contrast with the background.")
     return {key: value[key].lower() for key in THEME_KEYS}
 
 
@@ -240,6 +312,16 @@ def request_json(base, route, method="GET", body=None):
             raise ValueError("The session action did not succeed.")
         return result
     except (HTTPError, URLError, OSError, ValueError) as error:
+        if route == "/api/sources" or route.startswith("/api/sources/"):
+            detail = ""
+            if isinstance(error, HTTPError):
+                try:
+                    payload = json.loads(error.read(8192))
+                    if isinstance(payload, dict) and isinstance(payload.get("error"), str):
+                        detail = payload["error"]
+                except (OSError, ValueError):
+                    pass
+            raise RuntimeError(detail or "Cannot load or change app sources. Check that ASB is running, then try again.") from error
         action = "open this session" if route.endswith("/open") else "change the unread setting" if route == "/api/settings/unread" \
             else "change this session" if method == "POST" else "load sessions"
         recovery = "Check the app link handler, then try again." if route.endswith("/open") \
@@ -324,7 +406,9 @@ try:
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
     gi.require_version("Gdk", "4.0")
-    from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
+    gi.require_version("Gsk", "4.0")
+    gi.require_version("Graphene", "1.0")
+    from gi.repository import Adw, Gdk, Gio, GLib, GObject, Graphene, Gsk, Gtk, Pango
 except (ImportError, ValueError):
     print("ASB needs system Python 3 with PyGObject, GTK4, and Libadwaita. Use npm start for the web view.", file=sys.stderr)
     raise SystemExit(1)
@@ -352,6 +436,74 @@ def save_snapshot(window, output):
         raise RuntimeError("Cannot save the native window image.")
 
 
+class SessionStrip(Gtk.Box):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.hover_rect = self.hover_target = self.hover_from = self.hover_to = None
+        self.hover_alpha = 0
+        target = Adw.CallbackAnimationTarget.new(self.advance_hover)
+        self.hover_animation = Adw.TimedAnimation.new(self, 0, 1, 200, target)
+        self.hover_animation.set_easing(Adw.Easing.EASE_OUT_EXPO)
+        self.connect("unmap", self.clear_hover)
+
+    def show_hover(self, rectangle):
+        if rectangle == self.hover_target:
+            return
+        self.hover_animation.pause()
+        self.hover_target = rectangle
+        start = self.hover_rect if self.hover_alpha > 0 else rectangle
+        end = rectangle or start
+        if end is None:
+            self.clear_hover()
+            return
+        self.hover_from = (*start, self.hover_alpha)
+        self.hover_to = (*end, 1 if rectangle else 0)
+        self.add_css_class("asb-hover-paint")
+        self.hover_animation.set_duration(200 if start != end else 100)
+        self.hover_animation.reset()
+        if self.get_settings().get_property("gtk-enable-animations"):
+            self.hover_animation.play()
+        else:
+            self.advance_hover(1)
+
+    def advance_hover(self, value):
+        if self.hover_from is None:
+            return
+        frame = tuple(start + (end - start) * value for start, end in zip(self.hover_from, self.hover_to))
+        self.hover_alpha = frame[4]
+        self.hover_rect = frame[:4] if self.hover_alpha > 0 else None
+        if self.hover_target is None and self.hover_alpha <= 0:
+            self.remove_css_class("asb-hover-paint")
+        self.queue_draw()
+
+    def clear_hover(self, *_args):
+        self.hover_rect = self.hover_target = self.hover_from = self.hover_to = None
+        self.hover_alpha = 0
+        self.hover_animation.reset()
+        self.remove_css_class("asb-hover-paint")
+        self.queue_draw()
+
+    def do_snapshot(self, snapshot):
+        if self.hover_rect and self.hover_alpha > 0:
+            colors = self.get_root().hover_colors
+            if colors:
+                color = Gdk.RGBA()
+                color.parse(highlight_color(colors))
+            else:
+                found, color = self.get_style_context().lookup_color("window_fg_color")
+                color = (color if found else self.get_color()).copy()
+                color.alpha *= .07
+            color.alpha *= self.hover_alpha
+            bounds = Graphene.Rect()
+            bounds.init(*self.hover_rect)
+            rounded = Gsk.RoundedRect()
+            rounded.init_from_rect(bounds, 3)
+            snapshot.push_rounded_clip(rounded)
+            snapshot.append_color(color, bounds)
+            snapshot.pop()
+        Gtk.Box.do_snapshot(self, snapshot)
+
+
 class ColumnScroll(Gtk.ScrolledWindow):
     def do_measure(self, orientation, for_size):
         # Row count follows viewport height; it must not set the window's minimum height.
@@ -359,6 +511,369 @@ class ColumnScroll(Gtk.ScrolledWindow):
             return 0, 0, -1, -1
         minimum, natural, *_ = Gtk.ScrolledWindow.do_measure(self, orientation, for_size)
         return minimum, natural, -1, -1
+
+
+class SourceMarker(Gtk.Box):
+    def __init__(self, owner, color=""):
+        super().__init__(halign=Gtk.Align.START, valign=Gtk.Align.END, can_target=False)
+        self.owner = owner
+        self.add_css_class("asb-source-badge")
+        self.style_provider = Gtk.CssProvider()
+        self.get_style_context().add_provider(self.style_provider, Gtk.STYLE_PROVIDER_PRIORITY_USER + 2)
+        self.set_color(color)
+
+    def set_color(self, color):
+        try:
+            self.configured_color = validate_source_color(color)
+        except ValueError:
+            self.configured_color = ""
+        displayed = display_source_color(self.configured_color, self.owner.profile_surfaces) if self.configured_color else ""
+        self.set_visible(bool(displayed))
+        css = ""
+        if displayed:
+            background, highlight = self.owner.profile_surfaces
+            css = f""".asb-source-badge {{ background: {displayed}; border-color: {background}; }}
+.asb-session:hover .asb-source-badge, .asb-session:focus-within .asb-source-badge {{ border-color: {highlight}; }}"""
+        if css != getattr(self, "rendered_css", None):
+            self.style_provider.load_from_string(css)
+            self.rendered_css = css
+
+
+class AppSourcesWindow(Adw.Window):
+    def __init__(self, owner):
+        super().__init__(application=owner.get_application(), transient_for=owner, destroy_with_parent=True,
+                         title="App sources", default_width=890, default_height=700)
+        self.owner, self.base = owner, owner.base
+        self.closed = self.loading = self.choosing = self.loaded = self.editing = False
+        self.sources, self.max_sources, self.editing_id = [], 8, ""
+        self.preset_markers, self.table_markers = [], []
+        self.cancellable = Gio.Cancellable()
+        self.add_css_class("asb-column-flow")
+        if owner.hover_colors:
+            self.add_css_class("asb-custom")
+        self.connect("close-request", self.on_close)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        body.append(Adw.HeaderBar())
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, vexpand=True,
+                          margin_start=16, margin_end=16, margin_bottom=16)
+        body.append(content)
+        self.message = label("Loading app sources…", "caption")
+        self.message.set_wrap(True)
+        self.message.set_selectable(True)
+        content.append(self.message)
+        self.table = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
+        self.table.connect("row-selected", self.selected_source)
+        table_body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        table_body.append(self.table_line(["Enabled", "Name / App", "Session folder", "Open with", "Chats / Status"]))
+        table_body.append(self.table)
+        content.append(Gtk.ScrolledWindow(child=table_body, vexpand=True, min_content_height=180,
+                                         hscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
+                                         vscrollbar_policy=Gtk.PolicyType.AUTOMATIC))
+        self.form = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        content.append(self.form)
+        self.form_title = label("Select an app source", "heading")
+        self.form.append(self.form_title)
+        self.source_id = label("", "caption")
+        self.source_id.set_selectable(True)
+        self.form.append(self.source_id)
+        grid = Gtk.Grid(column_spacing=12, row_spacing=8)
+        self.form.append(grid)
+        self.provider = Gtk.DropDown.new_from_strings(["Codex", "Claude Desktop Code"])
+        self.provider.connect("notify::selected", self.provider_changed)
+        self.name, self.data_dir, self.launcher, self.projects_dir = (Gtk.Entry(hexpand=True) for _ in range(4))
+        self.name.set_max_length(80)
+        self.projects_dir.set_placeholder_text("Default: ~/.claude/projects")
+        self.launcher.set_placeholder_text("Installed app launcher required")
+        self.transcript_widgets = []
+        for index, (title, widget, folder) in enumerate((("App", self.provider, None), ("Name", self.name, None),
+                ("Session folder", self.data_dir, True), ("Open with", self.launcher, False),
+                ("Transcript folder", self.projects_dir, True))):
+            caption = label(title)
+            caption.set_mnemonic_widget(widget)
+            widget.update_property([Gtk.AccessibleProperty.LABEL], [title])
+            grid.attach(caption, 0, index, 1, 1)
+            grid.attach(widget, 1, index, 1, 1)
+            widgets = [caption, widget]
+            if folder is not None:
+                choose = Gtk.Button(label="Choose…", tooltip_text="Choose " + title.lower())
+                choose.update_property([Gtk.AccessibleProperty.LABEL], ["Choose " + title.lower()])
+                choose.connect("clicked", lambda _button, entry=widget, directory=folder: self.choose_path(entry, directory))
+                grid.attach(choose, 2, index, 1, 1)
+                widgets.append(choose)
+            if widget is self.projects_dir:
+                self.transcript_widgets = widgets
+        self.source_color = Gtk.ColorDialogButton.new(Gtk.ColorDialog(title="Profile color", with_alpha=False))
+        for accessible in (self.source_color, self.source_color.get_first_child()):
+            accessible.update_property([Gtk.AccessibleProperty.LABEL], ["Profile color"])
+        self.source_color.connect("notify::rgba", self.color_changed)
+        color_row = Gtk.Box(spacing=8)
+        color_row.append(self.source_color)
+        self.source_color_hex = label("", "caption")
+        self.source_color_hex.set_selectable(True)
+        color_row.append(self.source_color_hex)
+        color_name = label("Profile color")
+        color_name.set_mnemonic_widget(self.source_color)
+        grid.attach(color_name, 0, 5, 1, 1)
+        grid.attach(color_row, 1, 5, 2, 1)
+        presets = Gtk.Box(spacing=6)
+        for name, color in SOURCE_COLOR_PRESETS:
+            marker = SourceMarker(owner, color)
+            marker.set_valign(Gtk.Align.CENTER)
+            self.preset_markers.append(marker)
+            preset = Gtk.Box(spacing=6)
+            preset.append(marker)
+            preset.append(label(name, "caption"))
+            button = Gtk.Button(child=preset, tooltip_text=f"{name}: {color}")
+            button.update_property([Gtk.AccessibleProperty.LABEL], [f"Use {name} profile color"])
+            button.connect("clicked", lambda _button, value=color: self.source_color.set_rgba(owner.rgba(value)))
+            presets.append(button)
+        grid.attach(presets, 1, 6, 2, 1)
+        self.show_marker = Gtk.CheckButton(label="Show profile dot", active=True)
+        self.form.append(self.show_marker)
+        self.enabled = Gtk.CheckButton(label="Enabled", active=True)
+        self.form.append(self.enabled)
+        help_text = label("Codex: choose CODEX_HOME, such as ~/.codex-personal. Claude: choose the app profile folder with "
+                          "claude-code-sessions or Cache. Added sources need an installed app launcher. "
+                          "Only default sources can leave Open with empty to use the default app.", "caption")
+        help_text.set_wrap(True)
+        content.append(help_text)
+        self.source_status = label("", "caption")
+        self.source_status.set_wrap(True)
+        self.source_status.set_selectable(True)
+        content.append(self.source_status)
+        actions = Gtk.Box(spacing=8)
+        content.append(actions)
+        self.add_button, self.save_button, self.remove_button, self.cancel_button, self.reload_button = (
+            Gtk.Button(label=title) for title in ("Add", "Save", "Remove", "Cancel", "Refresh"))
+        for button, callback in ((self.add_button, self.add_source), (self.save_button, self.save_source),
+                                 (self.remove_button, self.remove_source), (self.cancel_button, self.cancel_form),
+                                 (self.reload_button, self.reload_sources)):
+            button.connect("clicked", callback)
+            actions.append(button)
+        self.save_button.add_css_class("suggested-action")
+        self.set_content(body)
+        self.update_controls()
+        self.reload_sources()
+
+    def color_changed(self, *_args):
+        self.source_color_hex.set_label(self.owner.hex_color(self.source_color.get_rgba()))
+
+    def update_marker_colors(self):
+        for marker in self.preset_markers + self.table_markers:
+            marker.set_color(marker.configured_color)
+
+    @staticmethod
+    def table_line(values):
+        line = Gtk.Box(spacing=8, margin_start=8, margin_end=8, margin_top=6, margin_bottom=6)
+        for value, width in zip(values, (64, 150, 210, 180, 180)):
+            cell = label(value, "caption") if isinstance(value, str) else value
+            cell.set_size_request(width, -1)
+            if isinstance(value, str):
+                cell.set_max_width_chars(1)
+                cell.set_ellipsize(Pango.EllipsizeMode.END)
+                cell.set_tooltip_text(value)
+            line.append(cell)
+        return line
+
+    def update_controls(self):
+        busy = self.loading or self.choosing
+        current = next((source for source in self.sources if source["id"] == self.editing_id), {})
+        self.table.set_sensitive(self.loaded and not busy)
+        self.form.set_sensitive(self.editing and not busy)
+        self.provider.set_sensitive(not current.get("builtin"))
+        self.add_button.set_sensitive(self.loaded and not busy and len(self.sources) < self.max_sources)
+        self.save_button.set_sensitive(self.loaded and not busy and self.editing)
+        self.remove_button.set_sensitive(self.loaded and not busy and bool(current) and not current.get("builtin"))
+        self.cancel_button.set_sensitive(self.loaded and not busy and self.editing)
+        self.reload_button.set_sensitive(not busy)
+        self.table.update_state([Gtk.AccessibleState.BUSY], [busy])
+
+    def provider_changed(self, *_args):
+        for widget in self.transcript_widgets:
+            widget.set_visible(self.provider.get_selected() == 1)
+
+    def set_form(self, source=None):
+        source = source or {}
+        self.editing, self.editing_id = True, source.get("id", "")
+        self.form_title.set_label("Edit app source" if self.editing_id else "Add app source")
+        self.source_id.set_label("ID: " + (self.editing_id or "Assigned when saved"))
+        self.provider.set_selected(SOURCE_PROVIDERS.index(source.get("provider", "codex")))
+        for entry, key in ((self.name, "label"), (self.data_dir, "dataDir"),
+                           (self.launcher, "launcher"), (self.projects_dir, "projectsDir")):
+            entry.set_text(source.get(key, ""))
+        self.enabled.set_active(source.get("enabled", True))
+        self.show_marker.set_active(source.get("showMarker", True))
+        try:
+            color = validate_source_color(source.get("color", SOURCE_COLOR_PRESETS[0][1]))
+        except ValueError:
+            color = SOURCE_COLOR_PRESETS[0][1]
+        self.source_color.set_rgba(self.owner.rgba(color))
+        for accessible in (self.source_color, self.source_color.get_first_child()):
+            accessible.update_property([Gtk.AccessibleProperty.LABEL], ["Profile color for " + source.get("label", "new app source")])
+        self.color_changed()
+        self.launcher.set_placeholder_text("Default app link handler" if source.get("builtin") else "Installed app launcher required")
+        status = source.get("status", "").capitalize()
+        if source.get("message"):
+            status += ": " + source["message"]
+        if source.get("builtin"):
+            status += ". Default source: you can edit or disable it. You cannot remove it."
+        self.source_status.set_label(status.strip(". "))
+        self.provider_changed()
+        self.update_controls()
+
+    def selected_source(self, _table, row):
+        if row and not (self.loading or self.choosing or self.closed):
+            self.set_form(row.asb_source)
+
+    def render_sources(self, preferred=""):
+        self.table_markers = []
+        child = self.table.get_first_child()
+        while child:
+            following = child.get_next_sibling()
+            self.table.remove(child)
+            child = following
+        selected = None
+        for source in self.sources:
+            provider = "Codex" if source["provider"] == "codex" else "Claude Desktop Code"
+            marker = SourceMarker(self.owner, source.get("color", ""))
+            marker.set_valign(Gtk.Align.CENTER)
+            self.table_markers.append(marker)
+            name_cell = Gtk.Box(spacing=6)
+            name_cell.append(marker)
+            name = label(source["label"] + "\n" + provider, "caption")
+            name.set_ellipsize(Pango.EllipsizeMode.END)
+            name.set_max_width_chars(1)
+            name.set_hexpand(True)
+            name_cell.append(name)
+            name_cell.set_tooltip_text(source["label"] + "\n" + provider + "\nProfile color: " + marker.configured_color)
+            status = f"{source.get('sessionCount', 0)} chats · {source.get('status', 'unknown').capitalize()}"
+            if source.get("message"):
+                status += "\n" + source["message"]
+            row = Gtk.ListBoxRow()
+            row.asb_source = source
+            row.set_child(self.table_line(["Yes" if source["enabled"] else "No", name_cell,
+                                           source["dataDir"], source["launcher"] or "Default app", status]))
+            row.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION],
+                                [f"{source['label']}, {provider}, {status}", "Profile color: " + marker.configured_color])
+            self.table.append(row)
+            if selected is None or source["id"] == preferred:
+                selected = row
+        if selected:
+            self.table.select_row(selected)
+            self.set_form(selected.asb_source)
+        else:
+            self.editing, self.editing_id = False, ""
+            self.form_title.set_label("Add an app source to show its chats")
+            self.source_id.set_label("")
+            self.source_status.set_label("")
+
+    def request_sources(self, route="/api/sources", method="GET", body=None):
+        if self.closed or self.owner.closed or self.loading or self.choosing:
+            return
+        preferred = self.editing_id
+        self.loading = True
+        self.message.set_label("Loading app sources…" if method == "GET" else "Saving app sources…")
+        self.update_controls()
+        def finished(result, error):
+            if self.closed or self.owner.closed:
+                return False
+            self.loading = False
+            if not error and (not isinstance(result, dict) or not isinstance(result.get("sources"), list)):
+                error = "The app source list is not valid. Refresh the list, then try again."
+            if error:
+                self.message.set_label(error)
+            else:
+                self.sources, self.loaded = result["sources"], True
+                self.max_sources = result.get("maxSources", self.max_sources)
+                identity = preferred
+                if method == "POST" and body and not body["source"].get("id"):
+                    identity = next((source["id"] for source in self.sources
+                                     if source["provider"] == body["source"]["provider"]
+                                     and source["dataDir"] == os.path.normpath(body["source"]["dataDir"])), "")
+                self.render_sources(identity)
+                feedback = "Saved. " if method == "POST" and body else "Removed. " if method == "POST" else ""
+                self.message.set_label(f"{feedback}{len(self.sources)} of {self.max_sources} app sources")
+                if method == "POST":
+                    self.owner.refresh(True)
+            self.update_controls()
+            return False
+        request_async(self.base, route, finished, GLib.idle_add, method, body)
+
+    def reload_sources(self, *_args):
+        self.request_sources()
+
+    def add_source(self, *_args):
+        if self.loading or self.choosing or not self.loaded or len(self.sources) >= self.max_sources:
+            return
+        self.table.unselect_all()
+        self.set_form()
+        self.name.grab_focus()
+
+    def cancel_form(self, *_args):
+        row = self.table.get_selected_row() or self.table.get_row_at_index(0)
+        if row:
+            self.table.select_row(row)
+            self.set_form(row.asb_source)
+        else:
+            self.editing = False
+            self.update_controls()
+
+    def save_source(self, *_args):
+        if self.closed or self.loading or self.choosing or not self.loaded or not self.editing:
+            return
+        try:
+            body = source_form_body(SOURCE_PROVIDERS[self.provider.get_selected()], self.name.get_text(),
+                                    self.data_dir.get_text(), self.launcher.get_text(), self.enabled.get_active(),
+                                    self.editing_id, self.projects_dir.get_text(),
+                                    self.owner.hex_color(self.source_color.get_rgba()), self.show_marker.get_active())
+        except ValueError as error:
+            self.message.set_label(str(error))
+            return
+        self.request_sources("/api/sources", "POST", body)
+
+    def remove_source(self, *_args):
+        current = next((source for source in self.sources if source["id"] == self.editing_id), {})
+        if current and not current.get("builtin"):
+            self.request_sources("/api/sources/" + quote(self.editing_id, safe="") + "/remove", "POST", {})
+
+    def choose_path(self, entry, folder):
+        if self.closed or self.loading or self.choosing:
+            return
+        self.choosing = True
+        self.update_controls()
+        dialog = Gtk.FileDialog(title="Choose session folder" if folder else "Choose app launcher")
+        value = Path(os.path.expanduser(entry.get_text().strip())) if entry.get_text().strip() else Path.home()
+        initial = value if folder else value.parent
+        if initial.is_dir():
+            dialog.set_initial_folder(Gio.File.new_for_path(str(initial)))
+        def finished(chooser, result):
+            if self.closed or self.owner.closed:
+                return
+            self.choosing = False
+            try:
+                chosen = chooser.select_folder_finish(result) if folder else chooser.open_finish(result)
+                path = chosen.get_path()
+                if not path:
+                    raise ValueError("Choose a local file or folder.")
+                entry.set_text(path)
+            except GLib.Error as error:
+                if not error.matches(Gtk.dialog_error_quark(), Gtk.DialogError.DISMISSED) \
+                        and not error.matches(Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED):
+                    self.message.set_label("Cannot select this path. Enter its local path, then try again.")
+            except ValueError as error:
+                self.message.set_label(str(error))
+            self.update_controls()
+        if folder:
+            dialog.select_folder(self, self.cancellable, finished)
+        else:
+            dialog.open(self, self.cancellable, finished)
+
+    def on_close(self, *_args):
+        self.closed = True
+        self.cancellable.cancel()
+        if self.owner.sources_window is self:
+            self.owner.sources_window = None
+        return False
 
 
 class SwitchboardWindow(Adw.ApplicationWindow):
@@ -390,6 +905,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.session_actions = set()
         self.open_errors = {}
         self.context_menu = None
+        self.sources_window = None
         self.drag_identity = None
         for name in ("mark-unread", "mark-read", "pin", "unpin", "pin-up", "pin-down"):
             action = Gio.SimpleAction.new(name, GLib.VariantType.new("s"))
@@ -417,7 +933,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.search = Gtk.SearchEntry(placeholder_text="Find a session or folder", hexpand=True)
         self.search.set_size_request(0, -1)
         self.search.set_tooltip_text("Search title or folder. cl: or claude: selects Claude; cx: or codex: selects Codex.")
-        self.search.connect("search-changed", lambda *_: self.render())
+        self.search.connect("search-changed", self.filter_changed)
         self.search.connect("stop-search", self.clear_search)
         tools.append(self.search)
         menu = Gtk.MenuButton(icon_name="view-more-symbolic", tooltip_text="Filters and theme")
@@ -461,7 +977,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             row.append(name)
             row.append(dropdown)
             settings.append(row)
-        self.archive.connect("toggled", lambda *_: self.render())
+        self.archive.connect("toggled", self.filter_changed)
         settings.append(self.archive)
         self.syncing_unread_setting = self.unread_setting_loading = False
         self.persistent_unread = Gtk.CheckButton(label="Persistent unread")
@@ -474,6 +990,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.unread_setting_error.set_wrap(True)
         self.unread_setting_error.set_max_width_chars(32)
         settings.append(self.unread_setting_error)
+        app_sources = Gtk.Button(label="App sources…")
+        app_sources.connect("clicked", self.open_sources)
+        settings.append(app_sources)
         view_row = Gtk.Box(spacing=12)
         view_name = label("View")
         view_name.set_hexpand(True)
@@ -508,6 +1027,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.theme_mode = Gtk.DropDown.new_from_strings(["GNOME colors", "Custom colors"])
         settings.append(self.theme_mode)
         self.color_buttons = {}
+        self.syncing_theme = False
         colors = self.native_colors()
         for key in THEME_KEYS:
             row = Gtk.Box(spacing=12)
@@ -517,6 +1037,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             for accessible in (picker, picker.get_first_child()):
                 accessible.update_property([Gtk.AccessibleProperty.LABEL], [f"{key.capitalize()} color"])
             picker.set_rgba(self.rgba(colors[key]))
+            picker.connect("notify::rgba", self.theme_color_changed)
             self.color_buttons[key] = picker
             row.append(name)
             row.append(picker)
@@ -554,8 +1075,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.pending_only = Gtk.ToggleButton(label="Pending", tooltip_text="Show sessions that need attention.")
         self.pending_only.add_css_class("asb-filter-pill")
         self.pending_only.update_property([Gtk.AccessibleProperty.LABEL], ["Pending only"])
-        self.pending_only.connect("notify::active", lambda *_: self.render())
+        self.pending_only.connect("notify::active", self.filter_changed)
         self.pending_group.append(self.pending_only)
+        self.working_only = Gtk.ToggleButton(label="Working", tooltip_text="Show Working sessions. With Pending, include unread chats. Turn off to show all states.")
+        self.working_only.add_css_class("asb-filter-pill")
+        self.working_only.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION],
+                                         ["Working filter", "Select Working only. With Pending, include unread chats."])
+        self.working_only.connect("toggled", self.working_from_pill)
+        self.pending_group.append(self.working_only)
         feedback.append(self.pending_group)
         self.count = label("Loading sessions…", "caption")
         self.count.set_ellipsize(Pango.EllipsizeMode.END)
@@ -572,11 +1099,19 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.notice.add_css_class("warning")
         self.notice.set_visible(False)
         body.append(self.notice)
-        self.list_body = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12,
-                                margin_start=4, margin_end=4, margin_bottom=4)
+        self.list_body = SessionStrip(orientation=Gtk.Orientation.HORIZONTAL, spacing=12,
+                                      margin_start=4, margin_end=4, margin_bottom=4)
         self.scroll = ColumnScroll(vexpand=True, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
                                         vscrollbar_policy=Gtk.PolicyType.NEVER,
                                         child=self.list_body)
+        self.scroll_target = None
+        self.scroll_direction, self.scroll_updating = 0, False
+        target = Adw.CallbackAnimationTarget.new(self.advance_scroll)
+        self.scroll_animation = Adw.TimedAnimation.new(self.scroll, 0, 1, 180, target)
+        self.scroll_animation.set_easing(Adw.Easing.EASE_OUT_EXPO)
+        self.scroll.get_hadjustment().connect("value-changed", self.scroll_position_changed)
+        self.scroll.get_hadjustment().connect("changed", self.cancel_scroll)
+        self.scroll.connect("unmap", self.cancel_scroll)
         body.append(self.scroll)
         wheel = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.BOTH_AXES,
                                           propagation_phase=Gtk.PropagationPhase.CAPTURE)
@@ -589,7 +1124,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.list_body.add_controller(drag)
         motion = Gtk.EventControllerMotion(propagation_phase=Gtk.PropagationPhase.CAPTURE)
         motion.connect("motion", lambda _event, x, _y: self.list_body.set_cursor_from_name("col-resize" if self.dragging or self.divider_at(x) else None))
+        motion.connect("motion", self.hover_motion)
         motion.connect("leave", lambda *_args: self.list_body.set_cursor_from_name(None))
+        motion.connect("leave", lambda *_args: self.list_body.show_hover(None))
         self.list_body.add_controller(motion)
         self.set_content(body)
         keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
@@ -604,8 +1141,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             if saved:
                 self.set_palette(saved)
                 self.theme_mode.set_selected(1)
-                for key, picker in self.color_buttons.items():
-                    picker.set_rgba(self.rgba(saved[key]))
+                self.set_theme_pickers(saved)
         except (OSError, ValueError) as error:
             self.theme_error.set_label(str(error))
         self.connect("realize", self.watch_layout)
@@ -653,6 +1189,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         css = f"""
 {base} .asb-session {{ min-height: {ROW_HEIGHT}px; padding: 0; border-radius: 3px; font-size: 13px; }}
 {base}.asb-comfortable .asb-session {{ min-height: {COMFORTABLE_ROW_HEIGHT}px; }}
+{base}.asb-comfortable .asb-hover-paint .asb-session:hover:not(:focus-within) {{ background: transparent; }}
 {base} .asb-filter-pill {{ min-height: 24px; border-radius: 99px; padding: 2px 8px; font-size: 11px; }}
 {base} .asb-filter-pill:checked {{ background: @accent_bg_color; color: @accent_fg_color; }}
 {base} .asb-toolbar > button, {base} .asb-toolbar > menubutton > button,
@@ -660,6 +1197,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-toolbar searchentry {{ min-height: 26px; padding-top: 0; padding-bottom: 0; }}
 {base} .asb-state {{ font-size: 11px; }}
 {base} .asb-provider {{ opacity: .65; }}
+{base} .asb-source-badge {{ min-width: 6px; min-height: 6px; padding: 0; border: 1px solid @window_bg_color;
+    border-radius: 50%; box-shadow: none; opacity: 1; }}
 {base} .asb-column {{ background: transparent; }}
 {base} .asb-column + .asb-column {{ border-left: 1px solid @borders; }}
 {base} .asb-dot {{ min-width: 7px; min-height: 7px; border-radius: 50%; background: @accent_color; }}
@@ -703,7 +1242,48 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 """
         else:
             self.remove_css_class("asb-custom")
+        palette = colors or self.native_colors()
+        highlight = highlight_color(palette) if colors else mix_color(palette["background"], palette["text"], .07)
+        self.profile_surfaces = (palette["background"], highlight)
+        quiet_title, title_fraction = quiet_color(palette, "text", .67, highlight)
+        quiet_caption, caption_fraction = quiet_color(palette, "muted" if colors else "text", .85 if colors else .5, highlight)
+        if not colors:
+            quiet_title = f"mix(@window_bg_color, @window_fg_color, {title_fraction})"
+            quiet_caption = f"mix(@window_bg_color, @window_fg_color, {caption_fraction})"
+        quiet = base + ".asb-comfortable .asb-idle-read:not(:hover):not(:focus-within)"
+        css += f"""
+{quiet} .asb-title {{ color: {quiet_title}; opacity: 1; }}
+{quiet} .asb-folder, {quiet} .asb-state, {quiet} .asb-age {{ color: {quiet_caption}; opacity: 1; }}
+"""
         self.css.load_from_string(css)
+        self.hover_colors = colors
+        for widget in self.focus_widgets.values():
+            widget.asb_source_badge.set_color(source_marker_color(widget.asb_thread))
+        if getattr(self, "sources_window", None):
+            (self.sources_window.add_css_class if colors else self.sources_window.remove_css_class)("asb-custom")
+            self.sources_window.update_marker_colors()
+
+    def open_sources(self, *_args):
+        if self.closed:
+            return
+        self.menu_button.get_popover().popdown()
+        if self.sources_window is None:
+            self.sources_window = AppSourcesWindow(self)
+        self.sources_window.present()
+
+    def set_theme_pickers(self, colors):
+        self.syncing_theme = True
+        try:
+            for key, picker in self.color_buttons.items():
+                picker.set_rgba(self.rgba(colors[key]))
+        finally:
+            self.syncing_theme = False
+
+    def theme_color_changed(self, *_args):
+        if not self.syncing_theme:
+            self.theme_mode.set_selected(1)
+            self.theme_error.remove_css_class("warning")
+            self.theme_error.set_label("Colors changed. Select Apply theme to save.")
 
     def apply_theme(self, *_args):
         try:
@@ -711,8 +1291,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 {key: self.hex_color(picker.get_rgba()) for key, picker in self.color_buttons.items()})
             write_theme(self.theme_path, colors)
             self.set_palette(colors)
-            self.theme_error.set_label("")
+            self.theme_error.remove_css_class("warning")
+            self.theme_error.set_label("Custom theme saved." if colors else "GNOME colors applied.")
         except (ValueError, OSError) as error:
+            self.theme_error.add_css_class("warning")
             self.theme_error.set_label(str(error))
 
     def reset_theme(self, *_args):
@@ -720,10 +1302,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             write_theme(self.theme_path)
             self.set_palette(None)
             self.theme_mode.set_selected(0)
-            for key, picker in self.color_buttons.items():
-                picker.set_rgba(self.rgba(self.native_colors()[key]))
-            self.theme_error.set_label("")
+            self.set_theme_pickers(self.native_colors())
+            self.theme_error.remove_css_class("warning")
+            self.theme_error.set_label("Reset to GNOME colors.")
         except OSError:
+            self.theme_error.add_css_class("warning")
             self.theme_error.set_label("Cannot reset the ASB theme. Check its config folder.")
 
     def set_notice(self, text, temporary=False):
@@ -792,7 +1375,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.sync_unread_setting(dashboard.get("persistentUnread", False))
         self.set_notice(" ".join(provider.get("message", "") for provider in dashboard.get("providers", []) if provider.get("message")), temporary=True)
         signature = dashboard.get("threads", [])
-        if signature != self.signature:
+        if signature != self.signature or any(type(row.get("sourceCount")) is not type(previous.get("sourceCount"))
+                                               for row, previous in zip(signature, self.signature or [])):
             self.signature = signature
             self.render()
         clock_interval = 2 if any(row.get("state") == "working" and not row.get("archived")
@@ -844,6 +1428,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.feedback.set_visible(not wide)
         geometry = (self.scroll.get_width(), self.scroll.get_height())
         if geometry[0] > 0 and geometry[1] > 0 and geometry != self.geometry:
+            self.cancel_scroll()
+            self.list_body.clear_hover()
             self.geometry = geometry
             self.render(reveal_focus=True)
         return False
@@ -851,6 +1437,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def set_column_width(self, *_args):
         width = validate_column_width(self.width_control.get_value_as_int())
         if width != self.column_width:
+            self.cancel_scroll()
             self.column_width = width
             available_width, available_height = self.geometry or (self.get_default_size().width, 600)
             if pack_columns([], available_width, available_height, width)[0] != getattr(self, "columns", 0):
@@ -878,6 +1465,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def change_view(self, *_args):
         view = "comfortable" if self.view_filter.get_selected() == 1 else "compact"
         if view != self.view:
+            self.cancel_scroll()
             focused = self.focus_key() or self.focused_id
             self.view = view
             self.row_height = COMFORTABLE_ROW_HEIGHT if view == "comfortable" else ROW_HEIGHT
@@ -893,11 +1481,65 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return any(abs(x - (index * step - 6)) <= 6 for index in range(1, getattr(self, "actual_columns", 0)))
 
     def scroll_horizontal(self, controller, dx, dy):
+        delta = dx if dx else dy
+        if self.closed or not delta:
+            return True
         adjustment = self.scroll.get_hadjustment()
         unit = controller.get_unit() if controller else Gdk.ScrollUnit.WHEEL
         distance = max(32, adjustment.get_step_increment()) if unit == Gdk.ScrollUnit.WHEEL else 1
-        adjustment.set_value(adjustment.get_value() + (dx if dx else dy) * distance)
+        lower = adjustment.get_lower()
+        upper = max(lower, adjustment.get_upper() - adjustment.get_page_size())
+        current = adjustment.get_value()
+        if upper == lower:
+            self.cancel_scroll()
+            return True
+        if unit != Gdk.ScrollUnit.WHEEL or not self.get_settings().get_property("gtk-enable-animations"):
+            self.cancel_scroll()
+            adjustment.set_value(max(lower, min(upper, current + delta * distance)))
+            return True
+        start = self.scroll_target if self.scroll_target is not None and delta * self.scroll_direction > 0 else current
+        target = max(lower, min(upper, start + delta * distance))
+        if target == current:
+            self.cancel_scroll()
+        elif target != self.scroll_target:
+            self.scroll_animation.pause()
+            self.scroll_from, self.scroll_target, self.scroll_direction = current, target, delta
+            self.scroll_animation.reset()
+            self.scroll_animation.play()
         return True
+
+    def advance_scroll(self, value):
+        if self.scroll_target is None or self.closed:
+            return
+        self.scroll_updating = True
+        try:
+            self.scroll.get_hadjustment().set_value(self.scroll_from + (self.scroll_target - self.scroll_from) * value)
+        finally:
+            self.scroll_updating = False
+        if value >= 1:
+            self.scroll_target, self.scroll_direction = None, 0
+
+    def cancel_scroll(self, *_args):
+        self.scroll_target, self.scroll_direction = None, 0
+        animation = getattr(self, "scroll_animation", None)
+        if animation:
+            animation.reset()
+
+    def scroll_position_changed(self, *_args):
+        self.list_body.clear_hover()
+        if not self.scroll_updating:
+            self.cancel_scroll()
+
+    def hover_motion(self, _controller, x, y):
+        rectangle = None
+        if self.view == "comfortable" and not self.closed and not self.dragging:
+            widget = self.list_body.pick(x, y, Gtk.PickFlags.DEFAULT)
+            row = widget.get_ancestor(Gtk.ListBoxRow) if widget else None
+            if row and row.get_ancestor(SessionStrip) is self.list_body:
+                found, bounds = row.compute_bounds(self.list_body)
+                if found:
+                    rectangle = (bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height)
+        self.list_body.show_hover(rectangle)
 
     def column_drag_begin(self, gesture, x, _y):
         if not self.divider_at(x):
@@ -929,6 +1571,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return None
 
     def clear_search(self, *_args):
+        self.cancel_scroll()
         self.search.set_text("")
         self.render()
 
@@ -959,6 +1602,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         app = next(iter(self.apps)) if len(self.apps) == 1 else "all"
         return filtered_rows(self.dashboard, self.search.get_text(), app, self.states, self.archive.get_active(), self.pending_only.get_active())
 
+    def filter_changed(self, *_args):
+        self.cancel_scroll()
+        self.list_body.clear_hover()
+        self.render()
+
     def select_apps(self, apps):
         self.syncing_apps = True
         self.apps = set(apps)
@@ -967,7 +1615,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.app_filter.set_selected(3 if len(self.apps) == 2 else 1 if self.apps == {"codex"}
                                      else 2 if self.apps == {"claude-desktop-code"} else 0)
         self.syncing_apps = False
-        self.render()
+        self.filter_changed()
 
     def apps_from_menu(self, *_args):
         if not self.syncing_apps:
@@ -984,7 +1632,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         title = "All states" if len(self.states) == len(STATES) else f"{len(self.states)} states"
         self.state_filter.set_label(title)
         self.state_filter.update_property([Gtk.AccessibleProperty.LABEL], ["Status: " + title])
-        self.render()
+        self.updating_states = True
+        self.working_only.set_active(self.states == {"working"})
+        self.updating_states = False
+        self.filter_changed()
 
     def select_states(self, states):
         self.updating_states = True
@@ -992,6 +1643,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             check.set_active(state in states)
         self.updating_states = False
         self.states_changed()
+
+    def working_from_pill(self, *_args):
+        if not self.updating_states:
+            self.select_states({"working"} if self.working_only.get_active() else set(STATES))
 
     def render(self, preserve_focus=None, reveal_focus=False, preserve_action=None):
         if self.dashboard is None or self.closed:
@@ -1009,6 +1664,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.row_order = [row["id"] for row in rows]
         layout_signature = (tuple(self.row_order), self.columns, self.capacity, self.column_pixel_width, self.view)
         repack = layout_signature != self.layout_signature
+        if repack:
+            self.cancel_scroll()
+            self.list_body.clear_hover()
         if repack and self.context_menu:
             self.context_menu.popdown()
         for identity in set(self.focus_widgets) - set(self.row_order):
@@ -1043,6 +1701,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 empty = label("No matching sessions. Change the search or filters." if self.dashboard.get("threads")
                               else "No desktop sessions found. Create a session, then refresh.", "dim-label")
                 empty.set_wrap(True)
+                empty.set_hexpand(True)
                 empty.set_margin_top(24)
                 self.list_body.append(empty)
         pending = sum(bool(row.get("pending")) for row in rows)
@@ -1052,6 +1711,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def restore_position(self, focused, position, reveal_focus=False, focused_action=None):
         if not self.closed:
+            self.cancel_scroll()
             if focused in self.focus_widgets:
                 if self.menu_button.get_active():
                     self.deferred_row_focus = focused
@@ -1079,8 +1739,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             adjustment = self.scroll.get_hadjustment()
             left, right = bounds.origin.x, bounds.origin.x + bounds.size.width
             if left < adjustment.get_value():
+                self.cancel_scroll()
                 adjustment.set_value(left)
             elif right > adjustment.get_value() + adjustment.get_page_size():
+                self.cancel_scroll()
                 adjustment.set_value(right - adjustment.get_page_size())
         return False
 
@@ -1182,12 +1844,16 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def update_session_row(self, widget, row):
         layout_changed = widget.asb_view != self.view
-        if not layout_changed and widget.asb_thread == row:
+        if not layout_changed and widget.asb_thread == row \
+                and source_marker_color(widget.asb_thread) == source_marker_color(row):
             return
         if layout_changed or ((row.get("unread") or row.get("questionAttention"))
                               and attention_signature(widget.asb_thread) != attention_signature(row)):
             self.clear_read_feedback(widget)
         widget.asb_thread = dict(row)
+        quiet = self.view == "comfortable" and row.get("state") == "idle" \
+            and not (row.get("unread") or row.get("questionAttention") or row.get("pending"))
+        (widget.add_css_class if quiet else widget.remove_css_class)("asb-idle-read")
         widget.set_activatable(bool(row.get("canOpen")))
         if layout_changed:
             widget.asb_view = self.view
@@ -1198,7 +1864,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             mark = Gtk.Image(pixel_size=14)
             mark.add_css_class("asb-provider")
             widget.asb_mark = mark
+            mark_overlay = Gtk.Overlay(child=mark)
+            badge = SourceMarker(self)
+            mark_overlay.add_overlay(badge)
+            mark_overlay.set_measure_overlay(badge, False)
+            widget.asb_source_badge = badge
             title = label("")
+            title.add_css_class("asb-title")
             title.set_single_line_mode(True)
             title.set_ellipsize(Pango.EllipsizeMode.END)
             title.set_hexpand(True)
@@ -1213,8 +1885,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                                   margin_end=8, margin_top=2, margin_bottom=2, valign=Gtk.Align.CENTER)
                 workspace = Gtk.Box(spacing=7)
                 workspace.set_margin_end(54)
-                workspace.append(mark)
+                workspace.append(mark_overlay)
                 folder = label("", "caption")
+                folder.add_css_class("asb-folder")
                 folder.add_css_class("dim-label")
                 folder.set_ellipsize(Pango.EllipsizeMode.END)
                 folder.set_hexpand(True)
@@ -1232,6 +1905,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 metadata = Gtk.Box(spacing=6, margin_start=21)
                 metadata.append(state)
                 age = label("", "caption")
+                age.add_css_class("asb-age")
                 age.add_css_class("dim-label")
                 age.set_ellipsize(Pango.EllipsizeMode.END)
                 age.set_hexpand(True)
@@ -1265,10 +1939,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 overlay.set_measure_overlay(actions, False)
                 content = overlay
             else:
-                for child in (mark, title, dot, state):
+                for child in (mark_overlay, title, dot, state):
                     content.append(child)
             widget.set_child(content)
         widget.asb_mark.set_from_icon_name("asb-openai-symbolic" if row["provider"] == "codex" else "asb-claude-symbolic")
+        widget.asb_source_badge.set_color(source_marker_color(row))
         widget.asb_dot.set_visible(bool(row.get("unread") or row.get("questionAttention")))
         state = widget.asb_state_label
         for css in (*("asb-" + value for value in STATES), "success", "warning", "dim-label"):
@@ -1374,6 +2049,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             read = "The original app marks this session as read."
         details = [row.get("title", ""), row.get("cwd") or "No project path", row.get("providerLabel", ""), row_meta(row, now_ms),
                    row.get("reason", ""), read]
+        source_label, source_id = row.get("sourceLabel", ""), row.get("sourceId", "")
+        widget.asb_source_description = "App source: " + (source_label or source_id) if source_label or source_id else ""
+        if source_id and source_label:
+            widget.asb_source_description += " (" + source_id + ")"
+        color = source_marker_color(row)
+        if color:
+            widget.asb_source_description += (". " if widget.asb_source_description else "") + "Profile color marker: " + color
+        details.append(widget.asb_source_description)
         if row.get("pinned"):
             details.append("Pinned in ASB. Drag to reorder, or use the row menu.")
         if not row.get("canOpen"):
@@ -1520,7 +2203,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         name = "Opening " + widget.asb_accessible_label.removeprefix("Open ") if opening else widget.asb_accessible_label
         if duration:
             name += " Working time " + duration + "."
-        widget.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION], [name, error])
+        description = "\n".join(filter(None, (getattr(widget, "asb_source_description", ""), error)))
+        widget.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION], [name, description])
         widget.update_state([Gtk.AccessibleState.BUSY], [opening])
 
     def open_row(self, _listing, widget):
@@ -1545,6 +2229,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def on_close(self, *_args):
         self.closed = True
+        if getattr(self, "sources_window", None):
+            self.sources_window.close()
+        self.cancel_scroll()
+        self.list_body.clear_hover()
         self.events.close()
         for name in ("timer", "clock_timer", "geometry_idle", "notice_timer"):
             source = getattr(self, name)
@@ -1577,6 +2265,12 @@ class SwitchboardApplication(Adw.Application):
             window = SwitchboardWindow(self, self.base)
         window.present()
 
+    def close_windows(self):
+        for window in self.get_windows():
+            window.close()
+        self.quit()
+        return False
+
 
 def main():
     try:
@@ -1587,9 +2281,7 @@ def main():
     GLib.set_application_name("ASB · Agent Switch Board")
     application = SwitchboardApplication(base)
     for sig in (signal.SIGTERM, signal.SIGINT):
-        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig,
-                             lambda: (application.get_active_window().close() if application.get_active_window()
-                                      else application.quit()) or False)
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, application.close_windows)
     return application.run([sys.argv[0]])
 
 

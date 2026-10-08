@@ -6,7 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import * as zlib from 'node:zlib';
-import { loadClaudeRemoteThreads, parseClaudeRemoteBody, claudeRemoteDeepLink, getClaudeRemoteCacheStats,
+import { loadClaudeRemoteThreads, loadSwitchboardClaudeThreads, parseClaudeRemoteBody, claudeRemoteDeepLink, getClaudeRemoteCacheStats,
   invalidateClaudeRemoteData, isClaudeRemoteCacheEvent } from '../src/claude-remote-data.mjs';
 import { loadSwitchboardDashboard, buildSwitchboardDashboard, openSwitchboardThread, PendingTracker,
   switchboardWatchPaths } from '../src/switchboard.mjs';
@@ -164,6 +164,89 @@ test('default source merges local aliases, retains each source on failure, and v
   assert.equal(localOnly.providers[1].status, 'warning');
   const injected = await loadSwitchboardDashboard({ nowMs: now, loadCodex: async () => ({ threads: [] }), loadClaude: async () => ({ threads: [] }) });
   assert.equal(injected.threads.length, 0);
+});
+
+test('desktop bridge session aliases match cse cache IDs and keep the local row identity', async (t) => {
+  const appDir = await temp(t);
+  const localDir = path.join(appDir, 'claude-code-sessions', 'account', 'organization');
+  await mkdir(localDir, { recursive: true });
+  const configId = 'local_123e4567-e89b-12d3-a456-426614174001';
+  for (const metadata of [
+    { sessionId: localId, cliSessionId: '123e4567-e89b-12d3-a456-426614174010',
+      title: 'Build task', cwd: '/work/build', bridgeSessionIds: ['session_01Build'] },
+    { sessionId: configId, cliSessionId: '123e4567-e89b-12d3-a456-426614174011',
+      title: 'Config task', cwd: '/work/config', bridgeSessionIds: [
+      'session_01ConfigFirst', 'session_01ConfigSecond', 'session_01ConfigPrevious', 'session_01ConfigCurrent',
+    ] },
+  ]) {
+    await writeFile(path.join(localDir, `${metadata.sessionId}.json`), JSON.stringify({ ...metadata,
+      lastActivityAt: now - 60_000, authorization: 'forbidden-local-token', config: { secret: 'forbidden-config' } }));
+  }
+  await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions?limit=100', JSON.stringify({ data: [
+    row('cse_01Build', { title: 'Build task' }),
+    row('cse_01ConfigPrevious', { title: 'Config task' }),
+    row('cse_01ConfigCurrent', { title: 'Config task' }),
+    row('cse_01Distinct', { title: 'Build task' }),
+    row('cse_01Cloud', { title: 'Config task', environment_kind: 'anthropic_cloud', connection_status: undefined }),
+  ], resume_token: cursor(now) }));
+  const options = { appDir, projectFiles: new Map(), maxCount: 5000, asbMode: true,
+    strictMetadataRead: true, nowMs: now };
+  assert.equal((await loadClaudeRemoteThreads(options)).threads.length, 5);
+  const merged = await loadSwitchboardClaudeThreads(options);
+  assert.equal(merged.threads.length, 4);
+  assert.equal(merged.provider.status, 'desktop');
+  const board = buildSwitchboardDashboard(merged.threads, [], now);
+  assert.deepEqual(new Set(board.threads.map((value) => value.externalId)), new Set([
+    localId, configId, 'cse_01Distinct', 'cse_01Cloud',
+  ]));
+  const local = board.threads.find((value) => value.externalId === localId);
+  assert.equal(local.cwd, '/work/build');
+  assert.equal(local.appDeepLink, `claude://code/continue?session=${localId}`);
+  assert.equal(local.state, 'unknown');
+  const config = board.threads.find((value) => value.externalId === configId);
+  assert.equal(config.cwd, '/work/config');
+  assert.equal(config.appDeepLink, `claude://code/continue?session=${configId}`);
+  assert.ok(board.threads.filter((value) => value.externalId.startsWith('cse_')).every((value) => value.state === 'working'));
+  assert.equal(JSON.stringify(board).includes('bridgeSessionIds'), false);
+  assert.equal(JSON.stringify(board).includes('forbidden'), false);
+  const before = getClaudeRemoteCacheStats();
+  assert.equal((await loadSwitchboardClaudeThreads(options)).threads.length, 4);
+  const after = getClaudeRemoteCacheStats();
+  assert.equal(after.bodyReads, before.bodyReads);
+  assert.equal(after.keyReads, before.keyReads);
+});
+
+test('bridge aliases reject malformed links and preserve remote rows with ambiguous local owners', async (t) => {
+  const appDir = await temp(t);
+  const localDir = path.join(appDir, 'claude-code-sessions');
+  await mkdir(localDir);
+  const metadata = [
+    { bridgeSessionIds: ['session_01Ambiguous'] },
+    { bridgeSessionIds: ['cse_01Ambiguous'] },
+    { bridgeSessionIds: 'session_01String' },
+    { bridgeSessionIds: { sessionId: 'session_01Object' } },
+    { bridgeSessionIds: [null, 1, true, {}, ['session_01Nested'], 'session_01Bad?query',
+      'forbidden-alias', `session_${'a'.repeat(129)}`, 'session_01Valid', 'session_01Valid', 'cse_01Valid'] },
+    { bridgeSessionIds: ['session_01Cloud', 'cse_01CloudDirect', 'session_session_01Other'] },
+    { sessionId: 'local_legacy', bridgeSessionIds: ['session_01InvalidOwner'] },
+  ];
+  for (let index = 0; index < metadata.length; index += 1) {
+    const session = { sessionId: `local_123e4567-e89b-12d3-a456-42661417400${index}`, title: 'Same task', ...metadata[index] };
+    await writeFile(path.join(localDir, `${session.sessionId}.json`), JSON.stringify(session));
+  }
+  const retained = ['cse_01Ambiguous', 'session_01Ambiguous', 'cse_01String', 'cse_01Object',
+    'cse_01Nested', 'cse_01Bad', 'cse_01InvalidOwner', 'session_01Other', 'cse_01Cloud'];
+  await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions?limit=100', JSON.stringify({ data: [
+    ...retained.map((id) => row(id, { title: 'Same task',
+      ...(id === 'cse_01Cloud' ? { environment_kind: 'anthropic_cloud' } : {}) })),
+    row('cse_01Valid'), row('session_01Valid'), row('cse_01CloudDirect', { environment_kind: 'anthropic_cloud' }),
+  ], resume_token: cursor(now) }));
+  const merged = await loadSwitchboardClaudeThreads({ appDir, projectFiles: new Map(), maxCount: 5000,
+    asbMode: true, strictMetadataRead: true, nowMs: now });
+  assert.equal(merged.threads.filter((value) => value.source !== 'claude-remote-cache').length, metadata.length);
+  assert.deepEqual(new Set(merged.threads.filter((value) => value.source === 'claude-remote-cache')
+    .map((value) => value.externalId)), new Set(retained));
+  assert.equal(JSON.stringify(buildSwitchboardDashboard(merged.threads, [], now)).includes('forbidden'), false);
 });
 
 test('zstd list responses use the built-in decoder when available', { skip: !zlib.zstdCompressSync }, () => {

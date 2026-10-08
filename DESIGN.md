@@ -59,9 +59,11 @@ Use the current GNOME window background and foreground. Inherit dim text, hover,
 
 ### Custom colors
 
-The saved fields are `background`, `text`, `accent`, `muted`, and `divider`. Each is a six-digit `#RRGGBB` value. The background must have relative luminance at or below 0.12. Text, muted text, and accent must each have contrast of at least 4.5:1 against both the background and row highlight. Divider contrast must be at least 1.5:1 against the background.
+The saved fields are `background`, `text`, `accent`, `muted`, and `divider`. Each is a six-digit `#RRGGBB` value. The background must have relative luminance at or below 0.12. Text, muted text, and accent must each have contrast of at least 4.5:1 against both the background and row highlight. Divider color has no minimum contrast.
 
 The highlight mixes the background (85%) and accent (15%) in encoded RGB, with each channel rounded. Custom Working, Waiting, and Pending labels use the accent. Their text labels keep the states distinct. Validation errors retain the applied theme and saved file.
+
+A user color change selects Custom colors. Apply checks, applies, and saves the palette with visible success or error text. Loading saved colors and resetting the pickers do not change the selected mode. Reset removes the saved palette and selects GNOME colors. Save errors keep the previous palette.
 
 **The Local Theme Rule.** Apply colors only to ASB. Never change GNOME settings to match a preview.
 
@@ -77,15 +79,19 @@ Column Flow uses equal-width native lists with a vertical divider between column
 
 Rows use 22px in Compact and 68px in Comfortable. Packing uses the available scroll area, not the whole window: `columns = max(1, floor((width + 12) / (column_width + 12)))` and `capacity = max(1, floor((height - 4) / row_height))`. The shared target width defaults to 240px and accepts 160–600px. A 360px window has one default column or two at 160px. Fill down a column, then move across. Create only the needed columns and continue left to right. The horizontal scrollbar is automatic; vertical scrolling is disabled. Ordinary wheel movement maps to the horizontal adjustment; trackpad X and Shift-wheel work too. Keep the visible-column width logic and equal widths across the full strip.
 
+Use one native 180 ms exponential ease-out animation for wheel scrolling in both views. Same-direction input adds to the clamped target; reversal starts from the current visible position. Surface/trackpad input stays direct and cancels the wheel animation. GNOME animations off gives immediate wheel feedback. Bounds, layout, filters, view changes, scrollbar or focus scroll changes, unmap, and close cancel old targets. Unchanged refresh keeps active scroll. Add no permanent frame loop or source reads on animation frames.
+
 The native mock captures show one, two, and four default columns at window widths of 360, 680, and 1040 pixels. A 1080×248 window shows four default columns or six at 160px, with three complete Comfortable rows per column. These are checked sizes, not fixed column-count breakpoints. The default window is 420 by 900 pixels.
 
-Use one `Gtk.WindowHandle` toolbar with search, a 16px disc app mark, menu, refresh, and native close. Codex, Claude, and Pending are native toggle pills in both views. Place pills and counts in that row at 680px or wider, and in the existing second short row below it at smaller widths. Keep them usable at 320px; counts can ellipsize. There is no separate title row or instructional footer. Keep native move, resize, and close behavior. Settings focus stays within an open popup during repacking, then returns to the remembered row after dismissal. Native autohide is enabled; one root capture/hit test dismisses outside clicks without intercepting popup surfaces or menu-button clicks. Do not change the app's outer border.
+Use one `Gtk.WindowHandle` toolbar with search, a 16px disc app mark, menu, refresh, and native close. Codex, Claude, Pending, and Working are native toggle pills in both views, in that order. Place pills and counts in that row at 680px or wider, and in the existing second short row below it at smaller widths. Keep them usable at 320px; counts can ellipsize. There is no separate title row or instructional footer. Keep native move, resize, and close behavior. Settings focus stays within an open popup during repacking, then returns to the remembered row after dismissal. Native autohide is enabled; one root capture/hit test dismisses outside clicks without intercepting popup surfaces or menu-button clicks. Do not change the app's outer border.
 
 **The Whole Session Rule.** Keep provider, title, state, and attention within one activatable row. Compact uses one line; Comfortable uses one 68px Workspace-first row.
 
 ## Elevation & Depth
 
-The session area is flat. It adds no row shadows or card surfaces. Dividers separate columns. GTK owns the toolbar, popover, dialog, and focus depth. A custom row highlight shows hover and focus.
+The session area is flat. It adds no row shadows or card surfaces. Dividers separate columns. GTK owns the toolbar, popover, dialog, and focus depth. Compact keeps static hover; keyboard focus keeps its existing native or custom highlight.
+
+Comfortable paints one rounded hover highlight behind the cards and their actions, including across columns. One native animation moves it in 200 ms with exponential ease-out and fades arrival/leave in 100 ms, aligned with the approved command-palette motion reference. From hidden, it appears at the new card. A rapid pointer change starts from the current painted bounds. The paint takes no pointer input and cannot change card size or position. Use the current GNOME foreground at 7% opacity, or the existing custom highlight mix. With GNOME animations off, the highlight changes immediately. Clear it on repack, filters, resize, scroll, unmap, and close. Static hover remains while shared paint is absent. Keep keyboard focus and button feedback separate. Add no permanent animation loop.
 
 ## Shapes
 
@@ -96,6 +102,8 @@ Use the frontmatter session radius. The unread dot has minimum width and height 
 ### Session row
 
 Use the same `Gtk.ListBoxRow`, accessible name, tooltip, focus/menu, pin drag, and open behavior in both views. Compact keeps the existing gray provider mark, title, dot, and state on one line. Comfortable uses a vertical box: provider plus folder basename above the two-line title, then state left and relative age right. The approved C Corner pair puts the Read dot beside the top-right pin. Full folder remains on hover. Ellipsize folder and age when space is short; preserve full state and the action pair at 160px. Keep padding on row content. Click or Enter opens a valid link; missing links disable activation.
+
+The approved C Restore on hover text rule applies only to Comfortable Idle rows without `unread`, `questionAttention`, or `pending`. Quiet title, folder, state, and age restore normal roles on hover or focus within. Pinned Idle-read rows also use quiet text; provider marks and pin/Read controls keep their existing strength. Source unread or unknown read status does not override an ASB acknowledgment. Mix the active text roles toward their background, with a 4.5:1 floor on background and highlight. A custom role near the floor can retain its original color. Set quiet label opacity to 1 to avoid another dim-label reduction; never dim the whole row. Compact, card dimensions, and controls stay unchanged.
 
 Comfortable uses two circular controls with a minimum size of 24×24px and a 2px gap. They sit in a `Gtk.Overlay` with measurement disabled. Folder and title reserve 54px inside the existing 8px right inset, for 62px total. The fixed title block, 68px row, state/time footer, and outer frame stay unchanged. The pin appears on row hover or keyboard focus. A pinned control stays visible with a quiet foreground tint. The Read target stays visible while attention is present; hover/focus shows a check cue. Use GNOME accent for Read and `success_color` for confirmation. Custom mode uses the saved accent for both.
 
@@ -121,9 +129,28 @@ Pinned rows have native `Gtk.DragSource`/`Gtk.DropTarget` reorder. Accept only a
 
 Show the full title, folder, provider, state, update age, state reason, and read-marker source. Include pin status and missing-link information when applicable. Keep native unread, ASB completion, and ASB manual mark descriptions distinct.
 
+### Provider Soft dot
+
+Use the approved Soft dot at the lower-left of the existing Codex or Claude provider icon. Its solid fill is 6px, with a 1px background rim and an 8px outer size. Put it in a `Gtk.Overlay` with measurement and pointer targeting disabled. Show it only when `sourceCount > 1` for that provider, including disabled registered sources, and `sourceShowMarker` is true or omitted. Hide it for legacy and single-source rows. Profile numbers remain metadata and are not visible.
+
+Use read-only `sourceColor` as the configured fill and the current background for the rim. The display can mix the fill toward white to keep 3:1 contrast on the current base and hover backgrounds. This does not change the saved color. State and unread colors stay unchanged. Keep provider marks, row/card size, border, pin/Read controls, controllers, and theme controls unchanged. The source name and ID remain in tooltips and accessible descriptions. Search includes `sourceLabel`, so color is not the only source identifier. Source IDs define identity; matching colors do not merge rows. Keep the existing provider pills.
+
+| Muted preset | Color |
+| --- | --- |
+| Slate blue | `#8296b4` |
+| Clay | `#b28f80` |
+| Plum | `#a28caa` |
+| Sage | `#899e91` |
+
+### App sources
+
+Place **App sources…** in the existing menu. It opens one native transient window with a source table and one editor. Table columns are Enabled, Name / App, Session folder, Open with, and Chats / Status. Use native controls and path pickers for the app, name, data folder, installed launcher, optional Claude transcript folder, and enabled flag. Add one native **Profile color** picker and the four muted presets above. Save optional `source.color` as lowercase `#RRGGBB` through the existing API, including dark colors. Apply the 3:1 contrast floor to the displayed dot, not the saved color. The native **Show profile dot** checkbox saves optional `source.showMarker`; false hides only the passive row dot and keeps its saved color. Old records get a stable ID-based color and show the dot; edits without either field retain its existing value. Keep Add, Save, Remove, Cancel, and Refresh in this window. Show **Saved** after a successful save and keep form input on an error.
+
+Default sources permit edits and disable but no removal or provider change. Additional sources need a supported installed launcher. Show validation and read errors in the source window. Source settings use the shared API; they do not change the main row layout or add a source filter pill. Saved attention, pins, unread marks, and other settings remain when a source is disabled or removed. Native visual verification is not recorded for this change.
+
 ### Search and filters
 
-Use native `Gtk.SearchEntry`, `Gtk.DropDown`, `Gtk.CheckButton`, and toggle pills. Codex/Claude pills and the app menu use one selected-app set. No selection and both providers show all; one selects it. Pending is an independent AND filter. State selection uses four checkboxes, with All selected by default. The summary says **All states** or **N states**. **Clear states** hides all sessions; **All states** restores all four. Counts describe the filtered rows. Use plain empty and error messages.
+Use native `Gtk.SearchEntry`, `Gtk.DropDown`, `Gtk.CheckButton`, and toggle pills. Codex/Claude pills and the app menu use one selected-app set. No selection and both providers show all; one selects it. Working alone selects only Working; turning it off restores all states. It uses the state checkbox selection and is active only when Working is the sole selected state. Working plus Pending shows Working or chats with Pending or a visible ASB unread/question dot. Provider, search, and archive filters still restrict that union. Pending alone and other state combinations keep the existing Pending filter. State selection uses four checkboxes, with All selected by default. The summary says **All states** or **N states**. **Clear states** hides all sessions; **All states** restores all four. Counts describe the filtered rows. Empty-result text expands to the available width. Use plain empty and error messages.
 
 ### Persistent unread
 

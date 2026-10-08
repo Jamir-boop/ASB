@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
 import { rememberBounded, sameFileSignature, statSignature } from './data-cache.mjs';
-import { buildDashboard, enrichThreads } from './insights.mjs';
+import { buildDashboard, enrichThreads, normalizeDashboardThreads } from './insights.mjs';
 import { GOVERNANCE_CONFIG } from './governance.mjs';
 import {
   addTokenBreakdowns,
@@ -1832,8 +1832,10 @@ async function attachRolloutSignals(threads, {
 } = {}) {
   const enriched = threads.map((thread) => ({ ...thread }));
   await ensurePersistentWorkMetricCache(workMetricCachePath);
+  const linkedIds = new Set(asbMode ? normalizeDashboardThreads(enriched)
+    .filter(rolloutThreadFilter).flatMap((thread) => thread.descendantThreadIds) : []);
   const candidates = enriched
-    .filter((thread) => thread.rolloutPath && rolloutThreadFilter(thread))
+    .filter((thread) => thread.rolloutPath && (rolloutThreadFilter(thread) || (!thread.archived && linkedIds.has(thread.id))))
     .slice(0, maxRollouts);
   const governanceCandidates = enriched
     .filter((thread) => thread.rolloutPath && !thread.archived)

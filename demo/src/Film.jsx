@@ -1,6 +1,6 @@
 import React, {useEffect, useState} from 'react';
 import {AbsoluteFill, Img, continueRender, delayRender, staticFile, useCurrentFrame} from 'remotion';
-import {menuActions, rowsAt, storyAt} from './story.mjs';
+import {conversations, rowsAt, samples, storyAt} from './story.mjs';
 
 const C = {ground: '#111113', panel: '#242424', control: '#343434', text: '#f6f3ed',
   muted: '#b3b0aa', line: '#4a4844', amber: '#ffb900', working: '#8fce8a'};
@@ -8,7 +8,6 @@ const clamp = value => Math.max(0, Math.min(1, value));
 const ease = value => 1 - Math.pow(1 - clamp(value), 4);
 const ramp = (frame, start, end) => ease((frame - start) / (end - start));
 const mix = (a, b, value) => a + (b - a) * value;
-const px = value => `${value}px`;
 const font = 'Cantarell, sans-serif';
 const display = 'Syne, sans-serif';
 
@@ -36,6 +35,22 @@ function Icon({kind, size = 16, color = C.muted}) {
     pin: <><path d="m6 2 5 5-2 1-1 3-3-3-3 1 1-3 3-1ZM6 10l-4 4"/></>,
     down: <path d="m4 6 4 4 4-4"/>,
     arrow: <path d="M2 8h12m-4-4 4 4-4 4"/>,
+    back: <path d="M14 8H2m4-4-4 4 4 4"/>,
+    plus: <path d="M8 2v12M2 8h12"/>,
+    folder: <path d="M2 4h5l2 2h5v7H2V4Zm0 3h12"/>,
+    home: <path d="m2 7 6-5 6 5v7h-4v-4H6v4H2V7Z"/>,
+    panel: <path d="M2 2h12v12H2V2Zm4 0v12"/>,
+    clock: <><circle cx="8" cy="8" r="6"/><path d="M8 4v4l3 2"/></>,
+    chat: <path d="M2 2h12v9H7l-4 3v-3H2V2Z"/>,
+    terminal: <><rect x="1.5" y="2" width="13" height="12" rx="2"/><path d="m4 5 3 3-3 3m5 0h3"/></>,
+    check: <path d="m3 8 3 3 7-7"/>,
+    compose: <path d="m9 3 4-1 1 1-1 4-7 7H2v-4l7-7Zm-7 0v11h11"/>,
+    artifacts: <><path d="M3 6h10v8H3V6Zm2 0V3h6v3M1 9h14"/></>,
+    sliders: <><path d="M2 4h12M2 12h12"/><circle cx="6" cy="4" r="2" fill={C.ground}/><circle cx="10" cy="12" r="2" fill={C.ground}/></>,
+    branch: <><circle cx="4" cy="3" r="2"/><circle cx="4" cy="13" r="2"/><circle cx="12" cy="3" r="2"/><path d="M4 5v6m0-3h4c3 0 4-1 4-3"/></>,
+    bell: <path d="M3 11h10l-1-3V6a4 4 0 0 0-8 0v2l-1 3Zm3 2h4"/>,
+    dots: <><circle cx="3" cy="8" r=".6"/><circle cx="8" cy="8" r=".6"/><circle cx="13" cy="8" r=".6"/></>,
+    up: <path d="M8 14V2m-4 4 4-4 4 4"/>,
   };
   return <svg width={size} height={size} viewBox="0 0 16 16" fill="none"
     stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">{paths[kind]}</svg>;
@@ -80,97 +95,41 @@ function position(index, capacity, width, rowHeight) {
   return {x: Math.floor(index / capacity) * (width + 12) + 4, y: (index % capacity) * rowHeight + 2};
 }
 
-function NativeBoard({frame, width = 900, height = 268, mode = 'compact', morph = 0,
-  query = '', provider = '', pending = false, selected = '', menu = '', opening = false}) {
-  const rows = rowsAt(frame, {query, provider, pending});
-  const rowHeight = mode === 'comfortable' ? 68 : 22;
+function NativeBoard({frame, width = 355, height = 400, selected = '', opening = false}) {
+  const rows = rowsAt(frame);
   const narrow = width < 680;
   const toolbarHeight = narrow ? 72 : 40;
-  const contentHeight = height - toolbarHeight - 2;
+  const rowHeight = 22;
   const columns = Math.max(1, Math.floor((width + 12) / 252));
   const columnWidth = Math.floor((width - 8 - 12 * (columns - 1)) / columns);
-  const capacity = Math.max(1, Math.floor((contentHeight - 4) / rowHeight));
+  const capacity = Math.max(1, Math.floor((height - toolbarHeight - 6) / rowHeight));
   const actualColumns = Math.ceil(rows.length / capacity);
-  const compactCapacity = Math.max(1, Math.floor((contentHeight - 4) / 22));
-  const morphing = morph > 0 && morph < 1;
-  const beforePin = frame >= 516 && frame < 554 ? rowsAt(frame < 537 ? 515 : 536) : null;
-  const pinProgress = frame < 537 ? ramp(frame, 516, 532) : ramp(frame, 537, 554);
-  const reading = frame >= 602 && frame < 630;
-  const readProgress = reading ? ramp(frame, 602, 618) : 0;
-  const beforeRead = reading && frame < 618 ? rowsAt(601) : null;
-  // Follow the focused sample after ASB's true sort moves it to a later column.
-  const scroll = reading ? 2 * (columnWidth + 12) * readProgress
-    : frame >= 290 && frame < 315 ? ramp(frame, 290, 306) * (columnWidth + 12) : 0;
-  const rowPositions = rows.map((row, index) => {
-    const target = position(index, capacity, columnWidth, rowHeight);
-    if (morphing) {
-      const start = position(index, compactCapacity, columnWidth, 22);
-      return {x: mix(start.x, target.x, morph), y: mix(start.y, target.y, morph)};
-    }
-    if (beforePin) {
-      const previous = position(beforePin.findIndex(old => old.id === row.id), capacity, columnWidth, rowHeight);
-      return {x: mix(previous.x, target.x, pinProgress), y: mix(previous.y, target.y, pinProgress)};
-    }
-    if (beforeRead) {
-      const previous = position(beforeRead.findIndex(old => old.id === row.id), capacity, columnWidth, rowHeight);
-      return {x: mix(previous.x, target.x, readProgress), y: mix(previous.y, target.y, readProgress)};
-    }
-    return target;
-  });
-  const menuIndex = rows.findIndex(row => row.id === selected);
-  const menuPosition = rowPositions[menuIndex] || {x: 4, y: 4};
   return <div style={{position: 'relative', width, height, overflow: 'hidden', borderRadius: 9,
-    background: C.panel, color: C.text, fontFamily: font, boxShadow: '0 18px 40px #0008'}}>
+    background: C.panel, color: C.text, fontFamily: font, boxShadow: '0 14px 32px #0009'}}>
     <div style={{height: 37, padding: '3px 4px', display: 'flex', alignItems: 'center', gap: 4}}>
       <Img src={staticFile('disc.svg')} style={{width: 16, height: 16, marginRight: 2}}/>
       <div style={{flex: 1, height: 29, minWidth: 140, background: '#383838', borderRadius: 7,
-        display: 'flex', alignItems: 'center', gap: 7, padding: '0 8px',
-        boxShadow: query ? `inset 0 0 0 1px ${C.amber}` : 'none'}}>
-        <Icon kind="search" size={14}/><span style={{fontSize: 13, color: query ? C.text : C.muted}}>
-          {query || 'Find a session or folder'}</span>
-        {query && <span style={{width: 1, height: 16, background: C.amber}}/>}
+        display: 'flex', alignItems: 'center', gap: 7, padding: '0 8px'}}>
+        <Icon kind="search" size={14}/><span style={{fontSize: 13, color: C.muted, whiteSpace: 'nowrap'}}>Find a session or folder</span>
       </div>
-      {!narrow && ['Codex', 'Claude', 'Pending'].map(label => <Pill key={label} label={label}
-        active={label === 'Pending' ? pending : provider === label.toLowerCase()}/>)}
-      {!narrow && <span style={{fontSize: 11, margin: '0 5px', color: C.muted, whiteSpace: 'nowrap'}}>
-        {rows.length} sessions · {rows.filter(row => row.pending).length} Pending</span>
-      }
+      {!narrow && ['Codex', 'Claude', 'Pending'].map(label => <Pill key={label} label={label}/>)}
       {['menu', 'refresh', 'close'].map(kind => <div key={kind} style={{width: 24, height: 28,
-        background: kind === 'menu' && menu === 'view' ? C.control : 'transparent', borderRadius: 5,
         display: 'flex', justifyContent: 'center', alignItems: 'center'}}><Icon kind={kind} size={14}/></div>)}
     </div>
     {narrow && <div style={{position: 'absolute', top: 39, left: 4, right: 4, display: 'flex', alignItems: 'center', gap: 4}}>
-      {['Codex', 'Claude', 'Pending'].map(label => <Pill key={label} label={label}
-        active={label === 'Pending' ? pending : provider === label.toLowerCase()}/>)}
-      <span style={{fontSize: 11, marginLeft: 7, color: C.muted}}>{rows.length} sessions · {rows.filter(row => row.pending).length} Pending</span>
+      {['Codex', 'Claude', 'Pending'].map(label => <Pill key={label} label={label}/>)}
+      <span style={{fontSize: 11, marginLeft: 4, color: C.muted, whiteSpace: 'nowrap'}}>{rows.length} sessions</span>
     </div>}
-    <div style={{position: 'absolute', top: toolbarHeight, left: 0, width, height: contentHeight, overflow: 'hidden'}}>
-      <div style={{position: 'relative', transform: `translateX(${-scroll}px)`}}>
-        {Array.from({length: actualColumns - 1}, (_, i) => <div key={i} style={{position: 'absolute',
-          left: (i + 1) * (columnWidth + 12) - 2, top: 0, width: 1, height: contentHeight - 5, background: C.line}}/>)}
-        {rows.map((row, index) => <div key={row.id} style={{position: 'absolute',
-          transform: `translate(${rowPositions[index].x}px, ${rowPositions[index].y}px)`}}>
-          <Session row={row} width={columnWidth} mode={mode} selected={selected === row.id} opening={opening && selected === row.id}/>
-        </div>)}
-      </div>
+    <div style={{position: 'absolute', top: toolbarHeight, left: 0, width, height: height - toolbarHeight, overflow: 'hidden'}}>
+      {Array.from({length: actualColumns - 1}, (_, i) => <div key={i} style={{position: 'absolute',
+        left: (i + 1) * (columnWidth + 12) - 2, top: 0, width: 1, height: height - toolbarHeight, background: C.line}}/>)}
+      {rows.map((row, index) => {
+        const point = position(index, capacity, columnWidth, rowHeight);
+        return <div key={row.id} style={{position: 'absolute', left: point.x, top: point.y}}>
+          <Session row={row} width={columnWidth} mode="compact" selected={row.id === selected}
+            opening={opening && row.id === selected}/></div>;
+      })}
     </div>
-    {actualColumns > columns && <div style={{position: 'absolute', bottom: 2, left: 5 + scroll / 4,
-      height: 3, width: Math.max(40, width * columns / actualColumns), borderRadius: 4, background: '#77736b'}}/>}
-    {menu === 'view' && <div style={{position: 'absolute', top: 34, right: 40, width: 250,
-      background: '#333333', borderRadius: 10, padding: 14, boxShadow: '0 8px 20px #0009', fontSize: 13}}>
-      <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: 12}}>View
-        <span style={{color: C.amber}}>{mode === 'comfortable' ? 'Comfortable' : 'Compact'}</span></div>
-      <div style={{padding: '7px 8px', borderRadius: 5, background: mode === 'compact' ? '#484238' : 'transparent'}}>Compact</div>
-      <div style={{padding: '7px 8px', borderRadius: 5, background: mode === 'comfortable' ? '#484238' : 'transparent'}}>Comfortable</div>
-      <div style={{height: 1, background: C.line, margin: '10px 0'}}/>
-      <div style={{display: 'flex', justifyContent: 'space-between', color: C.muted}}>Column width <span>240 px</span></div>
-    </div>}
-    {menu && menu !== 'view' && <div style={{position: 'absolute', left: menuPosition.x + 90,
-      top: Math.min(height - 116, menuPosition.y + 65), width: 178,
-      background: '#363636', borderRadius: 9, padding: 6, boxShadow: '0 8px 20px #000a', fontSize: 13}}>
-      {menuActions(rows[menuIndex]).map(label => <div key={label}
-        style={{padding: '8px 9px', background: label.toLowerCase() === menu ? '#57482b' : 'transparent', borderRadius: 5}}>{label}</div>)}
-    </div>}
   </div>;
 }
 
@@ -181,142 +140,174 @@ function Cursor({x, y, pressed = false, opacity = 1}) {
   </svg></div>;
 }
 
-const captions = {
-  unify: ['Your sessions.\nOne board.', 'Codex and Claude Desktop Code, together.'],
-  states: ['State stays clear.', 'Working. Idle. Waiting. Dots stay independent.'],
-  views: ['Make room.', 'Compact or Comfortable. Columns follow the window.'],
-  search: ['Find the right session.', 'Use cl: for Claude. Use cx: for Codex.'],
-  filters: ['Keep attention in view.', 'Choose an app. Add the Pending filter.'],
-  pins: ['Keep your work close.', 'Pin in ASB. Drag to set the order.'],
-  read: ['Read the dot. Keep the state.', 'Read clears ASB attention. The session stays Idle.'],
-  open: ['Open it where it belongs.', 'Return to the existing session in its original app.'],
-};
-const starts = {unify: 60, states: 150, views: 210, search: 315, filters: 420, pins: 480, read: 585, open: 630};
+function WindowControls() {
+  return <div style={{display: 'flex', gap: 16, alignItems: 'center', color: C.muted}}>
+    <svg width="10" height="12"><path d="M1 8h8" stroke="currentColor"/></svg>
+    <svg width="10" height="12"><rect x="1" y="2" width="8" height="8" fill="none" stroke="currentColor"/></svg>
+    <Icon kind="close" size={13}/>
+  </div>;
+}
 
-function Poster({frame, closing = false}) {
-  const progress = ramp(frame, closing ? 675 : 0, closing ? 691 : 23);
-  return <AbsoluteFill style={{background: C.ground, color: C.text, padding: '52px 64px'}}>
-    <div style={{position: 'absolute', top: 74, left: 65, overflow: 'hidden', width: 795, height: 225}}>
-      <div style={{fontFamily: display, fontWeight: 800, fontSize: 210, lineHeight: 1, letterSpacing: '-.04em',
-        transform: `translateY(${mix(12, 0, progress)}px)`}}>ASB<span style={{color: C.amber}}>.</span></div>
+function SidebarItem({title, icon, selected = false, dot = false, height = 30}) {
+  return <div style={{display: 'flex', alignItems: 'center', gap: 9, height, padding: '0 9px',
+    borderRadius: 6, background: selected ? '#30302e' : 'transparent', color: selected ? C.text : '#c7c6c1',
+    fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden'}}>
+    {icon && <Icon kind={icon} size={14}/>}
+    {dot && <span style={{width: 5, height: 5, borderRadius: '50%', background: selected ? C.text : '#6d6d68', flexShrink: 0}}/>}
+    <span style={{overflow: 'hidden', textOverflow: 'ellipsis', flex: 1}}>{title}</span>
+    {selected && <Icon kind="dots" size={12}/>}
+  </div>;
+}
+
+function CodexSidebar({row}) {
+  return <>
+    <div style={{width: 43, flexShrink: 0, background: '#090909', borderRight: '1px solid #191919',
+      padding: '10px 8px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 22}}>
+      {['home', 'artifacts', 'clock', 'chat', 'dots', 'branch'].map((kind, i) => <div key={kind}
+        style={{height: 25, width: 27, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: i === 0 ? '#222' : 'transparent', borderRadius: 8}}><Icon kind={kind} size={17} color={i === 0 ? C.text : '#999993'}/></div>)}
+      <div style={{marginTop: 'auto', width: 24, height: 24, borderRadius: '50%', background: '#35677f',
+        display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: 10}}>S</div>
     </div>
-    <Img src={staticFile('disc.svg')} style={{position: 'absolute', width: 284, height: 284, right: 64, top: 67,
-      transform: `rotate(${mix(-12, 0, progress)}deg) scale(${mix(.96, 1, progress)})`}}/>
-    <div style={{position: 'absolute', top: 328, left: 72, fontFamily: display, fontSize: 49,
-      fontWeight: 600, letterSpacing: '-.025em', color: C.amber}}>Agent Switch Board</div>
-    <div style={{position: 'absolute', top: 408, left: 75, fontFamily: font, fontSize: 32}}>
-      {closing ? 'Your local sessions. Within reach.' : 'Codex + Claude. Within reach.'}</div>
-    <div style={{position: 'absolute', left: 76, right: 76, top: 536, height: 1, background: C.line}}/>
-    <div style={{position: 'absolute', top: 570, left: 76, right: 76, display: 'flex', justifyContent: 'space-between',
-      alignItems: 'center', fontFamily: font, fontSize: 20, color: C.muted}}>
-      <span>Local session switcher for Linux GNOME</span><span style={{color: C.amber}}>v1.0.0</span>
+    <div style={{width: 187, flexShrink: 0, padding: '9px 9px', background: '#0b0b0b', borderRight: '1px solid #1a1a1a'}}>
+      <div style={{height: 33, display: 'flex', alignItems: 'center', gap: 5, paddingLeft: 7, fontSize: 17, fontWeight: 600}}>
+        Codex<Icon kind="down" size={12}/><span style={{marginLeft: 'auto'}}><Icon kind="bell" size={14}/></span><Icon kind="search" size={14}/>
+      </div>
+      <SidebarItem title="New chat" icon="compose"/>
+      <SidebarItem title="Sample workspace" icon="folder"/>
+      <div style={{margin: '18px 8px 11px', color: '#aaa9a3', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6}}>
+        Projects<Icon kind="arrow" size={11}/></div>
+      <div style={{margin: '19px 8px 8px', color: '#aaa9a3', fontSize: 12}}>Recents</div>
+      {samples.filter(item => item.provider === 'codex').map(item => <SidebarItem key={item.id}
+        title={item.title} selected={item.id === row.id}/>)}
     </div>
-    {closing && <div style={{position: 'absolute', left: 76, bottom: 49, fontFamily: font, fontSize: 16, color: C.muted}}>
-      github.com/Jamir-boop/ASB</div>}
-  </AbsoluteFill>;
+  </>;
+}
+
+function ClaudeSidebar({row}) {
+  return <div style={{width: 214, flexShrink: 0, padding: '8px 10px', background: '#191a18',
+    borderRight: '1px solid #30312d', display: 'flex', flexDirection: 'column'}}>
+    <div style={{display: 'flex', alignItems: 'center', gap: 16, height: 27, marginBottom: 7}}>
+      <Icon kind="menu" size={14}/><Icon kind="panel" size={14}/><Icon kind="back" size={14}/><Icon kind="arrow" size={14}/>
+      <div style={{marginLeft: 'auto', background: '#343530', borderRadius: 5, padding: '3px 6px',
+        fontFamily: 'monospace', fontSize: 12}}>&lt;/&gt;</div>
+    </div>
+    <div style={{height: 28, background: '#23241f', border: '1px solid #3a3b35', borderRadius: 5,
+      display: 'flex', gap: 8, alignItems: 'center', padding: '0 9px', color: '#b4b4aa', fontSize: 13, marginBottom: 6}}>
+      <Icon kind="search" size={13}/>Search</div>
+    {['New', 'Projects', 'Artifacts', 'Routines', 'Customize'].map((title, i) => <SidebarItem key={title}
+      title={title} height={26} icon={['plus', 'folder', 'artifacts', 'clock', 'sliders'][i]}/>)}
+    <div style={{margin: '19px 9px 8px', fontSize: 11, color: '#adada3'}}>Routines</div>
+    <SidebarItem title="Daily check" dot height={26}/>
+    {['atlas', 'orchid', 'harbor', 'relay'].map(folder => <div key={folder}>
+      <div style={{margin: '17px 8px 5px', color: '#adada3', fontSize: 11, display: 'flex', alignItems: 'center', gap: 4}}>
+        <span>{folder}</span><span style={{overflow: 'hidden', whiteSpace: 'nowrap', flex: 1}}> · ~/projects/{folder}</span><Icon kind="plus" size={12}/>
+      </div>
+      {samples.filter(item => item.provider === 'claude' && item.folder === folder).slice(0, 2).map(item => <SidebarItem key={item.id}
+        title={item.title} selected={item.id === row.id} dot height={26}/>)}
+    </div>)}
+    <div style={{marginTop: 'auto', height: 30, paddingTop: 8, borderTop: '1px solid #383934',
+      display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#c7c6bf'}}>
+      <div style={{width: 19, height: 19, borderRadius: '50%', background: '#526175', display: 'flex',
+        justifyContent: 'center', alignItems: 'center', color: C.text, fontSize: 10}}>S</div>Sample account<Icon kind="down" size={11}/>
+    </div>
+  </div>;
+}
+
+function Conversation({row}) {
+  const claude = row.provider === 'claude';
+  const chat = conversations[row.id] || conversations.atlas;
+  const muted = claude ? '#b3b4aa' : '#aaa9a3';
+  return <div style={{flex: 1, minWidth: 0, background: claude ? '#22231f' : '#0d0d0d',
+    position: 'relative', display: 'flex', flexDirection: 'column'}}>
+    <div style={{height: 47, padding: '0 19px', display: 'flex', alignItems: 'center', gap: 9,
+      borderBottom: `1px solid ${claude ? '#36372f' : '#202020'}`}}>
+      <Icon kind="folder" size={14}/><span style={{fontSize: 16, fontWeight: 600}}>{row.title}</span>
+      <span style={{fontSize: 12, color: muted, marginLeft: 6}}>{row.folder}</span>
+      <span style={{marginLeft: 'auto'}}><Icon kind="dots" size={16}/></span>
+    </div>
+    <div style={{padding: '20px 26px', flex: 1, overflow: 'hidden', fontSize: 14, lineHeight: '22px'}}>
+      <div style={{marginLeft: 64, background: claude ? '#303129' : '#242424', padding: '12px 16px', borderRadius: 13,
+        color: C.text, marginBottom: 20}}>{chat.request}</div>
+      <div style={{display: 'flex', alignItems: 'center', gap: 8, color: muted, fontSize: 12, marginBottom: 12}}>
+        <Mark provider={row.provider} size={16}/>{claude ? 'Claude' : 'Worked for 1m 42s'}<Icon kind="down" size={11}/>
+      </div>
+      <p style={{margin: '0 0 14px'}}>{chat.response}</p>
+      <div style={{display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: muted, margin: '10px 0 14px'}}>
+        <Icon kind="terminal" size={14}/>{chat.tool}<Icon kind="down" size={11}/>
+      </div>
+      <p style={{margin: '0 0 15px'}}>{chat.detail}</p>
+      <div style={{background: claude ? '#2b2c26' : '#191919', borderRadius: 6, padding: '9px 13px',
+        fontSize: 12, lineHeight: '22px', marginBottom: 15}}>
+        {chat.files.map(file => <div key={file} style={{display: 'flex', gap: 9, alignItems: 'center'}}>
+          <Icon kind="check" size={12} color="#8fce8a"/><span style={{fontFamily: 'monospace'}}>{file}</span>
+        </div>)}
+      </div>
+      <p style={{margin: 0}}>{chat.result}</p>
+      <div style={{display: 'flex', alignItems: 'center', gap: 14, marginTop: 14, color: muted}}>
+        <Icon kind="artifacts" size={13}/><Icon kind="check" size={13}/><Icon kind="dots" size={13}/>
+      </div>
+    </div>
+    <div style={{margin: '0 20px 16px', border: `1px solid ${claude ? '#494b40' : '#303030'}`,
+      borderRadius: 15, height: 94, padding: '11px 13px', background: claude ? '#2b2c25' : '#171717'}}>
+      <div style={{fontSize: 13, color: muted}}>{claude ? 'Reply…' : 'Do anything'}</div>
+      <div style={{display: 'flex', alignItems: 'center', gap: 12, marginTop: 27}}>
+        <Icon kind="plus" size={16}/>
+        <div style={{fontSize: 11, color: muted}}>{claude ? 'Code' : 'Local'}</div>
+        <span style={{marginLeft: 'auto', fontSize: 11, color: '#c5c4bd'}}>{claude ? 'Sonnet' : 'GPT-6.1 Sol'}</span>
+        <Icon kind="down" size={11}/>
+        <div style={{background: '#3c3d35', width: 23, height: 23, borderRadius: '50%', display: 'flex',
+          justifyContent: 'center', alignItems: 'center'}}><Icon kind="up" size={12}/></div>
+      </div>
+    </div>
+  </div>;
+}
+
+function AppWindow({provider, row, focused}) {
+  const claude = provider === 'claude';
+  return <div style={{position: 'absolute', left: claude ? 411 : 395, top: claude ? 55 : 43,
+    width: 853, height: 634, borderRadius: 10, overflow: 'hidden', color: C.text,
+    boxShadow: focused ? '0 15px 35px #000a' : '0 8px 20px #0007', zIndex: focused ? 4 : 2}}>
+    <div style={{height: 27, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 8,
+      background: focused ? '#242424' : '#303030', color: focused ? C.text : C.muted}}>
+      <Mark provider={provider} size={12}/><span style={{fontSize: 11}}>{claude ? 'Claude' : 'Codex'}</span>
+      <span style={{marginLeft: 'auto'}}><WindowControls/></span>
+    </div>
+    <div style={{height: 607, display: 'flex'}}>
+      {claude ? <ClaudeSidebar row={row}/> : <CodexSidebar row={row}/>}<Conversation row={row}/>
+    </div>
+  </div>;
 }
 
 export function Film() {
   const frame = useCurrentFrame();
   const story = storyAt(frame);
-  const {phase, query, provider, pending} = story;
-  const comfortable = frame >= 247 && frame < 315 || frame >= 480 && frame < 630;
-  const mode = comfortable ? 'comfortable' : 'compact';
-  const morph = frame >= 247 && frame < 264 ? ramp(frame, 247, 264) : 1;
-  const shrink = frame >= 270 && frame < 315 ? ramp(frame, 270, 288) : 0;
-  const logicalWidth = mix(900, 630, shrink);
-  const scale = 1.29;
-  const boardX = 59;
-  const boardY = phase === 'unify' ? 278 : 245;
-  const boardHeight = 268;
-  let selected = '', menu = '', cursor = null;
-  if (frame >= 225 && frame < 268) menu = 'view';
-  if (frame >= 488 && frame < 585) selected = 'relay';
-  if (frame >= 493 && frame < 516) menu = 'pin';
-  if (frame >= 585 && frame < 630) selected = 'atlas';
-  if (frame >= 589 && frame < 602) menu = 'read';
-  if (frame >= 630 && frame < 675) selected = 'relay';
-  const toolbarHeight = logicalWidth < 680 ? 72 : 40;
-  const contentHeight = boardHeight - toolbarHeight - 2;
-  const columns = Math.max(1, Math.floor((logicalWidth + 12) / 252));
-  const colWidth = Math.floor((logicalWidth - 8 - 12 * (columns - 1)) / columns);
-  const capacity = Math.floor((contentHeight - 4) / (comfortable ? 68 : 22));
-  const relayIndex = story.rows.findIndex(row => row.id === 'relay');
-  const atlasIndex = story.rows.findIndex(row => row.id === 'atlas');
-  const rowPoint = (index, fraction = .48) => {
-    const point = position(index, capacity, colWidth, comfortable ? 68 : 22);
-    return {x: boardX + (point.x + colWidth * fraction) * scale, y: boardY + (toolbarHeight + point.y + (comfortable ? 27 : 11)) * scale};
-  };
-  const menuPoint = (index, entry) => {
-    const point = position(index, capacity, colWidth, comfortable ? 68 : 22);
-    return {x: boardX + (point.x + 150) * scale,
-      y: boardY + (Math.min(boardHeight - 116, point.y + 65) + 23 + entry * 33) * scale};
-  };
-  if (frame >= 225 && frame < 268) cursor = {x: boardX + (logicalWidth - 66) * scale, y: boardY + 22};
-  if (frame >= 243 && frame < 268) cursor = {x: boardX + (logicalWidth - 180) * scale, y: boardY + 171};
-  if (frame >= 426 && frame < 449) cursor = {x: boardX + 634 * scale, y: boardY + 20, pressed: frame >= 434 && frame < 439};
-  if (frame >= 450 && frame < 476) cursor = {x: boardX + 697 * scale, y: boardY + 20, pressed: frame >= 456 && frame < 461};
-  if (frame >= 488 && frame < 530) cursor = {...rowPoint(relayIndex), pressed: frame >= 516 && frame < 521};
-  if (frame >= 493 && frame < 516) cursor = menuPoint(relayIndex, 1);
-  if (frame >= 530 && frame < 565) {
-    const move = ramp(frame, 533, 551);
-    const from = rowPoint(2), to = rowPoint(0);
-    cursor = {x: mix(from.x, to.x, move), y: mix(from.y, to.y, move), pressed: frame < 552};
-  }
-  if (frame >= 585 && frame < 620) cursor = rowPoint(frame >= 602 ? 3 : atlasIndex);
-  if (frame >= 589 && frame < 602) cursor = menuPoint(atlasIndex, 0);
-  if (frame >= 630 && frame < 650) cursor = {...rowPoint(relayIndex), pressed: frame >= 639};
-  const handoff = ramp(frame, 646, 662);
-  const fade = phase === 'intro' ? ramp(frame, 43, 60) : phase === 'close' ? 1 - ramp(frame, 675, 689) : 1;
-  const captionProgress = ramp(frame, starts[phase] ?? 60, (starts[phase] ?? 60) + 13);
-  return <AbsoluteFill style={{background: C.ground, color: C.text, fontFamily: font}}>
+  const {handoff} = story;
+  const boardX = 20, boardY = 176, boardWidth = 355, boardHeight = 400;
+  const beforeRows = rowsAt(handoff.click - 1);
+  const rowIndex = beforeRows.findIndex(row => row.id === handoff.row.id);
+  const rowPoint = {x: boardX + 145, y: boardY + 72 + 2 + rowIndex * 22 + 11};
+  const appPoint = {x: 1064, y: 522};
+  const approach = ramp(frame, handoff.start + 28, handoff.click - 2);
+  const depart = ramp(frame, handoff.opened + 10, handoff.opened + 32);
+  const cursor = frame < handoff.opened ? {
+    x: mix(appPoint.x, rowPoint.x, approach), y: mix(appPoint.y, rowPoint.y, approach),
+  } : {x: mix(rowPoint.x, appPoint.x, depart), y: mix(rowPoint.y, appPoint.y, depart)};
+  return <AbsoluteFill style={{background: '#16181c', color: C.text, fontFamily: font}}>
     <Fonts/>
-    {(phase === 'intro' || phase === 'close') && <AbsoluteFill style={{opacity: phase === 'intro'
-      ? 1 - ramp(frame, 43, 60) : ramp(frame, 675, 689)}}><Poster frame={frame} closing={phase === 'close'}/></AbsoluteFill>}
-    <AbsoluteFill style={{opacity: fade}}>
-      {captions[phase] && <div style={{position: 'absolute', top: 62, left: 62, right: 54}}>
-        <div style={{overflow: 'hidden'}}><div style={{fontFamily: display, fontWeight: 600,
-          fontSize: phase === 'read' ? 54 : 65, lineHeight: 1.08, letterSpacing: '-.025em', whiteSpace: 'pre-line',
-          transform: `translateX(${mix(14, 0, captionProgress)}px)`,
-          clipPath: `inset(0 ${mix(5, 0, captionProgress)}% 0 0)`}}>{captions[phase][0]}</div></div>
-        <div style={{fontSize: 23, lineHeight: 1.3, marginTop: 18, color: C.muted}}>{captions[phase][1]}</div>
-      </div>}
-      <div style={{position: 'absolute', left: boardX, top: boardY, transformOrigin: '0 0',
-        transform: `translateX(${mix(160, 0, ramp(frame, 47, 72))}px) scale(${scale})`,
-        opacity: frame < 60 ? ramp(frame, 47, 60) : phase === 'open' ? mix(1, .32, handoff) : 1}}>
-        <NativeBoard frame={frame} width={logicalWidth} height={boardHeight} mode={mode} morph={morph}
-          query={query} provider={provider} pending={pending} selected={selected} menu={menu}
-          opening={frame >= 640 && frame < 660}/>
-      </div>
-      {phase === 'views' && frame >= 274 && <div style={{position: 'absolute', right: 59, top: 277, width: 260,
-        fontSize: 28, color: C.amber, lineHeight: 1.2, opacity: shrink}}>
-        Same sessions.<br/>More columns.<br/><span style={{display: 'inline-block', marginTop: 22, color: C.muted, fontSize: 19}}>Scroll left to right.</span>
-      </div>}
-      {phase === 'states' && <div style={{position: 'absolute', left: 66, top: 625, display: 'flex', alignItems: 'center', gap: 11,
-        fontSize: 20, color: C.amber}}><Dot size={9}/><span>Unread attention</span>
-        <span style={{color: C.muted, marginLeft: 22}}>A dot does not change Working, Idle, or Waiting.</span></div>}
-      {phase === 'pins' && <div style={{position: 'absolute', left: 65, top: 625, color: C.muted, fontSize: 20}}>
-        Your ASB pin order. Original app data stays unchanged.</div>}
-      {phase === 'read' && <div style={{position: 'absolute', left: 65, top: 625, color: C.muted, fontSize: 20}}>
-        Manual Read and Unread belong to ASB.</div>}
-      {phase === 'open' && <div style={{position: 'absolute', left: mix(760, 658, handoff), top: 281,
-        width: 531, height: 280, opacity: handoff, background: '#292929', borderRadius: 10,
-        boxShadow: '0 18px 40px #000b', overflow: 'hidden'}}>
-        <div style={{height: 48, background: '#333', display: 'flex', alignItems: 'center', padding: '0 20px', gap: 12}}>
-          <Mark provider="codex" size={22}/><span style={{fontSize: 22}}>Codex</span>
-          <span style={{marginLeft: 'auto', color: C.muted, fontSize: 13}}>Original app · illustrated</span></div>
-        <div style={{padding: '32px 28px'}}><span style={{fontSize: 16, color: C.muted}}>relay</span>
-          <div style={{fontSize: 35, marginTop: 12}}>Relay cache</div>
-          <div style={{display: 'flex', alignItems: 'center', gap: 12, marginTop: 28, fontSize: 18, color: C.working}}>
-            <Icon kind="arrow" color={C.working}/><span>Existing session</span></div></div>
-      </div>}
-      {cursor && <Cursor {...cursor}/>}
-    </AbsoluteFill>
-    <div style={{position: 'absolute', bottom: 20, left: 62, right: 62, display: 'flex', justifyContent: 'space-between',
-      fontSize: 13, color: C.muted, letterSpacing: '.01em'}}>
-      <span>Illustrative demo · Synthetic sessions · No screen recording</span><span>ASB v1.0.0</span>
+    <div style={{height: 27, background: '#101010', padding: '0 20px', display: 'flex', alignItems: 'center',
+      gap: 27, fontSize: 12, fontWeight: 600}}>
+      <span>Activities</span><span>{story.activeApp}</span>
+      <span style={{position: 'absolute', left: 594}}>Oct 7 · 14:32</span>
+      <span style={{marginLeft: 'auto', display: 'flex', gap: 13}}><Icon kind="sliders" size={13}/><Icon kind="down" size={12}/></span>
     </div>
-    <div style={{position: 'absolute', bottom: 0, left: 0, width: px(1280 * frame / 719), height: 2, background: C.amber}}/>
+    <AppWindow provider="codex" row={story.apps.codex} focused={story.focusedProvider === 'codex'}/>
+    <AppWindow provider="claude" row={story.apps.claude} focused={story.focusedProvider === 'claude'}/>
+    <div style={{position: 'absolute', left: boardX, top: boardY, zIndex: 5}}>
+      <NativeBoard frame={frame} width={boardWidth} height={boardHeight} selected={story.selected} opening={story.opening}/>
+    </div>
+    <div style={{position: 'absolute', left: 22, bottom: 21, fontSize: 12, color: '#b3b0aa'}}>sample sessions · illustrated desktop</div>
+    <Cursor {...cursor} pressed={frame >= handoff.click && frame < handoff.click + 6}/>
   </AbsoluteFill>;
 }
 

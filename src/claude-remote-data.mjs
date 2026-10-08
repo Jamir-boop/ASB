@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import * as zlib from 'node:zlib';
-import { defaultClaudeAppDir, loadClaudeDesktopCodeThreads } from './claude-data.mjs';
+import { claudeDesktopCodeDeepLink, defaultClaudeAppDir, loadClaudeDesktopCodeThreads } from './claude-data.mjs';
 
 const INITIAL_MAGIC = 0xfcfb6d1ba7725c30n;
 const FINAL_MAGIC = 0xf4fa6f45970d41d8n;
@@ -352,8 +352,22 @@ export async function loadSwitchboardClaudeThreads(options = {}) {
   if (!local && !remote?.threads.length) throw results[0].reason;
   if (local?.provider?.status === 'error' && !remote?.threads.length) return local;
   const localThreads = local?.threads || [];
-  const aliases = new Set(localThreads.flatMap((thread) => thread.bridgeSessionIds || []));
-  const threads = [...localThreads, ...(remote?.threads || []).filter((thread) => !aliases.has(thread.externalId))];
+  const aliases = new Map();
+  for (const thread of localThreads) {
+    if (!claudeDesktopCodeDeepLink('', thread.externalId)) continue;
+    for (const alias of Array.isArray(thread.bridgeSessionIds) ? thread.bridgeSessionIds : []) {
+      if (!claudeRemoteDeepLink(alias)) continue;
+      // Desktop stores session_<token>; bridge cache rows can use cse_<token>.
+      for (const key of [alias, `bridge:${alias.replace(/^(?:cse|session)_/, '')}`]) {
+        aliases.set(key, aliases.has(key) && aliases.get(key) !== thread.id ? null : thread.id);
+      }
+    }
+  }
+  const threads = [...localThreads, ...(remote?.threads || []).filter((thread) => {
+    const key = thread.remoteEnvironmentKind === 'bridge'
+      ? `bridge:${thread.externalId.replace(/^(?:cse|session)_/, '')}` : thread.externalId;
+    return !aliases.get(key);
+  })];
   const warning = !local || local.provider?.status === 'warning' || local.provider?.status === 'error'
     || results[1].status === 'rejected' || remote?.partial;
   return { threads, provider: { ...local?.provider, installed: threads.length > 0,
