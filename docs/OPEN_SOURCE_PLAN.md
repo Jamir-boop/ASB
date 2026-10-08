@@ -2,6 +2,17 @@
 
 ## Latest publication
 
+ASB [1.3.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.3.0) was published on `2026-10-08` (Lima). Its source and tag use commit [35a9b9a](https://github.com/Jamir-boop/ASB/commit/35a9b9a010f203d2d92d0f04b5bf8a4dfd2460ab).
+
+- Uploaded `asb_1.3.0_all.deb`, `asb-1.3.0-linux.tar.gz`, and `SHA256SUMS`. All three downloads matched local bytes and hashes.
+- Independent checks passed 446 Node tests, 29 pure native logic checks, Python compilation, diff checks, the 32-file runtime whitelist, and Debian metadata. Reproducibility, imports, payload, and user-installer fixtures passed. [CI](https://github.com/Jamir-boop/ASB/actions/runs/37812000950) passed for the source commit on Node.js `22.13.0` and `24`.
+- A disposable `1.2.0` install used the downloaded public portable installer. Its upgrade to `1.3.0` kept layout, custom theme (including equal background/divider colors), sources, profile colors/dot visibility, pins, and manual/persistent unread byte-for-byte.
+- The current-user install and restart passed. All 32 installed runtime files matched reviewed source bytes and hashes. The manifest and running native path used `1.3.0`; the API returned HTTP `200`, with no duplicate IDs and preserved profile open availability. Theme, layout, and source hashes, manual marks, and pin order stayed unchanged. A synthetic launcher target survived opener exit and 5.2 seconds; a spawn failure kept unread attention.
+- Privacy scans covered 10 earlier commits, 222 blobs, and 26 new or changed release files. They found no secrets or private state. The upstream MIT license and exact README video link stayed unchanged. The synthetic demo source was reviewed; no video was rendered or uploaded again.
+- No UI/widget tests, new native screenshots, Debian `apt install`, or real-app GUI opens were run. Native pixel fidelity and real-app GUI opening remain unverified.
+
+## Earlier publications
+
 ASB [1.2.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.2.0) was published on `2026-10-07` (Lima). Its source and tag use commit [a139538](https://github.com/Jamir-boop/ASB/commit/a1395386f6b054befceca323f1c90567c2b23898).
 
 - Uploaded `asb_1.2.0_all.deb`, `asb-1.2.0-linux.tar.gz`, and `SHA256SUMS`. All three downloads matched local bytes and hashes.
@@ -9,8 +20,6 @@ ASB [1.2.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.2.0) was published
 - A disposable `1.1.0` install used its original installer. Its upgrade to `1.2.0` kept settings.
 - The current-user install and restart passed. Settings hashes stayed unchanged. Installed native bytes matched the reviewed source. Running paths used `1.2.0`; the backend returned HTTP `200`.
 - No UI tests, native screenshots, or Debian `apt install` were run. Native pixel fidelity remains unverified.
-
-## Earlier publications
 
 ASB [1.1.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.1.0) was published on `2026-10-07` (Lima). Its source and tag use commit [84b5dee](https://github.com/Jamir-boop/ASB/commit/84b5deed74a446eec794fc706418030b2d616cec).
 
