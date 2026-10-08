@@ -2,7 +2,7 @@
 
 ASB lists Codex and Claude Desktop Code chats. It also lists remote Code sessions observed in Claude's local cache. Select a row to open that chat in its original app. The Linux native window uses GTK and Libadwaita. ASB makes no model calls and does not send prompts.
 
-See [README.md](README.md) for v1.1.0 packages and runtime requirements.
+See [README.md](README.md) for v1.2.0 packages and runtime requirements.
 
 ## Layout and search
 
@@ -19,6 +19,8 @@ Type from a chat row to enter search. Escape clears the search and its prefix. E
 Use the **Codex**, **Claude**, and **Pending** toolbar pills. No selected app means all apps; both app pills mean their union. The menu uses the same app selection. The state menu has independent **Working**, **Waiting**, **Idle**, and **Unknown** choices. **All states** selects all. **Clear states** hides all rows until you select a state. Archived chats are hidden by default.
 
 ASB pins come first in their saved order. Unpinned chats follow: Pending, Working, Idle, then Unknown. Right-click a row, or use Menu or Shift+F10, to **Pin** or **Unpin** it. Drag a pinned row onto another pin to change the order. **Move pin earlier** and **Move pin later** provide the same control from the keyboard. Hidden pins keep their place in the saved order.
+
+In Comfortable, the top-right pin appears on row hover or keyboard focus. A pinned control stays visible. Select it to **Pin** or **Unpin** without opening the chat. Pinned chats use the saved pin order; unpinned chats return to the normal state order.
 
 ASB does not import or write pins in the original apps.
 
@@ -37,7 +39,7 @@ A Claude root stays Working while a recent child Agent linked by its launch is a
 
 Working time uses the current task or request start, when known. A local two-second clock updates the text without reading the source again. Compact shows the duration beside Working. Comfortable shows it at the right. Missing starts and other states have no running timer. Below one hour, the label includes seconds. Longer durations show hours and minutes.
 
-**Pending** means attention, not an execution state. A row keeps its Working, Waiting, Idle, or Unknown label beside its dot.
+**Pending** means attention, not an execution state. A row keeps its Working, Waiting, Idle, or Unknown label when its dot appears.
 
 - Codex native unread marks use only the identity and local host that match its SQLite creator metadata. Missing, corrupt, or unmatched read data means Unknown read status. ASB does not read credentials to find the identity.
 - A native unread dot can appear while Codex is Working. Native unread alone does not put a Working or Unknown row in Pending-only.
@@ -49,6 +51,8 @@ Working time uses the current task or request start, when known. A local two-sec
 Right-click a row, or use Menu or Shift+F10. The menu offers **Read** when the row has an ASB dot and **Unread** when it has none.
 
 **Unread** adds an ASB mark and includes the chat in Pending-only. It survives read changes in the original app. **Read** clears ASB attention. Neither action changes execution or the original chat store.
+
+In Comfortable, select the dot beside the top-right pin to **Read**. A successful action shows a check for 1.6 seconds. A failed action keeps the dot and puts the error in the row tooltip. This control works with or without **Persistent unread**. It does not open the chat or resolve a source question. New attention replaces old feedback.
 
 By default, a successful open acknowledges manual, native, completion, and question attention in ASB. A failed open keeps the attention. An acknowledgment does not answer a question or cancel the source task. A new question, completion, or native Read-to-Unread cycle can add new attention.
 

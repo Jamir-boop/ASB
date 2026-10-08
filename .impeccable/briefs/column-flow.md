@@ -12,7 +12,7 @@ Find an existing Codex or Claude Desktop Code session, read its state, and open 
 
 - One compact draggable native toolbar with search, disc app mark, menu, refresh, close, and Pending-only/counts. Narrow windows use a second short row for Pending-only/counts. No separate title or footer row.
 - One 22px line per session: gray provider mark, title, optional 7px unread dot, and text state.
-- The existing menu also offers Comfortable: the chosen Workspace-first 68px row with folder above a two-line title, then dot/state left and age right. Compact remains the default. Keep outer borders and session actions unchanged.
+- The existing menu also offers Comfortable: the chosen Workspace-first 68px row with folder above a two-line title, then state left and age right. The user selected C, Corner pair: the Read dot sits beside the top-right Pin/Unpin control. Compact remains the default. Keep outer borders unchanged.
 - Codex, Claude, and Pending are activate/deactivate pills in both views. Pills and the app menu share one selected-app set. No selection/both shows all; one selects a provider. Pending combines with the other filters. Narrow windows reuse the secondary row.
 - Fill down each column, then across. Width sets column count; available height sets row capacity. Further columns scroll horizontally left to right. There are no vertical pages or empty trailing columns. Ordinary wheel input maps horizontally.
 - One shared target column width defaults to 240px, with a 160–600px range. Any divider drag or the accessible menu field changes all columns. Save only ASB's layout config. A 360px window has one default column, or two at 160px.
@@ -23,6 +23,16 @@ Find an existing Codex or Claude Desktop Code session, read its state, and open 
 - Combine state checkboxes. All is selected by default; Clear states hides all until a state is selected.
 - Opening appears only in the row's title space and survives refresh/resize. Restore the current title afterward; keep failures in the row tooltip.
 - Use GNOME dark colors by default. Apply validated custom colors only within ASB.
+
+## Comfortable Corner pair
+
+The pin appears on row hover or keyboard focus and stays visible while pinned. The Read target appears for current ASB attention. Its hover/focus cue is a check. Select either control without opening the row or starting a pin drag. Space or Enter activates the focused control. Pin/Unpin uses the existing API and real saved order; row drag and keyboard menu reorder remain available.
+
+Both circular targets have a minimum size of 24×24px with a 2px gap. Their `Gtk.Overlay` does not affect row measurement. Folder and title reserve 62px at the right, including the content inset. Keep the 68px card, fixed title block, footer state/time, frame, and Compact layout. Use GNOME semantic colors or the saved custom palette.
+
+A successful Read clears only ASB attention and shows a check for 1.6 seconds. Failure keeps the dot and adds the error to the row tooltip. Read works with either Persistent unread setting; it cannot change execution, source read state, or source question resolution. Current row identity, view, feedback generation, and attention guard the result. New unread clears old feedback.
+
+Pending controls keep pointer sensitivity and native gesture handling but have no action bindings. They report accessible `BUSY` and `DISABLED`. The confirmed Read control has no action binding and reports `DISABLED`. Both remain separate from row opening.
 
 ## Attention behavior
 
@@ -39,6 +49,8 @@ Question attention is independent of execution. Only a current blocked synchrono
 `scripts/asb-native.py`, `src/switchboard.mjs`, and `test/asb_native_test.py` are the implementation and check sources. Native captures in `.impeccable/review/horizontal/` use mock sessions at 360×800, 680×800, 1040×800, and 1080×248, plus six-column, inline Opening, Pending-only, and custom-theme states. They show layout, not real account data or a performance benchmark. The 1080px six-column preview starts at the top of the list.
 
 The current code validates contrast on the custom background and row highlight and names each color control. This brief does not claim a complete assistive-technology audit. The Impeccable platform enum and HTML specimen format do not represent GTK; `.impeccable/design.json` records native details in extensions instead.
+
+The C Corner pair code and logic review found no remaining P1/P2 issue in that scope. No native UI tests or new native screenshots were run for this change. Earlier mock captures do not verify the new controls. Native pixel fidelity remains unverified.
 
 Native and web clients refresh at two seconds while any full-list unarchived root session is Working, otherwise five seconds. Focus and filters do not slow monitoring. Local source-change events request a cached read, with polling as a fallback and at most one pending follow-up. Native rows stay keyed by session ID; timestamp and state changes update existing fields. Only order, visible IDs, view, or packing changes move rows. Layout signals replace permanent frame checks. Removed rows disconnect their controllers. Cold load may take longer than the interval. Settings retain focus during repacking and close on an outside click or native Escape.
 

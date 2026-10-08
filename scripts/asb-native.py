@@ -38,6 +38,12 @@ def row_menu_actions(row):
     return actions
 
 
+def attention_signature(row):
+    return tuple(row.get(key) for key in ("unread", "questionAttention", "nativeUnread", "manualUnread",
+                 "nativeAttention", "completionAttention", "retainedUnread", "retainedUnreadSource",
+                 "completionAtMs", "updatedAtMs", "state", "workingSinceMs", "questionPending"))
+
+
 def provider_query(query, app="all"):
     match = re.match(r"^\s*(cl|claude|cx|codex)\s*:\s*(.*)$", query, re.IGNORECASE | re.DOTALL)
     if match:
@@ -381,6 +387,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.clock_interval = self.clock_timer = None
         self.notice_timer, self.notice_generation, self.provider_notice = None, 0, ""
         self.opening, self.focus_widgets = set(), {}
+        self.session_actions = set()
         self.open_errors = {}
         self.context_menu = None
         self.drag_identity = None
@@ -657,6 +664,20 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-column + .asb-column {{ border-left: 1px solid @borders; }}
 {base} .asb-dot {{ min-width: 7px; min-height: 7px; border-radius: 50%; background: @accent_color; }}
 {base} .asb-pending {{ color: @accent_color; opacity: 1; }}
+{base} .asb-card-action {{ min-width: 24px; min-height: 24px; padding: 0; border: 0; border-radius: 50%; box-shadow: none; }}
+{base} .asb-card-action.asb-action-pending > * {{ opacity: .5; }}
+{base} .asb-pin-button {{ opacity: 0; }}
+{base} .asb-session:hover .asb-pin-button, {base} .asb-session:focus-within .asb-pin-button,
+{base} .asb-pin-button.asb-pinned {{ opacity: 1; }}
+{base} .asb-pin-button.asb-pinned {{ background: alpha(@window_fg_color, .12); }}
+{base} .asb-read-button {{ color: @accent_color; background: alpha(@window_fg_color, .08); }}
+{base} .asb-read-button:hover, {base} .asb-read-button:focus-visible {{ background: alpha(@accent_color, .15); }}
+{base} .asb-read-cue {{ opacity: 0; }}
+{base} .asb-read-button:hover .asb-dot, {base} .asb-read-button:focus-visible .asb-dot,
+{base} .asb-read-confirmed .asb-dot {{ opacity: 0; }}
+{base} .asb-read-button:hover .asb-read-cue, {base} .asb-read-button:focus-visible .asb-read-cue,
+{base} .asb-read-confirmed .asb-read-cue {{ opacity: 1; }}
+{base} .asb-read-button.asb-read-confirmed {{ color: @success_color; background: alpha(@success_color, .12); }}
 """
         if colors:
             colors = validate_theme(colors)
@@ -668,8 +689,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} .asb-pending, {scope} .asb-working, {scope} .asb-waiting {{ color: {colors['accent']}; }}
 {scope} .asb-dot {{ background: {colors['accent']}; }}
 {scope} .asb-column + .asb-column {{ border-color: {colors['divider']}; }}
-{scope} .asb-session:hover, {scope} .asb-session:focus {{ background: {highlight_color(colors)}; }}
+{scope} .asb-session:hover, {scope} .asb-session:focus-within {{ background: {highlight_color(colors)}; }}
 {scope} entry, {scope} button, {scope} dropdown {{ color: {colors['text']}; }}
+{scope} .asb-read-button {{ color: {colors['accent']}; background: alpha({colors['text']}, .08); }}
+{scope} .asb-pin-button.asb-pinned {{ background: alpha({colors['text']}, .12); }}
+{scope} .asb-read-button:hover, {scope} .asb-read-button:focus-visible,
+{scope} .asb-read-button.asb-read-confirmed {{ color: {colors['accent']}; background: alpha({colors['accent']}, .15); }}
 {scope} :focus-visible {{ outline-color: {colors['accent']}; }}
 {scope} entry:focus-within {{ box-shadow: inset 0 0 0 1px {colors['accent']}; }}
 {scope} entry selection {{ background: {colors['accent']}; color: {colors['background']}; }}
@@ -968,10 +993,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.updating_states = False
         self.states_changed()
 
-    def render(self, preserve_focus=None, reveal_focus=False):
+    def render(self, preserve_focus=None, reveal_focus=False, preserve_action=None):
         if self.dashboard is None or self.closed:
             return
         focused = preserve_focus or self.focus_key()
+        focused_action = preserve_action or getattr(self.get_focus(), "asb_card_action", None)
         if reveal_focus and not focused and self.get_focus() is None:
             focused = self.focused_id
         position = self.scroll.get_hadjustment().get_value()
@@ -1021,16 +1047,18 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.list_body.append(empty)
         pending = sum(bool(row.get("pending")) for row in rows)
         self.count.set_label(f"{len(rows)} sessions · {pending} Pending")
-        if repack or reveal_focus:
-            GLib.idle_add(self.restore_position, focused, position, reveal_focus)
+        if repack or reveal_focus or preserve_action:
+            GLib.idle_add(self.restore_position, focused, position, reveal_focus, focused_action)
 
-    def restore_position(self, focused, position, reveal_focus=False):
+    def restore_position(self, focused, position, reveal_focus=False, focused_action=None):
         if not self.closed:
             if focused in self.focus_widgets:
                 if self.menu_button.get_active():
                     self.deferred_row_focus = focused
                 else:
-                    self.set_focus(self.focus_widgets[focused])
+                    row = self.focus_widgets[focused]
+                    control = getattr(row, "asb_" + str(focused_action) + "_button", None)
+                    self.set_focus(control if control and control.get_visible() and control.get_sensitive() else row)
             adjustment = self.scroll.get_hadjustment()
             adjustment.set_value(min(position, max(0, adjustment.get_upper() - adjustment.get_page_size())))
             if reveal_focus and focused in self.focus_widgets and not self.menu_button.get_active():
@@ -1117,8 +1145,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget.asb_focus_key = row["id"]
         widget.asb_view = None
         widget.asb_handlers = []
+        widget.asb_read_timer, widget.asb_read_generation = None, 0
         for controller, signals in (
-                (Gtk.EventControllerKey(), (("key-pressed", self.row_key),)),
+                (Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE), (("key-pressed", self.row_key),)),
                 (Gtk.EventControllerFocus(), (("enter", self.row_focus),)),
                 (Gtk.GestureClick(button=3), (("pressed", self.row_context),)),
                 (Gtk.DragSource(actions=Gdk.DragAction.MOVE), (("prepare", self.pin_drag_prepare),
@@ -1131,6 +1160,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return widget
 
     def release_row(self, widget):
+        self.clear_read_feedback(widget)
         for controller, handlers in widget.asb_handlers:
             for handler in handlers:
                 controller.disconnect(handler)
@@ -1154,11 +1184,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         layout_changed = widget.asb_view != self.view
         if not layout_changed and widget.asb_thread == row:
             return
+        if layout_changed or ((row.get("unread") or row.get("questionAttention"))
+                              and attention_signature(widget.asb_thread) != attention_signature(row)):
+            self.clear_read_feedback(widget)
         widget.asb_thread = dict(row)
         widget.set_activatable(bool(row.get("canOpen")))
         if layout_changed:
             widget.asb_view = self.view
-            for name in ("asb_folder", "asb_pin", "asb_age_label"):
+            for name in ("asb_folder", "asb_pin_button", "asb_read_button", "asb_age_label"):
                 if hasattr(widget, name):
                     delattr(widget, name)
             content = Gtk.Box(spacing=6, margin_start=5, margin_end=5, valign=Gtk.Align.CENTER)
@@ -1179,6 +1212,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_start=8,
                                   margin_end=8, margin_top=2, margin_bottom=2, valign=Gtk.Align.CENTER)
                 workspace = Gtk.Box(spacing=7)
+                workspace.set_margin_end(54)
                 workspace.append(mark)
                 folder = label("", "caption")
                 folder.add_css_class("dim-label")
@@ -1186,10 +1220,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 folder.set_hexpand(True)
                 widget.asb_folder = folder
                 workspace.append(folder)
-                pin = Gtk.Image(icon_name="view-pin-symbolic", pixel_size=11)
-                pin.add_css_class("dim-label")
-                widget.asb_pin = pin
-                workspace.append(pin)
                 content.append(workspace)
                 title.set_single_line_mode(False)
                 title.set_wrap(True)
@@ -1197,9 +1227,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 title.set_lines(2)
                 title.set_size_request(-1, 32)
                 title.set_margin_start(21)
+                title.set_margin_end(54)
                 content.append(title)
                 metadata = Gtk.Box(spacing=6, margin_start=21)
-                metadata.append(dot)
                 metadata.append(state)
                 age = label("", "caption")
                 age.add_css_class("dim-label")
@@ -1209,6 +1239,31 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 widget.asb_age_label = age
                 metadata.append(age)
                 content.append(metadata)
+                overlay = Gtk.Overlay(child=content)
+                actions = Gtk.Box(spacing=2, halign=Gtk.Align.END, valign=Gtk.Align.START,
+                                  margin_end=5, margin_top=2)
+                read_slot = Gtk.Box(width_request=24, height_request=24)
+                read_icon = Gtk.Overlay(child=dot)
+                dot.set_halign(Gtk.Align.CENTER)
+                check = Gtk.Image(icon_name="object-select-symbolic", pixel_size=12,
+                                  halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+                check.add_css_class("asb-read-cue")
+                read_icon.add_overlay(check)
+                read = Gtk.Button(child=read_icon)
+                pin = Gtk.Button(child=Gtk.Image(icon_name="view-pin-symbolic", pixel_size=12))
+                for button, name in ((read, "read"), (pin, "pin")):
+                    button.add_css_class("flat")
+                    button.add_css_class("asb-card-action")
+                    button.add_css_class("asb-" + name + "-button")
+                    button.asb_card_action = name
+                    button.set_action_target_value(GLib.Variant("s", row["id"]))
+                widget.asb_read_button, widget.asb_pin_button = read, pin
+                read_slot.append(read)
+                actions.append(read_slot)
+                actions.append(pin)
+                overlay.add_overlay(actions)
+                overlay.set_measure_overlay(actions, False)
+                content = overlay
             else:
                 for child in (mark, title, dot, state):
                     content.append(child)
@@ -1227,9 +1282,52 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             state.add_css_class("dim-label")
         if self.view == "comfortable":
             widget.asb_folder.set_label(row.get("projectName") or "No project")
-            widget.asb_pin.set_visible(bool(row.get("pinned")))
+            self.update_card_actions(widget)
         widget.asb_time_signature = None
         self.update_row_text(widget)
+
+    def clear_read_feedback(self, widget):
+        if getattr(widget, "asb_read_timer", None):
+            GLib.source_remove(widget.asb_read_timer)
+        widget.asb_read_timer = None
+        widget.asb_read_generation = getattr(widget, "asb_read_generation", 0) + 1
+
+    def update_card_actions(self, widget):
+        if widget.asb_view != "comfortable":
+            return
+        row, read, pin = widget.asb_thread, widget.asb_read_button, widget.asb_pin_button
+        pending = row["id"] in self.session_actions
+        unread = bool(row.get("unread") or row.get("questionAttention"))
+        confirmed = bool(widget.asb_read_timer)
+        read.set_visible(unread or confirmed)
+        read.set_action_name("win.mark-read" if unread and not pending else None)
+        if confirmed:
+            read.add_css_class("asb-read-confirmed")
+        else:
+            read.remove_css_class("asb-read-confirmed")
+        pinned = bool(row.get("pinned"))
+        pin.set_action_name(("win.unpin" if pinned else "win.pin") if not pending else None)
+        (pin.add_css_class if pinned else pin.remove_css_class)("asb-pinned")
+        # Keep native gestures active so busy controls and the Read cue cannot open the row.
+        for button, text, enabled in ((read, "Read in ASB" if confirmed else "Mark read in ASB", unread and not pending),
+                                      (pin, "Unpin in ASB" if pinned else "Pin in ASB", not pending)):
+            button.set_sensitive(True)
+            (button.add_css_class if pending else button.remove_css_class)("asb-action-pending")
+            button.set_tooltip_text(text)
+            button.update_property([Gtk.AccessibleProperty.LABEL], [text + ": " + row.get("title", "Untitled session")])
+            button.update_state([Gtk.AccessibleState.BUSY, Gtk.AccessibleState.DISABLED], [pending, not enabled])
+
+    def confirm_read(self, widget):
+        self.clear_read_feedback(widget)
+        generation = widget.asb_read_generation
+        def clear():
+            if not self.closed and self.focus_widgets.get(widget.asb_focus_key) is widget \
+                    and widget.asb_view == "comfortable" and widget.asb_read_generation == generation:
+                widget.asb_read_timer = None
+                self.update_card_actions(widget)
+            return False
+        widget.asb_read_timer = GLib.timeout_add(1600, clear)
+        self.update_card_actions(widget)
 
     def update_clock(self):
         if self.closed:
@@ -1291,8 +1389,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.update_open_state(widget)
 
     def row_key(self, _controller, key, _code, _state, identity):
-        if _state & SHORTCUT_MASK:
+        if _state & SHORTCUT_MASK or (self.context_menu and self.context_menu.get_visible()):
             return False
+        focus = self.get_focus()
+        if key in (Gdk.KEY_space, Gdk.KEY_Return, Gdk.KEY_KP_Enter) and getattr(focus, "asb_card_action", None):
+            if focus.get_sensitive() and focus.get_action_name():
+                focus.activate()
+            return True
         if key == Gdk.KEY_Menu or (key == Gdk.KEY_F10 and _state & Gdk.ModifierType.SHIFT_MASK):
             self.show_context(self.focus_widgets[identity])
             return True
@@ -1339,15 +1442,32 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.session_action(identity, name)
 
     def session_action(self, identity, action, body=None):
+        if identity in self.session_actions or self.closed:
+            return
+        self.session_actions.add(identity)
+        origin = self.focus_widgets.get(identity)
+        generation = getattr(origin, "asb_read_generation", None)
+        attention = attention_signature(origin.asb_thread) if origin else None
+        action_focus = getattr(self.get_focus(), "asb_card_action", None) if self.focus_key() == identity else None
+        if origin:
+            self.update_card_actions(origin)
         def finished(result, error):
+            self.session_actions.discard(identity)
             if not self.closed:
+                current = self.focus_widgets.get(identity)
+                same_attention = current is origin and current is not None \
+                    and current.asb_read_generation == generation and attention_signature(current.asb_thread) == attention
+                confirm = action == "mark-read" and same_attention and current.asb_view == "comfortable"
                 if error:
                     self.open_errors[identity] = error
-                    current = self.focus_widgets.get(identity)
                     if current:
+                        self.update_card_actions(current)
                         self.update_open_state(current)
+                        if action_focus and self.get_focus() is None:
+                            self.set_focus(getattr(current, "asb_" + action_focus + "_button", current))
                 if not error:
-                    if result.get("thread"):
+                    self.open_errors.pop(identity, None)
+                    if result.get("thread") and (action != "mark-read" or origin is None or same_attention):
                         self.dashboard["threads"] = [result["thread"] if row["id"] == identity else row for row in self.dashboard["threads"]]
                     if "pinnedOrder" in result:
                         order = result["pinnedOrder"]
@@ -1355,7 +1475,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                         for row in self.dashboard["threads"]:
                             row["pinned"] = row["id"] in order
                             row["pinIndex"] = order.index(row["id"]) if row["id"] in order else -1
-                    self.render()
+                    restore_action = action_focus if self.get_focus() is None or self.focus_key() == identity else None
+                    self.render(preserve_focus=identity if restore_action else None, preserve_action=restore_action)
+                    current = self.focus_widgets.get(identity)
+                    if current:
+                        self.update_card_actions(current)
+                        self.update_open_state(current)
+                        if confirm and current is origin and current.asb_view == "comfortable" \
+                                and not (current.asb_thread.get("unread") or current.asb_thread.get("questionAttention")):
+                            self.confirm_read(current)
                     self.refresh(True)
             return False
         request_async(self.base, "/api/threads/" + quote(identity, safe="") + "/" + action, finished, GLib.idle_add, "POST", body)
@@ -1363,6 +1491,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def pin_drag_prepare(self, _source, _x, _y, identity):
         row = self.focus_widgets.get(identity)
         if not row or not row.asb_thread.get("pinned") or identity in self.opening:
+            return None
+        picked = row.pick(_x, _y, Gtk.PickFlags.DEFAULT)
+        button = picked if getattr(picked, "asb_card_action", None) else picked.get_ancestor(Gtk.Button) if picked else None
+        if getattr(button, "asb_card_action", None):
             return None
         self.drag_identity = identity
         return Gdk.ContentProvider.new_for_value(GObject.Value(GObject.TYPE_STRING, "asb-pin:" + identity))

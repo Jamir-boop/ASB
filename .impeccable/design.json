@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-07T11:57:10Z",
+  "generatedAt": "2026-10-08T00:32:59Z",
   "title": "Design System: ASB",
   "extensions": {
     "platform": {
@@ -168,7 +168,7 @@
         },
         "comfortable": {
           "rowHeight": 68,
-          "direction": "Workspace first: provider/folder/quiet pin, fixed32px two-line title, dot/state left and relative age right."
+          "direction": "Workspace first: provider/folder, fixed32px two-line title, state left and relative age right. Approved C Corner pair places Read beside the top-right Pin/Unpin control."
         },
         "persistence": "Optional view in ASB layout.json; width-only means Compact; width/reset preserves view."
       },
@@ -222,11 +222,41 @@
         "opening": "Opening… replaces only title; restore current title on completion. Inline tooltip/description for failures.",
         "comfortableContent": [
           "Gray provider mark",
-          "Folder basename and optional quiet ASB pin",
+          "Folder basename",
           "Fixed32px two-line title",
-          "Dot + actual state left",
-          "Relative age right, ellipsized as needed"
+          "Actual state left",
+          "Relative age right, ellipsized as needed",
+          "Approved C Corner pair: Read dot beside top-right Pin/Unpin"
         ],
+        "comfortableActions": {
+          "gtkClasses": [
+            "Gtk.Overlay",
+            "Gtk.Button"
+          ],
+          "minimumTargetSize": "24x24px",
+          "shape": "Circular, flat, with a 2px gap.",
+          "overlayMeasurement": false,
+          "rightTextReserve": "54px plus the 8px content inset, 62px total for folder and title.",
+          "pinVisibility": "Visible on row hover or keyboard focus; pinned control stays visible with a foreground tint.",
+          "readVisibility": "Visible for current ASB attention or the successful Read confirmation.",
+          "readCue": "Hover or focus shows a check in place of the dot.",
+          "gnomeColors": "Read uses accent_color; confirmation uses success_color. Surfaces use semantic foreground/accent tints.",
+          "customColors": "Read and confirmation use the saved accent; surfaces use saved text/accent tints.",
+          "routes": {
+            "pin": "POST /api/threads/:id/pin with an empty object",
+            "unpin": "POST /api/threads/:id/unpin with an empty object",
+            "read": "POST /api/threads/:id/mark-read with an empty object"
+          },
+          "readScope": "Clear only ASB attention with either Persistent unread setting. Keep execution, source read state, and source question resolution unchanged.",
+          "readConfirmationMs": 1600,
+          "readFailure": "Retain the dot and show the error in the row tooltip and accessible description.",
+          "readGuards": "Require the current row identity, Comfortable view, feedback generation, and attention signature. New unread clears old feedback.",
+          "pending": "Keep pointer sensitivity and native gesture handling, remove action bindings, and report accessible BUSY and DISABLED.",
+          "confirmed": "Keep pointer sensitivity, remove the Read action binding, and report accessible DISABLED.",
+          "activation": "Space or Enter activates the focused control. Controls cannot open the row or start a pin drag.",
+          "pinOrder": "Use real saved ASB order; retain row drag and keyboard menu movement.",
+          "preserved": "Compact, 68px Comfortable cards, fixed title block, footer state/time, and outer frame."
+        },
         "sharedBehavior": "Same opening label, tooltip, accessible name, focus, row menu and pin drag."
       },
       {
@@ -344,7 +374,8 @@
       "Native captures use mock sessions.",
       "The current code checks custom background and highlight contrast and supplies field-specific color-control names.",
       "This record does not claim a complete assistive-technology audit.",
-      "Performance changes use syntax and pure logic checks. No native widget or screenshot check ran for this change."
+      "Performance changes use syntax and pure logic checks. No native widget or screenshot check ran for this change.",
+      "The approved C Corner pair review covers code and logic only, with no remaining P1/P2 issue in that scope. No native UI tests or new native screenshots ran; native pixel fidelity remains unverified."
     ],
     "appIdentity": {
       "applicationId": "local.asb.AgentSwitchBoard",

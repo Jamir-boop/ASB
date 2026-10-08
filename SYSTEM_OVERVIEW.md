@@ -1,6 +1,6 @@
 # ASB system overview
 
-ASB source `1.1.1` is unreleased. Published downloads remain on `1.1.0`.
+The current ASB source version is `1.2.0`. See the [publication record](docs/OPEN_SOURCE_PLAN.md) for verified release status.
 
 ASB is a local switch board for existing Codex and Claude Desktop Code chats, including remote Code sessions observed in Claude's local cache. Its main view is a small native GNOME window. It observes local files and opens the original app. It makes no model calls.
 
@@ -26,6 +26,8 @@ The launcher creates its own server and Python child. It stops them when the win
 Python 3 needs PyGObject, GTK `>=4.10`, and Libadwaita `>=1.4`. Node.js `>=22.13` uses built-in SQLite with read-only connections. Older supported Node.js (`>=20`) uses `sqlite3 -readonly`. ASB's runtime has no external npm dependencies. Development tests use Node.js `>=22.13` and need the SQLite CLI for some upstream fixtures.
 
 ASB and the retained upstream server share `DashboardSnapshot` in `src/dashboard-snapshot.mjs` for snapshots, source events, watchers, caches, and request coalescing. They also share local HTTP utilities, Codex open helpers, and provider cache helpers. The ASB package excludes `src/server.mjs` and its upstream-only dashboard, quota, notification, review, and search modules. Those files remain in the source repository.
+
+The package contains 31 runtime files, down from 42 in ASB `1.1.0`.
 
 ## Main files
 
@@ -96,6 +98,10 @@ All clients share one tracker. Tracking uses the complete scanned list before fi
 ## Native view contract
 
 - Compact is the default with 22-pixel rows. Comfortable uses 68-pixel rows with the folder first and a two-line title.
+- Comfortable uses the approved C Corner pair: a top-right Read dot beside Pin/Unpin. Pin appears on row hover or keyboard focus; a pinned control stays visible. Both use the existing ASB state APIs and stay separate from opening the chat. Saved pin order, drag reorder, and row menus remain available.
+- Comfortable actions use 24-pixel circular targets in an unmeasured overlay. Folder and title reserve 62 pixels at the right, including the content inset. State and time remain in the footer. Compact and the outer frame keep their existing layout.
+- A successful Read clears only ASB attention and shows a check for 1.6 seconds. It works with either Persistent unread setting. Failure keeps the dot. Row identity, view, feedback generation, and current attention guard against stale results or new unread marks. Read does not change execution, original-app read state, or source question resolution.
+- While a row action is pending, its controls keep pointer sensitivity but lose their action bindings. They report `BUSY` and `DISABLED` to accessibility APIs. The confirmation has no Read action binding. Pointer and keyboard activation cannot open the row through these controls.
 - Rows flow down each column, then across. The list scrolls horizontally. Height sets row capacity; shared width sets visible columns.
 - ASB pins come first in saved order. Other rows follow Pending, Working, Idle, then Unknown.
 - Codex, Claude, and Pending pills share the menu filters. State choices can be combined. Search prefixes temporarily take priority over app selection.
@@ -149,7 +155,9 @@ npm run build
 
 The first two commands do not launch the ASB window. Native widget tests are separate and need a GTK display with synthetic fixtures. Use them only when UI testing is in scope. Do not use real session stores for public media or test captures.
 
-The source build produces `asb_1.1.1_all.deb`, `asb-1.1.1-linux.tar.gz`, and `SHA256SUMS` in `dist/`. The portable root is `asb-1.1.1/` with `./install.sh`. These are unreleased build names. Public demo assets use synthetic session names and folders. Remotion build dependencies are separate from the ASB runtime.
+The source build produces `asb_1.2.0_all.deb`, `asb-1.2.0-linux.tar.gz`, and `SHA256SUMS` in `dist/`. The portable root is `asb-1.2.0/` with `./install.sh`. See [release notes](docs/releases/v1.2.0.md) for upgrades and check limits. Public demo assets use synthetic session names and folders. Remotion build dependencies are separate from the ASB runtime.
+
+The Corner pair review covers code and logic only. No native UI tests or new native screenshots were run for this change. Native pixel fidelity remains unverified.
 
 ## Retained upstream
 

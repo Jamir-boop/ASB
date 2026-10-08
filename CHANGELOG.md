@@ -2,17 +2,19 @@
 
 ASB has its own release series. The retained Agent Mission Control releases are recorded separately below.
 
-## ASB 1.1.1 - Unreleased
+## ASB 1.2.0 - 2026-10-07
 
-Cleanup scope:
+- Added the approved C Corner pair to Comfortable cards: a top-right Read dot beside Pin/Unpin, visible pins on hover/focus, and persistent pinned controls. Actions use the existing ASB APIs, saved pin order, drag reorder, and row menus.
+- Added a 1.6-second Read check after a successful ASB acknowledgment. Failed Read keeps the dot. Guards keep stale results and feedback from hiding new attention. Read stays separate from opening, execution, source read state, and question resolution.
+- Kept Compact, the 68px Comfortable height, the outer frame, and footer state/time. Circular overlay controls reserve folder/title space without changing row measurement.
 
-- Isolate ASB server and opener paths. Exclude the legacy server from ASB packages and share existing snapshot and watcher logic.
-- Remove seven dead browser helpers and unused CSS.
-- Share Codex and Claude cache and file-signature helpers.
-- Use standard SQLite process handling with `promisify(execFile)`. Keep SQL input and errors unchanged.
-- Simplify native Read/Unread action routing. Keep existing features and privacy limits.
+- Separated ASB server and opener paths. Excluded the legacy server from ASB packages and shared existing snapshot and watcher logic. The runtime has 31 files, down from 42 in `1.1.0`.
+- Removed seven dead browser helpers and unused CSS.
+- Shared Codex and Claude cache and file-signature helpers.
+- Used standard SQLite process handling with `promisify(execFile)`. Kept SQL input and errors unchanged.
+- Simplified native Read/Unread action routing. Kept existing features and privacy limits.
 
-Published downloads remain on `1.1.0`. This source version has no release or tag.
+See [ASB 1.2.0 release notes](docs/releases/v1.2.0.md) for upgrades and check limits. The Corner pair review covers code and logic. Native pixel fidelity remains unverified; no native UI tests or new native screenshots were run.
 
 ## ASB 1.1.0 - 2026-10-07
 
