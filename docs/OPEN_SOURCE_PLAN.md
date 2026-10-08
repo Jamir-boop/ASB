@@ -2,6 +2,16 @@
 
 ## Latest publication
 
+ASB [1.2.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.2.0) was published on `2026-10-07` (Lima). Its source and tag use commit [a139538](https://github.com/Jamir-boop/ASB/commit/a1395386f6b054befceca323f1c90567c2b23898).
+
+- Uploaded `asb_1.2.0_all.deb`, `asb-1.2.0-linux.tar.gz`, and `SHA256SUMS`. All three downloads matched local bytes and hashes.
+- Independent checks passed 426 Node tests, 12 pure native logic checks, build checks, and package checks. [CI](https://github.com/Jamir-boop/ASB/actions/runs/37708726563) passed on Node.js `22.13.0` and `24`.
+- A disposable `1.1.0` install used its original installer. Its upgrade to `1.2.0` kept settings.
+- The current-user install and restart passed. Settings hashes stayed unchanged. Installed native bytes matched the reviewed source. Running paths used `1.2.0`; the backend returned HTTP `200`.
+- No UI tests, native screenshots, or Debian `apt install` were run. Native pixel fidelity remains unverified.
+
+## Earlier publications
+
 ASB [1.1.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.1.0) was published on `2026-10-07` (Lima). Its source and tag use commit [84b5dee](https://github.com/Jamir-boop/ASB/commit/84b5deed74a446eec794fc706418030b2d616cec).
 
 - Uploaded `asb_1.1.0_all.deb`, `asb-1.1.0-linux.tar.gz`, and `SHA256SUMS`. All three downloaded hashes matched the local files.
