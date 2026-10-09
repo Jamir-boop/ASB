@@ -45,7 +45,7 @@ function fakeClock() {
     },
   };
 }
-async function fixture(t, { load, watchPaths, watchImpl } = {}) {
+async function fixture(t, { load, watchPaths, watchImpl, platform } = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'asb-refresh-'));
   const clock = fakeClock();
   const paths = watchPaths || switchboardWatchPaths({ homeDir: dir, appDir: path.join(dir, 'app') });
@@ -53,7 +53,7 @@ async function fixture(t, { load, watchPaths, watchImpl } = {}) {
   const watches = [];
   const hints = [];
   let loads = 0;
-  const server = createSwitchboardServer({ now: clock.now, pendingStatePath: false,
+  const server = createSwitchboardServer({ now: clock.now, pendingStatePath: false, dashboardPlatform: platform,
     dashboardWatchPaths: paths,
     dashboardSetTimeout: clock.setTimeout, dashboardClearTimeout: clock.clearTimeout,
     dashboardSourceChanged: (source, hint) => hints.push({ source, ...hint }),
@@ -232,7 +232,7 @@ test('watch failures use active fallback, retry missing stores, and follow atomi
 });
 
 test('unsupported recursive watch covers new child directories and closes every owned resource', async (t) => {
-  const f = await fixture(t, { watchImpl(_target, options) {
+  const f = await fixture(t, { platform: 'darwin', watchImpl(_target, options) {
     if (options.recursive) throw Object.assign(new Error('Unsupported recursive watch'), { code: 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM' });
   } });
   await f.scan();
@@ -246,6 +246,27 @@ test('unsupported recursive watch covers new child directories and closes every 
   await new Promise((resolve) => f.server.close(resolve));
   assert.ok(f.watches.every((item) => item.watcher.closed));
   assert.equal(f.clock.timers.size, 0);
+});
+
+test('linux watches each directory once, never recursively, and still sees nested files and new folders', async (t) => {
+  const native = await fixture(t, { platform: 'darwin' });
+  assert.deepEqual(native.watches.map((item) => Boolean(item.options.recursive)), native.paths.map((item) => Boolean(item.recursive)));
+  const f = await fixture(t, { platform: 'linux' });
+  const root = f.paths.find((item) => item.recursive && item.source === 'codex').path;
+  const childPath = path.join(root, '2026', '10');
+  await mkdir(childPath, { recursive: true });
+  await f.clock.advance(5_000);
+  await until(() => f.watches.some((item) => item.target === childPath));
+  const open = f.watches.filter((item) => !item.watcher.closed).map((item) => item.target);
+  assert.deepEqual([...open].sort(), [...f.paths.map((item) => item.path), path.dirname(childPath), childPath].sort());
+  assert.ok(f.watches.every((item) => item.options.recursive === false));
+  await f.scan();
+  await f.clock.advance(2_000);
+  const loads = f.loads();
+  f.watches.find((item) => item.target === childPath).callback('change', 'rollout-a.jsonl');
+  await f.scan();
+  assert.equal(f.loads(), loads + 1);
+  assert.deepEqual(f.hints, [{ source: 'codex', filePath: path.join(childPath, 'rollout-a.jsonl'), index: false }]);
 });
 
 test('watcher errors and failed scans retry without a tight loop', async (t) => {

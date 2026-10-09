@@ -10,6 +10,7 @@ ASB [1.3.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.3.0) was published
 - The current-user install and restart passed. All 32 installed runtime files matched reviewed source bytes and hashes. The manifest and running native path used `1.3.0`; the API returned HTTP `200`, with no duplicate IDs and preserved profile open availability. Theme, layout, and source hashes, manual marks, and pin order stayed unchanged. A synthetic launcher target survived opener exit and 5.2 seconds; a spawn failure kept unread attention.
 - Privacy scans covered 10 earlier commits, 222 blobs, and 26 new or changed release files. They found no secrets or private state. The upstream MIT license and exact README video link stayed unchanged. The synthetic demo source was reviewed; no video was rendered or uploaded again.
 - No UI/widget tests, new native screenshots, Debian `apt install`, or real-app GUI opens were run. Native pixel fidelity and real-app GUI opening remain unverified.
+- On `2026-10-09`, the working tree has unreleased changes after `1.3.0`. See the Unreleased section of [CHANGELOG.md](../CHANGELOG.md). These checks do not cover those changes.
 
 ## Earlier publications
 

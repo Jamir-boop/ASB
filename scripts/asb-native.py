@@ -11,7 +11,6 @@ import sys
 import threading
 import tempfile
 import time
-from datetime import datetime
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
@@ -76,18 +75,39 @@ def refresh_interval(dashboard):
 
 
 def row_menu_actions(row):
-    actions = [("Read", "mark-read") if row.get("unread") or row.get("questionAttention")
-               else ("Unread", "mark-unread"),
-               ("Unpin", "unpin") if row.get("pinned") else ("Pin", "pin")]
+    actions = [] if row.get("actionRequired") else [("Read", "mark-read")
+               if attention_indicator(row) in ("question", "dot") else ("Unread", "mark-unread")]
+    actions.append(("Unpin", "unpin") if row.get("pinned") else ("Pin", "pin"))
     if row.get("pinned"):
         actions.extend((("Move pin earlier", "pin-up"), ("Move pin later", "pin-down")))
+    if row.get("state") == "working":
+        actions.append(("Keep result", "keep-result") if row.get("discardResult") else ("Discard result", "discard-result"))
     return actions
+
+
+def pin_move_body(rows, identity, direction):
+    """Return the move-pin body for the visible pinned neighbor, or None at the end of the visible pins."""
+    pins = [row["id"] for row in rows if row.get("pinned")]
+    target = pins.index(identity) + (-1 if direction == "up" else 1) if identity in pins else -1
+    return {"targetId": pins[target], "placement": "before" if direction == "up" else "after"} if 0 <= target < len(pins) else None
 
 
 def attention_signature(row):
     return tuple(row.get(key) for key in ("unread", "questionAttention", "nativeUnread", "manualUnread",
-                 "nativeAttention", "completionAttention", "retainedUnread", "retainedUnreadSource",
-                 "completionAtMs", "updatedAtMs", "state", "workingSinceMs", "questionPending"))
+                 "nativeAttention", "completionAttention", "failedAttention", "retainedUnread", "retainedUnreadSource",
+                 "completionAtMs", "failedAtMs", "lastOutcome", "actionRequired", "discardResult", "updatedAtMs", "state", "workingSinceMs", "questionPending"))
+
+
+def attention_indicator(row):
+    """Return the row mark in question, unread, discard, then stopped order."""
+    return "question" if row.get("actionRequired") or row.get("questionAttention") else "dot" if row.get("unread") \
+        else "discard" if row.get("state") == "working" and row.get("discardResult") \
+        else "stop" if row.get("state") == "idle" and row.get("lastOutcome") == "stopped" else ""
+
+
+def ignore_discard_after_read(action, last_read_at, now=None):
+    now = time.monotonic() if now is None else now
+    return action in ("discard-result", "keep-result") and last_read_at is not None and now - last_read_at < .5
 
 
 def provider_query(query, app="all"):
@@ -126,7 +146,7 @@ def pack_columns(rows, width, height, column_width=DEFAULT_COLUMN_WIDTH, row_hei
 
 
 THEME_KEYS = ("background", "text", "accent", "muted", "divider")
-THEME_PATH = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "asb" / "theme.json"
+THEME_PATH = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "asb" / "theme.json"
 LAYOUT_PATH = THEME_PATH.with_name("layout.json")
 
 
@@ -262,7 +282,7 @@ def working_duration(row, now_ms=None):
     return f"{hours}h{minutes}m" if hours else f"{minutes}m{seconds}s" if minutes else f"{seconds}s"
 
 
-def row_meta(row, now_ms=None, relative=False):
+def row_meta(row, now_ms=None):
     now_ms = now_ms if now_ms is not None else time.time() * 1000
     updated = row.get("updatedAtMs", 0)
     age = max(0, now_ms - updated)
@@ -274,16 +294,79 @@ def row_meta(row, now_ms=None, relative=False):
         date = f"{int(age / 60_000)}m ago"
     elif age < 86_400_000:
         date = f"{int(age / 3_600_000)}h ago"
-    elif relative:
-        date = f"{int(age / 86_400_000)}d ago"
     else:
-        date = datetime.fromtimestamp(updated / 1000).strftime("%b %d")
+        date = f"{int(age / 86_400_000)}d ago"
     parts = [str(row.get("state", "unknown")).capitalize(), date]
     if row.get("pinned"):
         parts.append("Pinned")
     if row.get("archived"):
         parts.append("Archived")
     return " · ".join(parts)
+
+
+def tooltip_model(row, now_ms, home_dir, error=""):
+    full_path = row.get("cwd") or row.get("projectName") or "No project folder"
+    path = full_path
+    home = str(Path(home_dir))
+    if path == home:
+        path = "~"
+    elif path.startswith(home.rstrip("/") + "/"):
+        path = "~" + path[len(home.rstrip("/")):]
+    state = row.get("state", "unknown")
+    state = state if state in STATES else "unknown"
+    state_text = state.capitalize() + " · " + (working_duration(row, now_ms) or row_meta(row, now_ms).split(" · ")[1])
+    provider = row.get("providerLabel") or {"codex": "Codex", "claude-desktop-code": "Claude Desktop Code"}.get(row.get("provider"), "Unknown app")
+    source_label, source_id = row.get("sourceLabel", ""), row.get("sourceId", "")
+    app = provider + (" · " + source_label if source_label and source_label != provider else "")
+    indicator = attention_indicator(row)
+    note = ""
+    if indicator == "question":
+        note = "Waits for your permission." if row.get("actionRequired") else "Asks a question. Open the chat to answer."
+    elif indicator == "dot":
+        source = row.get("pendingSource", "")
+        dot_notes = {"manual-unread": "Marked unread in ASB.", "native-unread": "Unread in the original app.",
+                     "observed-completion": "Finished. Not read yet.", "observed-failure": "Failed. Not read yet."}
+        if source in dot_notes:
+            note = dot_notes[source]
+            if row.get("retainedUnread") and ((source == "native-unread" and not row.get("nativeAttention"))
+                                             or (source == "observed-completion" and not row.get("completionAttention"))):
+                note = "Unread kept in ASB. Use Read to clear it."
+        elif row.get("retainedUnread") and source:
+            note = "Unread kept in ASB. Use Read to clear it."
+        elif row.get("manualUnread"):
+            note = "Marked unread in ASB."
+        elif row.get("failedAttention"):
+            note = "Failed. Not read yet."
+        elif row.get("nativeAttention"):
+            note = "Unread in the original app."
+        elif row.get("completionAttention"):
+            note = "Finished. Not read yet."
+        else:
+            note = "Unread kept in ASB. Use Read to clear it."
+    elif indicator == "stop":
+        note = "You stopped this task."
+    elif indicator == "discard":
+        note = "Discard is on for this task."
+    elif row.get("questionPending"):
+        note = "A question is still open in the chat."
+    flags = " · ".join(text for key, text in (("pinned", "Pinned"), ("archived", "Archived")) if row.get(key))
+    if not row.get("canOpen"):
+        flags += (" · " if flags else "") + "No direct link"
+    source = "App source: " + (source_label or source_id) if source_label or source_id else ""
+    if source_label and source_id:
+        source += " (" + source_id + ")"
+    app_color = source_marker_color(row)
+    if app_color:
+        source += (". " if source else "") + "Profile color marker: " + app_color
+    return {"path": path, "full_path": full_path, "title": row.get("title") or "Untitled session",
+            "state": state, "state_text": state_text, "app": app, "app_color": app_color,
+            "indicator": indicator, "note": note, "flags": flags, "error": error,
+            "reason": row.get("reason", ""), "source": source}
+
+
+def tooltip_description(model):
+    return "\n".join(filter(None, (model["title"], model["full_path"], model["state_text"], model["app"],
+                                  model["reason"], model["source"], model["note"], model["flags"], model["error"])))
 
 
 def local_base_url(value):
@@ -295,11 +378,16 @@ def local_base_url(value):
     return value.rstrip("/")
 
 
+SOURCE_TOKEN = os.environ.get("ASB_SOURCE_TOKEN", "")
+
+
 def request_json(base, route, method="GET", body=None):
     headers = {"Accept": "application/json"}
     data = None
     if method == "POST":
         headers.update({"Origin": base, "Content-Type": "application/json"})
+        if SOURCE_TOKEN and (route == "/api/sources" or route.startswith("/api/sources/")):
+            headers["X-ASB-Source-Token"] = SOURCE_TOKEN
         data = json.dumps(body or {}).encode()
     request = Request(base + route, data=data, headers=headers, method=method)
     try:
@@ -311,7 +399,7 @@ def request_json(base, route, method="GET", body=None):
         if method == "POST" and not result.get(success):
             raise ValueError("The session action did not succeed.")
         return result
-    except (HTTPError, URLError, OSError, ValueError) as error:
+    except (HTTPError, URLError, HTTPException, OSError, ValueError) as error:
         if route == "/api/sources" or route.startswith("/api/sources/"):
             detail = ""
             if isinstance(error, HTTPError):
@@ -319,7 +407,7 @@ def request_json(base, route, method="GET", body=None):
                     payload = json.loads(error.read(8192))
                     if isinstance(payload, dict) and isinstance(payload.get("error"), str):
                         detail = payload["error"]
-                except (OSError, ValueError):
+                except (HTTPException, OSError, ValueError):
                     pass
             raise RuntimeError(detail or "Cannot load or change app sources. Check that ASB is running, then try again.") from error
         action = "open this session" if route.endswith("/open") else "change the unread setting" if route == "/api/settings/unread" \
@@ -363,6 +451,10 @@ class EventStream:
                 with connection.getresponse() as response:
                     if response.status != 200 or response.getheader("Content-Type", "").split(";")[0] != "text/event-stream":
                         raise ValueError("The ASB event stream is not available.")
+                    with self.lock:
+                        if self.stopped.is_set():
+                            break
+                        self.socket.settimeout(None)
                     event, data = "", []
                     while not self.stopped.is_set():
                         line = response.readline(4097)
@@ -901,13 +993,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.refresh_interval_ms = 5000
         self.clock_interval = self.clock_timer = None
         self.notice_timer, self.notice_generation, self.provider_notice = None, 0, ""
-        self.opening, self.focus_widgets = set(), {}
+        self.opening, self.focus_widgets, self.row_cache = set(), {}, {}
+        self.focus_generation = 0
+        self.connect("notify::focus-widget", self.focus_changed)
         self.session_actions = set()
         self.open_errors = {}
         self.context_menu = None
         self.sources_window = None
         self.drag_identity = None
-        for name in ("mark-unread", "mark-read", "pin", "unpin", "pin-up", "pin-down"):
+        for name in ("mark-unread", "mark-read", "pin", "unpin", "pin-up", "pin-down", "discard-result", "keep-result"):
             action = Gio.SimpleAction.new(name, GLib.VariantType.new("s"))
             action.connect("activate", self.row_action, name)
             self.add_action(action)
@@ -931,6 +1025,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.app_mark.update_property([Gtk.AccessibleProperty.LABEL], ["ASB app icon"])
         tools.append(self.app_mark)
         self.search = Gtk.SearchEntry(placeholder_text="Find a session or folder", hexpand=True)
+        self.search.set_search_delay(0)
         self.search.set_size_request(0, -1)
         self.search.set_tooltip_text("Search title or folder. cl: or claude: selects Claude; cx: or codex: selects Codex.")
         self.search.connect("search-changed", self.filter_changed)
@@ -1201,8 +1296,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     border-radius: 50%; box-shadow: none; opacity: 1; }}
 {base} .asb-column {{ background: transparent; }}
 {base} .asb-column + .asb-column {{ border-left: 1px solid @borders; }}
-{base} .asb-dot {{ min-width: 7px; min-height: 7px; border-radius: 50%; background: @accent_color; }}
-{base} .asb-pending {{ color: @accent_color; opacity: 1; }}
+{base} .asb-dot, .asb-tooltip .asb-dot {{ min-width: 7px; min-height: 7px; border-radius: 50%; background: @accent_color; }}
+{base} .asb-dot.asb-question, .asb-tooltip .asb-dot.asb-question {{ min-width: 0; min-height: 0; border-radius: 0; background: none; color: @accent_color;
+    font-size: 11px; font-weight: 800; }}
+{base} .asb-dot.asb-stop, .asb-tooltip .asb-dot.asb-stop {{ border-radius: 1px; background: alpha(@window_fg_color, .55); }}
+{base} .asb-dot.asb-discard, .asb-tooltip .asb-dot.asb-discard {{ min-width: 6px; min-height: 6px; border: 1.5px solid @window_fg_color;
+    border-radius: 50%; background: none; }}
+{base} .asb-discard-offer .asb-discard {{ border-style: dashed; border-color: alpha(@window_fg_color, .55); }}
 {base} .asb-card-action {{ min-width: 24px; min-height: 24px; padding: 0; border: 0; border-radius: 50%; box-shadow: none; }}
 {base} .asb-card-action.asb-action-pending > * {{ opacity: .5; }}
 {base} .asb-pin-button {{ opacity: 0; }}
@@ -1212,11 +1312,25 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-read-button {{ color: @accent_color; background: alpha(@window_fg_color, .08); }}
 {base} .asb-read-button:hover, {base} .asb-read-button:focus-visible {{ background: alpha(@accent_color, .15); }}
 {base} .asb-read-cue {{ opacity: 0; }}
-{base} .asb-read-button:hover .asb-dot, {base} .asb-read-button:focus-visible .asb-dot,
+{base} .asb-read-button:hover:not(.asb-passive-indicator):not(.asb-discard-button) .asb-dot,
+{base} .asb-read-button:focus-visible:not(.asb-passive-indicator):not(.asb-discard-button) .asb-dot,
 {base} .asb-read-confirmed .asb-dot {{ opacity: 0; }}
-{base} .asb-read-button:hover .asb-read-cue, {base} .asb-read-button:focus-visible .asb-read-cue,
+{base} .asb-read-button:hover:not(.asb-passive-indicator):not(.asb-discard-button) .asb-read-cue,
+{base} .asb-read-button:focus-visible:not(.asb-passive-indicator):not(.asb-discard-button) .asb-read-cue,
 {base} .asb-read-confirmed .asb-read-cue {{ opacity: 1; }}
 {base} .asb-read-button.asb-read-confirmed {{ color: @success_color; background: alpha(@success_color, .12); }}
+{base} .asb-read-button.asb-passive-indicator {{ background: transparent; }}
+{base} .asb-read-button.asb-discard-button {{ background: transparent; }}
+{base} .asb-discard-button.asb-discard-offer {{ opacity: 0; }}
+{base} .asb-session:hover .asb-discard-offer, {base} .asb-session:focus-within .asb-discard-offer {{ opacity: 1; }}
+.asb-tooltip {{ font-size: 12px; }}
+.asb-tooltip .asb-tooltip-title {{ font-size: 13px; }}
+.asb-tooltip .asb-tooltip-path, .asb-tooltip .asb-tooltip-footer, .asb-tooltip .asb-tooltip-flags {{ font-size: 11px; }}
+.asb-tooltip .asb-tooltip-muted {{ color: alpha(@window_fg_color, .72); opacity: 1; }}
+.asb-tooltip .asb-working {{ color: @success_color; }}
+.asb-tooltip .asb-waiting {{ color: @warning_color; }}
+.asb-tooltip .asb-provider {{ opacity: .65; }}
+.asb-tooltip .asb-source-badge {{ min-width: 6px; min-height: 6px; padding: 0; border: 1px solid @window_bg_color; border-radius: 50%; }}
 """
         if colors:
             colors = validate_theme(colors)
@@ -1225,8 +1339,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             css += f"""
 {scope}, {scope} headerbar, {scope} popover contents {{ background: {colors['background']}; color: {colors['text']}; }}
 {scope} .asb-state, {scope} .dim-label {{ color: {colors['muted']}; opacity: 1; }}
-{scope} .asb-pending, {scope} .asb-working, {scope} .asb-waiting {{ color: {colors['accent']}; }}
-{scope} .asb-dot {{ background: {colors['accent']}; }}
+{scope} .asb-working, {scope} .asb-waiting {{ color: {colors['accent']}; }}
+{scope} .asb-dot, .asb-tooltip.asb-custom .asb-dot {{ background: {colors['accent']}; }}
+{scope} .asb-dot.asb-question, .asb-tooltip.asb-custom .asb-dot.asb-question {{ background: none; color: {colors['accent']}; }}
+{scope} .asb-dot.asb-stop, .asb-tooltip.asb-custom .asb-dot.asb-stop {{ background: {colors['muted']}; }}
+{scope} .asb-dot.asb-discard, .asb-tooltip.asb-custom .asb-dot.asb-discard {{ background: none; border-color: {colors['text']}; }}
+{scope} .asb-discard-offer .asb-discard {{ border-color: {colors['muted']}; }}
 {scope} .asb-column + .asb-column {{ border-color: {colors['divider']}; }}
 {scope} .asb-session:hover, {scope} .asb-session:focus-within {{ background: {highlight_color(colors)}; }}
 {scope} entry, {scope} button, {scope} dropdown {{ color: {colors['text']}; }}
@@ -1234,11 +1352,17 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} .asb-pin-button.asb-pinned {{ background: alpha({colors['text']}, .12); }}
 {scope} .asb-read-button:hover, {scope} .asb-read-button:focus-visible,
 {scope} .asb-read-button.asb-read-confirmed {{ color: {colors['accent']}; background: alpha({colors['accent']}, .15); }}
+{scope} .asb-read-button.asb-passive-indicator {{ background: transparent; }}
+{scope} .asb-read-button.asb-discard-button {{ background: transparent; }}
 {scope} :focus-visible {{ outline-color: {colors['accent']}; }}
 {scope} entry:focus-within {{ box-shadow: inset 0 0 0 1px {colors['accent']}; }}
 {scope} entry selection {{ background: {colors['accent']}; color: {colors['background']}; }}
 {scope} switch:checked, {scope} checkbutton check:checked {{ background: {colors['accent']}; border-color: {colors['accent']}; }}
 {scope} .asb-filter-pill:checked {{ background: {colors['accent']}; color: {colors['background']}; }}
+.asb-tooltip.asb-custom {{ color: {colors['text']}; }}
+.asb-tooltip.asb-custom .asb-tooltip-muted, .asb-tooltip.asb-custom .asb-state {{ color: {colors['muted']}; }}
+.asb-tooltip.asb-custom .dim-label {{ opacity: 1; }}
+.asb-tooltip.asb-custom .asb-working, .asb-tooltip.asb-custom .asb-waiting {{ color: {colors['accent']}; }}
 """
         else:
             self.remove_css_class("asb-custom")
@@ -1257,7 +1381,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 """
         self.css.load_from_string(css)
         self.hover_colors = colors
-        for widget in self.focus_widgets.values():
+        for widget in self.row_cache.values():
+            widget.asb_tooltip_content = widget.asb_tooltip_key = None
             widget.asb_source_badge.set_color(source_marker_color(widget.asb_thread))
         if getattr(self, "sources_window", None):
             (self.sources_window.add_css_class if colors else self.sources_window.remove_css_class)("asb-custom")
@@ -1570,10 +1695,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget = widget.get_parent()
         return None
 
+    def focus_changed(self, *_args):
+        # A repack makes GTK move focus to a column or to nothing; only a user focus change cancels a queued restore.
+        focus = self.get_focus()
+        if focus is not None and type(focus).__name__ != "ListBox":
+            self.focus_generation += 1
+
     def clear_search(self, *_args):
         self.cancel_scroll()
         self.search.set_text("")
-        self.render()
 
     def window_key(self, _controller, key, _code, modifiers):
         if modifiers & SHORTCUT_MASK or self.menu_button.get_popover().get_visible() \
@@ -1652,7 +1782,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if self.dashboard is None or self.closed:
             return
         focused = preserve_focus or self.focus_key()
-        focused_action = preserve_action or getattr(self.get_focus(), "asb_card_action", None)
+        focus_widget = self.get_focus()
+        focused_action = preserve_action or getattr(focus_widget, "asb_card_action", None)
         if reveal_focus and not focused and self.get_focus() is None:
             focused = self.focused_id
         position = self.scroll.get_hadjustment().get_value()
@@ -1662,26 +1793,61 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.column_pixel_width = max(1, (width - 8 - 12 * (self.columns - 1)) // self.columns)
         self.actual_columns = len(parts)
         self.row_order = [row["id"] for row in rows]
-        layout_signature = (tuple(self.row_order), self.columns, self.capacity, self.column_pixel_width, self.view)
+        layout_signature = (tuple(self.row_order), self.columns, self.capacity, self.column_pixel_width, self.view,
+                            bool(self.dashboard.get("threads")))
         repack = layout_signature != self.layout_signature
+        reorder = repack and self.layout_signature is not None and layout_signature[1:] == self.layout_signature[1:] \
+            and set(layout_signature[0]) == set(self.layout_signature[0])
+        old_positions = {identity: index for index, identity in enumerate(self.layout_signature[0])} if reorder else {}
+        repack = repack and not reorder
         if repack:
             self.cancel_scroll()
             self.list_body.clear_hover()
         if repack and self.context_menu:
             self.context_menu.popdown()
-        for identity in set(self.focus_widgets) - set(self.row_order):
-            self.release_row(self.focus_widgets.pop(identity))
+        dashboard_ids = {row["id"] for row in self.dashboard.get("threads", [])}
+        for identity in self.row_cache.keys() - dashboard_ids:
+            self.release_row(self.row_cache.pop(identity))
+            self.focus_widgets.pop(identity, None)
+            self.open_errors.pop(identity, None)
         for row in rows:
-            widget = self.focus_widgets.get(row["id"])
+            widget = self.row_cache.get(row["id"])
             if widget is None:
-                self.focus_widgets[row["id"]] = self.session_row(row)
+                self.row_cache[row["id"]] = self.session_row(row)
             else:
+                if row["id"] not in self.focus_widgets:
+                    widget.asb_time_signature = None
                 self.update_session_row(widget, row)
-        if repack:
+                if row["id"] not in self.focus_widgets:
+                    self.update_row_text(widget)
+                    self.update_card_actions(widget)
+        visible_widgets = {row["id"]: self.row_cache[row["id"]] for row in rows}
+        if repack or reorder:
             self.layout_signature = layout_signature
-            for widget in self.focus_widgets.values():
+        if repack:
+            for identity, widget in self.focus_widgets.items():
+                if identity not in visible_widgets:
+                    self.clear_read_feedback(widget)
                 if widget.get_parent():
                     widget.get_parent().remove(widget)
+        self.focus_widgets = visible_widgets
+        if reorder:
+            listings = []
+            child = self.list_body.get_first_child()
+            while child:
+                listings.append(child)
+                child = child.get_next_sibling()
+            moved = [(index, self.focus_widgets[row["id"]]) for index, row in enumerate(rows) if old_positions[row["id"]] != index]
+            focus_row = self.focus_widgets.get(self.focus_key())
+            refocus = focus_widget is not None and any(widget is focus_row for _index, widget in moved)
+            for _index, widget in moved:
+                widget.get_parent().remove(widget)
+            for index, widget in moved:
+                listings[index // self.capacity].insert(widget, index % self.capacity)
+            # GTK 4 keeps the window focus on a removed row until the next frame, then moves it to the column.
+            if refocus and focus_widget.get_visible() and focus_widget.get_sensitive():
+                self.set_focus(focus_widget)
+        if repack:
             child = self.list_body.get_first_child()
             while child:
                 following = child.get_next_sibling()
@@ -1707,10 +1873,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         pending = sum(bool(row.get("pending")) for row in rows)
         self.count.set_label(f"{len(rows)} sessions · {pending} Pending")
         if repack or reveal_focus or preserve_action:
-            GLib.idle_add(self.restore_position, focused, position, reveal_focus, focused_action)
+            GLib.idle_add(self.restore_position, focused, position, reveal_focus, focused_action, self.focus_generation)
 
-    def restore_position(self, focused, position, reveal_focus=False, focused_action=None):
-        if not self.closed:
+    def restore_position(self, focused, position, reveal_focus=False, focused_action=None, focus_generation=None):
+        if not self.closed and (focus_generation is None or focus_generation == self.focus_generation):
             self.cancel_scroll()
             if focused in self.focus_widgets:
                 if self.menu_button.get_active():
@@ -1808,6 +1974,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget.asb_view = None
         widget.asb_handlers = []
         widget.asb_read_timer, widget.asb_read_generation = None, 0
+        widget.asb_last_read_at = None
+        widget.asb_tooltip_content = widget.asb_tooltip_key = None
+        widget.set_has_tooltip(True)
+        widget.asb_tooltip_handler = widget.connect("query-tooltip", self.query_row_tooltip)
         for controller, signals in (
                 (Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE), (("key-pressed", self.row_key),)),
                 (Gtk.EventControllerFocus(), (("enter", self.row_focus),)),
@@ -1823,6 +1993,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def release_row(self, widget):
         self.clear_read_feedback(widget)
+        widget.asb_last_read_at = None
+        widget.asb_tooltip_content = widget.asb_tooltip_key = None
+        if getattr(widget, "asb_tooltip_handler", None):
+            widget.disconnect(widget.asb_tooltip_handler)
+            widget.asb_tooltip_handler = None
         for controller, handlers in widget.asb_handlers:
             for handler in handlers:
                 controller.disconnect(handler)
@@ -1830,6 +2005,83 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget.asb_handlers.clear()
         if widget.get_parent():
             widget.get_parent().remove(widget)
+
+    def query_row_tooltip(self, widget, _x, _y, _keyboard, tooltip):
+        if self.closed:
+            return False
+        model = tooltip_model(widget.asb_thread, time.time() * 1000, Path.home(), self.open_errors.get(widget.asb_thread["id"], ""))
+        key = (model, bool(self.hover_colors), widget.asb_thread.get("provider"), bool(widget.asb_thread.get("pending")))
+        if key != widget.asb_tooltip_key:
+            widget.asb_tooltip_content = self.tooltip_content(widget.asb_thread, model)
+            widget.asb_tooltip_key = key
+        tooltip.set_custom(widget.asb_tooltip_content)
+        return True
+
+    def tooltip_content(self, row, model):
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        root.add_css_class("asb-tooltip")
+        if self.hover_colors:
+            root.add_css_class("asb-custom")
+        def text(value, css, indent=0):
+            widget = label(value, css)
+            widget.set_wrap(True)
+            widget.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            widget.set_max_width_chars(36)
+            widget.set_margin_start(indent)
+            return widget
+        path = Gtk.Box(spacing=7)
+        mark = Gtk.Image(icon_name="asb-openai-symbolic" if row.get("provider") == "codex" else "asb-claude-symbolic",
+                         pixel_size=14, valign=Gtk.Align.START)
+        mark.add_css_class("asb-provider")
+        path.append(mark)
+        path_label = text(model["path"], "asb-tooltip-path")
+        path_label.add_css_class("asb-tooltip-muted")
+        path.append(path_label)
+        root.append(path)
+        root.append(text(model["title"], "asb-tooltip-title", 21))
+        footer = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=False, min_children_per_line=1,
+                             max_children_per_line=2, column_spacing=10, row_spacing=2, margin_start=21)
+        footer.add_css_class("asb-tooltip-footer")
+        state = text(model["state_text"], "asb-state")
+        state.add_css_class("asb-" + model["state"])
+        if model["state"] not in ("working", "waiting") and not row.get("pending"):
+            state.add_css_class("dim-label")
+        footer.append(state)
+        app = Gtk.Box(spacing=5, halign=Gtk.Align.END)
+        if model["app_color"]:
+            app.append(SourceMarker(self, model["app_color"]))
+        app_label = text(model["app"], "asb-tooltip-muted")
+        app_label.set_xalign(1)
+        app.append(app_label)
+        footer.append(app)
+        root.append(footer)
+        if model["note"] or model["flags"] or model["error"]:
+            notes = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_start=21)
+            notes.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL, margin_top=4, margin_bottom=4))
+            if model["note"]:
+                line = Gtk.Box(spacing=7)
+                if model["indicator"]:
+                    mark = Gtk.Box(valign=Gtk.Align.CENTER)
+                    mark.add_css_class("asb-dot")
+                    if model["indicator"] == "question":
+                        mark.add_css_class("asb-question")
+                        mark.append(label("?"))
+                    elif model["indicator"] in ("stop", "discard"):
+                        mark.add_css_class("asb-" + model["indicator"])
+                    line.append(mark)
+                note = text(model["note"], "asb-tooltip-note")
+                if not model["indicator"]:
+                    note.add_css_class("asb-tooltip-muted")
+                line.append(note)
+                notes.append(line)
+            if model["flags"]:
+                flags = text(model["flags"], "asb-tooltip-flags")
+                flags.add_css_class("asb-tooltip-muted")
+                notes.append(flags)
+            if model["error"]:
+                notes.append(text(model["error"], "asb-tooltip-note"))
+            root.append(notes)
+        return root
 
     def row_focus(self, _controller, identity):
         self.focused_id = identity
@@ -1847,9 +2099,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if not layout_changed and widget.asb_thread == row \
                 and source_marker_color(widget.asb_thread) == source_marker_color(row):
             return
-        if layout_changed or ((row.get("unread") or row.get("questionAttention"))
+        if layout_changed or ((attention_indicator(row) in ("question", "dot", "stop")
+                               or row.get("discardResult") != widget.asb_thread.get("discardResult"))
                               and attention_signature(widget.asb_thread) != attention_signature(row)):
             self.clear_read_feedback(widget)
+        if getattr(widget, "asb_thread", row).get("state") != row.get("state"):
+            self.open_errors.pop(row["id"], None)
         widget.asb_thread = dict(row)
         quiet = self.view == "comfortable" and row.get("state") == "idle" \
             and not (row.get("unread") or row.get("questionAttention") or row.get("pending"))
@@ -1877,6 +2132,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.asb_title_label = title
             dot = Gtk.Box(valign=Gtk.Align.CENTER)
             dot.add_css_class("asb-dot")
+            dot.append(label("?"))
             widget.asb_dot = dot
             state = label("", "asb-state")
             widget.asb_state_label = state
@@ -1944,7 +2200,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.set_child(content)
         widget.asb_mark.set_from_icon_name("asb-openai-symbolic" if row["provider"] == "codex" else "asb-claude-symbolic")
         widget.asb_source_badge.set_color(source_marker_color(row))
-        widget.asb_dot.set_visible(bool(row.get("unread") or row.get("questionAttention")))
+        indicator = attention_indicator(row)
+        discard_offer = self.view == "comfortable" and row.get("state") == "working" and not indicator
+        widget.asb_dot.set_visible(bool(indicator) or discard_offer)
+        widget.asb_dot.get_first_child().set_visible(indicator == "question")
+        (widget.asb_dot.add_css_class if indicator == "question" else widget.asb_dot.remove_css_class)("asb-question")
+        (widget.asb_dot.add_css_class if indicator == "stop" else widget.asb_dot.remove_css_class)("asb-stop")
+        (widget.asb_dot.add_css_class if indicator == "discard" or discard_offer else widget.asb_dot.remove_css_class)("asb-discard")
         state = widget.asb_state_label
         for css in (*("asb-" + value for value in STATES), "success", "warning", "dim-label"):
             state.remove_css_class(css)
@@ -1972,10 +2234,20 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return
         row, read, pin = widget.asb_thread, widget.asb_read_button, widget.asb_pin_button
         pending = row["id"] in self.session_actions
-        unread = bool(row.get("unread") or row.get("questionAttention"))
+        indicator = attention_indicator(row)
+        unread = indicator in ("question", "dot") and not row.get("actionRequired")
+        discard = row.get("state") == "working" and indicator not in ("question", "dot")
+        if discard and widget.asb_read_timer:
+            self.clear_read_feedback(widget)
         confirmed = bool(widget.asb_read_timer)
-        read.set_visible(unread or confirmed)
-        read.set_action_name("win.mark-read" if unread and not pending else None)
+        passive = bool(indicator) and not unread and not discard and not confirmed
+        read.set_visible(bool(indicator) or discard or confirmed)
+        read.set_focusable(not passive)
+        (read.add_css_class if passive else read.remove_css_class)("asb-passive-indicator")
+        (read.add_css_class if discard else read.remove_css_class)("asb-discard-button")
+        (read.add_css_class if discard and not row.get("discardResult") else read.remove_css_class)("asb-discard-offer")
+        action = "win.keep-result" if row.get("discardResult") else "win.discard-result"
+        read.set_action_name((action if discard else "win.mark-read") if (unread or discard) and not pending else None)
         if confirmed:
             read.add_css_class("asb-read-confirmed")
         else:
@@ -1984,7 +2256,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         pin.set_action_name(("win.unpin" if pinned else "win.pin") if not pending else None)
         (pin.add_css_class if pinned else pin.remove_css_class)("asb-pinned")
         # Keep native gestures active so busy controls and the Read cue cannot open the row.
-        for button, text, enabled in ((read, "Read in ASB" if confirmed else "Mark read in ASB", unread and not pending),
+        read_text = "A user action is required in the original app" if row.get("actionRequired") else "Task stopped" \
+            if indicator == "stop" else "Read in ASB" if confirmed else "Mark read in ASB"
+        if discard:
+            read_text = "Keep result: show the dot when this task ends" if row.get("discardResult") \
+                else "Discard result: go to read Idle when this task ends"
+        for button, text, enabled in ((read, read_text, (unread or discard) and not pending),
                                       (pin, "Unpin in ASB" if pinned else "Pin in ASB", not pending)):
             button.set_sensitive(True)
             (button.add_css_class if pending else button.remove_css_class)("asb-action-pending")
@@ -2024,52 +2301,20 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         state_text = row.get("state", "unknown").capitalize()
         widget.asb_state_label.set_label(state_text + (" ·" + duration if self.view == "compact" and duration else ""))
         if self.view == "comfortable":
-            widget.asb_age_label.set_label(duration or row_meta(row, now_ms, relative=True).split(" · ")[1])
-        if row.get("retainedUnread"):
-            read = "ASB retained this unread attention. Use Read in the row menu to clear it."
-        elif row.get("manualUnread"):
-            read = "Marked as unread in ASB. This mark does not change the original app read state."
-        elif row.get("questionAttention"):
-            read = "A question needs your answer. Its attention can be read in ASB."
-        elif row.get("completionAttention"):
-            read = "ASB observed a completed task. The original app read state is unknown."
-        elif row.get("nativeAttention"):
-            read = "Original app unread state."
-        elif row.get("questionPending"):
-            read = "Question attention read in ASB. The source question remains unresolved."
-        elif row.get("nativeUnread") and not row.get("nativeAttention"):
-            read = "Read in ASB. The original app unread state remains unchanged."
-        elif row.get("readStatus") == "unread" or row.get("pendingSource") == "native-unread":
-            read = "Original app unread state."
-        elif row.get("pendingSource") == "observed-completion":
-            read = "ASB observed a completed task. The original app read state is unknown."
-        elif row.get("readStatus", "unknown") == "unknown":
-            read = "Original app read state is unknown."
-        else:
-            read = "The original app marks this session as read."
-        details = [row.get("title", ""), row.get("cwd") or "No project path", row.get("providerLabel", ""), row_meta(row, now_ms),
-                   row.get("reason", ""), read]
-        source_label, source_id = row.get("sourceLabel", ""), row.get("sourceId", "")
-        widget.asb_source_description = "App source: " + (source_label or source_id) if source_label or source_id else ""
-        if source_id and source_label:
-            widget.asb_source_description += " (" + source_id + ")"
-        color = source_marker_color(row)
-        if color:
-            widget.asb_source_description += (". " if widget.asb_source_description else "") + "Profile color marker: " + color
-        details.append(widget.asb_source_description)
-        if row.get("pinned"):
-            details.append("Pinned in ASB. Drag to reorder, or use the row menu.")
-        if not row.get("canOpen"):
-            details.append("This session has no direct desktop link.")
-        widget.asb_tooltip = "\n".join(filter(None, details))
+            widget.asb_age_label.set_label(duration or row_meta(row, now_ms).split(" · ")[1])
+        shown = row.get("unread")
         action = "Open" if row.get("canOpen") else "Session"
-        manual = " Marked as unread in ASB." if row.get("manualUnread") else ""
-        native_unread = " Unread in the original app." if row.get("nativeAttention") else ""
+        manual = " Marked as unread in ASB." if shown and row.get("manualUnread") else ""
+        native_unread = " Unread in the original app." if shown and row.get("nativeAttention") else ""
         pinned = " Pinned in ASB." if row.get("pinned") else ""
-        question = " Question needs your answer." if row.get("questionAttention") else ""
-        retained = " Unread retained in ASB. Use Read to clear it." if row.get("retainedUnread") else ""
-        widget.asb_accessible_label = f"{action} {row.get('title', 'Untitled session')} in {row.get('providerLabel', '')}. {state_text}.{manual}{native_unread}{pinned}{question}{retained}"
-        self.update_open_state(widget)
+        question = " A user action is required in the original app." if row.get("actionRequired") \
+            else " Question needs your answer." if row.get("questionAttention") else ""
+        retained = " Unread retained in ASB. Use Read to clear it." if shown and row.get("retainedUnread") else ""
+        outcome = " Task stopped." if row.get("lastOutcome") == "stopped" else " Task failed." \
+            if row.get("lastOutcome") == "failed" or row.get("failedAttention") else " Task completed." if row.get("completionAttention") else ""
+        discard = " Discard is on." if row.get("discardResult") else ""
+        widget.asb_accessible_label = f"{action} {row.get('title', 'Untitled session')} in {row.get('providerLabel', '')}. {state_text}.{manual}{native_unread}{pinned}{question}{retained}{outcome}{discard}"
+        self.update_open_state(widget, now_ms)
 
     def row_key(self, _controller, key, _code, _state, identity):
         if _state & SHORTCUT_MASK or (self.context_menu and self.context_menu.get_visible()):
@@ -2120,12 +2365,17 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def row_action(self, _action, target, name):
         identity = target.get_string()
         if name in ("pin-up", "pin-down"):
-            self.session_action(identity, "move-pin", {"direction": "up" if name == "pin-up" else "down"})
+            body = pin_move_body(self.visible_rows(), identity, "up" if name == "pin-up" else "down")
+            if body:
+                self.session_action(identity, "move-pin", body)
         else:
             self.session_action(identity, name)
 
     def session_action(self, identity, action, body=None):
         if identity in self.session_actions or self.closed:
+            return
+        guard_row = getattr(self, "row_cache", self.focus_widgets).get(identity)
+        if ignore_discard_after_read(action, getattr(guard_row, "asb_last_read_at", None)):
             return
         self.session_actions.add(identity)
         origin = self.focus_widgets.get(identity)
@@ -2150,11 +2400,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                             self.set_focus(getattr(current, "asb_" + action_focus + "_button", current))
                 if not error:
                     self.open_errors.pop(identity, None)
+                    if action == "mark-read" and guard_row is not None and getattr(self, "row_cache", self.focus_widgets).get(identity) is guard_row:
+                        guard_row.asb_last_read_at = time.monotonic()
                     if result.get("thread") and (action != "mark-read" or origin is None or same_attention):
                         self.dashboard["threads"] = [result["thread"] if row["id"] == identity else row for row in self.dashboard["threads"]]
                     if "pinnedOrder" in result:
                         order = result["pinnedOrder"]
-                        self.dashboard["pinnedOrder"] = order
                         for row in self.dashboard["threads"]:
                             row["pinned"] = row["id"] in order
                             row["pinIndex"] = order.index(row["id"]) if row["id"] in order else -1
@@ -2165,7 +2416,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                         self.update_card_actions(current)
                         self.update_open_state(current)
                         if confirm and current is origin and current.asb_view == "comfortable" \
-                                and not (current.asb_thread.get("unread") or current.asb_thread.get("questionAttention")):
+                                and current.asb_thread.get("state") != "working" and not attention_indicator(current.asb_thread):
                             self.confirm_read(current)
                     self.refresh(True)
             return False
@@ -2192,18 +2443,19 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.drag_identity = None
         return True
 
-    def update_open_state(self, widget):
+    def update_open_state(self, widget, now_ms=None):
         row = widget.asb_thread
         opening = row["id"] in self.opening
         error = self.open_errors.get(row["id"], "")
         widget.asb_title_label.set_label("Opening…" if opening else row.get("title", "Untitled session"))
         widget.set_sensitive(not opening)
         duration = widget.asb_duration
-        widget.set_tooltip_text(widget.asb_tooltip + ("\nWorking time: " + duration if duration else "") + ("\n" + error if error else ""))
         name = "Opening " + widget.asb_accessible_label.removeprefix("Open ") if opening else widget.asb_accessible_label
         if duration:
             name += " Working time " + duration + "."
-        description = "\n".join(filter(None, (getattr(widget, "asb_source_description", ""), error)))
+        model = tooltip_model(row, time.time() * 1000 if now_ms is None else now_ms, Path.home(), error)
+        widget.asb_tooltip = tooltip_description(model)
+        description = widget.asb_tooltip
         widget.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION], [name, description])
         widget.update_state([Gtk.AccessibleState.BUSY], [opening])
 
@@ -2223,7 +2475,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 if current:
                     self.update_open_state(current)
                 if not error:
-                    self.refresh(True)
+                    self.refresh(queue=True)
             return False
         request_async(self.base, "/api/threads/" + quote(row["id"], safe="") + "/open", finished, GLib.idle_add, "POST")
 
@@ -2244,8 +2496,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.surface_signal = self.layout_surface = None
         if self.context_menu:
             self.context_menu.popdown()
-        for widget in self.focus_widgets.values():
+        for widget in self.row_cache.values():
             self.release_row(widget)
+        self.row_cache.clear()
         self.focus_widgets.clear()
         Gtk.StyleContext.remove_provider_for_display(self.get_display(), self.css)
         return False

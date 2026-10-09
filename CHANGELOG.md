@@ -2,6 +2,52 @@
 
 ASB has its own release series. The retained Agent Mission Control releases are recorded separately below.
 
+## ASB 1.4.0 - 2026-10-09
+
+- Fixed rows that showed Working and the unread dot together. A Working chat now has `unread` false and is Pending only for a question. Saved manual, native, completion, and retained marks are not changed and show again when Working ends. Tooltips and accessible labels follow the same rule.
+- Added a `?` attention indicator for questions in both native views. It replaces the dot when a question needs an answer, uses the accent color, and keeps row size and the Comfortable Read control.
+- Added Claude `AskUserQuestion` as a question signal. The row shows Waiting with question attention. It stays Working with question attention when no other permission tool is pending and a linked child has recent open work. A question row is Pending through its question attention, so Read or a successful open can acknowledge it.
+- Claude permission waits, pending `ExitPlanMode`, and fresh remote `requires_action` now show a passive `?` with Waiting and Pending until resolved in Claude. Read cannot clear these waits, so the Comfortable control and row menu have no Read action. Pin stays available.
+- Stopped root and group tasks now show Idle with a passive 7px muted square, including historical stops. Stop adds no unread mark. Question and unread attention have priority; new work or a later end removes the square.
+- Added failed-task attention for observed Working-to-Idle terminal failures, including the last linked child end. Codex uses non-null `task_complete.error`; Claude uses terminal `result.is_error`, linked failed task notifications, and fresh remote session `failed`. Historical failures get no new dot on first load. Native read truth, successful-open acknowledgment, and Persistent unread keep their existing rules. Tooltips and accessible names distinguish failed from completed tasks.
+- Pending now includes every visible dot or `?`, including unread dots on Unknown or archived rows. The passive stop square does not count as Pending. Updated the status mapping worksheet. Codex approval wait remains unsupported because local files provide no reliable unanswered approval signal.
+- Each non-empty Claude user reply now starts a task, including `ok`, `y`, `1`, `.`, and `继续`. Local command records do not. Both readers skip a JSONL line that is not an object. Linked child task notifications handle `completed`, `failed`, `cancelled`, and `aborted`.
+- Added one-shot **Discard result** for Working tasks, with **Keep result**, the approved hollow dot, and native row-menu access. Successful ends suppress their completion and matching native unread attention, including new Persistent unread retention. Questions, failures, manual Unread and cancellation keep their normal behavior. Linked child work keeps the arm until the group ends; explicit local end/start evidence prevents carry into the next task. Remote cache gaps and first late native-unread ambiguity are documented.
+- Added protected local Discard/Keep POST actions with compatible numeric state fields. Discard scans current state before arming; Keep uses the normal cache without a forced scan. This rejects late cached arming after two tasks ended. An already-armed local task still has the documented latest-terminal observation limit. Malformed request JSON in the ASB session-action handler now returns 400; internal/source exceptions keep their existing status.
+- Working without a question now returns directly to the Discard offer/ring and clears old Read feedback. Reading a Working question shows no confirmation check; Idle/Waiting Read confirmation stays unchanged.
+- Order-only native refreshes now move changed rows inside existing columns, preserving widgets/actions and avoiding explicit menu/scroll/hover teardown. Added the approved 0.5-second monotonic guard after completed Read before Discard/Keep requests, while the ring/offer remains visible.
+- Added the native A Unfolded card tooltip in both views. It shows the full wrapped path/title, state/time, app/source and profile dot, with one optional indicator note, short flags, and the current row error. Its GTK frame stays native. Each query computes current text without a source read and reuses one row-owned widget for an unchanged model/theme, while still calling GTK `set_custom`. Model/theme changes rebuild content; palette changes and row release clear the cache, including hidden rows. Accessible descriptions retain full path, state reason, and source identity; row names and control tooltips stay unchanged.
+- Removed the native search delay and duplicate clear render. Previously shown rows stay cached across searches and filters, while removed dashboard IDs release their controllers. Queued focus restoration stops after a focus change. A successful open uses the cached dashboard and keeps one follow-up read when needed.
+- **Move pin earlier / later** now moves the pin before or after the adjacent visible pinned row and sends nothing at the first or last visible pin. A row action error leaves the row when its state changes or the row leaves the list. The empty-list text follows the list. A moved row that had keyboard focus gets the focus again. Removed the unused CSS class `.asb-pending`.
+- A pending Claude permission, plan approval (`ExitPlanMode`), or question tool now gives Waiting and Pending only for six hours after its tool event. After that, the usual rules apply.
+- Fixed a missing completion or failure dot for a task that goes Working, Waiting, then Idle.
+- Fixed a follow-up message in an armed Claude task cancelling Discard. Only a task that starts after an end later than the arm cancels it.
+- Fixed Claude local-command records being treated as new work. Broad no-path invalidation now reuses unchanged lifecycle data; targeted/equal-size rewrites keep their safe invalidation behavior.
+- Kept ASB Codex titles on the raw desktop-title path, with desktop-name priority and empty fallback, without selecting `first_user_message`. The upstream title path and native read-cache semantics remain unchanged.
+- Protected the selected Claude remote response chain from aggregate eviction while retaining the 512-response and 5000-projected-session limits. Raw protected storage can reach `512 × 5000` records per cache root, with up to 32 roots; the raw metric remains visible.
+- Fixed quiet native event streams reconnecting at the read timeout; validated streams now wait without a read deadline and close still releases blocked reads. Relative age signatures advance past one day, and empty XDG config paths use the home fallback.
+- Fixed incomplete HTTP responses escaping the native request worker. They now dispatch the normal failure callback without partial response data, including source-error detail reads, so loading/action controls can recover.
+- Icon registration errors now keep their message and allow the native window to open. Icon registration from source preserves a managed desktop entry that uses another launcher and reports the conflict before writing.
+- When ASB cannot use `pending.json` in full, it shows the Pending state warning and moves the old file to `pending.json.bad` before the first save. `sources.json` uses the same rule (`sources.json.bad`) before the next source update or remove. The cannot-save Pending warning clears after the next good save.
+- A forced read (`/api/dashboard?force=1`) during a scan now waits for it and gets one more scan that starts after the request. Forced requests during the same scan share that scan. A successful open marks the snapshot dirty and sends a `dashboard` event with the reason `asb-open`.
+- On Linux, source watchers use one watch for each directory under the session folders, not one for each file, and find new folders at the next reconcile. Other platforms use the native recursive watch and fall back to directory watches. An injected `loadDashboard` with no source registry gets no default watch paths.
+- Protected dashboard, source-list, and event reads against cross-site Origin/Sec-Fetch-Site requests, including forced dashboard refreshes. Rejected reads do not scan sources. Native requests without these headers, local browser reads, and address-bar navigation remain supported; asset and action rules stay unchanged.
+- Fixed malformed request URLs stopping the ASB server. Invalid targets now return 400. The launcher's exit hook also stops its owned native process on normal/fatal JavaScript exits; SIGKILL and native aborts can bypass cleanup.
+- Added a per-run app source token. The launcher gives it to the server and to the window (`ASB_SOURCE_TOKEN`). `POST /api/sources` and `POST /api/sources/<id>/remove` need the header `X-ASB-Source-Token` when a token is set; if not, the reply is 403. `GET /api/sources` is unchanged. A server started with `npm start` has no token.
+- Malformed JSON now gives 400 on every action route. The open reply has no `resumeCommand`. Removed the `?refresh=` alias and `performance.notifications`.
+- `~/.local/bin/asb` now starts the shipped `scripts/asb`. If the recorded Node.js is not usable, `scripts/asb` tries `~/.local/bin/node`, `/usr/local/bin/node`, then `/usr/bin/node`, and prints a message if none is usable. ASB appends `/usr/local/bin:/usr/bin:/bin` to the caller's `PATH` and puts no system folder before it.
+- A source run keeps an installed GNOME entry. It replaces a source-run entry, including one from another checkout. Uninstall removes the `asb/releases` and `asb` data folders when they are empty.
+- Raised the GTK floor to `4.12`. The Debian package depends on `gir1.2-gtk-4.0 (>= 4.12)`.
+- Generated launchers preserve a validated absolute Node executable with shell quoting. Interrupted package work awaits writes and rollback, clears only its own lock/staging folder, and preserves foreign locks with an error that identifies the folder.
+- Removed the unused upstream dashboard, service code, design records, and mock screenshot assets. Kept current ASB features, release media, the MIT license, upstream credit, and release history. Moved the ASB documentation case into its own test.
+- Removed the dashboard mode from the Codex, Claude, and normalization modules. They have one mode. The Codex reader makes no network request, reads no `auth.json`, and writes no file; `AMC_CODEX_RESET_CREDITS` has no effect. The Codex thread query does not select `sandbox_policy`, `approval_mode`, `cli_version`, or `memory_mode`. Only the Claude Desktop Code reader remains for Claude. Removed `src/governance.mjs` and `src/token-usage.mjs`; the package whitelist has 30 runtime files. Removed the npm script `test:asb`.
+- Corrected repository agent guidance for ASB's native Codex/Claude scope, local state, and loopback-only runtime.
+- Moved display-free native data checks into the no-GTK logic suite, sharing the existing synthetic fixtures. Added isolated busy/free-port and icon-failure launcher checks without opening GTK or changing real app entries. ASB fixtures use built-in SQLite on Node.js `>=22.13` without the SQLite CLI.
+- Shared row/tooltip indicator CSS without changing roles or geometry, and removed the unused source-description alias while retaining the actual accessible description.
+- Documented that the read-only SQLite open of the Codex state database can create `-wal` and `-shm` side files.
+
+See [ASB 1.4.0 release notes](docs/releases/v1.4.0.md) for downloads, upgrades, and check limits. The Node tests and the native logic tests pass. The GTK widget test file `test/asb_native_test.py` was run on one X11 machine: the window opens, three of its seven tests pass, and four fail in the same way as with the 1.3.0 code because their expectations are older than the 1.3.0 layout. No native screenshots and no Debian `apt install` were run. Native pixel fidelity remains unverified. Codex approval waits have no icon, because the local files have no signal for them. See the [publication record](docs/OPEN_SOURCE_PLAN.md) for verified release checks.
+
 ## ASB 1.3.0 - 2026-10-08
 
 - Removed the theme divider contrast limit. Any valid six-digit divider color now applies and saves, including the background color. Dark background and text contrast checks stay in place.
@@ -69,7 +115,7 @@ The following entries are the inherited Agent Mission Control history by forxidi
 
 ### Update preview / 更新预览
 
-![Agent Mission Control 模型额度与余额界面](docs/assets/agent-mission-control-model-services-ui.png)
+The original upstream release included a synthetic model-service dashboard screenshot.
 
 > This screenshot is generated entirely from synthetic mock data. It contains no local threads, real paths, account identifiers, credentials, or actual quota and balance values.
 >
@@ -490,7 +536,7 @@ The following entries are the inherited Agent Mission Control history by forxidi
 - Added "复制线程摘要" so a thread can be handed off to another Agent with privacy-limited local metadata and truncated signals.
 - Added sub-agent thread classification so child/worker threads do not pollute the main dashboard inbox or notification candidates.
 - Added project-facing `AGENTS.md` guidance for future maintainers.
-- Added `docs/thread-artifact-detail-brief.md` to capture the next direction for thread artifact/detail work.
+- Added a design brief to capture the next direction for upstream thread artifact/detail work.
 
 ### Changed
 

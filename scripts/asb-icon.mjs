@@ -70,6 +70,11 @@ export async function registerAppIcon(options = {}) {
   const conflictPath = previousDesktop !== null && !owned ? desktopPath
     : previousIcon === false || (previousIcon !== null && !owned && !same(previousIcon, icon)) ? iconPath : null;
   if (conflictPath) return { ...result, status: 'conflict', message: `ASB did not change ${conflictPath}. Rename or remove this file to register ASB.` };
+  // A source run keeps an installed entry but can replace the source-run entry of any checkout.
+  if (!options.launcherExecutable && owned && !/\/scripts\/asb(-desktop\.mjs)?"$/.test(previousDesktop.toString('utf8').split('\n')
+    .find((line) => line.startsWith('Exec=')) ?? '')) {
+    return { ...result, status: 'conflict', message: `ASB kept ${desktopPath}: the existing entry uses a different launcher.` };
+  }
   if (options.checkOnly) return { ...result, status: 'ready' };
 
   const files = [

@@ -9,30 +9,6 @@ export function openCommandForUrl(url, platform = process.platform) {
   return { command: 'xdg-open', args: [url] };
 }
 
-function shellQuote(value) {
-  return `'${String(value).replaceAll("'", "'\"'\"'")}'`;
-}
-
-export function codexResumeCommandForThread(thread = {}) {
-  const threadId = String(thread.externalId || thread.id || '');
-  if (!threadId) return thread.resumeCommand || '';
-
-  const resumeCommand = `codex resume --no-alt-screen ${shellQuote(threadId)}`;
-  return thread.cwd ? `cd ${shellQuote(thread.cwd)} && ${resumeCommand}` : resumeCommand;
-}
-
-function isCodexThread(thread = {}) {
-  return thread.provider === 'codex'
-    || thread.provider === 'codex-cli'
-    || String(thread.defaultOpenMode || '').startsWith('codex-')
-    || String(thread.appDeepLink || '').startsWith('codex://')
-    || String(thread.resumeCommand || '').startsWith('codex resume');
-}
-
-export function resumeCommandForResponse(thread = {}) {
-  return isCodexThread(thread) ? codexResumeCommandForThread(thread) : (thread.resumeCommand || '');
-}
-
 export async function openThreadInCodex(thread, {
   platform = process.platform,
   runCommand = execFileAsync,
@@ -43,9 +19,5 @@ export async function openThreadInCodex(thread, {
 
   const { command, args } = openCommandForUrl(thread.appDeepLink, platform);
   await runCommand(command, args, { timeout: 5000 });
-  return {
-    opened: true,
-    method: 'codex-deeplink',
-    resumeCommand: codexResumeCommandForThread(thread),
-  };
+  return { opened: true, method: 'codex-deeplink' };
 }

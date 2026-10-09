@@ -1,6 +1,6 @@
-# Agent Loop 进化 / Agent Mission Control
+# ASB / Agent Switch Board
 
-This repository is the working project for Agent Loop 进化. When a new thread is opened in this project and the user says "这个系统", "这个控制台", "Agent 任务控制台", "Agent Loop 进化", or "咱们这个项目", assume they mean this repository unless they explicitly point to another path.
+This repository is ASB (Agent Switch Board). When the user says "ASB", "Agent Switch Board", "这个系统", "这个控制台", or "咱们这个项目", use this repository unless they give another path.
 
 ## Start Here
 
@@ -10,13 +10,13 @@ This repository is the working project for Agent Loop 进化. When a new thread 
 
 ## Product Context
 
-Agent Mission Control is a local, read-only dashboard for tracking Codex, OpenCode, Claude Code, and related agent sessions. It helps the user see active threads, token usage, quota state, pending review/permission work, and recovery links across tools.
+ASB is a native GNOME switch board for Codex and Claude Desktop Code chats. It reads local app stores and opens existing chats in their original apps. Original app stores stay read-only. ASB saves its own local marks, pins, and settings. Its runtime reads no credentials, makes no model calls, and makes no network requests outside loopback.
 
 The release target is a GitHub-friendly open-source version. Be conservative about privacy:
 
-- Do not commit local Codex/OpenCode/Claude state, logs, screenshots with private text, cookies, tokens, API keys, or machine-specific secrets.
+- Do not commit local Codex/Claude state, logs, screenshots with private text, cookies, tokens, API keys, or machine-specific secrets.
 - Prefer mock data for public screenshots and examples.
-- Keep defaults local-only, especially `HOST=127.0.0.1`.
+- Keep the server local-only. It always binds `127.0.0.1`; the code has no `HOST` setting.
 
 ## Development Rules
 
@@ -29,6 +29,4 @@ The release target is a GitHub-friendly open-source version. Be conservative abo
 
 ## Current Notification Stance
 
-Desktop/system notifications are intentionally hidden for release until a reliable native notifier exists. Keep the in-app "待处理" notification center working, but do not expose a desktop reminder button or rely on script-based `osascript display notification` delivery for user-facing release behavior.
-
-If desktop reminders are revisited later, implement them behind a clear native helper or reliable platform path, update tests, and document exactly what app owns the macOS notification permission.
+ASB shows Pending attention in its chat rows. It has no desktop/system notifications or notification center.

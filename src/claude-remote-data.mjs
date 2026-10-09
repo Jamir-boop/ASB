@@ -12,7 +12,7 @@ const MAX_INDEX_ENTRIES = 50_000;
 const MAX_RESPONSES = 512;
 const ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 const caches = new Map();
-const metrics = { keyReads: 0, bodyReads: 0, bodyBytes: 0, directoryReads: 0 };
+const metrics = { keyReads: 0, bodyReads: 0, directoryReads: 0 };
 
 export function claudeRemoteDeepLink(id) {
   return typeof id === 'string' && /^(?:cse|session)_[A-Za-z0-9_-]{1,128}$/.test(id)
@@ -193,21 +193,23 @@ async function readResponse(filePath, key) {
       if (body.includes(marker)) return null;
     }
     metrics.bodyReads += 1;
-    metrics.bodyBytes += body.length;
     return parseClaudeRemoteBody(body, { ...key, incomplete: !complete, mtimeMs: stat.mtimeMs });
   } finally { await file.close(); }
 }
 
-function boundedResponses(cache) {
+function boundedResponses(cache, nowMs) {
   const ordered = [...cache.responses].sort((a, b) => b[1].mtimeMs - a[1].mtimeMs);
+  const chain = new Set(currentResponseChain(ordered.slice(0, MAX_RESPONSES).map(([, response]) => response), nowMs));
   let count = 0;
   for (let index = 0; index < ordered.length; index += 1) {
-    count += ordered[index][1].records.size;
-    if (index >= MAX_RESPONSES || count > MAX_SESSIONS) cache.responses.delete(ordered[index][0]);
+    const [name, response] = ordered[index];
+    count += response.records.size;
+    // Cursor-linked updates can repeat records from the full list.
+    if (index >= MAX_RESPONSES || count > MAX_SESSIONS && !chain.has(response)) cache.responses.delete(name);
   }
 }
 
-async function scanCache(root, cache) {
+async function scanCache(root, cache, nowMs) {
   const directory = await fs.stat(root);
   if (signature(directory) !== cache.directorySignature) {
     metrics.directoryReads += 1;
@@ -260,21 +262,20 @@ async function scanCache(root, cache) {
       if (key.signature === stamp) continue;
       try {
         const response = await readResponse(filePath, key);
-        if (response) { cache.responses.set(name, response); boundedResponses(cache); }
+        if (response) { cache.responses.set(name, response); boundedResponses(cache, nowMs); }
         else cache.responses.delete(name);
         key.signature = stamp;
       } catch { cache.responses.delete(name); cache.keys.delete(name); cache.directorySignature = ''; }
     }
   }));
-  boundedResponses(cache);
+  boundedResponses(cache, nowMs);
 }
 
-function currentSnapshot(responses, nowMs) {
-  // ponytail: only cached observations; complete remote coverage needs a supported app export or API.
+function currentResponseChain(responses, nowMs) {
   const valid = [...responses].filter((response) => Number.isFinite(response.observedAtMs)
     && response.observedAtMs > 0 && response.observedAtMs <= nowMs)
     .sort((a, b) => b.observedAtMs - a.observedAtMs || b.mtimeMs - a.mtimeMs);
-  if (!valid.length) return { records: [], observedAtMs: 0, partial: false };
+  if (!valid.length) return [];
   const chain = [valid[0]], used = new Set(chain);
   while (chain[0].kind === 'watch' && chain[0].startCursor) {
     const previous = valid.find((candidate) => !used.has(candidate) && candidate.lastCursor
@@ -282,6 +283,13 @@ function currentSnapshot(responses, nowMs) {
     if (!previous) break;
     chain.unshift(previous); used.add(previous);
   }
+  return chain;
+}
+
+function currentSnapshot(responses, nowMs) {
+  // ponytail: only cached observations; complete remote coverage needs a supported app export or API.
+  const chain = currentResponseChain(responses, nowMs);
+  if (!chain.length) return { records: [], observedAtMs: 0, partial: false };
   const records = new Map();
   for (const response of chain) for (const record of response.records.values()) {
     if (record.removed) records.delete(record.id);
@@ -318,7 +326,7 @@ export async function loadClaudeRemoteThreads({ appDir = defaultClaudeAppDir(), 
     caches.set(root, cache);
     if (caches.size > 32) caches.delete(caches.keys().next().value);
   }
-  if (!cache.read) cache.read = scanCache(root, cache).catch((error) => {
+  if (!cache.read) cache.read = scanCache(root, cache, nowMs).catch((error) => {
     if (error.code !== 'ENOENT') throw error;
     cache.keys.clear(); cache.responses.clear(); cache.directorySignature = '';
   }).finally(() => { cache.read = null; });
@@ -340,6 +348,10 @@ export async function loadClaudeRemoteThreads({ appDir = defaultClaudeAppDir(), 
     thread.readStatus = thread.nativeUnread === null ? 'unknown' : thread.nativeUnread ? 'unread' : 'read';
     thread.latestAgentFinalAtMs = status.state === 'idle' && ['completed', 'review_ready'].includes(record.statusBucket)
       && record.sessionStatus !== 'failed' ? record.eventAtMs : 0;
+    if (status.state === 'idle' && record.sessionStatus === 'failed') {
+      thread.latestLifecycleKind = 'failed';
+      thread.latestLifecycleAtMs = record.eventAtMs;
+    }
     return thread;
   });
   return { threads, partial: snapshot.partial, provider: { installed: threads.length > 0, status: snapshot.partial ? 'warning' : 'desktop' } };
@@ -392,8 +404,9 @@ export function isClaudeRemoteCacheEvent(root, filename, event) {
   return /^[a-f0-9]{16}_0$/.test(name) && (event === 'rename' || Boolean(caches.get(root)?.keys.get(name)?.kind));
 }
 
+// Read counters and cache sizes, for the tests of the read and size limits.
 export function getClaudeRemoteCacheStats() {
-  return { ...metrics, roots: caches.size, indexEntries: [...caches.values()].reduce((sum, cache) => sum + cache.keys.size, 0),
+  return { ...metrics,
     responseEntries: [...caches.values()].reduce((sum, cache) => sum + cache.responses.size, 0),
     sessionEntries: [...caches.values()].reduce((sum, cache) => sum + [...cache.responses.values()]
       .reduce((count, response) => count + response.records.size, 0), 0) };

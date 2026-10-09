@@ -35,7 +35,7 @@ FIXTURE = {
          "cwd": "/example/Tools", "projectName": "Tools", "state": "unknown", "canOpen": False, "updatedAtMs": NOW - 300_000},
         {"id": "claude:local_mock", "provider": "claude-desktop-code", "providerLabel": "Claude Desktop Code",
          "title": "Choose the folder for the next check", "cwd": "/example/Notes", "projectName": "Notes",
-         "state": "waiting", "canOpen": True, "updatedAtMs": NOW - 120_000, "pending": True, "pendingSource": "user-action"},
+         "state": "waiting", "canOpen": True, "updatedAtMs": NOW - 120_000, "pending": True, "pendingSource": "user-action", "actionRequired": True},
         {"id": "archive", "provider": "codex", "providerLabel": "Codex", "title": "Completed setup",
          "cwd": "/example/ASB", "projectName": "ASB", "state": "idle", "canOpen": True,
          "archived": True, "updatedAtMs": NOW - 3600_000},
@@ -55,162 +55,19 @@ def mock_dashboard():
     for index in range(106):
         state = "waiting" if index < 4 else "idle" if index < 12 else "working" if index < 29 else "unknown" if index >= 94 else "idle"
         manual = index in (12, 94)
-        pending = index < 12 or manual
+        pending = index < 12 or (manual and state != "working")
         provider = "claude-desktop-code" if index % 3 == 1 else "codex"
         rows.append({"id": f"sample-{index}", "provider": provider, "providerLabel": "Claude Desktop Code" if provider != "codex" else "Codex",
                      "title": titles[index // 8] + parts[index % 8], "cwd": "/example/" + ["ASB", "Tools", "Notes"][index % 3],
                      "projectName": ["ASB", "Tools", "Notes"][index % 3], "state": state, "canOpen": True,
-                     "pending": pending, "unread": (pending and state != "waiting") or index == 15, "manualUnread": manual,
+                     "pending": pending, "unread": pending and state not in ("waiting", "working"), "manualUnread": manual,
                      "nativeUnread": True if index == 15 else None,
                      "nativeAttention": index == 15,
-                     "pendingSource": "manual-unread" if manual else "user-action" if state == "waiting" else "observed-completion" if pending else "",
+                     "pendingSource": "manual-unread" if manual and pending else "user-question" if index == 0 else "user-action" if state == "waiting" else "observed-completion" if pending else "",
+                     "actionRequired": state == "waiting" and index != 0,
                      "questionPending": index == 0, "questionAttention": index == 0,
                      "readStatus": "read" if index == 0 else "unread" if index == 15 else "unknown", "updatedAtMs": NOW - index * 60_000})
     return {"generatedAtMs": NOW, "providers": [], "threads": rows}
-
-
-class DataChecks(unittest.TestCase):
-    def test_working_duration_uses_known_current_start_only(self):
-        row = {"state": "working", "workingSinceMs": NOW - 133_000}
-        self.assertEqual(asb.working_duration(row, NOW), "2m13s")
-        self.assertEqual(asb.working_duration(row, NOW + 2_000), "2m15s")
-        self.assertEqual(asb.working_duration({**row, "pending": True, "manualUnread": True}, NOW), "2m13s")
-        for seconds, expected in ((0, "0s"), (59, "59s"), (60, "1m0s"), (3723, "1h2m")):
-            self.assertEqual(asb.working_duration({**row, "workingSinceMs": NOW - seconds * 1000}, NOW), expected)
-        for start in (None, 0, -1, True, "unknown", NOW + 1, float("nan")):
-            self.assertEqual(asb.working_duration({**row, "workingSinceMs": start}, NOW), "")
-        for state in ("waiting", "idle", "unknown"):
-            self.assertEqual(asb.working_duration({**row, "state": state}, NOW), "")
-
-    def test_filters_state_order_pending_and_archive(self):
-        self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE)], ["second", "claude:local_mock", "first", "unknown"])
-        self.assertEqual(len(asb.filtered_rows(FIXTURE, archived=True)), 5)
-        for query, expected in [("SWITCHING", ["first"]), ("/example/Notes", ["claude:local_mock"]),
-                                ("Claude Desktop", ["claude:local_mock"]), ("missing", [])]:
-            self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE, query=query)], expected)
-        self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE, app="codex", state="unknown")], ["unknown"])
-        self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE, pending_only=True)], ["second", "claude:local_mock"])
-        self.assertIn("Pinned", asb.row_meta({**FIXTURE["threads"][0], "pinned": True}, NOW))
-        self.assertIn("Archived", asb.row_meta(FIXTURE["threads"][-1], NOW))
-
-    def test_column_capacity_and_unique_coverage(self):
-        rows = mock_dashboard()["threads"]
-        for width, expected in ((360, 1), (680, 2), (1040, 4)):
-            columns, capacity, pages = asb.pack_columns(rows, width, 660)
-            self.assertEqual(columns, expected)
-            self.assertEqual(capacity, 29)
-            self.assertEqual([row["id"] for column in pages for row in column], [row["id"] for row in rows])
-            self.assertGreater(asb.pack_columns(rows, width, 800)[1], capacity)
-        for width, columns in ((160, 6), (240, 4), (600, 1)):
-            self.assertEqual(asb.pack_columns(rows, 1080, 245, width)[0], columns)
-        self.assertEqual(asb.pack_columns(rows, 360, 700, 160)[0], 2)
-        for height in (22, 68):
-            columns, capacity, pages = asb.pack_columns(rows, 1040, 660, row_height=height)
-            self.assertEqual(capacity, 656 // height)
-            self.assertEqual([row["id"] for column in pages for row in column], [row["id"] for row in rows])
-
-    def test_layout_width_validation_persistence_and_reset(self):
-        with tempfile.TemporaryDirectory(prefix="asb-layout-test-") as directory:
-            path = Path(directory) / "layout.json"
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact"})
-            asb.write_layout(path, 160)
-            self.assertEqual(asb.read_layout(path)["columnWidth"], 160)
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-            previous = path.read_bytes()
-            for invalid in (159, 601, 240.5, "240", True):
-                with self.assertRaises(ValueError):
-                    asb.write_layout(path, invalid)
-                self.assertEqual(path.read_bytes(), previous)
-            asb.write_layout(path)
-            self.assertFalse(path.exists())
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact"})
-
-    def test_view_setting_legacy_width_save_and_reset(self):
-        with tempfile.TemporaryDirectory(prefix="asb-view-test-") as directory:
-            path = Path(directory) / "layout.json"
-            path.write_text(json.dumps({"version": 1, "columnWidth": 180}))
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact"})
-            asb.write_layout(path, 180, "comfortable")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "comfortable"})
-            asb.write_layout(path, 320)
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable"})
-            asb.write_layout(path)
-            self.assertTrue(path.exists())
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable"})
-            before = path.read_bytes()
-            with self.assertRaises(ValueError):
-                asb.write_layout(path, 240, "unknown")
-            self.assertEqual(path.read_bytes(), before)
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-            asb.write_layout(path, 240, "compact")
-            asb.write_layout(path)
-            self.assertFalse(path.exists())
-
-    def test_provider_prefixes(self):
-        for prefix, provider in (("cl:", "claude-desktop-code"), ("claude:", "claude-desktop-code"),
-                                 (" CL : ", "claude-desktop-code"), ("ClaUde: ", "claude-desktop-code"),
-                                 ("cx:", "codex"), ("codex:", "codex"), (" CX : ", "codex"), ("CODEX:", "codex")):
-            opposite = "codex" if provider == "claude-desktop-code" else "claude-desktop-code"
-            selected = asb.filtered_rows(FIXTURE, query=prefix, app=opposite)
-            self.assertTrue(selected)
-            self.assertTrue(all(row["provider"] == provider for row in selected))
-        self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE, "CL: CHOOSE THE FOLDER")], ["claude:local_mock"])
-        self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE, "codex: /example/ASB", pending_only=True)], ["second"])
-        self.assertEqual(len(asb.filtered_rows(FIXTURE, "cx:", archived=True)), 4)
-        self.assertEqual(asb.filtered_rows(FIXTURE, "claude:", state="working"), [])
-        literal = {"threads": [{**FIXTURE["threads"][0], "id": "literal", "title": "notes: <b>Literal title</b>"}]}
-        self.assertEqual(asb.provider_query("notes: <b>"), ("notes: <b>", "all"))
-        self.assertEqual(asb.filtered_rows(literal, "notes: <b>")[0]["id"], "literal")
-
-    def test_combined_states_and_asb_pin_order(self):
-        board = copy.deepcopy(FIXTURE)
-        selected = asb.filtered_rows(board, state={"working", "idle"})
-        self.assertEqual([row["id"] for row in selected], ["second", "first"])
-        self.assertEqual(asb.filtered_rows(board, state=set()), [])
-        self.assertEqual([row["id"] for row in asb.filtered_rows(board, state={"working", "idle"}, pending_only=True)], ["second"])
-        board["threads"][0].update(pinned=True, pinIndex=1)
-        board["threads"][2].update(pinned=True, pinIndex=0)
-        self.assertEqual([row["id"] for row in asb.filtered_rows(board)], ["unknown", "first", "second", "claude:local_mock"])
-        self.assertEqual([row["id"] for row in asb.filtered_rows(board, "cx:", state={"working", "idle"})], ["first", "second"])
-
-    def test_theme_validation_atomic_save_and_reset(self):
-        with tempfile.TemporaryDirectory(prefix="asb-theme-test-") as directory:
-            path = Path(directory) / "asb" / "theme.json"
-            self.assertIsNone(asb.read_theme(path))
-            asb.write_theme(path, CUSTOM)
-            self.assertEqual(asb.read_theme(path), CUSTOM)
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-            before = path.read_bytes()
-            for invalid in ({**CUSTOM, "text": "#222222"}, {**CUSTOM, "background": "#ffffff"},
-                            {**CUSTOM, "accent": "red"}, {**CUSTOM, "extra": "#ffffff"},
-                            {**CUSTOM, "muted": "#222222"}, {**CUSTOM, "divider": "#12345"}):
-                with self.assertRaises(ValueError):
-                    asb.write_theme(path, invalid)
-                self.assertEqual(path.read_bytes(), before)
-            low_highlight_contrast = {**CUSTOM, "text": "#888888", "accent": "#888888", "muted": "#888888"}
-            self.assertGreaterEqual(asb.contrast("#888888", "#171c22"), 4.5)
-            self.assertEqual(asb.highlight_color(low_highlight_contrast), "#282c31")
-            with self.assertRaisesRegex(ValueError, "highlight"):
-                asb.write_theme(path, low_highlight_contrast)
-            self.assertEqual(path.read_bytes(), before)
-            for key in ("text", "accent", "muted"):
-                self.assertGreaterEqual(asb.contrast(CUSTOM[key], asb.highlight_color(CUSTOM)), 4.5)
-            self.assertEqual(list(path.parent.iterdir()), [path])
-            asb.write_theme(path)
-            self.assertIsNone(asb.read_theme(path))
-
-    def test_local_url_and_unfocused_refresh(self):
-        self.assertEqual(asb.local_base_url("http://127.0.0.1:4629/"), "http://127.0.0.1:4629")
-        for value in ["https://example.com", "http://localhost:4629", "http://127.0.0.1:4629/api", "http://u:p@127.0.0.1:4629"]:
-            with self.assertRaises(ValueError):
-                asb.local_base_url(value)
-        calls = []
-        sidebar = SimpleNamespace(closed=False, is_active=lambda: False, refresh=lambda: calls.append(True))
-        self.assertTrue(asb.SwitchboardWindow.tick(sidebar))
-        self.assertEqual(calls, [True])
-        sidebar.closed = True
-        self.assertFalse(asb.SwitchboardWindow.tick(sidebar))
-        self.assertEqual(calls, [True])
 
 
 class RequestChecks(unittest.TestCase):
@@ -370,7 +227,7 @@ class WidgetCheck(unittest.TestCase):
                     self.assertFalse(title.get_wrap())
                     self.assertTrue(title.get_single_line_mode())
                     self.assertEqual(title.get_ellipsize(), asb.Pango.EllipsizeMode.END)
-                    self.assertIn(row.asb_thread["cwd"], row.get_tooltip_text())
+                    self.assertIn(row.asb_thread["cwd"], row.asb_tooltip)
                 self.assertEqual(displayed, window.row_order)
                 self.assertEqual(len(set(displayed)), 106)
                 self.assertEqual(window.focus_widgets["sample-0"].get_child().get_last_child().get_text(), "Waiting")
@@ -383,10 +240,13 @@ class WidgetCheck(unittest.TestCase):
                 native = window.focus_widgets["sample-15"]
                 dot = native.get_child().get_last_child().get_prev_sibling()
                 self.assertTrue(dot.has_css_class("asb-dot"))
-                self.assertEqual((dot.get_width(), dot.get_height()), (7, 7))
+                self.assertFalse(dot.get_visible())
+                self.assertFalse(native.asb_thread["unread"])
                 self.assertFalse(native.asb_thread["pending"])
-                self.assert_accessible_label(native, "Open Build pipeline · worker in Codex. Working. Unread in the original app.")
-                self.assertIn("Marked as unread in ASB", window.focus_widgets["sample-12"].get_tooltip_text())
+                self.assertTrue(native.asb_thread["nativeUnread"])
+                self.assertTrue(native.asb_thread["nativeAttention"])
+                self.assert_accessible_label(native, "Open Build pipeline · worker in Codex. Working.")
+                self.assertIn("Marked unread in ASB.", window.focus_widgets["sample-94"].asb_tooltip)
                 self.assertFalse(window.has_css_class("asb-custom"))
                 self.capture(window, directory / f"native-{width}.png")
                 large = copy.deepcopy(dashboard)
@@ -485,8 +345,8 @@ class WidgetCheck(unittest.TestCase):
             self.drain()
             self.assertFalse(window.focus_widgets["unknown"].get_activatable())
             self.assertTrue(window.focus_widgets["unknown"].get_sensitive())
-            self.assertIn("Original app unread state.", window.focus_widgets["first"].get_tooltip_text())
-            self.assertNotIn("marks this session as read", window.focus_widgets["first"].get_tooltip_text())
+            self.assertNotIn("Unread in the original app.", window.focus_widgets["first"].asb_tooltip)
+            self.assertNotIn("marks this session as read", window.focus_widgets["first"].asb_tooltip)
             context_clicks = [controller for controller in window.focus_widgets["unknown"].observe_controllers()
                               if isinstance(controller, asb.Gtk.GestureClick) and controller.get_button() == 3]
             self.assertEqual(len(context_clicks), 1)
@@ -667,7 +527,7 @@ class WidgetCheck(unittest.TestCase):
                 calls[-1][1](None, "Cannot open this session. Check its app link handler.")
                 self.drain()
                 self.assertEqual(window.focus_widgets["sample-15"].asb_title_label.get_text(), "<b>Current literal title</b>")
-                self.assertIn("Cannot open", window.focus_widgets["sample-15"].get_tooltip_text())
+                self.assertIn("Cannot open", window.focus_widgets["sample-15"].asb_tooltip)
                 self.assertFalse(window.notice.get_visible())
                 self.assertEqual((window.window_handle.get_height(), window.scroll.get_height()), geometry)
 
@@ -681,11 +541,20 @@ class WidgetCheck(unittest.TestCase):
                 self.assertEqual(len(calls), count + 1)
                 self.assertEqual(calls[-1][0], "/api/dashboard?force=1")
                 marked = copy.deepcopy(changed)
-                marked["threads"][15].update(manualUnread=True, unread=True, pending=True, pendingSource="manual-unread")
+                marked["threads"][15].update(manualUnread=True, unread=False, pending=False, pendingSource="")
                 calls[-1][1](marked, None)
                 self.drain()
                 self.assertTrue(window.focus_widgets["sample-15"].asb_thread["manualUnread"])
+                self.assertFalse(window.focus_widgets["sample-15"].asb_thread["unread"])
+                self.assertFalse(window.focus_widgets["sample-15"].asb_thread["pending"])
+                self.assertFalse(window.focus_widgets["sample-15"].asb_dot.get_visible())
                 self.assertFalse(window.refresh_queued)
+                ended = copy.deepcopy(marked)
+                ended["threads"][15].update(state="idle", unread=True, pending=True, pendingSource="manual-unread")
+                window.apply_dashboard(ended, None)
+                self.drain()
+                self.assertTrue(window.focus_widgets["sample-15"].asb_thread["manualUnread"])
+                self.assertTrue(window.focus_widgets["sample-15"].asb_dot.get_visible())
 
             close = window.window_controls.get_first_child()
             self.assertEqual(close.get_action_name(), "window.close")
@@ -714,18 +583,24 @@ class WidgetCheck(unittest.TestCase):
                     dashboard["persistentUnread"] = body["persistentUnread"]
                     if body["persistentUnread"]:
                         row = dashboard["threads"][15]
-                        row.update(retainedUnread=True, retainedUnreadSource="native-unread", unread=True,
-                                   nativeUnread=False, nativeAttention=False, readStatus="read")
+                        row.update(retainedUnread=True, retainedUnreadSource="native-unread", unread=False, pending=False,
+                                   pendingSource="", nativeUnread=False, nativeAttention=False, readStatus="read")
                     result = {"changed": True, "persistentUnread": body["persistentUnread"], "dashboard": dashboard}
                     self.send_response(200); self.end_headers(); self.wfile.write(json.dumps(result).encode())
                     return
                 identity, action = self.path.split("/")[-2:]
                 row = next(row for row in dashboard["threads"] if row["id"] == identity)
                 if action == "mark-unread":
-                    row.update(manualUnread=True, unread=True, pending=True, pendingSource="manual-unread")
+                    working = row["state"] == "working"
+                    row.update(manualUnread=True, unread=not working,
+                               pending=not working or bool(row.get("questionAttention") or row.get("actionRequired")),
+                               pendingSource="user-action" if row.get("actionRequired") else "user-question" if row.get("questionAttention")
+                               else "" if working else "manual-unread")
                     result = {"marked": True, "thread": row}
                 elif action == "mark-read":
-                    row.update(manualUnread=False, retainedUnread=False, unread=False, pending=False, pendingSource="")
+                    row.update(manualUnread=False, retainedUnread=False, retainedUnreadSource="", nativeAttention=False,
+                               completionAttention=False, failedAttention=False, questionAttention=False, unread=False,
+                               pending=bool(row.get("actionRequired")), pendingSource="user-action" if row.get("actionRequired") else "")
                     result = {"changed": True, "threadId": identity, "thread": row}
                 else:
                     if action == "pin":
@@ -799,15 +674,30 @@ class WidgetCheck(unittest.TestCase):
             row = window.focus_widgets["sample-15"]
             self.assertEqual(row.asb_thread["state"], "working")
             self.assertFalse(row.asb_thread["nativeUnread"])
-            self.assertIn("ASB retained", row.get_tooltip_text())
+            self.assertTrue(row.asb_thread["retainedUnread"])
+            self.assertFalse(row.asb_thread["unread"])
+            self.assertFalse(row.asb_thread["pending"])
+            self.assertEqual(asb.attention_indicator(row.asb_thread), "")
+            self.assertNotIn(("Read", "mark-read"), asb.row_menu_actions(row.asb_thread))
+            self.assertNotIn("Unread kept in ASB.", row.asb_tooltip)
             self.assert_accessible_label(row, row.asb_accessible_label)
+            self.assertNotIn("Unread retained in ASB", row.asb_accessible_label)
+        dashboard["threads"][15].update(state="idle", unread=True, pending=True, pendingSource="native-unread")
+        window.apply_dashboard(copy.deepcopy(dashboard), None); self.drain()
+        for view in (0, 1):
+            window.view_filter.set_selected(view); self.drain()
+            row = window.focus_widgets["sample-15"]
+            self.assertTrue(row.asb_thread["retainedUnread"])
+            self.assertTrue(row.asb_thread["unread"])
+            self.assertTrue(row.asb_thread["pending"])
+            self.assertIn("Unread kept in ASB.", row.asb_tooltip)
             self.assertIn("Unread retained in ASB", row.asb_accessible_label)
             dot = next(widget for widget in descendants(row) if widget.has_css_class("asb-dot"))
             self.assertEqual((dot.get_width(), dot.get_height()), (7, 7))
         window.view_filter.set_selected(0); self.drain()
         activate("sample-15", "Read")
         self.assertFalse(window.focus_widgets["sample-15"].asb_thread["retainedUnread"])
-        self.assertEqual(window.focus_widgets["sample-15"].asb_thread["state"], "working")
+        self.assertEqual(window.focus_widgets["sample-15"].asb_thread["state"], "idle")
         window.persistent_unread.set_active(False); self.drain(.4)
         self.assertEqual(received[-1], ("/api/settings/unread", {"persistentUnread": False}, base))
         self.assertEqual(sum(route == "/api/settings/unread" for route, *_args in received), 2)
@@ -906,7 +796,7 @@ class WidgetCheck(unittest.TestCase):
                     card = window.focus_widgets["sample-10"]
                     title = card.asb_title_label
                     self.assertIn("<b>", title.get_text())
-                    self.assertIn("/example/Tools", card.get_tooltip_text())
+                    self.assertIn("/example/Tools", card.asb_tooltip)
                     if mode == "comfortable":
                         self.assertIsInstance(card.get_child(), asb.Gtk.Overlay)
                         content = card.get_child().get_child()
@@ -992,7 +882,7 @@ class WidgetCheck(unittest.TestCase):
                     callback = request.call_args_list[0].args[2]
                     callback(None, "Cannot open this session.")
                     self.assertEqual(window.focus_widgets["sample-10"].asb_title_label.get_text(), dashboard["threads"][10]["title"])
-                    self.assertIn("Cannot open", window.focus_widgets["sample-10"].get_tooltip_text())
+                    self.assertIn("Cannot open", window.focus_widgets["sample-10"].asb_tooltip)
                 with patch.object(window, "session_action") as action:
                     self.assertIsNotNone(window.pin_drag_prepare(None, 0, 0, "sample-10"))
                     self.assertTrue(window.pin_drop(None, "asb-pin:sample-10", 0, 33, "sample-11"))

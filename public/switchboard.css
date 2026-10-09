@@ -54,6 +54,10 @@ h1 { font-size: 28px; line-height: 1; letter-spacing: -.03em; margin: 0; }
 .state.waiting { color: var(--amber); }
 .state.working::before, .state.waiting::before { background: currentColor; }
 .open-icon { width: 15px; height: 15px; margin-top: 3px; color: var(--muted); }
+.attention { align-self: center; flex: none; color: var(--amber); }
+.attention.dot, .attention.stop { width: 7px; height: 7px; background: currentColor; border-radius: 50%; }
+.attention.stop { color: var(--muted); border-radius: 1px; }
+.attention.question { font-size: 11px; font-weight: 800; }
 .empty { padding: 48px 12px; text-align: center; }
 .empty p { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 8px 0 0; }
 footer { border-top: 1px solid var(--line); padding: 15px 0 24px; color: var(--muted); font-size: 10px; line-height: 1.6; }

@@ -1,14 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtemp, mkdir, writeFile, readFile, rm, stat, utimes } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
-import { buildDashboard } from '../src/insights.mjs';
-import { defaultClaudeAppDir, normalizeClaudeDesktopCodeSession, loadClaudeDesktopCodeThreads, loadClaudeCodeCliThreads, parseClaudeJsonlSignals } from '../src/claude-data.mjs';
+import { defaultClaudeAppDir, normalizeClaudeDesktopCodeSession, loadClaudeDesktopCodeThreads, parseClaudeJsonlSignals } from '../src/claude-data.mjs';
 import { loadCodexDashboard, readThreads, discoverCodexStateDatabase, parseRolloutSignals, readRolloutSignals, getCodexCacheStats, codexNativeReadStatus } from '../src/codex-data.mjs';
 import { buildSwitchboardDashboard, createSwitchboardServer, loadSwitchboardDashboard, openSwitchboardThread, switchboardStatus, PendingTracker } from '../src/switchboard.mjs';
 
@@ -60,7 +63,7 @@ test('Claude recursively reads local metadata, keeps archives, and deduplicates 
   await writeFile(path.join(sessions, 'local_two.json'), JSON.stringify({ sessionId: localId, cliSessionId: id, title: 'Newest', isArchived: true, lastActivityAt: now + 100_000 }));
   for (const filename of ['local_one.json', 'local_two.json']) await utimes(path.join(sessions, filename), now / 1000, now / 1000);
   await writeFile(path.join(sessions, 'ignored.json'), JSON.stringify({ sessionId: 'private', cliSessionId: 'other' }));
-  const result = await loadClaudeDesktopCodeThreads({ appDir: path.join(dir, 'app'), projectFiles: new Map(), usageCache: null, nowMs: now });
+  const result = await loadClaudeDesktopCodeThreads({ appDir: path.join(dir, 'app'), projectsDir: path.join(dir, 'projects'), nowMs: now });
   assert.equal(result.threads.length, 1);
   assert.equal(result.threads[0].title, 'Newest');
   assert.equal(result.threads[0].archived, true);
@@ -118,21 +121,19 @@ test('Working start time uses the current Codex task or Claude request and stays
     byId.codex.workingSinceMs);
 });
 
-test('the ASB scan explicitly disables auth, usage cache, and metric scans or writes', async () => {
+test('the ASB scan sets its own reader limits over caller options', async () => {
   let codexOptions;
   let claudeOptions;
   const dashboard = await loadSwitchboardDashboard({ nowMs: now,
-    codexOptions: { codexResetCreditsEnabled: true, maxGovernanceRollouts: 50, workMetricCachePath: '/bad' },
-    claudeOptions: { usageCache: 'bad' },
+    codexOptions: { maxRollouts: 1, codexNativeReadEnabled: false },
+    claudeOptions: { maxCount: 1, strictMetadataRead: false },
     loadCodex: async (options) => { codexOptions = options; return { threads: [] }; },
     loadClaude: async (options) => { claudeOptions = options; return { threads: [] }; },
   });
-  assert.equal(codexOptions.codexResetCreditsEnabled, false);
-  assert.equal(codexOptions.workMetricCachePath, false);
-  assert.equal(codexOptions.maxGovernanceRollouts, 0);
-  assert.equal(codexOptions.maxOrphanRollouts, 0);
-  assert.equal(claudeOptions.usageCache, null);
-  assert.equal(claudeOptions.fileIndexCacheTtlMs, 1_000);
+  assert.equal(codexOptions.maxRollouts, 5000);
+  assert.equal(codexOptions.codexNativeReadEnabled, true);
+  assert.equal(claudeOptions.maxCount, 5000);
+  assert.equal(claudeOptions.strictMetadataRead, true);
   assert.equal(dashboard.providers.length, 2);
 });
 
@@ -189,7 +190,7 @@ test('Claude roots include only explicitly linked child work and observe its fin
     event('assistant', -1_000, { sessionId: id, message: { content: [{ type: 'thinking' }] } }),
   ]) + '\n');
   const scan = async (time = now) => buildSwitchboardDashboard((await loadClaudeDesktopCodeThreads({
-    appDir, projectsDir, nowMs: time, asbMode: true, usageCache: null,
+    appDir, projectsDir, nowMs: time,
   })).threads, [], time);
   const tracker = new PendingTracker(false);
   const active = await tracker.observe(await scan());
@@ -200,22 +201,24 @@ test('Claude roots include only explicitly linked child work and observe its fin
   assert.equal(active.threads[0].completionAtMs, 0);
   assert.equal(active.threads[0].pending, false);
   assert.equal(active.nextStatusCheckAtMs, now - 6_000 + 6 * 3_600_000 + 1);
+  const discardTracker = new PendingTracker(false);
+  const discardWorking = await discardTracker.observe(await scan());
+  await discardTracker.setDiscard(discardWorking.threads[0], true);
   assert.equal((await scan(now + 7 * 3_600_000)).threads[0].state, 'unknown');
   assert.doesNotMatch(JSON.stringify(active), /agent-linked|private child body|private result|subagents/);
-  const cli = await loadClaudeCodeCliThreads({ projectsDir, nowMs: now, runCommand: async () => ({ stdout: 'Claude Code' }) });
-  assert.equal(cli.threads.length, 1);
-  assert.equal(cli.threads[0].lifecycleRunning, true);
-  assert.equal(cli.threads[0].embeddedSubagentCount, 2);
   await tracker.markUnread(active.threads[0].id);
   const unreadWorking = await tracker.observe(await scan());
   assert.equal(unreadWorking.threads[0].state, 'working');
-  assert.equal(unreadWorking.threads[0].pendingSource, 'manual-unread');
+  assert.equal(unreadWorking.threads[0].manualUnread, true);
+  assert.deepEqual([unreadWorking.threads[0].unread, unreadWorking.threads[0].pending, unreadWorking.threads[0].pendingSource], [false, false, '']);
   await tracker.acknowledge(active.threads[0].id);
   await writeFile(childPath, jsonl([final(100)]) + '\n', { flag: 'a' });
   const complete = await tracker.observe(await scan(now + 100));
   assert.equal(complete.threads[0].state, 'idle');
   assert.equal(complete.threads[0].completionAtMs, now + 100);
   assert.equal(complete.threads[0].completionAttention, true);
+  const discardComplete = (await discardTracker.observe(await scan(now + 100))).threads[0];
+  assert.deepEqual([discardComplete.state, discardComplete.discardResult, discardComplete.pending, discardComplete.unread], ['idle', false, false, false]);
   assert.equal((await scan(now + 101)).threads[0].state, 'idle');
   await tracker.acknowledge(active.threads[0].id);
   await writeFile(rootPath, jsonl([
@@ -231,11 +234,16 @@ test('Claude roots include only explicitly linked child work and observe its fin
   assert.equal(discovered.threads[0].subagentCount, 3);
   assert.equal(discovered.threads[0].workingSinceMs, now + 200);
   for (const terminal of [{ type: 'result', terminal_reason: 'interrupted' }, { type: 'result', is_error: true }]) {
+    await writeFile(laterPath, jsonl([event('assistant', 280, { message: { content: [{ type: 'thinking' }] } })]) + '\n');
+    await tracker.observe(await scan(now + 280));
     await writeFile(laterPath, jsonl([event(terminal.type, 300, terminal)]) + '\n');
-    const cancelled = await tracker.observe(await scan(now + 300));
-    assert.equal(cancelled.threads[0].state, 'idle');
-    assert.equal(cancelled.threads[0].completionAtMs, 0);
-    assert.equal(cancelled.threads[0].pending, false);
+    const ended = (await tracker.observe(await scan(now + 300))).threads[0];
+    assert.equal(ended.state, 'idle');
+    assert.equal(ended.completionAtMs, 0);
+    assert.equal(ended.lastOutcome, terminal.is_error ? 'failed' : 'stopped');
+    assert.equal(ended.pending, Boolean(terminal.is_error));
+    assert.equal(ended.failedAttention, Boolean(terminal.is_error));
+    await tracker.acknowledge(ended.id);
   }
 });
 
@@ -262,17 +270,13 @@ test('stale Claude child work does not replace a fresh root start or keep a canc
     event('assistant', old + 3, { message: { content: [{ type: 'thinking' }] } }),
   ]) + '\n');
   const scan = async () => buildSwitchboardDashboard((await loadClaudeDesktopCodeThreads({
-    appDir, projectsDir, nowMs: now, asbMode: true, usageCache: null,
+    appDir, projectsDir, nowMs: now,
   })).threads, [], now);
   const active = (await scan()).threads[0];
   assert.equal(active.state, 'working');
   assert.equal(active.workingSinceMs, now - 100);
   await writeFile(rootPath, jsonl([event('assistant', -50, { message: { stop_reason: 'end_turn', content: 'Fresh work done.' } })]) + '\n', { flag: 'a' });
   assert.equal((await scan()).threads[0].state, 'unknown');
-  const cli = await loadClaudeCodeCliThreads({ projectsDir, nowMs: now, runCommand: async () => ({ stdout: 'Claude Code' }) });
-  assert.notEqual(cli.threads[0].status, 'running');
-  assert.equal(cli.threads[0].currentTurnStartedAtMs, null);
-  assert.notEqual(buildDashboard(cli.threads, now).threads[0].status, 'running');
   await writeFile(path.join(childDir, 'agent-old.jsonl'), jsonl([event('result', -20, { terminal_reason: 'interrupted' })]) + '\n', { flag: 'a' });
   assert.equal((await scan()).threads[0].state, 'idle');
   await writeFile(rootPath, jsonl([
@@ -283,6 +287,72 @@ test('stale Claude child work does not replace a fresh root start or keep a canc
   const cancelled = (await scan()).threads[0];
   assert.equal(cancelled.state, 'idle');
   assert.equal(cancelled.completionAtMs, 0);
+});
+
+test('a Working row hides stored unread marks, keeps them for later, and shows only question attention', async () => {
+  const tracker = new PendingTracker(false);
+  const board = (state, question = false) => {
+    const questionRow = buildSwitchboardDashboard([{ id: 'question', provider: 'codex', lifecycleRunning: true,
+      agentActivityAtMs: now, awaitingUserInput: question, latestUserQuestionAtMs: now }], [], now).threads[0];
+    return { providers: [], threads: [
+      { id: 'retained', state, nativeUnread: null, completionAtMs: state === 'idle' ? now : 0 },
+      { id: 'native', state, nativeUnread: true }, { id: 'manual', state, nativeUnread: false }, questionRow,
+    ] };
+  };
+  await tracker.setPersistentUnread(true, await tracker.observe(board('working')));
+  await tracker.observe(board('idle'));
+  await tracker.markUnread('manual');
+  const working = await tracker.observe(board('working', true));
+  assert.deepEqual(working.threads.map((row) => [row.id, row.state, row.unread, row.pending, row.pendingSource]), [
+    ['retained', 'working', false, false, ''], ['native', 'working', false, false, ''],
+    ['manual', 'working', false, false, ''], ['question', 'working', false, true, 'user-question']]);
+  assert.deepEqual(working.threads.slice(0, 3).map((row) => [row.retainedUnreadSource, row.nativeAttention, row.manualUnread]),
+    [['observed-completion', false, false], ['native-unread', true, false], ['', false, true]]);
+  const idle = await tracker.observe(board('idle'));
+  assert.deepEqual(idle.threads.slice(0, 3).map((row) => [row.unread, row.pending, row.pendingSource]),
+    [[true, true, 'observed-completion'], [true, true, 'native-unread'], [true, true, 'manual-unread']]);
+});
+
+test('a pending Claude AskUserQuestion gives question attention, and Working only while a linked child works', async (t) => {
+  const dir = await temp(t);
+  const appDir = path.join(dir, 'app');
+  const projectsDir = path.join(dir, 'projects');
+  const subagents = path.join(projectsDir, 'project', id, 'subagents');
+  const rootPath = path.join(projectsDir, 'project', `${id}.jsonl`);
+  const event = (type, offset, extra) => ({ type, timestamp: new Date(now + offset).toISOString(), ...extra });
+  const use = (toolId, name, offset) => event('assistant', offset, { message: { content: [{ type: 'tool_use', id: toolId, name }] } });
+  const result = (toolId, offset, extra) => event('user', offset, { message: { content: [{ type: 'tool_result', tool_use_id: toolId }] }, ...extra });
+  await mkdir(path.join(appDir, 'claude-code-sessions'), { recursive: true });
+  await mkdir(subagents, { recursive: true });
+  await writeFile(path.join(appDir, 'claude-code-sessions', `${localId}.json`), JSON.stringify({ sessionId: localId, cliSessionId: id }));
+  const tracker = new PendingTracker(false);
+  const scan = async (events) => {
+    if (events) await writeFile(rootPath, jsonl(events) + '\n', { flag: 'a' });
+    const { threads } = await loadClaudeDesktopCodeThreads({ appDir, projectsDir, nowMs: now });
+    return { thread: threads[0], row: (await tracker.observe(buildSwitchboardDashboard(threads, [], now))).threads[0] };
+  };
+  const attention = ({ row }) => [row.state, row.questionPending, row.questionAttention, row.unread, row.pending, row.pendingSource];
+  const blocking = await scan([event('user', -10_000, { message: { content: 'Start the work.' } }),
+    use('linked', 'Agent', -9_000), result('linked', -8_999, { toolUseResult: { isAsync: true, status: 'async_launched', agentId: 'linked' } }),
+    use('ask', 'AskUserQuestion', -5_000)]);
+  assert.deepEqual(attention(blocking), ['waiting', true, true, false, true, 'user-question']);
+  assert.deepEqual([blocking.thread.awaitingPermission, blocking.thread.pendingToolCount, blocking.thread.awaitingUserInput,
+    blocking.thread.latestUserQuestionAtMs], [true, 1, true, now - 5_000]);
+  await writeFile(path.join(subagents, 'agent-linked.jsonl'),
+    jsonl([event('assistant', -4_000, { sessionId: id, isSidechain: true, agentId: 'linked', message: { content: [{ type: 'thinking' }] } })]) + '\n');
+  const nonBlocking = await scan();
+  assert.deepEqual(attention(nonBlocking), ['working', true, true, false, true, 'user-question']);
+  assert.equal(nonBlocking.thread.awaitingPermission, true);
+  const permission = await scan([use('permission', 'request_permission', -3_000)]);
+  assert.deepEqual([permission.row.state, permission.row.actionRequired, permission.row.pending], ['waiting', true, true]);
+  await tracker.acknowledge(permission.row.id);
+  const permissionRead = (await scan()).row;
+  assert.deepEqual([permissionRead.questionAttention, permissionRead.actionRequired, permissionRead.pending], [false, true, true]);
+  const plan = await scan([result('permission', -2_800), use('plan', 'ExitPlanMode', -2_500)]);
+  assert.deepEqual([plan.row.state, plan.row.actionRequired, plan.row.pending, plan.thread.questionNonBlocking], ['waiting', true, true, false]);
+  const answered = await scan([result('plan', -2_000), result('ask', -1_000)]);
+  assert.deepEqual(attention(answered), ['working', false, false, false, false, '']);
+  assert.equal(answered.thread.awaitingUserInput, false);
 });
 
 test('ASB shares concurrent loads and uses the active fallback clock without forced scans', async (t) => {
@@ -374,15 +444,15 @@ test('the web view uses the adaptive clock, pauses when hidden, and skips overla
 
 test('ASB reports unavailable or corrupt Claude metadata without a ready status', async (t) => {
   const dir = await temp(t);
-  const missing = await loadSwitchboardDashboard({ loadCodex: async () => ({ threads: [] }), claudeOptions: { appDir: dir, projectFiles: new Map() } });
+  const missing = await loadSwitchboardDashboard({ loadCodex: async () => ({ threads: [] }), claudeOptions: { appDir: dir, projectsDir: path.join(dir, 'projects') } });
   assert.equal(missing.providers[1].status, 'error');
   const sessions = path.join(dir, 'claude-code-sessions');
   await mkdir(sessions);
   await writeFile(path.join(sessions, 'local_bad.json'), '{');
-  const corrupt = await loadSwitchboardDashboard({ loadCodex: async () => ({ threads: [] }), claudeOptions: { appDir: dir, projectFiles: new Map() } });
+  const corrupt = await loadSwitchboardDashboard({ loadCodex: async () => ({ threads: [] }), claudeOptions: { appDir: dir, projectsDir: path.join(dir, 'projects') } });
   assert.equal(corrupt.providers[1].status, 'error');
   await writeFile(path.join(sessions, 'local_good.json'), JSON.stringify({ sessionId: localId, title: 'Good' }));
-  const partial = await loadSwitchboardDashboard({ loadCodex: async () => ({ threads: [] }), claudeOptions: { appDir: dir, projectFiles: new Map() } });
+  const partial = await loadSwitchboardDashboard({ loadCodex: async () => ({ threads: [] }), claudeOptions: { appDir: dir, projectsDir: path.join(dir, 'projects') } });
   assert.equal(partial.providers[1].status, 'warning');
   assert.equal(partial.threads.length, 1);
   assert.equal(partial.threads[0].state, 'unknown');
@@ -408,11 +478,9 @@ test('native SQLite works without the CLI, preserves desktop name/pin, and reads
   const oldPath = process.env.PATH;
   process.env.PATH = '/no-asb-tools';
   t.after(() => { process.env.PATH = oldPath; });
-  const beforeMetrics = getCodexCacheStats();
-  const dashboard = await loadCodexDashboard({ databasePath: dbPath, sessionsDir: dir,
-    sessionIndexPath: path.join(dir, 'absent-index'), globalStatePath: path.join(dir, 'absent-state'),
+  const dashboard = await loadCodexDashboard({ databasePath: dbPath, sessionIndexPath: path.join(dir, 'absent-index'), globalStatePath: path.join(dir, 'absent-state'),
     authPath: path.join(dir, 'never-read-auth'), fetchImpl: () => assert.fail('Network call'),
-    codexResetCreditsEnabled: false, maxOrphanRollouts: 0, maxGovernanceRollouts: 0, workMetricCachePath: false, nowMs: now,
+    nowMs: now,
   });
   process.env.PATH = oldPath;
   assert.equal(dashboard.threads[0].title, 'Desktop name');
@@ -421,7 +489,6 @@ test('native SQLite works without the CLI, preserves desktop name/pin, and reads
   assert.equal(buildSwitchboardDashboard(dashboard.threads, [], now).threads[0].completionAtMs, now);
   assert.deepEqual(await readFile(dbPath), before);
   assert.equal((await stat(dbPath)).mtimeMs, beforeStat.mtimeMs);
-  assert.equal(getCodexCacheStats().workMetrics.fullScans, beforeMetrics.workMetrics.fullScans);
   await assert.rejects(readThreads({ databasePath: path.join(dir, 'missing.sqlite') }));
   await assert.rejects(stat(path.join(dir, 'missing.sqlite')), { code: 'ENOENT' });
 });
@@ -455,7 +522,7 @@ test('Codex roots read linked nested lifecycle, hold completion, and ignore arch
   for (const identity of [archivedId, unrelatedId, orphanId, internalId]) await append(identity, [event('task_started', -1_000)]);
   const beforeDatabase = await readFile(dbPath);
   const scan = (time = now) => loadSwitchboardDashboard({ nowMs: time,
-    codexOptions: { databasePath: dbPath, sessionsDir: dir, sessionIndexPath: path.join(dir, 'missing-index'),
+    codexOptions: { databasePath: dbPath, sessionIndexPath: path.join(dir, 'missing-index'),
       globalStatePath: path.join(dir, 'missing-state'), fetchImpl: () => assert.fail('Network call') },
     loadClaude: async () => ({ threads: [] }),
   });
@@ -499,12 +566,24 @@ test('Codex roots read linked nested lifecycle, hold completion, and ignore arch
   assert.equal(cancelled.threads[0].state, 'idle');
   assert.equal(cancelled.threads[0].completionAtMs, 0);
   assert.equal(cancelled.threads[0].pending, false);
+  assert.equal(cancelled.threads[0].lastOutcome, 'stopped');
   await append(nestedId, [event('task_started', 240)]);
   await tracker.observe(await scan(now + 240));
   await append(nestedId, [event('task_complete', 250)]);
   const afterCancellation = await tracker.observe(await scan(now + 250));
   assert.equal(afterCancellation.threads[0].completionAtMs, now + 250);
   assert.equal(afterCancellation.threads[0].completionAttention, true);
+  await tracker.acknowledge(id);
+  await append(nestedId, [event('task_started', 260)]);
+  await tracker.observe(await scan(now + 260));
+  await append(nestedId, [{ timestamp: new Date(now + 270).toISOString(), payload: {
+    type: 'task_complete', error: { message: 'Synthetic terminal error', codex_error_info: 'other' },
+  } }]);
+  const failed = (await tracker.observe(await scan(now + 270))).threads[0];
+  assert.deepEqual([failed.state, failed.lastOutcome, failed.failedAttention, failed.pending], ['idle', 'failed', true, true]);
+  assert.equal(failed.failedAtMs, now + 270);
+  assert.equal(failed.completionAtMs, 0);
+  assert.doesNotMatch(JSON.stringify(failed), /Synthetic terminal error|codex_error_info/);
   await tracker.acknowledge(id);
   await rm(rollout(nestedId));
   const missing = await scan(now + 300);
@@ -634,13 +713,14 @@ test('Pending observes complete scans, preserves native truth, and persists comp
   assert.equal(first.threads[0].pending, false);
   assert.equal(first.threads[2].pending, false);
   assert.equal(first.threads[2].state, 'working');
-  assert.equal(first.threads[2].unread, true);
-  assert.equal(first.threads[2].pendingSource, 'native-unread');
+  assert.equal(first.threads[2].nativeAttention, true);
+  assert.equal(first.threads[2].unread, false);
+  assert.equal(first.threads[2].pendingSource, '');
   assert.equal(first.threads[3].pendingSource, 'native-unread');
   assert.equal(first.threads[4].pending, false);
   assert.equal(first.threads[5].pending, true);
   assert.equal(first.threads[5].state, 'waiting');
-  assert.equal(first.threads[6].pending, false);
+  assert.equal(first.threads[6].pending, true);
   const completed = await tracker.observe(board([{ id: 'hidden', state: 'idle', completionAtMs: 200 }]));
   assert.equal(completed.threads[0].pendingSource, 'observed-completion');
   assert.equal(completed.threads[0].unread, true);
@@ -649,7 +729,8 @@ test('Pending observes complete scans, preserves native truth, and persists comp
   await restarted.acknowledge('hidden');
   assert.equal((await new PendingTracker(statePath).observe(board([{ id: 'hidden', state: 'idle', completionAtMs: 200 }]))).threads[0].pending, false);
   const saved = JSON.parse(await readFile(statePath, 'utf8'));
-  assert.deepEqual(Object.keys(saved.records.hidden).sort(), ['ack', 'manual', 'nativeAck', 'nativeAt', 'nativeSeen', 'pending', 'questionAck', 'questionSeen', 'retained', 'seen', 'working']);
+  assert.deepEqual(Object.keys(saved.records.hidden).sort(), ['ack', 'discard', 'discardEnd', 'discardNative', 'discardStart', 'discardedAt',
+    'manual', 'nativeAck', 'nativeAt', 'nativeSeen', 'pending', 'pendingKind', 'questionAck', 'questionSeen', 'retained', 'seen', 'working']);
   assert.equal((await stat(statePath)).mode & 0o777, 0o600);
   await tracker.observe(board([{ id: 'aborted', state: 'working' }]));
   assert.equal((await tracker.observe(board([{ id: 'aborted', state: 'idle', completionAtMs: 0 }]))).threads[0].pending, false);
@@ -669,7 +750,7 @@ test('Pending observes complete scans, preserves native truth, and persists comp
   await tracker.observe(board([{ id: 'stale', state: 'unknown' }]));
   const excluded = await tracker.observe(board([{ id: 'archive', state: 'idle', archived: true, nativeUnread: true, completionAtMs: 300 },
     { id: 'stale', state: 'idle', completionAtMs: 300 }]));
-  assert.equal(excluded.threads[0].pending, false);
+  assert.equal(excluded.threads[0].pending, true);
   assert.equal(excluded.threads[0].unread, true);
   assert.equal(excluded.threads[0].pendingSource, 'native-unread');
   assert.equal(excluded.threads[1].pending, false);
@@ -717,11 +798,12 @@ test('persistent unread retains native, question, and observed completion dots w
   await tracker.setPersistentUnread(true, existing);
   const completed = await tracker.observe(board(true, true, true));
   assert.deepEqual(completed.threads.map((row) => row.retainedUnreadSource), ['native-unread', 'observed-completion', 'user-question']);
-  assert.ok(completed.threads.every((row) => row.unread && !row.manualUnread));
-  assert.equal(completed.threads[0].state, 'working');
-  assert.equal(completed.threads[0].pending, false);
+  assert.ok(completed.threads.every((row) => row.retainedUnread && !row.manualUnread));
+  assert.deepEqual(completed.threads.map((row) => [row.state, row.unread, row.pending, row.pendingSource]),
+    [['working', false, false, ''], ['idle', true, true, 'observed-completion'], ['working', false, true, 'user-question']]);
   const clearedSource = await tracker.observe(board(false, false, true));
-  assert.ok(clearedSource.threads.every((row) => row.unread));
+  assert.deepEqual(clearedSource.threads.map((row) => [row.unread, row.pending]), [[false, false], [true, true], [false, false]]);
+  assert.ok(clearedSource.threads.every((row) => row.retainedUnread));
   assert.equal(clearedSource.threads[0].nativeUnread, false);
   assert.equal(clearedSource.threads[0].nativeAttention, false);
   assert.equal(clearedSource.threads[2].questionAttention, false);
@@ -754,7 +836,8 @@ test('persistent native attention promotes new question and completion sources w
   assert.equal((await tracker.observe(board({ question: true }))).threads[0].retainedUnreadSource, 'user-question');
   const resolved = (await tracker.observe(board())).threads[0];
   assert.equal(resolved.state, 'working');
-  assert.equal(resolved.pending, true);
+  assert.equal(resolved.pending, false);
+  assert.equal(resolved.unread, false);
   assert.equal(resolved.retainedUnreadSource, 'user-question');
   await tracker.acknowledge(id);
   const read = (await tracker.observe(board({ question: true }))).threads[0];
@@ -763,7 +846,8 @@ test('persistent native attention promotes new question and completion sources w
   await tracker.observe(board({ native: false }));
   assert.equal((await tracker.observe(board())).threads[0].retainedUnreadSource, 'native-unread');
   assert.equal((await tracker.observe(board({ completion: now + 2, running: false }))).threads[0].retainedUnreadSource, 'observed-completion');
-  assert.equal((await tracker.observe(board({ completion: now + 2 }))).threads[0].pending, true);
+  assert.equal((await tracker.observe(board({ completion: now + 2 }))).threads[0].pending, false);
+  assert.equal((await tracker.observe(board({ completion: now + 2, running: false }))).threads[0].pending, true);
 });
 
 test('Read clears persistent attention without changing execution, and only new source events add it again', async () => {
@@ -802,7 +886,7 @@ test('ASB unread settings seed cached dots, preserve them on open, and restore o
   let native = true;
   let loads = 0;
   const server = createSwitchboardServer({ pendingTracker: tracker,
-    loadDashboard: async () => { loads += 1; return { providers: [], threads: [{ id, state: 'working', nativeUnread: native,
+    loadDashboard: async () => { loads += 1; return { providers: [], threads: [{ id, state: 'unknown', nativeUnread: native,
       canOpen: true, provider: 'codex', appDeepLink: `codex://threads/${id}` }] }; }, openThread: async () => ({ opened: true }),
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -823,7 +907,7 @@ test('ASB unread settings seed cached dots, preserve them on open, and restore o
   const read = await post(`/api/threads/${id}/mark-read`);
   assert.equal(read.changed, true);
   assert.equal(read.thread.unread, false);
-  assert.equal(read.thread.state, 'working');
+  assert.equal(read.thread.state, 'unknown');
   await post(`/api/threads/${id}/mark-unread`);
   await post(`/api/threads/${id}/open`);
   assert.equal((await scan()).threads[0].manualUnread, true);
@@ -926,7 +1010,7 @@ test('manual unread has one stored-session action, persists over native reads, a
   await post(`${base}/api/threads/working/mark-unread`);
   await post(`${base}/api/threads/unknown/mark-unread`);
   dashboard = await scan();
-  assert.deepEqual(dashboard.threads.map((row) => [row.state, row.pending, row.unread]), [['idle', true, true], ['working', true, true], ['unknown', true, true]]);
+  assert.deepEqual(dashboard.threads.map((row) => [row.state, row.pending, row.unread]), [['idle', true, true], ['working', false, false], ['unknown', true, true]]);
   const restarted = new PendingTracker(statePath);
   assert.ok((await restarted.observe(board())).threads.every((row) => row.manualUnread));
   await post(`${base}/api/threads/${id}/open`);
@@ -1137,4 +1221,471 @@ test('successful ASB opens acknowledge question/native attention without changin
   assert.equal(completed.threads[0].state, 'idle');
   assert.equal(completed.threads[0].completionAttention, true);
   assert.equal(completed.threads[0].unread, true);
+});
+
+test('terminal Codex errors survive cached lifecycle reads and resolve questions without exposing error text', async (t) => {
+  const dir = await temp(t);
+  const rollout = path.join(dir, 'rollout-synthetic.jsonl');
+  const event = (type, offset, extra = {}) => ({ timestamp: new Date(now + offset).toISOString(), payload: { type, ...extra } });
+  const events = [event('task_started', -100), questionCall('request_user_input_async', 'terminal-question'),
+    event('task_complete', 10, { error: { message: 'Synthetic failure text', codex_error_info: 'other' } })];
+  const parsed = parseRolloutSignals(jsonl(events));
+  assert.deepEqual([parsed.agentRunning, parsed.latestLifecycleKind, parsed.awaitingUserInput], [false, 'failed', false]);
+  await writeFile(rollout, jsonl(events) + '\n');
+  const cached = await readRolloutSignals(rollout, { initialBytes: 32 });
+  assert.deepEqual([cached.agentRunning, cached.latestLifecycleKind, cached.latestLifecycleAtMs], [false, 'failed', now + 10]);
+  const historical = (await new PendingTracker(false).observe(buildSwitchboardDashboard([
+    { id, provider: 'codex', nativeUnread: null, lifecycleRunning: cached.agentRunning, ...cached },
+  ], [], now + 10))).threads[0];
+  assert.deepEqual([historical.state, historical.lastOutcome, historical.unread, historical.pending], ['idle', 'failed', false, false]);
+  await writeFile(rollout, jsonl([event('task_started', 20), event('task_complete', 30, { error: null })]) + '\n', { flag: 'a' });
+  const success = await readRolloutSignals(rollout, { initialBytes: 32 });
+  assert.equal(success.latestLifecycleKind, 'task_complete');
+  assert.equal(success.latestLifecycleAtMs, now + 30);
+  await writeFile(rollout, jsonl([event('task_started', 40)]) + '\n', { flag: 'a' });
+  const nextTask = await readRolloutSignals(rollout, { initialBytes: 32 });
+  assert.deepEqual([nextTask.latestTaskStartedAtMs, nextTask.latestTaskEndedAtMs, nextTask.latestTaskEndKind], [now + 40, now + 30, 'task_complete']);
+});
+
+test('observed failed attention follows native read truth, acknowledgment and Persistent unread', async (t) => {
+  const dir = await temp(t);
+  const statePath = path.join(dir, 'pending.json');
+  const board = (state, nativeUnread = null, at = now) => ({ providers: [], threads: [{ id, state, nativeUnread,
+    completionAtMs: 0, failedAtMs: state === 'idle' ? at : 0, lastOutcome: state === 'idle' ? 'failed' : '' }] });
+  const tracker = new PendingTracker(statePath);
+  await tracker.observe(board('working'));
+  const failed = await tracker.observe(board('idle'));
+  assert.deepEqual([failed.threads[0].failedAttention, failed.threads[0].completionAttention, failed.threads[0].pendingSource],
+    [true, false, 'observed-failure']);
+  const restart = new PendingTracker(statePath);
+  assert.equal((await restart.observe(board('idle'))).threads[0].failedAttention, true);
+  await restart.setPersistentUnread(true, failed);
+  const retained = (await restart.observe(board('working'))).threads[0];
+  assert.deepEqual([retained.retainedUnreadSource, retained.unread, retained.pending], ['observed-failure', false, false]);
+  assert.equal((await restart.observe(board('idle', null, now + 1))).threads[0].failedAttention, true);
+  await restart.acknowledge(id);
+  assert.equal((await restart.observe(board('idle', null, now + 1))).threads[0].pending, false);
+  const saved = await readFile(statePath, 'utf8');
+  assert.doesNotMatch(saved, /title|message|rollout|Synthetic/);
+  for (const nativeUnread of [true, false]) {
+    const native = new PendingTracker(false);
+    await native.observe(board('working', nativeUnread));
+    const row = (await native.observe(board('idle', nativeUnread))).threads[0];
+    assert.equal(row.failedAttention, false);
+    assert.equal(row.pending, nativeUnread);
+  }
+});
+
+test('the last Codex group end sets failure or stop, while active work and later ends take priority', async () => {
+  const childId = id.replace(/0$/, '1');
+  const root = { id, provider: 'codex', nativeUnread: null, lifecycleRunning: false, latestLifecycleKind: 'task_complete', latestLifecycleAtMs: now - 100 };
+  const child = { id: childId, provider: 'codex', parentThreadId: id, isSubagent: true, threadSource: 'subagent', lifecycleRunning: false,
+    latestLifecycleKind: 'failed', latestLifecycleAtMs: now };
+  const row = (rootExtra = {}, childExtra = {}) => buildSwitchboardDashboard([{ ...root, ...rootExtra }, { ...child, ...childExtra }], [], now + 100).threads[0];
+  assert.deepEqual([row().state, row().lastOutcome, row().failedAtMs], ['idle', 'failed', now]);
+  const rootQuestion = row({ awaitingUserInput: true, latestUserQuestionAtMs: now - 10 });
+  assert.equal(rootQuestion.questionPending, true);
+  const active = row({ lifecycleRunning: true, agentActivityAtMs: now + 50, latestLifecycleKind: 'task_started', latestLifecycleAtMs: now + 50 });
+  assert.deepEqual([active.state, active.lastOutcome, active.failedAtMs], ['working', '', 0]);
+  const completed = row({ latestLifecycleAtMs: now + 100 });
+  assert.deepEqual([completed.state, completed.lastOutcome, completed.completionAtMs], ['idle', '', now + 100]);
+  const stopped = row({ latestLifecycleKind: 'turn_aborted', latestLifecycleAtMs: now + 100 });
+  assert.deepEqual([stopped.state, stopped.lastOutcome, stopped.completionAtMs, stopped.failedAtMs], ['idle', 'stopped', 0, 0]);
+  const historical = (await new PendingTracker(false).observe({ providers: [], threads: [stopped] })).threads[0];
+  assert.deepEqual([historical.unread, historical.pending], [false, false]);
+});
+
+test('fresh remote permission waits keep attention after Read and stale waits give Unknown', async () => {
+  const thread = { id: 'claude-desktop-code:cse_example', externalId: 'cse_example', provider: 'claude-desktop-code',
+    source: 'claude-remote-cache', remoteObservedAtMs: now, remoteEnvironmentKind: 'anthropic_cloud',
+    remoteSessionStatus: 'active', remoteWorkerStatus: 'requires_action', nativeUnread: true };
+  const tracker = new PendingTracker(false);
+  const scan = (extra = {}, clock = now) => tracker.observe(buildSwitchboardDashboard([{ ...thread, ...extra }], [], clock));
+  const waiting = (await scan()).threads[0];
+  assert.deepEqual([waiting.state, waiting.actionRequired, waiting.pending], ['waiting', true, true]);
+  await tracker.acknowledge(waiting.id);
+  const read = (await scan()).threads[0];
+  assert.deepEqual([read.unread, read.actionRequired, read.pending], [false, true, true]);
+  assert.equal((await scan({ remoteWorkerStatus: 'idle' })).threads[0].pending, false);
+  const stale = (await scan({}, now + 7 * 3_600_000)).threads[0];
+  assert.deepEqual([stale.state, stale.actionRequired, stale.pending], ['unknown', false, false]);
+});
+
+test('browser rows show question, unread, then stop and name the actual end outcome', async () => {
+  const node = () => ({ value: 'all', checked: false, dataset: {}, children: [], attributes: {},
+    addEventListener() {}, setAttribute(key, value) { this.attributes[key] = value; },
+    append(...children) { this.children.push(...children); }, replaceChildren() {}, querySelectorAll() { return []; } });
+  const nodes = Object.fromEntries(['search', 'app', 'status', 'archive', 'refresh', 'count', 'updated', 'notice', 'sessions'].map((key) => [key, node()]));
+  nodes.search.value = '';
+  const document = { hidden: true, getElementById: (key) => nodes[key], addEventListener() {}, createElement: node,
+    createDocumentFragment: node };
+  const context = vm.createContext({ document, window: { addEventListener() {} }, clearTimeout() {}, setTimeout() {},
+    fetch: async () => ({ ok: true, json: async () => ({ generatedAtMs: now, providers: [], threads: [] }) }) });
+  vm.runInContext(await readFile(new URL('../public/switchboard.js', import.meta.url), 'utf8'), context);
+  for (const [extra, indicator, text] of [[{ lastOutcome: 'stopped' }, 'stop', 'Task stopped.'],
+    [{ lastOutcome: 'stopped', unread: true }, 'dot', 'Task stopped.'],
+    [{ lastOutcome: 'failed', unread: true, failedAttention: true }, 'dot', 'Task failed.'],
+    [{ actionRequired: true, unread: true, questionAttention: true }, 'question', 'A user action is required in the original app.'],
+    [{ questionAttention: true }, 'question', 'A question needs your answer.'],
+    [{ completionAttention: true, unread: true }, 'dot', 'Task completed.']]) {
+    context.rowData = { id, title: 'Synthetic', providerLabel: 'Codex', state: 'idle', canOpen: false, ...extra };
+    const row = vm.runInContext('sessionRow(rowData)', context);
+    assert.equal(row.children[1].className, `attention ${indicator}`);
+    assert.ok(row.attributes['aria-label'].includes(text));
+    assert.ok(row.title.includes(text));
+  }
+  context.rowData = { id, title: 'Synthetic', providerLabel: 'Codex', state: 'working', canOpen: false, unread: false, lastOutcome: '' };
+  assert.equal(vm.runInContext('sessionRow(rowData)', context).children.length, 1);
+});
+
+const discardEvent = (type, offset, extra = {}) => ({ timestamp: new Date(now + offset).toISOString(), payload: { type, ...extra } });
+function discardThread(events, extra = {}) {
+  const signals = parseRolloutSignals(jsonl(events));
+  return { id, provider: 'codex', nativeUnread: null, ...signals, lifecycleRunning: signals.agentRunning, ...extra };
+}
+const discardBoard = (events, extra = {}, children = []) => buildSwitchboardDashboard([discardThread(events, extra), ...children], [], now + 1000);
+
+test('Discard is one shot and suppresses only the armed successful end, including Persistent unread', async () => {
+  for (const persistent of [false, true]) for (const nativeUnread of [null, false, true]) {
+    const tracker = new PendingTracker(false);
+    const events = [discardEvent('task_started', 0)];
+    const working = await tracker.observe(discardBoard(events, { nativeUnread }));
+    await tracker.setPersistentUnread(persistent, working);
+    await tracker.setDiscard(working.threads[0], true);
+    assert.deepEqual([working.threads[0].discardResult, working.threads[0].unread, working.threads[0].pending], [true, false, false]);
+    events.push(discardEvent('task_complete', 10));
+    const ended = (await tracker.observe(discardBoard(events, { nativeUnread }))).threads[0];
+    assert.deepEqual([ended.state, ended.discardResult, ended.unread, ended.pending, ended.retainedUnread], ['idle', false, false, false, false]);
+    assert.equal(ended.nativeUnread, nativeUnread);
+    events.push(discardEvent('task_started', 20));
+    assert.equal((await tracker.observe(discardBoard(events, { nativeUnread }))).threads[0].discardResult, false);
+    events.push(discardEvent('task_complete', 30));
+    const next = (await tracker.observe(discardBoard(events, { nativeUnread }))).threads[0];
+    assert.equal(next.pending, nativeUnread !== false || persistent);
+  }
+});
+
+test('Discard preserves failed, question and manual attention and cancellation stays passive', async () => {
+  for (const persistent of [false, true]) {
+    const tracker = new PendingTracker(false);
+    const events = [discardEvent('task_started', -100)];
+    const working = await tracker.observe(discardBoard(events));
+    await tracker.setPersistentUnread(persistent, working);
+    await tracker.setDiscard(working.threads[0], true);
+    events.push(questionCall('request_user_input_async', 'discard-question'));
+    const question = (await tracker.observe(discardBoard(events))).threads[0];
+    assert.deepEqual([question.discardResult, question.questionAttention, question.pending, question.unread], [true, true, true, false]);
+    events.push(discardEvent('task_complete', 10, { error: { message: 'Synthetic error' } }));
+    const failed = (await tracker.observe(discardBoard(events))).threads[0];
+    assert.deepEqual([failed.discardResult, failed.failedAttention, failed.pending, failed.lastOutcome], [false, true, true, 'failed']);
+    events.push(discardEvent('task_started', 20));
+    const again = await tracker.observe(discardBoard(events));
+    await tracker.setDiscard(again.threads[0], true);
+    events.push(discardEvent('task_complete', 30));
+    const keptFailure = (await tracker.observe(discardBoard(events))).threads[0];
+    assert.equal(keptFailure.failedAttention, true);
+    assert.equal(keptFailure.pending, true);
+    await tracker.acknowledge(id);
+    events.push(discardEvent('task_started', 40));
+    const manual = await tracker.observe(discardBoard(events));
+    await tracker.markUnread(id);
+    await tracker.setDiscard(manual.threads[0], true);
+    events.push(discardEvent('task_complete', 50));
+    const manualEnd = (await tracker.observe(discardBoard(events))).threads[0];
+    assert.deepEqual([manualEnd.manualUnread, manualEnd.unread, manualEnd.pending, manualEnd.discardResult], [true, true, true, false]);
+    await tracker.acknowledge(id);
+    events.push(discardEvent('task_started', 60));
+    const stop = await tracker.observe(discardBoard(events));
+    await tracker.setDiscard(stop.threads[0], true);
+    events.push(discardEvent('turn_aborted', 70));
+    const stopped = (await tracker.observe(discardBoard(events))).threads[0];
+    assert.deepEqual([stopped.lastOutcome, stopped.pending, stopped.unread, stopped.discardResult], ['stopped', false, false, false]);
+  }
+});
+
+test('Discard suppresses the first late native unread episode and preserves a later Read-to-Unread cycle', async () => {
+  const tracker = new PendingTracker(false);
+  const events = [discardEvent('task_started', 0)];
+  const first = await tracker.observe(discardBoard(events, { nativeUnread: false }));
+  await tracker.setPersistentUnread(true, first);
+  await tracker.setDiscard(first.threads[0], true);
+  events.push(discardEvent('task_complete', 10));
+  assert.equal((await tracker.observe(discardBoard(events, { nativeUnread: false }))).threads[0].pending, false);
+  const late = (await tracker.observe(discardBoard(events, { nativeUnread: true }))).threads[0];
+  assert.deepEqual([late.nativeUnread, late.nativeAttention, late.unread, late.pending, late.retainedUnread], [true, false, false, false, false]);
+  await tracker.observe(discardBoard(events, { nativeUnread: false }));
+  const nextEpisode = (await tracker.observe(discardBoard(events, { nativeUnread: true }))).threads[0];
+  assert.deepEqual([nextEpisode.nativeAttention, nextEpisode.pending], [true, true]);
+});
+
+test('Discard survives reload, Waiting and Unknown, validates numeric state, and clears on untimestamped Idle', async (t) => {
+  const dir = await temp(t);
+  const statePath = path.join(dir, 'pending.json');
+  const tracker = new PendingTracker(statePath);
+  const working = await tracker.observe(discardBoard([discardEvent('task_started', -100)]));
+  await tracker.setDiscard(working.threads[0], true);
+  const restart = new PendingTracker(statePath);
+  const waiting = await restart.observe(discardBoard([discardEvent('task_started', -100), questionCall('request_user_input', 'blocking-discard')]));
+  assert.equal(waiting.threads[0].state, 'waiting');
+  assert.equal(restart.records[id].discard, 1);
+  const unknown = await restart.observe(buildSwitchboardDashboard([discardThread([discardEvent('task_started', -100)])], [], now + 7 * 3_600_000));
+  assert.equal(unknown.threads[0].state, 'unknown');
+  assert.equal(restart.records[id].discard, 1);
+  const idle = (await restart.observe({ providers: [], threads: [{ id, state: 'idle', nativeUnread: true, completionAtMs: 0 }] })).threads[0];
+  assert.deepEqual([restart.records[id].discard, idle.discardResult, idle.pending], [0, false, true]);
+  const saved = JSON.parse(await readFile(statePath, 'utf8'));
+  assert.equal(saved.version, 1);
+  for (const key of ['discard', 'discardedAt', 'discardStart', 'discardEnd', 'discardNative']) assert.equal(typeof saved.records[id][key], 'number');
+  saved.records[id].discard = '1'; saved.records[id].discardedAt = -1; saved.records[id].discardStart = 'private'; saved.records[id].discardNative = 3;
+  await writeFile(statePath, JSON.stringify(saved));
+  const invalid = new PendingTracker(statePath); await invalid.load();
+  assert.deepEqual([invalid.records[id].discard, invalid.records[id].discardedAt, invalid.records[id].discardStart, invalid.records[id].discardNative], [0, 0, 0, 0]);
+});
+
+test('Discard follows the linked group, keeps a late first child, and does not carry through an end/start gap', async () => {
+  const childId = id.replace(/0$/, '1');
+  const child = (events, extra = {}) => discardThread(events, { id: childId, isSubagent: true, parentThreadId: id,
+    threadSource: 'subagent', createdAtMs: now - 95, ...extra });
+  const tracker = new PendingTracker(false);
+  const rootEvents = [discardEvent('task_started', -100)];
+  let childEvents = [discardEvent('task_started', -90)];
+  const working = await tracker.observe(discardBoard(rootEvents, {}, [child(childEvents)]));
+  await tracker.setDiscard(working.threads[0], true);
+  rootEvents.push(discardEvent('task_complete', -80));
+  const rootEnded = (await tracker.observe(discardBoard(rootEvents, {}, [child(childEvents)]))).threads[0];
+  assert.deepEqual([rootEnded.state, rootEnded.workingSinceMs, rootEnded.discardResult], ['working', now - 90, true]);
+  childEvents.push(discardEvent('task_complete', -70), discardEvent('task_started', -60));
+  const gap = (await tracker.observe(discardBoard(rootEvents, {}, [child(childEvents)]))).threads[0];
+  assert.deepEqual([gap.state, gap.discardResult, gap.pending], ['working', false, false]);
+  childEvents.push(discardEvent('task_complete', -50));
+  assert.equal((await tracker.observe(discardBoard(rootEvents, {}, [child(childEvents)]))).threads[0].completionAttention, true);
+
+  const late = new PendingTracker(false);
+  const openRoot = [discardEvent('task_started', 0)];
+  const missing = child([], { createdAtMs: now + 1 });
+  const initial = await late.observe(discardBoard(openRoot, {}, [missing]));
+  await late.setDiscard(initial.threads[0], true);
+  openRoot.push(discardEvent('task_complete', 10));
+  assert.equal((await late.observe(discardBoard(openRoot, {}, [missing]))).threads[0].state, 'unknown');
+  const lateChild = child([discardEvent('task_started', 20)], { createdAtMs: now + 1 });
+  assert.equal((await late.observe(discardBoard(openRoot, {}, [lateChild]))).threads[0].discardResult, true);
+  const noCreation = { ...lateChild, createdAtMs: 0 };
+  assert.equal((await late.observe(discardBoard(openRoot, {}, [noCreation]))).threads[0].discardResult, true);
+  openRoot.push(discardEvent('task_started', 30));
+  assert.equal((await late.observe(discardBoard(openRoot, {}, [noCreation]))).threads[0].discardResult, false);
+
+  const rootGap = new PendingTracker(false);
+  const first = await rootGap.observe(discardBoard([discardEvent('task_started', 0)]));
+  await rootGap.setDiscard(first.threads[0], true);
+  const next = (await rootGap.observe(discardBoard([discardEvent('task_started', 0), discardEvent('task_complete', 10), discardEvent('task_started', 20)]))).threads[0];
+  assert.deepEqual([next.state, next.discardResult, next.pending], ['working', false, false]);
+});
+
+test('Discard scans current Working evidence, Keep uses the cache, and both retain local action protection', async (t) => {
+  const tracker = new PendingTracker(false);
+  let state = 'working';
+  let sourceError = false;
+  const server = createSwitchboardServer({ pendingTracker: tracker, now: () => now, dashboardWatchPaths: [], loadDashboard: async () => {
+    if (sourceError) throw new SyntaxError('Synthetic internal source error');
+    return { providers: [], threads: [{ id, state, nativeUnread: null, completionAtMs: 0 },
+      { id: 'idle', state: 'idle', nativeUnread: null, completionAtMs: 0 }] };
+  } });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const route = `${base}/api/threads/${id}/discard-result`;
+  const post = (url = route, headers = { Origin: base }, body = '{}') => fetch(url, { method: 'POST', headers, body });
+  assert.equal((await fetch(route)).status, 405);
+  assert.equal((await post(route, {})).status, 403);
+  assert.equal((await post(route, { Origin: 'https://example.com' })).status, 403);
+  const badHost = await new Promise((resolve, reject) => {
+    const request = http.request(route, { method: 'POST', headers: { Origin: base, Host: 'example.com' } }, (response) => {
+      response.resume(); resolve(response.statusCode);
+    });
+    request.on('error', reject); request.end('{}');
+  });
+  assert.equal(badHost, 403);
+  const untouched = JSON.stringify(tracker.records);
+  for (const body of ['null', '[]', '{"enabled":true}', '{broken']) {
+    assert.equal((await post(route, { Origin: base }, body)).status, 400);
+    assert.equal(JSON.stringify(tracker.records), untouched);
+  }
+  assert.equal((await post(`${base}/api/threads/missing/discard-result`)).status, 404);
+  assert.equal((await post(`${base}/api/threads/idle/discard-result`)).status, 400);
+  const armed = await (await post()).json();
+  assert.deepEqual([armed.changed, armed.threadId, armed.thread.discardResult], [true, id, true]);
+  const kept = await (await post(`${base}/api/threads/${id}/keep-result`)).json();
+  assert.equal(kept.thread.discardResult, false);
+  await tracker.markUnread(id);
+  assert.equal((await post()).status, 200);
+  state = 'idle';
+  assert.equal((await post()).status, 400);
+  assert.equal(tracker.records[id].manual, 1);
+  assert.equal(tracker.records[id].discard, 0);
+  sourceError = true;
+  const beforeFailure = JSON.stringify(tracker.records);
+  assert.equal((await post(`${base}/api/threads/${id}/keep-result`)).status, 200);
+  assert.equal((await fetch(`${base}/api/dashboard?force=1`)).status, 500);
+  assert.equal(JSON.stringify(tracker.records), beforeFailure);
+});
+
+test('an old Discard native mask cannot hide a same-time or later failed end', async () => {
+  for (const offset of [10, 30]) {
+    const tracker = new PendingTracker(false);
+    const events = [discardEvent('task_started', 0)];
+    const working = await tracker.observe(discardBoard(events, { nativeUnread: false }));
+    await tracker.setDiscard(working.threads[0], true);
+    events.push(discardEvent('task_complete', 10));
+    await tracker.observe(discardBoard(events, { nativeUnread: false }));
+    assert.equal(tracker.records[id].discardNative, 0);
+    events.push(discardEvent('task_started', 20), discardEvent('task_complete', offset, { error: { message: 'Synthetic failure' } }));
+    const failed = (await tracker.observe(discardBoard(events, { nativeUnread: true }))).threads[0];
+    assert.deepEqual([failed.lastOutcome, failed.nativeAttention, failed.pending, failed.unread], ['failed', true, true, true]);
+    if (offset > 10) assert.equal(tracker.records[id].discardedAt, 0);
+  }
+});
+
+test('Claude cached root end/start evidence clears Discard across a missed Idle without changing native fields', async (t) => {
+  const dir = await temp(t);
+  const appDir = path.join(dir, 'app');
+  const projectsDir = path.join(dir, 'projects');
+  const project = path.join(projectsDir, 'project');
+  await mkdir(path.join(appDir, 'claude-code-sessions'), { recursive: true });
+  await mkdir(project, { recursive: true });
+  await writeFile(path.join(appDir, 'claude-code-sessions', `${localId}.json`), JSON.stringify({ sessionId: localId, cliSessionId: id }));
+  const transcript = path.join(project, `${id}.jsonl`);
+  const event = (type, offset, content) => ({ type, timestamp: new Date(now + offset).toISOString(), message: { content } });
+  await writeFile(transcript, jsonl([event('user', 0, 'Start the synthetic task.')]) + '\n');
+  const tracker = new PendingTracker(false);
+  const scan = async () => {
+    const source = await loadClaudeDesktopCodeThreads({ appDir, projectsDir, nowMs: now + 100 });
+    return tracker.observe(buildSwitchboardDashboard(source.threads, [], now + 100));
+  };
+  const first = await scan(); await tracker.setDiscard(first.threads[0], true);
+  await writeFile(transcript, jsonl([{ type: 'result', timestamp: new Date(now + 10).toISOString() },
+    event('user', 20, 'Start the next synthetic task.')]) + '\n', { flag: 'a' });
+  const next = (await scan()).threads[0];
+  assert.deepEqual([next.state, next.discardResult, next.pending, next.nativeUnread], ['working', false, false, null]);
+  await writeFile(transcript, jsonl([{ type: 'result', timestamp: new Date(now + 30).toISOString() }]) + '\n', { flag: 'a' });
+  assert.equal((await scan()).threads[0].completionAttention, true);
+});
+
+test('Claude late linked starts and child-only end/start gaps retain the timer and one-shot Discard semantics', async (t) => {
+  const dir = await temp(t);
+  const appDir = path.join(dir, 'app');
+  const projectsDir = path.join(dir, 'projects');
+  const project = path.join(projectsDir, 'project');
+  const childDir = path.join(project, id, 'subagents');
+  await mkdir(path.join(appDir, 'claude-code-sessions'), { recursive: true });
+  await mkdir(childDir, { recursive: true });
+  await writeFile(path.join(appDir, 'claude-code-sessions', `${localId}.json`), JSON.stringify({ sessionId: localId, cliSessionId: id }));
+  const root = path.join(project, `${id}.jsonl`);
+  const child = path.join(childDir, 'agent-linked.jsonl');
+  const event = (type, offset, extra = {}) => ({ type, timestamp: new Date(now + offset).toISOString(), ...extra });
+  await writeFile(root, jsonl([
+    event('user', 0, { message: { content: 'Start the synthetic task.' } }),
+    event('assistant', 1, { message: { content: [{ type: 'tool_use', id: 'agent-tool', name: 'Agent' }] } }),
+    event('user', 2, { message: { content: [{ type: 'tool_result', tool_use_id: 'agent-tool' }] },
+      toolUseResult: { isAsync: true, status: 'async_launched', agentId: 'linked' } }),
+  ]) + '\n');
+  const tracker = new PendingTracker(false);
+  const scan = async () => tracker.observe(buildSwitchboardDashboard((await loadClaudeDesktopCodeThreads({
+    appDir, projectsDir, nowMs: now + 100,
+  })).threads, [], now + 100));
+  const first = await scan(); await tracker.setDiscard(first.threads[0], true);
+  await writeFile(root, jsonl([event('result', 10)]) + '\n', { flag: 'a' });
+  assert.equal((await scan()).threads[0].state, 'unknown');
+  assert.equal(tracker.records[first.threads[0].id].discard, 1);
+  await writeFile(child, jsonl([event('assistant', 20, { message: { content: [{ type: 'thinking' }] } })]) + '\n');
+  const late = (await scan()).threads[0];
+  assert.deepEqual([late.state, late.discardResult, late.workingSinceMs], ['working', true, now]);
+  await writeFile(child, jsonl([event('result', 30), event('user', 40, { message: { content: 'Next child task.' } })]) + '\n', { flag: 'a' });
+  const next = (await scan()).threads[0];
+  assert.deepEqual([next.state, next.discardResult, next.pending, next.workingSinceMs], ['working', false, false, now]);
+  await writeFile(child, jsonl([event('result', 50)]) + '\n', { flag: 'a' });
+  assert.equal((await scan()).threads[0].completionAttention, true);
+});
+
+test('Keep reuses warm snapshots while Discard rejects the reproduced two-ended-task cache gap', async (t) => {
+  const tracker = new PendingTracker(false);
+  let scans = 0;
+  let sourceEvents = [discardEvent('task_started', 0)];
+  const server = createSwitchboardServer({ pendingTracker: tracker, now: () => now + 1000, dashboardWatchPaths: [],
+    loadDashboard: async () => { scans += 1; return discardBoard(sourceEvents); },
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = (action) => fetch(`${base}/api/threads/${id}/${action}`, { method: 'POST', headers: { Origin: base }, body: '{}' });
+  const warm = await (await fetch(`${base}/api/dashboard`)).json();
+  assert.equal(warm.threads[0].state, 'working');
+  assert.equal(scans, 1);
+  for (let click = 0; click < 3; click += 1) assert.equal((await post('keep-result')).status, 200);
+  assert.equal(scans, 1);
+  assert.equal((await post('discard-result')).status, 200);
+  assert.equal(scans, 2);
+  assert.equal(tracker.records[id].discard, 1);
+  assert.equal((await post('keep-result')).status, 200);
+  assert.equal(scans, 2);
+  assert.equal(tracker.records[id].discard, 0);
+
+  sourceEvents.push(discardEvent('task_complete', 10), discardEvent('task_started', 20), discardEvent('task_complete', 30));
+  assert.equal((await post('keep-result')).status, 200);
+  assert.equal(scans, 2);
+  assert.equal((await post('discard-result')).status, 400);
+  assert.equal(scans, 3);
+  assert.equal(tracker.records[id].discard, 0);
+  const ended = await (await fetch(`${base}/api/dashboard`)).json();
+  assert.deepEqual([ended.threads[0].state, ended.threads[0].completionAtMs, ended.threads[0].unread], ['idle', now + 30, true]);
+  assert.equal((await post('keep-result')).status, 200);
+  assert.equal(scans, 3);
+});
+
+test('malformed raw request targets return 400 and leave the ASB server available', async (t) => {
+  let loads = 0;
+  const server = createSwitchboardServer({ pendingStatePath: false, dashboardWatchPaths: [],
+    loadDashboard: async () => { loads += 1; return { providers: [], threads: [] }; },
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const port = server.address().port;
+  const response = await new Promise((resolve, reject) => {
+    let text = '';
+    const socket = net.createConnection({ host: '127.0.0.1', port }, () => {
+      socket.end(`GET // HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: close\r\n\r\n`);
+    });
+    socket.on('data', (chunk) => { text += chunk.toString(); });
+    socket.on('end', () => resolve(text));
+    socket.on('error', reject);
+  });
+  assert.match(response, /^HTTP\/1\.1 400 /);
+  assert.equal(loads, 0);
+  const normal = await fetch(`http://127.0.0.1:${port}/api/dashboard`);
+  assert.equal(normal.status, 200);
+  assert.deepEqual((await normal.json()).threads, []);
+  assert.equal(loads, 1);
+});
+
+test('npm start listens on loopback only', async (t) => {
+  const dir = await temp(t);
+  const probe = net.createServer().listen(0, '127.0.0.1');
+  await once(probe, 'listening');
+  const { port } = probe.address();
+  await new Promise((resolve) => probe.close(resolve));
+  const child = spawn(process.execPath, [fileURLToPath(new URL('../src/switchboard.mjs', import.meta.url))], { stdio: ['ignore', 'pipe', 'pipe'],
+    env: { PATH: process.env.PATH, HOME: dir, PORT: String(port), XDG_STATE_HOME: path.join(dir, 'state'),
+      XDG_CONFIG_HOME: path.join(dir, 'config'), XDG_DATA_HOME: path.join(dir, 'data') } });
+  t.after(() => child.kill('SIGKILL'));
+  let output = '';
+  for await (const chunk of child.stdout) { output += chunk; if (output.includes('\n')) break; }
+  assert.equal(output.trim(), `ASB: http://127.0.0.1:${port}`);
+  const connect = (host) => new Promise((resolve) => {
+    const socket = net.createConnection({ host, port, timeout: 2_000 }, () => { socket.destroy(); resolve('open'); });
+    socket.on('timeout', () => { socket.destroy(); resolve('timeout'); });
+    socket.on('error', (error) => resolve(error.code));
+  });
+  assert.equal(await connect('127.0.0.1'), 'open');
+  const external = Object.values(os.networkInterfaces()).flat().find((address) => address.family === 'IPv4' && !address.internal);
+  if (external) assert.equal(await connect(external.address), 'ECONNREFUSED');
+  else t.diagnostic('No non-loopback IPv4 address. The refused-connect assert did not run.');
 });

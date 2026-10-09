@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from '../src/server.mjs';
-import { createSwitchboardServer, openSwitchboardThread } from '../src/switchboard.mjs';
+import http from 'node:http';
+import { createAsbServer } from '../src/asb-server.mjs';
+import { openSwitchboardThread } from '../src/switchboard.mjs';
 
 const id = '11111111-2222-3333-4444-555555555555';
 const localId = `local_${id}`;
@@ -21,11 +22,8 @@ test('ASB keeps all validated existing-session URL commands and opener results',
       const calls = [];
       const result = await openSwitchboardThread(thread, { platform, runCommand: async (...args) => calls.push(args) });
       const codex = thread.provider === 'codex';
-      assert.deepEqual(result, {
-        opened: true, method: codex ? 'codex-deeplink' : 'claude-desktop-deeplink',
-        resumeCommand: codex ? `codex resume --no-alt-screen '${id}'`
-          : thread.externalId.startsWith('local_') ? `open '${thread.appDeepLink}'` : `open ${thread.appDeepLink}`,
-      });
+      assert.deepEqual([result.opened, result.method], [true, codex ? 'codex-deeplink' : 'claude-desktop-deeplink']);
+      if (codex) assert.deepEqual(Object.keys(result), ['opened', 'method']);
       const command = platform === 'linux' ? 'xdg-open' : platform === 'darwin' ? 'open' : 'cmd';
       const args = platform === 'win32' ? ['/c', 'start', '', thread.appDeepLink] : [thread.appDeepLink];
       assert.deepEqual(calls, [codex ? [command, args, { timeout: 5000 }] : [command, args]]);
@@ -48,40 +46,39 @@ test('ASB rejects changed IDs, providers, links, and unavailable opens before it
   assert.equal(calls, 0);
 });
 
-test('the retained switchboardOnly option keeps injected notifications while ASB disables them', async (t) => {
-  for (const asb of [false, true]) {
-    let refreshes = 0;
-    const updates = [];
-    const monitored = Promise.withResolvers();
-    const notifications = { summary: { activeCount: 1 }, items: [{ id: 'notice', status: 'active' }] };
-    const options = {
-      switchboardOnly: true, pendingStatePath: false, dashboardWatchPaths: [],
-      reviewStore: null, searchIndex: null, monitorNotifications: true, notificationScanIntervalMs: 60_000,
-      now: () => 1_000,
-      loadDashboard: async () => ({ providers: [], summary: {}, threads: [{ ...sessions[0], state: 'idle' }] }),
-      openThread: async () => ({ opened: true }),
-      notificationCenter: {
-        refresh: async () => { refreshes += 1; monitored.resolve(); return notifications; },
-        updateNotification: async (notificationId, body) => {
-          updates.push({ notificationId, body });
-          return { id: notificationId, ...body };
-        },
-      },
-    };
-    const server = asb ? createSwitchboardServer(options) : createServer(options);
-    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
-    if (!asb) await monitored.promise;
-    const base = `http://127.0.0.1:${server.address().port}`;
-    const dashboard = await (await fetch(`${base}/api/dashboard`)).json();
-    assert.equal(refreshes, asb ? 0 : 1);
-    assert.deepEqual(dashboard.notifications, asb ? undefined : notifications);
-    assert.equal(dashboard.performance.notifications.refreshCount, asb ? 0 : 1);
-    const opened = await (await fetch(`${base}/api/threads/${id}/open`, {
-      method: 'POST', headers: { Origin: base }, body: JSON.stringify({ markNotificationDone: true, notificationId: 'notice' }),
-    })).json();
-    assert.equal(opened.opened, true);
-    assert.deepEqual(opened.notification, asb ? undefined : { id: 'notice', status: 'done' });
-    assert.deepEqual(updates, asb ? [] : [{ notificationId: 'notice', body: { status: 'done' } }]);
-  }
+const status = (base, route, headers = {}) => new Promise((resolve, reject) => {
+  const request = http.get(base + route, { headers }, (response) => {
+    resolve(response.statusCode);
+    response.destroy();
+  });
+  request.on('error', reject);
+});
+
+test('ASB read APIs reject cross-site requests before source loading and preserve native/browser reads', async (t) => {
+  let loads = 0;
+  let sourceLists = 0;
+  const server = createAsbServer({ dashboardWatchPaths: [],
+    loadDashboard: async () => { loads += 1; return { providers: [], threads: [] }; },
+    listSources: async () => { sourceLists += 1; return { sources: [] }; },
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const routes = ['/api/dashboard', '/api/dashboard?force=1', '/api/sources', '/api/events'];
+  const blocked = [
+    { Origin: 'https://example.com' }, { Origin: 'null' }, { Origin: '' },
+    { 'Sec-Fetch-Site': 'cross-site' }, { 'Sec-Fetch-Site': 'same-site' }, { 'Sec-Fetch-Site': '' },
+    { Origin: base, 'Sec-Fetch-Site': 'cross-site' },
+  ];
+  for (const route of routes) for (const headers of blocked) assert.equal(await status(base, route, headers), 403);
+  assert.equal(loads, 0);
+  assert.equal(sourceLists, 0);
+  assert.equal(await status(base, '/api/dashboard'), 200);
+  assert.equal(loads, 1);
+  for (const route of routes) for (const headers of [{}, { Origin: base, 'Sec-Fetch-Site': 'same-origin' },
+    { 'Sec-Fetch-Site': 'none' }, { Origin: base }]) assert.equal(await status(base, route, headers), 200);
+  const beforeAssets = loads;
+  assert.equal(await status(base, '/', { Origin: 'https://example.com', 'Sec-Fetch-Site': 'cross-site' }), 200);
+  assert.equal(await status(base, '/switchboard.js', { Origin: 'https://example.com', 'Sec-Fetch-Site': 'cross-site' }), 200);
+  assert.equal(loads, beforeAssets);
 });

@@ -3,40 +3,18 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import * as zlib from 'node:zlib';
 import {
-  loadClaudeAgentThreads,
-  loadClaudeCodeCliThreads,
-  loadClaudeDesktopCoworkThreads,
-  normalizeClaudeCodeCliSession,
+  loadClaudeDesktopCodeThreads,
   normalizeClaudeDesktopCodeSession,
-  normalizeClaudeDesktopCoworkSession,
   openClaudeThread,
   parseClaudeJsonlSignals,
-  readClaudeUsageCache,
 } from '../src/claude-data.mjs';
 
 function jsonl(records) {
   return `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
 }
 
-async function writeClaudeUsageCache(appDir, payload, {
-  organizationId = 'org_123',
-  observedAt = 'Tue, 12 May 2026 08:24:03 GMT',
-} = {}) {
-  const cacheDir = path.join(appDir, 'Cache', 'Cache_Data');
-  await mkdir(cacheDir, { recursive: true });
-  const header = Buffer.from(
-    `1/0/https://claude.ai/api/organizations/${organizationId}/usage\0`
-    + `HTTP/1.1 200\0date:${observedAt}\0content-type:application/json\0`
-    + `${zlib.zstdCompressSync ? 'content-encoding:zstd\0' : ''}\0`,
-  );
-  const rawBody = Buffer.from(JSON.stringify(payload));
-  const body = zlib.zstdCompressSync ? zlib.zstdCompressSync(rawBody) : rawBody;
-  await writeFile(path.join(cacheDir, 'usage-cache-entry_0'), Buffer.concat([header, body]));
-}
-
-test('parses Claude JSONL usage, running state, and pending user prompts', () => {
+test('parses Claude JSONL session fields and pending user prompts', () => {
   const signals = parseClaudeJsonlSignals(jsonl([
     {
       type: 'user',
@@ -53,11 +31,6 @@ test('parses Claude JSONL usage, running state, and pending user prompts', () =>
         id: 'msg_1',
         role: 'assistant',
         model: 'claude-sonnet-4-6',
-        usage: {
-          input_tokens: 100,
-          cache_read_input_tokens: 200,
-          output_tokens: 50,
-        },
         content: [
           {
             type: 'tool_use',
@@ -68,55 +41,16 @@ test('parses Claude JSONL usage, running state, and pending user prompts', () =>
         ],
       },
     },
-  ]), { todayStartMs: Date.parse('2026-05-09T00:00:00.000Z') });
+  ]));
 
   assert.equal(signals.sessionId, 'ses_cli');
   assert.equal(signals.cwd, '/Users/example/work');
   assert.equal(signals.model, 'claude-sonnet-4-6');
-  assert.equal(signals.tokensUsed, 350);
-  assert.equal(signals.todayTokenUsage, 350);
-  assert.deepEqual(signals.tokenBreakdown, {
-    total: 350,
-    input: 100,
-    cacheRead: 200,
-    cacheWrite: 0,
-    output: 50,
-    reasoning: 0,
-    uncategorized: 0,
-  });
-  assert.deepEqual(signals.todayTokenBreakdown, signals.tokenBreakdown);
   assert.equal(signals.latestUserMessage, '帮我检查这个项目');
   assert.equal(signals.latestAgentFinalAtMs, null);
   assert.equal(signals.pendingToolCount, 1);
   assert.equal(signals.pendingTools[0].title, '向用户提问');
   assert.equal(signals.pendingTools[0].kind, 'permission');
-});
-
-test('parses Claude rate limits from status line JSONL events', () => {
-  const signals = parseClaudeJsonlSignals(jsonl([
-    {
-      type: 'system',
-      timestamp: '2026-05-12T08:00:00.000Z',
-      rate_limits: {
-        five_hour: {
-          used_percentage: 41,
-          resets_at: '2026-05-12T08:30:00.000Z',
-        },
-        seven_day: {
-          used_percentage: 5,
-          resets_at: '2026-05-16T12:00:00.000Z',
-        },
-      },
-    },
-  ]));
-
-  assert.equal(signals.rateLimits.primary.used_percent, 41);
-  assert.equal(signals.rateLimits.primary.window_minutes, 300);
-  assert.equal(signals.rateLimits.primary.resets_at, Date.parse('2026-05-12T08:30:00.000Z') / 1000);
-  assert.equal(signals.rateLimits.secondary.used_percent, 5);
-  assert.equal(signals.rateLimits.secondary.window_minutes, 10_080);
-  assert.equal(signals.latestRateLimitAtMs, Date.parse('2026-05-12T08:00:00.000Z'));
-  assert.equal(signals.latestThreadRateLimitAtMs, Date.parse('2026-05-12T08:00:00.000Z'));
 });
 
 test('ignores ordinary unresolved Claude tool uses as user pending work', () => {
@@ -349,248 +283,17 @@ test('uses Claude stop hook summaries as completed-turn markers', () => {
   assert.equal(signals.latestMessageKind, 'agent');
 });
 
-test('normalizes Claude Code CLI sessions into provider threads', () => {
-  const signals = parseClaudeJsonlSignals(jsonl([
-    {
-      type: 'user',
-      timestamp: '2026-05-09T02:00:00.000Z',
-      sessionId: 'ses_cli',
-      cwd: '/Users/example/project',
-      entrypoint: 'cli',
-      version: '2.1.89',
-      message: { role: 'user', content: '生成报告' },
-    },
-    {
-      type: 'result',
-      timestamp: '2026-05-09T02:03:00.000Z',
-      session_id: 'ses_cli',
-      terminal_reason: 'completed',
-      result: '报告已生成',
-      usage: {
-        input_tokens: 10,
-        output_tokens: 20,
-      },
-    },
-  ]), { todayStartMs: Date.parse('2026-05-09T00:00:00.000Z') });
-
-  const thread = normalizeClaudeCodeCliSession({
-    filePath: '/tmp/ses_cli.jsonl',
-    stat: { mtimeMs: Date.parse('2026-05-09T02:03:00.000Z') },
-    signals,
-  }, Date.parse('2026-05-09T03:00:00.000Z'));
-
-  assert.equal(thread.id, 'claude-code-cli:ses_cli');
-  assert.equal(thread.provider, 'claude-code-cli');
-  assert.equal(thread.providerLabel, 'Claude Code CLI');
-  assert.equal(thread.title, '生成报告');
-  assert.equal(thread.projectName, 'project');
-  assert.equal(thread.tokensUsed, 30);
-  assert.equal(thread.todayTokenUsage, 30);
-  assert.equal(thread.status, 'warm');
-  assert.equal(thread.resumeCommand, 'cd /Users/example/project && claude --resume ses_cli');
-  assert.equal(thread.openLabel, '打开');
-});
-
-test('prefers Claude result usage over duplicate assistant usage', () => {
-  const signals = parseClaudeJsonlSignals(jsonl([
-    {
-      type: 'assistant',
-      timestamp: '2026-05-09T02:01:00.000Z',
-      message: {
-        id: 'msg_duplicate',
-        role: 'assistant',
-        usage: { input_tokens: 100, output_tokens: 50 },
-        content: [{ type: 'text', text: '处理中' }],
-      },
-    },
-    {
-      type: 'result',
-      timestamp: '2026-05-09T02:03:00.000Z',
-      uuid: 'result_1',
-      terminal_reason: 'completed',
-      usage: { input_tokens: 10, output_tokens: 20 },
-    },
-  ]), { todayStartMs: Date.parse('2026-05-09T00:00:00.000Z') });
-
-  assert.equal(signals.tokensUsed, 30);
-  assert.equal(signals.todayTokenUsage, 30);
-});
-
-test('reads Claude Desktop usage cache as rate limits', async () => {
-  const appDir = await mkdtemp(path.join(os.tmpdir(), 'claude-usage-cache-'));
-  await writeClaudeUsageCache(appDir, {
-    five_hour: {
-      utilization: 41,
-      resets_at: '2026-05-12T08:30:00.000Z',
-    },
-    seven_day: {
-      utilization: 5,
-      resets_at: '2026-05-16T12:00:00.000Z',
-    },
-  });
-
-  const usageCache = await readClaudeUsageCache({ appDir });
-
-  assert.equal(usageCache.source, 'claude-desktop-cache');
-  assert.equal(usageCache.organizationId, 'org_123');
-  assert.equal(usageCache.observedAtMs, Date.parse('Tue, 12 May 2026 08:24:03 GMT'));
-  assert.equal(usageCache.rateLimits.primary.used_percent, 41);
-  assert.equal(usageCache.rateLimits.primary.resets_at, Date.parse('2026-05-12T08:30:00.000Z') / 1000);
-  assert.equal(usageCache.rateLimits.secondary.used_percent, 5);
-  assert.equal(usageCache.rateLimits.secondary.window_minutes, 10_080);
-});
-
-test('reuses Claude Desktop usage cache within its TTL', async () => {
-  const appDir = await mkdtemp(path.join(os.tmpdir(), 'claude-usage-cache-ttl-'));
-  const cacheDir = path.join(appDir, 'Cache', 'Cache_Data');
-  await writeClaudeUsageCache(appDir, {
-    five_hour: { utilization: 22 },
-  });
-
-  const first = await readClaudeUsageCache({
-    appDir,
-    cacheTtlMs: 60_000,
-    nowMs: 1_000,
-  });
-  await rm(cacheDir, { recursive: true, force: true });
-  const cached = await readClaudeUsageCache({
-    appDir,
-    cacheTtlMs: 60_000,
-    nowMs: 2_000,
-  });
-  const expired = await readClaudeUsageCache({
-    appDir,
-    cacheTtlMs: 60_000,
-    nowMs: 62_001,
-  });
-
-  assert.equal(first.rateLimits.primary.used_percent, 22);
-  assert.equal(cached.rateLimits.primary.used_percent, 22);
-  assert.equal(expired, null);
-});
-
-test('loads Claude Cowork desktop metadata and audit signals', async () => {
-  const appDir = await mkdtemp(path.join(os.tmpdir(), 'claude-app-'));
-  const root = path.join(appDir, 'local-agent-mode-sessions', 'account', 'workspace');
-  const sessionId = 'local_123';
-  await mkdir(path.join(root, sessionId), { recursive: true });
-  await writeFile(path.join(root, 'spaces.json'), JSON.stringify({
-    spaces: [
-      {
-        id: 'space_1',
-        name: '产品研究',
-        folders: [{ path: '/Users/example/research' }],
-      },
-    ],
-  }));
-  await writeFile(path.join(root, `${sessionId}.json`), JSON.stringify({
-    sessionId,
-    cliSessionId: 'cli_123',
-    cwd: `${root}/${sessionId}/outputs`,
-    createdAt: Date.parse('2026-05-09T01:00:00.000Z'),
-    lastActivityAt: Date.parse('2026-05-09T02:00:00.000Z'),
-    model: 'claude-opus-4-6',
-    isArchived: false,
-    title: '研究 Agent 面板',
-    hostLoopMode: true,
-    spaceId: 'space_1',
-  }));
-  await writeFile(path.join(root, sessionId, 'audit.jsonl'), jsonl([
-    {
-      type: 'user',
-      timestamp: '2026-05-09T01:00:00.000Z',
-      session_id: 'audit_123',
-      message: { role: 'user', content: '研究 Agent 面板' },
-    },
-    {
-      type: 'result',
-      timestamp: '2026-05-09T02:00:00.000Z',
-      session_id: 'audit_123',
-      terminal_reason: 'completed',
-      result: '研究完成',
-      usage: { input_tokens: 500, output_tokens: 200 },
-    },
-  ]));
-  await writeClaudeUsageCache(appDir, {
-    five_hour: {
-      utilization: 38,
-      resets_at: '2026-05-09T04:30:00.000Z',
-    },
-    seven_day: {
-      utilization: 12,
-      resets_at: '2026-05-16T12:00:00.000Z',
-    },
-  }, { observedAt: 'Sat, 09 May 2026 02:01:00 GMT' });
-
-  const result = await loadClaudeDesktopCoworkThreads({
-    appDir,
-    nowMs: Date.parse('2026-05-09T03:00:00.000Z'),
-    todayStartMs: Date.parse('2026-05-09T00:00:00.000Z'),
-  });
-
-  assert.equal(result.provider.status, 'desktop');
-  assert.equal(result.provider.threadCount, 1);
-  assert.equal(result.threads[0].id, 'claude-desktop-cowork:local_123');
-  assert.equal(result.threads[0].projectName, '产品研究');
-  assert.equal(result.threads[0].cwd, '/Users/example/research');
-  assert.equal(result.threads[0].tokensUsed, 700);
-  assert.equal(result.threads[0].resumeCommand, 'open -a Claude');
-  assert.equal(result.threads[0].isAgentCompleted, null);
-  assert.equal(result.threads[0].agentRunning, false);
-  assert.equal(result.threads[0].rateLimits.primary.used_percent, 38);
-  assert.equal(result.threads[0].rateLimits.secondary.used_percent, 12);
-  assert.equal(result.threads[0].rateLimitUpdatedAtMs, Date.parse('Sat, 09 May 2026 02:01:00 GMT'));
-  assert.equal(result.threads[0].rateLimitActivityAtMs, null);
-});
-
-test('deduplicates Claude Desktop Code sessions from the CLI provider', async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'claude-dedupe-'));
-  const projectsDir = path.join(dir, 'projects', '-Users-example-project');
-  const appDir = path.join(dir, 'Claude');
-  const desktopDir = path.join(appDir, 'claude-code-sessions', 'account', 'workspace');
-  await mkdir(projectsDir, { recursive: true });
-  await mkdir(desktopDir, { recursive: true });
-  await writeFile(path.join(projectsDir, 'cli_shared.jsonl'), jsonl([
-    {
-      type: 'user',
-      timestamp: '2026-05-09T01:00:00.000Z',
-      sessionId: 'cli_shared',
-      cwd: '/Users/example/project',
-      entrypoint: 'cli',
-      message: { role: 'user', content: '桌面 Code 任务' },
-    },
-  ]));
-  await writeFile(path.join(desktopDir, 'local_shared.json'), JSON.stringify({
-    sessionId: 'local_shared',
-    cliSessionId: 'cli_shared',
-    cwd: '/Users/example/project',
-    originCwd: '/Users/example/project',
-    createdAt: Date.parse('2026-05-09T01:00:00.000Z'),
-    lastActivityAt: Date.parse('2026-05-09T01:10:00.000Z'),
-    title: '桌面 Code 任务',
-    model: 'claude-sonnet-4-6',
-  }));
-
-  const result = await loadClaudeAgentThreads({
-    appDir,
-    projectsDir,
-    nowMs: Date.parse('2026-05-09T03:00:00.000Z'),
-    todayStartMs: Date.parse('2026-05-09T00:00:00.000Z'),
-    runCommand: async () => ({ stdout: '2.1.89 (Claude Code)' }),
-  });
-
-  assert.equal(result.threads.filter((thread) => thread.provider === 'claude-code-cli').length, 0);
-  assert.equal(result.threads.filter((thread) => thread.provider === 'claude-desktop-code').length, 1);
-});
-
-test('folds Claude subagent transcripts into their host instead of creating recent threads', async (t) => {
+test('folds Claude subagent transcripts into their Desktop Code host', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'claude-subagents-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const projectDir = path.join(root, '-Users-example-project');
+  const projectDir = path.join(root, 'projects', '-Users-example-project');
+  const metadataDir = path.join(root, 'Claude', 'claude-code-sessions');
   const hostSessionId = '123e4567-e89b-12d3-a456-426614174000';
   const hostPath = path.join(projectDir, `${hostSessionId}.jsonl`);
   const subagentDir = path.join(projectDir, hostSessionId, 'subagents');
   await mkdir(subagentDir, { recursive: true });
+  await mkdir(metadataDir, { recursive: true });
+  await writeFile(path.join(metadataDir, 'local_host.json'), JSON.stringify({ sessionId: 'local_host', cliSessionId: hostSessionId }));
   await writeFile(hostPath, jsonl([
     {
       type: 'user',
@@ -612,28 +315,30 @@ test('folds Claude subagent transcripts into their host instead of creating rece
     },
   ]));
 
-  const result = await loadClaudeCodeCliThreads({
-    projectsDir: root,
+  const result = await loadClaudeDesktopCodeThreads({
+    appDir: path.join(root, 'Claude'),
+    projectsDir: path.join(root, 'projects'),
     maxCount: 20,
     nowMs: Date.parse('2026-05-09T02:00:00.000Z'),
-    runCommand: async () => ({ stdout: '2.1.89 (Claude Code)' }),
   });
 
   assert.equal(result.threads.length, 1);
-  assert.equal(result.threads[0].id, `claude-code-cli:${hostSessionId}`);
+  assert.equal(result.threads[0].id, 'claude-desktop-code:local_host');
   assert.equal(result.threads[0].embeddedSubagentCount, 1);
   assert.equal(result.threads[0].embeddedSubagentUpdatedAtMs > 0, true);
 });
 
-test('deduplicates Claude Desktop Code metadata that points at the same CLI session', async () => {
+test('deduplicates Claude Desktop Code metadata that points at the same CLI session', async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'claude-desktop-code-dedupe-'));
-  const projectsDir = path.join(dir, 'projects', '-Users-example-project');
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const projectsDir = path.join(dir, 'projects');
+  const projectDir = path.join(projectsDir, '-Users-example-project');
   const appDir = path.join(dir, 'Claude');
   const desktopDir = path.join(appDir, 'claude-code-sessions', 'account', 'workspace');
   const cliSessionId = 'cli_shared';
-  await mkdir(projectsDir, { recursive: true });
+  await mkdir(projectDir, { recursive: true });
   await mkdir(desktopDir, { recursive: true });
-  await writeFile(path.join(projectsDir, `${cliSessionId}.jsonl`), jsonl([
+  await writeFile(path.join(projectDir, `${cliSessionId}.jsonl`), jsonl([
     {
       type: 'assistant',
       timestamp: '2026-05-09T01:12:00.000Z',
@@ -669,57 +374,16 @@ test('deduplicates Claude Desktop Code metadata that points at the same CLI sess
     title: 'Newer duplicate',
   }));
 
-  const result = await loadClaudeAgentThreads({
+  const result = await loadClaudeDesktopCodeThreads({
     appDir,
     projectsDir,
     nowMs: Date.parse('2026-05-09T03:00:00.000Z'),
-    todayStartMs: Date.parse('2026-05-09T00:00:00.000Z'),
-    runCommand: async () => ({ stdout: '2.1.89 (Claude Code)' }),
   });
-  const desktopThreads = result.threads.filter((thread) => thread.provider === 'claude-desktop-code');
+  const desktopThreads = result.threads;
 
   assert.equal(desktopThreads.length, 1);
   assert.equal(desktopThreads[0].id, 'claude-desktop-code:local_new');
   assert.equal(desktopThreads[0].pendingToolCount, 0);
-});
-
-test('uses Claude Cowork incomplete metadata as a running signal', () => {
-  const signals = parseClaudeJsonlSignals(jsonl([
-    {
-      type: 'user',
-      timestamp: '2026-05-09T01:00:00.000Z',
-      session_id: 'audit_123',
-      message: { role: 'user', content: '持续研究这个问题' },
-    },
-    {
-      type: 'result',
-      timestamp: '2026-05-09T01:20:00.000Z',
-      session_id: 'audit_123',
-      terminal_reason: 'completed',
-      result: '阶段性完成',
-      usage: { input_tokens: 10, output_tokens: 20 },
-    },
-  ]), { todayStartMs: Date.parse('2026-05-09T00:00:00.000Z') });
-  const thread = normalizeClaudeDesktopCoworkSession({
-    sessionId: 'local_running',
-    cliSessionId: 'cli_running',
-    cwd: '/Users/example/research',
-    createdAt: Date.parse('2026-05-09T01:00:00.000Z'),
-    lastActivityAt: Date.parse('2026-05-09T01:30:00.000Z'),
-    model: 'claude-opus-4-6',
-    isArchived: false,
-    isAgentCompleted: false,
-    title: '持续研究',
-    hostLoopMode: true,
-  }, {
-    signals,
-  }, Date.parse('2026-05-09T03:00:00.000Z'));
-
-  assert.equal(thread.provider, 'claude-desktop-cowork');
-  assert.equal(thread.isAgentCompleted, false);
-  assert.equal(thread.agentRunning, true);
-  assert.equal(thread.status, 'running');
-  assert.equal(thread.currentTurnStartedAtMs, Date.parse('2026-05-09T01:00:00.000Z'));
 });
 
 test('normalizes Claude Desktop Code sessions with a desktop resume deep link', () => {
@@ -736,7 +400,6 @@ test('normalizes Claude Desktop Code sessions with a desktop resume deep link', 
 
   assert.equal(thread.provider, 'claude-desktop-code');
   assert.equal(thread.appDeepLink, `claude://resume?session=${cliSessionId}`);
-  assert.equal(thread.resumeCommand, `open 'claude://resume?session=${cliSessionId}'`);
   assert.equal(thread.cliSessionId, cliSessionId);
 });
 
@@ -766,26 +429,6 @@ test('uses Claude Desktop Code panel default title for untitled task-notificatio
   assert.equal(thread.title, 'General coding session');
 });
 
-test('opens Claude CLI sessions in Terminal on macOS', async () => {
-  const calls = [];
-  const result = await openClaudeThread({
-    provider: 'claude-code-cli',
-    externalId: 'ses_cli',
-    cwd: '/Users/example/project',
-    resumeCommand: 'cd /Users/example/project && claude --resume ses_cli',
-  }, {
-    platform: 'darwin',
-    runCommand: async (command, args) => {
-      calls.push({ command, args });
-    },
-  });
-
-  assert.equal(result.opened, true);
-  assert.equal(result.method, 'claude-terminal');
-  assert.equal(calls[0].command, 'osascript');
-  assert.match(calls[0].args.join('\n'), /claude --resume ses_cli/);
-});
-
 test('opens Claude Desktop Code sessions through the registered resume deep link', async () => {
   const cliSessionId = '123e4567-e89b-12d3-a456-426614174000';
   const appDeepLink = `claude://resume?session=${cliSessionId}`;
@@ -795,7 +438,6 @@ test('opens Claude Desktop Code sessions through the registered resume deep link
     externalId: 'local_123',
     cliSessionId,
     appDeepLink,
-    resumeCommand: `open '${appDeepLink}'`,
   }, {
     platform: 'darwin',
     runCommand: async (command, args) => {
@@ -809,4 +451,63 @@ test('opens Claude Desktop Code sessions through the registered resume deep link
     command: 'open',
     args: [appDeepLink],
   });
+});
+
+test('rejects a Claude thread that has no desktop deep link and runs no command', async () => {
+  const calls = [];
+  const runCommand = async (...args) => { calls.push(args); };
+  for (const thread of [
+    { provider: 'claude-desktop-code', externalId: 'local_legacy', cliSessionId: 'not-a-uuid' },
+    { provider: 'claude-code-cli', externalId: 'ses_cli', appDeepLink: 'claude://resume?session=ses_cli' },
+  ]) await assert.rejects(openClaudeThread(thread, { platform: 'linux', runCommand }), /no direct desktop link/);
+  assert.deepEqual(calls, []);
+});
+
+test('skips Claude JSONL lines that parse to a non-object', () => {
+  const signals = parseClaudeJsonlSignals(`null\n7\n"text"\n${jsonl([
+    { type: 'user', timestamp: '2026-05-09T02:00:00.000Z', sessionId: 'ses_cli', message: { content: 'Run the checks' } },
+    { type: 'assistant', timestamp: '2026-05-09T02:01:00.000Z', message: { content: [{ type: 'tool_use', id: 'ask', name: 'AskUserQuestion' }] } },
+  ])}`);
+  assert.equal(signals.sessionId, 'ses_cli');
+  assert.equal(signals.lifecycle.running, true);
+  assert.equal(signals.pendingToolCount, 1);
+});
+
+test('a linked async Agent child ends through a task notification', async (t) => {
+  const nowMs = Date.parse('2026-05-09T03:00:00.000Z');
+  const event = (type, offset, extra = {}) => ({ type, timestamp: new Date(nowMs + offset).toISOString(), ...extra });
+  const launched = [
+    event('user', -10_000, { message: { content: 'Start a background task.' } }),
+    event('assistant', -9000, { message: { content: [{ type: 'tool_use', id: 'launch', name: 'Agent', input: { run_in_background: true } }] } }),
+    event('user', -8900, { message: { content: [{ type: 'tool_result', tool_use_id: 'launch' }] },
+      toolUseResult: { isAsync: true, status: 'async_launched', agentId: 'background' } }),
+  ];
+  const rootEnd = (offset) => event('assistant', offset, { message: { stop_reason: 'end_turn', content: 'Done.' } });
+  const thinking = (offset) => event('assistant', offset, { message: { content: [{ type: 'thinking' }] } });
+  const load = async (records) => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'claude-task-notification-'));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const appDir = path.join(dir, 'Claude'), projectsDir = path.join(dir, 'projects');
+    const childDir = path.join(projectsDir, 'project', 'cli_root', 'subagents');
+    await mkdir(path.join(appDir, 'claude-code-sessions'), { recursive: true });
+    await mkdir(childDir, { recursive: true });
+    await writeFile(path.join(appDir, 'claude-code-sessions', 'local_root.json'), JSON.stringify({ sessionId: 'local_root', cliSessionId: 'cli_root' }));
+    await writeFile(path.join(projectsDir, 'project', 'cli_root.jsonl'), jsonl(records));
+    // The child transcript has no end record: only the notification can close its work.
+    await writeFile(path.join(childDir, 'agent-background.jsonl'), jsonl([thinking(-8500)]));
+    const [thread] = (await loadClaudeDesktopCodeThreads({ appDir, projectsDir, nowMs })).threads;
+    return [thread.lifecycleRunning, thread.latestLifecycleKind, thread.groupTaskEndKind, thread.groupTaskEndedAtMs];
+  };
+  assert.deepEqual(await load([...launched, rootEnd(-8000)]), [true, 'task_started', '', 0]);
+  for (const [status, kind] of [['completed', 'task_complete'], ['failed', 'failed'], ['cancelled', 'cancelled'], ['aborted', 'cancelled']]) {
+    const notice = event('user', -7000, { message: { content:
+      `<task-notification><task-id>background</task-id><status>${status}</status></task-notification>` } });
+    // The root ended before the child: the child end is the group end.
+    assert.deepEqual(await load([...launched, rootEnd(-8000), notice]), [false, kind, kind, nowMs - 7000], status);
+    // The root continues after the notification: the group has open work and no end.
+    assert.deepEqual(await load([...launched, notice, thinking(-6000)]), [true, 'task_started', '', 0], status);
+    // The root ends after the notification: the later root end sets the group outcome.
+    assert.deepEqual(await load([...launched, notice, thinking(-6000), rootEnd(-5000)]),
+      [false, 'task_complete', 'task_complete', nowMs - 5000], status);
+  }
 });

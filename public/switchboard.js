@@ -55,11 +55,19 @@ async function openSession(thread, button) {
 }
 
 function sessionRow(thread) {
+  const indicator = thread.actionRequired || thread.questionAttention ? 'question' : thread.unread ? 'dot'
+    : thread.state === 'idle' && thread.lastOutcome === 'stopped' ? 'stop' : '';
+  const attention = thread.actionRequired ? 'A user action is required in the original app.'
+    : indicator === 'question' ? 'A question needs your answer.' : indicator === 'dot' ? 'Unread in ASB.' : '';
+  const outcome = thread.lastOutcome === 'stopped' ? 'Task stopped.' : thread.lastOutcome === 'failed' || thread.failedAttention
+    ? 'Task failed.' : thread.completionAttention ? 'Task completed.' : '';
   const row = element('button', 'session');
   row.type = 'button';
   row.disabled = !thread.canOpen;
-  row.setAttribute('aria-label', `Open ${thread.title} in ${thread.providerLabel}. ${labels[thread.state]}.`);
+  row.setAttribute('aria-label', `Open ${thread.title} in ${thread.providerLabel}. ${labels[thread.state]}. ${attention} ${outcome}`.trim());
   row.title = thread.canOpen ? `Open in ${thread.providerLabel}` : 'This session has no direct desktop link.';
+  if (attention) row.title += ` ${attention}`;
+  if (outcome) row.title += ` ${outcome}`;
   row.dataset.threadId = thread.id;
   row.dataset.focusKey = `session:${thread.id}`;
   const body = element('span', 'session-body');
@@ -71,6 +79,11 @@ function sessionRow(thread) {
   if (thread.archived) meta.append(element('span', '', '· Archived'));
   body.append(element('span', 'session-title', thread.title), meta);
   row.append(body);
+  if (indicator) {
+    const mark = element('span', `attention ${indicator}`, indicator === 'question' ? '?' : '');
+    mark.setAttribute('aria-hidden', 'true');
+    row.append(mark);
+  }
   if (thread.canOpen) row.append(icon());
   row.addEventListener('click', () => openSession(thread, row));
   return row;

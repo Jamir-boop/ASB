@@ -85,6 +85,36 @@ test('newest cursor chain excludes old login streams and applies changes and del
   assert.equal(isClaudeRemoteCacheEvent(path.dirname(later), path.basename(later), 'change'), true);
 });
 
+test('response budget retains a full-list cursor chain and caps projected unique sessions', async (t) => {
+  const appDir = await temp(t);
+  const rows = Array.from({ length: 5000 }, (_, index) => row(`cse_${index}`));
+  await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions?limit=5000', JSON.stringify({
+    data: rows, resume_token: cursor(now - 2000),
+  }), { mtimeMs: now - 2000 });
+  await cacheFile(appDir, `1/0/https://claude.ai/v1/code/sessions/watch?resume_token=${encodeURIComponent(cursor(now - 2000))}`,
+    frame('changed', row('cse_0', { title: 'Updated task', worker_status: 'idle' })) + frame('sync', {}, cursor(now)));
+  const result = await loadClaudeRemoteThreads({ appDir, nowMs: now });
+  assert.equal(result.partial, false);
+  assert.equal(result.threads.length, 5000);
+  assert.equal(new Set(result.threads.map((thread) => thread.externalId)).size, 5000);
+  assert.equal(result.threads.find((thread) => thread.externalId === 'cse_0').title, 'Updated task');
+  assert.equal(result.threads.find((thread) => thread.externalId === 'cse_0').remoteWorkerStatus, 'idle');
+  await cacheFile(appDir, `1/0/https://claude.ai/v1/code/sessions/watch?resume_token=${encodeURIComponent(cursor(now))}`,
+    watch([row('cse_5000')], now + 1000), { mtimeMs: now + 1000 });
+  const capped = await loadClaudeRemoteThreads({ appDir, nowMs: now + 1000 });
+  assert.equal(capped.partial, false);
+  assert.equal(capped.threads.length, 5000);
+  assert.equal(capped.threads.find((thread) => thread.externalId === 'cse_0').title, 'Updated task');
+  const before = getClaudeRemoteCacheStats();
+  await cacheFile(appDir, `1/0/https://claude.ai/v1/code/sessions/watch?resume_token=${encodeURIComponent(cursor(now - 5000))}`,
+    watch([row('cse_01OldLogin')], now - 4000), { mtimeMs: now - 4000 });
+  const current = await loadClaudeRemoteThreads({ appDir, nowMs: now + 1000 });
+  assert.equal(current.partial, false);
+  assert.equal(current.threads.length, 5000);
+  assert.equal(getClaudeRemoteCacheStats().responseEntries, before.responseEntries);
+  assert.equal(getClaudeRemoteCacheStats().sessionEntries, before.sessionEntries);
+});
+
 test('open gzip watch entries are read without a closed footer and unrelated writes reuse the key index', async (t) => {
   const appDir = await temp(t);
   const file = await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions/watch?exclude_tags=-', watch([row()]), { incomplete: true });
@@ -115,12 +145,14 @@ test('remote states require explicit fresh metadata; cloud does not require a br
     row('cse_01Idle', { worker_status: 'idle' }), row('cse_01Unknown', { worker_status: 'WORKER_STATUS_UNSPECIFIED' }),
     row('cse_01Disconnected', { connection_status: 'disconnected' }),
     row('cse_01Cloud', { environment_kind: 'anthropic_cloud', connection_status: undefined }),
-    row('cse_01Archived', { status: 'archived', worker_status: 'idle' })];
+    row('cse_01Archived', { status: 'archived', worker_status: 'idle' }),
+    row('cse_01Failed', { status: 'failed', worker_status: 'idle' })];
   await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions/watch', watch(values));
   const result = await loadClaudeRemoteThreads({ appDir, nowMs: now });
   const board = buildSwitchboardDashboard(result.threads, [], now);
   const rows = Object.fromEntries(board.threads.map((value) => [value.externalId, value]));
-  assert.deepEqual(values.map((value) => rows[value.id].state), ['working', 'waiting', 'idle', 'unknown', 'unknown', 'working', 'idle']);
+  assert.deepEqual(values.map((value) => rows[value.id].state), ['working', 'waiting', 'idle', 'unknown', 'unknown', 'working', 'idle', 'idle']);
+  assert.deepEqual([rows.cse_01Failed.lastOutcome, rows.cse_01Failed.failedAtMs, rows.cse_01Failed.completionAtMs], ['failed', now, 0]);
   assert.equal(rows.cse_01Archived.archived, true);
   assert.equal(rows.cse_01Running.workingSinceMs, 0);
   assert.equal(rows.cse_01Running.cwd, '');
@@ -134,7 +166,8 @@ test('remote states require explicit fresh metadata; cloud does not require a br
   assert.equal(rows.cse_01Running.pending, false);
   assert.equal(rows.cse_01Idle.pending, true);
   await tracker.markUnread(rows.cse_01Running.id); tracker.apply(rows.cse_01Running);
-  assert.equal(rows.cse_01Running.state, 'working'); assert.equal(rows.cse_01Running.pending, true);
+  assert.equal(rows.cse_01Running.state, 'working'); assert.equal(rows.cse_01Running.manualUnread, true);
+  assert.equal(rows.cse_01Running.pending, false); assert.equal(rows.cse_01Running.unread, false);
   await tracker.setPinned(rows.cse_01Running.id, true); tracker.apply(rows.cse_01Running);
   assert.equal(rows.cse_01Running.pinned, true);
 });
@@ -142,7 +175,7 @@ test('remote states require explicit fresh metadata; cloud does not require a br
 test('default source merges local aliases, retains each source on failure, and validates remote opens', async (t) => {
   const appDir = await temp(t);
   await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions/watch', watch([row('session_01Twin'), row('cse_01Remote')]));
-  const scan = () => loadSwitchboardDashboard({ nowMs: now, loadCodex: async () => ({ threads: [] }), claudeOptions: { appDir, projectFiles: new Map() } });
+  const scan = () => loadSwitchboardDashboard({ nowMs: now, loadCodex: async () => ({ threads: [] }), claudeOptions: { appDir, projectsDir: path.join(appDir, 'projects') } });
   const remoteOnly = await scan();
   assert.equal(remoteOnly.threads.length, 2); assert.equal(remoteOnly.providers[1].status, 'warning');
   const localDir = path.join(appDir, 'claude-code-sessions'); await mkdir(localDir);
@@ -189,7 +222,7 @@ test('desktop bridge session aliases match cse cache IDs and keep the local row 
     row('cse_01Distinct', { title: 'Build task' }),
     row('cse_01Cloud', { title: 'Config task', environment_kind: 'anthropic_cloud', connection_status: undefined }),
   ], resume_token: cursor(now) }));
-  const options = { appDir, projectFiles: new Map(), maxCount: 5000, asbMode: true,
+  const options = { appDir, projectsDir: path.join(appDir, 'projects'), maxCount: 5000,
     strictMetadataRead: true, nowMs: now };
   assert.equal((await loadClaudeRemoteThreads(options)).threads.length, 5);
   const merged = await loadSwitchboardClaudeThreads(options);
@@ -241,8 +274,7 @@ test('bridge aliases reject malformed links and preserve remote rows with ambigu
       ...(id === 'cse_01Cloud' ? { environment_kind: 'anthropic_cloud' } : {}) })),
     row('cse_01Valid'), row('session_01Valid'), row('cse_01CloudDirect', { environment_kind: 'anthropic_cloud' }),
   ], resume_token: cursor(now) }));
-  const merged = await loadSwitchboardClaudeThreads({ appDir, projectFiles: new Map(), maxCount: 5000,
-    asbMode: true, strictMetadataRead: true, nowMs: now });
+  const merged = await loadSwitchboardClaudeThreads({ appDir, projectsDir: path.join(appDir, 'projects'), maxCount: 5000, strictMetadataRead: true, nowMs: now });
   assert.equal(merged.threads.filter((value) => value.source !== 'claude-remote-cache').length, metadata.length);
   assert.deepEqual(new Set(merged.threads.filter((value) => value.source === 'claude-remote-cache')
     .map((value) => value.externalId)), new Set(retained));
@@ -291,7 +323,7 @@ test('the newest cache target beyond 512 entries is selected and future or inval
   const invalid = await loadClaudeRemoteThreads({ appDir, nowMs: now });
   assert.ok(invalid.threads.every((value) => value.externalId !== 'cse_01Invalid'));
   assert.ok(getClaudeRemoteCacheStats().responseEntries <= 32 * 512);
-  assert.ok(getClaudeRemoteCacheStats().sessionEntries <= 32 * 5000);
+  assert.ok(getClaudeRemoteCacheStats().sessionEntries <= 32 * 512 * 5000);
   assert.equal(isClaudeRemoteCacheEvent(path.dirname(newest), path.basename(newest), 'change'), true);
 });
 
@@ -328,4 +360,31 @@ test('stable-file checks cover writes during discovery and response key validati
     assert.equal((await loadClaudeRemoteThreads({ appDir: other, nowMs: now })).threads.length, 0);
     assert.equal(keyReads, 2);
   } finally { fs.open = open; }
+});
+
+test('remote Discard uses explicit successful ends, clears generic Idle, and exposes missed-run limits', async (t) => {
+  for (const terminal of ['completed', 'review_ready', 'generic', 'failed']) {
+    const appDir = await temp(t);
+    const key = '1/0/https://claude.ai/v1/code/sessions/watch';
+    await cacheFile(appDir, key, watch([row()]));
+    const tracker = new PendingTracker(false);
+    const first = await tracker.observe(buildSwitchboardDashboard((await loadClaudeRemoteThreads({ appDir, nowMs: now })).threads, [], now));
+    await tracker.setDiscard(first.threads[0], true);
+    await cacheFile(appDir, key, watch([row(undefined, { worker_status: 'idle', status: terminal === 'failed' ? 'failed' : 'active',
+      status_bucket: terminal, last_event_at: new Date(now + 10).toISOString() })], now + 10), { mtimeMs: now + 10 });
+    const ended = (await tracker.observe(buildSwitchboardDashboard((await loadClaudeRemoteThreads({ appDir, nowMs: now + 10 })).threads, [], now + 10))).threads[0];
+    assert.equal(ended.discardResult, false);
+    assert.equal(ended.nativeUnread, true);
+    assert.equal(ended.pending, ['generic', 'failed'].includes(terminal));
+    assert.equal(tracker.records[ended.id].discard, 0);
+  }
+  const appDir = await temp(t);
+  const key = '1/0/https://claude.ai/v1/code/sessions/watch';
+  await cacheFile(appDir, key, watch([row()]));
+  const tracker = new PendingTracker(false);
+  const first = await tracker.observe(buildSwitchboardDashboard((await loadClaudeRemoteThreads({ appDir, nowMs: now })).threads, [], now));
+  await tracker.setDiscard(first.threads[0], true);
+  await cacheFile(appDir, key, watch([row(undefined, { last_event_at: new Date(now + 10).toISOString() })], now + 10), { mtimeMs: now + 10 });
+  const stillRunning = (await tracker.observe(buildSwitchboardDashboard((await loadClaudeRemoteThreads({ appDir, nowMs: now + 10 })).threads, [], now + 10))).threads[0];
+  assert.equal(stillRunning.discardResult, true);
 });

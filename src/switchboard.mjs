@@ -16,8 +16,11 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 const QUESTION_AT = Symbol('ASB question timestamp');
 const SOURCE_DIR = Symbol('ASB session store');
-const READ_FIELDS = ['questionSeen', 'questionAck', 'nativeAt', 'nativeAck', 'nativeSeen'];
-const RETAINED_SOURCES = ['native-unread', 'observed-completion', 'user-question'];
+const DISCARD_TASK = Symbol('ASB discard task signals');
+const READ_FIELDS = ['questionSeen', 'questionAck', 'nativeAt', 'nativeAck', 'nativeSeen',
+  'discard', 'discardedAt', 'discardStart', 'discardEnd', 'discardNative'];
+const RETAINED_SOURCES = ['native-unread', 'observed-completion', 'observed-failure', 'user-question'];
+const STOPPED_KINDS = ['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled'];
 
 export function switchboardRefreshInterval(dashboard) {
   return dashboard.threads?.some((row) => !row.archived && isSwitchboardRoot(row) && row.state === 'working') ? 2_000 : 5_000;
@@ -48,6 +51,12 @@ export function isSwitchboardRoot(thread) {
   return !thread.isSubagent && !['subagent', 'guardian_review'].includes(thread.threadSource);
 }
 
+// A pending Claude tool with a known time is current for six hours only.
+function pendingToolStale(thread, nowMs) {
+  const pendingAt = Number(thread.pendingToolAtMs || 0);
+  return pendingAt > 0 && nowMs - pendingAt > ACTIVITY_WINDOW_MS;
+}
+
 export function switchboardStatus(thread, nowMs = Date.now()) {
   if (thread.source === 'claude-remote-cache') return claudeRemoteStatus(thread, nowMs);
   const questionAt = Number(thread.latestBlockingQuestionAtMs || 0);
@@ -55,7 +64,7 @@ export function switchboardStatus(thread, nowMs = Date.now()) {
     && nowMs - questionAt <= ACTIVITY_WINDOW_MS) {
     return { state: 'waiting', reason: 'The current tool is waiting for an answer.' };
   }
-  if (thread.awaitingPermission || thread.pendingToolCount || thread.awaitingReview) {
+  if ((thread.awaitingPermission || thread.pendingToolCount) && !thread.questionNonBlocking && !pendingToolStale(thread, nowMs)) {
     return { state: 'waiting', reason: 'A user action is required.' };
   }
   if (thread.groupChildWaiting) return { state: 'waiting', reason: 'A linked child is waiting for an answer.' };
@@ -96,6 +105,16 @@ function codexGroupLifecycle(thread, byId, nowMs) {
   const unknown = children.some((child) => child.lifecycleRunning == null);
   const latestEnd = work.filter((member) => member.lifecycleRunning === false)
     .sort((a, b) => Number(b.latestLifecycleAtMs || 0) - Number(a.latestLifecycleAtMs || 0))[0];
+  const lastEnded = work.map((member) => ({
+    atMs: Number(member.latestTaskEndedAtMs || (member.lifecycleRunning === false ? member.latestLifecycleAtMs : 0) || 0),
+    kind: member.latestTaskEndKind || (member.lifecycleRunning === false ? member.latestLifecycleKind : ''),
+  })).filter((end) => end.atMs).sort((a, b) => b.atMs - a.atMs)[0];
+  const groupEnded = !unknown && lastEnded && active.every((member) => {
+    const start = Number(member.latestTaskStartedAtMs || member.agentStartedAtMs || 0);
+    const linkedStart = member === thread || member.latestTaskEndedAtMs ? start
+      : Math.min(Number(member.createdAtMs || 0), start);
+    return linkedStart > lastEnded.atMs;
+  });
   return { ...thread,
     lifecycleRunning: active.length ? true : unknown ? undefined : thread.lifecycleRunning,
     childWorkUnknown: unknown,
@@ -105,6 +124,10 @@ function codexGroupLifecycle(thread, byId, nowMs) {
     agentStartedAtMs: starts.length ? Math.min(...starts) : 0,
     agentActivityAtMs: active.length ? Math.max(...active.map((member) => Number(member.agentActivityAtMs || member.latestLifecycleAtMs || 0))) : 0,
     groupStatusActivityAtMs: expirySignals.length ? Math.min(...expirySignals) : 0,
+    groupTaskEndedAtMs: groupEnded ? lastEnded.atMs : 0,
+    groupTaskEndKind: groupEnded ? lastEnded.kind : '',
+    latestLifecycleKind: active.length || unknown ? 'task_started' : latestEnd?.latestLifecycleKind || '',
+    latestLifecycleAtMs: active.length || unknown ? thread.latestLifecycleAtMs : latestEnd?.latestLifecycleAtMs || 0,
     groupCompletionAtMs: active.length || unknown || ['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled', 'failed'].includes(latestEnd?.latestLifecycleKind) ? 0
       : Math.max(0, ...work.map((member) => Math.max(member.latestLifecycleKind === 'task_complete' ? Number(member.latestLifecycleAtMs || 0) : 0,
         Number(member.latestAgentFinalAtMs || 0)))),
@@ -150,7 +173,13 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
         workingSinceMs: status.state === 'working' && Number.isFinite(startedAtMs) ? Math.max(0, startedAtMs) : 0,
         nativeUnread: thread.source === 'claude-remote-cache' && status.state === 'unknown' ? null : thread.nativeUnread ?? null,
         readStatus: thread.source === 'claude-remote-cache' && status.state === 'unknown' ? 'unknown' : thread.readStatus || 'unknown',
-        questionPending: Boolean(thread.awaitingUserInput),
+        questionPending: Boolean(thread.awaitingUserInput) && !pendingToolStale(thread, nowMs),
+        actionRequired: status.state === 'waiting' && (thread.source === 'claude-remote-cache'
+          || (thread.pendingTools || []).some((tool) => tool.tool !== 'AskUserQuestion')
+          || (thread.awaitingPermission && !thread.awaitingUserInput)),
+        lastOutcome: status.state !== 'idle' ? '' : thread.latestLifecycleKind === 'failed' ? 'failed'
+          : STOPPED_KINDS.includes(thread.latestLifecycleKind) ? 'stopped' : '',
+        failedAtMs: status.state === 'idle' && thread.latestLifecycleKind === 'failed' ? Number(thread.latestLifecycleAtMs || 0) : 0,
         completionAtMs: thread.groupCompletionAtMs ?? (['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled', 'failed'].includes(thread.latestLifecycleKind) ? 0
           : Math.max(thread.latestLifecycleKind === 'task_complete' ? Number(thread.latestLifecycleAtMs || 0) : 0,
             Number(thread.latestAgentFinalAtMs || 0))),
@@ -158,11 +187,19 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
         appDeepLink,
       };
       Object.defineProperty(row, QUESTION_AT, { value: Number(thread.latestUserQuestionAtMs || 0) });
+      Object.defineProperty(row, DISCARD_TASK, { value: {
+        atMs: thread.groupTaskEndedAtMs ?? Number(thread.latestTaskEndedAtMs || (thread.lifecycleRunning === false ? thread.latestLifecycleAtMs : 0)
+          || row.completionAtMs || row.failedAtMs || 0),
+        kind: thread.groupTaskEndKind ?? (thread.latestTaskEndKind || (thread.lifecycleRunning === false ? thread.latestLifecycleKind : '')
+          || (row.failedAtMs ? 'failed' : row.completionAtMs ? 'task_complete' : '')),
+        rootStart: Number(thread.latestTaskStartedAtMs || thread.agentStartedAtMs || 0),
+        rootEnd: Number(thread.latestTaskEndedAtMs || (thread.lifecycleRunning === false ? thread.latestLifecycleAtMs : 0) || 0),
+      } });
       if (thread.sourceDataDir) Object.defineProperty(row, SOURCE_DIR, { value: thread.sourceDataDir });
       return row;
     }),
   };
-  const expiries = roots.flatMap((thread) => [thread.latestBlockingQuestionAtMs, thread.groupStatusActivityAtMs,
+  const expiries = roots.flatMap((thread) => [thread.latestBlockingQuestionAtMs, thread.groupStatusActivityAtMs, thread.pendingToolAtMs,
     thread.source === 'claude-remote-cache' ? thread.remoteObservedAtMs : 0,
     thread.lifecycleRunning === true ? thread.agentActivityAtMs ?? thread.latestLifecycleAtMs : 0,
     thread.provider === 'claude-desktop-code' && thread.lifecycleRunning == null ? thread.transcriptActivityAtMs : 0])
@@ -191,7 +228,6 @@ export async function loadSwitchboardDashboard({
       if (!(await fs.stat(source.dataDir)).isDirectory()) throw new Error('The source path is not a directory.');
       sourceOptions = source.provider === 'codex' ? {
         databasePath: await discoverCodexStateDatabase(source.dataDir),
-        sessionsDir: path.join(source.dataDir, 'sessions'),
         sessionIndexPath: path.join(source.dataDir, 'session_index.jsonl'),
         globalStatePath: path.join(source.dataDir, '.codex-global-state.json'),
       } : { appDir: source.dataDir, projectsDir: source.projectsDir || path.join(os.homedir(), '.claude', 'projects') };
@@ -199,18 +235,12 @@ export async function loadSwitchboardDashboard({
     }
     return source.provider === 'codex' ? loadCodex({
       ...codexOptions, ...sourceOptions, nowMs,
-      codexResetCreditsEnabled: false,
       codexNativeReadEnabled: true,
-      workMetricCachePath: false,
-      maxGovernanceRollouts: 0,
-      maxOrphanRollouts: 0,
       maxRollouts: 5000,
       rolloutThreadFilter: isSwitchboardRoot,
       initialRolloutBytes: 64 * 1024,
       maxRolloutBytes: 256 * 1024,
-      asbMode: true,
-    }) : loadClaude({ fileIndexCacheTtlMs: 1_000, ...claudeOptions, ...sourceOptions,
-      nowMs, maxCount: 5000, usageCache: null, strictMetadataRead: true, asbMode: true });
+    }) : loadClaude({ ...claudeOptions, ...sourceOptions, nowMs, maxCount: 5000, strictMetadataRead: true });
   }));
   const providers = results.map((result, index) => {
     const source = inputs[index];
@@ -274,7 +304,12 @@ export class PendingTracker {
     this.loaded = false;
     this.saved = '';
     this.write = Promise.resolve();
+    this.readWarning = '';
+    this.saveWarning = '';
+    this.bad = false;
   }
+
+  get warning() { return this.saveWarning || this.readWarning; }
 
   async load() {
     if (this.loaded) return;
@@ -282,22 +317,28 @@ export class PendingTracker {
     if (!this.statePath) return;
     try {
       const value = JSON.parse(await fs.readFile(this.statePath, 'utf8'));
+      this.bad = true;
       if (value?.version === 1 && value.records && typeof value.records === 'object') {
+        this.bad = false;
         this.persistentUnread = value.persistentUnread === true;
         for (const [id, record] of Object.entries(value.records)) {
           if (['seen', 'working', 'pending', 'ack'].every((key) => Number.isFinite(record?.[key]) && record[key] >= 0)) {
             this.records[id] = { ...Object.fromEntries(['seen', 'working', 'pending', 'ack'].map((key) => [key, record[key]])),
-              manual: record.manual === 1 ? 1 : 0, retained: RETAINED_SOURCES.includes(record.retained) ? record.retained : '' };
+              manual: record.manual === 1 ? 1 : 0, retained: RETAINED_SOURCES.includes(record.retained) ? record.retained : '',
+              pendingKind: record.pendingKind === 'failed' ? 'failed' : '' };
             for (const key of READ_FIELDS) this.records[id][key] = Number.isFinite(record[key]) && record[key] >= 0 ? record[key] : 0;
-          }
+            this.records[id].discard = record.discard === 1 ? 1 : 0;
+            this.records[id].discardNative = record.discardNative === 1 ? 1 : 0;
+          } else this.bad = true;
         }
         if (Array.isArray(value.pinnedOrder)) {
           this.pinnedOrder = [...new Set(value.pinnedOrder.filter((id) => typeof id === 'string' && this.records[id]))];
         }
       }
     } catch (error) {
-      if (error.code !== 'ENOENT') this.warning = 'ASB could not read its Pending state. New completions will still be tracked.';
+      this.bad = error.code !== 'ENOENT';
     }
+    if (this.bad) this.readWarning = 'ASB could not read its Pending state. New completions will still be tracked.';
     this.saved = JSON.stringify({ records: this.records, pinnedOrder: this.pinnedOrder, persistentUnread: this.persistentUnread });
   }
 
@@ -309,31 +350,65 @@ export class PendingTracker {
       await fs.mkdir(path.dirname(this.statePath), { recursive: true, mode: 0o700 });
       const temporary = `${this.statePath}.${process.pid}.tmp`;
       await fs.writeFile(temporary, JSON.stringify({ version: 1, ...JSON.parse(content) }), { mode: 0o600 });
+      // Keep the bytes of a state file that ASB could not use in full.
+      if (this.bad) await fs.rename(this.statePath, `${this.statePath}.bad`).catch((error) => { if (error.code !== 'ENOENT') throw error; });
+      this.bad = false;
       await fs.rename(temporary, this.statePath);
     });
-    try { await this.write; } catch { this.saved = ''; this.warning = 'ASB cannot save Pending state. Check its local state folder.'; }
+    try { await this.write; this.saveWarning = ''; }
+    catch { this.saved = ''; this.saveWarning = 'ASB cannot save Pending state. Check its local state folder.'; }
   }
 
   async observe(dashboard) {
     await this.load();
     for (const row of dashboard.threads) {
-      const completion = Number(row.completionAtMs || 0);
+      const completion = Math.max(Number(row.completionAtMs || 0), Number(row.failedAtMs || 0));
       let record = this.records[row.id];
       if (!record) record = this.records[row.id] = { seen: completion, working: 0, pending: 0, ack: 0, manual: 0, retained: '',
-        questionSeen: 0, questionAck: 0, nativeAt: 0, nativeAck: 0, nativeSeen: 0 };
+        questionSeen: 0, questionAck: 0, nativeAt: 0, nativeAck: 0, nativeSeen: 0,
+        discard: 0, discardedAt: 0, discardStart: 0, discardEnd: 0, discardNative: 0 };
+      const task = row[DISCARD_TASK] || { atMs: completion, kind: row.lastOutcome === 'failed' ? 'failed' : completion ? 'task_complete' : '' };
+      const newRoot = row.state === 'working' && task.rootStart > record.discardStart
+        && task.rootEnd > record.discardStart && task.rootStart > task.rootEnd;
+      const discardEnded = record.discard === 1 && (row.state === 'idle'
+        || row.state === 'working' && (task.atMs > record.discardEnd || newRoot));
+      const discardedSuccess = discardEnded && task.atMs > record.discardEnd && task.kind === 'task_complete';
+      if (discardEnded) record.discard = 0;
+      if (discardedSuccess) {
+        record.discardedAt = task.atMs;
+        record.discardNative = 0;
+        if (record.pendingKind !== 'failed') record.ack = Math.max(record.ack, record.pending);
+        if (['native-unread', 'observed-completion'].includes(record.retained)) record.retained = '';
+      }
+      if (!discardedSuccess && record.discardedAt && Math.max(task.atMs || 0, completion) > record.discardedAt) {
+        record.discardedAt = 0;
+        record.discardNative = 0;
+      }
       if (row.questionPending) record.questionSeen = Math.max(record.questionSeen, row[QUESTION_AT] || 1);
       if (row.nativeUnread === true && (!record.nativeSeen || completion > record.seen)) {
         record.nativeAt = Math.max(record.nativeAt + 1, Number(dashboard.generatedAtMs || Date.now()), completion);
       }
       if (row.nativeUnread !== null && row.nativeUnread !== undefined) record.nativeSeen = row.nativeUnread ? 1 : 0;
+      // shortcut: The first late source-app manual Unread cannot be distinguished from completion unread, use a per-task read signal when one exists.
+      if (row.nativeUnread === true && record.discardedAt > 0 && !record.discardNative
+        && row.lastOutcome !== 'failed' && !row.failedAtMs && task.kind !== 'failed'
+        && (task.atMs === record.discardedAt || completion === record.discardedAt)) {
+        record.nativeAck = record.nativeAt;
+        record.discardNative = 1;
+        if (record.retained === 'native-unread') record.retained = '';
+      }
       if (row.archived) record.working = 0;
       else if (row.state === 'working') record.working = 1;
       else if (row.state === 'idle') {
-        if (record.working && completion > record.seen) record.pending = completion;
+        if ((record.working || discardEnded) && !discardedSuccess && completion > record.seen) {
+          record.pending = completion;
+          record.pendingKind = row.failedAtMs > (row.completionAtMs || 0) ? 'failed' : '';
+          if (record.retained === 'observed-failure' && record.pendingKind !== 'failed') record.retained = 'observed-completion';
+        }
         record.working = 0;
         if (row.nativeUnread === false && !this.persistentUnread) record.ack = Math.max(record.ack, record.pending);
-      } else record.working = 0;
-      record.seen = Math.max(record.seen, completion);
+      } else if (row.state !== 'waiting') record.working = 0;
+      record.seen = Math.max(record.seen, completion, discardedSuccess ? task.atMs : 0);
       this.apply(row);
     }
     await this.save();
@@ -345,26 +420,30 @@ export class PendingTracker {
 
   apply(row) {
     const record = this.records[row.id];
+    row.actionRequired ??= row.state === 'waiting' && !row.questionPending;
+    row.discardResult = row.state === 'working' && record?.discard === 1;
     row.pinIndex = this.pinnedOrder.indexOf(row.id);
     row.pinned = row.pinIndex >= 0;
     row.manualUnread = record?.manual === 1;
     row.questionAttention = Boolean(row.questionPending && record?.questionSeen > record?.questionAck);
     row.nativeAttention = Boolean(row.nativeUnread === true && record?.nativeAt > record?.nativeAck);
-    row.completionAttention = Boolean(!row.archived && row.state === 'idle' && row.nativeUnread === null && record?.pending > record?.ack);
+    const observedAttention = Boolean(!row.archived && row.state === 'idle' && row.nativeUnread === null && record?.pending > record?.ack);
+    row.failedAttention = observedAttention && record?.pendingKind === 'failed';
+    row.completionAttention = observedAttention && !row.failedAttention;
     if (this.persistentUnread && record) {
       retainUnread(record, row.questionAttention ? 'user-question'
-        : !row.archived && row.state === 'idle' && record.pending > record.ack ? 'observed-completion'
+        : !row.archived && row.state === 'idle' && record.pending > record.ack ? record.pendingKind === 'failed' ? 'observed-failure' : 'observed-completion'
           : row.nativeAttention ? 'native-unread' : '');
     }
     row.retainedUnread = Boolean(record?.retained);
     row.retainedUnreadSource = record?.retained || '';
-    row.pending = row.manualUnread || row.questionAttention || (row.retainedUnread && (row.retainedUnreadSource !== 'native-unread' || row.state === 'idle'))
-      || (!row.archived && ((row.state === 'waiting' && !row.questionPending) || (row.state === 'idle' && (
-      row.nativeAttention || row.completionAttention))));
-    row.unread = row.manualUnread || row.nativeAttention || row.completionAttention || row.retainedUnread;
-    row.pendingSource = row.questionAttention ? 'user-question' : row.manualUnread ? 'manual-unread' : row.retainedUnread ? row.retainedUnreadSource
-      : row.pending && row.state === 'waiting' ? 'user-action' : row.unread
-      ? row.nativeAttention ? 'native-unread' : 'observed-completion' : '';
+    // A Working row shows only question attention. Stored marks stay and show again after Working ends.
+    const working = row.state === 'working';
+    row.unread = !working && (row.manualUnread || row.nativeAttention || row.completionAttention || row.failedAttention || row.retainedUnread);
+    row.pending = Boolean(row.unread || row.questionAttention || row.actionRequired);
+    row.pendingSource = row.actionRequired ? 'user-action' : row.questionAttention ? 'user-question' : working ? ''
+      : row.manualUnread ? 'manual-unread' : row.retainedUnread ? row.retainedUnreadSource
+        : row.nativeAttention ? 'native-unread' : row.failedAttention ? 'observed-failure' : row.completionAttention ? 'observed-completion' : '';
   }
 
   async setPersistentUnread(enabled, dashboard) {
@@ -373,7 +452,7 @@ export class PendingTracker {
     for (const row of dashboard.threads) {
       const record = this.records[row.id];
       if (enabled) retainUnread(record, row.questionAttention ? 'user-question'
-        : row.completionAttention ? 'observed-completion' : row.nativeAttention ? 'native-unread' : '');
+        : row.failedAttention ? 'observed-failure' : row.completionAttention ? 'observed-completion' : row.nativeAttention ? 'native-unread' : '');
       this.apply(row);
     }
     dashboard.persistentUnread = enabled;
@@ -384,6 +463,20 @@ export class PendingTracker {
     await this.load();
     if (this.records[id]) this.records[id].manual = 1;
     await this.save();
+  }
+
+  async setDiscard(row, enabled) {
+    await this.load();
+    if (enabled && row.state !== 'working') throw Object.assign(new Error('Discard requires a Working task.'), { statusCode: 400 });
+    const record = this.records[row.id];
+    if (!record) throw Object.assign(new Error('This session is not known to ASB.'), { statusCode: 400 });
+    record.discard = enabled ? 1 : 0;
+    if (enabled) {
+      record.discardStart = row[DISCARD_TASK]?.rootStart || 0;
+      record.discardEnd = row[DISCARD_TASK]?.atMs || 0;
+    }
+    await this.save();
+    this.apply(row);
   }
 
   async setPinned(id, pinned) {
@@ -434,7 +527,7 @@ export function createSwitchboardServer(options = {}) {
   const tracker = options.pendingTracker || new PendingTracker(options.pendingStatePath);
   const load = options.loadDashboard || loadSwitchboardDashboard;
   const open = options.openThread || openSwitchboardThread;
-  const registry = options.sourceRegistry || new AppSourceRegistry(options.sourceRegistryOptions);
+  const registry = options.sourceRegistry || new AppSourceRegistry();
   const registeredLoad = !options.loadDashboard || Boolean(options.sourceRegistry);
   const sourceWatchPaths = async () => {
     const sources = await registry.read();
@@ -448,10 +541,8 @@ export function createSwitchboardServer(options = {}) {
     ];
   };
   return createAsbServer({
-    dashboardAdaptiveRefresh: true,
-    dashboardEventMinIntervalMs: 0,
     dashboardWatchDebounceMs: 250,
-    dashboardWatchPaths: registeredLoad ? sourceWatchPaths : switchboardWatchPaths(),
+    dashboardWatchPaths: registeredLoad ? sourceWatchPaths : [],
     dashboardSourceChanged: (source, hint) => {
       if (source === 'codex') invalidateCodexData(hint);
       else { invalidateClaudeData(hint); invalidateClaudeRemoteData(hint); }
@@ -474,6 +565,7 @@ export function createSwitchboardServer(options = {}) {
       await tracker.acknowledge(thread.id);
       tracker.apply(thread);
     },
+    discardThread: (thread, enabled) => tracker.setDiscard(thread, enabled),
     setUnreadSettings: (enabled, dashboard) => tracker.setPersistentUnread(enabled, dashboard),
     pinThread: async (thread, action, body) => {
       const order = action === 'move-pin' ? await tracker.movePin(thread.id, body)
@@ -495,8 +587,7 @@ export function createSwitchboardServer(options = {}) {
       }
       return result;
     },
-    notificationCenter: null,
-    monitorNotifications: false,
+    sourceToken: options.sourceToken || '',
   });
 }
 

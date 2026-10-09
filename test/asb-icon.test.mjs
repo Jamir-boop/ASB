@@ -91,6 +91,44 @@ test('registration is idempotent and updates only files that changed', async (t)
   assert.equal((await stat(installed.iconPath, { bigint: true })).mtimeNs, iconStat.mtimeNs);
 });
 
+test('source registration preserves a managed entry for another launcher', async (t) => {
+  const options = await fixture(t);
+  const launcherExecutable = path.join(options.root, 'asb');
+  await writeFile(launcherExecutable, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const installed = await registerAppIcon({ ...options, launcherExecutable });
+  const desktop = await readFile(installed.desktopPath);
+  const icon = await readFile(installed.iconPath);
+  await writeFile(path.join(options.projectRoot, 'assets', 'icons', `${ASB_APP_ID}.svg`), '<svg><!-- Source icon update --></svg>\n');
+  const result = await registerAppIcon(options);
+  assert.equal(result.status, 'conflict');
+  assert.match(result.message, /different launcher/);
+  assert.deepEqual(await readFile(installed.desktopPath), desktop);
+  assert.deepEqual(await readFile(installed.iconPath), icon);
+  assert.equal((await registerAppIcon({ ...options, launcherExecutable })).status, 'updated');
+  assert.deepEqual(await readFile(installed.desktopPath), desktop);
+  assert.equal(await readFile(installed.iconPath, 'utf8'), '<svg><!-- Source icon update --></svg>\n');
+});
+
+test('source registration creates an entry and replaces the source entry of another checkout', async (t) => {
+  const options = await fixture(t);
+  const other = path.join(options.root, 'other/scripts');
+  await mkdir(other, { recursive: true });
+  await writeFile(path.join(other, 'asb-desktop.mjs'), '// Other checkout.\n');
+  await writeFile(path.join(other, 'asb'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const exec = `Exec="${process.execPath}" "${path.join(options.projectRoot, 'scripts', 'asb-desktop.mjs')}"\n`;
+  await mkdir(path.join(other, '../assets/icons'), { recursive: true });
+  await copyFile(sourceIcon, path.join(other, '../assets/icons', `${ASB_APP_ID}.svg`));
+  const first = await registerAppIcon({ ...options, projectRoot: path.dirname(other) });
+  assert.equal(first.status, 'installed');
+  assert.ok((await readFile(first.desktopPath, 'utf8')).includes(`"${path.join(other, 'asb-desktop.mjs')}"\n`));
+  assert.equal((await registerAppIcon(options)).status, 'updated');
+  assert.ok((await readFile(first.desktopPath, 'utf8')).includes(exec));
+  // An entry that an earlier source run wrote through scripts/asb is also a source entry.
+  assert.equal((await registerAppIcon({ ...options, launcherExecutable: path.join(other, 'asb') })).status, 'updated');
+  assert.equal((await registerAppIcon(options)).status, 'updated');
+  assert.ok((await readFile(first.desktopPath, 'utf8')).includes(exec));
+});
+
 test('registration replaces an owned themed icon entry with an escaped absolute file icon', async (t) => {
   const options = await fixture(t);
   options.dataDir = path.join(options.root, 'data "quoted" \\ $HOME %f');

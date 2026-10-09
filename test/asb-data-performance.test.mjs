@@ -6,17 +6,22 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
-  getCodexCacheStats, loadCodexDashboard, parseRolloutSignals, readCodexPinnedThreadIds, readRolloutSignals,
+  getCodexCacheStats, loadCodexDashboard, parseRolloutSignals, readRolloutSignals,
 } from '../src/codex-data.mjs';
 import {
   getClaudeCacheStats, invalidateClaudeData, loadClaudeDesktopCodeThreads, parseClaudeJsonlSignals,
 } from '../src/claude-data.mjs';
-import { buildDashboard, normalizeDashboardThreads } from '../src/insights.mjs';
+import { normalizeDashboardThreads } from '../src/insights.mjs';
 import { buildSwitchboardDashboard, createSwitchboardServer } from '../src/switchboard.mjs';
 
 const nowMs = Date.parse('2026-10-07T12:00:00Z');
 const jsonl = (records) => `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
 const codexEvent = (payload, time = nowMs) => ({ type: 'event_msg', timestamp: new Date(time).toISOString(), payload });
+const codexThreadsSchema = `create table threads(id text primary key, rollout_path text default '', created_at integer, updated_at integer,
+  source text default 'vscode', model_provider text, cwd text, title text, sandbox_policy text, approval_mode text,
+  tokens_used integer, archived integer, git_sha text, git_branch text, git_origin_url text, cli_version text,
+  first_user_message text, agent_nickname text, agent_role text, memory_mode text, model text, reasoning_effort text,
+  created_at_ms integer, updated_at_ms integer);`;
 const question = { type: 'function_call', name: 'functions.request_user_input_async', call_id: 'ask', arguments: JSON.stringify({ questions: [{ id: 'one' }] }) };
 
 async function temporaryDirectory(t) {
@@ -25,7 +30,7 @@ async function temporaryDirectory(t) {
   return directory;
 }
 
-test('ASB parses lifecycle and questions without token, quota, or artifact passes', async (t) => {
+test('Codex parses lifecycle and questions without token, quota, or artifact fields', async (t) => {
   const directory = await temporaryDirectory(t);
   const rolloutPath = path.join(directory, 'rollout.jsonl');
   const prefix = jsonl([
@@ -36,7 +41,7 @@ test('ASB parses lifecycle and questions without token, quota, or artifact passe
     codexEvent({ type: 'tool_output', text: 'x'.repeat(4096) }, nowMs - 600),
   ]);
   await fs.writeFile(rolloutPath, prefix + jsonl([codexEvent({ type: 'agent_message', message: 'Still working.' })]));
-  const options = { asbMode: true, initialBytes: 256, maxBytes: 256, todayStartMs: nowMs - 10_000 };
+  const options = { initialBytes: 256, maxBytes: 256 };
   const first = await readRolloutSignals(rolloutPath, options);
   assert.equal(first.agentRunning, true);
   assert.equal(first.agentStartedAtMs, nowMs - 900);
@@ -57,15 +62,9 @@ test('ASB parses lifecycle and questions without token, quota, or artifact passe
     codexEvent({ type: 'token_count', info: { total_token_usage: { total_tokens: 900 }, last_token_usage: { total_tokens: 90 } }, rate_limits: { primary: { used_percent: 5 } } }),
     codexEvent({ type: 'agent_message', phase: 'final_answer', message: 'Saved /tmp/result.html' }),
   ]);
-  const full = parseRolloutSignals(records, { todayStartMs: nowMs - 1 });
-  const scoped = parseRolloutSignals(records, { asbMode: true, todayStartMs: nowMs - 1 });
-  assert.equal(full.totalTokenUsage.total_tokens, 900);
-  assert.ok(full.artifacts.total > 0);
-  assert.equal(scoped.totalTokenUsage, null);
-  assert.equal(scoped.rateLimits, null);
-  assert.equal(scoped.todayTokenUsage, 0);
-  assert.equal(scoped.artifacts.total, 0);
-  assert.equal(scoped.latestAgentFinalAtMs, full.latestAgentFinalAtMs);
+  const scoped = parseRolloutSignals(records);
+  for (const key of ['totalTokenUsage', 'rateLimits', 'todayTokenUsage', 'artifacts']) assert.equal(Object.hasOwn(scoped, key), false);
+  assert.equal(scoped.latestAgentFinalAtMs, nowMs);
 });
 
 test('ASB retains more than 256 Codex signals and lifecycle checkpoints', async (t) => {
@@ -77,7 +76,7 @@ test('ASB retains more than 256 Codex signals and lifecycle checkpoints', async 
     codexEvent({ type: 'agent_message', message: 'Working.' }),
   ]);
   await Promise.all(paths.map((filePath) => fs.writeFile(filePath, records)));
-  const options = { asbMode: true, initialBytes: 128, maxBytes: 128 };
+  const options = { initialBytes: 128, maxBytes: 128 };
   for (const filePath of paths) await readRolloutSignals(filePath, options);
   const before = getCodexCacheStats().rolloutSignals;
   for (const filePath of paths) assert.equal((await readRolloutSignals(filePath, options)).awaitingUserInput, true);
@@ -97,7 +96,7 @@ test('ASB keeps incomplete JSONL and partial async answers across lifecycle appe
   ]));
   const ask = jsonl([codexEvent({ ...question, arguments: JSON.stringify({ questions: [{ id: 'one' }, { id: 'two' }] }) })]);
   const half = Math.floor(ask.length / 2);
-  const options = { asbMode: true, initialBytes: 512, maxBytes: 512 };
+  const options = { initialBytes: 512, maxBytes: 512 };
   await fs.appendFile(rolloutPath, ask.slice(0, half));
   assert.equal((await readRolloutSignals(rolloutPath, options)).awaitingUserInput, false);
   await fs.appendFile(rolloutPath, ask.slice(half));
@@ -113,7 +112,7 @@ test('ASB keeps incomplete JSONL and partial async answers across lifecycle appe
   assert.equal(finished.agentStartedAtMs, nowMs - 1000);
 });
 
-test('ASB does not grow the tail to count today tokens when lifecycle and question history are complete', async (t) => {
+test('Codex does not grow the tail for token events when lifecycle and question history are complete', async (t) => {
   const directory = await temporaryDirectory(t);
   const rolloutPath = path.join(directory, 'today.jsonl');
   await fs.writeFile(rolloutPath, jsonl([
@@ -123,12 +122,12 @@ test('ASB does not grow the tail to count today tokens when lifecycle and questi
     codexEvent({ type: 'task_started' }, nowMs - 900),
   ]));
   const before = getCodexCacheStats().rolloutSignals;
-  const signals = await readRolloutSignals(rolloutPath, { asbMode: true, initialBytes: 512, maxBytes: 8192, todayStartMs: nowMs - 20_000 });
+  const signals = await readRolloutSignals(rolloutPath, { initialBytes: 512, maxBytes: 8192 });
   const after = getCodexCacheStats().rolloutSignals;
   assert.equal(after.bytesRead - before.bytesRead, 512);
   assert.equal(after.lifecycleBytesRead, before.lifecycleBytesRead);
   assert.equal(signals.agentStartedAtMs, nowMs - 900);
-  assert.equal(signals.todayTokenUsage, 0);
+  assert.equal(Object.hasOwn(signals, 'todayTokenUsage'), false);
 });
 
 test('Codex metadata fingerprints detect replacement and database WAL writes', async (t) => {
@@ -137,21 +136,19 @@ test('Codex metadata fingerprints detect replacement and database WAL writes', a
   const database = new DatabaseSync(databasePath);
   t.after(() => database.close());
   database.exec(`pragma journal_mode=WAL;
-    create table threads(id text primary key, rollout_path text default '', created_at integer, updated_at integer,
-      source text default 'vscode', model_provider text, cwd text, title text, sandbox_policy text, approval_mode text,
-      tokens_used integer, archived integer, git_sha text, git_branch text, git_origin_url text, cli_version text,
-      first_user_message text, agent_nickname text, agent_role text, memory_mode text, model text, reasoning_effort text,
-      created_at_ms integer, updated_at_ms integer);
+    ${codexThreadsSchema}
     insert into threads(id,title,created_at_ms,updated_at_ms) values('first','Old title',${nowMs},${nowMs});`);
   const sessionIndexPath = path.join(directory, 'session_index.jsonl');
   const globalStatePath = path.join(directory, 'global.json');
   await fs.writeFile(sessionIndexPath, jsonl([{ id: 'first', thread_name: 'Sidebar title' }]));
   await fs.writeFile(globalStatePath, JSON.stringify({ 'pinned-thread-ids': ['first'] }));
-  const options = { databasePath, sessionIndexPath, globalStatePath, asbMode: true, nowMs };
+  // The old dashboard options of the caller stay accepted and have no effect.
+  const options = { databasePath, sessionsDir: directory, sessionIndexPath, globalStatePath, nowMs, asbMode: true,
+    codexResetCreditsEnabled: false, workMetricCachePath: false, maxGovernanceRollouts: 0, maxOrphanRollouts: 0 };
   const first = await loadCodexDashboard(options);
   assert.equal(first.threads[0].title, 'Sidebar title');
   assert.equal(first.threads[0].pinned, true);
-  assert.equal(first.summary, undefined);
+  assert.deepEqual(Object.keys(first), ['generatedAtMs', 'threads']);
   const before = getCodexCacheStats().metadata;
   await loadCodexDashboard(options);
   const warm = getCodexCacheStats().metadata;
@@ -197,10 +194,20 @@ test('backend source events invalidate Codex and Claude metadata with identical 
   const fixture = await claudeFixture(directory, 1);
   const globalStatePath = path.join(directory, '.codex-global-state.json');
   await fs.writeFile(globalStatePath, JSON.stringify({ 'pinned-thread-ids': ['first'] }));
+  const databasePath = path.join(directory, 'state.sqlite');
+  const database = new DatabaseSync(databasePath);
+  try {
+    database.exec(`${codexThreadsSchema}
+      insert into threads(id,title,created_at_ms,updated_at_ms) values('first','First',${nowMs},${nowMs}),('other','Other',${nowMs},${nowMs});`);
+  } finally {
+    database.close();
+  }
+  const codexPinned = async () => (await loadCodexDashboard({ databasePath, sessionIndexPath: path.join(directory, 'session_index.jsonl'), globalStatePath, nowMs })).threads
+    .filter((thread) => thread.pinned).map((thread) => thread.id);
   const originalStat = fs.stat;
   const frozenStats = new Map(await Promise.all([globalStatePath, fixture.metadataPath].map(async (filePath) => [filePath, await fs.stat(filePath)])));
   t.mock.method(fs, 'stat', async (filePath, ...args) => frozenStats.get(filePath) || originalStat(filePath, ...args));
-  const options = { appDir: fixture.appDir, projectsDir: fixture.projectsDir, nowMs, asbMode: true, usageCache: null };
+  const options = { appDir: fixture.appDir, projectsDir: fixture.projectsDir, nowMs };
   const callbacks = new Map();
   const server = createSwitchboardServer({
     pendingStatePath: false,
@@ -218,7 +225,7 @@ test('backend source events invalidate Codex and Claude metadata with identical 
       return watcher;
     },
     loadDashboard: async () => ({ generatedAtMs: nowMs, threads: [
-      { id: 'codex', provider: 'codex', state: 'idle', title: (await readCodexPinnedThreadIds(globalStatePath)).join(',') },
+      { id: 'codex', provider: 'codex', state: 'idle', title: (await codexPinned()).join(',') },
       ...(await loadClaudeDesktopCodeThreads(options)).threads,
     ] }),
   });
@@ -232,14 +239,14 @@ test('backend source events invalidate Codex and Claude metadata with identical 
   assert.equal(first.threads[0].title, 'first');
   assert.equal(first.threads[1].title, 'Task 1');
   const before = { codex: getCodexCacheStats().metadata, claude: getClaudeCacheStats().metadata };
-  await readCodexPinnedThreadIds(globalStatePath);
+  await codexPinned();
   await loadClaudeDesktopCodeThreads(options);
   assert.equal(getCodexCacheStats().metadata.bytesRead, before.codex.bytesRead);
   assert.equal(getClaudeCacheStats().metadata.bytesRead, before.claude.bytesRead);
   await fs.writeFile(globalStatePath, JSON.stringify({ 'pinned-thread-ids': ['other'] }));
   const metadata = await fs.readFile(fixture.metadataPath, 'utf8');
   await fs.writeFile(fixture.metadataPath, metadata.replace('Task 1', 'Task 2'));
-  assert.deepEqual(await readCodexPinnedThreadIds(globalStatePath), ['first']);
+  assert.deepEqual(await codexPinned(), ['first']);
   assert.equal((await loadClaudeDesktopCodeThreads(options)).threads[0].title, 'Task 1');
   callbacks.get(directory)('change', path.basename(globalStatePath));
   callbacks.get(path.dirname(fixture.metadataPath))('change', path.basename(fixture.metadataPath));
@@ -253,10 +260,9 @@ test('backend source events invalidate Codex and Claude metadata with identical 
 test('Claude ASB caches unchanged metadata and indices, detects new and renamed sessions', async (t) => {
   const directory = await temporaryDirectory(t);
   const fixture = await claudeFixture(directory, 1);
-  const options = { appDir: fixture.appDir, projectsDir: fixture.projectsDir, nowMs, asbMode: true, usageCache: null, strictMetadataRead: true };
+  const options = { appDir: fixture.appDir, projectsDir: fixture.projectsDir, nowMs, strictMetadataRead: true };
   const first = await loadClaudeDesktopCodeThreads(options);
   assert.equal(first.threads[0].latestUserMessageAtMs, nowMs - 1000);
-  assert.equal(first.threads[0].tokensUsed, 0);
   const before = getClaudeCacheStats();
   const warm = await loadClaudeDesktopCodeThreads({ ...options, nowMs: nowMs + 1000 });
   const after = getClaudeCacheStats();
@@ -302,7 +308,7 @@ test('Claude ASB bounds parse concurrency and caches more than 512 sessions', as
     return handle;
   };
   try {
-    const options = { appDir, projectsDir, maxCount: 5000, asbMode: true, usageCache: null, nowMs };
+    const options = { appDir, projectsDir, maxCount: 5000, nowMs };
     assert.equal((await loadClaudeDesktopCodeThreads(options)).threads.length, fixtures.length);
     assert.ok(maximum <= 6);
     assert.equal(active, 0);
@@ -337,7 +343,7 @@ test('Claude recovers linked child lifecycle outside the tail and reuses append 
     event('progress', -500, { data: 'x'.repeat(2048) }),
   ]));
   const options = { appDir: fixture.appDir, projectsDir: fixture.projectsDir, nowMs,
-    asbMode: true, usageCache: null, maxBytes: 256 };
+    maxBytes: 256 };
   const scan = async () => buildSwitchboardDashboard((await loadClaudeDesktopCodeThreads(options)).threads, [], nowMs);
   assert.equal((await scan()).threads[0].state, 'working');
   const before = getClaudeCacheStats().jsonlSignals;
@@ -365,17 +371,15 @@ test('Claude recovers linked child lifecycle outside the tail and reuses append 
   assert.equal((await scan()).threads[0].completionAtMs, 0);
 });
 
-test('narrow normalization matches dashboard relationships and default Claude usage stays enabled', () => {
+test('normalization attaches relationships and Claude ASB signals skip usage', () => {
   const threads = [
     { id: 'host', updatedAtMs: nowMs, tokensUsed: 0 },
     { id: 'child', parentThreadId: 'host', isSubagent: true, updatedAtMs: nowMs + 1, tokensUsed: 0 },
   ];
   const narrow = normalizeDashboardThreads(threads, nowMs);
-  const full = buildDashboard(threads, nowMs).threads;
   assert.deepEqual(narrow.map((thread) => [thread.id, thread.hostThreadId, thread.subagentCount, thread.groupUpdatedAtMs]),
-    full.map((thread) => [thread.id, thread.hostThreadId, thread.subagentCount, thread.groupUpdatedAtMs]));
+    [['child', 'host', 0, nowMs + 1], ['host', 'host', 1, nowMs + 1]]);
   const records = jsonl([{ type: 'assistant', timestamp: new Date(nowMs).toISOString(), message: { usage: { input_tokens: 123 }, stop_reason: 'end_turn', content: 'Done.' } }]);
-  assert.equal(parseClaudeJsonlSignals(records).tokensUsed, 123);
-  assert.equal(parseClaudeJsonlSignals(records, { asbMode: true }).tokensUsed, 0);
-  assert.equal(parseClaudeJsonlSignals(records, { asbMode: true }).latestAgentFinalAtMs, nowMs);
+  assert.ok(!parseClaudeJsonlSignals(records).tokensUsed);
+  assert.equal(parseClaudeJsonlSignals(records).latestAgentFinalAtMs, nowMs);
 });

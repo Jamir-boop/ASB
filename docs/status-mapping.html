@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ASB status mapping</title>
+<style>
+  :root { color-scheme: light dark; --bg: #fafafa; --fg: #1d1d1f; --dim: #666; --line: #d8d8dc; --card: #fff; --accent: #c77700; --changed: #fff4dc; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #17171a; --fg: #e8e8ea; --dim: #9a9aa2; --line: #34343a; --card: #1f1f23; --accent: #f0a93a; --changed: #33290f; }
+  }
+  body { margin: 0; padding: 24px 16px 48px; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, sans-serif; }
+  main { max-width: 1280px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p { margin: 0 0 16px; color: var(--dim); }
+  .scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+  table { border-collapse: collapse; width: 100%; min-width: 1080px; }
+  th, td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  td:first-child { font-weight: 600; min-width: 150px; border-left: 3px solid transparent; }
+  tr.changed td { background: var(--changed); }
+  tr.changed td:first-child { border-left-color: var(--accent); }
+  code { font: 12px ui-monospace, monospace; background: color-mix(in srgb, var(--fg) 9%, transparent); padding: 1px 4px; border-radius: 3px; }
+  small { display: block; color: var(--dim); font-weight: 400; }
+  .to { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; align-items: center; min-width: 250px; }
+  .to label { font-size: 12px; color: var(--dim); }
+  select, input, textarea, button { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px; }
+  select, input { width: 100%; box-sizing: border-box; }
+  select.diff { border-color: var(--accent); font-weight: 600; }
+  h2 { font-size: 15px; margin: 24px 0 8px; }
+  textarea { width: 100%; box-sizing: border-box; min-height: 160px; font: 12px/1.5 ui-monospace, monospace; }
+  .bar { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+  button { cursor: pointer; padding: 5px 12px; }
+  #copied { color: var(--dim); }
+</style>
+</head>
+<body>
+<main>
+  <h1>ASB status mapping</h1>
+  <p>Each row is one situation. The <b>Changes to</b> column starts with the current behaviour. Change a value and the row gets a highlight. Then copy the result and paste it into the chat.</p>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Situation</th><th>Codex native signal</th><th>Claude Code native signal</th><th>State now</th><th>Icon now</th><th>Pending now</th><th>Changes to</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <h2>Result (changed rows only)</h2>
+  <textarea id="out" readonly></textarea>
+  <div class="bar"><button id="copy">Copy result</button><button id="reset">Reset all</button><span id="copied"></span></div>
+</main>
+<script>
+const STATES = ['Working', 'Waiting', 'Idle', 'Unknown', 'Error (new)', 'Stopped (new)', 'Hidden', 'No change'];
+const ICONS = ['None', 'Dot', 'Hollow dot', '?', '!', 'Lock', '×', 'Stop square', 'Check'];
+const PENDING = ['No', 'Yes, until Read', 'Yes, until resolved'];
+// [id, situation, hint, codex, claude, state, icon, pending]
+const ROWS = [
+  ['run', 'Task runs', '', 'Thread `active`, turn `inProgress`, `task_started`', 'Worker `running`, `stop_reason: tool_use`', 'Working', 'None', 'No'],
+  ['discard-on', 'Discard is on', 'Current task only. Questions take priority. The ring is not attention; Compact keeps its timer.', 'ASB Discard mark and an open local task', 'ASB Discard mark and an open request', 'Working', 'Hollow dot', 'No'],
+  ['discard-end', 'Task ended with Discard on', 'Verified successful end only. The arm clears. Questions, failures and manual Unread are preserved. Remote cache and first late unread limits apply.', '`task_complete` with no error, ASB Discard armed', 'Successful group end, ASB Discard armed', 'Idle', 'None', 'No'],
+  ['seen', 'Task ended, you saw it', '', 'Thread `idle`, turn `completed`, `task_complete`', 'Worker `idle`, `stop_reason: end_turn`', 'Idle', 'None', 'No'],
+  ['unseen', 'Task ended, you did not see it', 'A task that ends after a Waiting scan (Working, Waiting, then Idle) also gets the dot.', 'Unread turn flag', 'No native flag. ASB observes Working to Idle', 'Idle', 'Dot', 'Yes, until Read'],
+  ['restart', 'Unread mark, then a new task starts', 'The mark is hidden, not deleted.', 'Unread turn flag and `task_started`', 'ASB mark and an open request', 'Working', 'None', 'No'],
+  ['ask-async', 'Question, task continues', '', '`request_user_input_async`, flag `waitingOnUserInput`', '`AskUserQuestion` while a linked subagent works', 'Working', '?', 'Yes, until Read'],
+  ['ask-sync', 'Question, task stops', 'A Claude question wait expires six hours after the tool event.', '`request_user_input`, flag `waitingOnUserInput`', '`AskUserQuestion`', 'Waiting', '?', 'Yes, until Read'],
+  ['approval-codex', 'Approval wait (Codex)', 'Unsupported. No reliable unanswered approval signal was found in local rollout or state schema. An open task keeps Working.', 'App-server flag `waitingOnApproval` is not read by ASB', 'Not applicable', 'Working', 'None', 'No'],
+  ['permission-claude', 'Permission wait (Claude)', 'Read cannot clear this wait. Resolve it in Claude. Remote state must be fresh. A local wait expires six hours after the tool event; then the usual rules apply.', 'Not applicable', 'Permission tool pending, worker `requires_action`', 'Waiting', '?', 'Yes, until resolved'],
+  ['plan-claude', 'Plan waits for approval (Claude)', 'A linked child cannot make this wait Working. Read cannot clear it. The wait expires six hours after the tool event; then the usual rules apply.', 'Not applicable', '`ExitPlanMode` pending', 'Waiting', '?', 'Yes, until resolved'],
+  ['stopped', 'You stopped the task', 'Includes historical stops. Adds no unread mark. Existing question or unread attention has priority over the square.', '`turn_aborted`, `turn_cancelled`, `task_cancelled`, `cancelled`', 'User interruption or cancelled terminal result', 'Idle', 'Stop square', 'No'],
+  ['failed', 'Task failed', 'Dot requires an observed Working to Idle end with unknown native read state. A Waiting scan before the end keeps the observation. No new dot on first load. Native read marks keep their own rule.', '`task_complete.error` is non-null', '`result.is_error`, linked failed task notification; fresh remote session `failed`', 'Idle', 'Dot', 'Yes, until Read'],
+  ['child-run', 'Subagent works after the root ends', '', 'Subagent `running`, `pendingInit`', 'Open child transcript', 'Working', 'None', 'No'],
+  ['child-failed', 'Subagent failed', 'Applies only when failure is the last group end. Active work keeps Working. A later completion or stop takes priority. Dot uses the same observed-end and native-read rule.', 'Linked child `task_complete.error` is non-null', 'Linked child `result.is_error` or failed task notification', 'Idle', 'Dot', 'Yes, until Read'],
+  ['stale', 'No recent signal (6 hours)', '', 'Thread `notLoaded`, or an old open task', 'Old open request, or worker not connected', 'Unknown', 'None', 'No'],
+  ['archived', 'Archived', '', 'Archive flag', '`isArchived`', 'Hidden', 'None', 'No'],
+  ['manual', 'You marked it Unread in ASB', 'Hidden while Working.', 'None', 'None', 'No change', 'Dot', 'Yes, until Read'],
+];
+const KEY = 'asb-status-mapping';
+let saved = {};
+try { saved = JSON.parse(localStorage.getItem(KEY)) || {}; } catch { /* storage is optional */ }
+
+const code = (text) => text.replace(/`([^`]+)`/g, '<code>$1</code>');
+const select = (id, field, options, now) => `<label for="${id}-${field}">${field}</label><select id="${id}-${field}" data-field="${field}" data-now="${now}">`
+  + options.map((value) => `<option${value === (saved[id]?.[field] ?? now) ? ' selected' : ''}>${value}</option>`).join('') + '</select>';
+
+document.getElementById('rows').innerHTML = ROWS.map(([id, name, hint, codex, claude, state, icon, pending]) =>
+  `<tr data-id="${id}" data-name="${name}"><td>${name}${hint ? `<small>${hint}</small>` : ''}</td><td>${code(codex)}</td><td>${code(claude)}</td>
+   <td>${state}</td><td>${icon}</td><td>${pending}</td>
+   <td><div class="to">${select(id, 'State', STATES, state)}${select(id, 'Icon', ICONS, icon)}${select(id, 'Pending', PENDING, pending)}
+   <label for="${id}-Note">Note</label><input id="${id}-Note" data-field="Note" placeholder="Optional"></div></td></tr>`).join('');
+for (const input of document.querySelectorAll('input[data-field]')) input.value = saved[input.closest('tr').dataset.id]?.Note || '';
+
+function update() {
+  const lines = [];
+  saved = {};
+  for (const row of document.querySelectorAll('#rows tr')) {
+    const cells = [];
+    let changed = false;
+    const values = saved[row.dataset.id] = {};
+    for (const control of row.querySelectorAll('[data-field]')) {
+      values[control.dataset.field] = control.value;
+      if (control.dataset.field === 'Note') {
+        if (control.value.trim()) changed = true;
+        cells.push(control.value.trim().replaceAll('|', '/'));
+        continue;
+      }
+      const diff = control.value !== control.dataset.now;
+      control.classList.toggle('diff', diff);
+      changed ||= diff;
+      cells.push(diff ? `${control.dataset.now} -> ${control.value}` : control.value);
+    }
+    row.classList.toggle('changed', changed);
+    if (changed) lines.push(`| ${row.dataset.name} | ${cells.join(' | ')} |`);
+  }
+  document.getElementById('out').value = lines.length
+    ? ['| Situation | State | Icon | Pending | Note |', '| --- | --- | --- | --- | --- |', ...lines].join('\n') : 'No changes.';
+  try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch { /* storage is optional */ }
+}
+document.getElementById('rows').addEventListener('input', update);
+document.getElementById('copy').addEventListener('click', async () => {
+  const out = document.getElementById('out');
+  try { await navigator.clipboard.writeText(out.value); } catch { out.select(); document.execCommand('copy'); }
+  document.getElementById('copied').textContent = 'Copied.';
+  setTimeout(() => { document.getElementById('copied').textContent = ''; }, 1500);
+});
+document.getElementById('reset').addEventListener('click', () => {
+  for (const control of document.querySelectorAll('[data-field]')) control.value = control.dataset.now || '';
+  update();
+});
+update();
+</script>
+</body>
+</html>

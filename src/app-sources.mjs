@@ -84,6 +84,7 @@ export class AppSourceRegistry {
     this.initialized = false;
     this.readPromise = null;
     this.write = Promise.resolve();
+    this.bad = false;
   }
 
   async validate(source, { stored = false, checkLauncher = true } = {}) {
@@ -142,7 +143,8 @@ export class AppSourceRegistry {
           await this.validateStores(sources);
           this.sources = sources;
           this.warning = '';
-        } catch { this.warning = 'ASB cannot read its app source settings. The last valid sources are still in use.'; }
+          this.bad = false;
+        } catch { this.bad = info.isFile(); this.warning = 'ASB cannot read its app source settings. The last valid sources are still in use.'; }
       } else if (first && this.discoverPersonal) {
         const dataDir = path.join(this.homeDir, '.codex-personal');
         const launcher = path.join(this.homeDir, '.local', 'bin', 'chatgpt-personal');
@@ -168,6 +170,9 @@ export class AppSourceRegistry {
       const temporary = `${this.configPath}.${randomUUID()}.tmp`;
       try {
         await fs.writeFile(temporary, JSON.stringify({ version: 1, sources }, null, 2), { flag: 'wx', mode: 0o600 });
+        // Keep the bytes of a settings file that ASB could not use.
+        if (this.bad) await fs.rename(this.configPath, `${this.configPath}.bad`).catch((error) => { if (error.code !== 'ENOENT') throw error; });
+        this.bad = false;
         await fs.rename(temporary, this.configPath);
       } finally { await fs.rm(temporary, { force: true }); }
       const info = await fs.stat(this.configPath);

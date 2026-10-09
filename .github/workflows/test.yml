@@ -19,7 +19,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-      - run: sudo apt-get update && sudo apt-get install -y sqlite3
       - run: npm test
       - run: python3 test/asb_native_logic_test.py
       - run: npm run build

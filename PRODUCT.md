@@ -6,7 +6,7 @@
 
 Native desktop: Linux GNOME, GTK4 and Libadwaita. The native window uses no browser or webview. The Impeccable platform enum has no GNOME value; do not substitute `web`, `ios`, `android`, or `adaptive`.
 
-This file records ASB. The retained Agent Mission Control documentation describes the upstream project.
+This file records ASB. The Agent Mission Control documentation is removed from this repository. `CHANGELOG.md` keeps the upstream release history.
 
 ## Users
 
@@ -29,14 +29,15 @@ The native window can be a narrow sidebar or a wide desktop window. A local Node
 - States are Working, Waiting, Idle, and Unknown. Pending is an attention marker. It does not replace Working, Waiting, or Unknown.
 - Use safe, matched local Codex metadata for native unread state. Missing or unmatched data means that read status is unknown.
 - When native read status is unknown, mark a new successful Working-to-Idle completion that ASB observed. Do not mark historical Idle sessions on the first scan. Waiting requires user attention.
-- **Unread** adds an ASB mark. The row menu shows **Read** for a current ASB dot and **Unread** for a row without a dot. It persists across native read-state changes. By default, a successful ASB open acknowledges local manual, completion, native, and question attention; a failed open retains it. Execution and original-app state do not change.
+- **Unread** adds an ASB mark. The row menu shows **Read** for a current ASB dot or question attention and **Unread** when neither is present; action-required waits have no ineffective Read action. It persists across native read-state changes. By default, a successful ASB open acknowledges local manual, completion, native, and question attention; a failed open retains it. Execution and original-app state do not change.
 - **Persistent unread** is off by default. When on, ASB retains attention across source read/resolution and successful opens. **Read** in the row menu clears it without changing execution or source data. Save the shared setting only in ASB state, separate from layout/theme.
 - Current synchronous Codex input can block execution and show Waiting. Async questions add attention beside current Working or Idle. Human resumption supersedes old questions; goal/context continuation and partial replies preserve them. Default open acknowledgment clears the local dot without resolving source input. Keep question and answer content out of the view.
 - Read original SQLite, JSON, and transcript stores without changing them. Keep creator and account identity fields internal. Do not read credentials or call models.
 - Save Pending state only in `$XDG_STATE_HOME/asb/pending.json`, or `~/.local/state/asb/pending.json`. Save custom colors only in `$XDG_CONFIG_HOME/asb/theme.json`, or `~/.config/asb/theme.json`.
 - Save one shared target column width and optional view only in ASB's `layout.json`. Native divider drag and a menu field change all columns. Compact is the default with 22px rows; Comfortable uses the chosen Workspace-first 68px layout. Scroll columns horizontally, with three complete Comfortable rows at 1080×248. Keep the same outer frame and no separate title/footer row.
 - Use native Codex/Claude/Pending pills in both views. No app selected or both selected shows all; one selects that provider. Pending combines with the other filters. Pills and the app menu share one selection.
-- Show a native unread dot while Working without changing its state or automatic Pending attention. Show Opening within the row, then restore its current title.
+- Hide unread marks while Working and keep them stored. Only question attention shows a `?` and makes a Working row Pending. Show Opening within the row, then restore its current title.
+- **Discard result** applies once to the current Working task. A successful end skips its result attention and clears the arm; the next task uses normal rules. Keep manual Unread, questions, and failures. Use the approved hollow dot in the existing Comfortable Read slot and a passive Compact ring with row-menu actions. It does not change state, Pending, sorting, or source-app read truth. Missing source observations remain an explicit limit.
 - Force dark mode only in ASB. Use GNOME semantic colors by default. Validate, save, apply, and reset custom colors without changing global GNOME settings.
 - ASB has no execution client, model calls, quota cards, token cards, telemetry, notifications, or review jobs.
 
@@ -61,4 +62,4 @@ The current implementation is in `scripts/asb-native.py` and `src/switchboard.mj
 
 Keep visible native focus, keyboard row movement, text state labels, full row details, and accessible control names. Custom text, muted text, and accent colors must pass the implemented contrast checks. Do not use color alone to show state.
 
-Working time uses the current source task/request start only. Compact shows it beside Working; Comfortable uses the right metadata label. A local two-second clock updates labels, tooltips, and accessible text without a data read. It stops when the full unarchived list has no Working session. Idle age labels refresh once a minute. Seconds show below one hour; longer durations show hours and minutes. Unknown start and non-Working states have no running timer. The backend sends a stable `workingSinceMs`, not elapsed time.
+Working time uses the current source task/request start only. Compact shows it beside Working; Comfortable uses the right metadata label. A local two-second clock updates labels and accessible text without a data read. The native Unfolded card tooltip computes current text when queried and reuses one row-owned content widget when its model/theme is unchanged. Changed content rebuilds; palette changes and row release clear the cache. It shows full path/title, state/time, app/source, and one optional indicator note, with the native frame and no source read. The label clock stops when the full unarchived list has no Working session. Idle age labels refresh once a minute. Seconds show below one hour; longer durations show hours and minutes. Unknown start and non-Working states have no running timer. The backend sends a stable `workingSinceMs`, not elapsed time.

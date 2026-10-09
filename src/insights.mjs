@@ -1,15 +1,9 @@
 import path from 'node:path';
-import { buildGovernanceModel } from './governance.mjs';
-import { isAutomationThread, isSubagentThread, subagentInfo } from './thread-classification.mjs';
-import {
-  addTokenBreakdowns,
-  tokenBreakdownWithFallbackTotal,
-} from './token-usage.mjs';
+import { isAutomationThread, subagentInfo } from './thread-classification.mjs';
 
 const FRESH_WINDOW_MS = 15 * 60 * 1000;
 const WARM_WINDOW_MS = 6 * 60 * 60 * 1000;
 const RUNNING_ACTIVITY_WINDOW_MS = WARM_WINDOW_MS;
-const HIGH_TOKEN_USAGE = 5_000_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function coerceNumber(value, fallback = 0) {
@@ -28,270 +22,10 @@ function coerceBoolean(value, fallback = false) {
   return Boolean(coerceNumber(value));
 }
 
-function shellQuote(value) {
-  return `'${String(value).replaceAll("'", "'\"'\"'")}'`;
-}
-
-function codexResumeCommand({ id, cwd }) {
-  const threadId = String(id || '');
-  if (!threadId) return '';
-  const command = `codex resume --no-alt-screen ${shellQuote(threadId)}`;
-  return cwd ? `cd ${shellQuote(cwd)} && ${command}` : command;
-}
-
 function unixValueToMs(value) {
   const number = coerceNumber(value);
   if (number <= 0) return 0;
   return number > 1_000_000_000_000 ? number : number * 1000;
-}
-
-function clampPercent(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return null;
-  return Math.min(Math.max(number, 0), 100);
-}
-
-function quotaWindow(window) {
-  if (!window || typeof window !== 'object') return null;
-
-  const usedPercent = clampPercent(
-    window.used_percent
-    ?? window.usedPercent
-    ?? window.used_percentage,
-  );
-  if (usedPercent === null) return null;
-
-  return {
-    usedPercent,
-    availablePercent: Math.max(0, 100 - usedPercent),
-    resetsAtMs: unixValueToMs(window.resets_at),
-    windowMinutes: coerceNumber(window.window_minutes),
-  };
-}
-
-const QUOTA_FAMILY_ORDER = ['gpt', 'claude', 'gemini', 'grok', 'deepseek', 'qwen', 'llama'];
-
-function compactModelLabel(value = '') {
-  return String(value).trim().replace(/\s+/g, ' ');
-}
-
-function isCodexProvider(thread) {
-  const provider = compactModelLabel(thread.provider).toLowerCase();
-  const providerLabel = compactModelLabel(thread.providerLabel).toLowerCase();
-  return provider === 'codex'
-    || provider === 'codex-cli'
-    || providerLabel.includes('codex');
-}
-
-function quotaFamily(thread) {
-  const model = compactModelLabel(thread.model);
-  const providerText = compactModelLabel([
-    thread.provider,
-    thread.providerLabel,
-    thread.source,
-  ].filter(Boolean).join(' '));
-  const searchText = `${providerText} ${model}`.toLowerCase();
-
-  if (searchText.includes('gpt') || searchText.includes('openai') || searchText.includes('codex')) {
-    return { key: 'gpt', label: 'GPT' };
-  }
-  if (searchText.includes('claude') || searchText.includes('anthropic') || /(^|[^a-z])(sonnet|opus|haiku)([^a-z]|$)/.test(searchText)) {
-    return { key: 'claude', label: 'Claude' };
-  }
-  if (searchText.includes('gemini') || searchText.includes('google')) {
-    return { key: 'gemini', label: 'Gemini' };
-  }
-  if (searchText.includes('grok') || searchText.includes('xai')) {
-    return { key: 'grok', label: 'Grok' };
-  }
-  if (searchText.includes('deepseek')) {
-    return { key: 'deepseek', label: 'DeepSeek' };
-  }
-  if (searchText.includes('qwen')) {
-    return { key: 'qwen', label: 'Qwen' };
-  }
-  if (searchText.includes('llama') || searchText.includes('meta')) {
-    return { key: 'llama', label: 'Llama' };
-  }
-
-  const label = compactModelLabel(model.split('/').pop() || providerText || '未知模型');
-  return {
-    key: label ? `model:${label.toLowerCase()}` : 'unknown',
-    label: label || '未知模型',
-  };
-}
-
-function quotaFamilyRank(group) {
-  const index = QUOTA_FAMILY_ORDER.indexOf(group.key);
-  return index >= 0 ? index : QUOTA_FAMILY_ORDER.length;
-}
-
-function quotaObservedAtMs(thread) {
-  return coerceNumber(thread.rateLimitUpdatedAtMs || thread.updatedAtMs);
-}
-
-function quotaSourcePriority(thread) {
-  const family = quotaFamily(thread);
-  const limitId = String(thread.rateLimits?.limit_id || '').trim().toLowerCase();
-
-  if (family.key === 'gpt' && limitId.startsWith('codex')) {
-    return limitId === 'codex' ? 3 : 1;
-  }
-
-  return 2;
-}
-
-function compareQuotaCandidates(candidate, current) {
-  const priorityDelta = quotaSourcePriority(candidate.thread) - quotaSourcePriority(current.thread);
-  if (priorityDelta) return priorityDelta;
-
-  return coerceNumber(candidate.group.observedAtMs) - coerceNumber(current.group.observedAtMs);
-}
-
-function quotaGroup(thread) {
-  const family = quotaFamily(thread);
-  const observedAtMs = quotaObservedAtMs(thread) || null;
-  const realtime = quotaWindow(thread.rateLimits?.primary);
-  const weekly = quotaWindow(thread.rateLimits?.secondary);
-  if (!realtime && !weekly) return null;
-
-  return {
-    ...family,
-    realtime,
-    weekly,
-    observedAtMs,
-    sourceThreadId: thread.id || '',
-    model: compactModelLabel(thread.model),
-    provider: thread.provider || '',
-    providerLabel: thread.providerLabel || '',
-    stale: Boolean(thread.rateLimitStale),
-    staleAtMs: coerceNumber(thread.rateLimitStaleAtMs) || null,
-  };
-}
-
-function activeQuotaFamily(thread) {
-  const family = quotaFamily(thread);
-  return {
-    ...family,
-    realtime: null,
-    weekly: null,
-    observedAtMs: null,
-    sourceThreadId: thread.id || '',
-    model: compactModelLabel(thread.model),
-    provider: thread.provider || '',
-    providerLabel: thread.providerLabel || '',
-  };
-}
-
-function quotaGroups(threads) {
-  const latestByFamily = new Map();
-  const quotaThreads = threads.filter((thread) => thread.rateLimits);
-
-  for (const thread of quotaThreads) {
-    const group = quotaGroup(thread);
-    if (!group) continue;
-
-    const candidate = { thread, group };
-    const current = latestByFamily.get(group.key);
-    if (!current || compareQuotaCandidates(candidate, current) > 0) {
-      latestByFamily.set(group.key, candidate);
-    }
-  }
-
-  const runningThreads = threads
-    .filter((thread) => thread.status === 'running')
-    .sort((a, b) => coerceNumber(b.updatedAtMs) - coerceNumber(a.updatedAtMs));
-
-  for (const thread of runningThreads) {
-    const group = activeQuotaFamily(thread);
-    if (!latestByFamily.has(group.key)) latestByFamily.set(group.key, { thread, group });
-  }
-
-  return [...latestByFamily.values()].map((candidate) => candidate.group).sort((a, b) => (
-    quotaFamilyRank(a) - quotaFamilyRank(b)
-    || coerceNumber(b.observedAtMs) - coerceNumber(a.observedAtMs)
-  ));
-}
-
-function timestampToMs(value) {
-  if (typeof value === 'string') {
-    const parsed = Date.parse(value);
-    return Number.isFinite(parsed) ? parsed : 0;
-  }
-  return coerceNumber(value);
-}
-
-function codexResetCreditEntries(codexResetCredits) {
-  const credits = Array.isArray(codexResetCredits?.credits) ? codexResetCredits.credits : [];
-  return credits
-    .filter((credit) => {
-      const status = String(credit.status || '').toLowerCase();
-      const resetType = String(credit.reset_type || credit.resetType || '').toLowerCase();
-      return (!status || status === 'available')
-        && (!resetType || resetType.includes('codex'));
-    })
-    .map((credit) => ({
-      key: String(credit.id || credit.key || credit.expires_at || credit.expiresAt || ''),
-      expiresAtMs: timestampToMs(credit.expires_at ?? credit.expiresAt ?? credit.expiresAtMs),
-      grantedAtMs: timestampToMs(credit.granted_at ?? credit.grantedAt ?? credit.grantedAtMs),
-    }))
-    .filter((credit) => credit.expiresAtMs > 0)
-    .sort((a, b) => a.expiresAtMs - b.expiresAtMs)
-    .map((credit, index) => ({
-      ...credit,
-      key: credit.key || `credit-${index + 1}`,
-      label: `第 ${index + 1} 次`,
-    }));
-}
-
-function codexResetSummary(threads, codexResetCredits) {
-  if (!threads.some(isCodexProvider)) return null;
-
-  const entries = codexResetCreditEntries(codexResetCredits);
-  if (!entries.length) return null;
-
-  const remainingCount = coerceNumber(
-    codexResetCredits?.available_count ?? codexResetCredits?.availableCount,
-    entries.length,
-  );
-
-  return {
-    remainingCount: Math.max(0, remainingCount || entries.length),
-    observedAtMs: timestampToMs(codexResetCredits?.observedAtMs) || null,
-    entries,
-  };
-}
-
-function quotaSummary(threads, { codexResetCredits = null } = {}) {
-  const groups = quotaGroups(threads);
-  const codexResets = codexResetSummary(threads, codexResetCredits);
-  const latest = groups
-    .filter((group) => group.realtime || group.weekly)
-    .sort((a, b) => (
-      coerceNumber(b.observedAtMs) - coerceNumber(a.observedAtMs)
-    ))[0];
-
-  if (!latest) {
-    return {
-      realtime: null,
-      weekly: null,
-      observedAtMs: null,
-      sourceThreadId: '',
-      groups,
-      codexResets,
-    };
-  }
-
-  return {
-    realtime: latest.realtime,
-    weekly: latest.weekly,
-    observedAtMs: latest.observedAtMs,
-    sourceThreadId: latest.sourceThreadId || '',
-    stale: latest.stale,
-    staleAtMs: latest.staleAtMs,
-    groups,
-    codexResets,
-  };
 }
 
 function currentTurnStartedAtMs(thread) {
@@ -371,7 +105,6 @@ export function normalizeThread(row, nowMs = Date.now()) {
   const projectName = cwd ? path.basename(cwd) : '未知项目';
   const source = String(row.source || '');
   const isCodexCli = ['cli', 'terminal', 'tui'].includes(source.toLowerCase());
-  const resumeCommand = codexResumeCommand({ id, cwd });
   const inCodexSidebar = coerceBoolean(row.in_codex_sidebar ?? row.inCodexSidebar, true);
   const defaultOpenMode = isCodexCli ? 'codex-cli-resume' : 'codex-deeplink';
   const subagent = subagentInfo(row);
@@ -384,7 +117,7 @@ export function normalizeThread(row, nowMs = Date.now()) {
     externalId: id,
     provider: isCodexCli ? 'codex-cli' : 'codex',
     providerLabel: isCodexCli ? 'Codex CLI' : 'Codex',
-    title: row.name || row.thread_name || row.title || '未命名任务',
+    title: row.name || row.thread_name || row.title || '',
     desktopName: row.name || '',
     cwd,
     projectName,
@@ -410,7 +143,6 @@ export function normalizeThread(row, nowMs = Date.now()) {
     canOpen: UUID_RE.test(id),
     openLabel: '打开',
     defaultOpenMode,
-    resumeCommand,
     inCodexSidebar,
     isAutomation: isAutomationThread(row),
     isSubagent: subagent.isSubagent,
@@ -513,131 +245,10 @@ function attachThreadRelationships(threads) {
   });
 }
 
-export function aggregateProjects(threads) {
-  const groups = new Map();
-
-  for (const thread of threads) {
-    if (thread.archived) continue;
-
-    const key = thread.cwd || thread.projectName || '未知项目';
-    const existing = groups.get(key) || {
-      cwd: thread.cwd,
-      projectName: thread.projectName || '未知项目',
-      threadCount: 0,
-      tokensUsed: 0,
-      todayTokensUsed: 0,
-      tokenBreakdown: addTokenBreakdowns(),
-      todayTokenBreakdown: addTokenBreakdowns(),
-      latestUpdatedAtMs: 0,
-    };
-
-    existing.threadCount += 1;
-    existing.tokensUsed += coerceNumber(thread.tokensUsed);
-    existing.todayTokensUsed += coerceNumber(thread.todayTokenUsage);
-    existing.tokenBreakdown = addTokenBreakdowns(
-      existing.tokenBreakdown,
-      tokenBreakdownWithFallbackTotal(thread.tokenBreakdown, thread.tokensUsed),
-    );
-    existing.todayTokenBreakdown = addTokenBreakdowns(
-      existing.todayTokenBreakdown,
-      tokenBreakdownWithFallbackTotal(thread.todayTokenBreakdown, thread.todayTokenUsage),
-    );
-    existing.latestUpdatedAtMs = Math.max(existing.latestUpdatedAtMs, coerceNumber(thread.updatedAtMs));
-    groups.set(key, existing);
-  }
-
-  return [...groups.values()].sort((a, b) => b.tokensUsed - a.tokensUsed);
-}
-
-function attentionReason(thread) {
-  if (thread.archived) return '';
-  if (isSubagentThread(thread)) return '';
-  if (
-    thread.awaitingPermission
-    || coerceNumber(thread.openCodePendingToolCount) > 0
-    || coerceNumber(thread.pendingToolCount) > 0
-  ) return 'awaiting permission';
-  if (thread.status === 'running') return 'running';
-  if (thread.status === 'fresh') return 'recent activity';
-  if (thread.tokensUsed >= HIGH_TOKEN_USAGE) return 'high token usage';
-  if (thread.hasUnreadTurn || thread.awaitingReview) return 'awaiting review';
-  return '';
-}
-
-function countRunningHostThreads(threads) {
-  const hostIds = new Set();
-
-  for (const thread of threads) {
-    if (thread.status !== 'running') continue;
-
-    const hostId = isSubagentThread(thread)
-      ? (thread.hostThreadId || thread.parentThreadId)
-      : thread.id;
-    if (hostId) hostIds.add(hostId);
-  }
-
-  return hostIds.size;
-}
-
-function aggregateTokenBreakdown(threads, breakdownField, totalField) {
-  return threads.reduce((sum, thread) => addTokenBreakdowns(
-    sum,
-    tokenBreakdownWithFallbackTotal(thread?.[breakdownField], coerceNumber(thread?.[totalField])),
-  ), addTokenBreakdowns());
-}
-
 export function normalizeDashboardThreads(threads, nowMs = Date.now()) {
   return attachThreadRelationships(threads
     .map((thread) => enrichThreadRuntime(thread, nowMs))
     .sort((a, b) => coerceNumber(b.updatedAtMs) - coerceNumber(a.updatedAtMs)));
-}
-
-export function buildDashboard(threads, nowMs = Date.now(), { codexResetCredits = null } = {}) {
-  const relationshipThreads = normalizeDashboardThreads(threads, nowMs);
-  const governanceModel = buildGovernanceModel(relationshipThreads, nowMs);
-  const sortedThreads = governanceModel.threads;
-  const activeThreads = sortedThreads.filter((thread) => !thread.archived);
-  const archivedThreads = sortedThreads.length - activeThreads.length;
-  const runningThreads = activeThreads.filter((thread) => thread.status === 'running').length;
-  const runningHostThreads = countRunningHostThreads(activeThreads);
-  const totalTokensUsed = sortedThreads.reduce((sum, thread) => sum + coerceNumber(thread.tokensUsed), 0);
-  const activeTokensUsed = activeThreads.reduce((sum, thread) => sum + coerceNumber(thread.tokensUsed), 0);
-  const todayTokensUsed = activeThreads.reduce((sum, thread) => sum + coerceNumber(thread.todayTokenUsage), 0);
-  const tokenBreakdown = aggregateTokenBreakdown(sortedThreads, 'tokenBreakdown', 'tokensUsed');
-  const activeTokenBreakdown = aggregateTokenBreakdown(activeThreads, 'tokenBreakdown', 'tokensUsed');
-  const todayTokenBreakdown = aggregateTokenBreakdown(activeThreads, 'todayTokenBreakdown', 'todayTokenUsage');
-  const todayStart = new Date(nowMs);
-  todayStart.setHours(0, 0, 0, 0);
-
-  const inbox = sortedThreads
-    .map((thread) => ({ ...thread, reason: attentionReason(thread) }))
-    .filter((thread) => thread.reason)
-    .slice(0, 12);
-
-  return {
-    generatedAtMs: nowMs,
-    summary: {
-      totalThreads: sortedThreads.length,
-      activeThreads: activeThreads.length,
-      runningThreads,
-      runningHostThreads,
-      archivedThreads,
-      totalTokensUsed,
-      activeTokensUsed,
-      todayTokensUsed,
-      tokenBreakdown,
-      activeTokenBreakdown,
-      todayTokenBreakdown,
-      updatedToday: activeThreads.filter((thread) => thread.updatedAtMs >= todayStart.getTime()).length,
-      inboxCount: inbox.length,
-      quota: quotaSummary(activeThreads, { codexResetCredits }),
-    },
-    inbox,
-    governance: governanceModel.governance,
-    portfolio: governanceModel.portfolio,
-    projects: aggregateProjects(sortedThreads).slice(0, 24),
-    threads: sortedThreads,
-  };
 }
 
 export function enrichThreads(rows, nowMs = Date.now()) {

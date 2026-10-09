@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createSwitchboardServer, switchboardPort } from '../src/switchboard.mjs';
 import { registerAppIcon } from './asb-icon.mjs';
@@ -8,7 +9,8 @@ if (process.platform !== 'linux') {
   process.exit(1);
 }
 const port = switchboardPort();
-const server = createSwitchboardServer();
+const sourceToken = randomBytes(32).toString('hex');
+const server = createSwitchboardServer({ sourceToken });
 let window;
 let stopping = false;
 function stop(code = 0) {
@@ -31,13 +33,11 @@ server.listen(port, '127.0.0.1', async () => {
     }
   } catch (error) {
     console.error(`Cannot register the ASB icon: ${error.message}`);
-    stop(1);
-    return;
   }
   if (stopping) return;
   const url = `http://127.0.0.1:${port}`;
   window = spawn(process.env.ASB_PYTHON || '/usr/bin/python3', [fileURLToPath(new URL('./asb-native.py', import.meta.url)), url], {
-    stdio: ['ignore', 'inherit', 'inherit'],
+    stdio: ['ignore', 'inherit', 'inherit'], env: { ...process.env, ASB_SOURCE_TOKEN: sourceToken },
   });
   window.once('error', (error) => {
     console.error(`Cannot open the native ASB window: ${error.message}. Use system Python 3 or npm start for the web view.`);
@@ -48,3 +48,4 @@ server.listen(port, '127.0.0.1', async () => {
 });
 process.once('SIGINT', () => stop());
 process.once('SIGTERM', () => stop());
+process.once('exit', stop);

@@ -1,18 +1,18 @@
 #!/bin/sh
 # ASB Linux launcher. Keep Node discovery independent of the desktop PATH.
 set -eu
-ASB_ROOT=$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")/.." && pwd)
 PATH="${PATH:-}:/usr/local/bin:/usr/bin:/bin"
 export PATH
+ASB_ROOT=$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")/.." && pwd)
 ASB_PACKAGE_COMMAND=
 if [ "${1:-}" = --package ]; then ASB_PACKAGE_COMMAND="${2:-}"; fi
 for ASB_CANDIDATE in "${ASB_NODE:-}" "$HOME/.local/bin/node" /usr/local/bin/node /usr/bin/node; do
   if [ -n "$ASB_CANDIDATE" ] && [ -x "$ASB_CANDIDATE" ] && "$ASB_CANDIDATE" --input-type=module -e 'if (Number(process.versions.node.split(".")[0]) < 20) process.exit(1); if (!["build","uninstall"].includes(process.argv[1])) { try { await import("node:sqlite"); } catch { const {execFileSync}=await import("node:child_process"); execFileSync("sqlite3",["--version"],{stdio:"ignore"}); } }' "$ASB_PACKAGE_COMMAND" >/dev/null 2>&1; then
+    export ASB_NODE="$ASB_CANDIDATE"
     if [ "${1:-}" = --package ]; then
       shift
       exec "$ASB_CANDIDATE" "$ASB_ROOT/scripts/asb-package.mjs" "$@"
     fi
-    export ASB_INSTALLED_LAUNCHER="${ASB_INSTALLED_LAUNCHER:-$ASB_ROOT/scripts/asb}"
     exec "$ASB_CANDIDATE" "$ASB_ROOT/scripts/asb-desktop.mjs" "$@"
   fi
 done

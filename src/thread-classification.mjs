@@ -123,10 +123,6 @@ export function subagentInfo(thread) {
   };
 }
 
-export function isSubagentThread(thread) {
-  return Boolean(subagentInfo(thread)?.isSubagent);
-}
-
 export function isAutomationThread(thread) {
   if (!thread || typeof thread !== 'object') return false;
   if (thread.isAutomation || thread.is_automation || thread.automation) return true;

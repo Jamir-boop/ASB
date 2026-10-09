@@ -7,7 +7,7 @@ Before a pull request:
 1. Keep original session stores read-only. Save ASB settings only in ASB's own files.
 2. Keep the server bound to `127.0.0.1`. Do not add credential reads, model calls, telemetry, or external requests to the ASB path.
 3. Use synthetic data for examples, tests, screenshots, and demo scenes. Do not include real titles, prompts, paths, logs, databases, keys, cookies, or tokens.
-4. Run `npm test` and `python3 test/asb_native_logic_test.py` with Node.js `>=22.13`. Some upstream fixtures need `sqlite3`.
+4. Run `npm test` and `python3 test/asb_native_logic_test.py` with Node.js `>=22.13`. ASB fixtures use built-in SQLite and need no SQLite CLI. `npm test` needs no environment variable.
 5. Review the diff. Update `SYSTEM_OVERVIEW.md`, `README.md`, and `CHANGELOG.md` when behavior or release details change.
 
 Native widget tests need a GTK display. Run them only when UI testing is in scope, with synthetic fixtures. Do not open real chats during tests.

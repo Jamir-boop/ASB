@@ -203,6 +203,23 @@ test('invalid settings keep the last valid sources and failed persistence does n
   assert.deepEqual(await readFile(path.join(homeDir, '.local', 'bin', 'chatgpt-personal'), 'utf8'), '#!/bin/sh\nexit 0\n');
 });
 
+test('settings that ASB cannot use are kept as .bad before the next save', async (t) => {
+  const { registry, homeDir, source } = await fixture(t);
+  await registry.update(source(path.join(homeDir, 'second')));
+  const stored = JSON.parse(await readFile(registry.configPath, 'utf8'));
+  for (const content of [JSON.stringify({ ...stored, extra: true }), '{"version":1,"sources":[']) {
+    await writeFile(registry.configPath, content);
+    await registry.read();
+    assert.match(registry.warning, /last valid/);
+    await registry.update(source(path.join(homeDir, `third-${content.length}`)));
+    assert.equal(await readFile(`${registry.configPath}.bad`, 'utf8'), content);
+    assert.equal(registry.warning, '');
+    assert.deepEqual(JSON.parse(await readFile(registry.configPath, 'utf8')).sources, await registry.read());
+  }
+  await registry.remove((await registry.read())[2].id);
+  assert.equal(await readFile(`${registry.configPath}.bad`, 'utf8'), '{"version":1,"sources":[');
+});
+
 test('separate stores scope lineage and attention while retaining original provider IDs and real open IDs', async (t) => {
   const { homeDir, registry, source } = await fixture(t);
   await mkdir(path.join(homeDir, '.codex'));
@@ -215,7 +232,7 @@ test('separate stores scope lineage and attention while retaining original provi
   const dashboard = await loadSwitchboardDashboard({ sources, nowMs: now,
     loadCodex: async (options) => {
       calls.push(options);
-      const second = options.sessionsDir === path.join(secondary, 'sessions');
+      const second = options.sessionIndexPath === path.join(secondary, 'session_index.jsonl');
       return { threads: [
         { id: uuid, provider: 'codex', lifecycleRunning: false, latestLifecycleAtMs: now - 10_000, nativeUnread: true,
           account: 'private', launcher: '/bin/sh', title: second ? 'Second root' : 'Default root' },
@@ -246,10 +263,6 @@ test('separate stores scope lineage and attention while retaining original provi
   assert.equal(JSON.stringify(other).includes(secondary), false);
   assert.equal(calls.length, 2);
   for (const options of calls) {
-    assert.equal(options.asbMode, true);
-    assert.equal(options.codexResetCreditsEnabled, false);
-    assert.equal(options.workMetricCachePath, false);
-    assert.equal(options.maxOrphanRollouts, 0);
     assert.equal(options.maxRollouts, 5000);
   }
   const tracker = new PendingTracker(false);
@@ -282,8 +295,6 @@ test('enabled sources load independently and Claude uses its registered profile 
     loadClaude: async (options) => {
       assert.equal(options.appDir, claudeDir);
       assert.equal(options.projectsDir, projectsDir);
-      assert.equal(options.asbMode, true);
-      assert.equal(options.usageCache, null);
       assert.equal(options.maxCount, 5000);
       return { threads: [{ id: `claude-desktop-code:local_${uuid}`, externalId: `local_${uuid}`,
         provider: 'claude-desktop-code', lifecycleRunning: false }] };
@@ -336,7 +347,7 @@ test('registered Codex stores select their own database, names, globals, and lif
   assert.equal(registered.threads.find((row) => row.id === uuid).state, 'idle');
   assert.equal(registered.threads.find((row) => row.id !== uuid).state, 'working');
   const legacy = await loadSwitchboardDashboard({ nowMs: now, loadClaude: async () => ({ threads: [] }),
-    codexOptions: { databasePath: path.join(roots[0], 'state_5.sqlite'), sessionsDir: path.join(roots[0], 'sessions'),
+    codexOptions: { databasePath: path.join(roots[0], 'state_5.sqlite'),
       sessionIndexPath: path.join(roots[0], 'session_index.jsonl'), globalStatePath: path.join(roots[0], '.codex-global-state.json') } });
   const { sourceId, sourceLabel, sourceNumber, sourceCount, sourceColor, sourceShowMarker, ...defaultRow } = registered.threads.find((row) => row.id === uuid);
   assert.deepEqual(defaultRow, legacy.threads[0]);
@@ -518,6 +529,22 @@ test('source APIs enforce exact bodies and local actions, refresh rows, and upda
   assert.ok(watches.filter((item) => item.target.startsWith(extraDir)).every((item) => item.watcher.closed));
 });
 
+test('the switchboard server requires the window token for app source edits', async (t) => {
+  const { registry, homeDir, source } = await fixture(t);
+  for (const name of ['first', 'second']) await mkdir(path.join(homeDir, name));
+  await registry.update(source(path.join(homeDir, 'first')));
+  const before = await readFile(registry.configPath, 'utf8');
+  const { post } = await serve(t, { sourceToken: 'window-token', sourceRegistry: registry,
+    pendingStatePath: path.join(homeDir, 'pending.json'), dashboardWatchPaths: [] });
+  const body = { source: source(path.join(homeDir, 'second'), { label: 'Third app' }) };
+  for (const route of ['/api/sources', `/api/sources/${(await registry.read())[2].id}/remove`]) {
+    assert.equal((await post(route, route.endsWith('/remove') ? {} : body)).status, 403);
+    assert.equal(await readFile(registry.configPath, 'utf8'), before);
+  }
+  assert.equal((await post('/api/sources', body, { 'X-ASB-Source-Token': 'window-token' })).status, 200);
+  assert.equal(JSON.parse(await readFile(registry.configPath, 'utf8')).sources.length, JSON.parse(before).sources.length + 1);
+});
+
 test('external registry edits have a polling fallback and stale rows cannot open in a changed store', async (t) => {
   const { homeDir, registry, source } = await fixture(t);
   const dataDir = path.join(homeDir, 'second');
@@ -559,7 +586,7 @@ test('dynamic source paths retain recursive fallback and discover new directorie
   let unsupported = 0;
   let ready;
   const started = new Promise((resolve) => { ready = resolve; });
-  await serve(t, { sourceRegistry: registry, loadDashboard: async () => ({ threads: [], providers: [] }),
+  await serve(t, { sourceRegistry: registry, loadDashboard: async () => ({ threads: [], providers: [] }), dashboardPlatform: 'darwin',
     dashboardSetTimeout(callback, milliseconds) {
       const timer = { callback, milliseconds, unref() {} };
       timers.push(timer);

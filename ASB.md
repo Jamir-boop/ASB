@@ -2,7 +2,7 @@
 
 ASB lists Codex and Claude Desktop Code chats. It also lists remote Code sessions observed in Claude's local cache. Select a row to open that chat in its original app. The Linux native window uses GTK and Libadwaita. ASB makes no model calls and does not send prompts.
 
-See [README.md](README.md) for v1.3.0 packages and runtime requirements.
+See [README.md](README.md) for v1.4.0 packages and runtime requirements.
 
 ## Layout and search
 
@@ -14,9 +14,13 @@ In Comfortable, one hover highlight moves between cards and columns in 200 ms. I
 
 Comfortable uses quiet title, folder, state, and age text for Idle chats with no ASB unread dot or Pending attention. Hover or keyboard focus restores normal text. Pins and provider marks keep their normal strength. Source read status does not change this rule.
 
+Hover a row to see the Unfolded card tooltip in either view. It shows the full folder path and title, then the current state/time and app/source. Paths below your home folder use `~`. Long text wraps. One short note explains the current indicator; pin/archive/link flags and the current row error appear only when needed. The profile dot uses the same rule as the row. Read historical failures do not show a failed-unread note. Screen readers also receive the original full path, state reason, and source identity. The native tooltip frame and control tooltips stay unchanged.
+
+Tooltip queries use current time and row data. Unchanged content is reused; changed text, profile or theme rebuilds it without a source read. Theme changes clear hidden-row tooltip caches too.
+
 Drag a column divider to change the width of all columns. The menu also has **Column width** (160–600 pixels) and **Reset width**. The default is 240 pixels. A view change keeps your search, filters, pins, and focused chat. Keyboard navigation reveals a focused row when it is outside the visible area.
 
-Search names, folders, or app-source names. A leading `cl:` or `claude:` selects Claude. A leading `cx:` or `codex:` selects Codex. Prefixes ignore case and permit spaces. A prefix alone lists that app. A prefix takes priority over the app filter while it is present. The other filters still apply. Unknown prefixes remain literal search text.
+Search names, folders, or app-source names. Results update when the text changes. A leading `cl:` or `claude:` selects Claude. A leading `cx:` or `codex:` selects Codex. Prefixes ignore case and permit spaces. A prefix alone lists that app. A prefix takes priority over the app filter while it is present. The other filters still apply. Unknown prefixes remain literal search text.
 
 Type from a chat row to enter search. Escape clears the search and its prefix. Explicit filters stay set. Native popups and Ctrl/Alt/Super shortcuts keep their normal keys.
 
@@ -24,7 +28,7 @@ Type from a chat row to enter search. Escape clears the search and its prefix. E
 
 Use the **Codex**, **Claude**, **Pending**, and **Working** toolbar pills. No selected app means all apps; both app pills mean their union. The menu uses the same app selection. **Working** alone selects only Working; turn it off to restore all states. It shares the state menu and is active only when Working is the sole selected state. **Pending** alone shows Pending chats. Together, **Working** and **Pending** show Working or chats with Pending or an ASB unread dot. App, search, and archive filters still apply. The state menu has independent **Working**, **Waiting**, **Idle**, and **Unknown** choices. Other state combinations keep Pending as an AND filter. **All states** selects all. **Clear states** hides all rows until you select a state. Archived chats are hidden by default.
 
-ASB pins come first in their saved order. Unpinned chats follow: Pending, Working, Idle, then Unknown. Right-click a row, or use Menu or Shift+F10, to **Pin** or **Unpin** it. Drag a pinned row onto another pin to change the order. **Move pin earlier** and **Move pin later** provide the same control from the keyboard. Hidden pins keep their place in the saved order.
+ASB pins come first in their saved order. Unpinned chats follow: Pending, Working, Idle, then Unknown. Right-click a row, or use Menu or Shift+F10, to **Pin** or **Unpin** it. Drag a pinned row onto another pin to change the order. **Move pin earlier** and **Move pin later** provide the same control from the keyboard. They move the pin before or after the adjacent visible pinned row, with search and filters applied. They do nothing at the first or last visible pin. Hidden pins keep their place in the saved order.
 
 In Comfortable, the top-right pin appears on row hover or keyboard focus. A pinned control stays visible. Select it to **Pin** or **Unpin** without opening the chat. Pinned chats use the saved pin order; unpinned chats return to the normal state order.
 
@@ -41,28 +45,46 @@ ASB does not import or write pins in the original apps.
 
 An unarchived chat is not proof that it is Working. An open task with no activity for six hours becomes Unknown. Source writes, cold scans, and app crashes can delay or limit the evidence.
 
-A Claude root stays Working while a recent child Agent linked by its launch is active, even after the root response ends. The child count includes files under that root. Only linked child lifecycle changes execution. A linked child with missing or stale signals can give Unknown. The completion dot waits for the group to finish; interruption and error do not add a completion dot.
+A Claude root stays Working while a recent child Agent linked by its launch is active, even after the root response ends. The child count includes files under that root. Only linked child lifecycle changes execution. Each non-empty Claude user reply starts a task, including `ok`, `y`, `1`, `.`, and `继续`. Local command records do not. A linked child with missing or stale signals can give Unknown. Attention waits for the group to finish. Its last end decides whether the task completed, failed, or stopped. A later end takes priority over an older failure.
 
 Working time uses the current task or request start, when known. A local two-second clock updates the text without reading the source again. Compact shows the duration beside Working. Comfortable shows it at the right. Missing starts and other states have no running timer. Below one hour, the label includes seconds. Longer durations show hours and minutes.
 
-**Pending** means attention, not an execution state. A row keeps its Working, Waiting, Idle, or Unknown label when its dot appears.
+**Pending** means attention, not an execution state. Each visible dot or `?` counts as Pending. A row keeps its Working, Waiting, Idle, or Unknown label when its indicator appears. A question or current permission wait shows a `?` instead of the dot. A stop square does not count as Pending.
 
 - Codex native unread marks use only the identity and local host that match its SQLite creator metadata. Missing, corrupt, or unmatched read data means Unknown read status. ASB does not read credentials to find the identity.
-- A native unread dot can appear while Codex is Working. Native unread alone does not put a Working or Unknown row in Pending-only.
-- Local Claude chats have no reliable native unread mark. Cached remote records can provide an unread mark. ASB can also add a completion dot when it observes a Working-to-Idle change with a new completion. This dot is an ASB observation. The first scan does not mark historical Idle chats Pending.
-- Current synchronous `request_user_input` questions can show Waiting. Async questions add attention while the real Working or Idle state stays visible. Real human input supersedes old questions. ASB sends no question or answer text to the view.
+- A Working chat is never unread. While a chat is Working, ASB hides its dot and shows only a `?` for a question. Saved Unread, native, completion, failure, and retained marks stay stored and show again when Working ends. A visible native unread dot also puts an Unknown row in Pending-only.
+- Local Claude chats have no reliable native unread mark. Cached remote records can provide an unread mark. ASB can also add a completion dot when it observes a Working-to-Idle change with a new completion. This dot is an ASB observation. A task that goes Working, Waiting, then Idle also gets its completion or failure dot. The first scan does not mark historical Idle chats Pending.
+- Current synchronous `request_user_input` questions can show Waiting. Async questions add attention while the real Working or Idle state stays visible. Real human input supersedes old questions. A pending Claude `AskUserQuestion` shows Waiting with the `?`. It stays Working with the `?` only while a linked child Agent has recent work and no other permission request is pending. ASB sends no question or answer text to the view.
+- Claude permission tools, pending `ExitPlanMode`, and fresh remote `requires_action` show Waiting with a passive `?` until resolved in Claude. Read and successful opens cannot clear this wait. Pin stays available. A pending Claude permission, plan approval, or question tool gives Waiting and Pending only for six hours after its tool event. After that, the usual rules apply, and an old open task gives Unknown.
+- A stopped root or group shows Idle with a small muted square, including historical stops. It adds no unread mark. New work or a later end removes the square. Existing question or unread attention has priority.
+- A terminal failure shows Idle. With unknown native read state, a failed-task dot requires an observed Working-to-Idle change and a new failure. Historical failures get no new dot on first load. Codex uses non-null `task_complete.error`; Claude uses terminal `result.is_error`, a linked failed task notification, or fresh remote session `failed`. Ordinary tool errors and interruptions are not task failures. Native read truth keeps its own rule.
+- Codex approval wait remains unsupported. ASB has no reliable unanswered approval signal in its local file sources and does not read the app-server `waitingOnApproval` flag.
 
 ## Read and Unread
 
-Right-click a row, or use Menu or Shift+F10. The menu offers **Read** when the row has an ASB dot and **Unread** when it has none.
+Right-click a row, or use Menu or Shift+F10. The menu offers **Read** for an ASB dot or question attention and **Unread** when neither is present. A current permission wait has no Read action. A passive stop square can still be marked Unread.
 
 **Unread** adds an ASB mark and includes the chat in Pending-only. It survives read changes in the original app. **Read** clears ASB attention. Neither action changes execution or the original chat store.
 
-In Comfortable, select the dot beside the top-right pin to **Read**. A successful action shows a check for 1.6 seconds. A failed action keeps the dot and puts the error in the row tooltip. This control works with or without **Persistent unread**. It does not open the chat or resolve a source question. New attention replaces old feedback.
+In Comfortable, select the dot or question-attention `?` beside the top-right pin to **Read**. A permission-wait `?` or stop square is passive, with no Read action or check cue. A successful Read shows a check for 1.6 seconds. A failed action keeps the dot and puts the error in the row tooltip. The error leaves the row when the row state changes or when the row leaves the list. This control works with or without **Persistent unread**. It does not open the chat or resolve a source question. New attention replaces old feedback.
 
-By default, a successful open acknowledges manual, native, completion, and question attention in ASB. A failed open keeps the attention. An acknowledgment does not answer a question or cancel the source task. A new question, completion, or native Read-to-Unread cycle can add new attention.
+By default, a successful open acknowledges manual, native, completion, failure, and question attention in ASB. A failed open keeps the attention. An acknowledgment does not answer a question, clear a permission wait, or change a stopped outcome. A new question, completion, failure, or native Read-to-Unread cycle can add new attention.
 
-**Persistent unread** is off by default. Turn it on to keep ASB attention after source Read, question resolution, completion, and successful opens. Choose **Read** to clear it. Turning the setting off keeps existing dots and restores acknowledgment on successful opens. Native unread alone on Working or Unknown keeps the Pending-only rule above.
+## Discard result
+
+Use **Discard result** while a task is Working to skip its next successful result dot. In Comfortable, point at the row or use keyboard focus to show the dashed hollow dot beside Pin. Select it to turn Discard on. The solid hollow dot stays visible. Select it again for **Keep result**. Compact keeps the Working timer and shows only the passive armed ring; use the row menu to change it. Working row menus provide both actions in either view.
+
+Discard applies to this task once. A verified successful group end goes to read Idle without new result attention, even with Persistent unread on. The next task uses normal rules. It does not clear manual Unread, questions, or earlier failed-task attention. A failed end still gets its normal dot; cancellation still gets the stop square. A question has priority over the ring and keeps its normal Read or permission-wait behavior. Discard changes no state, Pending filter, pin order, or source-app read flag.
+
+Reading a Working question returns directly to the Discard ring. It shows no Read confirmation check. Idle and Waiting Read confirmation stay unchanged. A new Working row without a question clears old Read feedback.
+
+Discard stays stored during Waiting and Unknown. Any observed Idle clears it. A root ending while its linked child works keeps it armed; a proven new root task clears the old arm. A follow-up message in an armed Claude task does not cancel Discard. Only a task that starts after an end later than the arm cancels it. ASB uses recorded starts and ends, not the changing Working timer.
+
+Discard checks the current source before arming. Keep uses the normal cache and adds no forced scan. If task A ends and task B starts and ends before a late click, cached A can still look Working; the Discard scan rejects the current Idle row. A task already armed before both ends can still affect B because the local reader retains only the latest end. ASB does not add history or infer a missing result.
+
+A native unread mark for the discarded success can arrive late. ASB suppresses the first matched episode and preserves later observed Read-to-Unread cycles. A source-app manual Unread that is the first mark for the same completion can also be suppressed. Remote cache limits still apply: generic Idle without a terminal timestamp clears the arm but cannot safely suppress native attention. A remote end and new run missed between scans can leave Discard armed. ASB does not infer a missing task identity.
+
+**Persistent unread** is off by default. Turn it on to keep ASB attention after source Read, question resolution, completion, and successful opens. Choose **Read** to clear it. Turning the setting off keeps existing dots and restores acknowledgment on successful opens. Retained marks follow the Working rule above: they are hidden while the chat is Working. Every visible retained dot counts as Pending.
 
 All ASB clients share this attention and pin state. Filters do not limit what the tracker observes.
 
@@ -72,12 +94,12 @@ ASB uses dark mode only in its own window. **GNOME colors** uses your current ba
 
 | File | Contents |
 | --- | --- |
-| `$XDG_STATE_HOME/asb/pending.json` | Attention history, Read/Unread marks, pins, and Persistent unread. |
+| `$XDG_STATE_HOME/asb/pending.json` | Attention history, Read/Unread marks, pins, Persistent unread, and current-task Discard. |
 | `$XDG_CONFIG_HOME/asb/layout.json` | Column width and selected view. |
 | `$XDG_CONFIG_HOME/asb/theme.json` | Custom colors. |
 | `$XDG_CONFIG_HOME/asb/sources.json` | App-source names, colors, dot visibility, folders, launchers, and enabled flags. |
 
-With no XDG override, state uses `~/.local/state` and config uses `~/.config`. A width-only layout file loads Compact. Reset width keeps the selected view. The attention and source settings files have owner-only access.
+With no XDG override, state uses `~/.local/state` and config uses `~/.config`. An empty `XDG_CONFIG_HOME` also uses `~/.config`. A width-only layout file loads Compact. Reset width keeps the selected view. The attention and source settings files have owner-only access. When ASB cannot use `pending.json` in full, it shows the Pending state warning and moves the old file to `pending.json.bad` before the first save. An older `.bad` file is replaced. The same rule applies to `sources.json` (`sources.json.bad`) before the next source update or remove. The warning that ASB cannot save Pending state clears after the next good save.
 
 The application ID is `local.asb.AgentSwitchBoard`. Per-user installation registers only ASB's own launcher and icon. It creates no auto-start entry. See [icon provenance](assets/icons/ASB-disc-provenance.md).
 
@@ -107,13 +129,13 @@ Choose **Profile color** in the source editor, then **Save**. The presets are Sl
 
 ## Start and stop
 
-Installed packages launch with `asb` or the ASB Applications entry. From source:
+Installed packages launch with `asb` or the ASB Applications entry. The per-user command `~/.local/bin/asb` starts the shipped `scripts/asb`. If the recorded Node.js is not usable, `scripts/asb` tries `~/.local/bin/node`, `/usr/local/bin/node`, then `/usr/bin/node`, and prints a message if none is usable. ASB appends `/usr/local/bin:/usr/bin:/bin` to the caller's `PATH`, so apps started from ASB keep the caller's `PATH` order. From source:
 
 ```bash
 npm run desktop
 ```
 
-The initial window is about 420×900 pixels. Closing it stops the backend that the launcher started. A busy port produces an error; ASB does not attach to another server. Use `PORT=4630 npm run desktop` to select a different port.
+The initial window is about 420×900 pixels. Closing it stops the backend that the launcher started. An icon registration error stays visible, but the window still opens. A source run keeps an installed GNOME entry and reports the conflict. It replaces a source-run entry, including one from another checkout. A busy port produces an error; ASB does not attach to another server. Use `PORT=4630 npm run desktop` to select a different port.
 
 The optional browser view starts with `npm start` at [http://127.0.0.1:4629/](http://127.0.0.1:4629/). Both modes bind only to `127.0.0.1`. `HOST` does not change the address.
 
@@ -123,7 +145,7 @@ Default Codex opens use `codex://threads/<id>`. Default Claude opens use `claude
 
 Both clients poll every two seconds while any unarchived root chat is Working, otherwise every five seconds. This uses the full list before filters. Monitoring continues when another app has focus. Source-change events can start a read sooner. The shared clean snapshot lasts five seconds, so a two-second poll can reconcile after about six seconds. Cold scans and source write delays can take longer.
 
-Reads do not overlap. Polling remains the fallback when a watcher or event stream fails. Rows stay keyed by chat ID and update in place. Activity alone does not rewrite ASB state.
+Reads do not overlap. On Linux, ASB uses one watch for each directory under the session folders and finds new folders at its next watcher check. Polling remains the fallback when a watcher or event stream fails. Rows stay keyed by chat ID and update in place. Activity alone does not rewrite ASB state.
 
 By default, ASB reads the latest `~/.codex/state_N.sqlite` in read-only mode, `session_index.jsonl`, matched `.codex-global-state.json` read marks, and rollout lifecycle signals. On Linux, Claude metadata comes from `$XDG_CONFIG_HOME/Claude/claude-code-sessions` or `~/.config/Claude/claude-code-sessions`. Only `local_*.json` metadata is used. Matched transcripts come from `~/.claude/projects`. Registered profiles use their selected folders and the same readers, source-change events, and polling fallback.
 
