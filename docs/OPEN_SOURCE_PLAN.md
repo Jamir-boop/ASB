@@ -2,6 +2,19 @@
 
 ## Latest publication
 
+ASB [1.4.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.4.0) was published on `2026-10-09` (Lima). Its source and tag use commit [95883c1](https://github.com/Jamir-boop/ASB/commit/95883c1aaa82e1ca3f2ce06ced549dfe863a4c23).
+
+- Uploaded `asb_1.4.0_all.deb`, `asb-1.4.0-linux.tar.gz`, and `SHA256SUMS`. All three downloads matched local bytes and hashes.
+- Independent checks passed 196 Node tests, 63 pure native logic checks, Python compilation, diff checks, the 30-file runtime whitelist, and Debian metadata. A second build gave the same bytes, and the archive files matched the source. [CI](https://github.com/Jamir-boop/ASB/actions/runs/37952353550) passed for the source commit on Node.js `22.13.0` and `24`.
+- A disposable `1.3.0` install used the local `1.3.0` portable archive. Its upgrade to `1.4.0` kept layout, custom theme, pins, a manual mark, and Persistent unread byte-for-byte. The installed command started ASB in the disposable home; the API returned HTTP `200`. Uninstall removed both releases and the empty data folders.
+- The current-user install and restart passed. All 30 installed runtime files matched the source bytes. The running paths used `1.4.0`; the API returned HTTP `200` with no duplicate IDs. Theme, layout, and source hashes, manual marks, and pin order stayed unchanged.
+- The reader code from before the dashboard removal and the `1.4.0` reader code gave the same rows for the same local stores. The comparison used field values only and recorded no content.
+- The GTK widget test file was run on one X11 machine. Three of its seven tests passed. Four failed in the same way as with the `1.3.0` code, because their expectations are older than the `1.3.0` layout. This run found one startup defect and one focus defect in unreleased code; both were fixed before the release. The row tooltip was built under GTK for 14 synthetic rows in both views and both color modes with no error.
+- Privacy scans covered the 4402 added lines of the release commit. They found no secrets or private state. The upstream MIT license and exact README video link stayed unchanged.
+- No native screenshots, Debian `apt install`, or real-app GUI opens were run. Native pixel fidelity and real-app GUI opening remain unverified. The Node.js `20` reader path with the `sqlite3` command was not run.
+
+## Earlier publications
+
 ASB [1.3.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.3.0) was published on `2026-10-08` (Lima). Its source and tag use commit [35a9b9a](https://github.com/Jamir-boop/ASB/commit/35a9b9a010f203d2d92d0f04b5bf8a4dfd2460ab).
 
 - Uploaded `asb_1.3.0_all.deb`, `asb-1.3.0-linux.tar.gz`, and `SHA256SUMS`. All three downloads matched local bytes and hashes.
@@ -10,9 +23,6 @@ ASB [1.3.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.3.0) was published
 - The current-user install and restart passed. All 32 installed runtime files matched reviewed source bytes and hashes. The manifest and running native path used `1.3.0`; the API returned HTTP `200`, with no duplicate IDs and preserved profile open availability. Theme, layout, and source hashes, manual marks, and pin order stayed unchanged. A synthetic launcher target survived opener exit and 5.2 seconds; a spawn failure kept unread attention.
 - Privacy scans covered 10 earlier commits, 222 blobs, and 26 new or changed release files. They found no secrets or private state. The upstream MIT license and exact README video link stayed unchanged. The synthetic demo source was reviewed; no video was rendered or uploaded again.
 - No UI/widget tests, new native screenshots, Debian `apt install`, or real-app GUI opens were run. Native pixel fidelity and real-app GUI opening remain unverified.
-- On `2026-10-09`, the working tree has unreleased changes after `1.3.0`. See the Unreleased section of [CHANGELOG.md](../CHANGELOG.md). These checks do not cover those changes.
-
-## Earlier publications
 
 ASB [1.2.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.2.0) was published on `2026-10-07` (Lima). Its source and tag use commit [a139538](https://github.com/Jamir-boop/ASB/commit/a1395386f6b054befceca323f1c90567c2b23898).
 
