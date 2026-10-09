@@ -2,15 +2,17 @@
 
 ASB lists Codex and Claude Desktop Code chats. It also lists remote Code sessions observed in Claude's local cache. Select a row to open that chat in its original app. The Linux native window uses GTK and Libadwaita. ASB makes no model calls and does not send prompts.
 
-See [README.md](README.md) for v1.4.0 packages and runtime requirements.
+See [README.md](README.md) for v1.5.0 packages and runtime requirements.
 
 ## Layout and search
 
 **Compact** is the default. It has one 22-pixel line per chat. **Comfortable** has 68-pixel rows, with the app and folder above a two-line title. Both views read down each column, then across from left to right. Window height sets the row count. More chats continue to the right. Use the mouse wheel, trackpad, or Shift-wheel to scroll horizontally.
 
-Mouse-wheel scrolling slows to its target in 180 ms. Repeated wheel input adds distance; reverse input starts from the visible position. Trackpad scrolling stays direct. With GNOME animations off, wheel scrolling is immediate.
+Mouse-wheel scrolling moves to its target with a spring. The speed stays continuous, the movement settles in about 350 ms, and it does not overshoot. Repeated wheel input adds distance; reverse input starts from the visible position. Trackpad scrolling stays direct. With GNOME animations off, wheel scrolling is immediate.
 
 In Comfortable, one hover highlight moves between cards and columns in 200 ms. It fades in or out in 100 ms. Cards stay fixed. With GNOME animations off, the highlight changes immediately. Compact keeps its static hover.
+
+When data or a filter changes the order or the set of visible cards, the cards move in both views. Each card that stays visible glides from its old place to its new place in about 350 ms. Each new card fades in. A card that leaves disappears at once. This applies to Read, a refresh with a new order, a pin move, search text, the pills, the menu filters, and the archive setting. A new change during the motion starts from the current painted places. There is no motion at start, when the window size, column width, or view changes, or with GNOME animations off. Pointer input, keyboard focus, and screen readers use the final layout at all times. The hover highlight clears when a motion starts.
 
 Comfortable uses quiet title, folder, state, and age text for Idle chats with no ASB unread dot or Pending attention. Hover or keyboard focus restores normal text. Pins and provider marks keep their normal strength. Source read status does not change this rule.
 
@@ -18,11 +20,11 @@ Hover a row to see the Unfolded card tooltip in either view. It shows the full f
 
 Tooltip queries use current time and row data. Unchanged content is reused; changed text, profile or theme rebuilds it without a source read. Theme changes clear hidden-row tooltip caches too.
 
-Drag a column divider to change the width of all columns. The menu also has **Column width** (160–600 pixels) and **Reset width**. The default is 240 pixels. A view change keeps your search, filters, pins, and focused chat. Keyboard navigation reveals a focused row when it is outside the visible area.
+Drag a column divider to change the width of all columns. The menu also has **Column width** (160–600 pixels) and **Reset width**. The default is 240 pixels. Columns keep the shared width when the list has fewer columns than the window can show, for example in search results. A view change keeps your search, filters, pins, and focused chat. Keyboard navigation reveals a focused row when it is outside the visible area.
 
-Search names, folders, or app-source names. Results update when the text changes. A leading `cl:` or `claude:` selects Claude. A leading `cx:` or `codex:` selects Codex. Prefixes ignore case and permit spaces. A prefix alone lists that app. A prefix takes priority over the app filter while it is present. The other filters still apply. Unknown prefixes remain literal search text.
+Search names, folders, or app-source names. Results update when the text changes. A row title has at most 300 characters; a longer title ends with `…`. Codex can store a full prompt as a title. Search matches the limited title, and the tooltip shows it. Claude Desktop Code titles keep their own shorter limit. A leading `cl:` or `claude:` selects Claude. A leading `cx:` or `codex:` selects Codex. Prefixes ignore case and permit spaces. A prefix alone lists that app. A prefix takes priority over the app filter while it is present. The other filters still apply. Unknown prefixes remain literal search text.
 
-Type from a chat row to enter search. Escape clears the search and its prefix. Explicit filters stay set. Native popups and Ctrl/Alt/Super shortcuts keep their normal keys.
+At start, no control has the keyboard focus. Type a printable key to enter search; the first Tab also goes to the search field. Type from a chat row to enter search. Escape clears the search and its prefix. Explicit filters stay set. Native popups and Ctrl/Alt/Super shortcuts keep their normal keys.
 
 ## Filters and pins
 
@@ -145,7 +147,7 @@ Default Codex opens use `codex://threads/<id>`. Default Claude opens use `claude
 
 Both clients poll every two seconds while any unarchived root chat is Working, otherwise every five seconds. This uses the full list before filters. Monitoring continues when another app has focus. Source-change events can start a read sooner. The shared clean snapshot lasts five seconds, so a two-second poll can reconcile after about six seconds. Cold scans and source write delays can take longer.
 
-Reads do not overlap. On Linux, ASB uses one watch for each directory under the session folders and finds new folders at its next watcher check. Polling remains the fallback when a watcher or event stream fails. Rows stay keyed by chat ID and update in place. Activity alone does not rewrite ASB state.
+Reads do not overlap. On Linux, ASB uses one watch for each directory under the session folders. It follows new and removed folders from the watcher events. It walks all session folders again only at start, when the source list changes, while a watch is missing, after a watcher error or a large burst of folder changes, and every 60 seconds. When a read brings no change, the native window gets a `304` reply and does no list work. A background poll does not change the Refresh button; the button is inactive only during a refresh that you requested. Polling remains the fallback when a watcher or event stream fails. Rows stay keyed by chat ID and update in place. Activity alone does not rewrite ASB state.
 
 By default, ASB reads the latest `~/.codex/state_N.sqlite` in read-only mode, `session_index.jsonl`, matched `.codex-global-state.json` read marks, and rollout lifecycle signals. On Linux, Claude metadata comes from `$XDG_CONFIG_HOME/Claude/claude-code-sessions` or `~/.config/Claude/claude-code-sessions`. Only `local_*.json` metadata is used. Matched transcripts come from `~/.claude/projects`. Registered profiles use their selected folders and the same readers, source-change events, and polling fallback.
 
@@ -153,6 +155,6 @@ Remote Code metadata comes from approved session-list and watch response bodies 
 
 Root chats are the list unit. Internal subagents stay grouped under their root. Reads are limited to 5000 records per source. ASB does not include orphan Codex rollouts that are absent from its local database.
 
-Codex tail reads start at 64 KiB and grow to 256 KiB. When needed, lifecycle and question checks scan full logs with bounded memory. Claude uses an 8 MiB transcript tail with lifecycle checks when needed. Large retained histories can make the first scan slow. In-memory caches reuse unchanged metadata and bound stored entries. No transcript checkpoint file is written by ASB.
+Codex tail reads start at 64 KiB and grow to 256 KiB. On the first read of a larger log, ASB searches the bytes before the tail for question calls and reads lines only from such a call. When the tail has no lifecycle event, lifecycle and question checks scan the full log with bounded memory. Claude uses an 8 MiB transcript tail with lifecycle checks when needed. Large retained histories can make the first scan slow. In-memory caches reuse unchanged metadata and bound stored entries. No transcript checkpoint file is written by ASB.
 
 See [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md) for source modules and [Privacy](docs/PRIVACY.md) for the full data boundary.

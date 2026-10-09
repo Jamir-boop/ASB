@@ -219,11 +219,14 @@ test('watch failures use active fallback, retry missing stores, and follow atomi
   await rename(old.target, `${old.target}-old`);
   await mkdir(old.target);
   for (const spec of f.paths) if (spec.path.startsWith(`${old.target}${path.sep}`)) await mkdir(spec.path, { recursive: true });
+  // A moved or removed watch root reports its own name, as inotify does.
+  old.callback('rename', path.basename(old.target));
   await f.clock.advance(5_000);
   assert.equal(old.watcher.closed, true);
   assert.ok(f.watches.length > f.paths.length);
   const claudePath = f.paths.find((item) => item.source === 'claude').path;
   await rm(claudePath, { recursive: true });
+  f.watches.findLast((item) => item.target === claudePath).callback('rename', path.basename(claudePath));
   await f.clock.advance(5_000);
   assert.equal((await f.scan()).performance.dashboard.watchCoverage, false);
   await mkdir(claudePath);
@@ -255,6 +258,7 @@ test('linux watches each directory once, never recursively, and still sees neste
   const root = f.paths.find((item) => item.recursive && item.source === 'codex').path;
   const childPath = path.join(root, '2026', '10');
   await mkdir(childPath, { recursive: true });
+  f.watches.find((item) => item.target === root).callback('rename', '2026');
   await f.clock.advance(5_000);
   await until(() => f.watches.some((item) => item.target === childPath));
   const open = f.watches.filter((item) => !item.watcher.closed).map((item) => item.target);
@@ -266,7 +270,8 @@ test('linux watches each directory once, never recursively, and still sees neste
   f.watches.find((item) => item.target === childPath).callback('change', 'rollout-a.jsonl');
   await f.scan();
   assert.equal(f.loads(), loads + 1);
-  assert.deepEqual(f.hints, [{ source: 'codex', filePath: path.join(childPath, 'rollout-a.jsonl'), index: false }]);
+  assert.deepEqual(f.hints, [{ source: 'codex', filePath: path.join(root, '2026'), index: true },
+    { source: 'codex', filePath: path.join(childPath, 'rollout-a.jsonl'), index: false }]);
 });
 
 test('watcher errors and failed scans retry without a tight loop', async (t) => {

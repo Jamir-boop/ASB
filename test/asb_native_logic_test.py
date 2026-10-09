@@ -26,6 +26,7 @@ STRIP = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.Cl
 STRIP.bases = []
 SCOPE = {"__file__": str(SOURCE)}
 exec(compile(ast.Module(body=NODES + [STRIP, MARKER, SOURCES, WINDOW, APPLICATION], type_ignores=[]), str(SOURCE), "exec"), SCOPE)
+SCOPE["SessionColumn"] = lambda **kwargs: SCOPE["Gtk"].ListBox(**kwargs)
 Window = SCOPE["SwitchboardWindow"]
 Strip = SCOPE["SessionStrip"]
 SourcesWindow = SCOPE["AppSourcesWindow"]
@@ -1114,53 +1115,70 @@ class NativeLogicChecks(unittest.TestCase):
                 window.scroll_position_changed(adjustment)
         adjustment.set_value = set_value
         window.scroll = SimpleNamespace(get_hadjustment=lambda: adjustment)
-        animation = window.scroll_animation = Mock(reset=Mock(side_effect=lambda: window.advance_scroll(0)))
+        animation = window.scroll_animation = Mock(get_velocity=Mock(return_value=0))
+        animation.reset.side_effect = lambda: window.advance_scroll(animation.set_value_from.call_args.args[0])
         wheel, surface = SimpleNamespace(get_unit=lambda: 0), SimpleNamespace(get_unit=lambda: 1)
+        def spring():
+            return tuple(getattr(animation, name).call_args.args[0] for name in ("set_value_from", "set_value_to", "set_initial_velocity"))
         with patch.dict(SCOPE, {"Gdk": SimpleNamespace(ScrollUnit=SimpleNamespace(WHEEL=0, SURFACE=1))}):
+            animation.get_velocity.return_value = 900  # A stopped spring gives no start speed.
             window.scroll_horizontal(wheel, 0, 1)
             self.assertEqual((adjustment.value, window.scroll_target), (10, 42))
-            window.advance_scroll(.37)
+            self.assertEqual(spring(), (10, 42, 0))
+            self.assertAlmostEqual(animation.set_epsilon.call_args.args[0] * 32, .05)
+            window.advance_scroll(21.84)
             self.assertAlmostEqual(adjustment.value, 21.84)
             self.assertEqual(window.scroll_target, 42)
+            animation.get_velocity.return_value = 300
             window.scroll_horizontal(wheel, 1, -5)  # Shift/horizontal input keeps its X mapping.
-            self.assertEqual(window.scroll_target, 74)
-            self.assertAlmostEqual(window.scroll_from, 21.84)
-            window.advance_scroll(.5)
+            self.assertEqual(spring(), (21.84, 74, 300))  # Same direction: new target, same speed.
+            window.advance_scroll(48)
             current = adjustment.value
             window.scroll_horizontal(wheel, 0, -.5)
-            self.assertEqual(window.scroll_from, current)
+            self.assertEqual(spring(), (current, current - 16, 300))  # Reversal: the speed turns round in the spring.
             self.assertEqual(window.scroll_target, current - 16)
-            window.advance_scroll(.5)
+            window.advance_scroll(current - 8)
             self.assertLess(adjustment.value, current)
+            animation.get_velocity.return_value = 5000
             window.scroll_horizontal(wheel, 100, 0)
             self.assertEqual(window.scroll_target, 110)
-            window.advance_scroll(1)
+            self.assertEqual(spring(), (40, 110, 1400))  # More than 20/s times the distance would pass the target.
+            animation.get_velocity.return_value = -5000
+            window.scroll_horizontal(wheel, -1, 0)
+            self.assertEqual(spring(), (40, 10, -600))
+            window.scroll_horizontal(wheel, 100, 0)
+            window.advance_scroll(110)
             self.assertEqual(adjustment.value, 110)
             self.assertIsNone(window.scroll_target)
             animation.play.reset_mock()
             window.scroll_horizontal(wheel, 1, 0)
             window.scroll_horizontal(wheel, 0, 0)
             animation.play.assert_not_called()
+            adjustment.value = 109.7  # Less than half a pixel from the end: no spring.
+            window.scroll_horizontal(wheel, 1, 0)
+            self.assertEqual((adjustment.value, window.scroll_target), (110, None))
+            animation.play.assert_not_called()
             window.scroll_horizontal(wheel, -100, 0)
             self.assertEqual(window.scroll_target, 10)
-            window.advance_scroll(1)
+            window.advance_scroll(10)
             self.assertEqual(adjustment.value, 10)
+            self.assertIsNone(window.scroll_target)
 
             window.scroll_horizontal(wheel, 0, 1)
-            window.advance_scroll(.5)
+            window.advance_scroll(26)
             current = adjustment.value
             animation.play.reset_mock()
             window.scroll_horizontal(surface, .75, 8)
             self.assertEqual(adjustment.value, current + .75)
             self.assertIsNone(window.scroll_target)
-            window.advance_scroll(1)
+            window.advance_scroll(42)
             self.assertEqual(adjustment.value, current + .75)
             animation.play.assert_not_called()
             window.scroll_horizontal(surface, 0, 1.25)
             self.assertEqual(adjustment.value, current + 2)
 
             window.scroll_horizontal(wheel, 0, 1)
-            window.advance_scroll(.5)
+            window.advance_scroll(50)
             current = adjustment.value
             settings.get_property.return_value = False
             animation.play.reset_mock()
@@ -1174,12 +1192,12 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertEqual(window.scroll_target, min(110, adjustment.value + 48))
             set_value(25.5)  # Scrollbar/keyboard changes win over an active wheel target.
             self.assertIsNone(window.scroll_target)
-            window.advance_scroll(1)
+            window.advance_scroll(60)
             self.assertEqual(adjustment.value, 25.5)
 
             window.scroll_horizontal(wheel, 0, 1)
             window.cancel_scroll(adjustment)  # GtkAdjustment bounds changes and unmap.
-            window.advance_scroll(1)
+            window.advance_scroll(73.5)
             self.assertEqual(adjustment.value, 25.5)
             adjustment.upper, adjustment.page = 110, 100
             set_value(10)
@@ -1195,13 +1213,52 @@ class NativeLogicChecks(unittest.TestCase):
             window.focus_widgets, window.row_cache = {}, {}
             with patch.dict(SCOPE, {"Gtk": SimpleNamespace(StyleContext=Mock())}):
                 self.assertFalse(window.on_close())
-            window.advance_scroll(1)
+            window.advance_scroll(58)
             window.scroll_horizontal(wheel, 0, 1)
             self.assertEqual(adjustment.value, 10)
-            self.assertIsNone(window.scroll_target)
-        window.refresh.assert_not_called()
-        window.render.assert_not_called()
-        window.list_body.clear_hover.assert_called()
+
+    def test_card_motion_decision_offsets_and_progress(self):
+        before = (("a", "b"), 4, 20, 239, "compact", True)
+        allowed = asb.motion_allowed
+        self.assertTrue(allowed(before, (("b", "a"), 4, 20, 239, "compact", True), True, True))
+        self.assertTrue(allowed(before, ((), 4, 20, 239, "compact", False), True, True))  # Filters change only the IDs.
+        self.assertFalse(allowed(None, before, True, True))  # First render.
+        self.assertFalse(allowed(before, before, False, True))  # GNOME animations off.
+        self.assertFalse(allowed(before, before, True, False))  # Not mapped.
+        for index, value in ((1, 5), (2, 21), (3, 240), (4, "comfortable")):
+            changed = list(before)
+            changed[index] = value
+            self.assertFalse(allowed(before, tuple(changed), True, True))
+        old = {"stay": (4, 0, 0), "down": (4, 22, 0), "across": (4, 418, 0), "flight": (130.5, 44, .25), "gone": (4, 66, 0)}
+        new = {"stay": (4, 0, 0), "down": (4, 110, 0), "across": (255, 0, 0), "flight": (255, 22, 0), "new": (4, 22, 0)}
+        self.assertEqual(asb.motion_offsets(old, new), {"down": (0, -88, 0), "across": (-251, 418, 0),
+                                                       "flight": (-124.5, 22, .25), "new": (0, 0, 1)})
+        self.assertEqual(asb.motion_offsets({}, {}), {})
+
+        class Row:
+            def __init__(self, x, y):
+                self.place, self.draws = SimpleNamespace(origin=SimpleNamespace(x=x, y=y)), 0
+            def compute_bounds(self, _target):
+                return True, self.place
+            def queue_draw(self):
+                self.draws += 1
+        window = object.__new__(Window)
+        window.scroll, window.closed = object(), False
+        window.list_body = SimpleNamespace(motion={"down": (0, -88, 0), "new": (0, 0, 1)}, motion_progress=.5)
+        window.focus_widgets = {"stay": Row(4, 0), "down": Row(4, 110), "new": Row(4, 22)}
+        self.assertEqual(window.painted_places(), {"stay": (4, 0, 0), "down": (4, 66, 0), "new": (4, 22, .5)})
+        column = Row(0, 0)
+        window.motion_columns = [column]
+        window.advance_motion(.25)
+        self.assertEqual((window.list_body.motion_progress, column.draws, len(window.list_body.motion)), (.25, 1, 2))
+        window.advance_motion(0)
+        self.assertEqual((window.list_body.motion, window.motion_columns, column.draws), ({}, [], 2))
+        window.motion_from = False  # A layout without motion is pending.
+        window.start_motion()
+        self.assertIsNone(window.motion_from)
+        window.motion_from = {}
+        window.cancel_motion()
+        self.assertIsNone(window.motion_from)
 
     def test_row_actions_keep_the_target_and_post_to_the_session_route(self):
         window = object.__new__(Window)
@@ -2282,6 +2339,181 @@ class NativeIOAuditChecks(unittest.TestCase):
                     self.assertEqual(scope["THEME_PATH"], base / "asb" / "theme.json")
                     self.assertEqual(scope["LAYOUT_PATH"], base / "asb" / "layout.json")
 
+
+    def test_dashboard_tag_is_sent_only_for_dashboard_reads_and_304_is_not_an_error(self):
+        import io
+        base, sent = "http://127.0.0.1:1", []
+        class Reply(io.BytesIO):
+            headers = {}
+        def transport(tag=None, status=200):
+            def open_request(request, timeout):
+                sent.append(request)
+                if status != 200:
+                    raise SCOPE["HTTPError"](request.full_url, status, "Synthetic", {}, io.BytesIO())
+                reply = Reply(b'{"threads": [], "changed": true}')
+                reply.headers = {"ETag": tag} if tag else {}
+                return reply
+            return {"LOCAL_HTTP": SimpleNamespace(open=open_request)}
+        request = SCOPE["request_json"]
+        with patch.dict(SCOPE, transport('"b"')):
+            for route in ("/api/dashboard", "/api/dashboard?force=1"):
+                etag = ['"a"']
+                self.assertEqual(request(base, route, etag=etag)["threads"], [])
+                self.assertEqual(sent[-1].get_header("If-none-match"), '"a"')
+                self.assertEqual(etag, ['"b"'])
+            etag = [None]
+            request(base, "/api/dashboard", etag=etag)
+            self.assertFalse(sent[-1].has_header("If-none-match"))
+            self.assertEqual(etag, ['"b"'])
+            for arguments in ((base, "/api/dashboard"), (base, "/api/sources", "GET", None, ['"a"']),
+                              (base, "/api/dashboard", "POST", None, ['"a"'])):
+                request(*arguments)
+                self.assertFalse(sent[-1].has_header("If-none-match"))
+        with patch.dict(SCOPE, transport()):
+            etag = ['"a"']
+            request(base, "/api/dashboard", etag=etag)
+            self.assertEqual(etag, [None])
+        with patch.dict(SCOPE, transport(status=304)):
+            etag, received = ['"a"'], []
+            self.assertIsNone(request(base, "/api/dashboard", etag=etag))
+            self.assertEqual(etag, ['"a"'])
+            REQUEST_ASYNC(base, "/api/dashboard", None, lambda *args: received.append(args), "GET", None, etag).join(1)
+            self.assertEqual(received, [(None, None, None)])
+            for arguments in ((base, "/api/dashboard"), (base, "/api/dashboard", "GET", None, [None]),
+                              (base, "/api/sources", "GET", None, ['"a"'])):
+                with self.assertRaises(RuntimeError):
+                    request(*arguments)
+        with patch.dict(SCOPE, transport(status=500)):
+            etag = ['"a"']
+            with self.assertRaisesRegex(RuntimeError, "Cannot load sessions"):
+                request(base, "/api/dashboard", etag=etag)
+            self.assertEqual(etag, ['"a"'])
+
+    def polling_window(self):
+        window = object.__new__(Window)
+        window.base, window.dashboard, window.signature, window.dashboard_etag = "http://127.0.0.1:1", None, None, None
+        window.closed = window.loading = window.refresh_queued = window.refresh_force_queued = window.snapshot_pending = False
+        window.refresh_interval_ms, window.clock_interval = 5000, 60
+        window.refresh_button, window.sync_unread_setting, window.set_notice, window.update_clock, window.render, window.count = \
+            (Mock() for _ in range(6))
+        return window
+
+    def test_unchanged_poll_changes_no_state_and_replaced_dashboard_drops_the_tag(self):
+        window, requests, pending = self.polling_window(), [], []
+        widgets = (window.sync_unread_setting, window.set_notice, window.update_clock, window.render, window.count)
+        def reply(dashboard, error, tag=None):
+            _base, route, callback, _dispatch, method, body, etag = requests.pop()
+            self.assertEqual((method, body), ("GET", None))
+            sent, etag[0] = etag[0], tag if dashboard else etag[0]
+            callback(dashboard, error)
+            return route, sent
+        glib = SimpleNamespace(idle_add=lambda callback, *args: pending.append((callback, args)))
+        with patch.dict(SCOPE, {"request_async": lambda *args: requests.append(args), "GLib": glib}):
+            first = {"threads": [{"id": "a", "state": "idle"}]}
+            window.tick()
+            self.assertEqual(reply(first, None, '"one"'), ("/api/dashboard", None))
+            self.assertIs(window.dashboard, first)
+            self.assertEqual(window.dashboard_etag, '"one"')
+            window.render.assert_called_once_with()
+            for widget in widgets:
+                widget.reset_mock()
+            before = dict(vars(window))
+            window.tick()
+            self.assertTrue(window.loading)
+            window.source_changed()
+            self.assertEqual(reply(None, None), ("/api/dashboard", '"one"'))
+            self.assertEqual(vars(window), before)
+            for widget in widgets:
+                self.assertEqual(widget.mock_calls, [])
+            callback, args = pending.pop()
+            self.assertEqual((callback, args), (window.refresh, (False,)))
+            callback(*args)
+            self.assertEqual(reply(None, "Cannot load sessions"), ("/api/dashboard", '"one"'))
+            self.assertIs(window.dashboard, first)
+            self.assertIsNone(window.dashboard_etag)
+            window.set_notice.assert_called_once_with("Cannot load sessions")
+            window.count.set_label.assert_not_called()
+            window.tick()
+            second = {"threads": [{"id": "b", "state": "idle"}]}
+            self.assertEqual(reply(second, None, '"two"'), ("/api/dashboard", None))
+            self.assertIs(window.dashboard, second)
+            window.tick()
+            self.assertEqual(reply(dict(second), None), ("/api/dashboard", '"two"'))
+            self.assertIsNone(window.dashboard_etag)
+            window.tick()
+            self.assertEqual(reply(second, None, '"three"'), ("/api/dashboard", None))
+            self.assertEqual((pending, window.refresh_button.mock_calls), ([], []))
+
+            window.refresh = Mock()
+            window.syncing_unread_setting = window.unread_setting_loading = False
+            window.persistent_unread, window.unread_setting_error = Mock(), Mock()
+            window.change_unread_setting()
+            posted = {"threads": []}
+            requests.pop()[2]({"changed": True, "persistentUnread": True, "dashboard": posted}, None)
+            self.assertIs(window.dashboard, posted)
+            self.assertIsNone(window.dashboard_etag)
+            window.refresh.assert_called_once_with(True)
+            window.dashboard_etag = '"four"'
+            window.session_actions, window.focus_widgets, window.open_errors = set(), {}, {}
+            window.get_focus = window.focus_key = lambda: None
+            window.session_action("a", "pin")
+            requests.pop()[2](None, "Cannot change this session.")
+            self.assertEqual(window.dashboard_etag, '"four"')
+            window.session_action("a", "pin")
+            requests.pop()[2]({"changed": True, "pinnedOrder": []}, None)
+            self.assertIsNone(window.dashboard_etag)
+            self.assertEqual(window.refresh.call_count, 2)
+
+    def test_only_forced_refresh_changes_the_refresh_button(self):
+        window, requests, pending = self.polling_window(), [], []
+        button = window.refresh_button.set_sensitive
+        def reply(dashboard, error):
+            requests.pop()[2](dashboard, error)
+            self.assertFalse(window.loading)
+        def follow_up():
+            callback, args = pending.pop()
+            callback(*args)
+        glib = SimpleNamespace(idle_add=lambda callback, *args: pending.append((callback, args)))
+        with patch.dict(SCOPE, {"request_async": lambda *args: requests.append(args), "GLib": glib}):
+            window.tick()
+            window.source_changed()
+            reply({"threads": []}, None)
+            follow_up()
+            reply(None, "Cannot load sessions")
+            window.tick()
+            reply(None, None)
+            self.assertEqual(window.refresh_button.mock_calls, [])
+            for result in (({"threads": []}, None), (None, "Cannot load sessions"), (None, None)):
+                button.reset_mock()
+                window.refresh(True)
+                self.assertEqual(requests[-1][1], "/api/dashboard?force=1")
+                button.assert_called_once_with(False)
+                reply(*result)
+                self.assertEqual([call.args for call in button.call_args_list], [(False,), (True,)])
+            button.reset_mock()
+            window.tick()
+            window.refresh(True)
+            button.assert_called_once_with(False)
+            reply(None, None)
+            button.assert_called_once_with(False)
+            follow_up()
+            self.assertEqual(requests[-1][1], "/api/dashboard?force=1")
+            window.refresh(True)
+            window.source_changed()
+            reply(None, "Cannot load sessions")
+            self.assertNotIn((True,), [call.args for call in button.call_args_list])
+            follow_up()
+            self.assertEqual(requests[-1][1], "/api/dashboard?force=1")
+            reply({"threads": []}, None)
+            self.assertEqual(button.call_args_list[-1].args, (True,))
+            self.assertEqual([call.args for call in button.call_args_list].count((True,)), 1)
+            self.assertEqual((requests, pending), ([], []))
+            button.reset_mock()
+            window.refresh(True)
+            window.closed = True
+            window.refresh(True)
+            requests.pop()[2]({"threads": []}, None)
+            button.assert_called_once_with(False)
 
 if __name__ == "__main__":
     unittest.main()

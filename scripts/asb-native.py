@@ -150,6 +150,22 @@ THEME_PATH = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") 
 LAYOUT_PATH = THEME_PATH.with_name("layout.json")
 
 
+def motion_allowed(previous, current, animations, mapped):
+    # The first render and a change of columns, capacity, column width, or view show the result at once.
+    return bool(animations and mapped and previous is not None and previous[1:5] == current[1:5])
+
+
+def motion_offsets(old, new):
+    """Paint offsets (x, y, missing opacity) from the old painted places; a card with no old place fades in."""
+    offsets = {}
+    for identity, place in new.items():
+        before = old.get(identity)
+        offset = (before[0] - place[0], before[1] - place[1], before[2]) if before else (0, 0, 1)
+        if any(offset):
+            offsets[identity] = offset
+    return offsets
+
+
 def luminance(color):
     channels = [int(color[index:index + 2], 16) / 255 for index in (1, 3, 5)]
     return sum((value / 12.92 if value <= .04045 else ((value + .055) / 1.055) ** 2.4) * weight
@@ -381,9 +397,11 @@ def local_base_url(value):
 SOURCE_TOKEN = os.environ.get("ASB_SOURCE_TOKEN", "")
 
 
-def request_json(base, route, method="GET", body=None):
+def request_json(base, route, method="GET", body=None, etag=None):
     headers = {"Accept": "application/json"}
     data = None
+    if etag and etag[0] and method == "GET" and route.split("?")[0] == "/api/dashboard":
+        headers["If-None-Match"] = etag[0]
     if method == "POST":
         headers.update({"Origin": base, "Content-Type": "application/json"})
         if SOURCE_TOKEN and (route == "/api/sources" or route.startswith("/api/sources/")):
@@ -398,8 +416,13 @@ def request_json(base, route, method="GET", body=None):
         success = "opened" if route.endswith("/open") else "marked" if route.endswith("/mark-unread") else "changed"
         if method == "POST" and not result.get(success):
             raise ValueError("The session action did not succeed.")
+        if etag is not None:
+            etag[0] = response.headers.get("ETag")
         return result
     except (HTTPError, URLError, HTTPException, OSError, ValueError) as error:
+        if isinstance(error, HTTPError) and error.code == 304 and "If-None-Match" in headers:
+            error.close()
+            return None
         if route == "/api/sources" or route.startswith("/api/sources/"):
             detail = ""
             if isinstance(error, HTTPError):
@@ -418,10 +441,10 @@ def request_json(base, route, method="GET", body=None):
         raise RuntimeError(f"Cannot {action}. {recovery}") from error
 
 
-def request_async(base, route, callback, dispatch, method="GET", body=None):
+def request_async(base, route, callback, dispatch, method="GET", body=None, etag=None):
     def work():
         try:
-            result, error = request_json(base, route, method, body), None
+            result, error = request_json(base, route, method, body, etag), None
         except RuntimeError as failure:
             result, error = None, str(failure)
         dispatch(callback, result, error)
@@ -533,6 +556,7 @@ class SessionStrip(Gtk.Box):
         super().__init__(**kwargs)
         self.hover_rect = self.hover_target = self.hover_from = self.hover_to = None
         self.hover_alpha = 0
+        self.motion, self.motion_progress = {}, 0
         target = Adw.CallbackAnimationTarget.new(self.advance_hover)
         self.hover_animation = Adw.TimedAnimation.new(self, 0, 1, 200, target)
         self.hover_animation.set_easing(Adw.Easing.EASE_OUT_EXPO)
@@ -596,13 +620,48 @@ class SessionStrip(Gtk.Box):
         Gtk.Box.do_snapshot(self, snapshot)
 
 
+class SessionColumn(Gtk.ListBox):
+    def do_measure(self, orientation, for_size):
+        minimum, natural, *baselines = Gtk.ListBox.do_measure(self, orientation, for_size)
+        # Long titles must not let spare strip width make a column wider than the shared width.
+        return (minimum, minimum, -1, -1) if orientation == Gtk.Orientation.HORIZONTAL else (minimum, natural, *baselines)
+
+    def do_snapshot(self, snapshot):
+        # Card motion is paint only: the column moves the whole row box, so allocation, input, and focus keep the final layout.
+        strip = self.get_parent()
+        motion, progress = strip.motion, strip.motion_progress
+        child = self.get_first_child()
+        while child:
+            offset = motion.get(child.asb_focus_key) if progress else None
+            if offset:
+                snapshot.save()
+                snapshot.translate(Graphene.Point().init(offset[0] * progress, offset[1] * progress))
+                if offset[2]:
+                    snapshot.push_opacity(1 - offset[2] * progress)
+                self.snapshot_child(child, snapshot)
+                if offset[2]:
+                    snapshot.pop()
+                snapshot.restore()
+            else:
+                self.snapshot_child(child, snapshot)
+            child = child.get_next_sibling()
+
+
 class ColumnScroll(Gtk.ScrolledWindow):
+    after_layout = None
+
     def do_measure(self, orientation, for_size):
         # Row count follows viewport height; it must not set the window's minimum height.
         if orientation == Gtk.Orientation.VERTICAL:
             return 0, 0, -1, -1
         minimum, natural, *_ = Gtk.ScrolledWindow.do_measure(self, orientation, for_size)
         return minimum, natural, -1, -1
+
+    def do_size_allocate(self, width, height, baseline):
+        Gtk.ScrolledWindow.do_size_allocate(self, width, height, baseline)
+        # New row places are known here, after allocation and before the paint of the same frame.
+        if self.after_layout:
+            self.after_layout()
 
 
 class SourceMarker(Gtk.Box):
@@ -990,6 +1049,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.dashboard = self.signature = None
         self.closed = self.loading = self.refresh_queued = False
         self.refresh_force_queued = False
+        self.dashboard_etag = None
         self.refresh_interval_ms = 5000
         self.clock_interval = self.clock_timer = None
         self.notice_timer, self.notice_generation, self.provider_notice = None, 0, ""
@@ -1202,8 +1262,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.scroll_target = None
         self.scroll_direction, self.scroll_updating = 0, False
         target = Adw.CallbackAnimationTarget.new(self.advance_scroll)
-        self.scroll_animation = Adw.TimedAnimation.new(self.scroll, 0, 1, 180, target)
-        self.scroll_animation.set_easing(Adw.Easing.EASE_OUT_EXPO)
+        self.scroll_animation = Adw.SpringAnimation.new(self.scroll, 0, 0, Adw.SpringParams.new(1, 1, 400), target)
+        self.motion_from, self.motion_columns = None, []
+        target = Adw.CallbackAnimationTarget.new(self.advance_motion)
+        self.motion_animation = Adw.SpringAnimation.new(self.scroll, 1, 0, Adw.SpringParams.new(1, 1, 400), target)
+        self.motion_animation.set_epsilon(.0001)
+        self.scroll.after_layout = self.start_motion
+        self.scroll.connect("unmap", self.cancel_motion)
         self.scroll.get_hadjustment().connect("value-changed", self.scroll_position_changed)
         self.scroll.get_hadjustment().connect("changed", self.cancel_scroll)
         self.scroll.connect("unmap", self.cancel_scroll)
@@ -1468,30 +1533,37 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def refresh(self, force=False, queue=False):
         if self.closed:
             return
+        if force:
+            self.refresh_button.set_sensitive(False)
         if self.loading:
             self.refresh_queued = self.refresh_queued or force or queue
             self.refresh_force_queued = self.refresh_force_queued or force
             return
         self.loading = True
-        self.refresh_button.set_sensitive(False)
+        etag = [self.dashboard_etag]
         request_async(self.base, "/api/dashboard?force=1" if force else "/api/dashboard",
-                      self.apply_dashboard, GLib.idle_add)
+                      lambda dashboard, error: self.apply_dashboard(dashboard, error, etag, force), GLib.idle_add, "GET", None, etag)
 
-    def apply_dashboard(self, dashboard, error):
+    def apply_dashboard(self, dashboard, error, etag=None, forced=False):
         if self.closed:
             return False
         self.loading = False
-        self.refresh_button.set_sensitive(True)
+        if forced and not self.refresh_force_queued:
+            self.refresh_button.set_sensitive(True)
         if self.refresh_queued:
             self.refresh_queued = False
             force, self.refresh_force_queued = self.refresh_force_queued, False
             GLib.idle_add(self.refresh, force)
         if error:
+            # A later 304 changes no widget, so it must not keep this notice.
+            self.dashboard_etag = None
             self.set_notice(error)
             if self.dashboard is None:
                 self.count.set_label("Sessions are not available")
             return False
-        self.dashboard = dashboard
+        if dashboard is None:
+            return False
+        self.dashboard, self.dashboard_etag = dashboard, etag and etag[0]
         interval = refresh_interval(dashboard)
         if interval != self.refresh_interval_ms:
             self.refresh_interval_ms = interval
@@ -1624,11 +1696,21 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return True
         start = self.scroll_target if self.scroll_target is not None and delta * self.scroll_direction > 0 else current
         target = max(lower, min(upper, start + delta * distance))
-        if target == current:
+        if abs(target - current) < .5:
+            # Less than half a pixel needs no spring; its stop fraction below must stay under 1, or it never ends.
             self.cancel_scroll()
+            adjustment.set_value(target)
         elif target != self.scroll_target:
+            velocity = self.scroll_animation.get_velocity() if self.scroll_target is not None else 0
+            # This spring passes its target only when it starts faster than 20/s times the distance.
+            limit = 20 * (target - current)
             self.scroll_animation.pause()
-            self.scroll_from, self.scroll_target, self.scroll_direction = current, target, delta
+            self.scroll_target, self.scroll_direction = target, delta
+            self.scroll_animation.set_value_from(current)
+            self.scroll_animation.set_value_to(target)
+            self.scroll_animation.set_initial_velocity(min(velocity, limit) if limit > 0 else max(velocity, limit))
+            # The spring stops at this fraction of the distance; keep the last step below half a pixel.
+            self.scroll_animation.set_epsilon(.05 / abs(target - current))
             self.scroll_animation.reset()
             self.scroll_animation.play()
         return True
@@ -1638,10 +1720,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return
         self.scroll_updating = True
         try:
-            self.scroll.get_hadjustment().set_value(self.scroll_from + (self.scroll_target - self.scroll_from) * value)
+            self.scroll.get_hadjustment().set_value(value)
         finally:
             self.scroll_updating = False
-        if value >= 1:
+        if value == self.scroll_target:
             self.scroll_target, self.scroll_direction = None, 0
 
     def cancel_scroll(self, *_args):
@@ -1654,6 +1736,44 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.list_body.clear_hover()
         if not self.scroll_updating:
             self.cancel_scroll()
+
+    def painted_places(self):
+        strip, places = self.list_body, {}
+        for identity, widget in self.focus_widgets.items():
+            found, bounds = widget.compute_bounds(self.scroll)
+            if found:
+                x, y, fade = strip.motion.get(identity, (0, 0, 0))
+                places[identity] = (bounds.origin.x + x * strip.motion_progress, bounds.origin.y + y * strip.motion_progress,
+                                    fade * strip.motion_progress)
+        return places
+
+    def start_motion(self):
+        old, self.motion_from = self.motion_from, None
+        if old in (None, False) or self.closed:
+            return
+        strip = self.list_body
+        self.motion_animation.reset()
+        self.advance_motion(0)
+        strip.motion = motion_offsets(old, self.painted_places())
+        if strip.motion:
+            strip.clear_hover()
+            self.motion_columns = list({self.focus_widgets[identity].get_parent() for identity in strip.motion})
+            self.advance_motion(1)
+            self.motion_animation.play()
+
+    def advance_motion(self, value):
+        strip = self.list_body
+        strip.motion_progress = value
+        for column in self.motion_columns:
+            column.queue_draw()
+        if value <= 0:
+            strip.motion, self.motion_columns = {}, []
+
+    def cancel_motion(self, *_args):
+        self.motion_from = None
+        animation = getattr(self, "motion_animation", None)
+        if animation:
+            animation.skip()
 
     def hover_motion(self, _controller, x, y):
         rectangle = None
@@ -1698,7 +1818,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def focus_changed(self, *_args):
         # A repack makes GTK move focus to a column or to nothing; only a user focus change cancels a queued restore.
         focus = self.get_focus()
-        if focus is not None and type(focus).__name__ != "ListBox":
+        if focus is not None and type(focus).__name__ not in ("ListBox", "SessionColumn"):
             self.focus_generation += 1
 
     def clear_search(self, *_args):
@@ -1800,6 +1920,16 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             and set(layout_signature[0]) == set(self.layout_signature[0])
         old_positions = {identity: index for index, identity in enumerate(self.layout_signature[0])} if reorder else {}
         repack = repack and not reorder
+        if repack or reorder:
+            if getattr(self, "motion_animation", None) and motion_allowed(
+                    self.layout_signature, layout_signature, self.get_settings().get_property("gtk-enable-animations"), self.get_mapped()):
+                # A second change before the next layout keeps the places that are on the screen.
+                if self.motion_from is None:
+                    self.motion_from = self.painted_places()
+            else:
+                self.cancel_motion()
+                # Until the next layout the row places are not valid as a start for motion.
+                self.motion_from = False
         if repack:
             self.cancel_scroll()
             self.list_body.clear_hover()
@@ -1856,8 +1986,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.list_body.remove(child)
                 child = following
             for part in parts:
-                listing = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, activate_on_single_click=True,
-                                      valign=Gtk.Align.START, hexpand=False, width_request=self.column_pixel_width)
+                listing = SessionColumn(selection_mode=Gtk.SelectionMode.NONE, activate_on_single_click=True,
+                                        valign=Gtk.Align.START, hexpand=False, width_request=self.column_pixel_width)
                 listing.add_css_class("asb-column")
                 listing.asb_activation = listing.connect("row-activated", self.open_row)
                 for row in part:
@@ -1959,7 +2089,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     self.sync_unread_setting((self.dashboard or {}).get("persistentUnread", False))
                 else:
                     self.sync_unread_setting(result["persistentUnread"])
-                    self.dashboard = result["dashboard"]
+                    self.dashboard, self.dashboard_etag = result["dashboard"], None
                     self.signature = self.dashboard.get("threads", [])
                     self.render()
                     self.refresh(True)
@@ -2400,6 +2530,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                             self.set_focus(getattr(current, "asb_" + action_focus + "_button", current))
                 if not error:
                     self.open_errors.pop(identity, None)
+                    self.dashboard_etag = None
                     if action == "mark-read" and guard_row is not None and getattr(self, "row_cache", self.focus_widgets).get(identity) is guard_row:
                         guard_row.asb_last_read_at = time.monotonic()
                     if result.get("thread") and (action != "mark-read" or origin is None or same_attention):
@@ -2484,6 +2615,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if getattr(self, "sources_window", None):
             self.sources_window.close()
         self.cancel_scroll()
+        self.cancel_motion()
         self.list_body.clear_hover()
         self.events.close()
         for name in ("timer", "clock_timer", "geometry_idle", "notice_timer"):
@@ -2516,6 +2648,10 @@ class SwitchboardApplication(Adw.Application):
         window = self.get_active_window()
         if window is None:
             window = SwitchboardWindow(self, self.base)
+            window.present()
+            # GTK focuses the search field on show; its cursor blink repaints the window.
+            window.set_focus(None)
+            return
         window.present()
 
     def close_windows(self):

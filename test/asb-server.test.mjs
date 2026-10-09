@@ -104,6 +104,60 @@ test('a source change during a scan replies with a scan that started after the c
   await first;
 });
 
+test('the dashboard reply has a content tag and an equal tag gets 304 with no body', async (t) => {
+  let loads = 0;
+  let board;
+  const reset = () => { board = { generatedAtMs: 1, providers: [{ id: 'codex', message: 'ok' }], threads: [{ id: 'one', title: 'A' }],
+    refreshIntervalMs: 5_000, persistentUnread: false }; };
+  reset();
+  const { base } = await serve(t, { loadDashboard: async () => { loads += 1; return structuredClone(board); } });
+  const get = (headers = {}, query = '?force=1') => fetch(`${base}/api/dashboard${query}`, { headers });
+  const first = await get();
+  const tag = first.headers.get('etag');
+  const body = await first.json();
+  assert.match(tag, /^"[A-Za-z0-9_-]{43}"$/);
+  assert.equal(first.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(Object.keys(body).sort(), ['generatedAtMs', 'performance', 'persistentUnread', 'providers', 'refreshIntervalMs', 'summary', 'threads']);
+  assert.deepEqual(body.threads, board.threads);
+  assert.equal(body.performance.dashboard.notModified, 0);
+  board.generatedAtMs = 2;
+  const second = await get();
+  assert.equal(second.headers.get('etag'), tag);
+  assert.notEqual((await second.json()).performance.dashboard.loadCount, body.performance.dashboard.loadCount);
+  assert.equal((await get({}, '')).headers.get('etag'), tag);
+
+  const changes = [(b) => { b.threads[0].title = 'B'; }, (b) => { b.providers[0].message = 'Not found'; },
+    (b) => { b.persistentUnread = true; }, (b) => { b.refreshIntervalMs = 2_000; }];
+  for (const change of changes) {
+    change(board);
+    assert.notEqual((await get()).headers.get('etag'), tag, String(change));
+    reset();
+  }
+
+  loads = 0;
+  const same = await get({ 'If-None-Match': tag });
+  assert.equal(same.status, 304);
+  assert.equal(same.headers.get('etag'), tag);
+  assert.equal(same.headers.get('cache-control'), 'no-store');
+  assert.equal(same.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(await same.text(), '');
+  assert.equal(loads, 1);
+  assert.equal((await get({ 'If-None-Match': tag }, '')).status, 304);
+  for (const headers of [{}, { 'If-None-Match': '"other"' }, { 'If-None-Match': tag.slice(1, -1) }]) {
+    const reply = await get(headers);
+    assert.equal(reply.status, 200);
+    assert.equal(reply.headers.get('etag'), tag);
+    assert.equal((await reply.json()).performance.dashboard.notModified, 2);
+  }
+  const refused = await get({ 'If-None-Match': tag, Origin: 'https://example.com' });
+  assert.equal(refused.status, 403);
+  assert.equal(refused.headers.get('etag'), null);
+  assert.deepEqual(await refused.json(), { error: 'Use the local ASB API.' });
+  assert.equal((await get({ 'If-None-Match': tag, 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+  board.threads[0].title = 'B';
+  assert.equal((await get({ 'If-None-Match': tag })).status, 200);
+});
+
 test('malformed JSON bodies get 400 on every action route', async (t) => {
   let calls = 0;
   const count = async () => { calls += 1; return { opened: true }; };

@@ -493,7 +493,7 @@ class WidgetCheck(unittest.TestCase):
             self.drain()
 
             calls = []
-            def request(_base, route, callback, _dispatch, method="GET", body=None):
+            def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None):
                 calls.append((route, callback, method))
             with patch.object(asb, "request_async", request):
                 geometry = (window.window_handle.get_height(), window.scroll.get_height())
@@ -1015,6 +1015,173 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(popup.get_visible())
         self.assertEqual(window.focus_key(), identity)
         window.close(); self.drain(.03)
+
+    def test_card_motion_wheel_spring_and_column_width(self):
+        threads = [{"id": f"s{n}", "provider": "codex", "providerLabel": "Codex",
+                    "title": f"Sample session {n} " + ("needle " if n % 2 else "") + "with a long synthetic title " * 7,
+                    "cwd": f"/example/project-{n % 9}", "projectName": f"project-{n % 9}", "state": "working" if n < 3 else "idle",
+                    "canOpen": True, "updatedAtMs": NOW - n * 600_000, "readStatus": "unknown",
+                    "pending": 3 <= n < 8, "unread": 3 <= n < 8, "completionAttention": 3 <= n < 8} for n in range(116)]
+        dashboard = {"generatedAtMs": NOW, "providers": [], "threads": threads}
+        # No server: a failed refresh shows a notice, and the notice changes the list height.
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(1000, 500)
+        window.present()
+        strip, motion, spring = window.list_body, window.motion_animation, window.scroll_animation
+        playing = asb.Adw.AnimationState.PLAYING
+        frames = []
+        window.get_frame_clock().connect("after-paint", lambda *_args: frames.append(
+            (strip.motion_progress, dict(strip.motion), window.painted_places())))
+        def wait(done, limit=6):
+            # The frame rate of the test display can be as low as one frame each second.
+            end = time.monotonic() + limit
+            while not done() and time.monotonic() < end:
+                self.drain(.02)
+            self.assertTrue(done())
+        def change(action, moves=True):
+            before = window.painted_places()
+            frames.clear()
+            action()
+            if moves:
+                wait(lambda: any(frame[1] for frame in frames) and not strip.motion and window.motion_from is None)
+            else:
+                wait(lambda: len(frames) >= 2 and not window.motion_from)
+            return before, list(frames)
+        def columns():
+            found, child = [], strip.get_first_child()
+            while child:
+                found.append(child)
+                child = child.get_next_sibling()
+            return found
+        def assert_rest():
+            self.assertEqual((strip.motion, window.motion_columns, window.motion_from), ({}, [], None))
+            self.assertNotEqual(motion.get_state(), playing)
+            self.assertNotEqual(spring.get_state(), playing)
+            self.assertEqual([row.asb_thread["id"] for row in self.widget_rows(window)], window.row_order)
+            self.assertEqual({row.get_height() for row in self.widget_rows(window)}, {22})
+            for column in columns():
+                self.assertIn(column.get_width(), (window.column_pixel_width, window.column_pixel_width - 1))  # 1 px divider.
+        def assert_glide(before, seen, identities):
+            first = next(index for index, frame in enumerate(seen) if frame[1])
+            for progress, offsets, places in seen[:first + 1]:
+                for identity in identities:
+                    self.assertAlmostEqual(places[identity][0], before[identity][0], delta=1)
+                    self.assertAlmostEqual(places[identity][1], before[identity][1], delta=1)
+            progress = [frame[0] for frame in seen[first:]]
+            self.assertEqual((progress[0], progress[-1]), (1, 0))
+            self.assertEqual(progress, sorted(progress, reverse=True))
+            return seen[first]
+        def mark(identity, pending):
+            board = copy.deepcopy(window.dashboard)
+            next(row for row in board["threads"] if row["id"] == identity).update(pending=pending, unread=pending, completionAttention=pending)
+            window.dashboard = board
+            window.render()
+
+        wait(lambda: len(frames) >= 3 and len(columns()) == 6 and columns()[0].get_width() == window.column_pixel_width)
+        self.assertEqual((window.columns, window.capacity, len(window.focus_widgets)), (4, 20, 116))
+        self.assertTrue(all(isinstance(column, asb.SessionColumn) for column in columns()))
+        self.assertFalse(any(frame[1] for frame in frames))  # The first render and its geometry repack do not move.
+        assert_rest()
+
+        # (a) Order only: an unread row becomes read. Six rows change places inside the same columns.
+        listings = columns()
+        window.set_focus(window.focus_widgets["s5"])
+        before, seen = change(lambda: mark("s5", False))
+        self.assertEqual(columns(), listings)
+        self.assertEqual(window.focus_key(), "s5")
+        _progress, offsets, _places = assert_glide(before, seen, before)
+        final = window.painted_places()
+        self.assertEqual(set(offsets), {"s5", "s6", "s7", "s0", "s1", "s2"})
+        self.assertEqual(offsets, {identity: (before[identity][0] - final[identity][0], before[identity][1] - final[identity][1], 0)
+                                   for identity in offsets})
+        self.assertEqual(offsets["s5"], (0, -110, 0))
+        curve = [motion.calculate_value(time_ms) for time_ms in range(601)]
+        self.assertGreater(curve[17], .9)  # Soft start.
+        self.assertTrue(all(0 <= later <= earlier <= 1 for earlier, later in zip(curve, curve[1:])))  # No overshoot.
+        self.assertLess(curve[350], .01)
+        self.assertLessEqual(motion.get_estimated_duration(), 600)
+        assert_rest()
+
+        # (b) Filters: rows that stay glide, a long title does not widen the three columns, and rows that return fade in.
+        full = window.painted_places()
+        before, seen = change(lambda: window.search.set_text("needle"))
+        staying = set(window.focus_widgets)
+        self.assertEqual((len(staying), len(columns())), (58, 3))
+        self.drain(.05)
+        self.assertEqual(window.focus_key(), "s5")  # The queued focus restore survives the move of focus to a column.
+        _progress, offsets, _places = assert_glide(before, seen, staying)
+        self.assertTrue(all(offset[2] == 0 for offset in offsets.values()))
+        self.assertGreater(len(offsets), 50)
+        assert_rest()
+        before, seen = change(lambda: window.search.set_text(""))
+        _progress, offsets, places = assert_glide(before, seen, staying)
+        self.assertEqual({identity for identity, offset in offsets.items() if offset[2]}, set(window.focus_widgets) - staying)
+        self.assertTrue(all(places[identity][2] == 1 and offsets[identity] == (0, 0, 1) for identity in set(window.focus_widgets) - staying))
+        self.assertTrue(all(place[2] == 0 for place in window.painted_places().values()))  # Full opacity at the end.
+        self.assertEqual(window.painted_places(), full)
+        assert_rest()
+
+        # A change during a motion starts from the painted places.
+        before = window.painted_places()
+        frames.clear()
+        mark("s6", False)
+        wait(lambda: any(frame[1] for frame in frames))
+        final = {identity: widget.compute_bounds(window.scroll)[1].origin for identity, widget in window.focus_widgets.items()}
+        strip.motion_progress = .5
+        flight = window.painted_places()
+        self.assertEqual(flight["s6"], (4, (before["s6"][1] + final["s6"].y) / 2, 0))
+        frames.clear()
+        mark("s7", False)
+        wait(lambda: any(frame[1] for frame in frames) and not strip.motion)
+        assert_glide(flight, list(frames), flight)
+        assert_rest()
+
+        # (c) GNOME animations off: no offset in any frame.
+        settings = window.get_settings()
+        settings.set_property("gtk-enable-animations", False)
+        self.addCleanup(settings.set_property, "gtk-enable-animations", True)
+        for action in (lambda: mark("s3", False), lambda: window.search.set_text("needle"), lambda: window.search.set_text("")):
+            _before, seen = change(action, False)
+            self.assertFalse(any(frame[0] or frame[1] for frame in seen))
+        adjustment = window.scroll.get_hadjustment()
+        window.scroll_horizontal(None, 0, 1)
+        self.assertEqual((adjustment.get_value(), window.scroll_target), (max(32, adjustment.get_step_increment()), None))
+        settings.set_property("gtk-enable-animations", True)
+        adjustment.set_value(0)
+        assert_rest()
+
+        # (d) A new column count is a geometry repack: no motion.
+        _before, seen = change(lambda: window.width_control.set_value(160), False)
+        self.assertEqual(window.columns, 5)
+        self.assertFalse(any(frame[0] or frame[1] for frame in seen))
+        _before, seen = change(lambda: window.width_control.set_value(240), False)
+        self.assertFalse(any(frame[0] or frame[1] for frame in seen))
+        wait(lambda: columns()[0].get_width() == window.column_pixel_width)
+        assert_rest()
+
+        # (e) One wheel click from rest: the spring of the window, read at 60 Hz frame times.
+        window.scroll_horizontal(None, 0, 1)
+        distance = window.scroll_target
+        self.assertEqual(distance, max(32, adjustment.get_step_increment()))
+        self.assertEqual(spring.get_state(), playing)
+        curve = [spring.calculate_value(time_ms) for time_ms in range(601)]
+        self.assertLess(curve[17], .15 * distance)
+        reached = next(time_ms for time_ms, value in enumerate(curve) if value >= .9 * distance)
+        self.assertTrue(150 <= reached <= 300, reached)
+        self.assertLessEqual(max(curve), distance)
+        self.assertTrue(all(earlier <= later for earlier, later in zip(curve, curve[1:])))
+        self.assertLessEqual(spring.get_estimated_duration(), 450)
+        self.assertTrue(all(abs(value - distance) < .5 for value in curve[spring.get_estimated_duration() - 1:]))
+        wait(lambda: window.scroll_target is None)
+        self.assertEqual(adjustment.get_value(), distance)
+        # (f) At rest no animation plays.
+        assert_rest()
 
 
 if __name__ == "__main__":

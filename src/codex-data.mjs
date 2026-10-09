@@ -1,9 +1,8 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createReadStream, promises as fs } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
 import { rememberBounded, sameFileSignature, statSignature } from './data-cache.mjs';
 import { enrichThreads, normalizeDashboardThreads } from './insights.mjs';
@@ -23,6 +22,14 @@ const COMPLETION_HINT = /(\bdone\b|\bcompleted?\b|ready for review|handoff|完�
 const LOW_SIGNAL_USER_MESSAGE = /^(继续|继续吧|你继续|你继续吧|好的|好的好的|可以|可以的|行|ok|okay|收到|嗯|嗯嗯|先这样)$/iu;
 const ROLLOUT_LIFECYCLE_EVENT_RE = /"type"\s*:\s*"(?:task_started|task_complete|turn_aborted|turn_cancelled|task_cancelled|cancelled)"/;
 const QUESTION_HISTORY_COMPLETE = Symbol('question history complete');
+const ROLLOUT_SCAN_CHUNK_BYTES = 1024 * 1024;
+const ROLLOUT_SCAN_OVERLAP_BYTES = 256;
+// The line breaks of node:readline, without the line feed that the scan splits on first.
+const ROLLOUT_LINE_BREAK_RE = /[\r\u2028\u2029]/;
+const QUESTION_CALL_NEEDLE = Buffer.from('request_user_input');
+const QUESTION_CALL_PREFIX_BYTES = 128;
+// shortcut: a "name" key written with JSON escapes is not found, upgrade if a Codex writer emits one. Whitespace that fills the window counts as a hit.
+const QUESTION_CALL_PREFIX_RE = /(?:"name"\s*:|[\s:]{100})\s*"(?:functions\.)?$/;
 const LOCAL_ARTIFACT_EXTENSIONS = [
   'avif', 'bmp', 'gif', 'heic', 'jpeg', 'jpg', 'png', 'svg', 'tif', 'tiff', 'webp',
   'html', 'htm', 'md', 'markdown', 'mdx', 'pdf',
@@ -610,10 +617,34 @@ export function parseRolloutSignals(jsonlText) {
   return finalizeRolloutLifecycle(signals);
 }
 
-async function scanRolloutLifecycle(rolloutPath, stat, cacheLimit) {
+// Returns where line processing must resume: the start of the line with the next question call, else of an unfinished last line, else `size`.
+async function findQuestionCallLine(handle, buffer, start, size) {
+  let lineStart = start, keep = 0;
+  for (let pos = start; pos < size;) {
+    const { bytesRead } = await handle.read(buffer, keep, Math.min(buffer.length - keep, size - pos), pos);
+    if (!bytesRead) break;
+    codexCacheMetrics.lifecycleBytesRead += bytesRead;
+    const chunk = buffer.subarray(0, keep + bytesRead), base = pos - keep;
+    for (let hit = chunk.indexOf(QUESTION_CALL_NEEDLE, Math.max(0, keep - QUESTION_CALL_NEEDLE.length + 1)); hit >= 0; hit = chunk.indexOf(QUESTION_CALL_NEEDLE, hit + 1)) {
+      if (!QUESTION_CALL_PREFIX_RE.test(chunk.latin1Slice(Math.max(0, hit - QUESTION_CALL_PREFIX_BYTES), hit))) continue;
+      const newline = chunk.lastIndexOf(10, hit);
+      return newline < 0 ? lineStart : Math.max(lineStart, base + newline + 1);
+    }
+    const newline = chunk.lastIndexOf(10);
+    if (newline >= 0) lineStart = Math.max(lineStart, base + newline + 1);
+    pos += bytesRead;
+    keep = Math.min(chunk.length, ROLLOUT_SCAN_OVERLAP_BYTES);
+    buffer.copyWithin(0, chunk.length - keep, chunk.length);
+  }
+  return lineStart;
+}
+
+async function scanRolloutLifecycle(rolloutPath, stat, cacheLimit, needLifecycle = true) {
   const cached = rolloutActivityCache.get(rolloutPath);
-  const append = cached && cached.ino === stat.ino && cached.dev === stat.dev && stat.size >= cached.size
+  // A question-only checkpoint has no valid lifecycle, so a caller that needs the lifecycle scans again from the start.
+  const append = cached && (cached.full || !needLifecycle) && cached.ino === stat.ino && cached.dev === stat.dev && stat.size >= cached.size
     && (stat.size > cached.size || (stat.mtimeMs === cached.mtimeMs && stat.ctimeMs === cached.ctimeMs));
+  const full = needLifecycle || Boolean(append && cached.full);
   const lifecycle = append ? cached.lifecycle : emptyRolloutLifecycle();
   const questions = append ? cached.questions : new Map();
   const start = append ? cached.offset : 0;
@@ -621,15 +652,8 @@ async function scanRolloutLifecycle(rolloutPath, stat, cacheLimit) {
     codexCacheMetrics.lifecycleHits += 1;
     return { ...lifecycle, ...questionSignals(questions) };
   }
-  codexCacheMetrics.lifecycleBytesRead += stat.size - start;
-  const input = createReadStream(rolloutPath, { encoding: 'utf8', start, end: stat.size - 1 });
-  const lines = createInterface({ input, crlfDelay: Infinity });
-  let lastLine = '', suffix = '';
-  input.on('data', (chunk) => { suffix = chunk.slice(-2); });
-
-  try {
-    for await (const line of lines) {
-      lastLine = line;
+  const applyLines = (text) => {
+    for (const line of text.split(ROLLOUT_LINE_BREAK_RE)) {
       if (!ROLLOUT_LIFECYCLE_EVENT_RE.test(line) && !/request_user_input|function_call_output|send_user_message_question_reply|"type"\s*:\s*"user_message"|"role"\s*:\s*"user"/.test(line)) continue;
 
       try {
@@ -642,13 +666,42 @@ async function scanRolloutLifecycle(rolloutPath, stat, cacheLimit) {
         // Ignore partial/corrupt lines, consistent with the main rollout parser.
       }
     }
+  };
+  const buffer = Buffer.allocUnsafe(Math.min(ROLLOUT_SCAN_CHUNK_BYTES, stat.size - start + ROLLOUT_SCAN_OVERLAP_BYTES));
+  const partial = [];
+  const handle = await fs.open(rolloutPath, 'r');
+
+  try {
+    for (let pos = start; pos < stat.size;) {
+      // Only a real question call changes an empty question map, so the bytes before the next call need no line parsing.
+      if (!full && !questions.size && !partial.length) pos = await findQuestionCallLine(handle, buffer, pos, stat.size);
+      const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, stat.size - pos), pos);
+      if (!bytesRead) break;
+      codexCacheMetrics.lifecycleBytesRead += bytesRead;
+      const chunk = buffer.subarray(0, bytesRead);
+      let from = 0;
+      do {
+        const newline = chunk.indexOf(10, from);
+        if (newline < 0) {
+          partial.push(Buffer.from(chunk.subarray(from)));
+          from = bytesRead;
+          break;
+        }
+        applyLines(partial.length ? Buffer.concat([...partial.splice(0), chunk.subarray(from, newline)]).toString() : chunk.toString('utf8', from, newline));
+        from = newline + 1;
+      } while (from < bytesRead && (full || questions.size));
+      pos += from;
+    }
   } finally {
-    lines.close();
-    input.destroy();
+    await handle.close();
   }
 
-  const offset = /[\r\n]$/.test(suffix) ? stat.size : stat.size - Buffer.byteLength(lastLine);
-  rememberBounded(rolloutActivityCache, rolloutPath, { ...statSignature(stat), offset, lifecycle, questions }, cacheLimit);
+  // The last line without a newline is applied now and read again after the next append.
+  const lastLine = Buffer.concat(partial).toString();
+  applyLines(lastLine);
+  const pieces = lastLine.split(ROLLOUT_LINE_BREAK_RE);
+  const offset = stat.size - (lastLine.endsWith('\r') ? 0 : Buffer.byteLength(pieces.at(-1) || pieces.at(-2) || ''));
+  rememberBounded(rolloutActivityCache, rolloutPath, { ...statSignature(stat), offset, lifecycle, questions, full }, cacheLimit);
   return { ...lifecycle, ...questionSignals(questions) };
 }
 
@@ -718,7 +771,7 @@ export async function readRolloutSignals(
     }
     // A human message or an abort clears all earlier questions. Otherwise keep the full history scan.
     if (tailStart > 0 && !(signals.agentRunning !== null && signals[QUESTION_HISTORY_COMPLETE])) {
-      const activity = await scanRolloutLifecycle(rolloutPath, stat, cacheLimit);
+      const activity = await scanRolloutLifecycle(rolloutPath, stat, cacheLimit, signals.agentRunning === null);
       signals = finalizeRolloutLifecycle({ ...signals, ...(signals.agentRunning === null ? activity : {}),
         awaitingUserInput: activity.awaitingUserInput, userQuestionBlocking: activity.userQuestionBlocking,
         latestUserQuestionAtMs: activity.latestUserQuestionAtMs, latestBlockingQuestionAtMs: activity.latestBlockingQuestionAtMs });

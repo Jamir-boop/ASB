@@ -21,6 +21,14 @@ const READ_FIELDS = ['questionSeen', 'questionAck', 'nativeAt', 'nativeAck', 'na
   'discard', 'discardedAt', 'discardStart', 'discardEnd', 'discardNative'];
 const RETAINED_SOURCES = ['native-unread', 'observed-completion', 'observed-failure', 'user-question'];
 const STOPPED_KINDS = ['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled'];
+const TITLE_LIMIT = 300;
+
+// A stored title can hold a whole prompt; a row and its tooltip show only the start.
+function capTitle(title) {
+  if (title.length <= TITLE_LIMIT) return title;
+  const points = [...title];
+  return points.length > TITLE_LIMIT ? `${points.slice(0, TITLE_LIMIT - 1).join('')}…` : title;
+}
 
 export function switchboardRefreshInterval(dashboard) {
   return dashboard.threads?.some((row) => !row.archived && isSwitchboardRoot(row) && row.state === 'working') ? 2_000 : 5_000;
@@ -162,7 +170,7 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
           sourceShowMarker: thread.sourceShowMarker } : {}),
         provider: isCodex ? 'codex' : thread.provider,
         providerLabel: isCodex ? 'Codex' : 'Claude Desktop Code',
-        title: thread.title || 'Untitled session',
+        title: capTitle(thread.title || 'Untitled session'),
         cwd: thread.cwd || '',
         projectName: thread.cwd ? path.basename(thread.cwd) || thread.cwd
           : thread.source === 'claude-remote-cache' ? thread.projectName || 'No project' : 'No project',

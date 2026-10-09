@@ -39,6 +39,11 @@ export class DashboardSnapshot {
     let dashboardWatchCoverage = false;
     let dashboardWatchRetryTimer = null;
     let dashboardWatchReconcilePromise = null;
+    let dashboardWatchWalkedAtMs = -Infinity;
+    let dashboardWatchWalkedPaths = '';
+    let dashboardWatchMissing = [];
+    let dashboardWatchDesired = new Set();
+    const dashboardWatchStructure = new Map();
     const adaptiveWatchers = new Map();
     const dashboardSourceHints = new Map();
     const dashboardSources = { codex: false, claude: false };
@@ -54,6 +59,7 @@ export class DashboardSnapshot {
       dashboardSoftInvalidations: 0,
       dashboardHardInvalidations: 0,
       dashboardLastInvalidatedAtMs: null,
+      dashboardWatchWalks: 0,
     };
 
     const performanceSnapshot = () => {
@@ -89,6 +95,7 @@ export class DashboardSnapshot {
           lastLoadedAtMs: serverMetrics.dashboardLastLoadedAtMs,
           dirty: dashboardDirty,
           watchCoverage: dashboardWatchCoverage,
+          watchWalks: serverMetrics.dashboardWatchWalks,
           softInvalidations: serverMetrics.dashboardSoftInvalidations,
           hardInvalidations: serverMetrics.dashboardHardInvalidations,
           lastInvalidatedAtMs: serverMetrics.dashboardLastInvalidatedAtMs,
@@ -132,7 +139,11 @@ export class DashboardSnapshot {
         dashboardSourceHints.clear();
         dashboardLoadPromise = Promise.resolve()
           .then(async () => {
-            if (dashboardDirty) await reconcileAdaptiveWatchers();
+            if (dashboardDirty) {
+              await reconcileAdaptiveWatchers();
+              // A reconcile in flight can predate the structure event that made this scan dirty.
+              if (dashboardWatchStructure.size) await reconcileAdaptiveWatchers();
+            }
             for (const [source, files] of hints) {
               for (const [filePath, index] of files) await dashboardSourceChanged(source, { filePath, index });
             }
@@ -239,38 +250,87 @@ export class DashboardSnapshot {
       scheduleDashboardInvalidation('file-change');
     };
 
+    const structureChanged = (spec, event, rawFilename, targetPath) => {
+      if (dashboardClosed || event !== 'rename' || rawFilename == null) return;
+      const filePath = path.join(targetPath, String(rawFilename));
+      // A removed or replaced watch root reports its own name; only a full walk can follow it.
+      if (targetPath === spec.path && String(rawFilename) === path.basename(targetPath)) dashboardWatchWalkedAtMs = -Infinity;
+      if (!spec.manualRecursive || path.dirname(filePath) !== targetPath || dashboardWatchWalkedAtMs === -Infinity) return;
+      // A large burst needs one full walk, with no unbounded structure queue.
+      if (dashboardWatchStructure.size >= 64) { dashboardWatchStructure.clear(); dashboardWatchWalkedAtMs = -Infinity; }
+      else dashboardWatchStructure.set(filePath, spec);
+    };
+
+    const attach = async (targetPath, spec, recursive) => {
+      if (dashboardClosed) return false;
+      const info = await stat(targetPath);
+      if (dashboardClosed) return false;
+      dashboardWatchDesired.add(targetPath);
+      const signature = `${info.dev}:${info.ino}`;
+      const previous = adaptiveWatchers.get(targetPath);
+      if (previous?.signature === signature && previous?.spec?.source === spec.source) return true;
+      previous?.watcher.close?.();
+      adaptiveWatchers.delete(targetPath);
+      const watcher = watchDashboardPath(targetPath, { recursive }, (event, filename) => {
+        // The spec filter can drop a directory event, so structure work comes first.
+        structureChanged(spec, event, filename, targetPath);
+        sourceChanged(spec, event, filename, targetPath);
+      });
+      adaptiveWatchers.set(targetPath, { watcher, signature, spec });
+      watcher.on?.('error', () => {
+        if (adaptiveWatchers.get(targetPath)?.watcher !== watcher) return;
+        watcher.close?.();
+        adaptiveWatchers.delete(targetPath);
+        dashboardWatchCoverage = false;
+        sourceChanged(spec, 'rename', null);
+      });
+      return true;
+    };
+    const attachDirectories = async (targetPath, spec) => {
+      await attach(targetPath, spec, false);
+      const entries = await readdir(targetPath, { withFileTypes: true });
+      for (const entry of entries) if (entry.isDirectory()) await attachDirectories(path.join(targetPath, entry.name), spec);
+    };
+
+    // Returns false when only a full walk can restore coverage.
+    const applyWatchStructure = async () => {
+      try {
+        for (const targetPath of dashboardWatchMissing) if (await stat(targetPath).catch(() => null)) return false;
+        for (const [targetPath, spec] of dashboardWatchStructure) {
+          dashboardWatchStructure.delete(targetPath);
+          const info = await stat(targetPath).catch((error) => {
+            if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error;
+          });
+          if (dashboardClosed) return true;
+          if (info?.isDirectory()) await attachDirectories(targetPath, spec);
+          else for (const [watchedPath, entry] of adaptiveWatchers) {
+            if (watchedPath !== targetPath && !watchedPath.startsWith(`${targetPath}${path.sep}`)) continue;
+            entry.watcher.close?.();
+            adaptiveWatchers.delete(watchedPath);
+          }
+        }
+        return dashboardWatchWalkedAtMs !== -Infinity;
+      } catch { return false; }
+    };
+
     const reconcileAdaptiveWatchers = () => {
       if (dashboardWatchReconcilePromise || dashboardClosed) return dashboardWatchReconcilePromise;
       dashboardWatchReconcilePromise = (async () => {
         const watchPaths = await getWatchPaths();
-        const desired = new Set();
+        const walkedPaths = JSON.stringify(watchPaths.map((entry) => typeof entry === 'string' ? [entry]
+          : [entry?.path, entry?.source, entry?.recursive, entry?.optional]));
+        const walkAgeMs = now() - dashboardWatchWalkedAtMs;
+        // The directory set almost never changes: events keep it current, and a full walk is the 60 s safety net.
+        if (dashboardWatchCoverage && walkedPaths === dashboardWatchWalkedPaths && walkAgeMs >= 0 && walkAgeMs < 60_000
+          && await applyWatchStructure()) return;
+        if (dashboardClosed) return;
+        serverMetrics.dashboardWatchWalks += 1;
+        dashboardWatchWalkedAtMs = now();
+        dashboardWatchWalkedPaths = walkedPaths;
+        dashboardWatchStructure.clear();
+        const desired = dashboardWatchDesired = new Set();
+        const missing = [];
         let covered = Boolean(watchPaths.length);
-        const attach = async (targetPath, spec, recursive) => {
-          if (dashboardClosed) return false;
-          const info = await stat(targetPath);
-          if (dashboardClosed) return false;
-          desired.add(targetPath);
-          const signature = `${info.dev}:${info.ino}`;
-          const previous = adaptiveWatchers.get(targetPath);
-          if (previous?.signature === signature && previous?.spec?.source === spec.source) return true;
-          previous?.watcher.close?.();
-          adaptiveWatchers.delete(targetPath);
-          const watcher = watchDashboardPath(targetPath, { recursive }, (event, filename) => sourceChanged(spec, event, filename, targetPath));
-          adaptiveWatchers.set(targetPath, { watcher, signature, spec });
-          watcher.on?.('error', () => {
-            if (adaptiveWatchers.get(targetPath)?.watcher !== watcher) return;
-            watcher.close?.();
-            adaptiveWatchers.delete(targetPath);
-            dashboardWatchCoverage = false;
-            sourceChanged(spec, 'rename', null);
-          });
-          return true;
-        };
-        const attachDirectories = async (targetPath, spec) => {
-          await attach(targetPath, spec, false);
-          const entries = await readdir(targetPath, { withFileTypes: true });
-          for (const entry of entries) if (entry.isDirectory()) await attachDirectories(path.join(targetPath, entry.name), spec);
-        };
         for (const entry of watchPaths) {
           const spec = typeof entry === 'string' ? { path: entry } : entry;
           if (!spec?.path) continue;
@@ -287,12 +347,14 @@ export class DashboardSnapshot {
               }
             }
           } catch (error) {
-            if (!(spec.optional && error.code === 'ENOENT')) covered = false;
+            if (spec.optional && error.code === 'ENOENT') missing.push(spec.path);
+            else covered = false;
           }
         }
         for (const [targetPath, entry] of adaptiveWatchers) {
           if (!desired.has(targetPath) || dashboardClosed) { entry.watcher.close?.(); adaptiveWatchers.delete(targetPath); }
         }
+        dashboardWatchMissing = missing;
         dashboardWatchCoverage = !dashboardClosed && covered;
       })().finally(() => { dashboardWatchReconcilePromise = null; });
       return dashboardWatchReconcilePromise;

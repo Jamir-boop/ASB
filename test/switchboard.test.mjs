@@ -1689,3 +1689,11 @@ test('npm start listens on loopback only', async (t) => {
   if (external) assert.equal(await connect(external.address), 'ECONNREFUSED');
   else t.diagnostic('No non-loopback IPv4 address. The refused-connect assert did not run.');
 });
+
+test('a row title is limited to 300 characters and keeps whole code points', () => {
+  const row = (title) => buildSwitchboardDashboard([{ id, provider: 'codex', title, updatedAtMs: now }], [], now).threads[0];
+  const long = row('a'.repeat(298) + '😀' + 'b'.repeat(20_000)).title;
+  assert.deepEqual([[...long].length, long.endsWith('😀…')], [300, true]);
+  assert.equal(row('😀'.repeat(300)).title, '😀'.repeat(300));
+  assert.equal(row('').title, 'Untitled session');
+});
