@@ -2,6 +2,19 @@
 
 ## Latest publication
 
+ASB [1.7.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.7.0) was published on `2026-10-10` (Lima). Its source and tag use commit [8c23839](https://github.com/Jamir-boop/ASB/commit/8c2383927d4f531d30995ae1058467d3c224a35d).
+
+- Uploaded `asb_1.7.0_all.deb`, `asb-1.7.0-linux.tar.gz`, and `SHA256SUMS`. All three downloads matched local bytes and hashes. [Exact-source CI](https://github.com/Jamir-boop/ASB/actions/runs/38031710679) passed on Node.js `22.13.0` and `24`.
+- Local checks passed 269 Node tests, 78 native logic tests, Python compilation, and diff checks. Both package payloads had 30 runtime files that matched source bytes. The final Debian `Installed-Size` was 479 KiB. Reproducibility checks passed.
+- Two focused GTK tests passed for Preferences on an isolated hidden X display, with Cairo and synthetic data. Six captures at 780px and 420px widths were inspected. The full GTK widget suite did not run. Real profile edits were not tested.
+- Synthetic upgrade, install, and removal fixtures passed using the verified published `1.6.1` package. The upgrade kept four settings files, three marks, two pins, three sources, drawer state, and Persistent unread.
+- The current-user install used the verified portable download and passed. The manifest used `1.7.0`; all 30 installed runtime files matched source bytes and hashes. Two normal X11 processes ran one window. The API returned HTTP `200`, with 155 rows and no duplicate IDs. The `1182x350` geometry was restored.
+- All four settings/state files kept their bytes and modes during installation. After start, theme, layout, sources, manual marks, pin order, Persistent unread, and record count stayed unchanged.
+- Privacy checks covered 21 history commits, 371 blobs, 101 current files, and 13 release files. They found no private material. The upstream MIT license, credit, exact README video link, and public media stayed unchanged.
+- No new FPS measurement was made. Resize lag on X11 remains unresolved. No Debian `apt install`, real-app opens, or Node.js `20` + SQLite CLI reader check was run. See [release notes](releases/v1.7.0.md) for check limits.
+
+## Earlier publications
+
 ASB [1.6.1](https://github.com/Jamir-boop/ASB/releases/tag/v1.6.1) was published on `2026-10-10` (Lima). Its source and tag use commit [bf4f2d9](https://github.com/Jamir-boop/ASB/commit/bf4f2d906e69c82f68f2795f137a183fdc90a3ae).
 
 - Uploaded `asb_1.6.1_all.deb`, `asb-1.6.1-linux.tar.gz`, and `SHA256SUMS`. All three downloads matched local bytes and hashes. [Exact-source CI](https://github.com/Jamir-boop/ASB/actions/runs/38029498867) passed on Node.js `22.13.0` and `24`.
@@ -12,8 +25,6 @@ ASB [1.6.1](https://github.com/Jamir-boop/ASB/releases/tag/v1.6.1) was published
 - Privacy checks covered 19 history commits, 356 blobs, 100 current files, and eight release files. The upstream MIT license, credit, and exact README video link stayed unchanged.
 - Manual scroll repaint activity measured 57.93 FPS; presented frames were not measured. Resize lag remains unresolved. The X11 fallback clock may run at about 60 Hz. See [release notes](releases/v1.6.1.md) for measurements and limits.
 - Twenty synthetic viewport pixel checks passed. The full GTK widget suite was not rerun; an earlier motion test failed an old startup expectation. No Debian `apt install`, real-chat opens, or Node.js `20` + SQLite CLI reader check was run.
-
-## Earlier publications
 
 ASB [1.6.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.6.0) was published on `2026-10-09` (Lima). Its source and tag use commit [c122324](https://github.com/Jamir-boop/ASB/commit/c1223247006eb6713a5c6424e3be3ef9d7696ab5).
 
