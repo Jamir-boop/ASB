@@ -29,20 +29,22 @@ async function until(predicate) {
   assert.fail('Expected asynchronous work to finish.');
 }
 
-async function fixture(t, { watchPaths, realWatch = false, acceptEvent } = {}) {
+async function fixture(t, { watchPaths, readWatchPaths = (paths) => paths, realWatch = false, acceptEvent } = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'asb-watchers-'));
   const root = path.join(dir, 'sessions');
   await mkdir(path.join(root, 'a', 'b'), { recursive: true });
   await mkdir(path.join(root, 'c'));
-  const paths = watchPaths ? watchPaths(dir, root) : [{ path: root, source: 'codex', recursive: true, acceptEvent }];
+  const paths = watchPaths ? await watchPaths(dir, root) : [{ path: root, source: 'codex', recursive: true, acceptEvent }];
   const watches = [];
+  const hints = [];
   const timers = [];
   let clock = Date.parse('2026-10-09T10:00:00Z');
   let loads = 0;
   const openAtLoad = [];
   const open = () => watches.filter((item) => !item.watcher.closed).map((item) => item.target).sort();
   const snapshot = new DashboardSnapshot({
-    dashboardWatchPaths: () => paths, dashboardPlatform: 'linux', now: () => clock,
+    dashboardWatchPaths: () => readWatchPaths(paths), dashboardPlatform: 'linux', now: () => clock,
+    dashboardSourceChanged: (source, hint) => hints.push({ source, ...hint }),
     dashboardSetTimeout(callback, milliseconds) { const timer = { callback, milliseconds, unref() {} }; timers.push(timer); return timer; },
     dashboardClearTimeout() {},
     loadDashboard: async () => { loads += 1; openAtLoad.push(open()); return { threads: [] }; },
@@ -64,7 +66,7 @@ async function fixture(t, { watchPaths, realWatch = false, acceptEvent } = {}) {
   calls.stat = 0;
   calls.readdir = 0;
   const performanceNow = () => snapshot.performanceSnapshot().dashboard;
-  return { dir, root, paths, watches, snapshot, performanceNow, open, openAtLoad, loads: () => loads,
+  return { dir, root, paths, watches, hints, snapshot, performanceNow, open, openAtLoad, loads: () => loads,
     advance(milliseconds) { clock += milliseconds; },
     // Runs the 5 s retry timer once, at its due time.
     async tick() { clock += 5_000; await retryTimer().callback(); },
@@ -177,21 +179,94 @@ test('the safety-net walk runs after 60 s and not before, on the retry timer and
   assert.equal(f.performanceNow().watchWalks, 3);
 });
 
-test('the 5 s retry walks while coverage is incomplete and stops when it is complete', async (t) => {
+test('the 5 s retry checks a missing required root without walking healthy directories and recovers its events', async (t) => {
   const f = await fixture(t, { watchPaths: (dir, root) => [{ path: root, source: 'codex', recursive: true },
     { path: path.join(dir, 'late'), source: 'claude', recursive: true }] });
   assert.equal(f.performanceNow().watchCoverage, false);
+  const healthy = [...f.watches];
   await f.tick();
   await f.tick();
-  assert.deepEqual([f.performanceNow().watchWalks, f.performanceNow().watchCoverage], [3, false]);
-  await mkdir(path.join(f.dir, 'late'));
+  assert.deepEqual([f.performanceNow().watchWalks, f.performanceNow().watchCoverage], [1, false]);
+  assert.deepEqual(calls, { stat: 2, readdir: 0 });
+  assert.equal(f.watches.length, healthy.length);
+  assert.ok(healthy.every((item) => !item.watcher.closed));
+  const restored = path.join(f.dir, 'late', 'nested');
+  await mkdir(restored, { recursive: true });
   await f.tick();
-  assert.deepEqual([f.performanceNow().watchWalks, f.performanceNow().watchCoverage], [4, true]);
+  assert.deepEqual([f.performanceNow().watchWalks, f.performanceNow().watchCoverage], [2, true]);
+  assert.deepEqual(calls, { stat: 4, readdir: 2 });
+  assert.ok(f.open().includes(restored));
+  f.emit(restored, 'change', 'local-synthetic.json');
+  await f.dirtyLoad();
+  assert.deepEqual(f.hints, [{ source: 'claude', filePath: path.join(restored, 'local-synthetic.json'), index: false }]);
   calls.stat = 0;
   calls.readdir = 0;
   for (let count = 0; count < 5; count += 1) await f.tick();
-  assert.equal(f.performanceNow().watchWalks, 4);
+  assert.equal(f.performanceNow().watchWalks, 2);
   assert.deepEqual(calls, { stat: 0, readdir: 0 });
+});
+
+test('failed watcher trees recover independently, replaced roots discard old watches, and source removal closes its tree', async (t) => {
+  const f = await fixture(t, { watchPaths: async (dir, root) => {
+    const other = path.join(dir, 'other');
+    await mkdir(path.join(other, 'child'), { recursive: true });
+    return [{ path: root, source: 'codex', recursive: true }, { path: other, source: 'claude', recursive: true }];
+  } });
+  const other = f.paths[1].path;
+  const healthy = f.watches.filter((item) => item.target.startsWith(f.root));
+  const failed = f.watches.find((item) => item.target === path.join(other, 'child'));
+  failed.watcher.emit('error', new Error('Watch failed'));
+  assert.equal(failed.watcher.closed, true);
+  assert.equal(f.performanceNow().watchCoverage, false);
+  await f.tick();
+  assert.deepEqual(calls, { stat: 2, readdir: 2 });
+  assert.equal(f.performanceNow().watchCoverage, true);
+  assert.ok(healthy.every((item) => !item.watcher.closed));
+  await f.dirtyLoad();
+  f.emit(path.join(other, 'child'), 'change', 'local-recovered.json');
+  await f.dirtyLoad();
+  assert.equal(f.hints.at(-1).filePath, path.join(other, 'child', 'local-recovered.json'));
+  const replaced = f.watches.filter((item) => item.target.startsWith(other) && !item.watcher.closed);
+  await rename(other, `${other}-old`);
+  await mkdir(path.join(other, 'new'), { recursive: true });
+  f.emit(other, 'rename', path.basename(other));
+  await f.tick();
+  assert.ok(replaced.every((item) => item.watcher.closed));
+  assert.ok(!f.open().includes(path.join(other, 'child')));
+  assert.ok(f.open().includes(path.join(other, 'new')));
+  f.emit(path.join(other, 'new'), 'change', 'local-replaced.json');
+  await f.dirtyLoad();
+  assert.equal(f.hints.at(-1).filePath, path.join(other, 'new', 'local-replaced.json'));
+  const removed = f.watches.filter((item) => item.target.startsWith(other));
+  f.paths.pop();
+  await f.tick();
+  assert.ok(removed.every((item) => item.watcher.closed));
+  assert.deepEqual(f.open(), healthy.map((item) => item.target).sort());
+  for (const item of removed) {
+    item.callback('rename', 'new');
+    item.watcher.emit('error', new Error('Stale watch error'));
+  }
+  assert.equal(f.performanceNow().dirty, false);
+  assert.equal(f.performanceNow().watchCoverage, true);
+  await f.tick();
+  assert.deepEqual(f.open(), healthy.map((item) => item.target).sort());
+});
+
+test('a watch path registry read error recovers coverage on the next retry', async (t) => {
+  let fail = false;
+  const f = await fixture(t, { readWatchPaths(paths) {
+    if (fail) throw new Error('Source registry unavailable');
+    return paths;
+  } });
+  fail = true;
+  await f.tick();
+  assert.equal(f.performanceNow().watchCoverage, false);
+  assert.deepEqual(calls, { stat: 0, readdir: 0 });
+  fail = false;
+  await f.tick();
+  assert.equal(f.performanceNow().watchCoverage, true);
+  assert.deepEqual(calls, { stat: 4, readdir: 4 });
+  assert.equal(f.watches.length, 4);
 });
 
 test('a watcher error and a watch root that reports its own name each cause one full walk', async (t) => {
@@ -222,6 +297,7 @@ test('a changed watch path list and a restored optional path each trigger a walk
   await mkdir(path.join(f.dir, 'cache'));
   await f.tick();
   assert.equal(f.performanceNow().watchWalks, 2);
+  assert.deepEqual(calls, { stat: 2, readdir: 0 });
   assert.ok(f.open().includes(path.join(f.dir, 'cache')));
   calls.stat = 0;
   await f.tick();

@@ -593,14 +593,14 @@ test('dynamic source paths retain recursive fallback and discover new directorie
       ready();
       return timer;
     }, dashboardClearTimeout(timer) { timer.cancelled = true; },
-    watchDashboardPath(target, options) {
+    watchDashboardPath(target, options, callback) {
       if (options.recursive) {
         unsupported += 1;
         throw Object.assign(new Error('Recursive watch is unavailable'), { code: 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM' });
       }
       const watcher = new EventEmitter();
       watcher.close = () => { watcher.closed = true; };
-      watches.push({ target, watcher });
+      watches.push({ target, watcher, callback });
       return watcher;
     },
   });
@@ -608,10 +608,11 @@ test('dynamic source paths retain recursive fallback and discover new directorie
   assert.equal(unsupported, 1);
   const childDir = path.join(sessions, 'new', 'nested');
   await mkdir(childDir, { recursive: true });
-  await timers[0].callback();
+  watches.find((item) => item.target === sessions).callback('rename', 'new');
+  await timers.find((timer) => timer.milliseconds === 5000).callback();
   assert.ok(watches.some((item) => item.target === childDir));
   assert.equal(unsupported, 1);
-  assert.ok(timers.every((timer) => timer.milliseconds === 5000));
+  assert.ok(timers.filter((timer) => timer.milliseconds !== 5000).every((timer) => timer.milliseconds === 250));
 });
 
 test('an extra profile without a launcher retains its rows but cannot use the default URL handler', async (t) => {

@@ -12,7 +12,7 @@ import {
   getClaudeCacheStats, invalidateClaudeData, loadClaudeDesktopCodeThreads, parseClaudeJsonlSignals,
 } from '../src/claude-data.mjs';
 import { normalizeDashboardThreads } from '../src/insights.mjs';
-import { buildSwitchboardDashboard, createSwitchboardServer } from '../src/switchboard.mjs';
+import { buildSwitchboardDashboard, createSwitchboardServer, loadSwitchboardDashboard } from '../src/switchboard.mjs';
 
 const nowMs = Date.parse('2026-10-07T12:00:00Z');
 const jsonl = (records) => `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
@@ -382,4 +382,177 @@ test('normalization attaches relationships and Claude ASB signals skip usage', (
   const records = jsonl([{ type: 'assistant', timestamp: new Date(nowMs).toISOString(), message: { usage: { input_tokens: 123 }, stop_reason: 'end_turn', content: 'Done.' } }]);
   assert.ok(!parseClaudeJsonlSignals(records).tokensUsed);
   assert.equal(parseClaudeJsonlSignals(records).latestAgentFinalAtMs, nowMs);
+});
+
+test('Claude profiles share directory checks and derived indices through source invalidation', async (t) => {
+  const directory = await temporaryDirectory(t), projectsDir = path.join(directory, 'projects');
+  await Promise.all(Array.from({ length: 1000 }, (_, index) => fs.mkdir(path.join(projectsDir, `folder-${index}`, 'subagents'), { recursive: true })));
+  const transcript = path.join(projectsDir, 'folder-0', 'shared.jsonl');
+  await fs.writeFile(transcript, jsonl([{ type: 'user', timestamp: new Date(nowMs - 1000).toISOString(), message: { content: 'Shared task.' } }]));
+  const sources = [];
+  for (let index = 0; index < 2; index++) {
+    const dataDir = path.join(directory, `app-${index}`);
+    await fs.mkdir(path.join(dataDir, 'claude-code-sessions'), { recursive: true });
+    await fs.writeFile(path.join(dataDir, 'claude-code-sessions', 'local_shared.json'), JSON.stringify({ sessionId: 'local_shared', cliSessionId: 'shared' }));
+    sources.push({ id: `claude-${index}`, provider: 'claude-desktop-code', label: `Claude ${index}`, dataDir,
+      projectsDir, enabled: true, launcher: '/tmp/claude-synthetic' });
+  }
+  const scan = () => loadSwitchboardDashboard({ sources, loadClaude: loadClaudeDesktopCodeThreads, nowMs });
+  t.after(() => loadSwitchboardDashboard({ sources: [] }));
+  const beforeCold = getClaudeCacheStats();
+  assert.equal((await scan()).threads.length, 2);
+  const cold = getClaudeCacheStats();
+  assert.equal(cold.projectIndex.writes - beforeCold.projectIndex.writes, 1);
+  assert.equal(cold.jsonlSignals.misses - beforeCold.jsonlSignals.misses, 1);
+  const originalStat = fs.stat;
+  let directoryChecks = 0;
+  t.mock.method(fs, 'stat', async (file, ...args) => {
+    if (String(file).startsWith(projectsDir) && !String(file).endsWith('.jsonl')) directoryChecks++;
+    return originalStat(file, ...args);
+  });
+  await scan();
+  assert.equal(directoryChecks, 2001);
+  assert.equal(getClaudeCacheStats().jsonlSignals.bytesRead, cold.jsonlSignals.bytesRead);
+  assert.equal(getClaudeCacheStats().projectIndex.writes, cold.projectIndex.writes);
+  const added = path.join(projectsDir, 'added', 'new.jsonl');
+  await fs.mkdir(path.dirname(added));
+  await fs.writeFile(added, jsonl([{ type: 'user', timestamp: new Date(nowMs).toISOString(), message: { content: 'New task.' } }]));
+  const metadata = path.join(sources[0].dataDir, 'claude-code-sessions', 'local_new.json');
+  await fs.writeFile(metadata, JSON.stringify({ sessionId: 'local_new', cliSessionId: 'new' }));
+  invalidateClaudeData({ filePath: added, index: true });
+  assert.equal((await scan()).threads.find((thread) => thread.externalId === 'local_new').state, 'working');
+  await fs.rename(path.dirname(added), path.join(projectsDir, 'renamed'));
+  invalidateClaudeData({ filePath: path.dirname(added), index: true });
+  assert.equal((await scan()).threads.find((thread) => thread.externalId === 'local_new').state, 'working');
+  await fs.rm(path.join(projectsDir, 'renamed'), { recursive: true });
+  invalidateClaudeData({ filePath: path.join(projectsDir, 'renamed'), index: true });
+  assert.equal((await scan()).threads.find((thread) => thread.externalId === 'local_new').state, 'unknown');
+  invalidateClaudeData();
+  const beforeBroad = getClaudeCacheStats();
+  await scan();
+  const broad = getClaudeCacheStats();
+  assert.equal(broad.projectIndex.writes - beforeBroad.projectIndex.writes, 1);
+  assert.equal(broad.jsonlSignals.bytesRead, beforeBroad.jsonlSignals.bytesRead);
+});
+
+test('two stores retain 6000 unchanged records and prune only inactive source ownership', async (t) => {
+  for (const provider of ['codex', 'claude-desktop-code']) {
+    await t.test(provider, async (t) => {
+      const directory = await temporaryDirectory(t), logsDir = path.join(directory, 'logs');
+      await fs.mkdir(logsDir);
+      const codexRecords = jsonl([codexEvent({ type: 'task_started' }, nowMs - 1000), codexEvent(question, nowMs - 900),
+        codexEvent({ type: 'tool_output', text: 'x'.repeat(2048) }), codexEvent({ type: 'agent_message', message: 'Working.' })]);
+      const claudeRecords = jsonl([{ type: 'user', timestamp: new Date(nowMs - 1000).toISOString(), message: { content: 'Work.' } },
+        { type: 'progress', timestamp: new Date(nowMs - 500).toISOString(), data: 'x'.repeat(2048) }]);
+      const sources = [];
+      const shared = path.join(logsDir, 'shared.jsonl');
+      await fs.writeFile(shared, provider === 'codex' ? codexRecords : claudeRecords);
+      for (let store = 0; store < 2; store++) {
+        const dataDir = path.join(directory, `store-${store}`), metadataDir = path.join(dataDir, 'claude-code-sessions');
+        await fs.mkdir(provider === 'codex' ? dataDir : metadataDir, { recursive: true });
+        let database, insert;
+        if (provider === 'codex') {
+          database = new DatabaseSync(path.join(dataDir, 'state_5.sqlite'));
+          database.exec(`${codexThreadsSchema} begin;`);
+          insert = database.prepare('insert into threads(id,rollout_path,title,created_at_ms,updated_at_ms) values(?,?,?,?,?)');
+          await fs.writeFile(path.join(dataDir, 'session_index.jsonl'), '');
+        }
+        try {
+          for (let batch = 0; batch < 3000; batch += 100) {
+            await Promise.all(Array.from({ length: 100 }, async (_, offset) => {
+              const index = batch + offset, cli = index ? `store-${store}-${index}` : 'shared';
+              const file = index ? path.join(logsDir, `${cli}.jsonl`) : shared;
+              if (index) await fs.writeFile(file, provider === 'codex' ? codexRecords : claudeRecords);
+              const id = `123e4567-e89b-12d3-a456-${(store * 3000 + index).toString(16).padStart(12, '0')}`;
+              if (insert) insert.run(id, file, `Task ${index}`, nowMs - 1000, nowMs);
+              else await fs.writeFile(path.join(metadataDir, `local_${index}.json`), JSON.stringify({
+                sessionId: `local_${id}`, cliSessionId: cli, title: `Task ${index}`, createdAt: nowMs - 1000, lastActivityAt: nowMs }));
+            }));
+          }
+          database?.exec('commit;');
+        } finally { database?.close(); }
+        sources.push({ id: `${provider}-${store}`, provider, label: `Store ${store}`, dataDir, projectsDir: logsDir,
+          enabled: true, launcher: '/tmp/app-synthetic' });
+      }
+      const options = { loadClaude: loadClaudeDesktopCodeThreads,
+        loadCodex: (options) => loadCodexDashboard({ ...options, initialRolloutBytes: 128, maxRolloutBytes: 128 }), nowMs };
+      const scan = (sources) => loadSwitchboardDashboard({ ...options, sources });
+      t.after(() => scan([]));
+      assert.equal((await scan(sources)).threads.length, 6000);
+      const stats = () => provider === 'codex' ? getCodexCacheStats().rolloutSignals : getClaudeCacheStats().jsonlSignals;
+      const first = stats();
+      assert.equal(first.entries, 5999);
+      assert.equal(first.limit, 10_000);
+      if (provider === 'codex') assert.equal(first.lifecycleEntries, 5999);
+      assert.equal((await scan(sources)).threads.length, 6000);
+      const warm = stats();
+      assert.equal(warm.hits - first.hits, 6000);
+      assert.equal(warm.bytesRead, first.bytesRead);
+      if (provider === 'codex') assert.equal(warm.lifecycleBytesRead, first.lifecycleBytesRead);
+      else assert.equal(getClaudeCacheStats().metadata.entries, 6000);
+      const active = [{ ...sources[0], enabled: false }, sources[1]];
+      assert.equal((await scan(active)).threads.length, 3000);
+      const pruned = stats();
+      assert.equal(pruned.entries, 3000);
+      assert.equal(pruned.bytesRead, warm.bytesRead);
+      if (provider === 'codex') assert.equal(pruned.lifecycleEntries, 3000);
+      else assert.equal(getClaudeCacheStats().metadata.entries, 3000);
+      const terminal = provider === 'codex' ? jsonl([codexEvent({ type: 'task_complete' }, nowMs + 100)])
+        : jsonl([{ type: 'result', timestamp: new Date(nowMs + 100).toISOString(), terminal_reason: 'completed' }]);
+      await fs.appendFile(shared, terminal);
+      const ended = await scan(active);
+      const sharedRow = ended.threads.find((thread) => thread.title === 'Task 0');
+      assert.equal(sharedRow.state, 'idle');
+      assert.equal(sharedRow.completionAtMs, nowMs + 100);
+      if (provider === 'codex') assert.equal(stats().lifecycleBytesRead - pruned.lifecycleBytesRead, Buffer.byteLength(terminal));
+      else assert.equal(stats().bytesRead - pruned.bytesRead, 64 + Buffer.byteLength(terminal));
+      await scan([]);
+      assert.equal(stats().entries, 0);
+      if (provider === 'codex') assert.equal(stats().lifecycleEntries, 0);
+      else assert.equal(getClaudeCacheStats().metadata.entries, 0);
+    });
+  }
+});
+
+test('a delayed Claude index walk cannot restore a removed or invalidated source root', async (t) => {
+  for (const change of ['removal', 'invalidation', 'targeted-invalidation']) {
+    await t.test(change, async (t) => {
+      const directory = await temporaryDirectory(t), fixture = await claudeFixture(directory, 1);
+      invalidateClaudeData();
+      const sources = [{ id: 'claude-race', provider: 'claude-desktop-code', label: 'Claude', enabled: true,
+        dataDir: fixture.appDir, projectsDir: fixture.projectsDir, launcher: '/tmp/claude-synthetic' }];
+      const scan = (sources) => loadSwitchboardDashboard({ sources, loadClaude: loadClaudeDesktopCodeThreads, nowMs });
+      t.after(() => scan([]));
+      let release, started, blocked = false;
+      const paused = new Promise((resolve) => { started = resolve; });
+      const continuation = new Promise((resolve) => { release = resolve; });
+      const originalReadDir = fs.readdir;
+      t.mock.method(fs, 'readdir', async (root, ...args) => {
+        const entries = await originalReadDir(root, ...args);
+        if (root === fixture.projectsDir && !blocked) {
+          blocked = true;
+          started();
+          await continuation;
+        }
+        return entries;
+      });
+      const pending = scan(sources);
+      await paused;
+      try {
+        if (change === 'removal') await scan([]);
+        else invalidateClaudeData(change === 'targeted-invalidation' ? { filePath: fixture.projectsDir, index: true } : {});
+      } finally { release(); }
+      await pending;
+      const after = getClaudeCacheStats();
+      assert.equal(after.fileIndex.entries, change === 'targeted-invalidation' ? 1 : 0);
+      assert.equal(after.projectIndex.entries, 0);
+      if (change === 'removal') {
+        assert.equal(after.jsonlSignals.entries, 0);
+        assert.equal(after.metadata.entries, 0);
+      } else {
+        await scan(sources);
+        assert.equal(getClaudeCacheStats().projectIndex.entries, 1);
+      }
+    });
+  }
 });

@@ -56,7 +56,7 @@ test('Claude index invalidation reuses unchanged transcripts and reads only chan
   const reads = getClaudeCacheStats().jsonlSignals;
   assert.equal(changed.threads.find((thread) => thread.externalId === 'local_0').state, 'idle');
   assert.equal(changed.threads.find((thread) => thread.externalId === 'local_0').completionAtMs, nowMs + 100);
-  assert.equal(reads.bytesRead - unchanged.bytesRead, 256 + Buffer.byteLength(completed));
+  assert.equal(reads.bytesRead - unchanged.bytesRead, 64 + Buffer.byteLength(completed));
   assert.equal(reads.hits - unchanged.hits, transcripts.length - 1);
   assert.ok(reads.entries <= reads.limit && reads.limit <= 5000);
 });
@@ -88,6 +88,36 @@ test('Claude lifecycle recovery detects same-size rewrites and targeted invalida
       assert.equal(stopped.completionAtMs, 0);
       assert.equal(stopped.lastOutcome, 'stopped');
       assert.equal(getClaudeCacheStats().jsonlSignals.bytesRead - before, 256 + signature.size);
+    });
+  }
+});
+
+test('Claude append checkpoints recover from truncation, replacement, and a changed append boundary', async (t) => {
+  for (const change of ['truncation', 'replacement', 'rewrite-and-grow']) {
+    await t.test(change, async (t) => {
+      const { transcripts: [transcriptPath], scan } = await fixture(t);
+      const records = jsonl([
+        event('user', -1000, { message: { content: 'Start this task.' } }),
+        event('progress', -950, { data: 'x'.repeat(2048) }),
+        event('result', -900, { terminal_reason: 'completed' }),
+      ]);
+      await fs.writeFile(transcriptPath, records);
+      assert.equal((await scan()).threads[0].completionAtMs, nowMs - 900);
+      if (change === 'truncation') await fs.writeFile(transcriptPath,
+        jsonl([event('user', -800, { message: { content: 'Start a different task.' } })]));
+      else if (change === 'replacement') {
+        await fs.writeFile(`${transcriptPath}.replacement`, records.replace('completed', 'cancelled'));
+        await fs.rename(`${transcriptPath}.replacement`, transcriptPath);
+      } else await fs.writeFile(transcriptPath, records.replace('completed', 'cancelled')
+        + jsonl([event('progress', -700, { data: 'New bytes.' })]));
+      invalidateClaudeData({ filePath: transcriptPath });
+      const recovered = (await scan()).threads[0];
+      assert.equal(recovered.completionAtMs, 0);
+      assert.equal(recovered.state, change === 'truncation' ? 'working' : 'idle');
+      assert.equal(recovered.lastOutcome, change === 'truncation' ? '' : 'stopped');
+      const before = getClaudeCacheStats().jsonlSignals.bytesRead;
+      await scan();
+      assert.equal(getClaudeCacheStats().jsonlSignals.bytesRead, before);
     });
   }
 });

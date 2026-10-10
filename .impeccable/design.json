@@ -157,7 +157,7 @@
         "visibleTitleRow": false,
         "visibleFooter": false,
         "pendingAndCount": "Inline at 680px or wider; second short row below.",
-        "filters": "Native Codex/Claude/Pending toggle pills, inline at680px or secondary row below; count ellipsizes at320px.",
+        "filters": "Native Codex/Claude/Pending/Working/Drawer toggle pills, inline at680px or secondary row below. In a narrow window the word Drawer can ellipsize and the count text can shrink to no width. The count text starts with the Pending number (N Pending · M sessions), so the default 420px window, which cuts the end of the text with five pills, still shows the Pending count.",
         "settingsDismissal": "Keep focus in open popup during repack. Native autohide and one root outside-click hit test dismiss it; restore remembered row after close."
       },
       "views": {
@@ -168,7 +168,7 @@
         },
         "comfortable": {
           "rowHeight": 68,
-          "direction": "Workspace first: provider/folder, fixed32px two-line title, state left and relative age right. Approved C Corner pair places Read beside the top-right Pin/Unpin control."
+          "direction": "Workspace first: provider/folder, fixed32px two-line title, state left and relative age right. Approved C Corner pair places Read beside the top-right Pin/Unpin control. The approved drawer design adds a drawer button before Read: drawer, read, pin."
         },
         "persistence": "Optional view in ASB layout.json; width-only means Compact; width/reset preserves view."
       },
@@ -226,7 +226,8 @@
           "Fixed32px two-line title",
           "Actual state left",
           "Relative age right, ellipsized as needed",
-          "Approved C Corner pair: Read dot beside top-right Pin/Unpin"
+          "Approved C Corner pair: Read dot beside top-right Pin/Unpin",
+          "Drawer button before Read while the pointer is on the card or the card or the button has visible keyboard focus, for a row that looks unread or a row in the drawer; none in a column narrower than 190px. Focus from a mouse click does not show it."
         ],
         "comfortableActions": {
           "gtkClasses": [
@@ -253,7 +254,7 @@
           "readGuards": "Require the current row identity, Comfortable view, feedback generation, and attention signature. New unread clears old feedback.",
           "pending": "Keep pointer sensitivity and native gesture handling, remove action bindings, and report accessible BUSY and DISABLED.",
           "confirmed": "Keep pointer sensitivity, remove the Read action binding, and report accessible DISABLED.",
-          "activation": "Space or Enter activates the focused control. Controls cannot open the row or start a pin drag.",
+          "activation": "Space or Enter activates the focused control. Controls cannot open the row or start a pin drag. A row with a card action in flight ignores activation.",
           "pinOrder": "Use real saved ASB order; retain row drag and keyboard menu movement.",
           "preserved": "Compact, 68px Comfortable cards, fixed title block, footer state/time, and outer frame."
         },
@@ -340,6 +341,7 @@
         "scope": "ASB state only; pin order comes first and remains global across filters.",
         "actions": [
           "Read if unread or questionAttention; otherwise Unread",
+          "Put in drawer if the row looks unread; Take out of drawer (with Read, no Unread) if the row is in the drawer",
           "Pin or Unpin",
           "Move pin earlier",
           "Move pin later"
@@ -356,7 +358,9 @@
         "Unknown"
       ],
       "withinGroup": [
-        "Newest updatedAtMs first",
+        "Working rows by workingSinceMs; unknown start after them, by ID",
+        "In Pending, Working rows first by workingSinceMs, then the others by newest updatedAtMs",
+        "Other rows: newest updatedAtMs first",
         "ID tie-break"
       ],
       "pinsAffectOrder": true,
@@ -402,6 +406,7 @@
       ],
       "selection": "One set shared with app menu. No selected provider or both means all; one means that provider.",
       "pending": "AND filter using existing ASB attention.",
+      "drawer": "Shows only drawer rows, as unread. Combines with app pills, search, state filters, and archive. Turning Drawer on turns Pending off, and the reverse. Accent count bubble of the drawer rows that the archive setting allows; search, app pills, and state filters do not change it. Hidden at zero; 99+ from 100. Checked: accent background with an inverted bubble.",
       "prefix": "Temporarily overrides selected apps while present."
     },
     "persistentUnread": {

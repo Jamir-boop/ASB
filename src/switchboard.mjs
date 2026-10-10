@@ -2,10 +2,10 @@ import path from 'node:path';
 import os from 'node:os';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { loadCodexDashboard, invalidateCodexData, discoverCodexStateDatabase } from './codex-data.mjs';
-import { defaultClaudeAppDir, invalidateClaudeData, openClaudeThread } from './claude-data.mjs';
+import { loadCodexDashboard, invalidateCodexData, discoverCodexStateDatabase, retainCodexDataScopes } from './codex-data.mjs';
+import { defaultClaudeAppDir, invalidateClaudeData, openClaudeThread, retainClaudeDataSources } from './claude-data.mjs';
 import { loadSwitchboardClaudeThreads, claudeRemoteDeepLink, claudeRemoteStatus,
-  invalidateClaudeRemoteData, isClaudeRemoteCacheEvent } from './claude-remote-data.mjs';
+  invalidateClaudeRemoteData, isClaudeRemoteCacheEvent, shutdownClaudeRemoteParser } from './claude-remote-data.mjs';
 import { normalizeDashboardThreads } from './insights.mjs';
 import { createAsbServer } from './asb-server.mjs';
 import { openThreadInCodex } from './session-opener.mjs';
@@ -18,7 +18,7 @@ const QUESTION_AT = Symbol('ASB question timestamp');
 const SOURCE_DIR = Symbol('ASB session store');
 const DISCARD_TASK = Symbol('ASB discard task signals');
 const READ_FIELDS = ['questionSeen', 'questionAck', 'nativeAt', 'nativeAck', 'nativeSeen',
-  'discard', 'discardedAt', 'discardStart', 'discardEnd', 'discardNative'];
+  'discard', 'discardedAt', 'discardStart', 'discardEnd', 'discardNative', 'drawerSeen'];
 const RETAINED_SOURCES = ['native-unread', 'observed-completion', 'observed-failure', 'user-question'];
 const STOPPED_KINDS = ['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled'];
 const TITLE_LIMIT = 300;
@@ -217,6 +217,20 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
   return board;
 }
 
+function sourceCacheScope(source) {
+  return source.provider === 'codex' ? source.dataDir
+    : `${source.dataDir}\0${source.projectsDir || path.join(os.homedir(), '.claude', 'projects')}`;
+}
+
+function retainSourceCaches(sources) {
+  const enabled = sources.filter((source) => source.enabled);
+  retainCodexDataScopes(enabled.filter((source) => source.provider === 'codex').map(sourceCacheScope));
+  retainClaudeDataSources(enabled.filter((source) => source.provider === 'claude-desktop-code').map((source) => ({
+    cacheScope: sourceCacheScope(source), appDir: source.dataDir,
+    projectsDir: source.projectsDir || path.join(os.homedir(), '.claude', 'projects'),
+  })));
+}
+
 export async function loadSwitchboardDashboard({
   nowMs = Date.now(),
   loadCodex = loadCodexDashboard,
@@ -229,6 +243,7 @@ export async function loadSwitchboardDashboard({
     { id: 'codex', provider: 'codex', label: 'Codex', enabled: true },
     { id: 'claude-desktop-code', provider: 'claude-desktop-code', label: 'Claude Desktop Code', enabled: true },
   ];
+  if (sources) retainSourceCaches(inputs);
   const results = await Promise.allSettled(inputs.map(async (source) => {
     if (!source.enabled) return null;
     let sourceOptions = {};
@@ -239,6 +254,7 @@ export async function loadSwitchboardDashboard({
         sessionIndexPath: path.join(source.dataDir, 'session_index.jsonl'),
         globalStatePath: path.join(source.dataDir, '.codex-global-state.json'),
       } : { appDir: source.dataDir, projectsDir: source.projectsDir || path.join(os.homedir(), '.claude', 'projects') };
+      sourceOptions.cacheScope = sourceCacheScope(source);
       if (source.provider === 'codex' && loadCodex === loadCodexDashboard) await fs.stat(sourceOptions.databasePath);
     }
     return source.provider === 'codex' ? loadCodex({
@@ -337,6 +353,7 @@ export class PendingTracker {
             for (const key of READ_FIELDS) this.records[id][key] = Number.isFinite(record[key]) && record[key] >= 0 ? record[key] : 0;
             this.records[id].discard = record.discard === 1 ? 1 : 0;
             this.records[id].discardNative = record.discardNative === 1 ? 1 : 0;
+            this.records[id].drawer = record.drawer === 1 ? 1 : 0;
           } else this.bad = true;
         }
         if (Array.isArray(value.pinnedOrder)) {
@@ -374,7 +391,8 @@ export class PendingTracker {
       let record = this.records[row.id];
       if (!record) record = this.records[row.id] = { seen: completion, working: 0, pending: 0, ack: 0, manual: 0, retained: '',
         questionSeen: 0, questionAck: 0, nativeAt: 0, nativeAck: 0, nativeSeen: 0,
-        discard: 0, discardedAt: 0, discardStart: 0, discardEnd: 0, discardNative: 0 };
+        discard: 0, discardedAt: 0, discardStart: 0, discardEnd: 0, discardNative: 0,
+        drawer: 0, drawerSeen: 0 };
       const task = row[DISCARD_TASK] || { atMs: completion, kind: row.lastOutcome === 'failed' ? 'failed' : completion ? 'task_complete' : '' };
       const newRoot = row.state === 'working' && task.rootStart > record.discardStart
         && task.rootEnd > record.discardStart && task.rootStart > task.rootEnd;
@@ -417,6 +435,8 @@ export class PendingTracker {
         if (row.nativeUnread === false && !this.persistentUnread) record.ack = Math.max(record.ack, record.pending);
       } else if (row.state !== 'waiting') record.working = 0;
       record.seen = Math.max(record.seen, completion, discardedSuccess ? task.atMs : 0);
+      // A result that the user discarded is not new attention for a drawer card.
+      if (discardedSuccess) record.drawerSeen = record.seen;
       this.apply(row);
     }
     await this.save();
@@ -445,9 +465,14 @@ export class PendingTracker {
     }
     row.retainedUnread = Boolean(record?.retained);
     row.retainedUnreadSource = record?.retained || '';
+    // The drawer uses the stored marks, so a chat that is Working or has an unknown read state for a time keeps its place.
+    if (record?.drawer === 1 && (record.seen > record.drawerSeen || row.questionAttention
+      || !(record.manual === 1 || record.retained || record.pending > record.ack
+        || row.nativeUnread !== false && record.nativeAt > record.nativeAck))) record.drawer = 0;
+    row.drawer = record?.drawer === 1;
     // A Working row shows only question attention. Stored marks stay and show again after Working ends.
     const working = row.state === 'working';
-    row.unread = !working && (row.manualUnread || row.nativeAttention || row.completionAttention || row.failedAttention || row.retainedUnread);
+    row.unread = !working && !row.drawer && (row.manualUnread || row.nativeAttention || row.completionAttention || row.failedAttention || row.retainedUnread);
     row.pending = Boolean(row.unread || row.questionAttention || row.actionRequired);
     row.pendingSource = row.actionRequired ? 'user-action' : row.questionAttention ? 'user-question' : working ? ''
       : row.manualUnread ? 'manual-unread' : row.retainedUnread ? row.retainedUnreadSource
@@ -469,8 +494,22 @@ export class PendingTracker {
 
   async markUnread(id) {
     await this.load();
-    if (this.records[id]) this.records[id].manual = 1;
+    if (this.records[id]) { this.records[id].manual = 1; this.records[id].drawer = 0; }
     await this.save();
+  }
+
+  async setDrawer(row, enabled) {
+    await this.load();
+    const record = this.records[row.id];
+    if (!record) throw Object.assign(new Error('This session is not known to ASB.'), { statusCode: 400 });
+    if (enabled && (row.unread !== true || row.questionAttention || row.actionRequired)) {
+      throw Object.assign(new Error('The drawer takes only unread sessions.'), { statusCode: 400 });
+    }
+    if (!enabled && record.drawer !== 1) throw Object.assign(new Error('This session is not in the drawer.'), { statusCode: 400 });
+    record.drawer = enabled ? 1 : 0;
+    if (enabled) record.drawerSeen = record.seen;
+    await this.save();
+    this.apply(row);
   }
 
   async setDiscard(row, enabled) {
@@ -526,6 +565,7 @@ export class PendingTracker {
       record.retained = '';
       record.questionAck = record.questionSeen;
       record.nativeAck = record.nativeAt;
+      record.drawer = 0;
     }
     await this.save();
   }
@@ -539,6 +579,7 @@ export function createSwitchboardServer(options = {}) {
   const registeredLoad = !options.loadDashboard || Boolean(options.sourceRegistry);
   const sourceWatchPaths = async () => {
     const sources = await registry.read();
+    retainSourceCaches(sources);
     return [
       ...(registry.configPath ? [{ path: path.dirname(registry.configPath), optional: true,
         acceptEvent: (filename) => !filename || filename === path.basename(registry.configPath) }] : []),
@@ -548,7 +589,7 @@ export function createSwitchboardServer(options = {}) {
             spec.source === (source.provider === 'codex' ? 'codex' : 'claude'))),
     ];
   };
-  return createAsbServer({
+  const server = createAsbServer({
     dashboardWatchDebounceMs: 250,
     dashboardWatchPaths: registeredLoad ? sourceWatchPaths : [],
     dashboardSourceChanged: (source, hint) => {
@@ -563,8 +604,8 @@ export function createSwitchboardServer(options = {}) {
       return dashboard;
     },
     listSources: (dashboard) => registry.report(dashboard),
-    updateSource: async (source) => { await registry.update(source); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); },
-    removeSource: async (id) => { await registry.remove(id); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); },
+    updateSource: async (source) => { await registry.update(source); retainSourceCaches(await registry.read()); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); },
+    removeSource: async (id) => { await registry.remove(id); retainSourceCaches(await registry.read()); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); },
     markUnreadThread: async (thread) => {
       await tracker.markUnread(thread.id);
       tracker.apply(thread);
@@ -574,6 +615,7 @@ export function createSwitchboardServer(options = {}) {
       tracker.apply(thread);
     },
     discardThread: (thread, enabled) => tracker.setDiscard(thread, enabled),
+    drawerThread: (thread, enabled) => tracker.setDrawer(thread, enabled),
     setUnreadSettings: (enabled, dashboard) => tracker.setPersistentUnread(enabled, dashboard),
     pinThread: async (thread, action, body) => {
       const order = action === 'move-pin' ? await tracker.movePin(thread.id, body)
@@ -597,6 +639,14 @@ export function createSwitchboardServer(options = {}) {
     },
     sourceToken: options.sourceToken || '',
   });
+  const close = server.close.bind(server);
+  server.close = (...args) => {
+    const result = close(...args);
+    // The snapshot stops scans first. Cancel parser work before pending HTTP reads can delay close.
+    shutdownClaudeRemoteParser().catch(() => {});
+    return result;
+  };
+  return server;
 }
 
 export function switchboardPort(value = process.env.PORT || '4629') {

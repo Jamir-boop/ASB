@@ -6,6 +6,8 @@ import importlib.util
 import json
 import os
 import queue
+import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -137,6 +139,8 @@ class WidgetCheck(unittest.TestCase):
         cls.addClassCleanup(cls.poll_timer.stop)
         cls.application = asb.SwitchboardApplication("http://127.0.0.1:1")
         cls.application.register(None)
+        # The ink checks read icon pixels, and the highest alpha of an icon is different in each icon theme.
+        asb.Gtk.Settings.get_default().set_property("gtk-icon-theme-name", "Adwaita")
         if os.environ.get("ASB_NATIVE_TEST_SNAPSHOTS"):
             Path(os.environ["ASB_NATIVE_TEST_SNAPSHOTS"]).mkdir(parents=True, exist_ok=True)
         cls.capsule_pointer = ctypes.pythonapi.PyCapsule_GetPointer
@@ -222,7 +226,7 @@ class WidgetCheck(unittest.TestCase):
                     self.assertLessEqual(row.get_height(), 22)
                     content = row.get_child()
                     self.assertEqual(content.get_orientation(), asb.Gtk.Orientation.HORIZONTAL)
-                    self.assertEqual(content.get_first_child().get_pixel_size(), 14)
+                    self.assertEqual(content.get_first_child().get_child().get_pixel_size(), 14)
                     title = content.get_first_child().get_next_sibling()
                     self.assertFalse(title.get_wrap())
                     self.assertTrue(title.get_single_line_mode())
@@ -299,7 +303,7 @@ class WidgetCheck(unittest.TestCase):
                 window.pending_only.set_active(False)
                 window.select_states({"waiting"})
                 self.assertEqual(len(window.focus_widgets), 4)
-                self.assertEqual(window.count.get_text(), "4 sessions · 4 Pending")
+                self.assertEqual(window.count.get_text(), "4 Pending · 4 sessions")
                 window.select_states(set(asb.STATES))
                 window.app_filter.set_selected(2)
                 self.assertTrue(all(row["provider"] == "claude-desktop-code" for row in window.visible_rows()))
@@ -308,7 +312,7 @@ class WidgetCheck(unittest.TestCase):
                 window.render()
                 self.assertTrue(all(row["cwd"] == "/example/Notes" for row in window.visible_rows()))
                 visible = window.visible_rows()
-                self.assertEqual(window.count.get_text(), f"{len(visible)} sessions · {sum(bool(row.get('pending')) for row in visible)} Pending")
+                self.assertEqual(window.count.get_text(), f"{sum(bool(row.get('pending')) for row in visible)} Pending · {len(visible)} sessions")
                 window.search.set_text("")
                 window.render()
                 window.theme_mode.set_selected(1)
@@ -384,7 +388,7 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual(window.window_controls.get_decoration_layout(), ":close")
             self.assertTrue(window.wide_controls)
             self.assertFalse(window.feedback.get_visible())
-            self.assertLessEqual(window.window_handle.get_height(), 34)
+            self.assertLessEqual(window.window_handle.get_height(), window.search.get_height() + 4)
             self.assertGreaterEqual(window.scroll.get_height(), 240)
             self.assertEqual(window.columns, 4)
             self.assertGreaterEqual(window.capacity, 10)
@@ -802,7 +806,7 @@ class WidgetCheck(unittest.TestCase):
                         content = card.get_child().get_child()
                         self.assertEqual(content.get_orientation(), asb.Gtk.Orientation.VERTICAL)
                         top = content.get_first_child()
-                        self.assertEqual(top.get_first_child().get_icon_name(), "asb-claude-symbolic")
+                        self.assertEqual(top.get_first_child().get_child().get_icon_name(), "asb-claude-symbolic")
                         self.assertEqual(top.get_first_child().get_next_sibling().get_text(), "Tools")
                         self.assertEqual(card.asb_pin_button.get_child().get_icon_name(), "view-pin-symbolic")
                         self.assertTrue(title.get_wrap())
@@ -901,6 +905,78 @@ class WidgetCheck(unittest.TestCase):
                 self.assertIs(window.focus_widgets["sample-15"], original)
                 window.close(); self.drain(.03)
 
+    def assert_packing_fits(self, window):
+        viewport = window.scroll.get_child()
+        heights = []
+        for row in window.focus_widgets.values():
+            found, bounds = row.compute_bounds(viewport)
+            self.assertTrue(found)
+            self.assertGreaterEqual(bounds.origin.y, 0)
+            self.assertLessEqual(bounds.origin.y + bounds.size.height, viewport.get_height())
+            heights.append(row.get_height())
+        self.assertEqual(window.row_height, max(heights))
+        self.assertEqual(window.capacity, max(1, (viewport.get_height() - 4) // window.row_height))
+        return viewport
+
+    def test_font_row_height_sets_capacity_without_repeat(self):
+        dashboard = mock_dashboard()
+        for row in dashboard["threads"][::3]:
+            row["title"] += " with a long synthetic title" * 5
+        # No server: a failed refresh shows a notice, and the notice changes the list height.
+        patcher = patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(1080, 248)
+        window.present(); self.drain(.5)
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.reset_property, "gtk-font-name")
+        # The font changes in a window that is open: only an internal relayout reports the new row heights.
+        settings.set_property("gtk-font-name", "Sans 22")
+        for selected, nominal in ((1, asb.COMFORTABLE_ROW_HEIGHT), (0, asb.ROW_HEIGHT)):
+            with self.subTest(selected=selected):
+                window.view_filter.set_selected(selected); self.drain(1.5)
+                self.assertGreaterEqual(window.row_height, nominal)
+                self.assert_packing_fits(window)
+                with patch.object(window, "render", wraps=window.render) as render:
+                    self.drain(1)
+                render.assert_not_called()
+
+    def test_a_title_with_line_breaks_keeps_the_card_height_and_a_wide_window_keeps_the_pill_width(self):
+        dashboard = mock_dashboard()
+        dashboard["threads"][5]["title"] = "\n".join(["A title with line breaks"] * 12)
+        patcher = patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(1182, 350)
+        window.present(); self.drain(.5)
+        window.view_filter.set_selected(1); self.drain(1.5)
+        # A title with line breaks is one paragraph in the card, so all cards have the same height.
+        heights = {widget.get_height() for widget in window.focus_widgets.values()}
+        self.assertEqual(len(heights), 1)
+        self.assertEqual((window.row_height, window.capacity), (max(heights), (window.geometry[1] - 4) // max(heights)))
+        self.assertGreater(window.capacity, 1)
+        # In the wide layout the Drawer pill has its natural width, as the other pills.
+        self.assertTrue(window.wide_controls)
+        self.assertLessEqual(window.drawer_only.get_width(), window.drawer_only.measure(asb.Gtk.Orientation.HORIZONTAL, -1)[1])
+
+    def test_scrollbar_below_viewport_sets_capacity(self):
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.reset_property, "gtk-overlay-scrolling")
+        settings.set_property("gtk-overlay-scrolling", False)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", mock_dashboard(), theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(1080, 248)
+        window.present(); self.drain(.3)
+        window.view_filter.set_selected(1); self.drain(1.5)
+        self.assertEqual((window.get_width(), window.get_height()), (1080, 248))
+        viewport = self.assert_packing_fits(window)
+        self.assertLess(viewport.get_height(), window.scroll.get_height())
+        self.assertGreater(len(window.focus_widgets), window.capacity * window.columns)
+
     def test_horizontal_short_wheel_focus_dividers_and_outside_settings(self):
         dashboard = mock_dashboard()
         dashboard["threads"][10].update(pinned=True, pinIndex=0)
@@ -919,13 +995,15 @@ class WidgetCheck(unittest.TestCase):
         while row:
             rows.append(row); row = row.get_next_sibling()
         self.assertEqual(len(rows), 3)
-        found, bar_bounds = window.scroll.get_hscrollbar().compute_bounds(window.scroll)
+        # The overlay scrollbar lies over the rows; the viewport is the visible area.
+        found, view_bounds = window.scroll.get_child().compute_bounds(window.scroll)
         self.assertTrue(found)
         for row in rows:
             self.assertEqual(row.get_height(), 68)
             found, bounds = row.compute_bounds(window.scroll)
             self.assertTrue(found)
-            self.assertLessEqual(bounds.origin.y + bounds.size.height, bar_bounds.origin.y + 1)
+            self.assertGreaterEqual(bounds.origin.y, view_bounds.origin.y)
+            self.assertLessEqual(bounds.origin.y + bounds.size.height, view_bounds.origin.y + view_bounds.size.height)
         adjustment = window.scroll.get_hadjustment()
         vertical = window.scroll.get_vadjustment()
         self.assertAlmostEqual(vertical.get_upper(), vertical.get_page_size(), delta=1)
@@ -935,6 +1013,11 @@ class WidgetCheck(unittest.TestCase):
         self.assertGreater(adjustment.get_upper(), adjustment.get_page_size())
         adjustment.set_value(0)
         self.assertTrue(window.scroll_horizontal(None, 0, 1))
+        # The wheel moves with a spring, and the test display can be as slow as one frame each second.
+        end = time.monotonic() + 6
+        while window.scroll_target is not None and time.monotonic() < end:
+            self.drain(.02)
+        self.assertIsNone(window.scroll_target)
         self.assertGreater(adjustment.get_value(), 0)
         surface = SimpleNamespace(get_unit=lambda: asb.Gdk.ScrollUnit.SURFACE)
         before = adjustment.get_value()
@@ -1182,6 +1265,381 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(adjustment.get_value(), distance)
         # (f) At rest no animation plays.
         assert_rest()
+
+    def ink(self, widget):
+        """The highest painted alpha of one widget: 0 when CSS hides it, below 255 when CSS dims it."""
+        snapshot = asb.Gtk.Snapshot()
+        asb.Gtk.WidgetPaintable.new(widget).snapshot(snapshot, widget.get_width(), widget.get_height())
+        node = snapshot.to_node()
+        if node is None:
+            return 0
+        # The Cairo renderer needs no surface, and its result does not depend on the renderer of the test display.
+        renderer = asb.Gsk.CairoRenderer()
+        renderer.realize(None)
+        data, _stride = asb.Gdk.TextureDownloader.new(renderer.render_texture(node, None)).download_bytes()
+        renderer.unrealize()
+        return max(data.get_data()[3::4])
+
+    def settle(self, window):
+        # CSS state reaches the widgets in the next frame, and the test display can paint only one frame each second.
+        self.drain(.1)
+        frames = []
+        handler = window.get_frame_clock().connect("after-paint", lambda *_args: frames.append(True))
+        window.queue_draw()
+        end = time.monotonic() + 6
+        while not frames and time.monotonic() < end:
+            self.drain(.02)
+        window.get_frame_clock().disconnect(handler)
+        self.assertTrue(frames)
+        self.drain(.05)
+
+    def test_drawer_pill_card_button_views_peek_and_narrow_column(self):
+        def row(n, **extra):
+            return {"id": f"s{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Summarize the open issues into one short note {n}",
+                    "cwd": "/example/field-notes", "projectName": "field-notes", "state": "idle", "canOpen": True,
+                    "updatedAtMs": NOW - n * 60_000, **extra}
+        unread = dict(pending=True, unread=True, completionAttention=True, pendingSource="observed-completion")
+        dashboard = {"generatedAtMs": NOW, "providers": [], "threads": [
+            row(1, **unread), row(2, **unread), row(3), row(4, state="working"), row(5, pending=True, questionAttention=True)]}
+        requests = []
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "request_async", lambda *args: requests.append(args))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(520, 400)
+        window.present(); window.set_focus(None); self.drain(.3)
+        window.view_filter.set_selected(1); self.drain(.3); window.check_geometry(); self.drain()
+        settle = lambda: self.settle(window)
+        pill, bubble, cards, hover = window.drawer_only, window.drawer_bubble, window.focus_widgets, asb.Gtk.StateFlags.PRELIGHT
+        put, out = "Put in drawer: look read here, keep it under Drawer", "Take out of drawer: show as unread again"
+        def reply(identity, **change):
+            requests[-1][2]({"changed": True, "threadId": identity, "thread": dict(cards[identity].asb_thread, **change)}, None)
+            settle()
+
+        # The pill: glyph, word, and a count bubble that is hidden at zero.
+        self.assertIsInstance(pill, asb.Gtk.ToggleButton)
+        self.assertIs(window.pending_group.get_last_child(), pill)
+        self.assertIs(window.working_only.get_next_sibling(), pill)
+        glyph = pill.get_child().get_first_child()
+        self.assertTrue(glyph.has_css_class("asb-drawer-glyph"))
+        self.assertEqual((glyph.get_width(), glyph.get_height()), (9, 5))  # Without the 1 px border.
+        self.assertEqual(glyph.get_next_sibling().get_text(), "Drawer")
+        self.assertIs(pill.get_child().get_last_child(), bubble)
+        self.assertFalse(bubble.get_visible())
+        self.assertFalse(pill.has_css_class("asb-drawer-filled"))
+        self.assert_accessible_label(pill, "Drawer only. Sessions in the drawer: 0")
+        self.assertEqual(pill.get_tooltip_text(), "Show only the sessions in the drawer, as unread. Point here to see them in the list.")
+        # An empty list changes its text when only the drawer view changes.
+        window.search.set_text("no such session"); settle()
+        empty = lambda: window.list_body.get_first_child().get_text()
+        self.assertEqual(empty(), "No matching sessions. Change the search or filters.")
+        pill.set_active(True); settle()
+        self.assertEqual(empty(), "The drawer is empty. Put an unread session in it to get it out of the way.")
+        pill.set_active(False); settle()
+        self.assertEqual(empty(), "No matching sessions. Change the search or filters.")
+        window.search.set_text(""); settle(); window.set_focus(None); settle()
+
+        # The drawer button: only for a row with an unread dot, before Read and Pin, and only with the pointer on the card.
+        self.assertEqual(window.column_pixel_width, 250)
+        self.assertEqual(window.row_order, ["s1", "s2", "s5", "s4", "s3"])
+        self.assertEqual({identity: card.asb_drawer_button.get_visible() for identity, card in cards.items()},
+                         {"s1": True, "s2": True, "s3": False, "s4": False, "s5": False})
+        one, question = cards["s1"], cards["s5"]
+        drawer, read, cue = one.asb_drawer_button, one.asb_read_button, one.asb_read_button.get_child().get_last_child()
+        self.assertIs(drawer.get_next_sibling().get_first_child(), read)
+        self.assertIs(drawer.get_next_sibling().get_next_sibling(), one.asb_pin_button)
+        self.assertTrue(drawer.get_parent().has_css_class("asb-corner-drawer"))
+        self.assertFalse(question.asb_drawer_button.get_parent().has_css_class("asb-corner-drawer"))
+        self.assertEqual((drawer.get_width(), drawer.get_height(), drawer.get_action_name()), (24, 24, "win.drawer-in"))
+        self.assertEqual(drawer.get_tooltip_text(), put)
+        self.assert_accessible_label(drawer, put + ": " + one.asb_thread["title"])
+        # The title has the same allocation with three buttons and with two.
+        self.assertIs(one.get_parent(), question.get_parent())
+        self.assertEqual(one.asb_title_label.get_width(), question.asb_title_label.get_width())
+        self.assertEqual(one.asb_title_label.get_width(), one.get_width() - 16 - 21 - 54)
+        self.assertEqual((one.get_height(), one.asb_title_label.get_height()), (68, 32))
+        self.assertEqual((self.ink(one.asb_dot), self.ink(cue), self.ink(drawer), self.ink(one.asb_state_label)), (255, 0, 0, 255))
+        one.set_state_flags(hover, False); question.set_state_flags(hover, False); settle()
+        self.assertEqual((self.ink(one.asb_dot), self.ink(drawer)), (0, 255))
+        self.assertGreater(self.ink(cue), 0)
+        self.assertLess(self.ink(one.asb_state_label), 255)  # The read tone.
+        self.assertGreater(self.ink(question.asb_dot), 0)  # A ? does not change.
+        one.unset_state_flags(hover); question.unset_state_flags(hover); settle()
+        self.assertEqual((self.ink(one.asb_dot), self.ink(cue), self.ink(drawer)), (255, 0, 0))
+        # Focus from a mouse click (not visible) does not change the row. Visible keyboard focus shows the controls.
+        shown = lambda: (self.ink(one.asb_dot), self.ink(drawer), self.ink(cue) > 0, self.ink(one.asb_state_label))
+        for focus in (one, read, drawer):
+            window.set_focus(focus); window.set_focus_visible(False); settle()
+            self.assertFalse(one.has_css_class("asb-key-focus"))
+            if focus is one:
+                self.assertEqual(shown(), (255, 0, False, 255))
+                self.assertGreater(self.ink(one.asb_pin_button), 0)  # The pin rule of 1.5.0 stays.
+            self.assertEqual((self.ink(one.asb_dot), self.ink(drawer)), (255, 0))
+            window.set_focus_visible(True); settle()
+            self.assertTrue(one.has_css_class("asb-key-focus"))
+            self.assertEqual(shown(), (0, 255, True, 255))
+        window.set_focus(cards["s2"]); settle()
+        self.assertFalse(one.has_css_class("asb-key-focus"))
+        self.assertEqual(shown(), (255, 0, False, 255))
+        window.set_focus(one)  # Tab goes to drawer, read, pin.
+        for control in (drawer, read, one.asb_pin_button):
+            self.assertTrue(one.child_focus(asb.Gtk.DirectionType.TAB_FORWARD))
+            self.assertIs(window.get_focus(), control)
+        window.set_focus(None); window.set_focus_visible(False); settle()
+        self.assertFalse(one.has_css_class("asb-key-focus"))
+
+        # A click sends drawer-in. After the reply the row looks read, sorts with the read rows, and the count is 1.
+        drawer.emit("clicked")
+        self.assertEqual((requests[-1][1], requests[-1][4], requests[-1][5]), ("/api/threads/s1/drawer-in", "POST", None))
+        self.assertIsNone(drawer.get_action_name())
+        self.assertTrue(drawer.has_css_class("asb-action-pending"))
+        window.dashboard_etag = "etag"
+        reply("s1", unread=False, pending=False, drawer=True)
+        self.assertIs(cards["s1"], one)
+        self.assertIsNone(window.dashboard_etag)
+        self.assertEqual(window.row_order, ["s2", "s5", "s4", "s1", "s3"])
+        self.assertEqual(window.count.get_text(), "2 Pending · 5 sessions")
+        self.assertTrue(one.has_css_class("asb-drawer") and one.has_css_class("asb-idle-read"))
+        self.assertEqual((self.ink(one.asb_dot), self.ink(read), self.ink(drawer)), (0, 0, 0))
+        self.assertEqual((bubble.get_visible(), bubble.get_text(), pill.has_css_class("asb-drawer-filled")), (True, "1", True))
+        self.assert_accessible_label(pill, "Drawer only. Sessions in the drawer: 1")
+        self.assertEqual((drawer.get_visible(), drawer.get_action_name(), drawer.has_css_class("asb-drawer-filled")),
+                         (True, "win.drawer-out", True))
+        self.assertFalse(drawer.has_css_class("asb-action-pending"))
+        self.assertEqual(drawer.get_tooltip_text(), out)
+        self.assert_accessible_label(drawer, out + ": " + one.asb_thread["title"])
+        self.assertTrue(one.asb_accessible_label.endswith(" Task completed. In the drawer. Still unread."))
+        self.assert_accessible_label(one, one.asb_accessible_label)
+        self.assertIn("Finished. Not read yet.\nIn the drawer", one.asb_tooltip)
+        self.assertEqual(asb.row_menu_actions(one.asb_thread)[:2], [("Read", "mark-read"), ("Take out of drawer", "drawer-out")])
+        one.set_state_flags(hover, False); settle()
+        self.assertEqual((self.ink(one.asb_dot), self.ink(read), self.ink(drawer)), (0, 255, 255))
+        self.assertGreater(self.ink(cue), 0)
+        one.unset_state_flags(hover); settle()
+
+        # Peek changes only the drawer cards; CSS shows their unread look without a render.
+        controllers = pill.observe_controllers()
+        peek = next(controller for controller in (controllers.get_item(index) for index in range(controllers.get_n_items()))
+                    if isinstance(controller, asb.Gtk.EventControllerMotion))
+        for palette in (None, CUSTOM):
+            window.set_palette(palette)
+            for view in (0, 1):
+                window.view_filter.set_selected(view); settle(); window.set_focus(None); settle()
+                one, two = cards["s1"], cards["s2"]
+                colors = lambda card: [getattr(card, name).get_color().to_string() for name in
+                                       ("asb_title_label", "asb_folder", "asb_state_label", "asb_age_label") if hasattr(card, name)]
+                with patch.object(window, "render") as render:
+                    self.assertEqual((self.ink(one.asb_dot), self.ink(two.asb_dot)), (0, 255))
+                    if view:  # In the normal list a drawer row has the quiet text of a read Idle row.
+                        self.assertEqual(colors(one), colors(cards["s3"]))
+                        self.assertNotEqual(colors(one)[0], colors(two)[0])
+                        self.assertNotEqual(colors(one)[1], colors(two)[1])
+                    else:  # Compact: focus of any kind never hides the dot.
+                        for visible in (False, True):
+                            window.set_focus(two); window.set_focus_visible(visible); settle()
+                            self.assertEqual((self.ink(two.asb_dot), self.ink(two.asb_state_label)), (255, 255))
+                        window.set_focus(None); window.set_focus_visible(False); settle()
+                    peek.emit("enter", 1, 1); settle()
+                    self.assertTrue(one.has_css_class("asb-drawer-lit"))
+                    self.assertFalse(window.has_css_class("asb-drawer-lit"))
+                    self.assertFalse(two.has_css_class("asb-drawer-lit"))
+                    self.assertEqual(colors(one), colors(two))  # The normal text color, in the peek.
+                    self.assertEqual((self.ink(one.asb_dot), self.ink(one.asb_state_label), self.ink(two.asb_dot)), (255, 255, 255))
+                    if view:
+                        self.assertEqual((self.ink(one.asb_read_button), self.ink(one.asb_drawer_button)), (255, 0))
+                    peek.emit("leave"); settle()
+                    self.assertFalse(one.has_css_class("asb-drawer-lit"))
+                    self.assertEqual(self.ink(one.asb_dot), 0)
+                    if not palette:
+                        self.assertLess(self.ink(one.asb_state_label), 255 if not view else 256)
+                    two.set_state_flags(hover, False); settle()  # The hover rule holds in both views.
+                    self.assertEqual(self.ink(two.asb_dot), 0)
+                    if view:
+                        self.assertEqual(self.ink(two.asb_drawer_button), 255)
+                    two.unset_state_flags(hover); settle()
+                    self.assertEqual(self.ink(two.asb_dot), 255)
+                    render.assert_not_called()
+        window.set_palette(None)
+        one, drawer = cards["s1"], cards["s1"].asb_drawer_button
+
+        # The drawer view: only drawer rows, with the unread look. Drawer and Pending do not combine.
+        window.pending_only.set_active(True); settle()
+        self.assertEqual(window.row_order, ["s2", "s5"])
+        pill.set_active(True); settle()
+        self.assertFalse(window.pending_only.get_active())
+        self.assertTrue(one.has_css_class("asb-drawer-lit"))
+        self.assertEqual(window.row_order, ["s1"])
+        self.assertEqual(window.count.get_text(), "0 Pending · 1 sessions")
+        self.assertIs(one.asb_dot.get_ancestor(asb.Gtk.Button), one.asb_read_button)
+        self.assertEqual((self.ink(one.asb_dot), self.ink(one.asb_state_label), self.ink(drawer)), (255, 255, 0))
+        normal = [label.get_color().to_string() for label in (one.asb_title_label, one.asb_folder, one.asb_state_label, one.asb_age_label)]
+        pill.set_active(False); settle()  # The drawer view has the normal text color; the normal list has the quiet color.
+        quiet = [label.get_color().to_string() for label in (one.asb_title_label, one.asb_folder, one.asb_state_label, one.asb_age_label)]
+        self.assertTrue(all(first != second for first, second in zip(normal, quiet)))
+        self.assertEqual(normal[0], cards["s2"].asb_title_label.get_color().to_string())
+        pill.set_active(True); settle()
+        peek.emit("enter", 1, 1); peek.emit("leave"); settle()
+        self.assertTrue(one.has_css_class("asb-drawer-lit"))
+        tooltip = SimpleNamespace(set_custom=lambda _content: None)
+        window.query_row_tooltip(one, 0, 0, False, tooltip)
+        self.assertEqual(one.asb_tooltip_key[0]["indicator"], "dot")
+        window.pending_only.set_active(True); settle()
+        self.assertFalse(pill.get_active())
+        self.assertFalse(window.has_css_class("asb-drawer-lit"))
+        self.assertEqual(window.row_order, ["s2", "s5"])
+        window.query_row_tooltip(one, 0, 0, False, tooltip)
+        self.assertEqual(one.asb_tooltip_key[0]["indicator"], "")
+        window.search.set_text("no such session"); pill.set_active(True); settle()
+        self.assertEqual(window.list_body.get_first_child().get_text(), "No matching sessions. Change the search or filters.")
+        window.search.set_text(""); settle()
+        self.assertEqual(window.row_order, ["s1"])
+
+        # Take out: the row leaves the drawer view, and the empty drawer has its own text.
+        drawer.emit("clicked")
+        self.assertEqual(requests[-1][1], "/api/threads/s1/drawer-out")
+        reply("s1", unread=True, pending=True, drawer=False)
+        self.assertEqual(window.row_order, [])
+        self.assertEqual(window.list_body.get_first_child().get_text(),
+                         "The drawer is empty. Put an unread session in it to get it out of the way.")
+        self.assertFalse(bubble.get_visible())
+        self.assertFalse(pill.has_css_class("asb-drawer-filled"))
+        pill.set_active(False); settle()
+        self.assertEqual(window.row_order, ["s1", "s2", "s5", "s4", "s3"])
+        self.assertFalse(one.has_css_class("asb-drawer"))
+        self.assertEqual((self.ink(one.asb_dot), drawer.get_action_name()), (255, "win.drawer-in"))
+
+        # A column narrower than 190 px has no drawer button; the corner is the Read and Pin pair.
+        window.width_control.set_value(160); settle()
+        self.assertLess(window.column_pixel_width, 190)
+        self.assertFalse(any(card.asb_drawer_button.get_visible() or card.asb_drawer_button.get_parent().has_css_class("asb-corner-drawer")
+                             for card in cards.values()))
+        self.assertTrue(one.asb_read_button.get_visible() and one.asb_pin_button.get_visible())
+        self.assertIn(("Put in drawer", "drawer-in"), asb.row_menu_actions(one.asb_thread))
+        window.width_control.set_value(240); settle()
+        self.assertEqual({identity: card.asb_drawer_button.get_visible() for identity, card in cards.items()},
+                         {"s1": True, "s2": True, "s3": False, "s4": False, "s5": False})
+
+        # The pill follows the other pills at 680 px and stays usable at 320 px with a count.
+        drawer.emit("clicked")
+        reply("s1", unread=False, pending=False, drawer=True)
+        self.assertTrue(bubble.get_visible())
+        # The count follows the archive setting, as the drawer view does. Search and the other filters do not change it.
+        board = copy.deepcopy(window.dashboard)
+        board["threads"].append(row(6, drawer=True, archived=True))
+        window.apply_dashboard(board, None); settle()
+        self.assertEqual(bubble.get_text(), "1")
+        window.archive.set_active(True); settle()
+        self.assertEqual(bubble.get_text(), "2")
+        self.assert_accessible_label(pill, "Drawer only. Sessions in the drawer: 2")
+        window.search.set_text("no such session"); window.app_pills["claude-desktop-code"].set_active(True); settle()
+        self.assertEqual((bubble.get_text(), window.row_order), ("2", []))
+        window.search.set_text(""); window.app_pills["claude-desktop-code"].set_active(False); pill.set_active(True); settle()
+        self.assertEqual(window.row_order, ["s1", "s6"])
+        window.archive.set_active(False); settle()
+        self.assertEqual((bubble.get_text(), window.row_order), ("1", ["s1"]))
+        self.assert_accessible_label(pill, "Drawer only. Sessions in the drawer: 1")
+        pill.set_active(False); settle()
+        for width, wide in ((320, False), (700, True)):
+            window.set_default_size(width, 400); settle(); window.check_geometry(); settle()
+            self.assertEqual((window.get_width(), window.wide_controls), (width, wide))
+            self.assertIs(pill.get_parent().get_parent(), window.tools if wide else window.feedback)
+            self.assertEqual(self.ink(bubble), 255)
+            self.assertGreater(self.ink(pill.get_child().get_first_child()), 0)
+        # 100 or more drawer rows show 99+; the accessible label keeps the exact number.
+        for count, text in ((99, "99"), (100, "99+"), (120, "99+")):
+            board = {"generatedAtMs": NOW, "providers": [], "threads": [row(n, drawer=True) for n in range(count)]}
+            window.apply_dashboard(board, None); settle()
+            self.assertEqual(bubble.get_text(), text)
+            self.assert_accessible_label(pill, f"Drawer only. Sessions in the drawer: {count}")
+        window.close(); self.drain(.03)
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real pointer clicks need xdotool and a nested test display (DISPLAY=:9 or :10).")
+    def test_real_pointer_click_on_a_corner_button_does_not_open_the_session(self):
+        asb.gi.require_version("GdkX11", "4.0")
+        from gi.repository import GdkX11
+        def row(n, **extra):
+            return {"id": f"s{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Summarize the open issues {n}",
+                    "cwd": "/example/field-notes", "projectName": "field-notes", "state": "idle", "canOpen": True,
+                    "updatedAtMs": NOW - n * 60_000, **extra}
+        unread = dict(pending=True, unread=True, completionAttention=True, pendingSource="observed-completion")
+        dashboard = {"generatedAtMs": NOW, "providers": [], "threads": [row(1, **unread), row(2, **unread), row(3, state="working"), row(4)]}
+        requests = []
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "request_async", lambda *args: requests.append(args))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        def xdo(*args):
+            return subprocess.run(["xdotool", *map(str, args)], check=True, capture_output=True, text=True).stdout
+        x, y = (line.split("=")[1] for line in xdo("getmouselocation", "--shell").splitlines()[:2])
+        self.addCleanup(xdo, "mousemove", x, y)  # A pointer that stays on the window changes the hover state in the next tests.
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(700, 420)
+        window.present(); window.set_focus(None); self.drain(.4)
+        window.view_filter.set_selected(1); self.drain(.4); window.check_geometry(); self.drain(.3)
+        cards = window.focus_widgets
+        def click(widget):
+            found, bounds = widget.compute_bounds(window)
+            self.assertTrue(found)
+            left, top = window.get_surface_transform()
+            xdo("mousemove", "--window", GdkX11.X11Surface.get_xid(window.get_surface()),
+                int(bounds.origin.x + bounds.size.width / 2 + left), int(bounds.origin.y + bounds.size.height / 2 + top))
+            self.drain(.3)
+            del requests[:]
+            xdo("click", 1)
+            self.drain(.4)
+            return [request[1] for request in requests]
+        failed = lambda: (requests[-1][2](None, "Cannot change this session."), self.drain(.3))
+        self.assertEqual(click(cards["s2"].asb_drawer_button), ["/api/threads/s2/drawer-in"])
+        pending = list(requests)
+        self.assertEqual(click(cards["s2"].asb_title_label), [])  # The card does not open while its action is in flight.
+        requests.extend(pending)
+        failed()
+        self.assertEqual(click(cards["s2"].asb_read_button), ["/api/threads/s2/mark-read"])
+        failed()
+        self.assertEqual(click(cards["s3"].asb_read_button), ["/api/threads/s3/discard-result"])
+        failed()
+        self.assertEqual(click(cards["s2"].asb_pin_button), ["/api/threads/s2/pin"])
+        requests[-1][2]({"changed": True, "pinnedOrder": ["s2"]}, None); self.drain(.8)
+        self.assertEqual(window.row_order[0], "s2")
+        self.assertFalse(window.opening or window.session_actions)
+        # Directly after an action is complete, a click on the card body opens the session one time.
+        self.assertEqual(click(cards["s2"].asb_title_label), ["/api/threads/s2/open"])
+        requests[-1][2]({"opened": True}, None); self.drain(.2)
+        self.assertEqual(click(cards["s4"].asb_title_label), ["/api/threads/s4/open"])
+        requests[-1][2]({"opened": True}, None); self.drain(.2)
+        # Focus from a mouse click does not change the row: after the pointer leaves, the dot stays and no drawer button shows.
+        one, two = cards["s1"], cards["s2"]
+        self.assertEqual(click(one.asb_read_button), ["/api/threads/s1/mark-read"])
+        failed()
+        xid = GdkX11.X11Surface.get_xid(window.get_surface())
+        xdo("mousemove", "--window", xid, 3, window.get_height() - 3); self.settle(window)
+        self.assertEqual(window.focus_key(), "s1")
+        self.assertTrue(one.get_state_flags() & asb.Gtk.StateFlags.FOCUS_WITHIN)
+        self.assertEqual((window.get_focus_visible(), one.has_css_class("asb-key-focus")), (False, False))
+        self.assertFalse(one.get_state_flags() & asb.Gtk.StateFlags.PRELIGHT)
+        shown = lambda card: (self.ink(card.asb_dot), self.ink(card.asb_read_button.get_child().get_last_child()) > 0,
+                              self.ink(card.asb_drawer_button))
+        self.assertEqual(shown(one), (255, False, 0))
+        self.assertGreater(self.ink(one.asb_pin_button), 0)  # The pin rule of 1.5.0.
+        # The keyboard makes the focus visible. Tab from the row goes to drawer, read, pin, with the controls shown.
+        xdo("windowfocus", xid)
+        xdo("key", "Up"); self.settle(window)
+        self.assertIs(window.get_focus(), two)
+        self.assertEqual((window.get_focus_visible(), two.has_css_class("asb-key-focus"), one.has_css_class("asb-key-focus")), (True, True, False))
+        self.assertEqual((shown(one), shown(two)), ((255, False, 0), (0, True, 255)))
+        for control in (two.asb_drawer_button, two.asb_read_button, two.asb_pin_button):
+            xdo("key", "Tab"); self.settle(window)
+            self.assertIs(window.get_focus(), control)
+            self.assertEqual(shown(two), (0, True, 255))
+        window.close(); self.drain(.03)
 
 
 if __name__ == "__main__":

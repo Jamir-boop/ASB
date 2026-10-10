@@ -400,7 +400,16 @@ test('the web view uses the adaptive clock, pauses when hidden, and skips overla
   let interval;
   let intervalMs;
   const release = Promise.withResolvers();
-  const node = () => ({ value: 'all', checked: false, dataset: {}, addEventListener() {}, setAttribute() {}, append() {},
+  const node = () => ({ value: 'all', checked: false, dataset: {}, children: [], addEventListener() {}, setAttribute() {},
+    get firstChild() { return this.children[0] || null; },
+    append(...children) { for (const child of children) this.insertBefore(child, null); },
+    insertBefore(child, before) {
+      child.remove();
+      this.children.splice(before ? this.children.indexOf(before) : this.children.length, 0, child);
+      child.parentNode = this;
+      if (this === nodes.sessions) redraws += 1;
+    },
+    remove() { if (this.parentNode) { this.parentNode.children.splice(this.parentNode.children.indexOf(this), 1); this.parentNode = null; } },
     replaceChildren() { redraws += 1; }, querySelectorAll() { return []; } });
   const nodes = Object.fromEntries(['search', 'app', 'status', 'archive', 'refresh', 'count', 'updated', 'notice', 'sessions'].map((key) => [key, node()]));
   nodes.search.value = '';
@@ -435,11 +444,12 @@ test('the web view uses the adaptive clock, pauses when hidden, and skips overla
   board.providers.push({ id: 'codex', message: 'Changed source' });
   interval();
   await new Promise(setImmediate);
-  assert.equal(redraws, 2);
+  assert.equal(redraws, 1);
+  assert.equal(nodes.notice.textContent, 'Changed source');
   clock += 60_000;
   interval();
   await new Promise(setImmediate);
-  assert.equal(redraws, 3);
+  assert.equal(redraws, 1);
 });
 
 test('ASB reports unavailable or corrupt Claude metadata without a ready status', async (t) => {
@@ -730,7 +740,7 @@ test('Pending observes complete scans, preserves native truth, and persists comp
   assert.equal((await new PendingTracker(statePath).observe(board([{ id: 'hidden', state: 'idle', completionAtMs: 200 }]))).threads[0].pending, false);
   const saved = JSON.parse(await readFile(statePath, 'utf8'));
   assert.deepEqual(Object.keys(saved.records.hidden).sort(), ['ack', 'discard', 'discardEnd', 'discardNative', 'discardStart', 'discardedAt',
-    'manual', 'nativeAck', 'nativeAt', 'nativeSeen', 'pending', 'pendingKind', 'questionAck', 'questionSeen', 'retained', 'seen', 'working']);
+    'drawer', 'drawerSeen', 'manual', 'nativeAck', 'nativeAt', 'nativeSeen', 'pending', 'pendingKind', 'questionAck', 'questionSeen', 'retained', 'seen', 'working']);
   assert.equal((await stat(statePath)).mode & 0o777, 0o600);
   await tracker.observe(board([{ id: 'aborted', state: 'working' }]));
   assert.equal((await tracker.observe(board([{ id: 'aborted', state: 'idle', completionAtMs: 0 }]))).threads[0].pending, false);
@@ -1314,7 +1324,14 @@ test('fresh remote permission waits keep attention after Read and stale waits gi
 test('browser rows show question, unread, then stop and name the actual end outcome', async () => {
   const node = () => ({ value: 'all', checked: false, dataset: {}, children: [], attributes: {},
     addEventListener() {}, setAttribute(key, value) { this.attributes[key] = value; },
-    append(...children) { this.children.push(...children); }, replaceChildren() {}, querySelectorAll() { return []; } });
+    append(...children) { for (const child of children) this.insertBefore(child, null); },
+    insertBefore(child, before) {
+      child.remove();
+      this.children.splice(before ? this.children.indexOf(before) : this.children.length, 0, child);
+      child.parentNode = this;
+    },
+    remove() { if (this.parentNode) { this.parentNode.children.splice(this.parentNode.children.indexOf(this), 1); this.parentNode = null; } },
+    replaceChildren() {}, querySelectorAll() { return []; } });
   const nodes = Object.fromEntries(['search', 'app', 'status', 'archive', 'refresh', 'count', 'updated', 'notice', 'sessions'].map((key) => [key, node()]));
   nodes.search.value = '';
   const document = { hidden: true, getElementById: (key) => nodes[key], addEventListener() {}, createElement: node,

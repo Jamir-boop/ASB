@@ -82,6 +82,9 @@ class Box:
     def set_label(self, value):
         self.label = value
 
+    def set_size_request(self, width, height):
+        self.size_request = (width, height)
+
     def clear_hover(self):
         pass
 
@@ -1253,6 +1256,18 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual((window.list_body.motion_progress, column.draws, len(window.list_body.motion)), (.25, 1, 2))
         window.advance_motion(0)
         self.assertEqual((window.list_body.motion, window.motion_columns, column.draws), ({}, [], 2))
+        offscreen = Row(0, 0)
+        adjustment = SimpleNamespace(value=0, get_value=lambda: adjustment.value)
+        window.scroll = SimpleNamespace(get_hadjustment=lambda: adjustment, get_width=lambda: 240, get_height=lambda: 400)
+        window.motion_columns = [column, offscreen]
+        window.motion_bounds = {column: (4, 244, 0, 400), offscreen: (508, 748, 0, 400)}
+        window.advance_motion(.75)
+        self.assertEqual((column.draws, offscreen.draws), (3, 0))
+        adjustment.value = 508  # Scrolling exposes the other column during the same animation.
+        window.advance_motion(.5)
+        self.assertEqual((column.draws, offscreen.draws), (3, 1))
+        window.advance_motion(0)
+        self.assertEqual((window.motion_columns, window.motion_bounds), ([], {}))
         window.motion_from = False  # A layout without motion is pending.
         window.start_motion()
         self.assertIsNone(window.motion_from)
@@ -1582,6 +1597,7 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(requests[-1][1], "/api/dashboard?force=1")
         widget = SimpleNamespace(asb_thread={"id": "a", "canOpen": True, "unread": True})
         window.focus_widgets, window.opening, window.open_errors = {"a": widget}, set(), {}
+        window.session_actions = set()
         window.update_open_state = Mock()
         for _ in range(2):
             window.open_row(None, widget)
@@ -1612,8 +1628,8 @@ class NativeLogicChecks(unittest.TestCase):
                 operations["insert"] += 1
                 super().insert(child, position)
         window = object.__new__(Window)
-        window.dashboard = {"threads": [{"id": "a", "state": "working", "updatedAtMs": 20},
-                                        {"id": "b", "state": "working", "updatedAtMs": 10}]}
+        window.dashboard = {"threads": [{"id": "a", "state": "idle", "updatedAtMs": 20},
+                                        {"id": "b", "state": "idle", "updatedAtMs": 10}]}
         window.closed, window.layout_signature, window.focused_id = False, None, None
         window.context_menu, window.cancel_scroll = Mock(), Mock()
         window.focus_generation = 0
@@ -1703,6 +1719,150 @@ class NativeLogicChecks(unittest.TestCase):
                                  [list(order[0:2]), list(order[2:4]), list(order[4:5])])
                 self.assertEqual(window.focus_widgets, widgets)
             window.list_body.remove.assert_not_called()
+
+    def test_drawer_roundtrip_reuses_all_columns_and_unchanged_controls(self):
+        for view, height in (("compact", 22), ("comfortable", 68)):
+            with self.subTest(view=view):
+                operations = {"columns": 0, "remove": 0, "insert": 0}
+                disconnected = []
+                class Listing(Box):
+                    def __init__(self, **kwargs):
+                        operations["columns"] += 1
+                        super().__init__(**kwargs)
+                    def remove(self, child):
+                        operations["remove"] += 1
+                        super().remove(child)
+                    def insert(self, child, position):
+                        operations["insert"] += 1
+                        super().insert(child, position)
+                    def disconnect(self, handler):
+                        self_test.assertIsNone(self.get_parent())
+                        self_test.assertIsNone(self.get_first_child())
+                        disconnected.append((self, handler))
+                self_test = self
+                window = object.__new__(Window)
+                window.dashboard = {"threads": [{"id": f"s{index}", "title": f"Session {index}", "provider": "codex",
+                                                  "providerLabel": "Codex", "state": "idle", "canOpen": True,
+                                                  "drawer": index < 5} for index in range(120)]}
+                window.closed, window.layout_signature, window.context_menu, window.focused_id = False, None, None, None
+                window.focus_generation, window.view, window.row_height = 0, view, height
+                window.geometry, window.column_width = (500, height * 3 + 4), 240
+                window.focus_key = window.get_focus = lambda: None
+                window.focus_widgets, window.row_cache, window.open_errors = {}, {}, {}
+                window.opening, window.session_actions = set(), set()
+                window.list_body, window.count = Box(), Box()
+                window.drawer_only, window.drawer_bubble = Mock(), Mock()
+                window.scroll = SimpleNamespace(get_hadjustment=lambda: SimpleNamespace(get_value=lambda: 0))
+                window.visible_rows = lambda: [row for row in window.dashboard["threads"] if not window.drawer_view or row["drawer"]]
+                controls = []
+                def create(row):
+                    widget = Box()
+                    widget.asb_view, widget.asb_thread = view, {}
+                    widget.asb_read_timer, widget.asb_read_generation, widget.asb_time_signature = None, 0, None
+                    widget.asb_handlers = []
+                    widget.asb_focus_key = row["id"]
+                    for name in ("asb_mark", "asb_source_badge", "asb_dot", "asb_state_label", "asb_title_label",
+                                 "asb_folder", "asb_age_label", "asb_read_button", "asb_pin_button", "asb_drawer_button",
+                                 "set_activatable", "set_sensitive", "update_property", "update_state", "remove_css_class"):
+                        control = Mock()
+                        setattr(widget, name, control)
+                        controls.append(control)
+                    window.update_session_row(widget, row)
+                    return widget
+                window.session_row = Mock(side_effect=create)
+                gtk = SimpleNamespace(ListBox=Listing, SelectionMode=SimpleNamespace(NONE=0), Align=SimpleNamespace(START=0),
+                                      AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1),
+                                      AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+                with patch.dict(SCOPE, {"Gtk": gtk, "GLib": SimpleNamespace(idle_add=Mock(), source_remove=Mock()),
+                                       "label": lambda *_args: Mock()}):
+                    window.render()
+                    columns, widgets = list(window.list_body.children), dict(window.focus_widgets)
+                    self.assertEqual((window.capacity, len(columns), operations["columns"]), (3, 40, 40))
+                    window.drawer_view = True
+                    window.render()
+                    self.assertEqual(window.list_body.children, columns[:2])
+                    self.assertEqual(len(window.row_cache), 120)
+                    self.assertEqual(window.list_columns, columns)
+                    self.assertEqual(disconnected, [])
+                    for key in operations:
+                        operations[key] = 0
+                    for control in controls:
+                        control.reset_mock()
+                    window.drawer_view = False
+                    window.render()
+                    self.assertEqual(window.list_body.children, columns)
+                    self.assertEqual(window.focus_widgets, widgets)
+                    self.assertEqual(window.session_row.call_count, 120)
+                    self.assertEqual(operations, {"columns": 0, "remove": 0, "insert": 115})
+                    self.assertEqual(sum(len(control.mock_calls) for control in controls), 5)  # Only the five peek classes change.
+                    self.assertEqual([[row.asb_thread["id"] for row in column.children] for column in columns],
+                                     [[f"s{index}" for index in range(start, start + 3)] for start in range(0, 120, 3)])
+                    window.geometry = (800, height * 3 + 4)
+                    window.render()
+                    self.assertEqual(window.list_body.children, columns)
+                    self.assertTrue(all(column.size_request == (window.column_pixel_width, -1) for column in columns))
+                    window.drawer_view = True
+                    window.render()
+                    window.dashboard["threads"] = window.dashboard["threads"][:15]
+                    window.render()  # The filtered set is unchanged, but the full dashboard lost IDs.
+                    self.assertEqual(window.list_columns, columns[:5])
+                    self.assertEqual(len(disconnected), 35)
+                    window.drawer_view = False
+                    window.render()
+                    self.assertEqual(window.list_body.children, columns[:5])
+                    window.geometry = (800, height * 6 + 4)
+                    window.render()
+                    self.assertEqual((window.capacity, window.list_columns), (6, columns[:3]))
+                    self.assertEqual(len(disconnected), 37)
+                    window.dashboard["threads"] = window.dashboard["threads"][:3]
+                    window.render()
+                    self.assertEqual(window.list_columns, columns[:1])
+                    self.assertEqual((len(disconnected), len(window.row_cache)), (39, 3))
+                    window.dashboard["threads"] = []
+                    window.render()
+                    self.assertEqual((window.list_columns, window.row_cache), ([], {}))
+                    self.assertEqual(len(disconnected), 40)
+
+    def test_drawer_peek_changes_only_drawer_rows_and_keeps_the_selected_view_lit(self):
+        window = object.__new__(Window)
+        window.focus_widgets = {str(index): SimpleNamespace(asb_thread={"drawer": index < 5},
+                                add_css_class=Mock(), remove_css_class=Mock()) for index in range(120)}
+        window.add_css_class, window.remove_css_class = Mock(), Mock()
+        window.set_drawer_peek(True)
+        window.set_drawer_peek(True)
+        self.assertEqual(sum(row.add_css_class.call_count for row in window.focus_widgets.values()), 5)
+        window.drawer_view = True
+        window.set_drawer_peek(False)
+        self.assertFalse(any(row.remove_css_class.called for row in window.focus_widgets.values()))
+        window.drawer_view = False
+        window.set_drawer_peek(False)
+        self.assertEqual(sum(row.remove_css_class.call_count for row in window.focus_widgets.values()), 5)
+        window.add_css_class.assert_not_called()
+        window.remove_css_class.assert_not_called()
+
+    def test_successful_session_action_queues_a_normal_read_after_an_older_read(self):
+        window = object.__new__(Window)
+        window.closed, window.loading, window.refresh_queued, window.refresh_force_queued = False, True, False, False
+        window.session_actions, window.focus_widgets = set(), {}
+        window.open_errors = {}
+        row = {"id": "a", "provider": "codex", "state": "idle"}
+        window.dashboard, window.dashboard_etag, window.signature = {"threads": [row]}, "old", [row]
+        window.base, window.refresh_interval_ms, window.clock_interval, window.snapshot_pending = "http://127.0.0.1:1", 5000, 60, False
+        window.get_focus = window.focus_key = lambda: None
+        window.render = window.sync_unread_setting = window.set_notice = window.update_clock = Mock()
+        window.refresh_button = Mock()
+        request, dispatch = Mock(), Mock()
+        with patch.dict(SCOPE, {"request_async": request, "GLib": SimpleNamespace(idle_add=dispatch)}):
+            window.session_action("a", "pin")
+            request.call_args.args[2]({"thread": dict(row, pinned=True)}, None)
+            self.assertEqual((window.refresh_queued, window.refresh_force_queued, window.dashboard_etag), (True, False, None))
+            window.apply_dashboard({"threads": [row]}, None)
+            callback, *args = dispatch.call_args.args
+            self.assertEqual((callback, args), (window.refresh, [False]))
+            callback(*args)
+            self.assertEqual(request.call_args.args[1], "/api/dashboard")
+            self.assertEqual(request.call_count, 2)
+            self.assertEqual(window.refresh_button.mock_calls, [])
 
     def test_completed_read_guard_ignores_discard_only_inside_half_second(self):
         ignore = SCOPE["ignore_discard_after_read"]
@@ -2240,6 +2400,193 @@ class NativeLogicChecks(unittest.TestCase):
                 stream.close()
                 stream.worker.join(1)
             self.assertFalse(stream.worker.is_alive())
+
+    def test_drawer_filter_indicator_menu_tooltip_and_action_flow(self):
+        filtered, indicator, actions = SCOPE["filtered_rows"], SCOPE["attention_indicator"], SCOPE["row_menu_actions"]
+        base = {"provider": "codex", "state": "idle", "title": "Chat", "providerLabel": "Codex", "canOpen": True}
+        unread = {**base, "id": "unread", "unread": True, "pending": True, "updatedAtMs": 4}
+        tucked = {**base, "id": "tucked", "drawer": True, "unread": False, "completionAttention": True,
+                  "pendingSource": "observed-completion", "updatedAtMs": 3}
+        board = {"threads": [unread, tucked, {**tucked, "id": "claude", "provider": "claude-desktop-code", "title": "Find"},
+                             {**tucked, "id": "old", "archived": True}, {**base, "id": "read", "updatedAtMs": 1}]}
+        ids = lambda *args, **kwargs: [row["id"] for row in filtered(board, *args, **kwargs)]
+        self.assertEqual(ids(), ["unread", "claude", "tucked", "read"])  # A drawer row sorts with the read rows.
+        self.assertEqual(ids(drawer_only=True), ["claude", "tucked"])
+        self.assertEqual(ids(drawer_only=True, archived=True), ["claude", "old", "tucked"])
+        self.assertEqual(ids("find", drawer_only=True), ["claude"])
+        self.assertEqual(ids(app="codex", drawer_only=True), ["tucked"])
+        self.assertEqual(ids("cl:", app="codex", drawer_only=True), ["claude"])
+        self.assertEqual(ids(state={"working"}, drawer_only=True), [])
+        self.assertEqual(ids(state={"idle"}, drawer_only=True), ["claude", "tucked"])
+
+        for row, expected in ((tucked, "dot"), ({**tucked, "questionAttention": True}, "question"),
+                              ({**tucked, "actionRequired": True}, "question"), ({**tucked, "state": "working"}, ""),
+                              ({**tucked, "state": "working", "discardResult": True}, "discard"),
+                              ({**tucked, "lastOutcome": "stopped"}, "dot"), (unread, "dot"), (base, "")):
+            self.assertEqual(indicator(row, True), expected)
+        self.assertEqual(indicator(tucked), "")
+        self.assertEqual(indicator({**tucked, "lastOutcome": "stopped"}), "stop")
+
+        self.assertEqual(actions(unread), [("Read", "mark-read"), ("Put in drawer", "drawer-in"), ("Pin", "pin")])
+        self.assertEqual(actions(tucked), [("Read", "mark-read"), ("Take out of drawer", "drawer-out"), ("Pin", "pin")])
+        self.assertEqual(actions({**tucked, "state": "working"}),
+                         [("Read", "mark-read"), ("Take out of drawer", "drawer-out"), ("Pin", "pin"), ("Discard result", "discard-result")])
+        self.assertEqual(actions({**tucked, "actionRequired": True}), [("Take out of drawer", "drawer-out"), ("Pin", "pin")])
+        for row in (base, {**base, "questionAttention": True}, {**unread, "questionAttention": True}, {**unread, "actionRequired": True}):
+            self.assertFalse({"drawer-in", "drawer-out"} & {action for _title, action in actions(row)})
+
+        signature = SCOPE["attention_signature"]
+        self.assertNotEqual(signature(tucked), signature({**tucked, "drawer": False}))
+
+        model, description = SCOPE["tooltip_model"], SCOPE["tooltip_description"]
+        value = model(tucked, 100_000, "/home/test")
+        self.assertEqual((value["indicator"], value["note"], value["flags"]), ("", "Finished. Not read yet.", "In the drawer"))
+        self.assertIn("Finished. Not read yet.\nIn the drawer", description(value))
+        shown = model(tucked, 100_000, "/home/test", drawer_view=True)
+        self.assertEqual((shown["indicator"], shown["note"], shown["flags"]), ("dot", "Finished. Not read yet.", "In the drawer"))
+        self.assertEqual(model({**tucked, "pinned": True, "pendingSource": "manual-unread"}, 100_000, "/home/test")["flags"], "Pinned · In the drawer")
+        self.assertEqual(model({**tucked, "pendingSource": "manual-unread"}, 100_000, "/home/test")["note"], "Marked unread in ASB.")
+        question = model({**tucked, "questionAttention": True}, 100_000, "/home/test")
+        self.assertEqual((question["indicator"], question["note"]), ("question", "Asks a question. Open the chat to answer."))
+        self.assertEqual(model(unread, 100_000, "/home/test")["flags"], "")
+
+        window = object.__new__(Window)
+        window.view, window.opening, window.open_errors = "compact", set(), {}
+        text = SimpleNamespace(asb_thread=dict(tucked), asb_time_signature=None, asb_state_label=Mock(), asb_title_label=Mock(),
+                               set_sensitive=Mock(), update_property=Mock(), update_state=Mock())
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1),
+                              AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        with patch.dict(SCOPE, {"Gtk": gtk}):
+            window.update_row_text(text, 100_000)
+            self.assertEqual(text.asb_accessible_label, "Open Chat in Codex. Idle. Task completed. In the drawer. Still unread.")
+            self.assertIn("In the drawer", text.update_property.call_args.args[1][1])
+            text.asb_thread, text.asb_time_signature = dict(unread), None
+            window.update_row_text(text, 100_000)
+            self.assertNotIn("drawer", text.asb_accessible_label)
+
+        put, out = "Put in drawer: look read here, keep it under Drawer", "Take out of drawer: show as unread again"
+        row = {**unread, "id": "a"}
+        widget = SimpleNamespace(asb_view="comfortable", asb_thread=dict(row), asb_focus_key="a", asb_read_timer=None,
+                                 asb_read_generation=1, asb_read_button=Mock(), asb_pin_button=Mock(), asb_drawer_button=Mock())
+        drawer, corner = widget.asb_drawer_button, widget.asb_drawer_button.get_parent.return_value
+        window = object.__new__(Window)
+        window.closed, window.view, window.base = False, "comfortable", "http://127.0.0.1:1"
+        window.session_actions, window.open_errors, window.focus_widgets = set(), {}, {"a": widget}
+        window.dashboard, window.dashboard_etag = {"threads": [dict(row)]}, "etag"
+        window.get_focus = window.focus_key = lambda: None
+        window.update_open_state, window.refresh = Mock(), Mock()
+        window.render = Mock(side_effect=lambda **_kwargs: setattr(widget, "asb_thread", dict(window.dashboard["threads"][0])))
+        request, timeout = Mock(), Mock()
+        with patch.dict(SCOPE, {"request_async": request, "Gtk": gtk,
+                               "GLib": SimpleNamespace(idle_add=Mock(), timeout_add=timeout, source_remove=Mock())}):
+            window.update_card_actions(widget)
+            drawer.set_visible.assert_called_with(True)
+            drawer.set_action_name.assert_called_with("win.drawer-in")
+            drawer.remove_css_class.assert_any_call("asb-drawer-filled")
+            drawer.set_tooltip_text.assert_called_with(put)
+            drawer.update_property.assert_called_with([0], [put + ": Chat"])
+            drawer.update_state.assert_called_with([0, 1], [False, False])
+            corner.add_css_class.assert_called_with("asb-corner-drawer")
+
+            window.session_action("a", "drawer-in")
+            window.session_action("a", "drawer-in")
+            request.assert_called_once()
+            self.assertEqual((request.call_args.args[1], request.call_args.args[4], request.call_args.args[5]),
+                             ("/api/threads/a/drawer-in", "POST", None))
+            drawer.set_action_name.assert_called_with(None)
+            drawer.add_css_class.assert_any_call("asb-action-pending")
+            drawer.update_state.assert_called_with([0, 1], [True, True])
+            request.call_args.args[2](None, "Cannot change this session.")
+            self.assertEqual((window.open_errors, window.session_actions, window.dashboard_etag),
+                             ({"a": "Cannot change this session."}, set(), "etag"))
+            self.assertTrue(widget.asb_thread["unread"])
+            drawer.set_action_name.assert_called_with("win.drawer-in")
+            window.refresh.assert_not_called()
+
+            window.session_action("a", "drawer-in")
+            reply = dict(row, unread=False, pending=False, drawer=True)
+            request.call_args.args[2]({"changed": True, "threadId": "a", "thread": reply}, None)
+            self.assertEqual((window.dashboard["threads"], window.open_errors, window.dashboard_etag), ([reply], {}, None))
+            window.refresh.assert_called_once_with(queue=True)
+            timeout.assert_not_called()  # No Read confirmation.
+            self.assertIsNone(widget.asb_read_timer)
+            drawer.set_visible.assert_called_with(True)
+            drawer.set_action_name.assert_called_with("win.drawer-out")
+            drawer.add_css_class.assert_any_call("asb-drawer-filled")
+            drawer.set_tooltip_text.assert_called_with(out)
+            drawer.update_property.assert_called_with([0], [out + ": Chat"])
+            widget.asb_read_button.set_visible.assert_called_with(True)
+            widget.asb_read_button.set_action_name.assert_called_with("win.mark-read")
+
+            window.session_action("a", "drawer-out")
+            self.assertEqual(request.call_args.args[1], "/api/threads/a/drawer-out")
+            request.call_args.args[2]({"changed": True, "threadId": "a", "thread": dict(row)}, None)
+            self.assertEqual(window.dashboard["threads"], [row])
+            drawer.set_action_name.assert_called_with("win.drawer-in")
+            timeout.assert_not_called()
+
+            for thread, width, shown in ((base, 240, False), (row, 189, False), (reply, 189, False), (row, 190, True),
+                                         ({**row, "questionAttention": True}, 240, False), ({**reply, "state": "working"}, 240, True)):
+                widget.asb_thread, window.column_pixel_width = {**thread, "id": "a"}, width
+                window.update_card_actions(widget)
+                drawer.set_visible.assert_called_with(shown)
+                (corner.add_css_class if shown else corner.remove_css_class).assert_called_with("asb-corner-drawer")
+        css = SOURCE.read_text()
+        for rule in ("{base} .asb-unread:hover .asb-dot,", "{base} .asb-drawer:not(.asb-drawer-lit) .asb-dot {{ opacity: 0; }}",
+                     "{base} .asb-unread:hover .asb-read-cue,", "{base} .asb-drawer.asb-drawer-lit:not(:hover) .asb-state {{ opacity: 1; }}"):
+            self.assertIn(rule, css)
+        self.assertIn('"drawer-in", "drawer-out"):', css)
+
+    def test_working_rows_keep_their_place_while_only_the_update_time_changes(self):
+        filtered = SCOPE["filtered_rows"]
+        ids = lambda rows: [row["id"] for row in filtered({"threads": rows})]
+        work = lambda identity, start, updated, **extra: {"id": identity, "provider": "codex", "state": "working",
+                                                         "workingSinceMs": start, "updatedAtMs": updated, **extra}
+        idle = lambda identity, updated, **extra: {"id": identity, "provider": "codex", "state": "idle", "updatedAtMs": updated, **extra}
+        # (a) Two Working rows keep their order when their update times swap.
+        self.assertEqual(ids([work("a", 100, 500), work("b", 200, 900)]), ["b", "a"])
+        self.assertEqual(ids([work("a", 100, 900), work("b", 200, 500)]), ["b", "a"])
+        # (b) In the Pending group the Working rows are first, by task start; the other rows follow by update time.
+        pending = [idle("new", 300, pending=True, unread=True), idle("old", 100, pending=True, unread=True)]
+        ask = lambda identity, start, updated: work(identity, start, updated, pending=True, questionAttention=True)
+        for updated in (1, 250, 999):
+            self.assertEqual(ids(pending + [ask("ask", 50, updated)]), ["ask", "new", "old"])
+            self.assertEqual(ids(pending + [ask("ask", 50, updated), ask("late", 60, 1), ask("zero", None, 999), work("plain", 999, 999)]),
+                             ["late", "ask", "zero", "new", "old", "plain"])
+        # (c) A Working row with no start sorts after the rows with a start, by id.
+        for start in (None, 0, -1, True, "unknown", float("nan")):
+            for updated in (1, 999):
+                rows = [work("z", start, updated), work("y", start, 5), work("a", 100, 500), work("b", 200, 2)]
+                self.assertEqual(ids(rows), ["b", "a", "y", "z"])
+        self.assertEqual(ids([{"id": "none", "state": "working", "updatedAtMs": 999}, work("a", 100, 1)]), ["a", "none"])
+        # (d) Working to Idle: the row moves to the Idle bucket, by its update time.
+        rows = [work("a", 100, 500), work("b", 200, 900), idle("i1", 800), idle("i2", 300)]
+        self.assertEqual(ids(rows), ["b", "a", "i1", "i2"])
+        rows[1] = idle("b", 400, workingSinceMs=200)
+        self.assertEqual(ids(rows), ["a", "i1", "b", "i2"])
+        # A new task start moves the row; pins keep their saved order.
+        self.assertEqual(ids([work("a", 300, 500), work("b", 200, 900)]), ["a", "b"])
+        self.assertEqual(ids([work("a", 100, 1), work("p", 1, 1, pinned=True, pinIndex=0)]), ["p", "a"])
+
+    def test_card_action_in_flight_does_not_open_the_row(self):
+        window = object.__new__(Window)
+        window.base, window.closed = "http://127.0.0.1:1", False
+        window.opening, window.open_errors, window.session_actions = set(), {}, {"a"}
+        window.update_open_state = Mock()
+        widget = SimpleNamespace(asb_thread={"id": "a", "canOpen": True})
+        other = SimpleNamespace(asb_thread={"id": "b", "canOpen": True})
+        request = Mock()
+        with patch.dict(SCOPE, {"request_async": request, "GLib": SimpleNamespace(idle_add=Mock())}):
+            window.open_row(None, widget)
+            request.assert_not_called()
+            self.assertEqual(window.opening, set())
+            window.update_open_state.assert_not_called()
+            window.open_row(None, other)
+            self.assertEqual(request.call_args.args[1], "/api/threads/b/open")
+            window.session_actions.discard("a")  # The reply came: the next click on the card opens it.
+            window.open_row(None, widget)
+            self.assertEqual(request.call_args.args[1], "/api/threads/a/open")
+            self.assertEqual(request.call_count, 2)
 
 
 class NativeIOAuditChecks(unittest.TestCase):

@@ -6,7 +6,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import * as zlib from 'node:zlib';
-import { loadClaudeRemoteThreads, loadSwitchboardClaudeThreads, parseClaudeRemoteBody, claudeRemoteDeepLink, getClaudeRemoteCacheStats,
+import { Worker } from 'node:worker_threads';
+import { spawnSync } from 'node:child_process';
+import { performance } from 'node:perf_hooks';
+import { loadClaudeRemoteThreads, loadSwitchboardClaudeThreads, parseClaudeRemoteBody, parseClaudeRemoteBodyAsync,
+  shutdownClaudeRemoteParser, claudeRemoteDeepLink, getClaudeRemoteCacheStats,
   invalidateClaudeRemoteData, isClaudeRemoteCacheEvent } from '../src/claude-remote-data.mjs';
 import { loadSwitchboardDashboard, buildSwitchboardDashboard, openSwitchboardThread, PendingTracker,
   switchboardWatchPaths } from '../src/switchboard.mjs';
@@ -60,6 +64,135 @@ test('remote parser projects metadata, follows complete SSE frames, and bounds I
   assert.equal(parseClaudeRemoteBody(Buffer.alloc(8 * 1024 * 1024 + 1)), null);
   const bomb = zlib.gzipSync(Buffer.alloc(17 * 1024 * 1024, 0x61));
   assert.equal(parseClaudeRemoteBody(bomb), null);
+});
+
+test('worker parsing matches the pure parser for approved bodies, partial frames, and byte limits', async () => {
+  const list = Buffer.from(JSON.stringify({ data: [row()], resume_token: cursor(now) }));
+  const events = Buffer.from(watch([row()]) + frame('changed', row(undefined, { title: 'Changed' }))
+    + 'event: changed\ndata: {"id":"cse_01Example","title":"unfinished"');
+  const partial = zlib.gzipSync(events).subarray(0, -8);
+  const complete = Buffer.from(watch([row()]));
+  const exactDecodedLimit = zlib.gzipSync(Buffer.concat([
+    Buffer.from(`:${'a'.repeat(16 * 1024 * 1024 - complete.length - 3)}\n\n`), complete,
+  ]));
+  const cases = [
+    [list, { kind: 'list' }], [zlib.gzipSync(list), { kind: 'list' }],
+    [events, { kind: 'watch', startCursor: cursor(now - 1000), mtimeMs: now }],
+    [zlib.gzipSync(events), {}], [partial, { incomplete: true }], [partial, {}],
+    [events, { incomplete: true }], [Buffer.from('invalid JSON'), { kind: 'list' }],
+    [Buffer.from([0x1f, 0x8b, 0]), {}], [Buffer.alloc(8 * 1024 * 1024 + 1), {}],
+    [exactDecodedLimit, {}], [zlib.gzipSync(Buffer.alloc(16 * 1024 * 1024 + 1, 0x61)), {}],
+    [Buffer.from(frame('added', row()) + frame('sync', {}, 'invalid-cursor')), {}],
+  ];
+  if (zlib.zstdCompressSync) cases.push([zlib.zstdCompressSync(list), { kind: 'list' }]);
+  for (const [body, options] of cases) {
+    const before = Buffer.from(body);
+    assert.deepEqual(await parseClaudeRemoteBodyAsync(body, options), parseClaudeRemoteBody(body, options));
+    assert.deepEqual(body, before);
+  }
+  assert.equal((await parseClaudeRemoteBodyAsync(exactDecodedLimit)).records.size, 1);
+});
+
+test('the shared worker bounds queued bodies, cancels jobs, and recovers after an unexpected exit', async () => {
+  const body = Buffer.from(watch([row()]));
+  await parseClaudeRemoteBodyAsync(body);
+  const before = getClaudeRemoteCacheStats();
+  await parseClaudeRemoteBodyAsync(body);
+  assert.equal(getClaudeRemoteCacheStats().parserStarts, before.parserStarts);
+
+  const pending = Array.from({ length: 512 }, () => parseClaudeRemoteBodyAsync(body));
+  const settled = Promise.allSettled(pending);
+  await assert.rejects(parseClaudeRemoteBodyAsync(body), /queue is full/);
+  await shutdownClaudeRemoteParser();
+  assert.ok((await settled).every((result) => result.status === 'rejected'));
+  assert.equal(getClaudeRemoteCacheStats().parserPending, 0);
+
+  const large = Buffer.alloc(8 * 1024 * 1024);
+  const largeJobs = Array.from({ length: 6 }, () => parseClaudeRemoteBodyAsync(large));
+  const largeSettled = Promise.allSettled(largeJobs);
+  await assert.rejects(parseClaudeRemoteBodyAsync(large), /queue is full/);
+  await shutdownClaudeRemoteParser();
+  assert.ok((await largeSettled).every((result) => result.status === 'rejected'));
+  assert.equal(getClaudeRemoteCacheStats().pendingBodyBytes, 0);
+
+  const postMessage = Worker.prototype.postMessage;
+  Worker.prototype.postMessage = function () { void this.terminate(); };
+  try { await assert.rejects(parseClaudeRemoteBodyAsync(body), /remote cache parser stopped/); }
+  finally { Worker.prototype.postMessage = postMessage; }
+  assert.deepEqual(await parseClaudeRemoteBodyAsync(body), parseClaudeRemoteBody(body));
+  await assert.rejects(parseClaudeRemoteBodyAsync(body, { mtimeMs: () => 0 }), /remote cache parser stopped/);
+  assert.deepEqual(await parseClaudeRemoteBodyAsync(body), parseClaudeRemoteBody(body));
+});
+
+test('pending parser work finishes and an idle worker does not keep Node alive', () => {
+  const moduleUrl = new URL('../src/claude-remote-data.mjs', import.meta.url).href;
+  const script = `import { parseClaudeRemoteBodyAsync } from ${JSON.stringify(moduleUrl)};
+    parseClaudeRemoteBodyAsync(Buffer.from(${JSON.stringify(watch([row()]))}))
+      .then((result) => process.stdout.write(String(result.records.size)));`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '--eval', script], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(child.error, undefined);
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout, '1');
+});
+
+test('large compressed watches leave the event loop responsive during decode and parse', async (t) => {
+  const one = frame('changed', row('cse_synthetic', { title: 'Synthetic '.repeat(14) }));
+  const body = zlib.gzipSync(one.repeat(Math.floor(15 * 1024 * 1024 / Buffer.byteLength(one)))
+    + frame('sync', {}, cursor(now)));
+  await parseClaudeRemoteBodyAsync(Buffer.from(watch([row()])));
+  async function measure(parse) {
+    let ticksDuringParse = 0, maxDelayMs = 0, last = performance.now(), complete = false;
+    const timer = setInterval(() => {
+      const time = performance.now();
+      maxDelayMs = Math.max(maxDelayMs, time - last - 2); last = time;
+      if (!complete) ticksDuringParse += 1;
+    }, 2);
+    try {
+      const start = performance.now();
+      assert.equal((await parse(body)).records.size, 1);
+      const totalMs = performance.now() - start;
+      complete = true;
+      await new Promise((resolve) => setTimeout(resolve, 4));
+      return { ticksDuringParse, totalMs, maxDelayMs };
+    } finally { clearInterval(timer); }
+  }
+  const synchronous = await measure(parseClaudeRemoteBody);
+  const worker = await measure(parseClaudeRemoteBodyAsync);
+  assert.equal(synchronous.ticksDuringParse, 0);
+  assert.ok(worker.ticksDuringParse >= 2);
+  t.diagnostic(JSON.stringify({ synchronous, worker }));
+});
+
+test('concurrent remote scans coalesce and shutdown cancels queued response reads', async (t) => {
+  const appDir = await temp(t);
+  await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions/watch', watch([row()]));
+  const before = getClaudeRemoteCacheStats();
+  const scans = await Promise.all(Array.from({ length: 8 }, () => loadClaudeRemoteThreads({ appDir, nowMs: now })));
+  assert.ok(scans.every((result) => result.threads.length === 1));
+  assert.equal(getClaudeRemoteCacheStats().bodyReads - before.bodyReads, 1);
+  assert.equal(getClaudeRemoteCacheStats().parserJobs - before.parserJobs, 1);
+  const warm = getClaudeRemoteCacheStats();
+  await loadClaudeRemoteThreads({ appDir, nowMs: now });
+  assert.equal(getClaudeRemoteCacheStats().bodyReads, warm.bodyReads);
+
+  const other = await temp(t);
+  for (let index = 0; index < 12; index += 1) await cacheFile(other,
+    `1/0/https://claude.ai/v1/code/sessions/watch?resume_token=${encodeURIComponent(cursor(now - index - 1))}`,
+    watch([row(`cse_${index}`)]));
+  const postMessage = Worker.prototype.postMessage;
+  let stopped;
+  const closing = new Promise((resolve) => { stopped = resolve; });
+  Worker.prototype.postMessage = function (...args) {
+    const result = postMessage.apply(this, args);
+    stopped(shutdownClaudeRemoteParser());
+    return result;
+  };
+  const scan = loadClaudeRemoteThreads({ appDir: other, nowMs: now });
+  const rejected = assert.rejects(scan, /remote cache parser stopped/);
+  try { await closing; await rejected; }
+  finally { Worker.prototype.postMessage = postMessage; }
+  assert.equal(getClaudeRemoteCacheStats().parserPending, 0);
+  assert.equal((await loadClaudeRemoteThreads({ appDir: other, nowMs: now })).threads.length, 1);
 });
 
 test('newest cursor chain excludes old login streams and applies changes and deletions', async (t) => {

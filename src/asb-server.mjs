@@ -4,7 +4,7 @@ import { DashboardSnapshot } from './dashboard-snapshot.mjs';
 import { DEFAULT_PUBLIC_DIR, parseBooleanSearchParam, readJsonBody, sendJson, serveStatic, threadNotFound } from './local-http.mjs';
 
 export function createAsbServer({
-  markUnreadThread = null, markReadThread = null, setUnreadSettings = null, pinThread = null, discardThread = null,
+  markUnreadThread = null, markReadThread = null, setUnreadSettings = null, pinThread = null, discardThread = null, drawerThread = null,
   listSources = null, updateSource = null, removeSource = null, sourceToken = '',
   publicDir = DEFAULT_PUBLIC_DIR, ...snapshotOptions
 } = {}) {
@@ -28,7 +28,7 @@ export function createAsbServer({
       sendJson(response, 403, { error: 'Use the local ASB address.' });
       return;
     }
-    const localAction = url.pathname.match(/^\/api\/threads\/([^/]+)\/(mark-unread|mark-read|pin|unpin|move-pin|discard-result|keep-result)$/);
+    const localAction = url.pathname.match(/^\/api\/threads\/([^/]+)\/(mark-unread|mark-read|pin|unpin|move-pin|discard-result|keep-result|drawer-in|drawer-out)$/);
     const unreadSettingsRoute = url.pathname === '/api/settings/unread';
     const sourcesRoute = url.pathname === '/api/sources' && Boolean(listSources);
     const removeSourceMatch = removeSource && url.pathname.match(/^\/api\/sources\/([a-z0-9][a-z0-9-]{0,79})\/remove$/);
@@ -112,12 +112,14 @@ export function createAsbServer({
         const fields = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join(',') : 'invalid';
         const validMove = fields === 'direction' && ['up', 'down'].includes(body.direction)
           || fields === 'placement,targetId' && typeof body.targetId === 'string' && ['before', 'after'].includes(body.placement);
-        if ((action === 'move-pin' && !validMove) || (action !== 'move-pin' && fields !== '')) {
+        let threadId = null;
+        try { threadId = decodeURIComponent(localAction[1]); } catch {}
+        if (threadId === null || (action === 'move-pin' && !validMove) || (action !== 'move-pin' && fields !== '')) {
           sendJson(response, 400, { error: 'Invalid ASB session action.' });
           return;
         }
         const discardAction = action === 'discard-result' || action === 'keep-result';
-        const thread = await findThreadForAction(decodeURIComponent(localAction[1]), action === 'discard-result');
+        const thread = await findThreadForAction(threadId, action === 'discard-result');
         if (!thread) { threadNotFound(response); return; }
         if (action === 'mark-unread') {
           await markUnreadThread(thread);
@@ -130,6 +132,10 @@ export function createAsbServer({
         } else if (discardAction) {
           await discardThread(thread, action === 'discard-result');
           invalidateDashboard('asb-discard', { hard: false, dirty: false });
+          sendJson(response, 200, { changed: true, threadId: thread.id, thread });
+        } else if (action === 'drawer-in' || action === 'drawer-out') {
+          await drawerThread(thread, action === 'drawer-in');
+          invalidateDashboard('asb-drawer', { hard: false, dirty: false });
           sendJson(response, 200, { changed: true, threadId: thread.id, thread });
         } else {
           if (body.targetId && !await findThreadForAction(body.targetId)) { threadNotFound(response); return; }

@@ -41,7 +41,7 @@ export class DashboardSnapshot {
     let dashboardWatchReconcilePromise = null;
     let dashboardWatchWalkedAtMs = -Infinity;
     let dashboardWatchWalkedPaths = '';
-    let dashboardWatchMissing = [];
+    const dashboardWatchFailures = new Map();
     let dashboardWatchDesired = new Set();
     const dashboardWatchStructure = new Map();
     const adaptiveWatchers = new Map();
@@ -272,6 +272,7 @@ export class DashboardSnapshot {
       previous?.watcher.close?.();
       adaptiveWatchers.delete(targetPath);
       const watcher = watchDashboardPath(targetPath, { recursive }, (event, filename) => {
+        if (adaptiveWatchers.get(targetPath)?.watcher !== watcher) return;
         // The spec filter can drop a directory event, so structure work comes first.
         structureChanged(spec, event, filename, targetPath);
         sourceChanged(spec, event, filename, targetPath);
@@ -281,6 +282,7 @@ export class DashboardSnapshot {
         if (adaptiveWatchers.get(targetPath)?.watcher !== watcher) return;
         watcher.close?.();
         adaptiveWatchers.delete(targetPath);
+        dashboardWatchFailures.set(spec.path, true);
         dashboardWatchCoverage = false;
         sourceChanged(spec, 'rename', null);
       });
@@ -295,7 +297,6 @@ export class DashboardSnapshot {
     // Returns false when only a full walk can restore coverage.
     const applyWatchStructure = async () => {
       try {
-        for (const targetPath of dashboardWatchMissing) if (await stat(targetPath).catch(() => null)) return false;
         for (const [targetPath, spec] of dashboardWatchStructure) {
           dashboardWatchStructure.delete(targetPath);
           const info = await stat(targetPath).catch((error) => {
@@ -321,19 +322,26 @@ export class DashboardSnapshot {
           : [entry?.path, entry?.source, entry?.recursive, entry?.optional]));
         const walkAgeMs = now() - dashboardWatchWalkedAtMs;
         // The directory set almost never changes: events keep it current, and a full walk is the 60 s safety net.
-        if (dashboardWatchCoverage && walkedPaths === dashboardWatchWalkedPaths && walkAgeMs >= 0 && walkAgeMs < 60_000
-          && await applyWatchStructure()) return;
+        const reuse = (dashboardWatchCoverage || dashboardWatchFailures.size > 0)
+          && walkedPaths === dashboardWatchWalkedPaths && walkAgeMs >= 0 && walkAgeMs < 60_000
+          && await applyWatchStructure();
+        if (reuse && !dashboardWatchFailures.size) return;
         if (dashboardClosed) return;
-        serverMetrics.dashboardWatchWalks += 1;
-        dashboardWatchWalkedAtMs = now();
-        dashboardWatchWalkedPaths = walkedPaths;
-        dashboardWatchStructure.clear();
-        const desired = dashboardWatchDesired = new Set();
-        const missing = [];
-        let covered = Boolean(watchPaths.length);
+        if (!reuse) {
+          serverMetrics.dashboardWatchWalks += 1;
+          dashboardWatchWalkedAtMs = now();
+          dashboardWatchWalkedPaths = walkedPaths;
+          dashboardWatchStructure.clear();
+          dashboardWatchFailures.clear();
+        }
+        const failedPaths = new Set(dashboardWatchFailures.keys());
+        const desired = dashboardWatchDesired = new Set(reuse ? [...adaptiveWatchers]
+          .filter(([, entry]) => !failedPaths.has(entry.spec.path)).map(([targetPath]) => targetPath) : []);
+        let recovered = false;
         for (const entry of watchPaths) {
           const spec = typeof entry === 'string' ? { path: entry } : entry;
-          if (!spec?.path) continue;
+          if (!spec?.path || (reuse && !failedPaths.has(spec.path))) continue;
+          dashboardWatchFailures.delete(spec.path);
           // Linux recursive watches cost one inotify watch per file; directory watches still report file appends.
           if (spec.recursive && (dashboardPlatform === 'linux' || adaptiveWatchers.get(spec.path)?.spec?.manualRecursive)) spec.manualRecursive = true;
           try {
@@ -346,16 +354,17 @@ export class DashboardSnapshot {
                 await attachDirectories(spec.path, spec);
               }
             }
+            recovered = true;
           } catch (error) {
-            if (spec.optional && error.code === 'ENOENT') missing.push(spec.path);
-            else covered = false;
+            dashboardWatchFailures.set(spec.path, !(spec.optional && error.code === 'ENOENT'));
           }
         }
         for (const [targetPath, entry] of adaptiveWatchers) {
           if (!desired.has(targetPath) || dashboardClosed) { entry.watcher.close?.(); adaptiveWatchers.delete(targetPath); }
         }
-        dashboardWatchMissing = missing;
-        dashboardWatchCoverage = !dashboardClosed && covered;
+        if (reuse && recovered) serverMetrics.dashboardWatchWalks += 1;
+        dashboardWatchCoverage = !dashboardClosed && Boolean(watchPaths.length)
+          && ![...dashboardWatchFailures.values()].some(Boolean);
       })().finally(() => { dashboardWatchReconcilePromise = null; });
       return dashboardWatchReconcilePromise;
     };

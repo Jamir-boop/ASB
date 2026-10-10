@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { rememberBounded, sameFileSignature, statSignature } from './data-cache.mjs';
+import { rememberBounded, sameFileSignature, SourceCache, statSignature } from './data-cache.mjs';
 import { enrichThreads, normalizeDashboardThreads } from './insights.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -40,12 +40,11 @@ const LOCAL_ARTIFACT_EXTENSIONS = [
   'txt', 'log', 'css', 'go', 'java', 'js', 'json', 'jsx', 'mjs', 'py', 'rs', 'sh', 'ts', 'tsx', 'xml', 'yaml', 'yml',
 ];
 const LOCAL_ARTIFACT_EXTENSION_RE = LOCAL_ARTIFACT_EXTENSIONS.join('|');
-const rolloutSignalCache = new Map();
-const rolloutActivityCache = new Map();
-const codexMetadataCache = new Map();
+const rolloutSignalCache = new SourceCache(DEFAULT_THREAD_LIMIT);
+const rolloutActivityCache = new SourceCache(DEFAULT_THREAD_LIMIT);
+const codexMetadataCache = new SourceCache(32);
 const codexNativeReadCache = new WeakMap();
 const codexCreatorIdentityCache = new Map();
-let rolloutSignalCacheLimit = DEFAULT_THREAD_LIMIT;
 const codexCacheMetrics = {
   rolloutSignalHits: 0,
   rolloutSignalMisses: 0,
@@ -101,9 +100,9 @@ export function parseSessionIndex(jsonlText = '') {
   return titleByThreadId;
 }
 
-async function readSessionIndex(sessionIndexPath = DEFAULT_SESSION_INDEX) {
+async function readSessionIndex(sessionIndexPath = DEFAULT_SESSION_INDEX, cacheScope = '') {
   try {
-    return await readCodexMetadata(sessionIndexPath, parseSessionIndex);
+    return await readCodexMetadata(sessionIndexPath, parseSessionIndex, cacheScope);
   } catch (error) {
     if (error?.code === 'ENOENT') return new Map();
     throw error;
@@ -136,18 +135,18 @@ export function parseCodexPinnedThreadIds(globalState = {}) {
   return threadIds;
 }
 
-async function readCodexGlobalState(globalStatePath = DEFAULT_GLOBAL_STATE) {
+async function readCodexGlobalState(globalStatePath = DEFAULT_GLOBAL_STATE, cacheScope = '') {
   try {
-    return await readCodexMetadata(globalStatePath, JSON.parse);
+    return await readCodexMetadata(globalStatePath, JSON.parse, cacheScope);
   } catch (error) {
     if (error?.code === 'ENOENT') return {};
     throw error;
   }
 }
 
-async function readCodexMetadata(filePath, parse) {
+async function readCodexMetadata(filePath, parse, cacheScope) {
   const signature = statSignature(await fs.stat(filePath));
-  const cached = codexMetadataCache.get(filePath);
+  const cached = codexMetadataCache.get(filePath, cacheScope);
   if (cached && sameFileSignature(cached.signature, signature)) {
     codexCacheMetrics.metadataHits += 1;
     return cached.value;
@@ -156,13 +155,17 @@ async function readCodexMetadata(filePath, parse) {
   const text = await fs.readFile(filePath, 'utf8');
   codexCacheMetrics.metadataBytesRead += Buffer.byteLength(text);
   const value = parse(text);
-  rememberBounded(codexMetadataCache, filePath, { signature, value }, 32);
+  codexMetadataCache.remember(filePath, { signature, value }, cacheScope);
   return value;
 }
 
 export function invalidateCodexData({ filePath = '' } = {}) {
   if (filePath) codexMetadataCache.delete(filePath);
   else codexMetadataCache.clear();
+}
+
+export function retainCodexDataScopes(scopes) {
+  for (const cache of [rolloutSignalCache, rolloutActivityCache, codexMetadataCache]) cache.retainScopes(scopes);
 }
 
 export function codexNativeReadStatus(thread, globalState) {
@@ -404,7 +407,9 @@ export function getCodexCacheStats() {
   return {
     rolloutSignals: {
       entries: rolloutSignalCache.size,
-      limit: rolloutSignalCacheLimit,
+      limit: rolloutSignalCache.limit,
+      lifecycleEntries: rolloutActivityCache.size,
+      lifecycleLimit: rolloutActivityCache.limit,
       hits: codexCacheMetrics.rolloutSignalHits,
       misses: codexCacheMetrics.rolloutSignalMisses,
       writes: codexCacheMetrics.rolloutSignalWrites,
@@ -639,8 +644,8 @@ async function findQuestionCallLine(handle, buffer, start, size) {
   return lineStart;
 }
 
-async function scanRolloutLifecycle(rolloutPath, stat, cacheLimit, needLifecycle = true) {
-  const cached = rolloutActivityCache.get(rolloutPath);
+async function scanRolloutLifecycle(rolloutPath, stat, cacheLimit, needLifecycle = true, cacheScope = '') {
+  const cached = rolloutActivityCache.get(rolloutPath, cacheScope, cacheLimit);
   // A question-only checkpoint has no valid lifecycle, so a caller that needs the lifecycle scans again from the start.
   const append = cached && (cached.full || !needLifecycle) && cached.ino === stat.ino && cached.dev === stat.dev && stat.size >= cached.size
     && (stat.size > cached.size || (stat.mtimeMs === cached.mtimeMs && stat.ctimeMs === cached.ctimeMs));
@@ -701,7 +706,7 @@ async function scanRolloutLifecycle(rolloutPath, stat, cacheLimit, needLifecycle
   applyLines(lastLine);
   const pieces = lastLine.split(ROLLOUT_LINE_BREAK_RE);
   const offset = stat.size - (lastLine.endsWith('\r') ? 0 : Buffer.byteLength(pieces.at(-1) || pieces.at(-2) || ''));
-  rememberBounded(rolloutActivityCache, rolloutPath, { ...statSignature(stat), offset, lifecycle, questions, full }, cacheLimit);
+  rolloutActivityCache.remember(rolloutPath, { ...statSignature(stat), offset, lifecycle, questions, full }, cacheScope, cacheLimit);
   return { ...lifecycle, ...questionSignals(questions) };
 }
 
@@ -739,6 +744,7 @@ export async function readRolloutSignals(
     initialBytes = DEFAULT_INITIAL_ROLLOUT_BYTES,
     maxBytes = DEFAULT_MAX_ROLLOUT_BYTES,
     signalCacheLimit = DEFAULT_THREAD_LIMIT,
+    cacheScope = '',
   } = {},
 ) {
   if (!rolloutPath) return parseRolloutSignals('');
@@ -747,10 +753,10 @@ export async function readRolloutSignals(
     const stat = await fs.stat(rolloutPath);
     const signature = statSignature(stat);
     const cacheLimit = Math.min(DEFAULT_THREAD_LIMIT, Math.max(0, Number(signalCacheLimit) || 0));
-    rolloutSignalCacheLimit = cacheLimit;
     const cacheKey = `${rolloutPath}\0${initialBytes}\0${maxBytes}`;
-    const cached = rolloutSignalCache.get(cacheKey);
+    const cached = rolloutSignalCache.get(cacheKey, cacheScope, cacheLimit);
     if (cached && sameFileSignature(cached.signature, signature)) {
+      rolloutActivityCache.get(rolloutPath, cacheScope, cacheLimit);
       codexCacheMetrics.rolloutSignalHits += 1;
       return cached.signals;
     }
@@ -771,13 +777,13 @@ export async function readRolloutSignals(
     }
     // A human message or an abort clears all earlier questions. Otherwise keep the full history scan.
     if (tailStart > 0 && !(signals.agentRunning !== null && signals[QUESTION_HISTORY_COMPLETE])) {
-      const activity = await scanRolloutLifecycle(rolloutPath, stat, cacheLimit, signals.agentRunning === null);
+      const activity = await scanRolloutLifecycle(rolloutPath, stat, cacheLimit, signals.agentRunning === null, cacheScope);
       signals = finalizeRolloutLifecycle({ ...signals, ...(signals.agentRunning === null ? activity : {}),
         awaitingUserInput: activity.awaitingUserInput, userQuestionBlocking: activity.userQuestionBlocking,
         latestUserQuestionAtMs: activity.latestUserQuestionAtMs, latestBlockingQuestionAtMs: activity.latestBlockingQuestionAtMs });
     }
     delete signals[QUESTION_HISTORY_COMPLETE];
-    rememberBounded(rolloutSignalCache, cacheKey, { signature, signals }, cacheLimit,
+    rolloutSignalCache.remember(cacheKey, { signature, signals }, cacheScope, cacheLimit,
       codexCacheMetrics, 'rolloutSignalWrites', 'rolloutSignalEvictions');
     return signals;
   } catch {
@@ -788,6 +794,7 @@ export async function readRolloutSignals(
 async function attachRolloutSignals(threads, {
   maxRollouts = DEFAULT_THREAD_LIMIT,
   signalCacheLimit = DEFAULT_THREAD_LIMIT,
+  cacheScope = '',
   rolloutThreadFilter = () => true,
   initialRolloutBytes = DEFAULT_INITIAL_ROLLOUT_BYTES,
   maxRolloutBytes = DEFAULT_MAX_ROLLOUT_BYTES,
@@ -806,6 +813,7 @@ async function attachRolloutSignals(threads, {
       initialBytes: initialRolloutBytes,
       maxBytes: maxRolloutBytes,
       signalCacheLimit,
+      cacheScope,
     }),
   );
 
@@ -849,8 +857,8 @@ async function attachRolloutSignals(threads, {
 export async function loadCodexDashboard(options = {}) {
   const nowMs = options.nowMs || Date.now();
   const rows = await readThreads(options);
-  const sessionIndex = await readSessionIndex(options.sessionIndexPath || DEFAULT_SESSION_INDEX);
-  const globalState = await readCodexGlobalState(options.globalStatePath || DEFAULT_GLOBAL_STATE).catch(() => ({}));
+  const sessionIndex = await readSessionIndex(options.sessionIndexPath || DEFAULT_SESSION_INDEX, options.cacheScope);
+  const globalState = await readCodexGlobalState(options.globalStatePath || DEFAULT_GLOBAL_STATE, options.cacheScope).catch(() => ({}));
   const pinnedThreadIds = parseCodexPinnedThreadIds(globalState);
   const indexedRows = applySessionIndexTitles(rows
     .sort((a, b) => threadRowUpdatedAtMs(b) - threadRowUpdatedAtMs(a)), sessionIndex);

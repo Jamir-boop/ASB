@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import * as zlib from 'node:zlib';
+import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { claudeDesktopCodeDeepLink, defaultClaudeAppDir, loadClaudeDesktopCodeThreads } from './claude-data.mjs';
 
 const INITIAL_MAGIC = 0xfcfb6d1ba7725c30n;
@@ -10,9 +11,12 @@ const MAX_DECODED_BYTES = 16 * 1024 * 1024;
 const MAX_SESSIONS = 5000;
 const MAX_INDEX_ENTRIES = 50_000;
 const MAX_RESPONSES = 512;
+const MAX_PENDING_BODY_BYTES = 6 * MAX_BODY_BYTES;
 const ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 const caches = new Map();
-const metrics = { keyReads: 0, bodyReads: 0, directoryReads: 0 };
+const metrics = { keyReads: 0, bodyReads: 0, directoryReads: 0, parserStarts: 0, parserJobs: 0 };
+const parserQueue = [];
+let parserWorker = null, parserRequest = null, parserJob = null, pendingBodyBytes = 0, parserGeneration = 0;
 
 export function claudeRemoteDeepLink(id) {
   return typeof id === 'string' && /^(?:cse|session)_[A-Za-z0-9_-]{1,128}$/.test(id)
@@ -140,6 +144,97 @@ export function parseClaudeRemoteBody(body, { kind = 'watch', startCursor = '', 
   return { kind, startCursor, lastCursor, observedAtMs: invalidReceipt ? 0 : observedAtMs || mtimeMs, mtimeMs, records };
 }
 
+function parserError() {
+  return new Error('The remote cache parser stopped. Retry the source scan.');
+}
+
+function finishParserRequest(result, failed = false) {
+  const request = parserRequest;
+  if (!request) return;
+  parserRequest = null;
+  clearTimeout(request.timer);
+  parserWorker?.unref();
+  failed ? request.reject(parserError()) : request.resolve(result);
+}
+
+function parseInWorker(body, options, generation) {
+  if (generation !== parserGeneration) return Promise.reject(parserError());
+  return new Promise((resolve, reject) => {
+    try {
+      if (!parserWorker) {
+        const worker = new Worker(new URL(import.meta.url), { workerData: 'claude-remote-parser', env: {}, execArgv: [] });
+        parserWorker = worker;
+        metrics.parserStarts += 1;
+        worker.on('message', (message) => {
+          if (parserWorker === worker) finishParserRequest(message?.result, message?.failed || !message || !('result' in message));
+        });
+        const stopped = () => {
+          if (parserWorker !== worker) return;
+          parserWorker = null;
+          finishParserRequest(null, true);
+        };
+        worker.on('error', stopped);
+        worker.on('exit', stopped);
+      }
+      const worker = parserWorker;
+      parserRequest = { resolve, reject, timer: setTimeout(() => {
+        if (parserWorker !== worker) return;
+        parserWorker = null;
+        finishParserRequest(null, true);
+        void worker.terminate();
+      }, 30_000) };
+      worker.ref();
+      metrics.parserJobs += 1;
+      worker.postMessage({ body, options });
+    } catch {
+      if (parserRequest) finishParserRequest(null, true);
+      else reject(parserError());
+    }
+  });
+}
+
+function startParserJob() {
+  if (parserJob || !parserQueue.length) return;
+  const job = parserQueue.shift();
+  parserJob = job;
+  const generation = parserGeneration;
+  const finish = () => {
+    pendingBodyBytes -= job.bytes;
+    parserJob = null;
+    startParserJob();
+  };
+  Promise.resolve().then(() => job.run(generation)).then(
+    (result) => { finish(); job.resolve(result); },
+    (error) => { finish(); job.reject(error); },
+  );
+}
+
+function queueParserJob(run, bytes = 0) {
+  if (parserQueue.length + Number(Boolean(parserJob)) >= MAX_RESPONSES
+    || pendingBodyBytes + bytes > MAX_PENDING_BODY_BYTES) {
+    return Promise.reject(new Error('The remote cache parser queue is full. Retry the source scan.'));
+  }
+  return new Promise((resolve, reject) => {
+    pendingBodyBytes += bytes;
+    parserQueue.push({ run, bytes, resolve, reject });
+    startParserJob();
+  });
+}
+
+export function parseClaudeRemoteBodyAsync(body, { kind = 'watch', startCursor = '', incomplete = false, mtimeMs = 0 } = {}) {
+  if (!Buffer.isBuffer(body) || body.length > MAX_BODY_BYTES) return Promise.resolve(null);
+  return queueParserJob((generation) => parseInWorker(body, { kind, startCursor, incomplete, mtimeMs }, generation), body.length);
+}
+
+export async function shutdownClaudeRemoteParser() {
+  parserGeneration += 1;
+  for (const job of parserQueue.splice(0)) { pendingBodyBytes -= job.bytes; job.reject(parserError()); }
+  const worker = parserWorker;
+  parserWorker = null;
+  finishParserRequest(null, true);
+  await worker?.terminate();
+}
+
 async function readBytes(file, length, position) {
   const buffer = Buffer.alloc(length);
   const { bytesRead } = await file.read(buffer, 0, length, position);
@@ -157,7 +252,13 @@ async function readKey(file) {
   return key ? { ...sourceKey(key.toString('utf8')), bodyStart: 24 + length } : { retry: true };
 }
 
-async function readResponse(filePath, key) {
+function readResponse(filePath, key, generation) {
+  if (generation !== parserGeneration) return Promise.reject(parserError());
+  // Queue the read too, so concurrent source scans do not retain large bodies behind the worker.
+  return queueParserJob(() => readResponseBody(filePath, key, generation));
+}
+
+async function readResponseBody(filePath, key, generation) {
   const file = await fs.open(filePath, 'r');
   try {
     const stat = await file.stat();
@@ -193,7 +294,8 @@ async function readResponse(filePath, key) {
       if (body.includes(marker)) return null;
     }
     metrics.bodyReads += 1;
-    return parseClaudeRemoteBody(body, { ...key, incomplete: !complete, mtimeMs: stat.mtimeMs });
+    return await parseInWorker(body, { kind: key.kind, startCursor: key.startCursor,
+      incomplete: !complete, mtimeMs: stat.mtimeMs }, generation);
   } finally { await file.close(); }
 }
 
@@ -210,6 +312,7 @@ function boundedResponses(cache, nowMs) {
 }
 
 async function scanCache(root, cache, nowMs) {
+  const generation = parserGeneration;
   const directory = await fs.stat(root);
   if (signature(directory) !== cache.directorySignature) {
     metrics.directoryReads += 1;
@@ -219,7 +322,7 @@ async function scanCache(root, cache, nowMs) {
     let next = 0;
     const unknown = names.filter((name) => !cache.keys.has(name)).slice(0, Math.max(0, MAX_INDEX_ENTRIES - cache.keys.size));
     await Promise.all(Array.from({ length: 6 }, async () => {
-      while (next < unknown.length) {
+      while (next < unknown.length && generation === parserGeneration) {
         const name = unknown[next++];
         let file;
         try {
@@ -232,13 +335,14 @@ async function scanCache(root, cache, nowMs) {
         finally { await file?.close(); }
       }
     }));
+    if (generation !== parserGeneration) { cache.directorySignature = ''; throw parserError(); }
     cache.directorySignature = signature(directory);
   }
   const candidates = [...cache.keys].filter(([, key]) => key?.kind || key?.retry);
   let next = 0;
   const files = [];
   await Promise.all(Array.from({ length: 6 }, async () => {
-    while (next < candidates.length) {
+    while (next < candidates.length && generation === parserGeneration) {
       const [name, storedKey] = candidates[next++], filePath = path.join(root, name);
       try {
         const stat = await fs.stat(filePath), stamp = signature(stat);
@@ -254,20 +358,22 @@ async function scanCache(root, cache, nowMs) {
       } catch { cache.responses.delete(name); cache.keys.delete(name); cache.directorySignature = ''; }
     }
   }));
+  if (generation !== parserGeneration) { cache.directorySignature = ''; throw parserError(); }
   files.sort((a, b) => b.mtimeMs - a.mtimeMs);
   next = 0;
   await Promise.all(Array.from({ length: 6 }, async () => {
-    while (next < Math.min(files.length, MAX_RESPONSES)) {
+    while (next < Math.min(files.length, MAX_RESPONSES) && generation === parserGeneration) {
       const { name, key, filePath, stamp } = files[next++];
       if (key.signature === stamp) continue;
       try {
-        const response = await readResponse(filePath, key);
+        const response = await readResponse(filePath, key, generation);
         if (response) { cache.responses.set(name, response); boundedResponses(cache, nowMs); }
         else cache.responses.delete(name);
         key.signature = stamp;
       } catch { cache.responses.delete(name); cache.keys.delete(name); cache.directorySignature = ''; }
     }
   }));
+  if (generation !== parserGeneration) { cache.directorySignature = ''; throw parserError(); }
   boundedResponses(cache, nowMs);
 }
 
@@ -407,7 +513,17 @@ export function isClaudeRemoteCacheEvent(root, filename, event) {
 // Read counters and cache sizes, for the tests of the read and size limits.
 export function getClaudeRemoteCacheStats() {
   return { ...metrics,
+    parserPending: parserQueue.length + Number(Boolean(parserJob)), pendingBodyBytes,
     responseEntries: [...caches.values()].reduce((sum, cache) => sum + cache.responses.size, 0),
     sessionEntries: [...caches.values()].reduce((sum, cache) => sum + [...cache.responses.values()]
       .reduce((count, response) => count + response.records.size, 0), 0) };
+}
+
+if (!isMainThread && workerData === 'claude-remote-parser') {
+  parentPort.on('message', ({ body, options }) => {
+    try {
+      const bytes = Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+      parentPort.postMessage({ result: parseClaudeRemoteBody(bytes, options) });
+    } catch { parentPort.postMessage({ failed: true }); }
+  });
 }
