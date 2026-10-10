@@ -116,12 +116,59 @@ test('the shared worker bounds queued bodies, cancels jobs, and recovers after a
   assert.equal(getClaudeRemoteCacheStats().pendingBodyBytes, 0);
 
   const postMessage = Worker.prototype.postMessage;
-  Worker.prototype.postMessage = function () { void this.terminate(); };
+  Worker.prototype.postMessage = function () { postMessage.call(this, { close: true }); };
   try { await assert.rejects(parseClaudeRemoteBodyAsync(body), /remote cache parser stopped/); }
   finally { Worker.prototype.postMessage = postMessage; }
   assert.deepEqual(await parseClaudeRemoteBodyAsync(body), parseClaudeRemoteBody(body));
   await assert.rejects(parseClaudeRemoteBodyAsync(body, { mtimeMs: () => 0 }), /remote cache parser stopped/);
   assert.deepEqual(await parseClaudeRemoteBodyAsync(body), parseClaudeRemoteBody(body));
+});
+
+test('shutdown and deadlines drain native parsing before starting a replacement worker', async () => {
+  const one = frame('changed', row('cse_synthetic', { title: 'Synthetic '.repeat(14) }));
+  const text = Buffer.from(one.repeat(Math.floor(8 * 1024 * 1024 / Buffer.byteLength(one)))
+    + frame('sync', {}, cursor(now)));
+  const bodies = [zlib.gzipSync(text)];
+  if (zlib.zstdCompressSync) bodies.push(zlib.zstdCompressSync(text));
+  const small = Buffer.from(watch([row()]));
+  const postMessage = Worker.prototype.postMessage, setTimeout = globalThis.setTimeout;
+  const workers = new Set();
+  let dispatched, deadline, peakWorkers = 0, closeMessages = 0;
+  Worker.prototype.postMessage = function (message, ...args) {
+    if (!workers.has(this)) {
+      workers.add(this); peakWorkers = Math.max(peakWorkers, workers.size);
+      this.once('exit', () => workers.delete(this));
+    }
+    const result = postMessage.call(this, message, ...args);
+    if (message.close) closeMessages += 1;
+    if (message.body && dispatched) { const resolve = dispatched; dispatched = null; resolve(); }
+    return result;
+  };
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    if (delay === 30_000) deadline = callback;
+    return setTimeout(callback, delay, ...args);
+  };
+  try {
+    for (const body of bodies) for (const mode of ['shutdown', 'deadline']) {
+      await parseClaudeRemoteBodyAsync(small);
+      const sent = new Promise((resolve) => { dispatched = resolve; });
+      const rejected = assert.rejects(parseClaudeRemoteBodyAsync(body), /remote cache parser stopped/);
+      await sent;
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      const closing = mode === 'shutdown' ? shutdownClaudeRemoteParser() : (deadline(), null);
+      const recovered = parseClaudeRemoteBodyAsync(small);
+      await rejected;
+      await closing;
+      assert.deepEqual(await recovered, parseClaudeRemoteBody(small));
+      assert.equal(getClaudeRemoteCacheStats().parserPending, 0);
+    }
+    assert.equal(peakWorkers, 1);
+    assert.equal(closeMessages, bodies.length * 2);
+  } finally {
+    Worker.prototype.postMessage = postMessage;
+    globalThis.setTimeout = setTimeout;
+    await shutdownClaudeRemoteParser();
+  }
 });
 
 test('pending parser work finishes and an idle worker does not keep Node alive', () => {
@@ -184,7 +231,7 @@ test('concurrent remote scans coalesce and shutdown cancels queued response read
   const closing = new Promise((resolve) => { stopped = resolve; });
   Worker.prototype.postMessage = function (...args) {
     const result = postMessage.apply(this, args);
-    stopped(shutdownClaudeRemoteParser());
+    if (args[0].body) stopped(shutdownClaudeRemoteParser());
     return result;
   };
   const scan = loadClaudeRemoteThreads({ appDir: other, nowMs: now });

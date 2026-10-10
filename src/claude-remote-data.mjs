@@ -16,7 +16,7 @@ const ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 const caches = new Map();
 const metrics = { keyReads: 0, bodyReads: 0, directoryReads: 0, parserStarts: 0, parserJobs: 0 };
 const parserQueue = [];
-let parserWorker = null, parserRequest = null, parserJob = null, pendingBodyBytes = 0, parserGeneration = 0;
+let parserWorker = null, parserClosing = null, parserRequest = null, parserJob = null, pendingBodyBytes = 0, parserGeneration = 0;
 
 export function claudeRemoteDeepLink(id) {
   return typeof id === 'string' && /^(?:cse|session)_[A-Za-z0-9_-]{1,128}$/.test(id)
@@ -157,7 +157,19 @@ function finishParserRequest(result, failed = false) {
   failed ? request.reject(parserError()) : request.resolve(result);
 }
 
-function parseInWorker(body, options, generation) {
+function closeParserWorker() {
+  const worker = parserWorker;
+  if (!worker) return parserClosing;
+  parserWorker = null;
+  parserClosing = new Promise((resolve) => worker.once('exit', resolve)).finally(() => { parserClosing = null; });
+  // Let synchronous native decompression return before worker cleanup starts.
+  worker.ref();
+  worker.postMessage({ close: true });
+  return parserClosing;
+}
+
+async function parseInWorker(body, options, generation) {
+  await parserClosing;
   if (generation !== parserGeneration) return Promise.reject(parserError());
   return new Promise((resolve, reject) => {
     try {
@@ -179,9 +191,7 @@ function parseInWorker(body, options, generation) {
       const worker = parserWorker;
       parserRequest = { resolve, reject, timer: setTimeout(() => {
         if (parserWorker !== worker) return;
-        parserWorker = null;
-        finishParserRequest(null, true);
-        void worker.terminate();
+        void shutdownClaudeRemoteParser();
       }, 30_000) };
       worker.ref();
       metrics.parserJobs += 1;
@@ -229,10 +239,9 @@ export function parseClaudeRemoteBodyAsync(body, { kind = 'watch', startCursor =
 export async function shutdownClaudeRemoteParser() {
   parserGeneration += 1;
   for (const job of parserQueue.splice(0)) { pendingBodyBytes -= job.bytes; job.reject(parserError()); }
-  const worker = parserWorker;
-  parserWorker = null;
+  const closing = closeParserWorker();
   finishParserRequest(null, true);
-  await worker?.terminate();
+  await closing;
 }
 
 async function readBytes(file, length, position) {
@@ -520,7 +529,8 @@ export function getClaudeRemoteCacheStats() {
 }
 
 if (!isMainThread && workerData === 'claude-remote-parser') {
-  parentPort.on('message', ({ body, options }) => {
+  parentPort.on('message', ({ body, options, close }) => {
+    if (close) { parentPort.close(); return; }
     try {
       const bytes = Buffer.from(body.buffer, body.byteOffset, body.byteLength);
       parentPort.postMessage({ result: parseClaudeRemoteBody(bytes, options) });

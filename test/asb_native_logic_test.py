@@ -1054,6 +1054,8 @@ class NativeLogicChecks(unittest.TestCase):
         strip.queue_draw = Mock()
         strip.get_settings = Mock(return_value=Mock(get_property=Mock(return_value=True)))
         strip.hover_animation = Mock(reset=Mock(side_effect=lambda: strip.advance_hover(0)))
+        strip.hover_rect = strip.hover_target = strip.hover_from = strip.hover_to = None
+        strip.hover_alpha = 0
         strip.clear_hover()
         first, second, across = (0, 0, 240, 68), (0, 68, 240, 68), (252, 0, 240, 68)
         strip.show_hover(first)
@@ -1083,7 +1085,13 @@ class NativeLogicChecks(unittest.TestCase):
         strip.show_hover(first)
         strip.advance_hover(.5)
         self.assertEqual(strip.hover_rect, first)
+        strip.queue_draw.reset_mock()
+        strip.hover_animation.reset.reset_mock()
         strip.clear_hover()
+        for _frame in range(20):
+            strip.clear_hover()
+        strip.queue_draw.assert_called_once_with()
+        strip.hover_animation.reset.assert_called_once_with()
         self.assertEqual(classes, set())
         strip.queue_draw.reset_mock()
         strip.advance_hover(.5)
@@ -1097,6 +1105,38 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertEqual(strip.hover_alpha, 1 if rectangle else 0)
             self.assertEqual(classes, {"asb-hover-paint"} if rectangle else set())
         strip.hover_animation.play.assert_not_called()
+
+    def test_scroll_does_not_restart_hover_paint_for_a_stationary_pointer(self):
+        window = object.__new__(Window)
+        window.view, window.closed, window.dragging = "comfortable", False, False
+        window.scroll_target, window.scroll_updating = None, False
+        window.list_body = Mock()
+        window.list_body.pick.return_value = None
+        window.cancel_scroll = Mock()
+        position = [True, 100, 200]
+        controller = SimpleNamespace(get_current_event=lambda: SimpleNamespace(get_position=lambda: position))
+        with patch.dict(SCOPE, {"Gtk": SimpleNamespace(PickFlags=SimpleNamespace(DEFAULT=0))}):
+            window.hover_motion(controller, 100, 200)
+            window.list_body.pick.assert_called_once()
+            window.list_body.reset_mock()
+            for frame in range(20):
+                window.scroll_updating = True
+                window.scroll_position_changed()
+                window.scroll_updating = False
+                window.hover_motion(controller, 100 + frame, 200)
+            window.list_body.pick.assert_not_called()
+            window.list_body.show_hover.assert_not_called()
+            window.cancel_scroll.assert_not_called()
+            window.hover_motion(None, 150, 200)
+            window.list_body.pick.assert_not_called()
+            position[1] += 1  # A real pointer move restores the normal hover path.
+            window.hover_motion(controller, 151, 200)
+            window.list_body.pick.assert_called_once()
+            window.list_body.show_hover.assert_called_once_with(None)
+            window.scroll_target = 300
+            position[1] += 1
+            window.hover_motion(controller, 152, 200)
+            self.assertEqual(window.list_body.pick.call_count, 1)
 
     def test_wheel_scroll_retargets_clamps_and_yields_to_native_input(self):
         window = object.__new__(Window)

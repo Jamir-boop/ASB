@@ -610,10 +610,13 @@ class SessionStrip(Gtk.Box):
         self.hover_alpha = frame[4]
         self.hover_rect = frame[:4] if self.hover_alpha > 0 else None
         if self.hover_target is None and self.hover_alpha <= 0:
+            self.hover_from = self.hover_to = None
             self.remove_css_class("asb-hover-paint")
         self.queue_draw()
 
     def clear_hover(self, *_args):
+        if self.hover_rect is None and self.hover_target is None and self.hover_from is None:
+            return
         self.hover_rect = self.hover_target = self.hover_from = self.hover_to = None
         self.hover_alpha = 0
         self.hover_animation.reset()
@@ -1811,6 +1814,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             animation.reset()
 
     def scroll_position_changed(self, *_args):
+        self.scroll_hover_blocked = True
         self.list_body.clear_hover()
         if not self.scroll_updating:
             self.cancel_scroll()
@@ -1874,6 +1878,19 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             animation.skip()
 
     def hover_motion(self, _controller, x, y):
+        event = _controller.get_current_event() if _controller else None
+        found, px, py = event.get_position() if event else (False, 0, 0)
+        pointer = (px, py) if found else None
+        if self.scroll_target is not None or self.scroll_updating:
+            self.list_body.clear_hover()
+            self.scroll_hover_blocked = True
+            return
+        # GTK also emits motion when scrolling changes the row under a stationary pointer.
+        if getattr(self, "scroll_hover_blocked", False):
+            if pointer is None or pointer == getattr(self, "hover_pointer", None):
+                return
+            self.scroll_hover_blocked = False
+        self.hover_pointer = pointer
         rectangle = None
         if self.view == "comfortable" and not self.closed and not self.dragging:
             widget = self.list_body.pick(x, y, Gtk.PickFlags.DEFAULT)
