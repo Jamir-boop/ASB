@@ -2,6 +2,19 @@
 
 ## Latest publication
 
+ASB [1.6.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.6.0) was published on `2026-10-09` (Lima). Its source and tag use commit [c122324](https://github.com/Jamir-boop/ASB/commit/c1223247006eb6713a5c6424e3be3ef9d7696ab5).
+
+- Uploaded `asb_1.6.0_all.deb`, `asb-1.6.0-linux.tar.gz`, and `SHA256SUMS`. All three downloads matched local bytes and hashes. [CI](https://github.com/Jamir-boop/ASB/actions/runs/38023748369) passed on Node.js `22.13.0` and `24`.
+- Local checks passed 269 Node tests on Node.js `24.21`, 74 native logic tests, Python compilation, and diff checks. All 30 runtime payload files matched source bytes. Debian metadata, runtime, reproducibility, and installer fixtures passed. The final Debian `Installed-Size` was 475 KiB.
+- A synthetic upgrade from `1.5.0` to `1.6.0` kept settings, three marks, two pins, drawer state, and Persistent unread.
+- The current-user portable install used the downloaded release and passed. All 30 installed runtime files matched source bytes; the manifest used `1.6.0`. Two ASB processes ran one window. The API returned HTTP `200`, with 154 rows and no duplicate IDs. The `1182x350` window size was restored.
+- Theme, layout, and source hashes and modes stayed unchanged. Pending bytes stayed unchanged during installation. After start, the record count, manual marks, pins, and Persistent unread stayed unchanged.
+- A synthetic 120-card check compared scrolling before and after the hover fix. Wheel-burst scrolling changed from 19.73 to 56.89 FPS; reversal changed from 14.98 to 60.01 FPS. The outside-pointer case was about 60 FPS. The hidden display used GL, the test accessibility backend (`GTK_A11Y=test`), four rows per column, and a fixed pointer. This was not a physical-pointer check. One 42 ms paint remained. See [release notes](releases/v1.6.0.md) for the other samples and limits.
+- Privacy checks covered 16 history commits and 339 blobs, plus incremental diffs. The upstream MIT license and exact README video link stayed unchanged.
+- The full GTK widget suite was not rerun after the performance changes. No Debian `apt install`, real-chat opens, or Node.js `20` + SQLite CLI reader check was run. Native pixel fidelity and real-app GUI opening remain unverified.
+
+## Earlier publications
+
 ASB [1.5.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.5.0) was published on `2026-10-09` (Lima). Its source and tag use commit [e22a046](https://github.com/Jamir-boop/ASB/commit/e22a0466aef560cd77a7e5be47ede11e3c6ad620).
 
 - Uploaded `asb_1.5.0_all.deb`, `asb-1.5.0-linux.tar.gz`, and `SHA256SUMS`. All three downloads matched local bytes and hashes.
@@ -13,8 +26,6 @@ ASB [1.5.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.5.0) was published
 - The GTK widget test file was run on one X11 machine. Four of its eight tests passed, including the new test for card motion, the wheel spring, and the column width. Four failed in the same way as with the `1.3.0` code, because their expectations are older than the `1.3.0` layout. On that display, with synthetic rows: a card motion painted at about 60 frames per second and painted no frame after its end while the pointer was outside the window; one wheel click reached 90% of its distance in 199 ms and ended on its target at 379 ms with no overshoot; search results with long titles kept the shared column width; no widget had focus after start. The row tooltip was built under GTK for 14 synthetic rows in both views and both color modes with no error.
 - Privacy scans covered the 1421 added lines of the release commit. They found no secrets or private state. The upstream MIT license and exact README video link stayed unchanged.
 - No Debian `apt install` or real-app GUI opens were run. Native pixel fidelity and real-app GUI opening remain unverified. The Node.js `20` reader path with the `sqlite3` command was not run.
-
-## Earlier publications
 
 ASB [1.4.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.4.0) was published on `2026-10-09` (Lima). Its source and tag use commit [95883c1](https://github.com/Jamir-boop/ASB/commit/95883c1aaa82e1ca3f2ce06ced549dfe863a4c23).
 
