@@ -8,24 +8,24 @@ https://github.com/user-attachments/assets/c85742f4-d1b0-4ffc-9497-144069fec36b
 
 ## Install on Linux
 
-[Download v1.6.1](https://github.com/Jamir-boop/ASB/releases/tag/v1.6.1) · [Release notes](docs/releases/v1.6.1.md) · [Checksums](https://github.com/Jamir-boop/ASB/releases/download/v1.6.1/SHA256SUMS)
+[Download v1.7.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.7.0) · [Release notes](docs/releases/v1.7.0.md) · [Checksums](https://github.com/Jamir-boop/ASB/releases/download/v1.7.0/SHA256SUMS)
 
 Needs Node.js `>=20` (`sqlite3` below `22.13`), Python 3 with PyGObject, GTK `>=4.12`, Libadwaita `>=1.4`, and `xdg-utils`.
 
 Install Codex and Claude Desktop first, with working `codex:` and `claude:` URL handlers.
 
-**Debian:** [asb_1.6.1_all.deb](https://github.com/Jamir-boop/ASB/releases/download/v1.6.1/asb_1.6.1_all.deb)
+**Debian:** [asb_1.7.0_all.deb](https://github.com/Jamir-boop/ASB/releases/download/v1.7.0/asb_1.7.0_all.deb)
 
 ```bash
-sudo apt install ./asb_1.6.1_all.deb
+sudo apt install ./asb_1.7.0_all.deb
 asb
 ```
 
-**Portable (per-user):** [asb-1.6.1-linux.tar.gz](https://github.com/Jamir-boop/ASB/releases/download/v1.6.1/asb-1.6.1-linux.tar.gz)
+**Portable (per-user):** [asb-1.7.0-linux.tar.gz](https://github.com/Jamir-boop/ASB/releases/download/v1.7.0/asb-1.7.0-linux.tar.gz)
 
 ```bash
-tar -xzf asb-1.6.1-linux.tar.gz
-cd asb-1.6.1
+tar -xzf asb-1.7.0-linux.tar.gz
+cd asb-1.7.0
 ./install.sh
 ~/.local/bin/asb
 ```

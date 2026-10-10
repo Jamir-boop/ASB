@@ -96,7 +96,7 @@
         "note": "These fractions seed the custom editor. They do not change GNOME colors."
       },
       "behavior": {
-        "apply": "Validate, atomically save, then apply in the current ASB window.",
+        "apply": "Validate, atomically save, then apply in the main and Preferences windows.",
         "pickerChange": "Does not apply until Apply theme is activated.",
         "reset": "Delete the custom file and restore GNOME roles.",
         "invalidInput": "Show the error; retain the applied theme and saved file.",
@@ -145,7 +145,7 @@
           "Native divider drag",
           "Accessible Gtk.SpinButton"
         ],
-        "save": "After drag end or menu value change.",
+        "save": "After drag end or Appearance field change.",
         "path": "$XDG_CONFIG_HOME/asb/layout.json",
         "fallbackPath": "~/.config/asb/layout.json",
         "reset": "240px; remove saved width and preserve optional view.",
@@ -158,7 +158,7 @@
         "visibleFooter": false,
         "pendingAndCount": "Inline at 680px or wider; second short row below.",
         "filters": "Native Codex/Claude/Pending/Working/Drawer toggle pills, inline at680px or secondary row below. In a narrow window the word Drawer can ellipsize and the count text can shrink to no width. The count text starts with the Pending number (N Pending · M sessions), so the default 420px window, which cuts the end of the text with five pills, still shows the Pending count.",
-        "settingsDismissal": "Keep focus in open popup during repack. Native autohide and one root outside-click hit test dismiss it; restore remembered row after close."
+        "settings": "Toolbar button opens or raises one separate, retained, nonmodal native Preferences window. List repacking does not rebuild its controls or take their focus."
       },
       "views": {
         "default": "compact",
@@ -282,6 +282,41 @@
         "purpose": "Current unacknowledged ASB attention, independent of execution. Native/manual/completion/question sources stay distinct."
       },
       {
+        "name": "Preferences",
+        "approvedOption": "B",
+        "gtkClasses": [
+          "Adw.Window",
+          "Gtk.Stack",
+          "Gtk.StackSidebar",
+          "Gtk.StackSwitcher",
+          "Adw.Breakpoint"
+        ],
+        "sections": {
+          "Sessions": [
+            "App",
+            "Status",
+            "Show archived sessions",
+            "Persistent unread"
+          ],
+          "Appearance": [
+            "View",
+            "Column width",
+            "Reset width",
+            "GNOME colors / Custom colors",
+            "Background / Text / Accent / Muted / Divider",
+            "Apply theme",
+            "Reset to GNOME"
+          ],
+          "Profiles": "Existing source table and editor, with all fields, default locks, Add/Save/Remove/Cancel/Refresh, validation, status, and authenticated API actions."
+        },
+        "navigation": "Left Gtk.StackSidebar at wide widths; Gtk.StackSwitcher tabs above the page at max-width:600px.",
+        "lifetime": "Repeated opens raise the same window. Close hides it and keeps the selected section and form edits. Main shutdown destroys it.",
+        "profilesLoad": "Create and load only on the first visit. Explicit source actions keep their existing load behavior. Section changes and reopening keep form edits without a reload.",
+        "theme": "Use the same GNOME or saved custom palette as the main window.",
+        "overflow": "Page content scrolls when height is small.",
+        "scope": "No new timer, background source scan, dependency, or backend route. Keep settings storage, main cards, borders, and scrolling unchanged."
+      },
+      {
         "name": "Search and filters",
         "gtkClasses": [
           "Gtk.SearchEntry",
@@ -290,12 +325,11 @@
           "Gtk.ToggleButton"
         ],
         "pendingSwitch": "Pending toggle pill in main toolbar; accessible name Pending only.",
-        "menu": [
+        "preferencesSessions": [
           "App",
           "Status",
           "Show archived sessions",
-          "Persistent unread",
-          "Theme"
+          "Persistent unread"
         ],
         "count": "Filtered session count and filtered Pending count.",
         "prefixes": {
@@ -310,7 +344,7 @@
           "behavior": "Case-insensitive; optional spaces; prefix temporarily overrides app filter; unknown prefix stays literal."
         },
         "states": {
-          "control": "Gtk.CheckButton set in native popover",
+          "control": "Gtk.CheckButton set in Preferences > Sessions",
           "default": "All four states",
           "clear": "No selected states hides all sessions.",
           "summary": "All states or N states"
@@ -318,6 +352,7 @@
       },
       {
         "name": "Theme editor",
+        "section": "Preferences > Appearance",
         "gtkClass": "Gtk.ColorDialogButton",
         "fields": [
           "Background",
@@ -404,13 +439,13 @@
         "codex",
         "claude-desktop-code"
       ],
-      "selection": "One set shared with app menu. No selected provider or both means all; one means that provider.",
+      "selection": "One set shared with the App field in Preferences > Sessions. No selected provider or both means all; one means that provider.",
       "pending": "AND filter using existing ASB attention.",
       "drawer": "Shows only drawer rows, as unread. Combines with app pills, search, state filters, and archive. Turning Drawer on turns Pending off, and the reverse. Accent count bubble of the drawer rows that the archive setting allows; search, app pills, and state filters do not change it. Hidden at zero; 99+ from 100. Checked: accent background with an inverted bubble.",
       "prefix": "Temporarily overrides selected apps while present."
     },
     "persistentUnread": {
-      "control": "Gtk.CheckButton in existing menu",
+      "control": "Gtk.CheckButton in Preferences > Sessions",
       "help": "Use Read in the row menu to clear dots.",
       "scope": "Shared ASB tracker state, separate from layout/theme.",
       "route": "POST /api/settings/unread with persistentUnread boolean",

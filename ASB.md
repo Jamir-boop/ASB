@@ -2,7 +2,7 @@
 
 ASB lists Codex and Claude Desktop Code chats. It also lists remote Code sessions observed in Claude's local cache. Select a row to open that chat in its original app. The Linux native window uses GTK and Libadwaita. ASB makes no model calls and does not send prompts.
 
-See [README.md](README.md) for v1.6.1 packages and runtime requirements.
+See [README.md](README.md) for v1.7.0 packages and runtime requirements.
 
 ## Layout and search
 
@@ -12,7 +12,7 @@ Mouse-wheel scrolling moves to its target with a spring. The speed stays continu
 
 In Comfortable, one hover highlight moves between cards and columns in 200 ms. It fades in or out in 100 ms. Cards stay fixed. With GNOME animations off, the highlight changes immediately. Wheel scrolling clears the shared highlight once and keeps it off during the spring. Motion from a stationary pointer afterward does not restart it. Move the pointer again to restore the glide. Native row hover and keyboard focus still work. Compact keeps its static hover.
 
-When data or a filter changes the order or the set of visible cards, the cards move in both views. Each card that stays visible glides from its old place to its new place in about 350 ms. Each new card fades in. A card that leaves disappears at once. This applies to Read, a refresh with a new order, a pin move, a card that goes in or out of the drawer, search text, the pills, the menu filters, and the archive setting. A new change during the motion starts from the current painted places. There is no motion at start, when the window size, column width, or view changes, or with GNOME animations off. Pointer input, keyboard focus, and screen readers use the final layout at all times. The hover highlight clears when a motion starts.
+When data or a filter changes the order or the set of visible cards, the cards move in both views. Each card that stays visible glides from its old place to its new place in about 350 ms. Each new card fades in. A card that leaves disappears at once. This applies to Read, a refresh with a new order, a pin move, a card that goes in or out of the drawer, search text, the pills, the Preferences filters, and the archive setting. A new change during the motion starts from the current painted places. There is no motion at start, when the window size, column width, or view changes, or with GNOME animations off. Pointer input, keyboard focus, and screen readers use the final layout at all times. The hover highlight clears when a motion starts.
 
 Comfortable uses quiet title, folder, state, and age text for Idle chats with no ASB unread dot or Pending attention. Hover or keyboard focus restores normal text. Pins and provider marks keep their normal strength. Source read status does not change this rule.
 
@@ -20,7 +20,7 @@ Hover a row to see the Unfolded card tooltip in either view. It shows the full f
 
 Tooltip queries use current time and row data. Unchanged content is reused; changed text, profile or theme rebuilds it without a source read. Theme changes clear hidden-row tooltip caches too.
 
-Drag a column divider to change the width of all columns. The menu also has **Column width** (160–600 pixels) and **Reset width**. The default is 240 pixels. Columns keep the shared width when the list has fewer columns than the window can show, for example in search results. A view change keeps your search, filters, pins, and focused chat. Keyboard navigation reveals a focused row when it is outside the visible area.
+Drag a column divider to change the width of all columns. **Appearance** in Preferences also has **Column width** (160–600 pixels) and **Reset width**. The default is 240 pixels. Columns keep the shared width when the list has fewer columns than the window can show, for example in search results. A view change keeps your search, filters, pins, and focused chat. Keyboard navigation reveals a focused row when it is outside the visible area.
 
 Search names, folders, or app-source names. Results update when the text changes. A row title has at most 300 characters; a longer title ends with `…`. Codex can store a full prompt as a title. Search matches the limited title, and the tooltip shows it. Claude Desktop Code titles keep their own shorter limit. A leading `cl:` or `claude:` selects Claude. A leading `cx:` or `codex:` selects Codex. Prefixes ignore case and permit spaces. A prefix alone lists that app. A prefix takes priority over the app filter while it is present. The other filters still apply. Unknown prefixes remain literal search text.
 
@@ -28,7 +28,7 @@ At start, no control has the keyboard focus. Type a printable key to enter searc
 
 ## Filters and pins
 
-Use the **Codex**, **Claude**, **Pending**, **Working**, and **Drawer** toolbar pills. No selected app means all apps; both app pills mean their union. The menu uses the same app selection. **Working** alone selects only Working; turn it off to restore all states. It shares the state menu and is active only when Working is the sole selected state. **Pending** alone shows Pending chats. Together, **Working** and **Pending** show Working or chats with Pending or an ASB unread dot. App, search, and archive filters still apply. The state menu has independent **Working**, **Waiting**, **Idle**, and **Unknown** choices. Other state combinations keep Pending as an AND filter. **All states** selects all. **Clear states** hides all rows until you select a state. Archived chats are hidden by default. **Drawer** shows only the chats in the drawer; see [The drawer](#the-drawer). It combines with the app pills, search, the state filters, and the archive setting. It does not combine with **Pending**: turning one on turns the other off.
+Use the **Codex**, **Claude**, **Pending**, **Working**, and **Drawer** toolbar pills. No selected app means all apps; both app pills mean their union. **Sessions** in Preferences uses the same app selection. **Working** alone selects only Working; turn it off to restore all states. It shares the state choices in **Sessions** and is active only when Working is the sole selected state. **Pending** alone shows Pending chats. Together, **Working** and **Pending** show Working or chats with Pending or an ASB unread dot. App, search, and archive filters still apply. **Sessions** has independent **Working**, **Waiting**, **Idle**, and **Unknown** choices. Other state combinations keep Pending as an AND filter. **All** selects all. **Clear** hides all rows until you select a state. Archived chats are hidden by default. **Drawer** shows only the chats in the drawer; see [The drawer](#the-drawer). It combines with the app pills, search, the state filters, and the archive setting. It does not combine with **Pending**: turning one on turns the other off.
 
 ASB pins come first in their saved order. Unpinned chats follow: Pending, Working, Idle, then Unknown. A Working chat sorts by the start of its current task, so it does not move while it works. A Working chat with no known start comes after the Working chats that have one. In the Pending group, Working chats with a question come first, by task start; the other Pending chats follow by newest activity. A card moves when its state or group changes or a new task starts. Right-click a row, or use Menu or Shift+F10, to **Pin** or **Unpin** it. Drag a pinned row onto another pin to change the order. **Move pin earlier** and **Move pin later** provide the same control from the keyboard. They move the pin before or after the adjacent visible pinned row, with search and filters applied. They do nothing at the first or last visible pin. Hidden pins keep their place in the saved order.
 
@@ -110,13 +110,17 @@ Discard checks the current source before arming. Keep uses the normal cache and 
 
 A native unread mark for the discarded success can arrive late. ASB suppresses the first matched episode and preserves later observed Read-to-Unread cycles. A source-app manual Unread that is the first mark for the same completion can also be suppressed. Remote cache limits still apply: generic Idle without a terminal timestamp clears the arm but cannot safely suppress native attention. A remote end and new run missed between scans can leave Discard armed. ASB does not infer a missing task identity.
 
-**Persistent unread** is off by default. Turn it on to keep ASB attention after source Read, question resolution, completion, and successful opens. Choose **Read** to clear it. Turning the setting off keeps existing dots and restores acknowledgment on successful opens. Retained marks follow the Working rule above: they are hidden while the chat is Working. Every visible retained dot counts as Pending.
+**Persistent unread** in **Sessions** is off by default. Turn it on to keep ASB attention after source Read, question resolution, completion, and successful opens. Choose **Read** to clear it. Turning the setting off keeps existing dots and restores acknowledgment on successful opens. Retained marks follow the Working rule above: they are hidden while the chat is Working. Every visible retained dot counts as Pending.
 
 All ASB clients share this attention and pin state. Filters do not limit what the tracker observes.
 
-## Theme and local settings
+## Preferences and local settings
 
-ASB uses dark mode only in its own window. **GNOME colors** uses your current background, text, and accent colors. **Custom colors** lets you set background, text, accent, muted text, and divider colors. Divider color has no contrast limit. Changing a color selects **Custom colors**. Select **Apply theme** to check the dark background and text contrast, apply the colors, and save them for the next start. A validation or save error keeps the previous theme. **Reset to GNOME** removes the custom theme and resets the pickers. ASB does not change global GNOME settings.
+Select the toolbar settings button to open **Preferences**. It is one separate native window. You can still use the main window. Selecting the button again raises the same Preferences window. Closing Preferences keeps ASB running and keeps form edits for the next open.
+
+Use **Sessions** for app and state filters, archived sessions, and Persistent unread. Use **Appearance** for Compact or Comfortable, column width, and colors. Use **Profiles** to add or edit app sources. A wide window has navigation on the left; a narrow window has tabs above the page.
+
+ASB uses dark mode in its main and Preferences windows. In **Appearance**, **GNOME colors** uses your current background, text, and accent colors. **Custom colors** lets you set background, text, accent, muted text, and divider colors. Divider color has no contrast limit. Changing a color selects **Custom colors**. Select **Apply theme** to check the dark background and text contrast, apply the colors to both windows, and save them for the next start. A validation or save error keeps the previous theme. **Reset to GNOME** removes the custom theme and resets the pickers. ASB does not change global GNOME settings.
 
 | File | Contents |
 | --- | --- |
@@ -131,7 +135,7 @@ The application ID is `local.asb.AgentSwitchBoard`. Per-user installation regist
 
 ## App sources
 
-Open **App sources…** in the menu to add or edit local Codex and Claude profiles. The native table shows Enabled, name/app, session folder, **Open with**, and chat count/status. Select a source to edit it, or choose **Add**. Use **Choose…** for folders and the installed app launcher, then **Save**. **Cancel** discards form edits; **Refresh** reloads the table. ASB supports eight registered sources, including the two defaults.
+Open **Profiles** in Preferences to add or edit local Codex and Claude profiles. The native table shows Enabled, name/app, session folder, **Open with**, and chat count/status. Select a source to edit it, or choose **Add**. Use **Choose…** for folders and the installed app launcher, then **Save**. **Cancel** discards form edits; **Refresh** reloads the table. The table loads on the first visit and after explicit actions. Changing the Preferences section keeps the form edits and does not reload the table. ASB supports eight registered sources, including the two defaults.
 
 | Field | Select |
 | --- | --- |

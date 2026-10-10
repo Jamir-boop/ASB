@@ -16,8 +16,10 @@ TREE = ast.parse(SOURCE.read_text())
 NODES = TREE.body[:next(index for index, node in enumerate(TREE.body) if isinstance(node, ast.Try))]
 WINDOW = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "SwitchboardWindow"))
 WINDOW.bases = []
-SOURCES = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "AppSourcesWindow"))
+SOURCES = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "AppSourcesEditor"))
 SOURCES.bases = []
+PREFERENCES = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "PreferencesWindow"))
+PREFERENCES.bases = []
 MARKER = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "SourceMarker"))
 MARKER.bases = []
 APPLICATION = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "SwitchboardApplication"))
@@ -27,12 +29,13 @@ STRIP.bases = []
 COLUMN = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "SessionColumn"))
 COLUMN.bases = []
 SCOPE = {"__file__": str(SOURCE)}
-exec(compile(ast.Module(body=NODES + [STRIP, COLUMN, MARKER, SOURCES, WINDOW, APPLICATION], type_ignores=[]), str(SOURCE), "exec"), SCOPE)
+exec(compile(ast.Module(body=NODES + [STRIP, COLUMN, MARKER, SOURCES, PREFERENCES, WINDOW, APPLICATION], type_ignores=[]), str(SOURCE), "exec"), SCOPE)
 Column = SCOPE["SessionColumn"]
 SCOPE["SessionColumn"] = lambda **kwargs: SCOPE["Gtk"].ListBox(**kwargs)
 Window = SCOPE["SwitchboardWindow"]
 Strip = SCOPE["SessionStrip"]
-SourcesWindow = SCOPE["AppSourcesWindow"]
+SourcesEditor = SCOPE["AppSourcesEditor"]
+Preferences = SCOPE["PreferencesWindow"]
 Marker = SCOPE["SourceMarker"]
 REQUEST_ASYNC = SCOPE["request_async"]
 asb = SimpleNamespace(**SCOPE)
@@ -360,13 +363,13 @@ class NativeLogicChecks(unittest.TestCase):
                 body(**{**fields, key: value})
 
     def test_source_requests_serialize_keep_failed_form_and_refresh_after_changes(self):
-        window = object.__new__(SourcesWindow)
+        window = object.__new__(SourcesEditor)
         builtin = {"id": "codex", "provider": "codex", "builtin": True, "dataDir": "/default"}
         personal = {"id": "codex-personal", "provider": "codex", "builtin": False}
         window.closed = window.loading = window.choosing = False
         window.loaded = window.editing = True
         window.base, window.sources, window.max_sources, window.editing_id = "http://127.0.0.1:1", [builtin, personal], 8, personal["id"]
-        window.owner = SimpleNamespace(closed=False, refresh=Mock(), sources_window=window,
+        window.owner = SimpleNamespace(closed=False, refresh=Mock(),
                                        hex_color=Mock(return_value="#b28f80"))
         window.source_color = Mock(get_rgba=Mock(return_value=object()))
         window.provider = Mock(get_selected=Mock(return_value=0))
@@ -438,8 +441,8 @@ class NativeLogicChecks(unittest.TestCase):
             window.reload_sources()
             self.assertEqual(request.call_args.args[1], "/api/sources")
             callback = request.call_args.args[2]
-            self.assertFalse(window.on_close())
-            self.assertIsNone(window.owner.sources_window)
+            window.close()
+            self.assertTrue(window.closed)
             window.cancellable.cancel.assert_called_once()
             window.render_sources.reset_mock()
             self.assertFalse(callback({"sources": []}, None))
@@ -449,8 +452,60 @@ class NativeLogicChecks(unittest.TestCase):
             window.reload_sources()
             request.assert_not_called()
 
+    def test_preferences_reuses_window_loads_profiles_once_and_cancels_dialog_callbacks(self):
+        owner = object.__new__(Window)
+        owner.closed = False
+        preferences = object.__new__(Preferences)
+        preferences.owner, preferences.closed, preferences.profiles_editor = owner, False, None
+        preferences.stack = Mock(get_visible_child_name=Mock(return_value="sessions"))
+        preferences.profiles, preferences.present, preferences.set_visible, preferences.destroy = Mock(), Mock(), Mock(), Mock()
+        owner.preferences_window = preferences
+        editor = SimpleNamespace(cancel_dialogs=Mock(), close=Mock())
+        with patch.dict(SCOPE, {"AppSourcesEditor": Mock(return_value=editor),
+                               "Gtk": SimpleNamespace(Window=SimpleNamespace(list_toplevels=lambda: []))}):
+            owner.open_preferences()
+            owner.open_preferences()
+            self.assertEqual(preferences.present.call_count, 2)
+            preferences.section_changed()
+            SCOPE["AppSourcesEditor"].assert_not_called()
+            preferences.stack.get_visible_child_name.return_value = "profiles"
+            preferences.section_changed()
+            preferences.section_changed()
+            SCOPE["AppSourcesEditor"].assert_called_once_with(owner, preferences)
+            preferences.profiles.append.assert_called_once_with(editor)
+            self.assertTrue(preferences.on_close())
+            preferences.set_visible.assert_called_with(False)
+            self.assertFalse(owner.closed)
+            self.assertFalse(preferences.closed)
+            preferences.section_changed()
+            SCOPE["AppSourcesEditor"].assert_called_once()
+            preferences.dispose()
+            self.assertTrue(preferences.closed)
+            editor.close.assert_called_once()
+            preferences.destroy.assert_called_once()
+
+        source = object.__new__(SourcesEditor)
+        source.closed = source.loading = source.choosing = False
+        source.owner, source.preferences = SimpleNamespace(closed=False), object()
+        source.update_controls, source.message = Mock(), Mock()
+        source.cancellable = Mock(is_cancelled=Mock(return_value=False))
+        entry = Mock(get_text=Mock(return_value="/example/profile"))
+        dialog = Mock()
+        with patch.dict(SCOPE, {"Gtk": SimpleNamespace(FileDialog=Mock(return_value=dialog))}):
+            source.choose_path(entry, True)
+            dialog.select_folder.assert_called_once()
+            parent, cancellable, callback = dialog.select_folder.call_args.args
+            self.assertIs(parent, source.preferences)
+            self.assertIs(cancellable, source.cancellable)
+            source.cancel_dialogs()
+            cancellable.is_cancelled.return_value = True
+            callback(dialog, object())
+            dialog.select_folder_finish.assert_not_called()
+            entry.set_text.assert_not_called()
+            self.assertFalse(source.choosing)
+
     def test_source_editor_reload_keeps_the_saved_picker_color_and_dot_setting(self):
-        window = object.__new__(SourcesWindow)
+        window = object.__new__(SourcesEditor)
         window.owner = SimpleNamespace(rgba=lambda color: color, hex_color=lambda color: color)
         for name in ("form_title", "source_id", "provider", "name", "data_dir", "launcher", "projects_dir", "enabled",
                      "show_marker", "source_color", "source_color_hex", "source_status"):
@@ -1056,7 +1111,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.states, window.updating_states = set(SCOPE["STATES"]), False
         window.state_checks = {state: toggle(True, window.states_changed) for state in SCOPE["STATES"]}
         window.working_only = toggle(False, window.working_from_pill)
-        window.state_filter, window.render = Mock(), Mock()
+        window.state_summary, window.render = Mock(), Mock()
         window.list_body = Mock()
         window.select_states = Mock(wraps=window.select_states)
         window.apps, window.syncing_apps = set(), False
@@ -2400,7 +2455,6 @@ class NativeLogicChecks(unittest.TestCase):
         row = SimpleNamespace(asb_pin_button=button)
         window.closed, window.focus_widgets = False, {"a": row}
         window.focus_generation = 0
-        window.menu_button = SimpleNamespace(get_active=lambda: False)
         window.set_focus = Mock()
         adjustment = SimpleNamespace(get_upper=lambda: 500, get_page_size=lambda: 300, set_value=Mock())
         window.scroll = SimpleNamespace(get_hadjustment=lambda: adjustment)
@@ -2414,15 +2468,9 @@ class NativeLogicChecks(unittest.TestCase):
         window.restore_position("a", 12, focused_action="pin", focus_generation=1)
         window.set_focus.assert_called_with(row)
         window.set_focus.reset_mock()
-        window.menu_button.get_active = lambda: True
         window.restore_position("a", 12, focus_generation=1)
-        self.assertEqual(window.deferred_row_focus, "a")
-        window.set_focus.assert_not_called()
-        window.menu_button.get_active = lambda: False
-        window.menu_button.get_popover = lambda: SimpleNamespace(get_visible=lambda: False)
-        window.reveal_row, window.list_body = Mock(), Mock()
-        window.restore_settings_focus("a")
         window.set_focus.assert_called_with(row)
+        window.reveal_row, window.list_body = Mock(), Mock()
         window.restore_position("a", 12, reveal_focus=True, focus_generation=1)
         window.reveal_row.assert_called_with("a")
         window.list_body.add_tick_callback.assert_called_once_with(window.reveal_after_layout, "a")

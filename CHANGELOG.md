@@ -4,6 +4,12 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+## ASB 1.7.0 - 2026-10-10
+
+- Moved native settings to the approved Option B Preferences window, with Sessions, Appearance, and Profiles. Wide windows use left navigation; narrow windows use tabs. Repeated opens raise the same window. Closing Preferences keeps ASB running and keeps form edits. Profiles loads only on the first visit and after explicit actions. Existing settings, source actions, and storage stay unchanged.
+
+Files from 1.6.1 load unchanged. See [ASB 1.7.0 release notes](docs/releases/v1.7.0.md) for downloads, upgrades, and check limits.
+
 ## ASB 1.6.1 - 2026-10-10
 
 - On composited X11, the existing realize hook disables GTK4 compositor-feedback frame sync when the surface API is available. Wayland and noncomposited displays stay unchanged. Native springs, the renderer, and reduced-motion rules stay unchanged. This GTK4 X11 backend API is deprecated and has no replacement. The fallback frame clock may run at about 60 Hz.

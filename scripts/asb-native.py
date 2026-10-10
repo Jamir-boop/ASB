@@ -731,24 +731,16 @@ class SourceMarker(Gtk.Box):
             self.rendered_css = css
 
 
-class AppSourcesWindow(Adw.Window):
-    def __init__(self, owner):
-        super().__init__(application=owner.get_application(), transient_for=owner, destroy_with_parent=True,
-                         title="App sources", default_width=890, default_height=700)
+class AppSourcesEditor(Gtk.Box):
+    def __init__(self, owner, preferences):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.preferences = preferences
         self.owner, self.base = owner, owner.base
         self.closed = self.loading = self.choosing = self.loaded = self.editing = False
         self.sources, self.max_sources, self.editing_id = [], 8, ""
         self.preset_markers, self.table_markers = [], []
         self.cancellable = Gio.Cancellable()
-        self.add_css_class("asb-column-flow")
-        if owner.hover_colors:
-            self.add_css_class("asb-custom")
-        self.connect("close-request", self.on_close)
-        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        body.append(Adw.HeaderBar())
-        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, vexpand=True,
-                          margin_start=16, margin_end=16, margin_bottom=16)
-        body.append(content)
+        content = self
         self.message = label("Loading app sources…", "caption")
         self.message.set_wrap(True)
         self.message.set_selectable(True)
@@ -768,8 +760,6 @@ class AppSourcesWindow(Adw.Window):
         self.source_id = label("", "caption")
         self.source_id.set_selectable(True)
         self.form.append(self.source_id)
-        grid = Gtk.Grid(column_spacing=12, row_spacing=8)
-        self.form.append(grid)
         self.provider = Gtk.DropDown.new_from_strings(["Codex", "Claude Desktop Code"])
         self.provider.connect("notify::selected", self.provider_changed)
         self.name, self.data_dir, self.launcher, self.projects_dir = (Gtk.Entry(hexpand=True) for _ in range(4))
@@ -777,23 +767,26 @@ class AppSourcesWindow(Adw.Window):
         self.projects_dir.set_placeholder_text("Default: ~/.claude/projects")
         self.launcher.set_placeholder_text("Installed app launcher required")
         self.transcript_widgets = []
-        for index, (title, widget, folder) in enumerate((("App", self.provider, None), ("Name", self.name, None),
+        for title, widget, folder in (("Name", self.name, None), ("App", self.provider, None),
                 ("Session folder", self.data_dir, True), ("Open with", self.launcher, False),
-                ("Transcript folder", self.projects_dir, True))):
+                ("Transcript folder", self.projects_dir, True)):
             caption = label(title)
             caption.set_mnemonic_widget(widget)
             widget.update_property([Gtk.AccessibleProperty.LABEL], [title])
-            grid.attach(caption, 0, index, 1, 1)
-            grid.attach(widget, 1, index, 1, 1)
-            widgets = [caption, widget]
+            field = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            field.append(caption)
+            line = Gtk.Box(spacing=8)
+            widget.set_hexpand(True)
+            line.append(widget)
+            field.append(line)
+            self.form.append(field)
             if folder is not None:
                 choose = Gtk.Button(label="Choose…", tooltip_text="Choose " + title.lower())
                 choose.update_property([Gtk.AccessibleProperty.LABEL], ["Choose " + title.lower()])
                 choose.connect("clicked", lambda _button, entry=widget, directory=folder: self.choose_path(entry, directory))
-                grid.attach(choose, 2, index, 1, 1)
-                widgets.append(choose)
+                line.append(choose)
             if widget is self.projects_dir:
-                self.transcript_widgets = widgets
+                self.transcript_widgets = [field]
         self.source_color = Gtk.ColorDialogButton.new(Gtk.ColorDialog(title="Profile color", with_alpha=False))
         for accessible in (self.source_color, self.source_color.get_first_child()):
             accessible.update_property([Gtk.AccessibleProperty.LABEL], ["Profile color"])
@@ -805,9 +798,10 @@ class AppSourcesWindow(Adw.Window):
         color_row.append(self.source_color_hex)
         color_name = label("Profile color")
         color_name.set_mnemonic_widget(self.source_color)
-        grid.attach(color_name, 0, 5, 1, 1)
-        grid.attach(color_row, 1, 5, 2, 1)
-        presets = Gtk.Box(spacing=6)
+        self.form.append(color_name)
+        self.form.append(color_row)
+        presets = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, column_spacing=6, row_spacing=6,
+                              min_children_per_line=2, max_children_per_line=4, homogeneous=True)
         for name, color in SOURCE_COLOR_PRESETS:
             marker = SourceMarker(owner, color)
             marker.set_valign(Gtk.Align.CENTER)
@@ -818,8 +812,8 @@ class AppSourcesWindow(Adw.Window):
             button = Gtk.Button(child=preset, tooltip_text=f"{name}: {color}")
             button.update_property([Gtk.AccessibleProperty.LABEL], [f"Use {name} profile color"])
             button.connect("clicked", lambda _button, value=color: self.source_color.set_rgba(owner.rgba(value)))
-            presets.append(button)
-        grid.attach(presets, 1, 6, 2, 1)
+            presets.insert(button, -1)
+        self.form.append(presets)
         self.show_marker = Gtk.CheckButton(label="Show profile dot", active=True)
         self.form.append(self.show_marker)
         self.enabled = Gtk.CheckButton(label="Enabled", active=True)
@@ -833,7 +827,8 @@ class AppSourcesWindow(Adw.Window):
         self.source_status.set_wrap(True)
         self.source_status.set_selectable(True)
         content.append(self.source_status)
-        actions = Gtk.Box(spacing=8)
+        actions = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, column_spacing=8, row_spacing=8,
+                              min_children_per_line=3, max_children_per_line=5, homogeneous=True)
         content.append(actions)
         self.add_button, self.save_button, self.remove_button, self.cancel_button, self.reload_button = (
             Gtk.Button(label=title) for title in ("Add", "Save", "Remove", "Cancel", "Refresh"))
@@ -841,9 +836,8 @@ class AppSourcesWindow(Adw.Window):
                                  (self.remove_button, self.remove_source), (self.cancel_button, self.cancel_form),
                                  (self.reload_button, self.reload_sources)):
             button.connect("clicked", callback)
-            actions.append(button)
+            actions.insert(button, -1)
         self.save_button.add_css_class("suggested-action")
-        self.set_content(body)
         self.update_controls()
         self.reload_sources()
 
@@ -1038,8 +1032,11 @@ class AppSourcesWindow(Adw.Window):
         initial = value if folder else value.parent
         if initial.is_dir():
             dialog.set_initial_folder(Gio.File.new_for_path(str(initial)))
+        if self.cancellable.is_cancelled():
+            self.cancellable = Gio.Cancellable()
+        cancellable = self.cancellable
         def finished(chooser, result):
-            if self.closed or self.owner.closed:
+            if self.closed or self.owner.closed or cancellable.is_cancelled():
                 return
             self.choosing = False
             try:
@@ -1056,16 +1053,91 @@ class AppSourcesWindow(Adw.Window):
                 self.message.set_label(str(error))
             self.update_controls()
         if folder:
-            dialog.select_folder(self, self.cancellable, finished)
+            dialog.select_folder(self.preferences, cancellable, finished)
         else:
-            dialog.open(self, self.cancellable, finished)
+            dialog.open(self.preferences, cancellable, finished)
+
+    def cancel_dialogs(self):
+        self.cancellable.cancel()
+        self.choosing = False
+        self.update_controls()
+
+    def close(self):
+        self.closed = True
+        self.cancel_dialogs()
+
+
+class PreferencesWindow(Adw.Window):
+    def __init__(self, owner, sessions, appearance):
+        super().__init__(application=owner.get_application(), transient_for=owner, destroy_with_parent=True,
+                         title="Preferences", default_width=780, default_height=560)
+        self.owner, self.closed, self.profiles_editor = owner, False, None
+        self.set_size_request(420, 360)
+        self.add_css_class("asb-column-flow")
+        self.add_css_class("asb-preferences")
+        self.connect("close-request", self.on_close)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        body.append(Adw.HeaderBar())
+        self.stack = Gtk.Stack(vexpand=True, hexpand=True, hhomogeneous=False, vhomogeneous=False)
+        self.sidebar = Gtk.StackSidebar(stack=self.stack)
+        self.sidebar.set_size_request(150, -1)
+        self.sidebar.add_css_class("asb-preferences-nav")
+        self.tabs = Gtk.StackSwitcher(stack=self.stack, visible=False, halign=Gtk.Align.FILL,
+                                      margin_start=6, margin_end=6, margin_top=6, margin_bottom=6)
+        body.append(self.tabs)
+        layout = Gtk.Box()
+        layout.append(self.sidebar)
+        layout.append(self.stack)
+        body.append(layout)
+        self.profiles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        for title, content in (("Sessions", sessions), ("Appearance", appearance), ("Profiles", self.profiles)):
+            page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16,
+                           margin_top=20, margin_bottom=20, margin_start=20, margin_end=20)
+            page.append(label(title, "title-2"))
+            page.append(content)
+            scroll = Gtk.ScrolledWindow(child=page, hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                       vscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
+            self.stack.add_titled(scroll, title.lower(), title)
+        self.stack.connect("notify::visible-child-name", self.section_changed)
+        self.set_content(body)
+        breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 600px"))
+        breakpoint.add_setter(self.sidebar, "visible", False)
+        breakpoint.add_setter(self.tabs, "visible", True)
+        self.add_breakpoint(breakpoint)
+        self.stack.update_property([Gtk.AccessibleProperty.LABEL], ["Preferences sections"])
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self.window_key)
+        self.add_controller(keys)
+
+    def section_changed(self, *_args):
+        if not self.closed and self.stack.get_visible_child_name() == "profiles" and self.profiles_editor is None:
+            self.profiles_editor = AppSourcesEditor(self.owner, self)
+            self.profiles.append(self.profiles_editor)
+
+    def window_key(self, _controller, key, _code, modifiers):
+        if key == Gdk.KEY_Escape and not modifiers & SHORTCUT_MASK:
+            self.close()
+            return True
+        return False
+
+    def cancel_dialogs(self):
+        if self.profiles_editor:
+            self.profiles_editor.cancel_dialogs()
+        for window in Gtk.Window.list_toplevels():
+            if window.get_transient_for() is self:
+                window.close()
 
     def on_close(self, *_args):
+        self.cancel_dialogs()
+        self.set_visible(False)
+        return True
+
+    def dispose(self):
         self.closed = True
-        self.cancellable.cancel()
-        if self.owner.sources_window is self:
-            self.owner.sources_window = None
-        return False
+        if self.profiles_editor:
+            self.profiles_editor.close()
+        self.cancel_dialogs()
+        self.destroy()
 
 
 class SwitchboardWindow(Adw.ApplicationWindow):
@@ -1106,7 +1178,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.session_actions = set()
         self.open_errors = {}
         self.context_menu = None
-        self.sources_window = None
+        self.preferences_window = None
         self.drag_identity = None
         for name in ("mark-unread", "mark-read", "pin", "unpin", "pin-up", "pin-down", "discard-result", "keep-result",
                      "drawer-in", "drawer-out"):
@@ -1139,28 +1211,30 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.search.connect("search-changed", self.filter_changed)
         self.search.connect("stop-search", self.clear_search)
         tools.append(self.search)
-        menu = Gtk.MenuButton(icon_name="view-more-symbolic", tooltip_text="Filters and theme")
+        menu = Gtk.Button(icon_name="view-more-symbolic", tooltip_text="Preferences")
+        menu.update_property([Gtk.AccessibleProperty.LABEL], ["Open Preferences"])
+        menu.connect("clicked", self.open_preferences)
         self.menu_button = menu
-        popover = Gtk.Popover()
-        popover.set_autohide(True)
-        popover.connect("closed", self.settings_closed)
-        settings = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
-                           margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
+        sessions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        appearance = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.apps, self.syncing_apps = set(), False
         self.app_filter = Gtk.DropDown.new_from_strings(["All apps", "Codex", "Claude", "Both apps"])
         self.states, self.updating_states = set(STATES), False
-        self.state_filter = Gtk.MenuButton(label="All states")
-        self.state_filter.update_property([Gtk.AccessibleProperty.LABEL], ["Status: All states"])
-        state_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=12,
-                            margin_bottom=12, margin_start=12, margin_end=12)
+        self.state_summary = label("All states", "caption")
+        state_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        checks = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, column_spacing=12, row_spacing=8,
+                             min_children_per_line=2, max_children_per_line=4, homogeneous=True)
+        state_box.append(checks)
         self.state_checks = {}
         for state in STATES:
             check = Gtk.CheckButton(label=state.capitalize(), active=True)
             check.connect("toggled", self.states_changed)
             self.state_checks[state] = check
-            state_box.append(check)
+            checks.insert(check, -1)
         choices = Gtk.Box(spacing=6)
-        for title, values in (("All states", set(STATES)), ("Clear states", set())):
+        self.state_summary.set_hexpand(True)
+        choices.append(self.state_summary)
+        for title, values in (("All", set(STATES)), ("Clear", set())):
             button = Gtk.Button(label=title)
             button.connect("clicked", lambda _button, selected=values: self.select_states(selected))
             choices.append(button)
@@ -1168,34 +1242,32 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         help_text = label("No selected states hides all sessions.", "caption")
         help_text.set_wrap(True)
         state_box.append(help_text)
-        self.state_filter.set_popover(Gtk.Popover(child=state_box))
         self.archive = Gtk.CheckButton(label="Show archived sessions")
-        for title, dropdown in (("App", self.app_filter), ("Status", self.state_filter)):
-            dropdown.update_property([Gtk.AccessibleProperty.LABEL], [title])
-            if dropdown is self.app_filter:
-                dropdown.connect("notify::selected", self.apps_from_menu)
-            row = Gtk.Box(spacing=12)
-            name = label(title)
-            name.set_hexpand(True)
-            row.append(name)
-            row.append(dropdown)
-            settings.append(row)
+        self.app_filter.update_property([Gtk.AccessibleProperty.LABEL], ["App"])
+        self.app_filter.connect("notify::selected", self.apps_from_preferences)
+        row = Gtk.Box(spacing=12)
+        name = label("App")
+        name.set_hexpand(True)
+        row.append(name)
+        row.append(self.app_filter)
+        sessions.append(label("Show sessions", "heading"))
+        sessions.append(row)
+        sessions.append(state_box)
         self.archive.connect("toggled", self.filter_changed)
-        settings.append(self.archive)
+        sessions.append(self.archive)
         self.syncing_unread_setting = self.unread_setting_loading = False
+        sessions.append(Gtk.Separator())
+        sessions.append(label("Unread", "heading"))
         self.persistent_unread = Gtk.CheckButton(label="Persistent unread")
         self.persistent_unread.connect("toggled", self.change_unread_setting)
-        settings.append(self.persistent_unread)
+        sessions.append(self.persistent_unread)
         unread_help = label("Use Read in the row menu to clear dots.", "caption")
         unread_help.set_wrap(True)
-        settings.append(unread_help)
+        sessions.append(unread_help)
         self.unread_setting_error = label("", "warning")
         self.unread_setting_error.set_wrap(True)
         self.unread_setting_error.set_max_width_chars(32)
-        settings.append(self.unread_setting_error)
-        app_sources = Gtk.Button(label="App sources…")
-        app_sources.connect("clicked", self.open_sources)
-        settings.append(app_sources)
+        sessions.append(self.unread_setting_error)
         view_row = Gtk.Box(spacing=12)
         view_name = label("View")
         view_name.set_hexpand(True)
@@ -1205,7 +1277,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.view_filter.connect("notify::selected", self.change_view)
         view_row.append(view_name)
         view_row.append(self.view_filter)
-        settings.append(view_row)
+        appearance.append(view_row)
         width_row = Gtk.Box(spacing=8)
         width_name = label("Column width")
         width_name.set_hexpand(True)
@@ -1218,17 +1290,23 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.width_control.connect("value-changed", self.set_column_width)
         width_row.append(width_name)
         width_row.append(self.width_control)
-        settings.append(width_row)
+        appearance.append(width_row)
         reset_width = Gtk.Button(label="Reset width")
         reset_width.connect("clicked", self.reset_width)
-        settings.append(reset_width)
+        appearance.append(reset_width)
         self.layout_error = label(layout_error, "warning")
         self.layout_error.set_wrap(True)
         self.layout_error.set_max_width_chars(32)
-        settings.append(self.layout_error)
-        settings.append(Gtk.Separator())
+        appearance.append(self.layout_error)
+        appearance.append(Gtk.Separator())
         self.theme_mode = Gtk.DropDown.new_from_strings(["GNOME colors", "Custom colors"])
-        settings.append(self.theme_mode)
+        theme_row = Gtk.Box(spacing=12)
+        theme_name = label("Colors")
+        theme_name.set_hexpand(True)
+        theme_row.append(theme_name)
+        self.theme_mode.update_property([Gtk.AccessibleProperty.LABEL], ["Colors"])
+        theme_row.append(self.theme_mode)
+        appearance.append(theme_row)
         self.color_buttons = {}
         self.syncing_theme = False
         colors = self.native_colors()
@@ -1244,11 +1322,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.color_buttons[key] = picker
             row.append(name)
             row.append(picker)
-            settings.append(row)
+            appearance.append(row)
         self.theme_error = label("", "warning")
         self.theme_error.set_wrap(True)
         self.theme_error.set_max_width_chars(32)
-        settings.append(self.theme_error)
+        appearance.append(self.theme_error)
         actions = Gtk.Box(spacing=8)
         apply = Gtk.Button(label="Apply theme")
         apply.connect("clicked", self.apply_theme)
@@ -1256,10 +1334,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         reset.connect("clicked", self.reset_theme)
         actions.append(apply)
         actions.append(reset)
-        settings.append(actions)
-        settings.append(label("Colors apply only to ASB.", "caption"))
-        popover.set_child(settings)
-        menu.set_popover(popover)
+        appearance.append(actions)
+        appearance.append(label("Colors apply only to ASB.", "caption"))
         tools.append(menu)
         tools.append(self.refresh_button)
         self.window_controls = Gtk.WindowControls(side=Gtk.PackType.END, decoration_layout=":close")
@@ -1357,10 +1433,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
         keys.connect("key-pressed", self.window_key)
         self.add_controller(keys)
-        self.settings_click = Gtk.GestureClick(button=0, propagation_phase=Gtk.PropagationPhase.CAPTURE)
-        self.settings_click.connect("pressed", self.outside_settings_pressed)
-        self.add_controller(self.settings_click)
-        self.deferred_row_focus = None
+        self.preferences_window = PreferencesWindow(self, sessions, appearance)
         try:
             saved = read_theme(theme_path)
             if saved:
@@ -1498,6 +1571,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} .asb-column + .asb-column {{ border-color: {colors['divider']}; }}
 {scope} .asb-session:hover, {scope} .asb-session:focus-within {{ background: {highlight_color(colors)}; }}
 {scope} entry, {scope} button, {scope} dropdown {{ color: {colors['text']}; }}
+{scope}.asb-preferences .asb-preferences-nav {{ background: alpha({colors['text']}, .04); }}
+{scope}.asb-preferences entry, {scope}.asb-preferences button, {scope}.asb-preferences dropdown {{ background: alpha({colors['text']}, .08); }}
+{scope}.asb-preferences row:selected, {scope}.asb-preferences button:checked {{ background: {colors['accent']}; color: {colors['background']}; }}
+{scope}.asb-preferences separator {{ background: {colors['divider']}; }}
 {scope} .asb-read-button {{ color: {colors['accent']}; background: alpha({colors['text']}, .08); }}
 {scope} .asb-pin-button.asb-pinned {{ background: alpha({colors['text']}, .12); }}
 {scope} .asb-read-button:hover, {scope} .asb-read-button:focus-visible,
@@ -1544,17 +1621,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         for widget in self.row_cache.values():
             widget.asb_tooltip_content = widget.asb_tooltip_key = None
             widget.asb_source_badge.set_color(source_marker_color(widget.asb_thread))
-        if getattr(self, "sources_window", None):
-            (self.sources_window.add_css_class if colors else self.sources_window.remove_css_class)("asb-custom")
-            self.sources_window.update_marker_colors()
+        if getattr(self, "preferences_window", None):
+            preferences = self.preferences_window
+            (preferences.add_css_class if colors else preferences.remove_css_class)("asb-custom")
+            if preferences.profiles_editor:
+                preferences.profiles_editor.update_marker_colors()
 
-    def open_sources(self, *_args):
-        if self.closed:
-            return
-        self.menu_button.get_popover().popdown()
-        if self.sources_window is None:
-            self.sources_window = AppSourcesWindow(self)
-        self.sources_window.present()
+    def open_preferences(self, *_args):
+        if not self.closed:
+            self.preferences_window.present()
 
     def set_theme_pickers(self, colors):
         self.syncing_theme = True
@@ -1990,8 +2065,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.search.set_text("")
 
     def window_key(self, _controller, key, _code, modifiers):
-        if modifiers & SHORTCUT_MASK or self.menu_button.get_popover().get_visible() \
-                or (self.context_menu and self.context_menu.get_visible()):
+        if modifiers & SHORTCUT_MASK or (self.context_menu and self.context_menu.get_visible()):
             return False
         focus = self.get_focus()
         if focus and focus.get_ancestor(Gtk.Popover):
@@ -2062,7 +2136,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.syncing_apps = False
         self.filter_changed()
 
-    def apps_from_menu(self, *_args):
+    def apps_from_preferences(self, *_args):
         if not self.syncing_apps:
             self.select_apps([set(), {"codex"}, {"claude-desktop-code"}, {"codex", "claude-desktop-code"}][self.app_filter.get_selected()])
 
@@ -2075,8 +2149,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return
         self.states = {state for state, check in self.state_checks.items() if check.get_active()}
         title = "All states" if len(self.states) == len(STATES) else f"{len(self.states)} states"
-        self.state_filter.set_label(title)
-        self.state_filter.update_property([Gtk.AccessibleProperty.LABEL], ["Status: " + title])
+        self.state_summary.set_label(title)
         self.updating_states = True
         self.working_only.set_active(self.states == {"working"})
         self.updating_states = False
@@ -2233,15 +2306,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if not self.closed and (focus_generation is None or focus_generation == self.focus_generation):
             self.cancel_scroll()
             if focused in self.focus_widgets:
-                if self.menu_button.get_active():
-                    self.deferred_row_focus = focused
-                else:
-                    row = self.focus_widgets[focused]
-                    control = getattr(row, "asb_" + str(focused_action) + "_button", None)
-                    self.set_focus(control if control and control.get_visible() and control.get_sensitive() else row)
+                row = self.focus_widgets[focused]
+                control = getattr(row, "asb_" + str(focused_action) + "_button", None)
+                self.set_focus(control if control and control.get_visible() and control.get_sensitive() else row)
             adjustment = self.scroll.get_hadjustment()
             adjustment.set_value(min(position, max(0, adjustment.get_upper() - adjustment.get_page_size())))
-            if reveal_focus and focused in self.focus_widgets and not self.menu_button.get_active():
+            if reveal_focus and focused in self.focus_widgets:
                 self.reveal_row(focused)
                 self.list_body.add_tick_callback(self.reveal_after_layout, focused)
         return False
@@ -2265,32 +2335,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.cancel_scroll()
                 adjustment.set_value(right - adjustment.get_page_size())
         return False
-
-    def settings_closed(self, *_args):
-        identity, self.deferred_row_focus = self.deferred_row_focus, None
-        if identity in self.focus_widgets:
-            GLib.idle_add(self.restore_settings_focus, identity)
-
-    def restore_settings_focus(self, identity):
-        if not self.closed and not self.menu_button.get_popover().get_visible() and identity in self.focus_widgets:
-            self.set_focus(self.focus_widgets[identity])
-            self.reveal_row(identity)
-        return False
-
-    def outside_settings_pressed(self, gesture, _count, x, y):
-        popover = self.menu_button.get_popover()
-        if not popover.get_visible():
-            return
-        event = gesture.get_current_event()
-        if event and event.get_surface() != self.get_surface():
-            return
-        for widget in (popover, self.menu_button):
-            found, bounds = widget.compute_bounds(self)
-            if found and bounds.origin.x <= x <= bounds.origin.x + bounds.size.width \
-                    and bounds.origin.y <= y <= bounds.origin.y + bounds.size.height:
-                return
-        popover.popdown()
-        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
 
     def sync_unread_setting(self, value):
         if self.unread_setting_loading:
@@ -2864,8 +2908,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def on_close(self, *_args):
         self.closed = True
-        if getattr(self, "sources_window", None):
-            self.sources_window.close()
+        if getattr(self, "preferences_window", None):
+            self.preferences_window.dispose()
         self.cancel_scroll()
         self.cancel_motion()
         self.list_body.clear_hover()

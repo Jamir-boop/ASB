@@ -10,19 +10,27 @@ Find an existing Codex or Claude Desktop Code session, read its state, and open 
 
 ## Chosen surface
 
-- One compact draggable native toolbar with search, disc app mark, menu, refresh, close, and Pending-only/counts. Narrow windows use a second short row for Pending-only/counts. No separate title or footer row.
+- One compact draggable native toolbar with search, disc app mark, settings, refresh, close, and Pending-only/counts. Narrow windows use a second short row for Pending-only/counts. No separate title or footer row.
 - One 22px line per session: gray provider mark, title, optional 7px unread dot, and text state.
-- The existing menu also offers Comfortable: the chosen Workspace-first 68px row with folder above a two-line title, then state left and age right. The user selected C, Corner pair: the Read dot sits beside the top-right Pin/Unpin control. Compact remains the default. Keep outer borders unchanged.
-- Codex, Claude, and Pending are activate/deactivate pills in both views. Pills and the app menu share one selected-app set. No selection/both shows all; one selects a provider. Pending combines with the other filters. Narrow windows reuse the secondary row.
+- Appearance in Preferences also offers Comfortable: the chosen Workspace-first 68px row with folder above a two-line title, then state left and age right. The user selected C, Corner pair: the Read dot sits beside the top-right Pin/Unpin control. Compact remains the default. Keep outer borders unchanged.
+- Codex, Claude, and Pending are activate/deactivate pills in both views. Pills and the App field in Sessions share one selected-app set. No selection/both shows all; one selects a provider. Pending combines with the other filters. Narrow windows reuse the secondary row.
 - Fill down each column, then across. Width sets column count; available height sets row capacity. Further columns scroll horizontally left to right. There are no vertical pages or empty trailing columns. Ordinary wheel input maps horizontally.
-- One shared target column width defaults to 240px, with a 160–600px range. Any divider drag or the accessible menu field changes all columns. Save only ASB's layout config. A 360px window has one default column, or two at 160px.
+- One shared target column width defaults to 240px, with a 160–600px range. Any divider drag or the accessible Appearance field changes all columns. Save only ASB's layout config. A 360px window has one default column, or two at 160px.
 - Packing uses the selected 22/68px row height. Optional view shares the layout file; width-only files load Compact. Width reset preserves Comfortable. Mode changes keep filter/search/pin/focus state and clamped horizontal position, revealing off-screen keyboard focus. Three complete 68px rows fit 1080×248.
 - Put ASB pins first in saved order, then unpinned Pending/Waiting, Working, Idle, and Unknown. Keep original-app pins separate. Native row drag and earlier/later menu actions reorder ASB pins without losing hidden pins.
 - Hover shows the full title, folder, state reason, and marker source. Keyboard movement and the native row menu remain available.
 - Prefix search supports `cl:`/`claude:` and `cx:`/`codex:`. Printable typing from a non-editable area enters search; Escape clears query/prefix and keeps explicit filters. Native popups and modified shortcuts keep their keys.
-- Combine state checkboxes. All is selected by default; Clear states hides all until a state is selected.
+- Combine state checkboxes. All four are selected by default. **Clear** hides all until a state is selected; **All** selects all four.
 - Opening appears only in the row's title space and survives refresh/resize. Restore the current title afterward; keep failures in the row tooltip.
 - Use GNOME dark colors by default. Apply validated custom colors only within ASB.
+
+## Preferences, approved Option B
+
+The toolbar settings button opens one separate, nonmodal native Preferences window. Repeated selection raises the same window. Closing it hides it, keeps the main window running, and keeps the selected section and form edits. Main shutdown destroys it.
+
+Use left `Gtk.StackSidebar` navigation at wide widths and `Gtk.StackSwitcher` tabs above the page at `max-width:600px`. **Sessions** holds app/state/archive filters and Persistent unread. **Appearance** holds view, shared width/reset, and GNOME/Custom colors with five pickers, Apply theme, and Reset to GNOME. Both windows use the applied theme. Page content scrolls when height is small.
+
+**Profiles** embeds the existing source table and editor, with all fields, default locks, Add/Save/Remove/Cancel/Refresh, validation, status, and authenticated API actions. Create and load it only on the first visit; explicit source actions keep their existing load behavior. Section changes and reopening keep form edits without a reload. Add no timer, background scan, backend route, or dependency. Main cards, borders, and scrolling keep their current behavior.
 
 ## Comfortable Corner pair
 
@@ -42,7 +50,7 @@ New native unread shows a dot. Working remains Working and does not join Pending
 
 Question attention is independent of execution. Only a current blocked synchronous question can show Waiting. Async requests keep Working or Idle. Real human input supersedes old requests; automatic goal/context and partial replies preserve them. Opening acknowledges the ASB dot without resolving source input. Show only a bool/reason, never question/answer text or request timestamps.
 
-**Unread** persists only in ASB and adds Pending attention and a dot. Every row retains its actual state label. By default, a successful ASB open acknowledges local manual, completion, native, and question attention. A failed open retains it. Original app data remains read-only. **Persistent unread** in the existing menu retains ASB attention across source read/resolution and opens. It is off by default. **Read** in the native row menu clears it. The setting belongs to shared ASB state, separate from layout/theme; current execution labels and native read truth stay unchanged.
+**Unread** persists only in ASB and adds Pending attention and a dot. Every row retains its actual state label. By default, a successful ASB open acknowledges local manual, completion, native, and question attention. A failed open retains it. Original app data remains read-only. **Persistent unread** in Preferences > Sessions retains ASB attention across source read/resolution and opens. It is off by default. **Read** in the native row menu clears it. The setting belongs to shared ASB state, separate from layout/theme; current execution labels and native read truth stay unchanged.
 
 ## Evidence and limits
 
@@ -52,7 +60,9 @@ The current code validates contrast on the custom background and row highlight a
 
 The C Corner pair code and logic review found no remaining P1/P2 issue in that scope. No native UI tests or new native screenshots were run for this change. Earlier mock captures do not verify the new controls. Native pixel fidelity remains unverified.
 
-Native and web clients refresh at two seconds while any full-list unarchived root session is Working, otherwise five seconds. Focus and filters do not slow monitoring. Local source-change events request a cached read, with polling as a fallback and at most one pending follow-up. Native rows stay keyed by session ID; timestamp and state changes update existing fields. Only order, visible IDs, view, or packing changes move rows. Layout signals replace permanent frame checks. Removed rows disconnect their controllers. Cold load may take longer than the interval. Settings retain focus during repacking and close on an outside click or native Escape.
+Preferences passed two focused GTK tests on an isolated nested X display, with Cairo and synthetic data. Six captures in `.impeccable/review/preferences/` were inspected at 780px and 420px widths, including the three sections and a custom theme. The full GTK suite did not run. The physical desktop was not changed. These checks do not cover all assistive technology or GNOME versions.
+
+Native and web clients refresh at two seconds while any full-list unarchived root session is Working, otherwise five seconds. Focus and filters do not slow monitoring. Local source-change events request a cached read, with polling as a fallback and at most one pending follow-up. Native rows stay keyed by session ID; timestamp and state changes update existing fields. Only order, visible IDs, view, or packing changes move rows. Layout signals replace permanent frame checks. Removed rows disconnect their controllers. Cold load may take longer than the interval. List repacking does not rebuild Preferences controls or take their focus.
 
 The row menu shows **Read** when the current ASB dot is present and **Unread** when it is absent. Pin and keyboard reorder actions remain available.
 
