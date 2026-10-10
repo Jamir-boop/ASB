@@ -24,8 +24,11 @@ APPLICATION = copy.deepcopy(next(node for node in TREE.body if isinstance(node, 
 APPLICATION.bases = []
 STRIP = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "SessionStrip"))
 STRIP.bases = []
+COLUMN = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "SessionColumn"))
+COLUMN.bases = []
 SCOPE = {"__file__": str(SOURCE)}
-exec(compile(ast.Module(body=NODES + [STRIP, MARKER, SOURCES, WINDOW, APPLICATION], type_ignores=[]), str(SOURCE), "exec"), SCOPE)
+exec(compile(ast.Module(body=NODES + [STRIP, COLUMN, MARKER, SOURCES, WINDOW, APPLICATION], type_ignores=[]), str(SOURCE), "exec"), SCOPE)
+Column = SCOPE["SessionColumn"]
 SCOPE["SessionColumn"] = lambda **kwargs: SCOPE["Gtk"].ListBox(**kwargs)
 Window = SCOPE["SwitchboardWindow"]
 Strip = SCOPE["SessionStrip"]
@@ -90,6 +93,98 @@ class Box:
 
 
 class DataChecks(unittest.TestCase):
+    def test_realize_disables_x11_frame_feedback_only_on_composited_displays(self):
+        constructor = next(node for node in WINDOW.body if isinstance(node, ast.FunctionDef) and node.name == "__init__")
+        hooks = [node for node in ast.walk(constructor) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute) and node.func.attr == "connect"
+                 and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == "realize"]
+        self.assertEqual(len(hooks), 1)
+        self.assertEqual(hooks[0].args[1].attr, "watch_layout")
+        for has_api, composited in ((True, True), (True, False), (False, True)):
+            with self.subTest(has_api=has_api, composited=composited):
+                surface = SimpleNamespace(connect=Mock(return_value=17))
+                frame_sync = Mock()
+                if has_api:
+                    surface.set_frame_sync_enabled = frame_sync
+                display = SimpleNamespace(is_composited=Mock(return_value=composited))
+                window = object.__new__(Window)
+                window.get_surface, window.get_display = lambda: surface, lambda: display
+                window.queue_geometry = Mock()
+                window.watch_layout()
+                if has_api and composited:
+                    frame_sync.assert_called_once_with(False)
+                else:
+                    frame_sync.assert_not_called()
+                self.assertEqual(display.is_composited.call_count, int(has_api))
+                self.assertIs(window.layout_surface, surface)
+                self.assertEqual(window.surface_signal, 17)
+                surface.connect.assert_called_once_with("layout", window.queue_geometry)
+                window.queue_geometry.assert_called_once_with()
+
+    def test_offscreen_snapshots_keep_rows_and_include_cross_column_motion(self):
+        viewport = SimpleNamespace(get_width=lambda: 500)
+        window = SimpleNamespace(scroll=SimpleNamespace(get_child=lambda: viewport,
+                                 get_hadjustment=lambda: SimpleNamespace(get_value=lambda: 200)), motion_bounds={})
+        strip = SimpleNamespace(motion={}, motion_progress=0)
+        column = object.__new__(Column)
+        row = SimpleNamespace(asb_focus_key="row", get_next_sibling=lambda: None)
+        column.get_root, column.get_parent = lambda: window, lambda: strip
+        column.get_first_child, column.snapshot_child = lambda: row, Mock()
+        bounds = SimpleNamespace(origin=SimpleNamespace(x=800), size=SimpleNamespace(width=240))
+        column.compute_bounds = lambda _viewport: (True, bounds)
+        snapshot = Mock()
+        column.do_snapshot(snapshot)
+        self.assertTrue(column.asb_snapshot_skipped)
+        self.assertIs(column.get_first_child(), row)
+        column.snapshot_child.assert_not_called()
+        for left, visible in ((500, False), (499, True), (-240, False), (-239, True)):
+            bounds.origin.x = left
+            self.assertEqual(column.in_viewport(), visible)
+        bounds.origin.x = 800
+        strip.motion_progress = .5
+        window.motion_bounds[column] = (450, 1240, 0, 68)
+        column.do_snapshot(snapshot)
+        self.assertFalse(column.asb_snapshot_skipped)
+        column.snapshot_child.assert_called_once_with(row, snapshot)
+        strip.motion_progress = 0
+        self.assertFalse(column.in_viewport())
+        column.compute_bounds = lambda _viewport: (False, bounds)
+        self.assertTrue(column.in_viewport())
+
+    def test_scroll_and_layout_restore_cached_empty_columns_once(self):
+        window = object.__new__(Window)
+        window.closed, window.scroll_updating, window.motion_from = False, True, None
+        window.list_body = Mock()
+        position, width = [1500], [500]
+        viewport = SimpleNamespace(get_width=lambda: width[0])
+        adjustment = SimpleNamespace(get_value=lambda: position[0], get_page_size=lambda: width[0])
+        window.scroll = SimpleNamespace(get_child=lambda: viewport, get_hadjustment=lambda: adjustment)
+        window.list_columns = []
+        strip = SimpleNamespace(motion_progress=0)
+        for index in range(12):
+            column = object.__new__(Column)
+            column.asb_snapshot_skipped = True
+            column.get_root, column.get_parent = lambda: window, lambda: strip
+            column.queue_draw = Mock()
+            column.compute_bounds = lambda _viewport, index=index: (True, SimpleNamespace(
+                origin=SimpleNamespace(x=index * 252 + 4 - position[0]), size=SimpleNamespace(width=240)))
+            window.list_columns.append(column)
+        window.scroll_position_changed()
+        self.assertTrue(all(window.list_columns[index].queue_draw.called for index in (5, 6, 7)))
+        window.list_columns[0].queue_draw.assert_not_called()
+        window.list_columns[11].queue_draw.assert_not_called()
+        window.scroll_position_changed()
+        self.assertTrue(all(column.queue_draw.call_count <= 1 for column in window.list_columns))
+        position[0] = 0
+        window.scroll_position_changed()
+        self.assertTrue(all(window.list_columns[index].queue_draw.called for index in (0, 1)))
+        window.list_columns[2].asb_snapshot_skipped = True
+        window.list_columns[2].queue_draw.reset_mock()
+        width[0] = 600
+        window.start_motion()
+        self.assertEqual(window.list_columns[2].queue_draw.call_count, 1)
+        self.assertTrue(all(column.queue_draw.call_count <= 1 for column in window.list_columns))
+
     def test_working_duration_uses_known_current_start_only(self):
         row = {"state": "working", "workingSinceMs": NOW - 133_000}
         self.assertEqual(asb.working_duration(row, NOW), "2m13s")

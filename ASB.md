@@ -2,7 +2,7 @@
 
 ASB lists Codex and Claude Desktop Code chats. It also lists remote Code sessions observed in Claude's local cache. Select a row to open that chat in its original app. The Linux native window uses GTK and Libadwaita. ASB makes no model calls and does not send prompts.
 
-See [README.md](README.md) for v1.6.0 packages and runtime requirements.
+See [README.md](README.md) for v1.6.1 packages and runtime requirements.
 
 ## Layout and search
 

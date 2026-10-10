@@ -4,6 +4,13 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+## ASB 1.6.1 - 2026-10-10
+
+- On composited X11, the existing realize hook disables GTK4 compositor-feedback frame sync when the surface API is available. Wayland and noncomposited displays stay unchanged. Native springs, the renderer, and reduced-motion rules stay unchanged. This GTK4 X11 backend API is deprecated and has no replacement. The fallback frame clock may run at about 60 Hz.
+- Native `SessionColumn` snapshots now skip columns outside the viewport. The viewport check includes card-motion bounds. Row allocation, input, focus, and accessibility stay unchanged. Scroll and layout invalidate skipped snapshots when their columns enter the viewport.
+
+Resize lag remains unresolved. See [ASB 1.6.1 release notes](docs/releases/v1.6.1.md) for downloads, upgrades, and check limits.
+
 ## ASB 1.6.0 - 2026-10-09
 
 - Added the drawer. It holds unread cards that the user wants out of the way. In the normal list, a drawer card looks read: it has no unread dot, it is not Pending, and it sorts with the read cards. The drawer has no time limit. A card leaves the drawer in these ways: **Take out of drawer**; Read; Unread through the API; a successful open when Persistent unread is off; new attention; or no stored mark is left. With Persistent unread on, an open keeps the marks and the card stays in the drawer.

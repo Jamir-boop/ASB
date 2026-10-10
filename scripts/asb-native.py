@@ -650,9 +650,26 @@ class SessionColumn(Gtk.ListBox):
         # Long titles must not let spare strip width make a column wider than the shared width.
         return (minimum, minimum, -1, -1) if orientation == Gtk.Orientation.HORIZONTAL else (minimum, natural, *baselines)
 
+    def in_viewport(self):
+        window = self.get_root()
+        viewport = window.scroll.get_child()
+        found, bounds = self.compute_bounds(viewport)
+        if not found:
+            return True
+        left, right = bounds.origin.x, bounds.origin.x + bounds.size.width
+        if self.get_parent().motion_progress:
+            motion = getattr(window, "motion_bounds", {}).get(self)
+            if motion:
+                position = window.scroll.get_hadjustment().get_value()
+                left, right = min(left, motion[0] - position), max(right, motion[1] - position)
+        return right > 0 and left < viewport.get_width()
+
     def do_snapshot(self, snapshot):
         # Card motion is paint only: the column moves the whole row box, so allocation, input, and focus keep the final layout.
         strip = self.get_parent()
+        self.asb_snapshot_skipped = not self.in_viewport()
+        if self.asb_snapshot_skipped:
+            return
         motion, progress = strip.motion, strip.motion_progress
         child = self.get_first_child()
         while child:
@@ -1677,6 +1694,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def watch_layout(self, *_args):
         self.layout_surface = self.get_surface()
+        frame_sync = getattr(self.layout_surface, "set_frame_sync_enabled", None)
+        if frame_sync and self.get_display().is_composited():
+            # GTK4 X11 feedback can halve cadence; its deprecated API has no replacement.
+            # shortcut: X11 fallback can cap at 60 Hz; revisit when compositor feedback is reliable.
+            frame_sync(False)
         self.surface_signal = self.layout_surface.connect("layout", self.queue_geometry)
         self.queue_geometry()
 
@@ -1816,8 +1838,23 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def scroll_position_changed(self, *_args):
         self.scroll_hover_blocked = True
         self.list_body.clear_hover()
+        self.redraw_visible_columns()
         if not self.scroll_updating:
             self.cancel_scroll()
+
+    def redraw_visible_columns(self):
+        listings = getattr(self, "list_columns", [])
+        if not listings or self.closed:
+            return
+        adjustment = self.scroll.get_hadjustment()
+        step = self.column_pixel_width + 12
+        first = max(0, int(adjustment.get_value() // step) - 1)
+        last = int((adjustment.get_value() + adjustment.get_page_size()) // step) + 2
+        # Scroll signals precede viewport allocation, so bounds still describe the previous position.
+        for listing in listings[first:last]:
+            if getattr(listing, "asb_snapshot_skipped", False) and listing.get_parent():
+                listing.asb_snapshot_skipped = False
+                listing.queue_draw()
 
     def painted_places(self):
         strip, places = self.list_body, {}
@@ -1830,6 +1867,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return places
 
     def start_motion(self):
+        self.redraw_visible_columns()
         old, self.motion_from = self.motion_from, None
         if old in (None, False) or self.closed:
             return
