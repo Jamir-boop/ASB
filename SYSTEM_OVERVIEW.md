@@ -26,6 +26,18 @@ The launcher creates its own server and Python child. It stops them when the win
 
 Python 3 needs PyGObject, GTK `>=4.12`, and Libadwaita `>=1.4`. Node.js `>=22.13` uses built-in SQLite with read-only connections. Older supported Node.js (`>=20`) uses `sqlite3 -readonly`; the Debian package keeps that dependency. ASB's runtime has no external npm dependencies. Development tests use Node.js `>=22.13` and built-in SQLite fixtures, without the SQLite CLI.
 
+Rust GTK/Libadwaita and Qt/C++ frontends were evaluated as unreleased `0.1.0`
+prototypes, then removed with their harnesses. The [Rust comparison](docs/benchmarks/python-rust-2026-10-12.md)
+found faster startup and lower frontend PSS, but mixed interaction timing and
+similar repaint cadence. Both Python and Rust passed fourteen critical native
+groups; [the acceptance record](docs/benchmarks/rust-acceptance-2026-10-12.md)
+retains coverage and limits. The [Qt comparison](docs/benchmarks/python-qt-2026-10-13.md)
+found no meaningful scroll speed gain in one valid main-monitor manual pair.
+Qt had lower resize callback p95 and higher PSS, with different resize paths.
+Eight bounded Qt native groups passed. These results do not prove complete UI
+parity or physical display FPS. The experiments cannot be run from this tree.
+Production ASB remains Python at `1.7.0`.
+
 ASB uses `DashboardSnapshot` in `src/dashboard-snapshot.mjs` for snapshots, source events, watchers, caches, and request coalescing. It also uses local HTTP utilities, Codex open helpers, and provider cache helpers.
 
 The ASB `1.7.0` package whitelist names 30 runtime files, including the app-source registry. ASB `1.6.1`, `1.6.0`, `1.5.0`, and `1.4.0` also shipped 30. ASB `1.3.0` shipped 32. ASB `1.2.0` shipped 31, down from 42 in ASB `1.1.0`.
@@ -47,6 +59,7 @@ The ASB `1.7.0` package whitelist names 30 runtime files, including the app-sour
 | `src/insights.mjs` | Shared thread normalization and root/descendant grouping. |
 | `scripts/asb-desktop.mjs` | Native launcher and owned child-process cleanup. |
 | `scripts/asb-native.py` | Native rows, filters, search, layout, theme, input, and local label clock. |
+| `docs/benchmarks/` | Historical frontend comparisons, numeric samples, acceptance coverage, and X11 timing limits. |
 | `scripts/asb-icon.mjs` | ASB icon and desktop entry registration. |
 | `scripts/asb-package.mjs` | Linux package build, runtime check, and per-user install/uninstall. |
 | `public/switchboard.html` | Optional ASB browser view. |
@@ -190,6 +203,26 @@ The Codex, Claude, and normalization modules have one mode. The ASB view has no 
 The remote reader keeps at most 32 cache roots, 50,000 classified file names per root, 512 response entries, and 5000 projected session records per root. Aggregate eviction preserves only the newest selected response chain so linked updates are not lost. Raw protected storage can reach `512 × 5000` records per root; its metric reports the actual raw count. Key discovery and file-stat scans use six concurrent readers. Approved response bodies queue before allocation. Runtime body reads and worker parsing run one at a time. One lazy shared worker decodes and parses bodies, using `src/claude-remote-data.mjs` itself. Its queue has at most 512 metadata jobs; explicitly submitted async bodies have a 48 MiB aggregate limit. Encoded bodies are limited to 8 MiB and decoded bodies to 16 MiB. Unrelated cache writes do not reread old keys or bodies. Built-in zstd decoding is optional; gzip watch reads work on older supported Node.js versions. The first remote load has worker startup overhead. An idle worker is unreferenced. A 30-second deadline or worker error rejects pending work. Shutdown rejects queued work immediately and stops old scan producers. After watcher cleanup, server close requests a graceful worker exit. Active bounded parsing is allowed to return before the worker closes. A replacement worker starts only after the old worker exits. This avoids forced termination during native decompression. A hung native parse can block worker exit and replacement. Tests retain the pure synchronous parser. This adds no runtime file or dependency.
 
 Codex tails start at 64 KiB and grow to 256 KiB. On the first read of a log that is larger than the tail, ASB does not parse each line of the full log when the tail gives the lifecycle state. It searches the raw bytes before the tail for a real question call (a `function_call` named `request_user_input` or `request_user_input_async`) and reads lines only from such a call until the question state is clear again. The results are the same as a full scan. A log whose tail has no lifecycle event still gets the full scan. Lifecycle and question recovery can scan full logs with bounded memory and append checkpoints held in memory. Later reads continue from the saved offset. Claude transcript tails have an 8 MiB limit and use six concurrent reads. Larger Claude logs recover complete lifecycle and Agent links with bounded memory. Signal reads keep an in-memory state and offset, including loaded questions and metadata. On growth, the reader checks the file identity and a 64-byte boundary guard. A match permits a read from the saved offset. A valid final JSON record without a newline is visible, but the next append rereads that line. Truncation, replacement, equal-size changes, and detected boundary rewrites trigger recovery. The append guard assumes earlier bytes stay unchanged when a file grows. Pending permission entries retain only the newest 5000. Local-command prefixes do not start new work. Broad no-path invalidation reuses unchanged lifecycle data, while targeted and equal-size rewrites retain safe invalidation. Unchanged child logs use cached signals. Retained history can still make cold reads slow. ASB writes no transcript or work-metric cache.
+
+### Known X11 frame-rate limitation
+
+No safe app-only 240 Hz fix was found on the tested stack. Keep Python and the current X11 workaround. Resize lag remains unresolved. See [the investigation report](docs/benchmarks/x11-frame-timing-2026-10-13.md) for methods, results, failed trials, and restoration checks.
+
+The 2026-10-13 tests used ASB `1.7.0`, Debian `13`, GNOME/Mutter `48.7`, GTK `4.18.6`, Libadwaita `1.7.6`, NVIDIA `550.163.01` with RTX `4070 SUPER`, and GNOME X11. Monitors were primary landscape `1920×1080 @ 239.76 Hz` and portrait `1080×1920 @ 60 Hz`. All trials used 149 visible synthetic rows with unchanged UI/features.
+
+The installed realize hook disables compositor-feedback frame synchronization. GTK reported `16667 µs` (about 60 Hz), consistent with [GTK's fallback](https://docs.gtk.org/gdk4/method.FrameClock.get_refresh_info.html). Restoring native synchronization on a fresh test surface gave these results from 105 adjacent frame intervals on the original layout:
+
+| Interval | Median (ms) | 95th percentile (ms) |
+| --- | --- | --- |
+| Paint | 0.703 | 1.778 |
+| After-paint to `FRAME_DRAWN` receipt | 16.154 | 32.784 |
+| Receipt to next paint | 0.036 | 0.083 |
+
+The buffer held 214 protocol messages, with zero drops/errors. These are frame callbacks, not physical display FPS. The driver/Mutter/message-delivery split is unproven.
+
+[Mutter's refresh selection](https://github.com/GNOME/mutter/blob/48.7/cogl/cogl/cogl-xlib-renderer.c#L419-L440) uses greatest overlap; equal-area ties follow output-name order. The 60 Hz portrait came first here. A temporary `900×1600` portrait mode changed reported refresh to `4171 µs` (about 240 Hz), but callbacks stayed near 33 ms (about 30 Hz). Default EGL, GLX with app-local VSync off, and GLX primary-device selection stayed near 33 ms. `GDK_DEBUG=no-vsync` did not improve changed-scroll cadence and used about 90% of one CPU core. Settings were restored. These trials support no permanent resolution or bypass-flag change.
+
+After a distro, desktop, GTK, or driver change, record the exact stack, X11/Wayland, renderer/context, and monitor rates. Use the same synthetic data and window size on the high-rate monitor. Compare scroll, Drawer, resize, frame intervals, and CPU. Add a single-monitor versus mixed-monitor comparison, not yet done. Distinguish callbacks from display FPS. Verify all input, actions, and accessibility before removing the workaround. A distro change alone is not a proven fix.
 
 ## API and trust boundary
 

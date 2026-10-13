@@ -169,6 +169,14 @@ The initial window is about 420×900 pixels. Closing it stops the backend that t
 
 The optional browser view starts with `npm start` at [http://127.0.0.1:4629/](http://127.0.0.1:4629/). Both modes bind only to `127.0.0.1`. `HOST` does not change the address. The browser view has no Drawer pill and no drawer actions.
 
+The unreleased Rust and Qt frontends were removed after evaluation. The normal
+launcher and installers use Python at ASB `1.7.0`. Archived [Rust results](docs/benchmarks/python-rust-2026-10-12.md)
+show faster startup and lower PSS, with mixed interaction timing. Archived
+[Qt results](docs/benchmarks/python-qt-2026-10-13.md) show no meaningful scroll
+speed gain; resize and memory results have limits. Neither comparison proves
+physical display FPS or complete UI parity. Their harnesses are no longer in
+this tree.
+
 Default Codex opens use `codex://threads/<id>`. Default Claude opens use `claude://code/continue?session=local_<uuid>` for local chats and `claude://code/<id>` for validated `cse_` or `session_` remote IDs. The apps must handle these links. An additional source's installed launcher receives the validated link for that profile. Invalid Claude local IDs remain visible with the open action disabled. Opens run in the background. **Opening…** appears in the row; a failure adds details to its tooltip.
 
 ## Refresh and data limits
@@ -186,3 +194,7 @@ Root chats are the list unit. Internal subagents stay grouped under their root. 
 Codex tail reads start at 64 KiB and grow to 256 KiB. On the first read of a larger log, ASB searches the bytes before the tail for question calls and reads lines only from such a call. When the tail has no lifecycle event, lifecycle and question checks scan the full log with bounded memory. Claude uses an 8 MiB transcript tail with complete lifecycle recovery when needed. After a guarded append, it reads new records from its in-memory checkpoint and keeps loaded questions and metadata. A valid final JSON record without a newline is visible and is read again on append. Truncation, replacement, equal-size changes, and detected boundary rewrites trigger recovery. The append guard assumes earlier bytes stay unchanged when a file grows. Large retained histories can make the first scan slow. In-memory caches reuse unchanged metadata. Local signal and lifecycle caches retain up to 5000 keys per enabled store, with shared values held once. Disabling, removing, or changing a store prunes its local cache ownership. Shared active data stays cached. Remote response-cache retention is separate. No transcript checkpoint file is written by ASB.
 
 See [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md) for source modules and [Privacy](docs/PRIVACY.md) for the full data boundary.
+
+## X11 scrolling limit
+
+On the tested Debian 13 GNOME X11 stack, ASB has no proven safe 240 Hz scrolling fix. Keep the current Python workaround. The [investigation report](docs/benchmarks/x11-frame-timing-2026-10-13.md) records the measured results. See [the measured limitation and retest checks](SYSTEM_OVERVIEW.md#known-x11-frame-rate-limitation) before changing the distro or desktop stack. Resize lag remains unresolved.

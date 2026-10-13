@@ -4,6 +4,11 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Archived the [X11 frame-timing investigation](docs/benchmarks/x11-frame-timing-2026-10-13.md), including failed graphics trials, restoration checks, and retest limits. No safe app-only 240 Hz fix was found. The existing Python workaround stays unchanged.
+- Archived the [Qt comparison](docs/benchmarks/python-qt-2026-10-13.md) and numeric samples. One valid main-monitor manual pair found no meaningful scroll speed gain, lower Qt resize callback p95, and higher Qt PSS. Different resize paths limit the comparison. Eight bounded native groups passed.
+- Archived the [Rust comparison](docs/benchmarks/python-rust-2026-10-12.md), numeric samples, and [acceptance coverage](docs/benchmarks/rust-acceptance-2026-10-12.md). Rust startup and PSS improved; interaction timing was mixed and repaint cadence was close. Python and Rust each passed fourteen critical native groups.
+- Removed both unreleased prototype trees and their harnesses after evaluation. These historical experiments cannot be run from the current tree. Production code and settings stay unchanged at ASB `1.7.0`.
+
 ## ASB 1.7.0 - 2026-10-10
 
 - Moved native settings to the approved Option B Preferences window, with Sessions, Appearance, and Profiles. Wide windows use left navigation; narrow windows use tabs. Repeated opens raise the same window. Closing Preferences keeps ASB running and keeps form edits. Profiles loads only on the first visit and after explicit actions. Existing settings, source actions, and storage stay unchanged.
