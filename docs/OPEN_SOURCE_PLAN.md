@@ -2,6 +2,24 @@
 
 ## Latest publication
 
+ASB [1.8.1](https://github.com/Jamir-boop/ASB/releases/tag/v1.8.1) was published on `2026-10-13` (Lima). Its source and tag use commit [a73a935](https://github.com/Jamir-boop/ASB/commit/a73a9353df0bf7138516509229a1b3a6d261c4e0).
+
+- Uploaded `asb_1.8.1_all.deb`, `asb-1.8.1-linux.tar.gz`, and `SHA256SUMS`. All three downloads matched the local build byte-for-byte. [Exact-source CI](https://github.com/Jamir-boop/ASB/actions/runs/38381855768) passed on Node.js `22.13.0` and `24`.
+- Local checks passed 272 Node tests, 87 native logic tests, Python compilation, and diff checks. One focused GTK toolbar test passed on hidden Xephyr with Cairo and synthetic data, including duplicate Working and App control checks. The Node tests include reproducibility checks.
+- Each package payload had 30 runtime files, all matching source bytes. The Debian `Installed-Size` was 488 KiB.
+- Synthetic upgrade, install, and removal fixtures passed using the verified published `1.8.0` package. The upgrade kept four settings files byte-for-byte with their modes, three state records, two manual marks, two pins, one drawer mark, three profiles, and saved Persistent unread off.
+- The current-user install used the verified `1.8.1` portable download. The manifest used `1.8.1`; all 30 installed runtime files matched source bytes and hashes. Two owned processes ran one window. The API returned HTTP `200`, with 157 rows and no duplicate IDs. The `1182x350` geometry was restored. No native `Traceback` appeared.
+- All four settings/state files kept their bytes and modes during installation. After start, theme and sources kept their bytes. Layout saved explicit `showAppPills: false` for the previous missing field; effective width, view, and app-pill visibility stayed unchanged. Manual marks, pin order, Persistent unread, and the 173-record count stayed unchanged.
+- Privacy preflight checks covered 24 existing history commits, 385 unique blobs, and 107 tracked files plus the new notes. Reviews covered 16 source-release files and 11 patch files; no private material was added. The MIT license, credit, exact README video URL, and 17 public media/icon/font files stayed unchanged.
+- No Debian `apt install`, real profile edits, real-app opens, full GTK widget suite, Node.js `20` + SQLite CLI reader check, or new FPS measurement was run. Known X11 scrolling and resize limits remain. See [release notes](releases/v1.8.1.md) for check limits.
+
+## Earlier publications
+
+ASB [1.8.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.8.0) was published on `2026-10-13` (Lima). Its source and tag use commit [ec6a253](https://github.com/Jamir-boop/ASB/commit/ec6a253e2513971700a57b2d9b8920fd59e4959c). Version `1.8.1` supersedes it with the duplicate toolbar chip correction.
+
+- All three installer/checksum downloads matched the local build. [Exact-source CI](https://github.com/Jamir-boop/ASB/actions/runs/38380349031) passed. Local checks passed 272 Node tests, 86 native logic tests, and one focused GTK test. Each package had 30 runtime files; Debian `Installed-Size` was 487 KiB.
+- The current-user install passed, kept settings, and ran normally before the user found the duplicate Working chip. See [release notes](releases/v1.8.0.md) for changes and check limits.
+
 ASB [1.7.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.7.0) was published on `2026-10-10` (Lima). Its source and tag use commit [8c23839](https://github.com/Jamir-boop/ASB/commit/8c2383927d4f531d30995ae1058467d3c224a35d).
 
 - Uploaded `asb_1.7.0_all.deb`, `asb-1.7.0-linux.tar.gz`, and `SHA256SUMS`. All three downloads matched local bytes and hashes. [Exact-source CI](https://github.com/Jamir-boop/ASB/actions/runs/38031710679) passed on Node.js `22.13.0` and `24`.
@@ -12,8 +30,6 @@ ASB [1.7.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.7.0) was published
 - All four settings/state files kept their bytes and modes during installation. After start, theme, layout, sources, manual marks, pin order, Persistent unread, and record count stayed unchanged.
 - Privacy checks covered 21 history commits, 371 blobs, 101 current files, and 13 release files. They found no private material. The upstream MIT license, credit, exact README video link, and public media stayed unchanged.
 - No new FPS measurement was made. Resize lag on X11 remains unresolved. No Debian `apt install`, real-app opens, or Node.js `20` + SQLite CLI reader check was run. See [release notes](releases/v1.7.0.md) for check limits.
-
-## Earlier publications
 
 ASB [1.6.1](https://github.com/Jamir-boop/ASB/releases/tag/v1.6.1) was published on `2026-10-10` (Lima). Its source and tag use commit [bf4f2d9](https://github.com/Jamir-boop/ASB/commit/bf4f2d906e69c82f68f2795f137a183fdc90a3ae).
 
