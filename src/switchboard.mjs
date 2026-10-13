@@ -324,7 +324,7 @@ export class PendingTracker {
     this.statePath = statePath;
     this.records = Object.create(null);
     this.pinnedOrder = [];
-    this.persistentUnread = false;
+    this.persistentUnread = true;
     this.loaded = false;
     this.saved = '';
     this.write = Promise.resolve();
@@ -344,7 +344,7 @@ export class PendingTracker {
       this.bad = true;
       if (value?.version === 1 && value.records && typeof value.records === 'object') {
         this.bad = false;
-        this.persistentUnread = value.persistentUnread === true;
+        this.persistentUnread = value.persistentUnread !== false;
         for (const [id, record] of Object.entries(value.records)) {
           if (['seen', 'working', 'pending', 'ack'].every((key) => Number.isFinite(record?.[key]) && record[key] >= 0)) {
             this.records[id] = { ...Object.fromEntries(['seen', 'working', 'pending', 'ack'].map((key) => [key, record[key]])),

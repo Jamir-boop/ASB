@@ -4,10 +4,18 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+## ASB 1.8.0 - 2026-10-13
+
+- Kept the native toolbar in one row, with fixed Preferences and native Close. Extra pills and removable App/state/archive filter chips scroll horizontally. Narrow search uses a popover; Refresh stays in Sessions. Below 320px, hide the disc and toolbar search control while typing and Preferences search remain available.
+- Hid app pills by default. Added Sessions > Show app pills, saved as optional boolean `showAppPills` in schema `1` layout settings. Narrow pills use the existing provider icons. Hiding pills and changing/resetting view or width keep filters and the setting.
+- Removed main-view numeric counters and the count summary. Drawer now uses a plain occupancy dot, with no numeral and no narrow label.
+- Made Persistent unread on by default when no valid saved setting exists. An explicit saved false stays off. Successful opens acknowledge attention only while it is off.
 - Archived the [X11 frame-timing investigation](docs/benchmarks/x11-frame-timing-2026-10-13.md), including failed graphics trials, restoration checks, and retest limits. No safe app-only 240 Hz fix was found. The existing Python workaround stays unchanged.
 - Archived the [Qt comparison](docs/benchmarks/python-qt-2026-10-13.md) and numeric samples. One valid main-monitor manual pair found no meaningful scroll speed gain, lower Qt resize callback p95, and higher Qt PSS. Different resize paths limit the comparison. Eight bounded native groups passed.
 - Archived the [Rust comparison](docs/benchmarks/python-rust-2026-10-12.md), numeric samples, and [acceptance coverage](docs/benchmarks/rust-acceptance-2026-10-12.md). Rust startup and PSS improved; interaction timing was mixed and repaint cadence was close. Python and Rust each passed fourteen critical native groups.
-- Removed both unreleased prototype trees and their harnesses after evaluation. These historical experiments cannot be run from the current tree. Production code and settings stay unchanged at ASB `1.7.0`.
+- Removed both unreleased prototype trees and their harnesses after evaluation. These historical experiments cannot be run from the current tree. Production ASB uses Python, with no new runtime dependency.
+
+Files from 1.7.0 remain compatible. Existing Persistent unread choices stay set; the new Show app pills setting is off when absent. See [ASB 1.8.0 release notes](docs/releases/v1.8.0.md) for downloads, upgrades, and check limits.
 
 ## ASB 1.7.0 - 2026-10-10
 

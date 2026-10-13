@@ -326,6 +326,7 @@ test('a pending Claude AskUserQuestion gives question attention, and Working onl
   await mkdir(subagents, { recursive: true });
   await writeFile(path.join(appDir, 'claude-code-sessions', `${localId}.json`), JSON.stringify({ sessionId: localId, cliSessionId: id }));
   const tracker = new PendingTracker(false);
+  await tracker.setPersistentUnread(false, { threads: [] });
   const scan = async (events) => {
     if (events) await writeFile(rootPath, jsonl(events) + '\n', { flag: 'a' });
     const { threads } = await loadClaudeDesktopCodeThreads({ appDir, projectsDir, nowMs: now });
@@ -793,6 +794,7 @@ test('persistent unread retains native, question, and observed completion dots w
   const dir = await temp(t);
   const statePath = path.join(dir, 'pending.json');
   const tracker = new PendingTracker(statePath);
+  await tracker.setPersistentUnread(false, { threads: [] });
   const board = (native = true, question = true, completion = false) => {
     const questionRow = buildSwitchboardDashboard([{ id: 'question', provider: 'codex', lifecycleRunning: true,
       agentActivityAtMs: now, awaitingUserInput: question, latestUserQuestionAtMs: now }], [], now).threads[0];
@@ -893,6 +895,7 @@ test('Read clears persistent attention without changing execution, and only new 
 
 test('ASB unread settings seed cached dots, preserve them on open, and restore open acknowledgments when disabled', async (t) => {
   const tracker = new PendingTracker(false);
+  await tracker.setPersistentUnread(false, { threads: [] });
   let native = true;
   let loads = 0;
   const server = createSwitchboardServer({ pendingTracker: tracker,
@@ -957,6 +960,7 @@ test('ASB unread routes require a local origin, exact bodies, known IDs, and POS
 
 test('only successful stored-session opens acknowledge fallback Pending', async (t) => {
   const tracker = new PendingTracker(false);
+  await tracker.setPersistentUnread(false, { threads: [] });
   await tracker.observe({ providers: [], threads: [{ id, state: 'working', nativeUnread: null, completionAtMs: 0 }] });
   let result = 'failed';
   const server = createSwitchboardServer({ pendingTracker: tracker,
@@ -983,6 +987,7 @@ test('manual unread has one stored-session action, persists over native reads, a
   const dir = await temp(t);
   const statePath = path.join(dir, 'pending.json');
   const tracker = new PendingTracker(statePath);
+  await tracker.setPersistentUnread(false, { threads: [] });
   const board = () => ({ providers: [], threads: [
     { id, provider: 'codex', state: 'idle', nativeUnread: false, canOpen: true, appDeepLink: `codex://threads/${id}` },
     { id: 'working', state: 'working', nativeUnread: false },
@@ -1179,6 +1184,7 @@ test('successful ASB opens acknowledge question/native attention without changin
   const board = () => buildSwitchboardDashboard([{ id, provider: 'codex', nativeUnread: native, readStatus: native ? 'unread' : 'read',
     lifecycleRunning: signals.agentRunning, ...signals, latestAgentFinalAtMs: completion }], [], now + 2);
   const tracker = new PendingTracker(statePath);
+  await tracker.setPersistentUnread(false, { threads: [] });
   let opened = false;
   const server = createSwitchboardServer({ pendingTracker: tracker, loadDashboard: async () => board(), openThread: async () => ({ opened }) });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -1279,6 +1285,7 @@ test('observed failed attention follows native read truth, acknowledgment and Pe
   assert.doesNotMatch(saved, /title|message|rollout|Synthetic/);
   for (const nativeUnread of [true, false]) {
     const native = new PendingTracker(false);
+    await native.setPersistentUnread(false, { threads: [] });
     await native.observe(board('working', nativeUnread));
     const row = (await native.observe(board('idle', nativeUnread))).threads[0];
     assert.equal(row.failedAttention, false);

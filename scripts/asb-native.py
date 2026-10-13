@@ -275,29 +275,53 @@ def validate_column_width(width):
 
 def read_layout(path):
     if not path or not Path(path).exists():
-        return {"columnWidth": DEFAULT_COLUMN_WIDTH, "view": "compact"}
+        return {"columnWidth": DEFAULT_COLUMN_WIDTH, "view": "compact", "showAppPills": False}
     value = json.loads(Path(path).read_text())
     if not isinstance(value, dict) or not {"version", "columnWidth"}.issubset(value) \
-            or set(value) - {"version", "columnWidth", "view"} or value["version"] != 1:
+            or set(value) - {"version", "columnWidth", "view", "showAppPills"} or value["version"] != 1:
         raise ValueError("The saved layout is not valid. Reset the width.")
     view = value.get("view", "compact")
     if view not in ("compact", "comfortable"):
         raise ValueError("Choose Compact or Comfortable view.")
-    return {"columnWidth": validate_column_width(value["columnWidth"]), "view": view}
+    show_apps = value.get("showAppPills", False)
+    if type(show_apps) is not bool:
+        raise ValueError("Show app pills must be on or off.")
+    return {"columnWidth": validate_column_width(value["columnWidth"]), "view": view, "showAppPills": show_apps}
 
 
-def write_layout(path, width=None, view=None):
-    if view is None:
-        view = read_layout(path)["view"]
+def write_layout(path, width=None, view=None, show_app_pills=None):
+    explicit_apps = show_app_pills is not None
+    if view is None or show_app_pills is None:
+        saved = read_layout(path)
+        view = saved["view"] if view is None else view
+        show_app_pills = saved["showAppPills"] if show_app_pills is None else show_app_pills
     if view not in ("compact", "comfortable"):
         raise ValueError("Choose Compact or Comfortable view.")
-    if width is None and view == "compact":
+    if type(show_app_pills) is not bool:
+        raise ValueError("Show app pills must be on or off.")
+    if width is None and view == "compact" and not show_app_pills and not explicit_apps:
         write_config(path, None)
         return
     value = {"version": 1, "columnWidth": validate_column_width(DEFAULT_COLUMN_WIDTH if width is None else width)}
     if view == "comfortable":
         value["view"] = view
+    if show_app_pills or explicit_apps:
+        value["showAppPills"] = show_app_pills
     write_config(path, value)
+
+
+def filter_chips(apps, states, archived):
+    chips = []
+    if len(apps) == 1:
+        title = "Codex" if apps == {"codex"} else "Claude"
+        chips.append(("app", title, f"Clear app filter: {title}"))
+    if set(states) != set(STATES):
+        names = ", ".join(state.capitalize() for state in STATES if state in states)
+        title = names or "No states"
+        chips.append(("states", title, "Clear state filter: " + (names or "No states")))
+    if archived:
+        chips.append(("archive", "Include archived", "Hide archived sessions"))
+    return tuple(chips)
 
 
 def working_duration(row, now_ms=None):
@@ -563,13 +587,6 @@ def save_snapshot(window, output):
     texture = window.get_renderer().render_texture(node, None)
     if not texture.save_to_png(output):
         raise RuntimeError("Cannot save the native window image.")
-
-
-class ShrinkLabel(Gtk.Label):
-    def do_measure(self, orientation, for_size):
-        minimum, natural, *baselines = Gtk.Label.do_measure(self, orientation, for_size)
-        # The five pills fit a 320 px window only when this text can go to no width.
-        return (0, natural, -1, -1) if orientation == Gtk.Orientation.HORIZONTAL else (minimum, natural, *baselines)
 
 
 class SessionStrip(Gtk.Box):
@@ -1142,6 +1159,7 @@ class PreferencesWindow(Adw.Window):
 
 class SwitchboardWindow(Adw.ApplicationWindow):
     drawer_view, drawer_peek, drawer_count, column_pixel_width = False, False, 0, DEFAULT_COLUMN_WIDTH
+    wide_controls, tiny_controls, search_expanded, show_app_pills = False, False, False, False
 
     def __init__(self, application, base, initial_dashboard=None, theme_path=THEME_PATH, layout_path=LAYOUT_PATH):
         super().__init__(application=application, title="ASB · Agent Switch Board",
@@ -1155,6 +1173,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         try:
             layout = read_layout(layout_path)
             self.column_width, self.view = layout["columnWidth"], layout["view"]
+            self.show_app_pills = layout["showAppPills"]
         except (OSError, ValueError) as error:
             self.column_width, self.view, layout_error = DEFAULT_COLUMN_WIDTH, "compact", str(error)
         self.row_height = COMFORTABLE_ROW_HEIGHT if self.view == "comfortable" else ROW_HEIGHT
@@ -1202,18 +1221,32 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.tools = tools = Gtk.Box(spacing=4, margin_start=4, margin_end=4, margin_top=2)
         tools.add_css_class("asb-toolbar")
         self.app_mark = Gtk.Image(icon_name=APP_ID, pixel_size=16, tooltip_text="ASB")
+        self.app_mark.set_size_request(20, -1)
+        self.app_mark.set_valign(Gtk.Align.START)
         self.app_mark.update_property([Gtk.AccessibleProperty.LABEL], ["ASB app icon"])
         tools.append(self.app_mark)
+        self.toolbar_center = Gtk.Box(spacing=4, hexpand=True, valign=Gtk.Align.START)
+        tools.append(self.toolbar_center)
         self.search = Gtk.SearchEntry(placeholder_text="Find a session or folder", hexpand=True)
         self.search.set_search_delay(0)
         self.search.set_size_request(0, -1)
         self.search.set_tooltip_text("Search title or folder. cl: or claude: selects Claude; cx: or codex: selects Codex.")
         self.search.connect("search-changed", self.filter_changed)
         self.search.connect("stop-search", self.clear_search)
-        tools.append(self.search)
+        self.search_popover = Gtk.Popover(position=Gtk.PositionType.BOTTOM)
+        self.search_popover.set_parent(self.toolbar_center)
+        self.search_popover.set_child(self.search)
+        self.search.set_size_request(240, -1)
+        self.search_popover.connect("closed", lambda *_args: setattr(self, "search_expanded", False))
+        self.search_button = Gtk.Button(icon_name="system-search-symbolic", tooltip_text="Find a session or folder", valign=Gtk.Align.START)
+        self.search_button.add_css_class("asb-toolbar-button")
+        self.search_button.update_property([Gtk.AccessibleProperty.LABEL], ["Search sessions"])
+        self.search_button.connect("clicked", self.open_search)
+        self.toolbar_center.append(self.search_button)
         menu = Gtk.Button(icon_name="view-more-symbolic", tooltip_text="Preferences")
         menu.update_property([Gtk.AccessibleProperty.LABEL], ["Open Preferences"])
         menu.connect("clicked", self.open_preferences)
+        menu.add_css_class("asb-toolbar-button")
         self.menu_button = menu
         sessions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         appearance = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -1255,10 +1288,21 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         sessions.append(state_box)
         self.archive.connect("toggled", self.filter_changed)
         sessions.append(self.archive)
+        self.app_pills_setting = Gtk.CheckButton(label="Show app pills", active=self.show_app_pills)
+        self.app_pills_setting.connect("toggled", self.change_app_pills_setting)
+        sessions.append(self.app_pills_setting)
+        self.app_pills_error = label("", "warning")
+        self.app_pills_error.set_wrap(True)
+        sessions.append(self.app_pills_error)
+        self.preferences_refresh_row = Gtk.Box(spacing=8)
+        preferences_search = Gtk.Button(label="Find a session or folder")
+        preferences_search.connect("clicked", self.open_search_from_preferences)
+        sessions.append(preferences_search)
+        sessions.append(self.preferences_refresh_row)
         self.syncing_unread_setting = self.unread_setting_loading = False
         sessions.append(Gtk.Separator())
         sessions.append(label("Unread", "heading"))
-        self.persistent_unread = Gtk.CheckButton(label="Persistent unread")
+        self.persistent_unread = Gtk.CheckButton(label="Persistent unread", active=True)
         self.persistent_unread.connect("toggled", self.change_unread_setting)
         sessions.append(self.persistent_unread)
         unread_help = label("Use Read in the row menu to clear dots.", "caption")
@@ -1336,21 +1380,45 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         actions.append(reset)
         appearance.append(actions)
         appearance.append(label("Colors apply only to ASB.", "caption"))
-        tools.append(menu)
-        tools.append(self.refresh_button)
+        self.toolbar_end = Gtk.Box(spacing=4, valign=Gtk.Align.START)
+        tools.append(self.toolbar_end)
+        self.refresh_button.add_css_class("asb-toolbar-button")
+        self.refresh_button.set_label("Refresh sessions")
+        self.preferences_refresh_row.append(self.refresh_button)
+        self.toolbar_end.append(menu)
         self.window_controls = Gtk.WindowControls(side=Gtk.PackType.END, decoration_layout=":close")
-        tools.append(self.window_controls)
+        self.toolbar_end.append(self.window_controls)
         self.window_handle = Gtk.WindowHandle(child=tools)
         body.append(self.window_handle)
-        self.feedback = feedback = Gtk.Box(spacing=6, margin_start=6, margin_end=6)
-        self.pending_group = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER)
+        self.toolbar_strip = Gtk.Box(spacing=4)
+        self.pending_group = Gtk.Box(spacing=4)
+        self.toolbar_strip.append(self.pending_group)
+        self.toolbar_scroll = Gtk.ScrolledWindow(hexpand=True, hscrollbar_policy=Gtk.PolicyType.EXTERNAL,
+                                                vscrollbar_policy=Gtk.PolicyType.NEVER, child=self.toolbar_strip)
+        self.toolbar_scroll.set_size_request(0, -1)
+        self.toolbar_center.append(self.toolbar_scroll)
+        toolbar_wheel = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.BOTH_AXES)
+        toolbar_wheel.connect("scroll", self.scroll_toolbar)
+        self.toolbar_scroll.add_controller(toolbar_wheel)
         self.app_pills = {}
+        self.app_pill_labels = {}
+        self.app_pill_icons = {}
         for provider, title in (("codex", "Codex"), ("claude-desktop-code", "Claude")):
-            pill = Gtk.ToggleButton(label=title, tooltip_text="Select apps. No selected apps shows all sessions.")
+            pill = Gtk.ToggleButton(tooltip_text=f"Select {title}. No selected apps or both apps shows all sessions.")
             pill.add_css_class("asb-filter-pill")
+            pill.update_property([Gtk.AccessibleProperty.LABEL], [f"Select {title}"])
+            content = Gtk.Box(spacing=3)
+            icon = Gtk.Image(icon_name="asb-openai-symbolic" if provider == "codex" else "asb-claude-symbolic", pixel_size=14)
+            content.append(icon)
+            name = label(title)
+            content.append(name)
+            pill.set_child(content)
             pill.connect("toggled", self.apps_from_pills)
             self.app_pills[provider] = pill
+            self.app_pill_labels[provider], self.app_pill_icons[provider] = name, icon
             self.pending_group.append(pill)
+            pill.set_visible(self.show_app_pills)
+            name.set_visible(False)
         self.pending_only = Gtk.ToggleButton(label="Pending", tooltip_text="Show sessions that need attention.")
         self.pending_only.add_css_class("asb-filter-pill")
         self.pending_only.update_property([Gtk.AccessibleProperty.LABEL], ["Pending only"])
@@ -1363,13 +1431,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.pending_group.append(self.working_only)
         self.drawer_only = Gtk.ToggleButton(tooltip_text="Show only the sessions in the drawer, as unread. Point here to see them in the list.")
         self.drawer_only.add_css_class("asb-filter-pill")
-        self.drawer_only.update_property([Gtk.AccessibleProperty.LABEL], ["Drawer only. Sessions in the drawer: 0"])
+        self.drawer_only.update_property([Gtk.AccessibleProperty.LABEL], ["Drawer only. The drawer is empty."])
         drawer = Gtk.Box(spacing=3)
         drawer.append(self.drawer_glyph())
-        drawer.append(ShrinkLabel(label="Drawer", ellipsize=Pango.EllipsizeMode.END))
-        self.drawer_bubble = Gtk.Label(valign=Gtk.Align.CENTER, visible=False)
-        self.drawer_bubble.add_css_class("asb-drawer-count")
-        drawer.append(self.drawer_bubble)
+        self.drawer_label = label("Drawer")
+        self.drawer_label.set_visible(False)
+        drawer.append(self.drawer_label)
+        self.drawer_dot = Gtk.Box(valign=Gtk.Align.CENTER, visible=False)
+        self.drawer_dot.add_css_class("asb-drawer-dot")
+        drawer.append(self.drawer_dot)
         self.drawer_only.set_child(drawer)
         self.pending_only.connect("notify::active", self.exclusive_pill, self.drawer_only)
         self.drawer_only.connect("notify::active", self.exclusive_pill, self.pending_only)
@@ -1378,16 +1448,22 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         peek.connect("leave", lambda *_args: self.set_drawer_peek(False))
         self.drawer_only.add_controller(peek)
         self.pending_group.append(self.drawer_only)
-        feedback.append(self.pending_group)
-        self.count = ShrinkLabel(label="Loading sessions…", xalign=0)
-        self.count.add_css_class("caption")
-        self.count.set_ellipsize(Pango.EllipsizeMode.END)
-        self.count.add_css_class("dim-label")
-        self.count.set_hexpand(True)
-        self.count.set_halign(Gtk.Align.END)
-        feedback.append(self.count)
-        body.append(feedback)
-        self.wide_controls = False
+        self.filter_chip_group = Gtk.Box(spacing=4, visible=False)
+        self.filter_chip_signature = None
+        self.filter_chip_widgets = {}
+        for key in ("app", "states", "archive"):
+            chip = Gtk.Button()
+            chip.add_css_class("asb-filter-pill")
+            content = Gtk.Box(spacing=6)
+            name = label("")
+            content.append(name)
+            content.append(Gtk.Image(icon_name="window-close-symbolic", pixel_size=12))
+            chip.set_child(content)
+            chip.connect("clicked", self.clear_filter_chip, key)
+            self.filter_chip_group.append(chip)
+            chip.set_visible(False)
+            self.filter_chip_widgets[key] = (chip, name)
+        self.toolbar_strip.append(self.filter_chip_group)
         self.notice = label("", "caption")
         self.notice.set_wrap(True)
         self.notice.set_margin_start(10)
@@ -1490,7 +1566,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base}.asb-comfortable .asb-hover-paint .asb-session:hover:not(:focus-within) {{ background: transparent; }}
 {base} .asb-filter-pill {{ min-height: 24px; border-radius: 99px; padding: 2px 8px; font-size: 11px; }}
 {base} .asb-filter-pill:checked {{ background: @accent_bg_color; color: @accent_fg_color; }}
-{base} .asb-toolbar > button, {base} .asb-toolbar > menubutton > button,
+{base} .asb-toolbar-button,
 {base} .asb-toolbar windowcontrols button {{ min-height: 24px; min-width: 22px; padding: 2px; }}
 {base} .asb-toolbar searchentry {{ min-height: 26px; padding-top: 0; padding-bottom: 0; }}
 {base} .asb-state {{ font-size: 11px; }}
@@ -1531,8 +1607,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-drawer-filled .asb-drawer-glyph {{ background: currentColor; }}
 {base} .asb-drawer-filled .asb-drawer-handle {{ background: @window_bg_color; }}
 {base} .asb-drawer-filled:checked .asb-drawer-handle {{ background: @accent_bg_color; }}
-{base} .asb-drawer-count {{ min-width: 8px; min-height: 16px; padding: 0 4px; border-radius: 99px; background: @accent_color; color: @window_bg_color; }}
-{base} .asb-filter-pill:checked .asb-drawer-count {{ background: @accent_fg_color; color: @accent_bg_color; }}
+{base} .asb-drawer-dot {{ min-width: 5px; min-height: 5px; border-radius: 50%; background: @accent_color; }}
+{base} .asb-filter-pill:checked .asb-drawer-dot {{ background: @accent_fg_color; }}
 {base} .asb-drawer-button {{ opacity: 0; background: alpha(@window_fg_color, .08); }}
 {base} .asb-session:hover .asb-drawer-button, {base} .asb-key-focus .asb-drawer-button {{ opacity: 1; }}
 {base} .asb-drawer-button.asb-drawer-filled {{ color: @accent_color; }}
@@ -1588,8 +1664,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} .asb-filter-pill:checked {{ background: {colors['accent']}; color: {colors['background']}; }}
 {scope} .asb-drawer-filled .asb-drawer-handle {{ background: {colors['background']}; }}
 {scope} .asb-drawer-filled:checked .asb-drawer-handle {{ background: {colors['accent']}; }}
-{scope} .asb-drawer-count {{ background: {colors['accent']}; color: {colors['background']}; }}
-{scope} .asb-filter-pill:checked .asb-drawer-count {{ background: {colors['background']}; color: {colors['accent']}; }}
+{scope} .asb-drawer-dot {{ background: {colors['accent']}; }}
+{scope} .asb-filter-pill:checked .asb-drawer-dot {{ background: {colors['background']}; }}
 {scope} .asb-drawer-button {{ background: alpha({colors['text']}, .08); }}
 {scope} .asb-drawer-button.asb-drawer-filled {{ color: {colors['accent']}; }}
 {scope} .asb-drawer-button:hover, {scope} .asb-drawer-button:focus-visible {{ background: alpha({colors['accent']}, .15); }}
@@ -1728,8 +1804,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             # A later 304 changes no widget, so it must not keep this notice.
             self.dashboard_etag = None
             self.set_notice(error)
-            if self.dashboard is None:
-                self.count.set_label("Sessions are not available")
             return False
         if dashboard is None:
             return False
@@ -1739,7 +1813,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.refresh_interval_ms = interval
             GLib.source_remove(self.timer)
             self.timer = GLib.timeout_add(interval, self.tick)
-        self.sync_unread_setting(dashboard.get("persistentUnread", False))
+        self.sync_unread_setting(dashboard.get("persistentUnread", True))
         self.set_notice(" ".join(provider.get("message", "") for provider in dashboard.get("providers", []) if provider.get("message")), temporary=True)
         signature = dashboard.get("threads", [])
         if signature != self.signature or any(type(row.get("sourceCount")) is not type(previous.get("sourceCount"))
@@ -1785,19 +1859,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.geometry_idle = None
         if self.closed:
             return False
-        wide = self.get_width() >= 680
-        if wide != self.wide_controls:
-            self.wide_controls = wide
-            for widget in (self.pending_group, self.count):
-                widget.get_parent().remove(widget)
-            if wide:
-                self.tools.insert_child_after(self.pending_group, self.search)
-                self.tools.insert_child_after(self.count, self.pending_group)
-            else:
-                self.feedback.append(self.pending_group)
-                self.feedback.append(self.count)
-            self.count.set_hexpand(not wide)
-            self.feedback.set_visible(not wide)
+        wide, tiny = self.get_width() >= 680, self.get_width() < 320
+        if (wide, tiny) != (self.wide_controls, self.tiny_controls):
+            self.wide_controls, self.tiny_controls = wide, tiny
+            self.update_toolbar_presentation()
         # A scrollbar that is not an overlay takes height from the viewport, and the font sets the real row height.
         viewport = self.scroll.get_child()
         geometry = (viewport.get_width(), viewport.get_height())
@@ -1808,6 +1873,60 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.geometry, self.row_height = geometry, row_height
             self.render(reveal_focus=True)
         return False
+
+    def update_toolbar_presentation(self):
+        wide = self.wide_controls
+        focused = self.get_focus()
+        search_focused = bool(focused and (focused is self.search or focused.is_ancestor(self.search)))
+        if wide != (self.search.get_parent() is self.toolbar_center):
+            if wide:
+                self.search_popover.popdown()
+                self.search_popover.set_child(None)
+                self.search.set_size_request(0, -1)
+                self.toolbar_center.prepend(self.search)
+            else:
+                self.toolbar_center.remove(self.search)
+                self.search.set_size_request(240, -1)
+                self.search_popover.set_child(self.search)
+        self.app_mark.set_visible(not self.tiny_controls)
+        self.search_button.set_visible(not wide and not self.tiny_controls)
+        if wide != (self.refresh_button.get_parent() is self.toolbar_end):
+            self.refresh_button.get_parent().remove(self.refresh_button)
+            if wide:
+                self.refresh_button.set_icon_name("view-refresh-symbolic")
+                self.toolbar_end.prepend(self.refresh_button)
+            else:
+                self.refresh_button.set_label("Refresh sessions")
+                self.preferences_refresh_row.append(self.refresh_button)
+        self.preferences_refresh_row.set_visible(not wide)
+        self.drawer_label.set_visible(wide)
+        for provider, pill in self.app_pills.items():
+            pill.set_visible(self.show_app_pills)
+            self.app_pill_labels[provider].set_visible(wide)
+            self.app_pill_icons[provider].set_visible(not wide)
+        if search_focused:
+            self.open_search()
+
+    def scroll_toolbar(self, _controller, dx, dy):
+        adjustment = self.toolbar_scroll.get_hadjustment()
+        distance = dx or dy
+        before = adjustment.get_value()
+        adjustment.set_value(max(0, min(before + distance * 40, adjustment.get_upper() - adjustment.get_page_size())))
+        return adjustment.get_value() != before
+
+    def change_app_pills_setting(self, *_args):
+        selected = self.app_pills_setting.get_active()
+        if selected == self.show_app_pills:
+            return
+        try:
+            write_layout(self.layout_path, self.column_width, self.view, selected)
+        except (OSError, ValueError) as error:
+            self.app_pills_setting.set_active(self.show_app_pills)
+            self.app_pills_error.set_label(str(error))
+            return
+        self.show_app_pills = selected
+        self.app_pills_error.set_label("")
+        self.update_toolbar_presentation()
 
     def set_column_width(self, *_args):
         width = validate_column_width(self.width_control.get_value_as_int())
@@ -1822,7 +1941,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def save_width(self):
         try:
-            write_layout(self.layout_path, self.column_width, self.view)
+            write_layout(self.layout_path, self.column_width, self.view, self.show_app_pills)
             self.layout_error.set_label("")
         except (OSError, ValueError) as error:
             self.layout_error.set_label(str(error))
@@ -1832,9 +1951,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.width_control.set_value(DEFAULT_COLUMN_WIDTH)
         self.dragging = False
         try:
-            write_layout(self.layout_path, view=self.view)
+            write_layout(self.layout_path, view=self.view, show_app_pills=self.show_app_pills)
             self.layout_error.set_label("")
-        except OSError:
+        except (OSError, ValueError):
             self.layout_error.set_label("Cannot reset the width. Check the ASB config folder.")
 
     def change_view(self, *_args):
@@ -2063,6 +2182,21 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def clear_search(self, *_args):
         self.cancel_scroll()
         self.search.set_text("")
+        if not self.wide_controls:
+            self.search_popover.popdown()
+            self.search_expanded = False
+            (self.menu_button if self.tiny_controls else self.search_button).grab_focus()
+
+    def open_search(self, *_args):
+        self.search_expanded = True
+        if not self.wide_controls:
+            self.search_popover.popup()
+        self.search.grab_focus()
+
+    def open_search_from_preferences(self, *_args):
+        self.preferences_window.set_visible(False)
+        self.present()
+        self.open_search()
 
     def window_key(self, _controller, key, _code, modifiers):
         if modifiers & SHORTCUT_MASK or (self.context_menu and self.context_menu.get_visible()):
@@ -2071,7 +2205,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if focus and focus.get_ancestor(Gtk.Popover):
             return False
         if key == Gdk.KEY_Escape:
-            if self.search.get_text():
+            if self.search.get_text() or (not self.wide_controls and self.search_expanded):
                 self.clear_search()
                 return True
             return False
@@ -2080,7 +2214,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return False
         codepoint = Gdk.keyval_to_unicode(key)
         if codepoint and chr(codepoint).isprintable():
-            self.search.grab_focus()
+            self.open_search()
             self.search.set_text(self.search.get_text() + chr(codepoint))
             self.search.set_position(-1)
             return True
@@ -2092,9 +2226,40 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                              self.pending_only.get_active(), self.drawer_view)
 
     def filter_changed(self, *_args):
+        self.sync_filter_chips()
         self.cancel_scroll()
         self.list_body.clear_hover()
         self.render()
+
+    def sync_filter_chips(self):
+        if not getattr(self, "filter_chip_group", None):
+            return
+        chips = filter_chips(self.apps, self.states, self.archive.get_active())
+        if chips == self.filter_chip_signature:
+            return
+        self.filter_chip_signature = chips
+        current = {key: (title, detail) for key, title, detail in chips}
+        for key, (chip, name) in self.filter_chip_widgets.items():
+            chip.set_visible(key in current)
+            if key in current:
+                title, detail = current[key]
+                name.set_label(title)
+                chip.set_tooltip_text(detail)
+                chip.update_property([Gtk.AccessibleProperty.LABEL], [detail])
+        self.filter_chip_group.set_visible(bool(chips))
+
+    def clear_filter_chip(self, _button, key):
+        focus = self.get_focus()
+        chip = self.filter_chip_widgets[key][0]
+        restore_focus = bool(focus and (focus is chip or focus.is_ancestor(chip)))
+        if key == "app":
+            self.select_apps(set())
+        elif key == "states":
+            self.select_states(set(STATES))
+        elif key == "archive":
+            self.archive.set_active(False)
+        if restore_focus:
+            next((button for button, _label in self.filter_chip_widgets.values() if button.get_visible()), self.menu_button).grab_focus()
 
     def exclusive_pill(self, pill, _property, other):
         self.drawer_view = self.drawer_only.get_active()
@@ -2290,15 +2455,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             else:
                 listing.disconnect(listing.asb_activation)
         self.list_columns = retained
-        pending = sum(bool(row.get("pending")) for row in rows)
-        # The Pending number comes first: a narrow window cuts the end of this text.
-        self.count.set_label(f"{pending} Pending · {len(rows)} sessions")
         if drawer != self.drawer_count:
             self.drawer_count = drawer
-            self.drawer_bubble.set_label(str(drawer) if drawer < 100 else "99+")
-            self.drawer_bubble.set_visible(bool(drawer))
+            self.drawer_dot.set_visible(bool(drawer))
             (self.drawer_only.add_css_class if drawer else self.drawer_only.remove_css_class)("asb-drawer-filled")
-            self.drawer_only.update_property([Gtk.AccessibleProperty.LABEL], [f"Drawer only. Sessions in the drawer: {drawer}"])
+            description = "The drawer has sessions." if drawer else "The drawer is empty."
+            self.drawer_only.update_property([Gtk.AccessibleProperty.LABEL], ["Drawer only. " + description])
         if repack or reveal_focus or preserve_action:
             GLib.idle_add(self.restore_position, focused, position, reveal_focus, focused_action, self.focus_generation)
 
@@ -2340,7 +2502,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if self.unread_setting_loading:
             return
         self.syncing_unread_setting = True
-        self.persistent_unread.set_active(bool(value))
+        self.persistent_unread.set_active(value if type(value) is bool else True)
         self.syncing_unread_setting = False
 
     def change_unread_setting(self, *_args):
@@ -2354,7 +2516,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.persistent_unread.set_sensitive(True)
                 self.unread_setting_error.set_label(error or "")
                 if error:
-                    self.sync_unread_setting((self.dashboard or {}).get("persistentUnread", False))
+                    self.sync_unread_setting((self.dashboard or {}).get("persistentUnread", True))
                 else:
                     self.sync_unread_setting(result["persistentUnread"])
                     self.dashboard, self.dashboard_etag = result["dashboard"], None
@@ -2908,6 +3070,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def on_close(self, *_args):
         self.closed = True
+        if getattr(self, "search_popover", None):
+            self.search_popover.unparent()
         if getattr(self, "preferences_window", None):
             self.preferences_window.dispose()
         self.cancel_scroll()

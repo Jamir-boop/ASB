@@ -24,6 +24,7 @@ SPEC.loader.exec_module(asb)
 NOW = 1_790_000_000_000
 FIXTURE = {
     "generatedAtMs": NOW,
+    "persistentUnread": False,
     "providers": [{"id": "codex", "label": "Codex", "message": ""},
                   {"id": "claude-desktop-code", "label": "Claude Desktop Code", "message": ""}],
     "threads": [
@@ -69,7 +70,7 @@ def mock_dashboard():
                      "actionRequired": state == "waiting" and index != 0,
                      "questionPending": index == 0, "questionAttention": index == 0,
                      "readStatus": "read" if index == 0 else "unread" if index == 15 else "unknown", "updatedAtMs": NOW - index * 60_000})
-    return {"generatedAtMs": NOW, "providers": [], "threads": rows}
+    return {"generatedAtMs": NOW, "providers": [], "threads": rows, "persistentUnread": False}
 
 
 class RequestChecks(unittest.TestCase):
@@ -197,6 +198,93 @@ class WidgetCheck(unittest.TestCase):
         adjustment = window.scroll.get_hadjustment()
         self.assertGreaterEqual(bounds.origin.x, adjustment.get_value() - 1)
         self.assertLessEqual(bounds.origin.x + bounds.size.width, adjustment.get_value() + adjustment.get_page_size() + 1)
+
+    def test_toolbar_c_one_row_corners_search_filters_and_no_counters(self):
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        with tempfile.TemporaryDirectory(prefix="asb-toolbar-c-") as temporary:
+            path = Path(temporary) / "layout.json"
+            dashboard = mock_dashboard()
+            dashboard.pop("persistentUnread")
+            dashboard["threads"][30].update(drawer=True, unread=False, pending=False)
+            window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard,
+                                          theme_path=False, layout_path=path)
+            self.addCleanup(window.close)
+            window.present(); window.set_focus(None); self.drain(.3)
+            border_width = window.get_default_size().width - window.get_width()
+            self.assertTrue(window.persistent_unread.get_active())
+            self.assertFalse(window.show_app_pills)
+            self.assertTrue(all(not pill.get_visible() for pill in window.app_pills.values()))
+            window.app_filter.set_selected(1)
+            window.select_states({"idle", "waiting"})
+            window.archive.set_active(True)
+            self.assertEqual(window.filter_chip_widgets["states"][1].get_text(), "Waiting, Idle")
+            window.app_pills_setting.set_active(True)
+            for width in (320, 420, 680, 1182, 280):
+                with self.subTest(width=width):
+                    window.set_default_size(width + border_width, 400); self.drain(.3); window.check_geometry(); self.drain(.1)
+                    self.assertEqual(window.get_width(), width)
+                    current_height = window.window_handle.get_height()
+                    pills = [*window.app_pills.values(), window.pending_only, window.working_only, window.drawer_only,
+                             *(chip for chip, _name in window.filter_chip_widgets.values())]
+                    controls = [*pills, window.menu_button, window.window_controls]
+                    controls += [window.search, window.refresh_button] if width >= 680 else [window.search_button]
+                    tallest = max(control.measure(asb.Gtk.Orientation.VERTICAL, -1)[1]
+                                  for control in controls if control.get_visible())
+                    self.assertLessEqual(current_height, tallest + window.tools.get_margin_top() + window.tools.get_margin_bottom())
+                    row_positions = []
+                    for pill in pills:
+                        if pill.get_visible():
+                            found, bounds = pill.compute_bounds(window.toolbar_strip)
+                            self.assertTrue(found)
+                            row_positions.append(round(bounds.origin.y))
+                    self.assertEqual(len(set(row_positions)), 1)
+                    self.assertFalse(hasattr(window, "count"))
+                    self.assertFalse(hasattr(window, "feedback"))
+                    self.assertEqual(window.pending_only.get_label(), "Pending")
+                    self.assertEqual(window.working_only.get_label(), "Working")
+                    self.assertTrue(window.drawer_dot.get_visible())
+                    self.assertFalse(isinstance(window.drawer_dot, asb.Gtk.Label))
+                    self.assertEqual(window.app_mark.get_visible(), width >= 320)
+                    self.assertEqual(window.search_button.get_visible(), 320 <= width < 680)
+                    self.assertEqual(window.drawer_label.get_visible(), width >= 680)
+                    self.assertTrue(all(icon.get_visible() == (width < 680) for icon in window.app_pill_icons.values()))
+                    found, before = window.toolbar_end.compute_bounds(window.tools)
+                    self.assertTrue(found)
+                    self.assertLessEqual(abs(before.origin.x + before.size.width - window.tools.get_width()), 1)
+                    window.open_search_from_preferences(); self.drain(.1)
+                    self.assertTrue(window.search.get_mapped())
+                    self.assertTrue(window.search.has_focus() or window.get_focus().is_ancestor(window.search))
+                    window.search.set_text("cx: example")
+                    if window.wide_controls:
+                        self.assertTrue(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0))
+                    else:
+                        window.search.emit("stop-search")
+                    self.drain(.1)
+                    self.assertEqual(window.search.get_text(), "")
+                    self.assertEqual((window.apps, window.states, window.archive.get_active()), ({"codex"}, {"idle", "waiting"}, True))
+                    found, after = window.toolbar_end.compute_bounds(window.tools)
+                    self.assertTrue(found)
+                    self.assertEqual((round(before.origin.x), round(before.origin.y)), (round(after.origin.x), round(after.origin.y)))
+            state_chip = window.filter_chip_widgets["states"][0]
+            state_chip.grab_focus(); self.drain(.1)
+            self.assertGreater(window.toolbar_scroll.get_hadjustment().get_value(), 0)
+            state_chip.emit("clicked"); self.drain(.1)
+            self.assertEqual(window.states, set(asb.STATES))
+            self.assertIsNot(window.get_focus(), state_chip)
+            window.app_pills_setting.set_active(False)
+            self.assertEqual(window.apps, {"codex"})
+            window.filter_chip_widgets["app"][0].emit("clicked")
+            self.assertEqual(window.apps, set())
+            window.filter_chip_widgets["archive"][0].emit("clicked")
+            self.assertFalse(window.archive.get_active())
+            window.reset_width()
+            self.assertFalse(asb.read_layout(path)["showAppPills"])
+            window.view_filter.set_selected(1)
+            self.assertFalse(asb.read_layout(path)["showAppPills"])
 
     def test_preferences_sections_reuse_lazy_profiles_theme_and_narrow_layout(self):
         requests = []
@@ -422,7 +510,7 @@ class WidgetCheck(unittest.TestCase):
                 window.pending_only.set_active(False)
                 window.select_states({"waiting"})
                 self.assertEqual(len(window.focus_widgets), 4)
-                self.assertEqual(window.count.get_text(), "4 Pending · 4 sessions")
+                self.assertFalse(hasattr(window, "count"))
                 window.select_states(set(asb.STATES))
                 window.app_filter.set_selected(2)
                 self.assertTrue(all(row["provider"] == "claude-desktop-code" for row in window.visible_rows()))
@@ -431,7 +519,7 @@ class WidgetCheck(unittest.TestCase):
                 window.render()
                 self.assertTrue(all(row["cwd"] == "/example/Notes" for row in window.visible_rows()))
                 visible = window.visible_rows()
-                self.assertEqual(window.count.get_text(), f"{sum(bool(row.get('pending')) for row in visible)} Pending · {len(visible)} sessions")
+                self.assertFalse(hasattr(window, "count"))
                 window.search.set_text("")
                 window.render()
                 window.theme_mode.set_selected(1)
@@ -506,7 +594,7 @@ class WidgetCheck(unittest.TestCase):
             self.assertFalse(window.window_controls.get_empty())
             self.assertEqual(window.window_controls.get_decoration_layout(), ":close")
             self.assertTrue(window.wide_controls)
-            self.assertFalse(window.feedback.get_visible())
+            self.assertFalse(hasattr(window, "feedback"))
             self.assertLessEqual(window.window_handle.get_height(), window.search.get_height() + 4)
             self.assertGreaterEqual(window.scroll.get_height(), 240)
             self.assertEqual(window.columns, 4)
@@ -780,10 +868,11 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual(len(callbacks), 1)
             self.assertEqual(callbacks[0][1], "/api/settings/unread")
             callbacks[0][2](None, "Cannot change the unread setting.")
-            self.assertFalse(window.persistent_unread.get_active())
+            self.assertTrue(window.persistent_unread.get_active())
             self.assertTrue(window.persistent_unread.get_sensitive())
             self.assertEqual(window.unread_setting_error.get_text(), "Cannot change the unread setting.")
             window.dashboard = current_dashboard
+            window.sync_unread_setting(current_dashboard["persistentUnread"])
         window.persistent_unread.set_active(True); self.drain(.4)
         self.assertEqual(received[-1], ("/api/settings/unread", {"persistentUnread": True}, base))
         self.assertTrue(window.persistent_unread.get_sensitive())
@@ -1416,13 +1505,13 @@ class WidgetCheck(unittest.TestCase):
         window.present(); window.set_focus(None); self.drain(.3)
         window.view_filter.set_selected(1); self.drain(.3); window.check_geometry(); self.drain()
         settle = lambda: self.settle(window)
-        pill, bubble, cards, hover = window.drawer_only, window.drawer_bubble, window.focus_widgets, asb.Gtk.StateFlags.PRELIGHT
+        pill, bubble, cards, hover = window.drawer_only, window.drawer_dot, window.focus_widgets, asb.Gtk.StateFlags.PRELIGHT
         put, out = "Put in drawer: look read here, keep it under Drawer", "Take out of drawer: show as unread again"
         def reply(identity, **change):
             requests[-1][2]({"changed": True, "threadId": identity, "thread": dict(cards[identity].asb_thread, **change)}, None)
             settle()
 
-        # The pill: glyph, word, and a count bubble that is hidden at zero.
+        # The pill: glyph, optional word, and a dot that is hidden when empty.
         self.assertIsInstance(pill, asb.Gtk.ToggleButton)
         self.assertIs(window.pending_group.get_last_child(), pill)
         self.assertIs(window.working_only.get_next_sibling(), pill)
@@ -1433,7 +1522,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertIs(pill.get_child().get_last_child(), bubble)
         self.assertFalse(bubble.get_visible())
         self.assertFalse(pill.has_css_class("asb-drawer-filled"))
-        self.assert_accessible_label(pill, "Drawer only. Sessions in the drawer: 0")
+        self.assert_accessible_label(pill, "Drawer only. The drawer is empty.")
         self.assertEqual(pill.get_tooltip_text(), "Show only the sessions in the drawer, as unread. Point here to see them in the list.")
         # An empty list changes its text when only the drawer view changes.
         window.search.set_text("no such session"); settle()
@@ -1494,7 +1583,7 @@ class WidgetCheck(unittest.TestCase):
         window.set_focus(None); window.set_focus_visible(False); settle()
         self.assertFalse(one.has_css_class("asb-key-focus"))
 
-        # A click sends drawer-in. After the reply the row looks read, sorts with the read rows, and the count is 1.
+        # A click sends drawer-in. After the reply the row looks read, sorts with the read rows, and lights the dot.
         drawer.emit("clicked")
         self.assertEqual((requests[-1][1], requests[-1][4], requests[-1][5]), ("/api/threads/s1/drawer-in", "POST", None))
         self.assertIsNone(drawer.get_action_name())
@@ -1504,11 +1593,11 @@ class WidgetCheck(unittest.TestCase):
         self.assertIs(cards["s1"], one)
         self.assertIsNone(window.dashboard_etag)
         self.assertEqual(window.row_order, ["s2", "s5", "s4", "s1", "s3"])
-        self.assertEqual(window.count.get_text(), "2 Pending · 5 sessions")
+        self.assertFalse(hasattr(window, "count"))
         self.assertTrue(one.has_css_class("asb-drawer") and one.has_css_class("asb-idle-read"))
         self.assertEqual((self.ink(one.asb_dot), self.ink(read), self.ink(drawer)), (0, 0, 0))
-        self.assertEqual((bubble.get_visible(), bubble.get_text(), pill.has_css_class("asb-drawer-filled")), (True, "1", True))
-        self.assert_accessible_label(pill, "Drawer only. Sessions in the drawer: 1")
+        self.assertEqual((bubble.get_visible(), pill.has_css_class("asb-drawer-filled")), (True, True))
+        self.assert_accessible_label(pill, "Drawer only. The drawer has sessions.")
         self.assertEqual((drawer.get_visible(), drawer.get_action_name(), drawer.has_css_class("asb-drawer-filled")),
                          (True, "win.drawer-out", True))
         self.assertFalse(drawer.has_css_class("asb-action-pending"))
@@ -1575,7 +1664,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(window.pending_only.get_active())
         self.assertTrue(one.has_css_class("asb-drawer-lit"))
         self.assertEqual(window.row_order, ["s1"])
-        self.assertEqual(window.count.get_text(), "0 Pending · 1 sessions")
+        self.assertFalse(hasattr(window, "count"))
         self.assertIs(one.asb_dot.get_ancestor(asb.Gtk.Button), one.asb_read_button)
         self.assertEqual((self.ink(one.asb_dot), self.ink(one.asb_state_label), self.ink(drawer)), (255, 255, 0))
         normal = [label.get_color().to_string() for label in (one.asb_title_label, one.asb_folder, one.asb_state_label, one.asb_age_label)]
@@ -1629,34 +1718,35 @@ class WidgetCheck(unittest.TestCase):
         drawer.emit("clicked")
         reply("s1", unread=False, pending=False, drawer=True)
         self.assertTrue(bubble.get_visible())
-        # The count follows the archive setting, as the drawer view does. Search and the other filters do not change it.
+        # The occupancy dot follows the archive setting. Search and the other filters do not change it.
         board = copy.deepcopy(window.dashboard)
         board["threads"].append(row(6, drawer=True, archived=True))
         window.apply_dashboard(board, None); settle()
-        self.assertEqual(bubble.get_text(), "1")
+        self.assertTrue(bubble.get_visible())
         window.archive.set_active(True); settle()
-        self.assertEqual(bubble.get_text(), "2")
-        self.assert_accessible_label(pill, "Drawer only. Sessions in the drawer: 2")
+        self.assertTrue(bubble.get_visible())
+        self.assert_accessible_label(pill, "Drawer only. The drawer has sessions.")
         window.search.set_text("no such session"); window.app_pills["claude-desktop-code"].set_active(True); settle()
-        self.assertEqual((bubble.get_text(), window.row_order), ("2", []))
+        self.assertEqual((bubble.get_visible(), window.row_order), (True, []))
         window.search.set_text(""); window.app_pills["claude-desktop-code"].set_active(False); pill.set_active(True); settle()
         self.assertEqual(window.row_order, ["s1", "s6"])
         window.archive.set_active(False); settle()
-        self.assertEqual((bubble.get_text(), window.row_order), ("1", ["s1"]))
-        self.assert_accessible_label(pill, "Drawer only. Sessions in the drawer: 1")
+        self.assertEqual((bubble.get_visible(), window.row_order), (True, ["s1"]))
+        self.assert_accessible_label(pill, "Drawer only. The drawer has sessions.")
         pill.set_active(False); settle()
         for width, wide in ((320, False), (700, True)):
             window.set_default_size(width, 400); settle(); window.check_geometry(); settle()
             self.assertEqual((window.get_width(), window.wide_controls), (width, wide))
-            self.assertIs(pill.get_parent().get_parent(), window.tools if wide else window.feedback)
+            self.assertIs(pill.get_parent().get_parent(), window.toolbar_strip)
             self.assertEqual(self.ink(bubble), 255)
             self.assertGreater(self.ink(pill.get_child().get_first_child()), 0)
-        # 100 or more drawer rows show 99+; the accessible label keeps the exact number.
-        for count, text in ((99, "99"), (100, "99+"), (120, "99+")):
+        # The occupancy dot has no numeral, including large drawers.
+        for count in (99, 100, 120):
             board = {"generatedAtMs": NOW, "providers": [], "threads": [row(n, drawer=True) for n in range(count)]}
             window.apply_dashboard(board, None); settle()
-            self.assertEqual(bubble.get_text(), text)
-            self.assert_accessible_label(pill, f"Drawer only. Sessions in the drawer: {count}")
+            self.assertTrue(bubble.get_visible())
+            self.assertFalse(isinstance(bubble, asb.Gtk.Label))
+            self.assert_accessible_label(pill, "Drawer only. The drawer has sessions.")
         window.close(); self.drain(.03)
 
     @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),

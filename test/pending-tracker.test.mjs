@@ -18,6 +18,72 @@ const claude = (extra) => ({ id, externalId: `local_${id}`, provider: 'claude-de
 const plain = (state, extra = {}) => ({ providers: [], threads: [{ id, state, nativeUnread: null, completionAtMs: 0, ...extra }] });
 const stateWarning = (dashboard) => dashboard.providers.find((provider) => provider.id === 'asb-state');
 
+test('Persistent unread defaults to on without a state file', async (t) => {
+  const transient = new PendingTracker(false);
+  assert.equal(transient.persistentUnread, true);
+  assert.equal((await transient.observe(plain('idle'))).persistentUnread, true);
+
+  const statePath = path.join(await temp(t), 'pending.json');
+  const fresh = new PendingTracker(statePath);
+  await fresh.load();
+  assert.equal(fresh.persistentUnread, true);
+  assert.equal(fresh.warning, '');
+  await assert.rejects(stat(statePath), { code: 'ENOENT' });
+  assert.equal((await fresh.observe(plain('idle'))).persistentUnread, true);
+  assert.equal(JSON.parse(await readFile(statePath, 'utf8')).persistentUnread, true);
+});
+
+test('legacy and invalid unread settings use the default and saved booleans keep their choice', async (t) => {
+  const dir = await temp(t);
+  for (const [setting, expected] of [[undefined, true], [null, true], ['false', true], [0, true], [1, true],
+    [{}, true], [[], true], [false, false], [true, true]]) {
+    const statePath = path.join(dir, `${JSON.stringify(setting)}.json`);
+    const content = JSON.stringify({ version: 1, persistentUnread: setting, pinnedOrder: [id],
+      records: { [id]: { seen: 10, working: 0, pending: 10, ack: 0 } } });
+    await writeFile(statePath, content);
+    const tracker = new PendingTracker(statePath);
+    const loaded = await tracker.observe(plain('idle', { completionAtMs: 10 }));
+    assert.equal(loaded.persistentUnread, expected, String(setting));
+    assert.equal(stateWarning(loaded), undefined, String(setting));
+    assert.deepEqual(loaded.pinnedOrder, [id]);
+    assert.deepEqual([loaded.threads[0].completionAttention, loaded.threads[0].unread], [true, true]);
+    await tracker.markUnread(id);
+    assert.equal(JSON.parse(await readFile(statePath, 'utf8')).persistentUnread, expected);
+    assert.equal((await new PendingTracker(statePath).observe(plain('idle', { completionAtMs: 10 }))).persistentUnread, expected);
+  }
+});
+
+test('the default preserves attention on open, Read clears it, and settings persist both choices', async (t) => {
+  const statePath = path.join(await temp(t), 'pending.json');
+  const tracker = new PendingTracker(statePath);
+  await tracker.observe(plain('working'));
+  const server = createSwitchboardServer({ pendingTracker: tracker, openThread: async () => ({ opened: true }),
+    loadDashboard: async () => plain('idle', { completionAtMs: 10, canOpen: true, provider: 'codex', appDeepLink: `codex://threads/${id}` }) });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = (route, body = {}) => fetch(`${base}${route}`, { method: 'POST', headers: { Origin: base }, body: JSON.stringify(body) });
+  const dashboard = () => fetch(`${base}/api/dashboard`).then((response) => response.json());
+  const first = await dashboard();
+  assert.equal(first.persistentUnread, true);
+  assert.deepEqual([first.threads[0].unread, first.threads[0].retainedUnread], [true, true]);
+  assert.equal((await post(`/api/threads/${id}/open`)).status, 200);
+  assert.equal((await dashboard()).threads[0].unread, true);
+  const read = await post(`/api/threads/${id}/mark-read`);
+  assert.equal(read.status, 200);
+  assert.deepEqual([(await read.json()).thread.unread, (await dashboard()).threads[0].pending], [false, false]);
+  for (const enabled of [false, true]) {
+    const settings = await post('/api/settings/unread', { persistentUnread: enabled });
+    assert.equal(settings.status, 200);
+    assert.equal((await settings.json()).persistentUnread, enabled);
+    assert.equal(JSON.parse(await readFile(statePath, 'utf8')).persistentUnread, enabled);
+    assert.equal((await new PendingTracker(statePath).observe(plain('idle', { completionAtMs: 10 }))).persistentUnread, enabled);
+    assert.equal((await post(`/api/threads/${id}/mark-unread`)).status, 200);
+    assert.equal((await post(`/api/threads/${id}/open`)).status, 200);
+    assert.equal((await dashboard()).threads[0].unread, enabled);
+  }
+});
+
 test('a follow-up message in the armed Claude task keeps Discard, and a new task after an end clears it', async (t) => {
   const tracker = new PendingTracker(path.join(await temp(t), 'pending.json'));
   const running = (start, end) => buildSwitchboardDashboard([claude({ lifecycleRunning: true, agentActivityAtMs: now + start,

@@ -2,7 +2,7 @@
 
 ASB lists Codex and Claude Desktop Code chats. It also lists remote Code sessions observed in Claude's local cache. Select a row to open that chat in its original app. The Linux native window uses GTK and Libadwaita. ASB makes no model calls and does not send prompts.
 
-See [README.md](README.md) for v1.7.0 packages and runtime requirements.
+See [README.md](README.md) for v1.8.0 packages and runtime requirements.
 
 ## Layout and search
 
@@ -24,11 +24,13 @@ Drag a column divider to change the width of all columns. **Appearance** in Pref
 
 Search names, folders, or app-source names. Results update when the text changes. A row title has at most 300 characters; a longer title ends with `…`. Codex can store a full prompt as a title. Search matches the limited title, and the tooltip shows it. Claude Desktop Code titles keep their own shorter limit. A leading `cl:` or `claude:` selects Claude. A leading `cx:` or `codex:` selects Codex. Prefixes ignore case and permit spaces. A prefix alone lists that app. A prefix takes priority over the app filter while it is present. The other filters still apply. Unknown prefixes remain literal search text.
 
-At start, no control has the keyboard focus. Type a printable key to enter search; the first Tab also goes to the search field. Type from a chat row to enter search. Escape clears the search and its prefix. Explicit filters stay set. Native popups and Ctrl/Alt/Super shortcuts keep their normal keys.
+The toolbar stays in one row. The disc is at the left; Preferences and native Close stay at the right. Extra pills and filter chips scroll horizontally. At 680 pixels or more, the search field and Refresh button are visible. Below that width, select Search or type to open the search popover; Refresh is in Preferences > Sessions. Below 320 pixels, the disc and toolbar Search button are hidden. Typing or **Find a session or folder** in Preferences still opens search. At start, no control has keyboard focus. Escape clears the query and prefix and closes narrow search. Explicit filters stay set. Native popups and Ctrl/Alt/Super shortcuts keep their normal keys.
 
 ## Filters and pins
 
-Use the **Codex**, **Claude**, **Pending**, **Working**, and **Drawer** toolbar pills. No selected app means all apps; both app pills mean their union. **Sessions** in Preferences uses the same app selection. **Working** alone selects only Working; turn it off to restore all states. It shares the state choices in **Sessions** and is active only when Working is the sole selected state. **Pending** alone shows Pending chats. Together, **Working** and **Pending** show Working or chats with Pending or an ASB unread dot. App, search, and archive filters still apply. **Sessions** has independent **Working**, **Waiting**, **Idle**, and **Unknown** choices. Other state combinations keep Pending as an AND filter. **All** selects all. **Clear** hides all rows until you select a state. Archived chats are hidden by default. **Drawer** shows only the chats in the drawer; see [The drawer](#the-drawer). It combines with the app pills, search, the state filters, and the archive setting. It does not combine with **Pending**: turning one on turns the other off.
+Use the **Pending**, **Working**, and **Drawer** toolbar pills. **Show app pills** in Preferences > Sessions is off by default. Turn it on to show **Codex** and **Claude**; narrow windows use app icons. The App field stays available when the pills are hidden. Hiding pills keeps the active app filter. No selected app means all apps; both app pills mean their union. **Sessions** in Preferences uses the same app selection. **Working** alone selects only Working; turn it off to restore all states. It shares the state choices in **Sessions** and is active only when Working is the sole selected state. **Pending** alone shows Pending chats. Together, **Working** and **Pending** show Working or chats with Pending or an ASB unread dot. App, search, and archive filters still apply. **Sessions** has independent **Working**, **Waiting**, **Idle**, and **Unknown** choices. Other state combinations keep Pending as an AND filter. **All** selects all. **Clear** hides all rows until you select a state. Archived chats are hidden by default. **Drawer** shows only the chats in the drawer; see [The drawer](#the-drawer). It combines with the app pills, search, the state filters, and the archive setting. It does not combine with **Pending**: turning one on turns the other off.
+
+Applied App, state, and archive settings have a chip with a × button in the toolbar. State chips show the selected states, or **No states**. Clear a chip to reset only that group: App to all apps, states to all states, or **Include archived** to off. Search prefixes still take priority over the app filter. Persistent unread and Show app pills have no filter chips. The main view has no numeric counters.
 
 ASB pins come first in their saved order. Unpinned chats follow: Pending, Working, Idle, then Unknown. A Working chat sorts by the start of its current task, so it does not move while it works. A Working chat with no known start comes after the Working chats that have one. In the Pending group, Working chats with a question come first, by task start; the other Pending chats follow by newest activity. A card moves when its state or group changes or a new task starts. Right-click a row, or use Menu or Shift+F10, to **Pin** or **Unpin** it. Drag a pinned row onto another pin to change the order. **Move pin earlier** and **Move pin later** provide the same control from the keyboard. They move the pin before or after the adjacent visible pinned row, with search and filters applied. They do nothing at the first or last visible pin. Hidden pins keep their place in the saved order.
 
@@ -72,7 +74,7 @@ While the pointer is on an unread row, the row looks read in both views: the unr
 
 In Comfortable, select the dot or question-attention `?` beside the top-right pin to **Read**. A permission-wait `?` or stop square is passive, with no Read action or check cue. A successful Read shows a check for 1.6 seconds. A failed action keeps the dot and puts the error in the row tooltip. The error leaves the row when the row state changes or when the row leaves the list. This control works with or without **Persistent unread**. It does not open the chat or resolve a source question. New attention replaces old feedback.
 
-By default, a successful open acknowledges manual, native, completion, failure, and question attention in ASB. A failed open keeps the attention. An acknowledgment does not answer a question, clear a permission wait, or change a stopped outcome. A new question, completion, failure, or native Read-to-Unread cycle can add new attention.
+With **Persistent unread** off, a successful open acknowledges manual, native, completion, failure, and question attention in ASB. A failed open keeps the attention. An acknowledgment does not answer a question, clear a permission wait, or change a stopped outcome. A new question, completion, failure, or native Read-to-Unread cycle can add new attention.
 
 ## The drawer
 
@@ -82,7 +84,7 @@ To put a chat in the drawer, open the row menu of an unread row and choose **Put
 
 Only a row with an unread dot can go in the drawer. A row with a `?`, a required action in the original app, or a Working state cannot.
 
-To see the drawer, select the **Drawer** pill. It shows a drawer glyph, the word Drawer, and a count of the chats in the drawer. Archived chats count only while **Show archived sessions** is on. Search, the app pills, and the state filters do not change the count. The count is hidden at zero and shows `99+` from 100. A selected pill has the accent color as background. In a narrow window the word Drawer can be cut short. With the pill on, the list shows only the drawer chats, and they look unread as normal. An empty drawer shows **The drawer is empty. Put an unread session in it to get it out of the way.** You can also point at the pill while it is off: the drawer chats then show their unread look in place until the pointer leaves.
+To see the drawer, select the **Drawer** pill. It shows a drawer glyph and a small dot when the drawer has chats. The dot has no numeral. Archived chats affect the dot only while **Show archived sessions** is on. Search, the app pills, and the state filters do not change it. An empty drawer hides the dot. A selected pill has the accent color as background. Narrow windows hide the word Drawer and keep the glyph and dot. With the pill on, the list shows only the drawer chats, and they look unread as normal. An empty drawer shows **The drawer is empty. Put an unread session in it to get it out of the way.** You can also point at the pill while it is off: the drawer chats then show their unread look in place until the pointer leaves.
 
 The drawer has no time limit. A chat leaves the drawer in these ways:
 
@@ -110,7 +112,7 @@ Discard checks the current source before arming. Keep uses the normal cache and 
 
 A native unread mark for the discarded success can arrive late. ASB suppresses the first matched episode and preserves later observed Read-to-Unread cycles. A source-app manual Unread that is the first mark for the same completion can also be suppressed. Remote cache limits still apply: generic Idle without a terminal timestamp clears the arm but cannot safely suppress native attention. A remote end and new run missed between scans can leave Discard armed. ASB does not infer a missing task identity.
 
-**Persistent unread** in **Sessions** is off by default. Turn it on to keep ASB attention after source Read, question resolution, completion, and successful opens. Choose **Read** to clear it. Turning the setting off keeps existing dots and restores acknowledgment on successful opens. Retained marks follow the Working rule above: they are hidden while the chat is Working. Every visible retained dot counts as Pending.
+**Persistent unread** in **Sessions** is on by default when no valid saved setting exists. An explicit saved off setting stays off. It keeps ASB attention after source Read, question resolution, completion, and successful opens. Choose **Read** to clear it. Turning the setting off keeps existing dots and restores acknowledgment on successful opens. Retained marks follow the Working rule above: they are hidden while the chat is Working. Every visible retained dot counts as Pending.
 
 All ASB clients share this attention and pin state. Filters do not limit what the tracker observes.
 
@@ -118,14 +120,14 @@ All ASB clients share this attention and pin state. Filters do not limit what th
 
 Select the toolbar settings button to open **Preferences**. It is one separate native window. You can still use the main window. Selecting the button again raises the same Preferences window. Closing Preferences keeps ASB running and keeps form edits for the next open.
 
-Use **Sessions** for app and state filters, archived sessions, and Persistent unread. Use **Appearance** for Compact or Comfortable, column width, and colors. Use **Profiles** to add or edit app sources. A wide window has navigation on the left; a narrow window has tabs above the page.
+Use **Sessions** for app and state filters, archived sessions, Show app pills, Persistent unread, search, and narrow-window Refresh. Use **Appearance** for Compact or Comfortable, column width, and colors. Use **Profiles** to add or edit app sources. A wide window has navigation on the left; a narrow window has tabs above the page.
 
 ASB uses dark mode in its main and Preferences windows. In **Appearance**, **GNOME colors** uses your current background, text, and accent colors. **Custom colors** lets you set background, text, accent, muted text, and divider colors. Divider color has no contrast limit. Changing a color selects **Custom colors**. Select **Apply theme** to check the dark background and text contrast, apply the colors to both windows, and save them for the next start. A validation or save error keeps the previous theme. **Reset to GNOME** removes the custom theme and resets the pickers. ASB does not change global GNOME settings.
 
 | File | Contents |
 | --- | --- |
 | `$XDG_STATE_HOME/asb/pending.json` | Attention history, Read/Unread marks, pins, Persistent unread, current-task Discard, and the drawer. |
-| `$XDG_CONFIG_HOME/asb/layout.json` | Column width and selected view. |
+| `$XDG_CONFIG_HOME/asb/layout.json` | Column width, selected view, and Show app pills. |
 | `$XDG_CONFIG_HOME/asb/theme.json` | Custom colors. |
 | `$XDG_CONFIG_HOME/asb/sources.json` | App-source names, colors, dot visibility, folders, launchers, and enabled flags. |
 
@@ -170,7 +172,7 @@ The initial window is about 420×900 pixels. Closing it stops the backend that t
 The optional browser view starts with `npm start` at [http://127.0.0.1:4629/](http://127.0.0.1:4629/). Both modes bind only to `127.0.0.1`. `HOST` does not change the address. The browser view has no Drawer pill and no drawer actions.
 
 The unreleased Rust and Qt frontends were removed after evaluation. The normal
-launcher and installers use Python at ASB `1.7.0`. Archived [Rust results](docs/benchmarks/python-rust-2026-10-12.md)
+launcher and installers use Python at ASB `1.8.0`. Archived [Rust results](docs/benchmarks/python-rust-2026-10-12.md)
 show faster startup and lower PSS, with mixed interaction timing. Archived
 [Qt results](docs/benchmarks/python-qt-2026-10-13.md) show no meaningful scroll
 speed gain; resize and memory results have limits. Neither comparison proves

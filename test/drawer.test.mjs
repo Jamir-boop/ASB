@@ -30,7 +30,9 @@ async function drawn(tracker = new PendingTracker(false)) {
 
 test('a drawer card is read in the list, keeps its mark fields, and survives a scan and a restart', async (t) => {
   const statePath = path.join(await temp(t), 'pending.json');
-  const { tracker, row } = await drawn(new PendingTracker(statePath));
+  const tracker = new PendingTracker(statePath);
+  await tracker.setPersistentUnread(false, { threads: [] });
+  const { row } = await drawn(tracker);
   const marks = (value) => [value.manualUnread, value.nativeAttention, value.completionAttention, value.failedAttention,
     value.retainedUnread, value.retainedUnreadSource, value.pendingSource];
   assert.deepEqual(view(row), [true, false, false]);
@@ -189,6 +191,7 @@ test('a discarded result is not new attention for a drawer card', async () => {
 test('a drawer card leaves the drawer when its mark is gone in the original app', async (t) => {
   const statePath = path.join(await temp(t), 'pending.json');
   const native = new PendingTracker(statePath);
+  await native.setPersistentUnread(false, { threads: [] });
   await native.setDrawer(await scan(native, 'idle', { nativeUnread: true }), true);
   assert.deepEqual(view(await scan(native, 'idle', { nativeUnread: true })), [true, false, false]);
   assert.deepEqual(view(await scan(native, 'idle', { nativeUnread: false })), [false, false, false]);
@@ -196,7 +199,7 @@ test('a drawer card leaves the drawer when its mark is gone in the original app'
 
   for (const persistent of [false, true]) {
     const tracker = new PendingTracker(false);
-    if (persistent) await tracker.setPersistentUnread(true, { threads: [] });
+    await tracker.setPersistentUnread(persistent, { threads: [] });
     await drawn(tracker);
     const read = await scan(tracker, 'idle', { completionAtMs: 10, nativeUnread: false });
     assert.deepEqual([view(read), read.retainedUnread], persistent ? [[true, false, false], true] : [[false, false, false], false], String(persistent));
@@ -319,8 +322,8 @@ test('a successful drawer-in sends one dashboard event with the reason asb-drawe
 test('a successful open takes a card out of the drawer only when Persistent unread is off', async (t) => {
   for (const persistent of [false, true]) {
     const tracker = await workingTracker();
+    await tracker.setPersistentUnread(persistent, { threads: [] });
     const { post, row } = await serve(t, tracker);
-    if (persistent) await tracker.setPersistentUnread(true, { threads: [await row()] });
     assert.equal((await post('drawer-in')).status, 200);
     assert.equal((await post('open')).status, 200);
     assert.deepEqual(view(await row()), persistent ? [true, false, false] : [false, false, false], String(persistent));

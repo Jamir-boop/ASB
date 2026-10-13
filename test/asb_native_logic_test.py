@@ -231,7 +231,7 @@ class DataChecks(unittest.TestCase):
     def test_layout_width_validation_persistence_and_reset(self):
         with TemporaryDirectory(prefix="asb-layout-test-") as directory:
             path = Path(directory) / "layout.json"
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "showAppPills": False})
             asb.write_layout(path, 160)
             self.assertEqual(asb.read_layout(path)["columnWidth"], 160)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
@@ -242,20 +242,20 @@ class DataChecks(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), previous)
             asb.write_layout(path)
             self.assertFalse(path.exists())
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "showAppPills": False})
 
     def test_view_setting_legacy_width_save_and_reset(self):
         with TemporaryDirectory(prefix="asb-view-test-") as directory:
             path = Path(directory) / "layout.json"
             path.write_text(json.dumps({"version": 1, "columnWidth": 180}))
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "showAppPills": False})
             asb.write_layout(path, 180, "comfortable")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "comfortable"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "comfortable", "showAppPills": False})
             asb.write_layout(path, 320)
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": False})
             asb.write_layout(path)
             self.assertTrue(path.exists())
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": False})
             before = path.read_bytes()
             with self.assertRaises(ValueError):
                 asb.write_layout(path, 240, "unknown")
@@ -264,6 +264,224 @@ class DataChecks(unittest.TestCase):
             asb.write_layout(path, 240, "compact")
             asb.write_layout(path)
             self.assertFalse(path.exists())
+
+    def test_app_pill_layout_boolean_and_setting_preservation(self):
+        with TemporaryDirectory(prefix="asb-toolbar-layout-") as directory:
+            path = Path(directory) / "layout.json"
+            for invalid in (0, 1, "true", None, [], {}):
+                path.write_text(json.dumps({"version": 1, "columnWidth": 240, "showAppPills": invalid}))
+                with self.assertRaises(ValueError):
+                    asb.read_layout(path)
+            path.unlink()
+            asb.write_layout(path, 180, "compact", True)
+            self.assertTrue(asb.read_layout(path)["showAppPills"])
+            asb.write_layout(path, 320, "comfortable")
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": True})
+            asb.write_layout(path)
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": True})
+            asb.write_layout(path, 240, "compact", False)
+            self.assertFalse(json.loads(path.read_text())["showAppPills"])
+            before = path.read_bytes()
+            with self.assertRaises(ValueError):
+                asb.write_layout(path, 240, "compact", "false")
+            self.assertEqual(path.read_bytes(), before)
+            window = object.__new__(Window)
+            window.show_app_pills, window.column_width, window.view, window.layout_path = False, 180, "comfortable", path
+            window.app_pills_setting = Mock(get_active=Mock(return_value=True))
+            window.app_pills_error, window.layout_error = Mock(), Mock()
+            window.update_toolbar_presentation, window.render = Mock(), Mock()
+            window.apps, window.states = {"codex"}, {"waiting"}
+            window.change_app_pills_setting()
+            self.assertTrue(window.show_app_pills)
+            self.assertTrue(asb.read_layout(path)["showAppPills"])
+            self.assertEqual((window.apps, window.states), ({"codex"}, {"waiting"}))
+            window.render.assert_not_called()
+            window.app_pills_setting.get_active.return_value = False
+            with patch.dict(SCOPE, {"write_layout": Mock(side_effect=OSError("Save failed"))}):
+                window.change_app_pills_setting()
+            self.assertTrue(window.show_app_pills)
+            window.app_pills_setting.set_active.assert_called_once_with(True)
+            window.app_pills_error.set_label.assert_called_with("Save failed")
+            window.update_toolbar_presentation.assert_called_once_with()
+            window.dragging = False
+            window.width_control = Mock(set_value=Mock(side_effect=lambda width: setattr(window, "column_width", width)))
+            window.reset_width()
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": True})
+            window.save_width()
+            self.assertTrue(asb.read_layout(path)["showAppPills"])
+
+    def test_filter_chip_groups_clear_only_their_constraint(self):
+        chips = asb.filter_chips
+        self.assertEqual(chips(set(), set(asb.STATES), False), ())
+        self.assertEqual(chips(set(asb.SOURCE_PROVIDERS), set(asb.STATES), False), ())
+        self.assertEqual(chips({"codex"}, set(), True), (
+            ("app", "Codex", "Clear app filter: Codex"),
+            ("states", "No states", "Clear state filter: No states"),
+            ("archive", "Include archived", "Hide archived sessions")))
+        self.assertEqual(chips({"claude-desktop-code"}, {"idle", "working"}, False), (
+            ("app", "Claude", "Clear app filter: Claude"),
+            ("states", "Working, Idle", "Clear state filter: Working, Idle")))
+        self.assertEqual(chips(set(), {"working"}, False), (("states", "Working", "Clear state filter: Working"),))
+        window = object.__new__(Window)
+        window.apps, window.states = {"claude-desktop-code"}, {"working"}
+        window.archive = SimpleNamespace(active=True, get_active=lambda: window.archive.active,
+                                         set_active=lambda value: setattr(window.archive, "active", value))
+        window.get_focus = lambda: None
+        window.filter_chip_widgets = {key: (Mock(), Mock()) for key in ("app", "states", "archive")}
+        window.select_apps = lambda values: setattr(window, "apps", values)
+        window.select_states = lambda values: setattr(window, "states", values)
+        board = {"threads": [dict(row, provider="codex") for row in (
+            {"id": "work", "state": "working"}, {"id": "old", "state": "idle", "archived": True})]}
+        self.assertEqual([row["id"] for row in asb.filtered_rows(board, "cx:", "claude-desktop-code", window.states, True)], ["work"])
+        window.clear_filter_chip(None, "app")
+        self.assertEqual((window.apps, window.states, window.archive.active), (set(), {"working"}, True))
+        window.clear_filter_chip(None, "states")
+        self.assertEqual((window.apps, window.states, window.archive.active), (set(), set(asb.STATES), True))
+        window.clear_filter_chip(None, "archive")
+        self.assertEqual((window.apps, window.states, window.archive.active), (set(), set(asb.STATES), False))
+
+    def test_filter_chips_reuse_controls_and_keep_full_state_names(self):
+        window = object.__new__(Window)
+        window.apps, window.states = {"codex"}, {"working", "waiting", "unknown"}
+        window.archive = Mock(get_active=Mock(return_value=True))
+        window.filter_chip_group, window.filter_chip_signature = Mock(), None
+        window.filter_chip_widgets = {key: (Mock(), Mock()) for key in ("app", "states", "archive")}
+        with patch.dict(SCOPE, {"Gtk": SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0))}):
+            window.sync_filter_chips()
+            chip, name = window.filter_chip_widgets["states"]
+            name.set_label.assert_called_once_with("Working, Waiting, Unknown")
+            chip.set_tooltip_text.assert_called_once_with("Clear state filter: Working, Waiting, Unknown")
+            chip.update_property.assert_called_once_with([0], ["Clear state filter: Working, Waiting, Unknown"])
+            window.sync_filter_chips()
+            self.assertEqual(chip.set_tooltip_text.call_count, 1)
+            window.states = set(asb.STATES)
+            window.sync_filter_chips()
+            chip.set_visible.assert_called_with(False)
+
+    def test_narrow_escape_collapses_search_and_keeps_filters(self):
+        window = object.__new__(Window)
+        window.search_expanded, window.wide_controls, window.context_menu = True, False, None
+        window.cancel_scroll = Mock()
+        window.search_popover, window.search_button = Mock(), Mock()
+        window.apps, window.states = {"codex"}, {"waiting"}
+        text = ["cl: example"]
+        window.search = SimpleNamespace(get_text=lambda: text[0], set_text=lambda value: text.__setitem__(0, value),
+                                        grab_focus=Mock(), set_position=Mock())
+        window.get_focus = lambda: None
+        window.present = Mock()
+        with patch.dict(SCOPE, {"Gdk": SimpleNamespace(KEY_Escape=27, KEY_space=32, KEY_Return=13, KEY_KP_Enter=14,
+                              keyval_to_unicode=lambda key: key), "SHORTCUT_MASK": 0,
+                              "Gtk": SimpleNamespace(Editable=type("Editable", (), {}), TextView=type("TextView", (), {}))}):
+            self.assertTrue(window.window_key(None, 27, 0, 0))
+            self.assertEqual((text[0], window.search_expanded), ("", False))
+            self.assertEqual((window.apps, window.states), ({"codex"}, {"waiting"}))
+            window.search_popover.popdown.assert_called_once_with()
+            self.assertTrue(window.window_key(None, ord("x"), 0, 0))
+            self.assertEqual((text[0], window.search_expanded), ("x", True))
+            window.search_popover.popup.assert_called_once_with()
+            window.wide_controls = True
+            window.clear_search()
+            self.assertTrue(window.search_expanded)
+            self.assertEqual(text[0], "")
+
+    def test_chip_clear_restores_keyboard_focus_and_preferences_search_raises_main(self):
+        window = object.__new__(Window)
+        chips = {key: (Mock(), Mock()) for key in ("app", "states", "archive")}
+        window.filter_chip_widgets, window.menu_button = chips, Mock()
+        window.get_focus = lambda: chips["states"][0]
+        for key, (button, _label) in chips.items():
+            button.get_visible.return_value = key == "archive"
+        window.select_states = Mock()
+        window.clear_filter_chip(chips["states"][0], "states")
+        window.select_states.assert_called_once_with(set(asb.STATES))
+        chips["archive"][0].grab_focus.assert_called_once_with()
+        chips["archive"][0].get_visible.return_value = False
+        window.clear_filter_chip(chips["states"][0], "states")
+        window.menu_button.grab_focus.assert_called_once_with()
+        window.preferences_window, window.present, window.open_search = Mock(), Mock(), Mock()
+        window.open_search_from_preferences()
+        window.preferences_window.set_visible.assert_called_once_with(False)
+        window.present.assert_called_once_with()
+        window.open_search.assert_called_once_with()
+
+    def test_toolbar_presentation_keeps_fixed_corners_and_reparents_only_on_mode_changes(self):
+        class Control(Box):
+            visible = True
+            def prepend(self, child):
+                self.insert(child, 0)
+            def set_visible(self, value):
+                self.visible = value
+            def set_child(self, child):
+                for old in tuple(self.children):
+                    self.remove(old)
+                if child:
+                    self.append(child)
+            def get_text(self):
+                return ""
+            set_icon_name = Mock()
+            popdown = Mock()
+        window = object.__new__(Window)
+        window.toolbar_center, window.toolbar_end, window.search_popover = Control(), Control(), Control()
+        window.search, window.search_button, window.app_mark, window.toolbar_scroll = Control(), Control(), Control(), Control()
+        window.preferences_refresh_row, window.refresh_button, window.drawer_label = Control(), Control(), Control()
+        window.menu_button, window.window_controls = Control(), Control()
+        window.app_pills = {provider: Control() for provider in asb.SOURCE_PROVIDERS}
+        window.app_pill_labels = {provider: Control() for provider in asb.SOURCE_PROVIDERS}
+        window.app_pill_icons = {provider: Control() for provider in asb.SOURCE_PROVIDERS}
+        window.toolbar_center.append(window.search_button)
+        window.toolbar_center.append(window.toolbar_scroll)
+        window.toolbar_end.append(window.menu_button)
+        window.toolbar_end.append(window.window_controls)
+        window.preferences_refresh_row.append(window.refresh_button)
+        window.search_popover.set_child(window.search)
+        window.get_focus = lambda: None
+        window.show_app_pills = True
+        window.update_toolbar_presentation()
+        self.assertIs(window.search.get_parent(), window.search_popover)
+        self.assertFalse(window.drawer_label.visible)
+        self.assertTrue(window.search_button.visible)
+        window.wide_controls = True
+        window.update_toolbar_presentation()
+        self.assertIs(window.search.get_parent(), window.toolbar_center)
+        self.assertIs(window.refresh_button.get_parent(), window.toolbar_end)
+        self.assertFalse(window.search_button.visible)
+        self.assertTrue(window.drawer_label.visible)
+        self.assertTrue(all(name.visible for name in window.app_pill_labels.values()))
+        with patch.object(window.toolbar_center, "remove", wraps=window.toolbar_center.remove) as remove:
+            window.update_toolbar_presentation()
+            remove.assert_not_called()
+        window.wide_controls, window.tiny_controls = False, True
+        window.update_toolbar_presentation()
+        self.assertFalse(window.app_mark.visible)
+        self.assertFalse(window.search_button.visible)
+        self.assertIs(window.search.get_parent(), window.search_popover)
+        self.assertIs(window.menu_button.get_parent(), window.toolbar_end)
+        self.assertIs(window.window_controls.get_parent(), window.toolbar_end)
+        self.assertTrue(all(icon.visible for icon in window.app_pill_icons.values()))
+        self.assertFalse(all(name.visible for name in window.app_pill_labels.values()))
+
+    def test_toolbar_wheel_scroll_clamps_without_a_timer(self):
+        window = object.__new__(Window)
+        value = [0]
+        adjustment = SimpleNamespace(get_value=lambda: value[0], get_upper=lambda: 240, get_page_size=lambda: 120,
+                                     set_value=lambda position: value.__setitem__(0, position))
+        window.toolbar_scroll = SimpleNamespace(get_hadjustment=lambda: adjustment)
+        self.assertTrue(window.scroll_toolbar(None, 0, 1))
+        self.assertEqual(value[0], 40)
+        self.assertTrue(window.scroll_toolbar(None, 5, 0))
+        self.assertEqual(value[0], 120)
+        self.assertFalse(window.scroll_toolbar(None, 0, 1))
+        self.assertTrue(window.scroll_toolbar(None, -8, 0))
+        self.assertEqual(value[0], 0)
+
+    def test_persistent_unread_missing_or_invalid_is_on_and_saved_false_stays_off(self):
+        window = object.__new__(Window)
+        window.unread_setting_loading, window.syncing_unread_setting = False, False
+        window.persistent_unread = Mock()
+        for value, expected in ((None, True), (0, True), ("false", True), (True, True), (False, False)):
+            window.sync_unread_setting(value)
+            window.persistent_unread.set_active.assert_called_with(expected)
+        self.assertFalse(window.syncing_unread_setting)
 
     def test_provider_prefixes(self):
         for prefix, provider in (("cl:", "claude-desktop-code"), ("claude:", "claude-desktop-code"),
@@ -1755,6 +1973,7 @@ class NativeLogicChecks(unittest.TestCase):
                 text = value
                 window.filter_changed()
         window.search = SimpleNamespace(set_text=set_text)
+        window.search_popover, window.search_button = Mock(), Mock()
         window.clear_search()
         window.render.assert_called_once_with()
         window.clear_search()
@@ -1941,7 +2160,7 @@ class NativeLogicChecks(unittest.TestCase):
                 window.focus_widgets, window.row_cache, window.open_errors = {}, {}, {}
                 window.opening, window.session_actions = set(), set()
                 window.list_body, window.count = Box(), Box()
-                window.drawer_only, window.drawer_bubble = Mock(), Mock()
+                window.drawer_only, window.drawer_dot = Mock(), Mock()
                 window.scroll = SimpleNamespace(get_hadjustment=lambda: SimpleNamespace(get_value=lambda: 0))
                 window.visible_rows = lambda: [row for row in window.dashboard["threads"] if not window.drawer_view or row["drawer"]]
                 controls = []

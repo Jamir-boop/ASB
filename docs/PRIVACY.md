@@ -31,7 +31,7 @@ Remote cache observations can be incomplete or old. ASB uses the newest response
 | Default path | Stored data |
 | --- | --- |
 | `~/.local/state/asb/pending.json` | Chat IDs, completion/read/question acknowledgment values, manual/retained attention, pin order, Persistent unread, and drawer marks. |
-| `~/.config/asb/layout.json` | Column width and selected view. |
+| `~/.config/asb/layout.json` | Column width, selected view, and Show app pills. |
 | `~/.config/asb/theme.json` | Custom colors. |
 | `~/.config/asb/sources.json` | Registered source IDs, app names, profile labels/colors, local data/transcript folders, installed launcher paths, and enabled flags. |
 | `~/.local/share/applications/local.asb.AgentSwitchBoard.desktop` | ASB's per-user desktop entry. |
