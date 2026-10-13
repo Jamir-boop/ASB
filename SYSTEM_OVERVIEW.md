@@ -1,6 +1,6 @@
 # ASB system overview
 
-The current ASB source version is `1.8.0`. See the [publication record](https://github.com/Jamir-boop/ASB/blob/main/docs/OPEN_SOURCE_PLAN.md) for verified release status.
+The current ASB source version is `1.8.1`. See the [publication record](https://github.com/Jamir-boop/ASB/blob/main/docs/OPEN_SOURCE_PLAN.md) for verified release status.
 
 ASB is a local switch board for existing Codex and Claude Desktop Code chats, including remote Code sessions observed in Claude's local cache. Its main view is a small native GNOME window. It observes local files and opens the original app. It makes no model calls.
 
@@ -36,11 +36,11 @@ found no meaningful scroll speed gain in one valid main-monitor manual pair.
 Qt had lower resize callback p95 and higher PSS, with different resize paths.
 Eight bounded Qt native groups passed. These results do not prove complete UI
 parity or physical display FPS. The experiments cannot be run from this tree.
-Production ASB uses Python at `1.8.0`.
+Production ASB uses Python at `1.8.1`.
 
 ASB uses `DashboardSnapshot` in `src/dashboard-snapshot.mjs` for snapshots, source events, watchers, caches, and request coalescing. It also uses local HTTP utilities, Codex open helpers, and provider cache helpers.
 
-The ASB `1.8.0` package whitelist names 30 runtime files, including the app-source registry. ASB `1.7.0`, `1.6.1`, `1.6.0`, `1.5.0`, and `1.4.0` also shipped 30. ASB `1.3.0` shipped 32. ASB `1.2.0` shipped 31, down from 42 in ASB `1.1.0`.
+The ASB `1.8.1` package whitelist names 30 runtime files, including the app-source registry. ASB `1.8.0`, `1.7.0`, `1.6.1`, `1.6.0`, `1.5.0`, and `1.4.0` also shipped 30. ASB `1.3.0` shipped 32. ASB `1.2.0` shipped 31, down from 42 in ASB `1.1.0`.
 
 ## Main files
 
@@ -152,7 +152,7 @@ ASB shows the Pending state warning when it cannot use `pending.json` in full. T
 ## Native view contract
 
 - The toolbar stays in one row at every width. Preferences and native Close stay fixed at the right. The disc stays at the left at widths of at least 320px; below 320px, the disc and toolbar search control are hidden. A horizontal native scroller holds extra pills and × filter chips. Pointer scrolling and native keyboard focus make hidden controls reachable. At 680px or more, search and Refresh are visible in the header. Narrow search uses a transient popover; typing or Sessions > Find a session or folder can open it below 320px. The main view shows no numeric counters or summary row. Native move, resize, outer border, and row layout stay unchanged.
-- App, restricted states, and archive settings each get one removable toolbar chip. State chips show the selected state names or No states; tooltip/accessibility text keeps all names. × resets only that group: app to All, states to All, archive to off. Clearing a focused chip moves focus to another visible chip or Preferences. Search prefixes still override app selection. Persistent unread and Show app pills are behaviors, so they create no chips.
+- Show a removable toolbar chip only when no visible pill controls that filter. Working alone uses the Working pill, with no duplicate state chip. A single app selection has a chip only when app pills are hidden. Other restricted state sets and the archive setting have a chip. State chips show the selected state names or No states; tooltip/accessibility text keeps all names. Changing app-pill visibility updates chips without changing filters. × resets only that group: app to All, states to All, archive to off. Clearing a focused chip moves focus to another visible chip or Preferences. Search prefixes still override app selection. Persistent unread and Show app pills are behaviors, so they create no chips.
 - Compact is the default with rows of a nominal 22 pixels. Comfortable uses rows of a nominal 68 pixels with the folder first and a two-line title. These are minimum heights; a font with higher lines makes rows higher.
 - Comfortable uses C Restore on hover: only Idle rows without visible ASB unread/question attention or Pending use quiet title/folder/state/age text. Pinned rows use the same rule; provider marks and controls keep their strength. Hover/focus restores normal text. Source read metadata cannot override ASB acknowledgment. Quiet colors derive from the active palette and keep 4.5:1 contrast on background and highlight. Compact is unchanged.
 - Comfortable uses the approved C Corner pair: a top-right Read dot beside Pin/Unpin. Pin appears on row hover or keyboard focus; a pinned control stays visible. Both use the existing ASB state APIs and stay separate from opening the chat. Saved pin order, drag reorder, and row menus remain available.
@@ -277,9 +277,9 @@ The first two commands do not launch the ASB window. `npm test` needs no `sqlite
 
 Native SSE retains its connection/header timeout but removes the live read timeout after validated stream headers; close shuts down blocked reads. Row ages use relative text for all elapsed days, and empty `XDG_CONFIG_HOME` falls back to the home config folder. Row and tooltip indicator CSS share the same shape rules and keep their existing roles/sizes.
 
-The source build produces `asb_1.8.0_all.deb`, `asb-1.8.0-linux.tar.gz`, and `SHA256SUMS` in `dist/`. The portable root is `asb-1.8.0/` with `./install.sh`. See [release notes](docs/releases/v1.8.0.md) for upgrades and check limits. Public demo assets use synthetic session names and folders. The current demo source shows four app switches; the existing README video link stays unchanged. Remotion build dependencies are separate from the ASB runtime.
+The source build produces `asb_1.8.1_all.deb`, `asb-1.8.1-linux.tar.gz`, and `SHA256SUMS` in `dist/`. The portable root is `asb-1.8.1/` with `./install.sh`. See [release notes](docs/releases/v1.8.1.md) for upgrades and check limits. Public demo assets use synthetic session names and folders. The current demo source shows four app switches; the existing README video link stays unchanged. Remotion build dependencies are separate from the ASB runtime.
 
-The current source passed 272 Node tests, 86 native logic tests, and one focused GTK toolbar test on an isolated hidden Xephyr display with Cairo and synthetic data. The full GTK widget suite did not run. Real profile edits were not tested. Resize lag on X11 remains unresolved. This release has no new FPS measurement. See [1.8.0 release notes](docs/releases/v1.8.0.md) for current check limits. Earlier performance samples and their limits remain in the [1.6.1 release notes](docs/releases/v1.6.1.md) and [1.6.0 release notes](docs/releases/v1.6.0.md).
+The current source passed 272 Node tests, 87 native logic tests, and one focused GTK toolbar test on an isolated hidden Xephyr display with Cairo and synthetic data. The full GTK widget suite did not run. Real profile edits were not tested. Resize lag on X11 remains unresolved. This release has no new FPS measurement. See [1.8.1 release notes](docs/releases/v1.8.1.md) for current check limits. Earlier performance samples and their limits remain in the [1.6.1 release notes](docs/releases/v1.6.1.md) and [1.6.0 release notes](docs/releases/v1.6.0.md).
 
 The earlier unreleased Drawer build had thirteen GTK widget tests. An earlier unreleased Drawer build was tested on one X11 machine, before the performance changes. All thirteen tests passed on a nested test display for that earlier build. The desktop display run was made before the thirteenth test was added: eleven tests passed and the pointer test was skipped. One test uses real pointer clicks through `xdotool`. It runs only when `xdotool` is installed and `DISPLAY` is `:9` or `:10` (a nested test display), so that it cannot move the pointer of a desktop; in other cases it is skipped. The tests set the Adwaita icon theme, because their pixel checks read icon pixels and the highest alpha of an icon is different in each icon theme. Four of them had expectations older than the 1.3.0 layout and were repaired after the `1.5.0` release. The 68px Comfortable row assertions hold with that machine's font; with Adwaita Sans or Noto Sans the rows are 70px. Two tests check row packing with another font and with overlay scrolling off. For ASB `1.5.0`, card motion and the wheel spring were also measured on that display with synthetic rows. No Debian `apt install` was run. Native pixel fidelity remains unverified. See the [publication record](docs/OPEN_SOURCE_PLAN.md) for verified release checks.
 

@@ -4,6 +4,12 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+## ASB 1.8.1 - 2026-10-13
+
+- Fixed duplicate native toolbar filter controls. Working-only uses its existing pill without a second chip. App chips appear only while the Codex and Claude pills are hidden. Other restricted state chips and the archive chip remain available. Filters and saved settings keep their values.
+
+See [ASB 1.8.1 release notes](docs/releases/v1.8.1.md) for downloads, upgrades, and check limits.
+
 ## ASB 1.8.0 - 2026-10-13
 
 - Kept the native toolbar in one row, with fixed Preferences and native Close. Extra pills and removable App/state/archive filter chips scroll horizontally. Narrow search uses a popover; Refresh stays in Sessions. Below 320px, hide the disc and toolbar search control while typing and Preferences search remain available.

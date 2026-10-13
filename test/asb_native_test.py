@@ -223,6 +223,7 @@ class WidgetCheck(unittest.TestCase):
             window.archive.set_active(True)
             self.assertEqual(window.filter_chip_widgets["states"][1].get_text(), "Waiting, Idle")
             window.app_pills_setting.set_active(True)
+            self.assertFalse(window.filter_chip_widgets["app"][0].get_visible())
             for width in (320, 420, 680, 1182, 280):
                 with self.subTest(width=width):
                     window.set_default_size(width + border_width, 400); self.drain(.3); window.check_geometry(); self.drain(.1)
@@ -269,6 +270,12 @@ class WidgetCheck(unittest.TestCase):
                     found, after = window.toolbar_end.compute_bounds(window.tools)
                     self.assertTrue(found)
                     self.assertEqual((round(before.origin.x), round(before.origin.y)), (round(after.origin.x), round(after.origin.y)))
+            window.working_only.set_active(True)
+            self.assertEqual(window.states, {"working"})
+            self.assertFalse(window.filter_chip_widgets["states"][0].get_visible())
+            window.working_only.set_active(False)
+            self.assertEqual(window.states, set(asb.STATES))
+            window.select_states({"idle", "waiting"})
             state_chip = window.filter_chip_widgets["states"][0]
             state_chip.grab_focus(); self.drain(.1)
             self.assertGreater(window.toolbar_scroll.get_hadjustment().get_value(), 0)
@@ -277,6 +284,8 @@ class WidgetCheck(unittest.TestCase):
             self.assertIsNot(window.get_focus(), state_chip)
             window.app_pills_setting.set_active(False)
             self.assertEqual(window.apps, {"codex"})
+            self.assertTrue(window.app_pills["codex"].get_active())
+            self.assertTrue(window.filter_chip_widgets["app"][0].get_visible())
             window.filter_chip_widgets["app"][0].emit("clicked")
             self.assertEqual(window.apps, set())
             window.filter_chip_widgets["archive"][0].emit("clicked")

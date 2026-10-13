@@ -310,12 +310,12 @@ def write_layout(path, width=None, view=None, show_app_pills=None):
     write_config(path, value)
 
 
-def filter_chips(apps, states, archived):
+def filter_chips(apps, states, archived, show_app_pills=False):
     chips = []
-    if len(apps) == 1:
+    if len(apps) == 1 and not show_app_pills:
         title = "Codex" if apps == {"codex"} else "Claude"
         chips.append(("app", title, f"Clear app filter: {title}"))
-    if set(states) != set(STATES):
+    if set(states) not in (set(STATES), {"working"}):
         names = ", ".join(state.capitalize() for state in STATES if state in states)
         title = names or "No states"
         chips.append(("states", title, "Clear state filter: " + (names or "No states")))
@@ -1927,6 +1927,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.show_app_pills = selected
         self.app_pills_error.set_label("")
         self.update_toolbar_presentation()
+        self.sync_filter_chips()
 
     def set_column_width(self, *_args):
         width = validate_column_width(self.width_control.get_value_as_int())
@@ -2234,7 +2235,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def sync_filter_chips(self):
         if not getattr(self, "filter_chip_group", None):
             return
-        chips = filter_chips(self.apps, self.states, self.archive.get_active())
+        chips = filter_chips(self.apps, self.states, self.archive.get_active(), self.show_app_pills)
         if chips == self.filter_chip_signature:
             return
         self.filter_chip_signature = chips

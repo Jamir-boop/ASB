@@ -321,7 +321,10 @@ class DataChecks(unittest.TestCase):
         self.assertEqual(chips({"claude-desktop-code"}, {"idle", "working"}, False), (
             ("app", "Claude", "Clear app filter: Claude"),
             ("states", "Working, Idle", "Clear state filter: Working, Idle")))
-        self.assertEqual(chips(set(), {"working"}, False), (("states", "Working", "Clear state filter: Working"),))
+        self.assertEqual(chips(set(), {"working"}, False), ())
+        self.assertEqual(chips({"codex"}, set(asb.STATES), False, True), ())
+        self.assertEqual(chips({"codex"}, set(asb.STATES), False), (("app", "Codex", "Clear app filter: Codex"),))
+        self.assertEqual(chips(set(), {"waiting"}, False), (("states", "Waiting", "Clear state filter: Waiting"),))
         window = object.__new__(Window)
         window.apps, window.states = {"claude-desktop-code"}, {"working"}
         window.archive = SimpleNamespace(active=True, get_active=lambda: window.archive.active,
@@ -357,6 +360,29 @@ class DataChecks(unittest.TestCase):
             window.states = set(asb.STATES)
             window.sync_filter_chips()
             chip.set_visible.assert_called_with(False)
+
+    def test_show_app_pills_resyncs_chips_without_changing_filters(self):
+        window = object.__new__(Window)
+        window.show_app_pills, window.column_width, window.view, window.layout_path = False, 240, "compact", False
+        window.apps, window.states = {"codex"}, {"waiting"}
+        window.archive = Mock(get_active=Mock(return_value=True))
+        window.app_pills_setting = Mock(get_active=Mock(return_value=True))
+        window.app_pills_error, window.update_toolbar_presentation = Mock(), Mock()
+        window.filter_chip_group, window.filter_chip_signature = Mock(), None
+        window.filter_chip_widgets = {key: (Mock(), Mock()) for key in ("app", "states", "archive")}
+        app_chip = window.filter_chip_widgets["app"][0]
+        with patch.dict(SCOPE, {"Gtk": SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0))}):
+            window.sync_filter_chips()
+            app_chip.set_visible.assert_called_with(True)
+            window.change_app_pills_setting()
+            app_chip.set_visible.assert_called_with(False)
+            self.assertTrue(window.show_app_pills)
+            self.assertEqual((window.apps, window.states, window.archive.get_active()), ({"codex"}, {"waiting"}, True))
+            window.app_pills_setting.get_active.return_value = False
+            window.change_app_pills_setting()
+            app_chip.set_visible.assert_called_with(True)
+            self.assertFalse(window.show_app_pills)
+            self.assertEqual((window.apps, window.states, window.archive.get_active()), ({"codex"}, {"waiting"}, True))
 
     def test_narrow_escape_collapses_search_and_keeps_filters(self):
         window = object.__new__(Window)

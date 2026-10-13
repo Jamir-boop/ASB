@@ -2,7 +2,7 @@
 
 ASB lists Codex and Claude Desktop Code chats. It also lists remote Code sessions observed in Claude's local cache. Select a row to open that chat in its original app. The Linux native window uses GTK and Libadwaita. ASB makes no model calls and does not send prompts.
 
-See [README.md](README.md) for v1.8.0 packages and runtime requirements.
+See [README.md](README.md) for v1.8.1 packages and runtime requirements.
 
 ## Layout and search
 
@@ -30,7 +30,7 @@ The toolbar stays in one row. The disc is at the left; Preferences and native Cl
 
 Use the **Pending**, **Working**, and **Drawer** toolbar pills. **Show app pills** in Preferences > Sessions is off by default. Turn it on to show **Codex** and **Claude**; narrow windows use app icons. The App field stays available when the pills are hidden. Hiding pills keeps the active app filter. No selected app means all apps; both app pills mean their union. **Sessions** in Preferences uses the same app selection. **Working** alone selects only Working; turn it off to restore all states. It shares the state choices in **Sessions** and is active only when Working is the sole selected state. **Pending** alone shows Pending chats. Together, **Working** and **Pending** show Working or chats with Pending or an ASB unread dot. App, search, and archive filters still apply. **Sessions** has independent **Working**, **Waiting**, **Idle**, and **Unknown** choices. Other state combinations keep Pending as an AND filter. **All** selects all. **Clear** hides all rows until you select a state. Archived chats are hidden by default. **Drawer** shows only the chats in the drawer; see [The drawer](#the-drawer). It combines with the app pills, search, the state filters, and the archive setting. It does not combine with **Pending**: turning one on turns the other off.
 
-Applied App, state, and archive settings have a chip with a × button in the toolbar. State chips show the selected states, or **No states**. Clear a chip to reset only that group: App to all apps, states to all states, or **Include archived** to off. Search prefixes still take priority over the app filter. Persistent unread and Show app pills have no filter chips. The main view has no numeric counters.
+Filters have a toolbar chip with a × button when no visible pill already controls them. Working alone uses the Working pill; it has no duplicate chip. A single App selection has a chip only when app pills are hidden. Other restricted state sets have a chip with the selected states, or **No states**. Clear a chip to reset only that group: App to all apps, states to all states, or **Include archived** to off. Search prefixes still take priority over the app filter. Persistent unread and Show app pills have no filter chips. The main view has no numeric counters.
 
 ASB pins come first in their saved order. Unpinned chats follow: Pending, Working, Idle, then Unknown. A Working chat sorts by the start of its current task, so it does not move while it works. A Working chat with no known start comes after the Working chats that have one. In the Pending group, Working chats with a question come first, by task start; the other Pending chats follow by newest activity. A card moves when its state or group changes or a new task starts. Right-click a row, or use Menu or Shift+F10, to **Pin** or **Unpin** it. Drag a pinned row onto another pin to change the order. **Move pin earlier** and **Move pin later** provide the same control from the keyboard. They move the pin before or after the adjacent visible pinned row, with search and filters applied. They do nothing at the first or last visible pin. Hidden pins keep their place in the saved order.
 
@@ -172,7 +172,7 @@ The initial window is about 420×900 pixels. Closing it stops the backend that t
 The optional browser view starts with `npm start` at [http://127.0.0.1:4629/](http://127.0.0.1:4629/). Both modes bind only to `127.0.0.1`. `HOST` does not change the address. The browser view has no Drawer pill and no drawer actions.
 
 The unreleased Rust and Qt frontends were removed after evaluation. The normal
-launcher and installers use Python at ASB `1.8.0`. Archived [Rust results](docs/benchmarks/python-rust-2026-10-12.md)
+launcher and installers use Python at ASB `1.8.1`. Archived [Rust results](docs/benchmarks/python-rust-2026-10-12.md)
 show faster startup and lower PSS, with mixed interaction timing. Archived
 [Qt results](docs/benchmarks/python-qt-2026-10-13.md) show no meaningful scroll
 speed gain; resize and memory results have limits. Neither comparison proves
