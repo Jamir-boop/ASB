@@ -1,0 +1,23 @@
+{
+  "name": "claude-uds-bridge",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun src/server.ts",
+    "build": "bun build src/server.ts src/hook.ts --target=bun --minify --outdir=dist",
+    "check": "tsc --noEmit",
+    "test": "bun test",
+    "test:native": "bun test/native.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "ws": "^8.22.0",
+    "zod": "^4.6.4"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "@types/ws": "^8.18.2",
+    "typescript": "^7.0.2"
+  }
+}
