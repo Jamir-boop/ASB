@@ -112,7 +112,10 @@ export async function checkDependencies() {
 }
 export function runCodex(home, args) {
   try { return execFileSync('codex', args, { env: { ...process.env, CODEX_HOME: absolute(home) }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
-  catch { throw new Error(`codex ${args.slice(0, 3).join(' ')} failed.`); }
+  catch (error) {
+    const reason = String(error.stderr || '').trim().split(/\r?\n/).at(-1).trim().slice(0, 200);
+    throw new Error(`codex ${args.slice(0, 3).join(' ')} failed.${reason ? ` ${reason}` : ''}`);
+  }
 }
 function sections(text) {
   const result = new Map();

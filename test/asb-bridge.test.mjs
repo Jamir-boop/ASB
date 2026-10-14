@@ -77,6 +77,25 @@ test('bridge installs explicit Codex and Claude skills through the selected Code
   assert.match(result.stdout, /Use \$bridge in Codex and \/bridge in Claude Code/);
 });
 
+test('Codex failures show only the last nonempty stderr line, capped at 200 characters', async (t) => {
+  const f = await fixture(t), stderr = path.join(f.temporary, 'stderr.txt');
+  await writeFile(path.join(f.bin, 'codex'), '#!/bin/sh\nprintf \'%s|%s|%s\\n\' codex "$CODEX_HOME" "$*" >> "$BRIDGE_LOG"\ncat "$BRIDGE_STDERR" >&2\nexit 1\n', { mode: 0o755 });
+  const before = await snapshot(f.home);
+  for (const [output, reason] of [
+    ['first diagnostic\n\n  final reason  \r\n \t\n', 'final reason'],
+    [`previous line\n${'x'.repeat(250)}\n`, 'x'.repeat(200)],
+    ['', ''],
+  ]) {
+    await writeFile(stderr, output);
+    const result = f.run(['install', '--codex-home', f.codex], { BRIDGE_STDERR: stderr, BRIDGE_PRIVATE_VALUE: 'synthetic-private-value' });
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr, `ASB Bridge failed: codex plugin marketplace add failed.${reason ? ` ${reason}` : ''}\n`);
+    assert.ok(!result.stderr.includes('synthetic-private-value'));
+    assert.equal((await f.calls()).at(-1), `codex|${f.codex}|plugin marketplace add ${ROOT}`);
+    assert.deepEqual(await snapshot(f.home), before);
+  }
+});
+
 test('bridge install is repeatable and replaces only a changed marketplace source', async (t) => {
   const f = await fixture(t);
   await writeFile(path.join(f.codex, 'config.toml'), '[marketplaces.asb]\nsource_type = "local"\nsource = "/old/asb"\n');
