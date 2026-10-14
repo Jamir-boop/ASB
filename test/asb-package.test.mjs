@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,6 +16,18 @@ test('release runtime includes the Claude remote reader imported by the switchbo
 
 const sourceRoot = fileURLToPath(new URL('..', import.meta.url));
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const bridgeRuntimeFiles = [
+  '.agents/plugins/marketplace.json', 'bridge/.codex-plugin/plugin.json', 'bridge/.mcp.json',
+  'bridge/hooks/hooks.json', 'bridge/dist/server.js', 'bridge/dist/hook.js', 'bridge/LICENSE',
+  'bridge/agent-skills/claude/bridge/SKILL.md', 'bridge/agent-skills/codex/bridge/SKILL.md',
+  'bridge/agent-skills/codex/bridge/agents/openai.yaml', 'scripts/asb-bridge.mjs',
+].sort();
+
+test('the bridge runtime whitelist has exactly the eleven required files', () => {
+  assert.deepEqual(RUNTIME_FILES.filter((file) => file.startsWith('bridge/')
+    || file === '.agents/plugins/marketplace.json' || file === 'scripts/asb-bridge.mjs'), bridgeRuntimeFiles);
+});
+
 test('ASB payload imports are complete', async () => {
   for (const file of RUNTIME_FILES.filter((name) => name.endsWith('.mjs'))) {
     const source = await readFile(path.join(sourceRoot, file), 'utf8');
@@ -56,10 +68,22 @@ test('release payloads are reproducible and the user installer preserves other f
   assert.ok((await readFile(path.join(sourceRoot, 'scripts/asb-package.mjs'), 'utf8')).includes(">= (4, 12), 'GTK 4.12 or later is required.'"));
   const extracted = path.join(temporary, 'deb');
   execFileSync('dpkg-deb', ['-x', artifacts[0], extracted]);
+  const control = path.join(temporary, 'control');
+  execFileSync('dpkg-deb', ['-e', artifacts[0], control]);
+  assert.deepEqual(await readdir(control), ['control']);
   const portable = path.join(temporary, 'portable');
   await mkdir(portable);
   execFileSync('tar', ['-xzf', artifacts[1], '-C', portable]);
   for (const payload of [path.join(extracted, 'usr/lib/asb'), path.join(portable, `asb-${version}`)]) {
+    const files = await Promise.all((await readdir(payload, { recursive: true })).map(async (file) =>
+      (await lstat(path.join(payload, file))).isFile() ? file : null));
+    assert.deepEqual(files.filter(Boolean).sort(), RUNTIME_FILES);
+    for (const file of bridgeRuntimeFiles) {
+      assert.deepEqual(await readFile(path.join(payload, file)), await readFile(path.join(sourceRoot, file)));
+    }
+    for (const file of ['src', 'test', 'node_modules', 'scripts', 'package.json', 'bun.lock', 'README.md', 'STARTUP.md', 'PROTOCOL-COVERAGE.md', 'COMPARISON.md']) {
+      await assert.rejects(lstat(path.join(payload, 'bridge', file)), { code: 'ENOENT' });
+    }
     execFileSync(process.execPath, ['--input-type=module', '-e', 'await import("./src/switchboard.mjs"); await import("./scripts/asb-package.mjs");'], { cwd: payload, stdio: 'pipe' });
     assert.equal((await lstat(path.join(payload, 'scripts/asb'))).mode & 0o777, 0o755);
   }
@@ -89,7 +113,7 @@ test('release payloads are reproducible and the user installer preserves other f
   const binDir = path.join(home, '.local/bin');
   const runtime = { nodeExecutable: process.execPath, pythonExecutable: '/usr/bin/python3' };
   const options = { sourceRoot, dataDir, binDir, check: async () => runtime };
-  await assert.rejects(install({ ...options, check: async () => { throw new Error('Missing GTK.'); } }), /Missing GTK/);
+  await assert.rejects(install({ ...options, bridgeClaude: true, check: async () => { throw new Error('Missing GTK.'); } }), /Missing GTK/);
   await assert.rejects(lstat(home), { code: 'ENOENT' });
   await mkdir(binDir, { recursive: true });
   const unrelated = path.join(temporary, 'unrelated');
@@ -136,6 +160,73 @@ test('release payloads are reproducible and the user installer preserves other f
   await writeFile(desktop, 'User replacement\n');
   assert.ok((await uninstall(options)).kept.includes(desktop));
   assert.equal(await readFile(desktop, 'utf8'), 'User replacement\n');
+});
+
+test('install flags use the installed bridge copy and leave bridge homes alone unless selected', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'asb-package-bridge-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const source = path.join(temporary, 'source');
+  for (const file of RUNTIME_FILES) {
+    await mkdir(path.dirname(path.join(source, file)), { recursive: true });
+    await copyFile(path.join(sourceRoot, file), path.join(source, file));
+  }
+  // Exercise the real argument parser with a display-free runtime check.
+  const packageScript = path.join(source, 'scripts/asb-package.mjs');
+  const code = await readFile(packageScript, 'utf8');
+  const start = code.indexOf('export async function checkRuntime() {');
+  const end = code.indexOf('\nfunction locations(', start);
+  assert.ok(start >= 0 && end > start);
+  await writeFile(packageScript, code.slice(0, start)
+    + 'export async function checkRuntime() { return { nodeExecutable: process.execPath, pythonExecutable: "/usr/bin/python3" }; }\n'
+    + code.slice(end));
+  const home = path.join(temporary, 'home');
+  const fakeBin = path.join(temporary, 'fake-bin');
+  const log = path.join(temporary, 'cli.jsonl');
+  const codexHomes = [path.join(home, ".codex home's $(not-a-command)"), path.join(home, '.codex-personal')];
+  const claudeHome = path.join(home, '.claude');
+  await mkdir(fakeBin);
+  for (const directory of [...codexHomes, claudeHome]) await mkdir(directory, { recursive: true });
+  for (const codexHome of codexHomes) await writeFile(path.join(codexHome, 'config.toml'), '');
+  for (const command of ['codex', 'bun']) {
+    await writeFile(path.join(fakeBin, command), `#!${process.execPath}\nconst fs = require('node:fs');\nconst args = process.argv.slice(2);\nfs.appendFileSync(process.env.ASB_BRIDGE_TEST_LOG, JSON.stringify({ command: ${JSON.stringify(command)}, args, home: process.env.CODEX_HOME }) + '\\n');\nconsole.log(${JSON.stringify(command + ' 1.0.0')});\nif (${JSON.stringify(command)} === 'codex' && process.env.ASB_BRIDGE_TEST_FAIL && args[0] === 'plugin') process.exit(7);\n`, { mode: 0o755 });
+  }
+  const env = { ...process.env, ASB_NODE: process.execPath, HOME: home, PATH: `${fakeBin}:/usr/bin:/bin`,
+    XDG_DATA_HOME: path.join(home, 'data'), XDG_CONFIG_HOME: path.join(home, 'config'), XDG_STATE_HOME: path.join(home, 'state'),
+    XDG_CACHE_HOME: path.join(home, 'cache'), CODEX_HOME: path.join(home, '.codex-default'), CLAUDE_CONFIG_DIR: claudeHome,
+    ASB_BRIDGE_TEST_LOG: log };
+  const run = (args, extra = {}) => execFileSync(process.execPath, [packageScript, ...args], { env: { ...env, ...extra }, encoding: 'utf8', stdio: 'pipe' });
+  const optional = 'Optional: run "asb bridge install --all" to let your Claude Code and Codex chats message each other.';
+  assert.equal(run(['install']).split('\n').filter((line) => line === optional).length, 1);
+  await assert.rejects(lstat(log), { code: 'ENOENT' });
+  for (const directory of [...codexHomes, claudeHome]) await assert.rejects(lstat(path.join(directory, 'skills')), { code: 'ENOENT' });
+  const version = JSON.parse(await readFile(path.join(source, 'package.json'))).version;
+  const installedRoot = path.join(env.XDG_DATA_HOME, 'asb/releases', version);
+  const flags = ['install', '--bridge-codex-home', codexHomes[0], '--bridge-claude', '--bridge-codex-home', codexHomes[1]];
+  assert.ok(!run(flags).includes(optional));
+  const calls = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.deepEqual(calls.filter((call) => call.command === 'codex' && call.args.slice(0, 3).join(' ') === 'plugin marketplace add')
+    .map(({ args, home }) => ({ args, home })), codexHomes.map((home) => ({ args: ['plugin', 'marketplace', 'add', installedRoot], home })));
+  assert.deepEqual(calls.filter((call) => call.command === 'codex' && call.args[0] === 'plugin' && call.args[1] === 'add')
+    .map((call) => ({ home: call.home, plugin: call.args[2] })), codexHomes.map((home) => ({ home, plugin: 'asb-bridge@asb' })));
+  for (const directory of [...codexHomes, claudeHome]) {
+    assert.equal(JSON.parse(await readFile(path.join(directory, 'skills/bridge/.asb-bridge.json'))).owner, 'asb-bridge');
+    assert.deepEqual(await readFile(path.join(directory, 'skills/bridge/SKILL.md')),
+      await readFile(path.join(installedRoot, 'bridge/agent-skills', directory === claudeHome ? 'claude' : 'codex', 'bridge/SKILL.md')));
+  }
+  const manifestPath = path.join(env.XDG_DATA_HOME, 'asb/install.json');
+  const manifest = await readFile(manifestPath);
+  const beforeInvalid = await readFile(log);
+  for (const args of [[], ['unknown'], ['constructor'], ['install', '--bridge-codex-home'], ['install', '--bridge-codex-home', '--bridge-claude'],
+    ['install', '--bridge-codex-home', ''], ['install', '--all'], ['build', '--bridge-claude'], ['uninstall', '--bridge-claude'], ['check', '--bridge-claude']]) {
+    assert.throws(() => run(args), (error) => error.status === 1 && /Use: asb-package.mjs build\|install\|uninstall\|check/.test(String(error.stderr)));
+  }
+  assert.deepEqual(await readFile(log), beforeInvalid);
+  assert.deepEqual(await readFile(manifestPath), manifest);
+  assert.throws(() => run(flags, { ASB_BRIDGE_TEST_FAIL: '1' }), (error) => error.status === 1);
+  assert.deepEqual(await readFile(manifestPath), manifest);
+  assert.ok((await lstat(path.join(home, '.local/bin/asb'))).isFile());
+  await assert.rejects(lstat(path.join(env.XDG_DATA_HOME, 'asb/.install-lock')), { code: 'ENOENT' });
+  assert.deepEqual(await readdir(path.dirname(installedRoot)), [version]);
 });
 
 test('safe unknown install-record files stay managed and edited, linked, or unlisted files stay protected', async (t) => {

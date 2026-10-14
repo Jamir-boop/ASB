@@ -18,6 +18,19 @@ async function temporaryDirectory(t) {
   return directory;
 }
 
+test('the launcher forwards bridge arguments to the bridge command before starting the desktop', async (t) => {
+  const directory = await temporaryDirectory(t);
+  const scripts = path.join(directory, 'source/scripts');
+  await mkdir(scripts, { recursive: true });
+  await copyFile(path.join(sourceRoot, 'scripts/asb'), path.join(scripts, 'asb'));
+  await writeFile(path.join(scripts, 'asb-bridge.mjs'), 'console.log(JSON.stringify({ node: process.env.ASB_NODE, args: process.argv.slice(2) }));\n');
+  const args = ['install', '--codex-home', path.join(directory, "Codex home's $(not-a-command)"), '--claude'];
+  const checked = JSON.parse(execFileSync(path.join(scripts, 'asb'), ['bridge', ...args], {
+    encoding: 'utf8', env: { ...process.env, ASB_NODE: process.execPath, HOME: directory },
+  }));
+  assert.deepEqual(checked, { node: process.execPath, args });
+});
+
 test('the launcher exports its checked stable Node candidate and the installer keeps its quoted path', async (t) => {
   const directory = await temporaryDirectory(t);
   const candidate = path.join(directory, "stable node's path");

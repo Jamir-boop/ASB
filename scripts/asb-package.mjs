@@ -20,6 +20,11 @@ export const RUNTIME_FILES = [
   'src/switchboard.mjs', 'src/app-sources.mjs', 'src/asb-server.mjs', 'src/dashboard-snapshot.mjs', 'src/local-http.mjs', 'src/session-opener.mjs',
   'src/codex-data.mjs', 'src/claude-data.mjs', 'src/claude-remote-data.mjs', 'src/insights.mjs', 'src/data-cache.mjs',
   'src/thread-classification.mjs',
+  '.agents/plugins/marketplace.json',
+  'bridge/.codex-plugin/plugin.json', 'bridge/.mcp.json', 'bridge/hooks/hooks.json',
+  'bridge/dist/server.js', 'bridge/dist/hook.js', 'bridge/LICENSE',
+  'bridge/agent-skills/claude/bridge/SKILL.md', 'bridge/agent-skills/codex/bridge/SKILL.md',
+  'bridge/agent-skills/codex/bridge/agents/openai.yaml', 'scripts/asb-bridge.mjs',
 ].sort();
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const executable = (file) => file.endsWith('.sh') || file === 'scripts/asb';
@@ -196,6 +201,7 @@ export async function install(options = {}) {
   let staging;
   const backup = `${destination}.previous-${randomUUID()}`;
   let committed = false;
+  let installed;
   const changed = new Map();
   try {
     try {
@@ -234,7 +240,7 @@ export async function install(options = {}) {
     signal.throwIfAborted();
     let retainedBackup;
     if (existing) { try { await rm(backup, { recursive: true }); } catch { retainedBackup = backup; } }
-    return { version: release, directory: destination, launcher: paths.launcher, nodeExecutable, retainedBackup };
+    installed = { version: release, directory: destination, launcher: paths.launcher, nodeExecutable, retainedBackup };
   } catch (error) {
     for (const [key, bytes] of [...changed].reverse()) {
       if (!(await contents(paths[key]))?.equals(bytes)) continue;
@@ -253,6 +259,14 @@ export async function install(options = {}) {
       finally { process.off('SIGINT', interrupt); process.off('SIGTERM', terminate); }
     }
   }
+  if (options.bridgeCodexHomes?.length || options.bridgeClaude) {
+    const args = (options.bridgeCodexHomes || []).flatMap((home) => ['--codex-home', home]);
+    if (options.bridgeClaude) args.push('--claude');
+    execFileSync(nodeExecutable, [path.join(destination, 'scripts/asb-bridge.mjs'), 'install', ...args], { stdio: 'inherit' });
+  } else {
+    console.log('Optional: run "asb bridge install --all" to let your Claude Code and Codex chats message each other.');
+  }
+  return installed;
 }
 
 export async function uninstall(options = {}) {
@@ -331,8 +345,17 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const command = process.argv[2];
   const commands = { build, install, uninstall, check: checkRuntime };
   try {
-    if (!commands[command] || process.argv.length !== 3) throw new Error('Use: asb-package.mjs build|install|uninstall|check');
-    console.log(JSON.stringify(await commands[command](), null, 2));
+    const misuse = () => { throw new Error('Use: asb-package.mjs build|install|uninstall|check'); };
+    if (!Object.hasOwn(commands, command) || (command !== 'install' && process.argv.length !== 3)) misuse();
+    const options = { bridgeCodexHomes: [] };
+    for (let index = 3; index < process.argv.length; index++) {
+      const flag = process.argv[index];
+      if (flag === '--bridge-claude') options.bridgeClaude = true;
+      else if (flag === '--bridge-codex-home' && process.argv[index + 1] && !process.argv[index + 1].startsWith('--')) {
+        options.bridgeCodexHomes.push(process.argv[++index]);
+      } else misuse();
+    }
+    console.log(JSON.stringify(await commands[command](options), null, 2));
   } catch (error) {
     console.error(`ASB ${command || 'package'} failed: ${error.message}`);
     if (error.stderr) console.error(String(error.stderr).trim());
