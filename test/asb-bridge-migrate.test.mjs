@@ -10,7 +10,7 @@ import { NEXT_STEPS, ROOT, skillState } from '../scripts/asb-bridge.mjs';
 import { main } from '../bridge/scripts/migrate-from-claude-uds-bridge.mjs';
 
 const SCRIPT = fileURLToPath(new URL('../bridge/scripts/migrate-from-claude-uds-bridge.mjs', import.meta.url));
-const OLD_CONFIG = '# Synthetic config\n[plugins."claude-uds-bridge@leonkohli"]\nenabled = true\n[hooks.state."claude-uds-bridge@leonkohli:hooks/hooks.json:session_start:0:0"]\ntrusted = true\n';
+const OLD_CONFIG = '# Synthetic config\n[marketplaces.leonkohli]\nsource = "/synthetic/old"\n[plugins."claude-uds-bridge@leonkohli"]\nenabled = true\n[hooks.state."claude-uds-bridge@leonkohli:hooks/hooks.json:session_start:0:0"]\ntrusted = true\n';
 async function snapshot(directory, prefix = '') {
   const result = {};
   for (const entry of await readdir(path.join(directory, prefix), { withFileTypes: true })) {
@@ -34,7 +34,7 @@ async function fixture(t) {
   await writeFile(ps, '  PID COMMAND\n  101 /usr/bin/sleep 1\n');
   await writeFile(path.join(bin, 'ps'), '#!/bin/sh\n[ "$*" = "-eo pid,args" ] || exit 3\ncat "$BRIDGE_PS"\n', { mode: 0o755 });
   await writeFile(path.join(bin, 'bun'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-  await writeFile(path.join(bin, 'codex'), `#!/bin/sh\nprintf '%s|%s\\n' "$CODEX_HOME" "$*" >> "$BRIDGE_LOG"\nif [ "$*" = 'plugin remove claude-uds-bridge@leonkohli' ]; then\n  [ "\${BRIDGE_KEEP_OLD-}" != 1 ] || exit 0\n  awk '\n    /^\\[plugins\\."claude-uds-bridge@leonkohli"\\]/ { skip = 1; next }\n    /^\\[/ { skip = 0 }\n    !skip { print }\n  ' "$CODEX_HOME/config.toml" > "$CODEX_HOME/config.toml.tmp" || exit 4\n  mv "$CODEX_HOME/config.toml.tmp" "$CODEX_HOME/config.toml"\nfi\n`, { mode: 0o755 });
+  await writeFile(path.join(bin, 'codex'), `#!/bin/sh\nprintf '%s|%s\\n' "$CODEX_HOME" "$*" >> "$BRIDGE_LOG"\nif [ "$*" = 'plugin remove claude-uds-bridge@leonkohli' ] || [ "$*" = 'plugin marketplace remove leonkohli' ]; then\n  awk -v command="$*" '\n    command == "plugin remove claude-uds-bridge@leonkohli" && /^\\[plugins\\."claude-uds-bridge@leonkohli"\\]/ { skip = 1; next }\n    command == "plugin marketplace remove leonkohli" && /^\\[marketplaces\\.leonkohli\\]/ { skip = 1; next }\n    /^\\[/ { skip = 0 }\n    !skip { print }\n  ' "$CODEX_HOME/config.toml" > "$CODEX_HOME/config.toml.tmp" || exit 4\n  mv "$CODEX_HOME/config.toml.tmp" "$CODEX_HOME/config.toml"\nfi\nif [ "$*" = 'plugin add asb-bridge@asb' ]; then\n  if [ -f "\${BRIDGE_FAIL_ADD-}" ]; then rm "$BRIDGE_FAIL_ADD"; exit 5; fi\n  if [ -f "\${BRIDGE_BLOCK_CLAUDE-}" ]; then rm "$BRIDGE_BLOCK_CLAUDE"; printf '%s\\n' 'Synthetic conflict' > "$CLAUDE_CONFIG_DIR/skills"; fi\nfi\n`, { mode: 0o755 });
   const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: claude, CODEX_HOME: codex, PATH: `${bin}:/usr/bin:/bin`, BRIDGE_LOG: log, BRIDGE_PS: ps };
   const run = (args = [], extra = {}) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env: { ...env, ...extra } });
   const calls = async () => {
@@ -54,9 +54,40 @@ test('migration dry run selects only old plugin homes and changes nothing', asyn
     assert.equal(result.stdout.split(`Codex ${f.codex}:`).length, 2);
     assert.ok(!result.stdout.includes(f.personal) && !result.stdout.includes('.codex-other'));
     for (const action of ['plugin remove claude-uds-bridge@leonkohli', 'plugin marketplace remove leonkohli', 'Rename ', 'Install ASB Bridge', 'install the /bridge skill once', 'Dry run only']) assert.ok(result.stdout.includes(action), action);
+    assert.ok(result.stdout.indexOf('Keep ') < result.stdout.indexOf('plugin remove '));
+    assert.ok(result.stdout.indexOf('Install ASB Bridge') < result.stdout.indexOf('install the /bridge skill once'));
+    assert.ok(result.stdout.indexOf('install the /bridge skill once') < result.stdout.indexOf('Rename '));
     await unchanged(f, before);
   }
   assert.equal(typeof main, 'function');
+});
+
+test('migration selects an old plugin, old marketplace or old state independently', async (t) => {
+  for (const signal of ['plugin', 'marketplace', 'state']) {
+    const f = await fixture(t), home = signal === 'state' ? path.join(f.home, '.codex-other') : f.codex;
+    await rm(path.join(f.codex, 'plugin-state/claude-uds-bridge'), { recursive: true });
+    await writeFile(path.join(f.codex, 'config.toml'), signal === 'plugin' ? '[plugins."claude-uds-bridge@leonkohli"]\nenabled = true\n' : signal === 'marketplace' ? '[marketplaces.leonkohli]\nsource = "/synthetic/old"\n' : '# Synthetic current home\n');
+    if (signal === 'state') await mkdir(path.join(home, 'plugin-state/claude-uds-bridge'), { recursive: true });
+    const before = await snapshot(f.home), dry = f.run();
+    passed(dry);
+    assert.ok(dry.stdout.includes(`Codex ${home}:`));
+    assert.equal(dry.stdout.includes('codex plugin remove claude-uds-bridge@leonkohli'), signal === 'plugin');
+    assert.equal(dry.stdout.includes('codex plugin marketplace remove leonkohli'), signal === 'marketplace');
+    await unchanged(f, before);
+    passed(f.run(['--apply']));
+    assert.deepEqual(await f.calls(), [
+      ...(signal === 'plugin' ? [`${home}|plugin remove claude-uds-bridge@leonkohli`] : []),
+      ...(signal === 'marketplace' ? [`${home}|plugin marketplace remove leonkohli`] : []),
+      `${home}|plugin marketplace add ${path.resolve(ROOT)}`, `${home}|plugin add asb-bridge@asb`,
+    ]);
+    assert.equal(await skillState(path.join(home, 'skills/bridge')), 'ok');
+    assert.deepEqual(await readdir(path.join(home, 'plugin-state/asb-bridge')), []);
+    await rm(f.log);
+    const after = await snapshot(f.home), second = f.run(['--apply']);
+    passed(second);
+    assert.equal(second.stdout, 'Nothing to migrate.\n');
+    await unchanged(f, after);
+  }
 });
 
 test('migration refuses all running Codex process forms and prints their lines', async (t) => {
@@ -95,6 +126,60 @@ test('migration apply uses normal installers and renames history without writing
     assert.ok(!config.includes('[hooks.state."asb-bridge@asb:'));
   }
   assert.ok(result.stdout.endsWith(`${NEXT_STEPS}\n`));
+});
+
+test('migration retries a failed plugin add with and without old history', async (t) => {
+  for (const oldExists of [true, false]) {
+    const f = await fixture(t), old = path.join(f.codex, 'plugin-state/claude-uds-bridge'), target = path.join(f.codex, 'plugin-state/asb-bridge');
+    const inode = (await lstat(path.join(old, 'task.sqlite'))).ino;
+    if (!oldExists) await rm(old, { recursive: true });
+    const fail = path.join(f.temporary, 'fail-add-once');
+    await writeFile(fail, 'Synthetic failure\n');
+    const failed = f.run(['--apply'], { BRIDGE_FAIL_ADD: fail });
+    assert.equal(failed.status, 1);
+    assert.match(failed.stderr, /codex plugin add asb-bridge@asb failed/);
+    assert.ok((await lstat(old)).isDirectory());
+    await assert.rejects(lstat(target), { code: 'ENOENT' });
+    assert.ok(!(await readFile(path.join(f.codex, 'config.toml'), 'utf8')).includes('[marketplaces.leonkohli]'));
+    assert.ok(!(await readFile(path.join(f.codex, 'config.toml'), 'utf8')).includes('[plugins."claude-uds-bridge@leonkohli"]'));
+    if (oldExists) assert.equal(await readFile(path.join(old, 'task.sqlite'), 'utf8'), 'Synthetic message history\n');
+    else assert.deepEqual(await readdir(old), []);
+    await rm(f.log);
+    const before = await snapshot(f.home), dry = f.run();
+    passed(dry);
+    assert.ok(dry.stdout.includes(`Codex ${f.codex}:`));
+    assert.ok(!dry.stdout.includes('codex plugin remove ') && !dry.stdout.includes('codex plugin marketplace remove leonkohli'));
+    await unchanged(f, before);
+    passed(f.run(['--apply'], { BRIDGE_FAIL_ADD: fail }));
+    assert.deepEqual(await f.calls(), [`${f.codex}|plugin marketplace add ${path.resolve(ROOT)}`, `${f.codex}|plugin add asb-bridge@asb`]);
+    for (const home of [f.codex, f.claude]) assert.equal(await skillState(path.join(home, 'skills/bridge')), 'ok');
+    await assert.rejects(lstat(old), { code: 'ENOENT' });
+    if (oldExists) {
+      assert.equal(await readFile(path.join(target, 'task.sqlite'), 'utf8'), 'Synthetic message history\n');
+      assert.equal((await lstat(path.join(target, 'task.sqlite'))).ino, inode);
+    } else assert.deepEqual(await readdir(target), []);
+  }
+});
+
+test('migration keeps every home for retry when Claude skill setup fails', async (t) => {
+  const f = await fixture(t), block = path.join(f.temporary, 'block-claude-once');
+  await writeFile(path.join(f.personal, 'config.toml'), OLD_CONFIG);
+  await writeFile(block, 'Synthetic failure\n');
+  const failed = f.run(['--apply'], { BRIDGE_BLOCK_CLAUDE: block });
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, /ENOTDIR/);
+  for (const home of [f.codex, f.personal]) {
+    assert.ok((await lstat(path.join(home, 'plugin-state/claude-uds-bridge'))).isDirectory());
+    await assert.rejects(lstat(path.join(home, 'plugin-state/asb-bridge')), { code: 'ENOENT' });
+    assert.equal(await skillState(path.join(home, 'skills/bridge')), 'ok');
+  }
+  await rm(path.join(f.claude, 'skills'));
+  await rm(f.log);
+  passed(f.run(['--apply'], { BRIDGE_BLOCK_CLAUDE: block }));
+  assert.deepEqual(await f.calls(), [f.codex, f.personal].flatMap((home) => [`${home}|plugin marketplace add ${path.resolve(ROOT)}`, `${home}|plugin add asb-bridge@asb`]));
+  assert.equal(await readFile(path.join(f.codex, 'plugin-state/asb-bridge/task.sqlite'), 'utf8'), 'Synthetic message history\n');
+  assert.deepEqual(await readdir(path.join(f.personal, 'plugin-state/asb-bridge')), []);
+  assert.equal(await skillState(path.join(f.claude, 'skills/bridge')), 'ok');
 });
 
 test('migration second run is a no-op, including explicit homes and missing dependencies', async (t) => {
