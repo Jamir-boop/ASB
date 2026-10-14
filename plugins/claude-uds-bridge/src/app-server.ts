@@ -106,6 +106,11 @@ export class AppServer {
     return { status, mode: this.mode };
   }
 
+  async cwd() {
+    const { thread } = z.object({ thread: z.object({ cwd: z.string() }) }).parse(await this.request('thread/read', { threadId: this.threadId }));
+    return thread.cwd;
+  }
+
   async observe(onState: (state: Runtime) => void) {
     const snapshot = z.object({ thread: threadSchema, approvalPolicy: permissionsSchema.shape.approvalPolicy,
       sandbox: permissionsSchema.shape.sandboxPolicy }).parse(

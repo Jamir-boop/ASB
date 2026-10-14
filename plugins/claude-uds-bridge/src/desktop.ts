@@ -134,6 +134,8 @@ class DesktopConnection {
 
   async inputs() { return desktopInputs(await this.snapshot()); }
 
+  async cwd() { return (await this.snapshot()).cwd; }
+
   private async refresh() {
     this.dirty = true;
     if (this.refreshing) return;
@@ -277,6 +279,12 @@ export async function deliverToDesktop(path: string, threadId: string, messageId
 export async function readDesktopRuntime(path: string, threadId: string) {
   const connection = new DesktopConnection(path, threadId);
   try { await connection.connect(); return await connection.runtime(); }
+  finally { connection.close(); }
+}
+
+export async function readDesktopCwd(path: string, threadId: string) {
+  const connection = new DesktopConnection(path, threadId);
+  try { await connection.connect(); return await connection.cwd(); }
   finally { connection.close(); }
 }
 

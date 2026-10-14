@@ -348,12 +348,69 @@ test('the task name carries its directory, stays unique among live peers, and ma
     // Claude picks a target from the name alone, so it has to say which directory this task works in.
     expect(name).toBe(`codex-${basename(f.root).toLowerCase()}-${f.desktop.threadId.slice(-2)}`);
     // A second task in the same directory must not claim the name the registered receiver already holds.
-    expect(sessionName(f.configDir, f.root, f.desktop.threadId)).toBe(`codex-${basename(f.root).toLowerCase()}-${f.desktop.threadId.slice(-4)}`);
+    const other = randomUUID().slice(0, -2) + f.desktop.threadId.slice(-2);
+    expect(sessionName(f.configDir, f.root, other)).toBe(`codex-${basename(f.root).toLowerCase()}-${other.slice(-4)}`);
+    // The task own row does not count as taken.
+    expect(name).toBe(sessionName(f.configDir, f.root, f.desktop.threadId));
     // The receiver replies to the name it was given, so the envelope and the registry have to agree.
     await f.bridge.sendMessage(f.peerId, 'named send');
     await until(() => f.frames.some(frame => frame.type === 'user' && frame.message.content.includes(`from-name="${name}"`)));
   } finally { await f.close(); }
 });
+
+async function withCodexHome<T>(run: (home: string) => Promise<T>) {
+  const previous = process.env.CODEX_HOME;
+  const home = mkdtempSync('/tmp/uds-codex-home-');
+  process.env.CODEX_HOME = home;
+  try { return await run(home); }
+  finally {
+    if (previous === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previous;
+    rmSync(home, { recursive: true });
+  }
+}
+
+function title(home: string, id: string, name: string) {
+  writeFileSync(join(home, 'session_index.jsonl'), JSON.stringify({ id, thread_name: name, updated_at: new Date().toISOString() }) + '\n', { flag: 'a' });
+}
+
+test('the task name follows the latest Codex title and falls back to the folder', () => withCodexHome(async home => {
+  const configDir = mkdtempSync('/tmp/uds-names-');
+  try {
+    const id = randomUUID();
+    const folder = `codex-${basename(configDir).toLowerCase()}-${id.slice(-2)}`;
+    expect(sessionName(configDir, configDir, id)).toBe(folder);
+    writeFileSync(join(home, 'session_index.jsonl'), 'not json\n');
+    title(home, randomUUID(), 'other task');
+    title(home, id, 'Investigate bridge implementations');
+    expect(sessionName(configDir, configDir, id)).toBe(`codex-investigate-bridge-imp-${id.slice(-2)}`);
+    // A rename appends a line, and the last one wins.
+    title(home, id, 'bridge-investigation');
+    expect(sessionName(configDir, configDir, id)).toBe(`codex-bridge-investigation-${id.slice(-2)}`);
+    // The cut can end on a separator, which is trimmed.
+    title(home, id, 'abcdefghijklmnopqrstu vwxyz');
+    expect(sessionName(configDir, configDir, id)).toBe(`codex-abcdefghijklmnopqrstu-${id.slice(-2)}`);
+    title(home, id, '!!! ???');
+    expect(sessionName(configDir, configDir, id)).toBe(folder);
+  } finally { rmSync(configDir, { recursive: true }); }
+}));
+
+test('the registered name refreshes on a status change once a title appears, and stays unique', () => withCodexHome(async home => {
+  const f = await fixture();
+  try {
+    const id = f.desktop.threadId;
+    expect(f.bridge.status().name).toBe(`codex-${basename(f.root).toLowerCase()}-${id.slice(-2)}`);
+    title(home, id, 'Shared Title');
+    f.bridge.updateRuntime({ status: 'busy', mode: 'prompting' });
+    expect(f.bridge.status().name).toBe(`codex-shared-title-${id.slice(-2)}`);
+    f.bridge.updateRuntime({ status: 'idle', mode: 'prompting' });
+    expect(f.bridge.status().name).toBe(`codex-shared-title-${id.slice(-2)}`);
+    // Another task with the same title and the same short suffix gets a longer one.
+    const other = randomUUID().slice(0, -2) + id.slice(-2);
+    title(home, other, 'Shared Title');
+    expect(sessionName(f.configDir, f.root, other)).toBe(`codex-shared-title-${other.slice(-4)}`);
+  } finally { await f.close(); }
+}));
 
 test('list_sessions names the agent kind and start time and leaves out the calling task', async () => {
   const f = await fixture();

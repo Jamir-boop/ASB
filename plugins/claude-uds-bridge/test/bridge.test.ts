@@ -35,6 +35,32 @@ test('MCP binds state to caller metadata and rejects a different task', async ()
   }
 });
 
+test('the status tool returns the five latest message rows without null fields', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'uds-mcp-'));
+  const id = randomUUID();
+  const bridge = new Bridge(id, root, join(root, 'plugin-state', 'claude-uds-bridge'), join(root, 'unavailable.sock'));
+  await bridge.close();
+  const db = new Database(join(root, 'plugin-state', 'claude-uds-bridge', `${id}.sqlite`));
+  for (let index = 0; index < 7; index++) {
+    db.run("INSERT INTO messages (id,peer_id,direction,text,status,created_at) VALUES (?,?,'out','text','unknown',?)", [String(index), randomUUID(), index]);
+  }
+  db.close();
+  const client = new Client({ name: 'test', version: '1.0.0' });
+  try {
+    await client.connect(new StdioClientTransport({ command: process.execPath,
+      args: [join(import.meta.dir, '../src/server.ts')], env: { CODEX_HOME: root, CLAUDE_CONFIG_DIR: root } }));
+    const body = z.object({ content: z.array(z.object({ text: z.string() })) })
+      .parse(await client.callTool({ name: 'status', arguments: {}, _meta: { threadId: id } }));
+    const state = JSON.parse(body.content[0]?.text ?? '');
+    expect(state.messages.map((row: { id: string }) => row.id)).toEqual(['6', '5', '4', '3', '2']);
+    expect(state.messages[0]).toEqual({ id: '6', peer_id: expect.any(String), direction: 'out', status: 'unknown' });
+    expect(state).toMatchObject({ threadId: id, name: null, replyAddress: null });
+  } finally {
+    await client.close();
+    rmSync(root, { recursive: true });
+  }
+});
+
 test('upgrading the inbox preserves existing queue records without relabelling their IDs as turns', async () => {
   const root = mkdtempSync('/tmp/uds-upgrade-');
   const threadId = randomUUID();

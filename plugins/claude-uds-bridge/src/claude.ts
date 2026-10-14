@@ -8,6 +8,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants, openSync, closeSync, fstatSync, readFileSync, readdirSync, lstatSync, chmodSync, mkdirSync, writeFileSync, unlinkSync, renameSync } from 'node:fs';
 import { dirname, join, basename, isAbsolute } from 'node:path';
 import { once } from 'node:events';
+import { homedir } from 'node:os';
 import { z } from 'zod';
 import { BurstBudget } from './guard';
 
@@ -121,26 +122,51 @@ export async function processStart(pid: number) {
   return output.trim();
 }
 
-// Claude's ListAgents gives the model only the name, so mirror its own <directory>-<suffix>
-// default and lengthen the suffix until no live peer holds the name.
+// Claude's ListAgents gives the model only the name, so name the task after its Codex title (its
+// folder when it has none) and lengthen the suffix until no other live peer holds the name.
 export function sessionName(configDir: string, cwd: string, sessionId: string) {
-  const slug = basename(cwd).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'task';
-  // Codex derives a task folder from the opening prompt, so keep both ends: long ones differ at the tail.
-  const folder = slug.length <= 22 ? slug
-    : `${trim(slug.slice(0, 14))}-${trim(slug.slice(-7))}`;
-  const taken = new Set(peers(configDir).map(peer => peer.name));
-  const candidates = [2, 4, 8].map(length => `codex-${folder}-${sessionId.slice(-length)}`);
-  return candidates.find(name => !taken.has(name)) ?? `codex-${folder}-${sessionId}`;
+  return uniqueName(configDir, nameBase(cwd, sessionId), sessionId);
 }
 
+function slug(text: string) { return trim(text.toLowerCase().replace(/[^a-z0-9]+/g, '-')); }
 function trim(part: string) { return part.replace(/^-+|-+$/g, ''); }
+
+// Codex appends a line to session_index.jsonl when it names or renames a thread, so the last match wins.
+function taskTitle(threadId: string) {
+  let lines: string[];
+  try { lines = readFileSync(join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'session_index.jsonl'), 'utf8').split('\n'); }
+  catch { return undefined; }
+  let title: string | undefined;
+  for (const line of lines.filter(line => line.includes(threadId))) {
+    try {
+      const row = JSON.parse(line);
+      if (row?.id === threadId && typeof row.thread_name === 'string') title = row.thread_name;
+    } catch { /* Ignore a malformed line. */ }
+  }
+  return title;
+}
+
+function nameBase(cwd: string, sessionId: string) {
+  const title = trim(slug(taskTitle(sessionId) ?? '').slice(0, 22));
+  if (title) return `codex-${title}`;
+  const folder = slug(basename(cwd)) || 'task';
+  // Codex derives a task folder from the opening prompt, so keep both ends: long ones differ at the tail.
+  return `codex-${folder.length <= 22 ? folder : `${trim(folder.slice(0, 14))}-${trim(folder.slice(-7))}`}`;
+}
+
+function uniqueName(configDir: string, base: string, sessionId: string) {
+  const taken = new Set(peers(configDir).filter(peer => peer.sessionId !== sessionId).map(peer => peer.name));
+  const candidates = [2, 4, 8].map(length => `${base}-${sessionId.slice(-length)}`);
+  return candidates.find(name => !taken.has(name)) ?? `${base}-${sessionId}`;
+}
 
 export async function register(configDir: string, sessionId: string, address: string, cwd: string, status: string) {
   const directory = join(configDir, 'sessions');
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   privateDirectory(directory);
   const path = join(directory, `${process.pid}.json`);
-  const record = { pid: process.pid, sessionId, cwd, name: sessionName(configDir, cwd, sessionId),
+  let base = nameBase(cwd, sessionId);
+  const record = { pid: process.pid, sessionId, cwd, name: uniqueName(configDir, base, sessionId),
     startedAt: Date.now(), procStart: await processStart(process.pid), peerProtocol: 1,
     ...(process.platform === 'darwin' ? { pidDomain: 'darwin' } : {}),
     kind: 'interactive', entrypoint: 'codex-claude-uds-bridge', messagingSocketPath: socketPath(address),
@@ -155,6 +181,9 @@ export async function register(configDir: string, sessionId: string, address: st
     update(status: string) {
       check();
       if (record.status === status) return;
+      // A new task gets its title during its first turn. Keep the name while its base holds, so the suffix does not flap.
+      const next = nameBase(cwd, sessionId);
+      if (next !== base) { base = next; record.name = uniqueName(configDir, base, sessionId); }
       record.status = status;
       record.statusUpdatedAt = Date.now();
       const temporary = `${path}.${randomUUID()}.tmp`;

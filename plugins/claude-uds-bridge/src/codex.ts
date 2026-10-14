@@ -3,7 +3,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { AppServer, AppServerDisconnected, ThreadUnavailable, withAppServer } from './app-server';
 import { privateDirectory } from './claude';
-import { deliverToDesktop, readDesktopInputs, readDesktopRuntime, watchDesktop, type Runtime } from './desktop';
+import { deliverToDesktop, readDesktopCwd, readDesktopInputs, readDesktopRuntime, watchDesktop, type Runtime } from './desktop';
 
 export const targetSchema = z.object({ kind: z.enum(['app-server', 'desktop']), path: z.string() });
 export type Target = z.infer<typeof targetSchema>;
@@ -66,6 +66,11 @@ function reconnectable(error: unknown) {
 export function readCodexRuntime(target: Target, threadId: string) {
   return target.kind === 'desktop' ? readDesktopRuntime(target.path, threadId)
     : withAppServer(target.path, threadId, server => server.runtime());
+}
+
+export function readCodexCwd(target: Target, threadId: string) {
+  return target.kind === 'desktop' ? readDesktopCwd(target.path, threadId)
+    : withAppServer(target.path, threadId, server => server.cwd());
 }
 
 export function readCodexInputs(target: Target, threadId: string, awaiting: string[]) {

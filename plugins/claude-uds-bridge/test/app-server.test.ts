@@ -6,14 +6,14 @@ import { peers } from '../src/claude';
 import { appServer } from './app-server-fixture';
 import { watchCodex } from '../src/codex';
 
-test('a CLI session registers without desktop IPC and withdraws at SessionEnd', async () => {
+test('a CLI session registers without desktop IPC, withdraws at SessionEnd and is revived after a restart', async () => {
   const server = await appServer();
   const configDir = join(server.root, 'claude');
-  const hook = async (hook_event_name: 'SessionStart' | 'SessionEnd') => {
-    const child = Bun.spawn([process.execPath, process.env.UDS_HOOK_TEST_ENTRYPOINT ?? join(import.meta.dir, '../src/hook.ts')],
-      { env: { ...process.env, CODEX_HOME: server.root, CLAUDE_CONFIG_DIR: configDir }, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' });
-    child.stdin.write(JSON.stringify({ session_id: server.threadId, cwd: server.root, hook_event_name }));
-    child.stdin.end();
+  const hook = async (hook_event_name: 'SessionStart' | 'SessionEnd' | '--revive') => {
+    const revive = hook_event_name === '--revive';
+    const child = Bun.spawn([process.execPath, process.env.UDS_HOOK_TEST_ENTRYPOINT ?? join(import.meta.dir, '../src/hook.ts'), ...(revive ? [hook_event_name] : [])],
+      { env: { ...process.env, CODEX_HOME: server.root, CLAUDE_CONFIG_DIR: configDir }, stdin: revive ? 'ignore' : 'pipe', stdout: 'pipe', stderr: 'pipe' });
+    if (!revive) { child.stdin?.write(JSON.stringify({ session_id: server.threadId, cwd: server.root, hook_event_name })); child.stdin?.end(); }
     const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
     expect({ code, out, err }).toEqual({ code: 0, out: '', err: '' });
   };
@@ -22,6 +22,8 @@ test('a CLI session registers without desktop IPC and withdraws at SessionEnd', 
     expect(peers(configDir).map(peer => peer.sessionId)).toEqual([server.threadId]);
     await hook('SessionEnd');
     expect(peers(configDir)).toEqual([]);
+    await hook('--revive');
+    expect(peers(configDir).map(peer => [peer.sessionId, peer.cwd])).toEqual([[server.threadId, server.root]]);
   } finally {
     for (const peer of peers(configDir)) process.kill(peer.pid, 'SIGTERM');
     await server.close();

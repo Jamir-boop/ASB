@@ -58,7 +58,7 @@ A socket write and a receipt are both separate from a model reply.
 | Resume or process change | yes | The task keeps its ID and gets a new verified process and socket. | hook |
 | Stale record, ambiguous ID | yes | The bridge discards the record or refuses the send. | trust, bridge |
 | Collision recovery, explicit socket path | yes | The recorded path is used. | trust |
-| Names | partial | `codex-<directory>-<suffix>`, lengthened when a live peer holds the name. A long Codex folder name keeps its first and last part. Missing: `/rename`, `--name`, `nameSource`, `rename` frame. | protocol |
+| Names | partial | `codex-<title>-<suffix>` from the Codex task title, or `codex-<directory>-<suffix>` without a title, lengthened when another live peer holds the name. A long title keeps its first 22 characters. A long Codex folder name keeps its first and last part. The name refreshes when the task status changes. Missing: `/rename`, `--name`, `nameSource`, `rename` frame. | protocol |
 | Registry fields | partial | The row carries `status`. `tempo`, `state`, `detail`, `needs`, and `waitingFor` are not written. | none |
 | Same name, several sessions | yes | Sending uses the full UUID. | protocol |
 | Own row, send to self | yes | The row is hidden and the send refused. | protocol |
