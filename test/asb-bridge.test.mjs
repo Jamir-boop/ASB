@@ -227,6 +227,31 @@ test('bridge status reports configuration, version, trust, skill ownership and l
   assert.deepEqual(await snapshot(f.home), before);
 });
 
+test('Codex version checks use a temporary home and remove it after success and failure', async (t) => {
+  const f = await fixture(t), temporaryRoot = path.join(f.temporary, 'version-tmp');
+  await mkdir(temporaryRoot);
+  await writeFile(path.join(f.bin, 'codex'), '#!/bin/sh\n[ -d "$CODEX_HOME" ] || exit 90\n[ "$BRIDGE_VERSION_SENTINEL" = preserved ] || exit 91\nprintf helper > "$CODEX_HOME/version-helper"\nprintf \'%s|%s|%s\\n\' codex "$CODEX_HOME" "$*" >> "$BRIDGE_LOG"\nif [ "$BRIDGE_VERSION_FAIL" = 1 ]; then exit 1; fi\nprintf \'codex 2.1.224\\n\'\n', { mode: 0o755 });
+  const before = await snapshot(f.home), generated = [];
+  for (const failure of ['0', '1']) {
+    const result = f.run(['status', '--json'], { TMPDIR: temporaryRoot, BRIDGE_VERSION_FAIL: failure, BRIDGE_VERSION_SENTINEL: 'preserved' });
+    passed(result);
+    const report = JSON.parse(result.stdout), calls = await f.calls();
+    assert.equal(report.versions.codex, failure === '0' ? 'codex 2.1.224' : null);
+    assert.deepEqual(report.codex.map((item) => item.home), [f.codex, f.personal]);
+    const [, directory, args] = calls.find((line) => line.startsWith('codex|')).split('|');
+    assert.equal(args, '--version');
+    assert.equal(path.dirname(directory), temporaryRoot);
+    assert.ok(path.basename(directory).startsWith('asb-bridge-version-'));
+    generated.push(directory);
+    await assert.rejects(lstat(directory), { code: 'ENOENT' });
+    assert.deepEqual(await readdir(temporaryRoot), []);
+    assert.deepEqual(await snapshot(f.home), before);
+    for (const tool of ['bun', 'claude']) assert.ok(calls.includes(`${tool}|${f.codex}|--version`));
+    await rm(f.log);
+  }
+  assert.notEqual(generated[0], generated[1]);
+});
+
 test('bridge all selects only detected Codex homes with config and the existing Claude home', async (t) => {
   const f = await fixture(t);
   passed(f.run(['install', '--all']));

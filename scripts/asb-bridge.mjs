@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, lstat, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -210,8 +210,10 @@ async function entries(directory) {
 }
 async function toolVersion(name) {
   if (!(await executable(name))) return null;
-  try { return execFileSync(name, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim(); }
+  const codexHome = name === 'codex' ? await mkdtemp(path.join(os.tmpdir(), 'asb-bridge-version-')) : null;
+  try { return execFileSync(name, ['--version'], { env: codexHome ? { ...process.env, CODEX_HOME: codexHome } : process.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim(); }
   catch { return null; }
+  finally { if (codexHome) await rm(codexHome, { recursive: true, force: true }); }
 }
 export async function status(options = {}) {
   const targets = await detectTargets(options);
