@@ -11,7 +11,7 @@
   ],
   "scripts": {
     "start": "node src/switchboard.mjs",
-    "test": "node --test",
+    "test": "node --test --no-experimental-strip-types",
     "desktop": "node scripts/asb-desktop.mjs",
     "build": "node scripts/asb-package.mjs build",
     "install:user": "node scripts/asb-package.mjs install",
