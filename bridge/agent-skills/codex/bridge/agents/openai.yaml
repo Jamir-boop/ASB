@@ -1,0 +1,5 @@
+interface:
+  display_name: "ASB Bridge"
+  short_description: "Message local Claude Code sessions and Codex tasks"
+policy:
+  allow_implicit_invocation: false

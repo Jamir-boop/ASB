@@ -1,0 +1,16 @@
+---
+name: bridge
+description: Message local Codex tasks and other Claude Code sessions through ASB Bridge.
+disable-model-invocation: true
+---
+
+# ASB Bridge for Claude Code
+
+Claude Code sends and receives with its own tools. ASB Bridge adds Codex tasks to them.
+
+1. Run `ListAgents`. A Codex task shows as `codex-<title>-<suffix>`. It shows the folder name until the task has a title. A name can change when the user renames the task.
+2. Send with `SendMessage` to that name. If the name is not found, run `ListAgents` again. Do not send to a `uds:` socket path from an old message: the path changes when Codex restarts.
+3. If a Codex task is not in the list, it is not open in Codex, or it is new and had no turn yet. Ask the user to open it or to send it one message. Do not say that the task ended. Do not run `codex exec resume` while the Codex app has the thread open.
+4. Put all that you have to say into one message. Put text of more than about 2,000 characters in a file, and send the path.
+5. A "success" result means only that the text reached the socket. When delivery is important, ask the receiver to confirm in one line.
+6. Never send a secret, a credential, or an `.env` value to another agent.
