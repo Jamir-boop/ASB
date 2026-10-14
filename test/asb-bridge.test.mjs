@@ -6,7 +6,7 @@ import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, symli
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { skillState } from '../scripts/asb-bridge.mjs';
+import { hasOldPlugin, skillState } from '../scripts/asb-bridge.mjs';
 
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const SCRIPT = path.join(ROOT, 'scripts/asb-bridge.mjs');
@@ -114,6 +114,26 @@ test('old plugin homes are skipped with the migration warning without plugin or 
   assert.match(result.stderr, /the old claude-uds-bridge plugin is installed here; run bridge\/scripts\/migrate-from-claude-uds-bridge.mjs first/);
   assert.deepEqual(await f.calls(), []);
   assert.deepEqual(await snapshot(f.home), before);
+});
+
+test('retained old hook trust permits install and does not report the old plugin', async (t) => {
+  const f = await fixture(t);
+  const config = '[hooks.state."claude-uds-bridge@leonkohli:hooks/hooks.json:session_start:0:0"]\ntrusted = true\n[hooks.state."claude-uds-bridge@leonkohli:hooks/hooks.json:session_end:0:0"]\ntrusted = true\n';
+  await writeFile(path.join(f.codex, 'config.toml'), config);
+  assert.equal(hasOldPlugin(config), false);
+  passed(f.run(['install', '--codex-home', f.codex]));
+  assert.deepEqual(await f.calls(), [`codex|${f.codex}|plugin marketplace add ${ROOT}`, `codex|${f.codex}|plugin add asb-bridge@asb`]);
+  await owned(path.join(f.codex, 'skills/bridge'), 'codex');
+  assert.equal(await readFile(path.join(f.codex, 'config.toml'), 'utf8'), config);
+  await rm(f.log);
+  const before = await snapshot(f.home), result = f.run(['status', '--json']);
+  passed(result);
+  const report = JSON.parse(result.stdout).codex.find((item) => item.home === f.codex);
+  assert.equal(report.oldPlugin, false);
+  assert.equal(report.warning, null);
+  assert.deepEqual(await snapshot(f.home), before);
+  assert.equal(await readFile(path.join(f.codex, 'config.toml'), 'utf8'), config);
+  assert.ok((await f.calls()).every((line) => line.endsWith('|--version')));
 });
 
 test('missing Bun refuses a Codex install before any target change', async (t) => {

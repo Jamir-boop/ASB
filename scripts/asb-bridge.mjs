@@ -124,6 +124,9 @@ function sections(text) {
   }
   return result;
 }
+export function hasOldPlugin(config) {
+  return sections(config).has(`plugins."${OLD_PLUGIN}"`);
+}
 function sourceValue(section = '') {
   const value = section.match(/^\s*source\s*=\s*("(?:\\.|[^"\\])*"|'[^']*')\s*(?:#.*)?$/m)?.[1];
   if (!value) return null;
@@ -134,7 +137,7 @@ async function codexTarget(home, force) {
   home = absolute(home);
   for (const file of ['config.toml', 'plugins/cache/asb/asb-bridge/.check', 'plugins/marketplaces/asb/.check']) await safeParents(path.join(home, file));
   const config = (await contents(path.join(home, 'config.toml')))?.toString() || '';
-  if (config.includes(OLD_PLUGIN)) return { home, skipped: true, warning: OLD_WARNING };
+  if (hasOldPlugin(config)) return { home, skipped: true, warning: OLD_WARNING };
   await checkSkill(path.join(home, 'skills/bridge'), force);
   return { home, config };
 }
@@ -215,12 +218,13 @@ export async function status(options = {}) {
   for (const home of targets.codexHomes) {
     const config = (await contents(path.join(home, 'config.toml')))?.toString() || '';
     const parsed = sections(config), plugin = parsed.get('plugins."asb-bridge@asb"');
+    const oldPlugin = hasOldPlugin(config);
     const versions = (await entries(path.join(home, 'plugins/cache/asb/asb-bridge'))).filter((entry) => entry.isDirectory() && /^\d+\.\d+\.\d+$/.test(entry.name)).map((entry) => entry.name).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
     const version = versions.at(-1) || null;
     const hooks = Object.fromEntries(['session_start', 'session_end'].map((event) => [event, parsed.has(`hooks.state."asb-bridge@asb:hooks/hooks.json:${event}:0:0"`)]));
     codex.push({ home, marketplace: { installed: parsed.has('marketplaces.asb'), source: sourceValue(parsed.get('marketplaces.asb')) },
       plugin: { installed: plugin !== undefined, enabled: plugin?.match(/^\s*enabled\s*=\s*(true|false)\s*(?:#.*)?$/m)?.[1] === 'true', versions, version, expectedVersion, versionMatches: version === expectedVersion },
-      hooks, skill: await skillState(path.join(home, 'skills/bridge')), oldPlugin: config.includes(OLD_PLUGIN), warning: config.includes(OLD_PLUGIN) ? OLD_WARNING : null,
+      hooks, skill: await skillState(path.join(home, 'skills/bridge')), oldPlugin, warning: oldPlugin ? OLD_WARNING : null,
       stateFiles: (await entries(path.join(home, 'plugin-state/asb-bridge'))).filter((entry) => entry.isFile()).length });
   }
   const claudeHome = absolute(options.claudeHome || defaultClaudeHome());
