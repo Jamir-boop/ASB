@@ -76,7 +76,7 @@ The repositories below were fetched through the GitHub API on 2026-10-03. The ta
 | [thierryc/Glyphs-mcp](https://github.com/thierryc/Glyphs-mcp) | `plugins/glyphs-mcp/` | MCP, skills | Localhost HTTP server | Pages only |
 | [douglasmonsky/codex-usage-tracker](https://github.com/douglasmonsky/codex-usage-tracker) | Repo root | MCP, skills | PyPI install | Several workflows, tests |
 | [zapier/sdk](https://github.com/zapier/sdk) | Repo root | Skills | No code | `validate.yml` |
-| This bridge | `plugins/claude-uds-bridge/` | Hooks, MCP | Committed `dist/` bundle | `ci.yml`, tests |
+| This bridge | `bridge/` | Hooks, MCP | Committed `dist/` bundle | `bridge.yml`, tests |
 
 Shared by most of them:
 

@@ -10,11 +10,11 @@ test('package.json, the plugin manifest, and the marketplace agree on name and v
   const pkg = z.object({ name: z.string(), version: z.string() }).parse(read(join(plugin, 'package.json')));
   const manifest = z.object({ name: z.string(), version: z.string(), mcpServers: z.string() }).parse(read(join(plugin, '.codex-plugin/plugin.json')));
   const marketplace = z.object({ plugins: z.array(z.object({ name: z.string(), source: z.object({ path: z.string() }) })) })
-    .parse(read(join(plugin, '../../.agents/plugins/marketplace.json')));
+    .parse(read(join(plugin, '../.agents/plugins/marketplace.json')));
   expect(manifest.version).toBe(pkg.version);
   expect(manifest.name).toBe(pkg.name);
   expect(marketplace.plugins.map(entry => entry.name)).toContain(manifest.name);
-  expect(existsSync(join(plugin, '../..', marketplace.plugins[0]!.source.path, '.codex-plugin/plugin.json'))).toBe(true);
+  expect(existsSync(join(plugin, '..', marketplace.plugins[0]!.source.path, '.codex-plugin/plugin.json'))).toBe(true);
 });
 
 test('the hooks run servers and bundles that exist', () => {

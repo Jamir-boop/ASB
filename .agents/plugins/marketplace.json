@@ -8,7 +8,7 @@
       "name": "claude-uds-bridge",
       "source": {
         "source": "local",
-        "path": "./plugins/claude-uds-bridge"
+        "path": "./bridge"
       },
       "policy": {
         "installation": "AVAILABLE",

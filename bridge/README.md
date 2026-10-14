@@ -24,7 +24,7 @@ The plugin is not in the public Plugin Directory. As of 2026-10-03, OpenAI's [su
 
 Codex ignores plugin hooks until you trust them. Open the plugin in Codex, review the two hooks, and confirm both. Then open a new task. Tasks that were already open keep running without the hooks.
 
-A task registers when its `SessionStart` hook runs, which Codex does on the first turn. A fresh chat with nothing typed stays invisible to Claude. When Codex restarts, it ends every loaded task. A task that registered before registers again without a turn when Codex loads it again. See [STARTUP.md](plugins/claude-uds-bridge/STARTUP.md).
+A task registers when its `SessionStart` hook runs, which Codex does on the first turn. A fresh chat with nothing typed stays invisible to Claude. When Codex restarts, it ends every loaded task. A task that registered before registers again without a turn when Codex loads it again. See [STARTUP.md](STARTUP.md).
 
 ## Check that it works
 
@@ -100,12 +100,12 @@ The sender sees Claude's status notices, among them `held`, `delivered`, `denied
 - App-server delivery uses the experimental `toolOutput` API. An incompatible runtime fails delivery; the bridge does not guess another protocol.
 - Codex has no loaded-only subscription. A task that closes between the bridge's loaded check and `thread/resume` can be resumed by the observer. Reads and delivery never resume tasks.
 
-What is missing compared with Claude Code is in [PROTOCOL-COVERAGE.md](plugins/claude-uds-bridge/PROTOCOL-COVERAGE.md). How other Codex and MCP bridges differ is in [COMPARISON.md](plugins/claude-uds-bridge/COMPARISON.md).
+What is missing compared with Claude Code is in [PROTOCOL-COVERAGE.md](PROTOCOL-COVERAGE.md). How other Codex and MCP bridges differ is in [COMPARISON.md](COMPARISON.md).
 
 ## Development
 
 ```bash
-cd plugins/claude-uds-bridge
+cd bridge
 bun install --frozen-lockfile
 bun run check
 bun test
@@ -113,7 +113,7 @@ bun run build
 bun run test:native
 ```
 
-The plugin runs the bundled `dist/server.js` and `dist/hook.js`, and CI fails when they lag `src/`. Run `bun run build` after changing `src/`. Set a new `version` in `package.json` and `.codex-plugin/plugin.json` for every release, because Codex caches an installed plugin by version. `bun run test:native` starts the installed Codex binary in a temporary home with a local model stub. See [Testing](plugins/claude-uds-bridge/PROTOCOL-COVERAGE.md#testing) for its modes and environment variables.
+The plugin runs the bundled `dist/server.js` and `dist/hook.js`, and CI fails when they lag `src/`. Run `bun run build` after changing `src/`. Set a new `version` in `package.json` and `.codex-plugin/plugin.json` for every release, because Codex caches an installed plugin by version. `bun run test:native` starts the installed Codex binary in a temporary home with a local model stub. See [Testing](PROTOCOL-COVERAGE.md#testing) for its modes and environment variables.
 
 ## License
 
