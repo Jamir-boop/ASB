@@ -12,7 +12,7 @@ test('a restart revives receivers of registered threads only, and concurrent sta
   const root = mkdtempSync('/tmp/uds-revive-');
   const codexHome = join(root, 'codex');
   const configDir = join(root, 'claude');
-  const stateDir = join(codexHome, 'plugin-state', 'claude-uds-bridge');
+  const stateDir = join(codexHome, 'plugin-state', 'asb-bridge');
   const ipcPath = join(codexHome, 'ipc', 'ipc.sock');
   mkdirSync(join(codexHome, 'ipc'), { recursive: true, mode: 0o700 });
   const owned = new Set<string>();

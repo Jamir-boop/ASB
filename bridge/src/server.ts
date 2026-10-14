@@ -10,7 +10,7 @@ import { version } from './version';
 
 const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
 const codexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex');
-const stateDir = join(codexHome, 'plugin-state', 'claude-uds-bridge');
+const stateDir = join(codexHome, 'plugin-state', 'asb-bridge');
 const hookPath = join(import.meta.dir, `hook${extname(import.meta.path)}`);
 let bridge: Bridge | undefined;
 let dialogs: HeldDialogs | undefined;
@@ -41,7 +41,7 @@ function brief(status: ReturnType<Bridge['status']>) {
 }
 // Codex copies these instructions into every bridge tool description, so they stay one line.
 // The safety notice travels with each incoming message instead.
-const server = new McpServer({ name: 'claude-uds-bridge', version }, { instructions:
+const server = new McpServer({ name: 'asb-bridge', version }, { instructions:
   'Message local Claude Code and Codex agents: list_sessions, then send_message by sessionId.' });
 
 async function startReceiver(threadId: string, cwd: string) {
@@ -64,7 +64,7 @@ server.registerTool('list_sessions', { description: 'List the live local agents,
   inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false } }, async (_args, extra) =>
   result(peers(configDir).filter(peer => peer.sessionId !== callerThread(extra._meta))
     .map(peer => ({ sessionId: peer.sessionId, name: peer.name,
-      agent: peer.entrypoint === 'codex-claude-uds-bridge' ? 'codex' : 'claude',
+      agent: peer.entrypoint === 'codex-asb-bridge' ? 'codex' : 'claude',
       cwd: peer.cwd, status: peer.status,
       startedAt: peer.startedAt === undefined ? null : new Date(peer.startedAt).toISOString() }))
     .sort((first, second) => (second.startedAt ?? '').localeCompare(first.startedAt ?? ''))));
@@ -86,7 +86,7 @@ server.registerTool('inbox', { description: 'Open a dialog the user answers. Use
   }
   if (view === 'policy') {
     const answer = await server.server.elicitInput({ mode: 'form',
-      message: `Claude UDS Bridge. Inbox of this Codex task. Currently: ${bridge.policy()}. Accept also delivers held messages. Refuse discards them.`,
+      message: `ASB Bridge. Inbox of this Codex task. Currently: ${bridge.policy()}. Accept also delivers held messages. Refuse discards them.`,
       requestedSchema: { type: 'object', properties: { policy: { type: 'string', title: 'Inbox',
         enum: ['default', 'accept', 'hold', 'refuse'], enumNames: ['Default: compare permission modes', 'Accept: receive', 'Hold: keep back', 'Refuse: reject'] } }, required: ['policy'] } });
     if (answer.action === 'accept') await bridge.setPolicy(policySchema.parse(answer.content?.policy));

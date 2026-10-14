@@ -46,11 +46,11 @@ approval_policy = "on-request"
 sandbox_mode = "read-only"
 [features]
 hooks = true
-[mcp_servers.claude_uds_bridge]
+[mcp_servers.asb_bridge]
 command = ${JSON.stringify(process.execPath)}
 args = [${JSON.stringify(mcpEntry)}]
 required = true
-[mcp_servers.claude_uds_bridge.env]
+[mcp_servers.asb_bridge.env]
 CODEX_HOME = ${JSON.stringify(root)}
 CLAUDE_CONFIG_DIR = ${JSON.stringify(configDir)}
 [model_providers.bridge_test]
@@ -142,7 +142,7 @@ try {
     console.log(`Untouched ${interactive ? 'interactive CLI' : 'app-server'} chat: no model request, no receiver, observer resume unavailable.`);
     const text = 'first external instruction without user input';
     await rpc('turn/start', { threadId, input: [], toolOutput: {
-      name: 'peer_message', namespace: 'claude_uds_bridge',
+      name: 'peer_message', namespace: 'asb_bridge',
       output: JSON.stringify({ inputId: randomUUID(), content: text }),
     } });
     await until(() => requests.length === 1);

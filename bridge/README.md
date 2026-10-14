@@ -1,4 +1,4 @@
-# Claude UDS Bridge
+# ASB Bridge
 
 A Codex plugin that lets Codex tasks and Claude Code sessions message each other on one machine.
 
@@ -14,8 +14,8 @@ Claude Code lists and messages its other sessions through its own local registry
 ## Install
 
 ```bash
-codex plugin marketplace add LeonKohli/claude-uds-bridge
-codex plugin add claude-uds-bridge@leonkohli
+codex plugin marketplace add Jamir-boop/ASB
+codex plugin add asb-bridge@asb
 ```
 
 To install from a local checkout, pass its path to `marketplace add` instead.

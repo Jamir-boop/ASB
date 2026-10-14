@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "claude_uds_bridge": {
+    "asb_bridge": {
       "command": "bun",
       "args": ["./dist/server.js"],
       "cwd": ".",

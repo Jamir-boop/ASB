@@ -1,11 +1,11 @@
 {
-  "name": "leonkohli",
+  "name": "asb",
   "interface": {
-    "displayName": "Leon Kohli"
+    "displayName": "ASB"
   },
   "plugins": [
     {
-      "name": "claude-uds-bridge",
+      "name": "asb-bridge",
       "source": {
         "source": "local",
         "path": "./bridge"

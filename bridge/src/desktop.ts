@@ -71,7 +71,7 @@ class DesktopConnection {
 
   async connectHost() {
     await once(this.socket, 'connect', { signal: AbortSignal.timeout(5000) });
-    const initialized = await this.request('initialize', { clientType: 'claude-uds-bridge' }, 0);
+    const initialized = await this.request('initialize', { clientType: 'asb-bridge' }, 0);
     this.clientId = z.object({ clientId: z.string().min(1) }).parse(initialized.result).clientId;
   }
 

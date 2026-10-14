@@ -17,7 +17,7 @@ async function fixture(prefix = '/tmp/uds-protocol-') {
   const root = mkdtempSync(prefix);
   const desktop = await receiver('idle', false, false, root);
   const configDir = join(root, 'claude');
-  const stateDir = join(root, 'plugin-state', 'claude-uds-bridge');
+  const stateDir = join(root, 'plugin-state', 'asb-bridge');
   const directory = join(root, 's');
   mkdirSync(join(configDir, 'sessions'), { recursive: true, mode: 0o700 });
   mkdirSync(directory, { mode: 0o700 });

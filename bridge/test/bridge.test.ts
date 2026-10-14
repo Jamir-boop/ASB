@@ -38,9 +38,9 @@ test('MCP binds state to caller metadata and rejects a different task', async ()
 test('the status tool returns the five latest message rows without null fields', async () => {
   const root = mkdtempSync(join(tmpdir(), 'uds-mcp-'));
   const id = randomUUID();
-  const bridge = new Bridge(id, root, join(root, 'plugin-state', 'claude-uds-bridge'), join(root, 'unavailable.sock'));
+  const bridge = new Bridge(id, root, join(root, 'plugin-state', 'asb-bridge'), join(root, 'unavailable.sock'));
   await bridge.close();
-  const db = new Database(join(root, 'plugin-state', 'claude-uds-bridge', `${id}.sqlite`));
+  const db = new Database(join(root, 'plugin-state', 'asb-bridge', `${id}.sqlite`));
   for (let index = 0; index < 7; index++) {
     db.run("INSERT INTO messages (id,peer_id,direction,text,status,created_at) VALUES (?,?,'out','text','unknown',?)", [String(index), randomUUID(), index]);
   }

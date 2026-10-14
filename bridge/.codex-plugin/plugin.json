@@ -1,19 +1,19 @@
 {
-  "name": "claude-uds-bridge",
+  "name": "asb-bridge",
   "version": "0.3.0",
-  "description": "Discover and message live Claude Code and Codex sessions through local UDS inboxes.",
+  "description": "Discover and message live Claude Code sessions and Codex tasks through local UDS inboxes. Part of ASB.",
   "author": {
-    "name": "Leon Kohli"
+    "name": "Jamir-boop"
   },
   "license": "MIT",
-  "homepage": "https://github.com/LeonKohli/claude-uds-bridge",
-  "repository": "https://github.com/LeonKohli/claude-uds-bridge",
-  "keywords": ["claude-code", "codex", "messaging", "multi-agent", "mcp"],
+  "homepage": "https://github.com/Jamir-boop/ASB",
+  "repository": "https://github.com/Jamir-boop/ASB",
+  "keywords": ["claude-code", "codex", "messaging", "multi-agent", "mcp", "asb"],
   "interface": {
-    "displayName": "Claude UDS Bridge",
+    "displayName": "ASB Bridge",
     "shortDescription": "Exchange messages with local Claude Code sessions.",
     "longDescription": "Session lifecycle hooks make this task discoverable through Claude ListAgents. Peer messages steer its active turn or start a new turn when idle. MCP provides listing, sending, status, and inbox controls.",
-    "developerName": "Leon Kohli",
+    "developerName": "Jamir-boop",
     "category": "Productivity",
     "capabilities": [
       "Read",

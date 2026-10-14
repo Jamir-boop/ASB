@@ -13,12 +13,12 @@ const eventSchema = z.object({ session_id: uuid, cwd: z.string().refine(isAbsolu
 type Event = z.infer<typeof eventSchema>;
 const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
 const codexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex');
-const stateDir = join(codexHome, 'plugin-state', 'claude-uds-bridge');
+const stateDir = join(codexHome, 'plugin-state', 'asb-bridge');
 const ipcPath = join(codexHome, 'ipc', 'ipc.sock');
 
 function receiver(threadId: string) {
   const matches = peers(configDir).filter(peer => peer.sessionId === threadId
-    && peer.entrypoint === 'codex-claude-uds-bridge');
+    && peer.entrypoint === 'codex-asb-bridge');
   if (matches.length > 1) throw new Error('Multiple receivers claim this Codex task');
   return matches[0];
 }

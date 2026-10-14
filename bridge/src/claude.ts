@@ -169,7 +169,7 @@ export async function register(configDir: string, sessionId: string, address: st
   const record = { pid: process.pid, sessionId, cwd, name: uniqueName(configDir, base, sessionId),
     startedAt: Date.now(), procStart: await processStart(process.pid), peerProtocol: 1,
     ...(process.platform === 'darwin' ? { pidDomain: 'darwin' } : {}),
-    kind: 'interactive', entrypoint: 'codex-claude-uds-bridge', messagingSocketPath: socketPath(address),
+    kind: 'interactive', entrypoint: 'codex-asb-bridge', messagingSocketPath: socketPath(address),
     status, statusUpdatedAt: Date.now(), peerFeatures: ['notify_idle'] };
   writeFileSync(path, JSON.stringify(record), { flag: 'wx', mode: 0o600 });
   const check = () => {

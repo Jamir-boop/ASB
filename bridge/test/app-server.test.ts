@@ -39,7 +39,7 @@ test('peer input has tool authority and an independent delivery ID in idle and a
       const result = await withAppServer(server.path, server.threadId, client => client.submit(inputId, 'peer update'));
       expect(result).toEqual({ status: 'accepted', turnId: server.turnId });
       expect(server.submissions.at(-1)?.params).toEqual({ threadId: server.threadId, input: [],
-        toolOutput: { name: 'peer_message', namespace: 'claude_uds_bridge', output: JSON.stringify({ inputId, content: 'peer update' }) } });
+        toolOutput: { name: 'peer_message', namespace: 'asb_bridge', output: JSON.stringify({ inputId, content: 'peer update' }) } });
     }
     server.loseAcknowledgement();
     await expect(withAppServer(server.path, server.threadId, client => client.submit(randomUUID(), 'uncertain update'))).rejects.toThrow();
@@ -62,7 +62,7 @@ test('consumed peer inputs correlate across history pages and new user input res
   const inputId = randomUUID();
   const nativeId = randomUUID();
   const userId = randomUUID();
-  const peer = { type: 'functionCallOutput', id: nativeId, name: 'peer_message', namespace: 'claude_uds_bridge',
+  const peer = { type: 'functionCallOutput', id: nativeId, name: 'peer_message', namespace: 'asb_bridge',
     output: JSON.stringify({ inputId, content: 'peer update' }) };
   const tail = Array.from({ length: 110 }, () => ({ type: 'agentMessage', id: randomUUID() }));
   try {
