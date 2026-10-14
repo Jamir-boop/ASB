@@ -40,7 +40,7 @@ Production ASB uses Python at `1.8.1`.
 
 ASB uses `DashboardSnapshot` in `src/dashboard-snapshot.mjs` for snapshots, source events, watchers, caches, and request coalescing. It also uses local HTTP utilities, Codex open helpers, and provider cache helpers.
 
-The ASB `1.8.1` package whitelist names 30 runtime files, including the app-source registry. ASB `1.8.0`, `1.7.0`, `1.6.1`, `1.6.0`, `1.5.0`, and `1.4.0` also shipped 30. ASB `1.3.0` shipped 32. ASB `1.2.0` shipped 31, down from 42 in ASB `1.1.0`.
+The current source package whitelist names 41 runtime files, including 11 ASB Bridge files. The published ASB `1.8.1` package shipped 30 runtime files, including the app-source registry. ASB `1.8.0`, `1.7.0`, `1.6.1`, `1.6.0`, `1.5.0`, and `1.4.0` also shipped 30. ASB `1.3.0` shipped 32. ASB `1.2.0` shipped 31, down from 42 in ASB `1.1.0`.
 
 ## Main files
 
@@ -62,6 +62,9 @@ The ASB `1.8.1` package whitelist names 30 runtime files, including the app-sour
 | `docs/benchmarks/` | Historical frontend comparisons, numeric samples, acceptance coverage, and X11 timing limits. |
 | `scripts/asb-icon.mjs` | ASB icon and desktop entry registration. |
 | `scripts/asb-package.mjs` | Linux package build, runtime check, and per-user install/uninstall. |
+| `scripts/asb-bridge.mjs` | Optional bridge status and per-provider install/uninstall command. |
+| `.agents/plugins/marketplace.json` | Local `asb` marketplace for the `asb-bridge` Codex plugin. |
+| `bridge/` | Optional ASB Bridge plugin, Bun/TypeScript source and tests, committed bundles, and on-demand usage skills. |
 | `public/switchboard.html` | Optional ASB browser view. |
 | `test/switchboard.test.mjs` | ASB data, attention, API, and source-event checks. |
 | `test/asb-desktop.test.mjs` | Isolated launcher, port-conflict, icon-failure, and owned-child checks without GTK. |
@@ -228,6 +231,8 @@ After a distro, desktop, GTK, or driver change, record the exact stack, X11/Wayl
 
 ## API and trust boundary
 
+ASB makes no model calls and sends no messages. When ASB Bridge is installed, a message that it delivers starts a turn in the receiving app.
+
 ASB uses `createAsbServer` from `src/asb-server.mjs`. It allows the view assets, dashboard, source events, app-source settings, known-session open, ASB Read/Unread, Discard/Keep, drawer in/out, pins, pin movement, and Persistent unread settings. Other API routes are not exposed.
 
 Actions require the local Host and a matching Origin. App-source changes also need the app source token when the server has one (see below). Session IDs must be in the scanned list. Read/Unread, pin/unpin, and drawer in/out accept an empty JSON object. Persistent unread accepts only a `persistentUnread` boolean. Pin movement accepts `up`/`down`, or a known pinned target with `before`/`after`. Session actions accept no client commands, paths, or URLs.
@@ -265,6 +270,10 @@ A local program that is not a browser can send Host and Origin itself, and a sou
 
 XDG state/config/data overrides apply. The per-user package also installs ASB under its own local data folder and adds `~/.local/bin/asb`. `~/.local/bin/asb` records `ASB_NODE` and starts the shipped `scripts/asb`. It keeps `ASB_NODE` when it is an absolute, executable regular file with no control characters; otherwise it records the current Node executable. Paths use shell quoting. If the recorded Node.js is not usable, `scripts/asb` tries `~/.local/bin/node`, `/usr/local/bin/node`, then `/usr/bin/node`. It prints a message if none is usable. ASB does not put system folders before the caller's `PATH`. It appends `/usr/local/bin:/usr/bin:/bin` and a recorded SQLite folder, so apps started from ASB keep the caller's `PATH` order. Uninstall removes the `asb/releases` and `asb` data folders when they are empty. SIGINT/SIGTERM abort package work, await pending writes and rollback, and remove only its acquired lock and staging folder. A foreign lock stays intact and the error identifies its folder. See the installer for its exact manifest. Original app stores stay read-only, with one exception: the read-only SQLite open of the Codex state database can create `-wal` and `-shm` side files next to it. The files `pending.json.bad` and `sources.json.bad` can appear next to their originals.
 
+Only when the user runs them with targets, `asb bridge install` and `asb bridge uninstall` change Codex plugin configuration through the `codex` CLI. They copy or remove the Codex `$bridge` and Claude Code `/bridge` skill folders. Without targets, they show usage and change nothing.
+
+The optional bridge plugin runs inside Codex. It writes per-task state under `<CODEX_HOME>/plugin-state/asb-bridge/` and registry rows under `<Claude home>/sessions/`. The Claude home is `$CLAUDE_CONFIG_DIR` or `~/.claude`. Uninstall keeps the per-task message history.
+
 ## Checks and release
 
 ```bash
@@ -275,11 +284,13 @@ npm run build
 
 The first two commands do not launch the ASB window. `npm test` needs no `sqlite3` command and no environment variable. Launcher checks use isolated HOME/XDG/source folders, `ASB_SYSTEM_INSTALL=1`, and `ASB_PYTHON=/bin/true` to verify busy/free ports without GTK or icon registration. Display-free data checks share the synthetic GTK fixtures through AST extraction without importing GTK. Native widget tests are separate and need a GTK display with synthetic fixtures. Use them only when UI testing is in scope. Do not use real session stores for public media or test captures.
 
+The root tests skip TypeScript files. After bridge changes, run `cd bridge && bun run check && bun test && bun run build`, and commit `bridge/dist/`. When you change a shipped bridge file, change the version in `bridge/package.json` and `bridge/.codex-plugin/plugin.json` together. Codex caches an installed plugin by version.
+
 Native SSE retains its connection/header timeout but removes the live read timeout after validated stream headers; close shuts down blocked reads. Row ages use relative text for all elapsed days, and empty `XDG_CONFIG_HOME` falls back to the home config folder. Row and tooltip indicator CSS share the same shape rules and keep their existing roles/sizes.
 
 The source build produces `asb_1.8.1_all.deb`, `asb-1.8.1-linux.tar.gz`, and `SHA256SUMS` in `dist/`. The portable root is `asb-1.8.1/` with `./install.sh`. See [release notes](docs/releases/v1.8.1.md) for upgrades and check limits. Public demo assets use synthetic session names and folders. The current demo source shows four app switches; the existing README video link stays unchanged. Remotion build dependencies are separate from the ASB runtime.
 
-The current source passed 272 Node tests, 87 native logic tests, and one focused GTK toolbar test on an isolated hidden Xephyr display with Cairo and synthetic data. The full GTK widget suite did not run. Real profile edits were not tested. Resize lag on X11 remains unresolved. This release has no new FPS measurement. See [1.8.1 release notes](docs/releases/v1.8.1.md) for current check limits. Earlier performance samples and their limits remain in the [1.6.1 release notes](docs/releases/v1.6.1.md) and [1.6.0 release notes](docs/releases/v1.6.0.md).
+The published `1.8.1` baseline passed 272 Node tests, 87 native logic tests, and one focused GTK toolbar test on an isolated hidden Xephyr display with Cairo and synthetic data. The full GTK widget suite did not run. Real profile edits were not tested. Resize lag on X11 remains unresolved. That release had no new FPS measurement. See [1.8.1 release notes](docs/releases/v1.8.1.md) for its check limits. Earlier performance samples and their limits remain in the [1.6.1 release notes](docs/releases/v1.6.1.md) and [1.6.0 release notes](docs/releases/v1.6.0.md).
 
 The earlier unreleased Drawer build had thirteen GTK widget tests. An earlier unreleased Drawer build was tested on one X11 machine, before the performance changes. All thirteen tests passed on a nested test display for that earlier build. The desktop display run was made before the thirteenth test was added: eleven tests passed and the pointer test was skipped. One test uses real pointer clicks through `xdotool`. It runs only when `xdotool` is installed and `DISPLAY` is `:9` or `:10` (a nested test display), so that it cannot move the pointer of a desktop; in other cases it is skipped. The tests set the Adwaita icon theme, because their pixel checks read icon pixels and the highest alpha of an icon is different in each icon theme. Four of them had expectations older than the 1.3.0 layout and were repaired after the `1.5.0` release. The 68px Comfortable row assertions hold with that machine's font; with Adwaita Sans or Noto Sans the rows are 70px. Two tests check row packing with another font and with overlay scrolling off. For ASB `1.5.0`, card motion and the wheel spring were also measured on that display with synthetic rows. No Debian `apt install` was run. Native pixel fidelity remains unverified. See the [publication record](docs/OPEN_SOURCE_PLAN.md) for verified release checks.
 

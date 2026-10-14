@@ -2,7 +2,7 @@
 
 ASB runs locally. Its default native and browser launch commands read no login credentials, make no model calls, send no telemetry, and make no network requests outside loopback.
 
-This document covers `npm start`, `npm run desktop`, and the packaged `asb` launcher.
+This document covers `npm start`, `npm run desktop`, and the packaged `asb` launcher. The optional bridge is described below.
 
 ## What ASB reads
 
@@ -42,6 +42,10 @@ Remote cache observations can be incomplete or old. ASB uses the newest response
 ASB writes no search index, review job, notification store, quota history, token cache, work-metric cache, or transcript checkpoint. The Codex reader makes no network request and reads no `auth.json`. Its source readers keep bounded caches in memory.
 
 Source colors are ASB settings in the same schema `1` file. They change only the local identity marker, not original app styles, data, sign-ins, or attention state. Source IDs remain the identity; color does not merge chats. Source names remain available in tooltips, search, and accessible descriptions.
+
+## Optional ASB Bridge
+
+ASB Bridge runs inside Codex. It stores the text of peer messages in per-task SQLite files under `<CODEX_HOME>/plugin-state/asb-bridge/`. ASB does not upload them. A message that the bridge delivers starts a turn in the receiving app. The receiving app uses its own model and network settings.
 
 ## Local API and app opens
 

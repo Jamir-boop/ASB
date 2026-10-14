@@ -4,6 +4,11 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Added ASB Bridge, moved from claude-uds-bridge `0.3.0` with its Git history and renamed to `asb-bridge`.
+- Added `asb bridge status`, `install`, and `uninstall` for selected providers. Installation needs explicit targets or `--all`; without targets it shows usage and changes nothing.
+- Added the on-demand `/bridge` skill for Claude Code and `$bridge` skill for Codex.
+- The root tests now skip TypeScript files, so Bun runs the bridge tests separately.
+
 ## ASB 1.8.1 - 2026-10-13
 
 - Fixed duplicate native toolbar filter controls. Working-only uses its existing pill without a second chip. App chips appear only while the Codex and Claude pills are hidden. Other restricted state chips and the archive chip remain available. Filters and saved settings keep their values.

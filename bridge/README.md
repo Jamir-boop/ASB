@@ -13,18 +13,30 @@ Claude Code lists and messages its other sessions through its own local registry
 
 ## Install
 
+Install the plugin and both usage skills with ASB. Bun must be on your `PATH`.
+
 ```bash
-codex plugin marketplace add Jamir-boop/ASB
+asb bridge install --codex-home ~/.codex --claude
+```
+
+Use `asb bridge install --all` for all detected providers. From a source checkout, use `scripts/asb bridge` in place of `asb bridge`. Without a target flag, `asb bridge install` prints the detected targets and usage, and changes nothing.
+
+To install only the plugin manually from a local checkout:
+
+```bash
+codex plugin marketplace add /path/to/ASB
 codex plugin add asb-bridge@asb
 ```
 
-To install from a local checkout, pass its path to `marketplace add` instead.
-
 The plugin is not in the public Plugin Directory. As of 2026-10-03, OpenAI's [submission rules](https://developers.openai.com/plugins/deploy/submission) reject plugins with lifecycle hooks and accept only hosted HTTPS MCP servers. This plugin needs a `SessionStart` hook and a local MCP server, because the sockets and registry it uses live on your machine. It installs through its own marketplace until those rules change.
 
-Codex ignores plugin hooks until you trust them. Open the plugin in Codex, review the two hooks, and confirm both. Then open a new task. Tasks that were already open keep running without the hooks.
+Codex ignores plugin hooks until you trust them. Open Plugins > ASB Bridge in Codex, review the two hooks, and trust both. Then restart Codex. After an ASB upgrade, run the install command again with the same targets.
 
 A task registers when its `SessionStart` hook runs, which Codex does on the first turn. A fresh chat with nothing typed stays invisible to Claude. When Codex restarts, it ends every loaded task. A task that registered before registers again without a turn when Codex loads it again. See [STARTUP.md](STARTUP.md).
+
+## Usage skills
+
+Type `/bridge` in Claude Code or `$bridge` in Codex to load the usage guide. Both skills load on demand only. The manual plugin commands above do not install them; use the ASB install command for the skill folders.
 
 ## Check that it works
 
@@ -42,7 +54,7 @@ flowchart LR
     cr["registry row<br/>sessions/PID.json"]
     cs["inbox socket<br/>cc-socks/PID.sock"]
   end
-  subgraph bridge["Bridge receiver, one per Codex task"]
+  subgraph bridge["ASB Bridge receiver, one per Codex task"]
     br["registry row"]
     bs["inbox socket"]
     db[("SQLite inbox<br/>policy, limits, held")]
@@ -113,8 +125,10 @@ bun run build
 bun run test:native
 ```
 
-The plugin runs the bundled `dist/server.js` and `dist/hook.js`, and CI fails when they lag `src/`. Run `bun run build` after changing `src/`. Set a new `version` in `package.json` and `.codex-plugin/plugin.json` for every release, because Codex caches an installed plugin by version. `bun run test:native` starts the installed Codex binary in a temporary home with a local model stub. See [Testing](PROTOCOL-COVERAGE.md#testing) for its modes and environment variables.
+The plugin runs the bundled `dist/server.js` and `dist/hook.js`, and CI fails when they lag `src/`. Run `bun run build` after changing `src/`, and commit `dist/`. When you change a shipped bridge file, change the version in `package.json` and `.codex-plugin/plugin.json` together, because Codex caches an installed plugin by version. `bun run test:native` starts the installed Codex binary in a temporary home with a local model stub. See [Testing](PROTOCOL-COVERAGE.md#testing) for its modes and environment variables.
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+ASB Bridge is based on claude-uds-bridge by Leon Kohli (MIT). See LICENSE.
