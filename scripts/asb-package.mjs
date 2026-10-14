@@ -259,13 +259,7 @@ export async function install(options = {}) {
       finally { process.off('SIGINT', interrupt); process.off('SIGTERM', terminate); }
     }
   }
-  if (options.bridgeCodexHomes?.length || options.bridgeClaude) {
-    const args = (options.bridgeCodexHomes || []).flatMap((home) => ['--codex-home', home]);
-    if (options.bridgeClaude) args.push('--claude');
-    execFileSync(nodeExecutable, [path.join(destination, 'scripts/asb-bridge.mjs'), 'install', ...args], { stdio: 'inherit' });
-  } else {
-    console.log('Optional: run "asb bridge install --all" to let your Claude Code and Codex chats message each other.');
-  }
+  console.log('Optional: run "asb bridge install --all" to let your Claude Code and Codex chats message each other.');
   return installed;
 }
 
@@ -345,17 +339,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const command = process.argv[2];
   const commands = { build, install, uninstall, check: checkRuntime };
   try {
-    const misuse = () => { throw new Error('Use: asb-package.mjs build|install|uninstall|check'); };
-    if (!Object.hasOwn(commands, command) || (command !== 'install' && process.argv.length !== 3)) misuse();
-    const options = { bridgeCodexHomes: [] };
-    for (let index = 3; index < process.argv.length; index++) {
-      const flag = process.argv[index];
-      if (flag === '--bridge-claude') options.bridgeClaude = true;
-      else if (flag === '--bridge-codex-home' && process.argv[index + 1] && !process.argv[index + 1].startsWith('--')) {
-        options.bridgeCodexHomes.push(process.argv[++index]);
-      } else misuse();
-    }
-    console.log(JSON.stringify(await commands[command](options), null, 2));
+    if (!Object.hasOwn(commands, command) || process.argv.length !== 3) throw new Error('Use: asb-package.mjs build|install|uninstall|check');
+    console.log(JSON.stringify(await commands[command](), null, 2));
   } catch (error) {
     console.error(`ASB ${command || 'package'} failed: ${error.message}`);
     if (error.stderr) console.error(String(error.stderr).trim());

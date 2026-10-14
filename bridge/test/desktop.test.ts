@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { deliverToDesktop, readDesktopInputs, readDesktopRuntime, watchDesktop, type Runtime } from "../src/desktop";
 import { receiver } from "./desktop-fixture";
+import { DeliveryRefused } from '../src/delivery';
 
 test('only committed input continues peer context; pending steering cannot replace a newer user input', async () => {
   const desktop = await receiver('active');
@@ -117,6 +118,20 @@ test('lost Desktop acknowledgement does not resend an accepted message', async (
   try {
     await expect(deliverToDesktop(desktop.path, desktop.threadId, randomUUID(), 'peer update')).rejects.toThrow();
     expect(desktop.submissions).toHaveLength(1);
+  } finally { await desktop.close(); }
+});
+
+test('only an explicit Desktop rejection is a definite delivery refusal', async () => {
+  const desktop = await receiver('idle');
+  try {
+    desktop.setSubmissionReply({ resultType: 'error', error: 'Peer input rejected' });
+    await expect(deliverToDesktop(desktop.path, desktop.threadId, randomUUID(), 'rejected update'))
+      .rejects.toBeInstanceOf(DeliveryRefused);
+    desktop.setSubmissionReply({ error: 'Malformed response' });
+    const error = await deliverToDesktop(desktop.path, desktop.threadId, randomUUID(), 'uncertain update').catch(error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(DeliveryRefused);
+    expect(desktop.submissions).toHaveLength(2);
   } finally { await desktop.close(); }
 });
 

@@ -68,8 +68,8 @@ export function readCodexRuntime(target: Target, threadId: string) {
     : withAppServer(target.path, threadId, server => server.runtime());
 }
 
-export function readCodexCwd(target: Target, threadId: string) {
-  return target.kind === 'desktop' ? readDesktopCwd(target.path, threadId)
+export function readCodexCwd(target: Target, threadId: string, timeoutMs?: number) {
+  return target.kind === 'desktop' ? readDesktopCwd(target.path, threadId, timeoutMs)
     : withAppServer(target.path, threadId, server => server.cwd());
 }
 

@@ -12,6 +12,7 @@ import { CancelledNotificationSchema, ElicitRequestSchema } from '@modelcontextp
 import { Bridge } from '../src/bridge';
 import { findPeer, frameSchema, hopChain, maxLineLength, peers, sendFrames, sessionName, userFrame } from '../src/claude';
 import { receiver } from './desktop-fixture';
+import { appServer } from './app-server-fixture';
 
 async function fixture(prefix = '/tmp/uds-protocol-') {
   const root = mkdtempSync(prefix);
@@ -258,6 +259,81 @@ test('idle stays pending while an accepted peer input has not been consumed', as
     f.bridge.updateRuntime({ status: 'idle', mode: 'prompting' });
     await until(() => notices().length === 1);
     expect(f.bridge.status().unreadCount).toBe(0);
+  } finally { await f.close(); }
+});
+
+test('an app-server refusal clears unread input, sends a dropped receipt and permits a later idle notice', async () => {
+  const f = await fixture();
+  const server = await appServer(undefined, f.desktop.threadId);
+  f.bridge.setTarget({ kind: 'app-server', path: server.path });
+  server.setState('active');
+  f.bridge.updateRuntime({ status: 'busy', mode: 'prompting' });
+  server.refuseSubmission();
+  const subscription = randomUUID();
+  try {
+    await f.transmit({ type: 'control', action: 'notify_when_idle', msg_id: subscription });
+    await until(() => f.bridge.status().idleRequests.some(row => row.id === subscription && row.status === 'waiting'));
+    const id = await f.message('prompting');
+    await until(() => f.frames.some(frame => frame.type === 'control' && frame.action === 'peer_message_status'
+      && frame.orig_msg_id === id && frame.status === 'dropped'));
+    expect(f.bridge.status().messages.find(row => row.id === id)).toMatchObject({ status: 'dropped', drop_reason: 'delivery-refused' });
+    expect(f.db.query('SELECT awaiting_input FROM messages WHERE id=?').get(id)).toEqual({ awaiting_input: 0 });
+    expect(f.bridge.status().unreadCount).toBe(0);
+    expect(f.frames.find(frame => frame.type === 'control' && frame.action === 'peer_message_status' && frame.orig_msg_id === id))
+      .toMatchObject({ status: 'dropped', drop_reason: 'delivery-refused', dropped_msg_ids: [id] });
+    const notices = () => f.frames.filter(frame => frame.type === 'control' && frame.action === 'peer_idle_notice' && frame.orig_msg_id === subscription);
+    expect(notices()).toHaveLength(0);
+    server.setState('idle');
+    f.bridge.updateRuntime({ status: 'idle', mode: 'prompting' });
+    await until(() => notices().length === 1);
+    expect(notices()[0]).toMatchObject({ state: 'idle' });
+    expect(server.submissions).toHaveLength(0);
+  } finally { await f.close(); await server.close(); }
+});
+
+test.each(['timeout', 'disconnect'] as const)('an app-server delivery %s preserves unknown input and blocks idle notices', async outcome => {
+  const f = await fixture();
+  const server = await appServer(undefined, f.desktop.threadId);
+  f.bridge.setTarget({ kind: 'app-server', path: server.path });
+  server.setState('active');
+  f.bridge.updateRuntime({ status: 'busy', mode: 'prompting' });
+  if (outcome === 'timeout') server.withholdAcknowledgement();
+  else server.loseAcknowledgement();
+  try {
+    const id = await f.message('prompting');
+    await until(() => f.bridge.status().messages.some(row => row.id === id && row.status === 'unknown'), 12000);
+    expect(server.submissions).toHaveLength(1);
+    expect(f.db.query('SELECT status,awaiting_input,drop_reason FROM messages WHERE id=?').get(id))
+      .toEqual({ status: 'unknown', awaiting_input: 1, drop_reason: null });
+    expect(f.bridge.status().unreadCount).toBe(1);
+    expect(f.frames.some(frame => frame.type === 'control' && frame.action === 'peer_message_status' && frame.orig_msg_id === id)).toBe(false);
+    const subscription = randomUUID();
+    await f.transmit({ type: 'control', action: 'notify_when_idle', msg_id: subscription });
+    await until(() => f.bridge.status().idleRequests.some(row => row.id === subscription));
+    server.setState('idle');
+    f.bridge.updateRuntime({ status: 'idle', mode: 'prompting' });
+    await f.bridge.setPolicy('default');
+    expect(f.bridge.status().idleRequests.find(row => row.id === subscription)?.status).toBe('waiting');
+    expect(f.frames.some(frame => frame.type === 'control' && frame.action === 'peer_idle_notice' && frame.orig_msg_id === subscription)).toBe(false);
+    expect(f.bridge.status().unreadCount).toBe(1);
+  } finally { await f.close(); await server.close(); }
+}, 15000);
+
+test.each(['refused', 'malformed'] as const)('Desktop %s delivery keeps definite refusals separate from unknown outcomes', async outcome => {
+  const f = await fixture();
+  f.desktop.setSubmissionReply(outcome === 'refused' ? { resultType: 'error', error: 'Peer input rejected' } : { error: 'Malformed response' });
+  try {
+    const id = await f.message('prompting');
+    const status = outcome === 'refused' ? 'dropped' : 'unknown';
+    await until(() => f.bridge.status().messages.some(row => row.id === id && row.status === status));
+    await f.bridge.setPolicy('default');
+    expect(f.db.query('SELECT status,awaiting_input,drop_reason FROM messages WHERE id=?').get(id))
+      .toEqual({ status, awaiting_input: outcome === 'refused' ? 0 : 1, drop_reason: outcome === 'refused' ? 'delivery-refused' : null });
+    expect(f.bridge.status().unreadCount).toBe(outcome === 'refused' ? 0 : 1);
+    const receipt = f.frames.find(frame => frame.type === 'control' && frame.action === 'peer_message_status' && frame.orig_msg_id === id);
+    if (outcome === 'refused') expect(receipt).toMatchObject({ status: 'dropped', drop_reason: 'delivery-refused', dropped_msg_ids: [id] });
+    else expect(receipt).toBeUndefined();
+    expect(f.desktop.submissions).toHaveLength(1);
   } finally { await f.close(); }
 });
 
@@ -683,40 +759,46 @@ test('the lifecycle hook opens held dialogs without model calls and shares manua
     const started = await client.callTool({ name: 'session_start', arguments: { cwd: f.root }, _meta: { threadId: f.desktop.threadId } });
     expect(started).not.toHaveProperty('isError', true);
     const id = await f.message('bypass', 'private held payload');
-    await until(() => dialogs.length === 1);
+    await until(() => dialogs.length === 1, 4000);
     expect(dialogs[0]?.text).toContain('private held payload');
     expect(f.desktop.submissions).toHaveLength(0);
     const manual = client.callTool({ name: 'inbox', arguments: { view: 'held' }, _meta: { threadId: f.desktop.threadId } });
-    await Bun.sleep(600);
+    expect((await client.callTool({ name: 'status', arguments: {}, _meta: { threadId: f.desktop.threadId } })).isError).not.toBe(true);
     expect(dialogs).toHaveLength(1);
     dialogs[0]!.answer.resolve({ action: 'accept', content: { decision: 'approve' } });
     const reviewed = await manual;
     expect(reviewed.isError).not.toBe(true);
+    expect(JSON.parse(z.array(z.object({ text: z.string() })).parse(reviewed.content)[0]!.text))
+      .toMatchObject({ action: 'accept', messageId: id });
     expect(JSON.stringify(reviewed)).not.toContain('private held payload');
     await until(() => f.desktop.submissions.length === 1);
     expect(f.bridge.status().messages.find(row => row.id === id)?.status).toBe('started');
     const denied = await f.message('bypass');
-    await until(() => dialogs.length === 2);
+    await until(() => dialogs.length === 2, 4000);
     dialogs[1]!.answer.resolve({ action: 'cancel' });
     await until(() => f.bridge.status().messages.find(row => row.id === denied)?.status === 'denied');
     await f.bridge.setPolicy('hold');
-    await f.message('bypass');
-    await Bun.sleep(600);
+    const held = await f.message('bypass');
+    await until(() => f.bridge.status().messages.find(row => row.id === held)?.status === 'held');
+    expect(f.bridge.reviewableHeld()).toEqual([]);
+    const blocked = await client.callTool({ name: 'inbox', arguments: { view: 'held' }, _meta: { threadId: f.desktop.threadId } });
+    expect(blocked.isError).not.toBe(true);
+    expect(JSON.stringify(blocked)).toContain('Explicit hold only releases after the user changes the policy.');
     expect(dialogs).toHaveLength(2);
   } finally { await client.close(); await f.close(); }
-});
+}, 15000);
 
 test('automatic dialogs cancel on expiry and transport failures leave messages held', async () => {
   const f = await fixture();
-  let requests = 0;
+  const requests: string[] = [];
   let cancellations = 0;
   const aborted = Promise.withResolvers<void>();
   let fail = false;
   const client = new Client({ name: 'dialog-expiry-test', version: '1.0.0' }, { capabilities: { elicitation: { form: {} } } });
   // SDK 1.30 ignores cancellation of request ID 0; observe the actual wire notification.
   client.setNotificationHandler(CancelledNotificationSchema, async () => { cancellations++; aborted.resolve(); });
-  client.setRequestHandler(ElicitRequestSchema, async () => {
-    requests++;
+  client.setRequestHandler(ElicitRequestSchema, async request => {
+    requests.push(request.params.message);
     if (fail) throw new Error('Fixture transport failure');
     await aborted.promise;
     return { action: 'cancel' };
@@ -726,20 +808,24 @@ test('automatic dialogs cancel on expiry and transport failures leave messages h
       env: { ...process.env, CODEX_HOME: f.root, CLAUDE_CONFIG_DIR: f.configDir } }));
     expect((await client.callTool({ name: 'session_start', arguments: { cwd: f.root }, _meta: { threadId: f.desktop.threadId } })).isError).not.toBe(true);
     const id = await f.message('bypass');
-    await until(() => requests === 1);
+    await until(() => requests.length === 1, 4000);
     f.db.run('UPDATE messages SET expires_at=? WHERE id=?', [Date.now() - 1, id]);
-    await until(() => cancellations === 1);
+    await until(() => cancellations === 1, 4000);
     await f.bridge.resolveHeld(id, 'approve');
     expect(f.bridge.status().messages.find(row => row.id === id)?.status).toBe('expired');
     expect(f.desktop.submissions).toHaveLength(0);
     fail = true;
-    const failed = await f.message('bypass');
-    await until(() => requests === 2);
-    await Bun.sleep(600);
-    expect(requests).toBe(2);
+    const failed = await f.message('bypass', 'failed held message');
+    await until(() => requests.length === 2, 4000);
+    const next = await f.message('bypass', 'next held message');
+    await until(() => requests.length === 3, 4000);
+    expect(requests[2]).toContain('next held message');
+    expect(requests.filter(text => text.includes('failed held message'))).toHaveLength(1);
     expect(f.bridge.status().messages.find(row => row.id === failed)?.status).toBe('held');
+    expect(f.bridge.status().messages.find(row => row.id === next)?.status).toBe('held');
+    expect(f.desktop.submissions).toHaveLength(0);
   } finally { await client.close(); await f.close(); }
-});
+}, 15000);
 
 test('MCP cancellation leaves policy alone but denies a default-held message', async () => {
   const f = await fixture();

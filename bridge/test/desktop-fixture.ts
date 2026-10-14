@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
-const requestSchema = z.object({ type: z.string(), requestId: z.string().optional(), method: z.string(), params: z.unknown() });
+const requestSchema = z.object({ type: z.string(), requestId: z.string().optional(), method: z.string(), params: z.unknown(), timeoutMs: z.number().optional() });
 
 export async function receiver(state: 'active' | 'idle', dropAcknowledgement = false, endBeforeSteer = false, root = mkdtempSync('/tmp/desktop-test-')) {
   mkdirSync(join(root, 'ipc'), { mode: 0o700 });
@@ -13,8 +13,11 @@ export async function receiver(state: 'active' | 'idle', dropAcknowledgement = f
   const threadId = randomUUID();
   const turnId = randomUUID();
   const submissions: { method: string; params: unknown }[] = [];
+  const requests: z.infer<typeof requestSchema>[] = [];
+  let stalledMethod: string | undefined;
   let permissions: unknown = { approvalPolicy: 'on-request', sandboxPolicy: { type: 'workspaceWrite' } };
   let history: Record<string, unknown> = { turns: [], turnHistory: { kind: 'legacy' } };
+  let submissionReply: Record<string, unknown> | undefined;
   const clients = new Set<net.Socket>();
   const announce = new Set<() => void>();
   const server = net.createServer(socket => {
@@ -40,6 +43,8 @@ export async function receiver(state: 'active' | 'idle', dropAcknowledgement = f
         const size = buffer.readUInt32LE();
         const request = requestSchema.parse(JSON.parse(buffer.subarray(4, 4 + size).toString('utf8')));
         buffer = buffer.subarray(4 + size);
+        requests.push(request);
+        if (request.method === stalledMethod) continue;
         const reply = (result: unknown) => write({ type: 'response', requestId: request.requestId,
           handledByClientId: 'owner', resultType: 'success', result });
         if (request.method === 'initialize') reply({ clientId: 'test-client' });
@@ -58,6 +63,7 @@ export async function receiver(state: 'active' | 'idle', dropAcknowledgement = f
           }
           submissions.push({ method: request.method, params: request.params });
           if (dropAcknowledgement) socket.destroy();
+          else if (submissionReply) write({ type: 'response', requestId: request.requestId, ...submissionReply });
           else reply({ result: state === 'active' ? { turnId } : { turn: { id: turnId } } });
         }
       }
@@ -66,12 +72,15 @@ export async function receiver(state: 'active' | 'idle', dropAcknowledgement = f
   server.listen(path);
   await once(server, 'listening');
   chmodSync(path, 0o600);
-  return { path, threadId, turnId, submissions,
+  return { path, threadId, turnId, submissions, requests,
+    stallAt(method: string) { stalledMethod = method; },
+    connections() { return clients.size; },
     setHistory(value: Record<string, unknown>) { history = { turns: [], turnHistory: { kind: 'legacy' }, ...value }; },
+    setSubmissionReply(value: Record<string, unknown>) { submissionReply = value; },
     setPermissions(value: unknown) { permissions = value; for (const send of announce) send(); },
-    setState(value: 'idle' | 'active') { state = value; for (const send of announce) send(); }, close: async () => {
+    setState(value: 'idle' | 'active') { state = value; for (const send of announce) send(); }, close: async (removeRoot = true) => {
     for (const socket of clients) socket.destroy();
     await new Promise<void>(resolve => server.close(() => resolve()));
-    rmSync(root, { recursive: true });
+    if (removeRoot) rmSync(root, { recursive: true });
   } };
 }

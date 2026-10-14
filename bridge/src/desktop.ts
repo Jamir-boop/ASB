@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { checkSocket, uuid } from './claude';
 import { desktopInputs } from './desktop-input';
+import { DeliveryRefused } from './delivery';
 
 const packetSchema = z.object({
   type: z.string(), requestId: z.string().optional(), sourceClientId: z.string().optional(),
@@ -25,8 +26,6 @@ export type Runtime = { status: 'idle' | 'busy' | 'unknown'; mode: 'prompting' |
 const acceptedSchema = z.object({ result: z.union([
   z.object({ turn: z.object({ id: uuid }) }), z.object({ turnId: uuid }),
 ]) });
-
-class Rejected extends Error {}
 
 function permissionMode(permissions: Snapshot['currentPermissions']): Runtime['mode'] {
   if (!permissions) return 'unknown';
@@ -52,7 +51,7 @@ class DesktopConnection {
   private refreshing = false;
   private dirty = false;
 
-  constructor(path: string, readonly threadId: string, onDisconnect?: () => void) {
+  constructor(path: string, readonly threadId: string, onDisconnect?: () => void, private timeoutMs = 15000) {
     checkSocket(path);
     this.socket = net.createConnection(path);
     this.socket.on('data', chunk => this.read(typeof chunk === 'string' ? Buffer.from(chunk) : chunk));
@@ -70,7 +69,7 @@ class DesktopConnection {
   }
 
   async connectHost() {
-    await once(this.socket, 'connect', { signal: AbortSignal.timeout(5000) });
+    await once(this.socket, 'connect', { signal: AbortSignal.timeout(Math.min(5000, this.timeoutMs)) });
     const initialized = await this.request('initialize', { clientType: 'asb-bridge' }, 0);
     this.clientId = z.object({ clientId: z.string().min(1) }).parse(initialized.result).clientId;
   }
@@ -95,10 +94,10 @@ class DesktopConnection {
     const id = randomUUID();
     const pending = Promise.withResolvers<Packet>();
     this.pending.set(id, pending);
-    const timer = setTimeout(() => pending.reject(new Error('Desktop request timed out; delivery may be unknown')), 15000);
+    const timer = setTimeout(() => pending.reject(new Error('Desktop request timed out; delivery may be unknown')), this.timeoutMs);
     try {
       this.write({ type: 'request', requestId: id, sourceClientId: this.clientId,
-        ...(this.ownerId ? { targetClientId: this.ownerId } : {}), method, params, version, timeoutMs: 12000 });
+        ...(this.ownerId ? { targetClientId: this.ownerId } : {}), method, params, version, timeoutMs: Math.min(12000, this.timeoutMs) });
       return await pending.promise;
     } finally {
       clearTimeout(timer);
@@ -115,7 +114,7 @@ class DesktopConnection {
   private async snapshot() {
     const pending = Promise.withResolvers<Snapshot>();
     this.snapshotResult = pending;
-    const timer = setTimeout(() => pending.reject(new Error('Desktop snapshot timed out')), 10000);
+    const timer = setTimeout(() => pending.reject(new Error('Desktop snapshot timed out')), Math.min(10000, this.timeoutMs));
     try { this.follow(true); return await pending.promise; }
     finally { clearTimeout(timer); this.snapshotResult = undefined; }
   }
@@ -158,7 +157,7 @@ class DesktopConnection {
     for (let attempt = 0; ; attempt++) {
       try { return await this.submitOnce(text, messageId); }
       catch (error) {
-        if (attempt !== 0 || !(error instanceof Rejected)
+        if (attempt !== 0 || !(error instanceof DeliveryRefused)
           || error.message !== `Cannot steer conversation ${this.threadId} because its active turn already ended`) throw error;
       }
     }
@@ -220,7 +219,8 @@ class DesktopConnection {
         } else if (packet.type === 'response' && packet.requestId) {
           const pending = this.pending.get(packet.requestId);
           if (packet.resultType === 'success') pending?.resolve(packet);
-          else pending?.reject(new Rejected(packet.error ?? 'Desktop request rejected'));
+          else if (packet.resultType === 'error') pending?.reject(new DeliveryRefused(packet.error ?? 'Desktop request rejected'));
+          else pending?.reject(new Error('Invalid Desktop response result type'));
         } else if (packet.type === 'broadcast' && packet.method === 'thread-stream-state-changed'
           && packet.sourceClientId === this.ownerId) {
           const params = z.object({ conversationId: z.string(), change: z.object({ type: z.string(), conversationState: z.unknown().optional(),
@@ -255,7 +255,8 @@ class DesktopConnection {
     }
   }
 
-  close() {
+  close(immediate = false) {
+    if (immediate) { this.socket.destroy(new Error('Desktop probe timed out')); return; }
     if (!this.socket.destroyed && this.ownerId) this.follow(false);
     this.socket.end();
     setTimeout(() => this.socket.destroy(), 250).unref();
@@ -282,10 +283,11 @@ export async function readDesktopRuntime(path: string, threadId: string) {
   finally { connection.close(); }
 }
 
-export async function readDesktopCwd(path: string, threadId: string) {
-  const connection = new DesktopConnection(path, threadId);
+export async function readDesktopCwd(path: string, threadId: string, timeoutMs?: number) {
+  const connection = new DesktopConnection(path, threadId, undefined, timeoutMs);
+  const timer = timeoutMs === undefined ? undefined : setTimeout(() => connection.close(true), timeoutMs);
   try { await connection.connect(); return await connection.cwd(); }
-  finally { connection.close(); }
+  finally { clearTimeout(timer); connection.close(timeoutMs !== undefined); }
 }
 
 export async function readDesktopInputs(path: string, threadId: string) {

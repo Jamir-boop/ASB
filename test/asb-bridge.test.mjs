@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { hasOldPlugin, skillState } from '../scripts/asb-bridge.mjs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { codexBunOnPath, hasOldPlugin, skillState } from '../scripts/asb-bridge.mjs';
 
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const SCRIPT = path.join(ROOT, 'scripts/asb-bridge.mjs');
@@ -21,21 +21,34 @@ async function snapshot(directory, prefix = '') {
   }
   return result;
 }
+function runScript(script, args, env, options) {
+  const code = `const { main } = await import(${JSON.stringify(pathToFileURL(script).href)}); try { process.exitCode = await main(process.argv.slice(1), ${JSON.stringify(options)}); } catch (error) { console.error('ASB Bridge failed: ' + error.message); process.exitCode = 1; }`;
+  return spawnSync(process.execPath, ['--input-type=module', '-e', code, ...args], { encoding: 'utf8', env });
+}
 async function fixture(t) {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'asb-bridge-test-'));
   t.after(() => rm(temporary, { recursive: true, force: true }));
-  const home = path.join(temporary, 'home'), bin = path.join(temporary, 'bin'), log = path.join(temporary, 'calls.log');
-  for (const directory of [bin, ...['.codex', '.codex-personal', '.codex-other', '.claude'].map((name) => path.join(home, name))]) await mkdir(directory, { recursive: true });
+  const home = path.join(temporary, 'home'), bin = path.join(temporary, 'bin'), log = path.join(temporary, 'calls.log'), procRoot = path.join(temporary, 'proc');
+  for (const directory of [bin, procRoot, ...['.codex', '.codex-personal', '.codex-other', '.claude'].map((name) => path.join(home, name))]) await mkdir(directory, { recursive: true });
   const codex = path.join(home, '.codex'), personal = path.join(home, '.codex-personal'), claude = path.join(home, '.claude');
   for (const directory of [codex, personal]) await writeFile(path.join(directory, 'config.toml'), '# Synthetic config\n');
   for (const name of ['codex', 'bun', 'claude']) await writeFile(path.join(bin, name), `#!/bin/sh\nprintf '%s|%s|%s\\n' '${name}' "\${CODEX_HOME-}" "$*" >> "$BRIDGE_LOG"\nif [ "\${1-}" = --version ]; then printf '%s\\n' '${name} 2.1.224'; fi\n`, { mode: 0o755 });
-  const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: claude, CODEX_HOME: codex, PATH: `${bin}:/usr/bin:/bin`, BRIDGE_LOG: log };
-  const run = (args, extra = {}) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env: { ...env, ...extra } });
+  const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: claude, CODEX_HOME: codex,
+    XDG_CONFIG_HOME: path.join(home, '.config'), XDG_STATE_HOME: path.join(home, '.local/state'), XDG_DATA_HOME: path.join(home, '.local/share'),
+    XDG_CACHE_HOME: path.join(home, '.cache'), XDG_RUNTIME_DIR: path.join(temporary, 'run'), PATH: `${bin}:/usr/bin:/bin`, BRIDGE_LOG: log };
+  const run = (args, extra = {}, options = {}) => runScript(SCRIPT, args, { ...env, ...extra }, { procRoot, platform: 'linux', ...options });
+  const processRow = async (pid, values, args = ['/usr/bin/codex', 'app-server']) => {
+    const directory = path.join(procRoot, String(pid));
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, 'cmdline'), `${args.join('\0')}\0`);
+    if (values) await writeFile(path.join(directory, 'environ'), `${Object.entries(values).map(([key, value]) => `${key}=${value}`).join('\0')}\0`);
+    return directory;
+  };
   const calls = async () => {
     try { return (await readFile(log, 'utf8')).trim().split('\n').filter(Boolean); }
     catch (error) { if (error.code === 'ENOENT') return []; throw error; }
   };
-  return { temporary, home, bin, log, codex, personal, claude, env, run, calls };
+  return { temporary, home, bin, log, codex, personal, claude, env, procRoot, run, processRow, calls };
 }
 function passed(result) { assert.equal(result.status, 0, result.stderr); }
 async function owned(directory, provider) {
@@ -158,18 +171,30 @@ test('retained old hook trust permits install and does not report the old plugin
 test('missing Bun refuses a Codex install before any target change', async (t) => {
   const f = await fixture(t);
   await rm(path.join(f.bin, 'bun'));
-  const before = await snapshot(f.home), result = f.run(['install', '--codex-home', f.codex, '--claude']);
+  const before = await snapshot(f.home), result = f.run(['install', '--codex-home', f.codex, '--claude'], { PATH: f.bin });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /needs bun on PATH/);
   assert.deepEqual(await f.calls(), []);
   assert.deepEqual(await snapshot(f.home), before);
-  const uninstall = f.run(['uninstall', '--codex-home', f.codex]);
-  assert.equal(uninstall.status, 1);
-  assert.match(uninstall.stderr, /needs bun on PATH/);
-  assert.deepEqual(await f.calls(), []);
-  assert.deepEqual(await snapshot(f.home), before);
   passed(f.run(['install', '--claude']));
   await owned(path.join(f.claude, 'skills/bridge'), 'claude');
+});
+
+test('bridge uninstall works without Bun and still requires Codex', async (t) => {
+  const f = await fixture(t);
+  passed(f.run(['install', '--codex-home', f.codex]));
+  await rm(path.join(f.bin, 'bun'));
+  await rm(f.log);
+  passed(f.run(['uninstall', '--codex-home', f.codex], { PATH: f.bin }));
+  assert.deepEqual(await f.calls(), [`codex|${f.codex}|plugin remove asb-bridge@asb`, `codex|${f.codex}|plugin marketplace remove asb`]);
+  await assert.rejects(lstat(path.join(f.codex, 'skills/bridge')), { code: 'ENOENT' });
+  await rm(path.join(f.bin, 'codex'));
+  await rm(f.log);
+  const before = await snapshot(f.home), refused = f.run(['uninstall', '--codex-home', f.codex], { PATH: f.bin });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /needs codex on PATH/);
+  assert.deepEqual(await f.calls(), []);
+  assert.deepEqual(await snapshot(f.home), before);
 });
 
 test('bridge uninstall removes owned skills and retains message history and foreign skills', async (t) => {
@@ -199,7 +224,8 @@ test('bridge uninstall removes owned skills and retains message history and fore
 test('bridge status reports configuration, version, trust, skill ownership and live receivers read-only', async (t) => {
   const f = await fixture(t);
   passed(f.run(['install', '--codex-home', f.codex, '--claude']));
-  await mkdir(path.join(f.codex, 'plugins/cache/asb/asb-bridge/0.3.0'), { recursive: true });
+  const expectedVersion = JSON.parse(await readFile(path.join(ROOT, 'bridge/.codex-plugin/plugin.json'), 'utf8')).version;
+  await mkdir(path.join(f.codex, 'plugins/cache/asb/asb-bridge', expectedVersion), { recursive: true });
   await mkdir(path.join(f.codex, 'plugin-state/asb-bridge'), { recursive: true });
   await writeFile(path.join(f.codex, 'plugin-state/asb-bridge/task.sqlite'), 'Synthetic state\n');
   await writeFile(path.join(f.codex, 'config.toml'), `[marketplaces.asb]\nsource_type = "local"\nsource = ${JSON.stringify(ROOT)}\n[plugins."asb-bridge@asb"]\nenabled = true\n[hooks.state."asb-bridge@asb:hooks/hooks.json:session_start:0:0"]\n[hooks.state."asb-bridge@asb:hooks/hooks.json:session_end:0:0"]\n`);
@@ -212,7 +238,7 @@ test('bridge status reports configuration, version, trust, skill ownership and l
   passed(result);
   const report = JSON.parse(result.stdout), codex = report.codex.find((item) => item.home === f.codex);
   assert.deepEqual(codex.marketplace, { installed: true, source: ROOT });
-  assert.deepEqual(codex.plugin, { installed: true, enabled: true, versions: ['0.3.0'], version: '0.3.0', expectedVersion: '0.3.0', versionMatches: true });
+  assert.deepEqual(codex.plugin, { installed: true, enabled: true, versions: [expectedVersion], version: expectedVersion, expectedVersion, versionMatches: true });
   assert.deepEqual(codex.hooks, { session_start: true, session_end: true });
   assert.equal(codex.skill, 'ok');
   assert.equal(codex.stateFiles, 1);
@@ -225,6 +251,98 @@ test('bridge status reports configuration, version, trust, skill ownership and l
   assert.deepEqual(report.versions, { bun: 'bun 2.1.224', codex: 'codex 2.1.224' });
   assert.ok((await f.calls()).every((line) => line.endsWith('|--version')));
   assert.deepEqual(await snapshot(f.home), before);
+});
+
+test('bridge status reports Bun on each app-server PATH as true, false or null', async (t) => {
+  const f = await fixture(t), withoutBun = path.join(f.temporary, 'desktop-bin');
+  await mkdir(path.join(withoutBun, 'bun'), { recursive: true });
+  await writeFile(path.join(f.home, '.codex-other/config.toml'), '# Synthetic config\n');
+  await f.processRow(101, { HOME: f.home, PATH: f.bin, SYNTHETIC_SECRET: 'never-print-this' }, ['/usr/bin/codex', '--trace', 'app-server']);
+  await f.processRow(102, { HOME: '/synthetic/other-home', CODEX_HOME: f.personal, PATH: withoutBun });
+  await f.processRow(103, { HOME: f.home, CODEX_HOME: f.codex, PATH: withoutBun }, ['/usr/bin/echo', 'codex', 'app-server']);
+  const before = await snapshot(f.home), result = f.run(['status', '--json']);
+  passed(result);
+  const report = JSON.parse(result.stdout);
+  assert.deepEqual(report.codex.map(({ home, bunOnAppServerPath }) => [home, bunOnAppServerPath]), [
+    [f.codex, true], [path.join(f.home, '.codex-other'), null], [f.personal, false],
+  ]);
+  assert.match(result.stderr, /Warning: .*\.codex-personal: bun is missing from a running Codex app-server PATH/);
+  assert.match(result.stderr, /Codex cannot start or resume tasks/);
+  assert.ok(!`${result.stdout}${result.stderr}`.includes('never-print-this'));
+  assert.deepEqual(await snapshot(f.home), before);
+  const text = f.run(['status']);
+  passed(text);
+  assert.match(text.stdout, /bun on app-server PATH=true/);
+  assert.match(text.stdout, /bun on app-server PATH=false/);
+  assert.match(text.stdout, /bun on app-server PATH=null/);
+  assert.equal(text.stderr, result.stderr);
+});
+
+test('app-server Bun lookup follows executable files and rejects directories and nonexecutables', async (t) => {
+  const f = await fixture(t), bin = path.join(f.temporary, 'desktop-bin');
+  await mkdir(bin);
+  await symlink(path.join(f.bin, 'bun'), path.join(bin, 'bun'));
+  await f.processRow(101, { HOME: f.home, PATH: bin });
+  const check = () => codexBunOnPath(f.codex, { procRoot: f.procRoot, platform: 'linux' });
+  assert.equal(await check(), true);
+  await rm(path.join(bin, 'bun'));
+  await symlink(f.bin, path.join(bin, 'bun'));
+  assert.equal(await check(), false);
+  await rm(path.join(bin, 'bun'));
+  await writeFile(path.join(bin, 'bun'), '#!/bin/sh\n', { mode: 0o644 });
+  assert.equal(await check(), false);
+  await chmod(path.join(bin, 'bun'), 0o755);
+  assert.equal(await check(), true);
+});
+
+test('app-server Bun lookup uses its own working directory for relative and empty PATH entries', async (t) => {
+  const f = await fixture(t), directory = await f.processRow(101, { HOME: f.home, PATH: 'bin' });
+  const check = () => codexBunOnPath(f.codex, { procRoot: f.procRoot, platform: 'linux' });
+  assert.equal(await check(), null);
+  await symlink(f.temporary, path.join(directory, 'cwd'));
+  assert.equal(await check(), true);
+  await writeFile(path.join(directory, 'environ'), `HOME=${f.home}\0PATH=\0`);
+  assert.equal(await check(), false);
+  await rm(path.join(directory, 'cwd'));
+  await symlink(f.bin, path.join(directory, 'cwd'));
+  assert.equal(await check(), true);
+});
+
+test('app-server Bun lookup is conservative with multiple processes and unreadable data', async (t) => {
+  const f = await fixture(t), withoutBun = path.join(f.temporary, 'desktop-bin');
+  await mkdir(withoutBun);
+  await f.processRow(101, { HOME: f.home, PATH: f.bin });
+  const check = () => codexBunOnPath(f.codex, { procRoot: f.procRoot, platform: 'linux' });
+  assert.equal(await check(), true);
+  const unreadable = await f.processRow(102, null);
+  await mkdir(path.join(unreadable, 'environ'));
+  assert.equal(await check(), null);
+  await f.processRow(103, { CODEX_HOME: f.codex, PATH: withoutBun });
+  assert.equal(await check(), false);
+  await f.processRow(103, { CODEX_HOME: f.personal, PATH: withoutBun });
+  assert.equal(await check(), null);
+  await rm(unreadable, { recursive: true });
+  assert.equal(await check(), true);
+  await writeFile(path.join(f.procRoot, '101/environ'), `HOME=${f.home}\0`);
+  assert.equal(await check(), null);
+  assert.equal(await codexBunOnPath(f.codex, { procRoot: path.join(f.temporary, 'missing'), platform: 'linux' }), null);
+  const result = f.run(['status', '--json'], {}, { platform: 'darwin' });
+  passed(result);
+  assert.ok(JSON.parse(result.stdout).codex.every((item) => item.bunOnAppServerPath === null));
+  assert.equal(result.stderr, '');
+});
+
+test('bridge install warns without failure when only the app-server PATH lacks Bun', async (t) => {
+  const f = await fixture(t), withoutBun = path.join(f.temporary, 'desktop-bin');
+  await mkdir(withoutBun);
+  await f.processRow(101, { CODEX_HOME: f.codex, PATH: withoutBun });
+  const result = f.run(['install', '--codex-home', f.codex]);
+  passed(result);
+  await owned(path.join(f.codex, 'skills/bridge'), 'codex');
+  assert.match(result.stdout, /installed/);
+  assert.match(result.stderr, /Warning: .*bun is missing from a running Codex app-server PATH/);
+  assert.ok(result.stderr.includes(`asb bridge uninstall --codex-home '${f.codex}'`));
+  assert.match(result.stderr, /restart Codex/);
 });
 
 test('Codex version checks use a temporary home and remove it after success and failure', async (t) => {
@@ -346,7 +464,7 @@ test('status uses shipped plugin metadata without bridge package.json and missin
   const f = await fixture(t), root = path.join(f.temporary, 'payload');
   await mkdir(path.join(root, 'scripts'), { recursive: true });
   await copyFile(SCRIPT, path.join(root, 'scripts/asb-bridge.mjs'));
-  const run = (args) => spawnSync(process.execPath, [path.join(root, 'scripts/asb-bridge.mjs'), ...args], { encoding: 'utf8', env: f.env });
+  const run = (args) => runScript(path.join(root, 'scripts/asb-bridge.mjs'), args, f.env, { procRoot: f.procRoot, platform: 'linux' });
   const before = await snapshot(f.home), refusal = run(['install', '--codex-home', f.codex]);
   assert.equal(refusal.status, 1);
   assert.match(refusal.stderr, /Missing ASB Bridge runtime file/);

@@ -10,9 +10,11 @@ An external first turn does work. `turn/start` with `input: []` and `toolOutput`
 
 ## Restart recovery
 
-When the Codex app or its app-server restarts, Codex runs `SessionEnd` for every loaded thread, and each receiver stops. Codex then loads the threads again without a turn, so `SessionStart` does not run.
+When the Codex app or its app-server restarts, the old process runs `SessionEnd` for every loaded thread, and each receiver stops. Codex then loads the threads again without a turn, so `SessionStart` does not run.
 
-The bundled MCP server starts when Codex loads a thread. About 1, 5, 15, and 60 seconds after it starts, it runs `hook.js --revive`. The sweep revives a thread only if a receiver ran for it before, no receiver is live now, and the app-server or the desktop app reports the thread as loaded. The receiver gets the thread's current working directory from that read. A generation check in the thread's state database makes sure that concurrent sweeps and a normal `SessionStart` leave one receiver.
+The bundled MCP server starts when Codex loads a thread. About 1, 5, 15, and 60 seconds after it starts, it runs `hook.js --revive`. Each sweep makes one `thread/loaded/list` request with no limit. It probes only loaded app-server threads that had a receiver before and have no live receiver now. It keeps all state files and message history. A generation check makes sure that concurrent sweeps and a normal `SessionStart` leave one receiver.
+
+Desktop IPC has no loaded-thread list. The sweep reads lifecycle metadata once and finds the newest valid `SessionEnd` time in that Codex home. For a thread absent from the app-server list, it probes desktop IPC only when the recorded end is within 30 seconds of that newest end, including the boundary. This permits recovery from the old process's shutdown burst after a restart. A failed app-server list also uses this bounded desktop path. Each desktop probe has a one-second total timeout and closes its socket. Missing or invalid end times, and ends outside the last burst, wait for a normal `SessionStart`. Old state databases still qualify through the app-server list; their desktop path needs a new `SessionEnd`. Beginning a session keeps its last end time so a failed revival can retry at a later sweep. This window limits probes; it does not prove that every eligible desktop thread is loaded.
 
 A fresh thread has no earlier receiver, so it still needs its first turn.
 

@@ -8,6 +8,7 @@ import { deliverToCodex, readCodexInputs, readCodexRuntime, targetSchema, type T
 import { z } from 'zod';
 import { outboundServer, refreshReceiver, sendViaReceiver } from './outbound';
 import { PeerGuard } from './guard';
+import { DeliveryRefused } from './delivery';
 
 type Message = { id: string; peer_id: string; direction: string; text: string; status: string; turn_id: string | null;
   peer_address: string | null; peer_start: string | null; from_mode: string | null; expires_at: number | null; kind: string;
@@ -87,6 +88,9 @@ export class Bridge {
     if (!this.db.query<{ name: string }, []>('PRAGMA table_info(runtime)').all().some(column => column.name === 'updated_at')) {
       this.db.exec('ALTER TABLE runtime ADD COLUMN updated_at INTEGER');
     }
+    if (!this.db.query<{ name: string }, []>('PRAGMA table_info(lifecycle)').all().some(column => column.name === 'ended_at')) {
+      this.db.exec('ALTER TABLE lifecycle ADD COLUMN ended_at INTEGER');
+    }
     if (!this.db.query<{ name: string }, []>('PRAGMA table_info(runtime)').all().some(column => column.name === 'hop_token')) {
       this.db.exec('ALTER TABLE runtime ADD COLUMN hop_token TEXT');
     }
@@ -109,7 +113,7 @@ export class Bridge {
     return this.db.transaction(() => {
       if (expected !== undefined && !this.db.query('SELECT 1 FROM lifecycle WHERE singleton=1 AND generation=?').get(expected)) return undefined;
       const generation = randomUUID();
-      this.db.run('INSERT INTO lifecycle VALUES (1,?,1) ON CONFLICT(singleton) DO UPDATE SET generation=excluded.generation, active=1', [generation]);
+      this.db.run('INSERT INTO lifecycle (singleton,generation,active) VALUES (1,?,1) ON CONFLICT(singleton) DO UPDATE SET generation=excluded.generation, active=1', [generation]);
       this.db.run("UPDATE messages SET status='expired' WHERE status='held'");
       this.db.run("UPDATE idle_requests SET status='expired' WHERE status IN ('waiting','submitting','unknown')");
       this.db.run("UPDATE runtime SET status='unknown',mode='unknown' WHERE singleton=1");
@@ -135,7 +139,7 @@ export class Bridge {
 
   endSession() {
     return this.db.transaction(() => {
-      this.db.run('INSERT INTO lifecycle VALUES (1,?,0) ON CONFLICT(singleton) DO UPDATE SET active=0', [randomUUID()]);
+      this.db.run('INSERT INTO lifecycle (singleton,generation,active,ended_at) VALUES (1,?,0,?) ON CONFLICT(singleton) DO UPDATE SET active=0, ended_at=excluded.ended_at', [randomUUID(), Date.now()]);
       this.db.run("UPDATE idle_requests SET status='expired' WHERE direction='out' AND status IN ('waiting','unknown')");
       return this.db.query<{ pid: number; proc_start: string }, []>('SELECT pid,proc_start FROM receiver WHERE singleton=1').get();
     })();
@@ -597,8 +601,11 @@ export class Bridge {
       const result = await deliverToCodex(this.target(), this.threadId, inputId, text);
       this.db.run('UPDATE messages SET status=?,turn_id=? WHERE id=?', [result.status, result.turnId, message.id]);
       if (message.status === 'held') await this.receipt(message, 'delivered');
-    } catch {
-      this.db.run("UPDATE messages SET status='unknown' WHERE id=?", [message.id]);
+    } catch (error) {
+      if (error instanceof DeliveryRefused) {
+        this.db.run("UPDATE messages SET status='dropped',drop_reason='delivery-refused',awaiting_input=0 WHERE id=?", [message.id]);
+        await this.receipt(message, 'dropped', 'delivery-refused');
+      } else this.db.run("UPDATE messages SET status='unknown' WHERE id=?", [message.id]);
     }
   }
 

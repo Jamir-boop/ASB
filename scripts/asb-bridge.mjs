@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -97,18 +97,58 @@ async function checkRoot(sourceRoot) {
   }
   return root;
 }
-async function executable(name) {
-  for (const directory of (process.env.PATH || '').split(path.delimiter)) {
+async function executable(name, searchPath = process.env.PATH || '', cwd = process.cwd()) {
+  for (const directory of searchPath.split(path.delimiter)) {
     try {
-      const file = path.resolve(directory, name);
+      const file = path.resolve(cwd, directory, name);
       await access(file, constants.X_OK);
-      if ((await lstat(file)).isFile() || (await lstat(file)).isSymbolicLink()) return true;
+      if ((await stat(file)).isFile()) return true;
     } catch (error) { if (!['ENOENT', 'EACCES', 'ENOTDIR'].includes(error.code)) throw error; }
   }
   return false;
 }
-export async function checkDependencies() {
-  for (const name of ['bun', 'codex']) if (!(await executable(name))) throw new Error(`ASB Bridge needs ${name} on PATH.`);
+export async function checkDependencies(names = ['bun', 'codex']) {
+  for (const name of names) if (!(await executable(name))) throw new Error(`ASB Bridge needs ${name} on PATH.`);
+}
+export async function codexBunOnPath(home, options = {}) {
+  if ((options.platform || process.platform) !== 'linux') return null;
+  home = absolute(home);
+  const procRoot = options.procRoot || '/proc';
+  let processes;
+  try { processes = await readdir(procRoot); }
+  catch { return null; }
+  let found = false, unknown = false;
+  for (const pid of processes.filter((name) => /^\d+$/.test(name)).sort()) {
+    const directory = path.join(procRoot, pid);
+    let argv;
+    try { argv = (await readFile(path.join(directory, 'cmdline'), 'utf8')).split('\0'); }
+    catch { continue; }
+    if (path.basename(argv[0]) !== 'codex' || !argv.slice(1).includes('app-server')) continue;
+    const env = {};
+    try {
+      for (const field of (await readFile(path.join(directory, 'environ'), 'utf8')).split('\0')) {
+        const key = field.slice(0, field.indexOf('='));
+        if (['HOME', 'CODEX_HOME', 'PATH'].includes(key)) env[key] = field.slice(key.length + 1);
+      }
+    } catch { unknown = true; continue; }
+    const processHome = env.CODEX_HOME || (path.isAbsolute(env.HOME || '') ? path.join(env.HOME, '.codex') : null);
+    if (!processHome || !path.isAbsolute(processHome)) { unknown = true; continue; }
+    if (path.resolve(processHome) !== home) continue;
+    found = true;
+    if (env.PATH === undefined) { unknown = true; continue; }
+    let cwd = '/';
+    try {
+      if (env.PATH.split(path.delimiter).some((part) => !path.isAbsolute(part))) {
+        cwd = await readlink(path.join(directory, 'cwd'));
+        if (!path.isAbsolute(cwd)) { unknown = true; continue; }
+      }
+      if (!(await executable('bun', env.PATH, cwd))) return false;
+    } catch { unknown = true; }
+  }
+  return found && !unknown ? true : null;
+}
+function warnBun(home) {
+  console.warn(`Warning: ${home}: bun is missing from a running Codex app-server PATH. Codex cannot start or resume tasks. Run asb bridge uninstall --codex-home '${home.replaceAll("'", "'\\''")}', then make bun visible to desktop apps and restart Codex.`);
 }
 export function runCodex(home, args) {
   try { return execFileSync('codex', args, { env: { ...process.env, CODEX_HOME: absolute(home) }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
@@ -185,7 +225,7 @@ export async function install(options = {}) {
   return { codex, claude };
 }
 export async function uninstall(options = {}) {
-  if (options.codexHomes?.length) await checkDependencies();
+  if (options.codexHomes?.length) await checkDependencies(['codex']);
   await checkRoot(options.sourceRoot || ROOT);
   const codex = [];
   for (const home of [...new Set(options.codexHomes || [])]) {
@@ -230,6 +270,7 @@ export async function status(options = {}) {
     codex.push({ home, marketplace: { installed: parsed.has('marketplaces.asb'), source: sourceValue(parsed.get('marketplaces.asb')) },
       plugin: { installed: plugin !== undefined, enabled: plugin?.match(/^\s*enabled\s*=\s*(true|false)\s*(?:#.*)?$/m)?.[1] === 'true', versions, version, expectedVersion, versionMatches: version === expectedVersion },
       hooks, skill: await skillState(path.join(home, 'skills/bridge')), oldPlugin, warning: oldPlugin ? OLD_WARNING : null,
+      bunOnAppServerPath: await codexBunOnPath(home, options),
       stateFiles: (await entries(path.join(home, 'plugin-state/asb-bridge'))).filter((entry) => entry.isFile()).length });
   }
   const claudeHome = absolute(options.claudeHome || defaultClaudeHome());
@@ -245,25 +286,26 @@ export async function status(options = {}) {
   return { codex, claude: { home: claudeHome, detected: Boolean(targets.claudeHome), skill: await skillState(path.join(claudeHome, 'skills/bridge')), version: await toolVersion('claude'), requirement: 'Cross-session messaging needs Claude Code 2.1.224 or later.' },
     liveReceivers, versions: { bun: await toolVersion('bun'), codex: await toolVersion('codex') } };
 }
-export async function main(args = process.argv.slice(2)) {
+export async function main(args = process.argv.slice(2), context = {}) {
   const command = args.shift() || 'status';
   if (command === 'status') {
     if (args.length && (args.length !== 1 || args[0] !== '--json')) throw new Error(USAGE);
-    const result = await status();
+    const result = await status(context);
     if (args[0] === '--json') console.log(JSON.stringify(result));
     else {
       for (const item of result.codex) {
-        console.log(`Codex ${item.home}: marketplace ${item.marketplace.source || 'missing'}; plugin ${item.plugin.installed ? item.plugin.enabled ? 'enabled' : 'disabled' : 'missing'}; version ${item.plugin.version || 'missing'} (${item.plugin.versionMatches ? 'current' : `expected ${item.plugin.expectedVersion}`}); hooks start=${item.hooks.session_start} end=${item.hooks.session_end}; skill ${item.skill}; state files ${item.stateFiles}`);
+        console.log(`Codex ${item.home}: marketplace ${item.marketplace.source || 'missing'}; plugin ${item.plugin.installed ? item.plugin.enabled ? 'enabled' : 'disabled' : 'missing'}; version ${item.plugin.version || 'missing'} (${item.plugin.versionMatches ? 'current' : `expected ${item.plugin.expectedVersion}`}); hooks start=${item.hooks.session_start} end=${item.hooks.session_end}; skill ${item.skill}; state files ${item.stateFiles}; bun on app-server PATH=${item.bunOnAppServerPath}`);
         if (item.warning) console.log(`Warning: ${item.home}: ${item.warning}`);
       }
       console.log(`Claude ${result.claude.home}: skill ${result.claude.skill}; version ${result.claude.version || 'missing'}`);
       console.log(result.claude.requirement);
       console.log(`Live receivers: ${result.liveReceivers}; bun: ${result.versions.bun || 'missing'}; codex: ${result.versions.codex || 'missing'}`);
     }
+    for (const item of result.codex) if (item.bunOnAppServerPath === false) warnBun(item.home);
     return 0;
   }
   if (!['install', 'uninstall'].includes(command)) throw new Error(USAGE);
-  const options = { codexHomes: [] };
+  const options = { ...context, codexHomes: [] };
   let all = false, claude = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--all') all = true;
@@ -274,7 +316,7 @@ export async function main(args = process.argv.slice(2)) {
   }
   if (all && (claude || options.codexHomes.length)) throw new Error(USAGE);
   if (all || (!claude && !options.codexHomes.length)) {
-    const targets = await detectTargets();
+    const targets = await detectTargets(context);
     if (!all) {
       console.log(`Detected Codex homes: ${targets.codexHomes.join(', ') || 'none'}\nDetected Claude home: ${targets.claudeHome || 'none'}\n${USAGE}`);
       return 0;
@@ -285,7 +327,10 @@ export async function main(args = process.argv.slice(2)) {
   let refused = false;
   for (const item of result.codex) {
     if (item.skipped) { console.error(`Warning: ${item.home}: ${item.warning}`); refused = true; }
-    else console.log(`Codex ${item.home}: ${command === 'install' ? 'installed' : `removed; message history stays at ${item.historyKept}`}`);
+    else {
+      console.log(`Codex ${item.home}: ${command === 'install' ? 'installed' : `removed; message history stays at ${item.historyKept}`}`);
+      if (command === 'install' && await codexBunOnPath(item.home, options) === false) warnBun(item.home);
+    }
   }
   if (result.claude) console.log(`Claude ${result.claude.home}: ${command === 'install' ? 'installed' : 'removed'}`);
   if (command === 'install') console.log(NEXT_STEPS);

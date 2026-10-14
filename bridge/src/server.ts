@@ -20,7 +20,7 @@ export function callerThread(meta: Record<string, unknown> | undefined): string 
   if (typeof turn === 'string') { try { turn = JSON.parse(turn); } catch { turn = undefined; } }
   const parsed = z.object({ thread_id: uuid }).safeParse(turn);
   const candidate = parsed.success ? parsed.data.thread_id :
-    meta?.['openai/threadId'] ?? meta?.['openai/thread_id'] ?? meta?.codexThreadId ?? meta?.codex_thread_id ?? meta?.threadId ?? meta?.thread_id;
+    meta?.threadId ?? meta?.thread_id;
   return uuid.parse(candidate);
 }
 
@@ -103,7 +103,8 @@ server.registerTool('inbox', { description: 'Open a dialog the user answers. Use
 let reviving: Bun.Subprocess | undefined;
 const revivals = [1000, 5000, 15000, 60000].map(delay => setTimeout(() => {
   if (reviving?.exitCode === null && reviving.signalCode === null) return;
-  reviving = Bun.spawn([process.execPath, hookPath, '--revive'], { stdin: 'ignore', stdout: 'ignore', stderr: 'inherit', env: process.env });
+  reviving = Bun.spawn([process.execPath, hookPath, '--revive'],
+    { stdin: 'ignore', stdout: 'ignore', stderr: 'inherit', env: process.env });
 }, delay).unref());
 
 server.server.onclose = () => { for (const timer of revivals) clearTimeout(timer); void (async () => { await dialogs?.close(); await bridge?.close(); })()

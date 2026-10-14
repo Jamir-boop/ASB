@@ -135,6 +135,11 @@ try {
       return !!threadId;
     });
   } else threadId = z.object({ thread: z.object({ id: uuid }) }).parse(await rpc('thread/start', { cwd: root })).thread.id;
+  assert(threadId, 'The current thread must have an ID');
+  const loaded = z.object({ data: z.array(uuid), nextCursor: z.string().nullish() })
+    .parse(await rpc('thread/loaded/list', {}));
+  assert(loaded.data.includes(threadId), 'The loaded-thread list must include the current thread');
+  assert(loaded.nextCursor == null, 'An unbounded loaded-thread list must be complete');
   if (peerFirst) {
     assert.equal(requests.length, 0, 'Opening a chat must not call the model');
     assert(!peers(configDir).some(peer => peer.sessionId === threadId), 'Stock SessionStart waits for the first turn');

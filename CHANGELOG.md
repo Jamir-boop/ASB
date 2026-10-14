@@ -8,6 +8,12 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Added `asb bridge status`, `install`, and `uninstall` for selected providers. Installation needs explicit targets or `--all`; without targets it shows usage and changes nothing.
 - Added the on-demand `/bridge` skill for Claude Code and `$bridge` skill for Codex.
 - The root tests now skip TypeScript files, so Bun runs the bridge tests separately.
+- ASB Bridge `0.3.1` checks Bun on the running Codex app-server PATH and warns when it is missing. Recovery is documented; uninstall no longer needs Bun.
+- Definite Codex delivery refusals now drop the message with `delivery-refused`, clear its awaiting mark, and send a receipt. Uncertain outcomes stay `unknown`.
+- Receiver revival uses one loaded-thread list per app-server sweep. Desktop probes use the last session-end burst (a 30-second window) and have a one-second total timeout, also when the loaded list fails.
+- Removed the undocumented bridge target flags from the ASB package installer. Use `asb bridge install` with explicit targets or `--all`.
+- Changed held-message checks from 500 milliseconds to two seconds.
+- Removed four unused MCP thread-ID aliases. Native `x-codex-turn-metadata`, `threadId`, and `thread_id` remain supported.
 
 ## ASB 1.8.1 - 2026-10-13
 

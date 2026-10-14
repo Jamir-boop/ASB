@@ -10,7 +10,7 @@ export class HeldDialogs {
   private timer: ReturnType<typeof setInterval>;
 
   constructor(private bridge: Bridge, private server: McpServer) {
-    this.timer = setInterval(() => this.tick(), 500);
+    this.timer = setInterval(() => this.tick(), 2000);
     this.timer.unref();
   }
 

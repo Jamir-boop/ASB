@@ -6,6 +6,7 @@ import { checkSocket, uuid } from './claude';
 import type { Runtime } from './desktop';
 import type { Inputs } from './desktop-input';
 import { version } from './version';
+import { DeliveryRefused } from './delivery';
 
 const statusSchema = z.object({ type: z.string() });
 const threadSchema = z.object({ id: uuid, status: statusSchema, canAcceptDirectInput: z.boolean().nullable().optional() });
@@ -33,8 +34,8 @@ export class AppServer {
   private refreshing = false;
   private dirty = false;
 
-  constructor(path: string, readonly threadId: string, onDisconnect?: (error: Error) => void) {
-    uuid.parse(threadId);
+  constructor(path: string, readonly threadId?: string, onDisconnect?: (error: Error) => void) {
+    if (threadId !== undefined) uuid.parse(threadId);
     checkSocket(path);
     this.socket = new WebSocket(`ws+unix://${path}:/`, { maxPayload: 256 * 1024 * 1024, perMessageDeflate: false });
     this.socket.on('error', error => { this.disconnectError = error; this.fail(error); });
@@ -70,7 +71,7 @@ export class AppServer {
       return;
     }
     const pending = this.pending.get(String(packet.id));
-    if (packet.error) pending?.reject(new Error(`App-server ${packet.error.code}: ${packet.error.message}`));
+    if (packet.error) pending?.reject(new DeliveryRefused(`App-server ${packet.error.code}: ${packet.error.message}`));
     else pending?.resolve(packet.result);
   }
 
@@ -85,10 +86,14 @@ export class AppServer {
     } finally { clearTimeout(timer); this.pending.delete(id); }
   }
 
-  async connect() {
+  async connectHost() {
     await once(this.socket, 'open', { signal: AbortSignal.timeout(5000) });
     await this.request('initialize', { clientInfo: { name: 'asb-bridge', version }, capabilities: { experimentalApi: true } });
     this.socket.send(JSON.stringify({ method: 'initialized' }));
+  }
+
+  async connect() {
+    await this.connectHost();
     const { thread } = z.object({ thread: threadSchema }).parse(await this.request('thread/read', { threadId: this.threadId }));
     if (thread.id !== this.threadId || thread.status.type === 'notLoaded' || thread.canAcceptDirectInput === false) {
       throw new ThreadUnavailable('This app-server does not own a reachable live thread');
@@ -189,4 +194,15 @@ export async function withAppServer<T>(path: string, threadId: string, operation
   const server = new AppServer(path, threadId);
   try { await server.connect(); return await operation(server); }
   finally { server.close(); }
+}
+
+export async function loadedAppServerThreads(path: string) {
+  const server = new AppServer(path);
+  try {
+    await server.connectHost();
+    const page = z.object({ data: z.array(uuid), nextCursor: z.string().nullish() })
+      .parse(await server.request('thread/loaded/list', {}));
+    if (page.nextCursor) throw new Error('App-server returned a partial loaded-thread list');
+    return new Set(page.data);
+  } finally { server.close(); }
 }

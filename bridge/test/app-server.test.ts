@@ -1,10 +1,22 @@
 import { test, expect } from 'bun:test';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { AppServer, withAppServer } from '../src/app-server';
+import { AppServer, loadedAppServerThreads, withAppServer } from '../src/app-server';
 import { peers } from '../src/claude';
 import { appServer } from './app-server-fixture';
 import { watchCodex } from '../src/codex';
+import { DeliveryRefused } from '../src/delivery';
+
+test('loaded-thread discovery initializes the host without a per-thread read', async () => {
+  const server = await appServer();
+  try {
+    expect(await loadedAppServerThreads(server.path)).toEqual(new Set([server.threadId]));
+    expect(server.requests.map(request => request.method)).toEqual(['initialize', 'thread/loaded/list']);
+    expect(server.requests[1]?.params).toEqual({});
+    server.setLoaded(false);
+    expect(await loadedAppServerThreads(server.path)).toEqual(new Set());
+  } finally { await server.close(); }
+});
 
 test('a CLI session registers without desktop IPC, withdraws at SessionEnd and is revived after a restart', async () => {
   const server = await appServer();
@@ -51,8 +63,9 @@ test('delivery refuses a thread unloaded after preflight without loading it agai
   const server = await appServer();
   try {
     server.unloadOnNextRead();
-    await expect(withAppServer(server.path, server.threadId, client => client.submit(randomUUID(), 'late message')))
-      .rejects.toThrow('Thread is not loaded');
+    const error = await withAppServer(server.path, server.threadId, client => client.submit(randomUUID(), 'late message')).catch(error => error);
+    expect(error).toBeInstanceOf(DeliveryRefused);
+    expect(error.message).toContain('Thread is not loaded');
     expect(server.submissions).toEqual([]);
   } finally { await server.close(); }
 });

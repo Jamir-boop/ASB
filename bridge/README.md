@@ -9,17 +9,23 @@ Claude Code lists and messages its other sessions through its own local registry
 - Stock Codex with its shared local app-server daemon. CLI tasks on the daemon and desktop tasks it owns work. Older desktop tasks use the desktop IPC fallback. CLI sessions started with `--no-daemon` have no inbox. Real-runtime checks cover Codex 0.159.0, 0.159.2, and 0.159.3.
 - macOS or Linux.
 - Claude Code 2.1.224 or later, the first release with [cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging).
-- Bun on your `PATH`.
+- Bun on the PATH of both your terminal and the Codex app.
 
 ## Install
 
 Install the plugin and both usage skills with ASB. Bun must be on your `PATH`.
+
+Codex starts the bridge server with `bun` from the PATH of the Codex app. The server stays `required: true` because the `SessionStart` hook needs it before the first turn. If Codex cannot start Bun, it cannot start or resume tasks. See OpenAI's [required MCP setting](https://learn.chatgpt.com/docs/config-file/config-reference).
+
+To recover, run `asb bridge uninstall --codex-home <home>` for the affected home. Uninstall needs Codex but does not need Bun. Then make Bun visible to desktop apps, for example with a link in `~/.local/bin` on Linux if that directory is on the app's PATH. Restart Codex and install the bridge again.
 
 ```bash
 asb bridge install --codex-home ~/.codex --claude
 ```
 
 Use `asb bridge install --all` for all detected providers. From a source checkout, use `scripts/asb bridge` in place of `asb bridge`. Without a target flag, `asb bridge install` prints the detected targets and usage, and changes nothing.
+
+`asb bridge status` reports `bunOnAppServerPath` for each Codex home: `true`, `false`, or `null`. On Linux, it uses the HOME, CODEX_HOME, and PATH of running `codex ... app-server` processes; without CODEX_HOME, the home is `$HOME/.codex`. It resolves relative PATH entries from that process's working directory. `false` means at least one matching process cannot find an executable Bun file. `true` means all matching processes checked can find it. `null` means no process matches, the platform is not Linux, or process data cannot be read or verified. An unreadable app-server environment can hide its home, so it prevents a `true` result for any home. Status and install print a warning for `false`; the warning does not fail install. This check does not start Bun.
 
 To install only the plugin manually from a local checkout:
 
@@ -32,7 +38,7 @@ The plugin is not in the public Plugin Directory. As of 2026-10-03, OpenAI's [su
 
 Codex ignores plugin hooks until you trust them. Open Plugins > ASB Bridge in Codex, review the two hooks, and trust both. Then restart Codex. After an ASB upgrade, run the install command again with the same targets.
 
-A task registers when its `SessionStart` hook runs, which Codex does on the first turn. A fresh chat with nothing typed stays invisible to Claude. When Codex restarts, it ends every loaded task. A task that registered before registers again without a turn when Codex loads it again. See [STARTUP.md](STARTUP.md).
+A task registers when its `SessionStart` hook runs, which Codex does on the first turn. A fresh chat with nothing typed stays invisible to Claude. When Codex restarts, it ends every loaded task. An app-server task that registered before registers again without a turn when Codex loads it again. Desktop recovery probes registered tasks whose end times are within 30 seconds of the newest valid end in that home; other state waits for `SessionStart`. See [STARTUP.md](STARTUP.md).
 
 ## Usage skills
 
@@ -40,7 +46,7 @@ Type `/bridge` in Claude Code or `$bridge` in Codex to load the usage guide. Bot
 
 ## Check that it works
 
-In the Codex task, ask for the bridge status. The `status` tool reports a `replyAddress` and a `transport` of `app-server` or `desktop`. A `null` address means the receiver is inactive. The receiver starts at the task's first turn, and when Codex loads a task that registered before. If the address stays `null` during a turn, the plugin hooks are not trusted or the `SessionStart` hook failed: check hook trust. No tool restarts the receiver.
+In the Codex task, ask for the bridge status. The `status` tool reports a `replyAddress` and a `transport` of `app-server` or `desktop`. A `null` address means the receiver is inactive. The receiver starts at the task's first turn. Registered app-server tasks can recover when loaded; desktop recovery has the limits in [STARTUP.md](STARTUP.md). If the address stays `null` during a turn, the plugin hooks are not trusted or the `SessionStart` hook failed: check hook trust. No tool restarts the receiver.
 
 In Claude Code, run `/list-agents`. The task appears as `codex-<title>-<suffix>`, or `codex-<directory>-<suffix>` before it has a title. A new task gets its title during its first turn, and the name changes at the end of that turn. Ask Claude to message it.
 

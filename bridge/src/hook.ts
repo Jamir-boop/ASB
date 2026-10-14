@@ -6,7 +6,8 @@ import { Database } from 'bun:sqlite';
 import { z } from 'zod';
 import { Bridge } from './bridge';
 import { peers, privateDirectory, processStart, uuid } from './claude';
-import { discoverTarget, readCodexCwd, watchCodex } from './codex';
+import { appServerSocket, discoverTarget, readCodexCwd, watchCodex } from './codex';
+import { loadedAppServerThreads } from './app-server';
 
 const eventSchema = z.object({ session_id: uuid, cwd: z.string().refine(isAbsolute),
   hook_event_name: z.enum(['SessionStart', 'SessionEnd']), generation: uuid.optional() });
@@ -102,22 +103,40 @@ async function runHook(event: Event) {
 async function revive() {
   let files: string[];
   try { files = readdirSync(stateDir); } catch { return; }
+  let appServerPath: string | undefined;
+  let loaded = new Set<string>();
+  try {
+    const path = appServerSocket(codexHome);
+    loaded = await loadedAppServerThreads(path);
+    appServerPath = path;
+  } catch { /* A failed list still permits the bounded desktop recovery below. */ }
+  const states: { threadId: string; generation: string; endedAt?: number }[] = [];
+  const now = Date.now();
+  let newestEnd = 0;
   for (const file of files) {
     const threadId = uuid.safeParse(file.slice(0, -'.sqlite'.length)).data;
     if (!threadId || file !== `${threadId}.sqlite`) continue;
-    let generation: string | undefined;
     try {
       const db = new Database(join(stateDir, file), { readonly: true });
       try {
-        if (db.query('SELECT 1 FROM transport WHERE singleton=1').get()) {
-          generation = db.query<{ generation: string }, []>('SELECT generation FROM lifecycle WHERE singleton=1').get()?.generation;
+        const lifecycle = db.query<{ generation: string; ended_at?: unknown }, []>('SELECT * FROM lifecycle WHERE singleton=1').get();
+        const end = lifecycle?.ended_at;
+        const endedAt = typeof end === 'number' && Number.isSafeInteger(end) && end > 0 && end <= now ? end : undefined;
+        if (endedAt !== undefined) newestEnd = Math.max(newestEnd, endedAt);
+        if (lifecycle?.generation && db.query('SELECT 1 FROM transport WHERE singleton=1').get()) {
+          states.push({ threadId, generation: lifecycle.generation, endedAt });
         }
       } finally { db.close(); }
     } catch { continue; }
-    if (!generation || await live(threadId)) continue;
+  }
+  for (const { threadId, generation, endedAt } of states) {
+    const inAppServer = loaded.has(threadId);
+    if ((!inAppServer && (endedAt === undefined || endedAt < newestEnd - 30000))
+      || await live(threadId)) continue;
     let event: Event;
     try {
-      const cwd = await readCodexCwd(await discoverTarget(ipcPath, threadId), threadId);
+      const cwd = inAppServer ? await readCodexCwd({ kind: 'app-server', path: appServerPath! }, threadId)
+        : await readCodexCwd({ kind: 'desktop', path: ipcPath }, threadId, 1000);
       event = eventSchema.parse({ session_id: threadId, cwd, hook_event_name: 'SessionStart' });
     } catch { continue; }
     const state = new Bridge(threadId, configDir, stateDir, ipcPath);

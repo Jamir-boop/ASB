@@ -42,7 +42,7 @@ Receipt statuses:
 - `held`: deferred.
 - `denied`: rejected by the receiving user.
 - `expired`: the deadline ended. With `status_detail: "refused"` it means refused.
-- `dropped`: a guard dropped it, with a reason.
+- `dropped`: a guard or a definite delivery refusal dropped it, with a reason. A Codex error reply gives `delivery-refused`.
 - `delivered`: a held message was released. Ordinary acceptance sends no receipt.
 
 A socket write and a receipt are both separate from a model reply.
@@ -56,6 +56,7 @@ A socket write and a receipt are both separate from a model reply.
 | Reachable without a manual tool call | yes | `SessionStart` on the first turn registers the receiver. | app-server, native |
 | Untouched chat, Claude starts the first turn | no | Codex runs `SessionStart` inside the first turn. See [STARTUP.md](STARTUP.md). | native `--peer-first` |
 | Resume or process change | yes | The task keeps its ID and gets a new verified process and socket. | hook |
+| Receiver revival | partial | One app-server loaded-thread list per sweep. Desktop IPC has no list: only a valid recorded end within 30 seconds of the newest end in that home permits a one-second total probe. A list error permits this bounded fallback. Old desktop state without an end time waits for `SessionStart`. | revive |
 | Stale record, ambiguous ID | yes | The bridge discards the record or refuses the send. | trust, bridge |
 | Collision recovery, explicit socket path | yes | The recorded path is used. | trust |
 | Names | partial | `codex-<title>-<suffix>` from the Codex task title, or `codex-<directory>-<suffix>` without a title, lengthened when another live peer holds the name. A long title keeps its first 22 characters. A long Codex folder name keeps its first and last part. The name refreshes when the task status changes. Missing: `/rename`, `--name`, `nameSource`, `rename` frame. | protocol |
@@ -76,7 +77,7 @@ A socket write and a receipt are both separate from a model reply.
 | Attachments and `SendFile` | no | The bridge refuses nonempty `file_attachments` with a reason. Claude gates `SendFile` on `tengu_send_file`, default off. | protocol |
 | Origin and permissions | yes | Peer marking, `from-session`, reply address. Peer text grants no approval. | protocol |
 | Input ID | yes | Random per delivery. A sender cannot claim an existing user input through `msg_id`. | protocol |
-| Lost confirmation | yes | `unknown`, no retry. `accepted` does not prove a reply. | desktop |
+| Lost confirmation | yes | `unknown`, no retry. `accepted` does not prove a reply. | protocol, app-server, desktop |
 | `priority` `now` and `later` | yes | Accepted and handled as `next`. Claude's own sender uses `next`. | protocol |
 | `session_id` on any frame | yes | A frame for another session is dropped, text or control. Claude's own control frames carry no `session_id`. | protocol |
 | Session ID change after `/clear` | yes | Per PeterSR and Claude's `regenerateSessionId`, a Claude process keeps its PID and start time and gets a new `sessionId`. Stored sends, idle requests, and receipts resolve by socket address and start time. Not reproduced against a live Claude. | protocol |
@@ -110,7 +111,7 @@ A socket write and a receipt are both separate from a model reply.
 | Receiver repeats | yes | The same last text from one sender within 30 seconds is dropped. IDs are deduplicated permanently. | protocol |
 | Receiver rate | yes | Same budget, checked at delivery and at hold release. | protocol |
 | Hop chains | yes | Discard at ten own tokens or more than 28 entries. Outgoing frames append the own token, up to 32. The chain continues from the last confirmed peer input and resets on user input. | protocol, app-server, desktop |
-| 50 unread accepted | yes | Only a native input ID frees a slot. Overflow drops with `queue-full`. | protocol |
+| 50 unread accepted | yes | A native input ID or a definite delivery refusal frees a slot. Overflow drops with `queue-full`. | protocol |
 | Receipt handling | partial | The bridge correlates reason, drop reason, and IDs, and ignores late receipts. Repeated receipts are not summarized. | protocol |
 
 ### Idle subscriptions

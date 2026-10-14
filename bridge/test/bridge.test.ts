@@ -12,7 +12,7 @@ import { Bridge } from '../src/bridge';
 import { peers } from '../src/claude';
 import { Database } from 'bun:sqlite';
 
-test('MCP binds state to caller metadata and rejects a different task', async () => {
+test('MCP accepts supported caller metadata and rejects unused aliases and a different task', async () => {
   const root = mkdtempSync(join(tmpdir(), 'uds-mcp-'));
   const client = new Client({ name: 'test', version: '1.0.0' });
   try {
@@ -22,11 +22,20 @@ test('MCP binds state to caller metadata and rejects a different task', async ()
     const missing = await client.callTool({ name: 'status', arguments: {} });
     expect(missing.isError).toBe(true);
     const id = randomUUID();
-    const valid = await client.callTool({ name: 'status', arguments: {},
-      _meta: { 'x-codex-turn-metadata': JSON.stringify({ thread_id: id }) } });
-    expect(valid.isError).not.toBe(true);
-    const body = z.object({ content: z.array(z.object({ type: z.literal('text'), text: z.string() })) }).parse(valid);
-    expect(z.object({ threadId: z.uuid() }).parse(JSON.parse(body.content[0]?.text ?? '')).threadId).toBe(id);
+    for (const key of ['openai/threadId', 'openai/thread_id', 'codexThreadId', 'codex_thread_id']) {
+      const rejected = await client.callTool({ name: 'status', arguments: {}, _meta: { [key]: id } });
+      expect(rejected.isError).toBe(true);
+    }
+    for (const meta of [
+      { 'x-codex-turn-metadata': JSON.stringify({ thread_id: id }) },
+      { 'x-codex-turn-metadata': { thread_id: id } },
+      { threadId: id }, { thread_id: id },
+    ]) {
+      const valid = await client.callTool({ name: 'status', arguments: {}, _meta: meta });
+      expect(valid.isError).not.toBe(true);
+      const body = z.object({ content: z.array(z.object({ type: z.literal('text'), text: z.string() })) }).parse(valid);
+      expect(z.object({ threadId: z.uuid() }).parse(JSON.parse(body.content[0]?.text ?? '')).threadId).toBe(id);
+    }
     const foreign = await client.callTool({ name: 'status', arguments: {}, _meta: { threadId: randomUUID() } });
     expect(foreign.isError).toBe(true);
   } finally {
