@@ -11,6 +11,7 @@ import local.asb.companion.notify.diff
 import local.asb.companion.notify.mergeActionBaseline
 import local.asb.companion.notify.notificationId
 import local.asb.companion.notify.notificationTag
+import local.asb.companion.notify.shouldPost
 import local.asb.companion.notify.update
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -42,6 +43,23 @@ class NotificationActionsTest {
         val after = mergeActionBaseline(before, limited.copy(completionAttention = false), 1001)!!
         assertEquals(BIT_FAILED, after["other"])
         assertTrue(diff(after, listOf(limited.copy(limitResetsAtMs = 0)), 2000).isEmpty())
+    }
+
+    @Test fun actionMergeNeverAddsABit() {
+        val old = mapOf("row" to BIT_DONE)
+        val grown = Thread(id = "row", completionAttention = true, failedAttention = true, questionAttention = true)
+        val merged = mergeActionBaseline(old, grown, 1000)!!
+        assertEquals(BIT_DONE, merged["row"])
+        assertEquals(listOf(BIT_INPUT, BIT_FAILED), diff(merged, listOf(grown), 1001).map { it.kind })
+        assertEquals(0, mergeActionBaseline(emptyMap(), grown, 1000)!!["row"])
+        val limited = grown.copy(limitResetsAtMs = 2000)
+        assertEquals(BIT_DONE, mergeActionBaseline(old, limited, 1000)!!["row"])
+    }
+
+    @Test fun manualCheckPostsWhileTheAppIsResumed() {
+        assertTrue(shouldPost(manual = true, resumed = true))
+        assertTrue(shouldPost(manual = false, resumed = false))
+        assertFalse(shouldPost(manual = false, resumed = true))
     }
 
     @Test fun stableIdsKeepHashCollisionsSeparateByTag() {

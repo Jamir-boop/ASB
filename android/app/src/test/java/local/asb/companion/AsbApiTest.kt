@@ -109,6 +109,25 @@ class AsbApiTest {
         assertEquals(Dashboard(), AsbJson.decodeFromString<Dashboard>("{}"))
     }
 
+    @Test fun fractionalDashboardTimesDecode() = runBlocking {
+        server.enqueue(MockResponse().setBody("""{"generatedAtMs":1792106050999.9,"threads":[""" +
+            """{"id":"one","updatedAtMs":1792106050744.051,"limitResetsAtMs":1792109650000.5},""" +
+            """{"id":"two","updatedAtMs":1792106050744}],"messages":[{"from":"one","to":"two","atMs":1792106050500.5}]}"""))
+        val board = (api().dashboard() as DashboardResult.Fetched).dashboard
+        assertEquals(1792106050999L, board.generatedAtMs)
+        assertEquals(listOf(1792106050744L, 1792106050744L), board.threads.map { it.updatedAtMs })
+        assertEquals(1792109650000L, board.threads.first().limitResetsAtMs)
+        assertEquals(1792106050500L, board.messages.single().atMs)
+    }
+
+    @Test fun invalidActionInputIsAnAsbErrorWithoutARequest() = runBlocking {
+        for ((id, action, body) in listOf(Triple("", "open", "{}"), Triple(".", "open", "{}"), Triple("..", "open", "{}"),
+            Triple("one", "delete", "{}"), Triple("one", "open", "[]"), Triple("one", "open", "not JSON"))) {
+            assertTrue(failure { api().action(id, action, body) } is AsbError.Server)
+        }
+        assertEquals(0, server.requestCount)
+    }
+
     @Test fun pairSendsNoBearerAndValidatesReply() = runBlocking {
         val info = PairingInfo("127.0.0.1", server.port, fingerprint, "c".repeat(27), "Test PC")
         server.enqueue(MockResponse().setBody(
@@ -128,7 +147,7 @@ class AsbApiTest {
         server.enqueue(MockResponse().setBody("""{
             "threads":[{"id":"one","limitResetsAtMs":1780000000000}],
             "messages":[null,42,{"from":"a","to":"b","atMs":"1"},
-                {"from":"a","to":"b","atMs":1.5},{"from":"a","to":"b","atMs":1.0}]
+                {"from":"a","to":"b","atMs":1e100000},{"from":"a","to":"b","atMs":1.5}]
         }"""))
         val result = api().dashboard() as DashboardResult.Fetched
         assertEquals("one", result.dashboard.threads.single().id)

@@ -26,8 +26,9 @@ internal fun actionOpened(reply: JsonObject): Boolean = (reply["opened"] as? Jso
     !it.isString && it.booleanOrNull == true
 } == true
 
+// A merge may only clear bits: a bit that the action reply adds was never notified.
 internal fun mergeActionBaseline(baseline: Map<String, Int>?, row: Thread, nowMs: Long): Map<String, Int>? =
-    baseline?.let { it + update(it, listOf(row), nowMs) }
+    baseline?.let { it + (row.id to ((it[row.id] ?: 0) and update(it, listOf(row), nowMs).getValue(row.id))) }
 
 class ActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {

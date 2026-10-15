@@ -10,6 +10,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.withLock
@@ -19,6 +20,9 @@ import local.asb.companion.AsbApp
 import local.asb.companion.data.AsbJson
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.DashboardResult
+
+// A manual check is pressed inside the app, so it must post even while the app is resumed.
+internal fun shouldPost(manual: Boolean, resumed: Boolean): Boolean = manual || !resumed
 
 class CheckWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
     override suspend fun doWork(): Result {
@@ -35,7 +39,7 @@ class CheckWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
                         if (app.store.token == token && !app.store.revoked) {
                             val baseline = app.store.loadBaselineIfPaired(token)
                             val nowMs = System.currentTimeMillis()
-                            if (!app.resumed) app.notifier.post(diff(baseline, reply.dashboard.threads, nowMs))
+                            if (shouldPost(inputData.getBoolean("manual", false), app.resumed)) app.notifier.post(diff(baseline, reply.dashboard.threads, nowMs))
                             app.store.saveBaselineIfPaired(token,
                                 AsbJson.encodeToString(update(baseline, reply.dashboard.threads, nowMs)))
                         }
@@ -66,7 +70,7 @@ class CheckWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
 
         fun checkNow(context: Context) {
             WorkManager.getInstance(context).enqueueUniqueWork("asb-check-now", ExistingWorkPolicy.KEEP,
-                OneTimeWorkRequestBuilder<CheckWorker>().build())
+                OneTimeWorkRequestBuilder<CheckWorker>().setInputData(workDataOf("manual" to true)).build())
         }
     }
 }

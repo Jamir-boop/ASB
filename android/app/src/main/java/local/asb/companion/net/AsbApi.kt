@@ -83,10 +83,11 @@ class AsbApi(
     }
 
     suspend fun action(id: String, action: String, body: String = "{}"): JsonObject {
-        require(id.isNotEmpty() && id != "." && id != "..") { "Invalid session ID" }
-        require(action in setOf("open", "mark-read", "mark-unread", "pin", "unpin", "move-pin",
-            "discard-result", "keep-result", "drawer-in", "drawer-out")) { "Invalid ASB action" }
-        require(AsbJson.parseToJsonElement(body) is JsonObject) { "Invalid action body" }
+        if (id.isEmpty() || id == "." || id == "..") throw AsbError.Server("Invalid session ID.")
+        if (action !in setOf("open", "mark-read", "mark-unread", "pin", "unpin", "move-pin",
+            "discard-result", "keep-result", "drawer-in", "drawer-out")) throw AsbError.Server("Invalid ASB action.")
+        val parsed = try { AsbJson.parseToJsonElement(body) } catch (_: SerializationException) { null }
+        if (parsed !is JsonObject) throw AsbError.Server("Invalid action body.")
         return decode<JsonObject>(request("threads", id, action, body = body).body)
     }
 

@@ -3,7 +3,9 @@ package local.asb.companion
 import local.asb.companion.data.AsbJson
 import local.asb.companion.data.Dashboard
 import local.asb.companion.data.Message
+import kotlinx.serialization.SerializationException
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -59,10 +61,39 @@ class ModelsTest {
         }
     }
 
-    @Test fun fractionalAndOutOfRangeTimestampsAreDroppedWithoutRounding() {
-        for (value in listOf("1.5", "1e-1", "1.0000000000000000000000000000000001",
-            "9223372036854775808", "-9223372036854775809", "9223372036854775807.1", "1e100000", "1e-100000")) {
+    @Test fun fractionalTimestampsAreFlooredAndOutOfRangeOnesAreDropped() {
+        val floored = mapOf("1.5" to 1L, "1e-1" to 0L, "-1.5" to -2L, "1e-100000" to 0L,
+            "1.0000000000000000000000000000000001" to 1L, "1792106050744.051" to 1792106050744L)
+        for ((value, expected) in floored) {
+            assertEquals(value, expected, messages("""[{"from":"a","to":"b","atMs":$value}]""").single().atMs)
+        }
+        for (value in listOf("9223372036854775808", "-9223372036854775809", "9223372036854775807.1", "1e100000")) {
             assertTrue(value, messages("""[{"from":"a","to":"b","atMs":$value}]""").isEmpty())
+        }
+    }
+
+    @Test fun fractionalDashboardTimesDecodeAsFlooredMilliseconds() {
+        val board = AsbJson.decodeFromString<Dashboard>("""{
+            "generatedAtMs":1792106050999.9,
+            "threads":[{"id":"one","updatedAtMs":1792106050744.051,"workingSinceMs":1792106040000.5,
+                "failedAtMs":1792106030000.25,"completionAtMs":1792106020000.75,"limitResetsAtMs":1792109650000.5},
+                {"id":"two","updatedAtMs":1792106050744}],
+            "messages":[{"from":"one","to":"two","atMs":1792106050500.999}]
+        }""")
+        assertEquals(1792106050999L, board.generatedAtMs)
+        val one = board.threads.first()
+        assertEquals(listOf(1792106050744L, 1792106040000L, 1792106030000L, 1792106020000L, 1792109650000L),
+            listOf(one.updatedAtMs, one.workingSinceMs, one.failedAtMs, one.completionAtMs, one.limitResetsAtMs))
+        assertEquals(1792106050744L, board.threads.last().updatedAtMs)
+        assertEquals(0L, board.threads.last().failedAtMs)
+        assertEquals(listOf(Message("one", "two", 1792106050500)), board.messages)
+    }
+
+    @Test fun nonNumericThreadTimesStillFail() {
+        for (value in listOf("null", "true", "\"1\"", "[]", "{}", "1e100000")) {
+            assertThrows(value, SerializationException::class.java) {
+                AsbJson.decodeFromString<Dashboard>("""{"threads":[{"id":"one","updatedAtMs":$value}]}""")
+            }
         }
     }
 
