@@ -19,7 +19,7 @@ export const RUNTIME_FILES = [
   'assets/icons/README.md', 'assets/icons/ASB-disc-provenance.md',
   'src/switchboard.mjs', 'src/app-sources.mjs', 'src/asb-server.mjs', 'src/dashboard-snapshot.mjs', 'src/local-http.mjs', 'src/session-opener.mjs',
   'src/codex-data.mjs', 'src/claude-data.mjs', 'src/claude-remote-data.mjs', 'src/insights.mjs', 'src/data-cache.mjs',
-  'src/thread-classification.mjs',
+  'src/thread-classification.mjs', 'src/phone-gateway.mjs',
   '.agents/plugins/marketplace.json',
   'bridge/.codex-plugin/plugin.json', 'bridge/.mcp.json', 'bridge/hooks/hooks.json',
   'bridge/dist/server.js', 'bridge/dist/hook.js', 'bridge/LICENSE',
