@@ -124,7 +124,7 @@ All ASB clients share this attention and pin state. Filters do not limit what th
 
 Select the toolbar settings button to open **Preferences**. It is one separate native window. You can still use the main window. Selecting the button again raises the same Preferences window. Closing Preferences keeps ASB running and keeps form edits for the next open.
 
-Use **Sessions** for app and state filters, archived sessions, Show app pills, Persistent unread, search, and narrow-window Refresh. Use **Appearance** for Compact or Comfortable, column width, and colors. Use **Profiles** to add or edit app sources. A wide window has navigation on the left; a narrow window has tabs above the page.
+Use **Sessions** for app and state filters, archived sessions, Show app pills, Persistent unread, search, and narrow-window Refresh. Use **Appearance** for Compact or Comfortable, column width, and colors. Use **Profiles** to add or edit app sources. Use **Phone** for the optional Android companion. A wide window has navigation on the left; a narrow window has tabs above the page.
 
 ASB uses dark mode in its main and Preferences windows. In **Appearance**, **GNOME colors** uses your current background, text, and accent colors. **Custom colors** lets you set background, text, accent, muted text, and divider colors. Divider color has no contrast limit. Changing a color selects **Custom colors**. Select **Apply theme** to check the dark background and text contrast, apply the colors to both windows, and save them for the next start. A validation or save error keeps the previous theme. **Reset to GNOME** removes the custom theme and resets the pickers. ASB does not change global GNOME settings.
 
@@ -134,8 +134,10 @@ ASB uses dark mode in its main and Preferences windows. In **Appearance**, **GNO
 | `$XDG_CONFIG_HOME/asb/layout.json` | Column width, selected view, and Show app pills. |
 | `$XDG_CONFIG_HOME/asb/theme.json` | Custom colors. |
 | `$XDG_CONFIG_HOME/asb/sources.json` | App-source names, colors, dot visibility, folders, launchers, and enabled flags. |
+| `$XDG_CONFIG_HOME/asb/phone.json` | Phone access on or off, address, port, and paired phones. Each phone has an ID, a name, times, and the SHA-256 of its token. |
+| `$XDG_CONFIG_HOME/asb/phone-tls/` | The phone certificate (`cert.pem`) and its private key (`key.pem`). |
 
-With no XDG override, state uses `~/.local/state` and config uses `~/.config`. An empty `XDG_CONFIG_HOME` also uses `~/.config`. A width-only layout file loads Compact. Reset width keeps the selected view. The attention and source settings files have owner-only access. When ASB cannot use `pending.json` in full, it shows the Pending state warning and moves the old file to `pending.json.bad` before the first save. An older `.bad` file is replaced. The same rule applies to `sources.json` (`sources.json.bad`) before the next source update or remove. The warning that ASB cannot save Pending state clears after the next good save.
+With no XDG override, state uses `~/.local/state` and config uses `~/.config`. An empty `XDG_CONFIG_HOME` also uses `~/.config`. A width-only layout file loads Compact. Reset width keeps the selected view. The attention, source, and phone settings files have owner-only access. When ASB cannot use `pending.json` in full, it shows the Pending state warning and moves the old file to `pending.json.bad` before the first save. An older `.bad` file is replaced. The same rule applies to `sources.json` (`sources.json.bad`) before the next source update or remove. The warning that ASB cannot save Pending state clears after the next good save.
 
 The application ID is `local.asb.AgentSwitchBoard`. Per-user installation registers only ASB's own launcher and icon. It creates no auto-start entry. See [icon provenance](assets/icons/ASB-disc-provenance.md).
 
@@ -163,6 +165,22 @@ When an app has multiple registered sources, a Soft dot appears at the lower-lef
 
 Choose **Profile color** in the source editor, then **Save**. The presets are Slate blue (`#8296b4`), Clay (`#b28f80`), Plum (`#a28caa`), and Sage (`#899e91`). ASB saves any valid six-digit hex color, including dark colors. The display can lighten the marker to keep 3:1 contrast without changing the saved color. A successful save shows **Saved**; an error keeps the form for correction. Old source settings get a stable default color and show the dot. Color identifies the source only; it does not change state, unread marks, chat identity, or original app styles.
 
+## Phone access
+
+Open **Phone** in Preferences to use the optional ASB Android app. Phone access is off by default. See [the Android guide](android/README.md) to build and install the app.
+
+| Field | Select |
+| --- | --- |
+| Allow phone access | Turn phone access on or off. Phones on your network can see your sessions and use ASB actions after pairing. |
+| Address | One private IPv4 address of this PC, with its interface name. |
+| Port | The phone port, from 1024 to 65535. The default is `4630`. It must be different from the ASB port. |
+
+Select **Apply** to save and start or stop phone access. The page then shows `Running at https://<address>:<port>` or an error. When the address is not on the PC now (for example after a Wi-Fi change), phone access stays off and the page shows an error. Choose another address, then select **Apply**. The page also shows the certificate fingerprint in groups of four characters. The fingerprint does not change when you change the address or port.
+
+To pair a phone, select **Pair a phone**. Scan the QR code with the ASB app. The code works once and ends in 10 minutes. Eight wrong codes also end it. Compare the fingerprint on the phone with the fingerprint in Preferences. When the phone is paired, the page shows **Paired:** and the phone name. Without `python3-qrcode`, the page shows the pairing link with **Copy link**; paste the link in the app. ASB keeps up to eight paired phones.
+
+**Paired phones** lists each phone with its pairing date and last-seen time. **Remove** removes that phone at once. The phone then shows that it was removed. To stop all phone access, clear **Allow phone access** and select **Apply**.
+
 ## Start and stop
 
 Installed packages launch with `asb` or the ASB Applications entry. The per-user command `~/.local/bin/asb` starts the shipped `scripts/asb`. If the recorded Node.js is not usable, `scripts/asb` tries `~/.local/bin/node`, `/usr/local/bin/node`, then `/usr/bin/node`, and prints a message if none is usable. ASB appends `/usr/local/bin:/usr/bin:/bin` to the caller's `PATH`, so apps started from ASB keep the caller's `PATH` order. From source:
@@ -171,9 +189,23 @@ Installed packages launch with `asb` or the ASB Applications entry. The per-user
 npm run desktop
 ```
 
-The initial window is about 420×900 pixels. Closing it stops the backend that the launcher started. An icon registration error stays visible, but the window still opens. A source run keeps an installed GNOME entry and reports the conflict. It replaces a source-run entry, including one from another checkout. A busy port produces an error; ASB does not attach to another server. Use `PORT=4630 npm run desktop` to select a different port.
+The initial window is about 420×900 pixels. Closing it stops the backend that the launcher started. An icon registration error stays visible, but the window still opens. A source run keeps an installed GNOME entry and reports the conflict. It replaces a source-run entry, including one from another checkout. A busy port produces an error. ASB attaches only to its own running user service (see below), not to another server. Use `PORT=4729 npm run desktop` to select a different port.
 
-The optional browser view starts with `npm start` at [http://127.0.0.1:4629/](http://127.0.0.1:4629/). Both modes bind only to `127.0.0.1`. `HOST` does not change the address. The browser view has no Drawer pill and no drawer actions.
+The optional browser view starts with `npm start` at [http://127.0.0.1:4629/](http://127.0.0.1:4629/). Both modes bind only to `127.0.0.1`. `HOST` does not change the address. `npm start` does not start phone access.
+
+ASB uses two ports. The ASB server uses `4629` on `127.0.0.1`, or the `PORT` value. Phone access uses `4630` by default on the address that you choose in Preferences > Phone.
+
+### User service
+
+The optional `asb.service` systemd user service runs the ASB server and phone access without the window. Phones then stay connected when you close the window. From a source checkout, use `scripts/asb service` in place of `asb service`.
+
+| Command | Effect |
+| --- | --- |
+| `asb service install` | Write `~/.config/systemd/user/asb.service`, then enable and start it. |
+| `asb service uninstall` | Stop and disable the service, then remove the unit file. |
+| `asb service status` | Show the service state and whether its runtime file is valid. |
+
+The service starts with the graphical session and restarts after a failure. Apps that ASB opened stay open when the service stops. While the service runs, `asb` attaches to it: it opens only the window and uses the service's port. Closing the window does not stop the service. An ASB `1.8.1` or older window cannot attach and reports a port conflict. After you install a new ASB package or move the checkout, run `asb service install` again to point the service to it. The user service needs Linux with systemd. The browser view has no Drawer pill and no drawer actions.
 
 The unreleased Rust and Qt frontends were removed after evaluation. The normal
 launcher and installers use Python at ASB `1.8.1`. Archived [Rust results](docs/benchmarks/python-rust-2026-10-12.md)

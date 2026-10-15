@@ -18,7 +18,7 @@ ASB (Agent Switch Board) is a local session switcher and monitor. It reads exist
 
 ## Operating Context
 
-The native window can be a narrow sidebar or a wide desktop window. A local Node.js backend supplies the list through `127.0.0.1`. Native and web clients refresh every two seconds while any unarchived root session is Working, otherwise every five seconds. This rule uses the complete list before filters and does not depend on ASB focus. Local source-change events wake a read. Reads do not overlap. A healthy source watcher permits reuse of a clean snapshot for up to five seconds; failed watches keep polling as a fallback. Successful native session actions request a normal queued refresh; Discard still validates current source state before arming. Native rows and bounded column containers are reused across filters. The native client skips unchanged cached text and action updates. The browser reuses rows by chat ID and its visible groups. Both clients use conditional dashboard reads; a `304` skips list updates, while browser age labels update once a minute. First load and source writes can exceed this cadence.
+The native window can be a narrow sidebar or a wide desktop window. A local Node.js backend supplies the list through `127.0.0.1`. An optional user service can run this backend without the window. An optional Android companion shows the same list on a paired phone over the local network. It uses the off-by-default phone gateway with pinned TLS. The phone can open a chat on the PC and use the row actions. Native and web clients refresh every two seconds while any unarchived root session is Working, otherwise every five seconds. This rule uses the complete list before filters and does not depend on ASB focus. Local source-change events wake a read. Reads do not overlap. A healthy source watcher permits reuse of a clean snapshot for up to five seconds; failed watches keep polling as a fallback. Successful native session actions request a normal queued refresh; Discard still validates current source state before arming. Native rows and bounded column containers are reused across filters. The native client skips unchanged cached text and action updates. The browser reuses rows by chat ID and its visible groups. Both clients use conditional dashboard reads; a `304` skips list updates, while browser age labels update once a minute. First load and source writes can exceed this cadence.
 
 ## Capabilities and Constraints
 
@@ -43,7 +43,7 @@ The native window can be a narrow sidebar or a wide desktop window. A local Node
 - When a usage limit stops a session, its card is greyed out and shows **Resets in** with a countdown. It is not Pending. At the reset it returns to normal at once.
 - A message between two sessions shows as a short accent light from the sender card to the receiver card. ASB reads only who sent to whom and when. It never reads or shows message text.
 - Force dark mode only in ASB. Use GNOME semantic colors by default. Validate, save, apply, and reset custom colors in both the main and Preferences windows without changing global GNOME settings.
-- ASB has no execution client, model calls, quota cards, token cards, telemetry, notifications, or review jobs.
+- ASB has no execution client, model calls, quota cards, token cards, telemetry, or review jobs. The desktop has no notifications. The Android companion has phone notifications for Done, Failed, and Needs input.
 
 ## Brand Commitments
 

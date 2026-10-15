@@ -20,9 +20,25 @@ src/switchboard.mjs
   -> src/claude-data.mjs, Claude Desktop Code reader
   -> src/insights.mjs, root grouping and normalization
   -> PendingTracker, ASB attention and pin state
+
+scripts/asb-service.mjs run (optional asb.service systemd user service)
+  -> src/switchboard.mjs, loopback HTTP server in service mode
+  -> src/phone-gateway.mjs, optional LAN HTTPS listener for the Android app
+  -> $XDG_RUNTIME_DIR/asb/service.json, port and source token for the window
+
+scripts/asb-desktop.mjs with a running service (attach mode)
+  -> scripts/asb-native.py only, with the service URL and source token
+
+android/ (Android companion)
+  -> HTTPS with a pinned certificate to src/phone-gateway.mjs
+       -> allowlisted proxy to the loopback ASB server
 ```
 
-The launcher creates its own server and Python child. It stops them when the window closes or Node emits the launcher's exit event, including normal and fatal JavaScript exits. SIGKILL or a native process abort can bypass this cleanup. An icon registration error stays visible and does not prevent the native window from opening. Launching from source (`npm run desktop` or `scripts/asb`) keeps an installed desktop entry and reports the conflict. It replaces a source-run entry, including one from another checkout. A port conflict is an error. It does not attach to a process already on the port. The server binds only to `127.0.0.1`; `HOST` cannot change that. The default port is `4629`. The launcher creates one random app source token for each run. It gives the token to the server and to the window through `ASB_SOURCE_TOKEN`.
+The launcher creates its own server and Python child. It stops them when the window closes or Node emits the launcher's exit event, including normal and fatal JavaScript exits. SIGKILL or a native process abort can bypass this cleanup. An icon registration error stays visible and does not prevent the native window from opening. Launching from source (`npm run desktop` or `scripts/asb`) keeps an installed desktop entry and reports the conflict. It replaces a source-run entry, including one from another checkout. A port conflict is an error. The launcher attaches only to a running ASB user service (see below), never to another process on the port. The server binds only to `127.0.0.1`; `HOST` cannot change that. The default port is `4629`. The launcher creates one random app source token for each run. It gives the token to the server and to the window through `ASB_SOURCE_TOKEN`. When it hosts the server, the launcher also creates the phone gateway and starts it after the server listens. A gateway start error goes to stderr and does not stop ASB. `npm start` creates no gateway.
+
+`asb service run` (`scripts/asb-service.mjs`) hosts the same server with no window. It needs an absolute, existing `XDG_RUNTIME_DIR`. It listens on `127.0.0.1` at `PORT` or `4629`, starts the phone gateway, and then writes `$XDG_RUNTIME_DIR/asb/service.json` (`0600`, folder `0700`) with `schema`, `pid`, `port`, and a random `sourceToken`. On SIGTERM or SIGINT it removes that file only when the file still holds its own pid and token, stops the gateway, and closes the server. It does not start when `service.json` is invalid or belongs to a running process. `asb service install` writes `asb.service` with `Restart=on-failure`, `KillMode=process`, and `WantedBy=graphical-session.target`, then runs `systemctl --user daemon-reload` and `enable --now asb.service`. `KillMode=process` keeps apps that ASB opened alive when the service stops. `ExecStart` uses `ASB_INSTALLED_LAUNCHER` when it is an absolute executable file, else `scripts/asb` of the current checkout. Paths with whitespace, control characters, quotes, `%`, `$`, or backslashes are rejected. `uninstall` runs `disable --now`, removes only a unit file with the ASB marker line, and reloads. `status` prints `systemctl --user is-active asb.service` and whether the runtime file is valid. Other arguments print usage and exit 2. The service commands need Linux.
+
+Attach mode: before it creates a server, the window launcher reads `service.json`. The file must be a regular file with mode `0600` in a `0700` folder, both owned by the user. The launcher then sends `GET /api/service` with the token and a two-second timeout. When the reply is `{ service: true }` with the same pid, the launcher creates no server and no gateway. It starts only the window with the service URL and token. The window exit ends the launcher and leaves the service running. Any other result uses the normal path, so a port conflict stays an error. An ASB `1.8.1` or older launcher has no attach mode and reports a port conflict while the service runs.
 
 Python 3 needs PyGObject, GTK `>=4.12`, and Libadwaita `>=1.4`. Node.js `>=22.13` uses built-in SQLite with read-only connections. Older supported Node.js (`>=20`) uses `sqlite3 -readonly`; the Debian package keeps that dependency. ASB's runtime has no external npm dependencies. Development tests use Node.js `>=22.13` and built-in SQLite fixtures, without the SQLite CLI.
 
@@ -40,7 +56,7 @@ Production ASB uses Python at `1.8.1`.
 
 ASB uses `DashboardSnapshot` in `src/dashboard-snapshot.mjs` for snapshots, source events, watchers, caches, and request coalescing. It also uses local HTTP utilities, Codex open helpers, and provider cache helpers.
 
-The current source package whitelist names 41 runtime files, including 11 ASB Bridge files. The published ASB `1.8.1` package shipped 30 runtime files, including the app-source registry. ASB `1.8.0`, `1.7.0`, `1.6.1`, `1.6.0`, `1.5.0`, and `1.4.0` also shipped 30. ASB `1.3.0` shipped 32. ASB `1.2.0` shipped 31, down from 42 in ASB `1.1.0`.
+The current source package whitelist names 43 runtime files, including 11 ASB Bridge files, `src/phone-gateway.mjs`, and `scripts/asb-service.mjs`. The published ASB `1.8.1` package shipped 30 runtime files, including the app-source registry. ASB `1.8.0`, `1.7.0`, `1.6.1`, `1.6.0`, `1.5.0`, and `1.4.0` also shipped 30. ASB `1.3.0` shipped 32. ASB `1.2.0` shipped 31, down from 42 in ASB `1.1.0`.
 
 ## Main files
 
@@ -57,17 +73,23 @@ The current source package whitelist names 41 runtime files, including 11 ASB Br
 | `src/claude-data.mjs` | Claude Desktop Code metadata and matched local transcript signals. |
 | `src/claude-remote-data.mjs` | Approved cached remote session metadata, cursor-linked updates, and explicit worker state. |
 | `src/insights.mjs` | Shared thread normalization and root/descendant grouping. |
-| `scripts/asb-desktop.mjs` | Native launcher and owned child-process cleanup. |
-| `scripts/asb-native.py` | Native rows, filters, search, layout, theme, input, and local label clock. |
+| `src/phone-gateway.mjs` | Optional phone gateway: settings, TLS certificate, pairing, bearer tokens, throttling, and the route allowlist proxy. |
+| `scripts/asb-desktop.mjs` | Native launcher, owned child-process cleanup, phone gateway start, and service attach mode. |
+| `scripts/asb-service.mjs` | Optional `asb service` user service (`run`, `install`, `uninstall`, `status`) and its runtime file. |
+| `scripts/asb-native.py` | Native rows, filters, search, layout, theme, input, local label clock, and the Preferences Phone page. |
 | `docs/benchmarks/` | Historical frontend comparisons, numeric samples, acceptance coverage, and X11 timing limits. |
 | `scripts/asb-icon.mjs` | ASB icon and desktop entry registration. |
 | `scripts/asb-package.mjs` | Linux package build, runtime check, and per-user install/uninstall. |
 | `scripts/asb-bridge.mjs` | Optional bridge status and per-provider install/uninstall command. |
 | `.agents/plugins/marketplace.json` | Local `asb` marketplace for the `asb-bridge` Codex plugin. |
 | `bridge/` | Optional ASB Bridge plugin, Bun/TypeScript source and tests, committed bundles, and on-demand usage skills. |
+| `android/` | Optional Android companion: Kotlin and Compose app, Gradle build, and JVM tests. See `android/README.md`. |
 | `public/switchboard.html` | Optional ASB browser view. |
 | `test/switchboard.test.mjs` | ASB data, attention, API, and source-event checks. |
 | `test/asb-desktop.test.mjs` | Isolated launcher, port-conflict, icon-failure, and owned-child checks without GTK. |
+| `test/phone-gateway.test.mjs` | Gateway settings, file modes, pairing, tokens, throttling, allowlist, and proxy checks. |
+| `test/asb-phone-api.test.mjs` | Loopback phone and service routes, token, Host/Origin, and strict-body checks. |
+| `test/asb-service.test.mjs` | Service unit, install/uninstall, runtime file, and attach-mode checks with a fake `systemctl`. |
 | `test/asb-docs.test.mjs` | ASB install, media, privacy, and credit checks. |
 | `test/asb_native_logic_test.py` | Native data, layout, theme, search/filter, scheduling, and row-reuse checks with no GTK display. |
 | `docs/status-mapping.html` | Status mapping worksheet; update it when a state, icon, or Pending rule changes. |
@@ -220,6 +242,8 @@ Native and web clients poll every two seconds while any unarchived root is Worki
 
 Source watchers send only a version, reason, and provider flags. They send no paths or content. Registered source folders and registry changes use these same watchers. Events are grouped for 250 milliseconds. Active scans start no more than once per two seconds. Missing directories and failed watches retry every five seconds, only for the affected required or optional roots. Healthy watcher trees stay in place. A required root failure keeps coverage incomplete; polling remains the fallback. Late callbacks from closed or replaced watchers are ignored. On Linux, ASB uses one watch for each directory under the session folders, not one for each file. It follows new and removed folders from `rename` events, with one `stat` for each event entry. Full directory walks remain for start, changed watch paths, root replacement or structure invalidation, a burst of more than 64 structure events, and the 60-second safety check. A watcher error retries its affected root. `performance.dashboard.watchWalks` counts directory walks, including recovered subtrees; a simple absent-root check does not increment it. Other platforms use the native recursive watch and fall back to directory watches. An injected `loadDashboard` with no source registry gets no default watch paths. Profile registration adds no permanent fast poll.
 
+In service mode (`serviceMode: true`), the server scans with no client. After it listens, it loads the shared dashboard, then schedules the next scan after two seconds while any unarchived root is Working, otherwise after five seconds. A source event with no connected event client also starts the follow-up scan. In this mode the clean snapshot lasts only one scan interval, also with full watch coverage. So ASB sees each task end while the window is closed, and the phone can show Done notifications on its next read. Close stops this timer.
+
 Client reads do not overlap and retain at most one requested follow-up. A forced read (`/api/dashboard?force=1`) that arrives during a scan waits for that scan. It then gets one more scan that starts after the request. Forced requests during the same scan share that scan. A successful open marks the server snapshot dirty and sends a `dashboard` event with the reason `asb-open`; the next read scans again. Successful native session actions request a normal queued refresh and retain a follow-up if a read is already active. The Discard server action still forces its validation scan before arming. Successful opens in both clients use the normal refresh path. Each `200` reply of `GET /api/dashboard`, with or without `?force=1`, has an `ETag` header: a quoted SHA-256 content hash of all reply fields except `generatedAtMs` and `performance`. The dashboard replies also have `Cache-Control: no-store`. A request with `If-None-Match` equal to the current tag gets `304` with no body; a forced request still scans first. `performance.dashboard.notModified` counts these replies. Both clients send the tag of the dashboard that they show in `If-None-Match` and skip list updates on `304`. The native window clears the tag after an error and after a POST reply changed its list. The browser clears its tag after an error; a queued forced browser refresh remains forced. Native rows remain keyed by ID and update in place. Rows skip unchanged cached text and action updates. A lazy row cache retains previously shown rows across search and filters, bounded by full dashboard IDs. Hidden rows have no clock work or Read feedback; current data, action state, time, view, and palette apply when they return. Layout signals replace permanent frame checks; IDs removed from the full dashboard and window close release row controllers.
 
 Native `SessionColumn` snapshots skip columns outside the viewport. The viewport check includes card-motion bounds. This changes paint only. Row allocation, input, focus, and accessibility stay unchanged. Scroll and layout invalidate skipped snapshots when their columns enter the viewport.
@@ -282,6 +306,44 @@ Providers are `codex` and `claude-desktop-code`. Paths must be absolute local pa
 
 A local program that is not a browser can send Host and Origin itself, and a source change can set the launcher that ASB runs. For this reason, the launcher gives the server and the window one random token for each run. When a token is set, `POST /api/sources` and `POST /api/sources/<id>/remove` need the header `X-ASB-Source-Token`. Without it, the reply is 403 with `Use app source actions from the ASB window.` The window sends the header only on app-source changes, and only when `ASB_SOURCE_TOKEN` is set. A server started with `npm start` has no token. These routes then have only the Host and Origin checks.
 
+### Loopback phone and service routes
+
+These routes exist only when the server has a phone gateway (window launcher or service). `npm start` has no gateway, so they give 404. All of them need the header `X-ASB-Source-Token` when a token is set, also the GET routes; else the reply is 403. GET routes use the read checks above. POST routes use the action Host and Origin checks and strict bodies (exact keys, else 400). Replies have `Cache-Control: no-store`.
+
+| Loopback route | Contract |
+| --- | --- |
+| `GET /api/phone` | Gateway `status()`: `enabled`, `bindAddress`, `port`, `addresses`, `running`, `error`, `warning`, `fingerprint`, `devices` (ID, name, times), and `pairing.expiresAtMs`. It never has a token, token hash, or pairing code. |
+| `POST /api/phone/settings` | `{"enabled":bool,"bindAddress":str,"port":int}`. The address must be in `addresses`, or empty when `enabled` is false. The port must be 1024 to 65535 and not the ASB port. Saves, restarts the listener, and replies with `status()`. |
+| `POST /api/phone/pairing` | `{}`. Needs a running listener. Replies `{ uri, expiresAtMs }`. |
+| `POST /api/phone/devices/<id>/revoke` | `{}`. `<id>` is 12 lowercase hex. Removes that phone and replies with `status()`. |
+| `GET /api/service` | `{ service, pid }`. `service` is true only in `asb service run`. The window launcher uses it for attach mode. |
+
+### Phone gateway
+
+`createPhoneGateway` in `src/phone-gateway.mjs` is a second listener, separate from the loopback server. It is off by default. It listens only when `enabled` is true and `bindAddress` is one of the private IPv4 addresses of the PC (`10/8`, `172.16/12`, `192.168/16`). It never binds `0.0.0.0`. The default port is `4630`. When the address is gone, or the port is in use, the gateway stays off and `status().error` says why.
+
+TLS uses `node:https` with `minVersion: 'TLSv1.3'`. On first start, `openssl req` (run with `execFile`, no shell, 20-second timeout) creates a self-signed P-256 certificate for ten years. The pin is the SHA-256 of the full certificate, as 64 lowercase hex characters. When `openssl` fails, phone access stays off with `ASB cannot create the phone certificate. Install openssl.` The request timeout is 15 seconds and the header timeout is 10 seconds. Every reply has `cache-control: no-store` and `x-content-type-options: nosniff`.
+
+The gateway handles each request in this order:
+
+1. It closes the socket when the remote address is not loopback or private IPv4 (also as `::ffff:a.b.c.d`).
+2. Throttle: 20 auth failures (401) or pair failures from one address in 60 seconds give `429` for 60 seconds. The map keeps at most 256 addresses.
+3. A bad URL gives 400. A path outside the allowlist gives 404. A wrong method gives 405.
+4. Each route except pairing needs `Authorization: Bearer <token>`, with a 43-character base64url token. The gateway compares its SHA-256 with each saved hash in constant time. No match gives 401.
+5. POST bodies are limited to 64 KiB (413).
+
+| Gateway route | Action |
+| --- | --- |
+| `POST /phone/v1/pair` | Body exactly `{"code","deviceName"}`. Gives the phone a new token. |
+| `GET /phone/v1/hello` | `{ api: 1, asbVersion, deviceId, serverName }`. |
+| `GET /phone/v1/dashboard` | Proxy to `GET /api/dashboard`. Only the query `force=1` passes. |
+| `POST /phone/v1/threads/<id>/<action>` | Proxy to the same loopback thread route. `<action>` is `open`, `mark-read`, `mark-unread`, `pin`, `unpin`, `move-pin`, `discard-result`, `keep-result`, `drawer-in`, or `drawer-out`. |
+| `POST /phone/v1/settings/unread` | Proxy to `POST /api/settings/unread`. |
+
+The proxy calls `127.0.0.1:<ASB port>` and sets `Host` itself. POST also gets the local `Origin` and `content-type: application/json`. Only `If-None-Match` passes from the phone; cookies, `Authorization`, and other headers do not. Only `content-type` and `etag` come back from the loopback reply. A failed loopback request gives 502, and the proxy timeout is 30 seconds. The loopback server applies its normal checks. The gateway cannot reach `/api/sources`, `/api/phone*`, `/api/service`, or `/api/events`.
+
+Pairing: `createPairing` makes one code of 20 random bytes (base64url). It is valid for 10 minutes and for one use. A new code replaces the old one, and 8 wrong codes void it. The QR link is `asb://pair?v=1&h=<address>&p=<port>&f=<fingerprint>&c=<code>&n=<host name>`. A good pair request saves a new device with a 256-bit random token and replies with the token once. The PC saves only the SHA-256 of the token. The device limit is eight (409). The device name is trimmed, has no control characters, and has at most 64 characters. `lastSeenAtMs` is saved at most once per 10 minutes per phone, and on stop. Revoke removes the device, so its token gives 401 at once.
+
 ## Local writes
 
 | Default location | Purpose |
@@ -290,10 +352,14 @@ A local program that is not a browser can send Host and Origin itself, and a sou
 | `~/.config/asb/layout.json` | Width, view, and optional boolean `showAppPills`. |
 | `~/.config/asb/theme.json` | Custom colors. |
 | `~/.config/asb/sources.json` | App-source IDs, labels, colors, dot visibility, paths, launchers, and enabled flags, with owner-only access. |
+| `~/.config/asb/phone.json` | Phone access settings and paired devices with token SHA-256 values, mode `0600`. An invalid file moves to `phone.json.bad`. |
+| `~/.config/asb/phone-tls/` | Phone certificate `cert.pem` and key `key.pem`, mode `0600`, folder `0700`. |
+| `$XDG_RUNTIME_DIR/asb/service.json` | Service pid, port, and source token while `asb service run` runs, mode `0600`, folder `0700`. |
+| `~/.config/systemd/user/asb.service` | User service unit, only after `asb service install`. |
 | `~/.local/share/applications/local.asb.AgentSwitchBoard.desktop` | Per-user launcher. |
 | `~/.local/share/icons/hicolor/scalable/apps/local.asb.AgentSwitchBoard.svg` | Per-user app icon. |
 
-XDG state/config/data overrides apply. The per-user package also installs ASB under its own local data folder and adds `~/.local/bin/asb`. `~/.local/bin/asb` records `ASB_NODE` and starts the shipped `scripts/asb`. It keeps `ASB_NODE` when it is an absolute, executable regular file with no control characters; otherwise it records the current Node executable. Paths use shell quoting. If the recorded Node.js is not usable, `scripts/asb` tries `~/.local/bin/node`, `/usr/local/bin/node`, then `/usr/bin/node`. It prints a message if none is usable. ASB does not put system folders before the caller's `PATH`. It appends `/usr/local/bin:/usr/bin:/bin` and a recorded SQLite folder, so apps started from ASB keep the caller's `PATH` order. Uninstall removes the `asb/releases` and `asb` data folders when they are empty. SIGINT/SIGTERM abort package work, await pending writes and rollback, and remove only its acquired lock and staging folder. A foreign lock stays intact and the error identifies its folder. See the installer for its exact manifest. Original app stores stay read-only, with one exception: the read-only SQLite open of the Codex state database can create `-wal` and `-shm` side files next to it. The files `pending.json.bad` and `sources.json.bad` can appear next to their originals.
+XDG state/config/data overrides apply. The per-user package also installs ASB under its own local data folder and adds `~/.local/bin/asb`. `~/.local/bin/asb` records `ASB_NODE` and starts the shipped `scripts/asb`. It keeps `ASB_NODE` when it is an absolute, executable regular file with no control characters; otherwise it records the current Node executable. Paths use shell quoting. If the recorded Node.js is not usable, `scripts/asb` tries `~/.local/bin/node`, `/usr/local/bin/node`, then `/usr/bin/node`. It prints a message if none is usable. ASB does not put system folders before the caller's `PATH`. It appends `/usr/local/bin:/usr/bin:/bin` and a recorded SQLite folder, so apps started from ASB keep the caller's `PATH` order. Uninstall removes the `asb/releases` and `asb` data folders when they are empty. SIGINT/SIGTERM abort package work, await pending writes and rollback, and remove only its acquired lock and staging folder. A foreign lock stays intact and the error identifies its folder. See the installer for its exact manifest. Original app stores stay read-only, with one exception: the read-only SQLite open of the Codex state database can create `-wal` and `-shm` side files next to it. The files `pending.json.bad`, `sources.json.bad`, and `phone.json.bad` can appear next to their originals.
 
 Only when the user runs them with targets, `asb bridge install` and `asb bridge uninstall` change Codex plugin configuration through the `codex` CLI. They copy or remove the Codex `$bridge` and Claude Code `/bridge` skill folders. Without targets, they show usage and change nothing.
 
@@ -305,9 +371,12 @@ The optional bridge plugin runs inside Codex. It writes per-task state under `<C
 npm test
 python3 test/asb_native_logic_test.py
 npm run build
+cd android && ./gradlew --no-daemon testDebugUnitTest lint assembleDebug
 ```
 
 The first two commands do not launch the ASB window. `npm test` needs no `sqlite3` command and no environment variable. Launcher checks use isolated HOME/XDG/source folders, `ASB_SYSTEM_INSTALL=1`, and `ASB_PYTHON=/bin/true` to verify busy/free ports without GTK or icon registration. Display-free data checks share the synthetic GTK fixtures through AST extraction without importing GTK. Native widget tests are separate and need a GTK display with synthetic fixtures. Use them only when UI testing is in scope. Do not use real session stores for public media or test captures.
+
+The Android build needs JDK 21 and the Android SDK; see `android/README.md`. The phone gateway certificate tests skip when `openssl` is not on `PATH`. The service tests use a fake `systemctl` and do not change the real user session.
 
 The root tests skip TypeScript files. After bridge changes, run `cd bridge && bun run check && bun test && bun run build`, and commit `bridge/dist/`. When you change a shipped bridge file, change the version in `bridge/package.json` and `bridge/.codex-plugin/plugin.json` together. Codex caches an installed plugin by version.
 

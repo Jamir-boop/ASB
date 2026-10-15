@@ -10,7 +10,7 @@ https://github.com/user-attachments/assets/c85742f4-d1b0-4ffc-9497-144069fec36b
 
 [Download v1.8.1](https://github.com/Jamir-boop/ASB/releases/tag/v1.8.1) · [Release notes](docs/releases/v1.8.1.md) · [Checksums](https://github.com/Jamir-boop/ASB/releases/download/v1.8.1/SHA256SUMS)
 
-Needs Node.js `>=20` (`sqlite3` below `22.13`), Python 3 with PyGObject, GTK `>=4.12`, Libadwaita `>=1.4`, and `xdg-utils`.
+Needs Node.js `>=20` (`sqlite3` below `22.13`), Python 3 with PyGObject, GTK `>=4.12`, Libadwaita `>=1.4`, and `xdg-utils`. The current source also needs `openssl` for the phone certificate. The optional `python3-qrcode` shows the phone pairing QR code.
 
 Install Codex and Claude Desktop first, with working `codex:` and `claude:` URL handlers.
 
@@ -31,6 +31,18 @@ cd asb-1.8.1
 ```
 
 [User guide](ASB.md) · [Privacy](docs/PRIVACY.md) · [Source setup](ASB.md#start-and-stop) · [Contributing](CONTRIBUTING.md)
+
+## Android companion (optional)
+
+The ASB Android app shows your sessions on your phone over your local network. It can open a chat on the PC, use the row actions, and change Persistent unread. It shows Done, Failed, and Needs input notifications.
+
+Phone access is off by default. In ASB, open Preferences > Phone, select **Allow phone access**, choose an address, and select **Apply**. Then select **Pair a phone** and scan the QR code with the app. Compare the certificate fingerprint on the PC and the phone. See the [Android guide](android/README.md) to build and install the app.
+
+## Run without the window (optional)
+
+`asb service install` installs and starts the `asb.service` systemd user service. It runs the ASB server and phone access without the window, so the phone stays connected when you close the window. `asb service status` shows the service state. `asb service uninstall` stops and removes it. While the service runs, the ASB window attaches to it. An ASB `1.8.1` or older window cannot attach and reports a port conflict.
+
+The current source includes the Android companion and the user service; published `1.8.1` packages do not.
 
 ## ASB Bridge (optional)
 

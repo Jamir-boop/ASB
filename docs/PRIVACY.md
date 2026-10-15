@@ -1,8 +1,8 @@
 # ASB privacy
 
-ASB runs locally. Its default native and browser launch commands read no login credentials, make no model calls, send no telemetry, and make no network requests outside loopback.
+ASB runs locally. Its default native and browser launch commands read no login credentials, make no model calls, send no telemetry, and make no network requests outside loopback. The optional phone gateway is off by default. When you turn it on, it accepts connections from paired phones on one private network address.
 
-This document covers `npm start`, `npm run desktop`, and the packaged `asb` launcher. The optional bridge is described below.
+This document covers `npm start`, `npm run desktop`, the packaged `asb` launcher, and the optional `asb service`. The optional bridge and the optional Android companion are described below.
 
 ## What ASB reads
 
@@ -39,6 +39,10 @@ Remote cache observations can be incomplete or old. ASB uses the newest response
 | `~/.config/asb/layout.json` | Column width, selected view, and Show app pills. |
 | `~/.config/asb/theme.json` | Custom colors. |
 | `~/.config/asb/sources.json` | Registered source IDs, app names, profile labels/colors, local data/transcript folders, installed launcher paths, and enabled flags. |
+| `~/.config/asb/phone.json` | Phone access on or off, address, port, and paired phones: ID, name, pairing and last-seen times, and the SHA-256 of the token. |
+| `~/.config/asb/phone-tls/` | The phone certificate and its private key. |
+| `$XDG_RUNTIME_DIR/asb/service.json` | Pid, port, and per-run source token of the running `asb service`. |
+| `~/.config/systemd/user/asb.service` | The user service unit, only after `asb service install`. |
 | `~/.local/share/applications/local.asb.AgentSwitchBoard.desktop` | ASB's per-user desktop entry. |
 | `~/.local/share/icons/hicolor/scalable/apps/local.asb.AgentSwitchBoard.svg` | ASB's app icon. |
 
@@ -52,9 +56,19 @@ Source colors are ASB settings in the same schema `1` file. They change only the
 
 ASB Bridge runs inside Codex. It stores the text of peer messages in per-task SQLite files under `<CODEX_HOME>/plugin-state/asb-bridge/`. ASB does not upload them. A message that the bridge delivers starts a turn in the receiving app. The receiving app uses its own model and network settings.
 
+## Optional Android companion
+
+Phone access is off by default. You turn it on in Preferences > Phone and pair each phone with a one-time QR code. ASB uses no cloud service and no relay. The phone talks to the PC directly on your local network. The gateway binds one private IPv4 address of the PC that you choose. It accepts only loopback and private IPv4 remote addresses. All traffic uses TLS 1.3. The phone pins the SHA-256 of the ASB certificate, and you compare the fingerprint during pairing.
+
+A paired phone receives the same dashboard data as the local view: chat titles, folders, app and source names and colors, execution states, update and working times, usage-limit reset times, attention, pin, and drawer marks, and row IDs. For session messages it receives only pairs of row IDs and the message times. It receives no message text, question body, answer text, transcript, or credential. It also receives the PC host name and the ASB version. The phone can open chats on the PC and use the row actions and Persistent unread. It cannot read or change app sources or phone settings.
+
+Each phone gets its own 256-bit random token. The PC saves only the SHA-256 of each token. The phone keeps the token in app-private storage, and the app turns off Android backup and device transfer. **Remove** in Preferences > Phone ends that phone's access at once. The pairing code works once and ends after 10 minutes. Repeated failed attempts from one address are blocked for one minute.
+
+Phone notifications show the session title and the source name. The app marks them private, so a secure lock screen can show only "A session needs attention", according to your Android settings. Anyone who unlocks the phone can see the session titles and folders in the app.
+
 ## Local API and app opens
 
-ASB binds only to `127.0.0.1`. `HOST` cannot change that. The native window and optional browser view use this local API. Source events contain a version, reason, and provider flags, with no file paths or content. Watchers do not upload files.
+The ASB server binds only to `127.0.0.1`. `HOST` cannot change that. The optional phone gateway is a separate listener; see above. The native window and optional browser view use this local API. Source events contain a version, reason, and provider flags, with no file paths or content. Watchers do not upload files.
 
 Session actions require the local Host, a matching Origin, a known session ID, and validated request fields. Source changes use the same Host and Origin protection and accept only source settings. When the launcher starts ASB, source changes also need its per-run token in the header `X-ASB-Source-Token`. A server started with `npm start` has no token. Local paths and installed app launchers are validated. Raw commands, arguments, environment fields, and arbitrary URLs are rejected. Other local programs under your account can still access local metadata.
 
