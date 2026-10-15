@@ -11,6 +11,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import local.asb.companion.data.AsbJson
 import local.asb.companion.data.Dashboard
+import local.asb.companion.data.Message
 import local.asb.companion.data.PairingInfo
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.AsbError
@@ -121,6 +122,18 @@ class AsbApiTest {
         assertEquals("My \"phone\"", body.getValue("deviceName").jsonPrimitive.content)
         server.enqueue(MockResponse().setBody("{}"))
         assertTrue(failure { AsbApi.pair(info, "Phone") } is AsbError.Server)
+    }
+
+    @Test fun malformedMessageEntriesDoNotFailTheDashboardRequest() = runBlocking {
+        server.enqueue(MockResponse().setBody("""{
+            "threads":[{"id":"one","limitResetsAtMs":1780000000000}],
+            "messages":[null,42,{"from":"a","to":"b","atMs":"1"},
+                {"from":"a","to":"b","atMs":1.5},{"from":"a","to":"b","atMs":1.0}]
+        }"""))
+        val result = api().dashboard() as DashboardResult.Fetched
+        assertEquals("one", result.dashboard.threads.single().id)
+        assertEquals(1780000000000L, result.dashboard.threads.single().limitResetsAtMs)
+        assertEquals(listOf(Message("a", "b", 1)), result.dashboard.messages)
     }
 
     @Test fun serverErrorsPreserveMessagesButRemoveSecrets() = runBlocking {

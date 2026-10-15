@@ -17,6 +17,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonPrimitive
 import local.asb.companion.data.Dashboard
+import local.asb.companion.data.Message
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.DashboardResult
@@ -39,9 +40,11 @@ class SessionsViewModel(
     initiallyRevoked: Boolean = false,
     private val saveBaseline: (Map<String, Int>) -> Unit = {},
     private val notificationMutex: Mutex = Mutex(),
+    private val loadBaseline: () -> Map<String, Int>? = { null },
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(UiState(revoked = initiallyRevoked))
     val state: StateFlow<UiState> = mutableState.asStateFlow()
+    var seenMessages: Set<Message>? = null
     private val pollMutex = Mutex()
     private var etag: String? = null
     private var offlineFailures = 0
@@ -129,7 +132,7 @@ class SessionsViewModel(
                     is DashboardResult.Fetched -> result.dashboard
                     DashboardResult.NotModified -> state.value.dashboard
                 }
-                dashboard?.let { saveBaseline(updateBaseline(it.threads)) }
+                dashboard?.let { saveBaseline(updateBaseline(loadBaseline(), it.threads)) }
                 if (result is DashboardResult.Fetched) etag = result.etag
                 offlineFailures = 0
                 mutableState.update { it.copy(dashboard = dashboard, offline = false, lastError = null) }

@@ -1,5 +1,8 @@
 package local.asb.companion.ui
 
+import android.os.SystemClock
+import android.provider.Settings
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
@@ -19,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListLayoutInfo
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -61,19 +65,35 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -83,14 +103,18 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntSize
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import local.asb.companion.R
+import local.asb.companion.data.Message
 import local.asb.companion.data.Provider
 import local.asb.companion.data.Thread
+import kotlin.math.pow
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -102,6 +126,8 @@ fun SessionsScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
+    val context = LocalContext.current
+    val density = LocalDensity.current.density
     val snackbar = remember { SnackbarHostState() }
     val keyboard = LocalSoftwareKeyboardController.current
     val listState = rememberLazyListState()
@@ -110,19 +136,25 @@ fun SessionsScreen(
     var dismissedWarnings by rememberSaveable { mutableStateOf(mapOf<String, String>()) }
     var initialError by rememberSaveable { mutableStateOf<String?>(null) }
     var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    val providerCenters = remember { mutableStateMapOf<String, Offset>() }
+    var listOrigin by remember { mutableStateOf(Offset.Zero) }
+    var listSize by remember { mutableStateOf(IntSize.Zero) }
+    var flights by remember { mutableStateOf(emptyList<MessageFlight>()) }
+    var highlights by remember { mutableStateOf(mapOf<String, Long>()) }
+    var frameNanos by remember { mutableLongStateOf(System.nanoTime()) }
+    var motionGeneration by remember { mutableLongStateOf(0L) }
     val threads = state.dashboard?.threads.orEmpty()
     val rows = remember(threads, state.filter) { filteredRows(threads, state.filter) }
     val rowsById = remember(rows) { rows.associateBy { it.id } }
+    val rowIndexes = remember(rows) { rows.mapIndexed { index, row -> row.id to index }.toMap() }
+    val currentRowIndexes by rememberUpdatedState(rowIndexes)
+    val currentDensity by rememberUpdatedState(density)
     val visibleRows by remember(rowsById, listState) {
         derivedStateOf {
             listState.layoutInfo.visibleItemsInfo.mapNotNull { rowsById[it.key] }
         }
     }
-    val clockIntervalMs = when {
-        visibleRows.any { it.state == "working" && it.workingSinceMs > 0 } -> 2000L
-        visibleRows.any { it.state != "working" && it.updatedAtMs > 0 } -> 60_000L
-        else -> 0L
-    }
+    val clockIntervalMs = if (visibleRows.isEmpty()) 0L else clockInterval(visibleRows, nowMs) * 1000
     val providers = state.dashboard?.providers.orEmpty()
     val warnings = providers.filter {
         it.status == "warning" && it.message.isNotBlank() && dismissedWarnings[it.id] != it.message
@@ -130,20 +162,86 @@ fun SessionsScreen(
     val actionRow = threads.firstOrNull { it.id == actionRowId }
     val hasDrawerRows = threads.any { it.drawer && (state.filter.archived || !it.archived) }
     val workingOnly = state.filter.states == setOf("working")
+    fun endpoint(id: String) = messageEndpoint(
+        id, providerCenters, listOrigin, listSize, listState.layoutInfo, currentRowIndexes, currentDensity,
+    )
 
     LaunchedEffect(viewModel, lifecycleOwner, state.revoked) {
         if (!state.revoked) lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            viewModel.poll()
+            try {
+                viewModel.poll()
+            } finally {
+                motionGeneration++
+                flights = emptyList()
+                highlights = emptyMap()
+            }
         }
     }
-    LaunchedEffect(lifecycleOwner, clockIntervalMs, state.revoked) {
+    LaunchedEffect(lifecycleOwner, clockIntervalMs, visibleRows, state.revoked) {
         if (!state.revoked && clockIntervalMs > 0) {
             lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 while (isActive) {
                     nowMs = System.currentTimeMillis()
-                    delay(clockIntervalMs)
+                    val resetDelay = visibleRows.map { it.limitResetsAtMs }.filter { it > nowMs }.minOrNull()?.minus(nowMs)
+                    delay(minOf(clockIntervalMs, resetDelay ?: clockIntervalMs))
                 }
             }
+        }
+    }
+    LaunchedEffect(rowsById) {
+        flights = flights.filter { it.message.from in rowsById && it.message.to in rowsById }
+        highlights = highlights.filterKeys { it in rowsById }
+        providerCenters.keys.filter { it !in rowsById }.forEach { providerCenters.remove(it) }
+    }
+    LaunchedEffect(viewModel, state.dashboard?.messages, rowsById, state.revoked) {
+        if (state.revoked) return@LaunchedEffect
+        val messages = state.dashboard?.messages ?: return@LaunchedEffect
+        val (play, seen) = newMessages(messages, viewModel.seenMessages, rowsById.keys,
+            System.currentTimeMillis(), MESSAGE_FLIGHT_LIMIT - flights.size)
+        viewModel.seenMessages = seen
+        if (play.isEmpty()) return@LaunchedEffect
+        val generation = motionGeneration
+        // New rows need one layout before their provider centers are available.
+        withFrameNanos { }
+        if (generation != motionGeneration ||
+            !lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) || state.revoked) return@LaunchedEffect
+        val reducedMotion = try {
+            Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+        } catch (_: SecurityException) { false }
+        val startedAt = System.nanoTime()
+        val highlightEnd = SystemClock.uptimeMillis() + if (reducedMotion) 2000 else 160
+        val added = mutableListOf<MessageFlight>()
+        val lit = highlights.toMutableMap()
+        for (message in play) {
+            val start = endpoint(message.from) ?: continue
+            val end = endpoint(message.to) ?: continue
+            if (start.outside && end.outside) continue
+            lit[message.from] = highlightEnd
+            if (reducedMotion) lit[message.to] = highlightEnd
+            else if (flights.size + added.size < MESSAGE_FLIGHT_LIMIT) added += MessageFlight(
+                message, startedAt, messageDuration(((end.point - start.point).getDistance() / density).toDouble()),
+                start.outside,
+            )
+        }
+        highlights = lit
+        if (added.isNotEmpty()) {
+            frameNanos = startedAt
+            flights = flights + added
+        }
+    }
+    LaunchedEffect(highlights) {
+        val next = highlights.values.minOrNull() ?: return@LaunchedEffect
+        delay((next - SystemClock.uptimeMillis()).coerceAtLeast(1))
+        highlights = highlights.filterValues { it > SystemClock.uptimeMillis() }
+    }
+    LaunchedEffect(flights.isNotEmpty()) {
+        while (flights.isNotEmpty()) {
+            withFrameNanos { frameNanos = it }
+            flights = flights.map { flight ->
+                if (flight.receiverOutside == null && flight.elapsedMs(frameNanos) >= flight.durationMs) {
+                    flight.copy(receiverOutside = endpoint(flight.message.to)?.outside ?: true)
+                } else flight
+            }.filter { it.elapsedMs(frameNanos) < it.durationMs + if (it.receiverOutside == true) 720 else 420 }
         }
     }
     LaunchedEffect(providers) {
@@ -280,7 +378,10 @@ fun SessionsScreen(
                 PullToRefreshBox(
                     isRefreshing = state.refreshing,
                     onRefresh = viewModel::refresh,
-                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    modifier = Modifier.fillMaxWidth().weight(1f).onGloballyPositioned {
+                        listOrigin = it.positionInRoot()
+                        listSize = it.size
+                    },
                 ) {
                     LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                         warnings.forEach { provider ->
@@ -323,11 +424,21 @@ fun SessionsScreen(
                                 drawer = state.filter.drawerOnly,
                                 busy = row.id in state.busyIds,
                                 nowMs = nowMs,
+                                messageLit = row.id in highlights,
+                                onProviderCenter = { center -> providerCenters[row.id] = center },
                                 onOpen = { viewModel.action(row.id, "open") },
                                 onActions = { keyboard?.hide(); actionRowId = row.id },
                             )
                         }
                         item(key = "bottom-space") { Spacer(Modifier.height(16.dp)) }
+                    }
+                    val messageColor = MaterialTheme.colorScheme.primary
+                    Canvas(Modifier.matchParentSize().clipToBounds()) {
+                        for (flight in flights) {
+                            val start = endpoint(flight.message.from) ?: continue
+                            val end = endpoint(flight.message.to) ?: continue
+                            if (!start.outside || !end.outside) drawMessage(flight, frameNanos, start, end, messageColor)
+                        }
                     }
                 }
             }
@@ -391,8 +502,13 @@ private fun ProviderWarning(provider: Provider, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun SessionRow(row: Thread, drawer: Boolean, busy: Boolean, nowMs: Long, onOpen: () -> Unit, onActions: () -> Unit) {
-    val indicator = attentionIndicator(row, drawer)
+private fun SessionRow(
+    row: Thread, drawer: Boolean, busy: Boolean, nowMs: Long, messageLit: Boolean,
+    onProviderCenter: (Offset) -> Unit, onOpen: () -> Unit, onActions: () -> Unit,
+) {
+    val left = limitLeft(row, nowMs)
+    val limited = left > 0
+    val indicator = attentionIndicator(row, drawer, nowMs)
     val state = stateLabel(row.state)
     val time = if (row.state == "working") workingDuration(row.workingSinceMs, nowMs) else idleAge(row.updatedAtMs, nowMs)
     val indicatorMeaning = when (indicator) {
@@ -407,7 +523,7 @@ private fun SessionRow(row: Thread, drawer: Boolean, busy: Boolean, nowMs: Long,
         else -> ""
     }
     val description = listOf(
-        row.title, row.projectName, state, time, indicatorMeaning,
+        row.title, row.projectName, state, if (limited) "Usage limit. Resets in ${spokenDuration(left)}" else time, indicatorMeaning,
         if (row.pinned) "Pinned" else "",
         if (row.drawer) "In the drawer" else "",
         row.sourceLabel.ifEmpty { row.providerLabel },
@@ -415,6 +531,7 @@ private fun SessionRow(row: Thread, drawer: Boolean, busy: Boolean, nowMs: Long,
         if (busy) "Opening" else "",
     ).filter { it.isNotBlank() }.joinToString(". ")
     val colors = MaterialTheme.colorScheme
+    val titleColor = if (limited) colors.onSurfaceVariant else colors.onSurface
     val markerColor = remember(row.sourceColor, colors.surface, colors.primary) {
         sourceMarkerColor(row.sourceColor, colors.surface, colors.primary)
     }
@@ -433,10 +550,16 @@ private fun SessionRow(row: Thread, drawer: Boolean, busy: Boolean, nowMs: Long,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(32.dp).clearAndSetSemantics { }, contentAlignment = Alignment.Center) {
-            Box(Modifier.fillMaxSize().background(colors.surfaceContainerHigh, CircleShape), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(32.dp).onGloballyPositioned {
+            onProviderCenter(it.positionInRoot() + Offset(it.size.width / 2f, it.size.height / 2f))
+        }.clearAndSetSemantics { }, contentAlignment = Alignment.Center) {
+            Box(
+                modifier = Modifier.fillMaxSize().graphicsLayer { alpha = if (limited) .4f else 1f }
+                    .background(colors.surfaceContainerHigh, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
                 Text(if (row.provider == "codex") "cx" else "cl", style = MaterialTheme.typography.labelMedium,
-                    color = colors.onSurfaceVariant)
+                    color = if (messageLit) colors.primary else colors.onSurfaceVariant)
             }
             if (row.sourceShowMarker && row.sourceCount > 1) Box(
                 Modifier.align(Alignment.BottomStart).size(8.dp)
@@ -446,12 +569,21 @@ private fun SessionRow(row: Thread, drawer: Boolean, busy: Boolean, nowMs: Long,
         }
         Column(Modifier.weight(1f).clearAndSetSemantics { }, verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
-                Text(row.title, style = MaterialTheme.typography.titleMedium, color = colors.onSurface,
+                Text(row.title, style = MaterialTheme.typography.titleMedium, color = titleColor,
                     maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 if (row.pinned) Icon(PinIcon, contentDescription = null,
                     tint = colors.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp).size(16.dp))
             }
             if (busy) Text("Opening…", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+            else if (limited) Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Icon(painterResource(R.drawable.ic_schedule), contentDescription = null,
+                    tint = colors.onSurfaceVariant, modifier = Modifier.size(12.dp))
+                Text("Resets in ${durationText(left)}", style = MaterialTheme.typography.bodyMedium,
+                    color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
             else Row(verticalAlignment = Alignment.CenterVertically) {
                 if (row.projectName.isNotBlank()) {
                     Text(row.projectName, style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant,
@@ -544,6 +676,87 @@ private fun RowActionSheet(row: Thread, busy: Boolean, onDismiss: () -> Unit, on
                 }
             }
         }
+    }
+}
+
+private data class MessageFlight(
+    val message: Message,
+    val startedAtNanos: Long,
+    val durationMs: Double,
+    val senderOutside: Boolean,
+    val receiverOutside: Boolean? = null,
+) {
+    fun elapsedMs(nowNanos: Long) = (nowNanos - startedAtNanos).coerceAtLeast(0) / 1_000_000.0
+}
+
+private data class MessageEndpoint(val point: Offset, val outside: Boolean)
+
+private fun messageEndpoint(
+    id: String,
+    centers: Map<String, Offset>,
+    origin: Offset,
+    viewport: IntSize,
+    layout: LazyListLayoutInfo,
+    indexes: Map<String, Int>,
+    density: Float,
+): MessageEndpoint? {
+    if (viewport.height <= 4 * density) return null
+    val visible = layout.visibleItemsInfo.filter { it.key in indexes }
+    val top = 2 * density
+    val bottom = viewport.height - 2 * density
+    if (visible.any { it.key == id }) {
+        val center = centers[id]?.minus(origin) ?: return null
+        val y = center.y.coerceIn(top, bottom)
+        return MessageEndpoint(Offset(center.x, y), y != center.y)
+    }
+    val index = indexes[id] ?: return null
+    val first = visible.firstNotNullOfOrNull { indexes[it.key] } ?: return null
+    val x = visible.firstNotNullOfOrNull { centers[it.key]?.x?.minus(origin.x) } ?: return null
+    return MessageEndpoint(Offset(x, if (index < first) top else bottom), true)
+}
+
+private fun DrawScope.drawMessage(
+    flight: MessageFlight, nowNanos: Long, start: MessageEndpoint, end: MessageEndpoint, color: Color,
+) {
+    val elapsed = flight.elapsedMs(nowNanos)
+    fun edge(point: Offset, ms: Double) {
+        val alpha = minOf(1.0, ms / 120, 1 - (ms - 420) / 300).coerceAtLeast(0.0).toFloat()
+        if (alpha > 0) drawRoundRect(
+            color.copy(alpha = alpha), topLeft = point - Offset(9.dp.toPx(), 1.5.dp.toPx()),
+            size = Size(18.dp.toPx(), 3.dp.toPx()), cornerRadius = CornerRadius(1.5.dp.toPx()),
+        )
+    }
+    if (flight.senderOutside && start.outside && elapsed < 720) edge(start.point, elapsed)
+    if (elapsed < flight.durationMs) {
+        val controlDp = messageControl(
+            (start.point.x / density).toDouble() to (start.point.y / density).toDouble(),
+            (end.point.x / density).toDouble() to (end.point.y / density).toDouble(),
+        )
+        val control = Offset(controlDp.first.toFloat() * density, controlDp.second.toFloat() * density)
+        fun point(time: Float): Offset {
+            val t = if (time < .5f) 4 * time * time * time else 1 - (-2 * time + 2).pow(3) / 2
+            val u = 1 - t
+            return start.point * (u * u) + control * (2 * u * t) + end.point * (t * t)
+        }
+        val time = (elapsed / flight.durationMs).toFloat().coerceIn(0f, 1f)
+        for (k in 1..8) {
+            val first = time - (k - 1) * .025f
+            if (first <= 0) break
+            drawLine(
+                color.copy(alpha = .7f * (1 - k / 9f)), point(first), point((time - k * .025f).coerceAtLeast(0f)),
+                strokeWidth = 3.2.dp.toPx() * (1 - k / 9f), cap = StrokeCap.Round,
+            )
+        }
+        val head = point(time)
+        drawCircle(color.copy(alpha = .25f), 6.dp.toPx(), head)
+        drawCircle(color, 3.dp.toPx(), head)
+    } else if (flight.receiverOutside == true && end.outside) {
+        edge(end.point, elapsed - flight.durationMs)
+    } else if (flight.receiverOutside == false && !end.outside) {
+        val time = ((elapsed - flight.durationMs) / 420).toFloat().coerceIn(0f, 1f)
+        val progress = if (time == 1f) 1f else 1 - 2f.pow(-10 * time)
+        drawCircle(color.copy(alpha = .85f * (1 - progress)), (5 + 8 * progress).dp.toPx(), end.point,
+            style = Stroke(1.5.dp.toPx()))
     }
 }
 

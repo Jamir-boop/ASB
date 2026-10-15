@@ -111,6 +111,7 @@ private fun PairedApp(app: AsbApp, onUnpair: () -> Unit) {
                             if (app.resumed) store.saveBaselineIfPaired(token, AsbJson.encodeToString(baseline))
                         },
                         notificationMutex = app.notificationMutex,
+                        loadBaseline = { store.loadBaselineIfPaired(token) },
                     )
                 }
             }

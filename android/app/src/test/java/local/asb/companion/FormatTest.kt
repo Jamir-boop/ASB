@@ -1,6 +1,8 @@
 package local.asb.companion
 
+import local.asb.companion.ui.durationText
 import local.asb.companion.ui.idleAge
+import local.asb.companion.ui.spokenDuration
 import local.asb.companion.ui.stateLabel
 import local.asb.companion.ui.workingDuration
 import org.junit.Assert.assertEquals
@@ -8,6 +10,39 @@ import org.junit.Test
 
 class FormatTest {
     private val now = 1_800_000_000_000L
+
+    @Test fun limitCountdownUsesTheNativeCompactFormatAndSpokenUnits() {
+        val cases = listOf(
+            Triple(0L, "0s", "0 seconds"),
+            Triple(1L, "1s", "1 second"),
+            Triple(45L, "45s", "45 seconds"),
+            Triple(59L, "59s", "59 seconds"),
+            Triple(60L, "1m0s", "1 minute"),
+            Triple(61L, "1m1s", "1 minute 1 second"),
+            Triple(122L, "2m2s", "2 minutes 2 seconds"),
+            Triple(725L, "12m5s", "12 minutes 5 seconds"),
+            Triple(3599L, "59m59s", "59 minutes 59 seconds"),
+            Triple(3600L, "1h0m", "1 hour"),
+            Triple(3601L, "1h0m", "1 hour"),
+            Triple(3661L, "1h1m", "1 hour 1 minute"),
+            Triple(7200L, "2h0m", "2 hours"),
+            Triple(16_330L, "4h32m", "4 hours 32 minutes"),
+            Triple(86_400L, "24h0m", "24 hours"),
+        )
+        for ((seconds, compact, spoken) in cases) {
+            assertEquals("Countdown $seconds s", compact, durationText(seconds))
+            assertEquals("Spoken duration $seconds s", spoken, spokenDuration(seconds))
+        }
+    }
+
+    @Test fun countdownFormattingHandlesLongBoundsWithoutOverflow() {
+        for (seconds in listOf(-1L, Long.MIN_VALUE)) {
+            assertEquals("0s", durationText(seconds))
+            assertEquals("0 seconds", spokenDuration(seconds))
+        }
+        assertEquals("2562047788015215h30m", durationText(Long.MAX_VALUE))
+        assertEquals("2562047788015215 hours 30 minutes", spokenDuration(Long.MAX_VALUE))
+    }
 
     @Test fun workingTimeUsesWholeSecondsAndChangesUnitsAtTheBoundary() {
         val cases = listOf(

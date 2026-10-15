@@ -1,8 +1,13 @@
 package local.asb.companion.data
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonTransformingSerializer
 
 val AsbJson = Json { ignoreUnknownKeys = true }
 
@@ -16,7 +21,30 @@ data class Dashboard(
     val refreshIntervalMs: Long = 5000,
     val summary: JsonObject = JsonObject(emptyMap()),
     val threads: List<Thread> = emptyList(),
+    @Serializable(with = MessageListSerializer::class)
+    val messages: List<Message> = emptyList(),
 )
+
+@Serializable
+data class Message(val from: String = "", val to: String = "", val atMs: Long = 0)
+
+private object MessageListSerializer : JsonTransformingSerializer<List<Message>>(ListSerializer(Message.serializer())) {
+    private val number = Regex("-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
+
+    override fun transformDeserialize(element: JsonElement): JsonElement = JsonArray(
+        (element as? JsonArray).orEmpty().mapNotNull { entry ->
+            val message = entry as? JsonObject ?: return@mapNotNull null
+            if ((message["from"] as? JsonPrimitive)?.isString != true ||
+                (message["to"] as? JsonPrimitive)?.isString != true) return@mapNotNull null
+            val at = message["atMs"] as? JsonPrimitive ?: return@mapNotNull null
+            if (at.isString || !number.matches(at.content)) return@mapNotNull null
+            // Message identity uses exact whole milliseconds, so no rounding or clipping is allowed.
+            val milliseconds = try { at.content.toBigDecimalOrNull()?.longValueExact() }
+                catch (_: ArithmeticException) { null } ?: return@mapNotNull null
+            JsonObject(message + ("atMs" to JsonPrimitive(milliseconds)))
+        }
+    )
+}
 
 @Serializable
 data class Thread(
@@ -46,6 +74,7 @@ data class Thread(
     val lastOutcome: String = "",
     val failedAtMs: Long = 0,
     val completionAtMs: Long = 0,
+    val limitResetsAtMs: Long = 0,
     val canOpen: Boolean = false,
     val appDeepLink: String = "",
     val discardResult: Boolean = false,

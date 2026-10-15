@@ -2,9 +2,14 @@ package local.asb.companion.ui
 
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlin.math.abs
+import kotlin.math.hypot
+import local.asb.companion.data.Message
 import local.asb.companion.data.Thread
 
 val STATES = listOf("working", "waiting", "idle", "unknown")
+const val MESSAGE_MAX_AGE_MS = 30_000L
+const val MESSAGE_FLIGHT_LIMIT = 6
 
 data class Filter(
     val query: String = "",
@@ -59,10 +64,23 @@ private fun compareIds(left: String, right: String): Int {
     return (left.length - first).compareTo(right.length - second)
 }
 
+// Port of limit_left
+fun limitLeft(row: Thread, nowMs: Long = System.currentTimeMillis()): Long {
+    val reset = row.limitResetsAtMs
+    if (reset <= nowMs) return 0
+    // Split seconds and remainders so the millisecond difference cannot overflow.
+    val seconds = Math.floorDiv(reset, 1000L) - Math.floorDiv(nowMs, 1000L)
+    return seconds + if (Math.floorMod(reset, 1000L) > Math.floorMod(nowMs, 1000L)) 1 else 0
+}
+
+// Port of clock_interval
+fun clockInterval(rows: List<Thread>, nowMs: Long = System.currentTimeMillis()): Long =
+    if (rows.any { it.state == "working" && !it.archived || limitLeft(it, nowMs) in 1L..3600L }) 2 else 60
+
 // Port of attention_indicator
-fun attentionIndicator(row: Thread, drawer: Boolean = false): String = when {
+fun attentionIndicator(row: Thread, drawer: Boolean = false, nowMs: Long = System.currentTimeMillis()): String = when {
     row.actionRequired || row.questionAttention -> "question"
-    row.unread || (drawer && row.drawer && row.state != "working") -> "dot"
+    row.unread || (drawer && row.drawer && row.state != "working" && limitLeft(row, nowMs) == 0L) -> "dot"
     row.state == "working" && row.discardResult -> "discard"
     row.state == "idle" && row.lastOutcome == "stopped" -> "stop"
     else -> ""
@@ -135,4 +153,48 @@ fun pinMoveBody(visibleRows: List<Thread>, id: String, direction: String): Strin
         put("targetId", target)
         put("placement", if (direction == "up") "before" else "after")
     }.toString()
+}
+
+// Port of new_messages
+fun newMessages(
+    messages: List<Message>,
+    seen: Set<Message>?,
+    visible: Set<String>,
+    nowMs: Long,
+    room: Int,
+): Pair<List<Message>, Set<Message>> {
+    val play = mutableListOf<Message>()
+    val pairs = mutableSetOf<Pair<String, String>>()
+    val oldest = if (nowMs < Long.MIN_VALUE + MESSAGE_MAX_AGE_MS) Long.MIN_VALUE else nowMs - MESSAGE_MAX_AGE_MS
+    for (message in messages) {
+        if (seen == null || message in seen || message.atMs < oldest || message.from == message.to ||
+            message.from !in visible || message.to !in visible || play.size >= room) continue
+        if (!pairs.add(message.from to message.to)) continue
+        play.add(message)
+    }
+    return play to messages.toSet()
+}
+
+// Port of message_duration
+fun messageDuration(distance: Double): Double {
+    val duration = distance / 1.5
+    return if (duration > 480) minOf(900.0, duration) else 480.0
+}
+
+// Port of message_control
+fun messageControl(start: Pair<Double, Double>, end: Pair<Double, Double>): Pair<Double, Double> {
+    val dx = end.first - start.first
+    val dy = end.second - start.second
+    val distance = hypot(dx, dy)
+    var x = (start.first + end.first) / 2
+    var y = (start.second + end.second) / 2
+    if (distance != 0.0) {
+        val bow = if (.22 * distance < 60) .22 * distance else 60.0
+        val nx = -dy / distance
+        val ny = dx / distance
+        val sign = if (if (abs(dx) >= abs(dy)) ny > 0 else nx > 0) -1 else 1
+        x += sign * nx * bow
+        y += sign * ny * bow
+    }
+    return (if (x > 2) x else 2.0) to y
 }

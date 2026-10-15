@@ -1,5 +1,32 @@
 package local.asb.companion.ui
 
+// Port of duration_text.
+fun durationText(seconds: Long): String {
+    val total = seconds.coerceAtLeast(0)
+    val hours = total / 3600
+    val minutes = total / 60 % 60
+    val remainder = total % 60
+    return when {
+        hours > 0 -> "${hours}h${minutes}m"
+        minutes > 0 -> "${minutes}m${remainder}s"
+        else -> "${remainder}s"
+    }
+}
+
+// Port of spoken_duration.
+fun spokenDuration(seconds: Long): String {
+    val total = seconds.coerceAtLeast(0)
+    val hours = total / 3600
+    val minutes = total / 60 % 60
+    val remainder = total % 60
+    fun unit(count: Long, name: String) = "$count $name" + if (count == 1L) "" else "s"
+    return when {
+        hours > 0 -> unit(hours, "hour") + if (minutes > 0) " " + unit(minutes, "minute") else ""
+        minutes > 0 -> unit(minutes, "minute") + if (remainder > 0) " " + unit(remainder, "second") else ""
+        else -> unit(remainder, "second")
+    }
+}
+
 fun workingDuration(workingSinceMs: Long, nowMs: Long): String {
     if (workingSinceMs <= 0 || workingSinceMs > nowMs) return ""
     val seconds = (nowMs - workingSinceMs) / 1000

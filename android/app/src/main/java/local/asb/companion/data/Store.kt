@@ -1,6 +1,8 @@
 package local.asb.companion.data
 
 import android.content.Context
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.decodeFromString
 
 class Store(context: Context) {
     private val preferences = context.getSharedPreferences("asb", Context.MODE_PRIVATE)
@@ -53,6 +55,14 @@ class Store(context: Context) {
     @Synchronized
     fun saveBaselineIfPaired(token: String, value: String) {
         if (token.isNotEmpty() && this.token == token) baseline = value
+    }
+
+    @Synchronized
+    fun loadBaselineIfPaired(token: String): Map<String, Int>? {
+        if (token.isEmpty() || this.token != token) return null
+        val value = baseline ?: return null
+        return try { AsbJson.decodeFromString<Map<String, Int>>(value) }
+            catch (_: SerializationException) { null }
     }
 
     @Synchronized

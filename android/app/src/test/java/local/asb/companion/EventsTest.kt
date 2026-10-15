@@ -13,6 +13,8 @@ import org.junit.Test
 
 class EventsTest {
     private val row = Thread(id = "one")
+    private val now = 1_800_000_000_000L
+    private val reset = now + 60_000L
 
     @Test fun eachAttentionFlagSetsItsBit() {
         assertEquals(0, bits(row))
@@ -34,8 +36,8 @@ class EventsTest {
 
     @Test fun firstRunSuppressesExistingAttention() {
         val attention = row.copy(completionAttention = true, failedAttention = true, actionRequired = true)
-        assertEquals(emptyList<Event>(), diff(null, listOf(attention)))
-        assertEquals(mapOf(row.id to 7), update(listOf(attention)))
+        assertEquals(emptyList<Event>(), diff(null, listOf(attention), now))
+        assertEquals(mapOf(row.id to 7), update(null, listOf(attention), now))
     }
 
     @Test fun eachNewBitEmitsItsOwnEvent() {
@@ -45,7 +47,7 @@ class EventsTest {
             row.copy(questionAttention = true) to BIT_INPUT,
             row.copy(actionRequired = true) to BIT_INPUT,
         )) {
-            assertEquals(listOf(Event(attention, kind)), diff(mapOf(row.id to 0), listOf(attention)))
+            assertEquals(listOf(Event(attention, kind)), diff(mapOf(row.id to 0), listOf(attention), now))
         }
     }
 
@@ -54,51 +56,137 @@ class EventsTest {
             questionAttention = true, actionRequired = true)
         assertEquals(
             listOf(Event(attention, BIT_INPUT), Event(attention, BIT_FAILED), Event(attention, BIT_DONE)),
-            diff(mapOf("another" to 7), listOf(attention)),
+            diff(mapOf("another" to 7), listOf(attention), now),
         )
     }
 
     @Test fun onlyRisingBitsEmitEvents() {
         val attention = row.copy(completionAttention = true, failedAttention = true, actionRequired = true)
         assertEquals(listOf(Event(attention, BIT_INPUT), Event(attention, BIT_FAILED)),
-            diff(mapOf(row.id to BIT_DONE), listOf(attention)))
-        assertEquals(emptyList<Event>(), diff(update(listOf(attention)), listOf(row)))
+            diff(mapOf(row.id to BIT_DONE), listOf(attention), now))
+        assertEquals(emptyList<Event>(), diff(update(null, listOf(attention), now), listOf(row), now))
     }
 
     @Test fun archivedRowsHaveNoAttention() {
         val archived = row.copy(archived = true, completionAttention = true,
             failedAttention = true, questionAttention = true, actionRequired = true)
         assertEquals(0, bits(archived))
-        assertEquals(emptyList<Event>(), diff(emptyMap(), listOf(archived)))
-        assertEquals(mapOf(row.id to 0), update(listOf(archived)))
+        assertEquals(emptyList<Event>(), diff(emptyMap(), listOf(archived), now))
+        assertEquals(mapOf(row.id to 0), update(null, listOf(archived), now))
     }
 
     @Test fun unchangedBitsDoNotEmitWhenTimestampsChange() {
         val done = row.copy(completionAttention = true, completionAtMs = 100)
-        assertEquals(emptyList<Event>(), diff(update(listOf(done)),
-            listOf(done.copy(completionAtMs = 200, updatedAtMs = 200))))
+        assertEquals(emptyList<Event>(), diff(update(null, listOf(done), now),
+            listOf(done.copy(completionAtMs = 200, updatedAtMs = 200)), now))
     }
 
     @Test fun drawerInDoesNotEmitAnEvent() {
         val done = row.copy(completionAttention = true, unread = true, pending = true)
         val drawer = done.copy(drawer = true, unread = false, pending = false)
-        assertEquals(emptyList<Event>(), diff(update(listOf(done)), listOf(drawer)))
-        assertEquals(emptyList<Event>(), diff(mapOf(row.id to 0), listOf(row.copy(drawer = true))))
+        assertEquals(emptyList<Event>(), diff(update(null, listOf(done), now), listOf(drawer), now))
+        assertEquals(emptyList<Event>(), diff(mapOf(row.id to 0), listOf(row.copy(drawer = true)), now))
     }
 
     @Test fun readThenNewCompletionEmitsAgain() {
         val done = row.copy(completionAttention = true, completionAtMs = 100)
         val read = done.copy(completionAttention = false)
-        assertEquals(emptyList<Event>(), diff(update(listOf(done)), listOf(read)))
+        assertEquals(emptyList<Event>(), diff(update(null, listOf(done), now), listOf(read), now))
         val next = done.copy(completionAtMs = 200)
-        assertEquals(listOf(Event(next, BIT_DONE)), diff(update(listOf(read)), listOf(next)))
+        assertEquals(listOf(Event(next, BIT_DONE)), diff(update(null, listOf(read), now), listOf(next), now))
     }
 
     @Test fun updateDropsRowsThatAreNoLongerCurrent() {
         val done = row.copy(completionAttention = true)
         val other = Thread(id = "other", actionRequired = true)
-        assertEquals(mapOf(row.id to BIT_DONE, other.id to BIT_INPUT), update(listOf(done, other)))
-        assertEquals(mapOf(other.id to BIT_INPUT), update(listOf(other)))
-        assertEquals(emptyMap<String, Int>(), update(emptyList()))
+        val baseline = update(null, listOf(done, other), now)
+        assertEquals(mapOf(row.id to BIT_DONE, other.id to BIT_INPUT), baseline)
+        assertEquals(mapOf(other.id to BIT_INPUT), update(baseline, listOf(other), now))
+        assertEquals(emptyMap<String, Int>(), update(baseline, emptyList(), now))
+    }
+
+    @Test fun limitedServerAttentionPreservesOldResultBitsWithoutEvents() {
+        for (kind in listOf(BIT_DONE, BIT_FAILED)) {
+            val limited = row.copy(state = "idle", limitResetsAtMs = reset,
+                completionAttention = kind == BIT_DONE, failedAttention = kind == BIT_FAILED,
+                unread = false, pending = false, pendingSource = "")
+            assertEquals(kind, bits(limited))
+            for (old in 0..3) {
+                val baseline = mapOf(row.id to old)
+                assertEquals(emptyList<Event>(), diff(baseline, listOf(limited), now))
+                val saved = update(baseline, listOf(limited), now)
+                assertEquals(old, saved.getValue(row.id) and (BIT_DONE or BIT_FAILED))
+                assertEquals(saved, update(saved, listOf(limited), reset - 1))
+            }
+        }
+    }
+
+    @Test fun firstRunAndNewLimitedRowsDoNotNotifyAtReset() {
+        val limited = row.copy(completionAttention = true, limitResetsAtMs = reset)
+        for (baseline in listOf(null, emptyMap(), mapOf("other" to BIT_FAILED))) {
+            assertEquals(emptyList<Event>(), diff(baseline, listOf(limited), now))
+            val saved = update(baseline, listOf(limited), now)
+            assertEquals(0, saved.getValue(row.id) and (BIT_DONE or BIT_FAILED))
+            assertEquals(emptyList<Event>(), diff(saved, listOf(limited.copy(limitResetsAtMs = 0)), reset))
+        }
+    }
+
+    @Test fun resetRestorationIsSuppressedAndThenStoresCurrentBits() {
+        for (kind in listOf(BIT_DONE, BIT_FAILED)) {
+            val limited = row.copy(state = "idle", limitResetsAtMs = reset,
+                completionAttention = kind == BIT_DONE, failedAttention = kind == BIT_FAILED,
+                unread = false, pending = false)
+            val saved = update(mapOf(row.id to 0), listOf(limited), now)
+            for (resetField in listOf(0L, reset)) {
+                val restored = limited.copy(limitResetsAtMs = resetField, unread = true, pending = true)
+                assertEquals(emptyList<Event>(), diff(saved, listOf(restored), reset))
+                val after = update(saved, listOf(restored), reset)
+                assertEquals(mapOf(row.id to kind), after)
+                assertEquals(emptyList<Event>(), diff(after, listOf(restored), reset + 1))
+            }
+        }
+    }
+
+    @Test fun inputCanClearAndRiseDuringTheLimitAndAtReset() {
+        val limited = row.copy(completionAttention = true, limitResetsAtMs = reset)
+        val initial = update(mapOf(row.id to BIT_FAILED), listOf(limited), now)
+        val input = limited.copy(questionAttention = true)
+        assertEquals(listOf(Event(input, BIT_INPUT)), diff(initial, listOf(input), now))
+        val waiting = update(initial, listOf(input), now)
+        assertEquals(BIT_FAILED or BIT_INPUT, waiting.getValue(row.id) and 7)
+        assertEquals(emptyList<Event>(), diff(waiting, listOf(input), now))
+        val cleared = update(waiting, listOf(limited), now)
+        assertEquals(BIT_FAILED, cleared.getValue(row.id) and 7)
+        val atReset = input.copy(limitResetsAtMs = 0, questionAttention = false, actionRequired = true)
+        assertEquals(listOf(Event(atReset, BIT_INPUT)), diff(cleared, listOf(atReset), reset))
+        assertEquals(mapOf(row.id to (BIT_DONE or BIT_INPUT)), update(cleared, listOf(atReset), reset))
+    }
+
+    @Test fun archivedLimitedRowsClearTheMarkerAndAllAttention() {
+        val limited = row.copy(completionAttention = true, limitResetsAtMs = reset)
+        val saved = update(mapOf(row.id to 7), listOf(limited), now)
+        val archived = limited.copy(archived = true, failedAttention = true, actionRequired = true)
+        assertEquals(emptyList<Event>(), diff(saved, listOf(archived), now))
+        assertEquals(mapOf(row.id to 0), update(saved, listOf(archived), now))
+        assertEquals(emptyMap<String, Int>(), update(saved, emptyList(), now))
+    }
+
+    @Test fun observedTaskAfterResetCanCompleteNormally() {
+        val limited = row.copy(failedAttention = true, limitResetsAtMs = reset)
+        val saved = update(mapOf(row.id to 0), listOf(limited), now)
+        val working = row.copy(state = "working", workingSinceMs = reset + 1)
+        assertEquals(emptyList<Event>(), diff(saved, listOf(working), reset + 1))
+        val workingBaseline = update(saved, listOf(working), reset + 1)
+        assertEquals(mapOf(row.id to 0), workingBaseline)
+        val done = row.copy(completionAttention = true, completionAtMs = reset + 10_000)
+        assertEquals(listOf(Event(done, BIT_DONE)), diff(workingBaseline, listOf(done), reset + 10_000))
+    }
+
+    @Test fun completionBetweenResetAndNextPollCannotBeDistinguishedFromRestoration() {
+        val limited = row.copy(failedAttention = true, limitResetsAtMs = reset)
+        val saved = update(mapOf(row.id to 0), listOf(limited), now)
+        val done = row.copy(completionAttention = true, completionAtMs = reset + 10_000)
+        assertEquals(emptyList<Event>(), diff(saved, listOf(done), reset + 15_000))
+        assertEquals(mapOf(row.id to BIT_DONE), update(saved, listOf(done), reset + 15_000))
     }
 }

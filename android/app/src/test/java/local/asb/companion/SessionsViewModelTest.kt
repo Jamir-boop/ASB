@@ -24,6 +24,9 @@ import local.asb.companion.data.Thread
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.sha256Hex
+import local.asb.companion.notify.BIT_DONE
+import local.asb.companion.notify.BIT_FAILED
+import local.asb.companion.notify.diff
 import local.asb.companion.ui.Filter
 import local.asb.companion.ui.SessionsViewModel
 import okhttp3.Protocol
@@ -74,9 +77,14 @@ class SessionsViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun model(mutex: Mutex = Mutex(), initiallyRevoked: Boolean = false): SessionsViewModel {
+    private fun model(
+        mutex: Mutex = Mutex(),
+        initiallyRevoked: Boolean = false,
+        loadBaseline: () -> Map<String, Int>? = { baselines.lastOrNull() },
+        saveBaseline: (Map<String, Int>) -> Unit = { baselines += it },
+    ): SessionsViewModel {
         val api = AsbApi("127.0.0.1", server.port, fingerprint, "t".repeat(43)) { revoked = true }
-        return SessionsViewModel(api, "Test PC", initiallyRevoked, { baselines += it }, mutex)
+        return SessionsViewModel(api, "Test PC", initiallyRevoked, saveBaseline, mutex, loadBaseline)
             .also { models.put("sessions", it) }
     }
 
@@ -211,6 +219,53 @@ class SessionsViewModelTest {
         assertFalse(model.state.value.refreshing)
         assertEquals("old", server.takeRequest().getHeader("If-None-Match"))
         assertEquals(2, baselines.size)
+    }
+
+    @Test fun foregroundLimitSnapshotsAnd304PreserveStoredResultBitsInsideTheTransaction() = runBlocking {
+        val nowMs = System.currentTimeMillis()
+        val limited = Dashboard(1, threads = listOf(
+            Thread(id = "done", state = "idle", limitResetsAtMs = nowMs + 3600000),
+            Thread(id = "failed", state = "idle", limitResetsAtMs = nowMs + 3600000),
+        ))
+        var stored: Map<String, Int>? = mapOf("done" to BIT_DONE, "failed" to BIT_FAILED, "gone" to BIT_DONE)
+        val mutex = Mutex(locked = true)
+        var reads = 0
+        val model = model(mutex, loadBaseline = {
+            assertTrue(mutex.isLocked)
+            reads++
+            stored
+        }, saveBaseline = {
+            assertTrue(mutex.isLocked)
+            stored = it
+            baselines += it
+        })
+        server.enqueue(response(limited))
+        model.refresh()
+        scheduler.runCurrent()
+        assertEquals(0, reads)
+        mutex.unlock()
+        await { !model.state.value.refreshing }
+        assertEquals(BIT_DONE, stored!!.getValue("done") and (BIT_DONE or BIT_FAILED))
+        assertEquals(BIT_FAILED, stored!!.getValue("failed") and (BIT_DONE or BIT_FAILED))
+        assertFalse(stored!!.containsKey("gone"))
+        val afterLimit = stored
+
+        server.enqueue(MockResponse().setResponseCode(304))
+        val polling = poll(model)
+        await { baselines.size == 2 }
+        polling.cancel()
+        scheduler.runCurrent()
+        assertEquals(afterLimit, stored)
+        val reset = limited.copy(generatedAtMs = 2, threads = listOf(
+            Thread(id = "done", state = "idle", completionAttention = true),
+            Thread(id = "failed", state = "idle", failedAttention = true),
+        ))
+        assertTrue(diff(stored, reset.threads, nowMs).isEmpty())
+        server.enqueue(response(reset))
+        model.refresh()
+        await { !model.state.value.refreshing }
+        assertEquals(mapOf("done" to BIT_DONE, "failed" to BIT_FAILED), stored)
+        assertEquals(3, reads)
     }
 
     @Test fun serverDashboardFailureKeepsCachedRowsOfflineUntil304AndRetriesAfter5Seconds() = runBlocking {

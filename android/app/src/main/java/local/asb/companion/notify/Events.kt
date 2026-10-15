@@ -1,10 +1,12 @@
 package local.asb.companion.notify
 
 import local.asb.companion.data.Thread
+import local.asb.companion.ui.limitLeft
 
 const val BIT_DONE = 1
 const val BIT_FAILED = 2
 const val BIT_INPUT = 4
+private const val BIT_LIMITED = 8
 
 fun bits(row: Thread): Int {
     if (row.archived) return 0
@@ -15,11 +17,19 @@ fun bits(row: Thread): Int {
 
 data class Event(val row: Thread, val kind: Int)
 
-fun diff(baseline: Map<String, Int>?, threads: List<Thread>): List<Event> {
+fun diff(
+    baseline: Map<String, Int>?,
+    threads: List<Thread>,
+    nowMs: Long = System.currentTimeMillis(),
+): List<Event> {
     if (baseline == null) return emptyList()
     return buildList {
         for (row in threads) {
-            val added = bits(row) and (baseline[row.id] ?: 0).inv()
+            val old = baseline[row.id] ?: 0
+            var added = bits(row) and old.inv()
+            // Stored attention survives a limit; suppress its first restoration after the reset.
+            // shortcut: A result after reset can be missed between polls; use event history if all results must notify.
+            if (limitLeft(row, nowMs) > 0 || old and BIT_LIMITED != 0) added = added and BIT_INPUT
             if (added and BIT_INPUT != 0) add(Event(row, BIT_INPUT))
             if (added and BIT_FAILED != 0) add(Event(row, BIT_FAILED))
             if (added and BIT_DONE != 0) add(Event(row, BIT_DONE))
@@ -27,4 +37,13 @@ fun diff(baseline: Map<String, Int>?, threads: List<Thread>): List<Event> {
     }
 }
 
-fun update(threads: List<Thread>): Map<String, Int> = threads.associate { it.id to bits(it) }
+fun update(
+    baseline: Map<String, Int>?,
+    threads: List<Thread>,
+    nowMs: Long = System.currentTimeMillis(),
+): Map<String, Int> = threads.associate { row ->
+    val current = bits(row)
+    row.id to if (!row.archived && limitLeft(row, nowMs) > 0) {
+        (current and BIT_INPUT) or ((baseline?.get(row.id) ?: 0) and (BIT_DONE or BIT_FAILED)) or BIT_LIMITED
+    } else current
+}

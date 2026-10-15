@@ -5,12 +5,20 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import local.asb.companion.data.Thread
+import local.asb.companion.data.Message
 import local.asb.companion.ui.Filter
+import local.asb.companion.ui.MESSAGE_FLIGHT_LIMIT
+import local.asb.companion.ui.MESSAGE_MAX_AGE_MS
 import local.asb.companion.ui.MenuAction
 import local.asb.companion.ui.STATES
 import local.asb.companion.ui.attentionIndicator
 import local.asb.companion.ui.casefold
+import local.asb.companion.ui.clockInterval
 import local.asb.companion.ui.filteredRows
+import local.asb.companion.ui.limitLeft
+import local.asb.companion.ui.messageControl
+import local.asb.companion.ui.messageDuration
+import local.asb.companion.ui.newMessages
 import local.asb.companion.ui.pinMoveBody
 import local.asb.companion.ui.providerQuery
 import local.asb.companion.ui.rowMenuActions
@@ -274,5 +282,105 @@ class RulesTest {
         assertEquals(1530, changed)
         assertEquals("50ce3332f4a0e7751952ce4e9ea9e25255d963b068484ef5e911a6af603064b9",
             digest.digest().joinToString("") { "%02x".format(it) })
+    }
+
+    @Test fun usageLimitRoundsUpUntilTheExactResetWithoutOverflow() {
+        for ((milliseconds, seconds) in listOf(3_600_000L to 3600L, 3_599_000L to 3599L,
+            16_330_000L to 16330L, 3_661_000L to 3661L, 60_000L to 60L, 59_000L to 59L,
+            1000L to 1L, 200L to 1L, 1L to 1L)) {
+            assertEquals(seconds, limitLeft(Thread(limitResetsAtMs = now + milliseconds), now))
+        }
+        for (reset in listOf(now, now - 1, 0L, Long.MIN_VALUE)) {
+            assertEquals(0L, limitLeft(Thread(limitResetsAtMs = reset), now))
+        }
+        assertEquals(0L, limitLeft(Thread(state = "idle"), now))
+        assertEquals(1L, limitLeft(Thread(limitResetsAtMs = Long.MAX_VALUE), Long.MAX_VALUE - 1))
+        assertEquals(9_223_372_036_854_776L, limitLeft(Thread(limitResetsAtMs = Long.MAX_VALUE), 0))
+        assertEquals(18_446_744_073_709_552L, limitLeft(Thread(limitResetsAtMs = Long.MAX_VALUE), Long.MIN_VALUE))
+    }
+
+    @Test fun clockCadenceUsesWorkingOrTheLastHourOfAnyVisibleReset() {
+        val row = Thread(state = "idle", limitResetsAtMs = now + 3_600_000)
+        assertEquals(60L, clockInterval(emptyList(), now))
+        assertEquals(60L, clockInterval(listOf(row), now - 1))
+        assertEquals(2L, clockInterval(listOf(row), now))
+        assertEquals(60L, clockInterval(listOf(row), now + 3_600_000))
+        assertEquals(2L, clockInterval(listOf(row.copy(state = "working")), now - 1))
+        assertEquals(60L, clockInterval(listOf(row.copy(state = "working", archived = true)), now - 1))
+        assertEquals(2L, clockInterval(listOf(row.copy(archived = true)), now))
+        assertEquals(2L, clockInterval(listOf(Thread(state = "idle"), Thread(state = "working")), now))
+    }
+
+    @Test fun limitedDrawerDotReturnsAtResetWithoutChangingOtherAttentionRules() {
+        val row = Thread(id = "a", state = "idle", drawer = true, limitResetsAtMs = now + 3_600_000)
+        assertEquals("", attentionIndicator(row, drawer = true, nowMs = now))
+        assertEquals("dot", attentionIndicator(row, drawer = true, nowMs = now + 3_600_000))
+        assertEquals("", attentionIndicator(row, nowMs = now))
+        assertEquals("question", attentionIndicator(row.copy(questionAttention = true), true, now))
+        assertEquals("question", attentionIndicator(row.copy(actionRequired = true), true, now))
+        assertEquals("dot", attentionIndicator(row.copy(unread = true), true, now))
+        assertEquals("discard", attentionIndicator(row.copy(state = "working", discardResult = true), true, now))
+        assertEquals(listOf("mark-read", "drawer-out", "pin"), rowMenuActions(row).map { it.action })
+    }
+
+    @Test fun newMessagesFirstSnapshotSeenReplacementAgeVisibilityPairsAndCap() {
+        val at = 1_000_000L
+        val visible = setOf("a", "b", "c")
+        fun message(from: String, to: String, time: Long = at - 1000) = Message(from, to, time)
+        val first = message("a", "b")
+        var result = newMessages(listOf(first), null, visible, at, 6)
+        assertEquals(emptyList<Message>() to setOf(first), result)
+        val reply = message("b", "a", at - 500)
+        result = newMessages(listOf(first, reply), result.second, visible, at, 6)
+        assertEquals(listOf(reply) to setOf(first, reply), result)
+        result = newMessages(listOf(reply), result.second, visible, at, 6)
+        assertEquals(emptyList<Message>() to setOf(reply), result)
+        assertEquals(listOf(first), newMessages(listOf(first), result.second, visible, at, 6).first)
+        val boundary = message("a", "c", at - 30_000)
+        val old = message("a", "b", at - 30_001)
+        assertEquals(listOf(boundary) to setOf(boundary, old),
+            newMessages(listOf(boundary, old), emptySet(), visible, at, 6))
+        val hidden = listOf(message("a", "hidden"), message("hidden", "a"), message("a", "a"))
+        assertEquals(emptyList<Message>() to hidden.toSet(), newMessages(hidden, emptySet(), visible, at, 6))
+        val samePair = listOf(message("a", "b", at - 3), message("a", "b", at - 2), message("b", "a", at - 1))
+        assertEquals(listOf(samePair[0], samePair[2]), newMessages(samePair, emptySet(), visible, at, 6).first)
+        assertEquals(listOf(samePair[1], samePair[2]), newMessages(samePair, setOf(samePair[0]), visible, at, 6).first)
+        val messages = (0..7).map { message("$it", "${it + 1}") }
+        val many = (0..8).map { "$it" }.toSet()
+        assertEquals(6, MESSAGE_FLIGHT_LIMIT)
+        assertEquals(30_000L, MESSAGE_MAX_AGE_MS)
+        assertEquals(messages.take(6) to messages.toSet(), newMessages(messages, emptySet(), many, at, 6))
+        assertEquals(messages.take(2) to messages.toSet(), newMessages(messages, emptySet(), many, at, 2))
+        for (room in listOf(0, -1)) {
+            assertEquals(emptyList<Message>() to messages.toSet(), newMessages(messages, emptySet(), many, at, room))
+        }
+        assertEquals(emptyList<Message>() to emptySet<Message>(), newMessages(emptyList(), emptySet(), visible, at, 6))
+        val future = message("a", "b", at + 5000)
+        assertEquals(listOf(future), newMessages(listOf(future), emptySet(), visible, at, 6).first)
+        val ancient = message("a", "b", Long.MIN_VALUE)
+        assertEquals(emptyList<Message>(), newMessages(listOf(ancient), emptySet(), visible, at, 6).first)
+        assertEquals(listOf(ancient), newMessages(listOf(ancient), emptySet(), visible, Long.MIN_VALUE, 6).first)
+        assertEquals(listOf(first), newMessages(listOf(first, first), emptySet(), visible, at, 6).first)
+    }
+
+    @Test fun messageDurationAndControlMatchNativeGeometry() {
+        assertEquals(480.0, messageDuration(100.0), 0.0)
+        assertEquals(700.0, messageDuration(1050.0), 0.0)
+        assertEquals(900.0, messageDuration(3000.0), 0.0)
+        assertEquals(480.0, messageDuration(-1.0), 0.0)
+        assertEquals(480.0, messageDuration(Double.NaN), 0.0)
+        assertEquals(900.0, messageDuration(Double.POSITIVE_INFINITY), 0.0)
+        assertEquals(1001.0 / 1.5, messageDuration(1001.0), 0.0)
+        assertEquals(50.0 to 78.0, messageControl(0.0 to 100.0, 100.0 to 100.0))
+        assertEquals(50.0 to 78.0, messageControl(100.0 to 100.0, 0.0 to 100.0))
+        assertEquals(500.0 to -60.0, messageControl(0.0 to 0.0, 1000.0 to 0.0))
+        assertEquals(28.0 to 50.0, messageControl(50.0 to 0.0, 50.0 to 100.0))
+        assertEquals(28.0 to 50.0, messageControl(50.0 to 100.0, 50.0 to 0.0))
+        assertEquals(2.0 to 500.0, messageControl(5.0 to 0.0, 5.0 to 1000.0))
+        val (x, y) = messageControl(0.0 to 0.0, 100.0 to 80.0)
+        assertTrue(x > 50)
+        assertTrue(y < 40)
+        assertEquals(7.0 to 7.0, messageControl(7.0 to 7.0, 7.0 to 7.0))
+        assertEquals(2.0 to 0.0, messageControl(0.0 to 0.0, 0.0 to 0.0))
     }
 }
