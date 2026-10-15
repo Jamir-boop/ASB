@@ -23,6 +23,11 @@ const CLAUDE_APPEND_GUARD_BYTES = 64;
 const CLAUDE_ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 const CLAUDE_DESKTOP_CODE_DEFAULT_TITLE = 'General coding session';
 const UUID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const MAX_INCOMING_MESSAGES = 20;
+const CROSS_SESSION_TAG = '<cross-session-message';
+const CROSS_SESSION_OPEN_TAG = /^<cross-session-message((?:\s+[\w-]+="[^"]*")*)\s*>/;
+const LOCAL_SESSION_PATTERN = /^local_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const BRIDGE_SENDER_PATTERN = /^bridge:(?:session|cse)_[A-Za-z0-9]{1,128}$/;
 const claudeProjectIndexCacheByDir = new Map();
 const claudeProjectIndexReads = new Map();
 const claudeSignalReads = new Map();
@@ -176,8 +181,22 @@ function initialSignals() {
 
 function initialClaudeLifecycle() {
   return { running: null, startedAtMs: 0, activityAtMs: 0, eventAtMs: 0, kind: '', finalAtMs: 0,
-    endedAtMs: 0, endKind: '',
-    agents: new Map(), agentTools: new Map() };
+    endedAtMs: 0, endKind: '', limitResetsAtMs: 0,
+    agents: new Map(), agentTools: new Map(), messages: [] };
+}
+
+// Reads only the opening tag of a message from another session, and returns only its sender ID.
+function crossSessionSender(text, maxIndex) {
+  const index = text.indexOf(CROSS_SESSION_TAG);
+  // A tag after other markup is quoted text, for example in a task notification.
+  if (index < 0 || index > maxIndex || text.slice(0, index).includes('<')) return '';
+  const tag = text.slice(index, index + 4096).match(CROSS_SESSION_OPEN_TAG);
+  if (!tag) return '';
+  const attributes = new Map([...tag[1].matchAll(/([\w-]+)="([^"]*)"/g)].map((match) => [match[1], match[2]]));
+  const session = attributes.get('from-session') || '';
+  if (LOCAL_SESSION_PATTERN.test(session) || UUID_PATTERN.test(session)) return session;
+  const from = attributes.get('from') || '';
+  return LOCAL_SESSION_PATTERN.test(from) || BRIDGE_SENDER_PATTERN.test(from) ? from : '';
 }
 
 function applyClaudeLifecycle(lifecycle, event, timestampMs) {
@@ -215,6 +234,13 @@ function applyClaudeLifecycle(lifecycle, event, timestampMs) {
     }
     return;
   }
+  // Each incoming message has one delivery record: a meta user record, or a queued prompt of a busy chat.
+  const sender = event.type === 'user' ? event.isMeta === true ? crossSessionSender(text, 199) : ''
+    : notice ? crossSessionSender(notice, 0) : '';
+  if (sender) {
+    lifecycle.messages.push({ from: sender, atMs: timestampMs });
+    if (lifecycle.messages.length > MAX_INCOMING_MESSAGES) lifecycle.messages.shift();
+  }
   if (timestampMs < lifecycle.eventAtMs) return;
   const kind = event.type === 'system' ? event.subtype : event.type;
   const stopReason = String(firstPresent(event.message?.stop_reason, event.message?.stopReason,
@@ -223,6 +249,11 @@ function applyClaudeLifecycle(lifecycle, event, timestampMs) {
   const cancelled = interrupted || ['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled', 'aborted', 'interrupted'].includes(kind)
     || (event.type === 'result' && ['interrupted', 'cancelled', 'aborted'].includes(event.terminal_reason));
   const failed = event.type === 'result' && event.is_error;
+  // Only the usage-limit error record with a reset time gives a limited state. Model limits and the old text form have no quotaLimits.
+  if (event.type === 'assistant') {
+    lifecycle.limitResetsAtMs = event.isApiErrorMessage === true && event.error === 'rate_limit'
+      && Number.isFinite(event.quotaLimits?.resetsAt) ? event.quotaLimits.resetsAt * 1000 : 0;
+  }
   // The app runs a tool call also after a stop reason such as refusal, so a record with a tool call is not the end of a turn.
   const completed = event.type === 'result' || kind === 'stop_hook_summary' || kind === 'task_complete'
     || (event.type === 'assistant' && ['end_turn', 'stop_sequence', 'max_tokens', 'refusal'].includes(stopReason)
@@ -244,6 +275,7 @@ function applyClaudeLifecycle(lifecycle, event, timestampMs) {
     || (Array.isArray(content) && content.some((item) => ['thinking', 'tool_use'].includes(item?.type))));
   if (humanStart || kind === 'task_started' || activeAssistant) {
     if (humanStart || lifecycle.running !== true) lifecycle.startedAtMs = timestampMs;
+    if (humanStart || kind === 'task_started') lifecycle.limitResetsAtMs = 0;
     lifecycle.running = true;
     lifecycle.kind = 'task_started';
     lifecycle.eventAtMs = timestampMs;
@@ -740,6 +772,10 @@ export function normalizeClaudeDesktopCodeSession(session, {
     extra: {
       appDeepLink,
       cliSessionId,
+      priorCliSessionIds: Array.isArray(session.priorCliSessionIds)
+        ? session.priorCliSessionIds.filter((id) => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id)) : [],
+      incomingMessages: (signals.lifecycle?.messages || []).map((message) => ({ ...message })),
+      limitResetsAtMs: coerceNumber(signals.lifecycle?.limitResetsAtMs),
       bridgeSessionIds: Array.isArray(session.bridgeSessionIds)
         ? session.bridgeSessionIds.filter((id) => typeof id === 'string' && /^(?:cse|session)_[A-Za-z0-9_-]{1,128}$/.test(id)) : [],
       permissionMode: session.permissionMode || '',

@@ -127,6 +127,43 @@ test('native receipt reasons remain visible in status while late receipts stay i
   } finally { await f.close(); }
 });
 
+test('an outgoing message that the peer holds stays out of the inbox, idle checks, expiry, sessions and close', async () => {
+  const f = await fixture();
+  try {
+    const first = await f.bridge.sendMessage(f.peerId, 'own text the peer holds');
+    const second = await f.bridge.sendMessage(f.peerId, 'second own text the peer holds');
+    const firstId = z.string().parse(first.messageId), secondId = z.string().parse(second.messageId);
+    const ids = [firstId, secondId];
+    for (const id of ids) await f.transmit({ type: 'control', action: 'peer_message_status', orig_msg_id: id, status: 'held' });
+    await until(() => f.bridge.status().messages.filter(row => ids.includes(row.id) && row.status === 'held').length === 2);
+    const receipts = () => f.frames.filter(frame => frame.type === 'control' && frame.action === 'peer_message_status'
+      && ids.includes(frame.orig_msg_id));
+    expect(f.bridge.held()).toEqual([]);
+    expect(f.bridge.reviewableHeld()).toEqual([]);
+    expect(f.bridge.status().heldCount).toBe(0);
+
+    const request = randomUUID();
+    await f.transmit({ type: 'control', action: 'notify_when_idle', msg_id: request });
+    await until(() => f.frames.some(frame => frame.type === 'control' && frame.action === 'peer_idle_notice' && frame.orig_msg_id === request));
+
+    await f.bridge.resolveHeld(firstId, 'approve');
+    f.db.run('UPDATE messages SET expires_at=0 WHERE id IN (?,?)', ids);
+    await f.bridge.setExpiry('5m');
+    f.bridge.beginSession();
+    const status = (id: string) => f.db.query<{ status: string }, [string]>('SELECT status FROM messages WHERE id=?').get(id)?.status;
+    expect(ids.map(status)).toEqual(['held', 'held']);
+    expect(f.desktop.submissions).toHaveLength(0);
+    expect(receipts()).toEqual([]);
+
+    await f.transmit({ type: 'control', action: 'peer_message_status', orig_msg_id: firstId, status: 'delivered' });
+    await until(() => status(firstId) === 'delivered');
+    await f.bridge.close();
+    await Bun.sleep(100);
+    expect(status(secondId)).toBe('held');
+    expect(receipts()).toEqual([]);
+  } finally { await f.close(); }
+});
+
 test('delivered receipts mean a held message was released, ordinary acceptance sends none', async () => {
   const f = await fixture();
   try {

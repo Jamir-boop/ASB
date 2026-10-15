@@ -21,6 +21,8 @@ const ROLLOUT_SIGNAL_CONCURRENCY = 6;
 const COMPLETION_HINT = /(\bdone\b|\bcompleted?\b|ready for review|handoff|完成|已完成|验收|交付|交接|可以看|可以试)/i;
 const LOW_SIGNAL_USER_MESSAGE = /^(继续|继续吧|你继续|你继续吧|好的|好的好的|可以|可以的|行|ok|okay|收到|嗯|嗯嗯|先这样)$/iu;
 const ROLLOUT_LIFECYCLE_EVENT_RE = /"type"\s*:\s*"(?:task_started|task_complete|turn_aborted|turn_cancelled|task_cancelled|cancelled)"/;
+// A usage window at 100 percent or more. Other token_count lines cannot change the limit reset of a scan, so they are not parsed.
+const ROLLOUT_LIMIT_REACHED_RE = /"used_percent"\s*:\s*[1-9]\d{2}/;
 const QUESTION_HISTORY_COMPLETE = Symbol('question history complete');
 const ROLLOUT_SCAN_CHUNK_BYTES = 1024 * 1024;
 const ROLLOUT_SCAN_OVERLAP_BYTES = 256;
@@ -43,6 +45,10 @@ const LOCAL_ARTIFACT_EXTENSION_RE = LOCAL_ARTIFACT_EXTENSIONS.join('|');
 const rolloutSignalCache = new SourceCache(DEFAULT_THREAD_LIMIT);
 const rolloutActivityCache = new SourceCache(DEFAULT_THREAD_LIMIT);
 const codexMetadataCache = new SourceCache(32);
+const bridgeMessageCache = new SourceCache(DEFAULT_THREAD_LIMIT);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const BRIDGE_DELIVERED_STATUSES = new Set(['accepted', 'started', 'steered']);
+export const SESSION_MESSAGE_WINDOW_MS = 2 * 60 * 1000;
 const codexNativeReadCache = new WeakMap();
 const codexCreatorIdentityCache = new Map();
 const codexCacheMetrics = {
@@ -160,12 +166,55 @@ async function readCodexMetadata(filePath, parse, cacheScope) {
 }
 
 export function invalidateCodexData({ filePath = '' } = {}) {
-  if (filePath) codexMetadataCache.delete(filePath);
-  else codexMetadataCache.clear();
+  for (const cache of [codexMetadataCache, bridgeMessageCache]) {
+    if (filePath) cache.delete(filePath);
+    else cache.clear();
+  }
 }
 
 export function retainCodexDataScopes(scopes) {
-  for (const cache of [rolloutSignalCache, rolloutActivityCache, codexMetadataCache]) cache.retainScopes(scopes);
+  for (const cache of [rolloutSignalCache, rolloutActivityCache, codexMetadataCache, bridgeMessageCache]) cache.retainScopes(scopes);
+}
+
+function sameBridgeSignature(a, b) {
+  return sameFileSignature(a.main, b.main) && (a.wal && b.wal ? sameFileSignature(a.wal, b.wal) : a.wal === b.wal);
+}
+
+// The receiver view of ASB Bridge: one database for each receiving Codex thread. The message text is never selected.
+async function readBridgeFile(filePath, to, sinceMs, cacheScope) {
+  const [main, wal] = await Promise.all([fs.stat(filePath), fs.stat(`${filePath}-wal`).catch(() => null)]);
+  if (Math.max(main.mtimeMs, wal?.mtimeMs || 0) < sinceMs) return [];
+  // A WAL append does not change the main file.
+  const signature = { main: statSignature(main), wal: wal ? statSignature(wal) : null };
+  const since = Math.floor(sinceMs / 1000);
+  const cached = bridgeMessageCache.get(filePath, cacheScope);
+  if (cached && sameBridgeSignature(cached.signature, signature) && since >= cached.since) {
+    return cached.messages.filter((message) => message.atMs >= since * 1000);
+  }
+  const columns = new Set((await querySqliteJson(filePath, 'pragma table_info(messages);')).map((row) => row.name));
+  let messages = [];
+  if (['peer_id', 'direction', 'status', 'created_at'].every((name) => columns.has(name))) {
+    const hasKind = columns.has('kind');
+    const rows = await querySqliteJson(filePath, `select peer_id, status, created_at${hasKind ? ', kind' : ''}
+      from messages where direction = 'in' and created_at >= ${since};`);
+    messages = rows.filter((row) => BRIDGE_DELIVERED_STATUSES.has(row.status) && (!hasKind || row.kind === 'message')
+      && typeof row.peer_id === 'string' && UUID_RE.test(row.peer_id) && Number.isFinite(Number(row.created_at)))
+      .map((row) => ({ to, from: row.peer_id, atMs: Number(row.created_at) * 1000 }));
+  }
+  bridgeMessageCache.remember(filePath, { signature, since, messages }, cacheScope);
+  return messages;
+}
+
+export async function readBridgeMessages(codexDir, sinceMs, cacheScope = '') {
+  const directory = path.join(codexDir, 'plugin-state', 'asb-bridge');
+  const names = await fs.readdir(directory).catch(() => []);
+  const results = await Promise.all(names.map((name) => {
+    const to = name.endsWith('.sqlite') ? name.slice(0, -'.sqlite'.length) : '';
+    if (!UUID_RE.test(to)) return [];
+    // A read error on one database skips only that database.
+    return readBridgeFile(path.join(directory, name), to, sinceMs, cacheScope).catch(() => []);
+  }));
+  return results.flat();
 }
 
 export function codexNativeReadStatus(thread, globalState) {
@@ -459,6 +508,12 @@ function emptyRolloutLifecycle() {
     latestTaskStartedAtMs: 0,
     latestTaskEndedAtMs: 0,
     latestTaskEndKind: '',
+    // A usage limit stopped the latest turn.
+    limitStopped: false,
+    limitStoppedAtMs: 0,
+    // The largest reset of the full windows in the newest token_count with a full window. Accounts with credits keep working past a full window.
+    limitFullResetsAtMs: 0,
+    limitResetsAtMs: 0,
   };
 }
 
@@ -471,6 +526,15 @@ function applyRolloutLifecycleEvent(lifecycle, payload, timestampMs) {
     lifecycle.latestLifecycleAtMs = timestampMs || lifecycle.latestLifecycleAtMs;
     lifecycle.latestLifecycleKind = eventType;
     lifecycle.latestTaskStartedAtMs = timestampMs || lifecycle.latestTaskStartedAtMs;
+    lifecycle.limitStopped = false;
+    lifecycle.limitStoppedAtMs = 0;
+    return;
+  }
+
+  if (eventType === 'token_count') {
+    const windows = [payload.rate_limits?.primary, payload.rate_limits?.secondary].filter((window) => window && typeof window === 'object');
+    const full = windows.filter((window) => Number(window.used_percent) >= 100);
+    if (full.length) lifecycle.limitFullResetsAtMs = Math.max(0, ...full.map((window) => Number(window.resets_at) * 1000).filter(Number.isFinite));
     return;
   }
 
@@ -482,10 +546,16 @@ function applyRolloutLifecycleEvent(lifecycle, payload, timestampMs) {
     lifecycle.latestLifecycleKind = eventType === 'task_complete' && payload.error != null ? 'failed' : eventType;
     lifecycle.latestTaskEndedAtMs = timestampMs || lifecycle.latestTaskEndedAtMs;
     lifecycle.latestTaskEndKind = lifecycle.latestLifecycleKind;
+    // Only the error kind is read, never the error message.
+    lifecycle.limitStopped = eventType === 'task_complete' && payload.error?.codex_error_info === 'usage_limit_exceeded';
+    lifecycle.limitStoppedAtMs = lifecycle.limitStopped ? timestampMs || 0 : 0;
   }
 }
 
 function finalizeRolloutLifecycle(signals) {
+  // Only an ended turn can be stopped by a usage limit. A reset at or before the stop is stale: a retry fails with no new full record.
+  signals.limitResetsAtMs = signals.agentRunning === false && signals.limitStopped
+    && signals.limitFullResetsAtMs > signals.limitStoppedAtMs ? signals.limitFullResetsAtMs : 0;
   if (signals.agentRunning === true) {
     signals.agentActivityAtMs = Math.max(
       Number(signals.agentStartedAtMs || 0),
@@ -659,7 +729,7 @@ async function scanRolloutLifecycle(rolloutPath, stat, cacheLimit, needLifecycle
   }
   const applyLines = (text) => {
     for (const line of text.split(ROLLOUT_LINE_BREAK_RE)) {
-      if (!ROLLOUT_LIFECYCLE_EVENT_RE.test(line) && !/request_user_input|function_call_output|send_user_message_question_reply|"type"\s*:\s*"user_message"|"role"\s*:\s*"user"/.test(line)) continue;
+      if (!ROLLOUT_LIFECYCLE_EVENT_RE.test(line) && !ROLLOUT_LIMIT_REACHED_RE.test(line) && !/request_user_input|function_call_output|send_user_message_question_reply|"type"\s*:\s*"user_message"|"role"\s*:\s*"user"/.test(line)) continue;
 
       try {
         const event = JSON.parse(line);
@@ -776,9 +846,12 @@ export async function readRolloutSignals(
       bytesToRead = nextBytes;
     }
     // A human message or an abort clears all earlier questions. Otherwise keep the full history scan.
-    if (tailStart > 0 && !(signals.agentRunning !== null && signals[QUESTION_HISTORY_COMPLETE])) {
-      const activity = await scanRolloutLifecycle(rolloutPath, stat, cacheLimit, signals.agentRunning === null, cacheScope);
+    // A stop without a full window in the tail needs the newest full window of the whole log.
+    const limitBeforeTail = signals.limitFullResetsAtMs === 0 && signals.agentRunning === false && signals.limitStopped;
+    if (tailStart > 0 && (limitBeforeTail || !(signals.agentRunning !== null && signals[QUESTION_HISTORY_COMPLETE]))) {
+      const activity = await scanRolloutLifecycle(rolloutPath, stat, cacheLimit, signals.agentRunning === null || limitBeforeTail, cacheScope);
       signals = finalizeRolloutLifecycle({ ...signals, ...(signals.agentRunning === null ? activity : {}),
+        ...(limitBeforeTail ? { limitFullResetsAtMs: activity.limitFullResetsAtMs } : {}),
         awaitingUserInput: activity.awaitingUserInput, userQuestionBlocking: activity.userQuestionBlocking,
         latestUserQuestionAtMs: activity.latestUserQuestionAtMs, latestBlockingQuestionAtMs: activity.latestBlockingQuestionAtMs });
     }
@@ -839,6 +912,10 @@ async function attachRolloutSignals(threads, {
     thread.latestUserQuestionAtMs = Number(result.value.latestUserQuestionAtMs || 0);
     thread.latestBlockingQuestionAtMs = Number(result.value.latestBlockingQuestionAtMs || 0);
     thread.lifecycleRunning = result.value.agentRunning;
+    thread.limitResetsAtMs = Number(result.value.limitResetsAtMs || 0);
+    thread.limitFullResetsAtMs = Number(result.value.limitFullResetsAtMs || 0);
+    thread.limitStopped = result.value.agentRunning === false && Boolean(result.value.limitStopped);
+    thread.limitStoppedAtMs = thread.limitStopped ? Number(result.value.limitStoppedAtMs || 0) : 0;
     if (result.value.agentRunning === true) {
       thread.agentRunning = true;
       thread.agentStartedAtMs = result.value.agentStartedAtMs;
@@ -856,7 +933,8 @@ async function attachRolloutSignals(threads, {
 // Callers can pass old dashboard options (asbMode, maxOrphanRollouts, and so on). They have no effect.
 export async function loadCodexDashboard(options = {}) {
   const nowMs = options.nowMs || Date.now();
-  const rows = await readThreads(options);
+  const databasePath = options.databasePath || await discoverCodexStateDatabase();
+  const rows = await readThreads({ ...options, databasePath });
   const sessionIndex = await readSessionIndex(options.sessionIndexPath || DEFAULT_SESSION_INDEX, options.cacheScope);
   const globalState = await readCodexGlobalState(options.globalStatePath || DEFAULT_GLOBAL_STATE, options.cacheScope).catch(() => ({}));
   const pinnedThreadIds = parseCodexPinnedThreadIds(globalState);
@@ -867,5 +945,16 @@ export async function loadCodexDashboard(options = {}) {
   if (options.codexNativeReadEnabled) {
     for (const thread of threads) Object.assign(thread, codexNativeReadStatus(thread, globalState));
   }
-  return { generatedAtMs: nowMs, threads: await attachRolloutSignals(threads, options) };
+  const enriched = await attachRolloutSignals(threads, options);
+  // A stop with no current full window in its own log uses the newest full-window reset of the same Codex home, if it is after the stop.
+  const homeLimitResetsAtMs = Math.max(0, ...enriched.map((thread) => thread.limitFullResetsAtMs || 0));
+  for (const thread of enriched) {
+    if (thread.limitStopped && !thread.limitResetsAtMs && homeLimitResetsAtMs > thread.limitStoppedAtMs) thread.limitResetsAtMs = homeLimitResetsAtMs;
+  }
+  const incoming = new Map();
+  for (const { to, from, atMs } of await readBridgeMessages(path.dirname(databasePath), nowMs - SESSION_MESSAGE_WINDOW_MS, options.cacheScope)) {
+    incoming.set(to, [...(incoming.get(to) || []), { from, atMs }]);
+  }
+  for (const thread of enriched) if (incoming.has(thread.id)) thread.incomingMessages = incoming.get(thread.id);
+  return { generatedAtMs: nowMs, threads: enriched };
 }

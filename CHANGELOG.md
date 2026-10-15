@@ -4,6 +4,11 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Added the usage-limit state: when a usage limit stops a session, its card is greyed out and shows "Resets in" with a countdown to the reset. ASB reads only the limit numbers and reset times from the Codex session logs and the Claude Code transcripts.
+- Fixed ASB Bridge `0.3.2` treating an outgoing message that a peer holds as an incoming held message. The task's own text could show in the inbox dialog, go back into the same task, or send false receipts to the peer, and it could block idle notices. Inbox queries now use only incoming messages.
+- Added message motion: when one session sends a message to another, a small light in the accent color flies from the sender card to the receiver card. This includes Claude to Claude, Codex to Codex, and messages between the two apps. ASB reads only the sender, the receiver, and the time, never the message text.
+- Fixed Claude remote sessions that were not on the board. On about 2026-10-10 the Claude app changed its watch request form and added a new query parameter. ASB now accepts any query parameters on the session-list and watch paths.
+- Fixed a Claude or Codex question that stayed an unread dot after you answered it, with Persistent unread on. A question now gives attention only while it is open. An old saved question mark loads as none.
 - Added ASB Bridge, moved from claude-uds-bridge `0.3.0` with its Git history and renamed to `asb-bridge`.
 - Added `asb bridge status`, `install`, and `uninstall` for selected providers. Installation needs explicit targets or `--all`; without targets it shows usage and changes nothing.
 - Added the on-demand `/bridge` skill for Claude Code and `$bridge` skill for Codex.

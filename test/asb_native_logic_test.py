@@ -97,6 +97,9 @@ class Box:
     def clear_hover(self):
         pass
 
+    def clear_flights(self):
+        pass
+
 
 class PhoneChecks(unittest.TestCase):
     def status(self, **changes):
@@ -467,6 +470,88 @@ class DataChecks(unittest.TestCase):
             self.assertEqual(asb.working_duration({**row, "workingSinceMs": start}, NOW), "")
         for state in ("waiting", "idle", "unknown"):
             self.assertEqual(asb.working_duration({**row, "state": state}, NOW), "")
+
+    def test_limited_drawer_row_has_no_dot_until_the_reset(self):
+        at = SCOPE["time"].time() * 1000
+        row = {"id": "a", "state": "idle", "drawer": True, "limitResetsAtMs": at + 3_600_000}
+        self.assertEqual(asb.attention_indicator(row, True), "")
+        self.assertEqual(asb.attention_indicator({**row, "limitResetsAtMs": at - 1}, True), "dot")
+
+    def test_usage_limit_tooltip_uses_24_hour_time_without_an_am_pm_marker(self):
+        time, strftime = SCOPE["time"], SCOPE["time"].strftime
+        reset = time.mktime((2026, 10, 7, 20, 28, 0, 0, 0, -1)) * 1000
+        row = {"id": "a", "provider": "codex", "providerLabel": "Codex", "title": "Chat", "state": "idle", "canOpen": True,
+               "updatedAtMs": reset - 600_000, "limitResetsAtMs": reset}
+        # A locale with no AM/PM marker: %p gives an empty string.
+        with patch.object(time, "strftime", lambda form, *at: strftime(form.replace("%p", ""), *at)):
+            limit = asb.tooltip_model(row, reset - 3_600_000, "/home/test")["limit"]
+        self.assertEqual(limit, "Codex is out of usage. It resets at 20:28.")
+
+    def test_usage_limit_countdown_clock_colors_tooltip_and_accessible_text(self):
+        row = {"id": "a", "provider": "codex", "providerLabel": "Codex", "title": "Chat", "state": "idle", "canOpen": True,
+               "updatedAtMs": NOW - 600_000, "limitResetsAtMs": NOW + 3_600_000}
+        left = lambda seconds: asb.limit_left({**row, "limitResetsAtMs": NOW + seconds * 1000}, NOW)
+        # Rounded up, so a limited row never shows 0s; the format is the Working timer format.
+        for seconds, text, spoken in ((3600, "1h0m", "1 hour"), (3599, "59m59s", "59 minutes 59 seconds"),
+                                      (16_330, "4h32m", "4 hours 32 minutes"), (3661, "1h1m", "1 hour 1 minute"),
+                                      (60, "1m0s", "1 minute"), (59, "59s", "59 seconds"), (1, "1s", "1 second"), (.2, "1s", "1 second")):
+            self.assertEqual((asb.duration_text(left(seconds)), asb.spoken_duration(left(seconds))), (text, spoken))
+        for reset in (NOW, NOW - 1, 0, None, True, "soon", float("nan"), float("inf")):
+            self.assertEqual(asb.limit_left({**row, "limitResetsAtMs": reset}, NOW), 0)
+        self.assertEqual(asb.limit_left({"state": "idle"}, NOW), 0)
+
+        interval = asb.clock_interval
+        self.assertEqual(interval([row], NOW - 1), 60)  # Over one hour.
+        self.assertEqual(interval([row], NOW), 2)
+        self.assertEqual(interval([row], NOW + 3_600_000), 60)  # At the reset.
+        self.assertEqual(interval([{**row, "state": "working"}], NOW - 1), 2)
+        self.assertEqual(interval([{**row, "state": "working", "archived": True}], NOW - 1), 60)
+
+        # Dimmer than the quiet Idle-read text, and 4.5:1 on the background, in GNOME dark and light and in a custom theme.
+        for palette, highlight in ((dict(background="#222226", text="#ffffff"), "#313135"),
+                                   (dict(background="#fafafb", text="#323237"), "#f1f1f2"),
+                                   (CUSTOM, asb.highlight_color(CUSTOM))):
+            limited, fraction = asb.limited_color(palette)
+            hover, _fraction = asb.quiet_color(palette, "text", 0, highlight)
+            self.assertGreaterEqual(asb.contrast(limited, palette["background"]), 4.5)
+            self.assertGreaterEqual(asb.contrast(hover, highlight), 4.5)
+            for quiet in (asb.quiet_color(palette, "text", .67, highlight)[0],
+                          asb.quiet_color(palette, "muted" if "muted" in palette else "text", .85 if "muted" in palette else .5, highlight)[0]):
+                self.assertLess(asb.contrast(limited, palette["background"]), asb.contrast(quiet, palette["background"]))
+            self.assertLess(fraction, 1)
+
+        clock = __import__("time").strftime("%I:%M %p", __import__("time").localtime((NOW + 3_600_000) / 1000)).lstrip("0")
+        model = asb.tooltip_model(row, NOW, "/home/test")
+        self.assertEqual(model["limit"], f"Codex is out of usage. It resets at {clock}.")
+        self.assertIn(model["limit"], asb.tooltip_description(model))
+        self.assertEqual(asb.tooltip_model({**row, "sourceLabel": "Codex Personal"}, NOW, "/home/test")["limit"],
+                         f"Codex Personal is out of usage. It resets at {clock}.")
+        self.assertEqual(asb.tooltip_model(row, NOW + 3_600_000, "/home/test")["limit"], "")
+
+        window = object.__new__(Window)
+        window.opening, window.open_errors = set(), {}
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0))
+        with patch.dict(SCOPE, {"Gtk": gtk}):
+            for view, state in (("comfortable", "Resets in"), ("compact", "Resets 4h32m")):
+                window.view = view
+                widget = SimpleNamespace(asb_thread={**row, "limitResetsAtMs": NOW + 16_330_000}, asb_time_signature=None,
+                                         asb_state_label=Mock(), asb_age_label=Mock(), asb_title_label=Mock(), asb_limit_clock=Mock(),
+                                         add_css_class=Mock(), remove_css_class=Mock(), set_sensitive=Mock(),
+                                         update_property=Mock(), update_state=Mock())
+                window.update_row_text(widget, NOW)
+                widget.add_css_class.assert_called_once_with("asb-limited")
+                widget.asb_limit_clock.set_visible.assert_called_once_with(True)
+                widget.asb_state_label.set_label.assert_called_with(state)
+                if view == "comfortable":
+                    widget.asb_age_label.set_label.assert_called_with("4h32m")
+                self.assertEqual(widget.asb_accessible_label, "Open Chat in Codex. Idle. Usage limit. Resets in 4 hours 32 minutes.")
+                window.update_row_text(widget, NOW + 16_330_000)  # At the reset the row is a normal Idle row at once.
+                widget.remove_css_class.assert_called_once_with("asb-limited")
+                widget.asb_limit_clock.set_visible.assert_called_with(False)
+                widget.asb_state_label.set_label.assert_called_with("Idle")
+                if view == "comfortable":
+                    widget.asb_age_label.set_label.assert_called_with("4h ago")
+                self.assertEqual(widget.asb_accessible_label, "Open Chat in Codex. Idle.")
 
     def test_filters_state_order_pending_and_archive(self):
         self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE)], ["second", "claude:local_mock", "first", "unknown"])
@@ -841,6 +926,91 @@ class DataChecks(unittest.TestCase):
         sidebar.closed = True
         self.assertFalse(asb.SwitchboardWindow.tick(sidebar))
         self.assertEqual(calls, [True])
+
+
+class MessageChecks(unittest.TestCase):
+    def test_flight_duration_bow_tail_and_edges(self):
+        self.assertEqual((asb.message_duration(100), asb.message_duration(1050), asb.message_duration(3000)), (480, 700, 900))
+        self.assertEqual(asb.message_control((0, 100), (100, 100)), (50, 78))
+        self.assertEqual(asb.message_control((100, 100), (0, 100)), (50, 78))
+        x, y = asb.message_control((0, 0), (1000, 0))
+        self.assertEqual((x, round(y, 6)), (500, -60))
+        self.assertEqual(asb.message_control((50, 0), (50, 100)), (28, 50))
+        self.assertEqual(asb.message_control((50, 100), (50, 0)), (28, 50))
+        self.assertEqual(asb.message_control((5, 0), (5, 1000)), (2, 500))
+        x, y = asb.message_control((0, 0), (100, 80))
+        self.assertLess(y, 40)
+        self.assertGreater(x, 50)
+        self.assertEqual(asb.message_control((7, 7), (7, 7)), (7, 7))
+        start, control, end = (0, 0), (50, -40), (100, 0)
+        self.assertEqual(asb.bezier_point(start, control, end, 0), start)
+        self.assertEqual(asb.bezier_point(start, control, end, 1), end)
+        self.assertEqual(asb.bezier_point(start, control, end, .5), (50, -20))
+        ease = asb.ease_in_out_cubic
+        self.assertEqual((ease(0), ease(.25), ease(.5), ease(.75), ease(1)), (0, .0625, .5, .9375, 1))
+        tail = asb.message_tail(.5)
+        self.assertEqual(len(tail), 8)
+        for k, (first, last, width, alpha) in enumerate(tail, 1):
+            self.assertAlmostEqual(first, ease(.5 - (k - 1) * .025))
+            self.assertAlmostEqual(last, ease(.5 - k * .025))
+            self.assertAlmostEqual(width, 3.2 * (1 - k / 9))
+            self.assertAlmostEqual(alpha, .7 * (1 - k / 9))
+        short = asb.message_tail(.06)
+        self.assertEqual(len(short), 3)
+        self.assertEqual(short[-1][1], 0)
+        self.assertEqual(asb.message_tail(0), [])
+        # The tail stretches with speed: short at the slow start and end, long in the fast middle.
+        length = lambda t: asb.message_tail(t)[0][0] - asb.message_tail(t)[-1][1]
+        self.assertAlmostEqual(length(.5), ease(.5) - ease(.3))
+        self.assertGreater(length(.5), .35)
+        self.assertLess(length(.2), .1)
+        self.assertLess(length(1), .1)
+        self.assertEqual(asb.message_tail(1)[0][0], 1)
+        self.assertEqual([asb.message_edge(x, 100, 400) for x in (50, 100, 250, 400, 450)], [102, 100, 250, 400, 398])
+        self.assertEqual([asb.edge_alpha(ms) for ms in (0, 60, 120, 300, 420, 570, 720, 800)], [0, .5, 1, 1, 1, .5, 0, 0])
+
+    def test_new_messages_first_seen_age_visibility_pairs_and_cap(self):
+        select = asb.new_messages
+        now = 1_000_000
+        visible = {"a": 1, "b": 1, "c": 1}
+        message = lambda source, target, at=now - 1000: {"from": source, "to": target, "atMs": at}
+        play, seen = select([message("a", "b")], None, visible, now, 6)
+        self.assertEqual((play, seen), ([], {("a", "b", now - 1000)}))
+        play, seen = select([message("a", "b"), message("b", "a", now - 500)], seen, visible, now, 6)
+        self.assertEqual(play, [("b", "a", now - 500)])
+        self.assertEqual(seen, {("a", "b", now - 1000), ("b", "a", now - 500)})
+        play, seen = select([message("b", "a", now - 500)], seen, visible, now, 6)
+        self.assertEqual((play, seen), ([], {("b", "a", now - 500)}))
+        play, _seen = select([message("a", "c", now - 30_000), message("a", "b", now - 30_001)], set(), visible, now, 6)
+        self.assertEqual(play, [("a", "c", now - 30_000)])
+        play, seen = select([message("a", "hidden"), message("hidden", "a"), message("a", "a")], set(), visible, now, 6)
+        self.assertEqual((play, len(seen)), ([], 3))
+        play, _seen = select([message("a", "b", now - 3), message("a", "b", now - 2), message("b", "a", now - 1)], set(), visible, now, 6)
+        self.assertEqual(play, [("a", "b", now - 3), ("b", "a", now - 1)])
+        many = {str(index): 1 for index in range(9)}
+        messages = [message(str(index), str(index + 1)) for index in range(8)]
+        play, seen = select(messages, set(), many, now, 6)
+        self.assertEqual((len(play), len(seen)), (6, 8))
+        play, seen = select(messages, set(), many, now, 2)
+        self.assertEqual((len(play), len(seen)), (2, 8))
+        play, seen = select([None, {"from": "a"}, {"from": "a", "to": "b", "atMs": "1"}], set(), visible, now, 6)
+        self.assertEqual((play, seen), ([], set()))
+        self.assertEqual(select(None, set(), visible, now, 6), ([], set()))
+
+    def test_dashboards_keep_message_state_apart_from_the_dashboard(self):
+        window = object.__new__(Window)
+        window.list_body = SimpleNamespace(flights=[], add_tick_callback=Mock())
+        window.focus_widgets = {"a": 1, "b": 1}
+        at = SCOPE["time"].time() * 1000
+        window.play_messages([{"from": "a", "to": "b", "atMs": at}])
+        window.list_body.add_tick_callback.assert_not_called()
+        window.play_messages([{"from": "a", "to": "b", "atMs": at}, {"from": "b", "to": "a", "atMs": at}])
+        window.list_body.add_tick_callback.assert_called_once_with(window.messages_after_layout, [("b", "a", at)])
+        window.list_body.flights = [None] * 6
+        window.play_messages([{"from": "a", "to": "b", "atMs": at + 1}])
+        self.assertEqual(window.list_body.add_tick_callback.call_count, 1)
+        window.play_messages([])
+        self.assertEqual(window.message_seen, set())
 
 
 class NativeLogicChecks(unittest.TestCase):
@@ -2095,7 +2265,7 @@ class NativeLogicChecks(unittest.TestCase):
                              *({"id": str(index), "state": "idle"} for index in range(111)),
                              {"id": "archived", "state": "idle", "archived": True}]}
         window = object.__new__(Window)
-        window.dashboard, window.closed = board, False
+        window.dashboard, window.closed, window.clock_interval = board, False, 2
         window.context_menu = window.focused_id = window.layout_signature = None
         window.focus_generation = 0
         window.focus_key = lambda: None
@@ -2822,7 +2992,8 @@ class NativeLogicChecks(unittest.TestCase):
     def test_clock_is_local_and_row_controllers_are_released(self):
         calls, disconnected = [], []
         window = object.__new__(Window)
-        window.closed, window.focus_widgets = False, {"a": object()}
+        window.closed, window.focus_widgets = False, {"a": SimpleNamespace(asb_thread={"state": "idle"})}
+        window.dashboard, window.clock_interval = {"threads": []}, 60
         window.update_row_text = lambda *args: calls.append(args)
         self.assertTrue(window.update_clock())
         self.assertEqual(len(calls), 1)
@@ -3357,7 +3528,7 @@ class NativeIOAuditChecks(unittest.TestCase):
         for current, age in ((now, "2d ago"), (now + day, "3d ago")):
             window.update_row_text(widget, current)
             widget.asb_age_label.set_label.assert_called_with(age)
-            self.assertEqual(widget.asb_time_signature, ("", "Idle · " + age + " · Pinned · Archived"))
+            self.assertEqual(widget.asb_time_signature, ("", "Idle · " + age + " · Pinned · Archived", ""))
             self.assertEqual(SCOPE["tooltip_model"](row, current, "/fixture/home")["state_text"], "Idle · " + age)
         self.assertEqual(window.update_open_state.call_count, 2)
         widget.asb_thread = {**row, "state": "working", "workingSinceMs": now - 61_000}

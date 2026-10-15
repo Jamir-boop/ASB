@@ -114,7 +114,7 @@ export class Bridge {
       if (expected !== undefined && !this.db.query('SELECT 1 FROM lifecycle WHERE singleton=1 AND generation=?').get(expected)) return undefined;
       const generation = randomUUID();
       this.db.run('INSERT INTO lifecycle (singleton,generation,active) VALUES (1,?,1) ON CONFLICT(singleton) DO UPDATE SET generation=excluded.generation, active=1', [generation]);
-      this.db.run("UPDATE messages SET status='expired' WHERE status='held'");
+      this.db.run("UPDATE messages SET status='expired' WHERE direction='in' AND status='held'");
       this.db.run("UPDATE idle_requests SET status='expired' WHERE status IN ('waiting','submitting','unknown')");
       this.db.run("UPDATE runtime SET status='unknown',mode='unknown' WHERE singleton=1");
       this.db.run('DELETE FROM peer_guard');
@@ -386,7 +386,7 @@ export class Bridge {
     const status = decision === 'hold' ? 'held' : 'refused';
     this.db.run('UPDATE messages SET status=?,expires_at=? WHERE id=? AND status=\'pending\'', [status, expires, message.id]);
     await this.receipt(message, status);
-    for (const old of this.db.query<Message, []>("SELECT * FROM messages WHERE status='held' ORDER BY created_at DESC,rowid DESC LIMIT -1 OFFSET 100").all()) {
+    for (const old of this.db.query<Message, []>("SELECT * FROM messages WHERE direction='in' AND status='held' ORDER BY created_at DESC,rowid DESC LIMIT -1 OFFSET 100").all()) {
       this.db.run("UPDATE messages SET status='dropped' WHERE id=? AND status='held'", [old.id]);
       await this.receipt(old, 'dropped');
     }
@@ -421,7 +421,7 @@ export class Bridge {
   private scheduleExpiry() {
     clearTimeout(this.expiryTimer);
     const next = this.db.query<{ deadline: number | null }, []>(`SELECT min(expires_at) AS deadline FROM (
-      SELECT expires_at FROM messages WHERE status='held'
+      SELECT expires_at FROM messages WHERE direction='in' AND status='held'
       UNION ALL SELECT expires_at FROM idle_requests WHERE status IN ('waiting','unknown')
     )`).get()?.deadline;
     if (next == null || this.closing) return;
@@ -432,20 +432,20 @@ export class Bridge {
   }
 
   private async expireHeld() {
-    for (const message of this.db.query<Message, [number]>("SELECT * FROM messages WHERE status='held' AND expires_at<=?").all(Date.now())) {
+    for (const message of this.db.query<Message, [number]>("SELECT * FROM messages WHERE direction='in' AND status='held' AND expires_at<=?").all(Date.now())) {
       if (this.db.run("UPDATE messages SET status='expired' WHERE id=? AND status='held'", [message.id]).changes) await this.receipt(message, 'expired');
     }
     this.scheduleExpiry();
   }
 
   held() {
-    return this.db.query<Message, []>("SELECT * FROM messages WHERE status='held' ORDER BY created_at,rowid").all();
+    return this.db.query<Message, []>("SELECT * FROM messages WHERE direction='in' AND status='held' ORDER BY created_at,rowid").all();
   }
 
   reviewableHeld() {
     if (this.policy() !== 'default') return [];
     return this.db.query<Pick<Message, 'id'>, [number]>(`SELECT id FROM messages
-      WHERE status='held' AND kind='message' AND (expires_at IS NULL OR expires_at>?) ORDER BY created_at,rowid`).all(Date.now());
+      WHERE direction='in' AND status='held' AND kind='message' AND (expires_at IS NULL OR expires_at>?) ORDER BY created_at,rowid`).all(Date.now());
   }
 
   async setPolicy(policy: Policy) {
@@ -468,7 +468,7 @@ export class Bridge {
     await this.exclusive(async () => {
       await this.expireHeld();
       this.db.run('UPDATE inbound_policy SET dialog_expiry=? WHERE singleton=1', [expiry]);
-      if (this.policy() === 'default') this.db.run("UPDATE messages SET expires_at=? WHERE status='held'", [this.heldDeadline()]);
+      if (this.policy() === 'default') this.db.run("UPDATE messages SET expires_at=? WHERE direction='in' AND status='held'", [this.heldDeadline()]);
       this.scheduleExpiry();
     });
     await this.refreshTimers();
@@ -500,7 +500,7 @@ export class Bridge {
     await this.exclusive(async () => {
       if (this.policy() === 'hold') throw new Error('Change the explicit hold policy before releasing messages');
       await this.expireHeld();
-      const message = this.db.query<Message, [string]>("SELECT * FROM messages WHERE id=? AND status='held'").get(id);
+      const message = this.db.query<Message, [string]>("SELECT * FROM messages WHERE id=? AND direction='in' AND status='held'").get(id);
       if (!message) return;
       if (action === 'approve' && this.policy() !== 'refuse') await this.deliver(message);
       else if (this.db.run("UPDATE messages SET status='denied' WHERE id=? AND status='held'", [id]).changes) await this.receipt(message, 'denied');

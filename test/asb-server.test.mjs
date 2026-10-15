@@ -127,7 +127,8 @@ test('the dashboard reply has a content tag and an equal tag gets 304 with no bo
   assert.equal((await get({}, '')).headers.get('etag'), tag);
 
   const changes = [(b) => { b.threads[0].title = 'B'; }, (b) => { b.providers[0].message = 'Not found'; },
-    (b) => { b.persistentUnread = true; }, (b) => { b.refreshIntervalMs = 2_000; }];
+    (b) => { b.persistentUnread = true; }, (b) => { b.refreshIntervalMs = 2_000; },
+    (b) => { b.messages = [{ from: 'two', to: 'one', atMs: 1 }]; }];
   for (const change of changes) {
     change(board);
     assert.notEqual((await get()).headers.get('etag'), tag, String(change));

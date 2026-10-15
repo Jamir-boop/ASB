@@ -1260,3 +1260,98 @@ phone stores host and port separately. A later version can let the gateway also
 bind `127.0.0.1:4630` and the app open an SSH local forward (for example with
 an embedded SSH library) to that port, with the same pin and token. No other
 change is needed in the API.
+
+---
+
+## 15. Addendum 2026-10-15: main 493990f (message motion, usage-limit state)
+
+ASB main moved to `493990f` (and `8302710`, bridge only). Bring these into the
+branch first: `git -C ~/Documents/ASB-android merge main` (merge, do not
+rebase pushed history; resolve conflicts, then run `npm test` and
+`python3 test/asb_native_logic_test.py`). Read the new main text in
+`SYSTEM_OVERVIEW.md` ("Session messages", "Usage limits"), `DESIGN.md` (the
+message light paragraph and the usage-limit card paragraph), and the new
+helpers in `scripts/asb-native.py`: `limit_left`, `clock_interval`,
+`attention_indicator` (changed), `new_messages`, `message_duration`,
+`message_control`. The gateway needs no change: both features are fields of
+`GET /api/dashboard`.
+
+### 15.1 Model changes (`Models.kt`)
+
+- `Thread.limitResetsAtMs: Long = 0`.
+- `Dashboard.messages: List<Message> = emptyList()`, with
+  `@Serializable data class Message(val from: String = "", val to: String = "", val atMs: Long = 0)`.
+
+### 15.2 Usage-limit state (Rules, Format, row UI, notifications)
+
+- Port `limit_left(row, nowMs)`: whole seconds rounded up until
+  `limitResetsAtMs`; 0 when the value is not > `nowMs`.
+- `attentionIndicator`: the drawer clause becomes
+  `drawer && row.drawer && row.state != "working" && limitLeft(row, nowMs) == 0`
+  (same as main). Add a `nowMs` parameter with default `System.currentTimeMillis()`.
+  `rowMenuActions` and `filteredRows` do not change (the server already makes a
+  limited row not Pending, `unread` false, state Idle).
+- Port `clock_interval`: tick every 2 s when a visible row is Working (not
+  archived) or has `0 < limitLeft <= 3600`, else every 60 s. Use it for the
+  row clock in place of the plain Working rule from 10.4.
+- Row look while `limitLeft > 0`: title, folder, state, and age text in
+  `MaterialTheme.colorScheme.onSurfaceVariant` (it keeps 4.5:1 contrast);
+  provider circle at alpha 0.4; the source dot stays at full alpha. Second
+  line: a 12 dp clock icon + `Resets in <countdown>`, with the countdown in the
+  Working format (`4h32m`, `12m5s`, `45s`, rounded up). Add the icon as
+  `res/drawable/ic_schedule.xml` from Material Icons "schedule" (Apache-2.0;
+  note it in the third-party list), because `material-icons-core` has no clock.
+  At the reset the row goes back to normal at once, with no animation and no
+  data read. No unread dot while limited. Open, Read, Unread work as usual.
+- Accessibility: content description adds
+  `Usage limit. Resets in 4 hours 32 minutes.` (hours/minutes, or
+  minutes/seconds under one hour, like `spoken_duration` on main).
+- Notifications (`Events.kt`): while `limitLeft(row) > 0`, the DONE and FAILED
+  bits of that row keep their old baseline value (they neither fire nor change).
+  INPUT works as usual. Result: no notification for a limit stop, and no
+  notification when the reset makes the stored mark show again. Add
+  `EventsTest` cases for both.
+- Tests: `RulesTest` ports the main Python cases for `limit_left`,
+  `clock_interval`, and the changed `attention_indicator`.
+
+### 15.3 Message motion (session list)
+
+The phone list is one vertical column, so port the rules and adapt the path:
+
+- Port `new_messages(messages, seen, visible, nowMs, room)` exactly:
+  `MESSAGE_MAX_AGE_MS = 30000`; skip bad entries; first dashboard after app
+  start (`seen == null`) plays nothing; skip seen keys, old entries,
+  `from == to`, rows not in the filtered list, a second entry for the same
+  `(from, to)` pair in one update, and more than `room` lights. At most 6
+  lights fly at a time (`room = 6 - flying`). Keep the returned key set as
+  `seen`. Unit-test it with the main Python cases.
+- Paint: one `Canvas` overlay above the `LazyColumn`, no input. Find each row
+  from `LazyListState.layoutInfo.visibleItemsInfo` by key. Start and end
+  points are the centers of the provider circles. Path: quadratic Bezier, the
+  control point bows to the left for mostly vertical travel and up for mostly
+  horizontal travel, by `min(60.dp, 0.22 * distance)` (port `message_control`).
+  Duration `message_duration(distance in dp)` = distance / 1.5, clamped
+  480..900 ms, cubic ease-in-out. Light: glow radius 6 dp at 25% alpha, head
+  radius 3 dp, a tail of 8 segments over the last 20% of the flight time.
+  Color: `MaterialTheme.colorScheme.primary`. Arrival: one ring 5 dp to
+  13 dp, fading out in 420 ms with exponential ease-out. The sender circle
+  shows the accent color for the first 160 ms.
+- Off-screen rows: the light uses the top or bottom list edge, 2 dp inside,
+  at the row's x. An 18 x 3 dp edge mark there fades in 120 ms, stays 300 ms,
+  and fades out 300 ms (at start for an off-screen sender; on reaching the
+  edge for an off-screen receiver, with no ring). Both off-screen: nothing plays.
+- Reduced motion: when `Settings.Global.ANIMATOR_DURATION_SCALE` is 0, show no
+  light or ring; tint both provider circles with the accent color for 2 s.
+- Drop a light when its row leaves the filtered list. Clear all lights when
+  the screen stops. Run frames only while a light or ring is active.
+- Messages never cause a notification.
+
+### 15.4 Acceptance for this addendum
+
+Unit tests for 15.2 and 15.3 pass. On the phone: a row that a usage limit
+stopped shows the dim look and the countdown and goes back to normal at the
+reset (use a synthetic dashboard from the test gateway if no real limit is
+active); a message from one session to another (ASB Bridge or Claude
+`SendMessage`) plays a light from the sender row to the receiver row within one
+refresh. Commit: `feat(android): add message motion and the usage-limit state`.
+Do this after phase 6 if phase 6 is not done yet; else as its own step now.

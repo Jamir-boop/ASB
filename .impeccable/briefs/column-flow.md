@@ -50,7 +50,7 @@ New native unread shows a dot. Working remains Working and does not join Pending
 
 Question attention is independent of execution. Only a current blocked synchronous question can show Waiting. Async requests keep Working or Idle. Real human input supersedes old requests; automatic goal/context and partial replies preserve them. Opening acknowledges the ASB dot without resolving source input. Show only a bool/reason, never question/answer text or request timestamps.
 
-**Unread** persists only in ASB and adds Pending attention and a dot. Every row retains its actual state label. By default, a successful ASB open acknowledges local manual, completion, native, and question attention. A failed open retains it. Original app data remains read-only. **Persistent unread** in Preferences > Sessions retains ASB attention across source read/resolution and opens. It is off by default. **Read** in the native row menu clears it. The setting belongs to shared ASB state, separate from layout/theme; current execution labels and native read truth stay unchanged.
+**Unread** persists only in ASB and adds Pending attention and a dot. Every row retains its actual state label. By default, a successful ASB open acknowledges local manual, completion, native, and question attention. A failed open retains it. Original app data remains read-only. **Persistent unread** in Preferences > Sessions retains ASB attention across source read and opens. A resolved question leaves no retained mark. It is off by default. **Read** in the native row menu clears it. The setting belongs to shared ASB state, separate from layout/theme; current execution labels and native read truth stay unchanged.
 
 ## Evidence and limits
 
