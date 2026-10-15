@@ -6,6 +6,7 @@ import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLContext
 import javax.net.ssl.X509TrustManager
+import okhttp3.ConnectionPool
 import okhttp3.ConnectionSpec
 import okhttp3.OkHttpClient
 import okhttp3.TlsVersion
@@ -39,6 +40,8 @@ fun pinnedClient(fingerprintHex: String): OkHttpClient {
         .followRedirects(false)
         .followSslRedirects(false)
         .retryOnConnectionFailure(false)
+        // No retry, so drop idle connections before the gateway closes them (it keeps them 65 s).
+        .connectionPool(ConnectionPool(2, 30, TimeUnit.SECONDS))
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(35, TimeUnit.SECONDS)
         .build()

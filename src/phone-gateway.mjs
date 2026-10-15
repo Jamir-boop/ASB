@@ -191,6 +191,8 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     catch { fingerprint = ''; error = 'ASB cannot create the phone certificate. Install openssl.'; return; }
     listener.requestTimeout = 15_000;
     listener.headersTimeout = 10_000;
+    // The app does not retry failed requests, so it must drop idle connections first (it keeps them 30 s).
+    listener.keepAliveTimeout = 65_000;
     listener.on('connection', (socket) => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
     listener.on('error', (cause) => {
       error = cause.code === 'EADDRINUSE' ? `Port ${settings.port} is in use.` : 'ASB cannot start phone access.';
