@@ -664,7 +664,7 @@ class WidgetCheck(unittest.TestCase):
             self.drain()
             self.assertEqual(window.columns, 4)
             self.assertEqual(window.column_width, 240)
-            self.assertFalse(window.layout_path.exists())
+            self.assertEqual(asb.read_layout(window.layout_path), {"columnWidth": 240, "view": "compact", "showAppPills": False})
 
             row = window.focus_widgets["sample-15"]
             window.refresh_button.grab_focus()
@@ -758,7 +758,7 @@ class WidgetCheck(unittest.TestCase):
                 window.apply_dashboard(changed, None)
                 self.drain()
                 self.assertEqual(len(calls), count + 1)
-                self.assertEqual(calls[-1][0], "/api/dashboard?force=1")
+                self.assertEqual(calls[-1][0], "/api/dashboard")
                 marked = copy.deepcopy(changed)
                 marked["threads"][15].update(manualUnread=True, unread=False, pending=False, pendingSource="")
                 calls[-1][1](marked, None)
@@ -1029,7 +1029,8 @@ class WidgetCheck(unittest.TestCase):
                         self.assertEqual(title.get_height(), 32)
                         self.assertEqual(title.get_ellipsize(), asb.Pango.EllipsizeMode.END)
                         metadata = window.focus_widgets["sample-15"].get_child().get_child().get_last_child()
-                        self.assertEqual(metadata.get_first_child().get_text(), "Working")
+                        self.assertFalse(metadata.get_first_child().get_visible())  # The usage-limit clock.
+                        self.assertEqual(metadata.get_first_child().get_next_sibling().get_text(), "Working")
                         self.assertIs(card.asb_dot.get_ancestor(asb.Gtk.Button), card.asb_read_button)
                         self.assertEqual(metadata.get_last_child().get_ellipsize(), asb.Pango.EllipsizeMode.END)
                     else:
@@ -1057,7 +1058,7 @@ class WidgetCheck(unittest.TestCase):
                         window.search.grab_focus(); self.drain(.2); adjustment.set_value(0); self.drain(.2)
                         self.capture(window, Path(output) / "view-comfortable-360-width160.png")
                     window.reset_width(); self.drain()
-                    self.assertEqual(asb.read_layout(layout_path), {"columnWidth": 240, "view": "comfortable"})
+                    self.assertEqual(asb.read_layout(layout_path), {"columnWidth": 240, "view": "comfortable", "showAppPills": False})
                 window.app_pills["codex"].set_active(True)
                 self.assertEqual(window.apps, {"codex"})
                 self.assertEqual(window.app_filter.get_selected(), 1)
@@ -1366,7 +1367,9 @@ class WidgetCheck(unittest.TestCase):
             window.dashboard = board
             window.render()
 
-        wait(lambda: len(frames) >= 3 and len(columns()) == 6 and columns()[0].get_width() == window.column_pixel_width)
+        # A geometry repack sets motion_from to False until its layout; wait for that layout too.
+        wait(lambda: len(frames) >= 3 and len(columns()) == 6 and columns()[0].get_width() == window.column_pixel_width
+             and window.motion_from is None)
         self.assertEqual((window.columns, window.capacity, len(window.focus_widgets)), (4, 20, 116))
         self.assertTrue(all(isinstance(column, asb.SessionColumn) for column in columns()))
         self.assertFalse(any(frame[1] for frame in frames))  # The first render and its geometry repack do not move.
@@ -1445,7 +1448,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(any(frame[0] or frame[1] for frame in seen))
         _before, seen = change(lambda: window.width_control.set_value(240), False)
         self.assertFalse(any(frame[0] or frame[1] for frame in seen))
-        wait(lambda: columns()[0].get_width() == window.column_pixel_width)
+        wait(lambda: columns()[0].get_width() == window.column_pixel_width and window.motion_from is None)
         assert_rest()
 
         # (e) One wheel click from rest: the spring of the window, read at 60 Hz frame times.
@@ -1492,6 +1495,74 @@ class WidgetCheck(unittest.TestCase):
         window.get_frame_clock().disconnect(handler)
         self.assertTrue(frames)
         self.drain(.05)
+
+    def test_usage_limit_card_greys_counts_down_and_lifts_at_the_reset(self):
+        now = time.time() * 1000
+        rows = [{"id": "limited", "provider": "codex", "providerLabel": "Codex", "sourceLabel": "Codex Personal",
+                 "title": "Plan the alarm export", "cwd": "/example/alarms", "projectName": "alarms", "state": "idle",
+                 "canOpen": True, "updatedAtMs": now - 600_000, "limitResetsAtMs": now + 12_000},
+                {"id": "normal", "provider": "codex", "providerLabel": "Codex", "title": "Test the offline mode",
+                 "cwd": "/example/mobile", "projectName": "mobile", "state": "idle", "canOpen": True, "updatedAtMs": now - 60_000}]
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", {"generatedAtMs": now, "providers": [], "threads": rows},
+                                       theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(520, 400)
+        window.present(); window.set_focus(None); self.drain(.3)
+        window.apply_dashboard(window.dashboard, None)
+        self.assertEqual(window.clock_interval, 2)
+        self.assertTrue(asb.Gtk.IconTheme.get_for_display(window.get_display()).has_icon("preferences-system-time-symbolic"))
+        hex_color = lambda label: asb.SwitchboardWindow.hex_color(label.get_color())
+        background = window.native_colors()["background"]
+        for view in (1, 0):
+            window.view_filter.set_selected(view); self.settle(window)
+            limited, normal = window.focus_widgets["limited"], window.focus_widgets["normal"]
+            self.assertTrue(limited.has_css_class("asb-limited"))
+            self.assertFalse(normal.has_css_class("asb-limited"))
+            self.assertTrue(limited.asb_limit_clock.get_visible())
+            self.assertEqual(limited.asb_limit_clock.get_icon_name(), "preferences-system-time-symbolic")
+            self.assertFalse(normal.asb_limit_clock.get_visible())
+            self.assertFalse(limited.asb_dot.get_visible())
+            self.assertEqual(self.ink(limited.asb_dot), 0)
+            self.assertEqual(limited.get_height(), normal.get_height())
+            if view:
+                self.assertEqual(limited.asb_state_label.get_text(), "Resets in")
+                self.assertRegex(limited.asb_age_label.get_text(), r"^\d{1,2}s$")
+                self.assertIs(limited.asb_limit_clock.get_next_sibling(), limited.asb_state_label)
+                # Dimmer than the quiet text of the normal read Idle row, with 4.5:1 on the background.
+                for name in ("asb_title_label", "asb_folder", "asb_state_label", "asb_age_label"):
+                    grey, quiet = hex_color(getattr(limited, name)), hex_color(getattr(normal, name))
+                    self.assertGreaterEqual(asb.contrast(grey, background), 4.5)
+                    self.assertLess(asb.contrast(grey, background), asb.contrast(quiet, background))
+            else:
+                self.assertRegex(limited.asb_state_label.get_text(), r"^Resets \d{1,2}s$")
+                self.assertIs(limited.asb_limit_clock.get_next_sibling(), limited.asb_dot)
+            self.assertRegex(limited.asb_accessible_label, r"^Open Plan the alarm export in Codex\. Idle\. Usage limit\. Resets in \d{1,2} seconds?\.$")
+            self.assert_accessible_label(limited, limited.asb_accessible_label)
+            tooltip = SimpleNamespace(set_custom=lambda _content: None)
+            window.query_row_tooltip(limited, 0, 0, False, tooltip)
+            self.assertRegex(limited.asb_tooltip_key[0]["limit"], r"^Codex Personal is out of usage\. It resets at 1?\d:\d\d [AP]M\.$")
+        # The local clock lifts the grey at the reset, with no data read.
+        while time.time() * 1000 <= rows[0]["limitResetsAtMs"]:
+            self.drain(.1)
+        with patch.object(window, "render") as render:
+            window.update_clock(); self.settle(window)
+            render.assert_not_called()
+        limited = window.focus_widgets["limited"]
+        self.assertFalse(limited.has_css_class("asb-limited"))
+        self.assertFalse(limited.asb_limit_clock.get_visible())
+        self.assertEqual(limited.asb_state_label.get_text(), "Idle")
+        self.assertEqual(limited.asb_accessible_label, "Open Plan the alarm export in Codex. Idle.")
+        self.assertEqual(window.clock_interval, 60)
+        window.view_filter.set_selected(1); self.settle(window)
+        limited, normal = window.focus_widgets["limited"], window.focus_widgets["normal"]
+        self.assertEqual((limited.asb_state_label.get_text(), limited.asb_age_label.get_text()), ("Idle", "10m ago"))
+        self.assertFalse(limited.asb_limit_clock.get_visible())
+        self.assertEqual(hex_color(limited.asb_title_label), hex_color(normal.asb_title_label))
 
     def test_drawer_pill_card_button_views_peek_and_narrow_column(self):
         def row(n, **extra):
@@ -1760,6 +1831,155 @@ class WidgetCheck(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
                          "Real pointer clicks need xdotool and a nested test display (DISPLAY=:9 or :10).")
+    def test_message_courier_flight_paint_lit_icons_and_hidden_rows(self):
+        def row(n, title):
+            return {"id": f"m{n}", "provider": "codex", "providerLabel": "Codex", "title": title, "cwd": "/example/notes",
+                    "projectName": "notes", "state": "idle", "canOpen": True, "updatedAtMs": NOW - n * 60_000}
+        threads = [row(1, "Draft the release note"), row(2, "Check the parser fixtures"), row(3, "Sort the open issues")]
+        at = time.time() * 1000
+        def board(*messages):
+            # Each pair has one fixed time, so a pair in a later dashboard is the same message.
+            return {"generatedAtMs": NOW, "providers": [], "threads": threads,
+                    "messages": [{"from": source, "to": target, "atMs": at + int(source[1:]) * 10 + int(target[1:])}
+                                 for source, target in messages]}
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", board(("m1", "m3")), theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(700, 420)
+        window.present()
+        self.settle(window)
+        strip, rows = window.list_body, window.focus_widgets
+        def wait(done, limit=6):
+            end = time.monotonic() + limit
+            while not done() and time.monotonic() < end:
+                self.drain(.02)
+            self.assertTrue(done())
+        # The first dashboard only marks its messages as seen.
+        self.drain(.3)
+        self.assertEqual(strip.flights, [])
+        window.apply_dashboard(board(("m1", "m3"), ("m3", "m1")), None)
+        wait(lambda: strip.flights)
+        self.assertEqual(len(strip.flights), 1)
+        flight = strip.flights[0]
+        self.assertEqual(flight["rows"], (rows["m3"], rows["m1"]))
+        for animation in flight["animations"]:
+            animation.pause()
+        flight["flight"] = .5
+        start, end = (point[:2] for point in strip.message_ends(flight))
+        head = asb.bezier_point(start, asb.message_control(start, end), end, .5)
+        self.assertTrue(end[1] < head[1] < start[1] and head[0] < start[0])
+        def pixel(x, y):
+            strip.queue_draw()
+            self.settle(window)
+            snapshot = asb.Gtk.Snapshot()
+            asb.Gtk.WidgetPaintable.new(strip).snapshot(snapshot, strip.get_width(), strip.get_height())
+            renderer = asb.Gsk.CairoRenderer()
+            renderer.realize(None)
+            # The node bounds start at the first painted pixel; the viewport keeps strip coordinates.
+            viewport = asb.Graphene.Rect().init(0, 0, strip.get_width(), strip.get_height())
+            downloader = asb.Gdk.TextureDownloader.new(renderer.render_texture(snapshot.to_node(), viewport))
+            downloader.set_format(asb.Gdk.MemoryFormat.R8G8B8A8)
+            data, stride = downloader.download_bytes()
+            renderer.unrealize()
+            offset = int(y) * stride + int(x) * 4
+            return tuple(data.get_data()[offset:offset + 4])
+        accent = window.message_color()
+        expected = tuple(min(255, round(channel * 255)) for channel in (accent.red, accent.green, accent.blue)) + (255,)
+        painted = pixel(*head)
+        self.assertTrue(all(abs(a - b) <= 3 for a, b in zip(painted, expected)), (painted, expected))
+        strip.clear_flights()
+        self.assertNotEqual(pixel(*head), painted)
+        # A played flight ends with no frame loop at rest.
+        window.apply_dashboard(board(("m1", "m3"), ("m3", "m1"), ("m2", "m1")), None)
+        wait(lambda: strip.flights)
+        wait(lambda: not strip.flights)
+
+        # GNOME animations off: no flight, and both provider icons show the accent color for 2 s.
+        settings = window.get_settings()
+        settings.set_property("gtk-enable-animations", False)
+        self.addCleanup(settings.set_property, "gtk-enable-animations", True)
+        window.apply_dashboard(board(("m1", "m2")), None)
+        wait(lambda: rows["m1"].has_css_class("asb-message-lit"))
+        self.assertTrue(rows["m2"].has_css_class("asb-message-lit"))
+        self.assertFalse(rows["m3"].has_css_class("asb-message-lit"))
+        self.assertEqual(strip.flights, [])
+        wait(lambda: not rows["m1"].has_css_class("asb-message-lit") and not rows["m2"].has_css_class("asb-message-lit"), 4)
+        settings.set_property("gtk-enable-animations", True)
+
+        # A message to a row that search hides plays nothing.
+        window.search.set_text("parser")
+        wait(lambda: list(window.focus_widgets) == ["m2"])
+        window.apply_dashboard(board(("m2", "m3")), None)
+        self.drain(.5)
+        self.assertEqual(strip.flights, [])
+        self.assertFalse(rows["m2"].has_css_class("asb-message-lit"))
+
+    def test_message_courier_out_of_view_edges(self):
+        threads = [{"id": f"e{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Sample row {n}", "cwd": "/example/notes",
+                    "projectName": "notes", "state": "idle", "canOpen": True, "updatedAtMs": NOW - n * 60_000} for n in range(80)]
+        at = time.time() * 1000
+        def board(*messages):
+            return {"generatedAtMs": NOW, "providers": [], "threads": threads,
+                    "messages": [{"from": source, "to": target, "atMs": at + index} for index, (source, target) in enumerate(messages)]}
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", board(), theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(500, 300)
+        window.present()
+        self.settle(window)
+        strip, adjustment = window.list_body, window.scroll.get_hadjustment()
+        playing = asb.Adw.AnimationState.PLAYING
+        def wait(done, limit=6):
+            end = time.monotonic() + limit
+            while not done() and time.monotonic() < end:
+                self.drain(.02)
+            self.assertTrue(done())
+        def send(*messages):
+            sent.extend(messages)
+            window.apply_dashboard(board(*sent), None)
+        sent = []
+        self.assertGreater(adjustment.get_upper(), 3 * adjustment.get_page_size())
+        # Receiver out of view: no edge mark at the start; at the end the edge mark flashes and no ring plays.
+        send(("e0", "e79"))
+        wait(lambda: strip.flights)
+        flight = strip.flights[0]
+        self.assertEqual([end[2] for end in strip.message_ends(flight)], [False, True])
+        self.assertNotEqual(flight["edge_animation"].get_state(), playing)
+        flight["animations"][-1].skip()
+        self.assertEqual(flight["edge_end"], 1)
+        self.assertEqual(flight["edge_animation"].get_state(), playing)
+        self.assertNotEqual(flight["ring_animation"].get_state(), playing)
+        strip.clear_flights()
+        # Sender out of view: the edge mark flashes at the start.
+        send(("e79", "e0"))
+        wait(lambda: strip.flights)
+        flight = strip.flights[0]
+        self.assertEqual((flight["edge_end"], flight["edge_animation"].get_state()), (0, playing))
+        strip.clear_flights()
+        # Both ends out of view: nothing plays, also with GNOME animations off.
+        adjustment.set_value((adjustment.get_upper() - adjustment.get_page_size()) / 2)
+        self.settle(window)
+        for pair in (("e0", "e78"), ("e1", "e78")):
+            ends = strip.message_ends({"rows": tuple(window.focus_widgets[identity] for identity in pair)})
+            self.assertEqual([end[2] for end in ends], [True, True])
+        send(("e0", "e78"))
+        self.drain(.5)
+        self.assertEqual(strip.flights, [])
+        settings = window.get_settings()
+        settings.set_property("gtk-enable-animations", False)
+        self.addCleanup(settings.set_property, "gtk-enable-animations", True)
+        send(("e1", "e78"))
+        self.drain(.5)
+        self.assertFalse(any(row.has_css_class("asb-message-lit") for row in window.focus_widgets.values()))
+
     def test_real_pointer_click_on_a_corner_button_does_not_open_the_session(self):
         asb.gi.require_version("GdkX11", "4.0")
         from gi.repository import GdkX11

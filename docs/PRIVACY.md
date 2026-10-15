@@ -12,15 +12,20 @@ This document covers `npm start`, `npm run desktop`, and the packaged `asb` laun
 - Matched `~/.codex/sessions/**/rollout-*.jsonl` lifecycle, activity, completion, and question signals.
 - Claude Desktop Code `local_*.json` metadata under `$XDG_CONFIG_HOME/Claude/claude-code-sessions`, or `~/.config/Claude/claude-code-sessions` on Linux.
 - Associated Claude transcripts under `~/.claude/projects` for lifecycle and completion signals.
+- The opening tag of each `<cross-session-message>` delivery record in these transcripts. ASB keeps only the `from-session` or `from` sender ID and the record time. It never keeps the message body, `from-name`, or the socket address.
+- Usage-limit numbers. From Codex session logs, ASB uses only `codex_error_info` of `task_complete` errors, and `used_percent` and `resets_at` of `rate_limits.primary` and `rate_limits.secondary` in `token_count` records. It never uses the error message. From Claude transcripts, it uses only `isApiErrorMessage`, `error`, and `quotaLimits.resetsAt` of assistant records. It never uses the limit message text or account and plan data. The view gets only the reset time.
+- ASB Bridge databases under `<CODEX_HOME>/plugin-state/asb-bridge/`, opened read-only. ASB reads only `peer_id`, `direction`, `status`, `kind`, and `created_at` of incoming (`in`) rows from the last two minutes. It never selects `text` or `peer_address`.
 - Approved Claude session-list and watch response bodies in `Cache/Cache_Data` for remote Code metadata. The reader uses only `https://claude.ai/v1/code/sessions` and `/watch`, with validated cache boundaries and bounded decoding. It does not use HTTP headers, cookies, authentication endpoints, or remote transcript-event bodies.
 - ASB's own local state, layout, and theme settings.
 - Registered app profiles use their selected local folders and the same readers. ASB also reads its own `sources.json` registration file. A ChatGPT-labeled source covers local Codex coding chats, not ordinary ChatGPT cloud chat history.
 
-Log readers can examine message and tool events in memory to identify state. The ASB view receives no question body, answer text, raw transcript, or credential. ASB does not write to original app stores. One exception applies: the read-only SQLite open of the Codex state database can create `-wal` and `-shm` side files next to it.
+Log readers can examine message and tool events in memory to identify state. The ASB view receives no question body, answer text, raw transcript, or credential. ASB does not write to original app stores. One exception applies: the read-only SQLite open of the Codex state database can create `-wal` and `-shm` side files next to it. The read-only open of an ASB Bridge database can do the same.
 
 ## What ASB displays locally
 
-Chat IDs, names, folders, app names, source IDs/names/colors, archive state, execution state and reason, update time, working time, subagent count, app links, and ASB attention/pin marks can appear in the local API or view. Compatibility profile numbers remain API metadata and are not visible. The source table also shows registered data and launcher paths, enabled flags, and chat count/status. These fields can still identify private work. Use synthetic data for public media and reports.
+Chat IDs, names, folders, app names, source IDs/names/colors, archive state, execution state and reason, update time, working time, usage-limit reset time, subagent count, app links, and ASB attention/pin marks can appear in the local API or view. Compatibility profile numbers remain API metadata and are not visible. The source table also shows registered data and launcher paths, enabled flags, and chat count/status. These fields can still identify private work. Use synthetic data for public media and reports.
+
+For session messages, the view gets only pairs of row IDs (sender and receiver) and the message times. It gets no message text, sender name, or address.
 
 Working, Waiting, Idle, and Unknown are local observations. A completion dot is not proof of unread state in the original app. Read/Unread and pins belong only to ASB.
 

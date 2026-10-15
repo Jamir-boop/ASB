@@ -2,7 +2,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { loadCodexDashboard, invalidateCodexData, discoverCodexStateDatabase, retainCodexDataScopes } from './codex-data.mjs';
+import { loadCodexDashboard, invalidateCodexData, discoverCodexStateDatabase, retainCodexDataScopes, SESSION_MESSAGE_WINDOW_MS } from './codex-data.mjs';
 import { defaultClaudeAppDir, invalidateClaudeData, openClaudeThread, retainClaudeDataSources } from './claude-data.mjs';
 import { loadSwitchboardClaudeThreads, claudeRemoteDeepLink, claudeRemoteStatus,
   invalidateClaudeRemoteData, isClaudeRemoteCacheEvent, shutdownClaudeRemoteParser } from './claude-remote-data.mjs';
@@ -19,9 +19,11 @@ const SOURCE_DIR = Symbol('ASB session store');
 const DISCARD_TASK = Symbol('ASB discard task signals');
 const READ_FIELDS = ['questionSeen', 'questionAck', 'nativeAt', 'nativeAck', 'nativeSeen',
   'discard', 'discardedAt', 'discardStart', 'discardEnd', 'discardNative', 'drawerSeen'];
-const RETAINED_SOURCES = ['native-unread', 'observed-completion', 'observed-failure', 'user-question'];
+const RETAINED_SOURCES = ['native-unread', 'observed-completion', 'observed-failure'];
 const STOPPED_KINDS = ['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled'];
 const TITLE_LIMIT = 300;
+const MAX_SESSION_MESSAGES = 50;
+const BRIDGE_ALIAS = /^(?:session|cse)_([A-Za-z0-9_-]{1,128})$/;
 
 // A stored title can hold a whole prompt; a row and its tooltip show only the start.
 function capTitle(title) {
@@ -194,6 +196,9 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
         canOpen: Boolean(appDeepLink) && thread.sourceCanOpen !== false,
         appDeepLink,
       };
+      // A usage limit stopped the session, and its reset is still in the future.
+      const limit = Number(thread.limitResetsAtMs || 0);
+      row.limitResetsAtMs = limit > nowMs && status.state !== 'working' && !(status.state === 'waiting' && row.actionRequired) ? limit : 0;
       Object.defineProperty(row, QUESTION_AT, { value: Number(thread.latestUserQuestionAtMs || 0) });
       Object.defineProperty(row, DISCARD_TASK, { value: {
         atMs: thread.groupTaskEndedAtMs ?? Number(thread.latestTaskEndedAtMs || (thread.lifecycleRunning === false ? thread.latestLifecycleAtMs : 0)
@@ -211,10 +216,49 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
     thread.source === 'claude-remote-cache' ? thread.remoteObservedAtMs : 0,
     thread.lifecycleRunning === true ? thread.agentActivityAtMs ?? thread.latestLifecycleAtMs : 0,
     thread.provider === 'claude-desktop-code' && thread.lifecycleRunning == null ? thread.transcriptActivityAtMs : 0])
-    .map((value) => Number(value || 0) + ACTIVITY_WINDOW_MS + 1).filter((value) => value > nowMs);
+    .map((value) => Number(value || 0) + ACTIVITY_WINDOW_MS + 1)
+    .concat(board.threads.map((row) => row.limitResetsAtMs)).filter((value) => value > nowMs);
   Object.defineProperty(board, 'nextStatusCheckAtMs', { value: expiries.length ? Math.min(...expiries) : Infinity });
   board.refreshIntervalMs = switchboardRefreshInterval(board);
+  board.messages = resolveSessionMessages(normalizedThreads, board.threads,
+    { sinceMs: nowMs - SESSION_MESSAGE_WINDOW_MS, untilMs: nowMs + 5_000 });
   return board;
+}
+
+// Maps the native session IDs of the sources to row IDs, and returns only row ID pairs and times.
+export function resolveSessionMessages(threads, rows, { sinceMs, untilMs }) {
+  const rowIds = new Set(rows.map((row) => row.id));
+  const rowOf = (thread) => rowIds.has(thread.id) ? thread.id : rowIds.has(thread.hostThreadId) ? thread.hostThreadId : '';
+  const lookup = new Map();
+  const add = (key, rowId) => { if (key) lookup.set(key, lookup.has(key) && lookup.get(key) !== rowId ? null : rowId); };
+  const addBridge = (alias, rowId) => {
+    const token = typeof alias === 'string' ? alias.match(BRIDGE_ALIAS)?.[1] : '';
+    if (token) for (const prefix of ['session', 'cse']) add(`bridge:${prefix}_${token}`, rowId);
+  };
+  for (const thread of threads) {
+    const rowId = rowOf(thread);
+    if (!rowId) continue;
+    const externalId = String(thread.externalId || thread.id || '');
+    add(externalId, rowId);
+    if (thread.provider !== 'claude-desktop-code') continue;
+    if (thread.source === 'claude-remote-cache') { addBridge(externalId, rowId); continue; }
+    add(String(thread.cliSessionId || ''), rowId);
+    for (const id of Array.isArray(thread.priorCliSessionIds) ? thread.priorCliSessionIds : []) add(String(id || ''), rowId);
+    for (const alias of Array.isArray(thread.bridgeSessionIds) ? thread.bridgeSessionIds : []) addBridge(alias, rowId);
+  }
+  const messages = new Map();
+  for (const thread of threads) {
+    if (!Array.isArray(thread.incomingMessages)) continue;
+    const to = rowOf(thread);
+    for (const message of to ? thread.incomingMessages : []) {
+      const from = lookup.get(String(message?.from || ''));
+      const atMs = Number(message?.atMs);
+      if (!from || from === to || !(atMs >= sinceMs && atMs <= untilMs)) continue;
+      messages.set(`${from}\0${to}\0${atMs}`, { from, to, atMs });
+    }
+  }
+  return [...messages.values()].sort((a, b) => a.atMs - b.atMs || (a.from < b.from ? -1 : a.from > b.from ? 1 : 0)
+    || (a.to < b.to ? -1 : a.to > b.to ? 1 : 0)).slice(-MAX_SESSION_MESSAGES);
 }
 
 function sourceCacheScope(source) {
@@ -459,9 +503,9 @@ export class PendingTracker {
     row.failedAttention = observedAttention && record?.pendingKind === 'failed';
     row.completionAttention = observedAttention && !row.failedAttention;
     if (this.persistentUnread && record) {
-      retainUnread(record, row.questionAttention ? 'user-question'
-        : !row.archived && row.state === 'idle' && record.pending > record.ack ? record.pendingKind === 'failed' ? 'observed-failure' : 'observed-completion'
-          : row.nativeAttention ? 'native-unread' : '');
+      retainUnread(record, !row.archived && row.state === 'idle' && record.pending > record.ack
+        ? record.pendingKind === 'failed' ? 'observed-failure' : 'observed-completion'
+        : row.nativeAttention ? 'native-unread' : '');
     }
     row.retainedUnread = Boolean(record?.retained);
     row.retainedUnreadSource = record?.retained || '';
@@ -470,8 +514,8 @@ export class PendingTracker {
       || !(record.manual === 1 || record.retained || record.pending > record.ack
         || row.nativeUnread !== false && record.nativeAt > record.nativeAck))) record.drawer = 0;
     row.drawer = record?.drawer === 1;
-    // A Working row shows only question attention. Stored marks stay and show again after Working ends.
-    const working = row.state === 'working';
+    // A Working or usage-limited row shows only question attention. Stored marks stay and show again after Working or the limit ends.
+    const working = row.state === 'working' || row.limitResetsAtMs > 0;
     row.unread = !working && !row.drawer && (row.manualUnread || row.nativeAttention || row.completionAttention || row.failedAttention || row.retainedUnread);
     row.pending = Boolean(row.unread || row.questionAttention || row.actionRequired);
     row.pendingSource = row.actionRequired ? 'user-action' : row.questionAttention ? 'user-question' : working ? ''
@@ -484,8 +528,7 @@ export class PendingTracker {
     this.persistentUnread = enabled;
     for (const row of dashboard.threads) {
       const record = this.records[row.id];
-      if (enabled) retainUnread(record, row.questionAttention ? 'user-question'
-        : row.failedAttention ? 'observed-failure' : row.completionAttention ? 'observed-completion' : row.nativeAttention ? 'native-unread' : '');
+      if (enabled) retainUnread(record, row.failedAttention ? 'observed-failure' : row.completionAttention ? 'observed-completion' : row.nativeAttention ? 'native-unread' : '');
       this.apply(row);
     }
     dashboard.persistentUnread = enabled;

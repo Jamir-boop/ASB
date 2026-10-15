@@ -47,9 +47,8 @@ function sourceKey(key) {
     if (url.origin !== 'https://claude.ai' || url.username || url.password || url.hash) return null;
     const kind = url.pathname === '/v1/code/sessions' ? 'list'
       : url.pathname === '/v1/code/sessions/watch' ? 'watch' : '';
-    if (!kind || [...url.searchParams.keys()].some((name) => ![
-      'limit', 'statuses', 'exclude_tags', 'resume_token', 'include_trigger_sessions',
-    ].includes(name))) return null;
+    // Any query parameters: the app adds new ones (keepalive_tolerance_seconds since 2026-10).
+    if (!kind) return null;
     return { kind, startCursor: url.searchParams.get('resume_token') || '' };
   } catch { return null; }
 }

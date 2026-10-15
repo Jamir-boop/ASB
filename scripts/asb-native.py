@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Native GNOME view for the local ASB session API."""
 import json
+import math
 from http.client import HTTPConnection, HTTPException
 import os
 import re
@@ -105,7 +106,7 @@ def attention_signature(row):
 def attention_indicator(row, drawer=False):
     """Return the row mark in question, unread, discard, then stopped order. With drawer, a drawer row shows its stored unread mark."""
     return "question" if row.get("actionRequired") or row.get("questionAttention") else "dot" \
-        if row.get("unread") or (drawer and row.get("drawer") and row.get("state") != "working") \
+        if row.get("unread") or (drawer and row.get("drawer") and row.get("state") != "working" and not limit_left(row)) \
         else "discard" if row.get("state") == "working" and row.get("discardResult") \
         else "stop" if row.get("state") == "idle" and row.get("lastOutcome") == "stopped" else ""
 
@@ -178,6 +179,79 @@ def motion_offsets(old, new):
     return offsets
 
 
+MESSAGE_MAX_AGE_MS = 30_000
+MESSAGE_FLIGHT_LIMIT = 6
+MESSAGE_LIGHT_MS = 2000
+
+
+def new_messages(messages, seen, visible, now_ms, room):
+    """Message keys to play now and the keys to keep as seen; the first dashboard (seen None) plays nothing."""
+    keys, play, pairs = set(), [], set()
+    for message in messages if isinstance(messages, list) else []:
+        if not isinstance(message, dict):
+            continue
+        source, target, at = message.get("from"), message.get("to"), message.get("atMs")
+        if not isinstance(source, str) or not isinstance(target, str) or type(at) not in (int, float):
+            continue
+        key = (source, target, at)
+        keys.add(key)
+        if seen is None or key in seen or now_ms - at > MESSAGE_MAX_AGE_MS or source == target \
+                or source not in visible or target not in visible or (source, target) in pairs or len(play) >= room:
+            continue
+        pairs.add((source, target))
+        play.append(key)
+    return play, keys
+
+
+def message_duration(distance):
+    return min(900, max(480, distance / 1.5))
+
+
+def message_control(start, end):
+    """Quadratic Bezier control point: bow to the upper side for mostly horizontal travel, else to the left."""
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    distance = math.hypot(dx, dy)
+    x, y = (start[0] + end[0]) / 2, (start[1] + end[1]) / 2
+    if distance:
+        bow = min(60, .22 * distance)
+        nx, ny = -dy / distance, dx / distance
+        sign = -1 if (ny > 0 if abs(dx) >= abs(dy) else nx > 0) else 1
+        x, y = x + sign * nx * bow, y + sign * ny * bow
+    return max(2, x), y
+
+
+def bezier_point(start, control, end, t):
+    u = 1 - t
+    return tuple(u * u * a + 2 * u * t * b + t * t * c for a, b, c in zip(start, control, end))
+
+
+def ease_in_out_cubic(t):
+    return 4 * t ** 3 if t < .5 else 1 - (-2 * t + 2) ** 3 / 2
+
+
+def message_tail(t):
+    """Tail segments (from, to, width, alpha) behind the head at linear time t, in eased path progress.
+    The steps are in time, so the tail stretches with the speed of the light; it stops at 0."""
+    segments = []
+    for k in range(1, 9):
+        first = t - (k - 1) * .025
+        if first <= 0:
+            break
+        segments.append((ease_in_out_cubic(first), ease_in_out_cubic(max(0, t - k * .025)),
+                         3.2 * (1 - k / 9), .7 * (1 - k / 9)))
+    return segments
+
+
+def message_edge(x, left, right):
+    """An x outside the viewport moves to the edge on that side, 2 px inside."""
+    return left + 2 if x < left else right - 2 if x > right else x
+
+
+def edge_alpha(ms):
+    """Edge mark: 0 to 1 in 120 ms, hold 300 ms, to 0 in 300 ms."""
+    return max(0, min(1, ms / 120, 1 - (ms - 420) / 300))
+
+
 def luminance(color):
     channels = [int(color[index:index + 2], 16) / 255 for index in (1, 3, 5)]
     return sum((value / 12.92 if value <= .04045 else ((value + .055) / 1.055) ** 2.4) * weight
@@ -219,6 +293,11 @@ def quiet_color(colors, key, fraction, highlight):
         if all(contrast(color, surface) >= 4.5 for surface in surfaces):
             return color, percent / 100
     return colors[key], 1
+
+
+def limited_color(colors):
+    """The text color of a limited row: the dimmest mix of text into the background with 4.5:1 on the background."""
+    return quiet_color(colors, "text", 0, colors["background"])
 
 
 def validate_theme(value):
@@ -329,9 +408,37 @@ def working_duration(row, now_ms=None):
     start = row.get("workingSinceMs", 0)
     if row.get("state") != "working" or isinstance(start, bool) or not isinstance(start, (int, float)) or not 0 < start <= now_ms:
         return ""
-    hours, remainder = divmod(int((now_ms - start) / 1000), 3600)
+    return duration_text(int((now_ms - start) / 1000))
+
+
+def duration_text(seconds):
+    hours, remainder = divmod(seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     return f"{hours}h{minutes}m" if hours else f"{minutes}m{seconds}s" if minutes else f"{seconds}s"
+
+
+def spoken_duration(seconds):
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    unit = lambda count, word: f"{count} {word}" + ("" if count == 1 else "s")
+    if hours:
+        return unit(hours, "hour") + (" " + unit(minutes, "minute") if minutes else "")
+    return unit(minutes, "minute") + (" " + unit(seconds, "second") if seconds else "") if minutes else unit(seconds, "second")
+
+
+def limit_left(row, now_ms=None):
+    """Whole seconds, rounded up, until the usage limit that stopped the row resets; 0 when no limit holds the row."""
+    now_ms = time.time() * 1000 if now_ms is None else now_ms
+    reset = row.get("limitResetsAtMs", 0)
+    if isinstance(reset, bool) or not isinstance(reset, (int, float)) or not math.isfinite(reset) or reset <= now_ms:
+        return 0
+    return math.ceil((reset - now_ms) / 1000)
+
+
+def clock_interval(threads, now_ms=None):
+    """Seconds between local clock ticks: 2 for a Working timer or a reset countdown under one hour, else 60."""
+    return 2 if any(row.get("state") == "working" and not row.get("archived") or 0 < limit_left(row, now_ms) <= 3600
+                    for row in threads) else 60
 
 
 def row_meta(row, now_ms=None):
@@ -412,15 +519,21 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
     app_color = source_marker_color(row)
     if app_color:
         source += (". " if source else "") + "Profile color marker: " + app_color
+    limit = ""
+    if limit_left(row, now_ms):
+        # A locale with no AM/PM marker needs the 24-hour form, or 20:28 reads as 8:28.
+        reset_at = time.localtime(row["limitResetsAtMs"] / 1000)
+        reset = time.strftime("%I:%M %p", reset_at).lstrip("0") if time.strftime("%p") else time.strftime("%H:%M", reset_at)
+        limit = f"{source_label or provider} is out of usage. It resets at {reset}."
     return {"path": path, "full_path": full_path, "title": row.get("title") or "Untitled session",
             "state": state, "state_text": state_text, "app": app, "app_color": app_color,
             "indicator": shape, "note": note, "flags": flags, "error": error,
-            "reason": row.get("reason", ""), "source": source}
+            "reason": row.get("reason", ""), "source": source, "limit": limit}
 
 
 def tooltip_description(model):
     return "\n".join(filter(None, (model["title"], model["full_path"], model["state_text"], model["app"],
-                                  model["reason"], model["source"], model["note"], model["flags"], model["error"])))
+                                  model["reason"], model["source"], model["limit"], model["note"], model["flags"], model["error"])))
 
 
 def local_base_url(value):
@@ -599,6 +712,8 @@ class SessionStrip(Gtk.Box):
         self.hover_animation = Adw.TimedAnimation.new(self, 0, 1, 200, target)
         self.hover_animation.set_easing(Adw.Easing.EASE_OUT_EXPO)
         self.connect("unmap", self.clear_hover)
+        self.flights = []
+        self.connect("unmap", self.clear_flights)
 
     def show_hover(self, rectangle):
         if rectangle == self.hover_target:
@@ -659,6 +774,130 @@ class SessionStrip(Gtk.Box):
             snapshot.append_color(color, bounds)
             snapshot.pop()
         Gtk.Box.do_snapshot(self, snapshot)
+        if self.flights:
+            self.snapshot_flights(snapshot)
+
+    def message_view(self):
+        # The strip starts after its 4 px margin inside the scrolled viewport.
+        adjustment = self.get_root().scroll.get_hadjustment()
+        left = adjustment.get_value() - self.get_margin_start()
+        return left, left + adjustment.get_page_size()
+
+    def message_point(self, row):
+        """The painted center of a row's provider icon in strip coordinates, during a card glide too."""
+        found, bounds = row.asb_mark.compute_bounds(self)
+        if not found:
+            return None
+        x, y, _fade = self.motion.get(row.asb_focus_key, (0, 0, 0))
+        return (bounds.origin.x + bounds.size.width / 2 + x * self.motion_progress,
+                bounds.origin.y + bounds.size.height / 2 + y * self.motion_progress)
+
+    def message_ends(self, flight):
+        points = [self.message_point(row) for row in flight["rows"]]
+        if None in points:
+            return None
+        left, right = self.message_view()
+        return [(message_edge(x, left, right), y, message_edge(x, left, right) != x) for x, y in points]
+
+    def start_flight(self, source, target, color, ends):
+        flight = {"rows": (source, target), "color": color, "flight": 0, "ring": None, "edge": None, "edge_end": 0,
+                  "animations": []}
+        def animation(key, duration, easing, value_to=1):
+            callback = Adw.CallbackAnimationTarget.new(lambda value: self.advance_flight(flight, key, value))
+            item = Adw.TimedAnimation.new(self, 0, value_to, duration, callback)
+            item.set_easing(easing)
+            item.connect("done", self.flight_done, flight, key)
+            flight["animations"].append(item)
+            return item
+        flight["ring_animation"] = animation("ring", 420, Adw.Easing.EASE_OUT_EXPO)
+        flight["edge_animation"] = animation("edge", 720, Adw.Easing.LINEAR, 720)
+        self.flights.append(flight)
+        # Linear time: the paint eases the path position, so the tail stretches with speed.
+        animation("flight", round(message_duration(math.dist(ends[0][:2], ends[1][:2]))), Adw.Easing.LINEAR).play()
+        if ends[0][2]:
+            flight["edge_animation"].play()
+
+    def advance_flight(self, flight, key, value):
+        if flight in self.flights:
+            flight[key] = value
+            self.queue_draw()
+
+    def flight_done(self, _animation, flight, key):
+        if flight not in self.flights:
+            return
+        flight[key] = None
+        if key == "flight":
+            ends = self.message_ends(flight)
+            if ends and ends[1][2]:
+                # The light reaches the viewport edge: the edge mark flashes there, and no ring shows.
+                flight["edge_end"] = 1
+                flight["edge_animation"].reset()
+                flight["edge_animation"].play()
+            else:
+                flight["ring_animation"].play()
+        elif flight["flight"] is None and flight["ring"] is None and flight["edge"] is None:
+            self.flights.remove(flight)
+            self.queue_draw()
+
+    def drop_flights(self, flights):
+        for flight in flights:
+            if flight in self.flights:
+                self.flights.remove(flight)
+            for item in flight["animations"]:
+                item.pause()
+
+    def clear_flights(self, *_args):
+        if self.flights:
+            self.drop_flights(list(self.flights))
+            self.queue_draw()
+
+    def snapshot_flights(self, snapshot):
+        current = self.get_root().focus_widgets
+        gone = [flight for flight in self.flights
+                if any(current.get(row.asb_focus_key) is not row for row in flight["rows"])]
+        # The callbacks of dropped flights do nothing, so no draw is queued during this paint.
+        self.drop_flights(gone)
+        for flight in self.flights:
+            ends = self.message_ends(flight)
+            if ends is None:
+                continue
+            start, end = ends[0][:2], ends[1][:2]
+            def color(alpha):
+                value = flight["color"].copy()
+                value.alpha *= alpha
+                return value
+            def fill(x, y, radius, alpha):
+                builder = Gsk.PathBuilder.new()
+                builder.add_circle(Graphene.Point().init(x, y), radius)
+                snapshot.append_fill(builder.to_path(), Gsk.FillRule.WINDING, color(alpha))
+            def stroke(path, width, alpha):
+                line = Gsk.Stroke.new(width)
+                line.set_line_cap(Gsk.LineCap.ROUND)
+                snapshot.append_stroke(path, line, color(alpha))
+            if flight["edge"] is not None and edge_alpha(flight["edge"]) > 0:
+                x, y, outside = ends[flight["edge_end"]]
+                if outside:
+                    bounds = Graphene.Rect()
+                    bounds.init(x - 1.5, y - 9, 3, 18)
+                    rounded = Gsk.RoundedRect()
+                    rounded.init_from_rect(bounds, 1.5)
+                    snapshot.push_rounded_clip(rounded)
+                    snapshot.append_color(color(edge_alpha(flight["edge"])), bounds)
+                    snapshot.pop()
+            if flight["flight"] is not None:
+                control = message_control(start, end)
+                for first, last, width, alpha in message_tail(flight["flight"]):
+                    builder = Gsk.PathBuilder.new()
+                    builder.move_to(*bezier_point(start, control, end, first))
+                    builder.line_to(*bezier_point(start, control, end, last))
+                    stroke(builder.to_path(), width, alpha)
+                head = bezier_point(start, control, end, ease_in_out_cubic(flight["flight"]))
+                fill(*head, 6, .25)
+                fill(*head, 3, 1)
+            elif flight["ring"] is not None:
+                builder = Gsk.PathBuilder.new()
+                builder.add_circle(Graphene.Point().init(*end), 5 + 8 * flight["ring"])
+                stroke(builder.to_path(), 1.5, .85 * (1 - flight["ring"]))
 
 
 class SessionColumn(Gtk.ListBox):
@@ -1160,6 +1399,7 @@ class PreferencesWindow(Adw.Window):
 class SwitchboardWindow(Adw.ApplicationWindow):
     drawer_view, drawer_peek, drawer_count, column_pixel_width = False, False, 0, DEFAULT_COLUMN_WIDTH
     wide_controls, tiny_controls, search_expanded, show_app_pills = False, False, False, False
+    message_seen = None
 
     def __init__(self, application, base, initial_dashboard=None, theme_path=THEME_PATH, layout_path=LAYOUT_PATH):
         super().__init__(application=application, title="ASB · Agent Switch Board",
@@ -1571,6 +1811,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-toolbar searchentry {{ min-height: 26px; padding-top: 0; padding-bottom: 0; }}
 {base} .asb-state {{ font-size: 11px; }}
 {base} .asb-provider {{ opacity: .65; }}
+{base} .asb-message-lit .asb-provider {{ color: @accent_color; opacity: 1; }}
 {base} .asb-source-badge {{ min-width: 6px; min-height: 6px; padding: 0; border: 1px solid @window_bg_color;
     border-radius: 50%; box-shadow: none; opacity: 1; }}
 {base} .asb-column {{ background: transparent; }}
@@ -1639,6 +1880,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope}, {scope} headerbar, {scope} popover contents {{ background: {colors['background']}; color: {colors['text']}; }}
 {scope} .asb-state, {scope} .dim-label {{ color: {colors['muted']}; opacity: 1; }}
 {scope} .asb-working, {scope} .asb-waiting {{ color: {colors['accent']}; }}
+{scope} .asb-message-lit .asb-provider {{ color: {colors['accent']}; }}
 {scope} .asb-dot, .asb-tooltip.asb-custom .asb-dot {{ background: {colors['accent']}; }}
 {scope} .asb-dot.asb-question, .asb-tooltip.asb-custom .asb-dot.asb-question {{ background: none; color: {colors['accent']}; }}
 {scope} .asb-dot.asb-stop, .asb-tooltip.asb-custom .asb-dot.asb-stop {{ background: {colors['muted']}; }}
@@ -1683,14 +1925,23 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.profile_surfaces = (palette["background"], highlight)
         quiet_title, title_fraction = quiet_color(palette, "text", .67, highlight)
         quiet_caption, caption_fraction = quiet_color(palette, "muted" if colors else "text", .85 if colors else .5, highlight)
+        # A limited row is dimmer than a quiet row: 4.5:1 on the background, and on the highlight while it is shown.
+        limited, limited_fraction = limited_color(palette)
+        limited_hover, hover_fraction = quiet_color(palette, "text", 0, highlight)
         if not colors:
             quiet_title = f"mix(@window_bg_color, @window_fg_color, {title_fraction})"
             quiet_caption = f"mix(@window_bg_color, @window_fg_color, {caption_fraction})"
+            limited = f"mix(@window_bg_color, @window_fg_color, {limited_fraction})"
+            limited_hover = f"mix(@window_bg_color, @window_fg_color, {hover_fraction})"
         # A drawer row is quiet as a read row, but not while the Drawer pill shows it as unread.
-        quiet = [base + ".asb-comfortable .asb-idle-read:not(.asb-drawer-lit):not(:hover):not(:focus-within)"]
+        quiet = [base + ".asb-comfortable .asb-idle-read:not(.asb-limited):not(.asb-drawer-lit):not(:hover):not(:focus-within)"]
+        parts = (" .asb-title", " .asb-folder", " .asb-state", " .asb-age", " .asb-limit-clock")
         css += f"""
 {", ".join(row + " .asb-title" for row in quiet)} {{ color: {quiet_title}; opacity: 1; }}
 {", ".join(row + part for row in quiet for part in (" .asb-folder", " .asb-state", " .asb-age"))} {{ color: {quiet_caption}; opacity: 1; }}
+{", ".join(base + " .asb-limited" + part for part in parts)} {{ color: {limited}; opacity: 1; }}
+{", ".join(base + " .asb-limited" + state + part for state in (":hover", ":focus-within") for part in parts)} {{ color: {limited_hover}; }}
+{base} .asb-limited:not(.asb-message-lit) .asb-provider {{ opacity: .4; }}
 """
         self.css.load_from_string(css)
         self.hover_colors = colors
@@ -1820,18 +2071,70 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                                                for row, previous in zip(signature, self.signature or [])):
             self.signature = signature
             self.render()
-        clock_interval = 2 if any(row.get("state") == "working" and not row.get("archived")
-                                  for row in dashboard.get("threads", [])) else 60
-        if clock_interval != self.clock_interval:
-            if self.clock_timer:
-                GLib.source_remove(self.clock_timer)
-            self.clock_interval = clock_interval
-            self.clock_timer = GLib.timeout_add_seconds(clock_interval, self.update_clock)
+        self.play_messages(dashboard.get("messages"))
         self.update_clock()
         if self.snapshot_pending:
             self.snapshot_pending = False
             GLib.timeout_add(250, self.capture)
         return False
+
+    def play_messages(self, messages):
+        if self.message_seen is None or not messages:
+            self.message_seen = new_messages(messages, None, {}, 0, 0)[1]
+            return
+        room = MESSAGE_FLIGHT_LIMIT - len(self.list_body.flights)
+        play, self.message_seen = new_messages(messages, self.message_seen, self.focus_widgets, time.time() * 1000, room)
+        if play:
+            # New rows have their places only after the next layout.
+            self.list_body.add_tick_callback(self.messages_after_layout, play)
+
+    def messages_after_layout(self, _widget, _clock, play):
+        GLib.idle_add(self.start_messages, play)
+        return False
+
+    def start_messages(self, play):
+        if self.closed:
+            return False
+        animations = self.get_settings().get_property("gtk-enable-animations")
+        for source, target, _at in play:
+            rows = self.focus_widgets.get(source), self.focus_widgets.get(target)
+            if None in rows:
+                continue
+            ends = self.list_body.message_ends({"rows": rows})
+            # A message between two cards outside the viewport plays nothing.
+            if ends is None or ends[0][2] and ends[1][2]:
+                continue
+            if not animations:
+                for row in rows:
+                    self.light_row(row, MESSAGE_LIGHT_MS)
+            elif len(self.list_body.flights) < MESSAGE_FLIGHT_LIMIT:
+                self.list_body.start_flight(*rows, self.message_color(), ends)
+                self.light_row(rows[0], 160)
+        return False
+
+    def message_color(self):
+        if self.hover_colors:
+            return self.rgba(self.hover_colors["accent"])
+        found, color = self.get_style_context().lookup_color("accent_color")
+        return color if found else self.get_color()
+
+    def light_row(self, widget, duration):
+        self.clear_message_light(widget)
+        generation = widget.asb_light_generation
+        def clear():
+            if widget.asb_light_generation == generation:
+                widget.asb_light_timer = None
+                widget.remove_css_class("asb-message-lit")
+            return False
+        widget.add_css_class("asb-message-lit")
+        widget.asb_light_timer = GLib.timeout_add(duration, clear)
+
+    def clear_message_light(self, widget):
+        if getattr(widget, "asb_light_timer", None):
+            GLib.source_remove(widget.asb_light_timer)
+            widget.remove_css_class("asb-message-lit")
+        widget.asb_light_timer = None
+        widget.asb_light_generation = getattr(widget, "asb_light_generation", 0) + 1
 
     def capture(self):
         try:
@@ -2401,6 +2704,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             for identity, widget in self.focus_widgets.items():
                 if identity not in visible_widgets:
                     self.clear_read_feedback(widget)
+                    self.clear_message_light(widget)
                     if widget.get_parent():
                         widget.get_parent().remove(widget)
         self.focus_widgets = visible_widgets
@@ -2535,6 +2839,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget.asb_view = None
         widget.asb_handlers = []
         widget.asb_read_timer, widget.asb_read_generation = None, 0
+        widget.asb_light_timer, widget.asb_light_generation = None, 0
         widget.asb_last_read_at = None
         widget.asb_tooltip_content = widget.asb_tooltip_key = None
         widget.set_has_tooltip(True)
@@ -2554,6 +2859,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def release_row(self, widget):
         self.clear_read_feedback(widget)
+        self.clear_message_light(widget)
         widget.asb_last_read_at = None
         widget.asb_tooltip_content = widget.asb_tooltip_key = None
         if getattr(widget, "asb_tooltip_handler", None):
@@ -2617,9 +2923,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         app.append(app_label)
         footer.append(app)
         root.append(footer)
-        if model["note"] or model["flags"] or model["error"]:
+        if model["limit"] or model["note"] or model["flags"] or model["error"]:
             notes = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_start=21)
             notes.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL, margin_top=4, margin_bottom=4))
+            if model["limit"]:
+                notes.append(text(model["limit"], "asb-tooltip-note"))
             if model["note"]:
                 line = Gtk.Box(spacing=7)
                 if model["indicator"]:
@@ -2677,7 +2985,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if layout_changed:
             widget.asb_view = self.view
             widget.asb_action_signature = None
-            for name in ("asb_folder", "asb_pin_button", "asb_read_button", "asb_drawer_button", "asb_age_label"):
+            for name in ("asb_folder", "asb_pin_button", "asb_read_button", "asb_drawer_button", "asb_age_label", "asb_limited"):
                 if hasattr(widget, name):
                     delattr(widget, name)
             content = Gtk.Box(spacing=6, margin_start=5, margin_end=5, valign=Gtk.Align.CENTER)
@@ -2701,6 +3009,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.asb_dot = dot
             state = label("", "asb-state")
             widget.asb_state_label = state
+            clock = Gtk.Image(icon_name="preferences-system-time-symbolic", pixel_size=12, visible=False)
+            clock.add_css_class("asb-limit-clock")
+            widget.asb_limit_clock = clock
             if self.view == "comfortable":
                 content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_start=8,
                                   margin_end=8, margin_top=2, margin_bottom=2, valign=Gtk.Align.CENTER)
@@ -2724,6 +3035,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 title.set_margin_end(54)
                 content.append(title)
                 metadata = Gtk.Box(spacing=6, margin_start=21)
+                metadata.append(clock)
                 metadata.append(state)
                 age = label("", "caption")
                 age.add_css_class("asb-age")
@@ -2762,7 +3074,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 overlay.set_measure_overlay(actions, False)
                 content = overlay
             else:
-                for child in (mark_overlay, title, dot, state):
+                for child in (mark_overlay, title, clock, dot, state):
                     content.append(child)
             widget.set_child(content)
         widget.asb_mark.set_from_icon_name("asb-openai-symbolic" if row["provider"] == "codex" else "asb-claude-symbolic")
@@ -2872,21 +3184,38 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         now_ms = time.time() * 1000
         for widget in self.focus_widgets.values():
             self.update_row_text(widget, now_ms)
+        # All rows, not only the shown ones: a filter change can show a countdown before the next tick.
+        interval = clock_interval((self.dashboard or {}).get("threads", []), now_ms)
+        if interval != self.clock_interval:
+            if self.clock_timer:
+                GLib.source_remove(self.clock_timer)
+            self.clock_interval = interval
+            self.clock_timer = GLib.timeout_add_seconds(interval, self.update_clock)
         return True
 
     def update_row_text(self, widget, now_ms=None):
         row = widget.asb_thread
         duration = working_duration(row, now_ms)
         meta = row_meta(row, now_ms)
-        signature = (duration, meta)
+        left = limit_left(row, now_ms)
+        countdown = duration_text(left) if left else ""
+        signature = (duration, meta, countdown)
         if signature == widget.asb_time_signature:
             return
         widget.asb_time_signature = signature
         widget.asb_duration = duration
         state_text = row.get("state", "unknown").capitalize()
-        widget.asb_state_label.set_label(state_text + (" ·" + duration if self.view == "compact" and duration else ""))
+        # The row class keeps the grey look across a view change; at the reset the next tick lifts it.
+        if bool(countdown) != getattr(widget, "asb_limited", False):
+            widget.asb_limited = bool(countdown)
+            (widget.add_css_class if countdown else widget.remove_css_class)("asb-limited")
+            widget.asb_limit_clock.set_visible(bool(countdown))
+        if countdown:
+            widget.asb_state_label.set_label("Resets in" if self.view == "comfortable" else "Resets " + countdown)
+        else:
+            widget.asb_state_label.set_label(state_text + (" ·" + duration if self.view == "compact" and duration else ""))
         if self.view == "comfortable":
-            widget.asb_age_label.set_label(duration or row_meta(row, now_ms).split(" · ")[1])
+            widget.asb_age_label.set_label(countdown or duration or row_meta(row, now_ms).split(" · ")[1])
         shown = row.get("unread")
         action = "Open" if row.get("canOpen") else "Session"
         manual = " Marked as unread in ASB." if shown and row.get("manualUnread") else ""
@@ -2899,7 +3228,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             if row.get("lastOutcome") == "failed" or row.get("failedAttention") else " Task completed." if row.get("completionAttention") else ""
         discard = " Discard is on." if row.get("discardResult") else ""
         drawer = " In the drawer. Still unread." if row.get("drawer") else ""
-        widget.asb_accessible_label = f"{action} {row.get('title', 'Untitled session')} in {row.get('providerLabel', '')}. {state_text}.{manual}{native_unread}{pinned}{question}{retained}{outcome}{discard}{drawer}"
+        limit = f" Usage limit. Resets in {spoken_duration(left)}." if left else ""
+        widget.asb_accessible_label = f"{action} {row.get('title', 'Untitled session')} in {row.get('providerLabel', '')}. {state_text}.{limit}{manual}{native_unread}{pinned}{question}{retained}{outcome}{discard}{drawer}"
         self.update_open_state(widget, now_ms)
 
     def row_key(self, _controller, key, _code, _state, identity):
@@ -3078,6 +3408,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.cancel_scroll()
         self.cancel_motion()
         self.list_body.clear_hover()
+        self.list_body.clear_flights()
         self.events.close()
         for name in ("timer", "clock_timer", "geometry_idle", "notice_timer"):
             source = getattr(self, name)

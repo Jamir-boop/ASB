@@ -790,7 +790,7 @@ test('Working activity does not rewrite Pending state, and legacy Working timest
   assert.equal((await new PendingTracker(legacyPath).observe(board('idle', now + 6_000))).threads[0].completionAttention, false);
 });
 
-test('persistent unread retains native, question, and observed completion dots with their sources through restart', async (t) => {
+test('persistent unread retains native and observed completion dots with their sources through restart, but no question mark', async (t) => {
   const dir = await temp(t);
   const statePath = path.join(dir, 'pending.json');
   const tracker = new PendingTracker(statePath);
@@ -809,13 +809,14 @@ test('persistent unread retains native, question, and observed completion dots w
   await tracker.setPinned('native', true);
   await tracker.setPersistentUnread(true, existing);
   const completed = await tracker.observe(board(true, true, true));
-  assert.deepEqual(completed.threads.map((row) => row.retainedUnreadSource), ['native-unread', 'observed-completion', 'user-question']);
-  assert.ok(completed.threads.every((row) => row.retainedUnread && !row.manualUnread));
+  assert.deepEqual(completed.threads.map((row) => row.retainedUnreadSource), ['native-unread', 'observed-completion', '']);
+  assert.deepEqual(completed.threads.map((row) => [row.retainedUnread, row.manualUnread, row.questionAttention]),
+    [[true, false, false], [true, false, false], [false, false, true]]);
   assert.deepEqual(completed.threads.map((row) => [row.state, row.unread, row.pending, row.pendingSource]),
     [['working', false, false, ''], ['idle', true, true, 'observed-completion'], ['working', false, true, 'user-question']]);
   const clearedSource = await tracker.observe(board(false, false, true));
   assert.deepEqual(clearedSource.threads.map((row) => [row.unread, row.pending]), [[false, false], [true, true], [false, false]]);
-  assert.ok(clearedSource.threads.every((row) => row.retainedUnread));
+  assert.deepEqual(clearedSource.threads.map((row) => row.retainedUnread), [true, true, false]);
   assert.equal(clearedSource.threads[0].nativeUnread, false);
   assert.equal(clearedSource.threads[0].nativeAttention, false);
   assert.equal(clearedSource.threads[2].questionAttention, false);
@@ -823,7 +824,7 @@ test('persistent unread retains native, question, and observed completion dots w
   const restored = await restarted.observe(board(false, false, true));
   assert.equal(restored.persistentUnread, true);
   assert.deepEqual(restored.pinnedOrder, ['native']);
-  assert.ok(restored.threads.every((row) => row.retainedUnread));
+  assert.deepEqual(restored.threads.map((row) => row.retainedUnread), [true, true, false]);
   const before = await stat(statePath);
   const content = await readFile(statePath, 'utf8');
   await restarted.observe(board(false, false, true));
@@ -832,11 +833,11 @@ test('persistent unread retains native, question, and observed completion dots w
   assert.equal((await stat(statePath)).ino, before.ino);
   assert.equal((await stat(statePath)).mtimeMs, before.mtimeMs);
   await restarted.setPersistentUnread(false, restored);
-  assert.ok(restored.threads.every((row) => row.retainedUnread));
+  assert.deepEqual(restored.threads.map((row) => row.retainedUnread), [true, true, false]);
   assert.equal((await new PendingTracker(statePath).observe(board(false, false, true))).persistentUnread, false);
 });
 
-test('persistent native attention promotes new question and completion sources without relatching acknowledged events', async () => {
+test('persistent native attention keeps its source through a question and promotes completion without relatching acknowledged events', async () => {
   const tracker = new PendingTracker(false);
   const board = ({ question = false, completion = 0, native = true, running = true } = {}) => buildSwitchboardDashboard([
     { id, provider: 'codex', nativeUnread: native, lifecycleRunning: running, agentActivityAtMs: now,
@@ -845,12 +846,13 @@ test('persistent native attention promotes new question and completion sources w
   const first = await tracker.observe(board());
   await tracker.setPersistentUnread(true, first);
   assert.equal(first.threads[0].retainedUnreadSource, 'native-unread');
-  assert.equal((await tracker.observe(board({ question: true }))).threads[0].retainedUnreadSource, 'user-question');
+  const asked = (await tracker.observe(board({ question: true }))).threads[0];
+  assert.deepEqual([asked.retainedUnreadSource, asked.questionAttention, asked.pendingSource], ['native-unread', true, 'user-question']);
   const resolved = (await tracker.observe(board())).threads[0];
   assert.equal(resolved.state, 'working');
   assert.equal(resolved.pending, false);
   assert.equal(resolved.unread, false);
-  assert.equal(resolved.retainedUnreadSource, 'user-question');
+  assert.equal(resolved.retainedUnreadSource, 'native-unread');
   await tracker.acknowledge(id);
   const read = (await tracker.observe(board({ question: true }))).threads[0];
   assert.equal(read.unread, false);
@@ -885,12 +887,35 @@ test('Read clears persistent attention without changing execution, and only new 
   const newNative = await tracker.observe(board(true, now + 1));
   assert.equal(newNative.threads[0].retainedUnreadSource, 'native-unread');
   const newQuestion = await tracker.observe(board(true, now + 1, now + 2));
-  assert.equal(newQuestion.threads[1].retainedUnreadSource, 'user-question');
+  assert.deepEqual([newQuestion.threads[1].retainedUnreadSource, newQuestion.threads[1].questionAttention], ['', true]);
   await tracker.acknowledge('native');
   assert.equal((await tracker.observe(board(true, now + 3, now + 2))).threads[0].retainedUnread, true);
   await tracker.acknowledge('completion');
   await tracker.observe(board(true, 0, now + 2));
   assert.equal((await tracker.observe(board(true, now + 4, now + 2))).threads[2].retainedUnreadSource, 'observed-completion');
+});
+
+test('persistent unread keeps no mark after a Claude question resolves, and old question marks load as none', async (t) => {
+  const dir = await temp(t);
+  const statePath = path.join(dir, 'pending.json');
+  const claudeId = 'claude-desktop-code:local_question';
+  await writeFile(statePath, JSON.stringify({ version: 1, records: {
+    old: { seen: now, working: 0, pending: 0, ack: 0, retained: 'user-question' } } }));
+  const tracker = new PendingTracker(statePath);
+  const scan = (question) => tracker.observe(buildSwitchboardDashboard([
+    { id: claudeId, provider: 'claude-desktop-code', nativeUnread: false, lifecycleRunning: question, agentActivityAtMs: now,
+      awaitingUserInput: question, latestUserQuestionAtMs: question ? now : 0, userQuestionBlocking: question,
+      latestBlockingQuestionAtMs: question ? now : 0 },
+    { id: 'old', provider: 'codex', nativeUnread: false, lifecycleRunning: true, agentActivityAtMs: now },
+  ], [], now + 10));
+  const asked = (await scan(true)).threads.find((row) => row.id === claudeId);
+  assert.deepEqual([asked.state, asked.questionAttention, asked.pending, asked.pendingSource, asked.retainedUnreadSource],
+    ['waiting', true, true, 'user-question', '']);
+  const answered = await scan(false);
+  assert.equal(answered.persistentUnread, true);
+  for (const row of answered.threads) {
+    assert.deepEqual([row.unread, row.pending, row.retainedUnread, row.retainedUnreadSource], [false, false, false, ''], row.id);
+  }
 });
 
 test('ASB unread settings seed cached dots, preserve them on open, and restore open acknowledgments when disabled', async (t) => {

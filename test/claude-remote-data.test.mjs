@@ -265,6 +265,19 @@ test('newest cursor chain excludes old login streams and applies changes and del
   assert.equal(isClaudeRemoteCacheEvent(path.dirname(later), path.basename(later), 'change'), true);
 });
 
+test('watch keys accept new query parameters on the session paths and ignore other paths', async (t) => {
+  const plain = await temp(t);
+  await cacheFile(plain, '1/0/https://claude.ai/v1/code/sessions/watch?exclude_tags=-&keepalive_tolerance_seconds=30',
+    watch([row('cse_01NoCursor')]));
+  await cacheFile(plain, '1/0/https://claude.ai/v1/sessions/cse_01Events/events?keepalive_tolerance_seconds=30',
+    watch([row('cse_01Events')], now + 1000), { mtimeMs: now + 1000 });
+  assert.deepEqual((await loadClaudeRemoteThreads({ appDir: plain, nowMs: now })).threads.map((thread) => thread.externalId), ['cse_01NoCursor']);
+  const resumed = await temp(t);
+  await cacheFile(resumed, '1/0/https://claude.ai/v1/code/sessions/watch?exclude_tags=-&keepalive_tolerance_seconds=30'
+    + `&resume_token=${encodeURIComponent(cursor(now - 1000))}`, watch([row('cse_01Cursor')]));
+  assert.deepEqual((await loadClaudeRemoteThreads({ appDir: resumed, nowMs: now })).threads.map((thread) => thread.externalId), ['cse_01Cursor']);
+});
+
 test('response budget retains a full-list cursor chain and caps projected unique sessions', async (t) => {
   const appDir = await temp(t);
   const rows = Array.from({ length: 5000 }, (_, index) => row(`cse_${index}`));
