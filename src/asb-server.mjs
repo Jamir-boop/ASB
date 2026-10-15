@@ -8,7 +8,7 @@ export function createAsbServer({
   listSources = null, updateSource = null, removeSource = null, sourceToken = '', phoneGateway = null, serviceMode = false,
   publicDir = DEFAULT_PUBLIC_DIR, ...snapshotOptions
 } = {}) {
-  const snapshot = new DashboardSnapshot(snapshotOptions);
+  const snapshot = new DashboardSnapshot({ serviceMode, ...snapshotOptions });
   const expectedSourceToken = Buffer.from(String(sourceToken || ''));
   const sourceTokenAllowed = (request) => {
     const given = Buffer.from(String(request.headers['x-asb-source-token'] || ''));

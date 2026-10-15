@@ -17,6 +17,10 @@ for ASB_CANDIDATE in "${ASB_NODE:-}" "$HOME/.local/bin/node" /usr/local/bin/node
       shift
       exec "$ASB_CANDIDATE" "$ASB_ROOT/scripts/asb-bridge.mjs" "$@"
     fi
+    if [ "${1:-}" = service ]; then
+      shift
+      exec "$ASB_CANDIDATE" "$ASB_ROOT/scripts/asb-service.mjs" "$@"
+    fi
     exec "$ASB_CANDIDATE" "$ASB_ROOT/scripts/asb-desktop.mjs" "$@"
   fi
 done

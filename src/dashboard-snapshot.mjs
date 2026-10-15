@@ -20,6 +20,7 @@ export class DashboardSnapshot {
       DEFAULT_DASHBOARD_WATCH_DEBOUNCE_MS,
     ),
     now = Date.now,
+    serviceMode = false,
     loadDashboard,
     openThread,
   } = {}) {
@@ -38,6 +39,7 @@ export class DashboardSnapshot {
     let dashboardClosed = false;
     let dashboardWatchCoverage = false;
     let dashboardWatchRetryTimer = null;
+    let dashboardServiceTimer = null;
     let dashboardWatchReconcilePromise = null;
     let dashboardWatchWalkedAtMs = -Infinity;
     let dashboardWatchWalkedPaths = '';
@@ -65,7 +67,7 @@ export class DashboardSnapshot {
     const performanceSnapshot = () => {
       const memory = process.memoryUsage();
       const dashboardCacheAgeMs = dashboardCache?.cachedAtMs ? Math.max(0, now() - dashboardCache.cachedAtMs) : null;
-      const cacheTtlMs = dashboardWatchCoverage ? 5_000
+      const cacheTtlMs = dashboardWatchCoverage && !serviceMode ? 5_000
         : dashboardCache?.dashboard?.refreshIntervalMs === 2_000 ? 2_000 : 5_000;
 
       return {
@@ -111,7 +113,7 @@ export class DashboardSnapshot {
       const cachedAtMs = Number(dashboardCache?.cachedAtMs || 0);
       const cacheAgeMs = now() - cachedAtMs;
       const refreshIntervalMs = dashboardCache?.dashboard?.refreshIntervalMs === 2_000 ? 2_000 : 5_000;
-      const cacheTtlMs = dashboardWatchCoverage ? 5_000 : refreshIntervalMs;
+      const cacheTtlMs = dashboardWatchCoverage && !serviceMode ? 5_000 : refreshIntervalMs;
       const clockExpired = now() >= Number(dashboardCache?.dashboard?.nextStatusCheckAtMs || Infinity);
       const busyThrottled = dashboardDirty && refreshIntervalMs === 2_000
         && now() - dashboardLastScanStartedAtMs < 2_000;
@@ -219,7 +221,7 @@ export class DashboardSnapshot {
         if (dashboardClosed) return;
         if (dashboardLoadPromise) return;
         // One shared follow-up scan covers the burst before clients read the snapshot.
-        if (dashboardCache && dashboardDirty && dashboardEventClients.size) {
+        if (dashboardCache && dashboardDirty && (dashboardEventClients.size || serviceMode)) {
           loadSharedDashboard().then(() => {
             if (!dashboardClosed) invalidateDashboard(dashboardInvalidationReason, { hard: false, dirty: false });
           }).catch(() => {
@@ -376,6 +378,15 @@ export class DashboardSnapshot {
       dashboardWatchRetryTimer.unref?.();
     };
 
+    const pollServiceDashboard = async () => {
+      if (dashboardClosed) return;
+      let delay = 5_000;
+      try { delay = (await loadSharedDashboard()).refreshIntervalMs === 2_000 ? 2_000 : 5_000; } catch {}
+      if (dashboardClosed) return;
+      dashboardServiceTimer = dashboardSetTimeout(pollServiceDashboard, delay);
+      dashboardServiceTimer.unref?.();
+    };
+
     const dashboardForRequest = async (options = {}) => {
       const dashboard = await loadSharedDashboard(options);
       return {
@@ -419,12 +430,14 @@ export class DashboardSnapshot {
         });
       },
       attach: (server) => {
+        if (serviceMode) server.once('listening', pollServiceDashboard);
         if (typeof dashboardWatchPaths === 'function' || dashboardWatchPaths?.length) server.once('listening', retryAdaptiveWatchers);
 
         const closeDashboardResources = () => {
           dashboardClosed = true;
           if (dashboardInvalidationTimer) dashboardClearTimeout(dashboardInvalidationTimer);
           if (dashboardWatchRetryTimer) dashboardClearTimeout(dashboardWatchRetryTimer);
+          if (dashboardServiceTimer) dashboardClearTimeout(dashboardServiceTimer);
           for (const entry of adaptiveWatchers.values()) entry.watcher.close?.();
           adaptiveWatchers.clear();
           for (const client of dashboardEventClients) client.end();
