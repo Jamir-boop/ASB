@@ -1,8 +1,23 @@
 # ASB Android companion
 
-Phase 4 provides an Android app with one ASB text screen. It has a Material 3
-theme that follows the system light or dark setting. Pairing, sessions,
-actions, and notifications are not implemented in this phase.
+Phase 5 provides QR or manual pairing with the ASB phone gateway. The user
+checks the PC and certificate fingerprint before the app sends the pairing
+request. A successful connection shows the server name and ASB version from
+the authenticated hello API. The Material 3 theme follows the system light
+or dark setting. The session list and notifications are not implemented yet.
+
+Pairing uses TLS 1.3 and the SHA-256 of the full certificate. The app stores
+the paired token in one private SharedPreferences file. Backup and device
+transfer are disabled. Network and response errors keep the saved pairing;
+HTTP 401 marks it revoked. Unpair requires confirmation. The app sends no
+bearer token on the pairing route, follows no redirects, and cancels network
+calls when their coroutine is canceled. Pairing links and tokens are not logged.
+The pairing input, confirmation, and running request survive screen rotation.
+Back cancels the request. Unpair resets the retained pairing flow before a new
+pairing starts; an old response cannot save credentials into that new flow.
+
+The QR scanner needs Google Play services and can download its scanner module
+on first use. Manual paste works when the scanner is unavailable.
 
 ## Requirements
 
@@ -54,6 +69,7 @@ From `android/`:
 
 ```bash
 ./gradlew --no-daemon assembleDebug
+./gradlew --no-daemon -Pandroid.builder.sdkDownload=false testDebugUnitTest
 /usr/local/bin/adb -s <serial> install -r app/build/outputs/apk/debug/app-debug.apk
 /usr/local/bin/adb -s <serial> shell am start -n local.asb.companion/.MainActivity
 ```
@@ -77,10 +93,17 @@ commands above for the device check.
 | Activity Compose | 1.10.1 |
 | SDK Build Tools | 36.0.0 |
 
-The approved version catalog also pins Lifecycle 2.9.2, WorkManager 2.10.2,
-OkHttp 4.12.0, kotlinx.serialization 1.9.0, kotlinx.coroutines 1.10.2,
-Google code scanner 16.1.0, and JUnit 4.13.2 for later phases. This screen
-uses only Activity and Compose dependencies.
+The version catalog also pins Lifecycle 2.9.2 and WorkManager 2.10.2 for later
+phases. Phase 5 uses OkHttp 4.12.0, kotlinx.serialization 1.9.0,
+kotlinx.coroutines 1.10.2, Google code scanner 16.1.0, and JUnit 4.13.2.
+
+The JVM tests use a real pinned TLS connection to MockWebServer. They cover
+certificate rejection, bearer handling, revocation, ETags, JSON defaults and
+long timestamps, path encoding, error handling, and cancellation while a
+response body is still arriving. Pairing parser tests reject duplicate,
+unknown, incomplete, malformed, and ambiguous fields.
+Retained-flow tests cover ViewModelStore recreation, Back cancellation,
+unpair/re-pair, and responses or scanner callbacks from an old flow.
 
 `buildToolsVersion` is set to `36.0.0` to use the installed package. AGP
 8.11.1 otherwise selects Build Tools 35.0.0 by default. JDK 21 runs Gradle;
