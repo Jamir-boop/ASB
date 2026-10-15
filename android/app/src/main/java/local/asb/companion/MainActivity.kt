@@ -1,9 +1,16 @@
 package local.asb.companion
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -49,24 +56,47 @@ import local.asb.companion.data.AsbJson
 import local.asb.companion.data.Hello
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.AsbApi
+import local.asb.companion.notify.CheckWorker
+import local.asb.companion.notify.Notifier
 import local.asb.companion.ui.AsbTheme
 import local.asb.companion.ui.PairScreen
 import local.asb.companion.ui.PairingViewModel
 import local.asb.companion.ui.SessionsScreen
 import local.asb.companion.ui.SessionsViewModel
+import local.asb.companion.ui.SettingsScreen
 
 class MainActivity : ComponentActivity() {
+    private var notificationsAllowed by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val app = application as AsbApp
+        app.notifier.opened(intent)
+        notificationsAllowed = Notifier.notificationsAllowed(this)
         setContent {
             AsbTheme {
+                val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+                    notificationsAllowed = Notifier.notificationsAllowed(this)
+                }
+                val requestNotifications = {
+                    val asked = app.store.notificationPermissionAsked
+                    app.store.notificationPermissionAsked = true
+                    if (Build.VERSION.SDK_INT >= 33 &&
+                        checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
+                        (!asked || shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS))) {
+                        permission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    } else {
+                        startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                            .putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+                    }
+                }
                 val pairingModel = viewModel<PairingViewModel>(factory = remember(app) {
                     viewModelFactory { initializer { PairingViewModel(app.store::save) } }
                 })
                 var paired by remember { mutableStateOf(app.store.paired) }
-                if (paired) PairedApp(app) {
+                if (paired) PairedApp(app, notificationsAllowed, requestNotifications) {
+                    app.notifier.clear()
                     pairingModel.reset()
                     app.store.clear()
                     paired = false
@@ -79,18 +109,30 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         (application as AsbApp).resumed = true
+        notificationsAllowed = Notifier.notificationsAllowed(this)
     }
 
     override fun onPause() {
         (application as AsbApp).resumed = false
         super.onPause()
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        (application as AsbApp).notifier.opened(intent)
+    }
 }
 
 private enum class Screen { VERIFY, SESSIONS, CONNECTION }
 
 @Composable
-private fun PairedApp(app: AsbApp, onUnpair: () -> Unit) {
+private fun PairedApp(
+    app: AsbApp,
+    notificationsAllowed: Boolean,
+    onRequestNotificationPermission: () -> Unit,
+    onUnpair: () -> Unit,
+) {
     val store = app.store
     val token = store.token
     val deviceId = store.deviceId
@@ -103,6 +145,12 @@ private fun PairedApp(app: AsbApp, onUnpair: () -> Unit) {
             screen = Screen.SESSIONS
         })
     } else {
+        LaunchedEffect(deviceId) {
+            if (Build.VERSION.SDK_INT >= 33 && !store.notificationPermissionAsked) {
+                if (notificationsAllowed) store.notificationPermissionAsked = true
+                else onRequestNotificationPermission()
+            }
+        }
         val sessionsModel = viewModel<SessionsViewModel>(key = "sessions:$deviceId", factory = remember(api, serverName) {
             viewModelFactory {
                 initializer {
@@ -121,9 +169,12 @@ private fun PairedApp(app: AsbApp, onUnpair: () -> Unit) {
             onUnpair()
         }
         if (screen == Screen.CONNECTION) {
-            ConnectionScreen(app, api, onUnpair = unpair,
+            SettingsScreen(store, api, notificationsAllowed,
                 onBack = { screen = Screen.SESSIONS },
-                onVerified = { serverName = it.serverName },
+                onUnpair = unpair,
+                onRequestNotificationPermission = onRequestNotificationPermission,
+                onCheckNow = { CheckWorker.checkNow(app) },
+                onPersistentUnreadChanged = sessionsModel::refresh,
             )
         } else {
             SessionsScreen(sessionsModel, serverName,

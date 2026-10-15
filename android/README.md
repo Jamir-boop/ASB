@@ -1,13 +1,20 @@
 # ASB Android companion
 
-Phase 6 provides the live session list, desktop filters, row menus, and Open
+Phase 7 provides the live session list, desktop filters, row menus, and Open
 on PC through the ASB phone gateway. QR or manual pairing remains available.
 The user checks the PC and certificate fingerprint before the app sends the
 pairing request. Authenticated hello must succeed before the session list
 opens. Connection information shows the real server name and ASB version. The Material 3
-theme follows the system light or dark setting. Settings currently opens the
-real server connection information and Unpair controls. Notifications and the
-remaining settings are not implemented yet.
+theme follows the system light or dark setting. Settings shows the connection,
+Persistent unread, notification switches, background check controls, and licenses.
+The app requests notification permission once after verified pairing. Settings
+can request permission again or open Android notification settings.
+
+Background checks use WorkManager with a 15-minute period and a connected network.
+Android and HyperOS can delay these checks. Foreground updates save the attention
+baseline without notifications. Background updates can show Done, Failed, and
+Needs input notifications with Open on PC and Read actions. Unpair removes the
+saved pairing and the app's notifications. Phone acceptance for Phase 7 is pending.
 
 Pairing uses TLS 1.3 and the SHA-256 of the full certificate. The app stores
 the paired token in one private SharedPreferences file. Backup and device
@@ -74,8 +81,9 @@ sdk.dir=/home/<user>/Android/Sdk
 From `android/`:
 
 ```bash
-./gradlew --no-daemon assembleDebug
+./gradlew --no-daemon -Pandroid.builder.sdkDownload=false assembleDebug
 ./gradlew --no-daemon -Pandroid.builder.sdkDownload=false testDebugUnitTest
+./gradlew --no-daemon -Pandroid.builder.sdkDownload=false lint
 /usr/local/bin/adb -s <serial> install -r app/build/outputs/apk/debug/app-debug.apk
 /usr/local/bin/adb -s <serial> shell am start -n local.asb.companion/.MainActivity
 ```
@@ -99,8 +107,8 @@ commands above for the device check.
 | Activity Compose | 1.10.1 |
 | SDK Build Tools | 36.0.0 |
 
-Phase 6 uses Lifecycle 2.9.2. WorkManager 2.10.2 remains pinned for the next
-phase. Networking and tests use OkHttp 4.12.0, kotlinx.serialization 1.9.0,
+The app uses Lifecycle 2.9.2 and WorkManager 2.10.2.
+Networking and tests use OkHttp 4.12.0, kotlinx.serialization 1.9.0,
 kotlinx.coroutines 1.10.2, Google code scanner 16.1.0, and JUnit 4.13.2.
 
 The JVM tests use a real pinned TLS connection to MockWebServer. They cover
@@ -131,5 +139,16 @@ The launcher uses the approved Palatine disc from
 librsvg SVG loader) renders the unchanged source to the 432 × 432 RGBA file
 `app/src/main/res/drawable-nodpi/ic_launcher_disc.png`. This keeps its masks,
 gradients, and screen blending. The foreground XML adds a 21 dp inset to keep
-the disc within the adaptive icon's safe area. The app uses the repository's
-MIT license. No third-party sounds are included yet.
+the disc within the adaptive icon's safe area. The notification icon uses
+monochrome geometry from the same approved source. The app includes the
+repository's MIT license in `app/src/main/assets/licenses/asb-LICENSE.txt`.
+
+## Third-party assets
+
+Notification sounds use unchanged audio from opencode, commit
+`fe87944b6ae85422db64c751b6d6ee488b0d7f1c`, under
+`packages/ui/src/assets/audio/`: `staplebops-01.mp3` (Done),
+`staplebops-02.mp3` (Needs input), and `nope-03.mp3` (Failed).
+The source is MIT, Copyright (c) 2025 opencode. The app includes the exact
+license in `app/src/main/assets/licenses/opencode-LICENSE.txt`.
+The user can change each channel's sound in Android notification settings.

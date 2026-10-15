@@ -31,6 +31,9 @@ class Store(context: Context) {
     var notifyInput: Boolean
         get() = preferences.getBoolean("notifyInput", true)
         set(value) { preferences.edit().putBoolean("notifyInput", value).apply() }
+    var notificationPermissionAsked: Boolean
+        get() = preferences.getBoolean("notificationPermissionAsked", false)
+        set(value) { preferences.edit().putBoolean("notificationPermissionAsked", value).apply() }
 
     @Synchronized
     fun save(info: PairingInfo, reply: PairReply) {
@@ -67,7 +70,9 @@ class Store(context: Context) {
 
     @Synchronized
     fun clear() {
-        preferences.edit().clear().apply()
+        preferences.edit().clear()
+            .putBoolean("notificationPermissionAsked", notificationPermissionAsked)
+            .apply()
         etag = null
     }
 }
