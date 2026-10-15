@@ -20,6 +20,8 @@ SOURCES = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.
 SOURCES.bases = []
 PREFERENCES = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "PreferencesWindow"))
 PREFERENCES.bases = []
+PHONE = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "PhoneEditor"))
+PHONE.bases = []
 MARKER = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "SourceMarker"))
 MARKER.bases = []
 APPLICATION = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "SwitchboardApplication"))
@@ -29,13 +31,14 @@ STRIP.bases = []
 COLUMN = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "SessionColumn"))
 COLUMN.bases = []
 SCOPE = {"__file__": str(SOURCE)}
-exec(compile(ast.Module(body=NODES + [STRIP, COLUMN, MARKER, SOURCES, PREFERENCES, WINDOW, APPLICATION], type_ignores=[]), str(SOURCE), "exec"), SCOPE)
+exec(compile(ast.Module(body=NODES + [STRIP, COLUMN, MARKER, SOURCES, PHONE, PREFERENCES, WINDOW, APPLICATION], type_ignores=[]), str(SOURCE), "exec"), SCOPE)
 Column = SCOPE["SessionColumn"]
 SCOPE["SessionColumn"] = lambda **kwargs: SCOPE["Gtk"].ListBox(**kwargs)
 Window = SCOPE["SwitchboardWindow"]
 Strip = SCOPE["SessionStrip"]
 SourcesEditor = SCOPE["AppSourcesEditor"]
 Preferences = SCOPE["PreferencesWindow"]
+PhoneEditor = SCOPE["PhoneEditor"]
 Marker = SCOPE["SourceMarker"]
 REQUEST_ASYNC = SCOPE["request_async"]
 asb = SimpleNamespace(**SCOPE)
@@ -93,6 +96,270 @@ class Box:
 
     def clear_hover(self):
         pass
+
+
+class PhoneChecks(unittest.TestCase):
+    def status(self, **changes):
+        return {"enabled": True, "bindAddress": "192.168.1.4", "port": 4630,
+                "addresses": [{"address": "192.168.1.4", "interface": "eth0"}],
+                "running": True, "error": "", "warning": "", "fingerprint": "abcd" * 16,
+                "devices": [], "pairing": {"expiresAtMs": 0}, **changes}
+
+    def editor(self):
+        editor = object.__new__(PhoneEditor)
+        editor.owner, editor.preferences = SimpleNamespace(closed=False), SimpleNamespace(closed=False)
+        editor.base, editor.closed, editor.active, editor.loaded = "http://127.0.0.1:1", False, True, True
+        editor.loading = editor.poll_loading = False
+        editor.generation, editor.poll_timer = 0, None
+        editor.status, editor.addresses, editor.remove_buttons = self.status(), ["192.168.1.4"], []
+        editor.pairing_uri, editor.expires_at, editor.pair_device_ids, editor.matrix = "", 0, set(), None
+        for name in ("settings", "apply", "pair", "retry", "message", "status_label", "fingerprint", "enabled",
+                     "address", "port", "devices", "empty", "pairing", "qr", "link", "copy", "qr_help"):
+            setattr(editor, name, Mock())
+        editor.devices.get_first_child.return_value = None
+        return editor
+
+    def test_phone_helpers_cover_off_starting_running_error_and_fingerprint(self):
+        self.assertEqual(asb.group_fingerprint("abcd" * 16), " ".join(["abcd"] * 16))
+        self.assertEqual(asb.group_fingerprint(""), "")
+        self.assertEqual(asb.phone_status_text(self.status()), "Running at https://192.168.1.4:4630")
+        self.assertEqual(asb.phone_status_text(self.status(enabled=False, running=False)), "Phone access is off.")
+        self.assertIn("Apply the settings", asb.phone_status_text(self.status(running=False)))
+        self.assertEqual(asb.phone_status_text(self.status(error="Choose a private address.")), "Choose a private address.")
+
+    def test_qr_helper_builds_the_expected_matrix_or_returns_none_without_qrcode(self):
+        import builtins
+        original_import = builtins.__import__
+        def no_qrcode(name, *args, **kwargs):
+            if name == "qrcode":
+                raise ModuleNotFoundError("qrcode")
+            return original_import(name, *args, **kwargs)
+        with patch("builtins.__import__", side_effect=no_qrcode):
+            self.assertIsNone(asb.qr_matrix("asb://pair?v=1"))
+        code = Mock(get_matrix=Mock(return_value=[[True, False], [False, True]]))
+        module = SimpleNamespace(QRCode=Mock(return_value=code), constants=SimpleNamespace(ERROR_CORRECT_M=17))
+        with patch.dict("sys.modules", {"qrcode": module}):
+            self.assertEqual(asb.qr_matrix("asb://pair?v=1"), [[True, False], [False, True]])
+        module.QRCode.assert_called_once_with(error_correction=17, border=4)
+        code.add_data.assert_called_once_with("asb://pair?v=1")
+        code.make.assert_called_once_with(fit=True)
+
+    def test_phone_and_service_http_headers_success_and_errors(self):
+        import io
+        token = "cd" * 32
+        routes = (("/api/phone", "GET"), ("/api/phone?force=1", "GET"),
+                  ("/api/phone/settings", "POST"), ("/api/phone/pairing", "POST"),
+                  ("/api/phone/devices/a/revoke", "POST"), ("/api/service", "GET"))
+        for route, method in routes:
+            with self.subTest(route=route):
+                transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(b'{"enabled": false}')))
+                with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": token}):
+                    self.assertEqual(asb.request_json("http://127.0.0.1:1", route, method, {}), {"enabled": False})
+                request = transport.open.call_args.args[0]
+                self.assertEqual(request.get_header("X-asb-source-token"), token)
+                self.assertEqual(request.get_header("Origin"), "http://127.0.0.1:1" if method == "POST" else None)
+        for route in ("/api/phonex", "/api/servicex", "/api/threads/a/pin"):
+            transport = Mock(open=Mock(side_effect=OSError()))
+            with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": token}):
+                with self.assertRaises(RuntimeError):
+                    asb.request_json("http://127.0.0.1:1", route)
+            self.assertIsNone(transport.open.call_args.args[0].get_header("X-asb-source-token"))
+        for route in ("/api/phone/settings", "/api/service"):
+            failure = SCOPE["HTTPError"]("http://127.0.0.1:1" + route, 400, "Bad Request", {},
+                                          io.BytesIO(b'{"error":"Choose a private address."}'))
+            with patch.dict(SCOPE, {"LOCAL_HTTP": Mock(open=Mock(side_effect=failure))}):
+                with self.assertRaisesRegex(RuntimeError, "Choose a private address"):
+                    asb.request_json("http://127.0.0.1:1", route, "POST", {})
+        with patch.dict(SCOPE, {"LOCAL_HTTP": Mock(open=Mock(return_value=io.BytesIO(b'{}')))}):
+            with self.assertRaisesRegex(RuntimeError, "Cannot change this session"):
+                asb.request_json("http://127.0.0.1:1", "/api/threads/a/pin", "POST", {})
+
+    def test_status_refresh_keeps_form_edits_and_lists_device_dates(self):
+        editor = self.editor()
+        device = {"id": "a", "name": "Test <phone> & tablet", "createdAtMs": NOW, "lastSeenAtMs": NOW - 60_000}
+        row = Mock()
+        model = Mock()
+        gtk = SimpleNamespace(StringList=SimpleNamespace(new=Mock(return_value=model)),
+                              Button=Mock(), Align=SimpleNamespace(CENTER=0),
+                              AccessibleProperty=SimpleNamespace(LABEL=0))
+        with patch.dict(SCOPE, {"Gtk": gtk, "Adw": SimpleNamespace(ActionRow=Mock(return_value=row))}):
+            editor.render_status(self.status(devices=[device]))
+            editor.enabled.set_active.assert_not_called()
+            editor.address.set_model.assert_not_called()
+            editor.port.set_value.assert_not_called()
+            self.assertEqual(SCOPE["Adw"].ActionRow.call_args.kwargs["title"], "Test <phone> & tablet")
+            self.assertFalse(SCOPE["Adw"].ActionRow.call_args.kwargs["use_markup"])
+            self.assertIn("Paired ", SCOPE["Adw"].ActionRow.call_args.kwargs["subtitle"])
+            self.assertIn("\nLast seen ", SCOPE["Adw"].ActionRow.call_args.kwargs["subtitle"])
+            editor.empty.set_visible.assert_called_with(False)
+            editor.render_status(self.status(bindAddress="192.168.1.8"), True)
+            self.assertEqual(editor.addresses, ["192.168.1.4", "192.168.1.8"])
+            gtk.StringList.new.assert_called_with(["192.168.1.4 (eth0)", "192.168.1.8 (unavailable)"])
+            editor.address.set_selected.assert_called_with(1)
+            editor.port.set_value.assert_called_once_with(4630)
+            editor.render_status(self.status(addresses=[], bindAddress=""), True)
+            gtk.StringList.new.assert_called_with(["No private IPv4 address"])
+            editor.empty.set_visible.assert_called_with(True)
+
+    def test_phone_requests_retry_errors_and_preserve_poll_form(self):
+        editor = self.editor()
+        editor.loaded = False
+        editor.render_status = Mock(side_effect=lambda *_args: setattr(editor, "loaded", True))
+        request, glib = Mock(), SimpleNamespace(idle_add=Mock(), source_remove=Mock())
+        with patch.dict(SCOPE, {"request_async": request, "GLib": glib}):
+            editor.request_phone()
+            self.assertTrue(editor.loading)
+            callback = request.call_args.args[2]
+            callback(None, "ASB is not answering.")
+            self.assertFalse(editor.loading)
+            editor.retry.set_visible.assert_called_with(True)
+            editor.request_phone()
+            request.call_args.args[2](self.status(), None)
+            editor.render_status.assert_called_once_with(self.status(), True)
+            editor.render_status.reset_mock()
+            editor.pairing_uri, editor.expires_at = "asb://pair?v=1", NOW + 600_000
+            with patch.object(SCOPE["time"], "time", return_value=NOW / 1000):
+                editor.request_phone(poll=True)
+                self.assertFalse(editor.loading)
+                self.assertTrue(editor.poll_loading)
+                count = request.call_count
+                editor.request_phone(poll=True)
+                self.assertEqual(request.call_count, count)
+                request.call_args.args[2](None, "ASB is not answering.")
+                editor.message.set_label.assert_called_with("ASB is not answering.")
+                editor.request_phone(poll=True)
+                request.call_args.args[2](self.status(pairing={"expiresAtMs": editor.expires_at}), None)
+                editor.message.set_label.assert_called_with("")
+            self.assertFalse(editor.poll_loading)
+            self.assertFalse(editor.render_status.call_args.args[1])
+            editor.request_phone("/api/phone/settings", "POST", {})
+            request.call_args.args[2](self.status(), None)
+            self.assertTrue(editor.render_status.call_args.args[1])
+
+    def test_pairing_poll_stops_for_success_expiry_hide_and_stale_callbacks(self):
+        editor = self.editor()
+        editor.render_status = Mock()
+        glib = SimpleNamespace(idle_add=Mock(), timeout_add_seconds=Mock(return_value=51), source_remove=Mock())
+        request = Mock()
+        result = {"uri": "asb://pair?v=1", "expiresAtMs": NOW + 600_000}
+        with patch.dict(SCOPE, {"GLib": glib, "request_async": request, "qr_matrix": Mock(return_value=None)}), \
+                patch.object(SCOPE["time"], "time", return_value=NOW / 1000):
+            editor.show_pairing(result)
+            glib.timeout_add_seconds.assert_called_once_with(3, editor.poll_pairing)
+            editor.link.set_label.assert_called_with(result["uri"])
+            editor.qr.set_visible.assert_called_with(False)
+            self.assertTrue(editor.poll_pairing())
+            callback = request.call_args.args[2]
+            device = {"id": "new", "name": "New phone", "createdAtMs": NOW}
+            callback(self.status(devices=[device]), None)
+            self.assertIsNone(editor.poll_timer)
+            self.assertEqual(editor.pairing_uri, "")
+            editor.message.set_label.assert_called_with("Paired: New phone")
+            glib.source_remove.assert_called_once_with(51)
+            editor.show_pairing(result)
+            editor.poll_pairing()
+            callback = request.call_args.args[2]
+            editor.expires_at = NOW - 1
+            self.assertFalse(editor.poll_pairing())
+            editor.message.set_label.assert_called_with("This pairing code has expired. Pair a phone to make a new one.")
+            editor.render_status.reset_mock()
+            callback(self.status(), None)
+            editor.render_status.assert_not_called()
+            editor.show_pairing(result)
+            editor.poll_pairing()
+            callback = request.call_args.args[2]
+            editor.set_active(False)
+            self.assertFalse(editor.poll_pairing())
+            self.assertEqual(editor.pairing_uri, "")
+            callback(self.status(), None)
+            editor.render_status.assert_not_called()
+            editor.set_active(True)
+            callback(self.status(), None)
+            editor.render_status.assert_not_called()
+            editor.request_phone("/api/phone/pairing", "POST", {})
+            callback = request.call_args.args[2]
+            editor.close()
+            callback(result, None)
+            self.assertTrue(editor.closed)
+            self.assertIsNone(editor.poll_timer)
+            self.assertEqual(glib.timeout_add_seconds.call_count, 3)
+
+    def test_settings_revoke_pairing_and_qr_use_native_values(self):
+        editor = self.editor()
+        editor.address.get_selected.return_value = 0
+        editor.enabled.get_active.return_value = False
+        editor.port.get_value.return_value = 4631
+        editor.request_phone = Mock()
+        with patch.dict(SCOPE, {"GLib": SimpleNamespace(source_remove=Mock())}):
+            editor.apply_settings()
+            editor.request_phone.assert_called_with("/api/phone/settings", "POST",
+                {"enabled": False, "bindAddress": "192.168.1.4", "port": 4631})
+            editor.revoke_device("a/b")
+            editor.request_phone.assert_called_with("/api/phone/devices/a%2Fb/revoke", "POST", {})
+            editor.pair_phone()
+            editor.request_phone.assert_called_with("/api/phone/pairing", "POST", {})
+            editor.active = False
+            editor.request_phone.reset_mock()
+            editor.apply_settings()
+            editor.revoke_device("a")
+            editor.pair_phone()
+            editor.request_phone.assert_not_called()
+        editor.matrix = [[True, False], [False, True]]
+        context = Mock()
+        editor.draw_qr(None, context, 241, 240)
+        self.assertEqual([call.args for call in context.set_source_rgb.call_args_list], [(1, 1, 1), (0, 0, 0)])
+        self.assertEqual([call.args for call in context.rectangle.call_args_list], [(0, 0, 120, 120), (120, 120, 120, 120)])
+
+    def test_copy_link_remains_available_with_qr_and_rejects_expired_codes(self):
+        editor = self.editor()
+        clipboard = Mock()
+        editor.get_clipboard = Mock(return_value=clipboard)
+        result = {"uri": "asb://pair?v=1", "expiresAtMs": NOW + 600_000}
+        glib = SimpleNamespace(timeout_add_seconds=Mock(return_value=51), source_remove=Mock())
+        with patch.dict(SCOPE, {"GLib": glib, "qr_matrix": Mock(return_value=[[True]])}), \
+                patch.object(SCOPE["time"], "time", return_value=NOW / 1000):
+            editor.show_pairing(result)
+            editor.copy.set_visible.assert_called_with(True)
+            editor.qr.set_visible.assert_called_with(True)
+            editor.link.set_visible.assert_called_with(False)
+            editor.copy_pairing()
+            clipboard.set.assert_called_once_with(result["uri"])
+            clipboard.set.reset_mock()
+            editor.expires_at = NOW - 1
+            editor.copy_pairing()
+            clipboard.set.assert_not_called()
+            self.assertEqual(editor.pairing_uri, "")
+            self.assertIsNone(editor.poll_timer)
+
+    def test_preferences_loads_phone_once_and_stops_it_on_page_and_window_hide(self):
+        preferences = object.__new__(Preferences)
+        preferences.owner, preferences.closed = SimpleNamespace(closed=False), False
+        preferences.profiles_editor = preferences.phone_editor = None
+        preferences.phone = Mock()
+        preferences.stack = Mock(get_visible_child_name=Mock(return_value="sessions"))
+        preferences.get_visible = Mock(return_value=True)
+        preferences.get_mapped = Mock(return_value=True)
+        editor = Mock()
+        with patch.dict(SCOPE, {"PhoneEditor": Mock(return_value=editor)}):
+            preferences.section_changed()
+            SCOPE["PhoneEditor"].assert_not_called()
+            preferences.stack.get_visible_child_name.return_value = "phone"
+            preferences.section_changed()
+            preferences.section_changed()
+            SCOPE["PhoneEditor"].assert_called_once_with(preferences.owner, preferences)
+            preferences.phone.append.assert_called_once_with(editor)
+            editor.set_active.assert_called_with(True)
+            preferences.stack.get_visible_child_name.return_value = "appearance"
+            preferences.section_changed()
+            editor.set_active.assert_called_with(False)
+            preferences.stack.get_visible_child_name.return_value = "phone"
+            preferences.get_mapped.return_value = False
+            preferences.section_changed()
+            editor.set_active.assert_called_with(False)
+            preferences.get_mapped.return_value = True
+            preferences.get_visible.return_value = False
+            preferences.section_changed()
+            editor.set_active.assert_called_with(False)
 
 
 class DataChecks(unittest.TestCase):
@@ -700,7 +967,9 @@ class NativeLogicChecks(unittest.TestCase):
         owner = object.__new__(Window)
         owner.closed = False
         preferences = object.__new__(Preferences)
-        preferences.owner, preferences.closed, preferences.profiles_editor = owner, False, None
+        preferences.owner, preferences.closed, preferences.profiles_editor, preferences.phone_editor = owner, False, None, None
+        preferences.get_visible = Mock(return_value=True)
+        preferences.get_mapped = Mock(return_value=True)
         preferences.stack = Mock(get_visible_child_name=Mock(return_value="sessions"))
         preferences.profiles, preferences.present, preferences.set_visible, preferences.destroy = Mock(), Mock(), Mock(), Mock()
         owner.preferences_window = preferences

@@ -435,15 +435,44 @@ def local_base_url(value):
 SOURCE_TOKEN = os.environ.get("ASB_SOURCE_TOKEN", "")
 
 
+def group_fingerprint(value):
+    return " ".join(value[index:index + 4] for index in range(0, len(value), 4))
+
+
+def phone_status_text(status):
+    if status.get("error"):
+        return status["error"]
+    if status.get("running"):
+        return f"Running at https://{status.get('bindAddress', '')}:{status.get('port', 4630)}"
+    if not status.get("enabled"):
+        return "Phone access is off."
+    return "Phone access is not running. Apply the settings to try again."
+
+
+def qr_matrix(uri):
+    try:
+        import qrcode
+    except ImportError:
+        return None
+    code = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=4)
+    code.add_data(uri)
+    code.make(fit=True)
+    return code.get_matrix()
+
+
 def request_json(base, route, method="GET", body=None, etag=None):
     headers = {"Accept": "application/json"}
+    path = route.split("?", 1)[0]
+    source_route = path == "/api/sources" or path.startswith("/api/sources/")
+    phone_route = path == "/api/phone" or path.startswith("/api/phone/")
+    service_route = path == "/api/service"
     data = None
     if etag and etag[0] and method == "GET" and route.split("?")[0] == "/api/dashboard":
         headers["If-None-Match"] = etag[0]
+    if SOURCE_TOKEN and ((source_route and method == "POST") or phone_route or service_route):
+        headers["X-ASB-Source-Token"] = SOURCE_TOKEN
     if method == "POST":
         headers.update({"Origin": base, "Content-Type": "application/json"})
-        if SOURCE_TOKEN and (route == "/api/sources" or route.startswith("/api/sources/")):
-            headers["X-ASB-Source-Token"] = SOURCE_TOKEN
         data = json.dumps(body or {}).encode()
     request = Request(base + route, data=data, headers=headers, method=method)
     try:
@@ -452,7 +481,7 @@ def request_json(base, route, method="GET", body=None, etag=None):
         if not isinstance(result, dict):
             raise ValueError("The ASB response is not an object.")
         success = "opened" if route.endswith("/open") else "marked" if route.endswith("/mark-unread") else "changed"
-        if method == "POST" and not result.get(success):
+        if method == "POST" and not phone_route and not service_route and not result.get(success):
             raise ValueError("The session action did not succeed.")
         if etag is not None:
             etag[0] = response.headers.get("ETag")
@@ -461,7 +490,7 @@ def request_json(base, route, method="GET", body=None, etag=None):
         if isinstance(error, HTTPError) and error.code == 304 and "If-None-Match" in headers:
             error.close()
             return None
-        if route == "/api/sources" or route.startswith("/api/sources/"):
+        if source_route or phone_route or service_route:
             detail = ""
             if isinstance(error, HTTPError):
                 try:
@@ -470,7 +499,8 @@ def request_json(base, route, method="GET", body=None, etag=None):
                         detail = payload["error"]
                 except (HTTPException, OSError, ValueError):
                     pass
-            raise RuntimeError(detail or "Cannot load or change app sources. Check that ASB is running, then try again.") from error
+            subject = "phone access" if phone_route else "the ASB service" if service_route else "app sources"
+            raise RuntimeError(detail or f"Cannot load or change {subject}. Check that ASB is running, then try again.") from error
         action = "open this session" if route.endswith("/open") else "change the unread setting" if route == "/api/settings/unread" \
             else "change this session" if method == "POST" else "load sessions"
         recovery = "Check the app link handler, then try again." if route.endswith("/open") \
@@ -1084,15 +1114,285 @@ class AppSourcesEditor(Gtk.Box):
         self.cancel_dialogs()
 
 
+class PhoneEditor(Gtk.Box):
+    def __init__(self, owner, preferences):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.owner, self.preferences, self.base = owner, preferences, owner.base
+        self.closed = self.active = self.loaded = self.loading = self.poll_loading = False
+        self.generation, self.poll_timer = 0, None
+        self.status, self.addresses, self.remove_buttons = {}, [], []
+        self.pairing_uri, self.expires_at, self.pair_device_ids, self.matrix = "", 0, set(), None
+        self.settings = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.settings.add_css_class("boxed-list")
+        self.enabled = Adw.SwitchRow(title="Allow phone access", subtitle=
+            "Phones on your network can see your sessions and use ASB actions after pairing.")
+        self.enabled.set_subtitle_lines(0)
+        self.address = Adw.ComboRow(title="Address")
+        self.port = Adw.SpinRow.new_with_range(1024, 65535, 1)
+        self.port.set_title("Port")
+        self.port.set_value(4630)
+        for row in (self.enabled, self.address, self.port):
+            self.settings.append(row)
+        self.append(self.settings)
+        actions = Gtk.Box(spacing=8)
+        self.apply = Gtk.Button(label="Apply")
+        self.apply.connect("clicked", self.apply_settings)
+        actions.append(self.apply)
+        self.retry = Gtk.Button(label="Retry", visible=False)
+        self.retry.connect("clicked", lambda *_args: self.request_phone())
+        actions.append(self.retry)
+        self.append(actions)
+        self.message = label("Loading phone access…", "warning")
+        self.status_label = label("", "caption")
+        self.fingerprint = label("", "monospace")
+        self.fingerprint.set_tooltip_text("Compare this certificate fingerprint with the ASB app.")
+        self.fingerprint.update_property([Gtk.AccessibleProperty.LABEL], ["Certificate fingerprint"])
+        for widget in (self.message, self.status_label, self.fingerprint):
+            widget.set_wrap(True)
+            widget.set_selectable(True)
+            widget.set_max_width_chars(64)
+            self.append(widget)
+        self.pair = Gtk.Button(label="Pair a phone", halign=Gtk.Align.START)
+        self.pair.connect("clicked", self.pair_phone)
+        self.append(self.pair)
+        self.pairing = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, visible=False)
+        self.qr = Gtk.DrawingArea(content_width=240, content_height=240, halign=Gtk.Align.CENTER)
+        self.qr.set_draw_func(self.draw_qr)
+        self.qr.update_property([Gtk.AccessibleProperty.LABEL], ["Phone pairing QR code"])
+        self.pairing.append(self.qr)
+        instruction = label("Scan with the ASB app. The code works once and ends in 10 minutes.", "caption")
+        instruction.set_wrap(True)
+        self.pairing.append(instruction)
+        self.link = label("", "monospace")
+        self.link.set_wrap(True)
+        self.link.set_wrap_mode(Pango.WrapMode.CHAR)
+        self.link.set_max_width_chars(48)
+        self.link.set_selectable(True)
+        self.pairing.append(self.link)
+        self.copy = Gtk.Button(label="Copy link", halign=Gtk.Align.START)
+        self.copy.connect("clicked", self.copy_pairing)
+        self.pairing.append(self.copy)
+        self.qr_help = label("Install python3-qrcode to show a QR code.", "caption")
+        self.qr_help.set_wrap(True)
+        self.pairing.append(self.qr_help)
+        self.append(self.pairing)
+        self.append(label("Paired phones", "heading"))
+        self.devices = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.devices.add_css_class("boxed-list")
+        self.append(self.devices)
+        self.empty = label("No paired phones.", "caption")
+        self.append(self.empty)
+        self.update_controls()
+
+    def set_active(self, active):
+        active = bool(active and not self.closed and not self.owner.closed and not self.preferences.closed)
+        if self.active == active:
+            return
+        self.active = active
+        if not active:
+            if self.loading:
+                self.loaded = False
+            self.loading = self.poll_loading = False
+            self.stop_pairing()
+        elif not self.loaded:
+            self.request_phone()
+
+    def update_controls(self):
+        ready = self.loaded and not self.loading and not self.closed
+        self.settings.set_sensitive(ready)
+        self.apply.set_sensitive(ready)
+        self.pair.set_sensitive(ready and bool(self.status.get("running")))
+        self.retry.set_sensitive(not self.loading and not self.closed)
+        for button in self.remove_buttons:
+            button.set_sensitive(ready)
+
+    def render_status(self, status, sync_form=False):
+        self.status, self.loaded = status, True
+        self.status_label.set_label(phone_status_text(status))
+        self.fingerprint.set_label(group_fingerprint(status.get("fingerprint", "")))
+        if sync_form:
+            self.enabled.set_active(status.get("enabled", False))
+            self.addresses = [item["address"] for item in status["addresses"]]
+            titles = [f"{item['address']} ({item['interface']})" for item in status["addresses"]]
+            address = status.get("bindAddress", "")
+            if address and address not in self.addresses:
+                self.addresses.append(address)
+                titles.append(address + " (unavailable)")
+            self.address.set_model(Gtk.StringList.new(titles or ["No private IPv4 address"]))
+            self.address.set_selected(self.addresses.index(address) if address in self.addresses else 0)
+            self.port.set_value(status.get("port", 4630))
+        child = self.devices.get_first_child()
+        while child:
+            self.devices.remove(child)
+            child = self.devices.get_first_child()
+        self.remove_buttons = []
+        for device in status["devices"]:
+            created = device.get("createdAtMs", 0)
+            date = time.strftime("%Y-%m-%d", time.localtime(created / 1000)) if created else "Unknown"
+            last_seen = row_meta({"updatedAtMs": device.get("lastSeenAtMs", 0)}).split(" · ", 1)[1]
+            row = Adw.ActionRow(title=device["name"], subtitle=f"Paired {date}\nLast seen {last_seen}", use_markup=False)
+            row.set_title_lines(0)
+            remove = Gtk.Button(label="Remove", valign=Gtk.Align.CENTER)
+            remove.update_property([Gtk.AccessibleProperty.LABEL], ["Remove " + device["name"]])
+            remove.connect("clicked", lambda _button, identity=device["id"]: self.revoke_device(identity))
+            row.add_suffix(remove)
+            self.remove_buttons.append(remove)
+            self.devices.append(row)
+        self.empty.set_visible(not status["devices"])
+        self.devices.set_visible(bool(status["devices"]))
+
+    def request_phone(self, route="/api/phone", method="GET", body=None, poll=False):
+        if self.closed or self.owner.closed or not self.active or self.loading or (poll and self.poll_loading):
+            return
+        if poll:
+            self.poll_loading = True
+        else:
+            self.generation += 1
+            self.poll_loading = False
+            self.loading = True
+            self.message.set_label("Loading phone access…" if method == "GET" else "Saving phone access…")
+            self.retry.set_visible(False)
+            self.update_controls()
+        generation = self.generation
+        sync_form = not self.loaded or route == "/api/phone/settings"
+        def finished(result, error):
+            if self.closed or self.owner.closed or not self.active or generation != self.generation:
+                return False
+            if poll:
+                self.poll_loading = False
+                if self.expire_pairing():
+                    return False
+            else:
+                self.loading = False
+            pairing = route == "/api/phone/pairing"
+            if not error and (not isinstance(result, dict) or (pairing and
+                    (not isinstance(result.get("uri"), str) or not result["uri"].startswith("asb://pair?")
+                     or type(result.get("expiresAtMs")) is not int or result["expiresAtMs"] <= time.time() * 1000))
+                    or (not pairing and (not isinstance(result.get("devices"), list)
+                                          or not isinstance(result.get("addresses"), list)))):
+                error = "The phone access response is not valid. Try again."
+            if error:
+                self.message.set_label(error)
+                self.retry.set_visible(not self.loaded)
+            elif pairing:
+                self.show_pairing(result)
+                self.message.set_label("")
+            else:
+                self.render_status(result, sync_form and not poll)
+                if not poll:
+                    feedback = "Saved." if route == "/api/phone/settings" else "Phone removed." if method == "POST" else ""
+                    self.message.set_label(" ".join(filter(None, (feedback, result.get("warning", "")))))
+                if poll:
+                    self.message.set_label(result.get("warning", ""))
+                    new = [device for device in result["devices"] if device["id"] not in self.pair_device_ids]
+                    if new and len(result["devices"]) > len(self.pair_device_ids):
+                        self.stop_pairing()
+                        newest = max(new, key=lambda device: device.get("createdAtMs", 0))
+                        self.message.set_label("Paired: " + newest["name"])
+                    elif not result.get("running") or (result.get("pairing") or {}).get("expiresAtMs") != self.expires_at:
+                        self.stop_pairing()
+                        self.message.set_label("This pairing code is no longer valid. Pair a phone to make a new one.")
+            self.update_controls()
+            return False
+        request_async(self.base, route, finished, GLib.idle_add, method, body)
+
+    def apply_settings(self, *_args):
+        if not self.loaded or self.loading or not self.active:
+            return
+        selected = self.address.get_selected()
+        body = {"enabled": self.enabled.get_active(),
+                "bindAddress": self.addresses[selected] if selected < len(self.addresses) else "",
+                "port": int(self.port.get_value())}
+        self.stop_pairing()
+        self.request_phone("/api/phone/settings", "POST", body)
+
+    def pair_phone(self, *_args):
+        if not self.loaded or self.loading or not self.active or not self.status.get("running"):
+            return
+        self.stop_pairing()
+        self.request_phone("/api/phone/pairing", "POST", {})
+
+    def revoke_device(self, identity):
+        if not self.loaded or self.loading or not self.active:
+            return
+        self.stop_pairing()
+        self.request_phone("/api/phone/devices/" + quote(identity, safe="") + "/revoke", "POST", {})
+
+    def show_pairing(self, result):
+        self.pairing_uri, self.expires_at = result["uri"], result["expiresAtMs"]
+        self.pair_device_ids = {device["id"] for device in self.status.get("devices", [])}
+        self.matrix = qr_matrix(self.pairing_uri)
+        self.qr.set_visible(self.matrix is not None)
+        self.qr.queue_draw()
+        self.link.set_label(self.pairing_uri if self.matrix is None else "")
+        for widget in (self.link, self.qr_help):
+            widget.set_visible(self.matrix is None)
+        self.copy.set_visible(True)
+        self.pairing.set_visible(True)
+        self.poll_timer = GLib.timeout_add_seconds(3, self.poll_pairing)
+
+    def draw_qr(self, _area, context, width, height):
+        context.set_source_rgb(1, 1, 1)
+        context.paint()
+        if not self.matrix:
+            return
+        size = len(self.matrix)
+        module = max(1, min(width, height) // size)
+        left, top = (width - module * size) // 2, (height - module * size) // 2
+        context.set_source_rgb(0, 0, 0)
+        for y, row in enumerate(self.matrix):
+            for x, dark in enumerate(row):
+                if dark:
+                    context.rectangle(left + x * module, top + y * module, module, module)
+        context.fill()
+
+    def copy_pairing(self, *_args):
+        if self.active and self.pairing_uri and not self.expire_pairing():
+            self.get_clipboard().set(self.pairing_uri)
+
+    def expire_pairing(self):
+        if self.expires_at and time.time() * 1000 >= self.expires_at:
+            self.stop_pairing()
+            self.message.set_label("This pairing code has expired. Pair a phone to make a new one.")
+            return True
+        return False
+
+    def poll_pairing(self):
+        if not self.active or self.closed or self.owner.closed or not self.pairing_uri:
+            self.stop_pairing()
+            return False
+        if self.expire_pairing():
+            return False
+        self.request_phone(poll=True)
+        return True
+
+    def stop_pairing(self):
+        self.generation += 1
+        self.poll_loading = False
+        if self.poll_timer is not None:
+            GLib.source_remove(self.poll_timer)
+            self.poll_timer = None
+        self.pairing_uri, self.expires_at, self.matrix = "", 0, None
+        self.pairing.set_visible(False)
+        self.link.set_label("")
+
+    def close(self):
+        self.set_active(False)
+        self.closed = True
+
+
 class PreferencesWindow(Adw.Window):
     def __init__(self, owner, sessions, appearance):
         super().__init__(application=owner.get_application(), transient_for=owner, destroy_with_parent=True,
                          title="Preferences", default_width=780, default_height=560)
-        self.owner, self.closed, self.profiles_editor = owner, False, None
+        self.owner, self.closed, self.profiles_editor, self.phone_editor = owner, False, None, None
         self.set_size_request(420, 360)
         self.add_css_class("asb-column-flow")
         self.add_css_class("asb-preferences")
         self.connect("close-request", self.on_close)
+        self.connect("notify::visible", self.section_changed)
+        self.connect("map", self.section_changed)
+        self.connect("unmap", self.section_changed)
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         body.append(Adw.HeaderBar())
         self.stack = Gtk.Stack(vexpand=True, hexpand=True, hhomogeneous=False, vhomogeneous=False)
@@ -1101,13 +1401,15 @@ class PreferencesWindow(Adw.Window):
         self.sidebar.add_css_class("asb-preferences-nav")
         self.tabs = Gtk.StackSwitcher(stack=self.stack, visible=False, halign=Gtk.Align.FILL,
                                       margin_start=6, margin_end=6, margin_top=6, margin_bottom=6)
+        self.tabs.get_layout_manager().set_homogeneous(False)
         body.append(self.tabs)
         layout = Gtk.Box()
         layout.append(self.sidebar)
         layout.append(self.stack)
         body.append(layout)
         self.profiles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        for title, content in (("Sessions", sessions), ("Appearance", appearance), ("Profiles", self.profiles)):
+        self.phone = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        for title, content in (("Sessions", sessions), ("Appearance", appearance), ("Profiles", self.profiles), ("Phone", self.phone)):
             page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16,
                            margin_top=20, margin_bottom=20, margin_start=20, margin_end=20)
             page.append(label(title, "title-2"))
@@ -1130,6 +1432,12 @@ class PreferencesWindow(Adw.Window):
         if not self.closed and self.stack.get_visible_child_name() == "profiles" and self.profiles_editor is None:
             self.profiles_editor = AppSourcesEditor(self.owner, self)
             self.profiles.append(self.profiles_editor)
+        phone_visible = not self.closed and self.get_visible() and self.get_mapped() and self.stack.get_visible_child_name() == "phone"
+        if phone_visible and self.phone_editor is None:
+            self.phone_editor = PhoneEditor(self.owner, self)
+            self.phone.append(self.phone_editor)
+        if self.phone_editor:
+            self.phone_editor.set_active(phone_visible)
 
     def window_key(self, _controller, key, _code, modifiers):
         if key == Gdk.KEY_Escape and not modifiers & SHORTCUT_MASK:
@@ -1153,6 +1461,8 @@ class PreferencesWindow(Adw.Window):
         self.closed = True
         if self.profiles_editor:
             self.profiles_editor.close()
+        if self.phone_editor:
+            self.phone_editor.close()
         self.cancel_dialogs()
         self.destroy()
 
@@ -1566,6 +1876,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base}.asb-comfortable .asb-hover-paint .asb-session:hover:not(:focus-within) {{ background: transparent; }}
 {base} .asb-filter-pill {{ min-height: 24px; border-radius: 99px; padding: 2px 8px; font-size: 11px; }}
 {base} .asb-filter-pill:checked {{ background: @accent_bg_color; color: @accent_fg_color; }}
+{base}.asb-preferences stackswitcher > button.text-button {{ min-width: 0; }}
 {base} .asb-toolbar-button,
 {base} .asb-toolbar windowcontrols button {{ min-height: 24px; min-width: 22px; padding: 2px; }}
 {base} .asb-toolbar searchentry {{ min-height: 26px; padding-top: 0; padding-bottom: 0; }}

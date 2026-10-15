@@ -5,11 +5,15 @@ import { DEFAULT_PUBLIC_DIR, parseBooleanSearchParam, readJsonBody, sendJson, se
 
 export function createAsbServer({
   markUnreadThread = null, markReadThread = null, setUnreadSettings = null, pinThread = null, discardThread = null, drawerThread = null,
-  listSources = null, updateSource = null, removeSource = null, sourceToken = '',
+  listSources = null, updateSource = null, removeSource = null, sourceToken = '', phoneGateway = null, serviceMode = false,
   publicDir = DEFAULT_PUBLIC_DIR, ...snapshotOptions
 } = {}) {
   const snapshot = new DashboardSnapshot(snapshotOptions);
   const expectedSourceToken = Buffer.from(String(sourceToken || ''));
+  const sourceTokenAllowed = (request) => {
+    const given = Buffer.from(String(request.headers['x-asb-source-token'] || ''));
+    return !expectedSourceToken.length || (given.length === expectedSourceToken.length && timingSafeEqual(given, expectedSourceToken));
+  };
   let dashboardNotModified = 0;
   const readBody = async (request) => {
     try { return await readJsonBody(request); }
@@ -32,11 +36,14 @@ export function createAsbServer({
     const unreadSettingsRoute = url.pathname === '/api/settings/unread';
     const sourcesRoute = url.pathname === '/api/sources' && Boolean(listSources);
     const removeSourceMatch = removeSource && url.pathname.match(/^\/api\/sources\/([a-z0-9][a-z0-9-]{0,79})\/remove$/);
+    const phoneReadRoute = phoneGateway && ['/api/phone', '/api/service'].includes(url.pathname);
+    const phoneRevoke = phoneGateway && url.pathname.match(/^\/api\/phone\/devices\/([a-f0-9]{12})\/revoke$/);
+    const phoneActionRoute = phoneGateway && (['/api/phone/settings', '/api/phone/pairing'].includes(url.pathname) || Boolean(phoneRevoke));
     const eventRoute = url.pathname === '/api/events';
     const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute
-      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch);
+      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute;
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
-    const readApiRoute = url.pathname === '/api/dashboard' || eventRoute || (sourcesRoute && request.method === 'GET');
+    const readApiRoute = url.pathname === '/api/dashboard' || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute;
     const readRoute = readApiRoute || staticRoutes.includes(url.pathname);
     if (!readRoute && !actionRoute) {
       sendJson(response, 404, { error: 'Route is not available in ASB.' });
@@ -60,11 +67,46 @@ export function createAsbServer({
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
     response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    if (phoneReadRoute || phoneActionRoute) {
+      response.setHeader('Cache-Control', 'no-store');
+      if (!sourceTokenAllowed(request)) {
+        sendJson(response, 403, { error: 'Use phone access settings from the ASB window.' });
+        return;
+      }
+      try {
+        let result;
+        if (phoneReadRoute) result = url.pathname === '/api/service' ? { service: Boolean(serviceMode), pid: process.pid } : await phoneGateway.status();
+        else {
+          const body = await readBody(request);
+          const fields = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join(',') : 'invalid';
+          if (fields !== (url.pathname === '/api/phone/settings' ? 'bindAddress,enabled,port' : '')) {
+            sendJson(response, 400, { error: 'Invalid phone action.' });
+            return;
+          }
+          if (url.pathname === '/api/phone/settings') {
+            if (typeof body.enabled !== 'boolean' || typeof body.bindAddress !== 'string'
+              || !Number.isInteger(body.port) || body.port < 1024 || body.port > 65535 || body.port === address.port) {
+              sendJson(response, 400, { error: 'Invalid phone settings. Use a port from 1024 to 65535 that is different from the ASB port.' });
+              return;
+            }
+            if (!(body.bindAddress === '' && !body.enabled)
+              && !(await phoneGateway.status()).addresses.some(({ address: value }) => value === body.bindAddress)) {
+              sendJson(response, 400, { error: 'Choose a phone address on this PC.' });
+              return;
+            }
+            result = await phoneGateway.updateSettings(body);
+          } else result = phoneRevoke ? await phoneGateway.revokeDevice(phoneRevoke[1]) : await phoneGateway.createPairing();
+        }
+        sendJson(response, 200, result);
+      } catch (error) {
+        sendJson(response, error.statusCode || 500, { error: error instanceof SyntaxError ? 'Invalid phone action.'
+          : error.statusCode === 400 ? error.message : 'Cannot update ASB phone access.' });
+      }
+      return;
+    }
     if (sourcesRoute || removeSourceMatch) {
       // Local programs can forge Host and Origin; only the ASB window holds the launcher's token.
-      const givenSourceToken = Buffer.from(String(request.headers['x-asb-source-token'] || ''));
-      if (actionRoute && expectedSourceToken.length && (givenSourceToken.length !== expectedSourceToken.length
-        || !timingSafeEqual(givenSourceToken, expectedSourceToken))) {
+      if (actionRoute && !sourceTokenAllowed(request)) {
         sendJson(response, 403, { error: 'Use app source actions from the ASB window.' });
         return;
       }

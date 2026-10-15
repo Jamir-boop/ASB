@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createSwitchboardServer, switchboardPort } from '../src/switchboard.mjs';
+import { createPhoneGateway } from '../src/phone-gateway.mjs';
 import { registerAppIcon } from './asb-icon.mjs';
 
 if (process.platform !== 'linux') {
@@ -10,7 +12,9 @@ if (process.platform !== 'linux') {
 }
 const port = switchboardPort();
 const sourceToken = randomBytes(32).toString('hex');
-const server = createSwitchboardServer({ sourceToken });
+const asbVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+const gateway = createPhoneGateway({ localPort: port, asbVersion });
+const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway });
 let window;
 let stopping = false;
 function stop(code = 0) {
@@ -20,12 +24,21 @@ function stop(code = 0) {
   if (window && window.exitCode === null) window.kill('SIGTERM');
   server.close();
   server.closeAllConnections();
+  gateway.stop().catch((error) => console.error(`Cannot stop ASB phone access: ${error.message}`));
 }
 server.once('error', (error) => {
   console.error(error.code === 'EADDRINUSE' ? `ASB cannot start. Port ${port} is in use.` : `ASB cannot start: ${error.message}`);
   stop(1);
 });
 server.listen(port, '127.0.0.1', async () => {
+  try {
+    await gateway.start();
+    const status = await gateway.status();
+    if (status.error) console.error(`Cannot start ASB phone access: ${status.error}`);
+  } catch (error) {
+    console.error(`Cannot start ASB phone access: ${error.message}`);
+  }
+  if (stopping) return;
   try {
     if (process.env.ASB_SYSTEM_INSTALL !== '1') {
       const registration = await registerAppIcon({ launcherExecutable: process.env.ASB_INSTALLED_LAUNCHER });
