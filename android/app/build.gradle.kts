@@ -45,6 +45,8 @@ dependencies {
     implementation(libs.activity.compose)
     implementation(libs.compose.material3)
     implementation(libs.compose.ui)
+    implementation(libs.compose.material.icons)
+    implementation(libs.lifecycle.runtime.compose)
     implementation(libs.lifecycle.viewmodel.compose)
     implementation(libs.okhttp)
     implementation(libs.serialization.json)

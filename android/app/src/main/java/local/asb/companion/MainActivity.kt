@@ -2,6 +2,7 @@ package local.asb.companion
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
@@ -29,6 +30,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,13 +40,20 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import kotlinx.coroutines.cancel
+import kotlinx.serialization.encodeToString
+import local.asb.companion.data.AsbJson
 import local.asb.companion.data.Hello
 import local.asb.companion.net.AsbError
+import local.asb.companion.net.AsbApi
 import local.asb.companion.ui.AsbTheme
 import local.asb.companion.ui.PairScreen
 import local.asb.companion.ui.PairingViewModel
+import local.asb.companion.ui.SessionsScreen
+import local.asb.companion.ui.SessionsViewModel
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -56,7 +66,7 @@ class MainActivity : ComponentActivity() {
                     viewModelFactory { initializer { PairingViewModel(app.store::save) } }
                 })
                 var paired by remember { mutableStateOf(app.store.paired) }
-                if (paired) ConnectionScreen(app) {
+                if (paired) PairedApp(app) {
                     pairingModel.reset()
                     app.store.clear()
                     paired = false
@@ -65,29 +75,98 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onResume() {
+        super.onResume()
+        (application as AsbApp).resumed = true
+    }
+
+    override fun onPause() {
+        (application as AsbApp).resumed = false
+        super.onPause()
+    }
+}
+
+private enum class Screen { VERIFY, SESSIONS, CONNECTION }
+
+@Composable
+private fun PairedApp(app: AsbApp, onUnpair: () -> Unit) {
+    val store = app.store
+    val token = store.token
+    val deviceId = store.deviceId
+    val api = remember(deviceId, token) { app.api() }
+    var screen by rememberSaveable(deviceId) { mutableStateOf(Screen.VERIFY) }
+    var serverName by rememberSaveable(deviceId) { mutableStateOf(store.serverName) }
+    if (screen == Screen.VERIFY) {
+        ConnectionScreen(app, api, onUnpair = onUnpair, onVerified = {
+            serverName = it.serverName
+            screen = Screen.SESSIONS
+        })
+    } else {
+        val sessionsModel = viewModel<SessionsViewModel>(key = "sessions:$deviceId", factory = remember(api, serverName) {
+            viewModelFactory {
+                initializer {
+                    SessionsViewModel(api, serverName, store.revoked,
+                        saveBaseline = { baseline ->
+                            if (app.resumed) store.saveBaselineIfPaired(token, AsbJson.encodeToString(baseline))
+                        },
+                        notificationMutex = app.notificationMutex,
+                    )
+                }
+            }
+        })
+        val unpair = {
+            sessionsModel.viewModelScope.cancel()
+            onUnpair()
+        }
+        if (screen == Screen.CONNECTION) {
+            ConnectionScreen(app, api, onUnpair = unpair,
+                onBack = { screen = Screen.SESSIONS },
+                onVerified = { serverName = it.serverName },
+            )
+        } else {
+            SessionsScreen(sessionsModel, serverName,
+                onSettings = { screen = Screen.CONNECTION }, onPairAgain = unpair)
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ConnectionScreen(app: AsbApp, onUnpair: () -> Unit) {
-    val api = remember { app.api() }
+private fun ConnectionScreen(
+    app: AsbApp,
+    api: AsbApi,
+    onUnpair: () -> Unit,
+    onBack: (() -> Unit)? = null,
+    onVerified: (Hello) -> Unit = {},
+) {
     var hello by remember { mutableStateOf<Hello?>(null) }
     var error by remember { mutableStateOf<AsbError?>(null) }
     var busy by remember { mutableStateOf(!app.store.revoked) }
     var attempt by remember { mutableIntStateOf(0) }
     var confirmUnpair by remember { mutableStateOf(false) }
-    LaunchedEffect(attempt) {
+    val currentOnVerified by rememberUpdatedState(onVerified)
+    if (onBack != null) BackHandler(onBack = onBack)
+    LaunchedEffect(api, attempt) {
         if (app.store.revoked) error = AsbError.NotPaired
         else {
             busy = true
             error = null
             hello = null
-            try { hello = api.hello() }
+            try {
+                val reply = api.hello()
+                if (reply.deviceId != app.store.deviceId) throw AsbError.Server("ASB sent an invalid response. Try again.")
+                hello = reply
+                currentOnVerified(reply)
+            }
             catch (cause: AsbError) { error = cause }
             finally { busy = false }
         }
     }
-    Scaffold(topBar = { TopAppBar(title = { Text("ASB") }) }) { padding ->
+    Scaffold(topBar = {
+        TopAppBar(title = { Text(if (onBack == null) "ASB" else "Connection") },
+            navigationIcon = { onBack?.let { TextButton(onClick = it) { Text("Back") } } })
+    }) { padding ->
         Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding), contentAlignment = Alignment.TopCenter) {
             Column(
                 modifier = Modifier.widthIn(max = 600.dp).fillMaxWidth()

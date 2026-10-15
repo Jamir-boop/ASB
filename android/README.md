@@ -1,10 +1,13 @@
 # ASB Android companion
 
-Phase 5 provides QR or manual pairing with the ASB phone gateway. The user
-checks the PC and certificate fingerprint before the app sends the pairing
-request. A successful connection shows the server name and ASB version from
-the authenticated hello API. The Material 3 theme follows the system light
-or dark setting. The session list and notifications are not implemented yet.
+Phase 6 provides the live session list, desktop filters, row menus, and Open
+on PC through the ASB phone gateway. QR or manual pairing remains available.
+The user checks the PC and certificate fingerprint before the app sends the
+pairing request. Authenticated hello must succeed before the session list
+opens. Connection information shows the real server name and ASB version. The Material 3
+theme follows the system light or dark setting. Settings currently opens the
+real server connection information and Unpair controls. Notifications and the
+remaining settings are not implemented yet.
 
 Pairing uses TLS 1.3 and the SHA-256 of the full certificate. The app stores
 the paired token in one private SharedPreferences file. Backup and device
@@ -15,6 +18,9 @@ calls when their coroutine is canceled. Pairing links and tokens are not logged.
 The pairing input, confirmation, and running request survive screen rotation.
 Back cancels the request. Unpair resets the retained pairing flow before a new
 pairing starts; an old response cannot save credentials into that new flow.
+Each pairing gets its own session ViewModel and API. The session screen owns
+the lifecycle polling loop. Foreground dashboard reads share a mutex with
+baseline updates; only the current, resumed pairing can save that baseline.
 
 The QR scanner needs Google Play services and can download its scanner module
 on first use. Manual paste works when the scanner is unavailable.
@@ -93,8 +99,8 @@ commands above for the device check.
 | Activity Compose | 1.10.1 |
 | SDK Build Tools | 36.0.0 |
 
-The version catalog also pins Lifecycle 2.9.2 and WorkManager 2.10.2 for later
-phases. Phase 5 uses OkHttp 4.12.0, kotlinx.serialization 1.9.0,
+Phase 6 uses Lifecycle 2.9.2. WorkManager 2.10.2 remains pinned for the next
+phase. Networking and tests use OkHttp 4.12.0, kotlinx.serialization 1.9.0,
 kotlinx.coroutines 1.10.2, Google code scanner 16.1.0, and JUnit 4.13.2.
 
 The JVM tests use a real pinned TLS connection to MockWebServer. They cover

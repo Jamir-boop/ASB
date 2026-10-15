@@ -1,0 +1,278 @@
+package local.asb.companion
+
+import java.security.MessageDigest
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import local.asb.companion.data.Thread
+import local.asb.companion.ui.Filter
+import local.asb.companion.ui.MenuAction
+import local.asb.companion.ui.STATES
+import local.asb.companion.ui.attentionIndicator
+import local.asb.companion.ui.casefold
+import local.asb.companion.ui.filteredRows
+import local.asb.companion.ui.pinMoveBody
+import local.asb.companion.ui.providerQuery
+import local.asb.companion.ui.rowMenuActions
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class RulesTest {
+    private val now = 1_790_000_000_000L
+    private val fixture = listOf(
+        Thread(id = "first", provider = "codex", providerLabel = "Codex",
+            title = "Verify native session switching", cwd = "/example/ASB", projectName = "ASB",
+            state = "working", canOpen = true, updatedAtMs = now, nativeUnread = true, nativeAttention = true),
+        Thread(id = "second", provider = "codex", providerLabel = "Codex",
+            title = "Check keyboard focus after refresh", cwd = "/example/ASB", projectName = "ASB",
+            state = "idle", canOpen = true, updatedAtMs = now - 60_000, pending = true, unread = true),
+        Thread(id = "unknown", provider = "codex", providerLabel = "Codex",
+            title = "A session without a desktop link", cwd = "/example/Tools", projectName = "Tools",
+            state = "unknown", updatedAtMs = now - 300_000),
+        Thread(id = "claude:local_mock", provider = "claude-desktop-code", providerLabel = "Claude Desktop Code",
+            title = "Choose the folder for the next check", cwd = "/example/Notes", projectName = "Notes",
+            state = "waiting", canOpen = true, updatedAtMs = now - 120_000, pending = true, actionRequired = true),
+        Thread(id = "archive", provider = "codex", providerLabel = "Codex", title = "Completed setup",
+            cwd = "/example/ASB", projectName = "ASB", state = "idle", canOpen = true, archived = true,
+            updatedAtMs = now - 3_600_000),
+    )
+
+    private fun ids(rows: List<Thread> = fixture, filter: Filter = Filter()) =
+        filteredRows(rows, filter).map { it.id }
+
+    @Test fun filtersStateOrderPendingAndArchive() {
+        assertEquals(listOf("second", "claude:local_mock", "first", "unknown"), ids())
+        assertEquals(5, ids(filter = Filter(archived = true)).size)
+        for ((query, expected) in listOf(
+            "SWITCHING" to listOf("first"), "/example/Notes" to listOf("claude:local_mock"),
+            "Claude Desktop" to listOf("claude:local_mock"), "missing" to emptyList(),
+        )) assertEquals(expected, ids(filter = Filter(query = query)))
+        assertEquals(listOf("unknown"), ids(filter = Filter(app = "codex", states = setOf("unknown"))))
+        assertEquals(listOf("second", "claude:local_mock"), ids(filter = Filter(pendingOnly = true)))
+        assertEquals(listOf("second", "first"), ids(filter = Filter(states = setOf("working", "idle"))))
+        assertEquals(emptyList<String>(), ids(filter = Filter(states = emptySet())))
+        assertEquals(listOf("second"), ids(filter = Filter(states = setOf("working", "idle"), pendingOnly = true)))
+        val pinned = fixture.map { when (it.id) {
+            "first" -> it.copy(pinned = true, pinIndex = 1)
+            "unknown" -> it.copy(pinned = true, pinIndex = 0)
+            else -> it
+        } }
+        assertEquals(listOf("unknown", "first", "second", "claude:local_mock"), ids(pinned))
+        assertEquals(listOf("first", "second"), ids(pinned, Filter(query = "cx:", states = setOf("working", "idle"))))
+        assertEquals(listOf("working", "waiting", "idle", "unknown"), STATES)
+    }
+
+    @Test fun providerPrefixesOverrideTheAppFilterAndKeepLiteralQueries() {
+        for (prefix in listOf("cl:", "claude:", " CL : ", "ClaUde: ", "cx:", "codex:", " CX : ", "CODEX:")) {
+            val provider = if (prefix.trim().startsWith("cl", true)) "claude-desktop-code" else "codex"
+            val opposite = if (provider == "codex") "claude-desktop-code" else "codex"
+            val selected = filteredRows(fixture, Filter(query = prefix, app = opposite))
+            assertTrue(prefix, selected.isNotEmpty())
+            assertTrue(prefix, selected.all { it.provider == provider })
+        }
+        assertEquals(listOf("claude:local_mock"), ids(filter = Filter(query = "CL: CHOOSE THE FOLDER")))
+        assertEquals(listOf("second"), ids(filter = Filter(query = "codex: /example/ASB", pendingOnly = true)))
+        assertEquals(4, ids(filter = Filter(query = "cx:", archived = true)).size)
+        assertEquals(emptyList<String>(), ids(filter = Filter(query = "claude:", states = setOf("working"))))
+        assertEquals("notes: <b>" to "all", providerQuery("notes: <b>"))
+        assertEquals(listOf("literal"), ids(listOf(fixture[0].copy(id = "literal", title = "notes: <b>Literal title</b>")),
+            Filter(query = "notes: <b>")))
+    }
+
+    @Test fun pythonWhitespaceAndMultilineQueriesKeepTheirMeaning() {
+        val whitespace = "\t\n\u000B\u000C\r\u001C\u001D\u001E\u001F \u0085\u00A0\u1680" +
+            "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u2028\u2029\u202F\u205F\u3000"
+        assertEquals(29, whitespace.length)
+        for (space in whitespace) {
+            assertEquals("find" to "all", providerQuery(space + "FIND" + space))
+            assertEquals("find\nnext" to "claude-desktop-code",
+                providerQuery(space + "CL" + space + ":" + space + "FIND\nNEXT" + space, "codex"))
+        }
+        for (notSpace in listOf('\u0000', '\u0008', '\u000E', '\u001B', '\u180E', '\u200B', '\uFEFF')) {
+            assertEquals(notSpace + "find" + notSpace to "all", providerQuery(notSpace + "FIND" + notSpace))
+            assertEquals(notSpace + "cl:find" to "codex", providerQuery(notSpace + "CL:FIND", "codex"))
+        }
+        assertEquals("find  next" to "all", providerQuery("FIND  NEXT"))
+    }
+
+    @Test fun sourceNameSearchKeepsOtherFilters() {
+        val rows = listOf(
+            Thread(id = "main", provider = "codex", sourceLabel = "Codex", state = "idle"),
+            Thread(id = "personal", provider = "codex", sourceLabel = "ChatGPT Personal", state = "working"),
+            Thread(id = "claude", provider = "claude-desktop-code", sourceLabel = "Claude Personal", state = "idle", pending = true),
+            Thread(id = "archived", provider = "codex", sourceLabel = "ChatGPT Personal", state = "working", archived = true),
+        )
+        assertEquals(setOf("personal", "claude"), ids(rows, Filter(query = "PERSONAL")).toSet())
+        assertEquals(listOf("personal"), ids(rows, Filter(query = "cx:Personal", app = "claude-desktop-code")))
+        assertEquals(listOf("claude"), ids(rows, Filter(query = "cl:Personal", app = "codex")))
+        assertEquals(listOf("claude"), ids(rows, Filter(query = "Personal", pendingOnly = true)))
+        assertEquals(listOf("claude", "personal"),
+            ids(rows, Filter(query = "Personal", states = setOf("working"), pendingOnly = true)))
+        assertEquals(setOf("personal", "archived"), ids(rows, Filter(query = "Personal", app = "codex", archived = true)).toSet())
+    }
+
+    @Test fun workingPendingUnionKeepsUnreadAndOtherFilters() {
+        val rows = listOf(
+            Thread(id = "working-read", provider = "codex", state = "working", title = "Find work"),
+            Thread(id = "working-unread", provider = "codex", state = "working", unread = true, pending = true),
+            Thread(id = "idle-unread", provider = "codex", state = "idle", unread = true, title = "Find idle"),
+            Thread(id = "waiting-attention", provider = "codex", state = "waiting", questionAttention = true),
+            Thread(id = "unknown-unread", provider = "codex", state = "unknown", unread = true),
+            Thread(id = "idle-read", provider = "codex", state = "idle"),
+            Thread(id = "native-only", provider = "codex", state = "unknown", nativeUnread = true),
+            Thread(id = "archived-unread", provider = "codex", state = "idle", unread = true, archived = true),
+            Thread(id = "claude-unread", provider = "claude-desktop-code", state = "idle", unread = true, title = "Find Claude"),
+        )
+        val union = Filter(states = setOf("working"), pendingOnly = true)
+        val expected = setOf("working-read", "working-unread", "idle-unread", "waiting-attention", "unknown-unread", "claude-unread")
+        assertEquals(expected, ids(rows, union).toSet())
+        assertEquals(expected.size, ids(rows, union).size)
+        assertEquals(setOf("working-read", "working-unread"), ids(rows, Filter(states = setOf("working"))).toSet())
+        assertEquals(listOf("working-unread"), ids(rows, Filter(pendingOnly = true)))
+        assertEquals(listOf("working-unread"), ids(rows, union.copy(states = setOf("working", "idle"))))
+        assertEquals(emptyList<String>(), ids(rows, union.copy(states = emptySet())))
+        assertEquals(expected - "claude-unread", ids(rows, union.copy(app = "codex")).toSet())
+        assertEquals(setOf("working-read", "idle-unread"), ids(rows, union.copy(query = "find", app = "codex")).toSet())
+        assertEquals(listOf("claude-unread"), ids(rows, union.copy(query = "cl:find", app = "codex")))
+        assertEquals(expected + "archived-unread", ids(rows, union.copy(archived = true)).toSet())
+    }
+
+    @Test fun sortUsesTaskStartAndStablePinAndCodePointIdOrder() {
+        val rows = listOf(
+            Thread(id = "work-old", state = "working", workingSinceMs = 10, updatedAtMs = 9999),
+            Thread(id = "work-new", state = "working", workingSinceMs = 20, updatedAtMs = 1),
+            Thread(id = "work-unknown", state = "working", workingSinceMs = -1, updatedAtMs = 99999),
+            Thread(id = "wait", state = "waiting", updatedAtMs = 100),
+            Thread(id = "pending-work", state = "working", pending = true, workingSinceMs = 1),
+            Thread(id = "pin-b", state = "unknown", pinned = true, pinIndex = 0),
+            Thread(id = "pin-a", state = "idle", pinned = true, pinIndex = 0),
+            Thread(id = "pin-last", state = "idle", pinned = true, pinIndex = 1),
+            Thread(id = "idle-b", state = "idle", updatedAtMs = 100),
+            Thread(id = "idle-a", state = "idle", updatedAtMs = 100),
+            Thread(id = "unknown", state = "unknown", updatedAtMs = 100000),
+        )
+        val before = rows.toList()
+        assertEquals(listOf("pin-a", "pin-b", "pin-last", "pending-work", "wait", "work-new", "work-old",
+            "work-unknown", "idle-a", "idle-b", "unknown"), ids(rows))
+        assertEquals(before, rows)
+        val supplementary = "\uD800\uDC00"
+        for (pinned in listOf(false, true)) {
+            val tied = listOf(supplementary, "\uE000", "a", "aa").map {
+                Thread(id = it, state = "idle", pinned = pinned, pinIndex = 0)
+            }
+            assertEquals(listOf("a", "aa", "\uE000", supplementary), ids(tied))
+        }
+    }
+
+    @Test fun attentionUsesOnlyTheCurrentAsbFlagsInPriorityOrder() {
+        val base = Thread(state = "working", discardResult = true)
+        for ((row, expected) in listOf(
+            Thread() to "", Thread(unread = true) to "dot", Thread(questionAttention = true) to "question",
+            Thread(unread = true, questionAttention = true) to "question",
+            Thread(state = "working", manualUnread = true, nativeAttention = true, retainedUnread = true) to "",
+            base to "discard", base.copy(unread = true) to "dot", base.copy(questionAttention = true) to "question",
+            base.copy(actionRequired = true) to "question", base.copy(state = "idle", lastOutcome = "stopped") to "stop",
+            base.copy(state = "idle") to "", Thread(state = "idle", lastOutcome = "stopped", unread = true) to "dot",
+        )) assertEquals(row.toString(), expected, attentionIndicator(row))
+    }
+
+    @Test fun menusKeepPermissionPinDiscardAndDrawerRules() {
+        for (row in listOf(Thread(unread = true), Thread(questionAttention = true), Thread(retainedUnread = true, unread = true))) {
+            assertEquals(MenuAction("Read", "mark-read"), rowMenuActions(row).first())
+        }
+        assertEquals(MenuAction("Unread", "mark-unread"), rowMenuActions(Thread(nativeUnread = true, nativeAttention = false)).first())
+        assertEquals(listOf("mark-unread", "unpin", "pin-up", "pin-down"),
+            rowMenuActions(Thread(pinned = true)).map { it.action })
+        val permission = Thread(state = "waiting", actionRequired = true, unread = true, questionAttention = true)
+        assertEquals(listOf(MenuAction("Pin", "pin")), rowMenuActions(permission))
+        assertEquals(listOf("unpin", "pin-up", "pin-down"), rowMenuActions(permission.copy(pinned = true)).map { it.action })
+        assertEquals(MenuAction("Unread", "mark-unread"), rowMenuActions(Thread(state = "idle", lastOutcome = "stopped")).first())
+        assertEquals(MenuAction("Keep result", "keep-result"), rowMenuActions(Thread(state = "working", discardResult = true)).last())
+        assertEquals(MenuAction("Discard result", "discard-result"), rowMenuActions(Thread(state = "working")).last())
+        assertFalse(rowMenuActions(Thread(state = "idle")).any { it.action in setOf("discard-result", "keep-result") })
+        assertFalse(rowMenuActions(Thread(canOpen = true)).any { it.action == "open" })
+    }
+
+    @Test fun drawerFilterIndicatorAndMenuMatchDesktop() {
+        val base = Thread(provider = "codex", state = "idle", title = "Chat", providerLabel = "Codex", canOpen = true)
+        val unread = base.copy(id = "unread", unread = true, pending = true, updatedAtMs = 4)
+        val tucked = base.copy(id = "tucked", drawer = true, completionAttention = true, updatedAtMs = 3)
+        val rows = listOf(unread, tucked, tucked.copy(id = "claude", provider = "claude-desktop-code", title = "Find"),
+            tucked.copy(id = "old", archived = true), base.copy(id = "read", updatedAtMs = 1))
+        val drawer = Filter(drawerOnly = true)
+        assertEquals(listOf("unread", "claude", "tucked", "read"), ids(rows))
+        assertEquals(listOf("claude", "tucked"), ids(rows, drawer))
+        assertEquals(listOf("claude", "old", "tucked"), ids(rows, drawer.copy(archived = true)))
+        assertEquals(listOf("claude"), ids(rows, drawer.copy(query = "find")))
+        assertEquals(listOf("tucked"), ids(rows, drawer.copy(app = "codex")))
+        assertEquals(listOf("claude"), ids(rows, drawer.copy(query = "cl:", app = "codex")))
+        assertEquals(emptyList<String>(), ids(rows, drawer.copy(states = setOf("working"))))
+        for ((row, expected) in listOf(
+            tucked to "dot", tucked.copy(questionAttention = true) to "question",
+            tucked.copy(actionRequired = true) to "question", tucked.copy(state = "working") to "",
+            tucked.copy(state = "working", discardResult = true) to "discard",
+            tucked.copy(lastOutcome = "stopped") to "dot", unread to "dot", base to "",
+        )) assertEquals(expected, attentionIndicator(row, drawer = true))
+        assertEquals("", attentionIndicator(tucked))
+        assertEquals("stop", attentionIndicator(tucked.copy(lastOutcome = "stopped")))
+        assertEquals(listOf("mark-read", "drawer-in", "pin"), rowMenuActions(unread).map { it.action })
+        assertEquals(listOf("mark-read", "drawer-out", "pin"), rowMenuActions(tucked).map { it.action })
+        assertEquals(listOf("mark-read", "drawer-out", "pin", "discard-result"),
+            rowMenuActions(tucked.copy(state = "working")).map { it.action })
+        assertEquals(listOf("drawer-out", "pin"), rowMenuActions(tucked.copy(actionRequired = true)).map { it.action })
+        for (row in listOf(base, base.copy(questionAttention = true), unread.copy(questionAttention = true),
+            unread.copy(actionRequired = true))) assertFalse(rowMenuActions(row).any { it.action.startsWith("drawer-") })
+    }
+
+    @Test fun pinMoveTargetsTheVisiblePinnedNeighborAndEscapesItsId() {
+        val rows = listOf(Thread(id = "a", pinned = true), Thread(id = "b", pinned = true), Thread(id = "c"))
+        assertNull(pinMoveBody(rows, "a", "up"))
+        assertNull(pinMoveBody(rows, "b", "down"))
+        assertNull(pinMoveBody(rows, "c", "up"))
+        assertNull(pinMoveBody(rows, "missing", "down"))
+        assertEquals("""{"targetId":"a","placement":"before"}""", pinMoveBody(rows, "b", "up"))
+        assertEquals("""{"targetId":"b","placement":"after"}""", pinMoveBody(rows, "a", "down"))
+        val escaped = "quote\"slash\\newline\n"
+        val body = pinMoveBody(listOf(rows[0], Thread(id = escaped, pinned = true)), "a", "down")!!
+        assertEquals(escaped, Json.parseToJsonElement(body).jsonObject.getValue("targetId").jsonPrimitive.content)
+    }
+
+    @Test fun unicodeFoldingPreservesExpansionsDotsSigmaCherokeeAndNormalization() {
+        for ((input, expected) in listOf(
+            "Straße STRASSE ẞ" to "strasse strasse ss", "I i ı İ" to "i i ı i\u0307",
+            "Σ σ ς ΟΣ" to "σ σ σ οσ", "\u13A0\uAB70\u13F8" to "\u13A0\u13A0\u13F0",
+            "ﬀ ﬁ ﬂ ﬃ ﬄ ﬅ ﬆ" to "ff fi fl ffi ffl st st", "é e\u0301" to "é e\u0301",
+            "\uD801\uDD70" to "\uD801\uDD97",
+        )) assertEquals(expected, casefold(input))
+        assertEquals(listOf("unicode"), ids(listOf(Thread(id = "unicode", state = "idle", title = "Straße")),
+            Filter(query = "STRASSE")))
+        assertEquals(listOf("unicode"), ids(listOf(Thread(id = "unicode", state = "idle", title = "İ")),
+            Filter(query = "i")))
+        assertEquals(emptyList<String>(), ids(listOf(Thread(id = "unicode", state = "idle", title = "I")),
+            Filter(query = "İ")))
+        assertEquals(emptyList<String>(), ids(listOf(Thread(id = "unicode", state = "idle", title = "ı")),
+            Filter(query = "I")))
+        assertEquals(emptyList<String>(), ids(listOf(Thread(id = "unicode", state = "idle", title = "é")),
+            Filter(query = "e\u0301")))
+    }
+
+    @Test fun everyCodePointMatchesThePythonUnicode151Baseline() {
+        // Generated independently with Python 3.13.5 chr(cp).casefold() for every code point.
+        val digest = MessageDigest.getInstance("SHA-256")
+        var changed = 0
+        for (codePoint in 0..0x10FFFF) {
+            val original = String(Character.toChars(codePoint))
+            val folded = casefold(original)
+            if (folded != original) {
+                changed++
+                digest.update("$codePoint=$folded\n".toByteArray(Charsets.UTF_8))
+            }
+        }
+        assertEquals(1530, changed)
+        assertEquals("50ce3332f4a0e7751952ce4e9ea9e25255d963b068484ef5e911a6af603064b9",
+            digest.digest().joinToString("") { "%02x".format(it) })
+    }
+}

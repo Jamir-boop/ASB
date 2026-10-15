@@ -30,6 +30,7 @@ class Store(context: Context) {
         get() = preferences.getBoolean("notifyInput", true)
         set(value) { preferences.edit().putBoolean("notifyInput", value).apply() }
 
+    @Synchronized
     fun save(info: PairingInfo, reply: PairReply) {
         preferences.edit()
             .putString("host", info.host)
@@ -44,6 +45,17 @@ class Store(context: Context) {
         etag = null
     }
 
+    @Synchronized
+    fun revokeIfPaired(token: String) {
+        if (token.isNotEmpty() && this.token == token) revoked = true
+    }
+
+    @Synchronized
+    fun saveBaselineIfPaired(token: String, value: String) {
+        if (token.isNotEmpty() && this.token == token) baseline = value
+    }
+
+    @Synchronized
     fun clear() {
         preferences.edit().clear().apply()
         etag = null
