@@ -45,3 +45,9 @@ public/*-layout-lab.html
 *.key
 *.p12
 *.pfx
+
+# Local Android SDK paths and build state.
+android/.gradle/
+android/.kotlin/
+android/local.properties
+android/captures/
