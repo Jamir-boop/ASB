@@ -184,7 +184,20 @@ function initialSignals() {
 function initialClaudeLifecycle() {
   return { running: null, startedAtMs: 0, promptStartedAtMs: 0, activityAtMs: 0, eventAtMs: 0, kind: '', finalAtMs: 0,
     endedAtMs: 0, endKind: '', limitResetsAtMs: 0,
-    agents: new Map(), agentTools: new Map(), messages: [] };
+    agents: new Map(), agentTools: new Map(), wrapUps: new Map(), messages: [] };
+}
+
+// The Desktop app can end a turn with this tool. Its result ends the turn; the app can write more records after it.
+const WRAP_UP_TOOL = 'mcp__ccd_turn__wrap_up';
+
+function wrapUpResultId(lifecycle, event) {
+  const content = event.message?.content;
+  if (event.type !== 'user' || !Array.isArray(content)) return '';
+  for (const item of content) {
+    const id = item?.type === 'tool_result' ? String(item.tool_use_id || item.toolUseId || '') : '';
+    if (id && lifecycle.wrapUps.has(id)) return id;
+  }
+  return '';
 }
 
 // Reads only the opening tag of a message from another session, and returns only its sender ID.
@@ -260,6 +273,7 @@ function applyClaudeLifecycle(lifecycle, event, timestampMs) {
   }
   // The app runs a tool call also after a stop reason such as refusal, so a record with a tool call is not the end of a turn.
   const completed = event.type === 'result' || kind === 'stop_hook_summary' || kind === 'task_complete'
+    || Boolean(wrapUpResultId(lifecycle, event))
     || (event.type === 'assistant' && ['end_turn', 'stop_sequence', 'max_tokens', 'refusal'].includes(stopReason)
       && !(Array.isArray(content) && content.some((item) => item?.type === 'tool_use')));
   if (cancelled || failed || completed) {
@@ -298,6 +312,11 @@ function applyClaudeLifecycle(lifecycle, event, timestampMs) {
       if (tool?.type === 'tool_use' && ['Agent', 'Task', 'SendMessage', 'Workflow'].includes(tool.name) && tool.id) {
         rememberBounded(lifecycle.agentTools, tool.id, { startedAtMs: timestampMs,
           requestStartedAtMs: lifecycle.startedAtMs, workflow: tool.name === 'Workflow' }, MAX_ASB_SESSION_COUNT);
+      }
+      // Only keep whether the wrap-up asks the user something, never the text.
+      if (tool?.type === 'tool_use' && tool.name === WRAP_UP_TOOL && tool.id) {
+        rememberBounded(lifecycle.wrapUps, String(tool.id),
+          typeof tool.input?.ask === 'string' && tool.input.ask.trim() !== '', MAX_ASB_SESSION_COUNT);
       }
     }
   }
@@ -351,20 +370,7 @@ function handleAssistantEvent(signals, event, timestampMs) {
   if (Array.isArray(message.content)) {
     for (const item of message.content) {
       if (item?.type !== 'tool_use' || !item.id || !isPermissionToolUse(item)) continue;
-      signals.pendingToolsById.set(String(item.id), {
-        id: String(item.id),
-        tool: String(item.name || 'tool'),
-        title: toolUseTitle(item),
-        status: 'pending',
-        kind: 'permission',
-        signalAtMs: timestampMs,
-      });
-      // Retain the newest 5000 permission signals, so an append-only stream cannot grow this map without limit.
-      if (signals.pendingToolsById.size > MAX_ASB_SESSION_COUNT) {
-        const oldest = [...signals.pendingToolsById.values()].reduce((a, b) => a.signalAtMs <= b.signalAtMs ? a : b);
-        signals.pendingToolsById.delete(oldest.id);
-      }
-      signals.pendingToolAtMs = Math.max(signals.pendingToolAtMs, timestampMs);
+      rememberPendingTool(signals, String(item.id), item, timestampMs);
     }
   }
 
@@ -376,6 +382,23 @@ function handleAssistantEvent(signals, event, timestampMs) {
   if (['end_turn', 'stop_sequence', 'max_tokens', 'refusal'].includes(stopReason)) {
     rememberAgentCompletion(signals, timestampMs);
   }
+}
+
+function rememberPendingTool(signals, id, item, timestampMs) {
+  signals.pendingToolsById.set(id, {
+    id,
+    tool: String(item.name || 'tool'),
+    title: toolUseTitle(item),
+    status: 'pending',
+    kind: 'permission',
+    signalAtMs: timestampMs,
+  });
+  // Retain the newest 5000 permission signals, so an append-only stream cannot grow this map without limit.
+  if (signals.pendingToolsById.size > MAX_ASB_SESSION_COUNT) {
+    const oldest = [...signals.pendingToolsById.values()].reduce((a, b) => a.signalAtMs <= b.signalAtMs ? a : b);
+    signals.pendingToolsById.delete(oldest.id);
+  }
+  signals.pendingToolAtMs = Math.max(signals.pendingToolAtMs, timestampMs);
 }
 
 function rememberAgentCompletion(signals, timestampMs) {
@@ -414,6 +437,16 @@ function applyClaudeSignalLine(signals, line, lifecycleOnly = false) {
   if (signals.lifecycle.eventAtMs === timestampMs && ['cancelled', 'failed'].includes(signals.lifecycle.kind)) {
     signals.pendingToolsById.clear();
     signals.pendingToolAtMs = 0;
+  }
+  const lifecycle = signals.lifecycle;
+  if (lifecycle.eventAtMs === timestampMs && lifecycle.kind === 'task_started') {
+    for (const id of signals.pendingToolsById.keys()) if (id.startsWith('wrap-up:')) signals.pendingToolsById.delete(id);
+  }
+  // A wrap-up with a question ends the turn, and the chat waits for the answer like a pending AskUserQuestion.
+  // The key has a prefix, so no tool result deletes it: only the next turn, a cancel, a failure, or a result does.
+  const wrapUpId = lifecycle.eventAtMs === timestampMs && lifecycle.kind === 'task_complete' ? wrapUpResultId(lifecycle, event) : '';
+  if (wrapUpId && lifecycle.wrapUps.get(wrapUpId)) {
+    rememberPendingTool(signals, `wrap-up:${wrapUpId}`, { name: 'AskUserQuestion' }, timestampMs);
   }
 
   signals.sessionId ||= String(event.sessionId || event.session_id || '');

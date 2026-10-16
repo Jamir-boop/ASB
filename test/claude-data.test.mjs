@@ -853,6 +853,74 @@ test('a message from another session starts a turn only in an idle chat', async 
   assert.deepEqual([busy.lifecycleRunning, busy.latestTaskStartedAtMs, busy.agentStartedAtMs], [true, resumeNowMs - 30_000, resumeNowMs - 30_000]);
 });
 
+// The Desktop app ends some turns with a wrap-up tool. Its result ends the turn; the app can write more records after it.
+const wrapUp = (offset, id, ask) => [
+  resumeEvent('assistant', offset, { message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id, name: 'mcp__ccd_turn__wrap_up',
+    input: { recap: 'SYNTHETIC_RECAP', ...(ask === undefined ? {} : { ask }),
+      actions: [{ label: 'SYNTHETIC_LABEL', message: 'SYNTHETIC_MESSAGE' }] } }] } }),
+  resumeEvent('user', offset + 100, { message: { content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text: 'ok' }] }] } }),
+];
+
+test('a Claude wrap-up with a question waits for the answer, and the next prompt clears it', async (t) => {
+  const fixture = await signalFixture(t, [resumePrompt(-50_000), resumeWork(-49_000), ...wrapUp(-40_000, 'wrap', 'SYNTHETIC_ASK?')]);
+  const tracker = new PendingTracker(false);
+  const asked = await observeFixture(fixture.projectsDir, resumeNowMs, tracker);
+  assert.deepEqual([asked.thread.lifecycleRunning, asked.thread.latestLifecycleKind, asked.thread.latestLifecycleAtMs],
+    [false, 'task_complete', resumeNowMs - 39_900]);
+  assert.deepEqual([asked.row.state, asked.row.questionPending, asked.row.questionAttention, asked.row.actionRequired,
+    asked.row.pending, asked.row.pendingSource], ['waiting', true, true, false, true, 'user-question']);
+  assert.equal(asked.thread.pendingToolAtMs, resumeNowMs - 39_900);
+  assert.doesNotMatch(JSON.stringify([asked.thread, asked.row]), /SYNTHETIC_/);
+  await appendFile(fixture.file, jsonl([resumePrompt(-30_000)]));
+  const answered = await observeFixture(fixture.projectsDir, resumeNowMs, tracker);
+  assert.deepEqual([answered.row.state, answered.row.questionPending, answered.thread.pendingToolCount], ['working', false, 0]);
+  // The question is current for six hours only, like a pending AskUserQuestion.
+  const stale = await signalFixture(t, [resumePrompt(-50_000), ...wrapUp(-40_000, 'wrap', 'SYNTHETIC_ASK?')]);
+  const later = resumeNowMs + 7 * 60 * 60 * 1000;
+  assert.equal(buildSwitchboardDashboard([await stale.load(later)], [], later).threads[0].questionPending, false);
+});
+
+test('a Claude wrap-up without a question is a completion', async (t) => {
+  for (const ask of [undefined, '', '  ']) {
+    const fixture = await signalFixture(t, [resumePrompt(-50_000), resumeWork(-49_000)]);
+    const tracker = new PendingTracker(false);
+    await observeFixture(fixture.projectsDir, resumeNowMs, tracker);
+    await appendFile(fixture.file, jsonl(wrapUp(-40_000, 'wrap', ask)));
+    const ended = await observeFixture(fixture.projectsDir, resumeNowMs, tracker);
+    assert.deepEqual([ended.row.state, ended.row.questionPending, ended.thread.pendingToolCount, ended.row.completionAtMs,
+      ended.row.completionAttention], ['idle', false, 0, resumeNowMs - 39_900, true], `ask ${JSON.stringify(ask)}`);
+  }
+});
+
+test('a Claude wrap-up ends the turn in the lifecycle-only scan of a large file and in appended reads', async (t) => {
+  const padding = resumeEvent('progress', -45_000, { data: 'x'.repeat(4096) });
+  const large = await signalFixture(t, [resumePrompt(-50_000), resumeWork(-49_000), padding, ...wrapUp(-40_000, 'wrap', 'SYNTHETIC_ASK?')], 256);
+  const small = await signalFixture(t, [resumePrompt(-50_000), resumeWork(-49_000), padding, ...wrapUp(-40_000, 'wrap', 'SYNTHETIC_ASK?')]);
+  const [big, full] = [await large.load(), await small.load()];
+  for (const key of ['lifecycleRunning', 'latestLifecycleKind', 'latestLifecycleAtMs', 'latestTaskEndedAtMs', 'latestTaskEndKind', 'latestAgentFinalAtMs']) {
+    assert.deepEqual(big[key], full[key], key);
+  }
+  assert.equal(big.lifecycleRunning, false);
+  const appended = await signalFixture(t, [resumePrompt(-50_000), resumeWork(-49_000), padding], 256);
+  await appended.load();
+  await appendFile(appended.file, jsonl(wrapUp(-40_000, 'wrap', 'SYNTHETIC_ASK?')));
+  const thread = await appended.load();
+  assert.deepEqual([thread.lifecycleRunning, buildSwitchboardDashboard([thread], [], resumeNowMs).threads[0].state], [false, 'waiting']);
+});
+
+test('a wake after a Claude wrap-up question clears the question and starts a turn', async (t) => {
+  const message = resumeEvent('user', -30_000, { isMeta: true, message: { content:
+    'Another session sent a message.\n<cross-session-message from-session="local_00000000-0000-4000-8000-000000000001">Hello.</cross-session-message>' } });
+  for (const wake of [message, resumeNotice(-30_000, 'kid')]) {
+    const fixture = await signalFixture(t, [resumePrompt(-50_000), ...wrapUp(-40_000, 'wrap', 'SYNTHETIC_ASK?')]);
+    assert.equal((await fixture.load()).pendingToolCount, 1);
+    await appendFile(fixture.file, jsonl([wake]));
+    const thread = await fixture.load();
+    assert.deepEqual([thread.lifecycleRunning, thread.pendingToolCount, buildSwitchboardDashboard([thread], [], resumeNowMs).threads[0].state],
+      [true, 0, 'working']);
+  }
+});
+
 test('a human prompt with only images starts a turn', async (t) => {
   const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } };
   const fixture = await signalFixture(t, [resumePrompt(-50_000), resumeEnd(-49_000)]);
