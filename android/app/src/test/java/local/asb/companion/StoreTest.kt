@@ -101,6 +101,7 @@ class StoreTest {
         store.notifyDone = false
         store.notifyFailed = false
         store.notifyInput = false
+        store.liveNotification = false
         store.clear()
         val next = Store(preferences)
         assertEquals("", next.token)
@@ -111,5 +112,6 @@ class StoreTest {
         assertFalse(next.notifyDone)
         assertFalse(next.notifyFailed)
         assertFalse(next.notifyInput)
+        assertFalse(next.liveNotification)
     }
 }

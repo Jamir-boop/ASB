@@ -51,6 +51,10 @@ class Notifier(private val app: AsbApp) {
             channel("asb_input", "Needs input", NotificationManager.IMPORTANCE_HIGH, "opencode_staplebops_02"),
             channel("asb_failed", "Failed", NotificationManager.IMPORTANCE_DEFAULT, "opencode_nope_03"),
             channel("asb_status", "Connection", NotificationManager.IMPORTANCE_LOW, null),
+            channel("asb_live", "Live sessions", NotificationManager.IMPORTANCE_LOW, null).apply {
+                enableVibration(false)
+                setShowBadge(false)
+            },
         ))
     }
 

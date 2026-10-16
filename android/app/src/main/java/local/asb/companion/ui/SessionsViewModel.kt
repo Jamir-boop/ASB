@@ -50,6 +50,7 @@ class SessionsViewModel(
     private val loadBaseline: () -> Map<String, Int>? = { null },
     initialView: String = "comfortable",
     private val savePalette: (Palette) -> Unit = {},
+    private val showLive: (Dashboard) -> Unit = {},
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(UiState(revoked = initiallyRevoked, view = initialView))
     val state: StateFlow<UiState> = mutableState.asStateFlow()
@@ -160,6 +161,7 @@ class SessionsViewModel(
                 }
                 dashboard?.let { saveBaseline(updateBaseline(loadBaseline(), it.threads)) }
                 Palette.parse(dashboard?.palette)?.let(savePalette)
+                dashboard?.let(showLive)
                 if (result is DashboardResult.Fetched) etag = result.etag
                 offlineFailures = 0
                 mutableState.update { it.copy(dashboard = dashboard, offline = false, lastError = null, path = api.endpoint?.kind) }

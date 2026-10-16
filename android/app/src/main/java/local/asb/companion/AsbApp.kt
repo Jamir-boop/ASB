@@ -7,6 +7,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.sync.Mutex
 import local.asb.companion.data.Endpoint
 import local.asb.companion.data.Palette
@@ -14,6 +15,7 @@ import local.asb.companion.data.Store
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.Paths
 import local.asb.companion.notify.CheckWorker
+import local.asb.companion.notify.LiveUpdate
 import local.asb.companion.notify.Notifier
 
 class AsbApp : Application() {
@@ -21,6 +23,8 @@ class AsbApp : Application() {
     val notifier by lazy { Notifier(this) }
     val notificationMutex = Mutex()
     @Volatile var resumed = false
+    /** The latest dashboard rows of the current pairing, shown by the live notification. */
+    val liveUpdates = MutableStateFlow<LiveUpdate?>(null)
     var palette by mutableStateOf(Palette())
         private set
     var textScale by mutableFloatStateOf(1f)

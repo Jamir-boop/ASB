@@ -82,6 +82,7 @@ import local.asb.companion.data.endpointLabel
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.DashboardResult
+import local.asb.companion.notify.LiveService
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -116,6 +117,7 @@ fun SettingsScreen(
     var notifyDone by remember(store) { mutableStateOf(store.notifyDone) }
     var notifyFailed by remember(store) { mutableStateOf(store.notifyFailed) }
     var notifyInput by remember(store) { mutableStateOf(store.notifyInput) }
+    var liveNotification by remember(store) { mutableStateOf(store.liveNotification) }
     var view by remember(store) { mutableStateOf(store.view) }
     var textScale by remember(store) { mutableFloatStateOf(store.textScale) }
     val palette = LocalPalette.current
@@ -292,6 +294,13 @@ fun SettingsScreen(
                     SettingsSwitch("Done", notifyDone) { notifyDone = it; store.notifyDone = it }
                     SettingsSwitch("Failed", notifyFailed) { notifyFailed = it; store.notifyFailed = it }
                     SettingsSwitch("Needs input", notifyInput) { notifyInput = it; store.notifyInput = it }
+                    SettingsSwitch("Live notification", liveNotification) {
+                        liveNotification = it
+                        store.liveNotification = it
+                        if (it) LiveService.startIfEnabled(context) else LiveService.stop(context)
+                    }
+                    Text("Shows the number of sessions, Working, and Pending. It checks every 5 seconds while a session is working, and every 30 seconds when not.",
+                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     if (!notificationsAllowed) {
                         Text("Notifications are off for ASB.", style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)

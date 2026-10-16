@@ -66,6 +66,8 @@ import local.asb.companion.data.Hello
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.AsbApi
 import local.asb.companion.notify.CheckWorker
+import local.asb.companion.notify.LiveService
+import local.asb.companion.notify.LiveUpdate
 import local.asb.companion.notify.Notifier
 import local.asb.companion.ui.AsbTheme
 import local.asb.companion.ui.EndpointList
@@ -116,6 +118,8 @@ class MainActivity : ComponentActivity() {
                     })
                     var paired by remember { mutableStateOf(app.store.paired) }
                     if (paired) PairedApp(app, notificationsAllowed, requestNotifications) {
+                        LiveService.stop(app)
+                        app.liveUpdates.value = null
                         app.notifier.clear()
                         pairingModel.reset()
                         app.store.clear()
@@ -132,6 +136,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         (application as AsbApp).resumed = true
         notificationsAllowed = Notifier.notificationsAllowed(this)
+        LiveService.startIfEnabled(this)
     }
 
     override fun onPause() {
@@ -168,6 +173,8 @@ private fun PairedApp(
         })
     } else {
         LaunchedEffect(deviceId) {
+            // A new pairing reaches this screen without a new onResume.
+            LiveService.startIfEnabled(app)
             if (Build.VERSION.SDK_INT >= 33 && !store.notificationPermissionAsked) {
                 if (notificationsAllowed) store.notificationPermissionAsked = true
                 else onRequestNotificationPermission()
@@ -184,6 +191,7 @@ private fun PairedApp(
                         loadBaseline = { store.loadBaselineIfPaired(token) },
                         initialView = store.view,
                         savePalette = app::usePalette,
+                        showLive = { app.liveUpdates.value = LiveUpdate(it.threads, System.currentTimeMillis()) },
                     )
                 }
             }

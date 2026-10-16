@@ -40,6 +40,10 @@ class Store(private val preferences: SharedPreferences) {
     var notifyInput: Boolean
         get() = preferences.getBoolean("notifyInput", true)
         set(value) { preferences.edit().putBoolean("notifyInput", value).apply() }
+    /** The ongoing notification with the session counts, run by the live service. */
+    var liveNotification: Boolean
+        get() = preferences.getBoolean("liveNotification", true)
+        set(value) { preferences.edit().putBoolean("liveNotification", value).apply() }
     var view: String
         get() = if (preferences.getString("view", null) == "compact") "compact" else "comfortable"
         set(value) { preferences.edit().putString("view", value).apply() }
@@ -129,6 +133,7 @@ class Store(private val preferences: SharedPreferences) {
             .putBoolean("notifyDone", notifyDone)
             .putBoolean("notifyFailed", notifyFailed)
             .putBoolean("notifyInput", notifyInput)
+            .putBoolean("liveNotification", liveNotification)
             .apply()
         etag = null
     }

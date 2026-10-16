@@ -29,6 +29,30 @@ Each pairing gets its own session ViewModel and API. The session screen owns
 the lifecycle polling loop. Foreground dashboard reads share a mutex with
 baseline updates; only the current, resumed pairing can save that baseline.
 
+## Live notification
+
+The live notification is an ongoing, silent notification with the session
+counts, for example `5 sessions · 2 working · 1 pending`. Archived sessions are
+not counted. Expand it to see the titles of the Working sessions (six titles,
+then `+N more`). Tap it to open the app. Select Stop to turn it off. The lock
+screen shows only the counts. When the PC does not answer, the notification
+keeps the last counts and shows `Offline · last update 5m ago`.
+
+A foreground service runs the notification. It is on by default after pairing.
+Turn it on or off in Settings > Notifications > Live notification. The service
+starts again after a phone restart and after an app update. Unpair or a removed
+pairing stops it. While the app is open, the session screen updates the
+notification and the service sends no requests. In the background, the service
+reads the dashboard every 5 seconds while a session is working, and every 30
+seconds when not or when the PC is offline. It also shows Done, Failed, and
+Needs input alerts at once. When the service is off, the 15-minute background
+check shows these alerts.
+
+The service keeps the phone network in use and costs some battery. A 30-second
+read with no change is small because the app sends the ETag. HyperOS can stop
+the service or block its start after a restart. In app info, set Battery saver
+to No restrictions and turn on Autostart.
+
 ## Away from home
 
 The app can reach ASB on the home network (LAN) and through ZeroTier or
