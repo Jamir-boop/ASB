@@ -1,9 +1,13 @@
 package local.asb.companion.ui
 
+import android.Manifest
 import android.app.Activity
+import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,6 +23,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -61,6 +66,8 @@ class PairingViewModel(
         private set
     var busy by mutableStateOf(false)
         private set
+    var scanning by mutableStateOf(false)
+        private set
     var paired by mutableStateOf(false)
         private set
     private var pairingJob: Job? = null
@@ -68,9 +75,31 @@ class PairingViewModel(
     fun changeInput(value: String) { input = value; error = null }
 
     fun review(value: String) {
+        scanning = false
         if (busy || paired) return
         candidate = parsePairingUri(value)
         error = if (candidate == null) "This is not an ASB pairing code." else null
+    }
+
+    fun openScanner() {
+        if (busy || paired || candidate != null) return
+        scanning = true
+        error = null
+    }
+
+    fun closeScanner() { scanning = false }
+
+    /** A result after the scanner closed (Cancel, Back, or reset) is ignored. */
+    fun scanned(value: String) { if (scanning) review(value) }
+
+    fun cameraFailed() {
+        if (!scanning) return
+        scanning = false
+        error = "Could not open the camera. Paste the pairing link below."
+    }
+
+    fun cameraDenied() {
+        error = "ASB needs the camera to scan the code. Allow the camera in the app settings, or paste the pairing link."
     }
 
     fun pair(deviceName: String) {
@@ -101,6 +130,7 @@ class PairingViewModel(
     fun back() {
         pairingJob?.cancel()
         pairingJob = null
+        scanning = false
         busy = false
         candidate = null
         error = null
@@ -117,6 +147,13 @@ class PairingViewModel(
 @Composable
 fun PairScreen(activity: Activity, model: PairingViewModel, onPaired: () -> Unit) {
     LaunchedEffect(model.paired) { if (model.paired) onPaired() }
+    val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) model.openScanner() else model.cameraDenied()
+    }
+    if (model.scanning) {
+        QrScanner(onResult = model::scanned, onFailed = model::cameraFailed, onCancel = model::closeScanner)
+        return
+    }
     BackHandler(enabled = model.candidate != null) { model.back() }
     Scaffold(contentWindowInsets = SafeContentInsets, topBar = {
         TopAppBar(
@@ -134,8 +171,18 @@ fun PairScreen(activity: Activity, model: PairingViewModel, onPaired: () -> Unit
                 val info = model.candidate
                 if (info == null) {
                     Text("On the PC open ASB Preferences > Phone, turn on phone access, and select Pair a phone.")
-                    Text("Scan the QR code on the PC with the phone camera or any QR scanner app. It opens ASB. " +
+                    Text("Select Scan QR code and scan the code on the PC. The phone camera can also open it in ASB. " +
                         "Or copy the pairing link from the PC and paste it below.")
+                    OutlinedButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            if (activity.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                                model.openScanner()
+                            } else {
+                                cameraPermission.launch(Manifest.permission.CAMERA)
+                            }
+                        },
+                    ) { Text("Scan QR code") }
                     OutlinedTextField(
                         value = model.input,
                         onValueChange = model::changeInput,

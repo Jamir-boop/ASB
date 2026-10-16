@@ -1,9 +1,10 @@
 # ASB Android companion
 
 Phase 7 provides the live session list, desktop filters, the session
-inspector, and Open on PC through the ASB phone gateway. Scan the pairing QR
-code with the phone camera or any QR scanner app: the `asb://pair` link opens
-ASB on the Check the PC screen. A pasted pairing link works the same way. When
+inspector, and Open on PC through the ASB phone gateway. Select **Scan QR
+code** in the app to scan the pairing QR code. The phone camera or any QR
+scanner app also works: the `asb://pair` link opens ASB on the Check the PC
+screen. A pasted pairing link works the same way. When
 the app is already paired, the link changes nothing and a short message says
 to unpair first.
 The user checks the PC and certificate fingerprint before the app sends the
@@ -138,7 +139,14 @@ cards fade in, and removed cards go at once. A press shows the palette
 highlight. A view change or a new column layout shows at once, with no motion.
 When Android animations are off, all motion is instant.
 
-The app has no QR scanner of its own and uses no Google Play services. The
+The app has its own QR scanner and uses no Google Play services. Scan QR code
+asks for the camera permission the first time. The scanner shows the back
+camera with CameraX and reads the code with ZXing on the phone. It uses the
+same review as a pasted link, so the Check the PC screen opens next. If the user
+denies the camera, or the camera cannot open (for example a device policy turns
+it off), the screen says to paste the link. If another app uses the camera, the
+scanner waits for it. The camera is used only while the scanner is open. Frames are not saved
+or sent. The camera is not required to install the app. The
 `asb://pair` intent filter lets the phone camera open the pairing link in ASB.
 A small activity with no window takes the link and gives it to the open app,
 like a notification tap does. A tap on the launcher icon keeps a permission
@@ -336,7 +344,9 @@ CurrentVersionCode: 1
 | Activity Compose | 1.10.1 |
 | SDK Build Tools | 36.0.0 |
 
-The app uses Lifecycle 2.9.2 and WorkManager 2.10.2.
+The app uses Lifecycle 2.9.2 and WorkManager 2.10.2. The QR scanner uses
+CameraX 1.6.2 (`camera-camera2`, `camera-lifecycle`, and `camera-view`) and
+ZXing core 3.5.3. Both are Apache-2.0.
 Networking and tests use OkHttp 4.12.0, kotlinx.serialization 1.9.0,
 kotlinx.coroutines 1.10.2, and JUnit 4.13.2.
 
@@ -351,7 +361,8 @@ the network change reset, the hello address update, and the saved-host migration
 Retained-flow tests cover ViewModelStore recreation, Back cancellation,
 unpair/re-pair, responses from an old flow, and a new link while a request
 runs. Link tests check that only a VIEW intent with an `asb://pair` URI starts
-a review.
+a review. Scanner tests decode a QR code made with ZXing, also with padded
+rows, and check that the scanner state closes on a result, Back, and unpair.
 
 `buildToolsVersion` is set to `36.0.0` to use the installed package. AGP
 8.11.1 otherwise selects Build Tools 35.0.0 by default. JDK 21 runs Gradle;

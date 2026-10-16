@@ -151,4 +151,52 @@ class PairingViewModelTest {
         response.complete(reply)
         runCurrent()
     }
+
+    @Test fun aScanFillsTheCheckScreenAndCloses() {
+        val model = PairingViewModel({ _, _ -> })
+        store.put("pairing", model)
+        model.openScanner()
+        assertTrue(model.scanning)
+        model.scanned(link)
+        assertFalse(model.scanning)
+        assertEquals("a".repeat(27), model.candidate!!.code)
+
+        model.back()
+        model.openScanner()
+        model.scanned("https://example.com")
+        assertFalse(model.scanning)
+        assertNull(model.candidate)
+        assertEquals("This is not an ASB pairing code.", model.error)
+    }
+
+    @Test fun backResetAndPasteCloseTheScannerAndIgnoreALateResult() {
+        val model = PairingViewModel({ _, _ -> })
+        store.put("pairing", model)
+        model.openScanner()
+        model.back()
+        assertFalse(model.scanning)
+        model.openScanner()
+        model.reset()
+        assertFalse(model.scanning)
+        model.scanned(link)
+        model.cameraFailed()
+        assertNull(model.candidate)
+        assertNull(model.error)
+
+        model.openScanner()
+        model.review(link)
+        assertFalse(model.scanning)
+        assertEquals("a".repeat(27), model.candidate!!.code)
+    }
+
+    @Test fun aCameraFailureClosesTheScannerWithAMessage() {
+        val model = PairingViewModel({ _, _ -> })
+        store.put("pairing", model)
+        model.openScanner()
+        model.cameraFailed()
+        assertFalse(model.scanning)
+        assertEquals("Could not open the camera. Paste the pairing link below.", model.error)
+        model.openScanner()
+        assertNull(model.error)
+    }
 }
