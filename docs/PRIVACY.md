@@ -1,6 +1,6 @@
 # ASB privacy
 
-ASB runs locally. Its default native and browser launch commands read no login credentials, make no model calls, send no telemetry, and make no network requests outside loopback. The optional phone gateway is off by default. When you turn it on, it accepts connections from paired phones on one private network address.
+ASB runs locally. Its default native and browser launch commands read no login credentials, make no model calls, send no telemetry, and make no network requests outside loopback. The optional phone gateway is off by default. When you turn it on, it accepts connections from paired phones on the private LAN, ZeroTier, or Tailscale addresses that you select.
 
 This document covers `npm start`, `npm run desktop`, the packaged `asb` launcher, and the optional `asb service`. The optional bridge and the optional Android companion are described below.
 
@@ -39,7 +39,7 @@ Remote cache observations can be incomplete or old. ASB uses the newest response
 | `~/.config/asb/layout.json` | Column width, selected view, and Show app pills. |
 | `~/.config/asb/theme.json` | Custom colors. |
 | `~/.config/asb/sources.json` | Registered source IDs, app names, profile labels/colors, local data/transcript folders, installed launcher paths, and enabled flags. |
-| `~/.config/asb/phone.json` | Phone access on or off, address, port, and paired phones: ID, name, pairing and last-seen times, and the SHA-256 of the token. |
+| `~/.config/asb/phone.json` | Phone access on or off, selected addresses, port, and paired phones: ID, name, pairing and last-seen times, and the SHA-256 of the token. |
 | `~/.config/asb/phone-tls/` | The phone certificate and its private key. |
 | `~/.local/state/asb/palette.json` | The last color palette of the ASB window: the GNOME or Custom mode and seven colors. |
 | `$XDG_RUNTIME_DIR/asb/service.json` | Pid, port, and per-run source token of the running `asb service`. |
@@ -59,9 +59,9 @@ ASB Bridge runs inside Codex. It stores the text of peer messages in per-task SQ
 
 ## Optional Android companion
 
-Phone access is off by default. You turn it on in Preferences > Phone and pair each phone with a one-time QR code. ASB uses no cloud service and no relay. The phone talks to the PC directly on your local network. The gateway binds one private IPv4 address of the PC that you choose. It accepts only loopback and private IPv4 remote addresses. All traffic uses TLS 1.3. The phone pins the SHA-256 of the ASB certificate, and you compare the fingerprint during pairing.
+Phone access is off by default. You turn it on in Preferences > Phone and pair each phone with a one-time QR code. ASB uses no cloud service and no relay of its own. The phone talks to the PC directly on your local network, or away from home through ZeroTier or Tailscale when you install and join one of them on the PC and the phone. These overlay networks are third-party services with their own privacy terms; ASB does not configure them. The gateway binds only the private LAN, ZeroTier, and Tailscale addresses of the PC that you select. It never binds a public address. A home network or ZeroTier address accepts only loopback and private IPv4 remote addresses. A Tailscale address accepts only Tailscale (`100.64.0.0/10`) and private IPv4 remote addresses. All traffic uses TLS 1.3. The phone pins the SHA-256 of the ASB certificate, and you compare the fingerprint during pairing.
 
-A paired phone receives the same dashboard data as the local view: chat titles, folders, app and source names and colors, execution states, update and working times, usage-limit reset times, attention, pin, and drawer marks, and row IDs. For session messages it receives only pairs of row IDs and the message times. It receives no message text, question body, answer text, transcript, or credential. It also receives the PC host name, the ASB version, and the color palette of the ASB window (seven `#RRGGBB` colors and the GNOME or Custom mode). The phone can open chats on the PC and use the row actions and Persistent unread. It cannot read or change app sources or phone settings.
+A paired phone receives the same dashboard data as the local view: chat titles, folders, app and source names and colors, execution states, update and working times, usage-limit reset times, attention, pin, and drawer marks, and row IDs. For session messages it receives only pairs of row IDs and the message times. It receives no message text, question body, answer text, transcript, or credential. It also receives the PC host name, the ASB version, the listening addresses and port of the gateway, and the color palette of the ASB window (seven `#RRGGBB` colors and the GNOME or Custom mode). The phone can open chats on the PC and use the row actions and Persistent unread. It cannot read or change app sources or phone settings.
 
 Each phone gets its own 256-bit random token. The PC saves only the SHA-256 of each token. The phone keeps the token in app-private storage, and the app turns off Android backup and device transfer. **Remove** in Preferences > Phone ends that phone's access at once. The pairing code works once and ends after 10 minutes. Repeated failed attempts from one address are blocked for one minute.
 

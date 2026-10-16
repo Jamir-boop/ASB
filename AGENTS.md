@@ -12,13 +12,13 @@ This repository is ASB (Agent Switch Board). When the user says "ASB", "Agent Sw
 
 ASB is a native GNOME switch board for Codex and Claude Desktop Code chats. It reads local app stores and opens existing chats in their original apps. Original app stores stay read-only. ASB saves its own local marks, pins, and settings. Its runtime reads no credentials and makes no model calls. The main server binds only `127.0.0.1` (default port `4629`).
 
-The optional phone gateway (`src/phone-gateway.mjs`) is off by default. When the user turns it on in Preferences > Phone, it binds one chosen private IPv4 address (default port `4630`). It uses TLS 1.3, a pinned self-signed certificate, and per-phone bearer tokens. It forwards only allowlisted session routes to the loopback server. The optional `asb service` user service runs the server and the gateway without the window. The Android companion app is in `android/`.
+The optional phone gateway (`src/phone-gateway.mjs`) is off by default. When the user turns it on in Preferences > Phone, it binds only the selected private LAN or overlay (ZeroTier, Tailscale) addresses (default port `4630`). It uses TLS 1.3, a pinned self-signed certificate, and per-phone bearer tokens. It forwards only allowlisted session routes to the loopback server. The optional `asb service` user service runs the server and the gateway without the window. The Android companion app is in `android/`.
 
 The release target is a GitHub-friendly open-source version. Be conservative about privacy:
 
 - Do not commit local Codex/Claude state, logs, screenshots with private text, cookies, tokens, API keys, or machine-specific secrets.
 - Prefer mock data for public screenshots and examples.
-- Keep the main server local-only. It always binds `127.0.0.1`; the code has no `HOST` setting. Do not remove the phone gateway to satisfy this rule. Keep the gateway off by default, bound to one private IPv4 address, and limited to its route allowlist. Never make `/api/sources` or the phone settings routes reachable from the gateway.
+- Keep the main server local-only. It always binds `127.0.0.1`; the code has no `HOST` setting. Do not remove the phone gateway to satisfy this rule. Keep the gateway off by default, bound only to selected private LAN or overlay (ZeroTier, Tailscale) addresses, and limited to its route allowlist. Never bind `0.0.0.0`, loopback, or public addresses. Never make `/api/sources`, `/api/palette`, or the phone settings routes reachable from the gateway.
 
 ## Development Rules
 
