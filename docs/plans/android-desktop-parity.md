@@ -196,7 +196,7 @@ spacing 2 dp):
   then across. Columns share the width of the visible area equally (the desktop
   visible-column rule) and are divided by a 1 dp divider line in the palette
   `divider` color. The strip scrolls horizontally (`LazyRow` of columns, each a
-  plain `Column` of cards); there is no vertical scroll. Pin, filter, and
+  `LazyColumn` of cards with user scroll off); there is no vertical scroll. Pin, filter, and
   search behavior do not change.
 - Rotation keeps the first visible session in view as far as possible: before
   the layout changes, remember the ID of the first visible row; after it,

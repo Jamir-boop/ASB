@@ -244,9 +244,10 @@ fun SessionsScreen(
     val currentPacking by rememberUpdatedState(packing)
     // A new list state per layout: a view change or a repack shows the new layout at once, with no card motion.
     // It starts at the first session that was visible before, so rotation keeps that session in view.
+    // A list that was at the top (anchor "") or a missing anchor starts at the top, so warnings and moved rows stay in view.
     val listState = remember(flow, state.view, if (flow) packing.columns to packing.capacity else null) {
-        val anchor = rows.indexOfFirst { it.id == viewModel.anchorId }.coerceAtLeast(0)
-        LazyListState(if (flow) anchor / packing.capacity else warnings.size + anchor)
+        val anchor = rows.indexOfFirst { it.id == viewModel.anchorId }
+        LazyListState(if (anchor < 0) 0 else if (flow) anchor / packing.capacity else warnings.size + anchor)
     }
     // The keys of the one-column list, in the same order as its items.
     val listKeys = remember(warnings, rows) {
@@ -260,7 +261,8 @@ fun SessionsScreen(
     if (!flow) KeepPositionOnChange(listState, listKeys)
     LaunchedEffect(listState, flow) {
         snapshotFlow {
-            if (flow) currentPacking.parts.getOrNull(listState.firstVisibleItemIndex)?.firstOrNull()?.id
+            if (listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0) ""
+            else if (flow) currentPacking.parts.getOrNull(listState.firstVisibleItemIndex)?.firstOrNull()?.id
             else listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key in currentRowIndexes }?.key as? String
         }.collect { id -> if (id != null) viewModel.anchorId = id }
     }

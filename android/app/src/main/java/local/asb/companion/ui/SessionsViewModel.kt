@@ -57,7 +57,7 @@ class SessionsViewModel(
     private val mutableState = MutableStateFlow(UiState(revoked = initiallyRevoked, view = initialView))
     val state: StateFlow<UiState> = mutableState.asStateFlow()
     var seenMessages: Set<Message>? = null
-    /** The first visible session, so a rotation or a return from Settings can show it again. */
+    /** The first visible session ("" at the top of the list), so a rotation or a return from Settings can show it again. */
     var anchorId: String? = null
     private val pollMutex = Mutex()
     private var etag: String? = null
