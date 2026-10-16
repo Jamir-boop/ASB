@@ -413,6 +413,30 @@ class SessionsViewModelTest {
         assertEquals(5, server.requestCount)
     }
 
+    @Test fun aRowStaysBusyUntilTheBoardRefreshAfterItsAction() = runBlocking {
+        val dashboard = Dashboard(1, threads = listOf(Thread(id = "one", canOpen = true)))
+        val model = model()
+        load(model, dashboard)
+        val release = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                "/phone/v1/dashboard" -> {
+                    assertTrue(release.await(5, TimeUnit.SECONDS))
+                    response(dashboard.copy(generatedAtMs = 2))
+                }
+                else -> MockResponse().setBody("{\"opened\":true}")
+            }
+        }
+        model.action("one", "open")
+        assertEquals(setOf("one"), model.state.value.openingIds)
+        await { server.requestCount == 3 }
+        await { model.state.value.openingIds.isEmpty() }
+        assertEquals(setOf("one"), model.state.value.busyIds)
+        release.countDown()
+        await { model.state.value.dashboard?.generatedAtMs == 2L }
+        await { model.state.value.busyIds.isEmpty() }
+    }
+
     @Test fun openNeedsExplicitConfirmationAndActionErrorsLeaveRowsUsable() = runBlocking {
         val dashboard = Dashboard(1, threads = listOf(Thread(id = "one", canOpen = true), Thread(id = "no-link")))
         val model = model()

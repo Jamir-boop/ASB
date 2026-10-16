@@ -176,8 +176,6 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withTimeoutOrNull
 import local.asb.companion.data.edgeColor
 import local.asb.companion.data.mixColor
 import local.asb.companion.data.readableColor
@@ -259,8 +257,10 @@ fun SessionsScreen(
             else listState.layoutInfo.visibleItemsInfo.mapNotNull { rowsById[it.key] }
         }
     }
-    val clockIntervalMs = if (visibleRows.isEmpty()) 0L else clockInterval(visibleRows, nowMs) * 1000
-    val inspectorRow = inspector?.let { (id, _) -> threads.firstOrNull { it.id == id } }
+    val inspectorRow = inspector?.let { (id, _) -> rowsById[id] }
+    // The inspector shows its row's timer even when the row is off screen.
+    val clockRows = visibleRows + listOfNotNull(inspectorRow)
+    val clockIntervalMs = if (clockRows.isEmpty()) 0L else clockInterval(clockRows, nowMs) * 1000
     val hasDrawerRows = threads.any { it.drawer && (state.filter.archived || !it.archived) }
     val workingOnly = state.filter.states == setOf("working")
     fun endpoint(id: String) = if (flow) flowEndpoint(
@@ -281,12 +281,12 @@ fun SessionsScreen(
             }
         }
     }
-    LaunchedEffect(lifecycleOwner, clockIntervalMs, visibleRows, state.revoked) {
+    LaunchedEffect(lifecycleOwner, clockIntervalMs, clockRows, state.revoked) {
         if (!state.revoked && clockIntervalMs > 0) {
             lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 while (isActive) {
                     nowMs = System.currentTimeMillis()
-                    val resetDelay = visibleRows.map { it.limitResetsAtMs }.filter { it > nowMs }.minOrNull()?.minus(nowMs)
+                    val resetDelay = clockRows.map { it.limitResetsAtMs }.filter { it > nowMs }.minOrNull()?.minus(nowMs)
                     delay(minOf(clockIntervalMs, resetDelay ?: clockIntervalMs))
                 }
             }
@@ -688,8 +688,8 @@ fun SessionsScreen(
     if (inspectorRow != null && !state.revoked) SessionInspector(
         row = inspectorRow,
         point = inspector?.second ?: Offset.Zero,
-        drawerView = state.filter.drawerOnly,
         busy = inspectorRow.id in state.busyIds,
+        message = snackbar.currentSnackbarData?.visuals?.message,
         nowMs = nowMs,
         viewModel = viewModel,
         windowSize = IntSize(constraints.maxWidth, constraints.maxHeight),
@@ -805,7 +805,7 @@ private fun SessionCard(
             enabled = !busy,
             role = Role.Button,
             onClickLabel = if (row.canOpen) "Open on PC" else "Show link information",
-            onLongClickLabel = "Session inspector",
+            onLongClickLabel = "Open session inspector",
             onLongClick = {
                 val placed = coordinates.value?.takeIf { it.isAttached }
                 if (placed != null) onActions(placed.localToWindow(
@@ -872,7 +872,9 @@ private fun SessionCard(
 }
 
 @Composable
-private fun ProviderMark(row: Thread, limited: Boolean, messageLit: Boolean, palette: Palette, modifier: Modifier) {
+private fun ProviderMark(
+    row: Thread, limited: Boolean, messageLit: Boolean, palette: Palette, modifier: Modifier, dot: Boolean = true,
+) {
     val text = hexColor(palette.text)
     val marker = remember(row.sourceColor, row.sourceCount, row.sourceShowMarker, palette) {
         if (!row.sourceShowMarker || row.sourceCount <= 1 || !row.sourceColor.matches(Regex("#[0-9a-fA-F]{6}"))) ""
@@ -886,7 +888,7 @@ private fun ProviderMark(row: Thread, limited: Boolean, messageLit: Boolean, pal
             modifier = Modifier.fillMaxSize(),
         )
         // The Soft dot: a 6 dp fill with a 1 dp background rim at the lower left of the mark.
-        if (marker.isNotEmpty()) Box(
+        if (dot && marker.isNotEmpty()) Box(
             Modifier.align(Alignment.BottomStart).size(8.dp).background(hexColor(palette.background), CircleShape)
                 .padding(1.dp).background(hexColor(marker), CircleShape),
         )
@@ -1051,7 +1053,7 @@ private val INSPECTOR_MARGIN = 16.dp
  */
 @Composable
 private fun SessionInspector(
-    row: Thread, point: Offset, drawerView: Boolean, busy: Boolean, nowMs: Long, viewModel: SessionsViewModel,
+    row: Thread, point: Offset, busy: Boolean, message: String?, nowMs: Long, viewModel: SessionsViewModel,
     windowSize: IntSize, onOpen: () -> Unit, onDismiss: () -> Unit,
 ) {
     val density = LocalDensity.current
@@ -1065,17 +1067,9 @@ private fun SessionInspector(
     )
     val width = with(density) { minOf(300.dp, windowSize.width.toDp() - INSPECTOR_MARGIN * 2) }
     val maxHeight = with(density) { maxOf(0, safe.height - 2 * room).toDp() }
-    // A change keeps its chosen state while its action is pending, until the next board data or an error.
+    // A change keeps its chosen state while its action and the board refresh after it are pending.
     val chosen = remember(row.id) { mutableStateMapOf<String, Boolean>() }
-    LaunchedEffect(row, chosen) { if (!busy) chosen.clear() }
-    LaunchedEffect(busy, chosen) {
-        if (busy || chosen.isEmpty()) return@LaunchedEffect
-        val ended = viewModel.state.value
-        if (ended.lastError == null) withTimeoutOrNull(10_000) {
-            viewModel.state.first { it.dashboard !== ended.dashboard || it.lastError != null }
-        }
-        chosen.clear()
-    }
+    LaunchedEffect(row, busy) { if (!busy) chosen.clear() }
     fun change(key: String, value: Boolean, action: String?) {
         if (action == null) return
         viewModel.action(row.id, action)
@@ -1086,19 +1080,22 @@ private fun SessionInspector(
     val surface = mixColor(palette.background, palette.text, .06)
     val group = mixColor(surface, palette.text, .06)
     val button = mixColor(surface, palette.text, .1)
+    val move = mixColor(group, palette.text, .1)
     val ring = edgeColor(surface, palette.accent, .7, listOf(palette.background, surface))
     val text = hexColor(palette.text)
     val muted = hexColor(readableColor(palette.muted, palette.text, listOf(surface, group)))
-    val indicator = attentionIndicator(row, drawerView, nowMs)
+    val controls = rowPanelControls(row)
     val stateColor = when {
         row.state == "working" -> hexColor(readableColor(palette.success, palette.text, listOf(surface)))
         row.state == "waiting" -> hexColor(readableColor(palette.warning, palette.text, listOf(surface)))
-        indicator == "question" || indicator == "dot" -> text
+        controls.getValue("unread").on -> text
         else -> muted
     }
-    val time = if (row.state == "working") workingDuration(row.workingSinceMs, nowMs) else idleAge(row.updatedAtMs, nowMs)
-    val title = row.title.ifEmpty { "Untitled session" }
-    val controls = rowPanelControls(row)
+    val time = (if (row.state == "working") workingDuration(row.workingSinceMs, nowMs) else "")
+        .ifEmpty { idleAge(row.updatedAtMs, nowMs) }
+    val title = row.title.trim().replace(Regex("\\s+"), " ").ifEmpty { "Untitled session" }
+    val app = row.providerLabel +
+        if (row.sourceLabel.isNotEmpty() && row.sourceLabel != row.providerLabel) " · ${row.sourceLabel}" else ""
     val shape = RoundedCornerShape(12.dp)
     Popup(
         popupPositionProvider = remember(point, safe) { InspectorPosition(point, safe) },
@@ -1109,70 +1106,76 @@ private fun SessionInspector(
                 Modifier.padding(INSPECTOR_SHADOW_ROOM).width(width).heightIn(max = maxHeight)
                     .shadow(12.dp, shape, ambientColor = Color.Black, spotColor = Color.Black)
                     .background(hexColor(surface), shape).border(1.dp, hexColor(ring), shape)
-                    .semantics { paneTitle = title }
-                    .verticalScroll(rememberScrollState()).padding(12.dp),
+                    .semantics { paneTitle = title },
             ) {
-                Column(
-                    Modifier.padding(start = 2.dp, end = 2.dp, bottom = 12.dp).semantics(mergeDescendants = true) { },
-                    verticalArrangement = Arrangement.spacedBy(3.dp),
-                ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
-                        ProviderMark(row, limited = false, messageLit = false, palette = palette, modifier = Modifier)
-                        Text(row.projectName.ifEmpty { "No project" }, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
-                            color = muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                    Text(title, fontSize = 13.sp, lineHeight = 17.sp, fontWeight = FontWeight.Bold, color = text,
-                        maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text(stateLabel(row.state) + if (time.isNotEmpty()) " · $time" else "", fontSize = 11.sp,
-                        lineHeight = CAPTION_LINE_HEIGHT.sp, color = stateColor)
-                }
-                val canOpen = row.canOpen && !busy
-                Box(
-                    Modifier.fillMaxWidth().heightIn(min = 48.dp).alpha(if (canOpen) 1f else .5f)
-                        .clip(RoundedCornerShape(8.dp)).background(hexColor(button))
-                        .clickable(enabled = canOpen, role = Role.Button, onClick = onOpen),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("Open in ${row.sourceLabel.ifEmpty { row.providerLabel }}", fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold, color = text, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(horizontal = 12.dp))
-                }
-                Spacer(Modifier.height(12.dp))
-                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(hexColor(group))) {
-                    val rule = hexColor(palette.divider)
-                    var first = true
-                    @Composable
-                    fun item(content: @Composable () -> Unit) {
-                        if (!first) HorizontalDivider(thickness = 1.dp, color = rule)
-                        first = false
-                        content()
-                    }
-                    @Composable
-                    fun switch(key: String, label: String, note: String = "") {
-                        val control = controls[key] ?: return
-                        item {
-                            PanelSwitch(label, note, chosen[key] ?: control.on, control.action != null && !busy, text, muted,
-                                palette) { change(key, it, control.action) }
+                Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(12.dp)) {
+                    Column(
+                        Modifier.padding(start = 2.dp, end = 2.dp, bottom = 12.dp).semantics(mergeDescendants = true) { },
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
+                            ProviderMark(row, limited = false, messageLit = false, palette = palette, modifier = Modifier, dot = false)
+                            // The API sends no PC home folder, so the path has no ~ prefix.
+                            Text(row.cwd.ifEmpty { row.projectName }.ifEmpty { "No project" }, fontSize = 11.sp,
+                                lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted, maxLines = 1, overflow = TextOverflow.StartEllipsis)
                         }
+                        Text(title, fontSize = 13.sp, lineHeight = 17.sp, fontWeight = FontWeight.Bold, color = text,
+                            maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(stateLabel(row.state) + if (time.isNotEmpty()) " · $time" else "", fontSize = 11.sp,
+                            lineHeight = CAPTION_LINE_HEIGHT.sp, color = stateColor)
                     }
-                    switch("unread", "Unread", rowPanelNote(row))
-                    switch("drawer", "In the drawer")
-                    switch("pinned", "Pinned")
-                    if ("order" in controls) item {
-                        Row(
-                            Modifier.fillMaxWidth().heightIn(min = 48.dp).alpha(if (busy) .5f else 1f).padding(start = 12.dp, end = 6.dp),
-                            horizontalArrangement = Arrangement.spacedBy(1.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text("Pin order", fontSize = 13.sp, color = text, modifier = Modifier.weight(1f).padding(end = 9.dp))
-                            PanelButton("Earlier", "Move pin earlier", RoundedCornerShape(6.dp, 0.dp, 0.dp, 6.dp),
-                                hexColor(button), text, !busy) { viewModel.action(row.id, "pin-up") }
-                            PanelButton("Later", "Move pin later", RoundedCornerShape(0.dp, 6.dp, 6.dp, 0.dp),
-                                hexColor(button), text, !busy) { viewModel.action(row.id, "pin-down") }
+                    val canOpen = row.canOpen && !busy
+                    Box(
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).alpha(if (canOpen) 1f else .5f)
+                            .clip(RoundedCornerShape(8.dp)).background(hexColor(button))
+                            .clickable(enabled = canOpen, role = Role.Button, onClick = onOpen),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("Open in $app", fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold, color = text, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 12.dp))
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(hexColor(group))) {
+                        val rule = hexColor(palette.divider)
+                        var first = true
+                        @Composable
+                        fun item(content: @Composable () -> Unit) {
+                            if (!first) HorizontalDivider(thickness = 1.dp, color = rule)
+                            first = false
+                            content()
                         }
+                        @Composable
+                        fun switch(key: String, label: String, note: String = "") {
+                            val control = controls[key] ?: return
+                            item {
+                                PanelSwitch(label, note, chosen[key] ?: control.on, control.action != null && !busy, text, muted,
+                                    palette) { change(key, it, control.action) }
+                            }
+                        }
+                        switch("unread", "Unread", rowPanelNote(row))
+                        switch("drawer", "In the drawer")
+                        switch("pinned", "Pinned")
+                        if ("order" in controls) item {
+                            Row(
+                                Modifier.fillMaxWidth().heightIn(min = 48.dp).alpha(if (busy) .5f else 1f)
+                                    .padding(start = 12.dp, end = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(1.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text("Pin order", fontSize = 13.sp, color = text, modifier = Modifier.weight(1f).padding(end = 9.dp))
+                                PanelButton("Earlier", "Move pin earlier", RoundedCornerShape(6.dp, 0.dp, 0.dp, 6.dp),
+                                    hexColor(move), text, !busy) { viewModel.action(row.id, "pin-up") }
+                                PanelButton("Later", "Move pin later", RoundedCornerShape(0.dp, 6.dp, 6.dp, 0.dp),
+                                    hexColor(move), text, !busy) { viewModel.action(row.id, "pin-down") }
+                            }
+                        }
+                        switch("discard", "Discard result", "Go to read Idle when this task ends")
                     }
-                    switch("discard", "Discard result", "Go to read Idle when this task ends")
                 }
+                // The panel covers the snackbar, so it shows the current message too (desktop asb-panel-error caption).
+                if (message != null) Text(message, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted,
+                    modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 12.dp))
             }
         },
     )

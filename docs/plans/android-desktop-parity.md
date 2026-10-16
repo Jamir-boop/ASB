@@ -218,8 +218,10 @@ wide, or the window width minus 32 dp. The surface is 6% text in the
 background, with a 1 dp ring from `edgeColor` (port of `edge_color`).
 `rowPanelControls` and `rowPanelNote` (ports of `row_panel_controls` and
 `row_panel_note`) map `rowMenuActions` to the switches, so it stays the only
-rule source. Every change uses the existing actions. Back, a tap outside, Open,
-or the row leaving the board closes it. A rotation closes it.
+rule source. Every change uses the existing actions. The panel covers the
+snackbar, so it shows the current snackbar message as an 11 sp caption below
+the switches (desktop `asb-panel-error`). Back, a tap outside, Open, or the
+row leaving the board closes it. A rotation closes it.
 
 ## 5. Motion (worker B)
 

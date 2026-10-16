@@ -124,7 +124,8 @@ class SessionsViewModel(
                         }
                         mutableState.update { it.copy(banner = "Opened on $serverName") }
                     }
-                    mutableState.update { it.copy(busyIds = it.busyIds - id, openingIds = it.openingIds - id) }
+                    // The row stays busy until the board refresh below, so its controls never act on the old row.
+                    mutableState.update { it.copy(openingIds = it.openingIds - id) }
                     if (action == "mark-read") confirmRead(id)
                     etag = null
                     fetchDashboard()

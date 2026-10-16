@@ -102,8 +102,9 @@ the provider, folder, title, and state, and an **Open in <app>** button. Below
 it are the **Unread**, **In the drawer**, and **Pinned** switches, **Pin order**
 (**Earlier** and **Later**) for a pinned row, and **Discard result** for a
 Working row. A control that the row does not allow is dimmed. The inspector
-stays open after a change and shows the new row data. Back, a tap outside, or
-Open closes it.
+stays open after a change and shows the new row data. It covers the message
+bar, so it shows the current message (for example an error) as a caption below
+the switches. Back, a tap outside, Open, or the row leaving the list closes it.
 
 The app turns with the phone. A window narrower than 600 dp shows one list. A
 wider window, for example landscape, shows the desktop Column Flow: 240 dp
