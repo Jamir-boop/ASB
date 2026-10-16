@@ -174,6 +174,7 @@ fun SessionsScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val context = LocalContext.current
     val density = LocalDensity.current.density
+    val fontScale = LocalDensity.current.fontScale
     val snackbar = remember { SnackbarHostState() }
     val keyboard = LocalSoftwareKeyboardController.current
     // Landscape and other wide windows use the desktop Column Flow.
@@ -185,7 +186,7 @@ fun SessionsScreen(
     var discMenu by remember { mutableStateOf(false) }
     val comfortable = state.view != "compact"
     val rowGap = if (comfortable) COMFORTABLE_CARD_GAP else 0
-    val rowHeight = (if (comfortable) COMFORTABLE_ROW_HEIGHT else COMPACT_ROW_HEIGHT) + rowGap
+    val rowHeight = if (comfortable) comfortableCardHeight(fontScale) else compactRowHeight(fontScale)
     var showFilters by rememberSaveable { mutableStateOf(false) }
     var actionRowId by rememberSaveable { mutableStateOf<String?>(null) }
     val store = remember(context) { Store(context) }
@@ -213,8 +214,9 @@ fun SessionsScreen(
     val warnings = providers.filter {
         it.status == "warning" && it.message.isNotBlank() && dismissedWarnings[it.id] != it.message
     }
-    val packing = remember(rows, listSize, rowHeight, density) {
-        packColumns(rows, (listSize.width / density).toInt(), (listSize.height / density).toInt(), rowHeight = rowHeight)
+    val packing = remember(rows, listSize, rowHeight, rowGap, density) {
+        packColumns(rows, (listSize.width / density).toInt(), (listSize.height / density).toInt(), rowHeight = rowHeight,
+            minGap = minOf(rowGap, COMFORTABLE_MIN_CARD_GAP).toFloat(), maxGap = rowGap.toFloat())
     }
     val currentPacking by rememberUpdatedState(packing)
     // A new list state per layout: a view change or a repack shows the new layout at once, with no card motion.
@@ -241,7 +243,7 @@ fun SessionsScreen(
     val workingOnly = state.filter.states == setOf("working")
     fun endpoint(id: String) = if (flow) flowEndpoint(
         id, providerCenters, listOrigin, listSize, listState.layoutInfo, currentRowIndexes, currentPacking.capacity,
-        rowHeight * currentDensity, currentDensity,
+        rowHeight * currentDensity, currentPacking.gap * currentDensity, currentDensity,
     ) else messageEndpoint(
         id, providerCenters, listOrigin, listSize, listState.layoutInfo, currentRowIndexes, currentDensity,
     )
@@ -613,7 +615,7 @@ fun SessionsScreen(
                                 // Columns share the visible width equally; a 1 dp divider in the palette color separates them.
                                 LazyColumn(
                                     userScrollEnabled = false,
-                                    verticalArrangement = Arrangement.spacedBy(rowGap.dp),
+                                    verticalArrangement = Arrangement.spacedBy(packing.gap.dp),
                                     modifier = Modifier.fillParentMaxWidth(1f / packing.columns).fillParentMaxHeight()
                                         .drawBehind {
                                             if (index > 0) drawLine(divider, Offset.Zero, Offset(0f, size.height), 1.dp.toPx())
@@ -758,8 +760,9 @@ private fun SessionCard(
         if (opening) "Opening" else "",
     ).filter { it.isNotBlank() }.joinToString(". ")
     val title = if (opening) "Opening…" else row.title
+    val fontScale = LocalDensity.current.fontScale
     val card = modifier.fillMaxWidth()
-        .heightIn(min = (if (comfortable) COMFORTABLE_ROW_HEIGHT else COMPACT_ROW_HEIGHT).dp)
+        .heightIn(min = (if (comfortable) comfortableCardHeight(fontScale) else compactRowHeight(fontScale)).dp)
         .combinedClickable(
             interactionSource = interaction,
             indication = remember(palette.highlight) { HighlightIndication(hexColor(palette.highlight)) },
@@ -791,25 +794,25 @@ private fun SessionCard(
     } else Box(card.semantics { contentDescription = description }) {
         Column(
             modifier = Modifier.fillMaxWidth().align(Alignment.CenterStart)
-                .padding(start = 8.dp, end = 8.dp, top = 2.dp, bottom = 2.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+                .padding(start = 8.dp, end = 8.dp, top = COMFORTABLE_PADDING.dp, bottom = COMFORTABLE_PADDING.dp),
+            verticalArrangement = Arrangement.spacedBy(COMFORTABLE_SPACING.dp),
         ) {
             Row(Modifier.padding(end = 54.dp).clearAndSetSemantics { }, horizontalArrangement = Arrangement.spacedBy(7.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 mark()
-                Text(row.projectName.ifEmpty { "No project" }, fontSize = 11.sp, lineHeight = 14.sp,
+                Text(row.projectName.ifEmpty { "No project" }, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
                     color = hexColor(tones.caption), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            Text(title, fontSize = 13.sp, lineHeight = 16.sp, color = hexColor(tones.title), maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 21.dp, end = 54.dp).heightIn(min = 32.dp).clearAndSetSemantics { })
+            Text(title, fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = hexColor(tones.title),
+                maxLines = COMFORTABLE_TITLE_LINES, minLines = COMFORTABLE_TITLE_LINES, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 21.dp, end = 54.dp).clearAndSetSemantics { })
             Row(Modifier.padding(start = 21.dp).clearAndSetSemantics { }, horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 if (limited) LimitClock(tones.state)
-                Text(if (limited) "Resets in" else state, fontSize = 11.sp, lineHeight = 14.sp,
+                Text(if (limited) "Resets in" else state, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
                     color = hexColor(tones.state), maxLines = 1)
                 Text(countdown.ifEmpty { working.ifEmpty { idleAge(row.updatedAtMs, nowMs) } }, fontSize = 11.sp,
-                    lineHeight = 14.sp, color = hexColor(tones.caption), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(tones.caption), maxLines = 1, overflow = TextOverflow.Ellipsis,
                     textAlign = TextAlign.End, modifier = Modifier.weight(1f))
             }
         }
@@ -835,7 +838,7 @@ private fun ProviderMark(row: Thread, limited: Boolean, messageLit: Boolean, pal
         if (!row.sourceShowMarker || row.sourceCount <= 1 || !row.sourceColor.matches(Regex("#[0-9a-fA-F]{6}"))) ""
         else displaySourceColor(row.sourceColor.lowercase(), listOf(palette.background, palette.highlight))
     }
-    Box(modifier.size(14.dp)) {
+    Box(modifier.size(PROVIDER_MARK_SIZE.dp)) {
         Icon(
             painterResource(if (row.provider == "codex") R.drawable.ic_provider_openai else R.drawable.ic_provider_claude),
             contentDescription = null,
@@ -852,7 +855,7 @@ private fun ProviderMark(row: Thread, limited: Boolean, messageLit: Boolean, pal
 
 @Composable
 private fun LimitClock(color: String) = Icon(painterResource(R.drawable.ic_schedule), contentDescription = null,
-    tint = hexColor(color), modifier = Modifier.size(12.dp))
+    tint = hexColor(color), modifier = Modifier.size(LIMIT_CLOCK_SIZE.dp))
 
 @Composable
 private fun IndicatorMark(indicator: String, palette: Palette) {
@@ -1062,6 +1065,7 @@ private fun flowEndpoint(
     indexes: Map<String, Int>,
     capacity: Int,
     rowHeight: Float,
+    gap: Float,
     density: Float,
 ): MessageEndpoint? {
     if (viewport.width <= 4 * density) return null
@@ -1077,7 +1081,7 @@ private fun flowEndpoint(
     }
     val first = visible.minOrNull() ?: return null
     // An off-screen card has no measured place; use its row slot in the column.
-    val y = ((index % capacity) + .5f) * rowHeight
+    val y = (index % capacity) * (rowHeight + gap) + rowHeight / 2
     return MessageEndpoint(Offset(if (column < first) left else right, y.coerceAtMost(viewport.height.toFloat())), true)
 }
 

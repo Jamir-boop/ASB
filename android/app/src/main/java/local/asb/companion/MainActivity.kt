@@ -38,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -48,9 +49,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewModelScope
@@ -89,34 +92,38 @@ class MainActivity : ComponentActivity() {
         app.notifier.opened(intent)
         notificationsAllowed = Notifier.notificationsAllowed(this)
         setContent {
-            AsbTheme(app.palette) {
-                val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-                    notificationsAllowed = Notifier.notificationsAllowed(this)
-                }
-                val requestNotifications = {
-                    val asked = app.store.notificationPermissionAsked
-                    app.store.notificationPermissionAsked = true
-                    if (Build.VERSION.SDK_INT >= 33 &&
-                        checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
-                        (!asked || shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS))) {
-                        permission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                    } else {
-                        startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                            .putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+            // The Settings text size scales every sp in the app, on top of the system font size.
+            val system = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(system.density, system.fontScale * app.textScale)) {
+                AsbTheme(app.palette) {
+                    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+                        notificationsAllowed = Notifier.notificationsAllowed(this)
                     }
+                    val requestNotifications = {
+                        val asked = app.store.notificationPermissionAsked
+                        app.store.notificationPermissionAsked = true
+                        if (Build.VERSION.SDK_INT >= 33 &&
+                            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
+                            (!asked || shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS))) {
+                            permission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        } else {
+                            startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                .putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+                        }
+                    }
+                    val pairingModel = viewModel<PairingViewModel>(factory = remember(app) {
+                        viewModelFactory { initializer { PairingViewModel(app.store::save) } }
+                    })
+                    var paired by remember { mutableStateOf(app.store.paired) }
+                    if (paired) PairedApp(app, notificationsAllowed, requestNotifications) {
+                        app.notifier.clear()
+                        pairingModel.reset()
+                        app.store.clear()
+                        app.usePalette(null)
+                        paired = false
+                    }
+                    else PairScreen(this, pairingModel) { paired = true }
                 }
-                val pairingModel = viewModel<PairingViewModel>(factory = remember(app) {
-                    viewModelFactory { initializer { PairingViewModel(app.store::save) } }
-                })
-                var paired by remember { mutableStateOf(app.store.paired) }
-                if (paired) PairedApp(app, notificationsAllowed, requestNotifications) {
-                    app.notifier.clear()
-                    pairingModel.reset()
-                    app.store.clear()
-                    app.usePalette(null)
-                    paired = false
-                }
-                else PairScreen(this, pairingModel) { paired = true }
             }
         }
     }
@@ -193,6 +200,7 @@ private fun PairedApp(
                 onCheckNow = { CheckWorker.checkNow(app) },
                 onPersistentUnreadChanged = sessionsModel::refresh,
                 onViewChanged = sessionsModel::setView,
+                onTextScaleChanged = app::useTextScale,
             )
         } else {
             SessionsScreen(sessionsModel, serverName,

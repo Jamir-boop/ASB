@@ -43,6 +43,10 @@ class Store(private val preferences: SharedPreferences) {
     var view: String
         get() = if (preferences.getString("view", null) == "compact") "compact" else "comfortable"
         set(value) { preferences.edit().putString("view", value).apply() }
+    /** The app text size, a factor on the system font scale. */
+    var textScale: Float
+        get() = preferences.getFloat("textScale", 1f)
+        set(value) { preferences.edit().putFloat("textScale", value).apply() }
     // The last good PC palette, in the dashboard shape, so the theme stays the same offline and at start.
     var palette: Palette?
         get() = preferences.getString("palette", null)?.let {
@@ -117,9 +121,14 @@ class Store(private val preferences: SharedPreferences) {
 
     @Synchronized
     fun clear() {
+        // Phone preferences stay for the next pairing; the pairing and its state go.
         preferences.edit().clear()
             .putBoolean("notificationPermissionAsked", notificationPermissionAsked)
             .putString("view", view)
+            .putFloat("textScale", textScale)
+            .putBoolean("notifyDone", notifyDone)
+            .putBoolean("notifyFailed", notifyFailed)
+            .putBoolean("notifyInput", notifyInput)
             .apply()
         etag = null
     }

@@ -92,4 +92,24 @@ class StoreTest {
         Store(preferences).dismissedWarnings = mapOf("claude-desktop-code" to "The remote cache contains only observed sessions.")
         assertEquals(mapOf("claude-desktop-code" to "The remote cache contains only observed sessions."), Store(preferences).dismissedWarnings)
     }
+
+    @Test fun unpairKeepsThePhonePreferencesAndRemovesThePairing() {
+        val preferences = MemoryPreferences(mutableMapOf("token" to token, "deviceId" to "012345abcdef"))
+        val store = Store(preferences)
+        store.textScale = 1.3f
+        store.view = "compact"
+        store.notifyDone = false
+        store.notifyFailed = false
+        store.notifyInput = false
+        store.clear()
+        val next = Store(preferences)
+        assertEquals("", next.token)
+        assertFalse(next.paired)
+        assertFalse(preferences.contains("deviceId"))
+        assertEquals(1.3f, next.textScale)
+        assertEquals("compact", next.view)
+        assertFalse(next.notifyDone)
+        assertFalse(next.notifyFailed)
+        assertFalse(next.notifyInput)
+    }
 }

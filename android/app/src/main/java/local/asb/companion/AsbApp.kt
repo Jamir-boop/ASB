@@ -4,6 +4,7 @@ import android.app.Application
 import android.net.ConnectivityManager
 import android.net.Network
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.sync.Mutex
@@ -22,10 +23,13 @@ class AsbApp : Application() {
     @Volatile var resumed = false
     var palette by mutableStateOf(Palette())
         private set
+    var textScale by mutableFloatStateOf(1f)
+        private set
 
     override fun onCreate() {
         super.onCreate()
         palette = store.palette ?: Palette()
+        textScale = store.textScale
         notifier.createChannels()
         CheckWorker.schedule(this)
         // Registered on the Application for the whole process (no activity to leak), so the
@@ -42,6 +46,12 @@ class AsbApp : Application() {
         if (value != null && next == palette) return
         palette = next
         store.palette = value
+    }
+
+    /** Shows and saves the app text size. */
+    fun useTextScale(value: Float) {
+        textScale = value
+        store.textScale = value
     }
 
     fun api(): AsbApi = synchronized(store) {

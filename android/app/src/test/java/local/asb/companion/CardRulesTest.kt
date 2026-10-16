@@ -6,6 +6,10 @@ import local.asb.companion.ui.CardTones
 import local.asb.companion.ui.CornerControl
 import local.asb.companion.ui.cardTones
 import local.asb.companion.ui.cornerControls
+import local.asb.companion.ui.COMFORTABLE_CARD_GAP
+import local.asb.companion.ui.COMFORTABLE_MIN_CARD_GAP
+import local.asb.companion.ui.comfortableCardHeight
+import local.asb.companion.ui.compactRowHeight
 import local.asb.companion.ui.packColumns
 import local.asb.companion.ui.quietRow
 import org.junit.Assert.assertEquals
@@ -89,16 +93,45 @@ class CardRulesTest {
     }
 
     @Test fun columnFlowPackingMatchesPythonPackColumns() {
-        fun pack(count: Int, width: Int, height: Int, rowHeight: Int) =
+        fun pack(count: Int, width: Int, height: Int, rowHeight: Float) =
             packColumns((0 until count).toList(), width, height, rowHeight = rowHeight).let { (columns, capacity, parts) ->
                 Triple(columns, capacity, parts.map { it.size })
             }
-        assertEquals(Triple(1, 8, listOf(8, 2)), pack(10, 360, 600, 68))
-        assertEquals(Triple(2, 4, listOf(4, 4, 2)), pack(10, 680, 300, 68))
-        assertEquals(Triple(4, 5, listOf(5, 5, 5, 5, 5)), pack(25, 1040, 248, 48))
-        assertEquals(Triple(1, 1, listOf(1, 1, 1)), pack(3, 100, 2, 22))
-        assertEquals(Triple(3, 8, emptyList<Int>()), pack(0, 800, 400, 48))
-        assertEquals(Triple(4, 3, listOf(3, 3, 1)), pack(7, 1080, 248, 68))
-        assertEquals(listOf(listOf(0, 1, 2), listOf(3, 4, 5), listOf(6)), packColumns((0 until 7).toList(), 1080, 248, rowHeight = 68).parts)
+        assertEquals(Triple(1, 8, listOf(8, 2)), pack(10, 360, 600, 68f))
+        assertEquals(Triple(2, 4, listOf(4, 4, 2)), pack(10, 680, 300, 68f))
+        assertEquals(Triple(4, 5, listOf(5, 5, 5, 5, 5)), pack(25, 1040, 248, 48f))
+        assertEquals(Triple(1, 1, listOf(1, 1, 1)), pack(3, 100, 2, 22f))
+        assertEquals(Triple(3, 8, emptyList<Int>()), pack(0, 800, 400, 48f))
+        assertEquals(Triple(4, 3, listOf(3, 3, 1)), pack(7, 1080, 248, 68f))
+        assertEquals(listOf(listOf(0, 1, 2), listOf(3, 4, 5), listOf(6)), packColumns((0 until 7).toList(), 1080, 248, rowHeight = 68f).parts)
+    }
+
+    @Test fun comfortableCardHeightGrowsWithTheText() {
+        assertEquals(68f, comfortableCardHeight(1f), .001f)
+        // The provider mark and the clock keep the small lines from going below their icons.
+        assertEquals(8f + 14f + 2 * 16f * .85f + 12f, comfortableCardHeight(.85f), .001f)
+        assertEquals(8f + 60f * 1.3f, comfortableCardHeight(1.3f), .001f)
+        assertEquals(48f, compactRowHeight(1.3f), .001f)
+        assertEquals(64f, compactRowHeight(4f), .001f)
+    }
+
+    @Test fun columnFlowFitsWholeComfortableCardsWithTheirGaps() {
+        for (scale in listOf(.85f, 1f, 1.15f, 1.3f, 2f)) for (height in listOf(300, 343, 372, 600)) {
+            val card = comfortableCardHeight(scale)
+            val packing = packColumns((0 until 40).toList(), 800, height, rowHeight = card,
+                minGap = COMFORTABLE_MIN_CARD_GAP.toFloat(), maxGap = COMFORTABLE_CARD_GAP.toFloat())
+            val used = packing.capacity * card + (packing.capacity - 1) * packing.gap
+            assertTrue("scale $scale height $height", packing.capacity >= 1 && used <= height - 4 + .001f)
+            assertTrue("scale $scale height $height", packing.gap <= COMFORTABLE_CARD_GAP)
+            if (packing.capacity > 1) assertTrue(packing.gap >= COMFORTABLE_MIN_CARD_GAP - .001f)
+            // One more card with the minimum gap does not fit.
+            assertTrue((packing.capacity + 1) * card + packing.capacity * COMFORTABLE_MIN_CARD_GAP > height - 4)
+        }
+        val landscape = packColumns((0 until 40).toList(), 800, 343, rowHeight = comfortableCardHeight(1f),
+            minGap = COMFORTABLE_MIN_CARD_GAP.toFloat(), maxGap = COMFORTABLE_CARD_GAP.toFloat())
+        assertEquals(4, landscape.capacity)
+        assertEquals((339f - 4 * 68f) / 3, landscape.gap, .001f)
+        // Compact keeps no gap.
+        assertEquals(0f, packColumns((0 until 40).toList(), 800, 343, rowHeight = 48f).gap, .001f)
     }
 }

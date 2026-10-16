@@ -44,6 +44,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -94,6 +95,7 @@ fun SettingsScreen(
     onCheckNow: () -> Unit,
     onPersistentUnreadChanged: () -> Unit = {},
     onViewChanged: (String) -> Unit = {},
+    onTextScaleChanged: (Float) -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -115,6 +117,7 @@ fun SettingsScreen(
     var notifyFailed by remember(store) { mutableStateOf(store.notifyFailed) }
     var notifyInput by remember(store) { mutableStateOf(store.notifyInput) }
     var view by remember(store) { mutableStateOf(store.view) }
+    var textScale by remember(store) { mutableFloatStateOf(store.textScale) }
     val palette = LocalPalette.current
     val paletteFromPc = remember(store, palette) { store.palette != null }
     val version = remember(context) {
@@ -271,6 +274,17 @@ fun SettingsScreen(
                             ) { Text(label) }
                         }
                     }
+                    Text("Text size", style = MaterialTheme.typography.labelLarge)
+                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                        TEXT_SCALES.forEachIndexed { index, (value, label) ->
+                            SegmentedButton(
+                                selected = textScale == value,
+                                onClick = { textScale = value; onTextScaleChanged(value) },
+                                shape = SegmentedButtonDefaults.itemShape(index, TEXT_SCALES.size),
+                                modifier = Modifier.heightIn(min = 48.dp),
+                            ) { Text(label) }
+                        }
+                    }
                 }
                 HorizontalDivider()
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -390,6 +404,8 @@ private fun LicenseDialog(title: String, paths: List<String>, onDismiss: () -> U
         confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
     )
 }
+
+private val TEXT_SCALES = listOf(0.85f to "Small", 1f to "Default", 1.15f to "Large", 1.3f to "Larger")
 
 private val SettingsLicenses = linkedMapOf(
     "ASB (MIT)" to listOf("licenses/asb-LICENSE.txt"),

@@ -22,15 +22,20 @@ values into code, tests, docs, or commits. Use placeholders.
 
 Touch adaptations that follow from the platform (not a user choice, keep them):
 - Compact rows keep the desktop content and order, but have a minimum height
-  of 48 dp, because Android needs 48 dp touch targets. Comfortable keeps 68 dp
-  as a minimum (2-line titles in large fonts can make it higher).
+  of 48 dp, because Android needs 48 dp touch targets. The Comfortable card is
+  68 dp at the default text size. Its text lines are in sp, so the card height
+  follows the font scale (`comfortableCardHeight` in `Rules.kt`).
+- Text size: Settings > Appearance has Small (0.85), Default (1.0), Large
+  (1.15), and Larger (1.3). The app multiplies the system font scale by this
+  factor for all screens. Unpair keeps it.
 - Corner controls keep their 24 dp drawn circle and get a 48 dp touch area
   (`Modifier.minimumInteractiveComponentSize()` or an equivalent touch inset).
 - Hover does not exist. The desktop hover highlight becomes the pressed
   highlight (section 4). The hover "looks read" rule does not apply.
 - Sizes: desktop px become dp, desktop font px become sp.
-- Comfortable cards have a 24 dp gap between cards, because touch has no
-  hover highlight to show which footer belongs to which card.
+- Comfortable cards have a 24 dp gap between cards in the one-column list,
+  because touch has no hover highlight to show which footer belongs to which
+  card. Column Flow can make this gap smaller, to 8 dp (section 4a).
 - Filter pills follow the desktop pill: 28 dp high, fully round, 12 sp label,
   no check icon, accent background when selected (48 dp touch area kept).
 - The search field and pill outlines use the divider color only when it has
@@ -138,11 +143,11 @@ provider mark, title 13 sp (one line, ellipsis, fills the space), indicator,
 state label (or clock plus `Resets 4h32m` on a limited row, Working timer
 beside Working as on the desktop). No corner buttons.
 
-Comfortable (min height 68 dp, padding 8 dp start/end, 2 dp top/bottom,
+Comfortable (min height 68 dp at the default text size, padding 8 dp start/end, 2 dp top/bottom,
 spacing 2 dp):
 1. Workspace line: provider mark, 7 dp gap, folder basename 11 sp muted,
    ellipsis; 54 dp reserved at the end for the corner.
-2. Title: 13 sp, max 2 lines, ellipsis, fixed 32 dp block, 21 dp start
+2. Title: 13 sp, max 2 lines, ellipsis, a 2-line block (2 x 16 sp), 21 dp start
    indent, 54 dp end reserve.
 3. Footer, 21 dp start indent: state (or clock plus "Resets in") left, age,
    Working timer, or countdown right (11 sp muted).
@@ -175,9 +180,15 @@ spacing 2 dp):
 - Column Flow ports the desktop packing (`pack_columns` in `asb-native.py` and
   `DESIGN.md` Layout): target column width 240 dp,
   `columns = max(1, floor((width + 12) / (240 + 12)))`, row capacity from the
-  viewport height and the row height of the view
-  (`capacity = max(1, floor((height - 4) / rowHeight))`, with the touch row
-  heights of section 1: 48 dp Compact, 68 dp Comfortable). Fill down a column,
+  viewport height and the row height of the view at the current font scale
+  (48 dp Compact, 68 dp Comfortable at the default text size). Compact has no
+  gap: `capacity = max(1, floor((height - 4) / rowHeight))`. Comfortable fits
+  as many whole cards as fit with a gap of at least 8 dp:
+  `capacity = max(1, floor((height - 4 + 8) / (card + 8)))`, then the rest of
+  the height becomes the gap between cards, at most 24 dp:
+  `gap = min(24, (height - 4 - capacity * card) / (capacity - 1))`. A column
+  has `capacity - 1` gaps. A phone in landscape (about 340 dp list height)
+  shows 4 Comfortable rows. Fill down a column,
   then across. Columns share the width of the visible area equally (the desktop
   visible-column rule) and are divided by a 1 dp divider line in the palette
   `divider` color. The strip scrolls horizontally (`LazyRow` of columns, each a
@@ -191,6 +202,8 @@ spacing 2 dp):
   as on the desktop.
 - The message light and edge marks use the card places in both layouts; in
   Column Flow the edge marks are at the left and right edges (desktop rule).
+  For a card in a column that is not visible, the light uses the card slot
+  (card height plus the packing gap).
 - Landscape keeps the top bar, search, and pills; on short heights they must
   not take more than about one third of the screen (use a compact top bar).
 

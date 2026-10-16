@@ -203,16 +203,41 @@ fun messageControl(start: Pair<Double, Double>, end: Pair<Double, Double>): Pair
 const val DEFAULT_COLUMN_WIDTH = 240
 // Touch row heights in dp: 48 dp is the Android touch minimum, so Compact is higher than the desktop 22 px.
 const val COMPACT_ROW_HEIGHT = 48
-const val COMFORTABLE_ROW_HEIGHT = 68
 // Comfortable cards have no hover highlight on touch, so a gap shows which footer belongs to which card.
+// It is the portrait gap and the largest Column Flow gap; Column Flow can go down to the minimum gap.
 const val COMFORTABLE_CARD_GAP = 24
+const val COMFORTABLE_MIN_CARD_GAP = 8
+// The Comfortable card parts: dp sizes, and sp line heights that grow with the text size.
+const val COMFORTABLE_PADDING = 2
+const val COMFORTABLE_SPACING = 2
+const val CAPTION_LINE_HEIGHT = 14
+const val TITLE_LINE_HEIGHT = 16
+const val COMFORTABLE_TITLE_LINES = 2
+const val PROVIDER_MARK_SIZE = 14
+const val LIMIT_CLOCK_SIZE = 12
 
-data class Packing<T>(val columns: Int, val capacity: Int, val parts: List<List<T>>)
+/** The Comfortable card height in dp: workspace line, two title lines, and footer, at this font scale. */
+fun comfortableCardHeight(fontScale: Float): Float =
+    2 * COMFORTABLE_PADDING + 2 * COMFORTABLE_SPACING +
+        maxOf(PROVIDER_MARK_SIZE.toFloat(), CAPTION_LINE_HEIGHT * fontScale) +
+        COMFORTABLE_TITLE_LINES * TITLE_LINE_HEIGHT * fontScale +
+        maxOf(LIMIT_CLOCK_SIZE.toFloat(), CAPTION_LINE_HEIGHT * fontScale)
 
-// Port of pack_columns.
-fun <T> packColumns(rows: List<T>, width: Int, height: Int, columnWidth: Int = DEFAULT_COLUMN_WIDTH, rowHeight: Int): Packing<T> {
-    val capacity = maxOf(1, Math.floorDiv(height - 4, rowHeight))
-    return Packing(maxOf(1, Math.floorDiv(width + 12, columnWidth + 12)), capacity, rows.chunked(capacity))
+/** The Compact row height in dp: the touch minimum, or the title line when the text is larger. */
+fun compactRowHeight(fontScale: Float): Float = maxOf(COMPACT_ROW_HEIGHT.toFloat(), TITLE_LINE_HEIGHT * fontScale)
+
+data class Packing<T>(val columns: Int, val capacity: Int, val parts: List<List<T>>, val gap: Float = 0f)
+
+// Port of pack_columns. Whole rows with at least minGap between them fit in height - 4; the rest of the
+// height spreads as the gap, up to maxGap. The column has capacity - 1 gaps.
+fun <T> packColumns(
+    rows: List<T>, width: Int, height: Int, columnWidth: Int = DEFAULT_COLUMN_WIDTH, rowHeight: Float,
+    minGap: Float = 0f, maxGap: Float = 0f,
+): Packing<T> {
+    val room = height - 4
+    val capacity = maxOf(1, ((room + minGap) / (rowHeight + minGap)).toInt())
+    val gap = if (capacity > 1) minOf(maxGap, (room - capacity * rowHeight) / (capacity - 1)) else 0f
+    return Packing(maxOf(1, Math.floorDiv(width + 12, columnWidth + 12)), capacity, rows.chunked(capacity), gap)
 }
 
 /** The quiet Idle-read rule of the Comfortable view (the `.asb-idle-read` CSS); pressed rows keep normal text. */
