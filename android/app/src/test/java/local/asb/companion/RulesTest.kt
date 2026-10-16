@@ -16,6 +16,7 @@ import local.asb.companion.ui.attentionIndicator
 import local.asb.companion.ui.casefold
 import local.asb.companion.ui.clockInterval
 import local.asb.companion.ui.filteredRows
+import local.asb.companion.ui.keepIndexOnChange
 import local.asb.companion.ui.limitLeft
 import local.asb.companion.ui.messageControl
 import local.asb.companion.ui.messageDuration
@@ -431,5 +432,15 @@ class RulesTest {
         assertEquals("discard", panelFocusReturn("discard", working))
         // A control without an action is disabled, so it cannot take the focus.
         assertEquals(null, panelFocusReturn("drawer", working))
+    }
+
+    @Test fun listKeepsItsIndexWhenKeysChange() {
+        val keys = listOf<Any>("a", "b", "c", "bottom-space")
+        assertFalse(keepIndexOnChange(null, keys, false))
+        assertFalse(keepIndexOnChange(keys, keys.toList(), false))
+        assertTrue(keepIndexOnChange(keys, listOf("c", "a", "b", "bottom-space"), false))
+        assertTrue(keepIndexOnChange(keys, listOf("warning:codex", "a", "b", "c", "bottom-space"), false))
+        assertTrue(keepIndexOnChange(keys, listOf("a", "c", "bottom-space"), false))
+        assertFalse(keepIndexOnChange(keys, listOf("c", "a", "b", "bottom-space"), true))
     }
 }

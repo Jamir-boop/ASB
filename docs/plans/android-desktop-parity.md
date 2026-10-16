@@ -201,6 +201,9 @@ spacing 2 dp):
 - Rotation keeps the first visible session in view as far as possible: before
   the layout changes, remember the ID of the first visible row; after it,
   scroll so that this row (or its column) is visible.
+- A data change (a session moves, comes, or goes) keeps the scroll position by
+  index, as on the desktop: the portrait list keeps its first visible index, and
+  each Column Flow column always shows its first card.
 - Card motion (section 5) also applies in Column Flow; a change of the packing
   (rotation, resize, view change) shows the new layout at once, with no motion,
   as on the desktop.

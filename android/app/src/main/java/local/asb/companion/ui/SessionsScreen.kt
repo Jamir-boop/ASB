@@ -110,6 +110,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -247,6 +248,16 @@ fun SessionsScreen(
         val anchor = rows.indexOfFirst { it.id == viewModel.anchorId }.coerceAtLeast(0)
         LazyListState(if (flow) anchor / packing.capacity else warnings.size + anchor)
     }
+    // The keys of the one-column list, in the same order as its items.
+    val listKeys = remember(warnings, rows) {
+        buildList<Any> {
+            warnings.forEach { add("warning:${it.id}") }
+            if (rows.isEmpty()) add("empty")
+            rows.forEach { add(it.id) }
+            add("bottom-space")
+        }
+    }
+    if (!flow) KeepPositionOnChange(listState, listKeys)
     LaunchedEffect(listState, flow) {
         snapshotFlow {
             if (flow) currentPacking.parts.getOrNull(listState.firstVisibleItemIndex)?.firstOrNull()?.id
@@ -642,8 +653,12 @@ fun SessionsScreen(
                         if (rows.isEmpty()) emptyState(Modifier.fillMaxSize())
                         else if (listSize.height > 0) LazyRow(state = listState, modifier = Modifier.fillMaxSize()) {
                             itemsIndexed(packing.parts, key = { index, _ -> index }) { index, part ->
+                                // Columns never scroll, so each column always shows its first card.
+                                val columnState = rememberLazyListState()
+                                KeepPositionOnChange(columnState, remember(part) { part.map { it.id } }, top = true)
                                 // Columns share the visible width equally; a 1 dp divider in the palette color separates them.
                                 LazyColumn(
+                                    state = columnState,
                                     userScrollEnabled = false,
                                     verticalArrangement = Arrangement.spacedBy(packing.gap.dp),
                                     modifier = Modifier.fillParentMaxWidth(1f / packing.columns).fillParentMaxHeight()
@@ -707,6 +722,24 @@ fun SessionsScreen(
 // Card motion: one critically damped spring (about 350 ms) for placement and fade in; a leaving card goes at once.
 private val CardPlacement = spring(dampingRatio = 1f, stiffness = 360f, visibilityThreshold = IntOffset.VisibilityThreshold)
 private val CardFade = spring<Float>(dampingRatio = 1f, stiffness = 360f)
+
+/**
+ * When the keys change, keep the list at the same index (or at its first item with [top]), as the desktop keeps
+ * its scroll offset. A lazy list alone follows its first visible key, so rows that move above it go off screen.
+ * The request runs after the composition and before the next measure, so that measure uses the index.
+ */
+@Composable
+private fun KeepPositionOnChange(state: LazyListState, keys: List<Any>, top: Boolean = false) {
+    val last = remember(state) { arrayOfNulls<List<Any>>(1) }
+    SideEffect {
+        val previous = last[0]
+        if (previous === keys) return@SideEffect
+        last[0] = keys
+        if (!keepIndexOnChange(previous, keys, state.isScrollInProgress)) return@SideEffect
+        if (top) state.requestScrollToItem(0)
+        else state.requestScrollToItem(state.firstVisibleItemIndex, state.firstVisibleItemScrollOffset)
+    }
+}
 
 @Composable
 private fun SessionChip(

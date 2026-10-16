@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Fixed the Android app scrolling down when sessions move. When a session moved above the first visible row (for example after a pin), the list followed that row, so the rows on top went above the screen. The list now keeps its position by index, as on the desktop, and each Column Flow column always shows its first card.
 - Changed the native row menu to a row panel (the approved option E): a session header, **Open in** the app, switches for **Unread**, **In the drawer**, **Pinned**, and **Discard result** (Working rows), and **Earlier** and **Later** for pinned rows. The panel has a ring in the accent color, so it stands out from the window, and it stays open while you change several marks. In custom colors, the search popover and other popovers now have a visible edge.
 - Added PC sounds for Done, Needs input, and Failed. The ASB server plays the same opencode sounds as the Android app, made louder for PC speakers, and uses the same rules as the Android notifications, with one sound per update at most. It uses `pw-play` (or `paplay`) as an event sound, so its volume follows the System Sounds volume. The Debian package now recommends `pipewire-bin`.
 - Changed the phone gateway to send the dashboard reply with gzip when the phone accepts it. The live notification service and the app read about 5 to 10 times fewer bytes. Every dashboard reply that the loopback server answers has `Vary: Accept-Encoding`, and the `ETag` and the 304 reply do not change.

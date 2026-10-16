@@ -274,6 +274,14 @@ fun <T> packColumns(
     return Packing(maxOf(1, Math.floorDiv(width + 12, columnWidth + 12)), capacity, rows.chunked(capacity), gap)
 }
 
+/**
+ * A lazy list follows the key of its first visible item when the data changes. The desktop keeps the scroll offset,
+ * so the list keeps its position by index when its keys change. Not on the first composition, and not while the user
+ * scrolls (a new position would stop the fling).
+ */
+fun keepIndexOnChange(previousKeys: List<Any>?, keys: List<Any>, scrolling: Boolean): Boolean =
+    previousKeys != null && !scrolling && previousKeys != keys
+
 /** The quiet Idle-read rule of the Comfortable view (the `.asb-idle-read` CSS); pressed rows keep normal text. */
 fun quietRow(row: Thread, comfortable: Boolean, drawerView: Boolean, nowMs: Long = System.currentTimeMillis()): Boolean =
     comfortable && row.state == "idle" && !(row.unread || row.questionAttention || row.pending) &&
