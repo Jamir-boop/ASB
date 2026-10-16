@@ -20,6 +20,11 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.encodeToString
 import local.asb.companion.data.AsbJson
 import local.asb.companion.data.Dashboard
+import local.asb.companion.data.Palette
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import kotlinx.serialization.json.Json
 import local.asb.companion.data.Thread
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.AsbError
@@ -53,6 +58,7 @@ class SessionsViewModelTest {
     private val models = ViewModelStore()
     private val polls = mutableListOf<Job>()
     private val baselines = mutableListOf<Map<String, Int>>()
+    private val palettes = mutableListOf<Palette>()
     private lateinit var server: MockWebServer
     private lateinit var fingerprint: String
     private lateinit var certificates: HandshakeCertificates
@@ -82,9 +88,11 @@ class SessionsViewModelTest {
         initiallyRevoked: Boolean = false,
         loadBaseline: () -> Map<String, Int>? = { baselines.lastOrNull() },
         saveBaseline: (Map<String, Int>) -> Unit = { baselines += it },
+        initialView: String = "comfortable",
+        savePalette: (Palette) -> Unit = { palettes += it },
     ): SessionsViewModel {
         val api = AsbApi("127.0.0.1", server.port, fingerprint, "t".repeat(43)) { revoked = true }
-        return SessionsViewModel(api, "Test PC", initiallyRevoked, saveBaseline, mutex, loadBaseline)
+        return SessionsViewModel(api, "Test PC", initiallyRevoked, saveBaseline, mutex, loadBaseline, initialView, savePalette)
             .also { models.put("sessions", it) }
     }
 
@@ -466,5 +474,50 @@ class SessionsViewModelTest {
         model.action("one", "open")
         advance(60000)
         assertEquals(2, server.requestCount)
+    }
+
+    @Test fun rotationKeepsFiltersSearchViewAndAnchorInTheRetainedModel() {
+        val api = AsbApi("127.0.0.1", server.port, fingerprint, "t".repeat(43)) {}
+        val factory = viewModelFactory { initializer { SessionsViewModel(api, "Test PC", initialView = "compact") } }
+        val owner = ViewModelStore()
+        val original = ViewModelProvider.create(owner, factory)[SessionsViewModel::class]
+        assertEquals("compact", original.state.value.view)
+        val filter = Filter(query = "cl: plan", app = "codex", states = setOf("working"), archived = true, drawerOnly = true)
+        original.setFilter(filter)
+        original.setView("comfortable")
+        original.anchorId = "two"
+
+        val recreated = ViewModelProvider.create(owner, factory)[SessionsViewModel::class]
+        assertSame(original, recreated)
+        assertEquals(filter, recreated.state.value.filter)
+        assertEquals("comfortable", recreated.state.value.view)
+        assertEquals("two", recreated.anchorId)
+        owner.clear()
+    }
+
+    @Test fun dashboardPaletteIsSavedAndAbsentPaletteKeepsTheSavedOne() = runBlocking {
+        val model = model()
+        load(model, Dashboard(1))
+        assertTrue(palettes.isEmpty())
+        val colors = """{"mode":"custom","colors":{"background":"#101418","text":"#e8e4dc","accent":"#f0b45a",""" +
+            """"muted":"#a8a29a","divider":"#3a3f46","success":"#f0b45a","warning":"#f0b45a"}}"""
+        load(model, Dashboard(2, palette = Json.parseToJsonElement(colors)))
+        assertEquals(Palette.parse(Json.parseToJsonElement(colors)), palettes.single())
+        assertEquals("custom", palettes.single().mode)
+    }
+
+    @Test fun successfulReadShowsTheConfirmationFor1600Ms() = runBlocking {
+        val model = model()
+        load(model, Dashboard(1, threads = listOf(Thread(id = "one", state = "idle", unread = true))))
+        server.enqueue(MockResponse().setBody("{}"))
+        server.enqueue(response(Dashboard(2, threads = listOf(Thread(id = "one", state = "idle")))))
+        model.action("one", "mark-read")
+        await { model.state.value.dashboard?.generatedAtMs == 2L }
+        assertEquals(setOf("one"), model.state.value.readConfirmedIds)
+        assertTrue(model.state.value.openingIds.isEmpty())
+        advance(1599)
+        assertEquals(setOf("one"), model.state.value.readConfirmedIds)
+        advance(1)
+        assertTrue(model.state.value.readConfirmedIds.isEmpty())
     }
 }

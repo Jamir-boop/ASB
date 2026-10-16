@@ -32,6 +32,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
@@ -88,6 +91,7 @@ fun SettingsScreen(
     onRequestNotificationPermission: () -> Unit,
     onCheckNow: () -> Unit,
     onPersistentUnreadChanged: () -> Unit = {},
+    onViewChanged: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -108,6 +112,9 @@ fun SettingsScreen(
     var notifyDone by remember(store) { mutableStateOf(store.notifyDone) }
     var notifyFailed by remember(store) { mutableStateOf(store.notifyFailed) }
     var notifyInput by remember(store) { mutableStateOf(store.notifyInput) }
+    var view by remember(store) { mutableStateOf(store.view) }
+    val palette = LocalPalette.current
+    val paletteFromPc = remember(store, palette) { store.palette != null }
     val version = remember(context) {
         val info = context.packageManager.getPackageInfo(context.packageName, 0)
         "${info.versionName.orEmpty()} (${info.longVersionCode})"
@@ -238,6 +245,29 @@ fun SettingsScreen(
                     if (savingUnread) Text("Saving…", style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                     settingsError?.let { SettingsError(it) }
+                }
+                HorizontalDivider()
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SettingsHeading("Appearance")
+                    Text(
+                        "Theme: follows the PC (" + when {
+                            !paletteFromPc -> "default colors until the PC sends its colors"
+                            palette.custom -> "Custom colors"
+                            else -> "GNOME colors"
+                        } + ")",
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Text("View", style = MaterialTheme.typography.labelLarge)
+                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                        listOf("compact" to "Compact", "comfortable" to "Comfortable").forEachIndexed { index, (value, label) ->
+                            SegmentedButton(
+                                selected = view == value,
+                                onClick = { view = value; store.view = value; onViewChanged(value) },
+                                shape = SegmentedButtonDefaults.itemShape(index, 2),
+                                modifier = Modifier.heightIn(min = 48.dp),
+                            ) { Text(label) }
+                        }
+                    }
                 }
                 HorizontalDivider()
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

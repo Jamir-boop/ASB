@@ -3,6 +3,7 @@ package local.asb.companion.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -18,6 +19,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonPrimitive
 import local.asb.companion.data.Dashboard
 import local.asb.companion.data.Message
+import local.asb.companion.data.Palette
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.DashboardResult
@@ -32,6 +34,9 @@ data class UiState(
     val lastError: String? = null,
     val revoked: Boolean = false,
     val refreshing: Boolean = false,
+    val view: String = "comfortable",
+    val openingIds: Set<String> = emptySet(),
+    val readConfirmedIds: Set<String> = emptySet(),
 )
 
 class SessionsViewModel(
@@ -41,15 +46,21 @@ class SessionsViewModel(
     private val saveBaseline: (Map<String, Int>) -> Unit = {},
     private val notificationMutex: Mutex = Mutex(),
     private val loadBaseline: () -> Map<String, Int>? = { null },
+    initialView: String = "comfortable",
+    private val savePalette: (Palette) -> Unit = {},
 ) : ViewModel() {
-    private val mutableState = MutableStateFlow(UiState(revoked = initiallyRevoked))
+    private val mutableState = MutableStateFlow(UiState(revoked = initiallyRevoked, view = initialView))
     val state: StateFlow<UiState> = mutableState.asStateFlow()
     var seenMessages: Set<Message>? = null
+    /** The first visible session, so a rotation or a return from Settings can show it again. */
+    var anchorId: String? = null
     private val pollMutex = Mutex()
     private var etag: String? = null
     private var offlineFailures = 0
+    private val readTimers = mutableMapOf<String, Job>()
 
     fun setFilter(filter: Filter) { mutableState.update { it.copy(filter = filter) } }
+    fun setView(view: String) { mutableState.update { it.copy(view = view) } }
     fun dismissBanner() { mutableState.update { it.copy(banner = null) } }
     fun clearError() { mutableState.update { it.copy(lastError = null) } }
 
@@ -85,7 +96,8 @@ class SessionsViewModel(
             mutableState.update { it.copy(banner = "This session has no direct link.") }
             return
         }
-        mutableState.update { it.copy(busyIds = it.busyIds + id) }
+        mutableState.update { it.copy(busyIds = it.busyIds + id,
+            openingIds = if (action == "open") it.openingIds + id else it.openingIds) }
         viewModelScope.launch {
             try {
                 notificationMutex.withLock {
@@ -109,7 +121,8 @@ class SessionsViewModel(
                         }
                         mutableState.update { it.copy(banner = "Opened on $serverName") }
                     }
-                    mutableState.update { it.copy(busyIds = it.busyIds - id) }
+                    mutableState.update { it.copy(busyIds = it.busyIds - id, openingIds = it.openingIds - id) }
+                    if (action == "mark-read") confirmRead(id)
                     etag = null
                     fetchDashboard()
                 }
@@ -117,8 +130,19 @@ class SessionsViewModel(
                 currentCoroutineContext().ensureActive()
                 showError(cause)
             } finally {
-                mutableState.update { it.copy(busyIds = it.busyIds - id) }
+                mutableState.update { it.copy(busyIds = it.busyIds - id, openingIds = it.openingIds - id) }
             }
+        }
+    }
+
+    // The card corner shows a check for 1.6 s after a successful Read, as on the desktop.
+    private fun confirmRead(id: String) {
+        mutableState.update { it.copy(readConfirmedIds = it.readConfirmedIds + id) }
+        readTimers.remove(id)?.cancel()
+        readTimers[id] = viewModelScope.launch {
+            delay(1600)
+            readTimers.remove(id)
+            mutableState.update { it.copy(readConfirmedIds = it.readConfirmedIds - id) }
         }
     }
 
@@ -133,6 +157,7 @@ class SessionsViewModel(
                     DashboardResult.NotModified -> state.value.dashboard
                 }
                 dashboard?.let { saveBaseline(updateBaseline(loadBaseline(), it.threads)) }
+                Palette.parse(dashboard?.palette)?.let(savePalette)
                 if (result is DashboardResult.Fetched) etag = result.etag
                 offlineFailures = 0
                 mutableState.update { it.copy(dashboard = dashboard, offline = false, lastError = null) }

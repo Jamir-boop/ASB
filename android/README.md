@@ -4,9 +4,9 @@ Phase 7 provides the live session list, desktop filters, row menus, and Open
 on PC through the ASB phone gateway. QR or manual pairing remains available.
 The user checks the PC and certificate fingerprint before the app sends the
 pairing request. Authenticated hello must succeed before the session list
-opens. Connection information shows the real server name and ASB version. The Material 3
-theme follows the system light or dark setting. Settings shows the connection,
-Persistent unread, notification switches, background check controls, and licenses.
+opens. Connection information shows the real server name and ASB version.
+Settings shows the connection, Persistent unread, the theme source, the view,
+notification switches, background check controls, and licenses.
 The app requests notification permission once after verified pairing. Settings
 can request permission again or open Android notification settings.
 
@@ -28,6 +28,32 @@ pairing starts; an old response cannot save credentials into that new flow.
 Each pairing gets its own session ViewModel and API. The session screen owns
 the lifecycle polling loop. Foreground dashboard reads share a mutex with
 baseline updates; only the current, resumed pairing can save that baseline.
+
+## Themes, views, and motion
+
+The app is dark only and follows the PC theme. The dashboard `palette` field
+gives the colors of the PC window: the Custom colors or the GNOME colors. The
+app saves the last palette and uses it at start and while offline. Before the
+first palette, it uses a dark fallback. Settings shows the theme source as
+read-only text.
+
+The session cards use the desktop Compact and Comfortable views. Select the
+view in Settings; the default is Comfortable. Compact rows are at least 48 dp
+high for touch, and Comfortable rows are at least 68 dp. In Comfortable, the
+card corner shows the Read target, the pin of a pinned row, the drawer glyph of
+a drawer row, and the armed Discard ring. Tap a corner control to use it. Pin,
+Put in drawer, and Discard result are in the long-press menu.
+
+The app turns with the phone. A window narrower than 600 dp shows one list. A
+wider window, for example landscape, shows the desktop Column Flow: 240 dp
+target columns, filled down and then across, with horizontal scrolling. After
+a rotation, the first visible session stays in view. Filters, search, the view,
+and open sheets stay the same.
+
+Cards move to new places with a critically damped spring of about 350 ms. New
+cards fade in, and removed cards go at once. A press shows the palette
+highlight. A view change or a new column layout shows at once, with no motion.
+When Android animations are off, all motion is instant.
 
 The QR scanner needs Google Play services and can download its scanner module
 on first use. Manual paste works when the scanner is unavailable.
@@ -144,6 +170,9 @@ monochrome geometry from the same approved source. The app includes the
 repository's MIT license in `app/src/main/assets/licenses/asb-LICENSE.txt`.
 
 ## Third-party assets
+
+The Codex and Claude marks are the ASB desktop marks from `assets/icons/`
+(Simple Icons, CC0). Brand rights remain with their owners.
 
 Notification sounds use unchanged audio from opencode, commit
 `fe87944b6ae85422db64c751b6d6ee488b0d7f1c`, under

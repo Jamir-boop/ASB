@@ -5,6 +5,7 @@ import kotlinx.serialization.json.put
 import kotlin.math.abs
 import kotlin.math.hypot
 import local.asb.companion.data.Message
+import local.asb.companion.data.Palette
 import local.asb.companion.data.Thread
 
 val STATES = listOf("working", "waiting", "idle", "unknown")
@@ -197,4 +198,71 @@ fun messageControl(start: Pair<Double, Double>, end: Pair<Double, Double>): Pair
         y += sign * ny * bow
     }
     return (if (x > 2) x else 2.0) to y
+}
+
+const val DEFAULT_COLUMN_WIDTH = 240
+// Touch row heights in dp: 48 dp is the Android touch minimum, so Compact is higher than the desktop 22 px.
+const val COMPACT_ROW_HEIGHT = 48
+const val COMFORTABLE_ROW_HEIGHT = 68
+
+data class Packing<T>(val columns: Int, val capacity: Int, val parts: List<List<T>>)
+
+// Port of pack_columns.
+fun <T> packColumns(rows: List<T>, width: Int, height: Int, columnWidth: Int = DEFAULT_COLUMN_WIDTH, rowHeight: Int): Packing<T> {
+    val capacity = maxOf(1, Math.floorDiv(height - 4, rowHeight))
+    return Packing(maxOf(1, Math.floorDiv(width + 12, columnWidth + 12)), capacity, rows.chunked(capacity))
+}
+
+/** The quiet Idle-read rule of the Comfortable view (the `.asb-idle-read` CSS); pressed rows keep normal text. */
+fun quietRow(row: Thread, comfortable: Boolean, drawerView: Boolean, nowMs: Long = System.currentTimeMillis()): Boolean =
+    comfortable && row.state == "idle" && !(row.unread || row.questionAttention || row.pending) &&
+        limitLeft(row, nowMs) == 0L && !(drawerView && row.drawer)
+
+data class CardTones(val title: String, val caption: String, val state: String)
+
+/** Text colors of a card as palette hex values, as update_session_row, update_row_text, and set_palette give them. */
+fun cardTones(
+    palette: Palette, row: Thread, comfortable: Boolean, drawerView: Boolean, pressed: Boolean,
+    nowMs: Long = System.currentTimeMillis(),
+): CardTones {
+    if (limitLeft(row, nowMs) > 0) {
+        val limited = if (pressed) palette.limitedPressed else palette.limited
+        return CardTones(limited, limited, limited)
+    }
+    if (!pressed && quietRow(row, comfortable, drawerView, nowMs)) {
+        return CardTones(palette.quietTitle, palette.quietCaption, palette.quietCaption)
+    }
+    val state = when {
+        row.state == "working" -> palette.success
+        row.state == "waiting" -> palette.warning
+        // GNOME drops dim-label for Pending; Custom keeps the muted state color.
+        row.pending && !palette.custom -> palette.text
+        else -> palette.muted
+    }
+    return CardTones(palette.text, palette.muted, state)
+}
+
+/** One Comfortable corner control. A null action is a passive mark. */
+data class CornerControl(val kind: String, val action: String?, val label: String)
+
+/**
+ * The Comfortable corner without hover, in visual order (drawer, read, pin): the Read target while attention shows,
+ * the pin control while pinned, the filled drawer glyph for a drawer row, and the armed Discard ring.
+ */
+fun cornerControls(
+    row: Thread, drawerView: Boolean, confirmed: Boolean, nowMs: Long = System.currentTimeMillis(),
+): List<CornerControl> = buildList {
+    val indicator = attentionIndicator(row, drawerView, nowMs)
+    val discard = row.state == "working" && indicator !in setOf("question", "dot")
+    if (row.drawer) add(CornerControl("drawer", "drawer-out", "Take out of drawer: show as unread again"))
+    when {
+        discard && row.discardResult -> add(CornerControl("discard", "keep-result", "Keep result: show the dot when this task ends"))
+        discard -> Unit
+        confirmed -> add(CornerControl("confirmed", null, "Read in ASB"))
+        row.actionRequired -> add(CornerControl("question", null, "A user action is required in the original app"))
+        indicator == "question" -> add(CornerControl("question", "mark-read", "Mark read in ASB"))
+        indicator == "dot" -> add(CornerControl("dot", "mark-read", "Mark read in ASB"))
+        indicator == "stop" -> add(CornerControl("stop", null, "Task stopped"))
+    }
+    if (row.pinned) add(CornerControl("pin", "unpin", "Unpin in ASB"))
 }

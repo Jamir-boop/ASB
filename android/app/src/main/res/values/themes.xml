@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#08080a</color>
-    <style name="Theme.Asb" parent="android:style/Theme.Material.Light.NoActionBar" />
+    <style name="Theme.Asb" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/asb_fallback_background</item>
+    </style>
+    <color name="asb_fallback_background">#222226</color>
 </resources>

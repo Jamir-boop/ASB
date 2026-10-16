@@ -31,6 +31,15 @@ class Store(context: Context) {
     var notifyInput: Boolean
         get() = preferences.getBoolean("notifyInput", true)
         set(value) { preferences.edit().putBoolean("notifyInput", value).apply() }
+    var view: String
+        get() = if (preferences.getString("view", null) == "compact") "compact" else "comfortable"
+        set(value) { preferences.edit().putString("view", value).apply() }
+    // The last good PC palette, in the dashboard shape, so the theme stays the same offline and at start.
+    var palette: Palette?
+        get() = preferences.getString("palette", null)?.let {
+            try { Palette.parse(AsbJson.parseToJsonElement(it)) } catch (_: SerializationException) { null }
+        }
+        set(value) { preferences.edit().apply { if (value == null) remove("palette") else putString("palette", value.toJson()) }.apply() }
     var notificationPermissionAsked: Boolean
         get() = preferences.getBoolean("notificationPermissionAsked", false)
         set(value) { preferences.edit().putBoolean("notificationPermissionAsked", value).apply() }
@@ -72,6 +81,7 @@ class Store(context: Context) {
     fun clear() {
         preferences.edit().clear()
             .putBoolean("notificationPermissionAsked", notificationPermissionAsked)
+            .putString("view", view)
             .apply()
         etag = null
     }

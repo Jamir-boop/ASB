@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -70,12 +71,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // Dark only: transparent bars with light icons over the palette background.
+        val bars = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        enableEdgeToEdge(statusBarStyle = bars, navigationBarStyle = bars)
         val app = application as AsbApp
         app.notifier.opened(intent)
         notificationsAllowed = Notifier.notificationsAllowed(this)
         setContent {
-            AsbTheme {
+            AsbTheme(app.palette) {
                 val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
                     notificationsAllowed = Notifier.notificationsAllowed(this)
                 }
@@ -99,6 +102,7 @@ class MainActivity : ComponentActivity() {
                     app.notifier.clear()
                     pairingModel.reset()
                     app.store.clear()
+                    app.usePalette(null)
                     paired = false
                 }
                 else PairScreen(this, pairingModel) { paired = true }
@@ -160,6 +164,8 @@ private fun PairedApp(
                         },
                         notificationMutex = app.notificationMutex,
                         loadBaseline = { store.loadBaselineIfPaired(token) },
+                        initialView = store.view,
+                        savePalette = app::usePalette,
                     )
                 }
             }
@@ -175,6 +181,7 @@ private fun PairedApp(
                 onRequestNotificationPermission = onRequestNotificationPermission,
                 onCheckNow = { CheckWorker.checkNow(app) },
                 onPersistentUnreadChanged = sessionsModel::refresh,
+                onViewChanged = sessionsModel::setView,
             )
         } else {
             SessionsScreen(sessionsModel, serverName,

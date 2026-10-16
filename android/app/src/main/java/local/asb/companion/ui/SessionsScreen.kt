@@ -2,6 +2,36 @@ package local.asb.companion.ui
 
 import android.os.SystemClock
 import android.provider.Settings
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.IndicationNodeFactory
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.InteractionSource
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.key
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.drawscope.ContentDrawScope
+import androidx.compose.ui.node.DelegatableNode
+import androidx.compose.ui.node.DrawModifierNode
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
+import local.asb.companion.data.Palette
+import local.asb.companion.data.displaySourceColor
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -83,9 +113,6 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.lerp
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -123,14 +150,18 @@ fun SessionsScreen(
     serverName: String,
     onSettings: () -> Unit,
     onPairAgain: () -> Unit,
-) {
+) = BoxWithConstraints {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
     val context = LocalContext.current
     val density = LocalDensity.current.density
     val snackbar = remember { SnackbarHostState() }
     val keyboard = LocalSoftwareKeyboardController.current
-    val listState = rememberLazyListState()
+    // Landscape and other wide windows use the desktop Column Flow; short windows use a compact header.
+    val flow = maxWidth >= 600.dp
+    val shortHeader = maxHeight < 480.dp
+    val comfortable = state.view != "compact"
+    val rowHeight = if (comfortable) COMFORTABLE_ROW_HEIGHT else COMPACT_ROW_HEIGHT
     var showFilters by rememberSaveable { mutableStateOf(false) }
     var actionRowId by rememberSaveable { mutableStateOf<String?>(null) }
     var dismissedWarnings by rememberSaveable { mutableStateOf(mapOf<String, String>()) }
@@ -149,20 +180,40 @@ fun SessionsScreen(
     val rowIndexes = remember(rows) { rows.mapIndexed { index, row -> row.id to index }.toMap() }
     val currentRowIndexes by rememberUpdatedState(rowIndexes)
     val currentDensity by rememberUpdatedState(density)
-    val visibleRows by remember(rowsById, listState) {
-        derivedStateOf {
-            listState.layoutInfo.visibleItemsInfo.mapNotNull { rowsById[it.key] }
-        }
-    }
-    val clockIntervalMs = if (visibleRows.isEmpty()) 0L else clockInterval(visibleRows, nowMs) * 1000
     val providers = state.dashboard?.providers.orEmpty()
     val warnings = providers.filter {
         it.status == "warning" && it.message.isNotBlank() && dismissedWarnings[it.id] != it.message
     }
+    val packing = remember(rows, listSize, rowHeight, density) {
+        packColumns(rows, (listSize.width / density).toInt(), (listSize.height / density).toInt(), rowHeight = rowHeight)
+    }
+    val currentPacking by rememberUpdatedState(packing)
+    // A new list state per layout: a view change or a repack shows the new layout at once, with no card motion.
+    // It starts at the first session that was visible before, so rotation keeps that session in view.
+    val listState = remember(flow, state.view, if (flow) packing.columns to packing.capacity else null) {
+        val anchor = rows.indexOfFirst { it.id == viewModel.anchorId }.coerceAtLeast(0)
+        LazyListState(if (flow) anchor / packing.capacity else warnings.size + anchor)
+    }
+    LaunchedEffect(listState, flow) {
+        snapshotFlow {
+            if (flow) currentPacking.parts.getOrNull(listState.firstVisibleItemIndex)?.firstOrNull()?.id
+            else listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key in currentRowIndexes }?.key as? String
+        }.collect { id -> if (id != null) viewModel.anchorId = id }
+    }
+    val visibleRows by remember(rowsById, listState, flow, packing) {
+        derivedStateOf {
+            if (flow) listState.layoutInfo.visibleItemsInfo.flatMap { packing.parts.getOrNull(it.index).orEmpty() }
+            else listState.layoutInfo.visibleItemsInfo.mapNotNull { rowsById[it.key] }
+        }
+    }
+    val clockIntervalMs = if (visibleRows.isEmpty()) 0L else clockInterval(visibleRows, nowMs) * 1000
     val actionRow = threads.firstOrNull { it.id == actionRowId }
     val hasDrawerRows = threads.any { it.drawer && (state.filter.archived || !it.archived) }
     val workingOnly = state.filter.states == setOf("working")
-    fun endpoint(id: String) = messageEndpoint(
+    fun endpoint(id: String) = if (flow) flowEndpoint(
+        id, providerCenters, listOrigin, listSize, listState.layoutInfo, currentRowIndexes, currentPacking.capacity,
+        rowHeight * currentDensity, currentDensity,
+    ) else messageEndpoint(
         id, providerCenters, listOrigin, listSize, listState.layoutInfo, currentRowIndexes, currentDensity,
     )
 
@@ -269,15 +320,113 @@ fun SessionsScreen(
         }
     }
 
+    @Composable
+    fun card(row: Thread, modifier: Modifier) = SessionCard(
+        row = row,
+        comfortable = comfortable,
+        drawerView = state.filter.drawerOnly,
+        busy = row.id in state.busyIds,
+        opening = row.id in state.openingIds,
+        confirmed = row.id in state.readConfirmedIds,
+        nowMs = nowMs,
+        messageLit = row.id in highlights,
+        onProviderCenter = { center -> providerCenters[row.id] = center },
+        onOpen = { viewModel.action(row.id, "open") },
+        onActions = { keyboard?.hide(); actionRowId = row.id },
+        onCorner = { action -> viewModel.action(row.id, action) },
+        modifier = modifier,
+    )
+
+    @Composable
+    fun emptyState(modifier: Modifier) = Box(modifier.padding(24.dp), contentAlignment = Alignment.Center) {
+        if (state.dashboard == null && !state.offline && initialError == null && state.lastError == null) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator(Modifier.semantics {
+                    contentDescription = "Loading sessions"
+                })
+                Spacer(Modifier.height(16.dp))
+                Text("Loading sessions…")
+            }
+        } else Text(
+            when {
+                state.dashboard == null -> initialError ?: state.lastError
+                    ?: "Could not load sessions. Check the PC and Wi-Fi, then refresh."
+                threads.isEmpty() -> "No sessions found on the PC."
+                else -> "No sessions match the search and filters."
+            },
+            style = MaterialTheme.typography.bodyLarge,
+        )
+    }
+
+    @Composable
+    fun searchField(modifier: Modifier) = OutlinedTextField(
+        value = state.filter.query,
+        onValueChange = { viewModel.setFilter(state.filter.copy(query = it)) },
+        placeholder = { Text("Search, or cl: / cx:", maxLines = 1) },
+        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+        trailingIcon = {
+            if (state.filter.query.isNotEmpty()) IconButton(
+                onClick = { viewModel.setFilter(state.filter.copy(query = "")) },
+            ) { Icon(Icons.Default.Close, contentDescription = "Clear search") }
+        },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
+        modifier = modifier.semantics { contentDescription = "Search sessions" },
+    )
+
+    @Composable
+    fun pills(modifier: Modifier) = Row(
+        modifier = modifier.horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        SessionChip("Pending", state.filter.pendingOnly, onClick = {
+            val selected = !state.filter.pendingOnly
+            viewModel.setFilter(state.filter.copy(
+                pendingOnly = selected,
+                drawerOnly = if (selected) false else state.filter.drawerOnly,
+            ))
+        })
+        SessionChip("Working", workingOnly, onClick = {
+            viewModel.setFilter(state.filter.copy(
+                states = if (workingOnly) STATES.toSet() else setOf("working"),
+            ))
+        })
+        SessionChip(
+            "Drawer", state.filter.drawerOnly,
+            modifier = Modifier.semantics {
+                contentDescription = if (hasDrawerRows) "Drawer, contains sessions" else "Drawer, empty"
+            },
+            dot = hasDrawerRows,
+            onClick = {
+                val selected = !state.filter.drawerOnly
+                viewModel.setFilter(state.filter.copy(
+                    drawerOnly = selected,
+                    pendingOnly = if (selected) false else state.filter.pendingOnly,
+                ))
+            },
+        )
+        SessionChip(
+            "Filters", state.filter.app != "all" || state.filter.archived ||
+                state.filter.states != STATES.toSet(),
+            onClick = { keyboard?.hide(); showFilters = true },
+        )
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             TopAppBar(
+                expandedHeight = if (shortHeader) 48.dp else TopAppBarDefaults.TopAppBarExpandedHeight,
                 title = {
-                    Column {
+                    val status = if (state.revoked) "" else "$serverName · ${if (state.offline) "Offline" else "Live"}"
+                    if (shortHeader) Text(listOf("ASB", status).filter { it.isNotEmpty() }.joinToString("  "),
+                        style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    else Column {
                         Text("ASB", style = MaterialTheme.typography.titleLarge)
-                        if (!state.revoked) Text(
-                            "$serverName · ${if (state.offline) "Offline" else "Live"}",
+                        if (status.isNotEmpty()) Text(
+                            status,
                             style = MaterialTheme.typography.bodySmall,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -320,60 +469,20 @@ fun SessionsScreen(
                     Spacer(Modifier.height(24.dp))
                     Button(onClick = onPairAgain) { Text("Pair again") }
                 }
-            } else Column(Modifier.widthIn(max = 840.dp).fillMaxSize().imePadding()) {
-                OutlinedTextField(
-                    value = state.filter.query,
-                    onValueChange = { viewModel.setFilter(state.filter.copy(query = it)) },
-                    placeholder = { Text("Search, or cl: / cx:") },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                    trailingIcon = {
-                        if (state.filter.query.isNotEmpty()) IconButton(
-                            onClick = { viewModel.setFilter(state.filter.copy(query = "")) },
-                        ) { Icon(Icons.Default.Close, contentDescription = "Clear search") }
-                    },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
-                        .semantics { contentDescription = "Search sessions" },
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 16.dp),
+            } else Column(Modifier.then(if (flow) Modifier else Modifier.widthIn(max = 840.dp)).fillMaxSize().imePadding()) {
+                if (shortHeader) Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    SessionChip("Pending", state.filter.pendingOnly, onClick = {
-                        val selected = !state.filter.pendingOnly
-                        viewModel.setFilter(state.filter.copy(
-                            pendingOnly = selected,
-                            drawerOnly = if (selected) false else state.filter.drawerOnly,
-                        ))
-                    })
-                    SessionChip("Working", workingOnly, onClick = {
-                        viewModel.setFilter(state.filter.copy(
-                            states = if (workingOnly) STATES.toSet() else setOf("working"),
-                        ))
-                    })
-                    SessionChip(
-                        "Drawer", state.filter.drawerOnly,
-                        modifier = Modifier.semantics {
-                            contentDescription = if (hasDrawerRows) "Drawer, contains sessions" else "Drawer, empty"
-                        },
-                        dot = hasDrawerRows,
-                        onClick = {
-                            val selected = !state.filter.drawerOnly
-                            viewModel.setFilter(state.filter.copy(
-                                drawerOnly = selected,
-                                pendingOnly = if (selected) false else state.filter.pendingOnly,
-                            ))
-                        },
-                    )
-                    SessionChip(
-                        "Filters", state.filter.app != "all" || state.filter.archived ||
-                            state.filter.states != STATES.toSet(),
-                        onClick = { keyboard?.hide(); showFilters = true },
-                    )
+                    searchField(Modifier.weight(1f))
+                    pills(Modifier.weight(1f))
+                } else {
+                    searchField(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp))
+                    pills(Modifier.fillMaxWidth().padding(horizontal = 16.dp))
+                }
+                if (flow) warnings.forEach { provider ->
+                    ProviderWarning(provider) { dismissedWarnings = dismissedWarnings + (provider.id to provider.message) }
                 }
                 PullToRefreshBox(
                     isRefreshing = state.refreshing,
@@ -383,7 +492,24 @@ fun SessionsScreen(
                         listSize = it.size
                     },
                 ) {
-                    LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                    key(listState) { if (flow) {
+                        val divider = MaterialTheme.colorScheme.outline
+                        if (rows.isEmpty()) emptyState(Modifier.fillMaxSize())
+                        else if (listSize.height > 0) LazyRow(state = listState, modifier = Modifier.fillMaxSize()) {
+                            itemsIndexed(packing.parts, key = { index, _ -> index }) { index, part ->
+                                // Columns share the visible width equally; a 1 dp divider in the palette color separates them.
+                                LazyColumn(
+                                    userScrollEnabled = false,
+                                    modifier = Modifier.fillParentMaxWidth(1f / packing.columns).fillParentMaxHeight()
+                                        .drawBehind {
+                                            if (index > 0) drawLine(divider, Offset.Zero, Offset(0f, size.height), 1.dp.toPx())
+                                        },
+                                ) {
+                                    items(part, key = { it.id }) { row -> card(row, Modifier.animateItem(CardFade, CardPlacement, null)) }
+                                }
+                            }
+                        }
+                    } else LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                         warnings.forEach { provider ->
                             item(key = "warning:${provider.id}") {
                                 ProviderWarning(provider) {
@@ -391,53 +517,23 @@ fun SessionsScreen(
                                 }
                             }
                         }
-                        if (rows.isEmpty()) item(key = "empty") {
-                            Box(
-                                modifier = Modifier.fillParentMaxSize().padding(24.dp),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                if (state.dashboard == null && !state.offline && initialError == null && state.lastError == null) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        CircularProgressIndicator(Modifier.semantics {
-                                            contentDescription = "Loading sessions"
-                                        })
-                                        Spacer(Modifier.height(16.dp))
-                                        Text("Loading sessions…")
-                                    }
-                                } else Text(
-                                    when {
-                                        state.dashboard == null -> initialError ?: state.lastError
-                                            ?: "Could not load sessions. Check the PC and Wi-Fi, then refresh."
-                                        threads.isEmpty() -> "No sessions found on the PC."
-                                        else -> "No sessions match the search and filters."
-                                    },
-                                    style = MaterialTheme.typography.bodyLarge,
-                                )
-                            }
-                        }
+                        if (rows.isEmpty()) item(key = "empty") { emptyState(Modifier.fillParentMaxSize()) }
                         itemsIndexed(rows, key = { _, row -> row.id }) { index, row ->
-                            if (index > 0 && rows[index - 1].pinned && !row.pinned) {
-                                HorizontalDivider(Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                            Column(Modifier.animateItem(CardFade, CardPlacement, null)) {
+                                if (index > 0 && rows[index - 1].pinned && !row.pinned) {
+                                    HorizontalDivider(Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                                }
+                                card(row, Modifier.padding(horizontal = 8.dp))
                             }
-                            SessionRow(
-                                row = row,
-                                drawer = state.filter.drawerOnly,
-                                busy = row.id in state.busyIds,
-                                nowMs = nowMs,
-                                messageLit = row.id in highlights,
-                                onProviderCenter = { center -> providerCenters[row.id] = center },
-                                onOpen = { viewModel.action(row.id, "open") },
-                                onActions = { keyboard?.hide(); actionRowId = row.id },
-                            )
                         }
                         item(key = "bottom-space") { Spacer(Modifier.height(16.dp)) }
-                    }
+                    } }
                     val messageColor = MaterialTheme.colorScheme.primary
                     Canvas(Modifier.matchParentSize().clipToBounds()) {
                         for (flight in flights) {
                             val start = endpoint(flight.message.from) ?: continue
                             val end = endpoint(flight.message.to) ?: continue
-                            if (!start.outside || !end.outside) drawMessage(flight, frameNanos, start, end, messageColor)
+                            if (!start.outside || !end.outside) drawMessage(flight, frameNanos, start, end, messageColor, flow)
                         }
                     }
                 }
@@ -456,6 +552,10 @@ fun SessionsScreen(
         onAction = { action -> actionRowId = null; viewModel.action(actionRow.id, action) },
     )
 }
+
+// Card motion: one critically damped spring (about 350 ms) for placement and fade in; a leaving card goes at once.
+private val CardPlacement = spring(dampingRatio = 1f, stiffness = 360f, visibilityThreshold = IntOffset.VisibilityThreshold)
+private val CardFade = spring<Float>(dampingRatio = 1f, stiffness = 360f)
 
 @Composable
 private fun SessionChip(
@@ -502,15 +602,21 @@ private fun ProviderWarning(provider: Provider, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun SessionRow(
-    row: Thread, drawer: Boolean, busy: Boolean, nowMs: Long, messageLit: Boolean,
-    onProviderCenter: (Offset) -> Unit, onOpen: () -> Unit, onActions: () -> Unit,
+private fun SessionCard(
+    row: Thread, comfortable: Boolean, drawerView: Boolean, busy: Boolean, opening: Boolean, confirmed: Boolean,
+    nowMs: Long, messageLit: Boolean, onProviderCenter: (Offset) -> Unit, onOpen: () -> Unit, onActions: () -> Unit,
+    onCorner: (String) -> Unit, modifier: Modifier = Modifier,
 ) {
+    val palette = LocalPalette.current
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val tones = cardTones(palette, row, comfortable, drawerView, pressed, nowMs)
     val left = limitLeft(row, nowMs)
     val limited = left > 0
-    val indicator = attentionIndicator(row, drawer, nowMs)
+    val countdown = if (limited) durationText(left) else ""
+    val indicator = attentionIndicator(row, drawerView, nowMs)
     val state = stateLabel(row.state)
-    val time = if (row.state == "working") workingDuration(row.workingSinceMs, nowMs) else idleAge(row.updatedAtMs, nowMs)
+    val working = if (row.state == "working") workingDuration(row.workingSinceMs, nowMs) else ""
     val indicatorMeaning = when (indicator) {
         "question" -> if (row.actionRequired) "Action required on the PC" else "Question needs attention"
         "dot" -> when {
@@ -523,86 +629,199 @@ private fun SessionRow(
         else -> ""
     }
     val description = listOf(
-        row.title, row.projectName, state, if (limited) "Usage limit. Resets in ${spokenDuration(left)}" else time, indicatorMeaning,
+        row.title, row.projectName, state,
+        if (limited) "Usage limit. Resets in ${spokenDuration(left)}" else working.ifEmpty { idleAge(row.updatedAtMs, nowMs) },
+        indicatorMeaning,
         if (row.pinned) "Pinned" else "",
         if (row.drawer) "In the drawer" else "",
         row.sourceLabel.ifEmpty { row.providerLabel },
         if (!row.canOpen) "No direct link" else "",
-        if (busy) "Opening" else "",
+        if (opening) "Opening" else "",
     ).filter { it.isNotBlank() }.joinToString(". ")
-    val colors = MaterialTheme.colorScheme
-    val titleColor = if (limited) colors.onSurfaceVariant else colors.onSurface
-    val markerColor = remember(row.sourceColor, colors.surface, colors.primary) {
-        sourceMarkerColor(row.sourceColor, colors.surface, colors.primary)
+    val title = if (opening) "Opening…" else row.title
+    val card = modifier.fillMaxWidth()
+        .heightIn(min = (if (comfortable) COMFORTABLE_ROW_HEIGHT else COMPACT_ROW_HEIGHT).dp)
+        .combinedClickable(
+            interactionSource = interaction,
+            indication = remember(palette.highlight) { HighlightIndication(hexColor(palette.highlight)) },
+            enabled = !busy,
+            role = Role.Button,
+            onClickLabel = if (row.canOpen) "Open on PC" else "Show link information",
+            onLongClickLabel = "Session actions",
+            onLongClick = onActions,
+            onClick = onOpen,
+        )
+    val mark: @Composable () -> Unit = {
+        ProviderMark(row, limited, messageLit, palette, Modifier.onGloballyPositioned {
+            onProviderCenter(it.positionInRoot() + Offset(it.size.width / 2f, it.size.height / 2f))
+        })
     }
-    Row(
-        modifier = Modifier.fillMaxWidth().heightIn(min = 88.dp)
-            .combinedClickable(
-                enabled = !busy,
-                role = Role.Button,
-                onClickLabel = if (row.canOpen) "Open on PC" else "Show link information",
-                onLongClickLabel = "Session actions",
-                onLongClick = onActions,
-                onClick = onOpen,
-            )
-            .semantics(mergeDescendants = true) { contentDescription = description }
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    if (!comfortable) Row(
+        modifier = card.semantics(mergeDescendants = true) { contentDescription = description }.padding(horizontal = 5.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(32.dp).onGloballyPositioned {
-            onProviderCenter(it.positionInRoot() + Offset(it.size.width / 2f, it.size.height / 2f))
-        }.clearAndSetSemantics { }, contentAlignment = Alignment.Center) {
-            Box(
-                modifier = Modifier.fillMaxSize().graphicsLayer { alpha = if (limited) .4f else 1f }
-                    .background(colors.surfaceContainerHigh, CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(if (row.provider == "codex") "cx" else "cl", style = MaterialTheme.typography.labelMedium,
-                    color = if (messageLit) colors.primary else colors.onSurfaceVariant)
+        Box(Modifier.clearAndSetSemantics { }) { mark() }
+        Text(title, fontSize = 13.sp, lineHeight = 16.sp, color = hexColor(tones.title), maxLines = 1,
+            overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).clearAndSetSemantics { })
+        if (indicator.isNotEmpty()) IndicatorMark(indicator, palette)
+        if (limited) LimitClock(tones.state)
+        Text(if (limited) "Resets $countdown" else state + if (working.isNotEmpty()) " ·$working" else "",
+            fontSize = 11.sp, lineHeight = 14.sp, color = hexColor(tones.state), maxLines = 1,
+            modifier = Modifier.clearAndSetSemantics { })
+    } else Box(card.semantics { contentDescription = description }) {
+        Column(
+            modifier = Modifier.fillMaxWidth().align(Alignment.CenterStart)
+                .padding(start = 8.dp, end = 8.dp, top = 2.dp, bottom = 2.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Row(Modifier.padding(end = 54.dp).clearAndSetSemantics { }, horizontalArrangement = Arrangement.spacedBy(7.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                mark()
+                Text(row.projectName.ifEmpty { "No project" }, fontSize = 11.sp, lineHeight = 14.sp,
+                    color = hexColor(tones.caption), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            if (row.sourceShowMarker && row.sourceCount > 1) Box(
-                Modifier.align(Alignment.BottomStart).size(8.dp)
-                    .background(markerColor, CircleShape)
-                    .border(1.dp, colors.surface, CircleShape),
-            )
+            Text(title, fontSize = 13.sp, lineHeight = 16.sp, color = hexColor(tones.title), maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 21.dp, end = 54.dp).heightIn(min = 32.dp).clearAndSetSemantics { })
+            Row(Modifier.padding(start = 21.dp).clearAndSetSemantics { }, horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                if (limited) LimitClock(tones.state)
+                Text(if (limited) "Resets in" else state, fontSize = 11.sp, lineHeight = 14.sp,
+                    color = hexColor(tones.state), maxLines = 1)
+                Text(countdown.ifEmpty { working.ifEmpty { idleAge(row.updatedAtMs, nowMs) } }, fontSize = 11.sp,
+                    lineHeight = 14.sp, color = hexColor(tones.caption), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.End, modifier = Modifier.weight(1f))
+            }
         }
-        Column(Modifier.weight(1f).clearAndSetSemantics { }, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
-                Text(row.title, style = MaterialTheme.typography.titleMedium, color = titleColor,
-                    maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                if (row.pinned) Icon(PinIcon, contentDescription = null,
-                    tint = colors.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp).size(16.dp))
+        Row(Modifier.align(Alignment.TopEnd).padding(end = 5.dp, top = 2.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            val controls = cornerControls(row, drawerView, confirmed, nowMs)
+            val title = row.title.ifEmpty { "Untitled session" }
+            controls.firstOrNull { it.kind == "drawer" }?.let { CornerButton(it, title, busy, palette, onCorner) }
+            // The read and pin slots keep their places, as on the desktop.
+            Box(Modifier.size(24.dp)) {
+                controls.firstOrNull { it.kind !in setOf("drawer", "pin") }?.let { CornerButton(it, title, busy, palette, onCorner) }
             }
-            if (busy) Text("Opening…", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
-            else if (limited) Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Icon(painterResource(R.drawable.ic_schedule), contentDescription = null,
-                    tint = colors.onSurfaceVariant, modifier = Modifier.size(12.dp))
-                Text("Resets in ${durationText(left)}", style = MaterialTheme.typography.bodyMedium,
-                    color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Box(Modifier.size(24.dp)) {
+                controls.firstOrNull { it.kind == "pin" }?.let { CornerButton(it, title, busy, palette, onCorner) }
             }
-            else Row(verticalAlignment = Alignment.CenterVertically) {
-                if (row.projectName.isNotBlank()) {
-                    Text(row.projectName, style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                    Text(" · ", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun ProviderMark(row: Thread, limited: Boolean, messageLit: Boolean, palette: Palette, modifier: Modifier) {
+    val text = hexColor(palette.text)
+    val marker = remember(row.sourceColor, row.sourceCount, row.sourceShowMarker, palette) {
+        if (!row.sourceShowMarker || row.sourceCount <= 1 || !row.sourceColor.matches(Regex("#[0-9a-fA-F]{6}"))) ""
+        else displaySourceColor(row.sourceColor.lowercase(), listOf(palette.background, palette.highlight))
+    }
+    Box(modifier.size(14.dp)) {
+        Icon(
+            painterResource(if (row.provider == "codex") R.drawable.ic_provider_openai else R.drawable.ic_provider_claude),
+            contentDescription = null,
+            tint = if (messageLit) hexColor(palette.accent) else text.copy(alpha = if (limited) .4f else .65f),
+            modifier = Modifier.fillMaxSize(),
+        )
+        // The Soft dot: a 6 dp fill with a 1 dp background rim at the lower left of the mark.
+        if (marker.isNotEmpty()) Box(
+            Modifier.align(Alignment.BottomStart).size(8.dp).background(hexColor(palette.background), CircleShape)
+                .padding(1.dp).background(hexColor(marker), CircleShape),
+        )
+    }
+}
+
+@Composable
+private fun LimitClock(color: String) = Icon(painterResource(R.drawable.ic_schedule), contentDescription = null,
+    tint = hexColor(color), modifier = Modifier.size(12.dp))
+
+@Composable
+private fun IndicatorMark(indicator: String, palette: Palette) {
+    when (indicator) {
+        "question" -> Text("?", color = hexColor(palette.accent), fontSize = 11.sp, lineHeight = 14.sp,
+            fontWeight = FontWeight.ExtraBold)
+        "dot" -> Box(Modifier.size(7.dp).background(hexColor(palette.accent), CircleShape))
+        "discard" -> Box(Modifier.size(9.dp).border(1.5.dp, hexColor(palette.text), CircleShape))
+        "stop" -> Box(Modifier.size(7.dp).background(hexColor(palette.muted), RoundedCornerShape(1.dp)))
+    }
+}
+
+@Composable
+private fun CornerButton(control: CornerControl, title: String, busy: Boolean, palette: Palette, onCorner: (String) -> Unit) {
+    val text = hexColor(palette.text)
+    val background = when (control.kind) {
+        "dot", "drawer" -> text.copy(alpha = .08f)
+        "question" -> if (control.action != null) text.copy(alpha = .08f) else Color.Transparent
+        "pin" -> text.copy(alpha = .12f)
+        "confirmed" -> hexColor(palette.success).copy(alpha = .12f)
+        else -> Color.Transparent
+    }
+    // The circle is 24 dp; the touch area is 48 dp around it (it reaches past the slot, as a touch inset).
+    Box(
+        Modifier.size(24.dp).wrapContentSize(unbounded = true).size(48.dp)
+            .then(if (control.action == null) Modifier.semantics { contentDescription = "${control.label}: $title" }
+            else Modifier.clickable(
+                interactionSource = null,
+                indication = null,
+                enabled = !busy,
+                role = Role.Button,
+                onClickLabel = control.label,
+            ) { onCorner(control.action) }.semantics {
+                contentDescription = "${control.label}: $title"
+                if (busy) stateDescription = "Busy"
+            }),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(Modifier.size(24.dp).background(background, CircleShape), contentAlignment = Alignment.Center) {
+            when (control.kind) {
+                "confirmed" -> Icon(Icons.Default.Check, contentDescription = null, tint = hexColor(palette.success),
+                    modifier = Modifier.size(12.dp))
+                "pin" -> Icon(PinIcon, contentDescription = null, tint = text, modifier = Modifier.size(12.dp))
+                "drawer" -> DrawerGlyph(hexColor(palette.accent), hexColor(palette.background))
+                else -> IndicatorMark(control.kind, palette)
+            }
+        }
+    }
+}
+
+// The filled drawer glyph of set_palette: a 9x5 dp rounded box with a 3x1 dp handle in the background color.
+@Composable
+private fun DrawerGlyph(color: Color, handle: Color) = Canvas(Modifier.size(9.dp, 5.dp)) {
+    drawRoundRect(color, cornerRadius = CornerRadius(2.dp.toPx()))
+    drawRect(handle, topLeft = Offset((size.width - 3.dp.toPx()) / 2, (size.height - 1.dp.toPx()) / 2),
+        size = Size(3.dp.toPx(), 1.dp.toPx()))
+}
+
+// The pressed highlight: the palette highlight behind the card, rounded 3 dp, fading in and out in 100 ms.
+private class HighlightIndication(private val color: Color) : IndicationNodeFactory {
+    override fun create(interactionSource: InteractionSource): DelegatableNode = HighlightNode(interactionSource, color)
+    override fun equals(other: Any?) = other is HighlightIndication && other.color == color
+    override fun hashCode() = color.hashCode()
+}
+
+private class HighlightNode(private val source: InteractionSource, private val color: Color) :
+    Modifier.Node(), DrawModifierNode {
+    private val alpha = Animatable(0f)
+
+    override fun onAttach() {
+        coroutineScope.launch {
+            val presses = mutableSetOf<PressInteraction.Press>()
+            source.interactions.collect { interaction ->
+                when (interaction) {
+                    is PressInteraction.Press -> presses += interaction
+                    is PressInteraction.Release -> presses -= interaction.press
+                    is PressInteraction.Cancel -> presses -= interaction.press
                 }
-                Text(listOf(state, time).filter { it.isNotEmpty() }.joinToString(" · "),
-                    style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                val target = if (presses.isEmpty()) 0f else 1f
+                launch { alpha.animateTo(target, tween(100)) }
             }
         }
-        Box(Modifier.size(24.dp).clearAndSetSemantics { }, contentAlignment = Alignment.Center) {
-            when (indicator) {
-                "question" -> Text("?", color = colors.primary, style = MaterialTheme.typography.titleLarge)
-                "dot" -> Box(Modifier.size(8.dp).background(colors.primary, CircleShape))
-                "discard" -> Box(Modifier.size(10.dp).border(1.5.dp, colors.onSurface, CircleShape))
-                "stop" -> Box(Modifier.size(8.dp).background(colors.onSurfaceVariant, RoundedCornerShape(1.dp)))
-            }
-        }
+    }
+
+    override fun ContentDrawScope.draw() {
+        if (alpha.value > 0f) drawRoundRect(color.copy(alpha = color.alpha * alpha.value),
+            cornerRadius = CornerRadius(3.dp.toPx()))
+        drawContent()
     }
 }
 
@@ -715,15 +934,46 @@ private fun messageEndpoint(
     return MessageEndpoint(Offset(x, if (index < first) top else bottom), true)
 }
 
+private fun flowEndpoint(
+    id: String,
+    centers: Map<String, Offset>,
+    origin: Offset,
+    viewport: IntSize,
+    layout: LazyListLayoutInfo,
+    indexes: Map<String, Int>,
+    capacity: Int,
+    rowHeight: Float,
+    density: Float,
+): MessageEndpoint? {
+    if (viewport.width <= 4 * density) return null
+    val index = indexes[id] ?: return null
+    val column = index / capacity
+    val visible = layout.visibleItemsInfo.map { it.index }
+    val left = 2 * density
+    val right = viewport.width - 2 * density
+    if (column in visible) {
+        val center = centers[id]?.minus(origin) ?: return null
+        val x = center.x.coerceIn(left, right)
+        return MessageEndpoint(Offset(x, center.y), x != center.x)
+    }
+    val first = visible.minOrNull() ?: return null
+    // An off-screen card has no measured place; use its row slot in the column.
+    val y = ((index % capacity) + .5f) * rowHeight
+    return MessageEndpoint(Offset(if (column < first) left else right, y.coerceAtMost(viewport.height.toFloat())), true)
+}
+
 private fun DrawScope.drawMessage(
     flight: MessageFlight, nowNanos: Long, start: MessageEndpoint, end: MessageEndpoint, color: Color,
+    sideEdges: Boolean,
 ) {
     val elapsed = flight.elapsedMs(nowNanos)
     fun edge(point: Offset, ms: Double) {
         val alpha = minOf(1.0, ms / 120, 1 - (ms - 420) / 300).coerceAtLeast(0.0).toFloat()
+        // Column Flow has its edge marks at the left and right edges, so they stand upright there.
+        val mark = if (sideEdges) Size(3.dp.toPx(), 18.dp.toPx()) else Size(18.dp.toPx(), 3.dp.toPx())
         if (alpha > 0) drawRoundRect(
-            color.copy(alpha = alpha), topLeft = point - Offset(9.dp.toPx(), 1.5.dp.toPx()),
-            size = Size(18.dp.toPx(), 3.dp.toPx()), cornerRadius = CornerRadius(1.5.dp.toPx()),
+            color.copy(alpha = alpha), topLeft = point - Offset(mark.width / 2, mark.height / 2),
+            size = mark, cornerRadius = CornerRadius(1.5.dp.toPx()),
         )
     }
     if (flight.senderOutside && start.outside && elapsed < 720) edge(start.point, elapsed)
@@ -758,20 +1008,6 @@ private fun DrawScope.drawMessage(
         drawCircle(color.copy(alpha = .85f * (1 - progress)), (5 + 8 * progress).dp.toPx(), end.point,
             style = Stroke(1.5.dp.toPx()))
     }
-}
-
-private fun sourceMarkerColor(value: String, surface: Color, fallback: Color): Color {
-    val rgb = value.takeIf { it.matches(Regex("#[0-9a-fA-F]{6}")) }?.drop(1)?.toLongOrNull(16)
-    val color = if (rgb == null) fallback else Color((0xff000000L or rgb).toInt())
-    fun contrast(candidate: Color): Float {
-        val a = candidate.luminance()
-        val b = surface.luminance()
-        return (maxOf(a, b) + 0.05f) / (minOf(a, b) + 0.05f)
-    }
-    if (contrast(color) >= 3f) return color
-    val target = if (contrast(Color.White) > contrast(Color.Black)) Color.White else Color.Black
-    // Adjust only the displayed marker so the configured color stays visible in either system theme.
-    return (1..10).map { lerp(color, target, it / 10f) }.first { contrast(it) >= 3f }
 }
 
 private val PinIcon = ImageVector.Builder("Pin", 24.dp, 24.dp, 24f, 24f).apply {
