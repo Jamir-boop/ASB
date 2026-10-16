@@ -357,7 +357,11 @@ gatewayTest('an upstream error after the gzip headers ends the phone reply', asy
     setTimeout(() => response.socket.destroy(), 50);
   } });
   const token = (await pair()).json.token;
-  await assert.rejects(request('/phone/v1/dashboard', { token, headers: { 'accept-encoding': 'gzip' } }));
+  const started = performance.now();
+  // The gateway must end the reply itself; the helper's 5 s timeout must not be what rejects.
+  await assert.rejects(request('/phone/v1/dashboard', { token, headers: { 'accept-encoding': 'gzip' } }),
+    (error) => error.message !== 'Test request timed out.');
+  assert.ok(performance.now() - started < 2000, 'the phone reply must end soon after the upstream error');
 });
 
 test('remote addresses and interface discovery allow only loopback or RFC1918 IPv4 as specified', () => {
