@@ -21,8 +21,10 @@ const ROLLOUT_SIGNAL_CONCURRENCY = 6;
 const COMPLETION_HINT = /(\bdone\b|\bcompleted?\b|ready for review|handoff|完成|已完成|验收|交付|交接|可以看|可以试)/i;
 const LOW_SIGNAL_USER_MESSAGE = /^(继续|继续吧|你继续|你继续吧|好的|好的好的|可以|可以的|行|ok|okay|收到|嗯|嗯嗯|先这样)$/iu;
 const ROLLOUT_LIFECYCLE_EVENT_RE = /"type"\s*:\s*"(?:task_started|task_complete|turn_aborted|turn_cancelled|task_cancelled|cancelled)"/;
-// A usage window at 100 percent or more. Other token_count lines cannot change the limit reset of a scan, so they are not parsed.
-const ROLLOUT_LIMIT_REACHED_RE = /"used_percent"\s*:\s*[1-9]\d{2}/;
+// A token_count line with a usage window. Lines without one cannot change the window record of a scan, so they are not parsed.
+const ROLLOUT_LIMIT_WINDOW_RE = /"used_percent"\s*:\s*-?\d/;
+// Codex refused at 94-98 percent in the observed logs. A window below this level cannot explain a stop.
+const LIMIT_STOP_USED_PERCENT = 90;
 const QUESTION_HISTORY_COMPLETE = Symbol('question history complete');
 const ROLLOUT_SCAN_CHUNK_BYTES = 1024 * 1024;
 const ROLLOUT_SCAN_OVERLAP_BYTES = 256;
@@ -511,8 +513,9 @@ function emptyRolloutLifecycle() {
     // A usage limit stopped the latest turn.
     limitStopped: false,
     limitStoppedAtMs: 0,
-    // The largest reset of the full windows in the newest token_count with a full window. Accounts with credits keep working past a full window.
-    limitFullResetsAtMs: 0,
+    // The newest token_count with a window: its time and its windows as [usedPercent, resetsAtMs]. Codex can stop a turn before a window shows 100 percent.
+    limitWindowAtMs: 0,
+    limitWindows: [],
     limitResetsAtMs: 0,
   };
 }
@@ -533,8 +536,10 @@ function applyRolloutLifecycleEvent(lifecycle, payload, timestampMs) {
 
   if (eventType === 'token_count') {
     const windows = [payload.rate_limits?.primary, payload.rate_limits?.secondary].filter((window) => window && typeof window === 'object');
-    const full = windows.filter((window) => Number(window.used_percent) >= 100);
-    if (full.length) lifecycle.limitFullResetsAtMs = Math.max(0, ...full.map((window) => Number(window.resets_at) * 1000).filter(Number.isFinite));
+    if (windows.length) {
+      lifecycle.limitWindowAtMs = timestampMs || 0;
+      lifecycle.limitWindows = windows.map((window) => [Number(window.used_percent) || 0, Number(window.resets_at) * 1000 || 0]);
+    }
     return;
   }
 
@@ -552,10 +557,17 @@ function applyRolloutLifecycleEvent(lifecycle, payload, timestampMs) {
   }
 }
 
+// The reset of the most-used window (on a tie the later reset) among the windows that reset after the stop and are near the refusal level, else 0.
+function limitStopResetsAtMs(windows, stoppedAtMs) {
+  return windows.filter(([used, resetsAtMs]) => used >= LIMIT_STOP_USED_PERCENT && resetsAtMs > stoppedAtMs)
+    .reduce((best, item) => item[0] > best[0] || (item[0] === best[0] && item[1] > best[1]) ? item : best, [0, 0])[1];
+}
+
 function finalizeRolloutLifecycle(signals) {
-  // Only an ended turn can be stopped by a usage limit. A reset at or before the stop is stale: a retry fails with no new full record.
+  // Only an ended turn can be stopped by a usage limit. The window record must be at or before the stop.
   signals.limitResetsAtMs = signals.agentRunning === false && signals.limitStopped
-    && signals.limitFullResetsAtMs > signals.limitStoppedAtMs ? signals.limitFullResetsAtMs : 0;
+    && signals.limitWindowAtMs && signals.limitWindowAtMs <= signals.limitStoppedAtMs
+    ? limitStopResetsAtMs(signals.limitWindows || [], signals.limitStoppedAtMs) : 0;
   if (signals.agentRunning === true) {
     signals.agentActivityAtMs = Math.max(
       Number(signals.agentStartedAtMs || 0),
@@ -729,7 +741,7 @@ async function scanRolloutLifecycle(rolloutPath, stat, cacheLimit, needLifecycle
   }
   const applyLines = (text) => {
     for (const line of text.split(ROLLOUT_LINE_BREAK_RE)) {
-      if (!ROLLOUT_LIFECYCLE_EVENT_RE.test(line) && !ROLLOUT_LIMIT_REACHED_RE.test(line) && !/request_user_input|function_call_output|send_user_message_question_reply|"type"\s*:\s*"user_message"|"role"\s*:\s*"user"/.test(line)) continue;
+      if (!ROLLOUT_LIFECYCLE_EVENT_RE.test(line) && !ROLLOUT_LIMIT_WINDOW_RE.test(line) && !/request_user_input|function_call_output|send_user_message_question_reply|"type"\s*:\s*"user_message"|"role"\s*:\s*"user"/.test(line)) continue;
 
       try {
         const event = JSON.parse(line);
@@ -846,12 +858,12 @@ export async function readRolloutSignals(
       bytesToRead = nextBytes;
     }
     // A human message or an abort clears all earlier questions. Otherwise keep the full history scan.
-    // A stop without a full window in the tail needs the newest full window of the whole log.
-    const limitBeforeTail = signals.limitFullResetsAtMs === 0 && signals.agentRunning === false && signals.limitStopped;
+    // A stop without a window record in the tail needs the newest window record of the whole log.
+    const limitBeforeTail = signals.limitWindowAtMs === 0 && signals.agentRunning === false && signals.limitStopped;
     if (tailStart > 0 && (limitBeforeTail || !(signals.agentRunning !== null && signals[QUESTION_HISTORY_COMPLETE]))) {
       const activity = await scanRolloutLifecycle(rolloutPath, stat, cacheLimit, signals.agentRunning === null || limitBeforeTail, cacheScope);
       signals = finalizeRolloutLifecycle({ ...signals, ...(signals.agentRunning === null ? activity : {}),
-        ...(limitBeforeTail ? { limitFullResetsAtMs: activity.limitFullResetsAtMs } : {}),
+        ...(limitBeforeTail ? { limitWindowAtMs: activity.limitWindowAtMs, limitWindows: activity.limitWindows } : {}),
         awaitingUserInput: activity.awaitingUserInput, userQuestionBlocking: activity.userQuestionBlocking,
         latestUserQuestionAtMs: activity.latestUserQuestionAtMs, latestBlockingQuestionAtMs: activity.latestBlockingQuestionAtMs });
     }
@@ -913,7 +925,8 @@ async function attachRolloutSignals(threads, {
     thread.latestBlockingQuestionAtMs = Number(result.value.latestBlockingQuestionAtMs || 0);
     thread.lifecycleRunning = result.value.agentRunning;
     thread.limitResetsAtMs = Number(result.value.limitResetsAtMs || 0);
-    thread.limitFullResetsAtMs = Number(result.value.limitFullResetsAtMs || 0);
+    thread.limitWindowAtMs = Number(result.value.limitWindowAtMs || 0);
+    thread.limitWindows = result.value.limitWindows || [];
     thread.limitStopped = result.value.agentRunning === false && Boolean(result.value.limitStopped);
     thread.limitStoppedAtMs = thread.limitStopped ? Number(result.value.limitStoppedAtMs || 0) : 0;
     if (result.value.agentRunning === true) {
@@ -946,10 +959,14 @@ export async function loadCodexDashboard(options = {}) {
     for (const thread of threads) Object.assign(thread, codexNativeReadStatus(thread, globalState));
   }
   const enriched = await attachRolloutSignals(threads, options);
-  // A stop with no current full window in its own log uses the newest full-window reset of the same Codex home, if it is after the stop.
-  const homeLimitResetsAtMs = Math.max(0, ...enriched.map((thread) => thread.limitFullResetsAtMs || 0));
+  // A stop uses the newest window record at or before it, of any session of the same Codex home: a retry can fail with no record of its own.
+  const windowRecords = enriched.filter((thread) => thread.limitWindowAtMs > 0);
   for (const thread of enriched) {
-    if (thread.limitStopped && !thread.limitResetsAtMs && homeLimitResetsAtMs > thread.limitStoppedAtMs) thread.limitResetsAtMs = homeLimitResetsAtMs;
+    if (!thread.limitStopped) continue;
+    // The own record comes first, so it wins a tie.
+    const record = [thread, ...windowRecords].reduce((best, item) => item.limitWindowAtMs <= thread.limitStoppedAtMs
+      && item.limitWindowAtMs > (best?.limitWindowAtMs || 0) ? item : best, null);
+    thread.limitResetsAtMs = record ? limitStopResetsAtMs(record.limitWindows, thread.limitStoppedAtMs) : 0;
   }
   const incoming = new Map();
   for (const { to, from, atMs } of await readBridgeMessages(path.dirname(databasePath), nowMs - SESSION_MESSAGE_WINDOW_MS, options.cacheScope)) {

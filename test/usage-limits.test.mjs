@@ -37,32 +37,59 @@ const fillers = (from, count) => Array.from({ length: count }, (_, index) => fil
 const resetMs = resetSeconds * 1000;
 const limitOf = (records) => parseRolloutSignals(jsonl(records)).limitResetsAtMs;
 
+// A failed turn writes this record. It has no windows.
+const premium = (offset) => codex(offset, {
+  type: 'token_count', info: { total_token_usage: { input_tokens: 10 } },
+  rate_limits: { limit_id: 'premium', limit_name: null, primary: null, secondary: null, credits: null, individual_limit: null,
+    spend_control_reached: null, plan_type: null, rate_limit_reached_type: null },
+});
+// Pro accounts have only a weekly primary window.
+const proCount = (offset, primary) => codex(offset, {
+  type: 'token_count', info: { total_token_usage: { input_tokens: 10 } },
+  rate_limits: { limit_id: 'codex', limit_name: null, primary, secondary: null, credits: null, individual_limit: null,
+    spend_control_reached: null, plan_type: 'pro', rate_limit_reached_type: null },
+});
+
 test('Codex gives a reset only for a turn that ended with the usage-limit error', () => {
   // Accounts with credits keep working past a full window.
   assert.equal(limitOf([started(-9000), tokenCount(-8000, window(100), undefined, { has_credits: true, unlimited: false, balance: '5' }),
     complete(-7000)]), 0);
-  // A stop in the same turn as a full record. A later record below 100 or with a null window does not change the reset.
-  assert.equal(limitOf([started(-9000), tokenCount(-8500, window(100)), tokenCount(-8000, window(3)), tokenCount(-7500, null),
-    failed(-7000)]), resetMs);
-  // The secondary window counts, the largest reset of the full windows wins, and the newest full record wins.
-  assert.equal(limitOf([started(-9000), tokenCount(-8000, window(40), window(100.0, resetSeconds + 50, 10080)), failed(-7000)]),
+  // Codex stops the turn before a window shows 100 percent, and the failed turn writes a premium record with no windows.
+  assert.equal(limitOf([started(-9000), tokenCount(-8000, window(98)), premium(-7100), failed(-7000)]), resetMs);
+  assert.equal(limitOf([started(-9000), premium(-7100), failed(-7000)]), 0);
+  // A Pro weekly window gives a reset days away.
+  const proResetSeconds = Math.floor(now / 1000) + 5 * 24 * 3600;
+  assert.equal(limitOf([started(-9000), proCount(-8000, window(97, proResetSeconds, 10080)), premium(-7100), failed(-7000)]),
+    proResetSeconds * 1000);
+  // The most-used window wins, and on a tie the later reset wins.
+  assert.equal(limitOf([started(-9000), tokenCount(-8000, window(92), window(95, resetSeconds + 50, 10080)), failed(-7000)]),
     (resetSeconds + 50) * 1000);
-  assert.equal(limitOf([started(-9000), tokenCount(-8000, window(100, resetSeconds + 9), window(100, resetSeconds + 5)), failed(-7000)]),
+  assert.equal(limitOf([started(-9000), tokenCount(-8000, window(90, resetSeconds + 5), window(90, resetSeconds + 9, 10080)), failed(-7000)]),
     (resetSeconds + 9) * 1000);
-  assert.equal(limitOf([started(-9000), tokenCount(-8500, window(100, resetSeconds + 900)), tokenCount(-8000, null, window(100.5)),
+  // The newest window record wins, also when an older one was fuller.
+  assert.equal(limitOf([started(-9000), tokenCount(-8500, window(100, resetSeconds + 900)), tokenCount(-8000, window(95)), premium(-7500),
     failed(-7000)]), resetMs);
-  // An error-only retry turn uses the full record of an earlier turn.
-  assert.equal(limitOf([started(-9000), tokenCount(-8000, window(100)), complete(-7000), started(-6000), failed(-5900)]), resetMs);
+  // A window that resets at or before the stop does not count, so a less-used full window that resets later wins.
+  const stopSeconds = Math.floor((now - 7000) / 1000);
+  assert.equal(limitOf([started(-9000), tokenCount(-8000, window(101, stopSeconds), window(100, resetSeconds, 10080)), failed(-7000)]), resetMs);
+  assert.equal(limitOf([started(-9000), tokenCount(-8000, window(99, stopSeconds), window(98, resetSeconds, 10080)), failed(-7000)]), resetMs);
+  // A record far below the refusal level cannot explain the stop, so it gives no days-away reset.
+  assert.equal(limitOf([started(-9000), tokenCount(-8000, window(40), window(60, resetSeconds + 4 * 24 * 3600, 10080)), premium(-7100),
+    failed(-7000)]), 0);
+  assert.equal(limitOf([started(-9000), tokenCount(-8000, window(89.9)), failed(-7000)]), 0);
+  assert.equal(limitOf([started(-9000), tokenCount(-8000, window(90)), failed(-7000)]), resetMs);
+  // An error-only retry turn uses the window record of an earlier turn.
+  assert.equal(limitOf([started(-9000), tokenCount(-8000, window(97)), complete(-7000), started(-6000), failed(-5900)]), resetMs);
   // A stop with no known reset, a running turn, a later normal end, and other errors give no limit.
   const stop = parseRolloutSignals(jsonl([started(-9000), failed(-8900)]));
   assert.deepEqual([stop.limitStopped, stop.limitResetsAtMs], [true, 0]);
-  assert.equal(limitOf([started(-9000), tokenCount(-8000, window(100)), failed(-7000), started(-6000)]), 0);
-  assert.equal(limitOf([started(-9000), tokenCount(-8000, window(100)), failed(-7000), started(-6000), complete(-5000)]), 0);
+  assert.equal(limitOf([started(-9000), tokenCount(-8000, window(97)), failed(-7000), started(-6000)]), 0);
+  assert.equal(limitOf([started(-9000), tokenCount(-8000, window(97)), failed(-7000), started(-6000), complete(-5000)]), 0);
   for (const kind of ['cyber_policy', 'server_overloaded', null]) {
-    assert.equal(limitOf([started(-9000), tokenCount(-8000, window(100)), failed(-7000, kind)]), 0, String(kind));
+    assert.equal(limitOf([started(-9000), tokenCount(-8000, window(97)), failed(-7000, kind)]), 0, String(kind));
   }
-  assert.equal(limitOf([started(-9000), tokenCount(-8000, window(100)), codex(-7000, { type: 'task_complete', error: 'usage_limit_exceeded' })]), 0);
-  assert.equal(limitOf([started(-9000), tokenCount(-8000, window(100)), failed(-7000), codex(-6000, { type: 'turn_aborted' })]), 0);
+  assert.equal(limitOf([started(-9000), tokenCount(-8000, window(97)), codex(-7000, { type: 'task_complete', error: 'usage_limit_exceeded' })]), 0);
+  assert.equal(limitOf([started(-9000), tokenCount(-8000, window(97)), failed(-7000), codex(-6000, { type: 'turn_aborted' })]), 0);
 });
 
 async function tokenCountParses(read) {
@@ -79,37 +106,37 @@ async function tokenCountParses(read) {
   }
 }
 
-test('Codex lifecycle scan parses only full-window token_count lines and its appends give the full result', async (t) => {
+test('Codex lifecycle scan parses only token_count lines with a window and its appends give the full result', async (t) => {
   const dir = await temp(t);
   const filePath = path.join(dir, 'rollout.jsonl');
   const options = { initialBytes: 2048, maxBytes: 2048 };
   // The tail has no lifecycle event, so the reader scans the full log.
   await writeFile(filePath, jsonl([started(-90_000), ...Array.from({ length: 500 }, (_, index) => tokenCount(-89_000 + index, window(index % 100))),
-    tokenCount(-60_000, window(100)), complete(-59_000), ...fillers(-50_000, 20)]));
+    tokenCount(-60_000, window(100)), premium(-59_500), complete(-59_000), ...fillers(-50_000, 20)]));
   const first = await tokenCountParses(() => readRolloutSignals(filePath, options));
-  assert.deepEqual([first.value.agentRunning, first.value.limitResetsAtMs, first.count], [false, 0, 1]);
+  assert.deepEqual([first.value.agentRunning, first.value.limitResetsAtMs, first.count], [false, 0, 501]);
 
-  await appendFile(filePath, jsonl([started(-40_000), tokenCount(-39_500, window(50)), failed(-39_000), ...fillers(-30_000, 20)]));
+  await appendFile(filePath, jsonl([started(-40_000), tokenCount(-39_500, window(95)), premium(-39_200), failed(-39_000), ...fillers(-30_000, 20)]));
   const appended = await tokenCountParses(() => readRolloutSignals(filePath, options));
-  assert.equal(appended.count, 0);
+  assert.equal(appended.count, 1);
   assert.deepEqual([appended.value.agentRunning, appended.value.limitResetsAtMs], [false, resetMs]);
 
   const copy = path.join(dir, 'copy.jsonl');
   await copyFile(filePath, copy);
   const full = await tokenCountParses(() => readRolloutSignals(copy, options));
-  assert.equal(full.count, 1);
+  assert.equal(full.count, 502);
   assert.deepEqual(appended.value, full.value);
 });
 
-test('Codex finds the full record before the tail when the tail has the stop', async (t) => {
+test('Codex finds the window record before the tail when the tail has the stop', async (t) => {
   const dir = await temp(t);
   const filePath = path.join(dir, 'rollout.jsonl');
-  await writeFile(filePath, jsonl([started(-90_000), tokenCount(-89_000, window(100)), complete(-88_000), ...fillers(-80_000, 20),
-    started(-6000), failed(-5900)]));
+  const records = [started(-90_000), tokenCount(-89_000, window(96)), complete(-88_000), ...fillers(-80_000, 20),
+    started(-6000), premium(-5950), failed(-5900)];
+  await writeFile(filePath, jsonl(records));
   const signals = await readRolloutSignals(filePath, { initialBytes: 2048, maxBytes: 2048 });
   assert.deepEqual([signals.agentRunning, signals.limitResetsAtMs], [false, resetMs]);
-  assert.deepEqual(signals, Object.fromEntries(Object.entries(parseRolloutSignals(jsonl([started(-90_000),
-    tokenCount(-89_000, window(100)), complete(-88_000), ...fillers(-80_000, 20), started(-6000), failed(-5900)])))));
+  assert.deepEqual(signals, Object.fromEntries(Object.entries(parseRolloutSignals(jsonl(records)))));
 });
 
 async function codexHome(t, rollouts) {
@@ -137,11 +164,11 @@ async function codexHome(t, rollouts) {
   return new Map(threads.map((thread) => [thread.id, thread]));
 }
 
-test('Codex rows use the profile reset for a stop without its own full record, only while the reset is in the future', async (t) => {
+test('Codex rows use the profile reset for a stop without its own window record, only while the reset is in the future', async (t) => {
   const threads = await codexHome(t, [
-    [started(-9000), failed(-8900)],
-    [started(-9000), tokenCount(-8000, window(100, resetSeconds + 60)), complete(-7000)],
-    [started(-9000), tokenCount(-8000, window(100, resetSeconds - 60)), failed(-7000)],
+    [started(-9000), premium(-1100), failed(-1000)],
+    [started(-9000), tokenCount(-6500, window(96, resetSeconds + 60)), complete(-6000)],
+    [started(-9000), tokenCount(-8000, window(98, resetSeconds - 60)), premium(-7100), failed(-7000)],
     [started(-9000), complete(-8900)],
   ]);
   const limits = [0, 1, 2, 3].map((index) => threads.get(id.replace(/0$/, String(index))).limitResetsAtMs);
@@ -163,22 +190,40 @@ const day = 24 * 3600 * 1000;
 const oldResetSeconds = Math.floor((now - day) / 1000) + 5 * 3600;
 const oldStop = [started(-day), tokenCount(-day + 1000, window(100, oldResetSeconds)), failed(-day + 2000)];
 
-test('Codex counts its own reset only when it is after the stop', async (t) => {
-  // A retry fails at once and writes no new full record, so the old reset is stale.
-  const retry = [...oldStop, started(-60_000), failed(-59_000)];
-  assert.equal(limitOf(retry), 0);
+test('Codex counts its own reset only when it is after the stop', () => {
+  // A retry fails at once and writes no new window record, so the old reset is stale.
+  assert.equal(limitOf([...oldStop, started(-60_000), failed(-59_000)]), 0);
+  assert.equal(limitOf(oldStop), oldResetSeconds * 1000);
+});
+
+test('Codex rows use the newest home window record at or before the stop', async (t) => {
   const threads = await codexHome(t, [
-    retry,
-    oldStop,
-    [started(-9000), tokenCount(-8000, window(100, resetSeconds - 60)), failed(-7000)],
-    [started(-9000), tokenCount(-8000, window(100)), failed(-7000)],
+    [started(-70_000), failed(-59_000)],
+    [started(-90_000), tokenCount(-80_000, window(97)), complete(-79_000)],
+    // A newer record after the stop of thread 0 does not count for it.
+    [started(-9000), tokenCount(-8000, window(100, resetSeconds + 900)), failed(-7000)],
   ]);
-  const limits = [0, 1, 2, 3].map((index) => threads.get(id.replace(/0$/, String(index))).limitResetsAtMs);
-  // The retry uses the home reset; the old stop keeps its own past reset; a stop with its own future reset keeps it.
-  assert.deepEqual(limits, [resetMs, oldResetSeconds * 1000, (resetSeconds - 60) * 1000, resetMs]);
-  const rows = buildSwitchboardDashboard([...threads.values()], [], now).threads;
-  assert.deepEqual([0, 1, 2, 3].map((index) => rows.find((row) => row.id === id.replace(/0$/, String(index))).limitResetsAtMs),
-    [resetMs, 0, (resetSeconds - 60) * 1000, resetMs]);
+  assert.deepEqual([0, 1, 2].map((index) => threads.get(id.replace(/0$/, String(index))).limitResetsAtMs),
+    [resetMs, 0, (resetSeconds + 900) * 1000]);
+
+  // The newest record at or before the stop has a reset at or before the stop, so a newer future reset does not count.
+  const stale = await codexHome(t, [
+    [started(-70_000), tokenCount(-60_000, window(98, Math.floor((now - 30_000) / 1000))), complete(-50_000)],
+    [started(-40_000), failed(-30_000)],
+    [started(-25_000), tokenCount(-20_000, window(100)), failed(-10_000)],
+  ]);
+  assert.deepEqual([0, 1, 2].map((index) => stale.get(id.replace(/0$/, String(index))).limitResetsAtMs), [0, 0, resetMs]);
+
+  // A low own snapshot does not explain a stop after the other session that was near the limit works again.
+  const stopOffset = -2 * 3600 * 1000;
+  const resumed = await codexHome(t, [
+    [started(stopOffset - 7_300_000), tokenCount(stopOffset - 7_200_000, window(40, resetSeconds - 3600),
+      window(60, resetSeconds + 4 * 24 * 3600, 10080)), complete(stopOffset - 7_100_000), started(stopOffset - 1000), premium(stopOffset - 500),
+    failed(stopOffset)],
+    [started(stopOffset - 900_000), tokenCount(stopOffset - 600_000, window(97, resetSeconds - 3600)), complete(stopOffset - 500_000),
+      started(-30 * 60_000), tokenCount(-29 * 60_000, window(2, resetSeconds + 4 * 3600)), complete(-28 * 60_000)],
+  ]);
+  assert.equal(resumed.get(id).limitResetsAtMs, 0);
 });
 
 test('Codex applies the stop-time rule in the full scan before the tail, and its appends give the full result', async (t) => {
