@@ -8,8 +8,9 @@ import https from 'node:https';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { gunzipSync } from 'node:zlib';
 import { createPhoneGateway, DEFAULT_PHONE_PORT, PHONE_API_VERSION, phoneSettingsPath, phoneTlsDir,
-  listPhoneAddresses, isAllowedRemote } from '../src/phone-gateway.mjs';
+  listPhoneAddresses, isAllowedRemote, acceptsGzip } from '../src/phone-gateway.mjs';
 import { RUNTIME_FILES } from '../scripts/asb-package.mjs';
 
 let hasOpenSsl = true;
@@ -84,8 +85,9 @@ async function fixture(t, options = {}) {
       response.on('data', (chunk) => chunks.push(chunk));
       response.on('error', reject);
       response.on('end', () => {
-        const text = Buffer.concat(chunks).toString();
-        resolve({ status: response.statusCode, headers: response.headers, text,
+        const raw = Buffer.concat(chunks);
+        const text = raw.toString();
+        resolve({ status: response.statusCode, headers: response.headers, raw, text,
           json: text.startsWith('{') ? JSON.parse(text) : null, fingerprint, protocol });
       });
     });
@@ -295,6 +297,67 @@ gatewayTest('the proxy adds local Host and Origin, strips other headers, and pre
   assert.equal(records.at(-1).headers.origin, undefined);
   await request('/phone/v1/dashboard?force=true&extra=secret', { token });
   assert.equal(records.at(-1).url, '/api/dashboard');
+});
+
+test('Accept-Encoding allows gzip only with a positive q-value for gzip or *', () => {
+  for (const header of ['gzip', 'GZIP', 'gzip, deflate, br', 'br;q=1, gzip;q=0.5', '*', '*;q=0.1', 'gzip;q=1, *;q=0', 'deflate, gzip ; q=0.2']) {
+    assert.equal(acceptsGzip(header), true, header);
+  }
+  for (const header of [undefined, '', 'identity', 'br, deflate', 'gzip;q=0', 'gzip;q=0.0', 'gzip; q=0', '*;q=0', 'gzip;q=0, *', 'gzip;q=abc']) {
+    assert.equal(acceptsGzip(header), false, String(header));
+  }
+});
+
+gatewayTest('the dashboard reply is gzip only when the phone accepts it and always has Vary', async (t) => {
+  const dashboard = JSON.stringify({ threads: Array.from({ length: 200 }, (_, i) => ({ id: `thread-${i}`, state: 'idle' })) });
+  const { request, pair, local } = await fixture(t, { reply: (request, response) => {
+    if (request.url.startsWith('/api/threads/')) { response.writeHead(200, { 'content-type': 'application/json' }); response.end(dashboard); return; }
+    response.writeHead(request.headers['if-none-match'] === '"v1"' ? 304 : 200, { etag: '"v1"', 'content-type': 'application/json' });
+    response.end(request.headers['if-none-match'] === '"v1"' ? undefined : dashboard);
+  } });
+  const token = (await pair()).json.token;
+  const zipped = await request('/phone/v1/dashboard', { token, headers: { 'accept-encoding': 'gzip' } });
+  assert.equal(zipped.status, 200);
+  assert.equal(zipped.headers['content-encoding'], 'gzip');
+  assert.equal(zipped.headers.vary, 'Accept-Encoding');
+  assert.equal(zipped.headers.etag, '"v1"');
+  assert.equal(zipped.headers['content-type'], 'application/json');
+  assert.equal(gunzipSync(zipped.raw).toString(), dashboard);
+  assert.ok(zipped.raw.length < dashboard.length / 5);
+  for (const headers of [{}, { 'accept-encoding': 'gzip;q=0' }]) {
+    const plain = await request('/phone/v1/dashboard', { token, headers });
+    assert.equal(plain.status, 200);
+    assert.equal(plain.headers['content-encoding'], undefined);
+    assert.equal(plain.headers.vary, 'Accept-Encoding');
+    assert.equal(plain.headers.etag, '"v1"');
+    assert.equal(plain.text, dashboard);
+  }
+  const cached = await request('/phone/v1/dashboard', { token, headers: { 'accept-encoding': 'gzip', 'if-none-match': '"v1"' } });
+  assert.equal(cached.status, 304);
+  assert.equal(cached.headers['content-encoding'], undefined);
+  assert.equal(cached.headers.vary, 'Accept-Encoding');
+  assert.equal(cached.headers.etag, '"v1"');
+  assert.equal(cached.raw.length, 0);
+  const action = await request('/phone/v1/threads/x/open', { method: 'POST', token, body: {}, headers: { 'accept-encoding': 'gzip' } });
+  assert.equal(action.status, 200);
+  assert.equal(action.headers['content-encoding'], undefined);
+  assert.equal(action.headers.vary, undefined);
+  assert.equal(action.text, dashboard);
+  await close(local);
+  const failed = await request('/phone/v1/dashboard', { token, headers: { 'accept-encoding': 'gzip' } });
+  assert.equal(failed.status, 502);
+  assert.equal(failed.headers['content-encoding'], undefined);
+  assert.deepEqual(failed.json, { error: 'ASB is not answering.' });
+});
+
+gatewayTest('an upstream error after the gzip headers ends the phone reply', async (t) => {
+  const { request, pair } = await fixture(t, { reply: (request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.write('{"threads":[');
+    setTimeout(() => response.socket.destroy(), 50);
+  } });
+  const token = (await pair()).json.token;
+  await assert.rejects(request('/phone/v1/dashboard', { token, headers: { 'accept-encoding': 'gzip' } }));
 });
 
 test('remote addresses and interface discovery allow only loopback or RFC1918 IPv4 as specified', () => {

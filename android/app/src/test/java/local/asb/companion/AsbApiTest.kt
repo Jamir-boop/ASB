@@ -1,7 +1,9 @@
 package local.asb.companion
 
+import java.io.ByteArrayOutputStream
 import java.net.InetAddress
 import java.util.concurrent.TimeUnit
+import java.util.zip.GZIPOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
@@ -28,6 +30,7 @@ import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.SocketPolicy
 import okhttp3.tls.HandshakeCertificates
 import okhttp3.tls.HeldCertificate
+import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -111,6 +114,18 @@ class AsbApiTest {
         assertEquals("unknown", result.dashboard.threads.single().state)
         assertTrue(result.dashboard.threads.single().sourceShowMarker)
         assertEquals(Dashboard(), AsbJson.decodeFromString<Dashboard>("{}"))
+    }
+
+    @Test fun gzipDashboardDecodesAndKeepsEtag() = runBlocking {
+        val json = """{"generatedAtMs":1780000000000,"threads":[{"id":"one","state":"idle"}]}"""
+        val zipped = ByteArrayOutputStream().also { out -> GZIPOutputStream(out).use { it.write(json.toByteArray()) } }
+        server.enqueue(MockResponse().setHeader("Content-Encoding", "gzip").setHeader("ETag", "\"zipped\"")
+            .setBody(Buffer().write(zipped.toByteArray())))
+        val result = api().dashboard() as DashboardResult.Fetched
+        assertEquals("\"zipped\"", result.etag)
+        assertEquals(1780000000000L, result.dashboard.generatedAtMs)
+        assertEquals("one", result.dashboard.threads.single().id)
+        assertEquals("gzip", server.takeRequest().getHeader("Accept-Encoding"))
     }
 
     @Test fun fractionalDashboardTimesDecode() = runBlocking {

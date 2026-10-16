@@ -7,6 +7,7 @@ import { isIPv4 } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { createGzip } from 'node:zlib';
 import { sendJson } from './local-http.mjs';
 
 export const PHONE_API_VERSION = 1;
@@ -80,6 +81,18 @@ function validSettings(value) {
       && Number.isSafeInteger(device.lastSeenAtMs) && device.lastSeenAtMs >= 0)
     && new Set(value.devices.map((device) => device.id)).size === value.devices.length
     && new Set(value.devices.map((device) => device.tokenSha256)).size === value.devices.length;
+}
+
+// A missing header means identity; gzip (or *) with q=0 refuses gzip.
+export function acceptsGzip(header) {
+  if (typeof header !== 'string') return false;
+  const weights = new Map();
+  for (const part of header.split(',')) {
+    const [coding, ...params] = part.split(';').map((item) => item.trim().toLowerCase());
+    const q = params.find((item) => item.startsWith('q='));
+    weights.set(coding, q === undefined ? 1 : Number(q.slice(2)));
+  }
+  return (weights.get('gzip') ?? weights.get('*') ?? 0) > 0;
 }
 
 function readBody(request) {
@@ -260,20 +273,28 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     if (record.times.length >= 20) record.blockedUntil = time + 60_000;
   }
 
-  function proxy(request, response, target, body) {
+  function proxy(request, response, target, body, dashboard) {
     const headers = { host: `127.0.0.1:${localPort}` };
     if (request.method === 'POST') Object.assign(headers, { origin: `http://127.0.0.1:${localPort}`, 'content-type': 'application/json' });
     if (request.headers['if-none-match']) headers['if-none-match'] = request.headers['if-none-match'];
     const unavailable = () => {
       if (response.destroyed) return;
-      if (response.headersSent) response.destroy();
+      // A started gzip stream can still flush into the reply, so a gzip reply always ends this way.
+      if (response.headersSent || response.hasHeader('content-encoding')) response.destroy();
       else sendJson(response, 502, { error: 'ASB is not answering.' });
     };
     const upstream = http.request({ host: '127.0.0.1', port: localPort, method: request.method, path: target, headers }, (reply) => {
       for (const name of ['content-type', 'etag']) if (reply.headers[name] !== undefined) response.setHeader(name, reply.headers[name]);
       response.statusCode = reply.statusCode;
       reply.on('error', unavailable);
-      reply.pipe(response);
+      if (dashboard) response.setHeader('vary', 'Accept-Encoding');
+      if (dashboard && reply.statusCode === 200 && acceptsGzip(request.headers['accept-encoding'])) {
+        response.setHeader('content-encoding', 'gzip');
+        const gzip = createGzip();
+        gzip.on('error', unavailable);
+        response.on('close', () => gzip.destroy());
+        reply.pipe(gzip).pipe(response);
+      } else reply.pipe(response);
     });
     upstreams.add(upstream);
     upstream.on('close', () => upstreams.delete(upstream));
@@ -355,7 +376,7 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
       } else {
         const target = dashboard ? `/api/dashboard${url.searchParams.get('force') === '1' ? '?force=1' : ''}`
           : unread ? '/api/settings/unread' : `/api/threads/${match[1]}/${match[2]}`;
-        proxy(request, response, target, body);
+        proxy(request, response, target, body, dashboard);
       }
     } catch (cause) {
       if (!response.destroyed) reject(cause.statusCode === 413 ? 413 : 500,
