@@ -90,6 +90,49 @@ def row_menu_actions(row):
     return actions
 
 
+def row_panel_controls(row):
+    """The row panel switches from row_menu_actions: key -> (on, the action a toggle runs, or None when it is not offered)."""
+    offered = {action for _title, action in row_menu_actions(row)}
+    pick = lambda *names: next((name for name in names if name in offered), None)
+    controls = {"unread": ("mark-unread" not in offered, pick("mark-read", "mark-unread")),
+                "drawer": ("drawer-out" in offered, pick("drawer-out", "drawer-in")),
+                "pinned": ("unpin" in offered, pick("unpin", "pin"))}
+    if "pin-up" in offered:
+        controls["order"] = (True, "pin-up")
+    if offered & {"discard-result", "keep-result"}:
+        controls["discard"] = ("keep-result" in offered, pick("keep-result", "discard-result"))
+    return controls
+
+
+def row_panel_note(row):
+    """The subtitle of the panel Unread switch."""
+    if row.get("actionRequired"):
+        return "Waits for your permission."
+    if row.get("questionAttention"):
+        return "Asks a question."
+    if (row.get("unread") or row.get("drawer")) and row.get("state") != "working":
+        return "Marked unread." if row.get("manualUnread") else "Finished. Not read yet."
+    return ""
+
+
+def panel_place(x, y, width, height, window_width, window_height, margin=6):
+    """Where a panel of this size, centered on x, points and opens ("bottom" or "top") to stay inside the window."""
+    half = width / 2
+    x = min(max(x, margin + half), window_width - margin - half) if window_width >= width + 2 * margin else window_width / 2
+    if window_height - margin - y >= height or window_height - y >= y:
+        return round(x), round(max(margin, min(y, window_height - margin - height))), "bottom"
+    return round(x), round(min(window_height - margin, max(y, margin + height))), "top"
+
+
+def edge_color(base, color, fraction, surfaces):
+    """The weakest mix of color into base, from fraction up, with 3:1 contrast on each surface."""
+    for percent in range(round(fraction * 100), 101):
+        value = mix_color(base, color, percent / 100)
+        if all(contrast(value, surface) >= 3 for surface in surfaces):
+            return value
+    return color
+
+
 def pin_move_body(rows, identity, direction):
     """Return the move-pin body for the visible pinned neighbor, or None at the end of the visible pins."""
     pins = [row["id"] for row in rows if row.get("pinned")]
@@ -426,6 +469,21 @@ def spoken_duration(seconds):
     return unit(minutes, "minute") + (" " + unit(seconds, "second") if seconds else "") if minutes else unit(seconds, "second")
 
 
+def limit_text(seconds):
+    """The reset countdown: days and hours from 24 hours on (weekly limits), else the Working time format."""
+    days, remainder = divmod(seconds, 86400)
+    return f"{days}d{remainder // 3600}h" if days else duration_text(seconds)
+
+
+def spoken_limit(seconds):
+    days, remainder = divmod(seconds, 86400)
+    if not days:
+        return spoken_duration(seconds)
+    hours = remainder // 3600
+    unit = lambda count, word: f"{count} {word}" + ("" if count == 1 else "s")
+    return unit(days, "day") + (" " + unit(hours, "hour") if hours else "")
+
+
 def limit_left(row, now_ms=None):
     """Whole seconds, rounded up, until the usage limit that stopped the row resets; 0 when no limit holds the row."""
     now_ms = time.time() * 1000 if now_ms is None else now_ms
@@ -524,7 +582,12 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
         # A locale with no AM/PM marker needs the 24-hour form, or 20:28 reads as 8:28.
         reset_at = time.localtime(row["limitResetsAtMs"] / 1000)
         reset = time.strftime("%I:%M %p", reset_at).lstrip("0") if time.strftime("%p") else time.strftime("%H:%M", reset_at)
-        limit = f"{source_label or provider} is out of usage. It resets at {reset}."
+        now_at = time.localtime((time.time() * 1000 if now_ms is None else now_ms) / 1000)
+        day = "" if reset_at[:3] == now_at[:3] else " " + time.strftime("%A", reset_at)
+        # A reset 6 to 7 days away has the weekday of today, so it also needs the date.
+        if day and reset_at.tm_wday == now_at.tm_wday:
+            day += f" {reset_at.tm_mday} " + time.strftime("%B", reset_at)
+        limit = f"{source_label or provider} is out of usage. It resets{day} at {reset}."
     return {"path": path, "full_path": full_path, "title": row.get("title") or "Untitled session",
             "state": state, "state_text": state_text, "app": app, "app_color": app_color,
             "indicator": shape, "note": note, "flags": flags, "error": error,
@@ -1783,7 +1846,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.search.set_tooltip_text("Search title or folder. cl: or claude: selects Claude; cx: or codex: selects Codex.")
         self.search.connect("search-changed", self.filter_changed)
         self.search.connect("stop-search", self.clear_search)
-        self.search_popover = Gtk.Popover(position=Gtk.PositionType.BOTTOM)
+        # No arrow: the custom 1px popover edge is on the contents node only.
+        self.search_popover = Gtk.Popover(position=Gtk.PositionType.BOTTOM, has_arrow=False)
         self.search_popover.set_parent(self.toolbar_center)
         self.search_popover.set_child(self.search)
         self.search.set_size_request(240, -1)
@@ -1855,7 +1919,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.persistent_unread = Gtk.CheckButton(label="Persistent unread", active=True)
         self.persistent_unread.connect("toggled", self.change_unread_setting)
         sessions.append(self.persistent_unread)
-        unread_help = label("Use Read in the row menu to clear dots.", "caption")
+        unread_help = label("Turn off Unread in the row panel to clear dots.", "caption")
         unread_help.set_wrap(True)
         sessions.append(unread_help)
         self.unread_setting_error = label("", "warning")
@@ -2182,13 +2246,27 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 .asb-tooltip .asb-waiting {{ color: @warning_color; }}
 .asb-tooltip .asb-provider {{ opacity: .65; }}
 .asb-tooltip .asb-source-badge {{ min-width: 6px; min-height: 6px; padding: 0; border: 1px solid @window_bg_color; border-radius: 50%; }}
+{base} popover.asb-row-panel > contents {{ padding: 12px; border: 1px solid alpha(@accent_color, .7); border-radius: 12px;
+    box-shadow: 0 2px 8px alpha(black, .35), 0 8px 24px alpha(black, .3); }}
+{base} .asb-row-panel .asb-panel-folder, {base} .asb-row-panel .asb-panel-state {{ font-size: 11px; }}
+{base} .asb-row-panel .asb-panel-title {{ font-size: 13px; font-weight: bold; }}
+{base} .asb-row-panel .asb-panel-open {{ min-height: 34px; border-radius: 8px; font-weight: bold; }}
+{base} .asb-row-panel .asb-panel-move {{ min-height: 28px; padding: 0 10px; font-size: 12px; font-weight: normal; }}
+{base} .asb-row-panel row .subtitle {{ color: alpha(@window_fg_color, .72); opacity: 1; }}
+{base} .asb-row-panel .asb-panel-error {{ font-size: 11px; }}
 """
         if colors:
             colors = validate_theme(colors)
             self.add_css_class("asb-custom")
             scope = base + ".asb-custom"
+            # The row panel is lifted from the board: 6% text in the background.
+            surface = mix_color(colors["background"], colors["text"], .06)
             css += f"""
 {scope}, {scope} headerbar, {scope} popover contents {{ background: {colors['background']}; color: {colors['text']}; }}
+{scope} popover > contents {{ border: 1px solid {edge_color(colors['background'], colors['text'], .36, (colors['background'],))}; }}
+{scope} popover.asb-row-panel > contents {{ background: {surface}; border-color: {edge_color(surface, colors['accent'], .7, (colors['background'], surface))}; }}
+{scope} .asb-row-panel .asb-panel-unread {{ color: {colors['text']}; }}
+{scope} .asb-row-panel row .subtitle {{ color: {colors['muted']}; opacity: 1; }}
 {scope} .asb-state, {scope} .dim-label {{ color: {colors['muted']}; opacity: 1; }}
 {scope} .asb-working, {scope} .asb-waiting {{ color: {colors['accent']}; }}
 {scope} .asb-message-lit .asb-provider {{ color: {colors['accent']}; }}
@@ -2952,6 +3030,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         focused = preserve_focus or self.focus_key()
         focus_widget = self.get_focus()
         focused_action = preserve_action or getattr(focus_widget, "asb_card_action", None)
+        panel_focus = focus_widget if getattr(self, "context_menu", None) and focus_widget and focus_widget.is_ancestor(self.context_menu) else None
         if reveal_focus and not focused and self.get_focus() is None:
             focused = self.focused_id
         position = self.scroll.get_hadjustment().get_value()
@@ -2987,8 +3066,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if repack:
             self.cancel_scroll()
             self.list_body.clear_hover()
-        if repack and self.context_menu:
-            self.context_menu.popdown()
         dashboard_ids = {row["id"] for row in self.dashboard.get("threads", [])}
         for identity in self.row_cache.keys() - dashboard_ids:
             self.release_row(self.row_cache.pop(identity))
@@ -3078,12 +3155,19 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             description = "The drawer has sessions." if drawer else "The drawer is empty."
             self.drawer_only.update_property([Gtk.AccessibleProperty.LABEL], ["Drawer only. " + description])
         if repack or reveal_focus or preserve_action:
-            GLib.idle_add(self.restore_position, focused, position, reveal_focus, focused_action, self.focus_generation)
+            GLib.idle_add(self.restore_position, focused, position, reveal_focus, focused_action, self.focus_generation, panel_focus)
+        # After the queued restore, so that a panel control that gets its focus back does not cancel the scroll restore.
+        self.sync_row_panel()
 
-    def restore_position(self, focused, position, reveal_focus=False, focused_action=None, focus_generation=None):
+    def restore_position(self, focused, position, reveal_focus=False, focused_action=None, focus_generation=None, panel_focus=None):
         if not self.closed and (focus_generation is None or focus_generation == self.focus_generation):
             self.cancel_scroll()
-            if focused in self.focus_widgets:
+            panel = self.context_menu
+            if panel_focus and panel and panel.get_mapped() and panel_focus.is_ancestor(panel) \
+                    and panel_focus.get_visible() and panel_focus.get_sensitive():
+                # The repack moved the row with its open panel; the focus goes back to the panel control.
+                self.set_focus(panel_focus)
+            elif focused in self.focus_widgets:
                 row = self.focus_widgets[focused]
                 control = getattr(row, "asb_" + str(focused_action) + "_button", None)
                 self.set_focus(control if control and control.get_visible() and control.get_sensitive() else row)
@@ -3495,6 +3579,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         now_ms = time.time() * 1000
         for widget in self.focus_widgets.values():
             self.update_row_text(widget, now_ms)
+        self.sync_row_panel()
         # All rows, not only the shown ones: a filter change can show a countdown before the next tick.
         interval = clock_interval((self.dashboard or {}).get("threads", []), now_ms)
         if interval != self.clock_interval:
@@ -3509,7 +3594,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         duration = working_duration(row, now_ms)
         meta = row_meta(row, now_ms)
         left = limit_left(row, now_ms)
-        countdown = duration_text(left) if left else ""
+        countdown = limit_text(left) if left else ""
         signature = (duration, meta, countdown)
         if signature == widget.asb_time_signature:
             return
@@ -3539,7 +3624,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             if row.get("lastOutcome") == "failed" or row.get("failedAttention") else " Task completed." if row.get("completionAttention") else ""
         discard = " Discard is on." if row.get("discardResult") else ""
         drawer = " In the drawer. Still unread." if row.get("drawer") else ""
-        limit = f" Usage limit. Resets in {spoken_duration(left)}." if left else ""
+        limit = f" Usage limit. Resets in {spoken_limit(left)}." if left else ""
         widget.asb_accessible_label = f"{action} {row.get('title', 'Untitled session')} in {row.get('providerLabel', '')}. {state_text}.{limit}{manual}{native_unread}{pinned}{question}{retained}{outcome}{discard}{drawer}"
         self.update_open_state(widget, now_ms)
 
@@ -3567,27 +3652,214 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if self.context_menu:
             self.context_menu.popdown()
         widget.grab_focus()
-        model = Gio.Menu()
-        actions = row_menu_actions(widget.asb_thread)
-        for title, action in actions:
-            item = Gio.MenuItem.new(title, None)
-            item.set_action_and_target_value("win." + action, GLib.Variant("s", widget.asb_thread["id"]))
-            model.append_item(item)
-        menu = Gtk.PopoverMenu.new_from_model(model)
-        menu.set_parent(widget)
-        if x is not None:
-            rectangle = Gdk.Rectangle()
-            rectangle.x, rectangle.y, rectangle.width, rectangle.height = int(x), int(y), 1, 1
-            menu.set_pointing_to(rectangle)
+        row = widget.asb_thread
+        panel = Gtk.Popover(has_arrow=False)
+        panel.add_css_class("asb-row-panel")
+        panel.asb_identity, panel.asb_signature = row["id"], None
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, width_request=276)
+        header = Gtk.Grid(column_spacing=7, row_spacing=3, margin_start=2, margin_end=2, margin_bottom=12)
+        panel.asb_icon = Gtk.Image(pixel_size=14)
+        panel.asb_icon.add_css_class("asb-provider")
+        header.attach(panel.asb_icon, 0, 0, 1, 1)
+        panel.asb_folder = label("", "asb-panel-folder")
+        panel.asb_folder.add_css_class("dim-label")
+        panel.asb_folder.set_ellipsize(Pango.EllipsizeMode.START)
+        # A small natural width keeps a long path or title from widening the panel; the labels fill the panel width.
+        panel.asb_folder.set_max_width_chars(1)
+        panel.asb_folder.set_hexpand(True)
+        header.attach(panel.asb_folder, 1, 0, 1, 1)
+        panel.asb_title = label("", "asb-panel-title")
+        panel.asb_title.set_wrap(True)
+        panel.asb_title.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        panel.asb_title.set_lines(2)
+        panel.asb_title.set_ellipsize(Pango.EllipsizeMode.END)
+        panel.asb_title.set_max_width_chars(1)
+        header.attach(panel.asb_title, 0, 1, 2, 1)
+        panel.asb_state = label("", "asb-panel-state")
+        header.attach(panel.asb_state, 0, 2, 2, 1)
+        root.append(header)
+        panel.asb_open = Gtk.Button(margin_bottom=12)
+        panel.asb_open.add_css_class("asb-panel-open")
+        panel.asb_open.connect("clicked", self.panel_open)
+        root.append(panel.asb_open)
+        controls = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        controls.add_css_class("boxed-list")
+        panel.asb_switches = {}
+        for key, title in (("unread", "Unread"), ("drawer", "In the drawer"), ("pinned", "Pinned"), ("order", None),
+                           ("discard", "Discard result")):
+            if key == "order":
+                control = Adw.ActionRow(title="Pin order", activatable=False, focusable=False)
+                buttons = Gtk.Box(valign=Gtk.Align.CENTER)
+                buttons.add_css_class("linked")
+                for direction, text in (("up", "Earlier"), ("down", "Later")):
+                    name = "Move pin " + text.lower()
+                    button = Gtk.Button(label=text, tooltip_text=name)
+                    button.add_css_class("asb-panel-move")
+                    button.update_property([Gtk.AccessibleProperty.LABEL], [name])
+                    button.connect("clicked", self.panel_move_pin, direction)
+                    setattr(panel, "asb_" + direction, button)
+                    buttons.append(button)
+                control.add_suffix(buttons)
+            else:
+                control = Adw.SwitchRow(title=title)
+                if key == "discard":
+                    control.set_subtitle("Go to read Idle when this task ends")
+                control.connect("notify::active", self.panel_toggle, key)
+            panel.asb_switches[key] = control
+            controls.append(control)
+        root.append(controls)
+        # The card tooltip shows a failed action, but the panel covers the card.
+        panel.asb_error = label("", "asb-panel-error")
+        panel.asb_error.add_css_class("error")
+        panel.asb_error.set_wrap(True)
+        panel.asb_error.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        panel.asb_error.set_max_width_chars(1)
+        panel.asb_error.set_margin_top(8)
+        root.append(panel.asb_error)
+        # The clamp keeps a long subtitle or label from widening the panel past about 300px.
+        panel.set_child(Adw.Clamp(maximum_size=276, tightening_threshold=276, child=root))
+        keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self.panel_key)
+        panel.add_controller(keys)
+        panel.set_parent(widget)
         def closed(popup):
+            # A repack moves the row, which unmaps its panel; GTK maps the panel again with the row.
+            if popup.get_visible() and not self.closed:
+                return
             GLib.idle_add(popup.unparent)
             if self.context_menu is popup:
                 self.context_menu = None
-        menu.connect("closed", closed)
-        self.context_menu = menu
-        menu.popup()
+                card = self.focus_widgets.get(popup.asb_identity)
+                focus = self.get_focus()
+                if card and not self.closed and card.get_mapped() and (focus is None or focus.is_ancestor(popup)):
+                    card.grab_focus()
+        panel.connect("closed", closed)
+        self.context_menu = panel
+        self.update_row_panel(panel, row)
+        self.place_row_panel(panel, widget, x, y)
+        panel.popup()
         if gesture:
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+
+    def place_row_panel(self, panel, widget, x, y):
+        """GTK keeps a popover inside the monitor only; this keeps the centered panel inside the window."""
+        if x is None:
+            x, y = widget.get_width() / 2, widget.get_height() / 2
+        ok, point = widget.compute_point(self, Graphene.Point().init(x, y))
+        if not ok:
+            return
+        # A popover measures 0 before it maps; its child plus the 12px padding and the 1px ring on each side is the size.
+        child = panel.get_child()
+        width = child.measure(Gtk.Orientation.HORIZONTAL, -1)[1]
+        height = child.measure(Gtk.Orientation.VERTICAL, width)[1] + 26
+        width += 26
+        px, py, side = panel_place(point.x, point.y, width, height, self.get_width(), self.get_height())
+        ok, local = self.compute_point(widget, Graphene.Point().init(px, py))
+        rectangle = Gdk.Rectangle()
+        rectangle.x, rectangle.y, rectangle.width, rectangle.height = round(local.x), round(local.y), 1, 1
+        panel.set_pointing_to(rectangle)
+        panel.set_position(Gtk.PositionType.TOP if side == "top" else Gtk.PositionType.BOTTOM)
+
+    def update_row_panel(self, panel, row):
+        """Show the row data in the open panel; an unchanged row keeps every widget as it is."""
+        pending = row["id"] in self.session_actions
+        controls = row_panel_controls(row)
+        model = tooltip_model(row, time.time() * 1000, Path.home(), "", self.drawer_view)
+        unread = controls["unread"][0] and model["state"] not in ("working", "waiting")
+        signature = (model["title"], model["path"], model["state_text"], model["state"], unread, model["app"], row.get("provider"),
+                     bool(row.get("canOpen")), tuple(controls.items()), row_panel_note(row), pending, self.open_errors.get(row["id"], ""))
+        if signature == panel.asb_signature:
+            return
+        panel.asb_signature = signature
+        focus = self.get_focus()
+        if pending and focus and focus.is_ancestor(panel):
+            # An insensitive control loses the focus; it gets it back when the action ends.
+            panel.asb_return_focus = focus
+        panel.update_property([Gtk.AccessibleProperty.LABEL], [model["title"]])
+        panel.asb_icon.set_from_icon_name("asb-openai-symbolic" if row.get("provider") == "codex" else "asb-claude-symbolic")
+        panel.asb_folder.set_label(model["path"])
+        panel.asb_title.set_label(" ".join(model["title"].split()))
+        panel.asb_state.set_label(model["state_text"])
+        for css in (*("asb-" + value for value in STATES), "success", "warning", "dim-label", "asb-panel-unread"):
+            panel.asb_state.remove_css_class(css)
+        panel.asb_state.add_css_class("asb-" + model["state"])
+        panel.asb_state.add_css_class("success" if model["state"] == "working" else "warning" if model["state"] == "waiting"
+                                      else "asb-panel-unread" if unread else "dim-label")
+        error = self.open_errors.get(row["id"], "")
+        panel.asb_error.set_label(error)
+        panel.asb_error.set_visible(bool(error))
+        panel.asb_open.set_label("Open in " + model["app"])
+        panel.asb_open.set_sensitive(bool(row.get("canOpen")) and not pending and row["id"] not in self.opening)
+        panel.asb_updating = True
+        for key, control in panel.asb_switches.items():
+            control.set_visible(key in controls)
+            on, action = controls.get(key, (False, None))
+            if key == "order":
+                panel.asb_up.set_sensitive(not pending)
+                panel.asb_down.set_sensitive(not pending)
+                continue
+            # While an action runs, the switch keeps the state that the user chose.
+            if not pending:
+                control.set_active(on)
+            control.set_sensitive(bool(action) and not pending)
+        panel.asb_switches["unread"].set_subtitle(row_panel_note(row))
+        panel.asb_updating = False
+        if not pending and getattr(panel, "asb_return_focus", None):
+            GLib.idle_add(self.restore_panel_focus, panel, panel.asb_return_focus)
+            panel.asb_return_focus = None
+
+    def restore_panel_focus(self, panel, control):
+        focus = self.get_focus()
+        if self.context_menu is panel and control.is_ancestor(panel) and control.get_mapped() and control.get_sensitive() \
+                and (focus is None or not focus.is_ancestor(panel)):
+            self.set_focus(control)
+        return False
+
+    def sync_row_panel(self):
+        panel = getattr(self, "context_menu", None)
+        if not panel or self.closed:
+            return
+        widget = self.focus_widgets.get(panel.asb_identity)
+        if widget is None or widget is not panel.get_parent():
+            panel.popdown()
+        else:
+            self.update_row_panel(panel, widget.asb_thread)
+
+    def panel_toggle(self, control, _param, key):
+        # The panel comes from the widget: a panel in the handler data makes a cycle that Python cannot free.
+        panel = control.get_ancestor(Gtk.Popover)
+        if getattr(panel, "asb_updating", False):
+            return
+        widget = self.focus_widgets.get(panel.asb_identity)
+        on, action = row_panel_controls(widget.asb_thread).get(key, (False, None)) if widget else (False, None)
+        if action and control.get_active() != on:
+            self.activate_action("win." + action, GLib.Variant("s", panel.asb_identity))
+        # An action that sent nothing puts the switch back.
+        if self.context_menu is panel and panel.asb_identity not in self.session_actions:
+            panel.asb_signature = None
+            self.sync_row_panel()
+
+    def panel_move_pin(self, button, direction):
+        panel = button.get_ancestor(Gtk.Popover)
+        self.activate_action("win.pin-" + direction, GLib.Variant("s", panel.asb_identity))
+
+    def panel_open(self, button):
+        panel = button.get_ancestor(Gtk.Popover)
+        widget = self.focus_widgets.get(panel.asb_identity)
+        panel.popdown()
+        if widget:
+            self.open_row(None, widget)
+
+    def panel_key(self, controller, key, _code, state):
+        panel = controller.get_widget()
+        if key in (Gdk.KEY_Up, Gdk.KEY_Down) and not state & SHORTCUT_MASK:
+            direction = Gtk.DirectionType.TAB_FORWARD if key == Gdk.KEY_Down else Gtk.DirectionType.TAB_BACKWARD
+            if not panel.child_focus(direction):
+                # At the last control, start again at the first one.
+                panel.get_child().set_focus_child(None)
+                panel.child_focus(direction)
+            return True
+        return False
 
     def row_action(self, _action, target, name):
         identity = target.get_string()
@@ -3611,6 +3883,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         action_focus = getattr(self.get_focus(), "asb_card_action", None) if self.focus_key() == identity else None
         if origin:
             self.update_card_actions(origin)
+        self.sync_row_panel()
         def finished(result, error):
             self.session_actions.discard(identity)
             if not self.closed:
@@ -3647,6 +3920,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                                 and current.asb_thread.get("state") != "working" and not attention_indicator(current.asb_thread):
                             self.confirm_read(current)
                     self.refresh(queue=True)
+                self.sync_row_panel()
             return False
         request_async(self.base, "/api/threads/" + quote(identity, safe="") + "/" + action, finished, GLib.idle_add, "POST", body)
 

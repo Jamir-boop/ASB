@@ -71,6 +71,12 @@ class Box:
     def get_parent(self):
         return self.parent
 
+    def is_ancestor(self, other):
+        parent = self.parent
+        while parent is not None and parent is not other:
+            parent = parent.parent
+        return parent is not None
+
     def get_first_child(self):
         return self.children[0] if self.children else None
 
@@ -487,6 +493,49 @@ class DataChecks(unittest.TestCase):
             limit = asb.tooltip_model(row, reset - 3_600_000, "/home/test")["limit"]
         self.assertEqual(limit, "Codex is out of usage. It resets at 20:28.")
 
+    def test_usage_limit_days_away_show_days_hours_and_the_weekday(self):
+        row = {"id": "a", "provider": "codex", "providerLabel": "Codex", "title": "Chat", "state": "idle", "canOpen": True,
+               "updatedAtMs": NOW - 600_000, "limitResetsAtMs": NOW + 3_600_000}
+        # Rounded up; from 24 hours on, days and hours. The Working timer keeps its format.
+        for seconds, text, spoken in ((86_400, "1d0h", "1 day"), (86_399, "23h59m", "23 hours 59 minutes"),
+                                      (273_600, "3d4h", "3 days 4 hours"), (90_000, "1d1h", "1 day 1 hour"),
+                                      (604_800, "7d0h", "7 days"), (176_399, "2d0h", "2 days")):
+            self.assertEqual((asb.limit_text(seconds), asb.spoken_limit(seconds)), (text, spoken))
+        self.assertEqual(asb.working_duration({"state": "working", "workingSinceMs": NOW - 273_600_000}, NOW), "76h0m")
+        self.assertEqual(asb.clock_interval([{**row, "limitResetsAtMs": NOW + 273_600_000}], NOW), 60)
+
+        time = SCOPE["time"]
+        # NOW is Monday 21 September 2026, 14:13:20 UTC; UTC is the local zone here.
+        with patch.object(time, "localtime", time.gmtime), patch.object(time, "time", lambda: NOW / 1000):
+            for reset, text in ((NOW + 9 * 3_600_000, "It resets at 11:13 PM."),
+                                (NOW + 10 * 3_600_000, "It resets Tuesday at 12:13 AM."),
+                                (NOW + 273_600_000, "It resets Thursday at 6:13 PM."),
+                                # Today's weekday a week away needs the date.
+                                (NOW + 604_500_000, "It resets Monday 28 September at 2:08 PM.")):
+                limited = {**row, "limitResetsAtMs": reset}
+                self.assertEqual(asb.tooltip_model(limited, NOW, "/home/test")["limit"], f"Codex is out of usage. {text}")
+                self.assertEqual(asb.tooltip_model(limited, None, "/home/test")["limit"], f"Codex is out of usage. {text}")
+            strftime = time.strftime
+            with patch.object(time, "strftime", lambda form, *at: strftime(form.replace("%p", ""), *at)):
+                self.assertEqual(asb.tooltip_model({**row, "limitResetsAtMs": NOW + 273_600_000}, NOW, "/home/test")["limit"],
+                                 "Codex is out of usage. It resets Thursday at 18:13.")
+
+        window = object.__new__(Window)
+        window.opening, window.open_errors = set(), {}
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0))
+        with patch.dict(SCOPE, {"Gtk": gtk}):
+            for view, state in (("comfortable", "Resets in"), ("compact", "Resets 3d4h")):
+                window.view = view
+                widget = SimpleNamespace(asb_thread={**row, "limitResetsAtMs": NOW + 273_600_000}, asb_time_signature=None,
+                                         asb_state_label=Mock(), asb_age_label=Mock(), asb_title_label=Mock(), asb_limit_clock=Mock(),
+                                         add_css_class=Mock(), remove_css_class=Mock(), set_sensitive=Mock(),
+                                         update_property=Mock(), update_state=Mock())
+                window.update_row_text(widget, NOW)
+                widget.asb_state_label.set_label.assert_called_with(state)
+                if view == "comfortable":
+                    widget.asb_age_label.set_label.assert_called_with("3d4h")
+                self.assertEqual(widget.asb_accessible_label, "Open Chat in Codex. Idle. Usage limit. Resets in 3 days 4 hours.")
+
     def test_usage_limit_countdown_clock_colors_tooltip_and_accessible_text(self):
         row = {"id": "a", "provider": "codex", "providerLabel": "Codex", "title": "Chat", "state": "idle", "canOpen": True,
                "updatedAtMs": NOW - 600_000, "limitResetsAtMs": NOW + 3_600_000}
@@ -520,12 +569,15 @@ class DataChecks(unittest.TestCase):
                 self.assertLess(asb.contrast(limited, palette["background"]), asb.contrast(quiet, palette["background"]))
             self.assertLess(fraction, 1)
 
-        clock = __import__("time").strftime("%I:%M %p", __import__("time").localtime((NOW + 3_600_000) / 1000)).lstrip("0")
-        model = asb.tooltip_model(row, NOW, "/home/test")
-        self.assertEqual(model["limit"], f"Codex is out of usage. It resets at {clock}.")
-        self.assertIn(model["limit"], asb.tooltip_description(model))
-        self.assertEqual(asb.tooltip_model({**row, "sourceLabel": "Codex Personal"}, NOW, "/home/test")["limit"],
-                         f"Codex Personal is out of usage. It resets at {clock}.")
+        time = SCOPE["time"]
+        # UTC as the local zone: NOW + 1 hour is on the same day, in every machine time zone.
+        with patch.object(time, "localtime", time.gmtime):
+            clock = time.strftime("%I:%M %p", time.localtime((NOW + 3_600_000) / 1000)).lstrip("0")
+            model = asb.tooltip_model(row, NOW, "/home/test")
+            self.assertEqual(model["limit"], f"Codex is out of usage. It resets at {clock}.")
+            self.assertIn(model["limit"], asb.tooltip_description(model))
+            self.assertEqual(asb.tooltip_model({**row, "sourceLabel": "Codex Personal"}, NOW, "/home/test")["limit"],
+                             f"Codex Personal is out of usage. It resets at {clock}.")
         self.assertEqual(asb.tooltip_model(row, NOW + 3_600_000, "/home/test")["limit"], "")
 
         window = object.__new__(Window)
@@ -1381,6 +1433,52 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual([row["id"] for row in filtered(board, "Personal", pending_only=True)], ["claude"])
         self.assertEqual([row["id"] for row in filtered(board, "Personal", state={"working"}, pending_only=True)], ["claude", "personal"])
         self.assertEqual({row["id"] for row in filtered(board, "Personal", app="codex", archived=True)}, {"personal", "archived"})
+
+    def test_row_panel_controls_note_and_edges_follow_the_menu_rules(self):
+        controls, note, edge = SCOPE["row_panel_controls"], SCOPE["row_panel_note"], SCOPE["edge_color"]
+        contrast = SCOPE["contrast"]
+        idle = {"state": "idle", "unread": True, "pinned": True, "pendingSource": "observed-completion"}
+        self.assertEqual(controls(idle), {"unread": (True, "mark-read"), "drawer": (False, "drawer-in"),
+                                          "pinned": (True, "unpin"), "order": (True, "pin-up")})
+        self.assertEqual(note(idle), "Finished. Not read yet.")
+        self.assertEqual(note({**idle, "manualUnread": True}), "Marked unread.")
+        working = {"state": "working"}
+        self.assertEqual(controls(working), {"unread": (False, "mark-unread"), "drawer": (False, None),
+                                             "pinned": (False, "pin"), "discard": (False, "discard-result")})
+        self.assertEqual(controls({**working, "discardResult": True})["discard"], (True, "keep-result"))
+        self.assertEqual(note({**working, "unread": True}), "")
+        drawer = {"state": "idle", "drawer": True}
+        self.assertEqual(controls(drawer)["unread"], (True, "mark-read"))
+        self.assertEqual(controls(drawer)["drawer"], (True, "drawer-out"))
+        self.assertEqual(note(drawer), "Finished. Not read yet.")
+        waiting = {"state": "waiting", "actionRequired": True, "questionAttention": True}
+        self.assertEqual(controls(waiting)["unread"], (True, None))
+        self.assertEqual(controls(waiting)["drawer"], (False, None))
+        self.assertEqual(note(waiting), "Waits for your permission.")
+        self.assertEqual(note({"state": "idle", "questionAttention": True}), "Asks a question.")
+        self.assertEqual(note({"state": "idle"}), "")
+        for row in (idle, working, drawer, waiting):
+            offered = {action for _title, action in SCOPE["row_menu_actions"](row)}
+            self.assertEqual({action for _on, action in controls(row).values() if action} - {"pin-up"}, offered - {"pin-up", "pin-down"})
+        self.assertEqual(edge("#0f0f0f", "#ffb900", .7, ("#000000", "#0f0f0f")), "#b78605")
+        dim = edge("#171c22", "#f0f2f5", .36, ("#171c22",))
+        self.assertGreaterEqual(contrast(dim, "#171c22"), 3)
+        self.assertEqual(edge("#000000", "#101010", .5, ("#000000",)), "#101010")
+
+    def test_panel_place_keeps_the_centered_panel_inside_the_window(self):
+        place = SCOPE["panel_place"]
+        # Room everywhere: the pointer stays.
+        self.assertEqual(place(200, 100, 302, 400, 962, 900), (200, 100, "bottom"))
+        # Near the left and right edges the center moves in by half the width plus the margin.
+        self.assertEqual(place(20, 100, 302, 400, 420, 900), (157, 100, "bottom"))
+        self.assertEqual(place(410, 100, 302, 400, 420, 900), (263, 100, "bottom"))
+        # A window narrower than the panel centers it.
+        self.assertEqual(place(20, 100, 302, 400, 300, 900)[0], 150)
+        # No room below, more room above: the panel opens upward.
+        self.assertEqual(place(200, 420, 302, 300, 962, 470), (200, 420, "top"))
+        # No room either way: the panel moves to stay in the window on the larger side.
+        self.assertEqual(place(200, 300, 302, 400, 962, 470), (200, 406, "top"))
+        self.assertEqual(place(200, 100, 302, 400, 962, 470), (200, 64, "bottom"))
 
     def test_policy_and_read_menu_use_current_asb_dot(self):
         interval, actions = SCOPE["refresh_interval"], SCOPE["row_menu_actions"]
@@ -2505,7 +2603,8 @@ class NativeLogicChecks(unittest.TestCase):
         window.dashboard = {"threads": [{"id": "a", "state": "idle", "updatedAtMs": 20},
                                         {"id": "b", "state": "idle", "updatedAtMs": 10}]}
         window.closed, window.layout_signature, window.focused_id = False, None, None
-        window.context_menu, window.cancel_scroll = Mock(), Mock()
+        window.context_menu, window.cancel_scroll = Mock(asb_identity="a"), Mock()
+        window.update_row_panel = Mock()
         window.focus_generation = 0
         window.get_focus = lambda: focus[0]
         window.focus_key = lambda: "a" if focus[0] else None
@@ -2530,6 +2629,8 @@ class NativeLogicChecks(unittest.TestCase):
         with patch.dict(SCOPE, {"Gtk": gtk, "GLib": glib}):
             window.render()
             columns, widgets = list(window.list_body.children), dict(window.focus_widgets)
+            # The open panel of row "a" stays open when the row moves, and shows the new row data.
+            window.context_menu.get_parent.return_value = widgets["a"]
             focus[0] = widgets["a"]
             for key in operations:
                 operations[key] = 0
@@ -2548,6 +2649,7 @@ class NativeLogicChecks(unittest.TestCase):
             window.list_body.remove.assert_not_called()
             window.list_body.append.assert_not_called()
             window.context_menu.popdown.assert_not_called()
+            window.update_row_panel.assert_called_with(window.context_menu, widgets["a"].asb_thread)
             window.cancel_scroll.assert_not_called()
             window.list_body.clear_hover.assert_not_called()
             self.assertEqual(glib.idle_add.call_count, queued)

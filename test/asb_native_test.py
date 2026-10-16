@@ -2,6 +2,7 @@
 import copy
 import ctypes
 import ctypes.util
+import gc
 import importlib.util
 import json
 import os
@@ -557,8 +558,14 @@ class WidgetCheck(unittest.TestCase):
 
     def test_native_context_menu_keyboard_and_disabled_open(self):
         application = self.application
+        fixture = copy.deepcopy(FIXTURE)
+        fixture["threads"][1].update(pinned=True, pinIndex=0)
+        fixture["threads"].append({"id": "drawer", "provider": "claude-desktop-code", "providerLabel": "Claude Desktop Code",
+                                   "title": "A result kept out of the way", "cwd": "/example/Notes", "projectName": "Notes",
+                                   "state": "idle", "canOpen": True, "updatedAtMs": NOW - 240_000, "drawer": True,
+                                   "manualUnread": True})
         with tempfile.TemporaryDirectory(prefix="asb-native-menu-test-") as temporary:
-            window = asb.SwitchboardWindow(application, "http://127.0.0.1:1", copy.deepcopy(FIXTURE),
+            window = asb.SwitchboardWindow(application, "http://127.0.0.1:1", fixture,
                                           theme_path=Path(temporary) / "theme.json", layout_path=False)
             self.addCleanup(window.close)
             window.present()
@@ -570,18 +577,163 @@ class WidgetCheck(unittest.TestCase):
             context_clicks = [controller for controller in window.focus_widgets["unknown"].observe_controllers()
                               if isinstance(controller, asb.Gtk.GestureClick) and controller.get_button() == 3]
             self.assertEqual(len(context_clicks), 1)
+            def switches(panel):
+                return {key: (row.get_active(), row.get_sensitive()) for key, row in panel.asb_switches.items()
+                        if key != "order" and row.get_visible()}
             for key, modifier in ((asb.Gdk.KEY_Menu, 0), (asb.Gdk.KEY_F10, asb.Gdk.ModifierType.SHIFT_MASK)):
                 self.assertTrue(window.row_key(None, key, 0, modifier, "unknown"))
-                menu = window.context_menu
-                self.assertIsInstance(menu, asb.Gtk.PopoverMenu)
-                self.assertEqual(menu.get_accessible_role(), asb.Gtk.AccessibleRole.MENU)
-                model = menu.get_menu_model()
-                self.assertEqual(model.get_item_attribute_value(0, "label", None).get_string(), "Unread")
-                self.assertEqual(model.get_item_attribute_value(0, "target", None).get_string(), "unknown")
-                self.assertEqual(model.get_item_attribute_value(1, "label", None).get_string(), "Pin")
-                self.assertEqual(model.get_item_attribute_value(1, "action", None).get_string(), "win.pin")
-                menu.popdown()
                 self.drain()
+                panel = window.context_menu
+                self.assertIsInstance(panel, asb.Gtk.Popover)
+                self.assertNotIsInstance(panel, asb.Gtk.PopoverMenu)
+                self.assertFalse(panel.get_has_arrow())
+                self.assertTrue(panel.has_css_class("asb-row-panel"))
+                self.assertTrue(panel.get_mapped())
+                self.assert_accessible_label(panel, "A session without a desktop link")
+                self.assertEqual(panel.asb_title.get_label(), "A session without a desktop link")
+                self.assertEqual(panel.asb_folder.get_label(), "/example/Tools")
+                self.assertTrue(panel.asb_state.get_label().startswith("Unknown · "))
+                self.assertEqual(panel.asb_open.get_label(), "Open in Codex")
+                self.assertFalse(panel.asb_open.get_sensitive())
+                self.assertEqual(switches(panel), {"unread": (False, True), "drawer": (False, False), "pinned": (False, True)})
+                self.assertFalse(panel.asb_switches["order"].get_visible())
+                self.assertFalse(window.row_key(None, asb.Gdk.KEY_Down, 0, 0, "unknown"))
+                panel.popdown()
+                self.drain()
+                self.assertIsNone(window.context_menu)
+            # The panel is about 300px wide with the 12px padding, also for a long title and folder.
+            row = window.focus_widgets["second"]
+            row.asb_thread.update(title="A long title " * 12, cwd="/example/" + "folder/" * 20)
+            window.show_context(row, 10, 10)
+            self.drain()
+            panel = window.context_menu
+            self.assertTrue(panel.get_mapped())
+            self.assertTrue(276 <= panel.get_child().get_width() <= 284, panel.get_child().get_width())
+            self.assertEqual(panel.asb_title.get_layout().get_line_count(), 2)
+            self.assertTrue(panel.asb_title.get_layout().is_ellipsized())
+            panel.popdown()
+            row.asb_thread.update(title=fixture["threads"][1]["title"], cwd="/example/ASB")
+            window.show_context(row, 10, 10)
+            self.drain()
+            panel = window.context_menu
+            # The centered panel points inside the window, also for a click near the window edge.
+            ok, rectangle = panel.get_pointing_to()
+            ok, point = row.compute_point(window, asb.Graphene.Point().init(rectangle.x, rectangle.y))
+            half = 151  # the 302px panel with its ring
+            self.assertTrue(half <= point.x <= window.get_width() - half, (point.x, half, window.get_width()))
+            # Small Earlier and Later buttons keep "Pin order" on one line.
+            self.assertLessEqual(panel.asb_up.get_height(), 30)
+            # A failed action shows its error in the panel, which covers the card tooltip.
+            self.assertFalse(panel.asb_error.get_visible())
+            window.open_errors["second"] = "The server did not answer."
+            window.sync_row_panel()
+            self.assertTrue(panel.asb_error.get_visible())
+            self.assertEqual(panel.asb_error.get_label(), "The server did not answer.")
+            window.open_errors.pop("second")
+            window.sync_row_panel()
+            self.assertFalse(panel.asb_error.get_visible())
+            self.assertEqual(switches(panel), {"unread": (True, True), "drawer": (False, True), "pinned": (True, True)})
+            self.assertEqual(panel.asb_switches["unread"].get_subtitle(), "Finished. Not read yet.")
+            self.assertTrue(panel.asb_switches["order"].get_visible())
+            self.assertEqual(panel.asb_up.get_tooltip_text(), "Move pin earlier")
+            self.assert_accessible_label(panel.asb_up, "Move pin earlier")
+            self.assert_accessible_label(panel.asb_down, "Move pin later")
+            self.assertTrue(panel.asb_state.has_css_class("asb-panel-unread"))
+            self.assertRegex(panel.asb_state.get_label(), r"^Idle · \d+[mhd] ago$")
+            self.assertTrue(panel.asb_open.get_sensitive())
+            # Earlier and Later at the ends of the pins send nothing.
+            with patch.object(window, "session_action") as action:
+                panel.asb_up.emit("clicked")
+                panel.asb_down.emit("clicked")
+                action.assert_not_called()
+                panel.asb_switches["drawer"].set_active(True)
+                action.assert_called_once_with("second", "drawer-in")
+                # Nothing was sent, so the switch shows the row data again.
+                self.assertFalse(panel.asb_switches["drawer"].get_active())
+                action.reset_mock()
+                panel.asb_switches["unread"].set_active(False)
+                action.assert_called_once_with("second", "mark-read")
+            self.assertIs(window.context_menu, panel)
+            # Down and Up move through the controls in Tab order and wrap at the ends.
+            keys = [controller for controller in panel.observe_controllers() if isinstance(controller, asb.Gtk.EventControllerKey)]
+            capture = next(controller for controller in keys if controller.get_propagation_phase() == asb.Gtk.PropagationPhase.CAPTURE)
+            panel.asb_open.grab_focus()
+            self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
+            self.assertIs(window.get_focus(), panel.asb_switches["unread"])
+            self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
+            self.assertIs(window.get_focus(), panel.asb_open)
+            self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
+            self.assertIs(window.get_focus(), panel.asb_down)
+            self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
+            self.assertIs(window.get_focus(), panel.asb_open)
+            # Escape (the native popover key handler) closes the panel and gives the focus back to the card.
+            panel.asb_switches["pinned"].grab_focus()
+            self.assertTrue(window.get_focus().is_ancestor(panel))
+            native = next(controller for controller in keys if controller.get_propagation_phase() == asb.Gtk.PropagationPhase.BUBBLE)
+            finalized = []
+            panel.weak_ref(lambda: finalized.append(True))
+            self.assertTrue(native.emit("key-pressed", asb.Gdk.KEY_Escape, 9, 0))
+            self.drain()
+            self.assertIsNone(window.context_menu)
+            self.assertIs(window.get_focus(), window.focus_widgets["second"])
+            # A closed panel is freed: its handlers hold no reference to it.
+            del panel, keys, capture, native
+            gc.collect()
+            self.drain()
+            self.assertEqual(finalized, [True])
+            window.show_context(window.focus_widgets["first"])
+            self.drain()
+            panel = window.context_menu
+            self.assertTrue(276 <= panel.get_child().get_width() <= 284, panel.get_child().get_width())
+            self.assertTrue(panel.asb_state.get_label().startswith("Working"))
+            self.assertTrue(panel.asb_state.has_css_class("success"))
+            self.assertEqual(switches(panel), {"unread": (False, True), "drawer": (False, False), "pinned": (False, True),
+                                               "discard": (False, True)})
+            self.assertEqual(panel.asb_switches["discard"].get_subtitle(), "Go to read Idle when this task ends")
+            # The state line ticks with the cards.
+            shown = panel.asb_state.get_label()
+            later = time.time() + 2 * 86_400
+            with patch.object(asb.time, "time", return_value=later):
+                window.update_clock()
+            self.assertNotEqual(panel.asb_state.get_label(), shown)
+            self.assertTrue(panel.asb_state.get_label().startswith("Working"))
+            self.assertEqual(panel.asb_switches["unread"].get_subtitle(), "")
+            window.show_context(window.focus_widgets["drawer"])
+            self.drain()
+            self.assertFalse(panel.get_visible())
+            panel = window.context_menu
+            self.assertEqual(panel.asb_open.get_label(), "Open in Claude Desktop Code")
+            self.assertEqual(switches(panel), {"unread": (True, True), "drawer": (True, True), "pinned": (False, True)})
+            self.assertEqual(panel.asb_switches["unread"].get_subtitle(), "Marked unread.")
+            window.show_context(window.focus_widgets["claude:local_mock"])
+            self.drain()
+            panel = window.context_menu
+            self.assertEqual(switches(panel), {"unread": (True, False), "drawer": (False, False), "pinned": (False, True)})
+            self.assertEqual(panel.asb_switches["unread"].get_subtitle(), "Waits for your permission.")
+            self.assertTrue(panel.asb_state.has_css_class("warning"))
+            # Open runs the card open path and closes the panel.
+            with patch.object(window, "open_row") as open_row:
+                panel.asb_open.emit("clicked")
+                open_row.assert_called_once_with(None, window.focus_widgets["claude:local_mock"])
+            self.drain()
+            self.assertIsNone(window.context_menu)
+            # A repack keeps the panel open on its row while the row stays on the board.
+            window.show_context(window.focus_widgets["second"])
+            self.drain()
+            panel = window.context_menu
+            window.search.set_text("keyboard focus")
+            window.render()
+            self.drain()
+            self.assertEqual(window.row_order, ["second"])
+            self.assertIs(window.context_menu, panel)
+            self.assertTrue(panel.get_mapped())
+            # A row that leaves the board closes its panel.
+            window.search.set_text("no session has this title")
+            window.render()
+            self.drain()
+            self.assertIsNone(window.context_menu)
+            window.search.set_text("")
+            window.render()
             with patch.object(window, "session_action") as action:
                 window.activate_action("win.mark-unread", asb.GLib.Variant("s", "unknown"))
                 action.assert_called_once_with("unknown", "mark-unread")
@@ -850,12 +1002,35 @@ class WidgetCheck(unittest.TestCase):
             child = widget.get_first_child()
             while child:
                 yield from descendants(child); child = child.get_next_sibling()
+        controls = {"Unread": ("unread", True), "Read": ("unread", False), "Pin": ("pinned", True), "Unpin": ("pinned", False)}
         def activate(identity, text):
             window.show_context(window.focus_widgets[identity])
+            self.drain()
             popup = window.context_menu
-            item = next(widget for widget in descendants(popup) if widget.find_property("text") and widget.get_property("text") == text)
-            self.assertTrue(item.activate())
+            if text in controls:
+                key, on = controls[text]
+                switch = popup.asb_switches[key]
+                self.assertNotEqual(switch.get_active(), on)
+                switch.grab_focus()
+                switch.set_active(on)
+                self.assertFalse(switch.get_sensitive())
+            else:
+                popup.asb_up.grab_focus()
+                popup.asb_up.emit("clicked")
             self.drain(.35)
+            # The panel stays open on its row, with the new row data, and keeps the focus.
+            self.assertIs(window.context_menu, popup)
+            self.assertTrue(popup.get_mapped())
+            self.assertIs(popup.get_parent(), window.focus_widgets[identity])
+            if text in controls:
+                self.assertEqual(switch.get_active(), on)
+                self.assertTrue(switch.get_sensitive())
+                self.assertIs(window.get_focus(), switch)
+            else:
+                self.assertIs(window.get_focus(), popup.asb_up)
+            popup.popdown()
+            self.drain()
+            self.assertIsNone(window.context_menu)
         activate("sample-30", "Unread")
         self.assertEqual(received[0], ("/api/threads/sample-30/mark-unread", {}, base))
         self.assertTrue(window.focus_widgets["sample-30"].asb_thread["manualUnread"])
