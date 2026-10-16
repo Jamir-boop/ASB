@@ -59,7 +59,8 @@ class Notifier(private val app: AsbApp) {
     }
 
     fun post(events: List<Event>) {
-        if (!canPost()) return
+        // Most reads find no new event; this skips the binder calls of the group check.
+        if (events.isEmpty() || !canPost()) return
         val children = children().toMutableSet()
         for (event in events) {
             val row = event.row

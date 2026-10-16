@@ -34,19 +34,26 @@ baseline updates; only the current, resumed pairing can save that baseline.
 The live notification is an ongoing, silent notification with the session
 counts, for example `5 sessions · 2 working · 1 pending`. Archived sessions are
 not counted. Expand it to see the titles of the Working sessions (six titles,
-then `+N more`). Tap it to open the app. Select Stop to turn it off. The lock
-screen shows only the counts. When the PC does not answer, the notification
-keeps the last counts and shows `Offline · last update 5m ago`.
+then `+N more`). Tap it to open the app. Select Stop to turn it off. When
+Android hides sensitive content on the lock screen, the lock screen shows only
+the counts (and the offline status). When the PC does not answer, the
+notification keeps the last counts and shows `Offline · last update 5m ago`.
 
 A foreground service runs the notification. It is on by default after pairing.
 Turn it on or off in Settings > Notifications > Live notification. The service
-starts again after a phone restart and after an app update. Unpair or a removed
-pairing stops it. While the app is open, the session screen updates the
-notification and the service sends no requests. In the background, the service
-reads the dashboard every 5 seconds while a session is working, and every 30
-seconds when not or when the PC is offline. It also shows Done, Failed, and
-Needs input alerts at once. When the service is off, the 15-minute background
-check shows these alerts.
+does not run while notifications are off for ASB. It starts again when the app
+opens with notifications allowed. It also starts again after a phone restart
+and after an app update. Unpair or a removed pairing stops it. While the session
+screen is open, the screen updates the notification and the service sends no
+requests. On the other screens of the app, the service reads the dashboard but
+shows no alerts. In the background, while the phone is awake, the service reads
+the dashboard every 5 seconds while a session is working, and every 30 seconds
+when not or when the PC is offline. It shows Done, Failed, and Needs input
+alerts after the read that finds them. When the screen is off, Android can put
+the phone to sleep and delay these reads and alerts, sometimes by many minutes,
+until the phone wakes again. When the service is off, the 15-minute background
+check shows these alerts. When the service or the screen read the dashboard
+less than one minute before, the 15-minute check does not read it again.
 
 The service keeps the phone network in use and costs some battery. A 30-second
 read with no change is small because the app sends the ETag. HyperOS can stop

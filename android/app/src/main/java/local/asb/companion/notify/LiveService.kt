@@ -64,20 +64,25 @@ internal fun liveOfflineText(lastMs: Long, nowMs: Long): String =
     else "Offline · last update " + idleAge(lastMs, nowMs).replaceFirstChar { it.lowercaseChar() }
 
 /**
- * Shows the session counts in an ongoing notification. While the app is resumed, the screen polls and
- * this service only shows its dashboards; otherwise the service polls and posts the attention alerts.
+ * Shows the session counts in an ongoing notification. While the session screen polls, this service only
+ * shows its dashboards; otherwise the service polls, and in the background it also posts the attention alerts.
  */
 class LiveService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var loop: Job? = null
     private var last: LiveUpdate? = null
+    private var own: LiveUpdate? = null // the last update that this service wrote
     private var offline = false
+    private var shown: Triple<String, List<String>, String?>? = null
 
     companion object {
-        /** Starts the service when the pairing is current and the switch is on; a refused start leaves CheckWorker. */
+        /**
+         * Starts the service when the pairing is current, the switch is on, and ASB can post notifications;
+         * a refused start leaves CheckWorker. onResume starts it again after the user allows notifications.
+         */
         fun startIfEnabled(context: Context) {
             val store = (context.applicationContext as AsbApp).store
-            if (!store.paired || store.revoked || !store.liveNotification) return
+            if (!store.paired || store.revoked || !store.liveNotification || !Notifier.notificationsAllowed(context)) return
             try {
                 ContextCompat.startForegroundService(context, Intent(context, LiveService::class.java))
             } catch (_: IllegalStateException) {
@@ -96,14 +101,16 @@ class LiveService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val app = application as AsbApp
         if (intent?.action == ACTION_STOP) {
-            app.store.liveNotification = false
+            app.useLiveNotification(false)
             stopSelf()
             return START_NOT_STICKY
         }
         try {
-            val notification = build()
+            val content = content()
+            val notification = build(content)
             if (Build.VERSION.SDK_INT >= 34) startForeground(LIVE_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
             else startForeground(LIVE_ID, notification)
+            shown = content
         } catch (_: IllegalStateException) {
             stopSelf()
             return START_NOT_STICKY
@@ -140,12 +147,16 @@ class LiveService : Service() {
                 if (!app.store.paired || app.store.revoked || !app.store.liveNotification) null else app.store.token
             }
             if (token == null) { stopSelf(); return }
-            if (app.resumed) {
+            val fed = app.liveUpdates.value
+            // Only the session screen feeds updates; on Settings or Connection the service reads itself.
+            if (app.resumed && fed != null && fed !== own && System.currentTimeMillis() - fed.atMs < 10_000) {
                 // The screen polls now; its baseline can be newer, so the next own read is a full one.
                 etag = null
                 delay(1000)
                 continue
             }
+            // A hidden notification posts no alerts, so the service stops; onResume starts it again.
+            if (!Notifier.notificationsAllowed(app)) { stopSelf(); return }
             if (api == null || apiToken != token) { api = app.api(); apiToken = token; etag = null }
             val current = api
             app.notificationMutex.withLock {
@@ -155,24 +166,28 @@ class LiveService : Service() {
                     val nowMs = System.currentTimeMillis()
                     when (reply) {
                         is DashboardResult.Fetched -> {
-                            etag = reply.etag
+                            // A read while the app shows Settings or Connection must not mark new attention as seen.
+                            etag = if (app.resumed) null else reply.etag
                             val threads = reply.dashboard.threads
                             synchronized(app.store) {
-                                if (app.store.token == token && !app.store.revoked) {
+                                if (!app.resumed && app.store.token == token && !app.store.revoked) {
                                     val baseline = app.store.loadBaselineIfPaired(token)
-                                    if (shouldPost(false, app.resumed)) app.notifier.post(diff(baseline, threads, nowMs))
+                                    app.notifier.post(diff(baseline, threads, nowMs))
                                     app.store.saveBaselineIfPaired(token, AsbJson.encodeToString(update(baseline, threads, nowMs)))
                                 }
                             }
-                            app.liveUpdates.value = LiveUpdate(threads, nowMs)
+                            own = LiveUpdate(threads, nowMs).also { app.liveUpdates.value = it }
                         }
-                        DashboardResult.NotModified -> last?.let { app.liveUpdates.value = it.copy(atMs = nowMs) }
+                        DashboardResult.NotModified -> last?.let { own = it.copy(atMs = nowMs).also { u -> app.liveUpdates.value = u } }
                     }
                 } catch (cause: AsbError) {
                     if (cause === AsbError.NotPaired) synchronized(app.store) {
                         if (app.store.token == token) {
                             app.store.revokeIfPaired(token)
                             app.notifier.postRevoked()
+                            // The pairing is gone: stop now, so the shade does not also show Offline.
+                            stopSelf()
+                            return
                         }
                     }
                     offline = true
@@ -183,17 +198,26 @@ class LiveService : Service() {
         }
     }
 
-    @SuppressLint("MissingPermission")
-    private fun show() {
-        try { getSystemService(NotificationManager::class.java).notify(LIVE_ID, build()) }
-        catch (_: SecurityException) {}
+    private fun content(): Triple<String, List<String>, String?> {
+        val update = last
+        return Triple(update?.let { liveTitle(it.threads) } ?: "ASB",
+            update?.let { liveLines(it.threads) }.orEmpty(),
+            if (offline) liveOfflineText(update?.atMs ?: 0, System.currentTimeMillis()) else null)
     }
 
-    private fun build(): Notification {
-        val update = last
-        val title = update?.let { liveTitle(it.threads) } ?: "ASB"
-        val lines = update?.let { liveLines(it.threads) }.orEmpty()
-        val status = if (offline) liveOfflineText(update?.atMs ?: 0, System.currentTimeMillis()) else null
+    // Most updates change only the time, so the same content is not posted again.
+    @SuppressLint("MissingPermission")
+    private fun show() {
+        val content = content()
+        if (content == shown) return
+        try {
+            getSystemService(NotificationManager::class.java).notify(LIVE_ID, build(content))
+            shown = content
+        } catch (_: SecurityException) {}
+    }
+
+    private fun build(content: Triple<String, List<String>, String?>): Notification {
+        val (title, lines, status) = content
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)

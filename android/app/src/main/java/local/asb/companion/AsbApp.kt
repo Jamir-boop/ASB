@@ -29,11 +29,14 @@ class AsbApp : Application() {
         private set
     var textScale by mutableFloatStateOf(1f)
         private set
+    var liveNotification by mutableStateOf(true)
+        private set
 
     override fun onCreate() {
         super.onCreate()
         palette = store.palette ?: Palette()
         textScale = store.textScale
+        liveNotification = store.liveNotification
         notifier.createChannels()
         CheckWorker.schedule(this)
         // Registered on the Application for the whole process (no activity to leak), so the
@@ -56,6 +59,12 @@ class AsbApp : Application() {
     fun useTextScale(value: Float) {
         textScale = value
         store.textScale = value
+    }
+
+    /** Shows and saves the live notification switch; the Stop action in the notification also sets it. */
+    fun useLiveNotification(value: Boolean) {
+        liveNotification = value
+        store.liveNotification = value
     }
 
     fun api(): AsbApi = synchronized(store) {

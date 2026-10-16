@@ -108,6 +108,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -513,15 +514,18 @@ fun SessionsScreen(
                 )
             }
         }
+        val density = LocalDensity.current
         DropdownMenu(expanded = discMenu, onDismissRequest = { discMenu = false }) {
-            Text(connection, style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp).widthIn(max = 280.dp))
-            DropdownMenuItem(
-                text = { Text("Refresh") },
-                leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
-                enabled = !state.refreshing,
-                onClick = { discMenu = false; viewModel.refresh() },
-            )
+            CompositionLocalProvider(LocalDensity provides density) {
+                Text(connection, style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp).widthIn(max = 280.dp))
+                DropdownMenuItem(
+                    text = { Text("Refresh") },
+                    leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
+                    enabled = !state.refreshing,
+                    onClick = { discMenu = false; viewModel.refresh() },
+                )
+            }
         }
     }
 
@@ -950,37 +954,40 @@ private class HighlightNode(private val source: InteractionSource, private val c
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun FilterSheet(filter: Filter, onChange: (Filter) -> Unit, onDismiss: () -> Unit) {
+    val density = LocalDensity.current
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        Column(
-            modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp)
-                .padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text("Filters", style = MaterialTheme.typography.headlineSmall)
-            Spacer(Modifier.height(8.dp))
-            Text("App", style = MaterialTheme.typography.titleMedium)
-            listOf("all" to "All", "codex" to "Codex", "claude-desktop-code" to "Claude").forEach { (app, label) ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
-                        .selectable(selected = filter.app == app, role = Role.RadioButton,
-                            onClick = { onChange(filter.copy(app = app)) }),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    RadioButton(selected = filter.app == app, onClick = null)
-                    Text(label, style = MaterialTheme.typography.bodyLarge)
+        CompositionLocalProvider(LocalDensity provides density) {
+            Column(
+                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp)
+                    .padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("Filters", style = MaterialTheme.typography.headlineSmall)
+                Spacer(Modifier.height(8.dp))
+                Text("App", style = MaterialTheme.typography.titleMedium)
+                listOf("all" to "All", "codex" to "Codex", "claude-desktop-code" to "Claude").forEach { (app, label) ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                            .selectable(selected = filter.app == app, role = Role.RadioButton,
+                                onClick = { onChange(filter.copy(app = app)) }),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        RadioButton(selected = filter.app == app, onClick = null)
+                        Text(label, style = MaterialTheme.typography.bodyLarge)
+                    }
                 }
-            }
-            Spacer(Modifier.height(8.dp))
-            Text("States", style = MaterialTheme.typography.titleMedium)
-            STATES.forEach { state ->
-                FilterCheckbox(stateLabel(state), state in filter.states) { checked ->
-                    onChange(filter.copy(states = if (checked) filter.states + state else filter.states - state))
+                Spacer(Modifier.height(8.dp))
+                Text("States", style = MaterialTheme.typography.titleMedium)
+                STATES.forEach { state ->
+                    FilterCheckbox(stateLabel(state), state in filter.states) { checked ->
+                        onChange(filter.copy(states = if (checked) filter.states + state else filter.states - state))
+                    }
                 }
+                Spacer(Modifier.height(8.dp))
+                FilterCheckbox("Include archived", filter.archived) { onChange(filter.copy(archived = it)) }
+                Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Done") }
             }
-            Spacer(Modifier.height(8.dp))
-            FilterCheckbox("Include archived", filter.archived) { onChange(filter.copy(archived = it)) }
-            Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Done") }
         }
     }
 }
@@ -1001,19 +1008,22 @@ private fun FilterCheckbox(label: String, checked: Boolean, onChecked: (Boolean)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RowActionSheet(row: Thread, busy: Boolean, onDismiss: () -> Unit, onAction: (String) -> Unit) {
+    val density = LocalDensity.current
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        Column(
-            modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp).padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(row.title, style = MaterialTheme.typography.titleLarge, maxLines = 2,
-                overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp))
-            val actions = (if (row.canOpen) listOf(MenuAction("Open on PC", "open")) else emptyList()) + rowMenuActions(row)
-            actions.forEach { action ->
-                TextButton(onClick = { onAction(action.action) }, enabled = !busy,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                    Text(action.label, modifier = Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyLarge)
+        CompositionLocalProvider(LocalDensity provides density) {
+            Column(
+                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp).padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(row.title, style = MaterialTheme.typography.titleLarge, maxLines = 2,
+                    overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp))
+                val actions = (if (row.canOpen) listOf(MenuAction("Open on PC", "open")) else emptyList()) + rowMenuActions(row)
+                actions.forEach { action ->
+                    TextButton(onClick = { onAction(action.action) }, enabled = !busy,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                        Text(action.label, modifier = Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyLarge)
+                    }
                 }
             }
         }

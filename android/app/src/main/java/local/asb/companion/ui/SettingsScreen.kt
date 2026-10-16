@@ -56,6 +56,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
@@ -97,6 +98,8 @@ fun SettingsScreen(
     onPersistentUnreadChanged: () -> Unit = {},
     onViewChanged: (String) -> Unit = {},
     onTextScaleChanged: (Float) -> Unit = {},
+    liveNotification: Boolean,
+    onLiveNotificationChanged: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -117,7 +120,6 @@ fun SettingsScreen(
     var notifyDone by remember(store) { mutableStateOf(store.notifyDone) }
     var notifyFailed by remember(store) { mutableStateOf(store.notifyFailed) }
     var notifyInput by remember(store) { mutableStateOf(store.notifyInput) }
-    var liveNotification by remember(store) { mutableStateOf(store.liveNotification) }
     var view by remember(store) { mutableStateOf(store.view) }
     var textScale by remember(store) { mutableFloatStateOf(store.textScale) }
     val palette = LocalPalette.current
@@ -295,11 +297,11 @@ fun SettingsScreen(
                     SettingsSwitch("Failed", notifyFailed) { notifyFailed = it; store.notifyFailed = it }
                     SettingsSwitch("Needs input", notifyInput) { notifyInput = it; store.notifyInput = it }
                     SettingsSwitch("Live notification", liveNotification) {
-                        liveNotification = it
-                        store.liveNotification = it
+                        // The setter runs first, because startIfEnabled reads the saved switch.
+                        onLiveNotificationChanged(it)
                         if (it) LiveService.startIfEnabled(context) else LiveService.stop(context)
                     }
-                    Text("Shows the number of sessions, Working, and Pending. It checks every 5 seconds while a session is working, and every 30 seconds when not.",
+                    Text("Shows the number of sessions, Working, and Pending. While the phone is awake, it checks every 5 seconds while a session is working, and every 30 seconds when not. Android can delay checks while the screen is off.",
                         style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     if (!notificationsAllowed) {
                         Text("Notifications are off for ASB.", style = MaterialTheme.typography.bodyMedium,
@@ -346,12 +348,13 @@ fun SettingsScreen(
             }
         }
     }
+    val density = LocalDensity.current
     if (confirmUnpair) AlertDialog(
         onDismissRequest = { confirmUnpair = false },
-        title = { Text("Unpair this phone?") },
-        text = { Text("This removes the saved pairing from this phone. Also remove this phone in ASB Preferences > Phone on the PC.") },
-        confirmButton = { TextButton(onClick = { confirmUnpair = false; onUnpair() }) { Text("Unpair") } },
-        dismissButton = { TextButton(onClick = { confirmUnpair = false }) { Text("Cancel") } },
+        title = withDensity(density) { Text("Unpair this phone?") },
+        text = withDensity(density) { Text("This removes the saved pairing from this phone. Also remove this phone in ASB Preferences > Phone on the PC.") },
+        confirmButton = withDensity(density) { TextButton(onClick = { confirmUnpair = false; onUnpair() }) { Text("Unpair") } },
+        dismissButton = withDensity(density) { TextButton(onClick = { confirmUnpair = false }) { Text("Cancel") } },
     )
     license?.let { title -> LicenseDialog(title, SettingsLicenses.getValue(title)) { license = null } }
 }
@@ -401,16 +404,17 @@ private fun LicenseDialog(title: String, paths: List<String>, onDismiss: () -> U
             withContext(Dispatchers.IO) { paths.joinToString("\n\n") { path -> assets.open(path).bufferedReader().use { it.readText() } } }
         } catch (_: IOException) { "Could not load this license. Close this dialog and try again." }
     }
+    val density = LocalDensity.current
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
+        title = withDensity(density) { Text(title) },
+        text = withDensity(density) {
             SelectionContainer {
                 Text(text ?: "Loading license…", style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()))
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        confirmButton = withDensity(density) { TextButton(onClick = onDismiss) { Text("Close") } },
     )
 }
 

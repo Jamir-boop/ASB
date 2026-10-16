@@ -76,6 +76,7 @@ import local.asb.companion.ui.PairingViewModel
 import local.asb.companion.ui.SessionsScreen
 import local.asb.companion.ui.SessionsViewModel
 import local.asb.companion.ui.SettingsScreen
+import local.asb.companion.ui.withDensity
 
 class MainActivity : ComponentActivity() {
     private var notificationsAllowed by mutableStateOf(false)
@@ -209,6 +210,8 @@ private fun PairedApp(
                 onPersistentUnreadChanged = sessionsModel::refresh,
                 onViewChanged = sessionsModel::setView,
                 onTextScaleChanged = app::useTextScale,
+                liveNotification = app.liveNotification,
+                onLiveNotificationChanged = app::useLiveNotification,
             )
         } else {
             SessionsScreen(sessionsModel, serverName,
@@ -286,12 +289,13 @@ private fun ConnectionScreen(
         }
     }
     if (confirmUnpair) {
+        val density = LocalDensity.current
         AlertDialog(
             onDismissRequest = { confirmUnpair = false },
-            title = { Text("Unpair this phone?") },
-            text = { Text("Also remove this phone in ASB Preferences > Phone on the PC.") },
-            confirmButton = { TextButton(onClick = onUnpair) { Text("Unpair") } },
-            dismissButton = { TextButton(onClick = { confirmUnpair = false }) { Text("Cancel") } },
+            title = withDensity(density) { Text("Unpair this phone?") },
+            text = withDensity(density) { Text("Also remove this phone in ASB Preferences > Phone on the PC.") },
+            confirmButton = withDensity(density) { TextButton(onClick = onUnpair) { Text("Unpair") } },
+            dismissButton = withDensity(density) { TextButton(onClick = { confirmUnpair = false }) { Text("Cancel") } },
         )
     }
 }
