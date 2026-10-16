@@ -299,7 +299,7 @@ gatewayTest('the proxy adds local Host and Origin, strips other headers, and pre
   assert.equal(records.at(-1).url, '/api/dashboard');
 });
 
-test('Accept-Encoding allows gzip only with a positive q-value for gzip or *', () => {
+test('Accept-Encoding allows gzip only with a positive q-value for gzip, or for * when gzip is not listed', () => {
   for (const header of ['gzip', 'GZIP', 'gzip, deflate, br', 'br;q=1, gzip;q=0.5', '*', '*;q=0.1', 'gzip;q=1, *;q=0', 'deflate, gzip ; q=0.2']) {
     assert.equal(acceptsGzip(header), true, header);
   }
@@ -308,7 +308,7 @@ test('Accept-Encoding allows gzip only with a positive q-value for gzip or *', (
   }
 });
 
-gatewayTest('the dashboard reply is gzip only when the phone accepts it and always has Vary', async (t) => {
+gatewayTest('the dashboard reply is gzip only when the phone accepts it and has Vary when the loopback server answers', async (t) => {
   const dashboard = JSON.stringify({ threads: Array.from({ length: 200 }, (_, i) => ({ id: `thread-${i}`, state: 'idle' })) });
   const { request, pair, local } = await fixture(t, { reply: (request, response) => {
     if (request.url.startsWith('/api/threads/')) { response.writeHead(200, { 'content-type': 'application/json' }); response.end(dashboard); return; }
@@ -353,7 +353,7 @@ gatewayTest('the dashboard reply is gzip only when the phone accepts it and alwa
 gatewayTest('an upstream error after the gzip headers ends the phone reply', async (t) => {
   const { request, pair } = await fixture(t, { reply: (request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
-    response.write('{"threads":[');
+    response.flushHeaders();
     setTimeout(() => response.socket.destroy(), 50);
   } });
   const token = (await pair()).json.token;
