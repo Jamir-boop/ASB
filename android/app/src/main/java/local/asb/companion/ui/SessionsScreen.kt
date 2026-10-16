@@ -749,8 +749,8 @@ private fun KeepPositionOnChange(state: LazyListState, keys: List<Any>, top: Boo
         } else {
             val first = state.firstVisibleItemIndex
             val offset = state.firstVisibleItemScrollOffset
-            val sameItem = previous?.getOrNull(first) == keys.getOrNull(first)
-            val (index, keptOffset) = keptPosition(first, offset, oldLead, lead, sameItem)
+            val keptIndex = keys.indexOf(previous?.getOrNull(first))
+            val (index, keptOffset) = keptPosition(first, offset, oldLead, lead, keptIndex)
             state.requestScrollToItem(index, keptOffset)
         }
     }

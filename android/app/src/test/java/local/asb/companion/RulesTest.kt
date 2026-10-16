@@ -448,26 +448,29 @@ class RulesTest {
 
     @Test fun keptPositionKeepsTheRowSlotWhenLeadingItemsChange() {
         // At the top: stay at the top, so a new warning shows.
-        assertEquals(0 to 0, keptPosition(0, 0, 0, 1, false))
-        assertEquals(0 to 0, keptPosition(0, 0, 2, 0, false))
+        assertEquals(0 to 0, keptPosition(0, 0, 0, 1, 1))
+        assertEquals(0 to 0, keptPosition(0, 0, 2, 0, -1))
+        assertEquals(0 to 0, keptPosition(0, 0, 1, 2, 1))
         // A row first (row 3 after 1 warning): a warning added or removed keeps that row and its offset first.
-        assertEquals(5 to 30, keptPosition(4, 30, 1, 2, false))
-        assertEquals(3 to 30, keptPosition(4, 30, 1, 0, false))
-        // A row first at its edge (such as after a rotation start) is not at the top.
-        assertEquals(4 to 0, keptPosition(4, 0, 2, 2, false))
+        assertEquals(5 to 30, keptPosition(4, 30, 1, 2, 5))
+        assertEquals(3 to 30, keptPosition(4, 30, 1, 0, 3))
         // A row first with offset at index 0 (no leading items) is not at the top.
-        assertEquals(1 to 30, keptPosition(0, 30, 0, 1, false))
+        assertEquals(1 to 30, keptPosition(0, 30, 0, 1, 1))
+        // A row first keeps its row slot after a reorder, not the row that moved.
+        assertEquals(4 to 0, keptPosition(4, 0, 2, 2, 6))
         // The "empty" item first: rows come, so the first row shows.
-        assertEquals(1 to 0, keptPosition(1, 16, 2, 1, false))
-        // A warning first while scrolled keeps its index and offset when the rows reorder.
-        assertEquals(0 to 60, keptPosition(0, 60, 1, 1, true))
-        assertEquals(1 to 30, keptPosition(1, 30, 3, 3, true))
-        // A different warning now at that index (one before it went, or a new one came) shows in full.
-        assertEquals(0 to 0, keptPosition(0, 40, 2, 1, false))
-        assertEquals(0 to 0, keptPosition(0, 30, 1, 2, false))
-        // A warning first whose index is now a row: the first row shows.
-        assertEquals(1 to 0, keptPosition(2, 20, 3, 1, false))
-        assertEquals(1 to 0, keptPosition(1, 20, 3, 1, false))
+        assertEquals(1 to 0, keptPosition(1, 16, 2, 1, -1))
+        // A warning first keeps its index and offset when the rows reorder.
+        assertEquals(0 to 60, keptPosition(0, 60, 1, 1, 0))
+        assertEquals(1 to 30, keptPosition(1, 30, 3, 3, 1))
+        // A warning first follows its key when warnings before it clear or a new one comes above it.
+        assertEquals(0 to 20, keptPosition(1, 20, 2, 1, 0))
+        assertEquals(0 to 20, keptPosition(2, 20, 3, 1, 0))
+        assertEquals(1 to 30, keptPosition(0, 30, 1, 2, 1))
+        // The first warning clears: the item now at its index, at most the first row, shows in full.
+        assertEquals(0 to 0, keptPosition(0, 40, 2, 1, -1))
+        assertEquals(1 to 0, keptPosition(1, 20, 3, 2, -1))
+        assertEquals(1 to 0, keptPosition(2, 20, 3, 1, -1))
     }
 
     @Test fun startIndexFindsTheAnchorRow() {
