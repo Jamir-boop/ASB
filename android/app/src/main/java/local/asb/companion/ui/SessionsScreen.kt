@@ -74,12 +74,14 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -162,7 +164,8 @@ fun SessionsScreen(
     val flow = maxWidth >= 600.dp
     val shortHeader = maxHeight < 480.dp
     val comfortable = state.view != "compact"
-    val rowHeight = if (comfortable) COMFORTABLE_ROW_HEIGHT else COMPACT_ROW_HEIGHT
+    val rowGap = if (comfortable) COMFORTABLE_CARD_GAP else 0
+    val rowHeight = (if (comfortable) COMFORTABLE_ROW_HEIGHT else COMPACT_ROW_HEIGHT) + rowGap
     var showFilters by rememberSaveable { mutableStateOf(false) }
     var actionRowId by rememberSaveable { mutableStateOf<String?>(null) }
     var dismissedWarnings by rememberSaveable { mutableStateOf(mapOf<String, String>()) }
@@ -373,6 +376,7 @@ fun SessionsScreen(
         singleLine = true,
         keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, imeAction = ImeAction.Search),
         keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
+        colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = hexColor(controlOutline(LocalPalette.current))),
         modifier = modifier.semantics { contentDescription = "Search sessions" },
     )
 
@@ -503,6 +507,7 @@ fun SessionsScreen(
                                 // Columns share the visible width equally; a 1 dp divider in the palette color separates them.
                                 LazyColumn(
                                     userScrollEnabled = false,
+                                    verticalArrangement = Arrangement.spacedBy(rowGap.dp),
                                     modifier = Modifier.fillParentMaxWidth(1f / packing.columns).fillParentMaxHeight()
                                         .drawBehind {
                                             if (index > 0) drawLine(divider, Offset.Zero, Offset(0f, size.height), 1.dp.toPx())
@@ -512,7 +517,8 @@ fun SessionsScreen(
                                 }
                             }
                         }
-                    } else LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                    } else LazyColumn(state = listState, modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(rowGap.dp)) {
                         warnings.forEach { provider ->
                             item(key = "warning:${provider.id}") {
                                 ProviderWarning(provider) {
@@ -571,12 +577,15 @@ private fun SessionChip(
     FilterChip(
         selected = selected,
         onClick = onClick,
-        modifier = modifier.heightIn(min = 48.dp),
-        leadingIcon = if (selected) ({ Icon(Icons.Default.Check, contentDescription = null, Modifier.size(18.dp)) }) else null,
+        // Desktop pill: small and round, accent background when selected. The chip keeps its 48 dp touch area.
+        modifier = modifier.height(28.dp),
+        shape = CircleShape,
+        border = FilterChipDefaults.filterChipBorder(true, selected, borderColor = hexColor(controlOutline(LocalPalette.current))),
         label = {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(label)
-                if (dot) Box(Modifier.size(6.dp).background(MaterialTheme.colorScheme.onSurface, CircleShape))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(label, fontSize = 12.sp)
+                if (dot) Box(Modifier.size(5.dp).background(
+                    if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.primary, CircleShape))
             }
         },
     )

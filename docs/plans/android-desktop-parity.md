@@ -29,6 +29,12 @@ Touch adaptations that follow from the platform (not a user choice, keep them):
 - Hover does not exist. The desktop hover highlight becomes the pressed
   highlight (section 4). The hover "looks read" rule does not apply.
 - Sizes: desktop px become dp, desktop font px become sp.
+- Comfortable cards have a 24 dp gap between cards, because touch has no
+  hover highlight to show which footer belongs to which card.
+- Filter pills follow the desktop pill: 28 dp high, fully round, 12 sp label,
+  no check icon, accent background when selected (48 dp touch area kept).
+- The search field and pill outlines use the divider color only when it has
+  3:1 contrast with the background (WCAG non-text contrast); else muted.
 
 ## 2. PC side: share the palette (worker A)
 

@@ -8,8 +8,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import local.asb.companion.data.Palette
+import local.asb.companion.data.contrast
 
 val LocalPalette = staticCompositionLocalOf { Palette() }
+
+// Control outlines need 3:1 contrast (WCAG non-text); a custom divider can be almost the background color.
+fun controlOutline(palette: Palette): String =
+    if (contrast(palette.divider, palette.background) >= 3.0) palette.divider else palette.muted
 
 fun hexColor(value: String): Color = Color(0xff000000L or value.substring(1).toLong(16))
 

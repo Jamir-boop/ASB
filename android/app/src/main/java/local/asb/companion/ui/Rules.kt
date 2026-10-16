@@ -204,6 +204,8 @@ const val DEFAULT_COLUMN_WIDTH = 240
 // Touch row heights in dp: 48 dp is the Android touch minimum, so Compact is higher than the desktop 22 px.
 const val COMPACT_ROW_HEIGHT = 48
 const val COMFORTABLE_ROW_HEIGHT = 68
+// Comfortable cards have no hover highlight on touch, so a gap shows which footer belongs to which card.
+const val COMFORTABLE_CARD_GAP = 24
 
 data class Packing<T>(val columns: Int, val capacity: Int, val parts: List<List<T>>)
 

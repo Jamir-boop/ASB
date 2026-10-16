@@ -98,4 +98,11 @@ class PaletteTest {
         assertEquals("""{"mode":"gnome","colors":{"background":"#222226","text":"#ffffff","accent":"#78aeed",""" +
             """"muted":"#c1c1c2","divider":"#646467","success":"#8ff0a4","warning":"#f8e45c"}}""", Palette().toJson())
     }
+
+    @Test fun controlOutlinesUseMutedWhenTheDividerIsTooClose() {
+        // Contrast values from the desktop contrast(): 1.018 and 3.239.
+        val black = Palette("custom", "#000000", "#ffffff", "#ffb900", "#bcbcbc", "#030303", "#ffb900", "#ffb900")
+        assertEquals("#bcbcbc", local.asb.companion.ui.controlOutline(black))
+        assertEquals("#5e5e5e", local.asb.companion.ui.controlOutline(black.copy(divider = "#5e5e5e")))
+    }
 }
