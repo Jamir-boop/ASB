@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -5,26 +7,48 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+// The release key stays outside git; see README.md "Release signing".
+val keystoreFile = rootProject.file("keystore.properties")
+
 android {
     namespace = "local.asb.companion"
     compileSdk = 36
     buildToolsVersion = "36.0.0"
 
     defaultConfig {
-        applicationId = "local.asb.companion"
+        applicationId = "io.github.jamir_boop.asb"
         minSdk = 29
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
     }
 
+    val releaseSigning = if (keystoreFile.exists()) {
+        val keystore = Properties().apply { keystoreFile.inputStream().use(::load) }
+        signingConfigs.create("release") {
+            storeFile = rootProject.file(keystore.getProperty("storeFile"))
+            storePassword = keystore.getProperty("storePassword")
+            keyAlias = keystore.getProperty("keyAlias")
+            keyPassword = keystore.getProperty("keyPassword")
+        }
+    } else {
+        // Without keystore.properties, the local debug key signs the release build.
+        signingConfigs.getByName("debug")
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
-            // shortcut: signed with this PC's debug key so it installs over the debug app and keeps the pairing; another PC's key needs an uninstall and a new pairing.
-            signingConfig = signingConfigs.getByName("debug")
+            // Keep this one-token form: fdroidserver deletes this line and builds an unsigned APK.
+            signingConfig = releaseSigning
         }
+    }
+
+    // The dependency block is encrypted for Google Play only; F-Droid rejects an APK that has it.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
     }
 
     compileOptions {
@@ -55,7 +79,6 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.serialization.json)
     implementation(libs.coroutines.android)
-    implementation(libs.code.scanner)
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.okhttp.tls)

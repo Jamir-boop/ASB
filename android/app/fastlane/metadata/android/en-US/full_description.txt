@@ -1,0 +1,20 @@
+<p>ASB (Agent Switch Board) is the phone companion for ASB, a GNOME switch board for Codex and Claude Desktop Code chats. The app shows the chats on your own PC and lets you open them there.</p>
+
+<p><b>What it does</b></p>
+<ul>
+<li>Shows the live list of your Codex and Claude Desktop Code chats with their status: Working, Done, Failed, or Needs input.</li>
+<li>Shows Pending attention, with the same filters and search as the desktop.</li>
+<li>Row actions: Read and Unread, pin, put in the drawer, discard a result, and Open on PC, which opens the chat in its original app on the PC.</li>
+<li>Notifications for Done, Failed, and Needs input, with Open on PC and Read actions and short sounds.</li>
+<li>An optional live notification with the session counts.</li>
+<li>Follows the colors of the ASB window on the PC. Compact and Comfortable views, and columns in landscape.</li>
+</ul>
+
+<p><b>What it needs</b></p>
+<p>ASB must run on your Linux PC, with phone access turned on in ASB Preferences &gt; Phone. The app does nothing without it.</p>
+
+<p><b>Privacy</b></p>
+<p>The phone talks only to your PC: on your home network, or away from home through ZeroTier or Tailscale when you use them. All traffic uses TLS 1.3, and the app pins the certificate of your PC. There are no accounts, no cloud service, and no tracking.</p>
+
+<p><b>Pairing</b></p>
+<p>On the PC, open ASB Preferences &gt; Phone and select Pair a phone. Scan the QR code with the phone camera or any QR scanner app, which opens ASB, or paste the pairing link. Compare the certificate fingerprint on the phone with the one on the PC, then select Pair with this PC. The code works once and ends in 10 minutes.</p>

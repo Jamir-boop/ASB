@@ -15,6 +15,14 @@ class PairingTest {
     private val code = "A_z-" + "0".repeat(23)
     private val link = "asb://pair?v=1&h=192.168.50.4&p=4630&f=$fingerprint&c=$code&n=Debian%20PC"
 
+    @Test fun pairingLinkComesOnlyFromAViewIntentWithAnAsbPairUri() {
+        assertEquals(link, pairingLink("android.intent.action.VIEW", link))
+        assertNull(pairingLink("android.intent.action.MAIN", link))
+        assertNull(pairingLink("android.intent.action.VIEW", null))
+        assertNull(pairingLink("android.intent.action.VIEW", "https://example.com/pair"))
+        assertNull(pairingLink(null, link))
+    }
+
     @Test fun validPairingLink() {
         val info = parsePairingUri(link)!!
         assertEquals(listOf(Endpoint("lan", "192.168.50.4")), info.addresses)

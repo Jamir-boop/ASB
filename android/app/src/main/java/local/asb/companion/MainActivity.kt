@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
@@ -79,8 +80,13 @@ import local.asb.companion.ui.SessionsViewModel
 import local.asb.companion.ui.SettingsScreen
 import local.asb.companion.ui.withDensity
 
+/** The asb://pair link that a VIEW intent carries, or null. */
+internal fun pairingLink(action: String?, data: String?): String? =
+    data?.takeIf { action == Intent.ACTION_VIEW && it.startsWith("asb://pair") }
+
 class MainActivity : ComponentActivity() {
     private var notificationsAllowed by mutableStateOf(false)
+    private var pendingPairingLink by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -94,6 +100,10 @@ class MainActivity : ComponentActivity() {
         }
         val app = application as AsbApp
         app.notifier.opened(intent)
+        // A recreate restores the screen, and Recents gives the old intent again: neither reviews the link again.
+        if (savedInstanceState == null && (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0) {
+            openPairingLink(intent)
+        }
         notificationsAllowed = Notifier.notificationsAllowed(this)
         setContent {
             // The Settings text size scales every sp in the app, on top of the system font size.
@@ -122,6 +132,11 @@ class MainActivity : ComponentActivity() {
                         viewModelFactory { initializer { PairingViewModel(app.store::save) } }
                     })
                     var paired by remember { mutableStateOf(app.store.paired) }
+                    // The link only fills the Check the PC screen; the user still compares and pairs.
+                    LaunchedEffect(pendingPairingLink) {
+                        pendingPairingLink?.let(pairingModel::review)
+                        pendingPairingLink = null
+                    }
                     if (paired) PairedApp(app, notificationsAllowed, requestNotifications) {
                         LiveService.stop(app)
                         app.liveUpdates.value = null
@@ -153,6 +168,17 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         (application as AsbApp).notifier.opened(intent)
+        openPairingLink(intent)
+    }
+
+    private fun openPairingLink(intent: Intent) {
+        val link = pairingLink(intent.action, intent.dataString) ?: return
+        if ((application as AsbApp).store.paired) {
+            Toast.makeText(this, "ASB is already paired. Unpair it in Connection, then open the link again.",
+                Toast.LENGTH_LONG).show()
+        } else {
+            pendingPairingLink = link
+        }
     }
 }
 

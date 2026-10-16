@@ -1,0 +1,1 @@
+First release. See and open your Codex and Claude Desktop Code chats on your PC, with filters, search, and row actions. Notifications for Done, Failed, and Needs input, and an optional live notification. Pair with the QR code from ASB Preferences > Phone on the PC (camera or pasted link). The phone talks only to your PC over TLS 1.3 with a pinned certificate.

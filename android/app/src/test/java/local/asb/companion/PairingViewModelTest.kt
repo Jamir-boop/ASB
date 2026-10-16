@@ -134,15 +134,21 @@ class PairingViewModelTest {
         assertTrue(saved.isEmpty())
     }
 
-    @Test fun oldScannerCallbacksCannotRestoreAResetFlow() {
-        val model = PairingViewModel({ _, _ -> })
+    @Test fun aNewLinkReplacesTheCheckScreenButNotARunningRequest() = runTest {
+        val response = CompletableDeferred<PairReply>()
+        val model = PairingViewModel({ _, _ -> }, { _, _ -> response.await() })
         store.put("pairing", model)
-        val scan = model.startScan()
-        model.reset()
-        model.scanResult(scan, link)
-        model.stopScan(scan, failed = true)
-        assertNull(model.candidate)
+        model.review(link)
+        model.review(nextLink)
+        assertEquals("b".repeat(27), model.candidate!!.code)
+        model.pair("Phone")
+        runCurrent()
+        model.review(link)
+        assertEquals("b".repeat(27), model.candidate!!.code)
+        model.review("asb://pair?v=9")
+        assertEquals("b".repeat(27), model.candidate!!.code)
         assertNull(model.error)
-        assertFalse(model.scanning)
+        response.complete(reply)
+        runCurrent()
     }
 }

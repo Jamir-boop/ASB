@@ -8,7 +8,6 @@ work = "2.10.2"
 okhttp = "4.12.0"
 serialization = "1.9.0"
 coroutines = "1.10.2"
-codeScanner = "16.1.0"
 junit = "4.13.2"
 
 [libraries]
@@ -28,7 +27,6 @@ okhttp-tls = { group = "com.squareup.okhttp3", name = "okhttp-tls", version.ref 
 serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serialization" }
 coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
-code-scanner = { group = "com.google.android.gms", name = "play-services-code-scanner", version.ref = "codeScanner" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 
 [plugins]

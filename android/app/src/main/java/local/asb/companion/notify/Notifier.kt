@@ -44,7 +44,7 @@ class Notifier(private val app: AsbApp) {
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
         fun channel(id: String, name: String, importance: Int, sound: String?) =
             NotificationChannel(id, name, importance).apply {
-                setSound(sound?.let { Uri.parse("android.resource://local.asb.companion/raw/$it") }, audio)
+                setSound(sound?.let { Uri.parse("android.resource://${app.packageName}/raw/$it") }, audio)
             }
         manager.createNotificationChannels(listOf(
             channel("asb_done", "Done", NotificationManager.IMPORTANCE_DEFAULT, "opencode_staplebops_01"),

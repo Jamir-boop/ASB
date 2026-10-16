@@ -1499,7 +1499,7 @@ class PhoneEditor(Gtk.Box):
         self.qr.set_draw_func(self.draw_qr)
         self.qr.update_property([Gtk.AccessibleProperty.LABEL], ["Phone pairing QR code"])
         self.pairing.append(self.qr)
-        instruction = label("Scan with the ASB app. The code works once and ends in 10 minutes.", "caption")
+        instruction = label("Scan the code with the phone camera; it opens ASB. Or copy the link and paste it in ASB. The code works once and ends in 10 minutes.", "caption")
         instruction.set_wrap(True)
         self.pairing.append(instruction)
         self.link = label("", "monospace")

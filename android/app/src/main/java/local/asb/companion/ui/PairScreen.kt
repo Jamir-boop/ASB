@@ -19,7 +19,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -40,9 +39,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
-import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ensureActive
@@ -65,37 +61,16 @@ class PairingViewModel(
         private set
     var busy by mutableStateOf(false)
         private set
-    var scanning by mutableStateOf(false)
-        private set
     var paired by mutableStateOf(false)
         private set
     private var pairingJob: Job? = null
-    private var scanId = 0
 
     fun changeInput(value: String) { input = value; error = null }
 
     fun review(value: String) {
         if (busy || paired) return
-        scanId++
-        scanning = false
         candidate = parsePairingUri(value)
         error = if (candidate == null) "This is not an ASB pairing code." else null
-    }
-
-    fun startScan(): Int {
-        scanning = true
-        error = null
-        return ++scanId
-    }
-
-    fun scanResult(id: Int, value: String) {
-        if (id == scanId) review(value)
-    }
-
-    fun stopScan(id: Int, failed: Boolean = false) {
-        if (id != scanId) return
-        scanning = false
-        if (failed) error = "Could not open the scanner. Paste the pairing link below."
     }
 
     fun pair(deviceName: String) {
@@ -126,8 +101,6 @@ class PairingViewModel(
     fun back() {
         pairingJob?.cancel()
         pairingJob = null
-        scanId++
-        scanning = false
         busy = false
         candidate = null
         error = null
@@ -161,23 +134,8 @@ fun PairScreen(activity: Activity, model: PairingViewModel, onPaired: () -> Unit
                 val info = model.candidate
                 if (info == null) {
                     Text("On the PC open ASB Preferences > Phone, turn on phone access, and select Pair a phone.")
-                    OutlinedButton(
-                        enabled = !model.scanning,
-                        modifier = Modifier.fillMaxWidth(),
-                        onClick = {
-                            val scanId = model.startScan()
-                            try {
-                                val options = GmsBarcodeScannerOptions.Builder()
-                                    .setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()
-                                GmsBarcodeScanning.getClient(activity, options).startScan()
-                                    .addOnSuccessListener { result -> model.scanResult(scanId, result.rawValue.orEmpty()) }
-                                    .addOnCanceledListener { model.stopScan(scanId) }
-                                    .addOnFailureListener { model.stopScan(scanId, failed = true) }
-                            } catch (_: Exception) {
-                                model.stopScan(scanId, failed = true)
-                            }
-                        },
-                    ) { Text(if (model.scanning) "Opening scanner…" else "Scan QR code") }
+                    Text("Scan the QR code on the PC with the phone camera or any QR scanner app. It opens ASB. " +
+                        "Or copy the pairing link from the PC and paste it below.")
                     OutlinedTextField(
                         value = model.input,
                         onValueChange = model::changeInput,

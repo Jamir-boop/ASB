@@ -44,6 +44,8 @@ public/*-layout-lab.html
 *.pem
 *.key
 *.p12
+*.jks
+*.keystore
 *.pfx
 
 # Local Android SDK paths and build state.
@@ -51,3 +53,4 @@ android/.gradle/
 android/.kotlin/
 android/local.properties
 android/captures/
+android/keystore.properties

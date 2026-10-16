@@ -1,8 +1,11 @@
 # ASB Android companion
 
 Phase 7 provides the live session list, desktop filters, the session
-inspector, and Open on PC through the ASB phone gateway. QR or manual pairing
-remains available.
+inspector, and Open on PC through the ASB phone gateway. Scan the pairing QR
+code with the phone camera or any QR scanner app: the `asb://pair` link opens
+ASB on the Check the PC screen. A pasted pairing link works the same way. When
+the app is already paired, the link changes nothing and a short message says
+to unpair first.
 The user checks the PC and certificate fingerprint before the app sends the
 pairing request. Authenticated hello must succeed before the session list
 opens. Connection information shows the real server name and ASB version.
@@ -135,8 +138,10 @@ cards fade in, and removed cards go at once. A press shows the palette
 highlight. A view change or a new column layout shows at once, with no motion.
 When Android animations are off, all motion is instant.
 
-The QR scanner needs Google Play services and can download its scanner module
-on first use. Manual paste works when the scanner is unavailable.
+The app has no QR scanner of its own and uses no Google Play services. The
+`asb://pair` intent filter lets the phone camera open the pairing link in ASB.
+The app has one window (`singleTask`), so a link or a notification tap goes to
+the open app.
 
 ## Requirements
 
@@ -191,7 +196,7 @@ From `android/`:
 ./gradlew --no-daemon -Pandroid.builder.sdkDownload=false testDebugUnitTest
 ./gradlew --no-daemon -Pandroid.builder.sdkDownload=false lint
 /usr/local/bin/adb -s <serial> install -r app/build/outputs/apk/debug/app-debug.apk
-/usr/local/bin/adb -s <serial> shell am start -n local.asb.companion/.MainActivity
+/usr/local/bin/adb -s <serial> shell am start -n io.github.jamir_boop.asb/local.asb.companion.MainActivity
 ```
 
 Use the debug build for development. Install the release build on the phone
@@ -206,7 +211,7 @@ Open the app and use it (scroll the list) for about one minute. Then compile
 the app with its profile:
 
 ```bash
-/usr/local/bin/adb -s <serial> shell cmd package compile -m speed-profile -f local.asb.companion
+/usr/local/bin/adb -s <serial> shell cmd package compile -m speed-profile -f io.github.jamir_boop.asb
 ```
 
 The debug build is much slower. The measured 99th-percentile frame time was
@@ -214,12 +219,104 @@ The debug build is much slower. The measured 99th-percentile frame time was
 profile. The release build uses R8 without resource shrinking, because the
 notification sounds are found by name.
 
-The release build is signed with the debug key of the PC that builds it. Thus
-it installs over the debug build from the same PC and keeps the pairing. An
-APK from another PC has a different key: uninstall the app and pair again.
+Without `keystore.properties`, the release build is signed with the debug key
+of the PC that builds it. Thus it installs over the debug build from the same
+PC and keeps the pairing. An APK with a different key (another PC, the release
+key, or F-Droid) does not install over it: uninstall the app and pair again.
 
 The debug APK is `app/build/outputs/apk/debug/app-debug.apk`. The app ID is
-`local.asb.companion`, version name is `0.1.0`, and version code is `1`.
+`io.github.jamir_boop.asb`, version name is `0.1.0`, and version code is `1`.
+The Kotlin package and the namespace stay `local.asb.companion`.
+Before this ID, the app ID was `local.asb.companion`. The new ID installs as a
+new app beside the old one. Pair the new app again, then uninstall the old one.
+
+The build turns off the AGP dependency metadata (`dependenciesInfo`), so the
+APK has no dependency block that only Google can read.
+
+## Release signing
+
+The release key is a file that you make yourself, outside git. Make it once:
+
+```bash
+keytool -genkeypair -v -keystore ~/keys/asb-release.jks -alias asb \
+  -keyalg RSA -keysize 4096 -validity 10000
+```
+
+Create `android/keystore.properties` (git ignores it). `storeFile` is
+relative to `android/`, or an absolute path:
+
+```properties
+storeFile=/home/<user>/keys/asb-release.jks
+storePassword=<store password>
+keyAlias=asb
+keyPassword=<key password>
+```
+
+When this file exists, `assembleRelease` signs with that key. Without it, the
+debug key signs the release build. Back up the key and its passwords offline.
+Without the key, you cannot publish updates of the app.
+
+Check the signed APK. The DN must not be `CN=Android Debug`:
+
+```bash
+~/Android/Sdk/build-tools/36.0.0/apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk
+```
+
+## Release
+
+Android releases have their own tags, `android-v<versionName>` (for example
+`android-v0.1.0`). The desktop tags stay `v<version>`.
+
+1. Increase `versionCode` and set `versionName` in `app/build.gradle.kts`.
+   Keep them as literals: F-Droid reads them with a regular expression.
+2. Add `app/fastlane/metadata/android/en-US/changelogs/<versionCode>.txt`
+   (at most 500 characters).
+3. Merge to `main`.
+4. Tag that `main` commit `android-vX.Y.Z` and push the tag.
+5. Build the signed release APK with `assembleRelease` and check it with
+   `apksigner`.
+6. Attach `app-release.apk` to the GitHub release of the tag.
+
+The store text and the icon for F-Droid are in
+`app/fastlane/metadata/android/en-US/`.
+
+## F-Droid
+
+This is the draft recipe for `metadata/io.github.jamir_boop.asb.yml` in
+fdroiddata. F-Droid builds the APK from source and signs it with its own key.
+It removes the `signingConfig` line of the release build first, so keep that
+line in its one-token form. In `commit`, put the full hash of the
+`android-v0.1.0` tag commit (`git rev-parse 'android-v0.1.0^{commit}'`).
+The root `package.json` has no lock file, so the recipe tells the scanner to
+ignore it.
+
+```yaml
+Categories:
+  - Development
+License: MIT
+AuthorName: jamir-boop
+SourceCode: https://github.com/Jamir-boop/ASB
+IssueTracker: https://github.com/Jamir-boop/ASB/issues
+Changelog: https://github.com/Jamir-boop/ASB/blob/HEAD/CHANGELOG.md
+
+RepoType: git
+Repo: https://github.com/Jamir-boop/ASB.git
+
+Builds:
+  - versionName: 0.1.0
+    versionCode: 1
+    commit: <full hash of the android-v0.1.0 tag commit>
+    subdir: android/app
+    gradle:
+      - yes
+    scanignore:
+      - package.json
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags ^android-v.*$
+CurrentVersion: 0.1.0
+CurrentVersionCode: 1
+```
 The minimum SDK is 29. The compile and target SDK are 36.
 
 AGP can print `WARNING: platform-tools package is not installed.` with this
@@ -239,7 +336,7 @@ commands above for the device check.
 
 The app uses Lifecycle 2.9.2 and WorkManager 2.10.2.
 Networking and tests use OkHttp 4.12.0, kotlinx.serialization 1.9.0,
-kotlinx.coroutines 1.10.2, Google code scanner 16.1.0, and JUnit 4.13.2.
+kotlinx.coroutines 1.10.2, and JUnit 4.13.2.
 
 The JVM tests use a real pinned TLS connection to MockWebServer. They cover
 certificate rejection, bearer handling, revocation, ETags, JSON defaults and
@@ -250,7 +347,9 @@ Endpoint tests use two MockWebServers with one certificate. They cover version
 1 and 2 links, the kind order, the read fallback, no second send of an action,
 the network change reset, the hello address update, and the saved-host migration.
 Retained-flow tests cover ViewModelStore recreation, Back cancellation,
-unpair/re-pair, and responses or scanner callbacks from an old flow.
+unpair/re-pair, responses from an old flow, and a new link while a request
+runs. Link tests check that only a VIEW intent with an `asb://pair` URI starts
+a review.
 
 `buildToolsVersion` is set to `36.0.0` to use the installed package. AGP
 8.11.1 otherwise selects Build Tools 35.0.0 by default. JDK 21 runs Gradle;
