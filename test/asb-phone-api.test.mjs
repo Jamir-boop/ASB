@@ -9,13 +9,15 @@ const routes = [
   ['/api/phone', 'GET'], ['/api/service', 'GET'], ['/api/phone/settings', 'POST'],
   ['/api/phone/pairing', 'POST'], [`/api/phone/devices/${deviceId}/revoke`, 'POST'],
 ];
-const configuration = { enabled: true, bindAddress: '192.168.1.2', port: 4630 };
+const configuration = { enabled: true, bindAddresses: ['192.168.50.4', '100.101.102.103'], port: 4630 };
 function fakeGateway() {
-  let state = { ...configuration, addresses: [{ address: '192.168.1.2', interface: 'test0' }], running: true,
+  let state = { ...configuration, addresses: [{ address: '192.168.50.4', interface: 'enp0s1', kind: 'lan' },
+    { address: '10.147.17.4', interface: 'ztabcdef12', kind: 'zerotier' },
+    { address: '100.101.102.103', interface: 'tailscale0', kind: 'tailscale' }], running: true,
     error: '', warning: '', fingerprint: 'b'.repeat(64),
     devices: [{ id: deviceId, name: 'Phone', createdAtMs: 1, lastSeenAtMs: 2 }], pairing: { expiresAtMs: 0 } };
   const calls = [];
-  const pairing = { uri: 'asb://pair?v=1&h=192.168.1.2&c=synthetic', expiresAtMs: 600_000 };
+  const pairing = { uri: 'asb://pair?v=2&a=lan%3A192.168.50.4&c=synthetic', expiresAtMs: 600_000 };
   const gateway = {
     status: async () => { calls.push(['status']); return structuredClone(state); },
     updateSettings: async (value) => { calls.push(['settings', value]); state = { ...state, ...value }; return structuredClone(state); },
@@ -160,13 +162,15 @@ test('phone POST bodies reject malformed JSON, non-objects and unknown fields', 
 test('phone settings validate booleans, available addresses, port bounds and the ASB port', async (t) => {
   const { gateway, calls } = fakeGateway();
   const { request, port } = await serve(t, { phoneGateway: gateway });
-  for (const extra of [{ enabled: 1 }, { enabled: null }, { bindAddress: 1 }, { bindAddress: '' },
-    { bindAddress: '0.0.0.0' }, { bindAddress: '8.8.8.8' }, { bindAddress: '192.168.1.3' },
-    { port: 1023 }, { port: 65536 }, { port: 4630.5 }, { port: '4630' }, { port }, { extra: true }]) {
+  for (const extra of [{ enabled: 1 }, { enabled: null }, { bindAddresses: '192.168.50.4' }, { bindAddresses: [1] }, { bindAddresses: [] },
+    { bindAddresses: ['0.0.0.0'] }, { bindAddresses: ['8.8.8.8'] }, { bindAddresses: ['192.168.50.4', '192.168.50.5'] },
+    { bindAddresses: ['192.168.50.4', '192.168.50.4'] }, { bindAddresses: Array(9).fill('192.168.50.4') },
+    { bindAddress: '192.168.50.4' }, { port: 1023 }, { port: 65536 }, { port: 4630.5 }, { port: '4630' }, { port }, { extra: true }]) {
     assert.equal((await request('/api/phone/settings', { method: 'POST', body: { ...configuration, ...extra } })).status, 400, JSON.stringify(extra));
   }
   assert.equal(calls.some(([action]) => action === 'settings'), false);
-  for (const body of [{ enabled: false, bindAddress: '', port: 1024 }, { ...configuration, port: 65535 }]) {
+  for (const body of [{ enabled: false, bindAddresses: [], port: 1024 }, { enabled: false, bindAddresses: ['10.147.17.4'], port: 1024 },
+    { ...configuration, port: 65535 }]) {
     assert.equal((await request('/api/phone/settings', { method: 'POST', body })).status, 200);
   }
 });

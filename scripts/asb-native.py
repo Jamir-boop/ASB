@@ -561,14 +561,33 @@ def group_fingerprint(value):
     return " ".join(value[index:index + 4] for index in range(0, len(value), 4))
 
 
+PHONE_KINDS = {"lan": "Home network", "zerotier": "ZeroTier", "tailscale": "Tailscale"}
+PHONE_OVERLAY_NOTE = "Install and join ZeroTier or Tailscale on this PC and the phone to use ASB away from home."
+
+
 def phone_status_text(status):
+    if status.get("running"):
+        port = status.get("port", 4630)
+        running = "Running at " + ", ".join(f"https://{item['address']}:{port} ({PHONE_KINDS.get(item['kind'], item['kind'])})"
+                                            for item in status.get("listening", []))
+        return "\n".join(filter(None, (running, status.get("error", ""))))
     if status.get("error"):
         return status["error"]
-    if status.get("running"):
-        return f"Running at https://{status.get('bindAddress', '')}:{status.get('port', 4630)}"
     if not status.get("enabled"):
         return "Phone access is off."
     return "Phone access is not running. Apply the settings to try again."
+
+
+def phone_address_rows(addresses):
+    return [{"address": item["address"], "title": PHONE_KINDS[item["kind"]],
+             "subtitle": item["address"] + ("" if item["kind"] == "lan" else " · Works away from home")}
+            for item in addresses if item.get("kind") in PHONE_KINDS]
+
+
+def phone_address_note(addresses):
+    kinds = {item.get("kind") for item in addresses}
+    return " ".join(filter(None, ("" if addresses else "No private network address on this PC.",
+                                  "" if kinds & {"zerotier", "tailscale"} else PHONE_OVERLAY_NOTE)))
 
 
 def qr_matrix(uri):
@@ -1369,20 +1388,27 @@ class PhoneEditor(Gtk.Box):
         self.owner, self.preferences, self.base = owner, preferences, owner.base
         self.closed = self.active = self.loaded = self.loading = self.poll_loading = False
         self.generation, self.poll_timer = 0, None
-        self.status, self.addresses, self.remove_buttons = {}, [], []
+        self.status, self.address_checks, self.remove_buttons = {}, {}, []
         self.pairing_uri, self.expires_at, self.pair_device_ids, self.matrix = "", 0, set(), None
         self.settings = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
         self.settings.add_css_class("boxed-list")
         self.enabled = Adw.SwitchRow(title="Allow phone access", subtitle=
             "Phones on your network can see your sessions and use ASB actions after pairing.")
         self.enabled.set_subtitle_lines(0)
-        self.address = Adw.ComboRow(title="Address")
         self.port = Adw.SpinRow.new_with_range(1024, 65535, 1)
         self.port.set_title("Port")
         self.port.set_value(4630)
-        for row in (self.enabled, self.address, self.port):
+        for row in (self.enabled, self.port):
             self.settings.append(row)
         self.append(self.settings)
+        self.append(label("Addresses", "heading"))
+        self.address_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.address_list.add_css_class("boxed-list")
+        self.append(self.address_list)
+        self.address_note = label("", "caption")
+        self.address_note.set_wrap(True)
+        self.address_note.set_max_width_chars(64)
+        self.append(self.address_note)
         actions = Gtk.Box(spacing=8)
         self.apply = Gtk.Button(label="Apply")
         self.apply.connect("clicked", self.apply_settings)
@@ -1449,6 +1475,7 @@ class PhoneEditor(Gtk.Box):
     def update_controls(self):
         ready = self.loaded and not self.loading and not self.closed
         self.settings.set_sensitive(ready)
+        self.address_list.set_sensitive(ready)
         self.apply.set_sensitive(ready)
         self.pair.set_sensitive(ready and bool(self.status.get("running")))
         self.retry.set_sensitive(not self.loading and not self.closed)
@@ -1461,14 +1488,23 @@ class PhoneEditor(Gtk.Box):
         self.fingerprint.set_label(group_fingerprint(status.get("fingerprint", "")))
         if sync_form:
             self.enabled.set_active(status.get("enabled", False))
-            self.addresses = [item["address"] for item in status["addresses"]]
-            titles = [f"{item['address']} ({item['interface']})" for item in status["addresses"]]
-            address = status.get("bindAddress", "")
-            if address and address not in self.addresses:
-                self.addresses.append(address)
-                titles.append(address + " (unavailable)")
-            self.address.set_model(Gtk.StringList.new(titles or ["No private IPv4 address"]))
-            self.address.set_selected(self.addresses.index(address) if address in self.addresses else 0)
+            child = self.address_list.get_first_child()
+            while child:
+                self.address_list.remove(child)
+                child = self.address_list.get_first_child()
+            self.address_checks = {}
+            selected = set(status.get("bindAddresses", []))
+            rows = phone_address_rows(status["addresses"])
+            for item in rows:
+                check = Gtk.CheckButton(active=item["address"] in selected, valign=Gtk.Align.CENTER)
+                row = Adw.ActionRow(title=item["title"], subtitle=item["subtitle"], use_markup=False, activatable_widget=check)
+                row.add_prefix(check)
+                self.address_list.append(row)
+                self.address_checks[item["address"]] = check
+            self.address_list.set_visible(bool(rows))
+            note = phone_address_note(status["addresses"])
+            self.address_note.set_label(note)
+            self.address_note.set_visible(bool(note))
             self.port.set_value(status.get("port", 4630))
         child = self.devices.get_first_child()
         while child:
@@ -1548,9 +1584,8 @@ class PhoneEditor(Gtk.Box):
     def apply_settings(self, *_args):
         if not self.loaded or self.loading or not self.active:
             return
-        selected = self.address.get_selected()
         body = {"enabled": self.enabled.get_active(),
-                "bindAddress": self.addresses[selected] if selected < len(self.addresses) else "",
+                "bindAddresses": [address for address, check in self.address_checks.items() if check.get_active()],
                 "port": int(self.port.get_value())}
         self.stop_pairing()
         self.request_phone("/api/phone/settings", "POST", body)

@@ -121,18 +121,20 @@ export function createAsbServer({
         else {
           const body = await readBody(request);
           const fields = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join(',') : 'invalid';
-          if (fields !== (url.pathname === '/api/phone/settings' ? 'bindAddress,enabled,port' : '')) {
+          if (fields !== (url.pathname === '/api/phone/settings' ? 'bindAddresses,enabled,port' : '')) {
             sendJson(response, 400, { error: 'Invalid phone action.' });
             return;
           }
           if (url.pathname === '/api/phone/settings') {
-            if (typeof body.enabled !== 'boolean' || typeof body.bindAddress !== 'string'
+            const addresses = body.bindAddresses;
+            if (typeof body.enabled !== 'boolean' || !Array.isArray(addresses) || addresses.length > 8
+              || !addresses.every((value) => typeof value === 'string') || new Set(addresses).size !== addresses.length
               || !Number.isInteger(body.port) || body.port < 1024 || body.port > 65535 || body.port === address.port) {
-              sendJson(response, 400, { error: 'Invalid phone settings. Use a port from 1024 to 65535 that is different from the ASB port.' });
+              sendJson(response, 400, { error: 'Invalid phone settings. Choose up to eight different addresses and a port from 1024 to 65535 that is different from the ASB port.' });
               return;
             }
-            if (!(body.bindAddress === '' && !body.enabled)
-              && !(await phoneGateway.status()).addresses.some(({ address: value }) => value === body.bindAddress)) {
+            const listed = (await phoneGateway.status()).addresses;
+            if ((body.enabled && !addresses.length) || !addresses.every((value) => listed.some((item) => item.address === value))) {
               sendJson(response, 400, { error: 'Choose a phone address on this PC.' });
               return;
             }
