@@ -245,9 +245,10 @@ fun SessionsScreen(
     // A new list state per layout: a view change or a repack shows the new layout at once, with no card motion.
     // It starts at the first session that was visible before, so rotation keeps that session in view.
     // A list that was at the top (anchor "") or a missing anchor starts at the top, so warnings and moved rows stay in view.
+    // The number of one-column items before the first row: the warnings and the "empty" item.
+    val lead = warnings.size + if (rows.isEmpty()) 1 else 0
     val listState = remember(flow, state.view, if (flow) packing.columns to packing.capacity else null) {
-        val anchor = rows.indexOfFirst { it.id == viewModel.anchorId }
-        LazyListState(if (anchor < 0) 0 else if (flow) anchor / packing.capacity else warnings.size + anchor)
+        LazyListState(startIndex(rows.indexOfFirst { it.id == viewModel.anchorId }, flow, packing.capacity, lead))
     }
     // The keys of the one-column list, in the same order as its items.
     val listKeys = remember(warnings, rows) {
@@ -258,7 +259,7 @@ fun SessionsScreen(
             add("bottom-space")
         }
     }
-    if (!flow) KeepPositionOnChange(listState, listKeys)
+    if (!flow) KeepPositionOnChange(listState, listKeys, lead = lead)
     LaunchedEffect(listState, flow) {
         snapshotFlow {
             if (listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0) ""
@@ -726,20 +727,29 @@ private val CardPlacement = spring(dampingRatio = 1f, stiffness = 360f, visibili
 private val CardFade = spring<Float>(dampingRatio = 1f, stiffness = 360f)
 
 /**
- * When the keys change, keep the list at the same index (or at its first item with [top]), as the desktop keeps
+ * When the keys change, keep the list at the same row slot (or at its first item with [top]), as the desktop keeps
  * its scroll offset. A lazy list alone follows its first visible key, so rows that move above it go off screen.
+ * [lead] is the number of items before the first row, so a warning that comes or goes does not shift the rows.
  * The request runs after the composition and before the next measure, so that measure uses the index.
  */
 @Composable
-private fun KeepPositionOnChange(state: LazyListState, keys: List<Any>, top: Boolean = false) {
+private fun KeepPositionOnChange(state: LazyListState, keys: List<Any>, top: Boolean = false, lead: Int = 0) {
     val last = remember(state) { arrayOfNulls<List<Any>>(1) }
+    val lastLead = remember(state) { intArrayOf(lead) }
     SideEffect {
         val previous = last[0]
         if (previous === keys) return@SideEffect
         last[0] = keys
+        val oldLead = lastLead[0]
+        lastLead[0] = lead
         if (!keepIndexOnChange(previous, keys, state.isScrollInProgress)) return@SideEffect
-        if (top) state.requestScrollToItem(0)
-        else state.requestScrollToItem(state.firstVisibleItemIndex, state.firstVisibleItemScrollOffset)
+        if (top) {
+            state.requestScrollToItem(0)
+        } else {
+            val first = state.firstVisibleItemIndex
+            val offset = state.firstVisibleItemScrollOffset
+            state.requestScrollToItem(keptFirstIndex(first, offset, oldLead, lead), if (first >= oldLead) offset else 0)
+        }
     }
 }
 

@@ -17,6 +17,7 @@ import local.asb.companion.ui.casefold
 import local.asb.companion.ui.clockInterval
 import local.asb.companion.ui.filteredRows
 import local.asb.companion.ui.keepIndexOnChange
+import local.asb.companion.ui.keptFirstIndex
 import local.asb.companion.ui.limitLeft
 import local.asb.companion.ui.messageControl
 import local.asb.companion.ui.messageDuration
@@ -27,6 +28,7 @@ import local.asb.companion.ui.providerQuery
 import local.asb.companion.ui.rowMenuActions
 import local.asb.companion.ui.rowPanelControls
 import local.asb.companion.ui.rowPanelNote
+import local.asb.companion.ui.startIndex
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -434,7 +436,7 @@ class RulesTest {
         assertEquals(null, panelFocusReturn("drawer", working))
     }
 
-    @Test fun listKeepsItsIndexWhenKeysChange() {
+    @Test fun keepIndexOnlyWhenKeysChangeAndNotScrolling() {
         val keys = listOf<Any>("a", "b", "c", "bottom-space")
         assertFalse(keepIndexOnChange(null, keys, false))
         assertFalse(keepIndexOnChange(keys, keys.toList(), false))
@@ -442,5 +444,34 @@ class RulesTest {
         assertTrue(keepIndexOnChange(keys, listOf("warning:codex", "a", "b", "c", "bottom-space"), false))
         assertTrue(keepIndexOnChange(keys, listOf("a", "c", "bottom-space"), false))
         assertFalse(keepIndexOnChange(keys, listOf("c", "a", "b", "bottom-space"), true))
+    }
+
+    @Test fun keptFirstIndexKeepsTheRowSlotWhenLeadingItemsChange() {
+        // At the top: stay at the top, so a new warning shows.
+        assertEquals(0, keptFirstIndex(0, 0, 0, 1))
+        assertEquals(0, keptFirstIndex(0, 0, 2, 0))
+        // A row first (row 3 after 1 warning): a warning added or removed keeps that row first.
+        assertEquals(5, keptFirstIndex(4, 30, 1, 2))
+        assertEquals(3, keptFirstIndex(4, 30, 1, 0))
+        // A row first with offset at index 0 (no leading items) is not at the top.
+        assertEquals(1, keptFirstIndex(0, 30, 0, 1))
+        // The "empty" item goes when rows come, and comes when they go.
+        assertEquals(1, keptFirstIndex(2, 0, 2, 1))
+        assertEquals(2, keptFirstIndex(1, 10, 1, 2))
+        // A warning first while scrolled stays at its index, at most the first row.
+        assertEquals(1, keptFirstIndex(1, 20, 3, 3))
+        assertEquals(1, keptFirstIndex(2, 20, 3, 1))
+    }
+
+    @Test fun startIndexFindsTheAnchorRow() {
+        val ids = listOf("a", "b", "c", "d", "e", "f")
+        // "" (a list at the top) and a missing id give -1: the top.
+        assertEquals(0, startIndex(ids.indexOf(""), flow = false, capacity = 1, lead = 2))
+        assertEquals(0, startIndex(ids.indexOf("gone"), flow = true, capacity = 4, lead = 0))
+        // Flow with capacity 4: row 5 is in column 1.
+        assertEquals(0, startIndex(ids.indexOf("a"), flow = true, capacity = 4, lead = 0))
+        assertEquals(1, startIndex(ids.indexOf("f"), flow = true, capacity = 4, lead = 0))
+        // Portrait with 2 warnings: row 2 is item 4.
+        assertEquals(4, startIndex(ids.indexOf("c"), flow = false, capacity = 4, lead = 2))
     }
 }

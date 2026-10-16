@@ -282,6 +282,28 @@ fun <T> packColumns(
 fun keepIndexOnChange(previousKeys: List<Any>?, keys: List<Any>, scrolling: Boolean): Boolean =
     previousKeys != null && !scrolling && previousKeys != keys
 
+/**
+ * The first visible index after the items before the first row ([oldLead] before, [newLead] after) change.
+ * A list at the top stays at the top, so a new warning shows. A row first keeps its row slot; a leading item first
+ * stays at its index, at most the first row. The caller keeps the scroll offset only when a row was first.
+ */
+fun keptFirstIndex(firstIndex: Int, offset: Int, oldLead: Int, newLead: Int): Int = when {
+    firstIndex == 0 && offset == 0 -> 0
+    firstIndex >= oldLead -> firstIndex - oldLead + newLead
+    else -> minOf(firstIndex, newLead)
+}
+
+/**
+ * The first index of a new list state: the item of the row at [anchorIndex] (-1 for a list at the top or a missing
+ * anchor, which starts at the top). The packed columns hold [capacity] rows each; the one-column list has [lead]
+ * items before its first row.
+ */
+fun startIndex(anchorIndex: Int, flow: Boolean, capacity: Int, lead: Int): Int = when {
+    anchorIndex < 0 -> 0
+    flow -> anchorIndex / capacity
+    else -> lead + anchorIndex
+}
+
 /** The quiet Idle-read rule of the Comfortable view (the `.asb-idle-read` CSS); pressed rows keep normal text. */
 fun quietRow(row: Thread, comfortable: Boolean, drawerView: Boolean, nowMs: Long = System.currentTimeMillis()): Boolean =
     comfortable && row.state == "idle" && !(row.unread || row.questionAttention || row.pending) &&
