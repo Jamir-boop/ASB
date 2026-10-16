@@ -2,6 +2,25 @@ package local.asb.companion.ui
 
 import android.os.SystemClock
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.unit.Dp
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.spring
@@ -80,8 +99,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -89,7 +106,6 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -161,9 +177,13 @@ fun SessionsScreen(
     val density = LocalDensity.current.density
     val snackbar = remember { SnackbarHostState() }
     val keyboard = LocalSoftwareKeyboardController.current
-    // Landscape and other wide windows use the desktop Column Flow; short windows use a compact header.
+    // Landscape and other wide windows use the desktop Column Flow.
     val flow = maxWidth >= 600.dp
-    val shortHeader = maxHeight < 480.dp
+    var searchOpened by rememberSaveable { mutableStateOf(false) }
+    var focusSearch by remember { mutableStateOf(false) }
+    val searching = searchOpen(searchOpened, state.filter.query)
+    val searchFocus = remember { FocusRequester() }
+    var discMenu by remember { mutableStateOf(false) }
     val comfortable = state.view != "compact"
     val rowGap = if (comfortable) COMFORTABLE_CARD_GAP else 0
     val rowHeight = (if (comfortable) COMFORTABLE_ROW_HEIGHT else COMPACT_ROW_HEIGHT) + rowGap
@@ -305,6 +325,19 @@ fun SessionsScreen(
             }.filter { it.elapsedMs(frameNanos) < it.durationMs + if (it.receiverOutside == true) 720 else 420 }
         }
     }
+    LaunchedEffect(focusSearch) {
+        if (focusSearch) {
+            searchFocus.requestFocus()
+            keyboard?.show()
+            focusSearch = false
+        }
+    }
+    fun closeSearch() {
+        keyboard?.hide()
+        searchOpened = false
+        viewModel.setFilter(state.filter.copy(query = ""))
+    }
+    BackHandler(enabled = !state.revoked && if (flow) state.filter.query.isNotEmpty() else searching) { closeSearch() }
     LaunchedEffect(actionRowId, actionRow) {
         if (actionRowId != null && actionRow == null) actionRowId = null
     }
@@ -364,100 +397,183 @@ fun SessionsScreen(
     }
 
     @Composable
-    fun searchField(modifier: Modifier) = OutlinedTextField(
-        value = state.filter.query,
-        onValueChange = { viewModel.setFilter(state.filter.copy(query = it)) },
-        placeholder = { Text("Search, or cl: / cx:", maxLines = 1) },
-        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-        trailingIcon = {
-            if (state.filter.query.isNotEmpty()) IconButton(
-                onClick = { viewModel.setFilter(state.filter.copy(query = "")) },
-            ) { Icon(Icons.Default.Close, contentDescription = "Clear search") }
-        },
-        singleLine = true,
-        keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, imeAction = ImeAction.Search),
-        keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
-        colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = hexColor(controlOutline(LocalPalette.current))),
-        modifier = modifier.semantics { contentDescription = "Search sessions" },
-    )
+    fun searchField(modifier: Modifier, height: Dp, placeholder: String) {
+        val palette = LocalPalette.current
+        val muted = hexColor(palette.muted)
+        BasicTextField(
+            value = state.filter.query,
+            onValueChange = { viewModel.setFilter(state.filter.copy(query = it)) },
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodyMedium.copy(color = hexColor(palette.text)),
+            cursorBrush = SolidColor(hexColor(palette.accent)),
+            keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
+            modifier = modifier.height(height).focusRequester(searchFocus)
+                .semantics { contentDescription = "Search sessions" },
+        ) { inner ->
+            Row(
+                modifier = Modifier.fillMaxSize()
+                    .border(1.dp, hexColor(controlOutline(palette)), RoundedCornerShape(height / 2))
+                    .padding(start = 12.dp, end = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Default.Search, contentDescription = null, tint = muted, modifier = Modifier.size(18.dp))
+                Box(Modifier.weight(1f)) {
+                    if (state.filter.query.isEmpty()) Text(placeholder, style = MaterialTheme.typography.bodyMedium,
+                        color = muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    inner()
+                }
+                // Portrait closes search mode; the always-visible Column Flow field only clears its query.
+                if (!flow || state.filter.query.isNotEmpty()) Box(
+                    Modifier.size(height - 4.dp).wrapContentSize(unbounded = true).size(48.dp).clip(CircleShape)
+                        .clickable(role = Role.Button) {
+                            if (flow) viewModel.setFilter(state.filter.copy(query = "")) else closeSearch()
+                        }.semantics { contentDescription = if (flow) "Clear search" else "Close search" },
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(20.dp)) }
+            }
+        }
+    }
 
     @Composable
-    fun pills(modifier: Modifier) = Row(
-        modifier = modifier.horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        SessionChip("Pending", state.filter.pendingOnly, onClick = {
-            val selected = !state.filter.pendingOnly
-            viewModel.setFilter(state.filter.copy(
-                pendingOnly = selected,
-                drawerOnly = if (selected) false else state.filter.drawerOnly,
-            ))
-        })
-        SessionChip("Working", workingOnly, onClick = {
-            viewModel.setFilter(state.filter.copy(
-                states = if (workingOnly) STATES.toSet() else setOf("working"),
-            ))
-        })
-        SessionChip(
-            "Drawer", state.filter.drawerOnly,
-            modifier = Modifier.semantics {
-                contentDescription = if (hasDrawerRows) "Drawer, contains sessions" else "Drawer, empty"
-            },
-            dot = hasDrawerRows,
-            onClick = {
-                val selected = !state.filter.drawerOnly
+    fun pills(modifier: Modifier) {
+        val scroll = rememberScrollState()
+        Row(
+            // The row fades out over 22 dp at its end while more pills are past that edge.
+            modifier = modifier.graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen).drawWithContent {
+                drawContent()
+                if (scroll.canScrollForward) drawRect(
+                    Brush.horizontalGradient(listOf(Color.Black, Color.Transparent), size.width - 22.dp.toPx(), size.width),
+                    topLeft = Offset(size.width - 22.dp.toPx(), 0f),
+                    blendMode = BlendMode.DstIn,
+                )
+            }.horizontalScroll(scroll).padding(end = 18.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            SessionChip("Pending", state.filter.pendingOnly, onClick = {
+                val selected = !state.filter.pendingOnly
                 viewModel.setFilter(state.filter.copy(
-                    drawerOnly = selected,
-                    pendingOnly = if (selected) false else state.filter.pendingOnly,
+                    pendingOnly = selected,
+                    drawerOnly = if (selected) false else state.filter.drawerOnly,
                 ))
-            },
-        )
-        SessionChip(
-            "Filters", state.filter.app != "all" || state.filter.archived ||
-                state.filter.states != STATES.toSet(),
-            onClick = { keyboard?.hide(); showFilters = true },
-        )
+            })
+            SessionChip("Working", workingOnly, onClick = {
+                viewModel.setFilter(state.filter.copy(
+                    states = if (workingOnly) STATES.toSet() else setOf("working"),
+                ))
+            })
+            SessionChip(
+                "Drawer", state.filter.drawerOnly,
+                modifier = Modifier.semantics {
+                    contentDescription = if (hasDrawerRows) "Drawer, contains sessions" else "Drawer, empty"
+                },
+                dot = hasDrawerRows,
+                onClick = {
+                    val selected = !state.filter.drawerOnly
+                    viewModel.setFilter(state.filter.copy(
+                        drawerOnly = selected,
+                        pendingOnly = if (selected) false else state.filter.pendingOnly,
+                    ))
+                },
+            )
+            SessionChip(
+                "Filters", state.filter.app != "all" || state.filter.archived ||
+                    state.filter.states != STATES.toSet(),
+                icon = FiltersIcon,
+                onClick = { keyboard?.hide(); showFilters = true },
+            )
+        }
+    }
+
+    @Composable
+    fun disc(connection: String) = Box {
+        val palette = LocalPalette.current
+        // The disc is 24 dp in the row; its touch area is 48 dp around it, as the card corner controls.
+        Box(
+            Modifier.size(24.dp).wrapContentSize(unbounded = true).size(48.dp).clip(CircleShape)
+                .combinedClickable(
+                    role = Role.Button,
+                    onClickLabel = "Show connection",
+                    onLongClickLabel = "Show connection",
+                    onLongClick = { discMenu = true },
+                    onClick = { discMenu = true },
+                ).semantics { contentDescription = "ASB connection: $connection" },
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(Modifier.size(24.dp)) {
+                Image(painterResource(R.drawable.ic_launcher_disc), contentDescription = null, modifier = Modifier.fillMaxSize())
+                // A 9 dp status dot with a 2 dp ring in the background color, 1 dp past the disc corner.
+                Box(
+                    Modifier.align(Alignment.BottomEnd).offset(3.dp, 3.dp).size(13.dp)
+                        .background(hexColor(palette.background), CircleShape).padding(2.dp)
+                        .background(hexColor(if (state.offline) palette.muted else palette.success), CircleShape),
+                )
+            }
+        }
+        DropdownMenu(expanded = discMenu, onDismissRequest = { discMenu = false }) {
+            Text(connection, style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp).widthIn(max = 280.dp))
+            DropdownMenuItem(
+                text = { Text("Refresh") },
+                leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
+                enabled = !state.refreshing,
+                onClick = { discMenu = false; viewModel.refresh() },
+            )
+        }
+    }
+
+    @Composable
+    fun topBar() {
+        val palette = LocalPalette.current
+        val connection = connectionText(serverName, state.offline, state.path?.let(::endpointLabel))
+        val settings: @Composable () -> Unit = {
+            IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, contentDescription = "Settings") }
+        }
+        Column(Modifier.fillMaxWidth().background(hexColor(palette.background))
+            .windowInsetsPadding(TopAppBarDefaults.windowInsets)) {
+            if (flow) Row(
+                modifier = Modifier.fillMaxWidth().height(48.dp).padding(start = 12.dp, end = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                disc(connection)
+                val word = if (state.offline) "Offline" else "Live"
+                val start = connection.indexOf(word, serverName.length)
+                Text(
+                    buildAnnotatedString {
+                        append(connection)
+                        if (start >= 0) addStyle(SpanStyle(color = hexColor(palette.text)), start, start + word.length)
+                    },
+                    color = hexColor(palette.muted), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 160.dp).clearAndSetSemantics { },
+                )
+                searchField(Modifier.width(150.dp), 36.dp, "Search")
+                pills(Modifier.weight(1f))
+                settings()
+            } else Row(
+                modifier = Modifier.fillMaxWidth().height(56.dp).padding(start = 12.dp, end = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (searching) searchField(Modifier.weight(1f), 40.dp, "Search, or cl: / cx:")
+                else {
+                    disc(connection)
+                    pills(Modifier.weight(1f))
+                    IconButton(onClick = { searchOpened = true; focusSearch = true }) {
+                        Icon(Icons.Default.Search, contentDescription = "Search")
+                    }
+                }
+                settings()
+            }
+            HorizontalDivider(thickness = 1.dp, color = hexColor(palette.divider))
+        }
     }
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
-        topBar = {
-            TopAppBar(
-                expandedHeight = if (shortHeader) 48.dp else TopAppBarDefaults.TopAppBarExpandedHeight,
-                title = {
-                    val status = if (state.revoked) "" else listOfNotNull(serverName,
-                        if (state.offline) "Offline" else "Live",
-                        state.path?.takeUnless { state.offline }?.let(::endpointLabel)).joinToString(" · ")
-                    if (shortHeader) Text(listOf("ASB", status).filter { it.isNotEmpty() }.joinToString("  "),
-                        style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    else Column {
-                        Text("ASB", style = MaterialTheme.typography.titleLarge)
-                        if (status.isNotEmpty()) Text(
-                            status,
-                            style = MaterialTheme.typography.bodySmall,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                },
-                actions = {
-                    if (!state.revoked) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(end = 8.dp)) {
-                            IconButton(onClick = viewModel::refresh, enabled = !state.refreshing) {
-                                if (state.refreshing) CircularProgressIndicator(
-                                    modifier = Modifier.size(24.dp).semantics { contentDescription = "Refreshing" },
-                                    strokeWidth = 2.dp,
-                                ) else Icon(Icons.Default.Refresh, contentDescription = "Refresh")
-                            }
-                            IconButton(onClick = onSettings) {
-                                Icon(Icons.Default.Settings, contentDescription = "Settings")
-                            }
-                        }
-                    }
-                },
-            )
-        },
+        topBar = { if (!state.revoked) topBar() },
     ) { padding ->
         Box(
             modifier = Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding),
@@ -478,17 +594,6 @@ fun SessionsScreen(
                     Button(onClick = onPairAgain) { Text("Pair again") }
                 }
             } else Column(Modifier.then(if (flow) Modifier else Modifier.widthIn(max = 840.dp)).fillMaxSize().imePadding()) {
-                if (shortHeader) Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    searchField(Modifier.weight(1f))
-                    pills(Modifier.weight(1f))
-                } else {
-                    searchField(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp))
-                    pills(Modifier.fillMaxWidth().padding(horizontal = 16.dp))
-                }
                 if (flow) warnings.forEach { provider ->
                     ProviderWarning(provider) { dismissWarning(provider) }
                 }
@@ -572,17 +677,20 @@ private fun SessionChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     dot: Boolean = false,
+    icon: ImageVector? = null,
 ) {
     FilterChip(
         selected = selected,
         onClick = onClick,
         // Desktop pill: small and round, accent background when selected. The chip keeps its 48 dp touch area.
-        modifier = modifier.height(28.dp),
+        // An icon pill shows only its icon; the label is its content description.
+        modifier = modifier.height(28.dp).then(if (icon != null) Modifier.semantics { contentDescription = label } else Modifier),
         shape = CircleShape,
         border = FilterChipDefaults.filterChipBorder(true, selected, borderColor = hexColor(controlOutline(LocalPalette.current))),
         label = {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(label, fontSize = 12.sp)
+                if (icon != null) Icon(icon, contentDescription = null, modifier = Modifier.size(14.dp))
+                else Text(label, fontSize = 12.sp)
                 if (dot) Box(Modifier.size(5.dp).background(
                     if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.primary, CircleShape))
             }
@@ -1040,5 +1148,17 @@ private val PinIcon = ImageVector.Builder("Pin", 24.dp, 24.dp, 24f, 24f).apply {
         horizontalLineTo(19f)
         verticalLineTo(12f)
         close()
+    }
+}.build()
+
+// The filter-lines icon of the desktop Filters pill: three centered lines, 1.8 wide with round caps.
+private val FiltersIcon = ImageVector.Builder("Filters", 24.dp, 24.dp, 24f, 24f).apply {
+    path(stroke = SolidColor(Color.Black), strokeLineWidth = 1.8f, strokeLineCap = StrokeCap.Round) {
+        moveTo(4f, 7f)
+        horizontalLineTo(20f)
+        moveTo(7f, 12f)
+        horizontalLineTo(17f)
+        moveTo(10f, 17f)
+        horizontalLineTo(14f)
     }
 }.build()

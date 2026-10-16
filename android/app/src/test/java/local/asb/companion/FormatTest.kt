@@ -1,11 +1,15 @@
 package local.asb.companion
 
+import local.asb.companion.ui.connectionText
 import local.asb.companion.ui.durationText
 import local.asb.companion.ui.idleAge
+import local.asb.companion.ui.searchOpen
 import local.asb.companion.ui.spokenDuration
 import local.asb.companion.ui.stateLabel
 import local.asb.companion.ui.workingDuration
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FormatTest {
@@ -89,5 +93,19 @@ class FormatTest {
             "unknown" to "Unknown", "" to "Unknown", "other" to "Unknown")) {
             assertEquals(label, stateLabel(state))
         }
+    }
+
+    @Test fun connectionTextShowsServerStateAndOnlyALivePath() {
+        assertEquals("PC · Live · Home network", connectionText("PC", offline = false, pathLabel = "Home network"))
+        assertEquals("PC · Live · ZeroTier", connectionText("PC", offline = false, pathLabel = "ZeroTier"))
+        assertEquals("PC · Live", connectionText("PC", offline = false, pathLabel = null))
+        assertEquals("PC · Offline", connectionText("PC", offline = true, pathLabel = "Tailscale"))
+    }
+
+    @Test fun searchStaysOpenWhileOpenedOrAQueryIsSet() {
+        assertFalse(searchOpen(opened = false, query = ""))
+        assertTrue(searchOpen(opened = true, query = ""))
+        assertTrue(searchOpen(opened = false, query = "cl:"))
+        assertTrue(searchOpen(opened = true, query = "x"))
     }
 }

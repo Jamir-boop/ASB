@@ -44,8 +44,8 @@ action or a setting goes to one address only. The app never sends it again to
 another address, so an action cannot run two times. When Android changes the
 default network, the next request starts again at the top of the order.
 
-The top bar shows the path, for example `PC · Live · ZeroTier`. Settings >
-Connection lists the addresses and marks the current one. When no address
+The connection text shows the path, for example `PC · Live · ZeroTier`. Tap
+or hold the ASB disc in the top bar to see this text. Settings > Connection lists the addresses and marks the current one. When no address
 answers and the pairing has a ZeroTier or Tailscale address, the error tells
 you to turn on that app on the phone. Install and join ZeroTier or Tailscale on
 the PC and on the phone to use ASB away from home.
@@ -70,6 +70,18 @@ wider window, for example landscape, shows the desktop Column Flow: 240 dp
 target columns, filled down and then across, with horizontal scrolling. After
 a rotation, the first visible session stays in view. Filters, search, the view,
 and open sheets stay the same.
+
+The top bar is one row with a 1 dp line under it. In one list, the row is 56 dp
+high: the ASB disc, the Pending, Working, Drawer, and Filters pills, Search,
+and Settings. A dot on the disc shows Live (success color) or Offline (muted
+color). Tap or hold the disc to open a menu with the connection text and
+Refresh. Pull the list down to refresh. Search replaces the disc and the pills
+with a search field. Close search or Back clears the query and closes the
+field. The field stays open while it has a query. In Column Flow, the row is 48
+dp high: the disc, the connection text, a search field, the pills, and
+Settings. Pull to refresh does not work in Column Flow, so use Refresh in the
+disc menu. The pills scroll sideways and fade at the end when more pills are
+there.
 
 Cards move to new places with a critically damped spring of about 350 ms. New
 cards fade in, and removed cards go at once. A press shows the palette

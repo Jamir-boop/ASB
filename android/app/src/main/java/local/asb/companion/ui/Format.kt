@@ -52,3 +52,10 @@ fun stateLabel(state: String): String = when (state) {
     "idle" -> "Idle"
     else -> "Unknown"
 }
+
+// The top bar connection text, for example "PC · Live · ZeroTier". An offline phone has no current path.
+fun connectionText(serverName: String, offline: Boolean, pathLabel: String?): String =
+    listOfNotNull(serverName, if (offline) "Offline" else "Live", pathLabel?.takeUnless { offline }).joinToString(" · ")
+
+// Search mode stays open while a query is set, for example after a rotation or a return to the screen.
+fun searchOpen(opened: Boolean, query: String): Boolean = opened || query.isNotEmpty()
