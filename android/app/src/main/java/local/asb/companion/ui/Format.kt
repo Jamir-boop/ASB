@@ -27,6 +27,21 @@ fun spokenDuration(seconds: Long): String {
     }
 }
 
+// Port of limit_text: the reset countdown shows days and hours from 24 hours on (weekly limits).
+fun limitText(seconds: Long): String {
+    val days = seconds.coerceAtLeast(0) / 86_400
+    return if (days > 0) "${days}d${seconds % 86_400 / 3600}h" else durationText(seconds)
+}
+
+// Port of spoken_limit.
+fun spokenLimit(seconds: Long): String {
+    val days = seconds.coerceAtLeast(0) / 86_400
+    if (days == 0L) return spokenDuration(seconds)
+    val hours = seconds % 86_400 / 3600
+    fun unit(count: Long, name: String) = "$count $name" + if (count == 1L) "" else "s"
+    return unit(days, "day") + if (hours > 0) " " + unit(hours, "hour") else ""
+}
+
 // Port of working_duration (without the state check; the caller passes a Working start).
 fun workingDuration(workingSinceMs: Long, nowMs: Long): String {
     if (workingSinceMs <= 0 || workingSinceMs > nowMs) return ""

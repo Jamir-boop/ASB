@@ -738,7 +738,7 @@ private fun SessionCard(
     val tones = cardTones(palette, row, comfortable, drawerView, pressed, nowMs)
     val left = limitLeft(row, nowMs)
     val limited = left > 0
-    val countdown = if (limited) durationText(left) else ""
+    val countdown = if (limited) limitText(left) else ""
     val indicator = attentionIndicator(row, drawerView, nowMs)
     val state = stateLabel(row.state)
     val working = if (row.state == "working") workingDuration(row.workingSinceMs, nowMs) else ""
@@ -755,7 +755,7 @@ private fun SessionCard(
     }
     val description = listOf(
         row.title, row.projectName, state,
-        if (limited) "Usage limit. Resets in ${spokenDuration(left)}" else working.ifEmpty { idleAge(row.updatedAtMs, nowMs) },
+        if (limited) "Usage limit. Resets in ${spokenLimit(left)}" else working.ifEmpty { idleAge(row.updatedAtMs, nowMs) },
         indicatorMeaning,
         if (row.pinned) "Pinned" else "",
         if (row.drawer) "In the drawer" else "",

@@ -3,8 +3,10 @@ package local.asb.companion
 import local.asb.companion.ui.connectionText
 import local.asb.companion.ui.durationText
 import local.asb.companion.ui.idleAge
+import local.asb.companion.ui.limitText
 import local.asb.companion.ui.searchOpen
 import local.asb.companion.ui.spokenDuration
+import local.asb.companion.ui.spokenLimit
 import local.asb.companion.ui.stateLabel
 import local.asb.companion.ui.workingDuration
 import org.junit.Assert.assertEquals
@@ -37,6 +39,30 @@ class FormatTest {
             assertEquals("Countdown $seconds s", compact, durationText(seconds))
             assertEquals("Spoken duration $seconds s", spoken, spokenDuration(seconds))
         }
+    }
+
+    // Values from limit_text and spoken_limit in scripts/asb-native.py.
+    @Test fun limitCountdownShowsDaysAndHoursFrom24Hours() {
+        val cases = listOf(
+            Triple(0L, "0s", "0 seconds"),
+            Triple(45L, "45s", "45 seconds"),
+            Triple(725L, "12m5s", "12 minutes 5 seconds"),
+            Triple(3600L, "1h0m", "1 hour"),
+            Triple(16_330L, "4h32m", "4 hours 32 minutes"),
+            Triple(86_399L, "23h59m", "23 hours 59 minutes"),
+            Triple(86_400L, "1d0h", "1 day"),
+            Triple(90_000L, "1d1h", "1 day 1 hour"),
+            Triple(176_399L, "2d0h", "2 days"),
+            Triple(273_600L, "3d4h", "3 days 4 hours"),
+            Triple(604_800L, "7d0h", "7 days"),
+        )
+        for ((seconds, compact, spoken) in cases) {
+            assertEquals("Limit $seconds s", compact, limitText(seconds))
+            assertEquals("Spoken limit $seconds s", spoken, spokenLimit(seconds))
+        }
+        assertEquals("0s", limitText(-1))
+        // The Working timer keeps its format.
+        assertEquals("76h0m", workingDuration(now - 273_600_000, now))
     }
 
     @Test fun countdownFormattingHandlesLongBoundsWithoutOverflow() {

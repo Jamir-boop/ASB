@@ -132,8 +132,10 @@ Shared:
 - State label 11 sp: Working = success, Waiting = warning, others = muted.
   Follow `update_row_text` for Pending and drawer tones.
 - Usage limit (`limitLeft > 0`): all text and the 12 dp clock in
-  `limited_color`; provider alpha .4; source dot unchanged. Keep the existing
-  countdown rules.
+  `limited_color`; provider alpha .4; source dot unchanged. The countdown
+  uses `limitText` (port of `limit_text`): from 24 hours on, days and hours
+  (`3d4h`, `3d0h`), else the Working format. The accessible text uses
+  `spokenLimit` (`3 days 4 hours`). The Working timer does not change.
 - "Opening…" replaces only the title while an open is in flight.
 - The accessible description keeps everything that the current app says
   (state, attention, pinned, drawer, usage limit, source).
