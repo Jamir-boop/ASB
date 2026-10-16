@@ -283,14 +283,16 @@ fun keepIndexOnChange(previousKeys: List<Any>?, keys: List<Any>, scrolling: Bool
     previousKeys != null && !scrolling && previousKeys != keys
 
 /**
- * The first visible index after the items before the first row ([oldLead] before, [newLead] after) change.
- * A list at the top stays at the top, so a new warning shows. A row first keeps its row slot; a leading item first
- * stays at its index, at most the first row. The caller keeps the scroll offset only when a row was first.
+ * The first visible index and scroll offset after the items before the first row ([oldLead] before, [newLead] after)
+ * change. A list at the top stays at the top, so a new warning shows. A row first keeps its row slot and offset; a
+ * leading item first that is still a leading item keeps its index, and its offset only when it is the same item
+ * ([sameItem]), so a different warning at that index shows in full. Else the first row shows.
  */
-fun keptFirstIndex(firstIndex: Int, offset: Int, oldLead: Int, newLead: Int): Int = when {
-    firstIndex == 0 && offset == 0 -> 0
-    firstIndex >= oldLead -> firstIndex - oldLead + newLead
-    else -> minOf(firstIndex, newLead)
+fun keptPosition(firstIndex: Int, offset: Int, oldLead: Int, newLead: Int, sameItem: Boolean): Pair<Int, Int> = when {
+    firstIndex == 0 && offset == 0 -> 0 to 0
+    firstIndex >= oldLead -> firstIndex - oldLead + newLead to offset
+    firstIndex < newLead -> firstIndex to if (sameItem) offset else 0
+    else -> newLead to 0
 }
 
 /**

@@ -259,7 +259,8 @@ fun SessionsScreen(
             add("bottom-space")
         }
     }
-    if (!flow) KeepPositionOnChange(listState, listKeys, lead = lead)
+    // An empty list goes to the top, so a warning that may explain it shows.
+    if (!flow) KeepPositionOnChange(listState, listKeys, top = rows.isEmpty(), lead = lead)
     LaunchedEffect(listState, flow) {
         snapshotFlow {
             if (listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0) ""
@@ -748,7 +749,9 @@ private fun KeepPositionOnChange(state: LazyListState, keys: List<Any>, top: Boo
         } else {
             val first = state.firstVisibleItemIndex
             val offset = state.firstVisibleItemScrollOffset
-            state.requestScrollToItem(keptFirstIndex(first, offset, oldLead, lead), if (first >= oldLead) offset else 0)
+            val sameItem = previous?.getOrNull(first) == keys.getOrNull(first)
+            val (index, keptOffset) = keptPosition(first, offset, oldLead, lead, sameItem)
+            state.requestScrollToItem(index, keptOffset)
         }
     }
 }

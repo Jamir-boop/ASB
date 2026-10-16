@@ -17,7 +17,7 @@ import local.asb.companion.ui.casefold
 import local.asb.companion.ui.clockInterval
 import local.asb.companion.ui.filteredRows
 import local.asb.companion.ui.keepIndexOnChange
-import local.asb.companion.ui.keptFirstIndex
+import local.asb.companion.ui.keptPosition
 import local.asb.companion.ui.limitLeft
 import local.asb.companion.ui.messageControl
 import local.asb.companion.ui.messageDuration
@@ -446,21 +446,28 @@ class RulesTest {
         assertFalse(keepIndexOnChange(keys, listOf("c", "a", "b", "bottom-space"), true))
     }
 
-    @Test fun keptFirstIndexKeepsTheRowSlotWhenLeadingItemsChange() {
+    @Test fun keptPositionKeepsTheRowSlotWhenLeadingItemsChange() {
         // At the top: stay at the top, so a new warning shows.
-        assertEquals(0, keptFirstIndex(0, 0, 0, 1))
-        assertEquals(0, keptFirstIndex(0, 0, 2, 0))
-        // A row first (row 3 after 1 warning): a warning added or removed keeps that row first.
-        assertEquals(5, keptFirstIndex(4, 30, 1, 2))
-        assertEquals(3, keptFirstIndex(4, 30, 1, 0))
+        assertEquals(0 to 0, keptPosition(0, 0, 0, 1, false))
+        assertEquals(0 to 0, keptPosition(0, 0, 2, 0, false))
+        // A row first (row 3 after 1 warning): a warning added or removed keeps that row and its offset first.
+        assertEquals(5 to 30, keptPosition(4, 30, 1, 2, false))
+        assertEquals(3 to 30, keptPosition(4, 30, 1, 0, false))
+        // A row first at its edge (such as after a rotation start) is not at the top.
+        assertEquals(4 to 0, keptPosition(4, 0, 2, 2, false))
         // A row first with offset at index 0 (no leading items) is not at the top.
-        assertEquals(1, keptFirstIndex(0, 30, 0, 1))
-        // The "empty" item goes when rows come, and comes when they go.
-        assertEquals(1, keptFirstIndex(2, 0, 2, 1))
-        assertEquals(2, keptFirstIndex(1, 10, 1, 2))
-        // A warning first while scrolled stays at its index, at most the first row.
-        assertEquals(1, keptFirstIndex(1, 20, 3, 3))
-        assertEquals(1, keptFirstIndex(2, 20, 3, 1))
+        assertEquals(1 to 30, keptPosition(0, 30, 0, 1, false))
+        // The "empty" item first: rows come, so the first row shows.
+        assertEquals(1 to 0, keptPosition(1, 16, 2, 1, false))
+        // A warning first while scrolled keeps its index and offset when the rows reorder.
+        assertEquals(0 to 60, keptPosition(0, 60, 1, 1, true))
+        assertEquals(1 to 30, keptPosition(1, 30, 3, 3, true))
+        // A different warning now at that index (one before it went, or a new one came) shows in full.
+        assertEquals(0 to 0, keptPosition(0, 40, 2, 1, false))
+        assertEquals(0 to 0, keptPosition(0, 30, 1, 2, false))
+        // A warning first whose index is now a row: the first row shows.
+        assertEquals(1 to 0, keptPosition(2, 20, 3, 1, false))
+        assertEquals(1 to 0, keptPosition(1, 20, 3, 1, false))
     }
 
     @Test fun startIndexFindsTheAnchorRow() {
@@ -473,5 +480,6 @@ class RulesTest {
         assertEquals(1, startIndex(ids.indexOf("f"), flow = true, capacity = 4, lead = 0))
         // Portrait with 2 warnings: row 2 is item 4.
         assertEquals(4, startIndex(ids.indexOf("c"), flow = false, capacity = 4, lead = 2))
+        assertEquals(2, startIndex(ids.indexOf("a"), flow = false, capacity = 4, lead = 2))
     }
 }
