@@ -75,7 +75,10 @@ fun parsePairingUri(text: String): PairingInfo? = try {
     require(fingerprint.matches(Regex("[0-9a-f]{64}")))
     val code = values.getValue("c")
     require(code.matches(Regex("[A-Za-z0-9_-]{27}")))
-    PairingInfo(addresses, port, fingerprint, code, values.getValue("n"))
+    val name = values.getValue("n")
+    // The same rule as the PC applies to device names, so a link cannot add lines to the Check the PC screen.
+    require(name.codePointCount(0, name.length) <= 64 && !name.contains(Regex("[\\x00-\\x1f\\x7f-\\x9f]")))
+    PairingInfo(addresses, port, fingerprint, code, name)
 } catch (_: Exception) {
     null
 }

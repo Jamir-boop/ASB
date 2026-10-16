@@ -140,8 +140,9 @@ When Android animations are off, all motion is instant.
 
 The app has no QR scanner of its own and uses no Google Play services. The
 `asb://pair` intent filter lets the phone camera open the pairing link in ASB.
-The app has one window (`singleTask`), so a link or a notification tap goes to
-the open app.
+A small activity with no window takes the link and gives it to the open app,
+like a notification tap does. A tap on the launcher icon keeps a permission
+dialog or a settings page that is open over the app.
 
 ## Requirements
 
@@ -233,6 +234,12 @@ new app beside the old one. Pair the new app again, then uninstall the old one.
 The build turns off the AGP dependency metadata (`dependenciesInfo`), so the
 APK has no dependency block that only Google can read.
 
+The minimum SDK is 29. The compile and target SDK are 36.
+
+AGP can print `WARNING: platform-tools package is not installed.` with this
+setup. The APK build works without that package. Use the external `adb`
+commands above for the device check.
+
 ## Release signing
 
 The release key is a file that you make yourself, outside git. Make it once:
@@ -317,11 +324,6 @@ UpdateCheckMode: Tags ^android-v.*$
 CurrentVersion: 0.1.0
 CurrentVersionCode: 1
 ```
-The minimum SDK is 29. The compile and target SDK are 36.
-
-AGP can print `WARNING: platform-tools package is not installed.` with this
-setup. The APK build works without that package. Use the external `adb`
-commands above for the device check.
 
 ## Build versions
 

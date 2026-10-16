@@ -36,6 +36,7 @@ class PairingTest {
         assertEquals("PC + 手机", parsePairingUri(link.substringBefore("&n=") + "&n=PC%20%2B%20%E6%89%8B%E6%9C%BA")!!.serverName)
         assertEquals("PC+Name", parsePairingUri(link.substringBefore("&n=") + "&n=PC+Name")!!.serverName)
         assertEquals("", parsePairingUri(link.substringBefore("&n=") + "&n=")!!.serverName)
+        assertEquals("手".repeat(64), parsePairingUri(link.substringBefore("&n=") + "&n=" + "%E6%89%8B".repeat(64))!!.serverName)
     }
 
     @Test fun invalidFieldsAreRejected() {
@@ -47,7 +48,8 @@ class PairingTest {
             "p=4630" to "p=04630", "f=$fingerprint" to "f=${fingerprint.uppercase()}",
             "f=$fingerprint" to "f=${fingerprint.drop(1)}", "c=$code" to "c=${code.drop(1)}",
             "c=$code" to "c=${code.dropLast(1)}!", "n=Debian%20PC" to "n=%FF",
-            "n=Debian%20PC" to "n=%ZZ",
+            "n=Debian%20PC" to "n=%ZZ", "n=Debian%20PC" to "n=PC%0ACertificate",
+            "n=Debian%20PC" to "n=PC%09", "n=Debian%20PC" to "n=PC%C2%85", "n=Debian%20PC" to "n=${"a".repeat(65)}",
         )
         for ((old, new) in changes) assertNull("Rejected field: $old", parsePairingUri(link.replace(old, new)))
     }
