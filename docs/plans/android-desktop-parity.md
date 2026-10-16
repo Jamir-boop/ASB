@@ -225,8 +225,9 @@ snackbar, so it shows the current snackbar message as an 11 sp caption below
 the switches. A failed action keeps its error for that row (desktop
 `asb-panel-error`), in an error color with 4.5:1 contrast on the surface. A
 successful action for the row, a change of the row state, or the row leaving
-the board removes it. A successful poll removes only an error from a failed
-dashboard load, not an action error. A control is disabled while its action
+the board removes it. A successful poll removes the snackbar message only after
+an offline state (a failed dashboard load, or an action that could not reach
+ASB). The row action error stays in the inspector. A control is disabled while its action
 runs. When the action ends, the control that had the focus gets it back if it
 is still there and enabled (desktop `restore_panel_focus`, `panelFocusReturn`).
 Back, a tap outside, Open, or the row leaving the board closes it. A rotation closes it.
@@ -262,6 +263,13 @@ Back, a tap outside, Open, or the row leaving the board closes it. A rotation cl
 - Device check (when the phone is connected): both views, Custom and GNOME
   palettes, a reorder, a press, Read from the corner, reduced motion, and
   rotation both ways in both views (state kept, Column Flow in landscape).
+  Also: Larger text (1.3) with the system font at 200%, where the pills and
+  the search field do not clip in the portrait and Column Flow top bars; a
+  hollow ring on the disc when Offline and a filled dot when Live; a failed
+  row action, where the inspector shows its error caption once (not again as
+  the snackbar text); and keyboard focus return in the inspector (Tab to
+  Later on a pinned row and to Unread, press Enter, wait for the refresh, and
+  make sure that the same control has the focus).
 
 ## 7. Out of scope
 

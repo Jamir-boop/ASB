@@ -127,7 +127,9 @@ class SessionsViewModel(
                         mutableState.update { it.copy(banner = "Opened on $serverName") }
                     }
                     // The row stays busy until the board refresh below, so its controls never act on the old row.
-                    mutableState.update { it.copy(openingIds = it.openingIds - id, actionErrors = it.actionErrors - id) }
+                    // The snackbar of the old failure closes with the row's error.
+                    mutableState.update { it.copy(openingIds = it.openingIds - id, actionErrors = it.actionErrors - id,
+                        lastError = it.lastError.takeIf { e -> e != it.actionErrors[id] }) }
                     if (action == "mark-read") confirmRead(id)
                     etag = null
                     fetchDashboard()
@@ -172,10 +174,12 @@ class SessionsViewModel(
                     val before = old.dashboard?.threads.orEmpty().associate { it.id to it.state }
                     val now = dashboard?.threads.orEmpty().associate { it.id to it.state }
                     // A row that leaves the board or changes state loses its action error, as on the desktop.
+                    val kept = old.actionErrors.filterKeys { id -> id in now && now[id] == before[id] }
                     old.copy(dashboard = dashboard, offline = false, path = api.endpoint?.kind,
-                        // Only a dashboard failure sets offline; an action error stays for its snackbar.
-                        lastError = if (old.offline) null else old.lastError,
-                        actionErrors = old.actionErrors.filterKeys { id -> id in now && now[id] == before[id] })
+                        // A poll that ends an offline state (a dashboard failure, or an action that could not reach
+                        // ASB) clears its stale message; another action error stays for its snackbar until its row error goes.
+                        lastError = if (old.offline || old.lastError in (old.actionErrors - kept.keys).values) null else old.lastError,
+                        actionErrors = kept)
                 }
                 dashboard?.refreshIntervalMs?.takeIf { it == 2000L || it == 5000L } ?: 5000L
             }

@@ -490,7 +490,17 @@ class SessionsViewModelTest {
             assertEquals("Cannot change row", model.state.value.lastError)
             assertEquals(mapOf("one" to "Cannot change row"), model.state.value.actionErrors)
         }
-        model.clearError()
+        // An action that cannot reach ASB sets offline, so the next good poll clears its snackbar but not its row error.
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+        model.action("one", "drawer-in")
+        await { model.state.value.busyIds.isEmpty() }
+        assertTrue(model.state.value.offline)
+        val message = model.state.value.lastError!!
+        refresh(response(dashboard.copy(generatedAtMs = 2)))
+        assertFalse(model.state.value.offline)
+        assertNull(model.state.value.lastError)
+        assertEquals(mapOf("one" to message), model.state.value.actionErrors)
+        fail()
         server.enqueue(MockResponse().setBody("{}"))
         server.enqueue(response(dashboard.copy(generatedAtMs = 3)))
         model.action("one", "drawer-in")
@@ -501,6 +511,7 @@ class SessionsViewModelTest {
         fail()
         refresh(response(dashboard.copy(generatedAtMs = 4, threads = listOf(Thread(id = "one", state = "working")))))
         assertEquals(emptyMap<String, String>(), model.state.value.actionErrors)
+        assertNull(model.state.value.lastError)
         fail()
         refresh(response(dashboard.copy(generatedAtMs = 5, threads = listOf(Thread(id = "two")))))
         assertEquals(emptyMap<String, String>(), model.state.value.actionErrors)

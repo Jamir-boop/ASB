@@ -117,15 +117,16 @@ target columns, filled down and then across, with horizontal scrolling. After
 a rotation, the first visible session stays in view. Filters, search, the view,
 and open sheets stay the same.
 
-The top bar is one row with a 1 dp line under it. In one list, the row is 56 dp
-high: the ASB disc, the Pending, Working, Drawer, and Filters pills, Search,
-and Settings. A dot on the disc shows Live (success color) or Offline (muted
-color). Tap or hold the disc to open a menu with the connection text and
+The top bar is one row with a 1 dp line under it. In one list, the row is at
+least 56 dp high: the ASB disc, the Pending, Working, Drawer, and Filters pills,
+Search, and Settings. A filled dot on the disc shows Live (success color); a
+hollow ring shows Offline (muted color). Tap or hold the disc to open a menu with the connection text and
 Refresh. Pull the list down to refresh. Search replaces the disc and the pills
 with a search field. Close search or Back clears the query and closes the
-field. The field stays open while it has a query. In Column Flow, the row is 48
-dp high: the disc, the connection text, a search field, the pills, and
-Settings. Pull to refresh does not work in Column Flow, so use Refresh in the
+field. The field stays open while it has a query. In Column Flow, the row is at
+least 48 dp high: the disc, the connection text, a search field, the pills, and
+Settings. With large text, both rows, the pills, and the search field get
+taller. Pull to refresh does not work in Column Flow, so use Refresh in the
 disc menu. The pills scroll sideways and fade at the end when more pills are
 there.
 
