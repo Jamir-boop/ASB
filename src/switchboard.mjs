@@ -217,6 +217,7 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
     thread.lifecycleRunning === true ? thread.agentActivityAtMs ?? thread.latestLifecycleAtMs : 0,
     thread.provider === 'claude-desktop-code' && thread.lifecycleRunning == null ? thread.transcriptActivityAtMs : 0])
     .map((value) => Number(value || 0) + ACTIVITY_WINDOW_MS + 1)
+    .concat(roots.map((thread) => Number(thread.childEndGraceAtMs || 0) + 1))
     .concat(board.threads.map((row) => row.limitResetsAtMs)).filter((value) => value > nowMs);
   Object.defineProperty(board, 'nextStatusCheckAtMs', { value: expiries.length ? Math.min(...expiries) : Infinity });
   board.refreshIntervalMs = switchboardRefreshInterval(board);

@@ -11,7 +11,7 @@ import {
   openClaudeThread,
   parseClaudeJsonlSignals,
 } from '../src/claude-data.mjs';
-import { buildSwitchboardDashboard } from '../src/switchboard.mjs';
+import { buildSwitchboardDashboard, PendingTracker } from '../src/switchboard.mjs';
 
 function jsonl(records) {
   return `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
@@ -503,10 +503,15 @@ test('a linked async Agent child ends through a task notification', async (t) =>
   };
   assert.deepEqual(await load([...launched, rootEnd(-8000)]), [true, 'task_started', '', 0]);
   for (const [status, kind] of [['completed', 'task_complete'], ['failed', 'failed'], ['cancelled', 'cancelled'], ['aborted', 'cancelled']]) {
-    const notice = event('user', -7000, { message: { content:
-      `<task-notification><task-id>background</task-id><status>${status}</status></task-notification>` } });
-    // The root ended before the child: the child end is the group end.
-    assert.deepEqual(await load([...launched, rootEnd(-8000), notice]), [false, kind, kind, nowMs - 7000], status);
+    const text = `<task-notification><task-id>background</task-id><status>${status}</status></task-notification>`;
+    const notice = event('user', -7000, { message: { content: text } });
+    // The root ended before the child: the delivered notification starts a turn, and the reply sets the group outcome.
+    assert.deepEqual(await load([...launched, rootEnd(-8000), notice]), [true, 'task_started', '', 0], status);
+    assert.deepEqual(await load([...launched, rootEnd(-8000), notice, rootEnd(-6500)]),
+      [false, 'task_complete', 'task_complete', nowMs - 6500], status);
+    // A queued notification starts no turn: the child end is the group end.
+    const queued = event('attachment', -7000, { attachment: { type: 'queued_command', prompt: text } });
+    assert.deepEqual(await load([...launched, rootEnd(-8000), queued]), [false, kind, kind, nowMs - 7000], status);
     // The root continues after the notification: the group has open work and no end.
     assert.deepEqual(await load([...launched, notice, thinking(-6000)]), [true, 'task_started', '', 0], status);
     // The root ends after the notification: the later root end sets the group outcome.
@@ -717,7 +722,9 @@ test('a resumed async Agent child makes its chat Working again until the next ta
       resumeEnd(-48_000),
     ], [resumePrompt(-48_800), resumeWork(-48_500)], maxBytes);
     assert.deepEqual(await step(), [true, 'working'], `launch ${maxBytes}`);
-    assert.deepEqual(await step([resumeNotice(-44_000, 'kid')], [resumeEnd(-45_000)]), [false, 'idle'], `end ${maxBytes}`);
+    // The delivered notification starts a turn of the main chat; its reply ends the turn.
+    assert.deepEqual(await step([resumeNotice(-44_000, 'kid')], [resumeEnd(-45_000)]), [true, 'working'], `notice ${maxBytes}`);
+    assert.deepEqual(await step([resumeEnd(-43_500)]), [false, 'idle'], `end ${maxBytes}`);
 
     const others = [{ message: 'Queued.', pin: null, success: true }, { display: 'Sent.', message: 'Hello.', msg_id: 'msg_1', success: true },
       { display: 'Sent.', message: 'Hello.', success: true }, resumeResult('kid', false), resumeResult('kid.x'), resumeResult('kid/../kid'),
@@ -731,12 +738,12 @@ test('a resumed async Agent child makes its chat Working again until the next ta
     // The message record alone starts the task of the child.
     assert.deepEqual(await step([], [resumeMessage(-29_950)]), [true, 'working'], `message ${maxBytes}`);
     assert.deepEqual(await step([], [resumeWork(-27_000)]), [true, 'working'], `resumed ${maxBytes}`);
-    assert.deepEqual(await step([resumeNotice(-24_000, 'kid')], [resumeEnd(-25_000)]), [false, 'idle'], `second end ${maxBytes}`);
+    assert.deepEqual(await step([resumeNotice(-24_000, 'kid'), resumeEnd(-23_500)], [resumeEnd(-25_000)]), [false, 'idle'], `second end ${maxBytes}`);
     // In the main transcript, a meta record starts no task.
     assert.deepEqual(await step([resumeEvent('user', -23_000, { isMeta: true, message: { content: 'A note.' } })]), [false, 'idle'], `meta ${maxBytes}`);
     assert.deepEqual(await step(sendMessage(-20_000, resumeResult('kid')), [resumeMessage(-19_950)]), [true, 'working'], `second resume ${maxBytes}`);
     const before = getClaudeCacheStats().jsonlSignals.bytesRead;
-    const failed = [resumeNotice(-15_000, 'kid', 'failed')];
+    const failed = [resumeNotice(-15_000, 'kid', 'failed'), resumeEnd(-14_500)];
     assert.deepEqual(await step(failed), [false, 'idle'], `third end ${maxBytes}`);
     // Only the guard and the appended part of the main transcript are read.
     if (maxBytes) assert.equal(getClaudeCacheStats().jsonlSignals.bytesRead - before, 64 + Buffer.byteLength(jsonl(failed)));
@@ -748,9 +755,9 @@ test('a resume of an Agent child whose launch is not in the transcript makes its
     const { step } = await resumeFixture(t, 'old', [resumeEvent('user', -50_000, { message: { content: 'Ask the old task for more.' } }),
       ...sendMessage(-49_000, resumeResult('old'), call)], [resumeEnd(-55_000), resumePrompt(-48_800), resumeWork(-48_500)]);
     assert.deepEqual(await step(), [true, 'working'], String(call));
-    // A stopped child writes no end record: only the notification ends its link.
-    assert.deepEqual(await step([resumeNotice(-40_000, 'old', call ? 'completed' : 'stopped')], call ? [resumeEnd(-41_000)] : []),
-      [false, 'idle'], String(call));
+    // A stopped child writes no end record: only the notification ends its link. A stopped notification starts no turn.
+    assert.deepEqual(await step([resumeNotice(-40_000, 'old', call ? 'completed' : 'stopped'), ...(call ? [resumeEnd(-39_500)] : [])],
+      call ? [resumeEnd(-41_000)] : []), [false, 'idle'], String(call));
   }
 });
 
@@ -765,6 +772,109 @@ test('a queued task notification ends the link of its Agent child', async (t) =>
       for (const record of others) assert.deepEqual(await step([record]), [true, 'working'], `${JSON.stringify(record.attachment)} ${maxBytes}`);
       assert.deepEqual(await step([queuedNotice(-40_000, 'kid', status)]), [false, 'idle'], `${status} ${maxBytes}`);
     }
+  }
+});
+
+// The state path false: the tracker never reads or writes a state file.
+async function observeFixture(projectsDir, nowMs = resumeNowMs, tracker = new PendingTracker(false)) {
+  const { threads } = await loadClaudeDesktopCodeThreads({ appDir: path.join(projectsDir, '..', 'Claude'), projectsDir, nowMs });
+  const board = await tracker.observe(buildSwitchboardDashboard(threads, [], nowMs));
+  return { thread: threads[0], row: board.threads[0], board };
+}
+
+test('a delivered task notification at an idle chat starts a turn, and its text-only reply ends it with a completion', async (t) => {
+  for (const maxBytes of [0, 256]) {
+    const { step, projectsDir } = await resumeFixture(t, 'kid', resumeLaunch('kid'),
+      [resumePrompt(-48_800), resumeWork(-48_500), resumeEnd(-45_000)], maxBytes);
+    const tracker = new PendingTracker(false);
+    assert.deepEqual(await step(), [false, 'idle'], `before ${maxBytes}`);
+    await observeFixture(projectsDir, resumeNowMs, tracker);
+    assert.deepEqual(await step([resumeNotice(-44_000, 'kid')]), [true, 'working'], `notice ${maxBytes}`);
+    const working = await observeFixture(projectsDir, resumeNowMs, tracker);
+    assert.equal(working.thread.agentStartedAtMs, resumeNowMs - 44_000, `start ${maxBytes}`);
+    assert.equal(working.row.unread, false, `not unread ${maxBytes}`);
+    assert.deepEqual(await step([resumeEnd(-43_000)]), [false, 'idle'], `reply ${maxBytes}`);
+    const ended = await observeFixture(projectsDir, resumeNowMs, tracker);
+    assert.deepEqual([ended.row.completionAtMs, ended.row.completionAttention], [resumeNowMs - 43_000, true], `completion ${maxBytes}`);
+  }
+});
+
+test('a Discard armed while a background Agent runs survives the reply to its task notification', async (t) => {
+  for (const maxBytes of [0, 256]) {
+    for (const reply of [[resumeEnd(-43_000)], [resumeWork(-43_500), resumeEnd(-43_000)]]) {
+      const { step, projectsDir } = await resumeFixture(t, 'kid', resumeLaunch('kid'), [resumePrompt(-48_800), resumeWork(-48_500)], maxBytes);
+      const tracker = new PendingTracker(false);
+      assert.deepEqual(await step(), [true, 'working'], `launch ${maxBytes}`);
+      const armed = await observeFixture(projectsDir, resumeNowMs, tracker);
+      await tracker.setDiscard(armed.row, true);
+      assert.deepEqual(await step([resumeNotice(-44_000, 'kid')], [resumeEnd(-45_000)]), [true, 'working'], `notice ${maxBytes}`);
+      const notice = await observeFixture(projectsDir, resumeNowMs, tracker);
+      assert.equal(notice.row.discardResult, true, `still armed ${maxBytes}`);
+      assert.deepEqual(await step(reply), [false, 'idle'], `reply ${maxBytes}`);
+      const ended = await observeFixture(projectsDir, resumeNowMs, tracker);
+      assert.deepEqual([ended.row.unread, ended.row.pending], [false, false], `discarded ${reply.length} ${maxBytes}`);
+    }
+  }
+});
+
+test('a stopped, killed, queued, or transcript-only task notification starts no turn', async (t) => {
+  for (const maxBytes of [0, 256]) {
+    for (const status of ['stopped', 'killed']) {
+      // These usually get no reply, so they must not leave the chat Working.
+      const { step } = await resumeFixture(t, 'kid', resumeLaunch('kid'), [resumePrompt(-48_800), resumeWork(-48_500)], maxBytes);
+      assert.deepEqual(await step([resumeNotice(-44_000, 'kid', status)]), [false, 'idle'], `${status} ${maxBytes}`);
+    }
+    const copy = await resumeFixture(t, 'kid', resumeLaunch('kid'), [resumePrompt(-48_800), resumeWork(-48_500)], maxBytes);
+    assert.deepEqual(await copy.step([{ ...resumeNotice(-44_000, 'kid'), queueTranscriptOnly: true }]), [false, 'idle'], `copy ${maxBytes}`);
+    // A queued notification arrives while the chat runs: the turn and its start time continue.
+    const busy = await resumeFixture(t, 'kid', [...resumeLaunch('kid'), resumePrompt(-30_000), resumeWork(-29_000)],
+      [resumePrompt(-48_800), resumeWork(-48_500)], maxBytes);
+    assert.deepEqual(await busy.step([queuedNotice(-28_000, 'kid')]), [true, 'working'], `queued ${maxBytes}`);
+    assert.equal((await observeFixture(busy.projectsDir)).thread.latestTaskStartedAtMs, resumeNowMs - 30_000, `queued start ${maxBytes}`);
+  }
+});
+
+test('a message from another session starts a turn only in an idle chat', async (t) => {
+  const message = (offset) => resumeEvent('user', offset, { isMeta: true, message: { content:
+    'Another session sent a message.\n<cross-session-message from-session="local_00000000-0000-4000-8000-000000000001">Hello.</cross-session-message>' } });
+  const fixture = await signalFixture(t, [resumePrompt(-50_000), resumeEnd(-49_000)]);
+  const tracker = new PendingTracker(false);
+  await observeFixture(fixture.projectsDir, resumeNowMs, tracker);
+  await appendFile(fixture.file, jsonl([message(-40_000)]));
+  const working = await observeFixture(fixture.projectsDir, resumeNowMs, tracker);
+  assert.deepEqual([working.thread.lifecycleRunning, working.row.state, working.thread.latestTaskStartedAtMs],
+    [true, 'working', resumeNowMs - 40_000]);
+  await appendFile(fixture.file, jsonl([resumeEnd(-39_000)]));
+  const ended = await observeFixture(fixture.projectsDir, resumeNowMs, tracker);
+  assert.deepEqual([ended.row.state, ended.row.completionAtMs, ended.row.completionAttention], ['idle', resumeNowMs - 39_000, true]);
+  // During a running turn the message does not move the start time.
+  await appendFile(fixture.file, jsonl([resumePrompt(-30_000), resumeWork(-29_000), message(-28_000)]));
+  const busy = await fixture.load();
+  assert.deepEqual([busy.lifecycleRunning, busy.latestTaskStartedAtMs, busy.agentStartedAtMs], [true, resumeNowMs - 30_000, resumeNowMs - 30_000]);
+});
+
+test('a human prompt with only images starts a turn', async (t) => {
+  const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } };
+  const fixture = await signalFixture(t, [resumePrompt(-50_000), resumeEnd(-49_000)]);
+  // An image in a tool result is not a prompt.
+  await appendFile(fixture.file, jsonl([resumeEvent('user', -45_000, { message: { content: [{ type: 'tool_result', tool_use_id: 'x' }, image] } })]));
+  assert.equal((await fixture.load()).lifecycleRunning, false);
+  await appendFile(fixture.file, jsonl([resumeEvent('user', -40_000, { message: { content: [image] } })]));
+  const thread = await fixture.load();
+  assert.deepEqual([thread.lifecycleRunning, thread.latestTaskStartedAtMs], [true, resumeNowMs - 40_000]);
+});
+
+test('a linked child log that ended without a task notification keeps the chat Working for 10 s', async (t) => {
+  for (const maxBytes of [0, 256]) {
+    const { projectsDir } = await resumeFixture(t, 'kid', resumeLaunch('kid'),
+      [resumePrompt(-48_800), resumeWork(-48_500), resumeEnd(-5_000)], maxBytes);
+    const grace = await observeFixture(projectsDir);
+    assert.deepEqual([grace.row.state, grace.thread.agentActivityAtMs, grace.thread.groupTaskEndedAtMs],
+      ['working', resumeNowMs - 5_000, 0], `grace ${maxBytes}`);
+    assert.equal(grace.board.nextStatusCheckAtMs, resumeNowMs - 5_000 + 10_001, `check ${maxBytes}`);
+    assert.equal((await observeFixture(projectsDir, resumeNowMs + 5_000)).row.state, 'working', `last ${maxBytes}`);
+    const ended = await observeFixture(projectsDir, resumeNowMs + 5_001);
+    assert.deepEqual([ended.row.state, ended.thread.groupTaskEndedAtMs], ['idle', resumeNowMs - 5_000], `end ${maxBytes}`);
   }
 });
 
@@ -840,7 +950,7 @@ test('a context compaction keeps the task, its start time, and the Agent calls t
     assert.equal(await load(busy), resumeNowMs - 90_000, `start ${maxBytes}`);
     assert.deepEqual(await busy.step([resumeEnd(-30_000)]), [true, 'working'], `child after compaction ${maxBytes}`);
     assert.equal(await load(busy), resumeNowMs - 90_000, `child start ${maxBytes}`);
-    assert.deepEqual(await busy.step([resumeNotice(-20_000, 'kid')], [resumeEnd(-21_000)]), [false, 'idle'], `end ${maxBytes}`);
+    assert.deepEqual(await busy.step([resumeNotice(-20_000, 'kid'), resumeEnd(-19_500)], [resumeEnd(-21_000)]), [false, 'idle'], `end ${maxBytes}`);
 
     const idle = await resumeFixture(t, 'none', [resumeEvent('user', -90_000, { message: { content: 'Hello.' } }), resumeEnd(-80_000),
       ...boundary(-40_000)], [], maxBytes);
@@ -857,7 +967,7 @@ test('an assistant record with a tool call does not end the turn, also with the 
   assert.deepEqual(await step(), [true, 'working']);
   // The main turn ends; the call of the refusal record made the link, so the child keeps the chat Working.
   assert.deepEqual(await step([resumeEnd(-48_000)]), [true, 'working']);
-  assert.deepEqual(await step([resumeNotice(-40_000, 'kid')]), [false, 'idle']);
+  assert.deepEqual(await step([resumeNotice(-40_000, 'kid'), resumeEnd(-39_500)]), [false, 'idle']);
   const plain = await resumeFixture(t, 'none', refusal([{ type: 'text', text: 'No.' }]), []);
   assert.deepEqual(await plain.step(), [false, 'idle']);
 });
@@ -896,8 +1006,10 @@ test('a background workflow keeps its chat Working until the task notification',
         nowMs: resumeNowMs, ...(maxBytes ? { maxBytes } : {}) });
       assert.equal(threads[0].agentStartedAtMs, resumeNowMs - 50_000, `start ${index} ${maxBytes}`);
       assert.equal(threads[0].agentActivityAtMs, resumeNowMs - 20_000, `activity ${index} ${maxBytes}`);
-      assert.deepEqual(await step([resumeNotice(-15_000, 'wf_run1'), resumeNotice(-14_000, 'a1')]), [true, 'working'], `other ID ${index} ${maxBytes}`);
-      assert.deepEqual(await step([notice]), [false, 'idle'], `end ${index} ${maxBytes}`);
+      assert.deepEqual(await step([resumeNotice(-15_000, 'wf_run1'), resumeNotice(-14_000, 'a1'), resumeEnd(-13_500)]),
+        [true, 'working'], `other ID ${index} ${maxBytes}`);
+      // A delivered completed or failed notification gets a reply; a stopped one and a queued one start no turn.
+      assert.deepEqual(await step([notice, ...(index < 2 ? [resumeEnd(-9_500)] : [])]), [false, 'idle'], `end ${index} ${maxBytes}`);
     }
   }
 });
@@ -955,5 +1067,5 @@ test('a launch result that is not a valid Workflow launch makes no link', async 
   await workflowLogs(projectsDir, 'project/cli_root', -20_000, 'wf_run2');
   assert.deepEqual(await step(), [true, 'working'], 'resumed run');
   assert.deepEqual(await step([resumeNotice(-10_000, 'wtask0001')]), [true, 'working'], 'old task ID');
-  assert.deepEqual(await step([resumeNotice(-9_000, 'wtask0002')]), [false, 'idle'], 'new task ID');
+  assert.deepEqual(await step([resumeNotice(-9_000, 'wtask0002'), resumeEnd(-8_500)]), [false, 'idle'], 'new task ID');
 });

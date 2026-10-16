@@ -21,6 +21,8 @@ const MAX_ASB_SESSION_COUNT = 5000;
 const SIGNAL_CONCURRENCY = 6;
 const CLAUDE_APPEND_GUARD_BYTES = 64;
 const CLAUDE_ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
+// A subagent log writes its end before the task notification reaches the root, so an open link stays open work for this time.
+const CLAUDE_CHILD_END_GRACE_MS = 10_000;
 const CLAUDE_DESKTOP_CODE_DEFAULT_TITLE = 'General coding session';
 const UUID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const MAX_INCOMING_MESSAGES = 20;
@@ -180,7 +182,7 @@ function initialSignals() {
 }
 
 function initialClaudeLifecycle() {
-  return { running: null, startedAtMs: 0, activityAtMs: 0, eventAtMs: 0, kind: '', finalAtMs: 0,
+  return { running: null, startedAtMs: 0, promptStartedAtMs: 0, activityAtMs: 0, eventAtMs: 0, kind: '', finalAtMs: 0,
     endedAtMs: 0, endKind: '', limitResetsAtMs: 0,
     agents: new Map(), agentTools: new Map(), messages: [] };
 }
@@ -232,7 +234,9 @@ function applyClaudeLifecycle(lifecycle, event, timestampMs) {
       agent.endedAtMs = timestampMs;
       agent.kind = status === 'completed' ? 'task_complete' : status === 'failed' ? 'failed' : 'cancelled';
     }
-    return;
+    // A delivered notification is a prompt: the app runs the model on it. A stopped or killed task usually gets no reply,
+    // and a queued attachment or a transcript-only copy arrives while the chat runs.
+    if (event.type !== 'user' || event.queueTranscriptOnly === true || ['stopped', 'killed'].includes(status)) return;
   }
   // Each incoming message has one delivery record: a meta user record, or a queued prompt of a busy chat.
   const sender = event.type === 'user' ? event.isMeta === true ? crossSessionSender(text, 199) : ''
@@ -269,12 +273,19 @@ function applyClaudeLifecycle(lifecycle, event, timestampMs) {
   }
   // A message that starts an ended subagent again is a meta record in the transcript of that subagent.
   // The summary of a context compaction is not a prompt: the task and its start time continue.
+  // A message from another session is a meta record; it starts a task only in an idle chat. A prompt can have only images.
   const humanStart = event.type === 'user' && !event.isCompactSummary
-    && (!event.isMeta || (event.isSidechain === true && lifecycle.running !== true)) && isUserPromptText(text);
+    && (!event.isMeta || ((sender || event.isSidechain === true) && lifecycle.running !== true))
+    && (isUserPromptText(text) || (!text && Array.isArray(content) && content.some((item) => item?.type === 'image')
+      && !content.some((item) => item?.type === 'tool_result')));
   const activeAssistant = event.type === 'assistant' && (stopReason === 'tool_use'
     || (Array.isArray(content) && content.some((item) => ['thinking', 'tool_use'].includes(item?.type))));
   if (humanStart || kind === 'task_started' || activeAssistant) {
-    if (humanStart || lifecycle.running !== true) lifecycle.startedAtMs = timestampMs;
+    if (humanStart || lifecycle.running !== true) {
+      lifecycle.startedAtMs = timestampMs;
+      // The reply to a task notification continues the task of the prompt, so it keeps a Discard of that task.
+      if (!(humanStart && notice.startsWith('<task-notification>'))) lifecycle.promptStartedAtMs = timestampMs;
+    }
     if (humanStart || kind === 'task_started') lifecycle.limitResetsAtMs = 0;
     lifecycle.running = true;
     lifecycle.kind = 'task_started';
@@ -705,6 +716,7 @@ function baseClaudeThread({
     groupTaskEndedAtMs: signals?.groupTaskEndedAtMs || 0,
     groupTaskEndKind: signals?.groupTaskEndKind || '',
     childWorkUnknown: Boolean(signals?.childWorkUnknown),
+    childEndGraceAtMs: signals?.childEndGraceAtMs || 0,
     firstUserMessage: signals?.firstUserMessage || '',
     latestUserMessage: signals?.latestUserMessage || '',
     latestMeaningfulUserMessage: signals?.latestMeaningfulUserMessage || '',
@@ -900,7 +912,8 @@ async function readClaudeRootSignals(entry, subagents, options, agentLogs = new 
   const root = signals.lifecycle;
   const childrenById = new Map((subagents || []).map((child) => [path.basename(child.filePath, '.jsonl'), child]));
   const work = [root];
-  let unknown = false;
+  const nowMs = options.nowMs || Date.now();
+  let unknown = false, childEndGraceAtMs = 0;
   let updatedAtMs = Math.max(0, ...(subagents || []).map((child) => coerceNumber(child.stat?.mtimeMs)));
   for (const [agentId, link] of root.agents) {
     if (link.endedAtMs) {
@@ -940,13 +953,20 @@ async function readClaudeRootSignals(entry, subagents, options, agentLogs = new 
       unknown = true;
       continue;
     }
+    if (lifecycle.running === false && nowMs - lifecycle.eventAtMs <= CLAUDE_CHILD_END_GRACE_MS) {
+      const graceAtMs = lifecycle.eventAtMs + CLAUDE_CHILD_END_GRACE_MS;
+      childEndGraceAtMs = childEndGraceAtMs ? Math.min(childEndGraceAtMs, graceAtMs) : graceAtMs;
+      work.push({ running: true, kind: 'task_started', startedAtMs: link.requestStartedAtMs || lifecycle.startedAtMs || link.startedAtMs,
+        activityAtMs: lifecycle.eventAtMs, eventAtMs: lifecycle.eventAtMs });
+      continue;
+    }
     work.push({ ...lifecycle, startedAtMs: link.requestStartedAtMs || lifecycle.startedAtMs || link.startedAtMs,
       taskStartedAtMs: lifecycle.endedAtMs && lifecycle.startedAtMs > lifecycle.endedAtMs
         ? lifecycle.startedAtMs : link.requestStartedAtMs || lifecycle.startedAtMs || link.startedAtMs });
   }
   const active = work.filter((item) => item.running === true);
   const recent = active.filter((item) => coerceNumber(item.activityAtMs) > 0
-    && (options.nowMs || Date.now()) - item.activityAtMs <= CLAUDE_ACTIVITY_WINDOW_MS);
+    && nowMs - item.activityAtMs <= CLAUDE_ACTIVITY_WINDOW_MS);
   const latestEnd = work.filter((item) => item.running === false).sort((a, b) => b.eventAtMs - a.eventAtMs)[0];
   const lastEnded = work.filter((item) => item.endedAtMs).sort((a, b) => b.endedAtMs - a.endedAtMs)[0];
   const groupEnded = !unknown && lastEnded && active.every((item) => (item.taskStartedAtMs ?? item.startedAtMs) > lastEnded.endedAtMs);
@@ -958,7 +978,8 @@ async function readClaudeRootSignals(entry, subagents, options, agentLogs = new 
         && recent.some((item) => item !== root),
       lifecycleRunning: running,
       childWorkUnknown: unknown,
-      latestTaskStartedAtMs: root.startedAtMs,
+      childEndGraceAtMs,
+      latestTaskStartedAtMs: root.promptStartedAtMs,
       latestTaskEndedAtMs: root.endedAtMs,
       latestTaskEndKind: root.endKind,
       groupTaskEndedAtMs: groupEnded ? lastEnded.endedAtMs : 0,

@@ -213,31 +213,35 @@ test('Claude roots include only explicitly linked child work and observe its fin
   assert.deepEqual([unreadWorking.threads[0].unread, unreadWorking.threads[0].pending, unreadWorking.threads[0].pendingSource], [false, false, '']);
   await tracker.acknowledge(active.threads[0].id);
   await writeFile(childPath, jsonl([final(100)]) + '\n', { flag: 'a' });
-  const complete = await tracker.observe(await scan(now + 100));
+  // The child log ended without a task notification: the group stays Working for 10 s, then the ASB view is built again.
+  const grace = await tracker.observe(await scan(now + 100));
+  assert.equal(grace.threads[0].state, 'working');
+  assert.equal(grace.nextStatusCheckAtMs, now + 100 + 10_001);
+  const complete = await tracker.observe(await scan(now + 10_101));
   assert.equal(complete.threads[0].state, 'idle');
   assert.equal(complete.threads[0].completionAtMs, now + 100);
   assert.equal(complete.threads[0].completionAttention, true);
-  const discardComplete = (await discardTracker.observe(await scan(now + 100))).threads[0];
+  const discardComplete = (await discardTracker.observe(await scan(now + 10_101))).threads[0];
   assert.deepEqual([discardComplete.state, discardComplete.discardResult, discardComplete.pending, discardComplete.unread], ['idle', false, false, false]);
-  assert.equal((await scan(now + 101)).threads[0].state, 'idle');
+  assert.equal((await scan(now + 10_102)).threads[0].state, 'idle');
   await tracker.acknowledge(active.threads[0].id);
   await writeFile(rootPath, jsonl([
-    event('user', 200, { message: { content: 'Start the next task.' } }), ...launch('later', 210),
+    event('user', 20_200, { message: { content: 'Start the next task.' } }), ...launch('later', 20_210),
   ]) + '\n', { flag: 'a' });
-  assert.equal((await scan(now + 220)).threads[0].state, 'working');
-  await writeFile(rootPath, jsonl([final(230)]) + '\n', { flag: 'a' });
-  assert.equal((await scan(now + 240)).threads[0].state, 'unknown');
+  assert.equal((await scan(now + 20_220)).threads[0].state, 'working');
+  await writeFile(rootPath, jsonl([final(20_230)]) + '\n', { flag: 'a' });
+  assert.equal((await scan(now + 20_240)).threads[0].state, 'unknown');
   const laterPath = path.join(subagents, 'agent-later.jsonl');
-  await writeFile(laterPath, jsonl([event('assistant', 250, { message: { content: [{ type: 'tool_use', name: 'Bash' }], stop_reason: 'tool_use' } })]) + '\n');
-  const discovered = await tracker.observe(await scan(now + 250));
+  await writeFile(laterPath, jsonl([event('assistant', 20_250, { message: { content: [{ type: 'tool_use', name: 'Bash' }], stop_reason: 'tool_use' } })]) + '\n');
+  const discovered = await tracker.observe(await scan(now + 20_250));
   assert.equal(discovered.threads[0].state, 'working');
   assert.equal(discovered.threads[0].subagentCount, 3);
-  assert.equal(discovered.threads[0].workingSinceMs, now + 200);
+  assert.equal(discovered.threads[0].workingSinceMs, now + 20_200);
   for (const terminal of [{ type: 'result', terminal_reason: 'interrupted' }, { type: 'result', is_error: true }]) {
-    await writeFile(laterPath, jsonl([event('assistant', 280, { message: { content: [{ type: 'thinking' }] } })]) + '\n');
-    await tracker.observe(await scan(now + 280));
-    await writeFile(laterPath, jsonl([event(terminal.type, 300, terminal)]) + '\n');
-    const ended = (await tracker.observe(await scan(now + 300))).threads[0];
+    await writeFile(laterPath, jsonl([event('assistant', 20_280, { message: { content: [{ type: 'thinking' }] } })]) + '\n');
+    await tracker.observe(await scan(now + 20_280));
+    await writeFile(laterPath, jsonl([event(terminal.type, 20_300, terminal)]) + '\n');
+    const ended = (await tracker.observe(await scan(now + 30_301))).threads[0];
     assert.equal(ended.state, 'idle');
     assert.equal(ended.completionAtMs, 0);
     assert.equal(ended.lastOutcome, terminal.is_error ? 'failed' : 'stopped');
@@ -269,22 +273,23 @@ test('stale Claude child work does not replace a fresh root start or keep a canc
   await writeFile(path.join(childDir, 'agent-old.jsonl'), jsonl([
     event('assistant', old + 3, { message: { content: [{ type: 'thinking' }] } }),
   ]) + '\n');
-  const scan = async () => buildSwitchboardDashboard((await loadClaudeDesktopCodeThreads({
-    appDir, projectsDir, nowMs: now,
-  })).threads, [], now);
+  const scan = async (time = now) => buildSwitchboardDashboard((await loadClaudeDesktopCodeThreads({
+    appDir, projectsDir, nowMs: time,
+  })).threads, [], time);
   const active = (await scan()).threads[0];
   assert.equal(active.state, 'working');
   assert.equal(active.workingSinceMs, now - 100);
   await writeFile(rootPath, jsonl([event('assistant', -50, { message: { stop_reason: 'end_turn', content: 'Fresh work done.' } })]) + '\n', { flag: 'a' });
   assert.equal((await scan()).threads[0].state, 'unknown');
   await writeFile(path.join(childDir, 'agent-old.jsonl'), jsonl([event('result', -20, { terminal_reason: 'interrupted' })]) + '\n', { flag: 'a' });
-  assert.equal((await scan()).threads[0].state, 'idle');
+  assert.equal((await scan()).threads[0].state, 'working');
+  assert.equal((await scan(now + 9_981)).threads[0].state, 'idle');
   await writeFile(rootPath, jsonl([
     event('user', -10, { message: { content: 'Start a request with a question.' } }),
     event('assistant', -5, { message: { content: [{ type: 'tool_use', id: 'ask', name: 'AskUserQuestion' }] } }),
     event('user', -1, { message: { content: '[Request interrupted by user]' } }),
   ]) + '\n', { flag: 'a' });
-  const cancelled = (await scan()).threads[0];
+  const cancelled = (await scan(now + 9_981)).threads[0];
   assert.equal(cancelled.state, 'idle');
   assert.equal(cancelled.completionAtMs, 0);
 });
@@ -1638,9 +1643,9 @@ test('Claude late linked starts and child-only end/start gaps retain the timer a
       toolUseResult: { isAsync: true, status: 'async_launched', agentId: 'linked' } }),
   ]) + '\n');
   const tracker = new PendingTracker(false);
-  const scan = async () => tracker.observe(buildSwitchboardDashboard((await loadClaudeDesktopCodeThreads({
-    appDir, projectsDir, nowMs: now + 100,
-  })).threads, [], now + 100));
+  const scan = async (time = now + 100) => tracker.observe(buildSwitchboardDashboard((await loadClaudeDesktopCodeThreads({
+    appDir, projectsDir, nowMs: time,
+  })).threads, [], time));
   const first = await scan(); await tracker.setDiscard(first.threads[0], true);
   await writeFile(root, jsonl([event('result', 10)]) + '\n', { flag: 'a' });
   assert.equal((await scan()).threads[0].state, 'unknown');
@@ -1652,7 +1657,9 @@ test('Claude late linked starts and child-only end/start gaps retain the timer a
   const next = (await scan()).threads[0];
   assert.deepEqual([next.state, next.discardResult, next.pending, next.workingSinceMs], ['working', false, false, now]);
   await writeFile(child, jsonl([event('result', 50)]) + '\n', { flag: 'a' });
-  assert.equal((await scan()).threads[0].completionAttention, true);
+  // The child log ended without a task notification: the group ends after 10 s.
+  assert.equal((await scan()).threads[0].state, 'working');
+  assert.equal((await scan(now + 10_051)).threads[0].completionAttention, true);
 });
 
 test('Keep reuses warm snapshots while Discard rejects the reproduced two-ended-task cache gap', async (t) => {

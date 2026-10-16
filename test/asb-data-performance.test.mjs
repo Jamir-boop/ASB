@@ -344,7 +344,9 @@ test('Claude recovers linked child lifecycle outside the tail and reuses append 
   ]));
   const options = { appDir: fixture.appDir, projectsDir: fixture.projectsDir, nowMs,
     maxBytes: 256 };
-  const scan = async () => buildSwitchboardDashboard((await loadClaudeDesktopCodeThreads(options)).threads, [], nowMs);
+  const scan = async (time = nowMs) => buildSwitchboardDashboard((await loadClaudeDesktopCodeThreads({ ...options, nowMs: time })).threads, [], time);
+  // A child end without a task notification keeps the group Working for 10 s.
+  const afterGrace = nowMs + 100 + 10_001;
   assert.equal((await scan()).threads[0].state, 'working');
   const before = getClaudeCacheStats().jsonlSignals;
   assert.equal((await scan()).threads[0].workingSinceMs, nowMs - 1000);
@@ -354,21 +356,23 @@ test('Claude recovers linked child lifecycle outside the tail and reuses append 
   await fs.appendFile(childPath, terminal.slice(0, half));
   assert.equal((await scan()).threads[0].state, 'working');
   await fs.appendFile(childPath, terminal.slice(half));
-  const completed = await scan();
+  assert.equal((await scan()).threads[0].state, 'working');
+  assert.equal((await scan()).nextStatusCheckAtMs, afterGrace);
+  const completed = await scan(afterGrace);
   assert.equal(completed.threads[0].state, 'idle');
   assert.equal(completed.threads[0].completionAtMs, nowMs + 100);
   assert.ok(getClaudeCacheStats().jsonlSignals.bytesRead - before.bytesRead < 1024);
   const completeReads = getClaudeCacheStats().jsonlSignals.bytesRead;
-  assert.equal((await scan()).threads[0].state, 'idle');
+  assert.equal((await scan(afterGrace)).threads[0].state, 'idle');
   assert.equal(getClaudeCacheStats().jsonlSignals.bytesRead, completeReads);
   const originalStat = fs.stat;
   const frozenStat = await fs.stat(childPath);
   t.mock.method(fs, 'stat', async (filePath, ...args) => filePath === childPath ? frozenStat : originalStat(filePath, ...args));
   const contents = await fs.readFile(childPath, 'utf8');
   await fs.writeFile(childPath, contents.replace('completed', 'cancelled'));
-  assert.equal((await scan()).threads[0].completionAtMs, nowMs + 100);
+  assert.equal((await scan(afterGrace)).threads[0].completionAtMs, nowMs + 100);
   invalidateClaudeData({ filePath: childPath });
-  assert.equal((await scan()).threads[0].completionAtMs, 0);
+  assert.equal((await scan(afterGrace)).threads[0].completionAtMs, 0);
 });
 
 test('normalization attaches relationships and Claude ASB signals skip usage', () => {
