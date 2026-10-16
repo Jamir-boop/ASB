@@ -194,7 +194,31 @@ From `android/`:
 /usr/local/bin/adb -s <serial> shell am start -n local.asb.companion/.MainActivity
 ```
 
-The APK is `app/build/outputs/apk/debug/app-debug.apk`. The app ID is
+Use the debug build for development. Install the release build on the phone
+for daily use:
+
+```bash
+./gradlew --no-daemon -Pandroid.builder.sdkDownload=false assembleRelease
+/usr/local/bin/adb -s <serial> install -r app/build/outputs/apk/release/app-release.apk
+```
+
+Open the app and use it (scroll the list) for about one minute. Then compile
+the app with its profile:
+
+```bash
+/usr/local/bin/adb -s <serial> shell cmd package compile -m speed-profile -f local.asb.companion
+```
+
+The debug build is much slower. The measured 99th-percentile frame time was
+125 ms for the debug build and 10 ms for the release build with the compiled
+profile. The release build uses R8 without resource shrinking, because the
+notification sounds are found by name.
+
+The release build is signed with the debug key of the PC that builds it. Thus
+it installs over the debug build from the same PC and keeps the pairing. An
+APK from another PC has a different key: uninstall the app and pair again.
+
+The debug APK is `app/build/outputs/apk/debug/app-debug.apk`. The app ID is
 `local.asb.companion`, version name is `0.1.0`, and version code is `1`.
 The minimum SDK is 29. The compile and target SDK are 36.
 
