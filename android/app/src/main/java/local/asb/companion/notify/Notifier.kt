@@ -51,11 +51,16 @@ class Notifier(private val app: AsbApp) {
             channel("asb_input", "Needs input", NotificationManager.IMPORTANCE_HIGH, "opencode_staplebops_02"),
             channel("asb_failed", "Failed", NotificationManager.IMPORTANCE_DEFAULT, "opencode_nope_03"),
             channel("asb_status", "Connection", NotificationManager.IMPORTANCE_LOW, null),
+            channel("asb_live", "Live sessions", NotificationManager.IMPORTANCE_LOW, null).apply {
+                enableVibration(false)
+                setShowBadge(false)
+            },
         ))
     }
 
     fun post(events: List<Event>) {
-        if (!canPost()) return
+        // Most reads find no new event; this skips the binder calls of the group check.
+        if (events.isEmpty() || !canPost()) return
         val children = children().toMutableSet()
         for (event in events) {
             val row = event.row

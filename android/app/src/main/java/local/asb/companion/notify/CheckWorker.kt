@@ -27,6 +27,9 @@ internal fun shouldPost(manual: Boolean, resumed: Boolean): Boolean = manual || 
 class CheckWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
     override suspend fun doWork(): Result {
         val app = applicationContext as AsbApp
+        // The live service or the screen read less than a minute ago; a Doze-frozen service has an old time, so this check still runs.
+        if (!inputData.getBoolean("manual", false) && app.store.liveNotification &&
+            (app.liveUpdates.value?.atMs ?: 0) > System.currentTimeMillis() - 60_000) return Result.success()
         app.notificationMutex.withLock {
             val pair = synchronized(app.store) {
                 if (!app.store.paired || app.store.revoked) null else app.store.token to app.api()

@@ -8,16 +8,17 @@ import https from 'node:https';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { gunzipSync } from 'node:zlib';
 import { createPhoneGateway, DEFAULT_PHONE_PORT, PHONE_API_VERSION, phoneSettingsPath, phoneTlsDir,
-  privateIPv4Addresses, isAllowedRemote } from '../src/phone-gateway.mjs';
+  listPhoneAddresses, isAllowedRemote, acceptsGzip } from '../src/phone-gateway.mjs';
 import { RUNTIME_FILES } from '../scripts/asb-package.mjs';
 
 let hasOpenSsl = true;
 try { execFileSync('openssl', ['version'], { stdio: 'ignore' }); } catch { hasOpenSsl = false; }
 const gatewayTest = (name, run) => test(name, { skip: hasOpenSsl ? false : 'openssl is not on PATH.' }, run);
 const sha256 = (text) => createHash('sha256').update(text).digest('hex');
-const settings = (extra = {}) => ({ schema: 1, enabled: false, bindAddress: '', port: DEFAULT_PHONE_PORT, devices: [], ...extra });
-const loopback = () => [{ address: '127.0.0.1', interface: 'lo' }];
+const settings = (extra = {}) => ({ schema: 2, enabled: false, bindAddresses: [], port: DEFAULT_PHONE_PORT, devices: [], ...extra });
+const loopback = () => [{ address: '127.0.0.1', interface: 'lo', kind: 'lan' }];
 
 async function storage(t, cleanup = true) {
   const home = await mkdtemp(path.join(os.tmpdir(), 'asb-phone-test-'));
@@ -71,12 +72,12 @@ async function fixture(t, options = {}) {
   await gateway.start();
   const port = await freePort();
   if (options.enabled !== false) {
-    const status = await gateway.updateSettings({ enabled: true, bindAddress: '127.0.0.1', port });
+    const status = await gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port });
     assert.equal(status.running, true, status.error);
   }
-  const request = (route, { method = 'GET', token, body, headers = {}, tls = {} } = {}) => new Promise((resolve, reject) => {
+  const request = (route, { method = 'GET', token, body, headers = {}, tls = {}, host = '127.0.0.1' } = {}) => new Promise((resolve, reject) => {
     const raw = body === undefined ? undefined : typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
-    const client = https.request({ host: '127.0.0.1', port, path: route, method, rejectUnauthorized: false, agent: false,
+    const client = https.request({ host, port, path: route, method, rejectUnauthorized: false, agent: false,
       headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...headers }, ...tls }, (response) => {
       const fingerprint = response.socket.getPeerCertificate().fingerprint256?.replaceAll(':', '').toLowerCase();
       const protocol = response.socket.getProtocol();
@@ -84,8 +85,9 @@ async function fixture(t, options = {}) {
       response.on('data', (chunk) => chunks.push(chunk));
       response.on('error', reject);
       response.on('end', () => {
-        const text = Buffer.concat(chunks).toString();
-        resolve({ status: response.statusCode, headers: response.headers, text,
+        const raw = Buffer.concat(chunks);
+        const text = raw.toString();
+        resolve({ status: response.statusCode, headers: response.headers, raw, text,
           json: text.startsWith('{') ? JSON.parse(text) : null, fingerprint, protocol });
       });
     });
@@ -109,7 +111,7 @@ test('phone defaults keep the listener off and paths use HOME when XDG_CONFIG_HO
   assert.equal(phoneSettingsPath({ HOME: store.home, XDG_CONFIG_HOME: '' }), path.join(store.home, '.config/asb/phone.json'));
   assert.equal(phoneTlsDir({ HOME: store.home }), path.join(store.home, '.config/asb/phone-tls'));
   assert.equal(PHONE_API_VERSION, 1);
-  assert.deepEqual(await gateway.start(), { enabled: false, bindAddress: '', port: 4630, addresses: [], running: false,
+  assert.deepEqual(await gateway.start(), { enabled: false, bindAddresses: [], port: 4630, addresses: [], listening: [], running: false,
     error: '', warning: '', fingerprint: '', devices: [], pairing: { expiresAtMs: 0 } });
   await assert.rejects(gateway.createPairing(), { statusCode: 400, message: 'Turn on phone access first.' });
   await assert.rejects(stat(store.settingsPath), { code: 'ENOENT' });
@@ -121,7 +123,9 @@ test('invalid phone settings replace phone.json.bad and set a warning', async (t
   await mkdir(path.dirname(store.settingsPath), { recursive: true });
   const device = { id: 'a'.repeat(12), name: 'Phone', tokenSha256: 'b'.repeat(64), createdAtMs: 0, lastSeenAtMs: 0 };
   for (const bad of ['{', 'null', ...[
-    { schema: 2 }, { enabled: 1 }, { bindAddress: 1 }, { port: 1023 }, { port: 65536 }, { port: 4630.5 },
+    { schema: 1 }, { schema: 3 }, { bindAddress: '' }, { enabled: 1 }, { bindAddresses: '' }, { bindAddresses: [1] },
+    { bindAddresses: ['10.0.0.1', '10.0.0.1'] }, { bindAddresses: Array.from({ length: 9 }, (_, i) => `10.0.0.${i}`) },
+    { port: 1023 }, { port: 65536 }, { port: 4630.5 },
     { extra: true }, { devices: {} }, { devices: Array(9).fill(device) }, { devices: [null] },
     ...[{ id: 'ABC' }, { name: '' }, { name: 'x'.repeat(65) }, { name: 'line\nbreak' },
       { name: '\u0085' }, { tokenSha256: 'A'.repeat(64) }, { createdAtMs: -1 }, { lastSeenAtMs: 1.5 }, { token: 'secret' }]
@@ -164,7 +168,11 @@ gatewayTest('pairing is single-use, expires, replaces old codes, and ends after 
   assert.match(first.json.token, /^[A-Za-z0-9_-]{43}$/);
   assert.match(first.json.deviceId, /^[a-f0-9]{12}$/);
   assert.deepEqual(Object.keys(first.json).sort(), ['api', 'asbVersion', 'deviceId', 'serverName', 'token']);
-  assert.equal(new URL(first.info.uri).searchParams.get('n'), 'Test PC & lab');
+  const link = new URL(first.info.uri);
+  assert.equal(link.searchParams.get('n'), 'Test PC & lab');
+  assert.equal(link.searchParams.get('v'), '2');
+  assert.equal(link.searchParams.get('a'), 'lan:127.0.0.1');
+  assert.equal(link.searchParams.get('h'), null);
   assert.equal((await gateway.status()).devices[0].name, 'Testphone');
   const post = (code) => request('/phone/v1/pair', { method: 'POST', body: { code, deviceName: 'Phone' } });
   assert.equal((await post(first.code)).status, 403);
@@ -194,7 +202,7 @@ gatewayTest('eight paired devices prevent a ninth device', async (t) => {
 });
 
 gatewayTest('bearer authentication needs the exact token and hello reports the paired device', async (t) => {
-  const { request, pair } = await fixture(t);
+  const { request, pair, port } = await fixture(t);
   const paired = (await pair()).json;
   for (const authorization of ['', `Bearer ${randomBytes(32).toString('base64url')}`, `bearer ${paired.token}`,
     `Bearer ${paired.token}=`, `Bearer ${paired.token} extra`, 'Basic xxx']) {
@@ -206,7 +214,8 @@ gatewayTest('bearer authentication needs the exact token and hello reports the p
   }
   const response = await request('/phone/v1/hello', { token: paired.token });
   assert.equal(response.status, 200);
-  assert.deepEqual(response.json, { api: 1, asbVersion: '1.8.1', deviceId: paired.deviceId, serverName: 'Test PC & lab' });
+  assert.deepEqual(response.json, { api: 1, asbVersion: '1.8.1', deviceId: paired.deviceId, serverName: 'Test PC & lab',
+    addresses: [{ kind: 'lan', address: '127.0.0.1' }], port });
 });
 
 gatewayTest('twenty failures throttle the remote for one minute and use a sliding window', async (t) => {
@@ -229,11 +238,18 @@ gatewayTest('twenty failures throttle the remote for one minute and use a slidin
 gatewayTest('the route allowlist blocks other APIs and checks methods before bearer auth', async (t) => {
   const { request, pair, records } = await fixture(t);
   const token = (await pair()).json.token;
-  for (const route of ['/phone/v1/sources', '/api/dashboard', '/phone/v1/threads/x/delete', '/phone/v1/settings/phone',
+  for (const route of ['/phone/v1/sources', '/api/dashboard', '/api/palette', '/phone/v1/palette', '/phone/v1/threads/x/delete', '/phone/v1/settings/phone',
     '/phone/v1/threads//open', `/phone/v1/threads/${'x'.repeat(513)}/open`, '/phone/v1/threads/x/y/open']) {
     const response = await request(route, { method: 'POST', token, body: {} });
     assert.equal(response.status, 404, route);
     assert.equal(response.json.error, 'Route is not available.');
+  }
+  for (const route of ['/api/sources', '/api/phone', '/api/phone/settings', '/api/palette']) {
+    for (const method of ['GET', 'POST']) {
+      const response = await request(route, { method, token, ...(method === 'POST' ? { body: {} } : {}) });
+      assert.equal(response.status, 404, `${method} ${route}`);
+      assert.equal(response.json.error, 'Route is not available.');
+    }
   }
   for (const [route, method, allow] of [['/phone/v1/hello', 'POST', 'GET'], ['/phone/v1/dashboard', 'POST', 'GET'],
     ['/phone/v1/pair', 'GET', 'POST'], ['/phone/v1/settings/unread', 'GET', 'POST'], ['/phone/v1/threads/x/open', 'GET', 'POST']]) {
@@ -283,17 +299,156 @@ gatewayTest('the proxy adds local Host and Origin, strips other headers, and pre
   assert.equal(records.at(-1).url, '/api/dashboard');
 });
 
-test('remote addresses and interface discovery allow only loopback or RFC1918 IPv4 as specified', () => {
-  for (const address of ['127.0.0.1', '::1', '10.0.0.1', '10.255.255.255', '172.16.0.1', '172.31.255.255', '192.168.0.1',
-    '::ffff:192.168.50.7', '::ffff:127.0.0.1', '::FFFF:10.1.2.3']) assert.equal(isAllowedRemote(address), true, address);
-  for (const address of ['8.8.8.8', '0.0.0.0', '127.0.0.2', '172.15.255.255', '172.32.0.0', '169.254.1.1',
-    '192.169.0.1', '192.168.1.256', '192.168.001.1', '::', 'fd00::1', '::ffff:8.8.8.8', '', null, 123]) {
-    assert.equal(isAllowedRemote(address), false, String(address));
+test('Accept-Encoding allows gzip only with a positive q-value for gzip, or for * when gzip is not listed', () => {
+  for (const header of ['gzip', 'GZIP', 'gzip, deflate, br', 'br;q=1, gzip;q=0.5', '*', '*;q=0.1', 'gzip;q=1, *;q=0', 'deflate, gzip ; q=0.2']) {
+    assert.equal(acceptsGzip(header), true, header);
   }
-  assert.deepEqual(privateIPv4Addresses({ z: [{ family: 'IPv4', address: '10.1.2.3' }],
-    a: [{ family: 'IPv4', address: '8.8.8.8' }, { family: 4, address: '172.16.1.2' }, { family: 'IPv6', address: 'fd00::1' }],
+  for (const header of [undefined, '', 'identity', 'br, deflate', 'gzip;q=0', 'gzip;q=0.0', 'gzip; q=0', '*;q=0', 'gzip;q=0, *', 'gzip;q=abc']) {
+    assert.equal(acceptsGzip(header), false, String(header));
+  }
+});
+
+gatewayTest('the dashboard reply is gzip only when the phone accepts it and has Vary when the loopback server answers', async (t) => {
+  const dashboard = JSON.stringify({ threads: Array.from({ length: 200 }, (_, i) => ({ id: `thread-${i}`, state: 'idle' })) });
+  const { request, pair, local } = await fixture(t, { reply: (request, response) => {
+    if (request.url.startsWith('/api/threads/')) { response.writeHead(200, { 'content-type': 'application/json' }); response.end(dashboard); return; }
+    response.writeHead(request.headers['if-none-match'] === '"v1"' ? 304 : 200, { etag: '"v1"', 'content-type': 'application/json' });
+    response.end(request.headers['if-none-match'] === '"v1"' ? undefined : dashboard);
+  } });
+  const token = (await pair()).json.token;
+  const zipped = await request('/phone/v1/dashboard', { token, headers: { 'accept-encoding': 'gzip' } });
+  assert.equal(zipped.status, 200);
+  assert.equal(zipped.headers['content-encoding'], 'gzip');
+  assert.equal(zipped.headers.vary, 'Accept-Encoding');
+  assert.equal(zipped.headers.etag, '"v1"');
+  assert.equal(zipped.headers['content-type'], 'application/json');
+  assert.equal(gunzipSync(zipped.raw).toString(), dashboard);
+  assert.ok(zipped.raw.length < dashboard.length / 5);
+  for (const headers of [{}, { 'accept-encoding': 'gzip;q=0' }]) {
+    const plain = await request('/phone/v1/dashboard', { token, headers });
+    assert.equal(plain.status, 200);
+    assert.equal(plain.headers['content-encoding'], undefined);
+    assert.equal(plain.headers.vary, 'Accept-Encoding');
+    assert.equal(plain.headers.etag, '"v1"');
+    assert.equal(plain.text, dashboard);
+  }
+  const cached = await request('/phone/v1/dashboard', { token, headers: { 'accept-encoding': 'gzip', 'if-none-match': '"v1"' } });
+  assert.equal(cached.status, 304);
+  assert.equal(cached.headers['content-encoding'], undefined);
+  assert.equal(cached.headers.vary, 'Accept-Encoding');
+  assert.equal(cached.headers.etag, '"v1"');
+  assert.equal(cached.raw.length, 0);
+  const action = await request('/phone/v1/threads/x/open', { method: 'POST', token, body: {}, headers: { 'accept-encoding': 'gzip' } });
+  assert.equal(action.status, 200);
+  assert.equal(action.headers['content-encoding'], undefined);
+  assert.equal(action.headers.vary, undefined);
+  assert.equal(action.text, dashboard);
+  await close(local);
+  const failed = await request('/phone/v1/dashboard', { token, headers: { 'accept-encoding': 'gzip' } });
+  assert.equal(failed.status, 502);
+  assert.equal(failed.headers['content-encoding'], undefined);
+  assert.deepEqual(failed.json, { error: 'ASB is not answering.' });
+});
+
+gatewayTest('an upstream error after the gzip headers ends the phone reply', async (t) => {
+  const { request, pair } = await fixture(t, { reply: (request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.flushHeaders();
+    setTimeout(() => response.socket.destroy(), 50);
+  } });
+  const token = (await pair()).json.token;
+  await assert.rejects(request('/phone/v1/dashboard', { token, headers: { 'accept-encoding': 'gzip' } }));
+});
+
+test('remote addresses and interface discovery allow only loopback or RFC1918 IPv4 as specified', () => {
+  for (const kind of ['lan', 'zerotier', undefined]) {
+    for (const address of ['127.0.0.1', '::1', '10.0.0.1', '10.255.255.255', '172.16.0.1', '172.31.255.255', '192.168.0.1',
+      '::ffff:192.168.50.7', '::ffff:127.0.0.1', '::FFFF:10.1.2.3']) assert.equal(isAllowedRemote(address, kind), true, address);
+    for (const address of ['8.8.8.8', '0.0.0.0', '127.0.0.2', '172.15.255.255', '172.32.0.0', '169.254.1.1', '100.101.102.103',
+      '::ffff:100.64.0.1', '192.169.0.1', '192.168.1.256', '192.168.001.1', '::', 'fd00::1', '::ffff:8.8.8.8', '', null, 123]) {
+      assert.equal(isAllowedRemote(address, kind), false, String(address));
+    }
+  }
+  for (const address of ['100.64.0.0', '100.101.102.103', '100.127.255.255', '::ffff:100.101.102.103', '10.147.17.4', '192.168.50.7']) {
+    assert.equal(isAllowedRemote(address, 'tailscale'), true, address);
+  }
+  for (const address of ['100.63.255.255', '100.128.0.0', '127.0.0.1', '::1', '::ffff:127.0.0.1', '8.8.8.8', '0.0.0.0', '', null]) {
+    assert.equal(isAllowedRemote(address, 'tailscale'), false, String(address));
+  }
+  assert.deepEqual(listPhoneAddresses({
+    tailscale0: [{ family: 'IPv4', address: '100.101.102.103' }, { family: 'IPv6', address: 'fd7a:115c:a1e0::1' }],
+    ztabcdef12: [{ family: 'IPv4', address: '10.147.17.4' }, { family: 'IPv4', address: '100.80.0.1' }],
+    enp0s1: [{ family: 'IPv4', address: '192.168.50.4' }, { family: 'IPv4', address: '8.8.8.8' }],
+    wlan0: [{ family: 4, address: '172.16.1.2' }, { family: 'IPv4', address: '100.64.0.7' }, { family: 'IPv6', address: 'fd00::1' }],
+    tailscale1: [{ family: 'IPv4', address: '8.8.4.4' }, { family: 'IPv4', address: '127.0.0.1' }],
     lo: [{ family: 'IPv4', address: '127.0.0.1' }], absent: undefined }),
-  [{ address: '172.16.1.2', interface: 'a' }, { address: '10.1.2.3', interface: 'z' }]);
+  [{ address: '192.168.50.4', interface: 'enp0s1', kind: 'lan' }, { address: '172.16.1.2', interface: 'wlan0', kind: 'lan' },
+    { address: '10.147.17.4', interface: 'ztabcdef12', kind: 'zerotier' },
+    { address: '100.101.102.103', interface: 'tailscale0', kind: 'tailscale' }]);
+});
+
+test('a schema 1 phone.json loads as schema 2 and saves as schema 2 at the next save', async (t) => {
+  const store = await storage(t);
+  await mkdir(path.dirname(store.settingsPath), { recursive: true });
+  const device = { id: 'a'.repeat(12), name: 'Phone', tokenSha256: 'b'.repeat(64), createdAtMs: 1, lastSeenAtMs: 2 };
+  for (const [bindAddress, bindAddresses] of [['', []], ['192.168.50.4', ['192.168.50.4']]]) {
+    const old = { schema: 1, enabled: false, bindAddress, port: 4631, devices: [device] };
+    await writeFile(store.settingsPath, JSON.stringify(old));
+    const gateway = createPhoneGateway({ localPort: 12345, asbVersion: '1.8.1', ...store, listAddresses: () => [] });
+    const status = await gateway.start();
+    assert.equal(status.warning, '');
+    assert.deepEqual(status.bindAddresses, bindAddresses);
+    assert.equal(status.port, 4631);
+    assert.equal(status.devices[0].id, device.id);
+    assert.deepEqual(JSON.parse(await readFile(store.settingsPath, 'utf8')), old);
+    await gateway.revokeDevice('c'.repeat(12));
+    assert.deepEqual(JSON.parse(await readFile(store.settingsPath, 'utf8')),
+      { schema: 2, enabled: false, bindAddresses, port: 4631, devices: [device] });
+    await gateway.stop();
+  }
+});
+
+gatewayTest('several listeners share one certificate, skip a missing address, and check callers per kind', async (t) => {
+  const { gateway, request, settingsPath, args, port } = await fixture(t, { enabled: false });
+  await assert.rejects(gateway.createPairing(), { statusCode: 400 });
+  await mkdir(path.dirname(settingsPath), { recursive: true });
+  // Loopback stands in for real interfaces; the kind decides the caller rule.
+  const listed = [{ address: '127.0.0.1', interface: 'enp0s1', kind: 'lan' },
+    { address: '127.0.0.3', interface: 'ztabcdef12', kind: 'zerotier' },
+    { address: '127.0.0.2', interface: 'tailscale0', kind: 'tailscale' }];
+  await writeFile(settingsPath, JSON.stringify(settings({ enabled: true, port,
+    bindAddresses: ['127.0.0.2', '192.168.50.4', '127.0.0.1', '127.0.0.3'] })));
+  const multi = createPhoneGateway({ ...args, listAddresses: () => listed });
+  t.after(() => multi.stop());
+  const status = await multi.start();
+  assert.equal(status.running, true);
+  assert.equal(status.error, 'The phone address 192.168.50.4 is not on this PC now. Choose another address.');
+  assert.deepEqual(status.listening, [{ kind: 'lan', address: '127.0.0.1' }, { kind: 'zerotier', address: '127.0.0.3' },
+    { kind: 'tailscale', address: '127.0.0.2' }]);
+  assert.deepEqual(status.addresses, listed);
+  const info = await multi.createPairing();
+  const link = new URL(info.uri);
+  assert.deepEqual([...link.searchParams.keys()], ['v', 'a', 'p', 'f', 'c', 'n']);
+  assert.equal(link.searchParams.get('v'), '2');
+  assert.equal(link.searchParams.get('a'), 'lan:127.0.0.1,zerotier:127.0.0.3,tailscale:127.0.0.2');
+  assert.ok(info.uri.includes('&a=lan%3A127.0.0.1%2Czerotier%3A127.0.0.3%2Ctailscale%3A127.0.0.2&'));
+  assert.equal(link.searchParams.get('p'), String(port));
+  assert.equal(link.searchParams.get('f'), status.fingerprint);
+  const paired = await request('/phone/v1/pair', { method: 'POST', body: { code: link.searchParams.get('c'), deviceName: 'Phone' }, host: '127.0.0.3' });
+  assert.equal(paired.status, 200);
+  for (const host of ['127.0.0.1', '127.0.0.3']) {
+    const hello = await request('/phone/v1/hello', { token: paired.json.token, host });
+    assert.equal(hello.status, 200);
+    assert.equal(hello.fingerprint, status.fingerprint);
+    assert.equal(hello.protocol, 'TLSv1.3');
+    assert.deepEqual(hello.json.addresses, status.listening);
+    assert.equal(hello.json.port, port);
+  }
+  // A Tailscale listener does not accept loopback callers.
+  await assert.rejects(request('/phone/v1/hello', { token: paired.json.token, host: '127.0.0.2' }));
+  await multi.stop();
+  assert.equal((await multi.status()).running, false);
+  await assert.rejects(request('/phone/v1/hello', { token: paired.json.token, host: '127.0.0.3' }));
 });
 
 gatewayTest('revoking a device rejects its old token and persists across a new gateway', async (t) => {
@@ -400,20 +555,25 @@ gatewayTest('last-seen state saves at most once per ten minutes and flushes on s
 
 gatewayTest('settings reject unsupported addresses and ports, and a vanished address keeps the listener off', async (t) => {
   const { gateway, localPort, port } = await fixture(t);
-  for (const extra of [{ enabled: 'true' }, { bindAddress: '0.0.0.0' }, { bindAddress: '' }, { bindAddress: '8.8.8.8' },
-    { port: 1023 }, { port: 65536 }, { port: localPort }, { port: 1234.5 }, { other: true }]) {
-    await assert.rejects(gateway.updateSettings({ enabled: true, bindAddress: '127.0.0.1', port, ...extra }), { statusCode: 400 });
+  for (const extra of [{ enabled: 'true' }, { bindAddresses: ['0.0.0.0'] }, { bindAddresses: [] }, { bindAddresses: ['8.8.8.8'] },
+    { bindAddresses: '127.0.0.1' }, { bindAddresses: ['127.0.0.1', '127.0.0.1'] }, { bindAddresses: ['127.0.0.1', '192.168.50.4'] },
+    { bindAddress: '127.0.0.1' }, { port: 1023 }, { port: 65536 }, { port: localPort }, { port: 1234.5 }, { other: true }]) {
+    await assert.rejects(gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port, ...extra }), { statusCode: 400 });
   }
+  await assert.rejects(gateway.updateSettings({ enabled: false, bindAddresses: ['192.168.50.4'], port }), { statusCode: 400 });
   assert.equal((await gateway.status()).running, true);
-  await gateway.updateSettings({ enabled: false, bindAddress: '', port });
+  await gateway.updateSettings({ enabled: false, bindAddresses: [], port });
   assert.equal((await gateway.status()).running, false);
   const store = await storage(t);
   await mkdir(path.dirname(store.settingsPath), { recursive: true });
-  await writeFile(store.settingsPath, JSON.stringify(settings({ enabled: true, bindAddress: '192.168.1.2', port })));
+  await writeFile(store.settingsPath, JSON.stringify(settings({ enabled: true, bindAddresses: ['192.168.1.2'], port })));
   const missing = createPhoneGateway({ localPort, asbVersion: '1.8.1', ...store, listAddresses: () => [] });
   const status = await missing.start();
   assert.equal(status.running, false);
   assert.equal(status.error, 'The phone address 192.168.1.2 is not on this PC now. Choose another address.');
+  await writeFile(store.settingsPath, JSON.stringify(settings({ enabled: true, bindAddresses: ['192.168.1.2', '10.147.17.4'], port })));
+  const both = createPhoneGateway({ localPort, asbVersion: '1.8.1', ...store, listAddresses: () => [] });
+  assert.equal((await both.start()).error, 'The phone addresses 192.168.1.2, 10.147.17.4 are not on this PC now. Choose other addresses.');
 });
 
 gatewayTest('a busy port and missing openssl leave the listener off with a useful error', async (t) => {
@@ -421,14 +581,14 @@ gatewayTest('a busy port and missing openssl leave the listener off with a usefu
   const occupied = net.createServer();
   const busyPort = await listen(occupied);
   t.after(() => close(occupied));
-  assert.equal((await gateway.updateSettings({ enabled: true, bindAddress: '127.0.0.1', port: busyPort })).error, `Port ${busyPort} is in use.`);
+  assert.equal((await gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port: busyPort })).error, `Port ${busyPort} is in use.`);
   assert.equal((await gateway.status()).running, false);
-  assert.equal((await gateway.updateSettings({ enabled: true, bindAddress: '127.0.0.1', port })).running, true);
+  assert.equal((await gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port })).running, true);
   await gateway.stop();
   const store = await storage(t);
   const missing = createPhoneGateway({ ...args, ...store, localPort, openssl: path.join(store.home, 'missing-openssl') });
   t.after(() => missing.stop());
-  const failed = await missing.updateSettings({ enabled: true, bindAddress: '127.0.0.1', port });
+  const failed = await missing.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port });
   assert.equal(failed.running, false);
   assert.equal(failed.error, 'ASB cannot create the phone certificate. Install openssl.');
   assert.equal(failed.fingerprint, '');

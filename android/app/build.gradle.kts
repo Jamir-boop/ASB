@@ -20,7 +20,10 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            // shortcut: signed with this PC's debug key so it installs over the debug app and keeps the pairing; another PC's key needs an uninstall and a new pairing.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 

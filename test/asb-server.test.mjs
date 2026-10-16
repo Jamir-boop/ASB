@@ -117,7 +117,7 @@ test('the dashboard reply has a content tag and an equal tag gets 304 with no bo
   const body = await first.json();
   assert.match(tag, /^"[A-Za-z0-9_-]{43}"$/);
   assert.equal(first.headers.get('cache-control'), 'no-store');
-  assert.deepEqual(Object.keys(body).sort(), ['generatedAtMs', 'performance', 'persistentUnread', 'providers', 'refreshIntervalMs', 'summary', 'threads']);
+  assert.deepEqual(Object.keys(body).sort(), ['generatedAtMs', 'palette', 'performance', 'persistentUnread', 'providers', 'refreshIntervalMs', 'summary', 'threads']);
   assert.deepEqual(body.threads, board.threads);
   assert.equal(body.performance.dashboard.notModified, 0);
   board.generatedAtMs = 2;

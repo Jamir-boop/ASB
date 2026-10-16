@@ -299,7 +299,8 @@ class WidgetCheck(unittest.TestCase):
     def test_preferences_sections_reuse_lazy_profiles_theme_and_narrow_layout(self):
         requests = []
         def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None):
-            requests.append((route, callback, method, body))
+            if route != "/api/palette":  # The window shares its palette at start; this test checks the other requests.
+                requests.append((route, callback, method, body))
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
                                    (asb, "request_async", request)):
@@ -949,6 +950,9 @@ class WidgetCheck(unittest.TestCase):
                 self.send_response(200); self.end_headers(); self.wfile.write(json.dumps(dashboard).encode())
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+                if self.path == "/api/palette":  # The window shares its palette at start; this test checks row actions.
+                    self.send_response(200); self.end_headers(); self.wfile.write(b'{"changed": true}')
+                    return
                 received.append((self.path, body, self.headers.get("Origin")))
                 if self.path == "/api/settings/unread":
                     dashboard["persistentUnread"] = body["persistentUnread"]

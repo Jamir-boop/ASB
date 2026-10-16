@@ -638,6 +638,7 @@ export function createSwitchboardServer(options = {}) {
   };
   const server = createAsbServer({
     dashboardWatchDebounceMs: 250,
+    palettePath: path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'), 'asb', 'palette.json'),
     dashboardWatchPaths: registeredLoad ? sourceWatchPaths : [],
     dashboardSourceChanged: (source, hint) => {
       if (source === 'codex') invalidateCodexData(hint);

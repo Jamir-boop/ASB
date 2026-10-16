@@ -109,9 +109,9 @@ class Box:
 
 class PhoneChecks(unittest.TestCase):
     def status(self, **changes):
-        return {"enabled": True, "bindAddress": "192.168.1.4", "port": 4630,
-                "addresses": [{"address": "192.168.1.4", "interface": "eth0"}],
-                "running": True, "error": "", "warning": "", "fingerprint": "abcd" * 16,
+        return {"enabled": True, "bindAddresses": ["192.168.50.4"], "port": 4630,
+                "addresses": [{"address": "192.168.50.4", "interface": "enp0s1", "kind": "lan"}],
+                "listening": [{"kind": "lan", "address": "192.168.50.4"}], "running": True, "error": "", "warning": "", "fingerprint": "abcd" * 16,
                 "devices": [], "pairing": {"expiresAtMs": 0}, **changes}
 
     def editor(self):
@@ -120,10 +120,10 @@ class PhoneChecks(unittest.TestCase):
         editor.base, editor.closed, editor.active, editor.loaded = "http://127.0.0.1:1", False, True, True
         editor.loading = editor.poll_loading = False
         editor.generation, editor.poll_timer = 0, None
-        editor.status, editor.addresses, editor.remove_buttons = self.status(), ["192.168.1.4"], []
+        editor.status, editor.address_checks, editor.remove_buttons = self.status(), {"192.168.50.4": Mock()}, []
         editor.pairing_uri, editor.expires_at, editor.pair_device_ids, editor.matrix = "", 0, set(), None
         for name in ("settings", "apply", "pair", "retry", "message", "status_label", "fingerprint", "enabled",
-                     "address", "port", "devices", "empty", "pairing", "qr", "link", "copy", "qr_help"):
+                     "address_list", "address_note", "port", "devices", "empty", "pairing", "qr", "link", "copy", "qr_help"):
             setattr(editor, name, Mock())
         editor.devices.get_first_child.return_value = None
         return editor
@@ -131,10 +131,29 @@ class PhoneChecks(unittest.TestCase):
     def test_phone_helpers_cover_off_starting_running_error_and_fingerprint(self):
         self.assertEqual(asb.group_fingerprint("abcd" * 16), " ".join(["abcd"] * 16))
         self.assertEqual(asb.group_fingerprint(""), "")
-        self.assertEqual(asb.phone_status_text(self.status()), "Running at https://192.168.1.4:4630")
+        self.assertEqual(asb.phone_status_text(self.status()), "Running at https://192.168.50.4:4630 (Home network)")
         self.assertEqual(asb.phone_status_text(self.status(enabled=False, running=False)), "Phone access is off.")
         self.assertIn("Apply the settings", asb.phone_status_text(self.status(running=False)))
-        self.assertEqual(asb.phone_status_text(self.status(error="Choose a private address.")), "Choose a private address.")
+        self.assertEqual(asb.phone_status_text(self.status(running=False, error="Choose a private address.")),
+                         "Choose a private address.")
+        missing = "The phone address 10.147.17.4 is not on this PC now. Choose another address."
+        self.assertEqual(asb.phone_status_text(self.status(port=4631, error=missing, listening=[
+            {"kind": "lan", "address": "192.168.50.4"}, {"kind": "tailscale", "address": "100.101.102.103"}])),
+            "Running at https://192.168.50.4:4631 (Home network), https://100.101.102.103:4631 (Tailscale)\n" + missing)
+
+    def test_phone_address_rows_name_each_kind_and_note_missing_overlays(self):
+        lan = {"address": "192.168.50.4", "interface": "enp0s1", "kind": "lan"}
+        zerotier = {"address": "10.147.17.4", "interface": "ztabcdef12", "kind": "zerotier"}
+        tailscale = {"address": "100.101.102.103", "interface": "tailscale0", "kind": "tailscale"}
+        self.assertEqual(asb.phone_address_rows([lan, zerotier, tailscale, {"address": "8.8.8.8", "kind": "other"}]), [
+            {"address": "192.168.50.4", "title": "Home network", "subtitle": "192.168.50.4"},
+            {"address": "10.147.17.4", "title": "ZeroTier", "subtitle": "10.147.17.4 · Works away from home"},
+            {"address": "100.101.102.103", "title": "Tailscale", "subtitle": "100.101.102.103 · Works away from home"}])
+        note = "Install and join ZeroTier or Tailscale on this PC and the phone to use ASB away from home."
+        self.assertEqual(asb.phone_address_note([lan]), note)
+        self.assertEqual(asb.phone_address_note([lan, zerotier]), "")
+        self.assertEqual(asb.phone_address_note([tailscale]), "")
+        self.assertEqual(asb.phone_address_note([]), "No private network address on this PC. " + note)
 
     def test_qr_helper_builds_the_expected_matrix_or_returns_none_without_qrcode(self):
         import builtins
@@ -187,27 +206,39 @@ class PhoneChecks(unittest.TestCase):
         editor = self.editor()
         device = {"id": "a", "name": "Test <phone> & tablet", "createdAtMs": NOW, "lastSeenAtMs": NOW - 60_000}
         row = Mock()
-        model = Mock()
-        gtk = SimpleNamespace(StringList=SimpleNamespace(new=Mock(return_value=model)),
+        gtk = SimpleNamespace(CheckButton=Mock(side_effect=lambda **kwargs: Mock(active=kwargs["active"])),
                               Button=Mock(), Align=SimpleNamespace(CENTER=0),
                               AccessibleProperty=SimpleNamespace(LABEL=0))
+        editor.address_list.get_first_child.side_effect = [Mock(), None, None, None]
         with patch.dict(SCOPE, {"Gtk": gtk, "Adw": SimpleNamespace(ActionRow=Mock(return_value=row))}):
             editor.render_status(self.status(devices=[device]))
             editor.enabled.set_active.assert_not_called()
-            editor.address.set_model.assert_not_called()
+            editor.address_list.append.assert_not_called()
             editor.port.set_value.assert_not_called()
             self.assertEqual(SCOPE["Adw"].ActionRow.call_args.kwargs["title"], "Test <phone> & tablet")
             self.assertFalse(SCOPE["Adw"].ActionRow.call_args.kwargs["use_markup"])
             self.assertIn("Paired ", SCOPE["Adw"].ActionRow.call_args.kwargs["subtitle"])
             self.assertIn("\nLast seen ", SCOPE["Adw"].ActionRow.call_args.kwargs["subtitle"])
             editor.empty.set_visible.assert_called_with(False)
-            editor.render_status(self.status(bindAddress="192.168.1.8"), True)
-            self.assertEqual(editor.addresses, ["192.168.1.4", "192.168.1.8"])
-            gtk.StringList.new.assert_called_with(["192.168.1.4 (eth0)", "192.168.1.8 (unavailable)"])
-            editor.address.set_selected.assert_called_with(1)
+            addresses = [{"address": "192.168.50.4", "interface": "enp0s1", "kind": "lan"},
+                         {"address": "100.101.102.103", "interface": "tailscale0", "kind": "tailscale"}]
+            SCOPE["Adw"].ActionRow.reset_mock()
+            editor.render_status(self.status(addresses=addresses, bindAddresses=["100.101.102.103", "10.147.17.4"]), True)
+            editor.address_list.remove.assert_called_once()
+            self.assertEqual(list(editor.address_checks), ["192.168.50.4", "100.101.102.103"])
+            self.assertEqual([check.active for check in editor.address_checks.values()], [False, True])
+            self.assertEqual([(call.kwargs["title"], call.kwargs["subtitle"]) for call in SCOPE["Adw"].ActionRow.call_args_list],
+                             [("Home network", "192.168.50.4"), ("Tailscale", "100.101.102.103 · Works away from home")])
+            self.assertIs(SCOPE["Adw"].ActionRow.call_args.kwargs["activatable_widget"], editor.address_checks["100.101.102.103"])
+            self.assertEqual(editor.address_list.append.call_count, 2)
+            editor.address_list.set_visible.assert_called_with(True)
+            editor.address_note.set_visible.assert_called_with(False)
             editor.port.set_value.assert_called_once_with(4630)
-            editor.render_status(self.status(addresses=[], bindAddress=""), True)
-            gtk.StringList.new.assert_called_with(["No private IPv4 address"])
+            editor.render_status(self.status(addresses=[], bindAddresses=[]), True)
+            self.assertEqual(editor.address_checks, {})
+            editor.address_list.set_visible.assert_called_with(False)
+            editor.address_note.set_label.assert_called_with(asb.phone_address_note([]))
+            editor.address_note.set_visible.assert_called_with(True)
             editor.empty.set_visible.assert_called_with(True)
 
     def test_phone_requests_retry_errors_and_preserve_poll_form(self):
@@ -295,14 +326,16 @@ class PhoneChecks(unittest.TestCase):
 
     def test_settings_revoke_pairing_and_qr_use_native_values(self):
         editor = self.editor()
-        editor.address.get_selected.return_value = 0
+        editor.address_checks = {"192.168.50.4": Mock(get_active=Mock(return_value=True)),
+                                  "10.147.17.4": Mock(get_active=Mock(return_value=False)),
+                                  "100.101.102.103": Mock(get_active=Mock(return_value=True))}
         editor.enabled.get_active.return_value = False
         editor.port.get_value.return_value = 4631
         editor.request_phone = Mock()
         with patch.dict(SCOPE, {"GLib": SimpleNamespace(source_remove=Mock())}):
             editor.apply_settings()
             editor.request_phone.assert_called_with("/api/phone/settings", "POST",
-                {"enabled": False, "bindAddress": "192.168.1.4", "port": 4631})
+                {"enabled": False, "bindAddresses": ["192.168.50.4", "100.101.102.103"], "port": 4631})
             editor.revoke_device("a/b")
             editor.request_phone.assert_called_with("/api/phone/devices/a%2Fb/revoke", "POST", {})
             editor.pair_phone()
@@ -965,6 +998,46 @@ class DataChecks(unittest.TestCase):
             self.assertEqual(list(path.parent.iterdir()), [path])
             asb.write_theme(path)
             self.assertIsNone(asb.read_theme(path))
+
+    def test_palette_payload_for_gnome_and_custom_colors(self):
+        native = {"background": "#242424", "text": "#ffffff", "accent": "#78aeed", "muted": "#c8c8c8", "divider": "#5b5b5b"}
+        self.assertEqual(asb.palette_payload(None, native, "#8ff0a4", "#f8e45c"),
+                         {"mode": "gnome", "colors": {**native, "success": "#8ff0a4", "warning": "#f8e45c"}})
+        self.assertEqual(asb.palette_payload(None, native)["colors"],
+                         {**native, "success": "#78aeed", "warning": "#78aeed"})
+        self.assertEqual(asb.palette_payload(CUSTOM, native, "#8ff0a4", "#f8e45c"),
+                         {"mode": "custom", "colors": {**CUSTOM, "success": CUSTOM["accent"], "warning": CUSTOM["accent"]}})
+
+    def test_palette_publish_sends_changes_once_and_retries_after_failure(self):
+        import io
+        window = object.__new__(Window)
+        window.base, window.closed, window.hover_colors = "http://127.0.0.1:1", False, dict(CUSTOM)
+        window.palette_sent = window.palette_wanted = None
+        window.palette_sending = False
+        sends = []
+        with patch.dict(SCOPE, {"GLib": SimpleNamespace(idle_add=Mock()), "request_async": lambda base, route, callback, dispatch, method, body:
+                                sends.append((route, method, body, callback))}):
+            window.publish_palette()
+            window.publish_palette()
+            self.assertEqual([(route, method) for route, method, *_ in sends], [("/api/palette", "POST")])
+            window.hover_colors = {**CUSTOM, "accent": "#ffffff"}
+            window.publish_palette()
+            with patch("sys.stderr", io.StringIO()) as stderr:
+                sends[0][3](None, "Cannot change this session.")
+            self.assertIn("palette", stderr.getvalue())
+            self.assertEqual(len(sends), 1)
+            window.publish_palette()
+            self.assertEqual(sends[1][2]["colors"]["accent"], "#ffffff")
+            sends[1][3]({"changed": True}, None)
+            window.publish_palette()
+            self.assertEqual(len(sends), 2)
+        token = "cd" * 32
+        transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(b'{"changed": false}')))
+        with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": token}):
+            self.assertEqual(asb.request_json("http://127.0.0.1:1", "/api/palette", "POST", sends[1][2]), {"changed": False})
+        request = transport.open.call_args.args[0]
+        self.assertEqual(request.get_header("X-asb-source-token"), token)
+        self.assertEqual(request.get_header("Origin"), "http://127.0.0.1:1")
 
     def test_local_url_and_unfocused_refresh(self):
         self.assertEqual(asb.local_base_url("http://127.0.0.1:4629/"), "http://127.0.0.1:4629")
@@ -2980,7 +3053,7 @@ class NativeLogicChecks(unittest.TestCase):
         mode.set_selected = lambda value: setattr(mode, "selected", value)
         window.rgba = window.hex_color = lambda value: value
         window.native_colors = lambda: dict(colors)
-        window.theme_error, window.set_palette = Mock(), Mock()
+        window.theme_error, window.set_palette, window.publish_palette = Mock(), Mock(), Mock()
         window.color_buttons = {}
         for key, color in colors.items():
             picker = SimpleNamespace(color=color)
@@ -3009,6 +3082,7 @@ class NativeLogicChecks(unittest.TestCase):
                 colors[key] = value
                 window.apply_theme()
                 window.set_palette.assert_called_once_with(colors)
+                window.publish_palette.assert_called()
                 self.assertEqual(SCOPE["read_theme"](window.theme_path), colors)
                 window.theme_error.set_label.assert_called_with("Custom theme saved.")
             for value in (colors["background"], "#121213"):

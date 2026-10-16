@@ -4,9 +4,33 @@ import java.io.ByteArrayOutputStream
 import java.net.URI
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
+/** One address of the paired PC; the pin and the token are the same for all of them. */
+@Serializable
+data class Endpoint(val kind: String = "", @SerialName("address") val host: String = "")
+
+/** The order in which the app tries the addresses of the PC. */
+val ENDPOINT_KINDS = listOf("lan", "zerotier", "tailscale")
+
+fun endpointLabel(kind: String): String = when (kind) {
+    "zerotier" -> "ZeroTier"
+    "tailscale" -> "Tailscale"
+    else -> "Home network"
+}
+
+/** Keeps the known kinds with an IPv4 address, once per address, in the order of [ENDPOINT_KINDS]. */
+fun orderEndpoints(list: List<Endpoint>): List<Endpoint> =
+    list.filter { it.kind in ENDPOINT_KINDS && isIpv4(it.host) }.distinctBy { it.host }
+        .sortedBy { ENDPOINT_KINDS.indexOf(it.kind) }
+
+private fun isIpv4(text: String): Boolean = text.split('.').let { octets ->
+    octets.size == 4 && octets.all { it.matches(Regex("0|[1-9][0-9]{0,2}")) && it.toInt() <= 255 }
+}
 
 data class PairingInfo(
-    val host: String,
+    val addresses: List<Endpoint>,
     val port: Int,
     val fingerprint: String,
     val code: String,
@@ -25,13 +49,24 @@ fun parsePairingUri(text: String): PairingInfo? = try {
         require(key !in values)
         values[key] = decodeQueryPart(pieces[1])
     }
-    require(values.keys == setOf("v", "h", "p", "f", "c", "n"))
-    require(values.getValue("v") == "1")
-    val host = values.getValue("h")
-    val octets = host.split('.')
-    require(octets.size == 4 && octets.all {
-        it.matches(Regex("0|[1-9][0-9]{0,2}")) && it.toInt() <= 255
-    })
+    val addresses = when (values["v"]) {
+        "1" -> {
+            require(values.keys == setOf("v", "h", "p", "f", "c", "n"))
+            listOf(Endpoint("lan", values.getValue("h")).also { require(isIpv4(it.host)) })
+        }
+        "2" -> {
+            require(values.keys == setOf("v", "a", "p", "f", "c", "n"))
+            // Unknown kinds are dropped, so a newer PC can add kinds; a known kind needs a valid address.
+            values.getValue("a").split(',').mapNotNull { item ->
+                val pieces = item.split(':', limit = 2)
+                require(pieces.size == 2)
+                if (pieces[0] !in ENDPOINT_KINDS) null
+                else Endpoint(pieces[0], pieces[1]).also { require(isIpv4(it.host)) }
+            }
+        }
+        else -> throw IllegalArgumentException()
+    }.let(::orderEndpoints)
+    require(addresses.isNotEmpty())
     val portText = values.getValue("p")
     require(portText.matches(Regex("[1-9][0-9]{0,4}")))
     val port = portText.toInt()
@@ -40,7 +75,7 @@ fun parsePairingUri(text: String): PairingInfo? = try {
     require(fingerprint.matches(Regex("[0-9a-f]{64}")))
     val code = values.getValue("c")
     require(code.matches(Regex("[A-Za-z0-9_-]{27}")))
-    PairingInfo(host, port, fingerprint, code, values.getValue("n"))
+    PairingInfo(addresses, port, fingerprint, code, values.getValue("n"))
 } catch (_: Exception) {
     null
 }

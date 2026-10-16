@@ -23,7 +23,7 @@ src/switchboard.mjs
 
 scripts/asb-service.mjs run (optional asb.service systemd user service)
   -> src/switchboard.mjs, loopback HTTP server in service mode
-  -> src/phone-gateway.mjs, optional LAN HTTPS listener for the Android app
+  -> src/phone-gateway.mjs, optional LAN, ZeroTier, and Tailscale HTTPS listeners for the Android app
   -> $XDG_RUNTIME_DIR/asb/service.json, port and source token for the window
 
 scripts/asb-desktop.mjs with a running service (attach mode)
@@ -88,7 +88,7 @@ The current source package whitelist names 48 runtime files, including 11 ASB Br
 | `public/switchboard.html` | Optional ASB browser view. |
 | `test/switchboard.test.mjs` | ASB data, attention, API, and source-event checks. |
 | `test/asb-desktop.test.mjs` | Isolated launcher, port-conflict, icon-failure, and owned-child checks without GTK. |
-| `test/phone-gateway.test.mjs` | Gateway settings, file modes, pairing, tokens, throttling, allowlist, and proxy checks. |
+| `test/phone-gateway.test.mjs` | Gateway address kinds, schema 1 migration, several listeners, caller rules, settings, file modes, pairing, tokens, throttling, allowlist, and proxy checks. |
 | `test/asb-phone-api.test.mjs` | Loopback phone and service routes, token, Host/Origin, and strict-body checks. |
 | `test/asb-service.test.mjs` | Service unit, install/uninstall, runtime file, and attach-mode checks with a fake `systemctl`. |
 | `test/asb-docs.test.mjs` | ASB install, media, privacy, and credit checks. |
@@ -291,7 +291,7 @@ After a distro, desktop, GTK, or driver change, record the exact stack, X11/Wayl
 
 ASB makes no model calls and sends no messages. When ASB Bridge is installed, a message that it delivers starts a turn in the receiving app.
 
-ASB uses `createAsbServer` from `src/asb-server.mjs`. It allows the view assets, dashboard, source events, app-source settings, known-session open, ASB Read/Unread, Discard/Keep, drawer in/out, pins, pin movement, and Persistent unread settings. Other API routes are not exposed.
+ASB uses `createAsbServer` from `src/asb-server.mjs`. It allows the view assets, dashboard, source events, app-source settings, known-session open, ASB Read/Unread, Discard/Keep, drawer in/out, pins, pin movement, Persistent unread settings, and the window palette. Other API routes are not exposed.
 
 Actions require the local Host and a matching Origin. App-source changes also need the app source token when the server has one (see below). Session IDs must be in the scanned list. Read/Unread, pin/unpin, and drawer in/out accept an empty JSON object. Persistent unread accepts only a `persistentUnread` boolean. Pin movement accepts `up`/`down`, or a known pinned target with `before`/`after`. Session actions accept no client commands, paths, or URLs.
 
@@ -321,21 +321,43 @@ These routes exist only when the server has a phone gateway (window launcher or 
 
 | Loopback route | Contract |
 | --- | --- |
-| `GET /api/phone` | Gateway `status()`: `enabled`, `bindAddress`, `port`, `addresses`, `running`, `error`, `warning`, `fingerprint`, `devices` (ID, name, times), and `pairing.expiresAtMs`. It never has a token, token hash, or pairing code. |
-| `POST /api/phone/settings` | `{"enabled":bool,"bindAddress":str,"port":int}`. The address must be in `addresses`, or empty when `enabled` is false. The port must be 1024 to 65535 and not the ASB port. Saves, restarts the listener, and replies with `status()`. |
+| `GET /api/phone` | Gateway `status()`: `enabled`, `bindAddresses`, `port`, `addresses` (`address`, `interface`, `kind`), `listening` (`kind`, `address`), `running`, `error`, `warning`, `fingerprint`, `devices` (ID, name, times), and `pairing.expiresAtMs`. It never has a token, token hash, or pairing code. |
+| `POST /api/phone/settings` | `{"enabled":bool,"bindAddresses":[str],"port":int}`. `bindAddresses` has 0 to 8 different addresses, and each must be in `addresses` now. When `enabled` is true, it must have at least one address. The port must be 1024 to 65535 and not the ASB port. Saves, restarts the listener, and replies with `status()`. |
 | `POST /api/phone/pairing` | `{}`. Needs a running listener. Replies `{ uri, expiresAtMs }`. |
 | `POST /api/phone/devices/<id>/revoke` | `{}`. `<id>` is 12 lowercase hex. Removes that phone and replies with `status()`. |
 | `GET /api/service` | `{ service, pid }`. `service` is true only in `asb service run`. The window launcher uses it for attach mode. |
 
+### Palette route
+
+The native window shares its resolved palette, so the phone can use the same colors. This route exists also when the server has no phone gateway.
+
+| Loopback route | Contract |
+| --- | --- |
+| `POST /api/palette` | Body exactly `{"mode","colors"}`. `mode` is `gnome` or `custom`. `colors` has exactly `background`, `text`, `accent`, `muted`, `divider`, `success`, and `warning`, each `#RRGGBB`. Else 400. Uses the action Host and Origin checks, and needs the header `X-ASB-Source-Token` when a token is set (else 403). The server saves the colors in lowercase and replies `{ changed }`. A change sends the normal `dashboard` event. |
+
+`GET /api/dashboard` has the top-level field `palette`: the last saved `{ mode, colors }`, or `null` before the first publish. The field is part of the `ETag` content, so a palette change gives a new tag. In GNOME mode the window sends the `native_colors()` values with the GNOME `success_color` and `warning_color`. In Custom mode it sends the saved custom colors, with `success` and `warning` equal to `accent`. The window sends at start, after Apply theme, after Reset to GNOME, and after a GNOME dark style or accent change. It sends only a palette that is different from the last good send. A failed send writes one line to stderr, and the next apply tries again.
+
 ### Phone gateway
 
-`createPhoneGateway` in `src/phone-gateway.mjs` is a second listener, separate from the loopback server. It is off by default. It listens only when `enabled` is true and `bindAddress` is one of the private IPv4 addresses of the PC (`10/8`, `172.16/12`, `192.168/16`). It never binds `0.0.0.0`. The default port is `4630`. When the address is gone, or the port is in use, the gateway stays off and `status().error` says why.
+`createPhoneGateway` in `src/phone-gateway.mjs` makes the phone listeners, separate from the loopback server. It is off by default. `listPhoneAddresses()` lists each usable IPv4 address as `{ address, interface, kind }`, sorted by kind (`lan`, `zerotier`, `tailscale`), then by interface name:
 
-TLS uses `node:https` with `minVersion: 'TLSv1.3'`. On first start, `openssl req` (run with `execFile`, no shell, 20-second timeout) creates a self-signed P-256 certificate for ten years. The pin is the SHA-256 of the full certificate, as 64 lowercase hex characters. When `openssl` fails, phone access stays off with `ASB cannot create the phone certificate. Install openssl.` The request timeout is 15 seconds and the header timeout is 10 seconds. Every reply has `cache-control: no-store` and `x-content-type-options: nosniff`.
+| Kind | Rule |
+| --- | --- |
+| `tailscale` | The interface name starts with `tailscale` and the address is in `100.64.0.0/10`. |
+| `zerotier` | The interface name starts with `zt` and the address is RFC 1918 private (`10/8`, `172.16/12`, `192.168/16`). |
+| `lan` | Any other interface with an RFC 1918 private address. |
+
+A `100.64.0.0/10` address on an interface that is not Tailscale is never listed, because carrier NAT and mobile hotspots also use this range. Loopback and public addresses are never listed. The gateway never binds `0.0.0.0`.
+
+When `enabled` is true, the gateway listens on each address in `bindAddresses` that is listed now, all on the same port (default `4630`), with the same certificate and the same handler. It skips a selected address that is not listed now, and `status().error` names it; the other addresses still listen. A port in use also goes in `status().error`. `running` is true when at least one listener listens. `status().listening` lists the listeners that listen now.
+
+`phone.json` is schema 2 with `bindAddresses`. A schema 1 file (`bindAddress`) loads as schema 2 (an empty `bindAddress` gives `[]`), and the next save writes schema 2.
+
+TLS uses `node:https` with `minVersion: 'TLSv1.3'` on every listener. On first start, `openssl req` (run with `execFile`, no shell, 20-second timeout) creates a self-signed P-256 certificate for ten years. The pin is the SHA-256 of the full certificate, as 64 lowercase hex characters. When `openssl` fails, phone access stays off with `ASB cannot create the phone certificate. Install openssl.` The request timeout is 15 seconds, the header timeout is 10 seconds, and the keep-alive timeout is 65 seconds. Every reply has `cache-control: no-store` and `x-content-type-options: nosniff`.
 
 The gateway handles each request in this order:
 
-1. It closes the socket when the remote address is not loopback or private IPv4 (also as `::ffff:a.b.c.d`).
+1. It closes the socket when the remote address is not allowed on that listener (also as `::ffff:a.b.c.d`). A `lan` or `zerotier` listener allows loopback and RFC 1918 callers. A `tailscale` listener allows `100.64.0.0/10` and RFC 1918 callers. No listener allows public callers.
 2. Throttle: 20 auth failures (401) or pair failures from one address in 60 seconds give `429` for 60 seconds. The map keeps at most 256 addresses.
 3. A bad URL gives 400. A path outside the allowlist gives 404. A wrong method gives 405.
 4. Each route except pairing needs `Authorization: Bearer <token>`, with a 43-character base64url token. The gateway compares its SHA-256 with each saved hash in constant time. No match gives 401.
@@ -344,20 +366,21 @@ The gateway handles each request in this order:
 | Gateway route | Action |
 | --- | --- |
 | `POST /phone/v1/pair` | Body exactly `{"code","deviceName"}`. Gives the phone a new token. |
-| `GET /phone/v1/hello` | `{ api: 1, asbVersion, deviceId, serverName }`. |
+| `GET /phone/v1/hello` | `{ api: 1, asbVersion, deviceId, serverName, addresses, port }`. `addresses` is `[{ kind, address }]` for the listeners that listen now. The app updates its saved address list from it. |
 | `GET /phone/v1/dashboard` | Proxy to `GET /api/dashboard`. Only the query `force=1` passes. |
 | `POST /phone/v1/threads/<id>/<action>` | Proxy to the same loopback thread route. `<action>` is `open`, `mark-read`, `mark-unread`, `pin`, `unpin`, `move-pin`, `discard-result`, `keep-result`, `drawer-in`, or `drawer-out`. |
 | `POST /phone/v1/settings/unread` | Proxy to `POST /api/settings/unread`. |
 
-The proxy calls `127.0.0.1:<ASB port>` and sets `Host` itself. POST also gets the local `Origin` and `content-type: application/json`. Only `If-None-Match` passes from the phone; cookies, `Authorization`, and other headers do not. Only `content-type` and `etag` come back from the loopback reply. A failed loopback request gives 502, and the proxy timeout is 30 seconds. The loopback server applies its normal checks. The gateway cannot reach `/api/sources`, `/api/phone*`, `/api/service`, or `/api/events`.
+The proxy calls `127.0.0.1:<ASB port>` and sets `Host` itself. POST also gets the local `Origin` and `content-type: application/json`. Only `If-None-Match` passes from the phone; cookies, `Authorization`, and other headers do not. Only `content-type` and `etag` come back from the loopback reply. Every dashboard reply that the loopback server answers has `Vary: Accept-Encoding`. The gateway's own error replies (401, 405, 429, 502) do not. When the phone accepts gzip in `Accept-Encoding` (`gzip` with a q-value above 0, or `*` with a q-value above 0 when `gzip` is not listed) and the loopback status is 200, the gateway streams the body through gzip and sets `Content-Encoding: gzip`. The `ETag` stays the same. A 304 reply has no body and no `Content-Encoding`. Other routes are not compressed. The Android app sets no `Accept-Encoding` header, so OkHttp sends `gzip` and decompresses the reply. A loopback error after a gzip reply starts closes the connection. A failed loopback request gives 502, and the proxy timeout is 30 seconds. The loopback server applies its normal checks. The gateway cannot reach `/api/sources`, `/api/phone*`, `/api/service`, `/api/palette`, or `/api/events`.
 
-Pairing: `createPairing` makes one code of 20 random bytes (base64url). It is valid for 10 minutes and for one use. A new code replaces the old one, and 8 wrong codes void it. The QR link is `asb://pair?v=1&h=<address>&p=<port>&f=<fingerprint>&c=<code>&n=<host name>`. A good pair request saves a new device with a 256-bit random token and replies with the token once. The PC saves only the SHA-256 of the token. The device limit is eight (409). The device name is trimmed, has no control characters, and has at most 64 characters. `lastSeenAtMs` is saved at most once per 10 minutes per phone, and on stop. Revoke removes the device, so its token gives 401 at once.
+Pairing: `createPairing` makes one code of 20 random bytes (base64url). It is valid for 10 minutes and for one use. A new code replaces the old one, and 8 wrong codes void it. The QR link is `asb://pair?v=2&a=<list>&p=<port>&f=<fingerprint>&c=<code>&n=<host name>`. `<list>` is the listening addresses as comma-separated `kind:address` items in the kind order above (for example `lan:192.168.50.4,zerotier:10.147.17.4,tailscale:100.101.102.103`), URL-encoded as one value. Version 1 links had `h=<one address>`. A good pair request saves a new device with a 256-bit random token and replies with the token once. The PC saves only the SHA-256 of the token. The device limit is eight (409). The device name is trimmed, has no control characters, and has at most 64 characters. `lastSeenAtMs` is saved at most once per 10 minutes per phone, and on stop. Revoke removes the device, so its token gives 401 at once.
 
 ## Local writes
 
 | Default location | Purpose |
 | --- | --- |
 | `~/.local/state/asb/pending.json` | ASB attention, pins, Persistent unread, current-task Discard marks, and drawer marks. |
+| `~/.local/state/asb/palette.json` | The last palette from the window, for the dashboard `palette` field, mode `0600`. The server reads it at start. A bad file gives `palette: null` and one stderr warning; the next publish replaces it. |
 | `~/.config/asb/layout.json` | Width, view, and optional boolean `showAppPills`. |
 | `~/.config/asb/theme.json` | Custom colors. |
 | `~/.config/asb/sources.json` | App-source IDs, labels, colors, dot visibility, paths, launchers, and enabled flags, with owner-only access. |
@@ -380,7 +403,7 @@ The optional bridge plugin runs inside Codex. It writes per-task state under `<C
 npm test
 python3 test/asb_native_logic_test.py
 npm run build
-cd android && ./gradlew --no-daemon testDebugUnitTest lint assembleDebug
+cd android && ./gradlew --no-daemon testDebugUnitTest lint assembleDebug assembleRelease
 ```
 
 The first two commands do not launch the ASB window. `npm test` needs no `sqlite3` command and no environment variable. Launcher checks use isolated HOME/XDG/source folders, `ASB_SYSTEM_INSTALL=1`, and `ASB_PYTHON=/bin/true` to verify busy/free ports without GTK or icon registration. Display-free data checks share the synthetic GTK fixtures through AST extraction without importing GTK. Native widget tests are separate and need a GTK display with synthetic fixtures. Use them only when UI testing is in scope. Do not use real session stores for public media or test captures.

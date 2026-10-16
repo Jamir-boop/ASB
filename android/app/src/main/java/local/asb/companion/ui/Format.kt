@@ -27,27 +27,37 @@ fun spokenDuration(seconds: Long): String {
     }
 }
 
-fun workingDuration(workingSinceMs: Long, nowMs: Long): String {
-    if (workingSinceMs <= 0 || workingSinceMs > nowMs) return ""
-    val seconds = (nowMs - workingSinceMs) / 1000
-    val minutes = seconds / 60
-    val hours = minutes / 60
-    return when {
-        hours > 0 -> "${hours}h ${minutes % 60}m"
-        minutes > 0 -> "${minutes}m ${(seconds % 60).toString().padStart(2, '0')}s"
-        else -> "${seconds}s"
-    }
+// Port of limit_text: the reset countdown shows days and hours from 24 hours on (weekly limits).
+fun limitText(seconds: Long): String {
+    val days = seconds.coerceAtLeast(0) / 86_400
+    return if (days > 0) "${days}d${seconds % 86_400 / 3600}h" else durationText(seconds)
 }
 
+// Port of spoken_limit.
+fun spokenLimit(seconds: Long): String {
+    val days = seconds.coerceAtLeast(0) / 86_400
+    if (days == 0L) return spokenDuration(seconds)
+    val hours = seconds % 86_400 / 3600
+    fun unit(count: Long, name: String) = "$count $name" + if (count == 1L) "" else "s"
+    return unit(days, "day") + if (hours > 0) " " + unit(hours, "hour") else ""
+}
+
+// Port of working_duration (without the state check; the caller passes a Working start).
+fun workingDuration(workingSinceMs: Long, nowMs: Long): String {
+    if (workingSinceMs <= 0 || workingSinceMs > nowMs) return ""
+    return durationText((nowMs - workingSinceMs) / 1000)
+}
+
+// Port of the date part of row_meta.
 fun idleAge(updatedAtMs: Long, nowMs: Long): String {
     if (updatedAtMs <= 0) return "No date"
-    if (updatedAtMs >= nowMs) return "now"
+    if (updatedAtMs >= nowMs) return "Just now"
     val age = nowMs - updatedAtMs
     return when {
-        age < 60_000 -> "now"
-        age < 3_600_000 -> "${age / 60_000}m"
-        age < 86_400_000 -> "${age / 3_600_000}h"
-        else -> "${age / 86_400_000}d"
+        age < 60_000 -> "Just now"
+        age < 3_600_000 -> "${age / 60_000}m ago"
+        age < 86_400_000 -> "${age / 3_600_000}h ago"
+        else -> "${age / 86_400_000}d ago"
     }
 }
 
@@ -57,3 +67,10 @@ fun stateLabel(state: String): String = when (state) {
     "idle" -> "Idle"
     else -> "Unknown"
 }
+
+// The top bar connection text, for example "PC · Live · ZeroTier". An offline phone has no current path.
+fun connectionText(serverName: String, offline: Boolean, pathLabel: String?): String =
+    listOfNotNull(serverName, if (offline) "Offline" else "Live", pathLabel?.takeUnless { offline }).joinToString(" · ")
+
+// Search mode stays open while a query is set, for example after a rotation or a return to the screen.
+fun searchOpen(opened: Boolean, query: String): Boolean = opened || query.isNotEmpty()

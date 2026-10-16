@@ -20,8 +20,15 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.encodeToString
 import local.asb.companion.data.AsbJson
 import local.asb.companion.data.Dashboard
+import local.asb.companion.data.Palette
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import kotlinx.serialization.json.Json
 import local.asb.companion.data.Thread
+import local.asb.companion.data.Endpoint
 import local.asb.companion.net.AsbApi
+import local.asb.companion.net.MemoryPaths
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.sha256Hex
 import local.asb.companion.notify.BIT_DONE
@@ -53,6 +60,7 @@ class SessionsViewModelTest {
     private val models = ViewModelStore()
     private val polls = mutableListOf<Job>()
     private val baselines = mutableListOf<Map<String, Int>>()
+    private val palettes = mutableListOf<Palette>()
     private lateinit var server: MockWebServer
     private lateinit var fingerprint: String
     private lateinit var certificates: HandshakeCertificates
@@ -82,9 +90,11 @@ class SessionsViewModelTest {
         initiallyRevoked: Boolean = false,
         loadBaseline: () -> Map<String, Int>? = { baselines.lastOrNull() },
         saveBaseline: (Map<String, Int>) -> Unit = { baselines += it },
+        initialView: String = "comfortable",
+        savePalette: (Palette) -> Unit = { palettes += it },
     ): SessionsViewModel {
-        val api = AsbApi("127.0.0.1", server.port, fingerprint, "t".repeat(43)) { revoked = true }
-        return SessionsViewModel(api, "Test PC", initiallyRevoked, saveBaseline, mutex, loadBaseline)
+        val api = AsbApi(MemoryPaths(listOf(Endpoint("lan", "127.0.0.1"))), server.port, fingerprint, "t".repeat(43)) { revoked = true }
+        return SessionsViewModel(api, "Test PC", initiallyRevoked, saveBaseline, mutex, loadBaseline, initialView, savePalette)
             .also { models.put("sessions", it) }
     }
 
@@ -177,6 +187,8 @@ class SessionsViewModelTest {
         advance(1)
         await { model.state.value.dashboard?.generatedAtMs == 2L }
         assertFalse(model.state.value.offline)
+        // The top bar names the path of the last good dashboard.
+        assertEquals("lan", model.state.value.path)
         server.takeRequest()
         advance(5000)
         await { model.state.value.offline }
@@ -247,7 +259,8 @@ class SessionsViewModelTest {
         await { !model.state.value.refreshing }
         assertEquals(BIT_DONE, stored!!.getValue("done") and (BIT_DONE or BIT_FAILED))
         assertEquals(BIT_FAILED, stored!!.getValue("failed") and (BIT_DONE or BIT_FAILED))
-        assertFalse(stored!!.containsKey("gone"))
+        // A row missing from the update keeps its bits, so it cannot notify again when it comes back.
+        assertEquals(BIT_DONE, stored!!.getValue("gone"))
         val afterLimit = stored
 
         server.enqueue(MockResponse().setResponseCode(304))
@@ -264,7 +277,7 @@ class SessionsViewModelTest {
         server.enqueue(response(reset))
         model.refresh()
         await { !model.state.value.refreshing }
-        assertEquals(mapOf("done" to BIT_DONE, "failed" to BIT_FAILED), stored)
+        assertEquals(mapOf("done" to BIT_DONE, "failed" to BIT_FAILED, "gone" to BIT_DONE), stored)
         assertEquals(3, reads)
     }
 
@@ -401,6 +414,30 @@ class SessionsViewModelTest {
         assertEquals(5, server.requestCount)
     }
 
+    @Test fun aRowStaysBusyUntilTheBoardRefreshAfterItsAction() = runBlocking {
+        val dashboard = Dashboard(1, threads = listOf(Thread(id = "one", canOpen = true)))
+        val model = model()
+        load(model, dashboard)
+        val release = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                "/phone/v1/dashboard" -> {
+                    assertTrue(release.await(5, TimeUnit.SECONDS))
+                    response(dashboard.copy(generatedAtMs = 2))
+                }
+                else -> MockResponse().setBody("{\"opened\":true}")
+            }
+        }
+        model.action("one", "open")
+        assertEquals(setOf("one"), model.state.value.openingIds)
+        await { server.requestCount == 3 }
+        await { model.state.value.openingIds.isEmpty() }
+        assertEquals(setOf("one"), model.state.value.busyIds)
+        release.countDown()
+        await { model.state.value.dashboard?.generatedAtMs == 2L }
+        await { model.state.value.busyIds.isEmpty() }
+    }
+
     @Test fun openNeedsExplicitConfirmationAndActionErrorsLeaveRowsUsable() = runBlocking {
         val dashboard = Dashboard(1, threads = listOf(Thread(id = "one", canOpen = true), Thread(id = "no-link")))
         val model = model()
@@ -428,6 +465,56 @@ class SessionsViewModelTest {
         model.dismissBanner()
         assertNull(model.state.value.banner)
         assertEquals(7, server.requestCount)
+    }
+
+    @Test fun actionErrorsSurviveSuccessfulPollsUntilTheRowActsChangesOrLeaves() = runBlocking {
+        val dashboard = Dashboard(1, threads = listOf(Thread(id = "one", state = "idle"), Thread(id = "two")))
+        val model = model()
+        load(model, dashboard)
+        suspend fun fail() {
+            server.enqueue(MockResponse().setResponseCode(500).setBody("{\"error\":\"Cannot change row\"}"))
+            model.action("one", "drawer-in")
+            await { model.state.value.busyIds.isEmpty() }
+            assertEquals("Cannot change row", model.state.value.lastError)
+            assertEquals(mapOf("one" to "Cannot change row"), model.state.value.actionErrors)
+        }
+        suspend fun refresh(reply: MockResponse) {
+            server.enqueue(reply)
+            model.refresh()
+            await { !model.state.value.refreshing }
+        }
+        fail()
+        for (reply in listOf(response(dashboard.copy(generatedAtMs = 2)), MockResponse().setResponseCode(304))) {
+            refresh(reply)
+            assertFalse(model.state.value.offline)
+            assertEquals("Cannot change row", model.state.value.lastError)
+            assertEquals(mapOf("one" to "Cannot change row"), model.state.value.actionErrors)
+        }
+        // An action that cannot reach ASB sets offline, so the next good poll clears its snackbar but not its row error.
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+        model.action("one", "drawer-in")
+        await { model.state.value.busyIds.isEmpty() }
+        assertTrue(model.state.value.offline)
+        val message = model.state.value.lastError!!
+        refresh(response(dashboard.copy(generatedAtMs = 2)))
+        assertFalse(model.state.value.offline)
+        assertNull(model.state.value.lastError)
+        assertEquals(mapOf("one" to message), model.state.value.actionErrors)
+        fail()
+        server.enqueue(MockResponse().setBody("{}"))
+        server.enqueue(response(dashboard.copy(generatedAtMs = 3)))
+        model.action("one", "drawer-in")
+        await { model.state.value.busyIds.isEmpty() }
+        assertEquals(emptyMap<String, String>(), model.state.value.actionErrors)
+        assertNull(model.state.value.lastError)
+
+        fail()
+        refresh(response(dashboard.copy(generatedAtMs = 4, threads = listOf(Thread(id = "one", state = "working")))))
+        assertEquals(emptyMap<String, String>(), model.state.value.actionErrors)
+        assertNull(model.state.value.lastError)
+        fail()
+        refresh(response(dashboard.copy(generatedAtMs = 5, threads = listOf(Thread(id = "two")))))
+        assertEquals(emptyMap<String, String>(), model.state.value.actionErrors)
     }
 
     @Test fun rowValidationAndServerErrorsCannotClearAnExistingDashboardFailure() = runBlocking {
@@ -466,5 +553,50 @@ class SessionsViewModelTest {
         model.action("one", "open")
         advance(60000)
         assertEquals(2, server.requestCount)
+    }
+
+    @Test fun rotationKeepsFiltersSearchViewAndAnchorInTheRetainedModel() {
+        val api = AsbApi(MemoryPaths(listOf(Endpoint("lan", "127.0.0.1"))), server.port, fingerprint, "t".repeat(43)) {}
+        val factory = viewModelFactory { initializer { SessionsViewModel(api, "Test PC", initialView = "compact") } }
+        val owner = ViewModelStore()
+        val original = ViewModelProvider.create(owner, factory)[SessionsViewModel::class]
+        assertEquals("compact", original.state.value.view)
+        val filter = Filter(query = "cl: plan", app = "codex", states = setOf("working"), archived = true, drawerOnly = true)
+        original.setFilter(filter)
+        original.setView("comfortable")
+        original.anchorId = "two"
+
+        val recreated = ViewModelProvider.create(owner, factory)[SessionsViewModel::class]
+        assertSame(original, recreated)
+        assertEquals(filter, recreated.state.value.filter)
+        assertEquals("comfortable", recreated.state.value.view)
+        assertEquals("two", recreated.anchorId)
+        owner.clear()
+    }
+
+    @Test fun dashboardPaletteIsSavedAndAbsentPaletteKeepsTheSavedOne() = runBlocking {
+        val model = model()
+        load(model, Dashboard(1))
+        assertTrue(palettes.isEmpty())
+        val colors = """{"mode":"custom","colors":{"background":"#101418","text":"#e8e4dc","accent":"#f0b45a",""" +
+            """"muted":"#a8a29a","divider":"#3a3f46","success":"#f0b45a","warning":"#f0b45a"}}"""
+        load(model, Dashboard(2, palette = Json.parseToJsonElement(colors)))
+        assertEquals(Palette.parse(Json.parseToJsonElement(colors)), palettes.single())
+        assertEquals("custom", palettes.single().mode)
+    }
+
+    @Test fun successfulReadShowsTheConfirmationFor1600Ms() = runBlocking {
+        val model = model()
+        load(model, Dashboard(1, threads = listOf(Thread(id = "one", state = "idle", unread = true))))
+        server.enqueue(MockResponse().setBody("{}"))
+        server.enqueue(response(Dashboard(2, threads = listOf(Thread(id = "one", state = "idle")))))
+        model.action("one", "mark-read")
+        await { model.state.value.dashboard?.generatedAtMs == 2L }
+        assertEquals(setOf("one"), model.state.value.readConfirmedIds)
+        assertTrue(model.state.value.openingIds.isEmpty())
+        advance(1599)
+        assertEquals(setOf("one"), model.state.value.readConfirmedIds)
+        advance(1)
+        assertTrue(model.state.value.readConfirmedIds.isEmpty())
     }
 }

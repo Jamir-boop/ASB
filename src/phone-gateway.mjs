@@ -7,6 +7,7 @@ import { isIPv4 } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { createGzip } from 'node:zlib';
 import { sendJson } from './local-http.mjs';
 
 export const PHONE_API_VERSION = 1;
@@ -16,7 +17,8 @@ const invalid = (message) => Object.assign(new Error(message), { statusCode: 400
 const controls = /[\x00-\x1f\x7f-\x9f]/;
 const fields = (value, names) => value !== null && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).sort().join(',') === [...names].sort().join(',');
-const defaults = () => ({ schema: 1, enabled: false, bindAddress: '', port: DEFAULT_PHONE_PORT, devices: [] });
+const defaults = () => ({ schema: 2, enabled: false, bindAddresses: [], port: DEFAULT_PHONE_PORT, devices: [] });
+const KINDS = ['lan', 'zerotier', 'tailscale'];
 const validPort = (port) => Number.isInteger(port) && port >= 1024 && port <= 65535;
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const equal = (left, right) => left.length === right.length && timingSafeEqual(left, right);
@@ -35,21 +37,41 @@ function privateIPv4(address) {
   return first === 10 || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168);
 }
 
-export function privateIPv4Addresses(interfaces = os.networkInterfaces()) {
-  return Object.keys(interfaces).sort().flatMap((name) => (interfaces[name] || [])
-    .filter((entry) => ['IPv4', 4].includes(entry.family) && privateIPv4(entry.address))
-    .map((entry) => ({ address: entry.address, interface: name })));
+// 100.64.0.0/10 is also carrier NAT and hotspot space, so it counts only on a Tailscale interface.
+function tailscaleIPv4(address) {
+  if (typeof address !== 'string' || !isIPv4(address)) return false;
+  const [first, second] = address.split('.').map(Number);
+  return first === 100 && second >= 64 && second <= 127;
 }
 
-export function isAllowedRemote(address) {
+function addressKind(name, address) {
+  if (name.startsWith('tailscale') && tailscaleIPv4(address)) return 'tailscale';
+  if (!privateIPv4(address)) return '';
+  return name.startsWith('zt') ? 'zerotier' : 'lan';
+}
+
+export function listPhoneAddresses(interfaces = os.networkInterfaces()) {
+  return Object.keys(interfaces).sort().flatMap((name) => (interfaces[name] || [])
+    .filter((entry) => ['IPv4', 4].includes(entry.family))
+    .map((entry) => ({ address: entry.address, interface: name, kind: addressKind(name, entry.address) }))
+    .filter((entry) => entry.kind))
+    .sort((left, right) => KINDS.indexOf(left.kind) - KINDS.indexOf(right.kind));
+}
+
+export function isAllowedRemote(address, kind = 'lan') {
   if (typeof address !== 'string') return false;
   const ipv4 = address.replace(/^::ffff:/i, '');
+  if (kind === 'tailscale') return tailscaleIPv4(ipv4) || privateIPv4(ipv4);
   return address === '::1' || ipv4 === '127.0.0.1' || privateIPv4(ipv4);
 }
 
+const validAddresses = (value) => Array.isArray(value) && value.length <= 8
+  && value.every((address) => typeof address === 'string') && new Set(value).size === value.length;
+
 function validSettings(value) {
-  return fields(value, ['schema', 'enabled', 'bindAddress', 'port', 'devices']) && value.schema === 1
-    && typeof value.enabled === 'boolean' && typeof value.bindAddress === 'string' && validPort(value.port)
+  return (value?.schema === 1 ? fields(value, ['schema', 'enabled', 'bindAddress', 'port', 'devices']) && typeof value.bindAddress === 'string'
+    : fields(value, ['schema', 'enabled', 'bindAddresses', 'port', 'devices']) && value.schema === 2 && validAddresses(value.bindAddresses))
+    && typeof value.enabled === 'boolean' && validPort(value.port)
     && Array.isArray(value.devices) && value.devices.length <= 8 && value.devices.every((device) =>
       fields(device, ['id', 'name', 'tokenSha256', 'createdAtMs', 'lastSeenAtMs'])
       && typeof device.id === 'string' && /^[a-f0-9]{12}$/.test(device.id)
@@ -59,6 +81,18 @@ function validSettings(value) {
       && Number.isSafeInteger(device.lastSeenAtMs) && device.lastSeenAtMs >= 0)
     && new Set(value.devices.map((device) => device.id)).size === value.devices.length
     && new Set(value.devices.map((device) => device.tokenSha256)).size === value.devices.length;
+}
+
+// A missing header means identity; gzip (or *) with q=0 refuses gzip.
+export function acceptsGzip(header) {
+  if (typeof header !== 'string') return false;
+  const weights = new Map();
+  for (const part of header.split(',')) {
+    const [coding, ...params] = part.split(';').map((item) => item.trim().toLowerCase());
+    const q = params.find((item) => item.startsWith('q='));
+    weights.set(coding, q === undefined ? 1 : Number(q.slice(2)));
+  }
+  return (weights.get('gzip') ?? weights.get('*') ?? 0) > 0;
 }
 
 function readBody(request) {
@@ -79,11 +113,11 @@ function readBody(request) {
 }
 
 export function createPhoneGateway({ localPort, asbVersion, settingsPath = phoneSettingsPath(), tlsDir = phoneTlsDir(),
-  now = Date.now, openssl = 'openssl', hostName = os.hostname(), listAddresses = privateIPv4Addresses }) {
+  now = Date.now, openssl = 'openssl', hostName = os.hostname(), listAddresses = listPhoneAddresses }) {
   if (!Number.isInteger(localPort) || localPort < 1 || localPort > 65535) throw invalid('Invalid ASB port.');
   let settings = defaults();
   let loaded = false;
-  let server = null;
+  let listeners = [];
   let fingerprint = '';
   let error = '';
   let warning = '';
@@ -112,7 +146,9 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
       warning = 'ASB moved an invalid phone.json to phone.json.bad.';
     } else {
       await fs.chmod(settingsPath, 0o600);
-      settings = value;
+      // Schema 1 had one address; the next save writes schema 2.
+      const { bindAddress, ...rest } = value;
+      settings = value.schema === 1 ? { ...rest, schema: 2, bindAddresses: bindAddress ? [bindAddress] : [] } : value;
       for (const device of settings.devices) seenSavedAt.set(device.id, device.lastSeenAtMs);
     }
     loaded = true;
@@ -135,20 +171,24 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     return pairing;
   }
 
+  const listening = () => listeners.filter((item) => item.server.listening).map(({ kind, address }) => ({ kind, address }));
+
   function status() {
-    return { enabled: settings.enabled, bindAddress: settings.bindAddress, port: settings.port,
-      addresses: listAddresses().map(({ address, interface: name }) => ({ address, interface: name })),
-      running: Boolean(server?.listening), error, warning, fingerprint,
+    return { enabled: settings.enabled, bindAddresses: [...settings.bindAddresses], port: settings.port,
+      addresses: listAddresses().map(({ address, interface: name, kind }) => ({ address, interface: name, kind })),
+      listening: listening(), running: listening().length > 0, error, warning, fingerprint,
       devices: settings.devices.map(({ id, name, createdAtMs, lastSeenAtMs }) => ({ id, name, createdAtMs, lastSeenAtMs })),
       pairing: { expiresAtMs: activePairing()?.expiresAtMs || 0 } };
   }
 
   async function closeListener() {
     pairing = null;
-    const previous = server;
-    server = null;
-    if (!previous) return;
-    const closed = new Promise((resolve) => previous.close(resolve));
+    const previous = listeners;
+    listeners = [];
+    if (!previous.length) return;
+    const closed = Promise.all(previous.map(({ server }) => new Promise((resolve) => {
+      if (server.listening) server.close(resolve); else resolve();
+    })));
     for (const upstream of upstreams) upstream.destroy();
     for (const socket of sockets) socket.destroy();
     await closed;
@@ -175,34 +215,44 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     await Promise.all([keyPath, certPath].map((file) => fs.chmod(file, 0o600)));
     const [key, cert] = await Promise.all([fs.readFile(keyPath), fs.readFile(certPath)]);
     fingerprint = new X509Certificate(cert).fingerprint256.replaceAll(':', '').toLowerCase();
-    return { key, cert, minVersion: 'TLSv1.3' };
+    return { key, cert };
   }
 
   async function restart() {
     await closeListener();
     error = '';
     if (!settings.enabled) return;
-    if (!listAddresses().some(({ address }) => address === settings.bindAddress)) {
-      error = `The phone address ${settings.bindAddress} is not on this PC now. Choose another address.`;
-      return;
+    const listed = listAddresses();
+    const missing = settings.bindAddresses.filter((address) => !listed.some((item) => item.address === address));
+    if (missing.length) {
+      error = missing.length === 1 ? `The phone address ${missing[0]} is not on this PC now. Choose another address.`
+        : `The phone addresses ${missing.join(', ')} are not on this PC now. Choose other addresses.`;
     }
-    let listener;
-    try { listener = https.createServer(await certificate(), (request, response) => { handle(request, response, listener); }); }
+    const selected = listed.filter(({ address }) => settings.bindAddresses.includes(address));
+    if (!selected.length) return;
+    // https.Server ignores a `secureContext` option, so every listener gets the same key and certificate.
+    let options;
+    try { options = { ...(await certificate()), minVersion: 'TLSv1.3' }; }
     catch { fingerprint = ''; error = 'ASB cannot create the phone certificate. Install openssl.'; return; }
-    listener.requestTimeout = 15_000;
-    listener.headersTimeout = 10_000;
-    // The app does not retry failed requests, so it must drop idle connections first (it keeps them 30 s).
-    listener.keepAliveTimeout = 65_000;
-    listener.on('connection', (socket) => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
-    listener.on('error', (cause) => {
-      error = cause.code === 'EADDRINUSE' ? `Port ${settings.port} is in use.` : 'ASB cannot start phone access.';
+    const group = selected.map(({ address, kind }) => {
+      const server = https.createServer(options, (request, response) => { handle(request, response, group, kind); });
+      server.requestTimeout = 15_000;
+      server.headersTimeout = 10_000;
+      // The app does not retry failed requests, so it must drop idle connections first (it keeps them 30 s).
+      server.keepAliveTimeout = 65_000;
+      server.on('connection', (socket) => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
+      server.on('error', (cause) => {
+        const text = cause.code === 'EADDRINUSE' ? `Port ${settings.port} is in use.` : 'ASB cannot start phone access.';
+        if (!error.includes(text)) error = [error, text].filter(Boolean).join(' ');
+      });
+      return { server, address, kind };
     });
-    server = listener;
-    await new Promise((resolve) => {
-      listener.once('error', resolve);
-      listener.listen(settings.port, settings.bindAddress, resolve);
-    });
-    if (!listener.listening) await closeListener();
+    listeners = group;
+    await Promise.all(group.map(({ server, address }) => new Promise((resolve) => {
+      server.once('error', resolve);
+      server.listen(settings.port, address, resolve);
+    })));
+    if (!listening().length) await closeListener();
   }
 
   function throttled(address) {
@@ -223,20 +273,28 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     if (record.times.length >= 20) record.blockedUntil = time + 60_000;
   }
 
-  function proxy(request, response, target, body) {
+  function proxy(request, response, target, body, dashboard) {
     const headers = { host: `127.0.0.1:${localPort}` };
     if (request.method === 'POST') Object.assign(headers, { origin: `http://127.0.0.1:${localPort}`, 'content-type': 'application/json' });
     if (request.headers['if-none-match']) headers['if-none-match'] = request.headers['if-none-match'];
     const unavailable = () => {
       if (response.destroyed) return;
-      if (response.headersSent) response.destroy();
+      // A started gzip stream can still flush into the reply, so a gzip reply always ends this way.
+      if (response.headersSent || response.hasHeader('content-encoding')) response.destroy();
       else sendJson(response, 502, { error: 'ASB is not answering.' });
     };
     const upstream = http.request({ host: '127.0.0.1', port: localPort, method: request.method, path: target, headers }, (reply) => {
       for (const name of ['content-type', 'etag']) if (reply.headers[name] !== undefined) response.setHeader(name, reply.headers[name]);
       response.statusCode = reply.statusCode;
       reply.on('error', unavailable);
-      reply.pipe(response);
+      if (dashboard) response.setHeader('vary', 'Accept-Encoding');
+      if (dashboard && reply.statusCode === 200 && acceptsGzip(request.headers['accept-encoding'])) {
+        response.setHeader('content-encoding', 'gzip');
+        const gzip = createGzip();
+        gzip.on('error', unavailable);
+        response.on('close', () => gzip.destroy());
+        reply.pipe(gzip).pipe(response);
+      } else reply.pipe(response);
     });
     upstreams.add(upstream);
     upstream.on('close', () => upstreams.delete(upstream));
@@ -246,9 +304,9 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     upstream.end(body);
   }
 
-  async function handle(request, response, listener) {
+  async function handle(request, response, group, kind) {
     const address = request.socket.remoteAddress;
-    if (!isAllowedRemote(address)) { request.socket.destroy(); return; }
+    if (!isAllowedRemote(address, kind)) { request.socket.destroy(); return; }
     response.setHeader('cache-control', 'no-store');
     response.setHeader('x-content-type-options', 'nosniff');
     let pairRoute = false;
@@ -288,7 +346,7 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
         });
         if (!device) { reject(401, 'This phone is not paired with ASB.'); return; }
       }
-      if (response.destroyed || listener !== server) return;
+      if (response.destroyed || group !== listeners) return;
       const body = request.method === 'POST' ? await readBody(request) : null;
       if (pairRoute) {
         let value;
@@ -297,7 +355,7 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
           reject(400, 'Invalid pairing request.'); return;
         }
         await serialize(async () => {
-          if (response.destroyed || listener !== server) return;
+          if (response.destroyed || group !== listeners) return;
           const current = activePairing();
           if (!current || !equal(Buffer.from(value.code), Buffer.from(current.code))) {
             if (current && ++current.failures >= 8) pairing = null;
@@ -313,11 +371,12 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
           sendJson(response, 200, { deviceId: id, token, serverName: hostName, asbVersion, api: PHONE_API_VERSION });
         });
       } else if (hello) {
-        sendJson(response, 200, { api: PHONE_API_VERSION, asbVersion, deviceId: device.id, serverName: hostName });
+        sendJson(response, 200, { api: PHONE_API_VERSION, asbVersion, deviceId: device.id, serverName: hostName,
+          addresses: listening(), port: settings.port });
       } else {
         const target = dashboard ? `/api/dashboard${url.searchParams.get('force') === '1' ? '?force=1' : ''}`
           : unread ? '/api/settings/unread' : `/api/threads/${match[1]}/${match[2]}`;
-        proxy(request, response, target, body);
+        proxy(request, response, target, body, dashboard);
       }
     } catch (cause) {
       if (!response.destroyed) reject(cause.statusCode === 413 ? 413 : 500,
@@ -331,21 +390,25 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     status: () => serialize(async () => { await load(); return status(); }),
     updateSettings: (value) => serialize(async () => {
       await load();
-      if (!fields(value, ['enabled', 'bindAddress', 'port']) || typeof value.enabled !== 'boolean' || typeof value.bindAddress !== 'string') {
+      if (!fields(value, ['enabled', 'bindAddresses', 'port']) || typeof value.enabled !== 'boolean' || !validAddresses(value.bindAddresses)) {
         throw invalid('Invalid phone settings.');
       }
       if (!validPort(value.port) || value.port === localPort) throw invalid('The phone port must be from 1024 to 65535 and different from the ASB port.');
-      if (!(value.bindAddress === '' && !value.enabled) && !listAddresses().some(({ address }) => address === value.bindAddress)) {
+      const listed = listAddresses();
+      if ((value.enabled && !value.bindAddresses.length)
+        || !value.bindAddresses.every((address) => listed.some((item) => item.address === address))) {
         throw invalid('Choose a phone address on this PC.');
       }
-      await save({ ...settings, ...value });
+      await save({ ...settings, ...value, bindAddresses: [...value.bindAddresses] });
       await restart();
       return status();
     }),
     createPairing: () => serialize(async () => {
-      if (!server?.listening) throw invalid('Turn on phone access first.');
+      const addresses = listening();
+      if (!addresses.length) throw invalid('Turn on phone access first.');
       pairing = { code: randomBytes(20).toString('base64url'), expiresAtMs: now() + 600_000, failures: 0 };
-      const values = { v: PHONE_API_VERSION, h: settings.bindAddress, p: settings.port, f: fingerprint, c: pairing.code, n: hostName };
+      const values = { v: 2, a: addresses.map(({ kind, address }) => `${kind}:${address}`).join(','), p: settings.port,
+        f: fingerprint, c: pairing.code, n: hostName };
       return { uri: `asb://pair?${Object.entries(values).map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join('&')}`,
         expiresAtMs: pairing.expiresAtMs };
     }),

@@ -135,7 +135,7 @@ ASB uses dark mode in its main and Preferences windows. In **Appearance**, **GNO
 | `$XDG_CONFIG_HOME/asb/layout.json` | Column width, selected view, and Show app pills. |
 | `$XDG_CONFIG_HOME/asb/theme.json` | Custom colors. |
 | `$XDG_CONFIG_HOME/asb/sources.json` | App-source names, colors, dot visibility, folders, launchers, and enabled flags. |
-| `$XDG_CONFIG_HOME/asb/phone.json` | Phone access on or off, address, port, and paired phones. Each phone has an ID, a name, times, and the SHA-256 of its token. |
+| `$XDG_CONFIG_HOME/asb/phone.json` | Phone access on or off, selected addresses, port, and paired phones. Each phone has an ID, a name, times, and the SHA-256 of its token. |
 | `$XDG_CONFIG_HOME/asb/phone-tls/` | The phone certificate (`cert.pem`) and its private key (`key.pem`). |
 
 With no XDG override, state uses `~/.local/state` and config uses `~/.config`. An empty `XDG_CONFIG_HOME` also uses `~/.config`. A width-only layout file loads Compact. Reset width keeps the selected view. The attention, source, and phone settings files have owner-only access. When ASB cannot use `pending.json` in full, it shows the Pending state warning and moves the old file to `pending.json.bad` before the first save. An older `.bad` file is replaced. The same rule applies to `sources.json` (`sources.json.bad`) before the next source update or remove. The warning that ASB cannot save Pending state clears after the next good save.
@@ -173,10 +173,12 @@ Open **Phone** in Preferences to use the optional ASB Android app. Phone access 
 | Field | Select |
 | --- | --- |
 | Allow phone access | Turn phone access on or off. Phones on your network can see your sessions and use ASB actions after pairing. |
-| Address | One private IPv4 address of this PC, with its interface name. |
+| Addresses | One check row for each private address of this PC: **Home network** (LAN), **ZeroTier**, or **Tailscale**, with the address. ZeroTier and Tailscale rows show "Works away from home". Select one or more. |
 | Port | The phone port, from 1024 to 65535. The default is `4630`. It must be different from the ASB port. |
 
-Select **Apply** to save and start or stop phone access. The page then shows `Running at https://<address>:<port>` or an error. When the address is not on the PC now (for example after a Wi-Fi change), phone access stays off and the page shows an error. Choose another address, then select **Apply**. The page also shows the certificate fingerprint in groups of four characters. The fingerprint does not change when you change the address or port.
+Select **Apply** to save and start or stop phone access. The page then shows `Running at` with each listening address, or an error. When a selected address is not on the PC now (for example after a Wi-Fi change), ASB skips it, the other addresses still listen, and the page shows an error that names it. Select other addresses, then select **Apply**. The page also shows the certificate fingerprint in groups of four characters. The fingerprint does not change when you change the addresses or port.
+
+To use ASB away from home, install and join ZeroTier or Tailscale on this PC and on the phone. Then select the ZeroTier or Tailscale row and select **Apply**. When no ZeroTier or Tailscale address is on the PC, the page shows a note about this. One pairing works on all selected addresses. The app finds a working address by itself, and a phone that was paired before also gets the new addresses.
 
 To pair a phone, select **Pair a phone**. Scan the QR code with the ASB app. The code works once and ends in 10 minutes. Eight wrong codes also end it. Compare the fingerprint on the phone with the fingerprint in Preferences. When the phone is paired, the page shows **Paired:** and the phone name. Without `python3-qrcode`, the page shows the pairing link with **Copy link**; paste the link in the app. ASB keeps up to eight paired phones.
 
@@ -194,7 +196,7 @@ The initial window is about 420×900 pixels. Closing it stops the backend that t
 
 The optional browser view starts with `npm start` at [http://127.0.0.1:4629/](http://127.0.0.1:4629/). Both modes bind only to `127.0.0.1`. `HOST` does not change the address. `npm start` does not start phone access.
 
-ASB uses two ports. The ASB server uses `4629` on `127.0.0.1`, or the `PORT` value. Phone access uses `4630` by default on the address that you choose in Preferences > Phone.
+ASB uses two ports. The ASB server uses `4629` on `127.0.0.1`, or the `PORT` value. Phone access uses `4630` by default on the addresses that you select in Preferences > Phone.
 
 ### User service
 

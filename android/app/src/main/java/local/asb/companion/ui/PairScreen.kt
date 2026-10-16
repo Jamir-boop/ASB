@@ -145,8 +145,9 @@ class PairingViewModel(
 fun PairScreen(activity: Activity, model: PairingViewModel, onPaired: () -> Unit) {
     LaunchedEffect(model.paired) { if (model.paired) onPaired() }
     BackHandler(enabled = model.candidate != null) { model.back() }
-    Scaffold(topBar = {
+    Scaffold(contentWindowInsets = SafeContentInsets, topBar = {
         TopAppBar(
+            windowInsets = SafeTopBarInsets,
             title = { Text("Pair with ASB") },
             navigationIcon = { if (model.candidate != null) TextButton(onClick = model::back) { Text("Back") } },
         )
@@ -191,7 +192,8 @@ fun PairScreen(activity: Activity, model: PairingViewModel, onPaired: () -> Unit
                     }
                 } else {
                     Text("Check the PC", style = MaterialTheme.typography.headlineSmall)
-                    Text("PC: ${info.serverName.ifEmpty { "ASB" }} at ${info.host}:${info.port}")
+                    Text("PC: ${info.serverName.ifEmpty { "ASB" }}")
+                    EndpointList(info.addresses, null, info.port)
                     Text("Certificate", style = MaterialTheme.typography.titleMedium)
                     Text(info.fingerprint.chunked(4).joinToString(" "), fontFamily = FontFamily.Monospace)
                     Text("Compare this fingerprint with ASB Preferences > Phone before you pair.")

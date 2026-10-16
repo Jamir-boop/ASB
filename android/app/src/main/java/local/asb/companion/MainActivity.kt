@@ -1,5 +1,8 @@
 package local.asb.companion
 
+import local.asb.companion.ui.LocalUseCameraArea
+import local.asb.companion.ui.SafeTopBarInsets
+import local.asb.companion.ui.SafeContentInsets
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -7,11 +10,15 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -42,9 +50,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewModelScope
@@ -57,51 +67,72 @@ import local.asb.companion.data.Hello
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.AsbApi
 import local.asb.companion.notify.CheckWorker
+import local.asb.companion.notify.LiveService
+import local.asb.companion.notify.LiveUpdate
 import local.asb.companion.notify.Notifier
 import local.asb.companion.ui.AsbTheme
+import local.asb.companion.ui.EndpointList
 import local.asb.companion.ui.PairScreen
 import local.asb.companion.ui.PairingViewModel
 import local.asb.companion.ui.SessionsScreen
 import local.asb.companion.ui.SessionsViewModel
 import local.asb.companion.ui.SettingsScreen
+import local.asb.companion.ui.withDensity
 
 class MainActivity : ComponentActivity() {
     private var notificationsAllowed by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // Dark only: transparent bars with light icons over the palette background.
+        val bars = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        enableEdgeToEdge(statusBarStyle = bars, navigationBarStyle = bars)
+        // Fullscreen: the system bars hide; a swipe from an edge shows them for a moment.
+        WindowCompat.getInsetsController(window, window.decorView).run {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.systemBars())
+        }
         val app = application as AsbApp
         app.notifier.opened(intent)
         notificationsAllowed = Notifier.notificationsAllowed(this)
         setContent {
-            AsbTheme {
-                val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-                    notificationsAllowed = Notifier.notificationsAllowed(this)
-                }
-                val requestNotifications = {
-                    val asked = app.store.notificationPermissionAsked
-                    app.store.notificationPermissionAsked = true
-                    if (Build.VERSION.SDK_INT >= 33 &&
-                        checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
-                        (!asked || shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS))) {
-                        permission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                    } else {
-                        startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                            .putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+            // The Settings text size scales every sp in the app, on top of the system font size.
+            val system = LocalDensity.current
+            CompositionLocalProvider(
+                LocalDensity provides Density(system.density, system.fontScale * app.textScale),
+                LocalUseCameraArea provides app.useCameraArea,
+            ) {
+                AsbTheme(app.palette) {
+                    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+                        notificationsAllowed = Notifier.notificationsAllowed(this)
                     }
+                    val requestNotifications = {
+                        val asked = app.store.notificationPermissionAsked
+                        app.store.notificationPermissionAsked = true
+                        if (Build.VERSION.SDK_INT >= 33 &&
+                            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
+                            (!asked || shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS))) {
+                            permission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        } else {
+                            startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                .putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+                        }
+                    }
+                    val pairingModel = viewModel<PairingViewModel>(factory = remember(app) {
+                        viewModelFactory { initializer { PairingViewModel(app.store::save) } }
+                    })
+                    var paired by remember { mutableStateOf(app.store.paired) }
+                    if (paired) PairedApp(app, notificationsAllowed, requestNotifications) {
+                        LiveService.stop(app)
+                        app.liveUpdates.value = null
+                        app.notifier.clear()
+                        pairingModel.reset()
+                        app.store.clear()
+                        app.usePalette(null)
+                        paired = false
+                    }
+                    else PairScreen(this, pairingModel) { paired = true }
                 }
-                val pairingModel = viewModel<PairingViewModel>(factory = remember(app) {
-                    viewModelFactory { initializer { PairingViewModel(app.store::save) } }
-                })
-                var paired by remember { mutableStateOf(app.store.paired) }
-                if (paired) PairedApp(app, notificationsAllowed, requestNotifications) {
-                    app.notifier.clear()
-                    pairingModel.reset()
-                    app.store.clear()
-                    paired = false
-                }
-                else PairScreen(this, pairingModel) { paired = true }
             }
         }
     }
@@ -110,6 +141,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         (application as AsbApp).resumed = true
         notificationsAllowed = Notifier.notificationsAllowed(this)
+        LiveService.startIfEnabled(this)
     }
 
     override fun onPause() {
@@ -146,6 +178,8 @@ private fun PairedApp(
         })
     } else {
         LaunchedEffect(deviceId) {
+            // A new pairing reaches this screen without a new onResume.
+            LiveService.startIfEnabled(app)
             if (Build.VERSION.SDK_INT >= 33 && !store.notificationPermissionAsked) {
                 if (notificationsAllowed) store.notificationPermissionAsked = true
                 else onRequestNotificationPermission()
@@ -160,6 +194,9 @@ private fun PairedApp(
                         },
                         notificationMutex = app.notificationMutex,
                         loadBaseline = { store.loadBaselineIfPaired(token) },
+                        initialView = store.view,
+                        savePalette = app::usePalette,
+                        showLive = { app.liveUpdates.value = LiveUpdate(it.threads, System.currentTimeMillis()) },
                     )
                 }
             }
@@ -175,6 +212,12 @@ private fun PairedApp(
                 onRequestNotificationPermission = onRequestNotificationPermission,
                 onCheckNow = { CheckWorker.checkNow(app) },
                 onPersistentUnreadChanged = sessionsModel::refresh,
+                onViewChanged = sessionsModel::setView,
+                onTextScaleChanged = app::useTextScale,
+                useCameraArea = app.useCameraArea,
+                onUseCameraAreaChanged = app::chooseCameraArea,
+                liveNotification = app.liveNotification,
+                onLiveNotificationChanged = app::useLiveNotification,
             )
         } else {
             SessionsScreen(sessionsModel, serverName,
@@ -215,9 +258,9 @@ private fun ConnectionScreen(
             finally { busy = false }
         }
     }
-    Scaffold(topBar = {
+    Scaffold(contentWindowInsets = SafeContentInsets, topBar = {
         TopAppBar(title = { Text(if (onBack == null) "ASB" else "Connection") },
-            navigationIcon = { onBack?.let { TextButton(onClick = it) { Text("Back") } } })
+            navigationIcon = { onBack?.let { TextButton(onClick = it) { Text("Back") } } }, windowInsets = SafeTopBarInsets)
     }) { padding ->
         Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding), contentAlignment = Alignment.TopCenter) {
             Column(
@@ -234,7 +277,7 @@ private fun ConnectionScreen(
                     style = MaterialTheme.typography.headlineSmall,
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                 )
-                Text("${app.store.host}:${app.store.port}")
+                EndpointList(app.store.endpoints, app.store.currentEndpoint, app.store.port)
                 hello?.let { Text("ASB ${it.asbVersion}") }
                 error?.let { Text(it.message.orEmpty(), color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }) }
@@ -252,12 +295,13 @@ private fun ConnectionScreen(
         }
     }
     if (confirmUnpair) {
+        val density = LocalDensity.current
         AlertDialog(
             onDismissRequest = { confirmUnpair = false },
-            title = { Text("Unpair this phone?") },
-            text = { Text("Also remove this phone in ASB Preferences > Phone on the PC.") },
-            confirmButton = { TextButton(onClick = onUnpair) { Text("Unpair") } },
-            dismissButton = { TextButton(onClick = { confirmUnpair = false }) { Text("Cancel") } },
+            title = withDensity(density) { Text("Unpair this phone?") },
+            text = withDensity(density) { Text("Also remove this phone in ASB Preferences > Phone on the PC.") },
+            confirmButton = withDensity(density) { TextButton(onClick = onUnpair) { Text("Unpair") } },
+            dismissButton = withDensity(density) { TextButton(onClick = { confirmUnpair = false }) { Text("Cancel") } },
         )
     }
 }

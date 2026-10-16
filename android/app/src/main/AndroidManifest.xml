@@ -3,6 +3,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <application
         android:name=".AsbApp"
         android:allowBackup="false"
@@ -15,6 +18,20 @@
         android:theme="@style/Theme.Asb">
         <meta-data android:name="com.google.mlkit.vision.DEPENDENCIES" android:value="barcode_ui" />
         <receiver android:name=".notify.ActionReceiver" android:exported="false" />
+        <receiver android:name=".notify.LiveStartReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+        <service
+            android:name=".notify.LiveService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Shows the live count of ASB sessions from the paired PC" />
+        </service>
         <activity
             android:name=".MainActivity"
             android:exported="true">

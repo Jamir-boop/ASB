@@ -1,12 +1,38 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
 import http from 'node:http';
+import path from 'node:path';
 import { DashboardSnapshot } from './dashboard-snapshot.mjs';
 import { DEFAULT_PUBLIC_DIR, parseBooleanSearchParam, readJsonBody, sendJson, serveStatic, threadNotFound } from './local-http.mjs';
+
+const PALETTE_KEYS = ['background', 'text', 'accent', 'muted', 'divider', 'success', 'warning'];
+
+// Returns the palette with lowercase colors in a fixed key order, or null when the value is not exactly a palette.
+function validPalette(value) {
+  const object = (item) => item && typeof item === 'object' && !Array.isArray(item);
+  if (!object(value) || Object.keys(value).sort().join(',') !== 'colors,mode' || !['gnome', 'custom'].includes(value.mode)
+    || !object(value.colors) || Object.keys(value.colors).sort().join(',') !== [...PALETTE_KEYS].sort().join(',')
+    || !Object.values(value.colors).every((color) => typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color))) return null;
+  return { mode: value.mode, colors: Object.fromEntries(PALETTE_KEYS.map((key) => [key, value.colors[key].toLowerCase()])) };
+}
+
+function readPalette(palettePath) {
+  if (!palettePath) return null;
+  try {
+    const palette = validPalette(JSON.parse(readFileSync(palettePath, 'utf8')));
+    if (palette) return palette;
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+  }
+  console.warn('ASB could not read its saved palette. The phone gets the palette at the next window theme apply.');
+  return null;
+}
 
 export function createAsbServer({
   markUnreadThread = null, markReadThread = null, setUnreadSettings = null, pinThread = null, discardThread = null, drawerThread = null,
   listSources = null, updateSource = null, removeSource = null, sourceToken = '', phoneGateway = null, serviceMode = false,
-  publicDir = DEFAULT_PUBLIC_DIR, ...snapshotOptions
+  palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, ...snapshotOptions
 } = {}) {
   const snapshot = new DashboardSnapshot({ serviceMode, ...snapshotOptions });
   const expectedSourceToken = Buffer.from(String(sourceToken || ''));
@@ -15,6 +41,21 @@ export function createAsbServer({
     return !expectedSourceToken.length || (given.length === expectedSourceToken.length && timingSafeEqual(given, expectedSourceToken));
   };
   let dashboardNotModified = 0;
+  let palette = readPalette(palettePath);
+  let paletteWrite = Promise.resolve();
+  // Saves run one at a time; the memory value changes only after the file has the new value.
+  const savePalette = (value) => paletteWrite = paletteWrite.catch(() => {}).then(async () => {
+    const content = JSON.stringify(value);
+    if (content === JSON.stringify(palette)) return false;
+    if (palettePath) {
+      await mkdir(path.dirname(palettePath), { recursive: true, mode: 0o700 });
+      const temporary = `${palettePath}.${process.pid}.tmp`;
+      await writeFile(temporary, content, { mode: 0o600 });
+      await rename(temporary, palettePath);
+    }
+    palette = value;
+    return true;
+  });
   const readBody = async (request) => {
     try { return await readJsonBody(request); }
     catch (error) { if (error instanceof SyntaxError) error.statusCode = 400; throw error; }
@@ -40,8 +81,9 @@ export function createAsbServer({
     const phoneRevoke = phoneGateway && url.pathname.match(/^\/api\/phone\/devices\/([a-f0-9]{12})\/revoke$/);
     const phoneActionRoute = phoneGateway && (['/api/phone/settings', '/api/phone/pairing'].includes(url.pathname) || Boolean(phoneRevoke));
     const eventRoute = url.pathname === '/api/events';
+    const paletteRoute = url.pathname === '/api/palette';
     const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute
-      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute;
+      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute;
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
     const readApiRoute = url.pathname === '/api/dashboard' || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute;
     const readRoute = readApiRoute || staticRoutes.includes(url.pathname);
@@ -79,18 +121,20 @@ export function createAsbServer({
         else {
           const body = await readBody(request);
           const fields = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join(',') : 'invalid';
-          if (fields !== (url.pathname === '/api/phone/settings' ? 'bindAddress,enabled,port' : '')) {
+          if (fields !== (url.pathname === '/api/phone/settings' ? 'bindAddresses,enabled,port' : '')) {
             sendJson(response, 400, { error: 'Invalid phone action.' });
             return;
           }
           if (url.pathname === '/api/phone/settings') {
-            if (typeof body.enabled !== 'boolean' || typeof body.bindAddress !== 'string'
+            const addresses = body.bindAddresses;
+            if (typeof body.enabled !== 'boolean' || !Array.isArray(addresses) || addresses.length > 8
+              || !addresses.every((value) => typeof value === 'string') || new Set(addresses).size !== addresses.length
               || !Number.isInteger(body.port) || body.port < 1024 || body.port > 65535 || body.port === address.port) {
-              sendJson(response, 400, { error: 'Invalid phone settings. Use a port from 1024 to 65535 that is different from the ASB port.' });
+              sendJson(response, 400, { error: 'Invalid phone settings. Choose up to eight different addresses and a port from 1024 to 65535 that is different from the ASB port.' });
               return;
             }
-            if (!(body.bindAddress === '' && !body.enabled)
-              && !(await phoneGateway.status()).addresses.some(({ address: value }) => value === body.bindAddress)) {
+            const listed = (await phoneGateway.status()).addresses;
+            if ((body.enabled && !addresses.length) || !addresses.every((value) => listed.some((item) => item.address === value))) {
               sendJson(response, 400, { error: 'Choose a phone address on this PC.' });
               return;
             }
@@ -101,6 +145,26 @@ export function createAsbServer({
       } catch (error) {
         sendJson(response, error.statusCode || 500, { error: error instanceof SyntaxError ? 'Invalid phone action.'
           : error.statusCode === 400 ? error.message : 'Cannot update ASB phone access.' });
+      }
+      return;
+    }
+    if (paletteRoute) {
+      // Local programs can forge Host and Origin; only the ASB window holds the launcher's token.
+      if (!sourceTokenAllowed(request)) {
+        sendJson(response, 403, { error: 'Use the palette route from the ASB window.' });
+        return;
+      }
+      try {
+        const value = validPalette(await readBody(request));
+        if (!value) {
+          sendJson(response, 400, { error: 'Invalid ASB palette.' });
+          return;
+        }
+        const changed = await savePalette(value);
+        if (changed) invalidateDashboard('asb-palette', { hard: false, dirty: false });
+        sendJson(response, 200, { changed });
+      } catch (error) {
+        sendJson(response, error.statusCode || 500, { error: error instanceof SyntaxError ? 'Invalid ASB palette.' : 'Cannot save the ASB palette.' });
       }
       return;
     }
@@ -197,7 +261,8 @@ export function createAsbServer({
       try {
         const dashboard = await dashboardForRequest({ force: parseBooleanSearchParam(url.searchParams.get('force')) });
         // The rows can change in place between scans, so the tag comes from the content of each reply.
-        const { generatedAtMs, performance: _, ...content } = dashboard;
+        const { generatedAtMs, performance: _, ...rows } = dashboard;
+        const content = { ...rows, palette };
         const list = JSON.stringify(content);
         const etag = `"${createHash('sha256').update(list).digest('base64url')}"`;
         const headers = { etag, 'cache-control': 'no-store' };

@@ -32,6 +32,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
@@ -41,6 +44,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -52,6 +56,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
@@ -71,11 +76,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import local.asb.companion.data.Endpoint
 import local.asb.companion.data.Hello
 import local.asb.companion.data.Store
+import local.asb.companion.data.endpointLabel
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.DashboardResult
+import local.asb.companion.notify.LiveService
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -88,6 +96,12 @@ fun SettingsScreen(
     onRequestNotificationPermission: () -> Unit,
     onCheckNow: () -> Unit,
     onPersistentUnreadChanged: () -> Unit = {},
+    onViewChanged: (String) -> Unit = {},
+    onTextScaleChanged: (Float) -> Unit = {},
+    useCameraArea: Boolean = true,
+    onUseCameraAreaChanged: (Boolean) -> Unit = {},
+    liveNotification: Boolean,
+    onLiveNotificationChanged: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -108,6 +122,10 @@ fun SettingsScreen(
     var notifyDone by remember(store) { mutableStateOf(store.notifyDone) }
     var notifyFailed by remember(store) { mutableStateOf(store.notifyFailed) }
     var notifyInput by remember(store) { mutableStateOf(store.notifyInput) }
+    var view by remember(store) { mutableStateOf(store.view) }
+    var textScale by remember(store) { mutableFloatStateOf(store.textScale) }
+    val palette = LocalPalette.current
+    val paletteFromPc = remember(store, palette) { store.palette != null }
     val version = remember(context) {
         val info = context.packageManager.getPackageInfo(context.packageName, 0)
         "${info.versionName.orEmpty()} (${info.longVersionCode})"
@@ -156,8 +174,9 @@ fun SettingsScreen(
     }
 
     Scaffold(
+        contentWindowInsets = SafeContentInsets,
         topBar = {
-            TopAppBar(title = { Text("Settings") }, navigationIcon = {
+            TopAppBar(windowInsets = SafeTopBarInsets, title = { Text("Settings") }, navigationIcon = {
                 IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
             })
         },
@@ -173,7 +192,7 @@ fun SettingsScreen(
                     SettingsHeading("Connection")
                     Text(hello?.serverName?.takeIf { it.isNotBlank() } ?: store.serverName.ifBlank { "Paired PC" },
                         style = MaterialTheme.typography.titleMedium)
-                    SelectionContainer { Text("${store.host}:${store.port}", style = MaterialTheme.typography.bodyLarge) }
+                    EndpointList(store.endpoints, store.currentEndpoint, store.port)
                     Text(
                         when {
                             refreshing -> "Checking ASB…"
@@ -241,10 +260,54 @@ fun SettingsScreen(
                 }
                 HorizontalDivider()
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SettingsHeading("Appearance")
+                    Text(
+                        "Theme: follows the PC (" + when {
+                            !paletteFromPc -> "default colors until the PC sends its colors"
+                            palette.custom -> "Custom colors"
+                            else -> "GNOME colors"
+                        } + ")",
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Text("View", style = MaterialTheme.typography.labelLarge)
+                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                        listOf("compact" to "Compact", "comfortable" to "Comfortable").forEachIndexed { index, (value, label) ->
+                            SegmentedButton(
+                                selected = view == value,
+                                onClick = { view = value; store.view = value; onViewChanged(value) },
+                                shape = SegmentedButtonDefaults.itemShape(index, 2),
+                                modifier = Modifier.heightIn(min = 48.dp),
+                            ) { Text(label) }
+                        }
+                    }
+                    Text("Text size", style = MaterialTheme.typography.labelLarge)
+                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                        TEXT_SCALES.forEachIndexed { index, (value, label) ->
+                            SegmentedButton(
+                                selected = textScale == value,
+                                onClick = { textScale = value; onTextScaleChanged(value) },
+                                shape = SegmentedButtonDefaults.itemShape(index, TEXT_SCALES.size),
+                                modifier = Modifier.heightIn(min = 48.dp),
+                            ) { Text(label) }
+                        }
+                    }
+                    SettingsSwitch("Use the camera area", useCameraArea, onChecked = onUseCameraAreaChanged)
+                    Text("Draw the app under the camera hole. Turn off to keep that band clear.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                HorizontalDivider()
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     SettingsHeading("Notifications")
                     SettingsSwitch("Done", notifyDone) { notifyDone = it; store.notifyDone = it }
                     SettingsSwitch("Failed", notifyFailed) { notifyFailed = it; store.notifyFailed = it }
                     SettingsSwitch("Needs input", notifyInput) { notifyInput = it; store.notifyInput = it }
+                    SettingsSwitch("Live notification", liveNotification) {
+                        // The setter runs first, because startIfEnabled reads the saved switch.
+                        onLiveNotificationChanged(it)
+                        if (it) LiveService.startIfEnabled(context) else LiveService.stop(context)
+                    }
+                    Text("Shows the number of sessions, Working, and Pending. While the phone is awake, it checks every 5 seconds while a session is working, and every 30 seconds when not. Android can delay checks while the screen is off.",
+                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     if (!notificationsAllowed) {
                         Text("Notifications are off for ASB.", style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -290,14 +353,28 @@ fun SettingsScreen(
             }
         }
     }
+    val density = LocalDensity.current
     if (confirmUnpair) AlertDialog(
         onDismissRequest = { confirmUnpair = false },
-        title = { Text("Unpair this phone?") },
-        text = { Text("This removes the saved pairing from this phone. Also remove this phone in ASB Preferences > Phone on the PC.") },
-        confirmButton = { TextButton(onClick = { confirmUnpair = false; onUnpair() }) { Text("Unpair") } },
-        dismissButton = { TextButton(onClick = { confirmUnpair = false }) { Text("Cancel") } },
+        title = withDensity(density) { Text("Unpair this phone?") },
+        text = withDensity(density) { Text("This removes the saved pairing from this phone. Also remove this phone in ASB Preferences > Phone on the PC.") },
+        confirmButton = withDensity(density) { TextButton(onClick = { confirmUnpair = false; onUnpair() }) { Text("Unpair") } },
+        dismissButton = withDensity(density) { TextButton(onClick = { confirmUnpair = false }) { Text("Cancel") } },
     )
     license?.let { title -> LicenseDialog(title, SettingsLicenses.getValue(title)) { license = null } }
+}
+
+/** The addresses of the paired PC with their kinds; the one that answered last is marked Current. */
+@Composable
+fun EndpointList(endpoints: List<Endpoint>, current: Endpoint?, port: Int) {
+    SelectionContainer {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            for (endpoint in endpoints) Text(
+                "${endpointLabel(endpoint.kind)}: ${endpoint.host}:$port" + if (endpoint == current) " · Current" else "",
+                style = MaterialTheme.typography.bodyLarge,
+            )
+        }
+    }
 }
 
 @Composable
@@ -332,18 +409,21 @@ private fun LicenseDialog(title: String, paths: List<String>, onDismiss: () -> U
             withContext(Dispatchers.IO) { paths.joinToString("\n\n") { path -> assets.open(path).bufferedReader().use { it.readText() } } }
         } catch (_: IOException) { "Could not load this license. Close this dialog and try again." }
     }
+    val density = LocalDensity.current
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
+        title = withDensity(density) { Text(title) },
+        text = withDensity(density) {
             SelectionContainer {
                 Text(text ?: "Loading license…", style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()))
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        confirmButton = withDensity(density) { TextButton(onClick = onDismiss) { Text("Close") } },
     )
 }
+
+private val TEXT_SCALES = listOf(0.85f to "Small", 1f to "Default", 1.15f to "Large", 1.3f to "Larger")
 
 private val SettingsLicenses = linkedMapOf(
     "ASB (MIT)" to listOf("licenses/asb-LICENSE.txt"),

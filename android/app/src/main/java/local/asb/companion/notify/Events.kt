@@ -10,8 +10,11 @@ private const val BIT_LIMITED = 8
 
 fun bits(row: Thread): Int {
     if (row.archived) return 0
-    return (if (row.completionAttention) BIT_DONE else 0) or
-        (if (row.failedAttention) BIT_FAILED else 0) or
+    // A Codex chat with native read state shows its result only as native attention and the last outcome.
+    val native = row.nativeAttention && row.state == "idle"
+    val nativeFailed = native && row.lastOutcome == "failed"
+    return (if (row.completionAttention || (native && !nativeFailed)) BIT_DONE else 0) or
+        (if (row.failedAttention || nativeFailed) BIT_FAILED else 0) or
         (if (row.questionAttention || row.actionRequired) BIT_INPUT else 0)
 }
 
@@ -37,13 +40,16 @@ fun diff(
     }
 }
 
+// Rows missing from one update keep their bits, so a skipped scan cannot replay an old mark.
 fun update(
     baseline: Map<String, Int>?,
     threads: List<Thread>,
     nowMs: Long = System.currentTimeMillis(),
-): Map<String, Int> = threads.associate { row ->
-    val current = bits(row)
-    row.id to if (!row.archived && limitLeft(row, nowMs) > 0) {
-        (current and BIT_INPUT) or ((baseline?.get(row.id) ?: 0) and (BIT_DONE or BIT_FAILED)) or BIT_LIMITED
-    } else current
+): Map<String, Int> = (baseline ?: emptyMap()).toMutableMap().apply {
+    for (row in threads) {
+        val current = bits(row)
+        put(row.id, if (!row.archived && limitLeft(row, nowMs) > 0) {
+            (current and BIT_INPUT) or ((baseline?.get(row.id) ?: 0) and (BIT_DONE or BIT_FAILED)) or BIT_LIMITED
+        } else current)
+    }
 }

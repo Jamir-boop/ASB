@@ -389,6 +389,15 @@ def write_theme(path, colors=None):
     write_config(path, None if colors is None else {"mode": "custom", "colors": validate_theme(colors)})
 
 
+def palette_payload(custom, native=None, success=None, warning=None):
+    """The palette for POST /api/palette: custom colors, or the GNOME colors with the GNOME success and warning colors."""
+    if custom:
+        return {"mode": "custom", "colors": {**{key: custom[key] for key in THEME_KEYS},
+                                             "success": custom["accent"], "warning": custom["accent"]}}
+    return {"mode": "gnome", "colors": {**{key: native[key] for key in THEME_KEYS},
+                                        "success": success or native["accent"], "warning": warning or native["accent"]}}
+
+
 def validate_column_width(width):
     if type(width) is not int or not 160 <= width <= 600:
         raise ValueError("Column width must be a whole number from 160 to 600 pixels.")
@@ -615,14 +624,33 @@ def group_fingerprint(value):
     return " ".join(value[index:index + 4] for index in range(0, len(value), 4))
 
 
+PHONE_KINDS = {"lan": "Home network", "zerotier": "ZeroTier", "tailscale": "Tailscale"}
+PHONE_OVERLAY_NOTE = "Install and join ZeroTier or Tailscale on this PC and the phone to use ASB away from home."
+
+
 def phone_status_text(status):
+    if status.get("running"):
+        port = status.get("port", 4630)
+        running = "Running at " + ", ".join(f"https://{item['address']}:{port} ({PHONE_KINDS.get(item['kind'], item['kind'])})"
+                                            for item in status.get("listening", []))
+        return "\n".join(filter(None, (running, status.get("error", ""))))
     if status.get("error"):
         return status["error"]
-    if status.get("running"):
-        return f"Running at https://{status.get('bindAddress', '')}:{status.get('port', 4630)}"
     if not status.get("enabled"):
         return "Phone access is off."
     return "Phone access is not running. Apply the settings to try again."
+
+
+def phone_address_rows(addresses):
+    return [{"address": item["address"], "title": PHONE_KINDS[item["kind"]],
+             "subtitle": item["address"] + ("" if item["kind"] == "lan" else " · Works away from home")}
+            for item in addresses if item.get("kind") in PHONE_KINDS]
+
+
+def phone_address_note(addresses):
+    kinds = {item.get("kind") for item in addresses}
+    return " ".join(filter(None, ("" if addresses else "No private network address on this PC.",
+                                  "" if kinds & {"zerotier", "tailscale"} else PHONE_OVERLAY_NOTE)))
 
 
 def qr_matrix(uri):
@@ -642,10 +670,11 @@ def request_json(base, route, method="GET", body=None, etag=None):
     source_route = path == "/api/sources" or path.startswith("/api/sources/")
     phone_route = path == "/api/phone" or path.startswith("/api/phone/")
     service_route = path == "/api/service"
+    palette_route = path == "/api/palette"
     data = None
     if etag and etag[0] and method == "GET" and route.split("?")[0] == "/api/dashboard":
         headers["If-None-Match"] = etag[0]
-    if SOURCE_TOKEN and ((source_route and method == "POST") or phone_route or service_route):
+    if SOURCE_TOKEN and ((source_route and method == "POST") or phone_route or service_route or palette_route):
         headers["X-ASB-Source-Token"] = SOURCE_TOKEN
     if method == "POST":
         headers.update({"Origin": base, "Content-Type": "application/json"})
@@ -657,7 +686,7 @@ def request_json(base, route, method="GET", body=None, etag=None):
         if not isinstance(result, dict):
             raise ValueError("The ASB response is not an object.")
         success = "opened" if route.endswith("/open") else "marked" if route.endswith("/mark-unread") else "changed"
-        if method == "POST" and not phone_route and not service_route and not result.get(success):
+        if method == "POST" and not phone_route and not service_route and not palette_route and not result.get(success):
             raise ValueError("The session action did not succeed.")
         if etag is not None:
             etag[0] = response.headers.get("ETag")
@@ -666,7 +695,7 @@ def request_json(base, route, method="GET", body=None, etag=None):
         if isinstance(error, HTTPError) and error.code == 304 and "If-None-Match" in headers:
             error.close()
             return None
-        if source_route or phone_route or service_route:
+        if source_route or phone_route or service_route or palette_route:
             detail = ""
             if isinstance(error, HTTPError):
                 try:
@@ -675,7 +704,8 @@ def request_json(base, route, method="GET", body=None, etag=None):
                         detail = payload["error"]
                 except (HTTPException, OSError, ValueError):
                     pass
-            subject = "phone access" if phone_route else "the ASB service" if service_route else "app sources"
+            subject = "phone access" if phone_route else "the ASB service" if service_route \
+                else "the phone palette" if palette_route else "app sources"
             raise RuntimeError(detail or f"Cannot load or change {subject}. Check that ASB is running, then try again.") from error
         action = "open this session" if route.endswith("/open") else "change the unread setting" if route == "/api/settings/unread" \
             else "change this session" if method == "POST" else "load sessions"
@@ -1422,20 +1452,27 @@ class PhoneEditor(Gtk.Box):
         self.owner, self.preferences, self.base = owner, preferences, owner.base
         self.closed = self.active = self.loaded = self.loading = self.poll_loading = False
         self.generation, self.poll_timer = 0, None
-        self.status, self.addresses, self.remove_buttons = {}, [], []
+        self.status, self.address_checks, self.remove_buttons = {}, {}, []
         self.pairing_uri, self.expires_at, self.pair_device_ids, self.matrix = "", 0, set(), None
         self.settings = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
         self.settings.add_css_class("boxed-list")
         self.enabled = Adw.SwitchRow(title="Allow phone access", subtitle=
             "Phones on your network can see your sessions and use ASB actions after pairing.")
         self.enabled.set_subtitle_lines(0)
-        self.address = Adw.ComboRow(title="Address")
         self.port = Adw.SpinRow.new_with_range(1024, 65535, 1)
         self.port.set_title("Port")
         self.port.set_value(4630)
-        for row in (self.enabled, self.address, self.port):
+        for row in (self.enabled, self.port):
             self.settings.append(row)
         self.append(self.settings)
+        self.append(label("Addresses", "heading"))
+        self.address_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.address_list.add_css_class("boxed-list")
+        self.append(self.address_list)
+        self.address_note = label("", "caption")
+        self.address_note.set_wrap(True)
+        self.address_note.set_max_width_chars(64)
+        self.append(self.address_note)
         actions = Gtk.Box(spacing=8)
         self.apply = Gtk.Button(label="Apply")
         self.apply.connect("clicked", self.apply_settings)
@@ -1502,6 +1539,7 @@ class PhoneEditor(Gtk.Box):
     def update_controls(self):
         ready = self.loaded and not self.loading and not self.closed
         self.settings.set_sensitive(ready)
+        self.address_list.set_sensitive(ready)
         self.apply.set_sensitive(ready)
         self.pair.set_sensitive(ready and bool(self.status.get("running")))
         self.retry.set_sensitive(not self.loading and not self.closed)
@@ -1514,14 +1552,23 @@ class PhoneEditor(Gtk.Box):
         self.fingerprint.set_label(group_fingerprint(status.get("fingerprint", "")))
         if sync_form:
             self.enabled.set_active(status.get("enabled", False))
-            self.addresses = [item["address"] for item in status["addresses"]]
-            titles = [f"{item['address']} ({item['interface']})" for item in status["addresses"]]
-            address = status.get("bindAddress", "")
-            if address and address not in self.addresses:
-                self.addresses.append(address)
-                titles.append(address + " (unavailable)")
-            self.address.set_model(Gtk.StringList.new(titles or ["No private IPv4 address"]))
-            self.address.set_selected(self.addresses.index(address) if address in self.addresses else 0)
+            child = self.address_list.get_first_child()
+            while child:
+                self.address_list.remove(child)
+                child = self.address_list.get_first_child()
+            self.address_checks = {}
+            selected = set(status.get("bindAddresses", []))
+            rows = phone_address_rows(status["addresses"])
+            for item in rows:
+                check = Gtk.CheckButton(active=item["address"] in selected, valign=Gtk.Align.CENTER)
+                row = Adw.ActionRow(title=item["title"], subtitle=item["subtitle"], use_markup=False, activatable_widget=check)
+                row.add_prefix(check)
+                self.address_list.append(row)
+                self.address_checks[item["address"]] = check
+            self.address_list.set_visible(bool(rows))
+            note = phone_address_note(status["addresses"])
+            self.address_note.set_label(note)
+            self.address_note.set_visible(bool(note))
             self.port.set_value(status.get("port", 4630))
         child = self.devices.get_first_child()
         while child:
@@ -1601,9 +1648,8 @@ class PhoneEditor(Gtk.Box):
     def apply_settings(self, *_args):
         if not self.loaded or self.loading or not self.active:
             return
-        selected = self.address.get_selected()
         body = {"enabled": self.enabled.get_active(),
-                "bindAddress": self.addresses[selected] if selected < len(self.addresses) else "",
+                "bindAddresses": [address for address, check in self.address_checks.items() if check.get_active()],
                 "port": int(self.port.get_value())}
         self.stop_pairing()
         self.request_phone("/api/phone/settings", "POST", body)
@@ -1801,6 +1847,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.clock_interval = self.clock_timer = None
         self.notice_timer, self.notice_generation, self.provider_notice = None, 0, ""
         self.opening, self.focus_widgets, self.row_cache = set(), {}, {}
+        self.palette_sent = self.palette_wanted = None
+        self.palette_sending = False
         self.list_columns = []
         self.focus_generation = 0
         self.connect("notify::focus-widget", self.focus_changed)
@@ -2132,6 +2180,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.set_theme_pickers(saved)
         except (OSError, ValueError) as error:
             self.theme_error.set_label(str(error))
+        self.publish_palette()
+        style = Adw.StyleManager.get_default()
+        for name in ("dark", "accent-color"):
+            if style.find_property(name):
+                # GNOME colors follow the system style; the phone gets them after GTK loads the new style.
+                style.connect("notify::" + name, lambda *_args: GLib.idle_add(self.publish_palette))
         self.connect("realize", self.watch_layout)
         self.timer = GLib.timeout_add(self.refresh_interval_ms, self.tick)
         self.events = EventStream(self.base, self.source_changed, GLib.idle_add)
@@ -2343,6 +2397,34 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             if preferences.profiles_editor:
                 preferences.profiles_editor.update_marker_colors()
 
+    def publish_palette(self):
+        if self.closed:
+            return False
+        if self.hover_colors:
+            self.palette_wanted = palette_payload(self.hover_colors)
+        else:
+            context = self.get_style_context()
+            found = [context.lookup_color(name) for name in ("success_color", "warning_color")]
+            self.palette_wanted = palette_payload(None, self.native_colors(),
+                                                  *(self.hex_color(value) if ok else None for ok, value in found))
+        if not self.palette_sending and self.palette_wanted != self.palette_sent:
+            sent = self.palette_wanted
+            self.palette_sending = True
+            request_async(self.base, "/api/palette", lambda _result, error: self.palette_published(sent, error),
+                          GLib.idle_add, "POST", sent)
+        return False
+
+    def palette_published(self, sent, error):
+        self.palette_sending = False
+        if error:
+            # The next palette apply tries again.
+            print(f"ASB cannot share its palette with the phone: {error}", file=sys.stderr)
+        else:
+            self.palette_sent = sent
+            if self.palette_wanted != sent and not self.closed:
+                self.publish_palette()
+        return False
+
     def open_preferences(self, *_args):
         if not self.closed:
             self.preferences_window.present()
@@ -2367,6 +2449,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 {key: self.hex_color(picker.get_rgba()) for key, picker in self.color_buttons.items()})
             write_theme(self.theme_path, colors)
             self.set_palette(colors)
+            self.publish_palette()
             self.theme_error.remove_css_class("warning")
             self.theme_error.set_label("Custom theme saved." if colors else "GNOME colors applied.")
         except (ValueError, OSError) as error:
@@ -2377,6 +2460,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         try:
             write_theme(self.theme_path)
             self.set_palette(None)
+            self.publish_palette()
             self.theme_mode.set_selected(0)
             self.set_theme_pickers(self.native_colors())
             self.theme_error.remove_css_class("warning")
