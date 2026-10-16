@@ -142,6 +142,7 @@ import kotlinx.coroutines.isActive
 import local.asb.companion.R
 import local.asb.companion.data.Message
 import local.asb.companion.data.Provider
+import local.asb.companion.data.Store
 import local.asb.companion.data.Thread
 import local.asb.companion.data.endpointLabel
 import kotlin.math.pow
@@ -168,7 +169,12 @@ fun SessionsScreen(
     val rowHeight = (if (comfortable) COMFORTABLE_ROW_HEIGHT else COMPACT_ROW_HEIGHT) + rowGap
     var showFilters by rememberSaveable { mutableStateOf(false) }
     var actionRowId by rememberSaveable { mutableStateOf<String?>(null) }
-    var dismissedWarnings by rememberSaveable { mutableStateOf(mapOf<String, String>()) }
+    val store = remember(context) { Store(context) }
+    var dismissedWarnings by remember { mutableStateOf(store.dismissedWarnings) }
+    fun dismissWarning(provider: Provider) {
+        dismissedWarnings = dismissedWarnings + (provider.id to provider.message)
+        store.dismissedWarnings = dismissedWarnings
+    }
     var initialError by rememberSaveable { mutableStateOf<String?>(null) }
     var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val providerCenters = remember { mutableStateMapOf<String, Offset>() }
@@ -297,11 +303,6 @@ fun SessionsScreen(
                     flight.copy(receiverOutside = endpoint(flight.message.to)?.outside ?: true)
                 } else flight
             }.filter { it.elapsedMs(frameNanos) < it.durationMs + if (it.receiverOutside == true) 720 else 420 }
-        }
-    }
-    LaunchedEffect(providers) {
-        dismissedWarnings = dismissedWarnings.filter { (id, text) ->
-            providers.any { it.id == id && it.status == "warning" && it.message == text }
         }
     }
     LaunchedEffect(actionRowId, actionRow) {
@@ -489,7 +490,7 @@ fun SessionsScreen(
                     pills(Modifier.fillMaxWidth().padding(horizontal = 16.dp))
                 }
                 if (flow) warnings.forEach { provider ->
-                    ProviderWarning(provider) { dismissedWarnings = dismissedWarnings + (provider.id to provider.message) }
+                    ProviderWarning(provider) { dismissWarning(provider) }
                 }
                 PullToRefreshBox(
                     isRefreshing = state.refreshing,
@@ -521,9 +522,7 @@ fun SessionsScreen(
                         verticalArrangement = Arrangement.spacedBy(rowGap.dp)) {
                         warnings.forEach { provider ->
                             item(key = "warning:${provider.id}") {
-                                ProviderWarning(provider) {
-                                    dismissedWarnings = dismissedWarnings + (provider.id to provider.message)
-                                }
+                                ProviderWarning(provider) { dismissWarning(provider) }
                             }
                         }
                         if (rows.isEmpty()) item(key = "empty") { emptyState(Modifier.fillParentMaxSize()) }

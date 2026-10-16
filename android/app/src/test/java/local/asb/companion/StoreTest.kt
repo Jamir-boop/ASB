@@ -85,4 +85,11 @@ class StoreTest {
         store.networkChanged(8)
         assertNull(store.currentEndpoint)
     }
+
+    @Test fun dismissedWarningsSurviveANewStore() {
+        val preferences = MemoryPreferences()
+        assertEquals(emptyMap<String, String>(), Store(preferences).dismissedWarnings)
+        Store(preferences).dismissedWarnings = mapOf("claude-desktop-code" to "The remote cache contains only observed sessions.")
+        assertEquals(mapOf("claude-desktop-code" to "The remote cache contains only observed sessions."), Store(preferences).dismissedWarnings)
+    }
 }

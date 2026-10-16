@@ -49,6 +49,12 @@ class Store(private val preferences: SharedPreferences) {
             try { Palette.parse(AsbJson.parseToJsonElement(it)) } catch (_: SerializationException) { null }
         }
         set(value) { preferences.edit().apply { if (value == null) remove("palette") else putString("palette", value.toJson()) }.apply() }
+    // Provider ID to the warning text that the user dismissed; the same text stays hidden after a restart.
+    var dismissedWarnings: Map<String, String>
+        get() = preferences.getString("dismissedWarnings", null)?.let {
+            try { AsbJson.decodeFromString<Map<String, String>>(it) } catch (_: SerializationException) { null }
+        }.orEmpty()
+        set(value) { preferences.edit().putString("dismissedWarnings", AsbJson.encodeToString(value)).apply() }
     var notificationPermissionAsked: Boolean
         get() = preferences.getBoolean("notificationPermissionAsked", false)
         set(value) { preferences.edit().putBoolean("notificationPermissionAsked", value).apply() }
