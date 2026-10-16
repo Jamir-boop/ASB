@@ -104,7 +104,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -162,6 +161,27 @@ import local.asb.companion.data.Store
 import local.asb.companion.data.Thread
 import local.asb.companion.data.endpointLabel
 import kotlin.math.pow
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onPlaced
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.semantics.paneTitle
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
+import local.asb.companion.data.edgeColor
+import local.asb.companion.data.mixColor
+import local.asb.companion.data.readableColor
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -189,7 +209,8 @@ fun SessionsScreen(
     val rowGap = if (comfortable) COMFORTABLE_CARD_GAP else 0
     val rowHeight = if (comfortable) comfortableCardHeight(fontScale) else compactRowHeight(fontScale)
     var showFilters by rememberSaveable { mutableStateOf(false) }
-    var actionRowId by rememberSaveable { mutableStateOf<String?>(null) }
+    // The inspector row ID and the long-press point in window pixels. A rotation closes it.
+    var inspector by remember { mutableStateOf<Pair<String, Offset>?>(null) }
     val store = remember(context) { Store(context) }
     var dismissedWarnings by remember { mutableStateOf(store.dismissedWarnings) }
     fun dismissWarning(provider: Provider) {
@@ -239,7 +260,7 @@ fun SessionsScreen(
         }
     }
     val clockIntervalMs = if (visibleRows.isEmpty()) 0L else clockInterval(visibleRows, nowMs) * 1000
-    val actionRow = threads.firstOrNull { it.id == actionRowId }
+    val inspectorRow = inspector?.let { (id, _) -> threads.firstOrNull { it.id == id } }
     val hasDrawerRows = threads.any { it.drawer && (state.filter.archived || !it.archived) }
     val workingOnly = state.filter.states == setOf("working")
     fun endpoint(id: String) = if (flow) flowEndpoint(
@@ -340,8 +361,8 @@ fun SessionsScreen(
         viewModel.setFilter(state.filter.copy(query = ""))
     }
     BackHandler(enabled = !state.revoked && if (flow) state.filter.query.isNotEmpty() else searching) { closeSearch() }
-    LaunchedEffect(actionRowId, actionRow) {
-        if (actionRowId != null && actionRow == null) actionRowId = null
+    LaunchedEffect(inspector, inspectorRow) {
+        if (inspector != null && inspectorRow == null) inspector = null
     }
     LaunchedEffect(state.lastError) {
         state.lastError?.let { message ->
@@ -372,7 +393,7 @@ fun SessionsScreen(
         messageLit = row.id in highlights,
         onProviderCenter = { center -> providerCenters[row.id] = center },
         onOpen = { viewModel.action(row.id, "open") },
-        onActions = { keyboard?.hide(); actionRowId = row.id },
+        onActions = { point -> keyboard?.hide(); inspector = row.id to point },
         onCorner = { action -> viewModel.action(row.id, action) },
         modifier = modifier,
     )
@@ -664,11 +685,16 @@ fun SessionsScreen(
         onChange = viewModel::setFilter,
         onDismiss = { showFilters = false },
     )
-    if (actionRow != null && !state.revoked) RowActionSheet(
-        row = actionRow,
-        busy = actionRow.id in state.busyIds,
-        onDismiss = { actionRowId = null },
-        onAction = { action -> actionRowId = null; viewModel.action(actionRow.id, action) },
+    if (inspectorRow != null && !state.revoked) SessionInspector(
+        row = inspectorRow,
+        point = inspector?.second ?: Offset.Zero,
+        drawerView = state.filter.drawerOnly,
+        busy = inspectorRow.id in state.busyIds,
+        nowMs = nowMs,
+        viewModel = viewModel,
+        windowSize = IntSize(constraints.maxWidth, constraints.maxHeight),
+        onOpen = { inspector = null; viewModel.action(inspectorRow.id, "open") },
+        onDismiss = { inspector = null },
     )
 }
 
@@ -729,12 +755,18 @@ private fun ProviderWarning(provider: Provider, onDismiss: () -> Unit) {
 @Composable
 private fun SessionCard(
     row: Thread, comfortable: Boolean, drawerView: Boolean, busy: Boolean, opening: Boolean, confirmed: Boolean,
-    nowMs: Long, messageLit: Boolean, onProviderCenter: (Offset) -> Unit, onOpen: () -> Unit, onActions: () -> Unit,
+    nowMs: Long, messageLit: Boolean, onProviderCenter: (Offset) -> Unit, onOpen: () -> Unit, onActions: (Offset) -> Unit,
     onCorner: (String) -> Unit, modifier: Modifier = Modifier,
 ) {
     val palette = LocalPalette.current
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
+    // The inspector opens at the long-press point; a long click with no touch (accessibility) uses the card center.
+    val coordinates = remember { mutableStateOf<LayoutCoordinates?>(null) }
+    val press = remember { mutableStateOf<Offset?>(null) }
+    LaunchedEffect(interaction) {
+        interaction.interactions.collect { press.value = (it as? PressInteraction.Press)?.pressPosition }
+    }
     val tones = cardTones(palette, row, comfortable, drawerView, pressed, nowMs)
     val left = limitLeft(row, nowMs)
     val limited = left > 0
@@ -765,7 +797,7 @@ private fun SessionCard(
     ).filter { it.isNotBlank() }.joinToString(". ")
     val title = if (opening) "Opening…" else row.title
     val fontScale = LocalDensity.current.fontScale
-    val card = modifier.fillMaxWidth()
+    val card = modifier.fillMaxWidth().onPlaced { coordinates.value = it }
         .heightIn(min = (if (comfortable) comfortableCardHeight(fontScale) else compactRowHeight(fontScale)).dp)
         .combinedClickable(
             interactionSource = interaction,
@@ -773,8 +805,12 @@ private fun SessionCard(
             enabled = !busy,
             role = Role.Button,
             onClickLabel = if (row.canOpen) "Open on PC" else "Show link information",
-            onLongClickLabel = "Session actions",
-            onLongClick = onActions,
+            onLongClickLabel = "Session inspector",
+            onLongClick = {
+                val placed = coordinates.value?.takeIf { it.isAttached }
+                if (placed != null) onActions(placed.localToWindow(
+                    press.value ?: Offset(placed.size.width / 2f, placed.size.height / 2f)))
+            },
             onClick = onOpen,
         )
     val mark: @Composable () -> Unit = {
@@ -1005,28 +1041,204 @@ private fun FilterCheckbox(label: String, checked: Boolean, onChecked: (Boolean)
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+// The inspector shadow needs room inside the popup window; the panel keeps 16 dp from the safe area edges.
+private val INSPECTOR_SHADOW_ROOM = 8.dp
+private val INSPECTOR_MARGIN = 16.dp
+
+/**
+ * The session inspector (desktop row panel, option E): a focusable popup at the long-press point. Back and an
+ * outside tap close it. Every change uses the existing actions; the panel stays open and shows the current row.
+ */
 @Composable
-private fun RowActionSheet(row: Thread, busy: Boolean, onDismiss: () -> Unit, onAction: (String) -> Unit) {
+private fun SessionInspector(
+    row: Thread, point: Offset, drawerView: Boolean, busy: Boolean, nowMs: Long, viewModel: SessionsViewModel,
+    windowSize: IntSize, onOpen: () -> Unit, onDismiss: () -> Unit,
+) {
     val density = LocalDensity.current
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        CompositionLocalProvider(LocalDensity provides density) {
+    val direction = LocalLayoutDirection.current
+    val insets = WindowInsets.safeDrawing
+    val margin = with(density) { (INSPECTOR_MARGIN - INSPECTOR_SHADOW_ROOM).roundToPx() }
+    val room = with(density) { INSPECTOR_SHADOW_ROOM.roundToPx() }
+    val safe = IntRect(
+        insets.getLeft(density, direction) + margin, insets.getTop(density) + margin,
+        windowSize.width - insets.getRight(density, direction) - margin, windowSize.height - insets.getBottom(density) - margin,
+    )
+    val width = with(density) { minOf(300.dp, windowSize.width.toDp() - INSPECTOR_MARGIN * 2) }
+    val maxHeight = with(density) { maxOf(0, safe.height - 2 * room).toDp() }
+    // A change keeps its chosen state while its action is pending, until the next board data or an error.
+    val chosen = remember(row.id) { mutableStateMapOf<String, Boolean>() }
+    LaunchedEffect(row, chosen) { if (!busy) chosen.clear() }
+    LaunchedEffect(busy, chosen) {
+        if (busy || chosen.isEmpty()) return@LaunchedEffect
+        val ended = viewModel.state.value
+        if (ended.lastError == null) withTimeoutOrNull(10_000) {
+            viewModel.state.first { it.dashboard !== ended.dashboard || it.lastError != null }
+        }
+        chosen.clear()
+    }
+    fun change(key: String, value: Boolean, action: String?) {
+        if (action == null) return
+        viewModel.action(row.id, action)
+        // An action that sends nothing leaves the row idle, so the control returns to the row state.
+        if (row.id in viewModel.state.value.busyIds) chosen[key] = value
+    }
+    val palette = LocalPalette.current
+    val surface = mixColor(palette.background, palette.text, .06)
+    val group = mixColor(surface, palette.text, .06)
+    val button = mixColor(surface, palette.text, .1)
+    val ring = edgeColor(surface, palette.accent, .7, listOf(palette.background, surface))
+    val text = hexColor(palette.text)
+    val muted = hexColor(readableColor(palette.muted, palette.text, listOf(surface, group)))
+    val indicator = attentionIndicator(row, drawerView, nowMs)
+    val stateColor = when {
+        row.state == "working" -> hexColor(readableColor(palette.success, palette.text, listOf(surface)))
+        row.state == "waiting" -> hexColor(readableColor(palette.warning, palette.text, listOf(surface)))
+        indicator == "question" || indicator == "dot" -> text
+        else -> muted
+    }
+    val time = if (row.state == "working") workingDuration(row.workingSinceMs, nowMs) else idleAge(row.updatedAtMs, nowMs)
+    val title = row.title.ifEmpty { "Untitled session" }
+    val controls = rowPanelControls(row)
+    val shape = RoundedCornerShape(12.dp)
+    Popup(
+        popupPositionProvider = remember(point, safe) { InspectorPosition(point, safe) },
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(focusable = true),
+        content = withDensity(density) {
             Column(
-                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp).padding(bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                Modifier.padding(INSPECTOR_SHADOW_ROOM).width(width).heightIn(max = maxHeight)
+                    .shadow(12.dp, shape, ambientColor = Color.Black, spotColor = Color.Black)
+                    .background(hexColor(surface), shape).border(1.dp, hexColor(ring), shape)
+                    .semantics { paneTitle = title }
+                    .verticalScroll(rememberScrollState()).padding(12.dp),
             ) {
-                Text(row.title, style = MaterialTheme.typography.titleLarge, maxLines = 2,
-                    overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp))
-                val actions = (if (row.canOpen) listOf(MenuAction("Open on PC", "open")) else emptyList()) + rowMenuActions(row)
-                actions.forEach { action ->
-                    TextButton(onClick = { onAction(action.action) }, enabled = !busy,
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                        Text(action.label, modifier = Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyLarge)
+                Column(
+                    Modifier.padding(start = 2.dp, end = 2.dp, bottom = 12.dp).semantics(mergeDescendants = true) { },
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
+                        ProviderMark(row, limited = false, messageLit = false, palette = palette, modifier = Modifier)
+                        Text(row.projectName.ifEmpty { "No project" }, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
+                            color = muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
+                    Text(title, fontSize = 13.sp, lineHeight = 17.sp, fontWeight = FontWeight.Bold, color = text,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(stateLabel(row.state) + if (time.isNotEmpty()) " · $time" else "", fontSize = 11.sp,
+                        lineHeight = CAPTION_LINE_HEIGHT.sp, color = stateColor)
+                }
+                val canOpen = row.canOpen && !busy
+                Box(
+                    Modifier.fillMaxWidth().heightIn(min = 48.dp).alpha(if (canOpen) 1f else .5f)
+                        .clip(RoundedCornerShape(8.dp)).background(hexColor(button))
+                        .clickable(enabled = canOpen, role = Role.Button, onClick = onOpen),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("Open in ${row.sourceLabel.ifEmpty { row.providerLabel }}", fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold, color = text, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 12.dp))
+                }
+                Spacer(Modifier.height(12.dp))
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(hexColor(group))) {
+                    val rule = hexColor(palette.divider)
+                    var first = true
+                    @Composable
+                    fun item(content: @Composable () -> Unit) {
+                        if (!first) HorizontalDivider(thickness = 1.dp, color = rule)
+                        first = false
+                        content()
+                    }
+                    @Composable
+                    fun switch(key: String, label: String, note: String = "") {
+                        val control = controls[key] ?: return
+                        item {
+                            PanelSwitch(label, note, chosen[key] ?: control.on, control.action != null && !busy, text, muted,
+                                palette) { change(key, it, control.action) }
+                        }
+                    }
+                    switch("unread", "Unread", rowPanelNote(row))
+                    switch("drawer", "In the drawer")
+                    switch("pinned", "Pinned")
+                    if ("order" in controls) item {
+                        Row(
+                            Modifier.fillMaxWidth().heightIn(min = 48.dp).alpha(if (busy) .5f else 1f).padding(start = 12.dp, end = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(1.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("Pin order", fontSize = 13.sp, color = text, modifier = Modifier.weight(1f).padding(end = 9.dp))
+                            PanelButton("Earlier", "Move pin earlier", RoundedCornerShape(6.dp, 0.dp, 0.dp, 6.dp),
+                                hexColor(button), text, !busy) { viewModel.action(row.id, "pin-up") }
+                            PanelButton("Later", "Move pin later", RoundedCornerShape(0.dp, 6.dp, 6.dp, 0.dp),
+                                hexColor(button), text, !busy) { viewModel.action(row.id, "pin-down") }
+                        }
+                    }
+                    switch("discard", "Discard result", "Go to read Idle when this task ends")
                 }
             }
+        },
+    )
+}
+
+@Composable
+private fun PanelSwitch(
+    label: String, note: String, checked: Boolean, enabled: Boolean, text: Color, muted: Color, palette: Palette,
+    onChange: (Boolean) -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).alpha(if (enabled) 1f else .5f)
+            .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange)
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(label, fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = text)
+            if (note.isNotEmpty()) Text(note, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted)
         }
+        // The row is the toggle; the switch only shows the state, so it keeps its colors when the row is disabled.
+        Switch(
+            checked = checked,
+            onCheckedChange = null,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = hexColor(palette.background),
+                checkedTrackColor = hexColor(palette.accent),
+                checkedBorderColor = hexColor(palette.accent),
+                uncheckedThumbColor = Color.White,
+                uncheckedTrackColor = text.copy(alpha = .2f),
+                uncheckedBorderColor = Color.Transparent,
+            ),
+        )
+    }
+}
+
+@Composable
+private fun PanelButton(
+    label: String, description: String, shape: RoundedCornerShape, background: Color, text: Color, enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier.heightIn(min = 48.dp).clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = description },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, fontSize = 12.sp, color = text,
+            modifier = Modifier.background(background, shape).padding(horizontal = 10.dp, vertical = 6.dp))
+    }
+}
+
+// Port of panel_place: centered on the point, below it when there is room or more room than above, inside safe.
+private class InspectorPosition(private val point: Offset, private val safe: IntRect) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect, windowSize: IntSize, layoutDirection: LayoutDirection, popupContentSize: IntSize,
+    ): IntOffset {
+        val right = minOf(safe.right, windowSize.width)
+        val bottom = minOf(safe.bottom, windowSize.height)
+        val x = point.x.roundToInt()
+        val y = point.y.roundToInt()
+        val (width, height) = popupContentSize
+        val left = (x - width / 2).coerceAtMost(right - width).coerceAtLeast(safe.left)
+        val top = (if (bottom - y >= height || bottom - y >= y - safe.top) y else y - height)
+            .coerceAtMost(bottom - height).coerceAtLeast(safe.top)
+        return IntOffset(left, top)
     }
 }
 

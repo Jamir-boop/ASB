@@ -7,13 +7,16 @@ import local.asb.companion.data.Dashboard
 import local.asb.companion.data.Palette
 import local.asb.companion.data.contrast
 import local.asb.companion.data.displaySourceColor
+import local.asb.companion.data.edgeColor
 import local.asb.companion.data.highlightColor
 import local.asb.companion.data.limitedColor
 import local.asb.companion.data.luminance
 import local.asb.companion.data.mixColor
 import local.asb.companion.data.quietColor
+import local.asb.companion.data.readableColor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 // Expected values come from the functions in scripts/asb-native.py, run with python3.
@@ -104,5 +107,24 @@ class PaletteTest {
         val black = Palette("custom", "#000000", "#ffffff", "#ffb900", "#bcbcbc", "#030303", "#ffb900", "#ffb900")
         assertEquals("#bcbcbc", local.asb.companion.ui.controlOutline(black))
         assertEquals("#5e5e5e", local.asb.companion.ui.controlOutline(black.copy(divider = "#5e5e5e")))
+    }
+
+    @Test fun inspectorEdgeMatchesPython() {
+        // The black Custom palette: surface #0f0f0f, accent #ffb900.
+        assertEquals("#0f0f0f", mixColor("#000000", "#ffffff", .06))
+        assertEquals("#b78605", edgeColor("#0f0f0f", "#ffb900", .7, listOf("#000000", "#0f0f0f")))
+        assertEquals("#65696e", edgeColor("#171c22", "#f0f2f5", .36, listOf("#171c22")))
+        assertEquals("#101010", edgeColor("#000000", "#101010", .5, listOf("#000000")))
+        // The GNOME fallback palette: surface #2f2f33.
+        assertEquals("#2f2f33", mixColor("#222226", "#ffffff", .06))
+        assertEquals("#6288b5", edgeColor("#2f2f33", "#78aeed", .7, listOf("#222226", "#2f2f33")))
+    }
+
+    @Test fun inspectorTextKeepsFourAndAHalfToOne() {
+        assertEquals("#a8a29a", readableColor("#a8a29a", "#e8e4dc", listOf("#101418")))
+        val raised = readableColor("#555555", "#ffffff", listOf("#0f0f0f", "#1d1d1d"))
+        assertTrue(contrast(raised, "#0f0f0f") >= 4.5 && contrast(raised, "#1d1d1d") >= 4.5)
+        assertTrue(contrast("#555555", "#0f0f0f") < 4.5)
+        assertEquals(raised, readableColor(raised, "#ffffff", listOf("#0f0f0f", "#1d1d1d")))
     }
 }

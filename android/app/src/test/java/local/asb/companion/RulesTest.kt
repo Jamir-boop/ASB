@@ -10,6 +10,7 @@ import local.asb.companion.ui.Filter
 import local.asb.companion.ui.MESSAGE_FLIGHT_LIMIT
 import local.asb.companion.ui.MESSAGE_MAX_AGE_MS
 import local.asb.companion.ui.MenuAction
+import local.asb.companion.ui.PanelControl
 import local.asb.companion.ui.STATES
 import local.asb.companion.ui.attentionIndicator
 import local.asb.companion.ui.casefold
@@ -22,6 +23,8 @@ import local.asb.companion.ui.newMessages
 import local.asb.companion.ui.pinMoveBody
 import local.asb.companion.ui.providerQuery
 import local.asb.companion.ui.rowMenuActions
+import local.asb.companion.ui.rowPanelControls
+import local.asb.companion.ui.rowPanelNote
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -382,5 +385,35 @@ class RulesTest {
         assertTrue(y < 40)
         assertEquals(7.0 to 7.0, messageControl(7.0 to 7.0, 7.0 to 7.0))
         assertEquals(2.0 to 0.0, messageControl(0.0 to 0.0, 0.0 to 0.0))
+    }
+
+    // The cases of test_row_panel_controls_note_and_edges_follow_the_menu_rules in test/asb_native_logic_test.py.
+    @Test fun rowPanelControlsAndNoteFollowTheMenuRules() {
+        val idle = Thread(state = "idle", unread = true, pinned = true)
+        assertEquals(mapOf("unread" to PanelControl(true, "mark-read"), "drawer" to PanelControl(false, "drawer-in"),
+            "pinned" to PanelControl(true, "unpin"), "order" to PanelControl(true, "pin-up")), rowPanelControls(idle))
+        assertEquals(listOf("unread", "drawer", "pinned", "order"), rowPanelControls(idle).keys.toList())
+        assertEquals("Finished. Not read yet.", rowPanelNote(idle))
+        assertEquals("Marked unread.", rowPanelNote(idle.copy(manualUnread = true)))
+        val working = Thread(state = "working")
+        assertEquals(mapOf("unread" to PanelControl(false, "mark-unread"), "drawer" to PanelControl(false, null),
+            "pinned" to PanelControl(false, "pin"), "discard" to PanelControl(false, "discard-result")), rowPanelControls(working))
+        assertEquals(PanelControl(true, "keep-result"), rowPanelControls(working.copy(discardResult = true))["discard"])
+        assertEquals("", rowPanelNote(working.copy(unread = true)))
+        val drawer = Thread(state = "idle", drawer = true)
+        assertEquals(PanelControl(true, "mark-read"), rowPanelControls(drawer)["unread"])
+        assertEquals(PanelControl(true, "drawer-out"), rowPanelControls(drawer)["drawer"])
+        assertEquals("Finished. Not read yet.", rowPanelNote(drawer))
+        val waiting = Thread(state = "waiting", actionRequired = true, questionAttention = true)
+        assertEquals(PanelControl(true, null), rowPanelControls(waiting)["unread"])
+        assertEquals(PanelControl(false, null), rowPanelControls(waiting)["drawer"])
+        assertEquals("Waits for your permission.", rowPanelNote(waiting))
+        assertEquals("Asks a question.", rowPanelNote(Thread(state = "idle", questionAttention = true)))
+        assertEquals("", rowPanelNote(Thread(state = "idle")))
+        for (row in listOf(idle, working, drawer, waiting)) {
+            val offered = rowMenuActions(row).map { it.action }.toSet()
+            assertEquals(offered - setOf("pin-up", "pin-down"),
+                rowPanelControls(row).values.mapNotNull { it.action }.toSet() - "pin-up")
+        }
     }
 }

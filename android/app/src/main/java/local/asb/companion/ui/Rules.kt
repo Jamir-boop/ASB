@@ -144,6 +144,32 @@ fun rowMenuActions(row: Thread): List<MenuAction> = buildList {
     )
 }
 
+/** One row panel control: its state, and the action a change runs, or null when the change is not offered. */
+data class PanelControl(val on: Boolean, val action: String?)
+
+// Port of row_panel_controls: the row panel switches from rowMenuActions, in panel order.
+fun rowPanelControls(row: Thread): Map<String, PanelControl> {
+    val offered = rowMenuActions(row).map { it.action }.toSet()
+    fun pick(vararg names: String) = names.firstOrNull { it in offered }
+    return buildMap {
+        put("unread", PanelControl("mark-unread" !in offered, pick("mark-read", "mark-unread")))
+        put("drawer", PanelControl("drawer-out" in offered, pick("drawer-out", "drawer-in")))
+        put("pinned", PanelControl("unpin" in offered, pick("unpin", "pin")))
+        if ("pin-up" in offered) put("order", PanelControl(true, "pin-up"))
+        if ("discard-result" in offered || "keep-result" in offered) {
+            put("discard", PanelControl("keep-result" in offered, pick("keep-result", "discard-result")))
+        }
+    }
+}
+
+// Port of row_panel_note: the subtitle of the panel Unread switch.
+fun rowPanelNote(row: Thread): String = when {
+    row.actionRequired -> "Waits for your permission."
+    row.questionAttention -> "Asks a question."
+    (row.unread || row.drawer) && row.state != "working" -> if (row.manualUnread) "Marked unread." else "Finished. Not read yet."
+    else -> ""
+}
+
 // Port of pin_move_body
 fun pinMoveBody(visibleRows: List<Thread>, id: String, direction: String): String? {
     val pins = visibleRows.filter { it.pinned }.map { it.id }

@@ -1,7 +1,8 @@
 # ASB Android companion
 
-Phase 7 provides the live session list, desktop filters, row menus, and Open
-on PC through the ASB phone gateway. QR or manual pairing remains available.
+Phase 7 provides the live session list, desktop filters, the session
+inspector, and Open on PC through the ASB phone gateway. QR or manual pairing
+remains available.
 The user checks the PC and certificate fingerprint before the app sends the
 pairing request. Authenticated hello must succeed before the session list
 opens. Connection information shows the real server name and ASB version.
@@ -94,7 +95,15 @@ view in Settings; the default is Comfortable. Compact rows are at least 48 dp
 high for touch, and Comfortable rows are at least 68 dp. In Comfortable, the
 card corner shows the Read target, the pin of a pinned row, the drawer glyph of
 a drawer row, and the armed Discard ring. Tap a corner control to use it. Pin,
-Put in drawer, and Discard result are in the long-press menu.
+Put in drawer, and Discard result are in the session inspector.
+
+Touch and hold a card to open the session inspector at that point. It shows
+the provider, folder, title, and state, and an **Open in <app>** button. Below
+it are the **Unread**, **In the drawer**, and **Pinned** switches, **Pin order**
+(**Earlier** and **Later**) for a pinned row, and **Discard result** for a
+Working row. A control that the row does not allow is dimmed. The inspector
+stays open after a change and shows the new row data. Back, a tap outside, or
+Open closes it.
 
 The app turns with the phone. A window narrower than 600 dp shows one list. A
 wider window, for example landscape, shows the desktop Column Flow: 240 dp

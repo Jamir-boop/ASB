@@ -18,7 +18,7 @@ values into code, tests, docs, or commits. Use placeholders.
 | Theme source | Follow the PC. The phone uses the palette that the PC window uses: the Custom five colors, or the resolved GNOME colors. |
 | Views | Compact and Comfortable, as on the desktop. A switch in phone Settings. Default Comfortable on the phone. |
 | Layout | Portrait phone: one vertical column. Landscape and other wide windows: desktop Column Flow (section 4a). The app supports rotation in both directions. |
-| Touch | The corner shows what the desktop shows without hover: the Read target (dot or `?`) while attention shows, the pin control while pinned, the filled drawer glyph for a drawer row, and the armed Discard ring. Tap acts. Unpinned Pin, Put in drawer, and the Discard offer stay in the long-press menu. |
+| Touch | The corner shows what the desktop shows without hover: the Read target (dot or `?`) while attention shows, the pin control while pinned, the filled drawer glyph for a drawer row, and the armed Discard ring. Tap acts. Unpinned Pin, Put in drawer, and the Discard offer are in the session inspector. |
 
 Touch adaptations that follow from the platform (not a user choice, keep them):
 - Compact rows keep the desktop content and order, but have a minimum height
@@ -208,6 +208,18 @@ spacing 2 dp):
   (card height plus the packing gap).
 - Landscape keeps the top bar, search, and pills; on short heights they must
   not take more than about one third of the screen (use a compact top bar).
+
+## 4b. Session inspector
+
+The session inspector replaces the long-press row menu (desktop row panel,
+option E). Touch and hold a card in either view to open it as a focusable
+popup at that point, inside the safe area with a 16 dp margin. It is 300 dp
+wide, or the window width minus 32 dp. The surface is 6% text in the
+background, with a 1 dp ring from `edgeColor` (port of `edge_color`).
+`rowPanelControls` and `rowPanelNote` (ports of `row_panel_controls` and
+`row_panel_note`) map `rowMenuActions` to the switches, so it stays the only
+rule source. Every change uses the existing actions. Back, a tap outside, Open,
+or the row leaving the board closes it. A rotation closes it.
 
 ## 5. Motion (worker B)
 

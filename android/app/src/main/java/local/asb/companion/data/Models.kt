@@ -194,6 +194,24 @@ fun displaySourceColor(color: String, surfaces: List<String>): String {
     return ""
 }
 
+// Port of edge_color: the weakest mix of color into base, from fraction up, with 3:1 contrast on each surface.
+fun edgeColor(base: String, color: String, fraction: Double, surfaces: List<String>): String {
+    for (percent in Math.rint(fraction * 100).toInt()..100) {
+        val value = mixColor(base, color, percent / 100.0)
+        if (surfaces.all { contrast(value, it) >= 3 }) return value
+    }
+    return color
+}
+
+// Text keeps 4.5:1: the first mix of color toward text that has it on every surface.
+fun readableColor(color: String, text: String, surfaces: List<String>): String {
+    for (percent in 0..100) {
+        val value = mixColor(color, text, percent / 100.0)
+        if (surfaces.all { contrast(value, it) >= 4.5 }) return value
+    }
+    return text
+}
+
 // Port of highlight_color.
 fun highlightColor(background: String, accent: String): String = mixColor(background, accent, .15)
 
