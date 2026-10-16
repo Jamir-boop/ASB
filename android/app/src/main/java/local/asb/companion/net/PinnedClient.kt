@@ -42,7 +42,8 @@ fun pinnedClient(fingerprintHex: String): OkHttpClient {
         .retryOnConnectionFailure(false)
         // No retry, so drop idle connections before the gateway closes them (it keeps them 65 s).
         .connectionPool(ConnectionPool(2, 30, TimeUnit.SECONDS))
-        .connectTimeout(5, TimeUnit.SECONDS)
+        // Short, so a GET can try the next endpoint soon when one does not answer.
+        .connectTimeout(3, TimeUnit.SECONDS)
         .readTimeout(35, TimeUnit.SECONDS)
         .build()
 }

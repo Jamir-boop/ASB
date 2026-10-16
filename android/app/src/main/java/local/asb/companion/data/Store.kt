@@ -1,13 +1,22 @@
 package local.asb.companion.data
 
 import android.content.Context
+import android.content.SharedPreferences
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 
-class Store(context: Context) {
-    private val preferences = context.getSharedPreferences("asb", Context.MODE_PRIVATE)
+class Store(private val preferences: SharedPreferences) {
+    constructor(context: Context) : this(context.getSharedPreferences("asb", Context.MODE_PRIVATE))
 
-    val host: String get() = preferences.getString("host", "").orEmpty()
+    // A pairing from before version 2 links saved one "host"; it reads as one lan endpoint.
+    val endpoints: List<Endpoint> get() = preferences.getString("endpoints", null)?.let {
+        try { orderEndpoints(AsbJson.decodeFromString<List<Endpoint>>(it)) } catch (_: SerializationException) { null }
+    } ?: preferences.getString("host", null)?.let { orderEndpoints(listOf(Endpoint("lan", it))) }.orEmpty()
+    /** The endpoint that answered last; null starts again at the top of the order. */
+    val currentEndpoint: Endpoint? get() = preferences.getString("currentEndpoint", null)?.let {
+        try { AsbJson.decodeFromString<Endpoint>(it) } catch (_: SerializationException) { null }
+    }?.takeIf { it in endpoints }
     val port: Int get() = preferences.getInt("port", 4630)
     val fingerprint: String get() = preferences.getString("fingerprint", "").orEmpty()
     val token: String get() = preferences.getString("token", "").orEmpty()
@@ -47,7 +56,9 @@ class Store(context: Context) {
     @Synchronized
     fun save(info: PairingInfo, reply: PairReply) {
         preferences.edit()
-            .putString("host", info.host)
+            .remove("host")
+            .putString("endpoints", AsbJson.encodeToString(info.addresses))
+            .remove("currentEndpoint")
             .putInt("port", info.port)
             .putString("fingerprint", info.fingerprint)
             .putString("token", reply.token)
@@ -62,6 +73,27 @@ class Store(context: Context) {
     @Synchronized
     fun revokeIfPaired(token: String) {
         if (token.isNotEmpty() && this.token == token) revoked = true
+    }
+
+    @Synchronized
+    fun saveEndpointsIfPaired(token: String, value: List<Endpoint>) {
+        if (token.isEmpty() || this.token != token) return
+        preferences.edit().remove("host").putString("endpoints", AsbJson.encodeToString(value)).apply()
+    }
+
+    @Synchronized
+    fun saveCurrentEndpointIfPaired(token: String, value: Endpoint?) {
+        if (token.isEmpty() || this.token != token) return
+        preferences.edit().apply {
+            if (value == null) remove("currentEndpoint") else putString("currentEndpoint", AsbJson.encodeToString(value))
+        }.apply()
+    }
+
+    /** A new Android default network starts the endpoint order again; the same network keeps it, also after a restart. */
+    @Synchronized
+    fun networkChanged(handle: Long) {
+        if (preferences.contains("network") && preferences.getLong("network", 0) == handle) return
+        preferences.edit().putLong("network", handle).remove("currentEndpoint").apply()
     }
 
     @Synchronized

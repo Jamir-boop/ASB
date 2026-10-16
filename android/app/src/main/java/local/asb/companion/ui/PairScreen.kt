@@ -191,7 +191,8 @@ fun PairScreen(activity: Activity, model: PairingViewModel, onPaired: () -> Unit
                     }
                 } else {
                     Text("Check the PC", style = MaterialTheme.typography.headlineSmall)
-                    Text("PC: ${info.serverName.ifEmpty { "ASB" }} at ${info.host}:${info.port}")
+                    Text("PC: ${info.serverName.ifEmpty { "ASB" }}")
+                    EndpointList(info.addresses, null, info.port)
                     Text("Certificate", style = MaterialTheme.typography.titleMedium)
                     Text(info.fingerprint.chunked(4).joinToString(" "), fontFamily = FontFamily.Monospace)
                     Text("Compare this fingerprint with ASB Preferences > Phone before you pair.")

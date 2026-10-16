@@ -74,8 +74,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import local.asb.companion.data.Endpoint
 import local.asb.companion.data.Hello
 import local.asb.companion.data.Store
+import local.asb.companion.data.endpointLabel
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.DashboardResult
@@ -180,7 +182,7 @@ fun SettingsScreen(
                     SettingsHeading("Connection")
                     Text(hello?.serverName?.takeIf { it.isNotBlank() } ?: store.serverName.ifBlank { "Paired PC" },
                         style = MaterialTheme.typography.titleMedium)
-                    SelectionContainer { Text("${store.host}:${store.port}", style = MaterialTheme.typography.bodyLarge) }
+                    EndpointList(store.endpoints, store.currentEndpoint, store.port)
                     Text(
                         when {
                             refreshing -> "Checking ASB…"
@@ -328,6 +330,19 @@ fun SettingsScreen(
         dismissButton = { TextButton(onClick = { confirmUnpair = false }) { Text("Cancel") } },
     )
     license?.let { title -> LicenseDialog(title, SettingsLicenses.getValue(title)) { license = null } }
+}
+
+/** The addresses of the paired PC with their kinds; the one that answered last is marked Current. */
+@Composable
+fun EndpointList(endpoints: List<Endpoint>, current: Endpoint?, port: Int) {
+    SelectionContainer {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            for (endpoint in endpoints) Text(
+                "${endpointLabel(endpoint.kind)}: ${endpoint.host}:$port" + if (endpoint == current) " · Current" else "",
+                style = MaterialTheme.typography.bodyLarge,
+            )
+        }
+    }
 }
 
 @Composable

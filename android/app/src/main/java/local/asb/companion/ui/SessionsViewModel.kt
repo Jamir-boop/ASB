@@ -37,6 +37,8 @@ data class UiState(
     val view: String = "comfortable",
     val openingIds: Set<String> = emptySet(),
     val readConfirmedIds: Set<String> = emptySet(),
+    /** The kind of endpoint that gave the last dashboard: lan, zerotier, or tailscale. */
+    val path: String? = null,
 )
 
 class SessionsViewModel(
@@ -160,14 +162,14 @@ class SessionsViewModel(
                 Palette.parse(dashboard?.palette)?.let(savePalette)
                 if (result is DashboardResult.Fetched) etag = result.etag
                 offlineFailures = 0
-                mutableState.update { it.copy(dashboard = dashboard, offline = false, lastError = null) }
+                mutableState.update { it.copy(dashboard = dashboard, offline = false, lastError = null, path = api.endpoint?.kind) }
                 dashboard?.refreshIntervalMs?.takeIf { it == 2000L || it == 5000L } ?: 5000L
             }
         } catch (cause: AsbError) {
             withContext(Dispatchers.Main.immediate) {
                 ensureActive()
                 showError(cause, dashboardFailure = true)
-                if (cause === AsbError.Offline) {
+                if (cause is AsbError.Offline) {
                     offlineFailures++
                     when (offlineFailures) { 1 -> 5000L; 2 -> 10000L; else -> 30000L }
                 } else 5000L
@@ -177,7 +179,7 @@ class SessionsViewModel(
 
     private fun showError(cause: AsbError, dashboardFailure: Boolean = false) {
         mutableState.update {
-            it.copy(offline = it.offline || dashboardFailure || cause === AsbError.Offline || cause === AsbError.PinMismatch,
+            it.copy(offline = it.offline || dashboardFailure || cause is AsbError.Offline || cause === AsbError.PinMismatch,
                 revoked = it.revoked || cause === AsbError.NotPaired,
                 lastError = cause.message)
         }

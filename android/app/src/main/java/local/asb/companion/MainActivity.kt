@@ -60,6 +60,7 @@ import local.asb.companion.net.AsbApi
 import local.asb.companion.notify.CheckWorker
 import local.asb.companion.notify.Notifier
 import local.asb.companion.ui.AsbTheme
+import local.asb.companion.ui.EndpointList
 import local.asb.companion.ui.PairScreen
 import local.asb.companion.ui.PairingViewModel
 import local.asb.companion.ui.SessionsScreen
@@ -241,7 +242,7 @@ private fun ConnectionScreen(
                     style = MaterialTheme.typography.headlineSmall,
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                 )
-                Text("${app.store.host}:${app.store.port}")
+                EndpointList(app.store.endpoints, app.store.currentEndpoint, app.store.port)
                 hello?.let { Text("ASB ${it.asbVersion}") }
                 error?.let { Text(it.message.orEmpty(), color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }) }

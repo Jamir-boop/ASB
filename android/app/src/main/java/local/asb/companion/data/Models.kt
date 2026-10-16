@@ -147,6 +147,8 @@ data class Hello(
     val asbVersion: String = "",
     val deviceId: String = "",
     val serverName: String = "",
+    /** The addresses the gateway listens on now; empty from a PC before version 2 links. */
+    val addresses: List<Endpoint> = emptyList(),
 )
 
 @Serializable

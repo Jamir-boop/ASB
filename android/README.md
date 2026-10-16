@@ -29,6 +29,27 @@ Each pairing gets its own session ViewModel and API. The session screen owns
 the lifecycle polling loop. Foreground dashboard reads share a mutex with
 baseline updates; only the current, resumed pairing can save that baseline.
 
+## Away from home
+
+The app can reach ASB on the home network (LAN) and through ZeroTier or
+Tailscale. A pairing link can give one address for each kind. The pin and the
+token are the same for all addresses. Pairing links from older PCs give one
+home network address, and an existing pairing keeps its saved address. After
+each successful hello, the app saves the address list that the PC sends.
+
+A read (dashboard or hello) first uses the last address that answered. When
+that address does not answer, the app tries the other addresses in this order:
+home network, ZeroTier, Tailscale. Each address gets 3 seconds to connect. An
+action or a setting goes to one address only. The app never sends it again to
+another address, so an action cannot run two times. When Android changes the
+default network, the next request starts again at the top of the order.
+
+The top bar shows the path, for example `PC · Live · ZeroTier`. Settings >
+Connection lists the addresses and marks the current one. When no address
+answers and the pairing has a ZeroTier or Tailscale address, the error tells
+you to turn on that app on the phone. Install and join ZeroTier or Tailscale on
+the PC and on the phone to use ASB away from home.
+
 ## Themes, views, and motion
 
 The app is dark only and follows the PC theme. The dashboard `palette` field
@@ -142,6 +163,9 @@ certificate rejection, bearer handling, revocation, ETags, JSON defaults and
 long timestamps, path encoding, error handling, and cancellation while a
 response body is still arriving. Pairing parser tests reject duplicate,
 unknown, incomplete, malformed, and ambiguous fields.
+Endpoint tests use two MockWebServers with one certificate. They cover version
+1 and 2 links, the kind order, the read fallback, no second send of an action,
+the network change reset, the hello address update, and the saved-host migration.
 Retained-flow tests cover ViewModelStore recreation, Back cancellation,
 unpair/re-pair, and responses or scanner callbacks from an old flow.
 

@@ -141,6 +141,7 @@ import local.asb.companion.R
 import local.asb.companion.data.Message
 import local.asb.companion.data.Provider
 import local.asb.companion.data.Thread
+import local.asb.companion.data.endpointLabel
 import kotlin.math.pow
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -420,7 +421,9 @@ fun SessionsScreen(
             TopAppBar(
                 expandedHeight = if (shortHeader) 48.dp else TopAppBarDefaults.TopAppBarExpandedHeight,
                 title = {
-                    val status = if (state.revoked) "" else "$serverName · ${if (state.offline) "Offline" else "Live"}"
+                    val status = if (state.revoked) "" else listOfNotNull(serverName,
+                        if (state.offline) "Offline" else "Live",
+                        state.path?.takeUnless { state.offline }?.let(::endpointLabel)).joinToString(" · ")
                     if (shortHeader) Text(listOf("ASB", status).filter { it.isNotEmpty() }.joinToString("  "),
                         style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     else Column {

@@ -26,7 +26,9 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import kotlinx.serialization.json.Json
 import local.asb.companion.data.Thread
+import local.asb.companion.data.Endpoint
 import local.asb.companion.net.AsbApi
+import local.asb.companion.net.MemoryPaths
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.sha256Hex
 import local.asb.companion.notify.BIT_DONE
@@ -91,7 +93,7 @@ class SessionsViewModelTest {
         initialView: String = "comfortable",
         savePalette: (Palette) -> Unit = { palettes += it },
     ): SessionsViewModel {
-        val api = AsbApi("127.0.0.1", server.port, fingerprint, "t".repeat(43)) { revoked = true }
+        val api = AsbApi(MemoryPaths(listOf(Endpoint("lan", "127.0.0.1"))), server.port, fingerprint, "t".repeat(43)) { revoked = true }
         return SessionsViewModel(api, "Test PC", initiallyRevoked, saveBaseline, mutex, loadBaseline, initialView, savePalette)
             .also { models.put("sessions", it) }
     }
@@ -185,6 +187,8 @@ class SessionsViewModelTest {
         advance(1)
         await { model.state.value.dashboard?.generatedAtMs == 2L }
         assertFalse(model.state.value.offline)
+        // The top bar names the path of the last good dashboard.
+        assertEquals("lan", model.state.value.path)
         server.takeRequest()
         advance(5000)
         await { model.state.value.offline }
@@ -477,7 +481,7 @@ class SessionsViewModelTest {
     }
 
     @Test fun rotationKeepsFiltersSearchViewAndAnchorInTheRetainedModel() {
-        val api = AsbApi("127.0.0.1", server.port, fingerprint, "t".repeat(43)) {}
+        val api = AsbApi(MemoryPaths(listOf(Endpoint("lan", "127.0.0.1"))), server.port, fingerprint, "t".repeat(43)) {}
         val factory = viewModelFactory { initializer { SessionsViewModel(api, "Test PC", initialView = "compact") } }
         val owner = ViewModelStore()
         val original = ViewModelProvider.create(owner, factory)[SessionsViewModel::class]
