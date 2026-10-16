@@ -36,7 +36,6 @@ import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.key
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.draw.drawBehind
@@ -532,7 +531,7 @@ fun SessionsScreen(
             IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, contentDescription = "Settings") }
         }
         Column(Modifier.fillMaxWidth().background(hexColor(palette.background))
-            .windowInsetsPadding(TopAppBarDefaults.windowInsets)) {
+            .windowInsetsPadding(SafeTopBarInsets)) {
             if (flow) Row(
                 modifier = Modifier.fillMaxWidth().height(48.dp).padding(start = 12.dp, end = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -572,6 +571,7 @@ fun SessionsScreen(
     }
 
     Scaffold(
+        contentWindowInsets = SafeContentInsets,
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = { if (!state.revoked) topBar() },
     ) { padding ->

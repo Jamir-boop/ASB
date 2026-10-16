@@ -165,8 +165,9 @@ fun SettingsScreen(
     }
 
     Scaffold(
+        contentWindowInsets = SafeContentInsets,
         topBar = {
-            TopAppBar(title = { Text("Settings") }, navigationIcon = {
+            TopAppBar(windowInsets = SafeTopBarInsets, title = { Text("Settings") }, navigationIcon = {
                 IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
             })
         },

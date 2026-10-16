@@ -1,5 +1,7 @@
 package local.asb.companion
 
+import local.asb.companion.ui.SafeTopBarInsets
+import local.asb.companion.ui.SafeContentInsets
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -13,6 +15,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -75,6 +80,11 @@ class MainActivity : ComponentActivity() {
         // Dark only: transparent bars with light icons over the palette background.
         val bars = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         enableEdgeToEdge(statusBarStyle = bars, navigationBarStyle = bars)
+        // Fullscreen: the system bars hide; a swipe from an edge shows them for a moment.
+        WindowCompat.getInsetsController(window, window.decorView).run {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.systemBars())
+        }
         val app = application as AsbApp
         app.notifier.opened(intent)
         notificationsAllowed = Notifier.notificationsAllowed(this)
@@ -223,9 +233,9 @@ private fun ConnectionScreen(
             finally { busy = false }
         }
     }
-    Scaffold(topBar = {
+    Scaffold(contentWindowInsets = SafeContentInsets, topBar = {
         TopAppBar(title = { Text(if (onBack == null) "ASB" else "Connection") },
-            navigationIcon = { onBack?.let { TextButton(onClick = it) { Text("Back") } } })
+            navigationIcon = { onBack?.let { TextButton(onClick = it) { Text("Back") } } }, windowInsets = SafeTopBarInsets)
     }) { padding ->
         Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding), contentAlignment = Alignment.TopCenter) {
             Column(

@@ -145,8 +145,9 @@ class PairingViewModel(
 fun PairScreen(activity: Activity, model: PairingViewModel, onPaired: () -> Unit) {
     LaunchedEffect(model.paired) { if (model.paired) onPaired() }
     BackHandler(enabled = model.candidate != null) { model.back() }
-    Scaffold(topBar = {
+    Scaffold(contentWindowInsets = SafeContentInsets, topBar = {
         TopAppBar(
+            windowInsets = SafeTopBarInsets,
             title = { Text("Pair with ASB") },
             navigationIcon = { if (model.candidate != null) TextButton(onClick = model::back) { Text("Back") } },
         )
