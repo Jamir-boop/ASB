@@ -259,7 +259,8 @@ class SessionsViewModelTest {
         await { !model.state.value.refreshing }
         assertEquals(BIT_DONE, stored!!.getValue("done") and (BIT_DONE or BIT_FAILED))
         assertEquals(BIT_FAILED, stored!!.getValue("failed") and (BIT_DONE or BIT_FAILED))
-        assertFalse(stored!!.containsKey("gone"))
+        // A row missing from the update keeps its bits, so it cannot notify again when it comes back.
+        assertEquals(BIT_DONE, stored!!.getValue("gone"))
         val afterLimit = stored
 
         server.enqueue(MockResponse().setResponseCode(304))
@@ -276,7 +277,7 @@ class SessionsViewModelTest {
         server.enqueue(response(reset))
         model.refresh()
         await { !model.state.value.refreshing }
-        assertEquals(mapOf("done" to BIT_DONE, "failed" to BIT_FAILED), stored)
+        assertEquals(mapOf("done" to BIT_DONE, "failed" to BIT_FAILED, "gone" to BIT_DONE), stored)
         assertEquals(3, reads)
     }
 

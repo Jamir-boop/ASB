@@ -96,13 +96,25 @@ class EventsTest {
         assertEquals(listOf(Event(next, BIT_DONE)), diff(update(null, listOf(read), now), listOf(next), now))
     }
 
-    @Test fun updateDropsRowsThatAreNoLongerCurrent() {
+    @Test fun rowsMissingFromOneUpdateKeepTheirBitsAndDoNotNotifyAgain() {
         val done = row.copy(completionAttention = true)
         val other = Thread(id = "other", actionRequired = true)
         val baseline = update(null, listOf(done, other), now)
         assertEquals(mapOf(row.id to BIT_DONE, other.id to BIT_INPUT), baseline)
-        assertEquals(mapOf(other.id to BIT_INPUT), update(baseline, listOf(other), now))
-        assertEquals(emptyMap<String, Int>(), update(baseline, emptyList(), now))
+        // A provider read fails for one scan: the row is missing but keeps its bits.
+        val skipped = update(baseline, listOf(other), now)
+        assertEquals(baseline, skipped)
+        assertEquals(baseline, update(baseline, emptyList(), now))
+        // When it comes back with the same mark, nothing notifies again.
+        assertEquals(emptyList<Event>(), diff(skipped, listOf(done, other), now))
+    }
+
+    @Test fun codexNativeAttentionOnAnIdleRowIsDone() {
+        val native = row.copy(state = "idle", nativeAttention = true)
+        assertEquals(BIT_DONE, bits(native))
+        assertEquals(0, bits(native.copy(state = "working")))
+        assertEquals(0, bits(native.copy(archived = true)))
+        assertEquals(listOf(Event(native, BIT_DONE)), diff(mapOf(row.id to 0), listOf(native), now))
     }
 
     @Test fun limitedServerAttentionPreservesOldResultBitsWithoutEvents() {
@@ -168,7 +180,8 @@ class EventsTest {
         val archived = limited.copy(archived = true, failedAttention = true, actionRequired = true)
         assertEquals(emptyList<Event>(), diff(saved, listOf(archived), now))
         assertEquals(mapOf(row.id to 0), update(saved, listOf(archived), now))
-        assertEquals(emptyMap<String, Int>(), update(saved, emptyList(), now))
+        // A row missing from an update keeps its stored bits.
+        assertEquals(saved, update(saved, emptyList(), now))
     }
 
     @Test fun observedTaskAfterResetCanCompleteNormally() {
