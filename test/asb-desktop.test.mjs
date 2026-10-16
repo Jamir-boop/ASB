@@ -14,6 +14,8 @@ import vm from 'node:vm';
 const launcherUrl = new URL('../scripts/asb-desktop.mjs', import.meta.url);
 const launcher = (await readFile(launcherUrl, 'utf8')).replace(/^import[^\n]*\n/gm, '')
   .replaceAll('import.meta.url', 'launcherUrl');
+// The launcher gets a silent player; tests never play sound.
+const silentPlayer = () => {};
 const disabledGateway = () => ({ start: async () => {}, status: async () => ({ error: '' }), stop: async () => {} });
 
 for (const exitCode of [0, 1]) test(`launcher exit ${exitCode} stops its owned synthetic native process`, { timeout: 5_000 }, async (t) => {
@@ -29,7 +31,7 @@ for (const exitCode of [0, 1]) test(`launcher exit ${exitCode} stops its owned s
   t.after(() => { if (native?.exitCode === null && native?.signalCode === null) native.kill('SIGKILL'); });
   const launch = vm.runInNewContext(launcher, { process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, randomBytes, readFileSync,
     findRunningService: async () => null, createPhoneGateway: disabledGateway,
-    createSwitchboardServer: () => server, switchboardPort: () => 4629, registerAppIcon: async () => {},
+    createSoundPlayer: () => silentPlayer, createSwitchboardServer: () => server, switchboardPort: () => 4629, registerAppIcon: async () => {},
     console: { log() {}, error() {}, warn() {} },
     spawn: (_program, args) => {
       assert.match(args[0], /asb-native\.py$/);
@@ -65,7 +67,7 @@ test('icon registration failure keeps its message and still launches the owned n
   t.after(() => { if (native?.exitCode === null && native?.signalCode === null) native.kill('SIGKILL'); });
   const launch = vm.runInNewContext(launcher, { process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, randomBytes, readFileSync,
     findRunningService: async () => null, createPhoneGateway: disabledGateway,
-    createSwitchboardServer: (options) => { sourceToken = options.sourceToken; return server; }, switchboardPort: () => 4629,
+    createSoundPlayer: () => silentPlayer, createSwitchboardServer: (options) => { sourceToken = options.sourceToken; return server; }, switchboardPort: () => 4629,
     registerAppIcon: async () => { throw new Error('Synthetic registration failure'); },
     console: { log(message) { printed.push(message); }, error(message) { errors.push(message); }, warn(message) { printed.push(message); } },
     spawn: (program, args, options) => {
@@ -150,8 +152,9 @@ for (const failure of ['', 'reported', 'thrown']) test(`launcher owns the phone 
       calls.push('create-gateway');
       return gateway;
     },
-    createSwitchboardServer: (options) => {
+    createSoundPlayer: () => silentPlayer, createSwitchboardServer: (options) => {
       assert.equal(options.phoneGateway, gateway);
+      assert.equal(options.playSound, silentPlayer);
       assert.match(options.sourceToken, /^[0-9a-f]{64}$/);
       calls.push('create-server');
       return server;
@@ -186,7 +189,7 @@ test('a stop during gateway startup cannot launch a window later', async () => {
   server.closeAllConnections = () => {};
   const launch = vm.runInNewContext(launcher, { process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, randomBytes, readFileSync,
     findRunningService: async () => null, createPhoneGateway: () => ({ start: () => { started.resolve(); return starting.promise; }, status: async () => ({ error: '' }), stop: async () => { stopped += 1; } }),
-    createSwitchboardServer: () => server, switchboardPort: () => 12345, registerAppIcon: async () => {},
+    createSoundPlayer: () => silentPlayer, createSwitchboardServer: () => server, switchboardPort: () => 12345, registerAppIcon: async () => {},
     console: { log() {}, error() {}, warn() {} }, spawn: () => assert.fail('The launcher already stopped.'),
   });
   await started.promise;

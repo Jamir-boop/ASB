@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createSwitchboardServer, switchboardPort } from '../src/switchboard.mjs';
 import { createPhoneGateway } from '../src/phone-gateway.mjs';
+import { createSoundPlayer } from '../src/asb-sounds.mjs';
 import { findRunningService } from './asb-service.mjs';
 import { registerAppIcon } from './asb-icon.mjs';
 
@@ -36,7 +37,7 @@ async function start() {
   } else {
     const asbVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
     gateway = createPhoneGateway({ localPort: port, asbVersion });
-    server = createSwitchboardServer({ sourceToken, phoneGateway: gateway });
+    server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, playSound: createSoundPlayer() });
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
     if (stopping) return;
     try {

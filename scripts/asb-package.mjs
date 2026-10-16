@@ -17,9 +17,11 @@ export const RUNTIME_FILES = [
   'public/switchboard.html', 'public/switchboard.css', 'public/switchboard.js', 'public/icon.svg',
   'assets/icons/local.asb.AgentSwitchBoard.svg', 'assets/icons/asb-claude-symbolic.svg', 'assets/icons/asb-openai-symbolic.svg',
   'assets/icons/README.md', 'assets/icons/ASB-disc-provenance.md',
+  'assets/sounds/opencode_staplebops_01.mp3', 'assets/sounds/opencode_staplebops_02.mp3', 'assets/sounds/opencode_nope_03.mp3',
+  'assets/sounds/opencode-LICENSE.txt',
   'src/switchboard.mjs', 'src/app-sources.mjs', 'src/asb-server.mjs', 'src/dashboard-snapshot.mjs', 'src/local-http.mjs', 'src/session-opener.mjs',
   'src/codex-data.mjs', 'src/claude-data.mjs', 'src/claude-remote-data.mjs', 'src/insights.mjs', 'src/data-cache.mjs',
-  'src/thread-classification.mjs', 'src/phone-gateway.mjs',
+  'src/thread-classification.mjs', 'src/phone-gateway.mjs', 'src/asb-sounds.mjs',
   '.agents/plugins/marketplace.json',
   'bridge/.codex-plugin/plugin.json', 'bridge/.mcp.json', 'bridge/hooks/hooks.json',
   'bridge/dist/server.js', 'bridge/dist/hook.js', 'bridge/LICENSE',
@@ -325,7 +327,7 @@ export async function build({ sourceRoot = ROOT, outputDir = path.join(ROOT, 'di
     await copyFile(path.join(sourceRoot, 'LICENSE'), path.join(debRoot, 'usr/share/doc/asb/copyright'));
     await writeFile(path.join(debRoot, 'usr/share/applications', `${ASB_APP_ID}.desktop`), `[Desktop Entry]\nType=Application\nName=ASB\nGenericName=Agent Switch Board\nExec=/usr/bin/asb\nIcon=/usr/share/icons/hicolor/scalable/apps/${ASB_APP_ID}.svg\nTerminal=false\nStartupWMClass=${ASB_APP_ID}\nCategories=Development;\n`);
     const installedSize = Math.ceil((await Promise.all((await treeFiles(path.join(debRoot, 'usr'))).map(async (file) => (await lstat(path.join(debRoot, 'usr', file))).size))).reduce((a, b) => a + b, 0) / 1024);
-    await writeFile(path.join(debRoot, 'DEBIAN/control'), `Package: asb\nVersion: ${release}\nSection: utils\nPriority: optional\nArchitecture: all\nMaintainer: ASB contributors <noreply@github.com>\nInstalled-Size: ${installedSize}\nDepends: ${DEBIAN_DEPENDS}\nRecommends: python3-qrcode\nHomepage: https://github.com/Jamir-boop/ASB\nDescription: Local session switch board for Codex and Claude Desktop Code\n Native GTK4 session list with local read-only provider access.\n`);
+    await writeFile(path.join(debRoot, 'DEBIAN/control'), `Package: asb\nVersion: ${release}\nSection: utils\nPriority: optional\nArchitecture: all\nMaintainer: ASB contributors <noreply@github.com>\nInstalled-Size: ${installedSize}\nDepends: ${DEBIAN_DEPENDS}\nRecommends: python3-qrcode, pipewire-bin\nHomepage: https://github.com/Jamir-boop/ASB\nDescription: Local session switch board for Codex and Claude Desktop Code\n Native GTK4 session list with local read-only provider access.\n`);
     await normalizeTree(debRoot, epoch);
     const deb = path.join(outputDir, `asb_${release}_all.deb`);
     execFileSync('dpkg-deb', ['--root-owner-group', '--threads-max=1', '--build', debRoot, deb], { env: { ...process.env, SOURCE_DATE_EPOCH: String(epoch) }, stdio: 'pipe' });

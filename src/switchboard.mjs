@@ -8,6 +8,7 @@ import { loadSwitchboardClaudeThreads, claudeRemoteDeepLink, claudeRemoteStatus,
   invalidateClaudeRemoteData, isClaudeRemoteCacheEvent, shutdownClaudeRemoteParser } from './claude-remote-data.mjs';
 import { normalizeDashboardThreads } from './insights.mjs';
 import { createAsbServer } from './asb-server.mjs';
+import { createSoundPlayer, createSoundWatcher } from './asb-sounds.mjs';
 import { openThreadInCodex } from './session-opener.mjs';
 import { AppSourceRegistry, numberAppSources, validateSourceLauncher } from './app-sources.mjs';
 import { spawn } from 'node:child_process';
@@ -621,6 +622,8 @@ export function createSwitchboardServer(options = {}) {
   const open = options.openThread || openSwitchboardThread;
   const registry = options.sourceRegistry || new AppSourceRegistry();
   const registeredLoad = !options.loadDashboard || Boolean(options.sourceRegistry);
+  // Only real entry points pass a player, so tests and imports stay silent.
+  const sound = options.playSound ? createSoundWatcher(options.playSound) : null;
   const sourceWatchPaths = async () => {
     const sources = await registry.read();
     retainSourceCaches(sources);
@@ -643,6 +646,7 @@ export function createSwitchboardServer(options = {}) {
     ...options,
     loadDashboard: async () => {
       const dashboard = await tracker.observe(await load(registeredLoad ? { sources: await registry.read() } : undefined));
+      sound?.(dashboard);
       if (registeredLoad && registry.warning) dashboard.providers.push({ id: 'asb-sources', label: 'ASB', status: 'warning', message: registry.warning });
       dashboard.refreshIntervalMs = switchboardRefreshInterval(dashboard);
       return dashboard;
@@ -701,7 +705,7 @@ export function switchboardPort(value = process.env.PORT || '4629') {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const port = switchboardPort();
-  const server = createSwitchboardServer();
+  const server = createSwitchboardServer({ playSound: createSoundPlayer() });
   server.on('error', (error) => {
     console.error(error.code === 'EADDRINUSE' ? `ASB cannot start. Port ${port} is in use.` : `ASB cannot start: ${error.message}`);
     process.exitCode = 1;

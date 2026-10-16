@@ -65,7 +65,7 @@ test('release payloads are reproducible and the user installer preserves other f
   assert.equal(debVersion, `Version: ${version}`);
   assert.equal(architecture, 'Architecture: all');
   assert.equal(depends, 'Depends: nodejs (>= 20), sqlite3, python3, python3-gi, gir1.2-gtk-4.0 (>= 4.12), gir1.2-adw-1 (>= 1.4), xdg-utils, openssl');
-  assert.equal(recommends, 'Recommends: python3-qrcode');
+  assert.equal(recommends, 'Recommends: python3-qrcode, pipewire-bin');
   assert.ok((await readFile(path.join(sourceRoot, 'scripts/asb-package.mjs'), 'utf8')).includes(">= (4, 12), 'GTK 4.12 or later is required.'"));
   const extracted = path.join(temporary, 'deb');
   execFileSync('dpkg-deb', ['-x', artifacts[0], extracted]);

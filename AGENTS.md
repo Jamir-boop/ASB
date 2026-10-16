@@ -33,4 +33,4 @@ The release target is a GitHub-friendly open-source version. Be conservative abo
 
 ## Current Notification Stance
 
-ASB shows Pending attention in its chat rows. The desktop window has no desktop/system notifications or notification center. The Android companion in `android/` has phone notifications (Done, Failed, and Needs input).
+ASB shows Pending attention in its chat rows. The desktop has no pop-up notifications or notification center. The ASB server plays the Done, Needs input, and Failed sounds on the PC (`src/asb-sounds.mjs`). The Android companion in `android/` has phone notifications (Done, Failed, and Needs input) with the same sounds.
