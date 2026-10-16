@@ -632,7 +632,7 @@ def request_json(base, route, method="GET", body=None, etag=None):
         if isinstance(error, HTTPError) and error.code == 304 and "If-None-Match" in headers:
             error.close()
             return None
-        if source_route or phone_route or service_route:
+        if source_route or phone_route or service_route or palette_route:
             detail = ""
             if isinstance(error, HTTPError):
                 try:
@@ -641,7 +641,8 @@ def request_json(base, route, method="GET", body=None, etag=None):
                         detail = payload["error"]
                 except (HTTPException, OSError, ValueError):
                     pass
-            subject = "phone access" if phone_route else "the ASB service" if service_route else "app sources"
+            subject = "phone access" if phone_route else "the ASB service" if service_route \
+                else "the phone palette" if palette_route else "app sources"
             raise RuntimeError(detail or f"Cannot load or change {subject}. Check that ASB is running, then try again.") from error
         action = "open this session" if route.endswith("/open") else "change the unread setting" if route == "/api/settings/unread" \
             else "change this session" if method == "POST" else "load sessions"
