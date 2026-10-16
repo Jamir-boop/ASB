@@ -41,6 +41,10 @@ class Store(private val preferences: SharedPreferences) {
         get() = preferences.getBoolean("notifyInput", true)
         set(value) { preferences.edit().putBoolean("notifyInput", value).apply() }
     /** The ongoing notification with the session counts, run by the live service. */
+    // Draw under the camera hole (fullscreen to the top edge); off keeps the cutout band clear.
+    var useCameraArea: Boolean
+        get() = preferences.getBoolean("useCameraArea", true)
+        set(value) { preferences.edit().putBoolean("useCameraArea", value).apply() }
     var liveNotification: Boolean
         get() = preferences.getBoolean("liveNotification", true)
         set(value) { preferences.edit().putBoolean("liveNotification", value).apply() }
@@ -134,6 +138,7 @@ class Store(private val preferences: SharedPreferences) {
             .putBoolean("notifyFailed", notifyFailed)
             .putBoolean("notifyInput", notifyInput)
             .putBoolean("liveNotification", liveNotification)
+            .putBoolean("useCameraArea", useCameraArea)
             .apply()
         etag = null
     }

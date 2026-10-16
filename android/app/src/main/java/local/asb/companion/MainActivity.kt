@@ -1,5 +1,6 @@
 package local.asb.companion
 
+import local.asb.companion.ui.LocalUseCameraArea
 import local.asb.companion.ui.SafeTopBarInsets
 import local.asb.companion.ui.SafeContentInsets
 import android.Manifest
@@ -97,7 +98,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             // The Settings text size scales every sp in the app, on top of the system font size.
             val system = LocalDensity.current
-            CompositionLocalProvider(LocalDensity provides Density(system.density, system.fontScale * app.textScale)) {
+            CompositionLocalProvider(
+                LocalDensity provides Density(system.density, system.fontScale * app.textScale),
+                LocalUseCameraArea provides app.useCameraArea,
+            ) {
                 AsbTheme(app.palette) {
                     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
                         notificationsAllowed = Notifier.notificationsAllowed(this)
@@ -210,6 +214,8 @@ private fun PairedApp(
                 onPersistentUnreadChanged = sessionsModel::refresh,
                 onViewChanged = sessionsModel::setView,
                 onTextScaleChanged = app::useTextScale,
+                useCameraArea = app.useCameraArea,
+                onUseCameraAreaChanged = app::chooseCameraArea,
                 liveNotification = app.liveNotification,
                 onLiveNotificationChanged = app::useLiveNotification,
             )

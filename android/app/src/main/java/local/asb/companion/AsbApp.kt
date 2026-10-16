@@ -31,12 +31,15 @@ class AsbApp : Application() {
         private set
     var liveNotification by mutableStateOf(true)
         private set
+    var useCameraArea by mutableStateOf(true)
+        private set
 
     override fun onCreate() {
         super.onCreate()
         palette = store.palette ?: Palette()
         textScale = store.textScale
         liveNotification = store.liveNotification
+        useCameraArea = store.useCameraArea
         notifier.createChannels()
         CheckWorker.schedule(this)
         // Registered on the Application for the whole process (no activity to leak), so the
@@ -53,6 +56,12 @@ class AsbApp : Application() {
         if (value != null && next == palette) return
         palette = next
         store.palette = value
+    }
+
+    /** Shows and saves the camera area setting. */
+    fun chooseCameraArea(value: Boolean) {
+        useCameraArea = value
+        store.useCameraArea = value
     }
 
     /** Shows and saves the app text size. */

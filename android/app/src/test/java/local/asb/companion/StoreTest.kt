@@ -102,6 +102,7 @@ class StoreTest {
         store.notifyFailed = false
         store.notifyInput = false
         store.liveNotification = false
+        store.useCameraArea = false
         store.clear()
         val next = Store(preferences)
         assertEquals("", next.token)
@@ -109,6 +110,7 @@ class StoreTest {
         assertFalse(preferences.contains("deviceId"))
         assertEquals(1.3f, next.textScale)
         assertEquals("compact", next.view)
+        assertFalse(next.useCameraArea)
         assertFalse(next.notifyDone)
         assertFalse(next.notifyFailed)
         assertFalse(next.notifyInput)

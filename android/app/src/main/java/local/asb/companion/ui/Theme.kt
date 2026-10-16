@@ -1,5 +1,8 @@
 package local.asb.companion.ui
 
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.WindowInsetsSides
@@ -22,10 +25,14 @@ val LocalPalette = staticCompositionLocalOf { Palette() }
 fun controlOutline(palette: Palette): String =
     if (contrast(palette.divider, palette.background) >= 3.0) palette.divider else palette.muted
 
-// Fullscreen hides the system bars, so insets must still keep content clear of the camera cutout.
-val SafeContentInsets: WindowInsets @Composable get() = WindowInsets.safeDrawing
+// Settings > Appearance > Use the camera area: true draws under the camera hole, false keeps the cutout band clear.
+val LocalUseCameraArea = staticCompositionLocalOf { true }
+
+// Fullscreen hides the system bars; without the camera area the insets keep content clear of the cutout.
+val SafeContentInsets: WindowInsets
+    @Composable get() = if (LocalUseCameraArea.current) WindowInsets.systemBars.union(WindowInsets.ime) else WindowInsets.safeDrawing
 val SafeTopBarInsets: WindowInsets
-    @Composable get() = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
+    @Composable get() = SafeContentInsets.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
 
 // A dialog, menu, or sheet window sets its own density, so its content gets the app text size again from this.
 fun withDensity(density: Density, content: @Composable () -> Unit): @Composable () -> Unit =

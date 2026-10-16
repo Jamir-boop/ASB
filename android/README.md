@@ -90,6 +90,11 @@ app saves the last palette and uses it at start and while offline. Before the
 first palette, it uses a dark fallback. Settings shows the theme source as
 read-only text.
 
+The app is fullscreen: the system bars hide, and a swipe from an edge shows
+them for a moment. Settings > Appearance > **Use the camera area** is on by
+default, so the app also draws under the camera hole. Turn it off to keep the
+camera band clear.
+
 The session cards use the desktop Compact and Comfortable views. Select the
 view in Settings; the default is Comfortable. Compact rows are at least 48 dp
 high for touch, and Comfortable rows are at least 68 dp. In Comfortable, the

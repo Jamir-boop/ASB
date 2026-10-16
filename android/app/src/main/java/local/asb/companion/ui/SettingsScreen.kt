@@ -98,6 +98,8 @@ fun SettingsScreen(
     onPersistentUnreadChanged: () -> Unit = {},
     onViewChanged: (String) -> Unit = {},
     onTextScaleChanged: (Float) -> Unit = {},
+    useCameraArea: Boolean = true,
+    onUseCameraAreaChanged: (Boolean) -> Unit = {},
     liveNotification: Boolean,
     onLiveNotificationChanged: (Boolean) -> Unit,
 ) {
@@ -289,6 +291,9 @@ fun SettingsScreen(
                             ) { Text(label) }
                         }
                     }
+                    SettingsSwitch("Use the camera area", useCameraArea, onChecked = onUseCameraAreaChanged)
+                    Text("Draw the app under the camera hole. Turn off to keep that band clear.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 HorizontalDivider()
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
