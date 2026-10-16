@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Added `POST /api/palette` and the dashboard field `palette`. The ASB window sends its resolved colors (GNOME or Custom, with the success and warning colors) at start, after Apply theme or Reset, and after a GNOME style change. The server saves them in `$XDG_STATE_HOME/asb/palette.json` (mode `0600`), so the service keeps them after a restart. The phone gets the palette with the dashboard. The phone gateway cannot reach the route.
 - Added the optional phone gateway. It is off by default. When you turn it on, it binds one private IPv4 address of the PC (default port `4630`) with TLS 1.3, a pinned self-signed certificate, and one bearer token for each phone. It forwards only the allowlisted session routes to the loopback server. The main server still binds only `127.0.0.1`.
 - Added Preferences > Phone: turn phone access on or off, choose the address and port, see the certificate fingerprint, pair a phone with a one-time QR code, and remove paired phones. The Debian package now depends on `openssl` and recommends `python3-qrcode` for the QR code.
 - Added `asb service install`, `uninstall`, `status`, and `run`. The optional `asb.service` systemd user service runs the ASB server and phone access without the window. It scans every two or five seconds with no client, so it sees task ends while the window is closed. The ASB window attaches to a running service.

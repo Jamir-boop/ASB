@@ -229,7 +229,7 @@ gatewayTest('twenty failures throttle the remote for one minute and use a slidin
 gatewayTest('the route allowlist blocks other APIs and checks methods before bearer auth', async (t) => {
   const { request, pair, records } = await fixture(t);
   const token = (await pair()).json.token;
-  for (const route of ['/phone/v1/sources', '/api/dashboard', '/phone/v1/threads/x/delete', '/phone/v1/settings/phone',
+  for (const route of ['/phone/v1/sources', '/api/dashboard', '/api/palette', '/phone/v1/palette', '/phone/v1/threads/x/delete', '/phone/v1/settings/phone',
     '/phone/v1/threads//open', `/phone/v1/threads/${'x'.repeat(513)}/open`, '/phone/v1/threads/x/y/open']) {
     const response = await request(route, { method: 'POST', token, body: {} });
     assert.equal(response.status, 404, route);

@@ -282,7 +282,7 @@ After a distro, desktop, GTK, or driver change, record the exact stack, X11/Wayl
 
 ASB makes no model calls and sends no messages. When ASB Bridge is installed, a message that it delivers starts a turn in the receiving app.
 
-ASB uses `createAsbServer` from `src/asb-server.mjs`. It allows the view assets, dashboard, source events, app-source settings, known-session open, ASB Read/Unread, Discard/Keep, drawer in/out, pins, pin movement, and Persistent unread settings. Other API routes are not exposed.
+ASB uses `createAsbServer` from `src/asb-server.mjs`. It allows the view assets, dashboard, source events, app-source settings, known-session open, ASB Read/Unread, Discard/Keep, drawer in/out, pins, pin movement, Persistent unread settings, and the window palette. Other API routes are not exposed.
 
 Actions require the local Host and a matching Origin. App-source changes also need the app source token when the server has one (see below). Session IDs must be in the scanned list. Read/Unread, pin/unpin, and drawer in/out accept an empty JSON object. Persistent unread accepts only a `persistentUnread` boolean. Pin movement accepts `up`/`down`, or a known pinned target with `before`/`after`. Session actions accept no client commands, paths, or URLs.
 
@@ -318,6 +318,16 @@ These routes exist only when the server has a phone gateway (window launcher or 
 | `POST /api/phone/devices/<id>/revoke` | `{}`. `<id>` is 12 lowercase hex. Removes that phone and replies with `status()`. |
 | `GET /api/service` | `{ service, pid }`. `service` is true only in `asb service run`. The window launcher uses it for attach mode. |
 
+### Palette route
+
+The native window shares its resolved palette, so the phone can use the same colors. This route exists also when the server has no phone gateway.
+
+| Loopback route | Contract |
+| --- | --- |
+| `POST /api/palette` | Body exactly `{"mode","colors"}`. `mode` is `gnome` or `custom`. `colors` has exactly `background`, `text`, `accent`, `muted`, `divider`, `success`, and `warning`, each `#RRGGBB`. Else 400. Uses the action Host and Origin checks, and needs the header `X-ASB-Source-Token` when a token is set (else 403). The server saves the colors in lowercase and replies `{ changed }`. A change sends the normal `dashboard` event. |
+
+`GET /api/dashboard` has the top-level field `palette`: the last saved `{ mode, colors }`, or `null` before the first publish. The field is part of the `ETag` content, so a palette change gives a new tag. In GNOME mode the window sends the `native_colors()` values with the GNOME `success_color` and `warning_color`. In Custom mode it sends the saved custom colors, with `success` and `warning` equal to `accent`. The window sends at start, after Apply theme, after Reset to GNOME, and after a GNOME dark style or accent change. It sends only a palette that is different from the last good send. A failed send writes one line to stderr, and the next apply tries again.
+
 ### Phone gateway
 
 `createPhoneGateway` in `src/phone-gateway.mjs` is a second listener, separate from the loopback server. It is off by default. It listens only when `enabled` is true and `bindAddress` is one of the private IPv4 addresses of the PC (`10/8`, `172.16/12`, `192.168/16`). It never binds `0.0.0.0`. The default port is `4630`. When the address is gone, or the port is in use, the gateway stays off and `status().error` says why.
@@ -340,7 +350,7 @@ The gateway handles each request in this order:
 | `POST /phone/v1/threads/<id>/<action>` | Proxy to the same loopback thread route. `<action>` is `open`, `mark-read`, `mark-unread`, `pin`, `unpin`, `move-pin`, `discard-result`, `keep-result`, `drawer-in`, or `drawer-out`. |
 | `POST /phone/v1/settings/unread` | Proxy to `POST /api/settings/unread`. |
 
-The proxy calls `127.0.0.1:<ASB port>` and sets `Host` itself. POST also gets the local `Origin` and `content-type: application/json`. Only `If-None-Match` passes from the phone; cookies, `Authorization`, and other headers do not. Only `content-type` and `etag` come back from the loopback reply. A failed loopback request gives 502, and the proxy timeout is 30 seconds. The loopback server applies its normal checks. The gateway cannot reach `/api/sources`, `/api/phone*`, `/api/service`, or `/api/events`.
+The proxy calls `127.0.0.1:<ASB port>` and sets `Host` itself. POST also gets the local `Origin` and `content-type: application/json`. Only `If-None-Match` passes from the phone; cookies, `Authorization`, and other headers do not. Only `content-type` and `etag` come back from the loopback reply. A failed loopback request gives 502, and the proxy timeout is 30 seconds. The loopback server applies its normal checks. The gateway cannot reach `/api/sources`, `/api/phone*`, `/api/service`, `/api/palette`, or `/api/events`.
 
 Pairing: `createPairing` makes one code of 20 random bytes (base64url). It is valid for 10 minutes and for one use. A new code replaces the old one, and 8 wrong codes void it. The QR link is `asb://pair?v=1&h=<address>&p=<port>&f=<fingerprint>&c=<code>&n=<host name>`. A good pair request saves a new device with a 256-bit random token and replies with the token once. The PC saves only the SHA-256 of the token. The device limit is eight (409). The device name is trimmed, has no control characters, and has at most 64 characters. `lastSeenAtMs` is saved at most once per 10 minutes per phone, and on stop. Revoke removes the device, so its token gives 401 at once.
 
@@ -349,6 +359,7 @@ Pairing: `createPairing` makes one code of 20 random bytes (base64url). It is va
 | Default location | Purpose |
 | --- | --- |
 | `~/.local/state/asb/pending.json` | ASB attention, pins, Persistent unread, current-task Discard marks, and drawer marks. |
+| `~/.local/state/asb/palette.json` | The last palette from the window, for the dashboard `palette` field, mode `0600`. The server reads it at start. A bad file gives `palette: null` and one stderr warning; the next publish replaces it. |
 | `~/.config/asb/layout.json` | Width, view, and optional boolean `showAppPills`. |
 | `~/.config/asb/theme.json` | Custom colors. |
 | `~/.config/asb/sources.json` | App-source IDs, labels, colors, dot visibility, paths, launchers, and enabled flags, with owner-only access. |

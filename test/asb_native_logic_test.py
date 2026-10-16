@@ -914,6 +914,46 @@ class DataChecks(unittest.TestCase):
             asb.write_theme(path)
             self.assertIsNone(asb.read_theme(path))
 
+    def test_palette_payload_for_gnome_and_custom_colors(self):
+        native = {"background": "#242424", "text": "#ffffff", "accent": "#78aeed", "muted": "#c8c8c8", "divider": "#5b5b5b"}
+        self.assertEqual(asb.palette_payload(None, native, "#8ff0a4", "#f8e45c"),
+                         {"mode": "gnome", "colors": {**native, "success": "#8ff0a4", "warning": "#f8e45c"}})
+        self.assertEqual(asb.palette_payload(None, native)["colors"],
+                         {**native, "success": "#78aeed", "warning": "#78aeed"})
+        self.assertEqual(asb.palette_payload(CUSTOM, native, "#8ff0a4", "#f8e45c"),
+                         {"mode": "custom", "colors": {**CUSTOM, "success": CUSTOM["accent"], "warning": CUSTOM["accent"]}})
+
+    def test_palette_publish_sends_changes_once_and_retries_after_failure(self):
+        import io
+        window = object.__new__(Window)
+        window.base, window.closed, window.hover_colors = "http://127.0.0.1:1", False, dict(CUSTOM)
+        window.palette_sent = window.palette_wanted = None
+        window.palette_sending = False
+        sends = []
+        with patch.dict(SCOPE, {"GLib": SimpleNamespace(idle_add=Mock()), "request_async": lambda base, route, callback, dispatch, method, body:
+                                sends.append((route, method, body, callback))}):
+            window.publish_palette()
+            window.publish_palette()
+            self.assertEqual([(route, method) for route, method, *_ in sends], [("/api/palette", "POST")])
+            window.hover_colors = {**CUSTOM, "accent": "#ffffff"}
+            window.publish_palette()
+            with patch("sys.stderr", io.StringIO()) as stderr:
+                sends[0][3](None, "Cannot change this session.")
+            self.assertIn("palette", stderr.getvalue())
+            self.assertEqual(len(sends), 1)
+            window.publish_palette()
+            self.assertEqual(sends[1][2]["colors"]["accent"], "#ffffff")
+            sends[1][3]({"changed": True}, None)
+            window.publish_palette()
+            self.assertEqual(len(sends), 2)
+        token = "cd" * 32
+        transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(b'{"changed": false}')))
+        with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": token}):
+            self.assertEqual(asb.request_json("http://127.0.0.1:1", "/api/palette", "POST", sends[1][2]), {"changed": False})
+        request = transport.open.call_args.args[0]
+        self.assertEqual(request.get_header("X-asb-source-token"), token)
+        self.assertEqual(request.get_header("Origin"), "http://127.0.0.1:1")
+
     def test_local_url_and_unfocused_refresh(self):
         self.assertEqual(asb.local_base_url("http://127.0.0.1:4629/"), "http://127.0.0.1:4629")
         for value in ["https://example.com", "http://localhost:4629", "http://127.0.0.1:4629/api", "http://u:p@127.0.0.1:4629"]:
@@ -2878,7 +2918,7 @@ class NativeLogicChecks(unittest.TestCase):
         mode.set_selected = lambda value: setattr(mode, "selected", value)
         window.rgba = window.hex_color = lambda value: value
         window.native_colors = lambda: dict(colors)
-        window.theme_error, window.set_palette = Mock(), Mock()
+        window.theme_error, window.set_palette, window.publish_palette = Mock(), Mock(), Mock()
         window.color_buttons = {}
         for key, color in colors.items():
             picker = SimpleNamespace(color=color)
@@ -2907,6 +2947,7 @@ class NativeLogicChecks(unittest.TestCase):
                 colors[key] = value
                 window.apply_theme()
                 window.set_palette.assert_called_once_with(colors)
+                window.publish_palette.assert_called()
                 self.assertEqual(SCOPE["read_theme"](window.theme_path), colors)
                 window.theme_error.set_label.assert_called_with("Custom theme saved.")
             for value in (colors["background"], "#121213"):

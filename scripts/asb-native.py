@@ -346,6 +346,15 @@ def write_theme(path, colors=None):
     write_config(path, None if colors is None else {"mode": "custom", "colors": validate_theme(colors)})
 
 
+def palette_payload(custom, native=None, success=None, warning=None):
+    """The palette for POST /api/palette: custom colors, or the GNOME colors with the GNOME success and warning colors."""
+    if custom:
+        return {"mode": "custom", "colors": {**{key: custom[key] for key in THEME_KEYS},
+                                             "success": custom["accent"], "warning": custom["accent"]}}
+    return {"mode": "gnome", "colors": {**{key: native[key] for key in THEME_KEYS},
+                                        "success": success or native["accent"], "warning": warning or native["accent"]}}
+
+
 def validate_column_width(width):
     if type(width) is not int or not 160 <= width <= 600:
         raise ValueError("Column width must be a whole number from 160 to 600 pixels.")
@@ -579,10 +588,11 @@ def request_json(base, route, method="GET", body=None, etag=None):
     source_route = path == "/api/sources" or path.startswith("/api/sources/")
     phone_route = path == "/api/phone" or path.startswith("/api/phone/")
     service_route = path == "/api/service"
+    palette_route = path == "/api/palette"
     data = None
     if etag and etag[0] and method == "GET" and route.split("?")[0] == "/api/dashboard":
         headers["If-None-Match"] = etag[0]
-    if SOURCE_TOKEN and ((source_route and method == "POST") or phone_route or service_route):
+    if SOURCE_TOKEN and ((source_route and method == "POST") or phone_route or service_route or palette_route):
         headers["X-ASB-Source-Token"] = SOURCE_TOKEN
     if method == "POST":
         headers.update({"Origin": base, "Content-Type": "application/json"})
@@ -594,7 +604,7 @@ def request_json(base, route, method="GET", body=None, etag=None):
         if not isinstance(result, dict):
             raise ValueError("The ASB response is not an object.")
         success = "opened" if route.endswith("/open") else "marked" if route.endswith("/mark-unread") else "changed"
-        if method == "POST" and not phone_route and not service_route and not result.get(success):
+        if method == "POST" and not phone_route and not service_route and not palette_route and not result.get(success):
             raise ValueError("The session action did not succeed.")
         if etag is not None:
             etag[0] = response.headers.get("ETag")
@@ -1738,6 +1748,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.clock_interval = self.clock_timer = None
         self.notice_timer, self.notice_generation, self.provider_notice = None, 0, ""
         self.opening, self.focus_widgets, self.row_cache = set(), {}, {}
+        self.palette_sent = self.palette_wanted = None
+        self.palette_sending = False
         self.list_columns = []
         self.focus_generation = 0
         self.connect("notify::focus-widget", self.focus_changed)
@@ -2068,6 +2080,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.set_theme_pickers(saved)
         except (OSError, ValueError) as error:
             self.theme_error.set_label(str(error))
+        self.publish_palette()
+        style = Adw.StyleManager.get_default()
+        for name in ("dark", "accent-color"):
+            if style.find_property(name):
+                # GNOME colors follow the system style; the phone gets them after GTK loads the new style.
+                style.connect("notify::" + name, lambda *_args: GLib.idle_add(self.publish_palette))
         self.connect("realize", self.watch_layout)
         self.timer = GLib.timeout_add(self.refresh_interval_ms, self.tick)
         self.events = EventStream(self.base, self.source_changed, GLib.idle_add)
@@ -2265,6 +2283,34 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             if preferences.profiles_editor:
                 preferences.profiles_editor.update_marker_colors()
 
+    def publish_palette(self):
+        if self.closed:
+            return False
+        if self.hover_colors:
+            self.palette_wanted = palette_payload(self.hover_colors)
+        else:
+            context = self.get_style_context()
+            found = [context.lookup_color(name) for name in ("success_color", "warning_color")]
+            self.palette_wanted = palette_payload(None, self.native_colors(),
+                                                  *(self.hex_color(value) if ok else None for ok, value in found))
+        if not self.palette_sending and self.palette_wanted != self.palette_sent:
+            sent = self.palette_wanted
+            self.palette_sending = True
+            request_async(self.base, "/api/palette", lambda _result, error: self.palette_published(sent, error),
+                          GLib.idle_add, "POST", sent)
+        return False
+
+    def palette_published(self, sent, error):
+        self.palette_sending = False
+        if error:
+            # The next palette apply tries again.
+            print(f"ASB cannot share its palette with the phone: {error}", file=sys.stderr)
+        else:
+            self.palette_sent = sent
+            if self.palette_wanted != sent and not self.closed:
+                self.publish_palette()
+        return False
+
     def open_preferences(self, *_args):
         if not self.closed:
             self.preferences_window.present()
@@ -2289,6 +2335,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 {key: self.hex_color(picker.get_rgba()) for key, picker in self.color_buttons.items()})
             write_theme(self.theme_path, colors)
             self.set_palette(colors)
+            self.publish_palette()
             self.theme_error.remove_css_class("warning")
             self.theme_error.set_label("Custom theme saved." if colors else "GNOME colors applied.")
         except (ValueError, OSError) as error:
@@ -2299,6 +2346,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         try:
             write_theme(self.theme_path)
             self.set_palette(None)
+            self.publish_palette()
             self.theme_mode.set_selected(0)
             self.set_theme_pickers(self.native_colors())
             self.theme_error.remove_css_class("warning")
