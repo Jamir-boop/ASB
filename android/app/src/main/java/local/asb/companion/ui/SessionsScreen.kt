@@ -178,6 +178,7 @@ import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import local.asb.companion.data.edgeColor
 import local.asb.companion.data.mixColor
+import local.asb.companion.data.luminance
 import local.asb.companion.data.readableColor
 import kotlin.math.roundToInt
 
@@ -431,12 +432,13 @@ fun SessionsScreen(
             cursorBrush = SolidColor(hexColor(palette.accent)),
             keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
-            modifier = modifier.height(height).focusRequester(searchFocus)
+            modifier = modifier.heightIn(min = height).focusRequester(searchFocus)
                 .semantics { contentDescription = "Search sessions" },
         ) { inner ->
             Row(
-                modifier = Modifier.fillMaxSize()
-                    .border(1.dp, hexColor(controlOutline(palette)), RoundedCornerShape(height / 2))
+                // A minimum height, so large text makes the field taller and does not clip.
+                modifier = Modifier.fillMaxWidth().heightIn(min = height)
+                    .border(1.dp, hexColor(controlOutline(palette)), CircleShape)
                     .padding(start = 12.dp, end = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -528,10 +530,12 @@ fun SessionsScreen(
             Box(Modifier.size(24.dp)) {
                 Image(painterResource(R.drawable.ic_launcher_disc), contentDescription = null, modifier = Modifier.fillMaxSize())
                 // A 9 dp status dot with a 2 dp ring in the background color, 1 dp past the disc corner.
+                // Live is a filled dot and Offline a hollow ring, so the state does not depend on color only.
                 Box(
                     Modifier.align(Alignment.BottomEnd).offset(3.dp, 3.dp).size(13.dp)
                         .background(hexColor(palette.background), CircleShape).padding(2.dp)
-                        .background(hexColor(if (state.offline) palette.muted else palette.success), CircleShape),
+                        .then(if (state.offline) Modifier.border(2.dp, hexColor(palette.muted), CircleShape)
+                            else Modifier.background(hexColor(palette.success), CircleShape)),
                 )
             }
         }
@@ -560,7 +564,7 @@ fun SessionsScreen(
         Column(Modifier.fillMaxWidth().background(hexColor(palette.background))
             .windowInsetsPadding(SafeTopBarInsets)) {
             if (flow) Row(
-                modifier = Modifier.fillMaxWidth().height(48.dp).padding(start = 12.dp, end = 4.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 12.dp, end = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -579,7 +583,7 @@ fun SessionsScreen(
                 pills(Modifier.weight(1f))
                 settings()
             } else Row(
-                modifier = Modifier.fillMaxWidth().height(56.dp).padding(start = 12.dp, end = 4.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 12.dp, end = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -690,6 +694,7 @@ fun SessionsScreen(
         point = inspector?.second ?: Offset.Zero,
         busy = inspectorRow.id in state.busyIds,
         message = snackbar.currentSnackbarData?.visuals?.message,
+        error = state.actionErrors[inspectorRow.id],
         nowMs = nowMs,
         viewModel = viewModel,
         windowSize = IntSize(constraints.maxWidth, constraints.maxHeight),
@@ -716,7 +721,7 @@ private fun SessionChip(
         onClick = onClick,
         // Desktop pill: small and round, accent background when selected. The chip keeps its 48 dp touch area.
         // An icon pill shows only its icon; the label is its content description.
-        modifier = modifier.height(28.dp).then(if (icon != null) Modifier.semantics { contentDescription = label } else Modifier),
+        modifier = modifier.heightIn(min = 28.dp).then(if (icon != null) Modifier.semantics { contentDescription = label } else Modifier),
         shape = CircleShape,
         border = FilterChipDefaults.filterChipBorder(true, selected, borderColor = hexColor(controlOutline(LocalPalette.current))),
         label = {
@@ -1053,7 +1058,7 @@ private val INSPECTOR_MARGIN = 16.dp
  */
 @Composable
 private fun SessionInspector(
-    row: Thread, point: Offset, busy: Boolean, message: String?, nowMs: Long, viewModel: SessionsViewModel,
+    row: Thread, point: Offset, busy: Boolean, message: String?, error: String?, nowMs: Long, viewModel: SessionsViewModel,
     windowSize: IntSize, onOpen: () -> Unit, onDismiss: () -> Unit,
 ) {
     val density = LocalDensity.current
@@ -1172,9 +1177,15 @@ private fun SessionInspector(
                         }
                         switch("discard", "Discard result", "Go to read Idle when this task ends")
                     }
+                    // Desktop asb-panel-error: the last failed action of this row, in the Adwaita error color made readable.
+                    if (error != null) Text(error, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
+                        color = hexColor(readableColor(if (luminance(palette.background) < .5) "#ff7b63" else "#c01c28",
+                            palette.text, listOf(surface))),
+                        modifier = Modifier.padding(start = 2.dp, end = 2.dp, top = 8.dp)
+                            .semantics { liveRegion = LiveRegionMode.Polite })
                 }
-                // The panel covers the snackbar, so it shows the current message too (desktop asb-panel-error caption).
-                if (message != null) Text(message, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted,
+                // The panel covers the snackbar, so it shows the current message too.
+                if (message != null && message != error) Text(message, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted,
                     modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 12.dp))
             }
         },

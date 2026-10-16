@@ -117,6 +117,16 @@ class EventsTest {
         assertEquals(listOf(Event(native, BIT_DONE)), diff(mapOf(row.id to 0), listOf(native), now))
     }
 
+    @Test fun codexNativeFailureIsFailedOnly() {
+        val success = row.copy(state = "idle", nativeAttention = true)
+        val failure = success.copy(lastOutcome = "failed")
+        assertEquals(listOf(Event(success, BIT_DONE)), diff(mapOf(row.id to 0), listOf(success), now))
+        assertEquals(BIT_FAILED, bits(failure))
+        assertEquals(listOf(Event(failure, BIT_FAILED)), diff(mapOf(row.id to 0), listOf(failure), now))
+        assertEquals(0, bits(failure.copy(state = "working")))
+        assertEquals(emptyList<Event>(), diff(mapOf(row.id to 0), listOf(failure.copy(state = "working")), now))
+    }
+
     @Test fun limitedServerAttentionPreservesOldResultBitsWithoutEvents() {
         for (kind in listOf(BIT_DONE, BIT_FAILED)) {
             val limited = row.copy(state = "idle", limitResetsAtMs = reset,

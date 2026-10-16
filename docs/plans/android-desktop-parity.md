@@ -36,8 +36,10 @@ Touch adaptations that follow from the platform (not a user choice, keep them):
 - Comfortable cards have a 24 dp gap between cards in the one-column list,
   because touch has no hover highlight to show which footer belongs to which
   card. Column Flow can make this gap smaller, to 8 dp (section 4a).
-- Filter pills follow the desktop pill: 28 dp high, fully round, 12 sp label,
-  no check icon, accent background when selected (48 dp touch area kept).
+- Filter pills follow the desktop pill: at least 28 dp high (they grow with
+  large text), fully round, 12 sp label, no check icon, accent background when
+  selected (48 dp touch area kept). The search field also has only a minimum
+  height, and the top bar grows with it.
 - The search field and pill outlines use the divider color only when it has
   3:1 contrast with the background (WCAG non-text contrast); else muted.
 
@@ -220,7 +222,11 @@ background, with a 1 dp ring from `edgeColor` (port of `edge_color`).
 `row_panel_note`) map `rowMenuActions` to the switches, so it stays the only
 rule source. Every change uses the existing actions. The panel covers the
 snackbar, so it shows the current snackbar message as an 11 sp caption below
-the switches (desktop `asb-panel-error`). Back, a tap outside, Open, or the
+the switches. A failed action keeps its error for that row (desktop
+`asb-panel-error`), in an error color with 4.5:1 contrast on the surface. A
+successful action for the row, a change of the row state, or the row leaving
+the board removes it. A successful poll removes only an error from a failed
+dashboard load, not an action error. Back, a tap outside, Open, or the
 row leaving the board closes it. A rotation closes it.
 
 ## 5. Motion (worker B)

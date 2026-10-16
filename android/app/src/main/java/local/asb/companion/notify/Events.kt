@@ -10,10 +10,11 @@ private const val BIT_LIMITED = 8
 
 fun bits(row: Thread): Int {
     if (row.archived) return 0
-    // A Codex chat with native read state shows its completion only as native attention.
-    val done = row.completionAttention || (row.nativeAttention && row.state == "idle")
-    return (if (done) BIT_DONE else 0) or
-        (if (row.failedAttention) BIT_FAILED else 0) or
+    // A Codex chat with native read state shows its result only as native attention and the last outcome.
+    val native = row.nativeAttention && row.state == "idle"
+    val nativeFailed = native && row.lastOutcome == "failed"
+    return (if (row.completionAttention || (native && !nativeFailed)) BIT_DONE else 0) or
+        (if (row.failedAttention || nativeFailed) BIT_FAILED else 0) or
         (if (row.questionAttention || row.actionRequired) BIT_INPUT else 0)
 }
 

@@ -467,6 +467,45 @@ class SessionsViewModelTest {
         assertEquals(7, server.requestCount)
     }
 
+    @Test fun actionErrorsSurviveSuccessfulPollsUntilTheRowActsChangesOrLeaves() = runBlocking {
+        val dashboard = Dashboard(1, threads = listOf(Thread(id = "one", state = "idle"), Thread(id = "two")))
+        val model = model()
+        load(model, dashboard)
+        suspend fun fail() {
+            server.enqueue(MockResponse().setResponseCode(500).setBody("{\"error\":\"Cannot change row\"}"))
+            model.action("one", "drawer-in")
+            await { model.state.value.busyIds.isEmpty() }
+            assertEquals("Cannot change row", model.state.value.lastError)
+            assertEquals(mapOf("one" to "Cannot change row"), model.state.value.actionErrors)
+        }
+        suspend fun refresh(reply: MockResponse) {
+            server.enqueue(reply)
+            model.refresh()
+            await { !model.state.value.refreshing }
+        }
+        fail()
+        for (reply in listOf(response(dashboard.copy(generatedAtMs = 2)), MockResponse().setResponseCode(304))) {
+            refresh(reply)
+            assertFalse(model.state.value.offline)
+            assertEquals("Cannot change row", model.state.value.lastError)
+            assertEquals(mapOf("one" to "Cannot change row"), model.state.value.actionErrors)
+        }
+        model.clearError()
+        server.enqueue(MockResponse().setBody("{}"))
+        server.enqueue(response(dashboard.copy(generatedAtMs = 3)))
+        model.action("one", "drawer-in")
+        await { model.state.value.busyIds.isEmpty() }
+        assertEquals(emptyMap<String, String>(), model.state.value.actionErrors)
+        assertNull(model.state.value.lastError)
+
+        fail()
+        refresh(response(dashboard.copy(generatedAtMs = 4, threads = listOf(Thread(id = "one", state = "working")))))
+        assertEquals(emptyMap<String, String>(), model.state.value.actionErrors)
+        fail()
+        refresh(response(dashboard.copy(generatedAtMs = 5, threads = listOf(Thread(id = "two")))))
+        assertEquals(emptyMap<String, String>(), model.state.value.actionErrors)
+    }
+
     @Test fun rowValidationAndServerErrorsCannotClearAnExistingDashboardFailure() = runBlocking {
         val dashboard = Dashboard(1, threads = listOf(Thread(id = "one", canOpen = true)))
         val model = model()

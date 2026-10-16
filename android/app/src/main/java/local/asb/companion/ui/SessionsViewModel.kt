@@ -37,6 +37,8 @@ data class UiState(
     val view: String = "comfortable",
     val openingIds: Set<String> = emptySet(),
     val readConfirmedIds: Set<String> = emptySet(),
+    /** The last failed action of a row, as the desktop row panel error. */
+    val actionErrors: Map<String, String> = emptyMap(),
     /** The kind of endpoint that gave the last dashboard: lan, zerotier, or tailscale. */
     val path: String? = null,
 )
@@ -125,7 +127,7 @@ class SessionsViewModel(
                         mutableState.update { it.copy(banner = "Opened on $serverName") }
                     }
                     // The row stays busy until the board refresh below, so its controls never act on the old row.
-                    mutableState.update { it.copy(openingIds = it.openingIds - id) }
+                    mutableState.update { it.copy(openingIds = it.openingIds - id, actionErrors = it.actionErrors - id) }
                     if (action == "mark-read") confirmRead(id)
                     etag = null
                     fetchDashboard()
@@ -133,6 +135,7 @@ class SessionsViewModel(
             } catch (cause: AsbError) {
                 currentCoroutineContext().ensureActive()
                 showError(cause)
+                cause.message?.let { message -> mutableState.update { it.copy(actionErrors = it.actionErrors + (id to message)) } }
             } finally {
                 mutableState.update { it.copy(busyIds = it.busyIds - id, openingIds = it.openingIds - id) }
             }
@@ -165,7 +168,15 @@ class SessionsViewModel(
                 dashboard?.let(showLive)
                 if (result is DashboardResult.Fetched) etag = result.etag
                 offlineFailures = 0
-                mutableState.update { it.copy(dashboard = dashboard, offline = false, lastError = null, path = api.endpoint?.kind) }
+                mutableState.update { old ->
+                    val before = old.dashboard?.threads.orEmpty().associate { it.id to it.state }
+                    val now = dashboard?.threads.orEmpty().associate { it.id to it.state }
+                    // A row that leaves the board or changes state loses its action error, as on the desktop.
+                    old.copy(dashboard = dashboard, offline = false, path = api.endpoint?.kind,
+                        // Only a dashboard failure sets offline; an action error stays for its snackbar.
+                        lastError = if (old.offline) null else old.lastError,
+                        actionErrors = old.actionErrors.filterKeys { id -> id in now && now[id] == before[id] })
+                }
                 dashboard?.refreshIntervalMs?.takeIf { it == 2000L || it == 5000L } ?: 5000L
             }
         } catch (cause: AsbError) {
