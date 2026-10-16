@@ -226,8 +226,10 @@ the switches. A failed action keeps its error for that row (desktop
 `asb-panel-error`), in an error color with 4.5:1 contrast on the surface. A
 successful action for the row, a change of the row state, or the row leaving
 the board removes it. A successful poll removes only an error from a failed
-dashboard load, not an action error. Back, a tap outside, Open, or the
-row leaving the board closes it. A rotation closes it.
+dashboard load, not an action error. A control is disabled while its action
+runs. When the action ends, the control that had the focus gets it back if it
+is still there and enabled (desktop `restore_panel_focus`, `panelFocusReturn`).
+Back, a tap outside, Open, or the row leaving the board closes it. A rotation closes it.
 
 ## 5. Motion (worker B)
 

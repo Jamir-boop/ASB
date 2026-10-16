@@ -162,6 +162,14 @@ fun rowPanelControls(row: Thread): Map<String, PanelControl> {
     }
 }
 
+// Port of the restore_panel_focus check: the panel control that gets the focus back when its action ends, if it is
+// still there and enabled. The Earlier and Later buttons belong to the "order" control.
+fun panelFocusReturn(key: String?, controls: Map<String, PanelControl>): String? = when (key) {
+    null -> null
+    "earlier", "later" -> key.takeIf { "order" in controls }
+    else -> key.takeIf { controls[key]?.action != null }
+}
+
 // Port of row_panel_note: the subtitle of the panel Unread switch.
 fun rowPanelNote(row: Thread): String = when {
     row.actionRequired -> "Waits for your permission."

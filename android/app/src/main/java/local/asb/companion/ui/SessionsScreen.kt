@@ -14,6 +14,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.CompositingStrategy
@@ -1074,12 +1075,31 @@ private fun SessionInspector(
     val maxHeight = with(density) { maxOf(0, safe.height - 2 * room).toDp() }
     // A change keeps its chosen state while its action and the board refresh after it are pending.
     val chosen = remember(row.id) { mutableStateMapOf<String, Boolean>() }
-    LaunchedEffect(row, busy) { if (!busy) chosen.clear() }
+    // Desktop restore_panel_focus: a control is disabled while its action runs, so it gets the focus back after.
+    val focusers = remember(row.id) { mutableMapOf<String, FocusRequester>() }
+    var focused by remember(row.id) { mutableStateOf<String?>(null) }
+    var refocus by remember(row.id) { mutableStateOf<String?>(null) }
+    fun focusable(key: String) = Modifier.focusRequester(focusers.getOrPut(key) { FocusRequester() })
+        .onFocusChanged { if (it.isFocused) focused = key else if (focused == key) focused = null }
+    fun started(key: String): Boolean {
+        val pending = row.id in viewModel.state.value.busyIds
+        if (pending && focused == key) refocus = key
+        return pending
+    }
+    val controls = rowPanelControls(row)
+    LaunchedEffect(row, busy) {
+        if (!busy) {
+            chosen.clear()
+            val key = panelFocusReturn(refocus, controls)
+            refocus = null
+            if (key != null) focusers[key]?.requestFocus()
+        }
+    }
     fun change(key: String, value: Boolean, action: String?) {
         if (action == null) return
         viewModel.action(row.id, action)
         // An action that sends nothing leaves the row idle, so the control returns to the row state.
-        if (row.id in viewModel.state.value.busyIds) chosen[key] = value
+        if (started(key)) chosen[key] = value
     }
     val palette = LocalPalette.current
     val surface = mixColor(palette.background, palette.text, .06)
@@ -1089,7 +1109,6 @@ private fun SessionInspector(
     val ring = edgeColor(surface, palette.accent, .7, listOf(palette.background, surface))
     val text = hexColor(palette.text)
     val muted = hexColor(readableColor(palette.muted, palette.text, listOf(surface, group)))
-    val controls = rowPanelControls(row)
     val stateColor = when {
         row.state == "working" -> hexColor(readableColor(palette.success, palette.text, listOf(surface)))
         row.state == "waiting" -> hexColor(readableColor(palette.warning, palette.text, listOf(surface)))
@@ -1155,7 +1174,7 @@ private fun SessionInspector(
                             val control = controls[key] ?: return
                             item {
                                 PanelSwitch(label, note, chosen[key] ?: control.on, control.action != null && !busy, text, muted,
-                                    palette) { change(key, it, control.action) }
+                                    palette, focusable(key)) { change(key, it, control.action) }
                             }
                         }
                         switch("unread", "Unread", rowPanelNote(row))
@@ -1170,9 +1189,9 @@ private fun SessionInspector(
                             ) {
                                 Text("Pin order", fontSize = 13.sp, color = text, modifier = Modifier.weight(1f).padding(end = 9.dp))
                                 PanelButton("Earlier", "Move pin earlier", RoundedCornerShape(6.dp, 0.dp, 0.dp, 6.dp),
-                                    hexColor(move), text, !busy) { viewModel.action(row.id, "pin-up") }
+                                    hexColor(move), text, !busy, focusable("earlier")) { viewModel.action(row.id, "pin-up"); started("earlier") }
                                 PanelButton("Later", "Move pin later", RoundedCornerShape(0.dp, 6.dp, 6.dp, 0.dp),
-                                    hexColor(move), text, !busy) { viewModel.action(row.id, "pin-down") }
+                                    hexColor(move), text, !busy, focusable("later")) { viewModel.action(row.id, "pin-down"); started("later") }
                             }
                         }
                         switch("discard", "Discard result", "Go to read Idle when this task ends")
@@ -1195,10 +1214,10 @@ private fun SessionInspector(
 @Composable
 private fun PanelSwitch(
     label: String, note: String, checked: Boolean, enabled: Boolean, text: Color, muted: Color, palette: Palette,
-    onChange: (Boolean) -> Unit,
+    modifier: Modifier, onChange: (Boolean) -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 48.dp).alpha(if (enabled) 1f else .5f)
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).alpha(if (enabled) 1f else .5f).then(modifier)
             .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange)
             .padding(horizontal = 12.dp, vertical = 7.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -1227,10 +1246,10 @@ private fun PanelSwitch(
 @Composable
 private fun PanelButton(
     label: String, description: String, shape: RoundedCornerShape, background: Color, text: Color, enabled: Boolean,
-    onClick: () -> Unit,
+    modifier: Modifier, onClick: () -> Unit,
 ) {
     Box(
-        Modifier.heightIn(min = 48.dp).clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+        Modifier.heightIn(min = 48.dp).then(modifier).clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .semantics { contentDescription = description },
         contentAlignment = Alignment.Center,
     ) {

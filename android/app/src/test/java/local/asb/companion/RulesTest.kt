@@ -20,6 +20,7 @@ import local.asb.companion.ui.limitLeft
 import local.asb.companion.ui.messageControl
 import local.asb.companion.ui.messageDuration
 import local.asb.companion.ui.newMessages
+import local.asb.companion.ui.panelFocusReturn
 import local.asb.companion.ui.pinMoveBody
 import local.asb.companion.ui.providerQuery
 import local.asb.companion.ui.rowMenuActions
@@ -415,5 +416,20 @@ class RulesTest {
             assertEquals(offered - setOf("pin-up", "pin-down"),
                 rowPanelControls(row).values.mapNotNull { it.action }.toSet() - "pin-up")
         }
+    }
+
+    @Test fun panelFocusReturnsOnlyToAControlThatIsStillThereAndEnabled() {
+        val idle = rowPanelControls(Thread(state = "idle", unread = true, pinned = true))
+        assertEquals("unread", panelFocusReturn("unread", idle))
+        assertEquals("earlier", panelFocusReturn("earlier", idle))
+        assertEquals("later", panelFocusReturn("later", idle))
+        assertEquals(null, panelFocusReturn(null, idle))
+        // The Discard switch goes away when Working ends; the pin order goes away with the pin.
+        assertEquals(null, panelFocusReturn("discard", idle))
+        assertEquals(null, panelFocusReturn("later", rowPanelControls(Thread(state = "idle"))))
+        val working = rowPanelControls(Thread(state = "working"))
+        assertEquals("discard", panelFocusReturn("discard", working))
+        // A control without an action is disabled, so it cannot take the focus.
+        assertEquals(null, panelFocusReturn("drawer", working))
     }
 }
