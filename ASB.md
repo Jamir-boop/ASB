@@ -175,11 +175,16 @@ Choose **Profile color** in the source editor, then **Save**. The presets are Sl
 | Command | Effect |
 | --- | --- |
 | `asb agent status` | Show the version, mode, pid, ASB root path, source settings path, and backend/UI state. |
-| `asb agent sources list` | List registered sources. `--json` also returns their settings revision. |
-| `asb agent sources get <id>` | Show one registered source. |
+| `asb agent peers` | List live local agents from the Claude session registries by app instance, and the agent homes that are not in ASB. Read-only. |
+| `asb agent sources list` | List registered sources: id, name, provider, enabled state, label, and data folder. `--json` also returns their settings revision. |
+| `asb agent sources get <id\|name>` | Show one registered source. |
 | `asb agent sources add --file <json-file>` | Add a source from one JSON object. |
-| `asb agent sources update <id> --file <json-file>` | Merge the supplied fields into the current source. |
-| `asb agent sources remove <id>` | Unregister an additional source. An absent source is unchanged. |
+| `asb agent sources update <id\|name> --file <json-file>` | Merge the supplied fields into the current source. |
+| `asb agent sources remove <id\|name>` | Unregister an additional source. An absent source is unchanged. |
+
+Each source has a name made from its label: lowercase letters and digits, with other characters changed to `-`, at most 80 characters. A label with no letters or digits uses the source id. Names are unique: a save fails when the name is the name or the id of another source. A selector that is a source id selects that source. Otherwise ASB selects the one source with that name. If older settings give more than one source the same name, the command fails with `source_ambiguous`; use the id.
+
+`asb agent peers` shows each live agent as `<instance>/<name>`, where the instance is the source name of the agent's app home and the name is the agent's own registry name. ASB reads Claude session records from the `sessions` folder of each Claude source home and of `~/.claude`. It accepts only records owned by you whose process is alive and has the recorded start time. For each agent it reads only `CLAUDE_CONFIG_DIR` and `CODEX_HOME` from that process. Codex tasks from ASB Bridge use `CODEX_HOME` (default `~/.codex`); other agents use `CLAUDE_CONFIG_DIR` (default `~/.claude`). When no source, or more than one source, matches the home, the instance is `unknown`. A relative or empty value in the variable that selects the agent's home, or an unreadable process environment, also gives `unknown`; the other variable does not affect the result. `duplicate name` marks a name that more than one live agent uses. `Not in ASB` lists `~/.codex*` folders with a `config.toml` and Claude agent homes that match no source.
 
 Add `--json` to any command for structured output. Use `--file -` to read JSON from standard input. Input is limited to 64 KiB and accepts only `provider`, `label`, `dataDir`, `launcher`, `enabled`, `projectsDir`, `color`, and `showMarker`. Do not include `id` or report fields such as `sessionCount`. Source folders and launcher paths must be absolute. A new source needs `provider`, `label`, `dataDir`, and `launcher`; `enabled` defaults to true. The provider is `codex` or `claude-desktop-code`.
 

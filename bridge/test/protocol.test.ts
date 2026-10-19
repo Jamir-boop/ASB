@@ -454,7 +454,7 @@ test('held capacity drops the oldest item separately from the delivery guard', a
   } finally { await f.close(); }
 });
 
-test('the task name carries its directory, stays unique among live peers, and matches the envelope', async () => {
+test('the task name carries its directory, stays unique among live peers, and matches the envelope', () => withCodexHome(async () => {
   const f = await fixture();
   try {
     const name = f.bridge.status().name;
@@ -469,17 +469,19 @@ test('the task name carries its directory, stays unique among live peers, and ma
     await f.bridge.sendMessage(f.peerId, 'named send');
     await until(() => f.frames.some(frame => frame.type === 'user' && frame.message.content.includes(`from-name="${name}"`)));
   } finally { await f.close(); }
-});
+}));
 
-async function withCodexHome<T>(run: (home: string) => Promise<T>) {
+async function withCodexHome<T>(run: (home: string) => Promise<T>, name = '.codex') {
   const previous = process.env.CODEX_HOME;
-  const home = mkdtempSync('/tmp/uds-codex-home-');
+  const root = mkdtempSync('/tmp/uds-codex-home-');
+  const home = join(root, name);
+  mkdirSync(home);
   process.env.CODEX_HOME = home;
   try { return await run(home); }
   finally {
     if (previous === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = previous;
-    rmSync(home, { recursive: true });
+    rmSync(root, { recursive: true });
   }
 }
 
@@ -507,6 +509,19 @@ test('the task name follows the latest Codex title and falls back to the folder'
     expect(sessionName(configDir, configDir, id)).toBe(folder);
   } finally { rmSync(configDir, { recursive: true }); }
 }));
+
+test('the task name prefix names its Codex home', async () => {
+  const id = randomUUID();
+  const configDir = mkdtempSync('/tmp/uds-names-');
+  try {
+    for (const [name, prefix] of [['.codex-personal', 'codex-personal'], ['Work', 'codex-work'], ['codex', 'codex'], ['!!!', 'codex']]) {
+      await withCodexHome(async home => {
+        title(home, id, 'Shared Title');
+        expect(sessionName(configDir, configDir, id)).toBe(`${prefix}-shared-title-${id.slice(-2)}`);
+      }, name);
+    }
+  } finally { rmSync(configDir, { recursive: true }); }
+});
 
 test('the registered name refreshes on a status change once a title appears, and stays unique', () => withCodexHome(async home => {
   const f = await fixture();

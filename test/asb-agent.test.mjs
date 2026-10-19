@@ -2,10 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { AppSourceRegistry, appSourcesRevision } from '../src/app-sources.mjs';
 import { createSwitchboardServer } from '../src/switchboard.mjs';
 import { findRunningService, readServiceRuntime } from '../scripts/asb-instance.mjs';
@@ -221,6 +222,118 @@ test('agent rejects strict command and input errors before source writes', async
   assert.equal((await f.command(['sources', 'add', '--file', f.input, '--json'])).result.error.code, 'invalid_input');
   assert.equal(f.posts.length, 0);
   await assert.rejects(readFile(f.registry.configPath), { code: 'ENOENT' });
+});
+
+test('agent selects sources by id or name and rejects ambiguous names', async (t) => {
+  const f = await fixture(t);
+  await f.jsonFile({ provider: 'codex', label: 'Work Profile', dataDir: f.dataDir, launcher: f.appLauncher });
+  const added = await f.command(['sources', 'add', '--file', f.input, '--json']);
+  assert.equal(added.code, 0, added.stderr);
+  const { id } = added.result.source;
+  assert.equal(added.result.source.name, 'work-profile');
+  const got = await f.command(['sources', 'get', 'work-profile', '--json']);
+  assert.equal(got.code, 0, got.stderr);
+  assert.equal(got.result.source.id, id);
+  assert.match((await f.command(['sources', 'list'])).stdout, new RegExp(`^${id}\twork-profile\tcodex\tenabled\tWork Profile\t`, 'm'));
+  await f.jsonFile({ color: '#123456' });
+  const updated = await f.command(['sources', 'update', 'work-profile', '--file', f.input, '--json']);
+  assert.equal(updated.code, 0, updated.stderr);
+  assert.equal((await f.registry.read()).find((source) => source.id === id).color, '#123456');
+  const removed = await f.command(['sources', 'remove', 'work-profile', '--json']);
+  assert.equal(removed.code, 0, removed.stderr);
+  assert.equal(f.posts.at(-1).route, `/api/sources/${id}/remove`);
+  assert.equal((await f.registry.read()).some((source) => source.id === id), false);
+  // Settings saved before names existed can hold the same label twice, or a label that names another source's id.
+  const legacy = (id, label) => ({ id, provider: 'codex', label, dataDir: path.join(f.home, id), launcher: f.appLauncher, enabled: true });
+  const defaults = (await f.registry.read()).map(({ builtin, ...source }) => source);
+  await writeFile(f.registry.configPath, JSON.stringify({ version: 1, sources: [...defaults,
+    legacy('codex-a', 'Same'), legacy('codex-b', 'Same'), legacy('codex-c', 'Claude Desktop Code')] }));
+  const exact = await f.command(['sources', 'get', 'claude-desktop-code', '--json']);
+  assert.equal(exact.code, 0, exact.stderr);
+  assert.equal(exact.result.source.provider, 'claude-desktop-code');
+  const before = f.posts.length;
+  for (const args of [['get', 'same'], ['remove', 'same'], ['update', 'same', '--file', f.input]]) {
+    const ambiguous = await f.command(['sources', ...args, '--json']);
+    assert.equal(ambiguous.code, 1);
+    assert.equal(ambiguous.result.error.code, 'source_ambiguous');
+    assert.equal(ambiguous.result.error.message, 'More than one app source uses the name same. Use its id.');
+  }
+  assert.equal(f.posts.length, before);
+});
+
+test('agent peers lists live Claude registry agents by app instance without other environment values', async (t) => {
+  const f = await fixture(t);
+  const secret = 'asb-env-sentinel-7f3a';
+  const auth = 'asb-auth-sentinel-9c1d';
+  const children = [];
+  t.after(() => Promise.all(children.map(async (child) => {
+    if (child.exitCode === null && child.signalCode === null) { child.kill(); await once(child, 'exit'); }
+  })));
+  const start = async (env) => {
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { env: { [secret]: secret, ...env }, stdio: 'ignore' });
+    children.push(child);
+    await once(child, 'spawn');
+    const procStart = (await readFile(`/proc/${child.pid}/stat`, 'utf8')).split(') ').pop().split(' ')[19];
+    return { pid: child.pid, procStart, child };
+  };
+  const dir = async (...parts) => { const value = path.join(f.home, ...parts); await mkdir(value, { recursive: true }); return value; };
+  for (const home of ['.codex', '.codex-personal', '.codex-other']) await writeFile(path.join(await dir(home), 'config.toml'), '');
+  const sessions = await dir('.claude', 'sessions');
+  await dir('claude-proxy');
+  await symlink('../.claude/sessions', path.join(f.home, 'claude-proxy', 'sessions'));
+  const elsewhere = await dir('elsewhere');
+  await f.registry.update({ provider: 'codex', label: 'ChatGPT Personal', dataDir: path.join(f.home, '.codex-personal'), launcher: f.appLauncher, enabled: true });
+  const missingHome = path.join(f.home, 'missing-home');
+  await f.registry.update({ provider: 'codex', label: 'Missing Home', dataDir: missingHome, launcher: f.appLauncher, enabled: true });
+  await f.registry.update({ provider: 'claude-desktop-code', label: 'Claude Proxy', dataDir: await dir('claude-proxy-app'),
+    projectsDir: path.join(f.home, 'claude-proxy', 'projects'), launcher: f.appLauncher, enabled: true });
+  const record = async (peer, fields) => writeFile(path.join(sessions, `${peer.pid}.json`), JSON.stringify({ pid: peer.pid, procStart: peer.procStart,
+    sessionId: randomUUID(), cwd: f.home, status: 'idle', kind: 'interactive', peerToken: auth, messagingSocketPath: path.join(f.home, 's.sock'), ...fields }));
+  const claudeDefault = await start({});
+  const claudeProxy = await start({ CLAUDE_CONFIG_DIR: path.join(f.home, 'claude-proxy') });
+  const codexDefault = await start({ CLAUDE_CONFIG_DIR: 'unused-relative' });
+  const codexPersonal = await start({ CODEX_HOME: path.join(f.home, '.codex-personal') });
+  const stray = await start({ CLAUDE_CONFIG_DIR: elsewhere });
+  const lost = await start({ CODEX_HOME: missingHome });
+  const relative = await start({ CLAUDE_CONFIG_DIR: 'relative-home' });
+  const restarted = await start({});
+  const dead = await start({});
+  dead.child.kill();
+  await once(dead.child, 'exit');
+  await record(claudeDefault, { name: 'dup-name', entrypoint: 'claude-desktop', cwd: `${f.home}\nnext` });
+  await record(claudeProxy, { name: 'dup-name', entrypoint: 'cli' });
+  await record(codexDefault, { name: 'codex-task', entrypoint: 'codex-asb-bridge' });
+  await record(codexPersonal, { name: 'codex-personal-task', entrypoint: 'codex-asb-bridge' });
+  await record(stray, { name: 'stray', entrypoint: 'cli' });
+  await record(lost, { name: 'lost-task', entrypoint: 'codex-asb-bridge' });
+  await record(relative, { name: 'relative', entrypoint: 'cli' });
+  await record(restarted, { name: 'restarted', procStart: '1' });
+  await record(dead, { name: 'dead' });
+  await writeFile(path.join(sessions, `${claudeDefault.pid}.${'a'.repeat(64)}.key`), JSON.stringify({ peerToken: auth }));
+  const reply = await f.command(['peers', '--json']);
+  assert.equal(reply.code, 0, reply.stderr);
+  assert.ok(!reply.stdout.includes(secret) && !reply.stdout.includes(auth));
+  assert.deepEqual(reply.result.peers.map(({ address, pid, duplicate }) => [address, pid, duplicate]), [
+    ['chatgpt-personal/codex-personal-task', codexPersonal.pid, false],
+    ['claude-desktop-code/dup-name', claudeDefault.pid, true],
+    ['claude-proxy/dup-name', claudeProxy.pid, true],
+    ['codex/codex-task', codexDefault.pid, false],
+    ['missing-home/lost-task', lost.pid, false],
+    ['unknown/relative', relative.pid, false],
+    ['unknown/stray', stray.pid, false],
+  ]);
+  const peer = reply.result.peers[3];
+  assert.deepEqual(Object.keys(peer), ['instance', 'name', 'address', 'sessionId', 'pid', 'status', 'cwd', 'kind', 'entrypoint', 'duplicate']);
+  assert.deepEqual({ ...peer, sessionId: typeof peer.sessionId }, { instance: 'codex', name: 'codex-task', address: 'codex/codex-task', sessionId: 'string',
+    pid: codexDefault.pid, status: 'idle', cwd: f.home, kind: 'interactive', entrypoint: 'codex-asb-bridge', duplicate: false });
+  assert.deepEqual(reply.result.notInAsb, [{ provider: 'claude-desktop-code', home: await realpath(elsewhere) },
+    { provider: 'codex', home: await realpath(path.join(f.home, '.codex-other')) }]);
+  const human = await f.command(['peers']);
+  assert.equal(human.code, 0, human.stderr);
+  const lines = human.stdout.trimEnd().split('\n');
+  assert.equal(lines.length, 10);
+  assert.equal(lines[1], `claude-desktop-code/dup-name\tidle\tpid ${claudeDefault.pid}\t${f.home}\\x0anext\tduplicate name`);
+  assert.deepEqual(lines.slice(7), ['Not in ASB:', `  claude-desktop-code\t${await realpath(elsewhere)}`, `  codex\t${await realpath(path.join(f.home, '.codex-other'))}`]);
 });
 
 test('agent reports a revision conflict without overwriting a concurrent edit', async (t) => {

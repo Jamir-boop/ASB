@@ -70,7 +70,7 @@ The directory link follows the unpublished native registry behavior checked in C
 
 In the Codex task, ask for the bridge status. The `status` tool reports a `replyAddress` and a `transport` of `app-server` or `desktop`. A `null` address means the receiver is inactive. The receiver starts at the task's first turn. Registered app-server tasks can recover when loaded; desktop recovery has the limits in [STARTUP.md](STARTUP.md). If the address stays `null` during a turn, the plugin hooks are not trusted or the `SessionStart` hook failed: check hook trust. No tool restarts the receiver.
 
-In Claude Code, run `/list-agents`. The task appears as `codex-<title>-<suffix>`, or `codex-<directory>-<suffix>` before it has a title. A new task gets its title during its first turn, and the name changes at the end of that turn. Ask Claude to message it.
+In Claude Code, run `/list-agents`. The task appears as `codex-<title>-<suffix>`, or `codex-<directory>-<suffix>` before it has a title. When `CODEX_HOME` is not the default, its folder name replaces `codex`: `~/.codex-personal` gives `codex-personal-<title>-<suffix>`, and a folder such as `work` gives `codex-work-<title>-<suffix>`. A new task gets its title during its first turn, and the name changes at the end of that turn. Ask Claude to message it.
 
 ## How a message arrives
 

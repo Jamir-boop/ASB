@@ -67,7 +67,9 @@ test('discovery drops a session record with a mismatched registry filename or mi
 test('profiles share one registry through a sessions directory link for registration, names, updates, and close', async () => {
   const f = await fixture();
   const previous = process.env.CODEX_HOME;
-  process.env.CODEX_HOME = f.root;
+  const codexHome = join(f.root, '.codex');
+  mkdirSync(codexHome);
+  process.env.CODEX_HOME = codexHome;
   try {
     const linked = join(f.root, 'proxy');
     mkdirSync(linked, { mode: 0o700 });
@@ -79,13 +81,13 @@ test('profiles share one registry through a sessions directory link for registra
     expect(peers(linked)).toEqual([peer]);
     expect(findPeerProcess(linked, peerAddress(f.socketPath), f.procStart)).toEqual(peer);
     await expect(register(f.configDir, randomUUID(), peerAddress(f.socketPath), f.root, 'idle')).rejects.toHaveProperty('code', 'EEXIST');
-    writeFileSync(join(f.root, 'session_index.jsonl'), JSON.stringify({ id: f.sessionId, thread_name: 'Shared Title' }) + '\n');
+    writeFileSync(join(codexHome, 'session_index.jsonl'), JSON.stringify({ id: f.sessionId, thread_name: 'Shared Title' }) + '\n');
     registration.update('busy');
     const updated = findPeer(linked, f.sessionId);
     expect(updated).toMatchObject({ status: 'busy', name: `codex-shared-title-${f.sessionId.slice(-2)}` });
     expect(peers(f.configDir)).toEqual([updated]);
     const other = randomUUID().slice(0, -2) + f.sessionId.slice(-2);
-    writeFileSync(join(f.root, 'session_index.jsonl'), JSON.stringify({ id: other, thread_name: 'Shared Title' }) + '\n', { flag: 'a' });
+    writeFileSync(join(codexHome, 'session_index.jsonl'), JSON.stringify({ id: other, thread_name: 'Shared Title' }) + '\n', { flag: 'a' });
     expect(sessionName(linked, f.root, other)).toBe(`codex-shared-title-${other.slice(-4)}`);
     const recordPath = join(f.sessions, `${process.pid}.json`);
     const saved = join(f.root, 'saved.json');

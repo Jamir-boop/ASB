@@ -9,7 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { mkdtemp, mkdir, writeFile, readFile, rm, stat, chmod, symlink, link } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { AppSourceRegistry, MAX_APP_SOURCES, appSourcesRevision, numberAppSources, validateSourceLauncher } from '../src/app-sources.mjs';
+import { AppSourceRegistry, MAX_APP_SOURCES, appSourcesRevision, numberAppSources, sourceName, validateSourceLauncher } from '../src/app-sources.mjs';
 import { buildSwitchboardDashboard, createSwitchboardServer, loadSwitchboardDashboard, openSwitchboardThread, PendingTracker } from '../src/switchboard.mjs';
 
 const uuid = '123e4567-e89b-12d3-a456-426614174000';
@@ -21,7 +21,7 @@ async function fixture(t) {
   t.after(() => rm(homeDir, { recursive: true, force: true }));
   const registry = new AppSourceRegistry({ homeDir, env: {}, platform: 'linux', discoverPersonal: false });
   const launcher = path.join(homeDir, '.local', 'bin', 'chatgpt-personal');
-  const source = (dataDir, extra = {}) => ({ provider: 'codex', label: 'Second app', dataDir, launcher, enabled: true, ...extra });
+  const source = (dataDir, extra = {}) => ({ provider: 'codex', label: `App ${path.basename(dataDir)}`, dataDir, launcher, enabled: true, ...extra });
   await mkdir(path.dirname(launcher), { recursive: true });
   await writeFile(launcher, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   return { homeDir, registry, source, launcher };
@@ -62,6 +62,25 @@ test('source revisions use normalized settings only and leave schema 1 unchanged
   const stored = JSON.parse(await readFile(registry.configPath, 'utf8'));
   assert.deepEqual(Object.keys(stored).sort(), ['sources', 'version']);
   assert.equal(stored.version, 1);
+});
+
+test('source names come from labels, stay unique against names and ids, and are reported but not stored', async (t) => {
+  const { registry, homeDir, source } = await fixture(t);
+  await registry.update(source(path.join(homeDir, 'work'), { label: '  Work -- Profile!  ' }));
+  const { builtin: workBuiltin, ...work } = (await registry.read()).find((item) => item.dataDir === path.join(homeDir, 'work'));
+  await registry.update({ ...work, label: 'work profile' });
+  await assert.rejects(registry.update(source(path.join(homeDir, 'copy'), { label: 'WORK profile' })),
+    { statusCode: 400, message: 'Another app source already uses the name work-profile. Choose another name.' });
+  const { builtin, ...codex } = (await registry.read()).find((item) => item.id === 'codex');
+  await registry.update({ ...codex, label: 'Main' });
+  await assert.rejects(registry.update(source(path.join(homeDir, 'copy'), { label: 'Codex' })), /already uses the name codex\./);
+  await registry.update(source(path.join(homeDir, 'symbols'), { label: '!!!' }));
+  const report = await registry.report({});
+  const symbols = report.sources.find((item) => item.label === '!!!');
+  assert.deepEqual(report.sources.map((item) => item.name), ['main', 'claude-desktop-code', 'work-profile', symbols.id]);
+  assert.equal(sourceName({ id: 'x', label: `${'a'.repeat(79)} b` }), 'a'.repeat(79));
+  assert.equal(report.revision, appSourcesRevision(await registry.read()));
+  assert.ok(JSON.parse(await readFile(registry.configPath, 'utf8')).sources.every((item) => !Object.hasOwn(item, 'name')));
 });
 
 test('queued source changes check the current revision and stale edits or removals preserve saved settings', async (t) => {
@@ -304,7 +323,7 @@ test('separate stores scope lineage and attention while retaining original provi
   assert.equal(other.externalId, uuid);
   assert.equal(other.appDeepLink, `codex://threads/${uuid}`);
   assert.equal(other.canOpen, true);
-  assert.equal(other.sourceLabel, 'Second app');
+  assert.equal(other.sourceLabel, `App ${path.basename(secondary)}`);
   assert.equal(main.sourceColor, sources.find((item) => item.id === 'codex').color);
   assert.equal(other.sourceColor, extra.color);
   assert.equal(main.sourceShowMarker, true);

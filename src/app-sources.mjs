@@ -66,6 +66,11 @@ export function appSourcesRevision(sources) {
   return createHash('sha256').update(JSON.stringify(config)).digest('hex');
 }
 
+export function sourceName(source) {
+  const name = source.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80).replace(/-+$/, '');
+  return name || source.id;
+}
+
 export async function storeIdentity(source) {
   let root = path.resolve(source.dataDir);
   try { root = await fs.realpath(root); } catch {}
@@ -204,6 +209,10 @@ export class AppSourceRegistry {
       if (next.provider === 'claude-desktop-code' && next.projectsDir === undefined) {
         next.projectsDir = existing?.projectsDir || path.join(this.homeDir, '.claude', 'projects');
       }
+      const name = sourceName(next);
+      if (this.sources.some((item) => item.id !== next.id && (sourceName(item) === name || item.id === name))) {
+        throw invalid(`Another app source already uses the name ${name}. Choose another name.`);
+      }
       const sources = existing ? this.sources.map((item) => item.id === next.id ? next : item) : [...this.sources, next];
       await this.validateStores(sources);
       await this.save(sources);
@@ -238,7 +247,7 @@ export class AppSourceRegistry {
     const sources = numberAppSources(await this.read());
     return { revision: appSourcesRevision(sources), sources: sources.map((source) => {
       const provider = dashboard.providers?.find((item) => item.id === source.id);
-      return { ...source, sessionCount: dashboard.threads?.filter((row) => (row.sourceId || row.provider) === source.id).length || 0,
+      return { ...source, name: sourceName(source), sessionCount: dashboard.threads?.filter((row) => (row.sourceId || row.provider) === source.id).length || 0,
         status: !source.enabled ? 'disabled' : provider?.status || 'missing',
         message: provider?.message || this.warning || '' };
     }), maxSources: MAX_APP_SOURCES };

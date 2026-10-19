@@ -174,7 +174,7 @@ test('source API writes support quoted revisions, preserve stale edits and remov
   const { registry, homeDir } = await fixture(t);
   const { request } = await serve(t, { switchboard: true, sourceRegistry: registry });
   const initial = (await request('/api/sources')).json();
-  const { builtin, sessionCount, status, message, sourceNumber, sourceCount, ...source } = initial.sources[0];
+  const { builtin, name, sessionCount, status, message, sourceNumber, sourceCount, ...source } = initial.sources[0];
   const post = (route, body, match) => request(route, { method: 'POST', body, headers: match === undefined ? {} : { 'if-match': match } });
   for (const match of [initial.revision, '*', `W/"${initial.revision}"`, `"${initial.revision}", "${initial.revision}"`, '"old"']) {
     assert.equal((await post('/api/sources', { source }, match)).status, 400);

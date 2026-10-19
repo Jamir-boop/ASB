@@ -128,6 +128,11 @@ export function sessionName(configDir: string, cwd: string, sessionId: string) {
   return uniqueName(configDir, nameBase(cwd, sessionId), sessionId);
 }
 
+function codexPrefix() {
+  const home = slug(basename(process.env.CODEX_HOME ?? ''));
+  return !home ? 'codex' : home.startsWith('codex') ? home : `codex-${home}`;
+}
+
 function slug(text: string) { return trim(text.toLowerCase().replace(/[^a-z0-9]+/g, '-')); }
 function trim(part: string) { return part.replace(/^-+|-+$/g, ''); }
 
@@ -148,10 +153,10 @@ function taskTitle(threadId: string) {
 
 function nameBase(cwd: string, sessionId: string) {
   const title = trim(slug(taskTitle(sessionId) ?? '').slice(0, 22));
-  if (title) return `codex-${title}`;
+  if (title) return `${codexPrefix()}-${title}`;
   const folder = slug(basename(cwd)) || 'task';
   // Codex derives a task folder from the opening prompt, so keep both ends: long ones differ at the tail.
-  return `codex-${folder.length <= 22 ? folder : `${trim(folder.slice(0, 14))}-${trim(folder.slice(-7))}`}`;
+  return `${codexPrefix()}-${folder.length <= 22 ? folder : `${trim(folder.slice(0, 14))}-${trim(folder.slice(-7))}`}`;
 }
 
 function uniqueName(configDir: string, base: string, sessionId: string) {

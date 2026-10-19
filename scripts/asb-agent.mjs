@@ -1,5 +1,6 @@
 import { constants } from 'node:fs';
-import { open } from 'node:fs/promises';
+import { open, readdir, readFile, realpath, stat } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -10,13 +11,13 @@ const editable = ['provider', 'label', 'dataDir', 'launcher', 'enabled', 'projec
 const revision = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
 const failure = (code, message, details = {}) => Object.assign(new Error(message), { code, ...details });
-const usage = 'Usage: asb agent status [--json] | sources list [--json] | sources get <id> [--json] | sources add --file <json-file|-> [--json] | sources update <id> --file <json-file|-> [--json] | sources remove <id> [--json]';
+const usage = 'Usage: asb agent status [--json] | peers [--json] | sources list [--json] | sources get <id|name> [--json] | sources add --file <json-file|-> [--json] | sources update <id|name> --file <json-file|-> [--json] | sources remove <id|name> [--json]';
 
 function parseArgs(args) {
   const json = args.includes('--json');
   if (args.filter((arg) => arg === '--json').length > 1) throw failure('usage', usage);
   args = args.filter((arg) => arg !== '--json');
-  if (args.length === 1 && args[0] === 'status') return { command: 'status', json };
+  if (args.length === 1 && ['status', 'peers'].includes(args[0])) return { command: args[0], json };
   if (args[0] !== 'sources') throw failure('usage', usage);
   const command = `sources.${args[1]}`;
   if (args[1] === 'list' && args.length === 2) return { command, json };
@@ -69,6 +70,17 @@ async function sources(runtime) {
   return value;
 }
 
+async function readHandle(handle, limit) {
+  const buffer = Buffer.alloc(limit + 1);
+  let size = 0;
+  while (size < buffer.length) {
+    const { bytesRead } = await handle.read(buffer, size, buffer.length - size, size);
+    if (!bytesRead) break;
+    size += bytesRead;
+  }
+  return buffer.subarray(0, size);
+}
+
 async function readInput(file) {
   let bytes;
   try {
@@ -85,14 +97,7 @@ async function readInput(file) {
       const handle = await open(file, constants.O_RDONLY | constants.O_NONBLOCK);
       try {
         if (!(await handle.stat()).isFile()) throw failure('invalid_input', 'The source JSON path must be a regular file.');
-        const buffer = Buffer.alloc(64 * 1024 + 1);
-        let size = 0;
-        while (size < buffer.length) {
-          const { bytesRead } = await handle.read(buffer, size, buffer.length - size, size);
-          if (!bytesRead) break;
-          size += bytesRead;
-        }
-        bytes = buffer.subarray(0, size);
+        bytes = await readHandle(handle, 64 * 1024);
       } finally { await handle.close(); }
     }
   } catch (error) {
@@ -140,6 +145,106 @@ async function verify(runtime, target, acknowledgedAfter) {
   return result;
 }
 
+const canonical = (value) => realpath(value).catch(() => path.resolve(value));
+const text = (value) => typeof value === 'string' ? value : null;
+
+function findSource(list, selector) {
+  const exact = list.find((source) => source.id === selector);
+  if (exact || selector === undefined) return exact;
+  const named = list.filter((source) => source.name === selector);
+  if (named.length > 1) throw failure('source_ambiguous', `More than one app source uses the name ${selector}. Use its id.`);
+  return named[0];
+}
+
+async function readRecord(file) {
+  let handle;
+  try { handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return null; }
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.uid !== process.getuid() || info.size > 256 * 1024) return null;
+    const bytes = await readHandle(handle, 256 * 1024);
+    return bytes.length > 256 * 1024 ? null : JSON.parse(bytes);
+  } catch { return null; } finally { await handle.close(); }
+}
+
+async function processStart(pid) {
+  try {
+    if ((await stat(`/proc/${pid}`)).uid !== process.getuid()) return null;
+    const fields = (await readFile(`/proc/${pid}/stat`, 'utf8')).split(') ').pop().split(' ');
+    return fields[0] === 'Z' ? null : fields[19] ?? null;
+  } catch { return null; }
+}
+
+// Keep only the two home variables; the rest of the peer's environment is never decoded.
+async function processHomes(pid) {
+  let buffer;
+  try { buffer = await readFile(`/proc/${pid}/environ`); } catch { return null; }
+  const homes = {};
+  for (let start = 0; start < buffer.length;) {
+    let end = buffer.indexOf(0, start);
+    if (end < 0) end = buffer.length;
+    for (const key of ['CLAUDE_CONFIG_DIR', 'CODEX_HOME']) {
+      const prefix = Buffer.from(`${key}=`);
+      if (end - start >= prefix.length && buffer.subarray(start, start + prefix.length).equals(prefix)) homes[key] = buffer.toString('utf8', start + prefix.length, end);
+    }
+    start = end + 1;
+  }
+  buffer.fill(0);
+  return homes;
+}
+
+async function listPeers(list) {
+  const codexStores = await Promise.all(list.filter((source) => source.provider === 'codex').map(async (source) => ({ name: source.name, home: await canonical(source.dataDir) })));
+  const claudeStores = await Promise.all(list.filter((source) => source.provider === 'claude-desktop-code' && source.projectsDir)
+    .map(async (source) => ({ name: source.name, home: await canonical(path.dirname(source.projectsDir)) })));
+  const roots = new Set();
+  for (const root of [...list.filter((source) => source.provider === 'claude-desktop-code' && source.projectsDir)
+    .map((source) => path.join(path.dirname(source.projectsDir), 'sessions')), path.join(os.homedir(), '.claude', 'sessions')]) {
+    const real = await realpath(root).catch(() => null);
+    if (real) roots.add(real);
+  }
+  const accepted = new Map();
+  const unregistered = new Map();
+  for (const root of roots) {
+    let files;
+    try { files = await readdir(root); } catch (error) { if (['ENOENT', 'ENOTDIR'].includes(error.code)) continue; throw error; }
+    for (const file of files.filter((name) => /^[1-9][0-9]*\.json$/.test(name))) {
+      const record = await readRecord(path.join(root, file));
+      if (!object(record) || record.pid !== Number(file.slice(0, -5)) || typeof record.name !== 'string' || typeof record.sessionId !== 'string'
+        || record.procStart === undefined || record.procStart === null) continue;
+      const start = await processStart(record.pid);
+      if (start === null || start !== String(record.procStart)) continue;
+      const homes = await processHomes(record.pid);
+      if (await processStart(record.pid) !== start) continue;
+      const codex = record.entrypoint === 'codex-asb-bridge';
+      let instance = 'unknown';
+      const value = homes?.[codex ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR'];
+      // The CLI cannot resolve a relative path against another process's working directory.
+      const home = homes && (value === undefined || path.isAbsolute(value))
+        && await canonical(value ?? path.join(os.homedir(), codex ? '.codex' : '.claude'));
+      if (home) {
+        const matches = (codex ? codexStores : claudeStores).filter((store) => store.home === home);
+        if (matches.length === 1) instance = matches[0].name;
+        if (!codex && !matches.length) unregistered.set(`claude-desktop-code\0${home}`, { provider: 'claude-desktop-code', home });
+      }
+      accepted.set(`${record.pid}:${start}`, { instance, name: record.name, address: `${instance}/${record.name}`, sessionId: record.sessionId,
+        pid: record.pid, status: text(record.status), cwd: text(record.cwd), kind: text(record.kind), entrypoint: text(record.entrypoint) });
+    }
+  }
+  const peers = [...accepted.values()];
+  for (const peer of peers) peer.duplicate = peers.filter((other) => other.name === peer.name).length > 1;
+  peers.sort((left, right) => left.address < right.address ? -1 : left.address > right.address ? 1 : left.pid - right.pid);
+  for (const entry of await readdir(os.homedir()).catch(() => [])) {
+    if (!entry.startsWith('.codex')) continue;
+    const home = path.join(os.homedir(), entry);
+    if (!(await stat(path.join(home, 'config.toml')).catch(() => null))?.isFile()) continue;
+    const real = await canonical(home);
+    if (!codexStores.some((store) => store.home === real)) unregistered.set(`codex\0${real}`, { provider: 'codex', home: real });
+  }
+  const notInAsb = [...unregistered.entries()].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0).map(([, entry]) => entry);
+  return { ok: true, command: 'peers', peers, notInAsb };
+}
+
 async function run(args, rememberRuntime) {
   const parsed = parseArgs(args);
   const input = parsed.file ? await readInput(parsed.file) : null;
@@ -149,8 +254,9 @@ async function run(args, rememberRuntime) {
   const instance = await status(runtime);
   if (parsed.command === 'status') return { ok: true, command: parsed.command, instance };
   const report = await sources(runtime);
+  if (parsed.command === 'peers') return listPeers(report.sources);
   if (parsed.command === 'sources.list') return { ok: true, command: parsed.command, ...report };
-  const current = report.sources.find((source) => source.id === parsed.id);
+  const current = findSource(report.sources, parsed.id);
   if (parsed.command === 'sources.get') {
     if (!current) throw failure('source_not_found', 'This app source is not registered.');
     return { ok: true, command: parsed.command, revision: report.revision, source: current };
@@ -176,7 +282,7 @@ async function run(args, rememberRuntime) {
   } else unchanged = !current;
   let savedReport = report;
   const acknowledgedAfter = unchanged ? 0 : Date.now();
-  if (!unchanged) savedReport = await api(runtime, parsed.command === 'sources.remove' ? `/api/sources/${parsed.id}/remove` : '/api/sources',
+  if (!unchanged) savedReport = await api(runtime, parsed.command === 'sources.remove' ? `/api/sources/${current.id}/remove` : '/api/sources',
     { method: 'POST', body: parsed.command === 'sources.remove' ? {} : { source: next }, headers: { 'If-Match': `"${report.revision}"` }, timeoutMs: 15_000 });
   if (!revision(savedReport?.revision)) throw failure('invalid_response', 'ASB saved the request but did not return a source revision.');
   if (!unchanged && !revision(savedReport.savedRevision)) throw failure('invalid_response', 'ASB saved the request but did not return its write revision.');
@@ -187,10 +293,18 @@ async function run(args, rememberRuntime) {
     changed: !unchanged, revision: target, ...(source ? { source } : {}), verification };
 }
 
+const printable = (value) => String(value ?? '').replace(/[\x00-\x1f\x7f-\x9f]/g, (character) => `\\x${character.charCodeAt(0).toString(16).padStart(2, '0')}`);
+
 function human(result) {
   if (!result.ok && result.error) return `ASB agent: ${result.error.message}`;
   if (result.command === 'status') return `ASB ${result.instance.appVersion}: ${result.instance.mode}, PID ${result.instance.pid}.\nRoot: ${result.instance.rootDir}\nSources file: ${result.instance.sourcesPath}\nSources revision: ${result.instance.sourcesRevision}.\nBackend: ${result.instance.backendRevision === result.instance.sourcesRevision ? 'verified' : 'pending'}. UI: ${uiEvidence(result.instance, result.instance.sourcesRevision).status}.`;
-  if (result.command === 'sources.list') return result.sources.map((source) => `${source.id}\t${source.provider}\t${source.enabled ? 'enabled' : 'disabled'}\t${source.label}\t${source.dataDir}`).join('\n') || 'No app sources.';
+  if (result.command === 'peers') {
+    const lines = result.peers.map((peer) => [peer.address, peer.status, `pid ${peer.pid}`, peer.cwd, ...(peer.duplicate ? ['duplicate name'] : [])].map(printable).join('\t'));
+    if (!lines.length) lines.push('No live agents.');
+    if (result.notInAsb.length) lines.push('Not in ASB:', ...result.notInAsb.map((entry) => `  ${printable(entry.provider)}\t${printable(entry.home)}`));
+    return lines.join('\n');
+  }
+  if (result.command === 'sources.list') return result.sources.map((source) => `${source.id}\t${source.name ?? ''}\t${source.provider}\t${source.enabled ? 'enabled' : 'disabled'}\t${source.label}\t${source.dataDir}`).join('\n') || 'No app sources.';
   if (result.command === 'sources.get') return JSON.stringify(result.source, null, 2);
   return `App sources ${result.changed ? 'saved' : 'unchanged'}.\nSaved: ${result.verification.saved.status}. Backend: ${result.verification.backend.status}. UI: ${result.verification.ui.status}.${result.verification.error ? `\n${result.verification.error.message}` : ''}`;
 }
