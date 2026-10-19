@@ -1701,6 +1701,34 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(window.focus_key(), identity)
         window.close(); self.drain(.03)
 
+    def test_repack_keeps_focus_when_a_frame_comes_before_the_restore(self):
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", mock_dashboard(),
+                                      theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(1080, 248)
+        window.present(); self.drain(.3)
+        window.view_filter.set_selected(1); self.drain(.3); window.check_geometry(); self.drain()
+        last = window.row_order[-1]
+        window.focus_widgets[last].grab_focus(); self.drain()
+        self.assertEqual(window.focus_key(), last)
+        # Hold the queued restore so that GTK lays out a frame first, as on a slow display.
+        held = []
+        idle_add = asb.GLib.idle_add
+        def hold(callback, *args, **kwargs):
+            if getattr(callback, "__name__", "") == "restore_position":
+                held.append((callback, args))
+                return 0
+            return idle_add(callback, *args, **kwargs)
+        with patch.object(asb.GLib, "idle_add", hold):
+            window.set_default_size(680, 500); self.drain(.3)
+        self.assertTrue(held)
+        self.assertEqual(window.focus_key(), last)
+        for callback, args in held:
+            callback(*args)
+        self.drain()
+        self.assertEqual(window.focus_key(), last)
+        self.assert_focus_visible(window, last)
+
     def test_card_motion_wheel_spring_and_column_width(self):
         threads = [{"id": f"s{n}", "provider": "codex", "providerLabel": "Codex",
                     "title": f"Sample session {n} " + ("needle " if n % 2 else "") + "with a long synthetic title " * 7,

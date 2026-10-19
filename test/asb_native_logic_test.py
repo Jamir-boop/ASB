@@ -100,6 +100,12 @@ class Box:
     def set_size_request(self, width, height):
         self.size_request = (width, height)
 
+    def get_visible(self):
+        return True
+
+    def get_sensitive(self):
+        return True
+
     def clear_hover(self):
         pass
 
@@ -2887,6 +2893,9 @@ class NativeLogicChecks(unittest.TestCase):
         window.focus_key = lambda: "a"
         window.search.query = "Unique match"
         window.render()
+        # The repack moved the focused row, so render keeps the focus on it before GTK can move it.
+        window.set_focus.assert_called_once_with(widgets["a"])
+        window.set_focus.reset_mock()
         callback, *args = SCOPE["GLib"].idle_add.call_args.args
         window.get_focus = lambda: window.search
         window.focus_changed()

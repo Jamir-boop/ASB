@@ -3581,8 +3581,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     widget.get_parent().remove(widget)
             for index, widget in moved:
                 listings[index // self.capacity].insert(widget, index % self.capacity)
-            # GTK 4 keeps the window focus on a removed row until the next frame, then moves it to the column.
-            if reorder and refocus and focus_widget.get_visible() and focus_widget.get_sensitive():
+            # GTK 4 keeps the window focus on a removed row until the next frame, then moves it to the first row of a column;
+            # that frame can come before the queued restore, so a repack also sets the focus again now.
+            if refocus and focus_widget.get_visible() and focus_widget.get_sensitive():
                 self.set_focus(focus_widget)
             if not rows:
                 empty = label(empty_text, "dim-label")
