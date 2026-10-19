@@ -420,8 +420,11 @@ test('registered Codex stores select their own database, names, globals, and lif
   const legacy = await loadSwitchboardDashboard({ nowMs: now, loadClaude: async () => ({ threads: [] }),
     codexOptions: { databasePath: path.join(roots[0], 'state_5.sqlite'),
       sessionIndexPath: path.join(roots[0], 'session_index.jsonl'), globalStatePath: path.join(roots[0], '.codex-global-state.json') } });
-  const { sourceId, sourceLabel, sourceNumber, sourceCount, sourceColor, sourceShowMarker, ...defaultRow } = registered.threads.find((row) => row.id === uuid);
+  const { sourceId, sourceLabel, sourceName: name, sourceNumber, sourceCount, sourceColor, sourceShowMarker, ...defaultRow } = registered.threads.find((row) => row.id === uuid);
   assert.deepEqual(defaultRow, legacy.threads[0]);
+  assert.equal(name, 'codex');
+  assert.equal(registered.threads.find((row) => row.id !== uuid).sourceName, sourceName(source(roots[1])));
+  assert.equal(legacy.threads[0].sourceName, undefined);
   assert.equal(legacy.threads[0].sourceNumber, undefined);
   assert.equal(legacy.threads[0].sourceCount, undefined);
   assert.equal(legacy.threads[0].sourceColor, undefined);

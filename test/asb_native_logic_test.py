@@ -4033,6 +4033,57 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertEqual(request.call_args.args[1], "/api/threads/a/open")
             self.assertEqual(request.call_count, 2)
 
+    def test_session_reference_uses_the_app_host_and_the_app_session_id(self):
+        claude = {"id": "claude-proxy-1:local_1234", "externalId": "local_1234", "provider": "claude-desktop-code", "sourceName": "claude-proxy"}
+        self.assertEqual(asb.session_reference(claude), "claude-proxy/local_1234")
+        codex = {"id": "123e4567-e89b-12d3-a456-426614174000", "externalId": "123e4567-e89b-12d3-a456-426614174000", "provider": "codex"}
+        self.assertEqual(asb.session_reference(codex), "codex/123e4567-e89b-12d3-a456-426614174000")
+        self.assertEqual(asb.session_reference({"id": "x:cse_remote", "externalId": "cse_remote", "provider": "claude-desktop-code"}),
+                         "claude-desktop-code/cse_remote")
+
+    def test_panel_copy_writes_the_reference_and_shows_copied_for_a_moment(self):
+        timers, removed = {}, []
+        def timeout_add(delay, callback):
+            timers[len(timers) + 1] = (delay, callback)
+            return len(timers)
+        glib = SimpleNamespace(timeout_add=timeout_add, source_remove=removed.append, Error=type("GError", (Exception,), {}))
+        gtk = SimpleNamespace(Popover=object, AccessibleProperty=SimpleNamespace(DESCRIPTION=1))
+        window = object.__new__(Window)
+        window.closed, window.update_row_panel = False, Mock()
+        clipboard = Mock()
+        window.get_clipboard = lambda: clipboard
+        row = {"id": "claude-proxy-1:local_1234", "externalId": "local_1234", "provider": "claude-desktop-code", "sourceName": "claude-proxy"}
+        window.focus_widgets = {row["id"]: SimpleNamespace(asb_thread=row)}
+        panel = SimpleNamespace(asb_identity=row["id"], asb_copy=Mock(), asb_copy_row=Mock(), asb_copy_timer=None, asb_copy_error="")
+        panel.asb_copy.get_ancestor = lambda _type: panel
+        with patch.dict(SCOPE, {"GLib": glib, "Gtk": gtk}):
+            window.panel_copy(panel.asb_copy)
+            clipboard.set.assert_called_once_with("claude-proxy/local_1234")
+            panel.asb_copy.set_icon_name.assert_called_with("object-select-symbolic")
+            panel.asb_copy.set_tooltip_text.assert_called_with("Copied")
+            panel.asb_copy_row.update_property.assert_called_with([1], ["Copied"])
+            self.assertEqual(timers[1][0], 1600)
+            window.update_row_panel.assert_called_with(panel, row)
+            # A second copy starts the 1.6 seconds again.
+            window.panel_copy(panel.asb_copy)
+            self.assertEqual((removed, panel.asb_copy_timer), ([1], 2))
+            timers[2][1]()
+            self.assertIsNone(panel.asb_copy_timer)
+            panel.asb_copy.set_icon_name.assert_called_with("edit-copy-symbolic")
+            panel.asb_copy.set_tooltip_text.assert_called_with("Copy app and session ID")
+            panel.asb_copy_row.reset_property.assert_called_with(1)
+            # Close removes a running timer, so no late callback touches the panel.
+            window.panel_copy(panel.asb_copy)
+            window.clear_copy_feedback(panel)
+            self.assertEqual((removed[-1], panel.asb_copy_timer), (3, None))
+            clipboard.set.side_effect = TypeError("no clipboard")
+            panel.asb_copy.reset_mock()
+            window.panel_copy(panel.asb_copy)
+            self.assertEqual(panel.asb_copy_error, "Cannot copy the app and session ID: no clipboard")
+            self.assertEqual(len(timers), 3)
+            panel.asb_copy.set_icon_name.assert_called_once_with("edit-copy-symbolic")
+            window.update_row_panel.assert_called_with(panel, row)
+
     def test_number_keys_take_whole_openable_cards_down_then_across(self):
         rows = [{"id": f"r{index}", "canOpen": index != 1} for index in range(14)]
         # Two columns of five 22px rows, 252px apart; the third column is cut at the right edge.

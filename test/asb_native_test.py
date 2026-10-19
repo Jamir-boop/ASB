@@ -674,7 +674,11 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_open)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
+            self.assertIs(window.get_focus(), panel.asb_copy)
+            self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_down)
+            self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
+            self.assertIs(window.get_focus(), panel.asb_copy)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_open)
             # Escape (the native popover key handler) closes the panel and gives the focus back to the card.
@@ -1347,6 +1351,98 @@ class WidgetCheck(unittest.TestCase):
                 with patch.object(window, "render", wraps=window.render) as render:
                     self.drain(1)
                 render.assert_not_called()
+
+    def test_row_panel_copies_the_app_and_session_id_and_matches_the_board_background(self):
+        patcher = patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        dashboard = mock_dashboard()
+        row = dashboard["threads"][1]
+        row.update(id="claude-proxy-1:local_" + "a" * 36, externalId="local_" + "a" * 36, sourceId="claude-proxy-1",
+                   sourceLabel="Claude Proxy", sourceName="claude-proxy")
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        clipboard = SimpleNamespace(texts=[])
+        clipboard.set = clipboard.texts.append
+        window.get_clipboard = lambda: clipboard  # No write to a real clipboard.
+        window.set_default_size(680, 600)
+        window.present(); self.drain(.5); window.check_geometry(); self.drain()
+        window.show_context(window.focus_widgets[row["id"]]); self.drain(.3)
+        panel = window.context_menu
+        reference = "claude-proxy/local_" + "a" * 36
+        copy_row = panel.asb_copy_row
+        self.assertIsNone(copy_row.get_next_sibling())  # The last row of the list.
+        self.assertEqual((copy_row.get_title(), copy_row.get_subtitle(), copy_row.get_tooltip_text()),
+                         ("App and session ID", reference, reference))
+        def subtitle_of(widget):
+            child = widget.get_first_child()
+            while child:
+                if isinstance(child, asb.Gtk.Label) and child.has_css_class("subtitle"):
+                    return child
+                found = subtitle_of(child)
+                if found:
+                    return found
+                child = child.get_next_sibling()
+        subtitle = subtitle_of(copy_row)
+        self.assertEqual(subtitle.get_ellipsize(), asb.Pango.EllipsizeMode.MIDDLE)
+        button = panel.asb_copy
+        self.assertEqual((button.get_icon_name(), button.get_tooltip_text()), ("edit-copy-symbolic", "Copy app and session ID"))
+        self.assertTrue(button.has_css_class("flat") and button.has_css_class("circular"))
+        self.assert_accessible_label(button, "Copy app and session ID")
+        # The row and the button copy the exact reference, and the panel stays open.
+        # A click on the row activates its button, which shows a 250 ms press first.
+        copy_row.get_parent().emit("row-activated", copy_row); self.drain(.4)
+        button.emit("clicked"); self.drain(.1)
+        self.assertEqual(clipboard.texts, [reference, reference])
+        self.assertIs(window.context_menu, panel)
+        self.assertTrue(panel.get_visible())
+        self.assertEqual((button.get_icon_name(), button.get_tooltip_text()), ("object-select-symbolic", "Copied"))
+        self.drain(1.7)
+        self.assertEqual((button.get_icon_name(), button.get_tooltip_text()), ("edit-copy-symbolic", "Copy app and session ID"))
+        # Up and Down reach the copy button and wrap at the end.
+        panel.asb_down.grab_focus()
+        keys = next(controller for controller in panel.observe_controllers()
+                    if isinstance(controller, asb.Gtk.EventControllerKey) and controller.get_propagation_phase() == asb.Gtk.PropagationPhase.CAPTURE)
+        self.assertTrue(keys.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
+        self.assertIs(window.get_focus(), button)
+        self.assertTrue(keys.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
+        self.assertIs(window.get_focus(), panel.asb_open)
+        # A refresh with a new ID updates the row and ends the feedback of the old copy.
+        button.emit("clicked")
+        row["externalId"] = "local_" + "b" * 36
+        window.render(); window.sync_row_panel(); self.drain(.1)
+        self.assertEqual(copy_row.get_subtitle(), "claude-proxy/local_" + "b" * 36)
+        self.assertEqual(button.get_icon_name(), "edit-copy-symbolic")
+        window.open_errors[row["id"]] = "The server did not answer."
+        window.sync_row_panel(); self.drain(.1)
+        def panel_background():
+            snapshot = asb.Gtk.Snapshot()
+            asb.Gtk.WidgetPaintable.new(panel).snapshot(snapshot, panel.get_width(), panel.get_height())
+            renderer = asb.Gsk.CairoRenderer()
+            renderer.realize(None)
+            viewport = asb.Graphene.Rect().init(0, 0, panel.get_width(), panel.get_height())
+            downloader = asb.Gdk.TextureDownloader.new(renderer.render_texture(snapshot.to_node(), viewport))
+            downloader.set_format(asb.Gdk.MemoryFormat.R8G8B8A8)
+            data, stride = downloader.download_bytes()
+            renderer.unrealize()
+            found, bounds = panel.get_child().compute_bounds(panel)
+            x, y = int(bounds.origin.x - 6), int(bounds.origin.y + 20)  # Inside the 12px padding.
+            return "#" + "".join(f"{value:02x}" for value in data.get_data()[y * stride + x * 4:y * stride + x * 4 + 3])
+        def text_on(label, background, dimmed=1):
+            color = label.get_color()
+            # Libadwaita colors can have channels past 1; the screen shows them clamped.
+            ink = "#" + "".join(f"{max(0, min(255, round(channel * 255))):02x}" for channel in (color.red, color.green, color.blue))
+            return asb.contrast(asb.mix_color(background, ink, color.alpha * dimmed), background)
+        for custom in (None, {"background": "#171c22", "text": "#f0f2f5", "accent": "#f3c66b", "muted": "#b8c0cc", "divider": "#586372"}):
+            with self.subTest(custom=bool(custom)):
+                window.set_palette(custom); self.drain(.2)
+                board = custom["background"] if custom else window.native_colors()["background"]
+                painted = panel_background()
+                self.assertTrue(all(abs(int(painted[i:i + 2], 16) - int(board[i:i + 2], 16)) <= 1 for i in (1, 3, 5)), (painted, board))
+                # Adwaita dims .dim-label to 55% opacity; custom colors use the muted role at full opacity.
+                for label, dimmed in ((panel.asb_folder, 1 if custom else .55), (panel.asb_title, 1), (panel.asb_state, 1),
+                                      (subtitle, 1), (panel.asb_error, 1)):
+                    self.assertGreaterEqual(text_on(label, board, dimmed), 4.5, label.get_css_classes())
 
     def test_ctrl_number_keycaps_cover_the_mark_in_both_views_and_keep_the_row_height(self):
         patcher = patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)

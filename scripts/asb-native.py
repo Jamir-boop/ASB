@@ -119,6 +119,12 @@ def row_panel_controls(row):
     return controls
 
 
+def session_reference(row):
+    """The app host and the app's own session ID, for example claude-proxy/local_<uuid>; never the ASB row ID."""
+    host = row.get("sourceName") or ("codex" if row.get("provider") == "codex" else "claude-desktop-code")
+    return host + "/" + str(row.get("externalId", ""))
+
+
 def row_panel_note(row):
     """The subtitle of the panel Unread switch."""
     if row.get("actionRequired"):
@@ -2487,7 +2493,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 .asb-tooltip .asb-waiting {{ color: @warning_color; }}
 .asb-tooltip .asb-provider {{ opacity: .65; }}
 .asb-tooltip .asb-source-badge {{ min-width: 6px; min-height: 6px; padding: 0; border: 1px solid @window_bg_color; border-radius: 50%; }}
-{base} popover.asb-row-panel > contents {{ padding: 12px; border: 1px solid alpha(@accent_color, .7); border-radius: 12px;
+{base} popover.asb-row-panel > contents {{ padding: 12px; border: 1px solid alpha(@accent_color, .7); border-radius: 12px; background: @window_bg_color;
     box-shadow: 0 2px 8px alpha(black, .35), 0 8px 24px alpha(black, .3); }}
 {base} .asb-row-panel .asb-panel-folder, {base} .asb-row-panel .asb-panel-state {{ font-size: 11px; }}
 {base} .asb-row-panel .asb-panel-title {{ font-size: 13px; font-weight: bold; }}
@@ -2500,13 +2506,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             colors = validate_theme(colors)
             self.add_css_class("asb-custom")
             scope = base + ".asb-custom"
-            # The row panel is lifted from the board: 6% text in the background.
-            surface = mix_color(colors["background"], colors["text"], .06)
             number_fill, number_edge, number_pressed = number_badge_colors(colors)
             css += f"""
 {scope}, {scope} headerbar, {scope} popover contents {{ background: {colors['background']}; color: {colors['text']}; }}
 {scope} popover > contents {{ border: 1px solid {edge_color(colors['background'], colors['text'], .36, (colors['background'],))}; }}
-{scope} popover.asb-row-panel > contents {{ background: {surface}; border-color: {edge_color(surface, colors['accent'], .7, (colors['background'], surface))}; }}
+{scope} popover.asb-row-panel > contents {{ background: {colors['background']}; border-color: {edge_color(colors['background'], colors['accent'], .7, (colors['background'],))}; }}
 {scope} .asb-row-panel .asb-panel-unread {{ color: {colors['text']}; }}
 {scope} .asb-row-panel row .subtitle {{ color: {colors['muted']}; opacity: 1; }}
 {scope} .asb-state, {scope} .dim-label {{ color: {colors['muted']}; opacity: 1; }}
@@ -4150,6 +4154,32 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 control.connect("notify::active", self.panel_toggle, key)
             panel.asb_switches[key] = control
             controls.append(control)
+        panel.asb_copy_row = Adw.ActionRow(title="App and session ID", focusable=False)
+        panel.asb_copy_row.set_subtitle_lines(1)
+        def subtitle_label(widget):
+            # Adw.ActionRow keeps its subtitle label inside; the ID keeps both ends visible.
+            child = widget.get_first_child()
+            while child:
+                if isinstance(child, Gtk.Label) and child.has_css_class("subtitle"):
+                    return child
+                found = subtitle_label(child)
+                if found:
+                    return found
+                child = child.get_next_sibling()
+            return None
+        subtitle = subtitle_label(panel.asb_copy_row)
+        if subtitle:
+            subtitle.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        panel.asb_copy = Gtk.Button(icon_name="edit-copy-symbolic", tooltip_text="Copy app and session ID", valign=Gtk.Align.CENTER)
+        panel.asb_copy.add_css_class("flat")
+        panel.asb_copy.add_css_class("circular")
+        panel.asb_copy.update_property([Gtk.AccessibleProperty.LABEL], ["Copy app and session ID"])
+        panel.asb_copy.connect("clicked", self.panel_copy)
+        panel.asb_copy_row.add_suffix(panel.asb_copy)
+        # The row and its button run one copy: a click on the row activates the button.
+        panel.asb_copy_row.set_activatable_widget(panel.asb_copy)
+        panel.asb_copy_timer, panel.asb_copy_error, panel.asb_reference = None, "", None
+        controls.append(panel.asb_copy_row)
         root.append(controls)
         # The card tooltip shows a failed action, but the panel covers the card.
         panel.asb_error = label("", "asb-panel-error")
@@ -4169,6 +4199,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             # A repack moves the row, which unmaps its panel; GTK maps the panel again with the row.
             if popup.get_visible() and not self.closed:
                 return
+            self.clear_copy_feedback(popup)
             GLib.idle_add(popup.unparent)
             if self.context_menu is popup:
                 self.context_menu = None
@@ -4209,11 +4240,19 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         controls = row_panel_controls(row)
         model = tooltip_model(row, time.time() * 1000, Path.home(), "", self.drawer_view)
         unread = controls["unread"][0] and model["state"] not in ("working", "waiting")
+        reference = session_reference(row)
         signature = (model["title"], model["path"], model["state_text"], model["state"], unread, model["app"], row.get("provider"),
-                     bool(row.get("canOpen")), tuple(controls.items()), row_panel_note(row), pending, self.open_errors.get(row["id"], ""))
+                     bool(row.get("canOpen")), tuple(controls.items()), row_panel_note(row), pending, self.open_errors.get(row["id"], ""),
+                     reference, panel.asb_copy_error)
         if signature == panel.asb_signature:
             return
         panel.asb_signature = signature
+        if reference != panel.asb_reference:
+            # A new ID ends the feedback of a copy of the old one.
+            self.clear_copy_feedback(panel)
+            panel.asb_reference = reference
+            panel.asb_copy_row.set_subtitle(reference)
+            panel.asb_copy_row.set_tooltip_text(reference)
         focus = self.get_focus()
         if pending and focus and focus.is_ancestor(panel):
             # An insensitive control loses the focus; it gets it back when the action ends.
@@ -4228,7 +4267,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         panel.asb_state.add_css_class("asb-" + model["state"])
         panel.asb_state.add_css_class("success" if model["state"] == "working" else "warning" if model["state"] == "waiting"
                                       else "asb-panel-unread" if unread else "dim-label")
-        error = self.open_errors.get(row["id"], "")
+        error = self.open_errors.get(row["id"], "") or panel.asb_copy_error
         panel.asb_error.set_label(error)
         panel.asb_error.set_visible(bool(error))
         panel.asb_open.set_label("Open in " + model["app"])
@@ -4281,6 +4320,36 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if self.context_menu is panel and panel.asb_identity not in self.session_actions:
             panel.asb_signature = None
             self.sync_row_panel()
+
+    def panel_copy(self, button):
+        panel = button.get_ancestor(Gtk.Popover)
+        widget = self.focus_widgets.get(panel.asb_identity)
+        if not widget or self.closed:
+            return
+        self.clear_copy_feedback(panel)
+        try:
+            self.get_clipboard().set(session_reference(widget.asb_thread))
+        except (GLib.Error, TypeError) as error:
+            panel.asb_copy_error = f"Cannot copy the app and session ID: {error}"
+        else:
+            panel.asb_copy_error = ""
+            panel.asb_copy.set_icon_name("object-select-symbolic")
+            panel.asb_copy.set_tooltip_text("Copied")
+            panel.asb_copy_row.update_property([Gtk.AccessibleProperty.DESCRIPTION], ["Copied"])
+            def clear():
+                panel.asb_copy_timer = None
+                self.clear_copy_feedback(panel)
+                return False
+            panel.asb_copy_timer = GLib.timeout_add(1600, clear)
+        self.update_row_panel(panel, widget.asb_thread)
+
+    def clear_copy_feedback(self, panel):
+        if panel.asb_copy_timer:
+            GLib.source_remove(panel.asb_copy_timer)
+            panel.asb_copy_timer = None
+        panel.asb_copy.set_icon_name("edit-copy-symbolic")
+        panel.asb_copy.set_tooltip_text("Copy app and session ID")
+        panel.asb_copy_row.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
 
     def panel_move_pin(self, button, direction):
         panel = button.get_ancestor(Gtk.Popover)
@@ -4436,6 +4505,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.cancel_scroll()
         self.cancel_motion()
         self.hide_numbers()
+        if self.context_menu:
+            self.clear_copy_feedback(self.context_menu)
         for source in (self.number_idle, self.number_scroll):
             if source:
                 GLib.source_remove(source)

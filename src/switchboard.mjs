@@ -10,7 +10,7 @@ import { normalizeDashboardThreads } from './insights.mjs';
 import { createAsbServer } from './asb-server.mjs';
 import { createSoundPlayer, createSoundWatcher } from './asb-sounds.mjs';
 import { openThreadInCodex } from './session-opener.mjs';
-import { AppSourceRegistry, appSourcesRevision, numberAppSources, validateSourceLauncher } from './app-sources.mjs';
+import { AppSourceRegistry, appSourcesRevision, numberAppSources, sourceName, validateSourceLauncher } from './app-sources.mjs';
 import { spawn } from 'node:child_process';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -173,7 +173,7 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
       const row = {
         id: thread.id,
         externalId,
-        ...(thread.sourceId ? { sourceId: thread.sourceId, sourceLabel: thread.sourceLabel,
+        ...(thread.sourceId ? { sourceId: thread.sourceId, sourceLabel: thread.sourceLabel, sourceName: thread.sourceName,
           sourceNumber: thread.sourceNumber, sourceCount: thread.sourceCount, sourceColor: thread.sourceColor,
           sourceShowMarker: thread.sourceShowMarker } : {}),
         provider: isCodex ? 'codex' : thread.provider,
@@ -337,7 +337,7 @@ export async function loadSwitchboardDashboard({
       if (!sources) return thread;
       const scope = (id) => id && !source.builtin ? `${source.id}:${id}` : id;
       return { ...thread, id: scope(thread.id), parentThreadId: scope(thread.parentThreadId),
-        externalId: thread.externalId || thread.id, sourceId: source.id, sourceLabel: source.label,
+        externalId: thread.externalId || thread.id, sourceId: source.id, sourceLabel: source.label, sourceName: sourceName(source),
         sourceNumber: source.sourceNumber, sourceCount: source.sourceCount, sourceColor: source.color,
         sourceShowMarker: source.showMarker,
         sourceCanOpen: source.builtin || Boolean(source.launcher), sourceDataDir: source.dataDir };
