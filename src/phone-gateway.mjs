@@ -123,6 +123,8 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
   let warning = '';
   let pairing = null;
   let dirty = false;
+  let bound = '';
+  let timer = null;
   let work = Promise.resolve();
   const seenSavedAt = new Map();
   const failures = new Map();
@@ -170,6 +172,10 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     if (pairing && now() >= pairing.expiresAtMs) pairing = null;
     return pairing;
   }
+
+  // The selected addresses that are on this PC now, in the saved order.
+  const available = (listed = listAddresses()) => settings.bindAddresses
+    .filter((address) => listed.some((item) => item.address === address)).join(',');
 
   const listening = () => listeners.filter((item) => item.server.listening).map(({ kind, address }) => ({ kind, address }));
 
@@ -221,12 +227,15 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
   async function restart() {
     await closeListener();
     error = '';
+    bound = '';
     if (!settings.enabled) return;
     const listed = listAddresses();
+    // A failed bind keeps this value, so the address check does not retry a busy port or a missing openssl.
+    bound = available(listed);
     const missing = settings.bindAddresses.filter((address) => !listed.some((item) => item.address === address));
     if (missing.length) {
-      error = missing.length === 1 ? `The phone address ${missing[0]} is not on this PC now. Choose another address.`
-        : `The phone addresses ${missing.join(', ')} are not on this PC now. Choose other addresses.`;
+      error = missing.length === 1 ? `The phone address ${missing[0]} is not on this PC now. ASB listens on it when it appears.`
+        : `The phone addresses ${missing.join(', ')} are not on this PC now. ASB listens on them when they appear.`;
     }
     const selected = listed.filter(({ address }) => settings.bindAddresses.includes(address));
     if (!selected.length) return;
@@ -384,9 +393,25 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     }
   }
 
+  // An address can come or go after the start (ZeroTier often starts after ASB), so the listeners follow it.
+  const checkAddresses = () => serialize(async () => {
+    if (timer && settings.enabled && available() !== bound) await restart();
+  }).catch(() => {});
+
   return {
-    start: () => serialize(async () => { await load(); await restart(); return status(); }),
-    stop: () => serialize(async () => { await closeListener(); if (dirty) await save(); }),
+    start: () => serialize(async () => {
+      await load();
+      await restart();
+      timer ??= setInterval(checkAddresses, 30_000);
+      timer.unref();
+      return status();
+    }),
+    stop: () => serialize(async () => {
+      clearInterval(timer);
+      timer = null;
+      await closeListener();
+      if (dirty) await save();
+    }),
     status: () => serialize(async () => { await load(); return status(); }),
     updateSettings: (value) => serialize(async () => {
       await load();
@@ -396,7 +421,8 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
       if (!validPort(value.port) || value.port === localPort) throw invalid('The phone port must be from 1024 to 65535 and different from the ASB port.');
       const listed = listAddresses();
       if ((value.enabled && !value.bindAddresses.length)
-        || !value.bindAddresses.every((address) => listed.some((item) => item.address === address))) {
+        // A saved address that is absent now can stay selected; it is bound only when it is on this PC again.
+        || !value.bindAddresses.every((address) => listed.some((item) => item.address === address) || settings.bindAddresses.includes(address))) {
         throw invalid('Choose a phone address on this PC.');
       }
       await save({ ...settings, ...value, bindAddresses: [...value.bindAddresses] });

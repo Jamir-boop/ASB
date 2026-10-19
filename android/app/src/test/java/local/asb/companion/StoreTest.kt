@@ -8,6 +8,7 @@ import local.asb.companion.data.Store
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** SharedPreferences in memory, so the Store runs in a JVM test. */
@@ -77,12 +78,12 @@ class StoreTest {
         val preferences = MemoryPreferences(mutableMapOf("token" to token))
         val store = Store(preferences)
         store.saveEndpointsIfPaired(token, listOf(lan, zerotier))
-        store.networkChanged(7)
+        assertTrue(store.networkChanged(7))
         store.saveCurrentEndpointIfPaired(token, zerotier)
         // The same network after a process restart keeps the current endpoint.
-        Store(preferences).networkChanged(7)
+        assertFalse(Store(preferences).networkChanged(7))
         assertEquals(zerotier, Store(preferences).currentEndpoint)
-        store.networkChanged(8)
+        assertTrue(store.networkChanged(8))
         assertNull(store.currentEndpoint)
     }
 

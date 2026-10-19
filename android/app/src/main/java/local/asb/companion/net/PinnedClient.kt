@@ -14,6 +14,12 @@ import okhttp3.TlsVersion
 fun sha256Hex(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
     .digest(bytes).joinToString("") { "%02x".format(it) }
 
+/**
+ * One pool for every pinned client (two idle sockets each for the screen and the live service), so a network change
+ * can drop all idle sockets of the old network at once. A client uses only its own sockets: the pin is part of the address.
+ */
+val pinnedConnections = ConnectionPool(4, 30, TimeUnit.SECONDS)
+
 fun pinnedClient(fingerprintHex: String): OkHttpClient {
     require(fingerprintHex.matches(Regex("[0-9a-f]{64}"))) { "Invalid certificate fingerprint" }
     val trust = object : X509TrustManager {
@@ -41,7 +47,7 @@ fun pinnedClient(fingerprintHex: String): OkHttpClient {
         .followSslRedirects(false)
         .retryOnConnectionFailure(false)
         // No retry, so drop idle connections before the gateway closes them (it keeps them 65 s).
-        .connectionPool(ConnectionPool(2, 30, TimeUnit.SECONDS))
+        .connectionPool(pinnedConnections)
         // Short, so a GET can try the next endpoint soon when one does not answer.
         .connectTimeout(3, TimeUnit.SECONDS)
         .readTimeout(35, TimeUnit.SECONDS)

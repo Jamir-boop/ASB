@@ -80,6 +80,18 @@ action or a setting goes to one address only. The app never sends it again to
 another address, so an action cannot run two times. When Android changes the
 default network, the next request starts again at the top of the order.
 
+A network change (for example when you turn on ZeroTier on the phone) also
+drops the idle connections of the old network, and the session screen and the
+live notification read the dashboard at once. They do not wait for the offline
+delay. When the PC does not answer yet (a new VPN can need a few seconds), the
+next try comes after 3 seconds, then the normal delays. The session screen
+waits 5, 10, and then 30 seconds; the live notification waits 30 seconds. A
+change while the app is in the background also counts when the session screen
+opens again. The first good read after a network change also reads hello, so
+an address that you select later on the PC (for example ZeroTier) reaches the
+phone without a new pairing. The app also reads hello at each start. The PC
+starts to listen on a selected address within 30 seconds after it appears.
+
 The connection text shows the path, for example `PC · Live · ZeroTier`. Tap
 or hold the ASB disc in the top bar to see this text. Settings > Connection lists the addresses and marks the current one. When no address
 answers and the pairing has a ZeroTier or Tailscale address, the error tells
@@ -358,6 +370,8 @@ unknown, incomplete, malformed, and ambiguous fields.
 Endpoint tests use two MockWebServers with one certificate. They cover version
 1 and 2 links, the kind order, the read fallback, no second send of an action,
 the network change reset, the hello address update, and the saved-host migration.
+Session tests check that a network change wakes the offline poll at once,
+retries after 3 seconds, and reads hello after the next good dashboard.
 Retained-flow tests cover ViewModelStore recreation, Back cancellation,
 unpair/re-pair, responses from an old flow, and a new link while a request
 runs. Link tests check that only a VIEW intent with an `asb://pair` URI starts

@@ -717,10 +717,24 @@ def phone_status_text(status):
     return "Phone access is not running. Apply the settings to try again."
 
 
-def phone_address_rows(addresses):
-    return [{"address": item["address"], "title": PHONE_KINDS[item["kind"]],
+def phone_address_rows(addresses, selected=()):
+    rows = [{"address": item["address"], "title": PHONE_KINDS[item["kind"]],
              "subtitle": item["address"] + ("" if item["kind"] == "lan" else " · Works away from home")}
             for item in addresses if item.get("kind") in PHONE_KINDS]
+    # A saved address that is absent now (ZeroTier is off) stays, so Apply does not drop it.
+    shown = {row["address"] for row in rows}
+    return rows + [{"address": address, "title": "Not on this PC now",
+                    "subtitle": address + " · ASB listens on it when it appears"}
+                   for address in selected if address not in shown]
+
+
+def phone_form_values(loaded, form, status):
+    """The (enabled, port, checked addresses) to show after a status read. A form that differs from the last
+    loaded values has unsaved edits, so it stays; otherwise the form follows the server."""
+    server = (status.get("enabled", False), status.get("port", 4630), list(status.get("bindAddresses", [])))
+    if loaded is None or form is None or (form[0], form[1], set(form[2])) == (loaded[0], loaded[1], set(loaded[2])):
+        return server
+    return form
 
 
 def phone_address_note(addresses):
@@ -1654,7 +1668,7 @@ class PhoneEditor(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.owner, self.preferences, self.base = owner, preferences, owner.base
         self.closed = self.active = self.loaded = self.loading = self.poll_loading = False
-        self.generation, self.poll_timer = 0, None
+        self.generation, self.poll_timer, self.form_loaded = 0, None, None
         self.status, self.address_checks, self.remove_buttons = {}, {}, []
         self.pairing_uri, self.expires_at, self.pair_device_ids, self.matrix = "", 0, set(), None
         self.settings = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
@@ -1732,11 +1746,11 @@ class PhoneEditor(Gtk.Box):
             return
         self.active = active
         if not active:
-            if self.loading:
-                self.loaded = False
             self.loading = self.poll_loading = False
             self.stop_pairing()
-        elif not self.loaded:
+        else:
+            # The addresses can change while the pane is hidden, so each open reads them again; render_status keeps form edits.
+            self.loaded = False
             self.request_phone()
 
     def update_controls(self):
@@ -1754,14 +1768,18 @@ class PhoneEditor(Gtk.Box):
         self.status_label.set_label(phone_status_text(status))
         self.fingerprint.set_label(group_fingerprint(status.get("fingerprint", "")))
         if sync_form:
-            self.enabled.set_active(status.get("enabled", False))
+            form = None if self.form_loaded is None else (self.enabled.get_active(), int(self.port.get_value()),
+                    [address for address, check in self.address_checks.items() if check.get_active()])
+            enabled, port, selected = phone_form_values(self.form_loaded, form, status)
+            self.form_loaded = (status.get("enabled", False), status.get("port", 4630), list(status.get("bindAddresses", [])))
+            self.enabled.set_active(enabled)
             child = self.address_list.get_first_child()
             while child:
                 self.address_list.remove(child)
                 child = self.address_list.get_first_child()
             self.address_checks = {}
-            selected = set(status.get("bindAddresses", []))
-            rows = phone_address_rows(status["addresses"])
+            # A checked address that is absent now stays as "Not on this PC now"; a new address is unchecked.
+            rows = phone_address_rows(status["addresses"], selected)
             for item in rows:
                 check = Gtk.CheckButton(active=item["address"] in selected, valign=Gtk.Align.CENTER)
                 row = Adw.ActionRow(title=item["title"], subtitle=item["subtitle"], use_markup=False, activatable_widget=check)
@@ -1772,7 +1790,7 @@ class PhoneEditor(Gtk.Box):
             note = phone_address_note(status["addresses"])
             self.address_note.set_label(note)
             self.address_note.set_visible(bool(note))
-            self.port.set_value(status.get("port", 4630))
+            self.port.set_value(port)
         child = self.devices.get_first_child()
         while child:
             self.devices.remove(child)
@@ -1830,6 +1848,8 @@ class PhoneEditor(Gtk.Box):
                 self.show_pairing(result)
                 self.message.set_label("")
             else:
+                if route == "/api/phone/settings":
+                    self.form_loaded = None  # The saved values replace the edits.
                 self.render_status(result, sync_form and not poll)
                 if not poll:
                     feedback = "Saved." if route == "/api/phone/settings" else "Phone removed." if method == "POST" else ""

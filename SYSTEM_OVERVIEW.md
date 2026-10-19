@@ -365,7 +365,7 @@ These routes exist only when the server has a phone gateway (the engine). `npm s
 | Loopback route | Contract |
 | --- | --- |
 | `GET /api/phone` | Gateway `status()`: `enabled`, `bindAddresses`, `port`, `addresses` (`address`, `interface`, `kind`), `listening` (`kind`, `address`), `running`, `error`, `warning`, `fingerprint`, `devices` (ID, name, times), and `pairing.expiresAtMs`. It never has a token, token hash, or pairing code. |
-| `POST /api/phone/settings` | `{"enabled":bool,"bindAddresses":[str],"port":int}`. `bindAddresses` has 0 to 8 different addresses, and each must be in `addresses` now. When `enabled` is true, it must have at least one address. The port must be 1024 to 65535 and not the ASB port. Saves, restarts the listener, and replies with `status()`. |
+| `POST /api/phone/settings` | `{"enabled":bool,"bindAddresses":[str],"port":int}`. `bindAddresses` has 0 to 8 different addresses, and each must be in `addresses` now or already saved. When `enabled` is true, it must have at least one address. The port must be 1024 to 65535 and not the ASB port. Saves, restarts the listener, and replies with `status()`. |
 | `POST /api/phone/pairing` | `{}`. Needs a running listener. Replies `{ uri, expiresAtMs }`. |
 | `POST /api/phone/devices/<id>/revoke` | `{}`. `<id>` is 12 lowercase hex. Removes that phone and replies with `status()`. |
 | `GET /api/service` | `{ service, pid }`. `service` is true only in the engine. `findRunningService()` uses it. |
@@ -393,7 +393,9 @@ The native window shares its resolved palette, so the phone can use the same col
 
 A `100.64.0.0/10` address on an interface that is not Tailscale is never listed, because carrier NAT and mobile hotspots also use this range. Loopback and public addresses are never listed. The gateway never binds `0.0.0.0`.
 
-When `enabled` is true, the gateway listens on each address in `bindAddresses` that is listed now, all on the same port (default `4630`), with the same certificate and the same handler. It skips a selected address that is not listed now, and `status().error` names it; the other addresses still listen. A port in use also goes in `status().error`. `running` is true when at least one listener listens. `status().listening` lists the listeners that listen now.
+When `enabled` is true, the gateway listens on each address in `bindAddresses` that is listed now, all on the same port (default `4630`), with the same certificate and the same handler. It skips a selected address that is not listed now, and `status().error` names it and says that ASB listens on it when it appears; the other addresses still listen. A port in use also goes in `status().error`. `running` is true when at least one listener listens. `status().listening` lists the listeners that listen now.
+
+Every 30 seconds (an `unref` timer from `start()` to `stop()`), the gateway compares the selected addresses that are listed now with the set that the last restart used. Only a changed set restarts the listeners, so an address that comes up after the start (for example ZeroTier after `asb.service`) gets a listener, and an address that goes away loses its listener. A restart closes the open phone connections and ends a pairing code. A busy port or a missing `openssl` keeps the same set, so the check does not retry it until the addresses change or the user applies the settings. Preferences > Phone reads the status and the address list again each time the page opens. A form with no unsaved edits follows the server; a form with unsaved edits keeps its switch, port, and checks, and a new address shows unchecked. After Apply the form shows the saved values. A saved address that is not listed now stays as a checked row named "Not on this PC now", and `POST /api/phone/settings` accepts it.
 
 `phone.json` is schema 2 with `bindAddresses`. A schema 1 file (`bindAddress`) loads as schema 2 (an empty `bindAddress` gives `[]`), and the next save writes schema 2.
 
@@ -410,7 +412,7 @@ The gateway handles each request in this order:
 | Gateway route | Action |
 | --- | --- |
 | `POST /phone/v1/pair` | Body exactly `{"code","deviceName"}`. Gives the phone a new token. |
-| `GET /phone/v1/hello` | `{ api: 1, asbVersion, deviceId, serverName, addresses, port }`. `addresses` is `[{ kind, address }]` for the listeners that listen now. The app updates its saved address list from it. |
+| `GET /phone/v1/hello` | `{ api: 1, asbVersion, deviceId, serverName, addresses, port }`. `addresses` is `[{ kind, address }]` for the listeners that listen now. The app updates its saved address list from it at each app start, in Settings, and after the first good dashboard after a network change. |
 | `GET /phone/v1/dashboard` | Proxy to `GET /api/dashboard`. Only the query `force=1` passes. |
 | `POST /phone/v1/threads/<id>/<action>` | Proxy to the same loopback thread route. `<action>` is `open`, `mark-read`, `mark-unread`, `pin`, `unpin`, `move-pin`, `discard-result`, `keep-result`, `drawer-in`, or `drawer-out`. |
 | `POST /phone/v1/settings/unread` | Proxy to `POST /api/settings/unread`. |

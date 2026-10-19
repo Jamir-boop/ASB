@@ -19,10 +19,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import local.asb.companion.AsbApp
 import local.asb.companion.MainActivity
@@ -55,9 +57,11 @@ internal fun liveLines(threads: List<Thread>): List<String> {
     return if (titles.size <= MAX_LINES) titles else titles.take(MAX_LINES) + "+${titles.size - MAX_LINES} more"
 }
 
-// Offline retries stay slow: each try can wait for every endpoint to time out.
-internal fun liveIntervalMs(threads: List<Thread>?, offline: Boolean): Long =
-    if (!offline && threads.orEmpty().any { !it.archived && it.state == "working" }) 5_000L else 30_000L
+// Offline retries stay slow: each try can wait for every endpoint to time out. After a network change one retry
+// comes after 3 s, because a VPN that the user just turned on can need a few seconds.
+internal fun liveIntervalMs(threads: List<Thread>?, offline: Boolean, afterNetworkChange: Boolean = false): Long =
+    if (offline && afterNetworkChange) 3_000L
+    else if (!offline && threads.orEmpty().any { !it.archived && it.state == "working" }) 5_000L else 30_000L
 
 internal fun liveOfflineText(lastMs: Long, nowMs: Long): String =
     if (lastMs <= 0) "Offline"
@@ -142,6 +146,10 @@ class LiveService : Service() {
         var api: AsbApi? = null
         var apiToken = ""
         var etag: String? = null
+        var seenNetwork = app.networkChanges.value
+        var afterNetworkChange = false
+        // The first good read also reads hello, so new PC addresses reach the phone.
+        var learnAddresses = true
         while (scope.isActive) {
             val token = synchronized(app.store) {
                 if (!app.store.paired || app.store.revoked || !app.store.liveNotification) null else app.store.token
@@ -180,6 +188,10 @@ class LiveService : Service() {
                         }
                         DashboardResult.NotModified -> last?.let { own = it.copy(atMs = nowMs).also { u -> app.liveUpdates.value = u } }
                     }
+                    if (learnAddresses) {
+                        learnAddresses = false
+                        try { current.hello() } catch (_: AsbError) {}
+                    }
                 } catch (cause: AsbError) {
                     if (cause === AsbError.NotPaired) synchronized(app.store) {
                         if (app.store.token == token) {
@@ -194,7 +206,14 @@ class LiveService : Service() {
                     show()
                 }
             }
-            delay(liveIntervalMs(last?.threads, offline))
+            withTimeoutOrNull(liveIntervalMs(last?.threads, offline, afterNetworkChange)) {
+                app.networkChanges.first { it != seenNetwork }
+            }
+            afterNetworkChange = app.networkChanges.value != seenNetwork
+            if (afterNetworkChange) {
+                seenNetwork = app.networkChanges.value
+                learnAddresses = true
+            }
         }
     }
 

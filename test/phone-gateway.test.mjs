@@ -427,7 +427,7 @@ gatewayTest('several listeners share one certificate, skip a missing address, an
   t.after(() => multi.stop());
   const status = await multi.start();
   assert.equal(status.running, true);
-  assert.equal(status.error, 'The phone address 192.168.50.4 is not on this PC now. Choose another address.');
+  assert.equal(status.error, 'The phone address 192.168.50.4 is not on this PC now. ASB listens on it when it appears.');
   assert.deepEqual(status.listening, [{ kind: 'lan', address: '127.0.0.1' }, { kind: 'zerotier', address: '127.0.0.3' },
     { kind: 'tailscale', address: '127.0.0.2' }]);
   assert.deepEqual(status.addresses, listed);
@@ -575,10 +575,10 @@ gatewayTest('settings reject unsupported addresses and ports, and a vanished add
   const missing = createPhoneGateway({ localPort, asbVersion: '1.8.1', ...store, listAddresses: () => [] });
   const status = await missing.start();
   assert.equal(status.running, false);
-  assert.equal(status.error, 'The phone address 192.168.1.2 is not on this PC now. Choose another address.');
+  assert.equal(status.error, 'The phone address 192.168.1.2 is not on this PC now. ASB listens on it when it appears.');
   await writeFile(store.settingsPath, JSON.stringify(settings({ enabled: true, bindAddresses: ['192.168.1.2', '10.147.17.4'], port })));
   const both = createPhoneGateway({ localPort, asbVersion: '1.8.1', ...store, listAddresses: () => [] });
-  assert.equal((await both.start()).error, 'The phone addresses 192.168.1.2, 10.147.17.4 are not on this PC now. Choose other addresses.');
+  assert.equal((await both.start()).error, 'The phone addresses 192.168.1.2, 10.147.17.4 are not on this PC now. ASB listens on them when they appear.');
 });
 
 gatewayTest('a busy port and missing openssl leave the listener off with a useful error', async (t) => {
@@ -600,6 +600,96 @@ gatewayTest('a busy port and missing openssl leave the listener off with a usefu
   const restarted = createPhoneGateway({ ...args, ...store, openssl: path.join(store.home, 'missing-openssl') });
   assert.equal((await restarted.start()).error, failed.error);
   assert.equal((await restarted.status()).running, false);
+});
+
+gatewayTest('the address check binds a selected address that appears later and restarts only when the set changes', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const created = t.mock.method(https, 'createServer');
+  const { args, port } = await fixture(t, { enabled: false });
+  const store = await storage(t);
+  await mkdir(path.dirname(store.settingsPath), { recursive: true });
+  await writeFile(store.settingsPath, JSON.stringify(settings({ enabled: true, port, bindAddresses: ['127.0.0.1', '127.0.0.3'] })));
+  const lan = { address: '127.0.0.1', interface: 'enp0s1', kind: 'lan' };
+  const zerotier = { address: '127.0.0.3', interface: 'ztabcdef12', kind: 'zerotier' };
+  let listed = [lan];
+  const gateway = createPhoneGateway({ ...args, ...store, listAddresses: () => listed });
+  t.after(() => gateway.stop());
+  let status = await gateway.start();
+  assert.deepEqual(status.listening, [{ kind: 'lan', address: '127.0.0.1' }]);
+  assert.equal(status.error, 'The phone address 127.0.0.3 is not on this PC now. ASB listens on it when it appears.');
+  const before = created.mock.callCount();
+  t.mock.timers.tick(90_000);
+  assert.deepEqual((await gateway.status()).listening, [{ kind: 'lan', address: '127.0.0.1' }]);
+  assert.equal(created.mock.callCount(), before);
+  // A saved address that is absent now stays selected when the user applies the settings again.
+  status = await gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1', '127.0.0.3'], port });
+  assert.deepEqual(status.bindAddresses, ['127.0.0.1', '127.0.0.3']);
+  listed = [lan, zerotier];
+  t.mock.timers.tick(29_999);
+  assert.equal((await gateway.status()).listening.length, 1);
+  t.mock.timers.tick(1);
+  status = await gateway.status();
+  assert.deepEqual(status.listening, [{ kind: 'lan', address: '127.0.0.1' }, { kind: 'zerotier', address: '127.0.0.3' }]);
+  assert.equal(status.error, '');
+  listed = [lan];
+  t.mock.timers.tick(30_000);
+  status = await gateway.status();
+  assert.deepEqual(status.listening, [{ kind: 'lan', address: '127.0.0.1' }]);
+  assert.match(status.error, /127\.0\.0\.3 is not on this PC now/);
+  await gateway.stop();
+  const stopped = created.mock.callCount();
+  listed = [lan, zerotier];
+  t.mock.timers.tick(60_000);
+  assert.equal((await gateway.status()).running, false);
+  assert.equal(created.mock.callCount(), stopped);
+});
+
+gatewayTest('the address check retries a busy port or a missing openssl only when the addresses change', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const created = t.mock.method(https, 'createServer');
+  let listed = loopback();
+  const { args, localPort } = await fixture(t, { enabled: false, gateway: { listAddresses: () => listed } });
+  const occupied = net.createServer();
+  const busyPort = await listen(occupied);
+  t.after(() => close(occupied));
+  const busy = createPhoneGateway({ ...args, ...(await storage(t)) });
+  t.after(() => busy.stop());
+  await busy.start();
+  assert.equal((await busy.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port: busyPort })).error, `Port ${busyPort} is in use.`);
+  const count = created.mock.callCount();
+  t.mock.timers.tick(120_000);
+  assert.equal((await busy.status()).error, `Port ${busyPort} is in use.`);
+  assert.equal(created.mock.callCount(), count);
+  listed = [];
+  t.mock.timers.tick(30_000);
+  await busy.status();
+  assert.equal(created.mock.callCount(), count);
+  listed = loopback();
+  t.mock.timers.tick(30_000);
+  assert.equal((await busy.status()).error, `Port ${busyPort} is in use.`);
+  assert.equal(created.mock.callCount(), count + 1);
+  await busy.stop();
+  const store = await storage(t);
+  const log = path.join(store.home, 'openssl.log');
+  const openssl = path.join(store.home, 'openssl');
+  await writeFile(openssl, `#!/bin/sh\necho run >> '${log}'\nexit 1\n`);
+  await chmod(openssl, 0o755);
+  const missing = createPhoneGateway({ ...args, ...store, localPort, openssl });
+  t.after(() => missing.stop());
+  await missing.start();
+  assert.equal((await missing.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port: await freePort() })).error,
+    'ASB cannot create the phone certificate. Install openssl.');
+  const runs = async () => (await readFile(log, 'utf8')).split('\n').filter(Boolean).length;
+  t.mock.timers.tick(120_000);
+  await missing.status();
+  assert.equal(await runs(), 1);
+  listed = [...loopback(), { address: '127.0.0.3', interface: 'ztabcdef12', kind: 'zerotier' }];
+  await missing.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1', '127.0.0.3'], port: await freePort() });
+  assert.equal(await runs(), 2);
+  listed = loopback();
+  t.mock.timers.tick(30_000);
+  await missing.status();
+  assert.equal(await runs(), 3);
 });
 
 gatewayTest('existing certificates are reused and a missing key replaces both TLS files', async (t) => {

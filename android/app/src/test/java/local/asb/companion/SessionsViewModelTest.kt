@@ -9,6 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
@@ -92,10 +93,12 @@ class SessionsViewModelTest {
         saveBaseline: (Map<String, Int>) -> Unit = { baselines += it },
         initialView: String = "comfortable",
         savePalette: (Palette) -> Unit = { palettes += it },
+        networks: MutableStateFlow<Long> = MutableStateFlow(0L),
+        paths: MemoryPaths = MemoryPaths(listOf(Endpoint("lan", "127.0.0.1"))),
     ): SessionsViewModel {
-        val api = AsbApi(MemoryPaths(listOf(Endpoint("lan", "127.0.0.1"))), server.port, fingerprint, "t".repeat(43)) { revoked = true }
-        return SessionsViewModel(api, "Test PC", initiallyRevoked, saveBaseline, mutex, loadBaseline, initialView, savePalette)
-            .also { models.put("sessions", it) }
+        val api = AsbApi(paths, server.port, fingerprint, "t".repeat(43)) { revoked = true }
+        return SessionsViewModel(api, "Test PC", initiallyRevoked, saveBaseline, mutex, loadBaseline, initialView, savePalette,
+            networkChanges = networks).also { models.put("sessions", it) }
     }
 
     private fun poll(model: SessionsViewModel): Job = CoroutineScope(dispatcher).launch { model.poll() }
@@ -198,6 +201,52 @@ class SessionsViewModelTest {
         advance(1)
         await { model.state.value.dashboard?.generatedAtMs == 3L }
         assertFalse(model.state.value.offline)
+    }
+
+    @Test fun aNetworkChangeWakesTheOfflinePollRetriesAfter3SecondsAndLearnsNewAddresses() = runBlocking {
+        val dashboard = Dashboard(1, threads = listOf(Thread(id = "cached")))
+        server.enqueue(response(dashboard))
+        repeat(5) { server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)) }
+        server.enqueue(response(dashboard.copy(generatedAtMs = 2)))
+        val lan = Endpoint("lan", "127.0.0.1")
+        val zerotier = Endpoint("zerotier", "127.0.0.3")
+        server.enqueue(MockResponse().setBody("""{"api":1,"asbVersion":"1.8.1","deviceId":"0123456789ab","serverName":"Test PC",""" +
+            """"addresses":[{"kind":"zerotier","address":"127.0.0.3"},{"kind":"lan","address":"127.0.0.1"}],"port":4630}"""))
+        val networks = MutableStateFlow(0L)
+        val paths = MemoryPaths(listOf(lan))
+        val model = model(networks = networks, paths = paths)
+        poll(model)
+        await { model.state.value.dashboard != null }
+        server.takeRequest()
+        // The normal backoff reaches the 30 s step.
+        for ((index, waitMs) in listOf(5000L, 5000L, 10000L).withIndex()) {
+            model.clearError()
+            advance(waitMs)
+            await { model.state.value.lastError != null }
+            assertEquals(index + 2, server.requestCount)
+            server.takeRequest()
+        }
+        // The user turns on ZeroTier: the poll reads now, not after 30 s.
+        model.clearError()
+        networks.value = 1L
+        await { model.state.value.lastError != null }
+        assertEquals(5, server.requestCount)
+        server.takeRequest()
+        model.clearError()
+        advance(2999)
+        assertEquals(5, server.requestCount)
+        advance(1)
+        await { model.state.value.lastError != null }
+        server.takeRequest()
+        advance(4999)
+        assertEquals(6, server.requestCount)
+        advance(1)
+        await { model.state.value.dashboard?.generatedAtMs == 2L }
+        assertEquals("/phone/v1/dashboard", server.takeRequest().path)
+        // The first good dashboard after the change also reads hello, which adds the new ZeroTier address.
+        await { paths.endpoints.size == 2 }
+        assertEquals("/phone/v1/hello", server.takeRequest().path)
+        assertEquals(listOf(lan, zerotier), paths.endpoints)
     }
 
     @Test fun forcedRefreshAndPollingShareTheWholeFetchAndBaselineLock() = runBlocking {

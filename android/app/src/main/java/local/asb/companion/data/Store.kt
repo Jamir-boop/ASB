@@ -107,11 +107,15 @@ class Store(private val preferences: SharedPreferences) {
         }.apply()
     }
 
-    /** A new Android default network starts the endpoint order again; the same network keeps it, also after a restart. */
+    /**
+     * A new Android default network starts the endpoint order again; the same network keeps it, also after a restart.
+     * Returns true for a new network.
+     */
     @Synchronized
-    fun networkChanged(handle: Long) {
-        if (preferences.contains("network") && preferences.getLong("network", 0) == handle) return
+    fun networkChanged(handle: Long): Boolean {
+        if (preferences.contains("network") && preferences.getLong("network", 0) == handle) return false
         preferences.edit().putLong("network", handle).remove("currentEndpoint").apply()
+        return true
     }
 
     @Synchronized

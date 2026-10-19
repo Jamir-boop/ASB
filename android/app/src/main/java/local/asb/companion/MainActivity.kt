@@ -223,6 +223,7 @@ private fun PairedApp(
                         initialView = store.view,
                         savePalette = app::usePalette,
                         showLive = { app.liveUpdates.value = LiveUpdate(it.threads, System.currentTimeMillis()) },
+                        networkChanges = app.networkChanges,
                     )
                 }
             }

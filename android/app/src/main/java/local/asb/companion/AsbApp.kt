@@ -8,12 +8,14 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import local.asb.companion.data.Endpoint
 import local.asb.companion.data.Palette
 import local.asb.companion.data.Store
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.Paths
+import local.asb.companion.net.pinnedConnections
 import local.asb.companion.notify.CheckWorker
 import local.asb.companion.notify.LiveUpdate
 import local.asb.companion.notify.Notifier
@@ -25,6 +27,8 @@ class AsbApp : Application() {
     @Volatile var resumed = false
     /** The latest dashboard rows of the current pairing, shown by the live notification. */
     val liveUpdates = MutableStateFlow<LiveUpdate?>(null)
+    /** Counts the default-network changes; the session poll and the live service wake on each one. */
+    val networkChanges = MutableStateFlow(0L)
     var palette by mutableStateOf(Palette())
         private set
     var textScale by mutableFloatStateOf(1f)
@@ -46,7 +50,12 @@ class AsbApp : Application() {
         // session screen, the worker, and notification actions all see each network change.
         getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(
             object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: Network) = store.networkChanged(network.networkHandle)
+                override fun onAvailable(network: Network) {
+                    if (!store.networkChanged(network.networkHandle)) return
+                    // An idle socket of the old network can hang until its timeout, so no request may reuse one.
+                    pinnedConnections.evictAll()
+                    networkChanges.update { it + 1 }
+                }
             })
     }
 

@@ -560,7 +560,7 @@ class PhoneChecks(unittest.TestCase):
         editor.owner, editor.preferences = SimpleNamespace(closed=False), SimpleNamespace(closed=False)
         editor.base, editor.closed, editor.active, editor.loaded = "http://127.0.0.1:1", False, True, True
         editor.loading = editor.poll_loading = False
-        editor.generation, editor.poll_timer = 0, None
+        editor.generation, editor.poll_timer, editor.form_loaded = 0, None, None
         editor.status, editor.address_checks, editor.remove_buttons = self.status(), {"192.168.50.4": Mock()}, []
         editor.pairing_uri, editor.expires_at, editor.pair_device_ids, editor.matrix = "", 0, set(), None
         for name in ("settings", "apply", "pair", "retry", "message", "status_label", "fingerprint", "enabled",
@@ -577,7 +577,7 @@ class PhoneChecks(unittest.TestCase):
         self.assertIn("Apply the settings", asb.phone_status_text(self.status(running=False)))
         self.assertEqual(asb.phone_status_text(self.status(running=False, error="Choose a private address.")),
                          "Choose a private address.")
-        missing = "The phone address 10.147.17.4 is not on this PC now. Choose another address."
+        missing = "The phone address 10.147.17.4 is not on this PC now. ASB listens on it when it appears."
         self.assertEqual(asb.phone_status_text(self.status(port=4631, error=missing, listening=[
             {"kind": "lan", "address": "192.168.50.4"}, {"kind": "tailscale", "address": "100.101.102.103"}])),
             "Running at https://192.168.50.4:4631 (Home network), https://100.101.102.103:4631 (Tailscale)\n" + missing)
@@ -591,6 +591,9 @@ class PhoneChecks(unittest.TestCase):
             {"address": "10.147.17.4", "title": "ZeroTier", "subtitle": "10.147.17.4 · Works away from home"},
             {"address": "100.101.102.103", "title": "Tailscale", "subtitle": "100.101.102.103 · Works away from home"}])
         note = "Install and join ZeroTier or Tailscale on this PC and the phone to use ASB away from home."
+        self.assertEqual(asb.phone_address_rows([lan], ["10.147.17.4", "192.168.50.4"]), [
+            {"address": "192.168.50.4", "title": "Home network", "subtitle": "192.168.50.4"},
+            {"address": "10.147.17.4", "title": "Not on this PC now", "subtitle": "10.147.17.4 · ASB listens on it when it appears"}])
         self.assertEqual(asb.phone_address_note([lan]), note)
         self.assertEqual(asb.phone_address_note([lan, zerotier]), "")
         self.assertEqual(asb.phone_address_note([tailscale]), "")
@@ -647,9 +650,11 @@ class PhoneChecks(unittest.TestCase):
         editor = self.editor()
         device = {"id": "a", "name": "Test <phone> & tablet", "createdAtMs": NOW, "lastSeenAtMs": NOW - 60_000}
         row = Mock()
-        gtk = SimpleNamespace(CheckButton=Mock(side_effect=lambda **kwargs: Mock(active=kwargs["active"])),
+        gtk = SimpleNamespace(CheckButton=Mock(side_effect=lambda **kwargs: Mock(
+                                  active=kwargs["active"], get_active=Mock(return_value=kwargs["active"]))),
                               Button=Mock(), Align=SimpleNamespace(CENTER=0),
                               AccessibleProperty=SimpleNamespace(LABEL=0))
+        editor.enabled.get_active.return_value, editor.port.get_value.return_value = True, 4630
         editor.address_list.get_first_child.side_effect = [Mock(), None, None, None]
         with patch.dict(SCOPE, {"Gtk": gtk, "Adw": SimpleNamespace(ActionRow=Mock(return_value=row))}):
             editor.render_status(self.status(devices=[device]))
@@ -666,12 +671,14 @@ class PhoneChecks(unittest.TestCase):
             SCOPE["Adw"].ActionRow.reset_mock()
             editor.render_status(self.status(addresses=addresses, bindAddresses=["100.101.102.103", "10.147.17.4"]), True)
             editor.address_list.remove.assert_called_once()
-            self.assertEqual(list(editor.address_checks), ["192.168.50.4", "100.101.102.103"])
-            self.assertEqual([check.active for check in editor.address_checks.values()], [False, True])
+            # The saved ZeroTier address is absent now; it stays selected so Apply keeps it.
+            self.assertEqual(list(editor.address_checks), ["192.168.50.4", "100.101.102.103", "10.147.17.4"])
+            self.assertEqual([check.active for check in editor.address_checks.values()], [False, True, True])
             self.assertEqual([(call.kwargs["title"], call.kwargs["subtitle"]) for call in SCOPE["Adw"].ActionRow.call_args_list],
-                             [("Home network", "192.168.50.4"), ("Tailscale", "100.101.102.103 · Works away from home")])
-            self.assertIs(SCOPE["Adw"].ActionRow.call_args.kwargs["activatable_widget"], editor.address_checks["100.101.102.103"])
-            self.assertEqual(editor.address_list.append.call_count, 2)
+                             [("Home network", "192.168.50.4"), ("Tailscale", "100.101.102.103 · Works away from home"),
+                              ("Not on this PC now", "10.147.17.4 · ASB listens on it when it appears")])
+            self.assertIs(SCOPE["Adw"].ActionRow.call_args.kwargs["activatable_widget"], editor.address_checks["10.147.17.4"])
+            self.assertEqual(editor.address_list.append.call_count, 3)
             editor.address_list.set_visible.assert_called_with(True)
             editor.address_note.set_visible.assert_called_with(False)
             editor.port.set_value.assert_called_once_with(4630)
@@ -681,6 +688,64 @@ class PhoneChecks(unittest.TestCase):
             editor.address_note.set_label.assert_called_with(asb.phone_address_note([]))
             editor.address_note.set_visible.assert_called_with(True)
             editor.empty.set_visible.assert_called_with(True)
+
+    def test_phone_form_values_keep_unsaved_edits_and_else_follow_the_server(self):
+        status = self.status(port=4631, bindAddresses=["192.168.50.4", "10.147.17.4"])
+        server = (True, 4631, ["192.168.50.4", "10.147.17.4"])
+        self.assertEqual(asb.phone_form_values(None, (False, 4630, []), status), server)
+        self.assertEqual(asb.phone_form_values((True, 4630, ["10.147.17.4", "192.168.50.4"]),
+                                               (True, 4630, ["192.168.50.4", "10.147.17.4"]), status), server)
+        edited = (True, 4632, ["192.168.50.4"])
+        self.assertEqual(asb.phone_form_values((True, 4630, ["192.168.50.4", "10.147.17.4"]), edited, status), edited)
+
+    def test_phone_pane_reopen_keeps_edits_shows_new_addresses_unchecked_and_follows_an_unedited_form(self):
+        editor = self.editor()
+        lan = {"address": "192.168.50.4", "interface": "enp0s1", "kind": "lan"}
+        zerotier = {"address": "10.147.17.4", "interface": "ztabcdef12", "kind": "zerotier"}
+        tailscale = {"address": "100.101.102.103", "interface": "tailscale0", "kind": "tailscale"}
+        gtk = SimpleNamespace(CheckButton=Mock(side_effect=lambda **kwargs: Mock(
+                                  active=kwargs["active"], get_active=Mock(return_value=kwargs["active"]))),
+                              Button=Mock(), Align=SimpleNamespace(CENTER=0), AccessibleProperty=SimpleNamespace(LABEL=0))
+        actions = Mock(side_effect=lambda **kwargs: Mock(title=kwargs["title"]))
+        editor.address_list.get_first_child.return_value = None
+        checks = lambda: {address: check.get_active() for address, check in editor.address_checks.items()}
+        with patch.dict(SCOPE, {"Gtk": gtk, "Adw": SimpleNamespace(ActionRow=actions)}):
+            editor.render_status(self.status(addresses=[lan], bindAddresses=["192.168.50.4"]), True)
+            self.assertEqual(checks(), {"192.168.50.4": True})
+            # An unedited form follows the server.
+            editor.enabled.get_active.return_value, editor.port.get_value.return_value = True, 4630
+            editor.render_status(self.status(addresses=[lan, zerotier], port=4631,
+                                             bindAddresses=["192.168.50.4", "10.147.17.4"]), True)
+            self.assertEqual(checks(), {"192.168.50.4": True, "10.147.17.4": True})
+            editor.port.set_value.assert_called_with(4631)
+            # The user unchecks ZeroTier and changes the port, then the pane opens again with a new address.
+            editor.address_checks["10.147.17.4"].get_active.return_value = False
+            editor.enabled.get_active.return_value, editor.port.get_value.return_value = False, 4632
+            editor.render_status(self.status(addresses=[lan, zerotier, tailscale], port=4631,
+                                             bindAddresses=["192.168.50.4", "10.147.17.4"]), True)
+            self.assertEqual(checks(), {"192.168.50.4": True, "10.147.17.4": False, "100.101.102.103": False})
+            editor.port.set_value.assert_called_with(4632)
+            editor.enabled.set_active.assert_called_with(False)
+            # A checked address that went away stays checked as "Not on this PC now".
+            editor.render_status(self.status(addresses=[zerotier, tailscale], port=4631,
+                                             bindAddresses=["192.168.50.4", "10.147.17.4"]), True)
+            self.assertEqual(checks(), {"10.147.17.4": False, "100.101.102.103": False, "192.168.50.4": True})
+            self.assertEqual(actions.call_args.kwargs["title"], "Not on this PC now")
+            editor.port.set_value.assert_called_with(4632)
+
+    def test_each_phone_pane_open_reads_the_addresses_and_form_again(self):
+        editor = self.editor()
+        editor.active, editor.preferences, editor.owner = False, SimpleNamespace(closed=False), SimpleNamespace(closed=False)
+        editor.render_status = Mock(side_effect=lambda *_args: setattr(editor, "loaded", True))
+        request, glib = Mock(), SimpleNamespace(idle_add=Mock(), source_remove=Mock())
+        with patch.dict(SCOPE, {"request_async": request, "GLib": glib}):
+            for count in (1, 2):
+                editor.set_active(True)
+                self.assertEqual(request.call_count, count)
+                self.assertEqual(request.call_args.args[1], "/api/phone")
+                request.call_args.args[2](self.status(), None)
+                editor.render_status.assert_called_with(self.status(), True)
+                editor.set_active(False)
 
     def test_phone_requests_retry_errors_and_preserve_poll_form(self):
         editor = self.editor()

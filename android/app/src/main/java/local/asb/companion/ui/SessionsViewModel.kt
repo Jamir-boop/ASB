@@ -10,12 +10,14 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonPrimitive
 import local.asb.companion.data.Dashboard
 import local.asb.companion.data.Message
@@ -53,6 +55,8 @@ class SessionsViewModel(
     initialView: String = "comfortable",
     private val savePalette: (Palette) -> Unit = {},
     private val showLive: (Dashboard) -> Unit = {},
+    /** Counts the default-network changes (AsbApp.networkChanges). */
+    private val networkChanges: StateFlow<Long> = MutableStateFlow(0L),
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(UiState(revoked = initiallyRevoked, view = initialView))
     val state: StateFlow<UiState> = mutableState.asStateFlow()
@@ -62,6 +66,12 @@ class SessionsViewModel(
     private val pollMutex = Mutex()
     private var etag: String? = null
     private var offlineFailures = 0
+    private var seenNetwork = networkChanges.value
+    /**
+     * After a network change the next good dashboard also reads hello, so new PC addresses (ZeroTier selected
+     * later on the PC) reach the phone. The Connection screen reads hello at each app start.
+     */
+    private var learnAddresses = false
     private val readTimers = mutableMapOf<String, Job>()
 
     fun setFilter(filter: Filter) { mutableState.update { it.copy(filter = filter) } }
@@ -73,9 +83,20 @@ class SessionsViewModel(
         if (!pollMutex.tryLock()) return
         try {
             while (currentCoroutineContext().isActive && !state.value.revoked) {
+                // Also a change while the screen was stopped: the user turns on ZeroTier in its own app.
+                if (networkChanges.value != seenNetwork) {
+                    seenNetwork = networkChanges.value
+                    // A new VPN can need a few seconds, so the first offline retry comes after 3 s.
+                    offlineFailures = -1
+                    learnAddresses = true
+                }
                 val waitMs = notificationMutex.withLock { fetchDashboard() }
                 if (state.value.revoked) return
-                delay(waitMs)
+                if (learnAddresses && !state.value.offline) {
+                    learnAddresses = false
+                    try { api.hello() } catch (_: AsbError) {}
+                }
+                withTimeoutOrNull(waitMs) { networkChanges.first { it != seenNetwork } }
             }
         } finally {
             pollMutex.unlock()
@@ -189,7 +210,7 @@ class SessionsViewModel(
                 showError(cause, dashboardFailure = true)
                 if (cause is AsbError.Offline) {
                     offlineFailures++
-                    when (offlineFailures) { 1 -> 5000L; 2 -> 10000L; else -> 30000L }
+                    when (offlineFailures) { 0 -> 3000L; 1 -> 5000L; 2 -> 10000L; else -> 30000L }
                 } else 5000L
             }
         }

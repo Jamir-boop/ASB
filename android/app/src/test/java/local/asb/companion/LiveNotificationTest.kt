@@ -39,6 +39,9 @@ class LiveNotificationTest {
         assertEquals(30_000L, liveIntervalMs(listOf(row("a", "working", archived = true), row("b")), offline = false))
         assertEquals(30_000L, liveIntervalMs(null, offline = false))
         assertEquals(30_000L, liveIntervalMs(listOf(row("a", "working")), offline = true))
+        // One quick retry after a network change, for a VPN that needs a few seconds.
+        assertEquals(3_000L, liveIntervalMs(null, offline = true, afterNetworkChange = true))
+        assertEquals(5_000L, liveIntervalMs(listOf(row("a", "working")), offline = false, afterNetworkChange = true))
     }
 
     @Test fun offlineTextUsesTheIdleAge() {
