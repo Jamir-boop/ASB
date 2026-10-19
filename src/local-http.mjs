@@ -32,11 +32,13 @@ export function hitRatePercent(hits, misses) {
   return Math.round((Number(hits || 0) / total) * 100);
 }
 
-export async function readJsonBody(request) {
+export async function readJsonBody(request, limit = 64 * 1024) {
   let raw = '';
+  // Decodes a character that two chunks split.
+  request.setEncoding('utf8');
   for await (const chunk of request) {
     raw += chunk;
-    if (raw.length > 64 * 1024) {
+    if (raw.length > limit) {
       const error = new Error('Request body too large');
       error.statusCode = 413;
       throw error;

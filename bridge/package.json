@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "bun src/server.ts",
-    "build": "bun build src/server.ts src/hook.ts --target=bun --minify --outdir=dist",
+    "build": "bun build src/server.ts src/hook.ts src/relay.ts --target=bun --minify --outdir=dist",
     "check": "tsc --noEmit",
     "test": "bun test",
     "test:native": "bun test/native.ts"

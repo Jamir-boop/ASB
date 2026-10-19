@@ -9,7 +9,8 @@ import { configDir } from './platform-paths.mjs';
 export const MAX_APP_SOURCES = 8;
 const PROVIDERS = ['codex', 'claude-desktop-code', 'opencode'];
 const BUILTIN_IDS = ['codex', 'claude-desktop-code', 'opencode'];
-const SOURCE_FIELDS = ['id', 'provider', 'label', 'dataDir', 'launcher', 'enabled', 'projectsDir', 'color', 'showMarker'];
+const SOURCE_FIELDS = ['id', 'provider', 'label', 'dataDir', 'launcher', 'enabled', 'projectsDir', 'remoteClaude', 'color', 'showMarker'];
+const REMOTE_CLAUDE = ['auto', 'bridge', 'native'];
 const SOURCE_COLORS = ['#8296b4', '#b28f80', '#a28caa', '#899e91'];
 const APP_LAUNCHER = /^(?:chatgpt|codex|claude)(?:[-_.][a-z0-9][a-z0-9._-]*)?(?:\.exe)?$/i;
 const invalid = (message) => Object.assign(new Error(message), { statusCode: 400 });
@@ -124,6 +125,10 @@ export class AppSourceRegistry {
       throw invalid('Invalid app launcher.');
     }
     if (source.projectsDir !== undefined && source.provider !== 'claude-desktop-code') throw invalid('Only Claude sources have a transcript folder.');
+    if (source.remoteClaude !== undefined && source.provider !== 'claude-desktop-code') throw invalid('Only Claude sources have a remote Claude setting.');
+    if (source.remoteClaude !== undefined && !REMOTE_CLAUDE.includes(source.remoteClaude)) {
+      throw invalid('Remote Claude sessions must be Automatic, Through ASB, or Claude Remote Control only.');
+    }
     const color = source.color === undefined ? stored ? defaultSourceColor(source.id) : undefined : validateSourceColor(source.color);
     return { ...source, label: source.label.trim(), dataDir, launcher,
       ...(color === undefined ? {} : { color }),
@@ -225,6 +230,10 @@ export class AppSourceRegistry {
       if (!next.builtin && !next.launcher && (!existing || next.enabled)) throw invalid('Additional app profiles need their own installed app launcher.');
       if (next.provider === 'claude-desktop-code' && next.projectsDir === undefined) {
         next.projectsDir = existing?.projectsDir || path.join(this.homeDir, '.claude', 'projects');
+      }
+      // An edit that does not know the setting keeps it.
+      if (next.provider === 'claude-desktop-code' && next.remoteClaude === undefined && existing?.remoteClaude !== undefined) {
+        next.remoteClaude = existing.remoteClaude;
       }
       const name = sourceName(next);
       if (this.sources.some((item) => item.id !== next.id && (sourceName(item) === name || item.id === name))) {

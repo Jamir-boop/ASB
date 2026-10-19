@@ -34,6 +34,7 @@ function readPalette(palettePath) {
 export function createAsbServer({
   markUnreadThread = null, markReadThread = null, setUnreadSettings = null, pinThread = null, discardThread = null, drawerThread = null, muteThread = null,
   listSources = null, updateSource = null, removeSource = null, sourceToken = '', phoneGateway = null, machineGroup = null, serviceMode = false, onStop = null,
+  machineRelay = null, readSources = async () => [],
   appVersion = '', rootDir = '', sourcesPath = '', readSourcesRevision = async () => null,
   palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, now = Date.now, ...snapshotOptions
 } = {}) {
@@ -63,8 +64,8 @@ export function createAsbServer({
     palette = value;
     return true;
   });
-  const readBody = async (request) => {
-    try { return await readJsonBody(request); }
+  const readBody = async (request, limit) => {
+    try { return await readJsonBody(request, limit); }
     catch (error) { if (error instanceof SyntaxError) error.statusCode = 400; throw error; }
   };
   const { dashboardForRequest, loadSharedDashboard, invalidateDashboard, performanceSnapshot,
@@ -90,15 +91,16 @@ export function createAsbServer({
     const phoneRevoke = phoneGateway && url.pathname.match(/^\/api\/phone\/devices\/([a-f0-9]{12})\/revoke$/);
     const phoneActionRoute = phoneGateway && (['/api/phone/settings', '/api/phone/pairing'].includes(url.pathname) || Boolean(phoneRevoke));
     const groupRoute = machineGroup && url.pathname.match(/^\/api\/group(?:\/(invite|join|remove|leave))?$/);
+    const relayRoute = machineRelay && url.pathname.match(/^\/api\/relay\/(homes|remote-peers|send)$/)?.[1];
     const eventRoute = url.pathname === '/api/events';
     const paletteRoute = url.pathname === '/api/palette';
     const engineStopRoute = Boolean(onStop) && url.pathname === '/api/engine/stop';
     const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute
       || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute
-      || Boolean(groupRoute?.[1]);
+      || Boolean(groupRoute?.[1]) || relayRoute === 'send';
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
     const readApiRoute = url.pathname === '/api/dashboard' || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute
-      || Boolean(groupRoute && !groupRoute[1]);
+      || Boolean(groupRoute && !groupRoute[1]) || ['homes', 'remote-peers'].includes(relayRoute);
     const readRoute = readApiRoute || staticRoutes.includes(url.pathname);
     if (!readRoute && !actionRoute) {
       sendJson(response, 404, { error: 'Route is not available in ASB.' });
@@ -242,6 +244,26 @@ export function createAsbServer({
         else if ([400, 409, 502].includes(error.statusCode)) {
           sendJson(response, error.statusCode, { error: error.message, ...(error.suggestion ? { suggestion: error.suggestion } : {}) });
         } else sendJson(response, error.statusCode === 413 ? 413 : 500, { error: 'Cannot update the ASB machine group.' });
+      }
+      return;
+    }
+    if (relayRoute) {
+      response.setHeader('Cache-Control', 'no-store');
+      // Only the engine's relay process holds the token.
+      if (!expectedSourceToken.length || !sourceTokenAllowed(request)) {
+        sendJson(response, 403, { error: 'Use the relay routes from the ASB message relay.' });
+        return;
+      }
+      try {
+        if (relayRoute === 'homes') sendJson(response, 200, await machineRelay.homes(await readSources()));
+        else if (relayRoute === 'remote-peers') sendJson(response, 200, machineRelay.remotePeers());
+        else {
+          const result = await machineRelay.send(await readBody(request, 2 * 1024 * 1024));
+          sendJson(response, result.status, result.body);
+        }
+      } catch (error) {
+        if (error instanceof SyntaxError || error.statusCode === 400) sendJson(response, 400, { error: 'Invalid relay request.' });
+        else sendJson(response, error.statusCode === 413 ? 413 : 500, { error: 'Cannot answer the relay request.' });
       }
       return;
     }

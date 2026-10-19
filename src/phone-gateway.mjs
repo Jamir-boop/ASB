@@ -110,13 +110,13 @@ export function acceptsGzip(header) {
   return (weights.get('gzip') ?? weights.get('*') ?? 0) > 0;
 }
 
-function readBody(request) {
+function readBody(request, limit = 64 * 1024) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
     request.on('data', (chunk) => {
       size += chunk.length;
-      if (size > 64 * 1024) {
+      if (size > limit) {
         chunks.length = 0;
         reject(Object.assign(new Error('Request body too large.'), { statusCode: 413 }));
       } else chunks.push(chunk);
@@ -364,7 +364,7 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
 
   // The member routes of the machine group; only `join` takes a certificate that is not a member's.
   async function handlePeer(request, response, group, route, reject) {
-    const method = ['join', 'leave'].includes(route) ? 'POST' : 'GET';
+    const method = ['join', 'leave', 'deliver'].includes(route) ? 'POST' : 'GET';
     if (request.method !== method) { response.setHeader('allow', method); reject(405, 'Method not allowed.'); return; }
     const raw = request.socket.getPeerCertificate(true)?.raw;
     const caller = raw ? hash(raw) : '';
@@ -372,7 +372,8 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     if (caller && route !== 'join' && peer.removedFingerprint(caller)) { request.resume(); sendJson(response, 410, { error: 'This machine was removed from the group.' }); return; }
     if (!caller || (route !== 'join' && !peer.memberFingerprint(caller))) { reject(401, 'This machine is not in the group.'); return; }
     try {
-      const body = method === 'POST' ? await readBody(request) : null;
+      // A relayed message can be 1 MiB of text (plan 9.7).
+      const body = method === 'POST' ? await readBody(request, route === 'deliver' ? 2 * 1024 * 1024 : 64 * 1024) : null;
       if (response.destroyed || group !== listeners) return;
       let value;
       try { value = body && JSON.parse(body.toString('utf8')); } catch {}
@@ -385,7 +386,9 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
       } else if (route === 'leave') {
         if (!fields(value, [])) { reject(400, 'Invalid leave request.'); return; }
         result = await peer.leave(caller);
-      } else if (route === 'sessions') {
+      } else if (route === 'peers') result = await peer.peers();
+      else if (route === 'deliver') result = await peer.deliver(value, caller);
+      else if (route === 'sessions') {
         const answer = await peer.sessions(request.headers['if-none-match']);
         if (response.destroyed) return;
         response.setHeader('vary', 'Accept-Encoding');
@@ -423,7 +426,7 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     try { url = new URL(request.url, 'https://asb'); }
     catch { reject(400, 'Invalid request URL.'); return; }
     pairRoute = url.pathname === '/phone/v1/pair';
-    const peerRoute = peer && url.pathname.match(/^\/peer\/v1\/(join|hello|group|sessions|leave)$/);
+    const peerRoute = peer && url.pathname.match(/^\/peer\/v1\/(join|hello|group|sessions|leave|peers|deliver)$/);
     if (peerRoute) { await handlePeer(request, response, group, peerRoute[1], reject); return; }
     const match = url.pathname.match(/^\/phone\/v1\/threads\/([^/]{1,512})\/(open|mark-read|mark-unread|pin|unpin|move-pin|discard-result|keep-result|drawer-in|drawer-out)$/);
     const hello = url.pathname === '/phone/v1/hello';

@@ -269,7 +269,8 @@ gatewayTest('the route allowlist blocks other APIs and checks methods before bea
     assert.equal(response.json.error, 'Route is not available.');
   }
   for (const route of ['/api/sources', '/api/phone', '/api/phone/settings', '/api/palette',
-    '/api/agent/status', '/api/agent/ui', '/phone/v1/agent/status', '/phone/v1/agent/ui', '/api/engine/stop', '/phone/v1/engine/stop']) {
+    '/api/agent/status', '/api/agent/ui', '/phone/v1/agent/status', '/phone/v1/agent/ui', '/api/engine/stop', '/phone/v1/engine/stop',
+    '/api/relay/homes', '/api/relay/remote-peers', '/api/relay/send', '/phone/v1/relay/send']) {
     for (const method of ['GET', 'POST']) {
       const response = await request(route, { method, token, ...(method === 'POST' ? { body: {} } : {}) });
       assert.equal(response.status, 404, `${method} ${route}`);
@@ -800,7 +801,7 @@ async function peerFixture(t, options = {}) {
     hostName: 'debian', log: (line) => logs.push(line),
     server: () => ({ dashboardForRequest: async () => group.merge(structuredClone(exportBoard)) }) });
   const address = options.address || '127.0.0.2';
-  fx = await fixture(t, { enabled: false, gateway: { peer: group.peer, onPhonePaired: group.onPhonePaired, onPhoneRevoked: group.onPhoneRevoked,
+  fx = await fixture(t, { enabled: false, gateway: { peer: { ...group.peer, ...options.relay }, onPhonePaired: group.onPhonePaired, onPhoneRevoked: group.onPhoneRevoked,
     listAddresses: () => [{ address, interface: 'lo', kind: 'lan' }] } });
   await fx.gateway.updateSettings({ enabled: true, bindAddresses: [address], port: fx.port });
   await group.start();
@@ -892,6 +893,27 @@ gatewayTest('a removed certificate gets 410 on the member routes, and 410 does n
   assert.equal((await peer('/peer/v1/hello', { as: stranger })).status, 401);
   const again = await peer('/peer/v1/join', { method: 'POST', as: joiner, body: joinBody(await code(), 'laptop') });
   assert.deepEqual([again.status, again.json.error], [409, 'This machine was removed. Reset its identity and join again.']);
+});
+
+gatewayTest('the relay member routes need a member certificate, check methods, and take up to 2 MiB for deliver', async (t) => {
+  const calls = [];
+  const relay = { peers: async () => ({ status: 200, body: { peers: [] } }),
+    deliver: async (value, fingerprint) => { calls.push([value, fingerprint]); return { status: 403, body: { error: 'The sender machine does not match.' } }; } };
+  const { peer, joiner, stranger, joinBody, code } = await peerFixture(t, { address: '127.0.0.4', relay });
+  assert.equal((await peer('/peer/v1/peers', { as: stranger })).status, 401);
+  assert.equal((await peer('/peer/v1/deliver', { method: 'POST', as: stranger, body: {} })).status, 401);
+  assert.equal((await peer('/peer/v1/join', { method: 'POST', as: joiner, body: joinBody(await code()) })).status, 200);
+  const listed = await peer('/peer/v1/peers', { as: joiner });
+  assert.deepEqual([listed.status, listed.json, listed.headers['cache-control']], [200, { peers: [] }, 'no-store']);
+  assert.equal((await peer('/peer/v1/peers', { method: 'POST', as: joiner, body: {} })).status, 405);
+  assert.equal((await peer('/peer/v1/deliver', { as: joiner })).status, 405);
+  // A body above 64 KiB passes on deliver; the relay gets the caller's certificate fingerprint.
+  const large = { text: 'x'.repeat(1_500_000) };
+  const reply = await peer('/peer/v1/deliver', { method: 'POST', as: joiner, body: large });
+  assert.deepEqual([reply.status, reply.json], [403, { error: 'The sender machine does not match.' }]);
+  assert.deepEqual(calls, [[large, joiner.fingerprint]]);
+  assert.equal((await peer('/peer/v1/deliver', { method: 'POST', as: joiner, body: { text: 'x'.repeat(2 * 1024 * 1024) } })).status, 413);
+  assert.equal(calls.length, 1);
 });
 
 gatewayTest('a non-member certificate counts toward the throttle on peer routes', async (t) => {

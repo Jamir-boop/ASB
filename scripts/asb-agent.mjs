@@ -8,7 +8,7 @@ import { storeIdentity } from '../src/app-sources.mjs';
 import { processStart, readLiveClaudeRegistry } from '../src/claude-registry.mjs';
 import { readServiceRuntime, requestInstance } from './asb-instance.mjs';
 
-const editable = ['provider', 'label', 'dataDir', 'launcher', 'enabled', 'projectsDir', 'color', 'showMarker'];
+const editable = ['provider', 'label', 'dataDir', 'launcher', 'enabled', 'projectsDir', 'remoteClaude', 'color', 'showMarker'];
 const revision = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
 const failure = (code, message, details = {}) => Object.assign(new Error(message), { code, ...details });
@@ -245,6 +245,7 @@ async function run(args, rememberRuntime) {
     if (!current) throw failure('source_not_found', 'This app source is not registered.');
     next = { ...fields(current), ...input };
     if (next.provider !== 'claude-desktop-code' && !Object.hasOwn(input, 'projectsDir')) delete next.projectsDir;
+    if (next.provider !== 'claude-desktop-code' && !Object.hasOwn(input, 'remoteClaude')) delete next.remoteClaude;
     unchanged = suppliedEqual(current, input);
   } else unchanged = !current;
   let savedReport = report;

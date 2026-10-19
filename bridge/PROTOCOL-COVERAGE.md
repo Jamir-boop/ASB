@@ -49,6 +49,12 @@ Receipt statuses:
 
 A socket write and a receipt are both separate from a model reply.
 
+### ASB relay proxy rows
+
+The ASB message relay (`src/relay.ts`, Linux) writes proxy rows for sessions on other machines of an ASB machine group. A proxy row is a normal registry row with `entrypoint: "asb-relay"`, `cwd: ""`, `peerFeatures: []`, and the PID of a `/usr/bin/cat` placeholder that exits with the relay. Claude Code 2.1.303 does not check a dead PID or a stale `procStart`, so the relay removes its rows itself (at stop, and stale ones at start). The registry schema also reads the optional `bridgeSessionId` (Claude Remote Control). `findPeer` and `list_sessions` skip proxy rows; `peers()` and `findPeerProcess` keep them, so a Codex task can receive from a reverse row and send receipts to it.
+
+Relay paths: a frame that a verified local session writes to a proxy socket goes through the engine to the member that runs the target. A `user` frame keeps `msg_id`, the text without its envelope, the sender mode, and the hop chain. A `peer_message_status` receipt keeps `orig_msg_id`. Other control frames are dropped. When the member is not reachable or refuses, the sender gets `expired` with `status_detail: "refused"` and a reason from the proxy row. On the target machine the relay writes the frame to the one live local session with the target ID (never to a proxy row) from the reverse row of the sender, with `from-name` the reverse row name and `from-session` the sender ID. The target replies to the reverse row. The reverse row stays for 30 minutes after the last delivery while the sender is listed, and for 120 s while it is not listed yet. Test: `relay`.
+
 ## Parity
 
 ### Discovery

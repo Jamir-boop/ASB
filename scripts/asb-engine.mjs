@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { createSwitchboardServer, switchboardPort } from '../src/switchboard.mjs';
 import { createMachineGroup } from '../src/machine-group.mjs';
+import { createRelaySupervisor } from '../src/machine-relay.mjs';
 import { createPhoneGateway } from '../src/phone-gateway.mjs';
 import { createSoundPlayer } from '../src/asb-sounds.mjs';
 import { configDir, runtimeDir, stateDir } from '../src/platform-paths.mjs';
@@ -50,12 +51,14 @@ export async function runEngine({ env = process.env, platform = process.platform
   const asbVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
   // Decision B: the group reads the gateway and the server lazily, so it is made first.
   const group = createMachineGroup({ gateway: () => gateway, server: () => server, asbVersion,
-    onChange: () => server.invalidateDashboard('peer-sessions', { hard: false }) });
-  const gateway = createPhoneGateway({ localPort: port, asbVersion, peer: group.peer,
+    onChange: () => { server.invalidateDashboard('peer-sessions', { hard: false }); relay.check(); } });
+  const relay = createRelaySupervisor({ group, port, sourceToken, env, platform });
+  const gateway = createPhoneGateway({ localPort: port, asbVersion,
+    peer: { ...group.peer, peers: () => relay.peerPeers(), deliver: (value, fingerprint) => relay.peerDeliver(value, fingerprint) },
     onPhonePaired: group.onPhonePaired, onPhoneRevoked: group.onPhoneRevoked });
   let machineId = '';
   // Windows has no board, so it never plays sounds (phase 1 rule).
-  const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, machineGroup: group, serviceMode: true,
+  const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, machineGroup: group, machineRelay: relay, serviceMode: true,
     playSound: platform === 'win32' ? undefined : createSoundPlayer(),
     machineIdentity: () => ({ machineId, machineName: group.selfName() }),
     onStop: () => shutdown('the stop request') });
@@ -78,8 +81,13 @@ export async function runEngine({ env = process.env, platform = process.platform
           const closed = new Promise((resolve) => server.close(resolve));
           server.closeAllConnections();
           try {
-            step = 'machine links stop';
-            await group.stop();
+            try {
+              step = 'relay stop';
+              await relay.stop();
+            } finally {
+              step = 'machine links stop';
+              await group.stop();
+            }
           } finally {
             step = 'phone access stop';
             try { await gateway.stop(); } finally {
@@ -113,6 +121,7 @@ export async function runEngine({ env = process.env, platform = process.platform
     if (stopping) return;
     try { await group.start(); } catch (error) { console.error(`Cannot start the ASB machine group: ${error.message}`); }
     if (stopping) return;
+    relay.start().catch(() => console.error('ASB cannot start the message relay.'));
     runtimeRecord = await publishInstanceRuntime(prepared, { schema: 1, pid: process.pid, port, sourceToken });
     if (!stopping && shouldStartTray(env, platform)) {
       tray = spawnProcess(env.ASB_PYTHON || '/usr/bin/python3', [fileURLToPath(new URL('./asb-tray.py', import.meta.url))], {

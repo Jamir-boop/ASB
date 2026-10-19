@@ -62,7 +62,7 @@ server.registerTool('session_start', { description: 'Bind the native SessionStar
 
 server.registerTool('list_sessions', { description: 'List the live local agents, most recently started first. Pick one by sessionId: names and working directories repeat across agents, and status tells you idle or busy right now, not how long an agent has sat idle. Start time separates them.',
   inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false } }, async (_args, extra) =>
-  result(peers(configDir).filter(peer => peer.sessionId !== callerThread(extra._meta))
+  result(peers(configDir).filter(peer => peer.sessionId !== callerThread(extra._meta) && peer.entrypoint !== 'asb-relay')
     .map(peer => ({ sessionId: peer.sessionId, name: peer.name,
       agent: peer.entrypoint === 'codex-asb-bridge' ? 'codex' : 'claude',
       cwd: peer.cwd, status: peer.status,

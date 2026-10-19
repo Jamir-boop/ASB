@@ -727,6 +727,7 @@ export function createSwitchboardServer(options = {}) {
     rootDir: ROOT_DIR,
     sourcesPath: registry.configPath,
     readSourcesRevision: async () => appSourcesRevision(await registry.read()),
+    readSources: async () => registeredLoad ? registry.read() : [],
     palettePath: path.join(stateDir(), 'palette.json'),
     dashboardWatchPaths: registeredLoad ? sourceWatchPaths : [],
     dashboardSourceChanged: (source, hint) => {

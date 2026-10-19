@@ -302,6 +302,8 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
       return group ? mergePeerRows(dashboard, peerStates(), group.self, nowMs) : dashboard;
     },
     peerStates,
+    // The member TLS of this machine, for the message relay (plan 16.6).
+    tls,
     status: () => serialize(currentStatus),
 
     invite: () => serialize(async () => {

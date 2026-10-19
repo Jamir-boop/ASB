@@ -1,0 +1,357 @@
+// The ASB message relay (plan 9.6, 9.7, 16). The engine starts it while the machine group has another member. It keeps
+// proxy rows in the local Claude config homes for sessions on other machines, sends the frames written to them through
+// the engine, and writes the frames that other machines deliver. Only short error lines without message data are logged.
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { mkdirSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
+import { z } from 'zod';
+import { hopChain, inbox, maxLineLength, ownedJson, peerAddress, peers, privateDirectory, processStart, senderMode, sendFrames,
+  SendRefused, serializeFrame, userFrame, uuid, type Frame, type Peer } from './claude';
+
+const homeSchema = z.object({ path: z.string().refine(isAbsolute), remoteClaude: z.enum(['auto', 'bridge', 'native']), hasRemoteControl: z.boolean() });
+const homesSchema = z.object({ machineId: z.string(), machineName: z.string(), homes: z.array(homeSchema) });
+const remoteSchema = z.object({ machineId: z.string().regex(/^[a-f0-9]{16}$/), machineName: z.string().min(1), online: z.boolean(),
+  sessionId: uuid, name: z.string(), agent: z.enum(['claude', 'codex']), status: z.string(), remoteControl: z.boolean() });
+const statuses = z.enum(['held', 'denied', 'expired', 'delivered', 'refused', 'dropped']);
+// The body of POST /deliver (plan 9.7); src/machine-relay.mjs checks the same rules in the engine.
+const deliverSchema = z.strictObject({
+  targetSessionId: uuid,
+  sender: z.strictObject({ machineId: z.string().regex(/^[a-f0-9]{16}$/), sessionId: uuid,
+    name: z.string().min(1).max(128).regex(/^[^\x00-\x1f\x7f-\x9f]*$/), mode: z.enum(['prompting', 'bypass', 'unknown']), agent: z.enum(['claude', 'codex']) }),
+  message: z.strictObject({ msgId: uuid, text: z.string().min(1).max(maxLineLength), hopChain: z.array(z.string().regex(/^[a-f0-9]{24}$/)).max(32) }).optional(),
+  control: z.strictObject({ action: z.literal('peer_message_status'), orig_msg_id: uuid, status: statuses, status_detail: z.string().max(64).optional(),
+    reason: z.string().max(1000).optional(), drop_reason: z.string().max(64).optional(), dropped_msg_ids: z.array(uuid).max(256).optional() }).optional(),
+}).refine(value => (value.message === undefined) !== (value.control === undefined));
+const replySchema = z.union([z.strictObject({ ok: z.literal(true), outcome: z.literal('socket-written') }),
+  z.strictObject({ ok: z.literal(false), reason: z.enum(['machine-offline', 'target-unavailable', 'too-large', 'rate-limited', 'refused']) })]);
+export type Home = z.infer<typeof homeSchema>;
+export type RemotePeer = z.infer<typeof remoteSchema>;
+// `peer` is the data of the last delivery that needed the row, for a sender that is not listed yet.
+export type ReverseNeed = { home: string; machineId: string; sessionId: string; atMs: number; peer: RemotePeer };
+type Reply = z.infer<typeof replySchema>;
+
+const REVERSE_MS = 30 * 60_000;
+const UNLISTED_MS = 120_000;
+const ROWS_PER_HOME = 32;
+const ENVELOPE = /^<cross-session-message\s[^>]*>\n([\s\S]*)\n<\/cross-session-message>$/;
+const REASONS: Record<Exclude<Reply, { ok: true }>['reason'], (machine: string) => string> = {
+  'machine-offline': machine => `${machine} is not reachable.`,
+  'target-unavailable': machine => `The session on ${machine} is not available.`,
+  'too-large': () => 'The message is too large.',
+  'rate-limited': () => 'Too many messages to this session just now.',
+  refused: machine => `${machine} refused the message.`,
+};
+const rowKey = (home: string, machineId: string, sessionId: string) => `${home}\0${machineId}\0${sessionId}`;
+const agentOf = (peer: Peer) => peer.entrypoint === 'codex-asb-bridge' ? 'codex' as const : 'claude' as const;
+
+// Plan 9.6: which remote sessions get a proxy row in each local Claude config home.
+export function proxyPlan(homes: Home[], remote: RemotePeer[], reverse: ReverseNeed[], nowMs = Date.now()): Map<string, RemotePeer[]> {
+  const plan = new Map<string, RemotePeer[]>();
+  for (const home of homes) {
+    // A listed sender keeps its reverse row 30 minutes; a sender that is not listed yet keeps it 120 s.
+    const reverseRows = reverse.filter(need => need.home === home.path).flatMap(need => {
+      const listed = remote.find(peer => peer.machineId === need.machineId && peer.sessionId === need.sessionId);
+      return nowMs - need.atMs < (listed ? REVERSE_MS : UNLISTED_MS) ? [listed ?? need.peer] : [];
+    });
+    const needed = new Set(reverseRows.map(peer => rowKey(home.path, peer.machineId, peer.sessionId)));
+    const isNeeded = (peer: RemotePeer) => needed.has(rowKey(home.path, peer.machineId, peer.sessionId));
+    // Claude Remote Control already lists a remote Claude session in Claude when both sides have it.
+    const wanted = (peer: RemotePeer) => peer.agent === 'codex' || home.remoteClaude === 'bridge'
+      || (home.remoteClaude === 'auto' && !(peer.remoteControl && home.hasRemoteControl));
+    plan.set(home.path, [...reverseRows, ...remote.filter(peer => !isNeeded(peer) && wanted(peer))].slice(0, ROWS_PER_HOME));
+  }
+  return plan;
+}
+
+// The machine name keeps a proxy row apart from the local sessions in Claude's ListAgents.
+export function proxyName(machineName: string, name: string, taken: Iterable<string>) {
+  const clean = (text: string) => text.replace(/-+/g, '-').replace(/^-+|-+$/g, '');
+  const base = clean(`${machineName}-${name}`.toLowerCase().replace(/[^a-z0-9_-]/g, '-'));
+  const used = new Set(taken);
+  for (let number = 1; ; number++) {
+    const suffix = number === 1 ? '' : `-${number}`;
+    const candidate = clean(base.slice(0, 64 - suffix.length)) + suffix;
+    if (!used.has(candidate)) return candidate;
+  }
+}
+
+function livePeers(home: string) {
+  try { return peers(home); } catch { return []; }
+}
+
+function alive(pid: number) {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error instanceof Error && 'code' in error && error.code === 'EPERM'; }
+}
+
+// Rows of an earlier relay whose placeholder is gone. A reused PID has another start time.
+async function removeStaleRows(home: string) {
+  const directory = join(home, 'sessions');
+  let files: string[];
+  try { files = readdirSync(directory); } catch { return; }
+  for (const file of files.filter(name => /^[1-9][0-9]*\.json$/.test(name))) {
+    try {
+      const row = z.object({ pid: z.number().int().positive(), entrypoint: z.literal('asb-relay'), procStart: z.string() })
+        .parse(ownedJson(join(directory, file), 256 * 1024));
+      if (file !== `${row.pid}.json` || (alive(row.pid) && await processStart(row.pid).catch(() => null) === row.procStart)) continue;
+      unlinkSync(join(directory, file));
+    } catch { /* Not a proxy row, or already gone. */ }
+  }
+}
+
+type Row = { key: string; home: string; peer: RemotePeer; path: string; address: string; socket: { close(): Promise<void> };
+  child: Bun.Subprocess<'pipe', 'ignore', 'ignore'>; record: { pid: number; procStart: string; name: string; status: string;
+    messagingSocketPath: string; statusUpdatedAt: number } & Record<string, unknown> };
+
+async function main() {
+  const engine = process.env.ASB_ENGINE_URL ?? '';
+  const sourceToken = process.env.ASB_SOURCE_TOKEN ?? '';
+  const relayDir = process.env.ASB_RELAY_DIR ?? '';
+  const enginePort = Number(/^http:\/\/127\.0\.0\.1:([1-9][0-9]{0,4})$/.exec(engine)?.[1] ?? 0);
+  if (!enginePort || enginePort > 65535 || !/^[a-f0-9]{64}$/.test(sourceToken) || !isAbsolute(relayDir)) {
+    console.error('ASB relay: ASB_ENGINE_URL, ASB_SOURCE_TOKEN, and ASB_RELAY_DIR are not valid.');
+    process.exit(2);
+  }
+  mkdirSync(relayDir, { recursive: true, mode: 0o700 });
+  const directory = realpathSync(relayDir);
+  privateDirectory(directory);
+  const removeSockets = () => {
+    for (const file of readdirSync(directory)) if (file.endsWith('.sock')) try { unlinkSync(join(directory, file)); } catch { /* Gone. */ }
+  };
+  removeSockets();
+  const log = (line: string) => console.error(line);
+  const call = async (path: string, body?: unknown) => {
+    const response = await fetch(`${engine}${path}`, { method: body === undefined ? 'GET' : 'POST', signal: AbortSignal.timeout(30_000),
+      headers: { 'x-asb-source-token': sourceToken, ...(body === undefined ? {} : { origin: engine, 'content-type': 'application/json' }) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json() as Promise<unknown>;
+  };
+  let self = homesSchema.parse(await call('/api/relay/homes'));
+  for (const home of self.homes) await removeStaleRows(home.path);
+
+  const rows = new Map<string, Row>();
+  const needs = new Map<string, ReverseNeed>();
+  let remote: RemotePeer[] = [];
+  let lastOkAtMs = Date.now();
+  let closing = false;
+  let queue: Promise<unknown> = Promise.resolve();
+  // Row changes run one at a time, so a delivery and the timer never add the same row twice.
+  const serialize = <T>(action: () => Promise<T>) => {
+    const result = queue.catch(() => {}).then(action);
+    queue = result;
+    return result;
+  };
+
+  async function addRow(home: string, peer: RemotePeer) {
+    const sessions = join(home, 'sessions');
+    mkdirSync(sessions, { recursive: true, mode: 0o700 });
+    const real = realpathSync(sessions);
+    privateDirectory(real);
+    const child = Bun.spawn(['/usr/bin/cat'], { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' });
+    let socket: { address: string; close(): Promise<void> } | undefined;
+    try {
+      const procStart = await processStart(child.pid);
+      const messagingSocketPath = join(directory, `${child.pid}.sock`);
+      // The sun_path limit of a Unix socket.
+      if (Buffer.byteLength(messagingSocketPath) > 103) throw new Error('The relay socket path is too long.');
+      let row: Row | undefined;
+      socket = await inbox(directory, frame => {
+        if (row) void forward(row, frame).catch(() => log('ASB relay: cannot forward a frame.'));
+      }, `${child.pid}.sock`);
+      const now = Date.now();
+      const record = { pid: child.pid, sessionId: peer.sessionId, cwd: '', name: proxyName(peer.machineName, peer.name, livePeers(home).map(item => item.name)),
+        startedAt: now, procStart, peerProtocol: 1, kind: 'interactive', entrypoint: 'asb-relay', messagingSocketPath,
+        status: peer.status, statusUpdatedAt: now, peerFeatures: [] };
+      const path = join(real, `${child.pid}.json`);
+      writeFileSync(path, JSON.stringify(record), { flag: 'wx', mode: 0o600 });
+      row = { key: rowKey(home, peer.machineId, peer.sessionId), home, peer, path, address: socket.address, socket, child, record };
+      rows.set(row.key, row);
+      return row;
+    } catch (error) {
+      await socket?.close().catch(() => {});
+      child.stdin.end();
+      child.kill();
+      throw error;
+    }
+  }
+
+  async function removeRow(row: Row) {
+    rows.delete(row.key);
+    try {
+      const current = z.object({ pid: z.number(), procStart: z.string() }).parse(ownedJson(row.path, 256 * 1024));
+      if (current.pid === row.record.pid && current.procStart === row.record.procStart) unlinkSync(row.path);
+    } catch { /* Already gone. */ }
+    await row.socket.close().catch(() => {});
+    try { unlinkSync(row.record.messagingSocketPath); } catch { /* Already gone. */ }
+    row.child.stdin.end();
+    row.child.kill();
+  }
+
+  function setStatus(row: Row, status: string) {
+    row.record = { ...row.record, status, statusUpdatedAt: Date.now() };
+    const temporary = `${row.path}.${randomUUID()}.tmp`;
+    writeFileSync(temporary, JSON.stringify(row.record), { flag: 'wx', mode: 0o600 });
+    renameSync(temporary, row.path);
+  }
+
+  async function apply(plan: Map<string, RemotePeer[]>) {
+    if (closing) return;
+    const wanted = new Map<string, { home: string; peer: RemotePeer }>();
+    for (const [home, list] of plan) for (const peer of list) wanted.set(rowKey(home, peer.machineId, peer.sessionId), { home, peer });
+    for (const row of [...rows.values()]) if (!wanted.has(row.key)) await removeRow(row);
+    for (const [key, { home, peer }] of wanted) {
+      const row = rows.get(key);
+      try {
+        if (!row) await addRow(home, peer);
+        else {
+          row.peer = peer;
+          if (row.record.status !== peer.status) setStatus(row, peer.status);
+        }
+      } catch { log('ASB relay: cannot write a proxy row.'); }
+    }
+  }
+
+  // Plan 16.3: the sender is a live local session that writes from its own socket.
+  async function findSender(home: string, from: string) {
+    for (const peer of livePeers(home)) {
+      if (peer.entrypoint === 'asb-relay' || !peer.procStart || peerAddress(peer.messagingSocketPath) !== from) continue;
+      if (await processStart(peer.pid).catch(() => null) === peer.procStart) return peer;
+    }
+    return undefined;
+  }
+
+  async function forward(row: Row, frame: Frame) {
+    if (frame.type === 'control' && frame.action !== 'peer_message_status') return;
+    const sender = await findSender(row.home, frame.from);
+    if (!sender) return;
+    const target = { machineId: row.peer.machineId, targetSessionId: row.peer.sessionId };
+    const from = (mode: string) => ({ machineId: self.machineId, sessionId: sender.sessionId, agent: agentOf(sender),
+      name: sender.name.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').slice(0, 128) || 'Claude Code',
+      mode: ['prompting', 'bypass'].includes(mode) ? mode : 'unknown' });
+    if (frame.type === 'control') {
+      if (frame.action !== 'peer_message_status') return;
+      const { action, orig_msg_id, status, status_detail, reason, drop_reason, dropped_msg_ids } = frame;
+      const control = Object.fromEntries(Object.entries({ action, orig_msg_id, status, status_detail: status_detail?.slice(0, 64),
+        reason: reason?.slice(0, 1000), drop_reason: drop_reason?.slice(0, 64), dropped_msg_ids }).filter(([, value]) => value !== undefined));
+      await call('/api/relay/send', { ...target, sender: from('unknown'), control }).catch(() => {});
+      return;
+    }
+    try { serializeFrame(frame); } catch { return; }
+    const content = frame.message.content;
+    const text = (ENVELOPE.exec(content)?.[1] ?? content).replaceAll('<\\/cross-session-message', '</cross-session-message');
+    let reason: string | undefined;
+    try {
+      const reply = replySchema.parse(await call('/api/relay/send', { ...target, sender: from(senderMode(content) ?? 'unknown'),
+        message: { msgId: frame.msg_id, text, hopChain: hopChain(content) } }));
+      if (!reply.ok) reason = REASONS[reply.reason](row.peer.machineName);
+    } catch { reason = REASONS['machine-offline'](row.peer.machineName); }
+    if (reason) {
+      await sendFrames(row.home, sender, [{ msgV: 1, type: 'control', msg_id: randomUUID(), from: row.address, session_id: sender.sessionId,
+        action: 'peer_message_status', orig_msg_id: frame.msg_id, status: 'expired', status_detail: 'refused', reason }]);
+    }
+  }
+
+  // Plan 16.5: a frame from another machine for a local session. Proxy rows never receive one, so relays cannot loop.
+  async function deliver(value: unknown): Promise<Reply | undefined> {
+    const parsed = deliverSchema.safeParse(value);
+    if (!parsed.success) return undefined;
+    const { targetSessionId, sender, message, control } = parsed.data;
+    const found = new Map<number, { home: string; target: Peer }>();
+    for (const home of self.homes) for (const peer of livePeers(home.path)) {
+      if (peer.sessionId === targetSessionId && peer.entrypoint !== 'asb-relay' && !found.has(peer.pid)) found.set(peer.pid, { home: home.path, target: peer });
+    }
+    const match = found.size === 1 ? [...found.values()][0] : undefined;
+    if (!match) return { ok: false, reason: 'target-unavailable' };
+    const { home, target } = match;
+    let reverse: Row;
+    try {
+      reverse = await serialize(async () => {
+        const key = rowKey(home, sender.machineId, sender.sessionId);
+        const listed = remote.find(peer => peer.machineId === sender.machineId && peer.sessionId === sender.sessionId);
+        const machineName = remote.find(peer => peer.machineId === sender.machineId)?.machineName ?? sender.machineId.slice(0, 8);
+        const peer = listed ?? { machineId: sender.machineId, machineName, online: true, sessionId: sender.sessionId,
+          name: sender.name, agent: sender.agent, status: 'idle', remoteControl: false };
+        needs.set(key, { home, machineId: sender.machineId, sessionId: sender.sessionId, atMs: Date.now(), peer });
+        const existing = rows.get(key);
+        if (existing) return existing;
+        if (closing) throw new Error('The relay is stopping.');
+        return addRow(home, peer);
+      });
+    } catch { return { ok: false, reason: 'target-unavailable' }; }
+    let frame: unknown;
+    if (message) {
+      frame = userFrame(target, reverse.address, reverse.record.name, sender.sessionId, message.msgId, message.text, sender.mode, null, message.hopChain);
+      try { serializeFrame(frame); } catch { return { ok: false, reason: 'too-large' }; }
+    } else frame = { msgV: 1, type: 'control', msg_id: randomUUID(), from: reverse.address, session_id: target.sessionId, ...control };
+    try { await sendFrames(home, target, [frame]); }
+    catch (error) { return { ok: false, reason: error instanceof SendRefused ? 'rate-limited' : 'target-unavailable' }; }
+    return { ok: true, outcome: 'socket-written' };
+  }
+
+  function listPeers() {
+    const seen = new Map<string, { sessionId: string; name: string; agent: 'claude' | 'codex'; status: string; remoteControl: boolean }>();
+    for (const home of self.homes) for (const peer of livePeers(home.path)) {
+      if (peer.entrypoint === 'asb-relay' || seen.has(peer.sessionId)) continue;
+      seen.set(peer.sessionId, { sessionId: peer.sessionId, name: peer.name, agent: agentOf(peer), status: peer.status, remoteControl: Boolean(peer.bridgeSessionId) });
+    }
+    return [...seen.values()];
+  }
+
+  const token = randomBytes(32).toString('hex');
+  const expected = Buffer.from(`Bearer ${token}`);
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, maxRequestBodySize: 2 * 1024 * 1024 + 1024, async fetch(request) {
+    const given = Buffer.from(request.headers.get('authorization') ?? '');
+    if (given.length !== expected.length || !timingSafeEqual(given, expected) || request.headers.get('host') !== `127.0.0.1:${server.port}`) {
+      return Response.json({ error: 'Unauthorized.' }, { status: 401 });
+    }
+    const { pathname } = new URL(request.url);
+    if (pathname === '/peers' && request.method === 'GET') return Response.json({ peers: listPeers() });
+    if (pathname === '/deliver' && request.method === 'POST') {
+      const reply = await deliver(await request.json().catch(() => undefined));
+      return reply ? Response.json(reply) : Response.json({ error: 'Invalid relay request.' }, { status: 400 });
+    }
+    return Response.json({ error: 'Not found.' }, { status: 404 });
+  } });
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  async function tick() {
+    try {
+      const [homes, listed] = await Promise.all([call('/api/relay/homes'), call('/api/relay/remote-peers')]);
+      self = homesSchema.parse(homes);
+      remote = z.object({ peers: z.array(remoteSchema) }).parse(listed).peers;
+      lastOkAtMs = Date.now();
+    } catch {
+      // Plan 16.2: the rows stay for 30 s while the engine does not answer.
+      if (Date.now() - lastOkAtMs >= 30_000) await serialize(async () => { for (const row of [...rows.values()]) await removeRow(row); });
+      return;
+    }
+    for (const [key, need] of needs) if (Date.now() - need.atMs >= REVERSE_MS) needs.delete(key);
+    await serialize(() => apply(proxyPlan(self.homes, remote, [...needs.values()])));
+  }
+  const loop = async () => {
+    await tick().catch(() => log('ASB relay: cannot update the proxy rows.'));
+    if (!closing) timer = setTimeout(loop, 5000);
+  };
+
+  const shutdown = async () => {
+    if (closing) return;
+    closing = true;
+    clearTimeout(timer);
+    await serialize(async () => { for (const row of [...rows.values()]) await removeRow(row); }).catch(() => {});
+    removeSockets();
+    server.stop(true);
+    process.exit(0);
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+  // The engine keeps stdin open; its end means the engine is gone.
+  process.stdin.on('end', shutdown);
+  process.stdin.resume();
+  console.log(JSON.stringify({ port: server.port, token }));
+  void loop();
+}
+
+if (import.meta.main) {
+  main().catch(() => { console.error('ASB relay: cannot start.'); process.exit(1); });
+}

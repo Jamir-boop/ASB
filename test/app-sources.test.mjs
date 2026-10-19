@@ -384,6 +384,33 @@ test('enabled sources load independently and Claude uses its registered profile 
   assert.equal((await registry.report(dashboard)).sources.at(-1).status, 'warning');
 });
 
+test('Claude sources keep an optional remote Claude setting that only Claude sources accept', async (t) => {
+  const { homeDir, registry, source } = await fixture(t);
+  const claude = (await registry.read()).find((item) => item.id === 'claude-desktop-code');
+  const { builtin, ...edit } = claude;
+  const before = appSourcesRevision(await registry.read());
+  for (const remoteClaude of ['', 'Auto', 'remote', null, true, 1]) {
+    await assert.rejects(registry.update({ ...edit, remoteClaude }), { statusCode: 400,
+      message: 'Remote Claude sessions must be Automatic, Through ASB, or Claude Remote Control only.' });
+  }
+  const codexDir = path.join(homeDir, 'codex-extra');
+  await mkdir(codexDir);
+  await assert.rejects(registry.update(source(codexDir, { remoteClaude: 'auto' })), { statusCode: 400 });
+  const saved = await registry.update({ ...edit, remoteClaude: 'native' });
+  assert.notEqual(saved, before);
+  assert.equal((await registry.read()).find((item) => item.id === claude.id).remoteClaude, 'native');
+  // An edit without the field keeps it.
+  await registry.update({ ...edit, label: 'Claude edited' });
+  assert.equal((await registry.read()).find((item) => item.id === claude.id).remoteClaude, 'native');
+  await registry.update({ ...edit, remoteClaude: 'bridge' });
+  const stored = JSON.parse(await readFile(registry.configPath, 'utf8'));
+  assert.equal(stored.version, 1);
+  assert.equal(stored.sources.find((item) => item.id === claude.id).remoteClaude, 'bridge');
+  const report = await registry.report({ providers: [], threads: [] });
+  assert.equal(report.sources.find((item) => item.id === claude.id).remoteClaude, 'bridge');
+  assert.equal(Object.hasOwn(report.sources.find((item) => item.id === 'codex'), 'remoteClaude'), false);
+});
+
 test('registered Codex stores select their own database, names, globals, and lifecycle without source writes', async (t) => {
   const { homeDir, registry, source } = await fixture(t);
   const roots = [path.join(homeDir, '.codex'), path.join(homeDir, 'second')];

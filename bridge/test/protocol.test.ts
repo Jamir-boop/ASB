@@ -10,7 +10,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { CancelledNotificationSchema, ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { Bridge } from '../src/bridge';
-import { findPeer, frameSchema, hopChain, maxLineLength, peers, sendFrames, sessionName, userFrame } from '../src/claude';
+import { findPeer, frameSchema, hopChain, inbox, maxLineLength, peerAddress, peers, sendFrames, sessionName, socketPath, userFrame } from '../src/claude';
 import { receiver } from './desktop-fixture';
 import { appServer } from './app-server-fixture';
 
@@ -558,6 +558,19 @@ test('list_sessions names the agent kind and start time and leaves out the calli
     const own = (await list(randomUUID())).find(row => row.sessionId === f.desktop.threadId);
     expect(own).toMatchObject({ agent: 'codex', name: f.bridge.status().name });
     expect(Date.parse(own?.startedAt ?? '')).toBeGreaterThan(1700000000000);
+    // An ASB relay proxy row stands for a session on another machine: peers() keeps it, the Codex tools skip it.
+    const placeholder = Bun.spawn(['/usr/bin/cat'], { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' });
+    const proxy = await inbox(join(f.root, 's'), () => {}, `${placeholder.pid}.sock`);
+    try {
+      expect(proxy.address).toBe(peerAddress(join(f.root, 's', `${placeholder.pid}.sock`)));
+      const proxyId = randomUUID();
+      writeFileSync(join(f.configDir, 'sessions', `${placeholder.pid}.json`), JSON.stringify({ pid: placeholder.pid, sessionId: proxyId,
+        messagingSocketPath: socketPath(proxy.address), cwd: '', name: 'other-machine-task', peerProtocol: 1, entrypoint: 'asb-relay',
+        bridgeSessionId: 'session_remote' }));
+      expect(peers(f.configDir).find(peer => peer.sessionId === proxyId)?.bridgeSessionId).toBe('session_remote');
+      expect(() => findPeer(f.configDir, proxyId)).toThrow('unavailable or ambiguous');
+      expect((await list(randomUUID())).map(row => row.sessionId)).not.toContain(proxyId);
+    } finally { await proxy.close(); placeholder.kill(); }
   } finally { await client.close(); await f.close(); }
 });
 

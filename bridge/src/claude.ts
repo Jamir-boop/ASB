@@ -21,7 +21,7 @@ const registry = z.object({
   name: z.string().default('Claude Code'), cwd: z.string(), status: z.string().default('unknown'),
   peerProtocol: z.literal(1), procStart: z.string().optional(),
   entrypoint: z.string().optional(), startedAt: z.number().int().nonnegative().optional(),
-  peerFeatures: z.array(z.string()).default([]),
+  peerFeatures: z.array(z.string()).default([]), bridgeSessionId: z.string().optional(),
 });
 export type Peer = z.infer<typeof registry>;
 export const modeSchema = z.enum(['prompting', 'bypass']);
@@ -94,7 +94,8 @@ export function peers(configDir: string): Peer[] {
 }
 
 export function findPeer(configDir: string, sessionId: string): Peer {
-  const matches = peers(configDir).filter(peer => peer.sessionId === sessionId);
+  // ASB relay proxy rows stand for sessions on other machines; the Codex tools do not send to them.
+  const matches = peers(configDir).filter(peer => peer.sessionId === sessionId && peer.entrypoint !== 'asb-relay');
   const peer = matches[0];
   if (!peer || matches.length !== 1) throw new Error('Claude session is unavailable or ambiguous; list sessions again');
   return peer;
@@ -199,9 +200,9 @@ export async function register(configDir: string, sessionId: string, address: st
   };
 }
 
-export async function inbox(directory: string, receive: (frame: Frame) => void) {
+export async function inbox(directory: string, receive: (frame: Frame) => void, fileName = `${process.pid}.sock`) {
   privateDirectory(directory);
-  const path = join(directory, `${process.pid}.sock`);
+  const path = join(directory, fileName);
   const sockets = new Set<net.Socket>();
   const server = net.createServer(socket => {
     sockets.add(socket);
