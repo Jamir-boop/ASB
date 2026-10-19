@@ -733,6 +733,19 @@ test('an extra profile without a launcher retains its rows but cannot use the de
   await assert.rejects(registry.update({ ...edit, launcher, enabled: true }), /existing executable/);
 });
 
+test('a saved file that already has eight sources stays valid and does not gain the OpenCode source', async (t) => {
+  const { registry, homeDir, source } = await fixture(t);
+  const defaults = (await registry.read()).slice(0, 2);
+  const extra = Array.from({ length: 6 }, (_, index) => ({ ...source(path.join(homeDir, `extra-${index}`), { id: `codex-extra-${index}` }), builtin: false }));
+  await mkdir(path.dirname(registry.configPath), { recursive: true });
+  await writeFile(registry.configPath, JSON.stringify({ version: 1, sources: [...defaults, ...extra] }));
+  const full = new AppSourceRegistry({ homeDir, env: {}, platform: 'linux', discoverPersonal: false });
+  const sources = await full.read();
+  assert.equal(sources.length, MAX_APP_SOURCES);
+  assert.equal(sources.some((item) => item.id === 'opencode' || item.provider === 'opencode'), false);
+  assert.equal(full.warning, '');
+});
+
 test('OpenCode is the third default source, old settings gain it in memory, and only the default can change its own fields', async (t) => {
   const { registry, homeDir, source, launcher } = await fixture(t);
   const defaults = await registry.read();
