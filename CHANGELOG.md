@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Made the list in the native row panel flat on the board background, with thin neutral lines around it and between its rows.
 - Added an **App and session ID** row with a copy button to the native row panel, and gave the panel the same background as the board.
 - Added Ctrl number keys to the native window: hold Ctrl to show the numbers 1–9 on the first nine whole cards, and press Ctrl+1 to Ctrl+9 to open that card.
 - Fixed a Claude session that waits for a permission prompt showing Working; it now shows Waiting.

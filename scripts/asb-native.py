@@ -2501,17 +2501,23 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-row-panel .asb-panel-move {{ min-height: 28px; padding: 0 10px; font-size: 12px; font-weight: normal; }}
 {base} .asb-row-panel row .subtitle {{ color: alpha(@window_fg_color, .72); opacity: 1; }}
 {base} .asb-row-panel .asb-panel-error {{ font-size: 11px; }}
+{base} .asb-row-panel list.boxed-list {{ background-color: @window_bg_color; box-shadow: 0 0 0 1px @borders; }}
+{base} .asb-row-panel list.boxed-list > row {{ border-bottom-color: @borders; }}
 """
         if colors:
             colors = validate_theme(colors)
             self.add_css_class("asb-custom")
             scope = base + ".asb-custom"
             number_fill, number_edge, number_pressed = number_badge_colors(colors)
+            # The neutral popover edge, not the divider color, which can be near the background.
+            panel_line = edge_color(colors['background'], colors['text'], .36, (colors['background'],))
             css += f"""
 {scope}, {scope} headerbar, {scope} popover contents {{ background: {colors['background']}; color: {colors['text']}; }}
 {scope} popover > contents {{ border: 1px solid {edge_color(colors['background'], colors['text'], .36, (colors['background'],))}; }}
 {scope} popover.asb-row-panel > contents {{ background: {colors['background']}; border-color: {edge_color(colors['background'], colors['accent'], .7, (colors['background'],))}; }}
 {scope} .asb-row-panel .asb-panel-unread {{ color: {colors['text']}; }}
+{scope} .asb-row-panel list.boxed-list {{ background-color: {colors['background']}; box-shadow: 0 0 0 1px {panel_line}; }}
+{scope} .asb-row-panel list.boxed-list > row {{ border-bottom-color: {panel_line}; }}
 {scope} .asb-row-panel row .subtitle {{ color: {colors['muted']}; opacity: 1; }}
 {scope} .asb-state, {scope} .dim-label {{ color: {colors['muted']}; opacity: 1; }}
 {scope} .asb-working, {scope} .asb-waiting {{ color: {colors['accent']}; }}

@@ -1415,7 +1415,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(button.get_icon_name(), "edit-copy-symbolic")
         window.open_errors[row["id"]] = "The server did not answer."
         window.sync_row_panel(); self.drain(.1)
-        def panel_background():
+        def render_panel():
             snapshot = asb.Gtk.Snapshot()
             asb.Gtk.WidgetPaintable.new(panel).snapshot(snapshot, panel.get_width(), panel.get_height())
             renderer = asb.Gsk.CairoRenderer()
@@ -1425,9 +1425,14 @@ class WidgetCheck(unittest.TestCase):
             downloader.set_format(asb.Gdk.MemoryFormat.R8G8B8A8)
             data, stride = downloader.download_bytes()
             renderer.unrealize()
-            found, bounds = panel.get_child().compute_bounds(panel)
-            x, y = int(bounds.origin.x - 6), int(bounds.origin.y + 20)  # Inside the 12px padding.
-            return "#" + "".join(f"{value:02x}" for value in data.get_data()[y * stride + x * 4:y * stride + x * 4 + 3])
+            data = data.get_data()
+            return lambda x, y: "#" + "".join(f"{value:02x}" for value in data[int(y) * stride + int(x) * 4:int(y) * stride + int(x) * 4 + 3])
+        def near(first, second, delta=1):
+            return all(abs(int(first[i:i + 2], 16) - int(second[i:i + 2], 16)) <= delta for i in (1, 3, 5))
+        def bounds_of(widget):
+            found, bounds = widget.compute_bounds(panel)
+            return bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height
+        listing, unread = copy_row.get_parent(), panel.asb_switches["unread"]
         def text_on(label, background, dimmed=1):
             color = label.get_color()
             # Libadwaita colors can have channels past 1; the screen shows them clamped.
@@ -1437,8 +1442,34 @@ class WidgetCheck(unittest.TestCase):
             with self.subTest(custom=bool(custom)):
                 window.set_palette(custom); self.drain(.2)
                 board = custom["background"] if custom else window.native_colors()["background"]
-                painted = panel_background()
-                self.assertTrue(all(abs(int(painted[i:i + 2], 16) - int(board[i:i + 2], 16)) <= 1 for i in (1, 3, 5)), (painted, board))
+                window.set_focus(panel.asb_open); self.drain(.3)
+                pixel = render_panel()
+                found, bounds = panel.get_child().compute_bounds(panel)
+                painted = pixel(bounds.origin.x - 6, bounds.origin.y + 20)  # Inside the 12px padding.
+                self.assertTrue(near(painted, board), (painted, board))
+                # The list and its rows are flat on the board, with one 1px neutral ring and 1px separators.
+                line = asb.edge_color(board, custom["text"], .36, (board,)) if custom \
+                    else asb.mix_color(board, window.native_colors()["text"], .15)
+                x, y, width, height = bounds_of(listing)
+                _ux, unread_y, _uw, unread_height = bounds_of(unread)
+                for name, point, expected in (("list", (x + 4, unread_y + unread_height / 2), board),
+                                              ("copy row", (x + 4, bounds_of(copy_row)[1] + 6), board),
+                                              ("ring", (x - 1, y + height / 2), line), ("outside ring", (x - 2, y + height / 2), board),
+                                              ("separator", (x + 20, unread_y + unread_height - 1), line),
+                                              ("above separator", (x + 20, unread_y + unread_height - 3), board)):
+                    self.assertTrue(near(pixel(*point), expected, 2), (name, pixel(*point), expected))
+                # Native hover and press still tint an activatable row, and a focused row keeps its focus ring.
+                copy_y = bounds_of(copy_row)[1] + 6
+                for state in (asb.Gtk.StateFlags.PRELIGHT, asb.Gtk.StateFlags.ACTIVE):
+                    copy_row.set_state_flags(state, False); self.drain(.3)
+                    self.assertFalse(near(render_panel()(x + 4, copy_y), board, 2), state)
+                    copy_row.unset_state_flags(state); self.drain(.3)
+                pinned = panel.asb_switches["pinned"]
+                _px, pinned_y, _pw, pinned_height = bounds_of(pinned)
+                window.set_focus_visible(True)
+                pinned.grab_focus(); self.drain(.3)
+                self.assertTrue(pinned.has_focus())
+                self.assertFalse(near(render_panel()(x, pinned_y + pinned_height / 2), board, 2))  # The ring is on the row edge.
                 # Adwaita dims .dim-label to 55% opacity; custom colors use the muted role at full opacity.
                 for label, dimmed in ((panel.asb_folder, 1 if custom else .55), (panel.asb_title, 1), (panel.asb_state, 1),
                                       (subtitle, 1), (panel.asb_error, 1)):
