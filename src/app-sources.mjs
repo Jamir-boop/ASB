@@ -207,9 +207,10 @@ export class AppSourceRegistry {
       const sources = existing ? this.sources.map((item) => item.id === next.id ? next : item) : [...this.sources, next];
       await this.validateStores(sources);
       await this.save(sources);
+      return appSourcesRevision(sources);
     });
     this.write = action;
-    await action;
+    return action;
   }
 
   async remove(id, expectedRevision) {
@@ -219,10 +220,12 @@ export class AppSourceRegistry {
       const source = this.sources.find((item) => item.id === id);
       if (!source) throw invalid('This app source is not registered.');
       if (source.builtin) throw invalid('Default app sources cannot be removed.');
-      await this.save(this.sources.filter((item) => item.id !== id));
+      const sources = this.sources.filter((item) => item.id !== id);
+      await this.save(sources);
+      return appSourcesRevision(sources);
     });
     this.write = action;
-    await action;
+    return action;
   }
 
   checkRevision(expectedRevision) {

@@ -179,10 +179,12 @@ async function run(args, rememberRuntime) {
   if (!unchanged) savedReport = await api(runtime, parsed.command === 'sources.remove' ? `/api/sources/${parsed.id}/remove` : '/api/sources',
     { method: 'POST', body: parsed.command === 'sources.remove' ? {} : { source: next }, headers: { 'If-Match': `"${report.revision}"` }, timeoutMs: 15_000 });
   if (!revision(savedReport?.revision)) throw failure('invalid_response', 'ASB saved the request but did not return a source revision.');
+  if (!unchanged && !revision(savedReport.savedRevision)) throw failure('invalid_response', 'ASB saved the request but did not return its write revision.');
+  const target = unchanged ? savedReport.revision : savedReport.savedRevision;
   if (!unchanged && Array.isArray(savedReport.sources) && next) source = savedReport.sources.find((item) => next.id ? item.id === next.id : !report.sources.some((old) => old.id === item.id));
-  const verification = await verify(runtime, savedReport.revision, acknowledgedAfter);
+  const verification = await verify(runtime, target, acknowledgedAfter);
   return { ok: verification.saved.status === 'verified' && verification.backend.status === 'verified', command: parsed.command,
-    changed: !unchanged, revision: savedReport.revision, ...(source ? { source } : {}), verification };
+    changed: !unchanged, revision: target, ...(source ? { source } : {}), verification };
 }
 
 function human(result) {

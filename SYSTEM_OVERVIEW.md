@@ -315,8 +315,8 @@ Malformed request URLs return 400 without stopping the server. A malformed sessi
 | App-source route | Contract |
 | --- | --- |
 | `GET /api/sources` | `revision`, registered sources, colors, compatibility profile metadata, chat counts/status, and the eight-source limit. Needs no token. |
-| `POST /api/sources` | `{source: {...}}` with full `provider`, `label`, `dataDir`, `launcher`, and `enabled` fields. Include `id` to edit; omit it to add. Optional `color` uses `#RRGGBB`; optional `showMarker` is boolean. Claude can include `projectsDir`. Needs the header `X-ASB-Source-Token` when a token is set. |
-| `POST /api/sources/<id>/remove` | Empty JSON object; default source removal is rejected. Needs the header `X-ASB-Source-Token` when a token is set. |
+| `POST /api/sources` | `{source: {...}}` with full `provider`, `label`, `dataDir`, `launcher`, and `enabled` fields. Include `id` to edit; omit it to add. Optional `color` uses `#RRGGBB`; optional `showMarker` is boolean. Claude can include `projectsDir`. Needs the header `X-ASB-Source-Token` when a token is set. Returns `changed`, `savedRevision` (the revision of this request's write), and the current `revision`, `sources`, and `maxSources` read after the dashboard scan; another client's save during the scan can make `revision` differ from `savedRevision`. |
+| `POST /api/sources/<id>/remove` | Empty JSON object; default source removal is rejected. Needs the header `X-ASB-Source-Token` when a token is set. Returns the same fields as `POST /api/sources`: `savedRevision` is this removal's write, and `revision` and `sources` are the current settings. |
 | `POST /api/threads/<id>/discard-result` | Empty JSON object; forces a source scan and requires a known Working row. Arms its current task once. |
 | `POST /api/threads/<id>/keep-result` | Empty JSON object; uses the normal cached lookup and clears a known row's Discard arm without a forced scan. |
 | `POST /api/threads/<id>/drawer-in` | Empty JSON object; same access checks as `mark-read`. Puts the row in the drawer. Gives 400 unless the row is unread with no question and no required action. Replies `{ changed, threadId, thread }`. |

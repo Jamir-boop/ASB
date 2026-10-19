@@ -14,7 +14,7 @@ const script = fileURLToPath(new URL('../scripts/asb-agent.mjs', import.meta.url
 const launcher = fileURLToPath(new URL('../scripts/asb', import.meta.url));
 const clientId = '11111111-1111-4111-8111-111111111111';
 
-async function fixture(t, mode = 'desktop') {
+async function fixture(t, mode = 'desktop', { onScan } = {}) {
   const home = await mkdtemp(path.join(os.tmpdir(), 'asb-agent-test-'));
   const env = { HOME: home, XDG_CONFIG_HOME: path.join(home, 'config'), XDG_STATE_HOME: path.join(home, 'state'),
     XDG_RUNTIME_DIR: path.join(home, 'runtime'), XDG_CACHE_HOME: path.join(home, 'cache'), XDG_DATA_HOME: path.join(home, 'data'),
@@ -23,7 +23,10 @@ async function fixture(t, mode = 'desktop') {
   const registry = new AppSourceRegistry({ homeDir: home, env, discoverPersonal: false });
   const server = createSwitchboardServer({ sourceToken: 'a'.repeat(64), sourceRegistry: registry, serviceMode: mode === 'service',
     phoneGateway: {}, pendingStatePath: false, palettePath: false,
-    loadDashboard: async ({ sources }) => ({ providers: sources.map((source) => ({ id: source.id, status: 'ok' })), threads: [] }) });
+    loadDashboard: async ({ sources }) => {
+      await onScan?.(sources);
+      return { providers: sources.map((source) => ({ id: source.id, status: 'ok' })), threads: [] };
+    } });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => {
     server.closeAllConnections();
@@ -68,7 +71,7 @@ async function fixture(t, mode = 'desktop') {
     body: JSON.stringify({ clientId, sourcesRevision: revision, profilesRevision: revision, profilesVisible: true, dirty: false, ...overrides }) });
     assert.equal(response.status, 200);
   };
-  return { home, env, registry, server, runtime, manifest, dataDir, appLauncher, input, posts, command, jsonFile, reportUi };
+  return { home, env, registry, server, port, runtime, manifest, dataDir, appLauncher, input, posts, command, jsonFile, reportUi };
 }
 
 for (const mode of ['desktop', 'service']) test(`agent status authenticates the ${mode} instance and shell dispatch`, async (t) => {
@@ -239,6 +242,60 @@ test('agent reports a revision conflict without overwriting a concurrent edit', 
   assert.equal(reply.result.error.code, 'revision_conflict');
   assert.equal((await f.registry.read()).find((source) => source.id === 'codex').label, 'Concurrent edit');
   assert.equal(f.posts.length, 1);
+});
+
+test('agent verifies its own write revision when another client saves during the dashboard scan', async (t) => {
+  const within = (promise, label) => Promise.race([promise, new Promise((_, reject) => {
+    setTimeout(() => reject(new Error(`Timed out waiting for ${label}.`)), 10_000).unref();
+  })]);
+  const scan = Promise.withResolvers();
+  const scanStarted = Promise.withResolvers();
+  const secondSaved = Promise.withResolvers();
+  const f = await fixture(t, 'desktop', { onScan: async (sources) => {
+    if (sources.find((source) => source.id === 'codex').label !== 'First') return;
+    scanStarted.resolve(sources);
+    await scan.promise;
+  } });
+  const original = f.registry.update.bind(f.registry);
+  f.registry.update = async (source, revision) => {
+    const saved = await original(source, revision).catch((error) => {
+      if (source?.label === 'Second') secondSaved.reject(error);
+      throw error;
+    });
+    if (source?.label === 'Second') secondSaved.resolve();
+    return saved;
+  };
+  t.after(() => scan.resolve());
+  await f.jsonFile({ label: 'First' });
+  const cli = f.command(['sources', 'update', 'codex', '--file', f.input, '--json']);
+  let other;
+  try {
+    const held = await within(scanStarted.promise, 'the CLI save scan');
+    const r1 = appSourcesRevision(held);
+    const { builtin, ...codex } = held.find((source) => source.id === 'codex');
+    other = fetch(`http://127.0.0.1:${f.port}/api/sources`, { method: 'POST', signal: AbortSignal.timeout(10_000), headers: {
+      'X-ASB-Source-Token': f.manifest.sourceToken, origin: `http://127.0.0.1:${f.port}`, 'content-type': 'application/json',
+      'If-Match': `"${r1}"` }, body: JSON.stringify({ source: { ...codex, label: 'Second' } }) });
+    await within(secondSaved.promise, 'the second save');
+    const r2 = appSourcesRevision(await f.registry.read());
+    scan.resolve();
+    const response = await other;
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).savedRevision, r2);
+    const reply = await within(cli, 'the CLI');
+    assert.equal(reply.code, 1);
+    assert.equal(reply.result.ok, false);
+    assert.equal(reply.result.verification.saved.status, 'changed-after-write');
+    assert.equal(reply.result.verification.saved.revision, r2);
+    assert.equal(reply.result.revision, r1);
+    assert.notEqual(r1, r2);
+    const current = await f.registry.read();
+    assert.equal(appSourcesRevision(current), r2);
+    assert.equal(current.find((source) => source.id === 'codex').label, 'Second');
+  } finally {
+    scan.resolve();
+    await within(Promise.allSettled([cli, other]), 'request cleanup').catch(() => {});
+  }
 });
 
 test('agent reports saved/backend evidence separately from current UI reports', async (t) => {

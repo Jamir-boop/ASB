@@ -219,6 +219,7 @@ export function createAsbServer({
         return;
       }
       try {
+        let savedRevision;
         if (actionRoute) {
           const body = await readBody(request);
           if (!body || typeof body !== 'object' || Array.isArray(body)
@@ -232,12 +233,11 @@ export function createAsbServer({
             return;
           }
           const revision = match?.slice(1, -1);
-          if (removeSourceMatch) await removeSource(removeSourceMatch[1], revision);
-          else await updateSource(body.source, revision);
+          savedRevision = removeSourceMatch ? await removeSource(removeSourceMatch[1], revision) : await updateSource(body.source, revision);
           invalidateDashboard('asb-sources');
         }
         const dashboard = await dashboardForRequest({ force: actionRoute });
-        sendJson(response, 200, { ...(actionRoute ? { changed: true } : {}), ...await listSources(dashboard) });
+        sendJson(response, 200, { ...(actionRoute ? { changed: true, savedRevision } : {}), ...await listSources(dashboard) });
       } catch (error) {
         sendJson(response, error.statusCode || 500, { error: error instanceof SyntaxError ? 'Invalid app source action.'
           : [400, 409].includes(error.statusCode) ? error.message : 'Cannot update ASB app sources.' });

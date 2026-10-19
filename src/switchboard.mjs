@@ -661,8 +661,8 @@ export function createSwitchboardServer(options = {}) {
       return dashboard;
     },
     listSources: (dashboard) => registry.report(dashboard),
-    updateSource: async (source, revision) => { await registry.update(source, revision); retainSourceCaches(await registry.read()); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); },
-    removeSource: async (id, revision) => { await registry.remove(id, revision); retainSourceCaches(await registry.read()); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); },
+    updateSource: async (source, revision) => { const saved = await registry.update(source, revision); retainSourceCaches(await registry.read()); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); return saved; },
+    removeSource: async (id, revision) => { const saved = await registry.remove(id, revision); retainSourceCaches(await registry.read()); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); return saved; },
     markUnreadThread: async (thread) => {
       await tracker.markUnread(thread.id);
       tracker.apply(thread);
