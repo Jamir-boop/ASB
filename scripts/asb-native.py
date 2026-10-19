@@ -12,6 +12,7 @@ import sys
 import threading
 import tempfile
 import time
+import uuid
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
@@ -68,6 +69,19 @@ def source_form_body(provider, name, data_dir, launcher, enabled, identity="", p
             raise ValueError("Choose the Show profile dot setting.")
         source["showMarker"] = show_marker
     return {"source": source}
+
+
+def source_revision(value):
+    return value if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) else None
+
+
+def source_edit_values(source):
+    if source is None:
+        return None
+    return tuple(source.get(key, default) for key, default in (
+        ("id", ""), ("provider", "codex"), ("label", ""), ("dataDir", ""), ("launcher", ""),
+        ("projectsDir", ""), ("enabled", True), ("color", SOURCE_COLOR_PRESETS[0][1]),
+        ("showMarker", True), ("builtin", False)))
 
 
 def refresh_interval(dashboard):
@@ -664,17 +678,18 @@ def qr_matrix(uri):
     return code.get_matrix()
 
 
-def request_json(base, route, method="GET", body=None, etag=None):
-    headers = {"Accept": "application/json"}
+def request_json(base, route, method="GET", body=None, etag=None, headers=None):
+    headers = {"Accept": "application/json", **(headers or {})}
     path = route.split("?", 1)[0]
     source_route = path == "/api/sources" or path.startswith("/api/sources/")
     phone_route = path == "/api/phone" or path.startswith("/api/phone/")
     service_route = path == "/api/service"
     palette_route = path == "/api/palette"
+    agent_route = path.startswith("/api/agent/")
     data = None
     if etag and etag[0] and method == "GET" and route.split("?")[0] == "/api/dashboard":
         headers["If-None-Match"] = etag[0]
-    if SOURCE_TOKEN and ((source_route and method == "POST") or phone_route or service_route or palette_route):
+    if SOURCE_TOKEN and ((source_route and method == "POST") or phone_route or service_route or palette_route or agent_route):
         headers["X-ASB-Source-Token"] = SOURCE_TOKEN
     if method == "POST":
         headers.update({"Origin": base, "Content-Type": "application/json"})
@@ -686,7 +701,7 @@ def request_json(base, route, method="GET", body=None, etag=None):
         if not isinstance(result, dict):
             raise ValueError("The ASB response is not an object.")
         success = "opened" if route.endswith("/open") else "marked" if route.endswith("/mark-unread") else "changed"
-        if method == "POST" and not phone_route and not service_route and not palette_route and not result.get(success):
+        if method == "POST" and not (phone_route or service_route or palette_route or agent_route) and not result.get(success):
             raise ValueError("The session action did not succeed.")
         if etag is not None:
             etag[0] = response.headers.get("ETag")
@@ -695,7 +710,7 @@ def request_json(base, route, method="GET", body=None, etag=None):
         if isinstance(error, HTTPError) and error.code == 304 and "If-None-Match" in headers:
             error.close()
             return None
-        if source_route or phone_route or service_route or palette_route:
+        if source_route or phone_route or service_route or palette_route or agent_route:
             detail = ""
             if isinstance(error, HTTPError):
                 try:
@@ -705,7 +720,7 @@ def request_json(base, route, method="GET", body=None, etag=None):
                 except (HTTPException, OSError, ValueError):
                     pass
             subject = "phone access" if phone_route else "the ASB service" if service_route \
-                else "the phone palette" if palette_route else "app sources"
+                else "the phone palette" if palette_route else "the native UI status" if agent_route else "app sources"
             raise RuntimeError(detail or f"Cannot load or change {subject}. Check that ASB is running, then try again.") from error
         action = "open this session" if route.endswith("/open") else "change the unread setting" if route == "/api/settings/unread" \
             else "change this session" if method == "POST" else "load sessions"
@@ -715,10 +730,10 @@ def request_json(base, route, method="GET", body=None, etag=None):
         raise RuntimeError(f"Cannot {action}. {recovery}") from error
 
 
-def request_async(base, route, callback, dispatch, method="GET", body=None, etag=None):
+def request_async(base, route, callback, dispatch, method="GET", body=None, etag=None, headers=None):
     def work():
         try:
-            result, error = request_json(base, route, method, body, etag), None
+            result, error = request_json(base, route, method, body, etag, headers), None
         except RuntimeError as failure:
             result, error = None, str(failure)
         dispatch(callback, result, error)
@@ -1116,6 +1131,8 @@ class AppSourcesEditor(Gtk.Box):
         self.preferences = preferences
         self.owner, self.base = owner, owner.base
         self.closed = self.loading = self.choosing = self.loaded = self.editing = False
+        self.active = self.refresh_queued = self.rendering = self.setting_form = self.conflict = False
+        self.revision = self.edit_revision = self.observed_revision = self.form_baseline = self.baseline_source = None
         self.sources, self.max_sources, self.editing_id = [], 8, ""
         self.preset_markers, self.table_markers = [], []
         self.cancellable = Gio.Cancellable()
@@ -1197,6 +1214,10 @@ class AppSourcesEditor(Gtk.Box):
         self.form.append(self.show_marker)
         self.enabled = Gtk.CheckButton(label="Enabled", active=True)
         self.form.append(self.enabled)
+        for entry in (self.name, self.data_dir, self.launcher, self.projects_dir):
+            entry.connect("changed", self.form_changed)
+        for check in (self.enabled, self.show_marker):
+            check.connect("toggled", self.form_changed)
         help_text = label("Codex: choose CODEX_HOME, such as ~/.codex-personal. Claude: choose the app profile folder with "
                           "claude-code-sessions or Cache. Added sources need an installed app launcher. "
                           "Only default sources can leave Open with empty to use the default app.", "caption")
@@ -1218,10 +1239,40 @@ class AppSourcesEditor(Gtk.Box):
             actions.insert(button, -1)
         self.save_button.add_css_class("suggested-action")
         self.update_controls()
-        self.reload_sources()
 
     def color_changed(self, *_args):
         self.source_color_hex.set_label(self.owner.hex_color(self.source_color.get_rgba()))
+        self.form_changed()
+
+    def form_values(self):
+        return (self.provider.get_selected(), self.name.get_text(), self.data_dir.get_text(),
+                self.launcher.get_text(), self.projects_dir.get_text(), self.enabled.get_active(),
+                self.owner.hex_color(self.source_color.get_rgba()), self.show_marker.get_active())
+
+    def is_dirty(self):
+        baseline = getattr(self, "form_baseline", None)
+        return bool(self.editing and baseline is not None and self.form_values() != baseline)
+
+    def form_changed(self, *_args):
+        if not getattr(self, "setting_form", False):
+            getattr(self.owner, "report_ui", lambda: None)()
+
+    def set_active(self, active):
+        active = bool(active and not self.closed and not self.owner.closed)
+        previous, self.active = getattr(self, "active", False), active
+        if active and not previous:
+            self.reload_sources()
+
+    def observe_revision(self, revision):
+        if revision and revision != getattr(self, "observed_revision", None):
+            self.observed_revision = revision
+            self.refresh_queued = True
+            self.flush_refresh()
+
+    def flush_refresh(self):
+        if getattr(self, "refresh_queued", False) and getattr(self, "active", False) and not (self.loading or self.choosing):
+            self.refresh_queued = False
+            self.reload_sources()
 
     def update_marker_colors(self):
         for marker in self.preset_markers + self.table_markers:
@@ -1242,9 +1293,10 @@ class AppSourcesEditor(Gtk.Box):
 
     def update_controls(self):
         busy = self.loading or self.choosing
+        form_busy = self.choosing or self.loading and (not self.loaded or getattr(self, "saving", False))
         current = next((source for source in self.sources if source["id"] == self.editing_id), {})
-        self.table.set_sensitive(self.loaded and not busy)
-        self.form.set_sensitive(self.editing and not busy)
+        self.table.set_sensitive(self.loaded and not form_busy)
+        self.form.set_sensitive(self.editing and not form_busy)
         self.provider.set_sensitive(not current.get("builtin"))
         self.add_button.set_sensitive(self.loaded and not busy and len(self.sources) < self.max_sources)
         self.save_button.set_sensitive(self.loaded and not busy and self.editing)
@@ -1256,9 +1308,19 @@ class AppSourcesEditor(Gtk.Box):
     def provider_changed(self, *_args):
         for widget in self.transcript_widgets:
             widget.set_visible(self.provider.get_selected() == 1)
+        self.form_changed()
+
+    def set_source_status(self, source):
+        status = source.get("status", "").capitalize()
+        if source.get("message"):
+            status += ": " + source["message"]
+        if source.get("builtin"):
+            status += ". Default source: you can edit or disable it. You cannot remove it."
+        self.source_status.set_label(status.strip(". "))
 
     def set_form(self, source=None):
         source = source or {}
+        self.setting_form = True
         self.editing, self.editing_id = True, source.get("id", "")
         self.form_title.set_label("Edit app source" if self.editing_id else "Add app source")
         self.source_id.set_label("ID: " + (self.editing_id or "Assigned when saved"))
@@ -1277,92 +1339,142 @@ class AppSourcesEditor(Gtk.Box):
             accessible.update_property([Gtk.AccessibleProperty.LABEL], ["Profile color for " + source.get("label", "new app source")])
         self.color_changed()
         self.launcher.set_placeholder_text("Default app link handler" if source.get("builtin") else "Installed app launcher required")
-        status = source.get("status", "").capitalize()
-        if source.get("message"):
-            status += ": " + source["message"]
-        if source.get("builtin"):
-            status += ". Default source: you can edit or disable it. You cannot remove it."
-        self.source_status.set_label(status.strip(". "))
+        self.set_source_status(source)
         self.provider_changed()
+        self.form_baseline = self.form_values()
+        self.baseline_source = dict(source) if self.editing_id else None
+        self.edit_revision = getattr(self, "revision", None)
+        self.conflict = self.setting_form = False
         self.update_controls()
+        self.form_changed()
 
     def selected_source(self, _table, row):
-        if row and not (self.loading or self.choosing or self.closed):
+        if row and not (self.choosing or self.closed or getattr(self, "saving", False) or getattr(self, "rendering", False)):
             self.set_form(row.asb_source)
 
-    def render_sources(self, preferred=""):
-        self.table_markers = []
+    def render_sources(self, preferred="", preserve_form=False):
+        focus = self.preferences.get_focus()
+        current = next((source for source in self.sources if source["id"] == preferred), None)
+        keep_form = False
+        if preserve_form and self.editing:
+            unchanged = source_edit_values(current) == source_edit_values(getattr(self, "baseline_source", None))
+            keep_form = not self.editing_id or unchanged or self.is_dirty() or self.choosing
+            if not self.editing_id or unchanged:
+                self.edit_revision, self.conflict = self.revision, False
+            elif keep_form:
+                self.conflict = True
+        self.rendering = True
+        existing = {}
         child = self.table.get_first_child()
         while child:
             following = child.get_next_sibling()
-            self.table.remove(child)
+            if any(source["id"] == child.asb_source["id"] for source in self.sources):
+                existing[child.asb_source["id"]] = child
+            else:
+                self.table.remove(child)
             child = following
+        self.table_markers = []
         selected = None
-        for source in self.sources:
-            provider = "Codex" if source["provider"] == "codex" else "Claude Desktop Code"
-            marker = SourceMarker(self.owner, source.get("color", ""))
-            marker.set_valign(Gtk.Align.CENTER)
-            self.table_markers.append(marker)
-            name_cell = Gtk.Box(spacing=6)
-            name_cell.append(marker)
-            name = label(source["label"] + "\n" + provider, "caption")
-            name.set_ellipsize(Pango.EllipsizeMode.END)
-            name.set_max_width_chars(1)
-            name.set_hexpand(True)
-            name_cell.append(name)
-            name_cell.set_tooltip_text(source["label"] + "\n" + provider + "\nProfile color: " + marker.configured_color)
-            status = f"{source.get('sessionCount', 0)} chats · {source.get('status', 'unknown').capitalize()}"
-            if source.get("message"):
-                status += "\n" + source["message"]
-            row = Gtk.ListBoxRow()
-            row.asb_source = source
-            row.set_child(self.table_line(["Yes" if source["enabled"] else "No", name_cell,
-                                           source["dataDir"], source["launcher"] or "Default app", status]))
-            row.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION],
-                                [f"{source['label']}, {provider}, {status}", "Profile color: " + marker.configured_color])
-            self.table.append(row)
-            if selected is None or source["id"] == preferred:
+        for index, source in enumerate(self.sources):
+            row = existing.get(source["id"])
+            if row is None or row.asb_source != source:
+                provider = "Codex" if source["provider"] == "codex" else "Claude Desktop Code"
+                marker = SourceMarker(self.owner, source.get("color", ""))
+                marker.set_valign(Gtk.Align.CENTER)
+                name_cell = Gtk.Box(spacing=6)
+                name_cell.append(marker)
+                name = label(source["label"] + "\n" + provider, "caption")
+                name.set_ellipsize(Pango.EllipsizeMode.END)
+                name.set_max_width_chars(1)
+                name.set_hexpand(True)
+                name_cell.append(name)
+                name_cell.set_tooltip_text(source["label"] + "\n" + provider + "\nProfile color: " + marker.configured_color)
+                status = f"{source.get('sessionCount', 0)} chats · {source.get('status', 'unknown').capitalize()}"
+                if source.get("message"):
+                    status += "\n" + source["message"]
+                row = row or Gtk.ListBoxRow()
+                row.asb_source, row.asb_marker = source, marker
+                row.set_child(self.table_line(["Yes" if source["enabled"] else "No", name_cell,
+                                               source["dataDir"], source["launcher"] or "Default app", status]))
+                row.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION],
+                                    [f"{source['label']}, {provider}, {status}", "Profile color: " + marker.configured_color])
+            self.table_markers.append(row.asb_marker)
+            if self.table.get_row_at_index(index) is not row:
+                if row.get_parent() is self.table:
+                    self.table.remove(row)
+                self.table.insert(row, index)
+            if source["id"] == preferred or selected is None and not keep_form:
                 selected = row
-        if selected:
-            self.table.select_row(selected)
-            self.set_form(selected.asb_source)
-        else:
-            self.editing, self.editing_id = False, ""
-            self.form_title.set_label("Add an app source to show its chats")
-            self.source_id.set_label("")
-            self.source_status.set_label("")
+        self.table.select_row(selected)
+        self.rendering = False
+        if focus is not None and focus in existing.values() and focus.get_parent() is self.table \
+                and self.preferences.get_focus() is not focus:
+            focus.grab_focus()
+        if keep_form and current:
+            self.set_source_status(current)
+        elif not keep_form:
+            if selected:
+                self.set_form(selected.asb_source)
+            else:
+                self.editing, self.editing_id = False, ""
+                self.form_baseline = self.baseline_source = self.edit_revision = None
+                self.conflict = False
+                self.form_title.set_label("Add an app source to show its chats")
+                self.source_id.set_label("")
+                self.source_status.set_label("")
 
     def request_sources(self, route="/api/sources", method="GET", body=None):
-        if self.closed or self.owner.closed or self.loading or self.choosing:
+        if self.closed or self.owner.closed:
             return
+        if self.loading or self.choosing:
+            if method == "GET":
+                self.refresh_queued = True
+            return
+        self.refresh_queued = False
         preferred = self.editing_id
         self.loading = True
+        self.saving = method == "POST"
         self.message.set_label("Loading app sources…" if method == "GET" else "Saving app sources…")
         self.update_controls()
         def finished(result, error):
             if self.closed or self.owner.closed:
                 return False
             self.loading = False
+            self.saving = False
             if not error and (not isinstance(result, dict) or not isinstance(result.get("sources"), list)):
                 error = "The app source list is not valid. Refresh the list, then try again."
             if error:
+                if method == "GET":
+                    self.observed_revision = None
+                    self.refresh_queued = False
                 self.message.set_label(error)
             else:
                 self.sources, self.loaded = result["sources"], True
+                self.revision = source_revision(result.get("revision"))
                 self.max_sources = result.get("maxSources", self.max_sources)
                 identity = preferred
                 if method == "POST" and body and not body["source"].get("id"):
                     identity = next((source["id"] for source in self.sources
                                      if source["provider"] == body["source"]["provider"]
                                      and source["dataDir"] == os.path.normpath(body["source"]["dataDir"])), "")
-                self.render_sources(identity)
+                if method == "GET":
+                    self.render_sources(self.editing_id, preserve_form=True)
+                else:
+                    self.render_sources(identity)
                 feedback = "Saved. " if method == "POST" and body else "Removed. " if method == "POST" else ""
-                self.message.set_label(f"{feedback}{len(self.sources)} of {self.max_sources} app sources")
+                self.message.set_label("This app source changed outside this form. Your edits are kept. Select Cancel to load the saved source, then edit and save again."
+                                       if getattr(self, "conflict", False) else f"{feedback}{len(self.sources)} of {self.max_sources} app sources")
                 if method == "POST":
                     self.owner.refresh(True)
             self.update_controls()
+            self.form_changed()
+            self.flush_refresh()
             return False
-        request_async(self.base, route, finished, GLib.idle_add, method, body)
+        revision = getattr(self, "edit_revision", None) or getattr(self, "revision", None)
+        if method == "POST" and revision:
+            request_async(self.base, route, finished, GLib.idle_add, method, body, headers={"If-Match": '"' + revision + '"'})
+        else:
+            request_async(self.base, route, finished, GLib.idle_add, method, body)
 
     def reload_sources(self, *_args):
         self.request_sources()
@@ -1382,9 +1494,13 @@ class AppSourcesEditor(Gtk.Box):
         else:
             self.editing = False
             self.update_controls()
+            self.form_changed()
 
     def save_source(self, *_args):
         if self.closed or self.loading or self.choosing or not self.loaded or not self.editing:
+            return
+        if getattr(self, "conflict", False):
+            self.message.set_label("This app source changed outside this form. Your edits are kept. Select Cancel to load the saved source, then edit and save again.")
             return
         try:
             body = source_form_body(SOURCE_PROVIDERS[self.provider.get_selected()], self.name.get_text(),
@@ -1397,6 +1513,9 @@ class AppSourcesEditor(Gtk.Box):
         self.request_sources("/api/sources", "POST", body)
 
     def remove_source(self, *_args):
+        if getattr(self, "conflict", False):
+            self.message.set_label("This app source changed outside this form. Select Cancel to load the saved source before removal.")
+            return
         current = next((source for source in self.sources if source["id"] == self.editing_id), {})
         if current and not current.get("builtin"):
             self.request_sources("/api/sources/" + quote(self.editing_id, safe="") + "/remove", "POST", {})
@@ -1431,6 +1550,8 @@ class AppSourcesEditor(Gtk.Box):
             except ValueError as error:
                 self.message.set_label(str(error))
             self.update_controls()
+            self.form_changed()
+            self.flush_refresh()
         if folder:
             dialog.select_folder(self.preferences, cancellable, finished)
         else:
@@ -1440,6 +1561,7 @@ class AppSourcesEditor(Gtk.Box):
         self.cancellable.cancel()
         self.choosing = False
         self.update_controls()
+        self.flush_refresh()
 
     def close(self):
         self.closed = True
@@ -1780,12 +1902,16 @@ class PreferencesWindow(Adw.Window):
         if not self.closed and self.stack.get_visible_child_name() == "profiles" and self.profiles_editor is None:
             self.profiles_editor = AppSourcesEditor(self.owner, self)
             self.profiles.append(self.profiles_editor)
+        profiles_visible = not self.closed and self.get_visible() and self.get_mapped() and self.stack.get_visible_child_name() == "profiles"
+        if self.profiles_editor:
+            self.profiles_editor.set_active(profiles_visible)
         phone_visible = not self.closed and self.get_visible() and self.get_mapped() and self.stack.get_visible_child_name() == "phone"
         if phone_visible and self.phone_editor is None:
             self.phone_editor = PhoneEditor(self.owner, self)
             self.phone.append(self.phone_editor)
         if self.phone_editor:
             self.phone_editor.set_active(phone_visible)
+        self.owner.report_ui()
 
     def window_key(self, _controller, key, _code, modifiers):
         if key == Gdk.KEY_Escape and not modifiers & SHORTCUT_MASK:
@@ -1801,6 +1927,8 @@ class PreferencesWindow(Adw.Window):
                 window.close()
 
     def on_close(self, *_args):
+        if self.profiles_editor:
+            self.profiles_editor.set_active(False)
         self.cancel_dialogs()
         self.set_visible(False)
         return True
@@ -1843,6 +1971,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.closed = self.loading = self.refresh_queued = False
         self.refresh_force_queued = False
         self.dashboard_etag = None
+        self.sources_revision = None
+        self.ui_client_id = str(uuid.uuid4())
+        self.ui_report_last, self.ui_report_at, self.ui_report_sending = None, 0, False
         self.refresh_interval_ms = 5000
         self.clock_interval = self.clock_timer = None
         self.notice_timer, self.notice_generation, self.provider_notice = None, 0, ""
@@ -2493,8 +2624,29 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def tick(self):
         if not self.closed:
+            self.report_ui()
             self.refresh()
         return not self.closed
+
+    def report_ui(self):
+        if self.closed or not SOURCE_TOKEN or not getattr(self, "ui_client_id", None):
+            return
+        preferences = self.preferences_window
+        editor = preferences.profiles_editor if preferences else None
+        visible = bool(preferences and not preferences.closed and preferences.get_visible() and preferences.get_mapped()
+                       and preferences.stack.get_visible_child_name() == "profiles")
+        payload = {"clientId": self.ui_client_id, "sourcesRevision": self.sources_revision,
+                   "profilesRevision": editor.revision if editor and editor.loaded else None,
+                   "profilesVisible": visible, "dirty": editor.is_dirty() if editor else False}
+        if self.ui_report_sending or payload == self.ui_report_last and time.monotonic() - self.ui_report_at < 25:
+            return
+        self.ui_report_last, self.ui_report_at, self.ui_report_sending = payload, time.monotonic(), True
+        def finished(_result, _error):
+            self.ui_report_sending = False
+            if not self.closed:
+                self.report_ui()
+            return False
+        request_async(self.base, "/api/agent/ui", finished, GLib.idle_add, "POST", payload)
 
     def source_changed(self):
         self.refresh(queue=True)
@@ -2529,9 +2681,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.dashboard_etag = None
             self.set_notice(error)
             return False
+        if dashboard is not None:
+            self.dashboard, self.dashboard_etag = dashboard, etag and etag[0]
+            self.sources_revision = source_revision(dashboard.get("sourcesRevision"))
+        preferences = self.preferences_window
+        if preferences and preferences.profiles_editor:
+            preferences.profiles_editor.observe_revision(self.sources_revision)
+        self.report_ui()
         if dashboard is None:
             return False
-        self.dashboard, self.dashboard_etag = dashboard, etag and etag[0]
         interval = refresh_interval(dashboard)
         if interval != self.refresh_interval_ms:
             self.refresh_interval_ms = interval

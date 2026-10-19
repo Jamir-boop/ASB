@@ -1,6 +1,6 @@
 import path from 'node:path';
 import os from 'node:os';
-import { promises as fs } from 'node:fs';
+import { promises as fs, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadCodexDashboard, invalidateCodexData, discoverCodexStateDatabase, retainCodexDataScopes, SESSION_MESSAGE_WINDOW_MS } from './codex-data.mjs';
 import { defaultClaudeAppDir, invalidateClaudeData, openClaudeThread, retainClaudeDataSources } from './claude-data.mjs';
@@ -10,7 +10,7 @@ import { normalizeDashboardThreads } from './insights.mjs';
 import { createAsbServer } from './asb-server.mjs';
 import { createSoundPlayer, createSoundWatcher } from './asb-sounds.mjs';
 import { openThreadInCodex } from './session-opener.mjs';
-import { AppSourceRegistry, numberAppSources, validateSourceLauncher } from './app-sources.mjs';
+import { AppSourceRegistry, appSourcesRevision, numberAppSources, validateSourceLauncher } from './app-sources.mjs';
 import { spawn } from 'node:child_process';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -25,6 +25,8 @@ const STOPPED_KINDS = ['turn_aborted', 'turn_cancelled', 'task_cancelled', 'canc
 const TITLE_LIMIT = 300;
 const MAX_SESSION_MESSAGES = 50;
 const BRIDGE_ALIAS = /^(?:session|cse)_([A-Za-z0-9_-]{1,128})$/;
+const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const APP_VERSION = JSON.parse(readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8')).version;
 
 // A stored title can hold a whole prompt; a row and its tooltip show only the start.
 function capTitle(title) {
@@ -638,6 +640,10 @@ export function createSwitchboardServer(options = {}) {
   };
   const server = createAsbServer({
     dashboardWatchDebounceMs: 250,
+    appVersion: APP_VERSION,
+    rootDir: ROOT_DIR,
+    sourcesPath: registry.configPath,
+    readSourcesRevision: async () => appSourcesRevision(await registry.read()),
     palettePath: path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'), 'asb', 'palette.json'),
     dashboardWatchPaths: registeredLoad ? sourceWatchPaths : [],
     dashboardSourceChanged: (source, hint) => {
@@ -646,15 +652,17 @@ export function createSwitchboardServer(options = {}) {
     },
     ...options,
     loadDashboard: async () => {
-      const dashboard = await tracker.observe(await load(registeredLoad ? { sources: await registry.read() } : undefined));
+      const sources = registeredLoad ? await registry.read() : null;
+      const dashboard = await tracker.observe(await load(sources ? { sources } : undefined));
+      dashboard.sourcesRevision = sources ? appSourcesRevision(sources) : null;
       sound?.(dashboard);
       if (registeredLoad && registry.warning) dashboard.providers.push({ id: 'asb-sources', label: 'ASB', status: 'warning', message: registry.warning });
       dashboard.refreshIntervalMs = switchboardRefreshInterval(dashboard);
       return dashboard;
     },
     listSources: (dashboard) => registry.report(dashboard),
-    updateSource: async (source) => { await registry.update(source); retainSourceCaches(await registry.read()); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); },
-    removeSource: async (id) => { await registry.remove(id); retainSourceCaches(await registry.read()); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); },
+    updateSource: async (source, revision) => { await registry.update(source, revision); retainSourceCaches(await registry.read()); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); },
+    removeSource: async (id, revision) => { await registry.remove(id, revision); retainSourceCaches(await registry.read()); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); },
     markUnreadThread: async (thread) => {
       await tracker.markUnread(thread.id);
       tracker.apply(thread);

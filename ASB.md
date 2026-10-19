@@ -144,7 +144,9 @@ The application ID is `local.asb.AgentSwitchBoard`. Per-user installation regist
 
 ## App sources
 
-Open **Profiles** in Preferences to add or edit local Codex and Claude profiles. The native table shows Enabled, name/app, session folder, **Open with**, and chat count/status. Select a source to edit it, or choose **Add**. Use **Choose…** for folders and the installed app launcher, then **Save**. **Cancel** discards form edits; **Refresh** reloads the table. The table loads on the first visit and after explicit actions. Changing the Preferences section keeps the form edits and does not reload the table. ASB supports eight registered sources, including the two defaults.
+Open **Profiles** in Preferences to add or edit local Codex and Claude profiles. The native table shows Enabled, name/app, session folder, **Open with**, and chat count/status. Select a source to edit it, or choose **Add**. Use **Choose…** for folders and the installed app launcher, then **Save**. **Cancel** discards form edits; **Refresh** reloads the table. The table reloads when Profiles becomes visible and when the dashboard reports changed source settings. ASB supports eight registered sources, including the two defaults.
+
+Automatic refresh keeps unsaved edits and an **Add** draft. If another client changes or removes a source with unsaved edits, ASB keeps your edits and shows a conflict. Select **Cancel** to load the saved source, then edit and save again. If only another source changed, your form stays available. Save and Remove also check the source revision, so a change during a request returns `409` without overwriting saved settings.
 
 | Field | Select |
 | --- | --- |
@@ -165,6 +167,33 @@ A second ChatGPT/Codex login needs its own local profile data and installed prof
 When an app has multiple registered sources, a Soft dot appears at the lower-left of its icon in both views. It uses the source color and has no action. Clear **Show profile dot**, then **Save**, to hide only this profile's dot. This keeps the source enabled, its saved color, and its state and unread marks. Legacy rows and apps with one registered source hide it. Profile numbers are not visible. The source name remains in the tooltip, accessible description, and search. The Codex and Claude pills still select all sources for that app.
 
 Choose **Profile color** in the source editor, then **Save**. The presets are Slate blue (`#8296b4`), Clay (`#b28f80`), Plum (`#a28caa`), and Sage (`#899e91`). ASB saves any valid six-digit hex color, including dark colors. The display can lighten the marker to keep 3:1 contrast without changing the saved color. A successful save shows **Saved**; an error keeps the form for correction. Old source settings get a stable default color and show the dot. Color identifies the source only; it does not change state, unread marks, chat identity, or original app styles.
+
+## Local agent commands
+
+`asb agent` inspects the running ASB instance and manages its app sources through the local API. From a source checkout, use `scripts/asb agent` in place of `asb agent`.
+
+| Command | Effect |
+| --- | --- |
+| `asb agent status` | Show the version, mode, pid, ASB root path, source settings path, and backend/UI state. |
+| `asb agent sources list` | List registered sources. `--json` also returns their settings revision. |
+| `asb agent sources get <id>` | Show one registered source. |
+| `asb agent sources add --file <json-file>` | Add a source from one JSON object. |
+| `asb agent sources update <id> --file <json-file>` | Merge the supplied fields into the current source. |
+| `asb agent sources remove <id>` | Unregister an additional source. An absent source is unchanged. |
+
+Add `--json` to any command for structured output. Use `--file -` to read JSON from standard input. Input is limited to 64 KiB and accepts only `provider`, `label`, `dataDir`, `launcher`, `enabled`, `projectsDir`, `color`, and `showMarker`. Do not include `id` or report fields such as `sessionCount`. Source folders and launcher paths must be absolute. A new source needs `provider`, `label`, `dataDir`, and `launcher`; `enabled` defaults to true. The provider is `codex` or `claude-desktop-code`.
+
+For example, an update file can contain only:
+
+```json
+{"color":"#899e91","showMarker":true}
+```
+
+Apply it with `asb agent sources update <id> --file profile.json --json`. Repeating an update with the same values changes nothing. Repeating Add for the same physical store with matching supplied settings changes nothing; different settings require Update. Default sources remain protected. Writes use the revision from the preceding read. A concurrent change returns `409`; read the current sources and repeat the command.
+
+Write results report **Saved**, **Backend**, and **UI** separately. Saved confirms the settings revision; Backend confirms the revision in the cached dashboard. UI reports recent state received by native clients and, when Profiles is visible, its table revision. UI can be `verified`, `pending`, `dirty`, or `not-open`. These reports do not prove what was drawn on the display. A successful write requires saved and backend verification; check UI separately.
+
+The commands need a current desktop or service with a safe `$XDG_RUNTIME_DIR/asb/service.json`. Both modes publish this private descriptor (`0600` in a user-owned `0700` folder); it contains the pid, port, and per-run source token. The CLI verifies the API version and pid and never prints the token. Without `XDG_RUNTIME_DIR`, the desktop can run without the descriptor and the CLI cannot find it. Older ASB builds and the unmanaged `npm start` server do not support these commands. The phone gateway cannot access the agent or source settings routes.
 
 ## Phone access
 

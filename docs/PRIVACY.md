@@ -42,7 +42,7 @@ Remote cache observations can be incomplete or old. ASB uses the newest response
 | `~/.config/asb/phone.json` | Phone access on or off, selected addresses, port, and paired phones: ID, name, pairing and last-seen times, and the SHA-256 of the token. |
 | `~/.config/asb/phone-tls/` | The phone certificate and its private key. |
 | `~/.local/state/asb/palette.json` | The last color palette of the ASB window: the GNOME or Custom mode and seven colors. |
-| `$XDG_RUNTIME_DIR/asb/service.json` | Pid, port, and per-run source token of the running `asb service`. |
+| `$XDG_RUNTIME_DIR/asb/service.json` | Shared desktop/service descriptor: schema, pid, port, and per-run ASB source token. Mode `0600` in a user-owned `0700` folder. |
 | `~/.config/systemd/user/asb.service` | The user service unit, only after `asb service install`. |
 | `~/.local/share/applications/local.asb.AgentSwitchBoard.desktop` | ASB's per-user desktop entry. |
 | `~/.local/share/icons/hicolor/scalable/apps/local.asb.AgentSwitchBoard.svg` | ASB's app icon. |
@@ -76,6 +76,10 @@ Phone notifications show the session title and the source name. The app marks th
 The ASB server binds only to `127.0.0.1`. `HOST` cannot change that. The optional phone gateway is a separate listener; see above. The native window and optional browser view use this local API. Source events contain a version, reason, and provider flags, with no file paths or content. Watchers do not upload files.
 
 Session actions require the local Host, a matching Origin, a known session ID, and validated request fields. Source changes use the same Host and Origin protection and accept only source settings. When the launcher starts ASB, source changes also need its per-run token in the header `X-ASB-Source-Token`. A server started with `npm start` has no token. Local paths and installed app launchers are validated. Raw commands, arguments, environment fields, and arbitrary URLs are rejected. Other local programs under your account can still access local metadata.
+
+`asb agent` reads the private runtime descriptor and uses its ASB token to inspect or change sources through loopback. It reads no app login credentials and does not print the token. The agent status route always requires a nonempty configured token. It returns the ASB version, pid, mode, root path, source settings path, and saved/backend revisions. Source revisions use normalized settings only, with no chat content or session counts; they add no stored field to schema `1` `sources.json`. Revision checks reject stale writes with `409`.
+
+Native UI reports contain a random client UUID, received dashboard and Profiles revisions, Profiles visibility, a dirty flag, and the server receipt time. They contain no unsaved field values. The server holds at most 16 reports in memory and expires them after 45 seconds. These reports confirm received state and do not prove visual display. Profiles refresh keeps unsaved edits and Add drafts; a conflict requires loading the saved source before another save. The phone gateway exposes neither the agent routes nor source or phone administration routes.
 
 Selecting a row opens a validated `codex:` or `claude:` app link. Default sources use the existing URL handler. A registered profile can use its installed launcher; ASB passes one validated URI through detached `spawn`, without a shell. The launched app runs independently after dispatch; ASB does not wait for or stop it. ASB does not change sign-ins, credentials, app data, or default handlers. The original app can make its own network requests under its own settings. ASB does not send it a prompt, answer a question, cancel a task, or change its read state.
 

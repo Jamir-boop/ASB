@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { createSwitchboardServer, switchboardPort } from '../src/switchboard.mjs';
 import { createPhoneGateway } from '../src/phone-gateway.mjs';
 import { createSoundPlayer } from '../src/asb-sounds.mjs';
-import { findRunningService } from './asb-service.mjs';
+import { findRunningService, prepareInstanceRuntime, publishInstanceRuntime, removeInstanceRuntimeSync } from './asb-instance.mjs';
 import { registerAppIcon } from './asb-icon.mjs';
 
 if (process.platform !== 'linux') {
@@ -17,11 +17,14 @@ let sourceToken = randomBytes(32).toString('hex');
 let gateway;
 let server;
 let window;
+let runtimeRecord;
 let stopping = false;
 function stop(code = 0) {
   if (stopping) return;
   stopping = true;
   process.exitCode = code;
+  try { removeInstanceRuntimeSync(runtimeRecord); }
+  catch (error) { console.error(`Cannot remove the ASB runtime file: ${error.message}`); process.exitCode = 1; }
   if (window && window.exitCode === null) window.kill('SIGTERM');
   server?.close();
   server?.closeAllConnections();
@@ -35,11 +38,15 @@ async function start() {
     port = service.port;
     sourceToken = service.sourceToken;
   } else {
+    const prepared = await prepareInstanceRuntime(process.env, { required: false });
+    if (stopping) return;
     const asbVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
     gateway = createPhoneGateway({ localPort: port, asbVersion });
     server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, playSound: createSoundPlayer() });
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
     if (stopping) return;
+    runtimeRecord = await publishInstanceRuntime(prepared, { schema: 1, pid: process.pid, port, sourceToken });
+    if (stopping) { removeInstanceRuntimeSync(runtimeRecord); return; }
     try {
       await gateway.start();
       const status = await gateway.status();

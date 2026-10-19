@@ -44,6 +44,10 @@ Phone access is off by default. In ASB, open Preferences > Phone, select **Allow
 
 The current source includes the Android companion and the user service; published `1.8.1` packages do not.
 
+## Local agent commands
+
+The current source adds `asb agent status` and `asb agent sources` commands to list, get, add, update, or remove a source, with `--json` output and JSON files for edits. Commands use the running desktop or service and report saved, backend, and recent UI state separately. Profiles refreshes after external changes and keeps unsaved edits. See [commands and conflict handling](ASB.md#local-agent-commands). Published `1.8.1` packages and the unmanaged `npm start` server do not support these commands.
+
 ## ASB Bridge (optional)
 
 ASB Bridge lets local Claude Code sessions and Codex tasks message each other. When ASB Bridge is installed, a message that one agent sends starts a turn in the receiving app.

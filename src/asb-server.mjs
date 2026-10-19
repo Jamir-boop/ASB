@@ -7,6 +7,8 @@ import { DashboardSnapshot } from './dashboard-snapshot.mjs';
 import { DEFAULT_PUBLIC_DIR, parseBooleanSearchParam, readJsonBody, sendJson, serveStatic, threadNotFound } from './local-http.mjs';
 
 const PALETTE_KEYS = ['background', 'text', 'accent', 'muted', 'divider', 'success', 'warning'];
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SOURCE_REVISION = /^[a-f0-9]{64}$/;
 
 // Returns the palette with lowercase colors in a fixed key order, or null when the value is not exactly a palette.
 function validPalette(value) {
@@ -32,15 +34,20 @@ function readPalette(palettePath) {
 export function createAsbServer({
   markUnreadThread = null, markReadThread = null, setUnreadSettings = null, pinThread = null, discardThread = null, drawerThread = null,
   listSources = null, updateSource = null, removeSource = null, sourceToken = '', phoneGateway = null, serviceMode = false,
-  palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, ...snapshotOptions
+  appVersion = '', rootDir = '', sourcesPath = '', readSourcesRevision = async () => null,
+  palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, now = Date.now, ...snapshotOptions
 } = {}) {
-  const snapshot = new DashboardSnapshot({ serviceMode, ...snapshotOptions });
+  const snapshot = new DashboardSnapshot({ serviceMode, now, ...snapshotOptions });
   const expectedSourceToken = Buffer.from(String(sourceToken || ''));
   const sourceTokenAllowed = (request) => {
     const given = Buffer.from(String(request.headers['x-asb-source-token'] || ''));
     return !expectedSourceToken.length || (given.length === expectedSourceToken.length && timingSafeEqual(given, expectedSourceToken));
   };
   let dashboardNotModified = 0;
+  const uiClients = new Map();
+  const expireUiClients = () => {
+    for (const [id, client] of uiClients) if (now() - client.reportedAtMs >= 45_000) uiClients.delete(id);
+  };
   let palette = readPalette(palettePath);
   let paletteWrite = Promise.resolve();
   // Saves run one at a time; the memory value changes only after the file has the new value.
@@ -77,15 +84,17 @@ export function createAsbServer({
     const unreadSettingsRoute = url.pathname === '/api/settings/unread';
     const sourcesRoute = url.pathname === '/api/sources' && Boolean(listSources);
     const removeSourceMatch = removeSource && url.pathname.match(/^\/api\/sources\/([a-z0-9][a-z0-9-]{0,79})\/remove$/);
+    const agentStatusRoute = url.pathname === '/api/agent/status';
+    const agentUiRoute = url.pathname === '/api/agent/ui';
     const phoneReadRoute = phoneGateway && ['/api/phone', '/api/service'].includes(url.pathname);
     const phoneRevoke = phoneGateway && url.pathname.match(/^\/api\/phone\/devices\/([a-f0-9]{12})\/revoke$/);
     const phoneActionRoute = phoneGateway && (['/api/phone/settings', '/api/phone/pairing'].includes(url.pathname) || Boolean(phoneRevoke));
     const eventRoute = url.pathname === '/api/events';
     const paletteRoute = url.pathname === '/api/palette';
     const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute
-      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute;
+      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute;
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
-    const readApiRoute = url.pathname === '/api/dashboard' || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute;
+    const readApiRoute = url.pathname === '/api/dashboard' || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute;
     const readRoute = readApiRoute || staticRoutes.includes(url.pathname);
     if (!readRoute && !actionRoute) {
       sendJson(response, 404, { error: 'Route is not available in ASB.' });
@@ -109,6 +118,41 @@ export function createAsbServer({
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
     response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    if (agentStatusRoute || agentUiRoute) {
+      response.setHeader('Cache-Control', 'no-store');
+      if (!expectedSourceToken.length || !sourceTokenAllowed(request)) {
+        sendJson(response, 403, { error: 'Use the current ASB source token for agent access.' });
+        return;
+      }
+      try {
+        expireUiClients();
+        if (agentStatusRoute) {
+          sendJson(response, 200, { apiVersion: 1, pid: process.pid, mode: serviceMode ? 'service' : 'desktop',
+            appVersion, rootDir, sourcesPath, sourcesRevision: await readSourcesRevision(),
+            backendRevision: snapshot.cachedDashboard()?.sourcesRevision ?? null,
+            ui: { clients: [...uiClients.values()] } });
+        } else {
+          const body = await readBody(request);
+          const revision = (value) => value === null || typeof value === 'string' && SOURCE_REVISION.test(value);
+          if (!body || typeof body !== 'object' || Array.isArray(body)
+            || Object.keys(body).sort().join(',') !== 'clientId,dirty,profilesRevision,profilesVisible,sourcesRevision'
+            || typeof body.clientId !== 'string' || !UUID.test(body.clientId)
+            || !revision(body.sourcesRevision) || !revision(body.profilesRevision)
+            || typeof body.profilesVisible !== 'boolean' || typeof body.dirty !== 'boolean') {
+            sendJson(response, 400, { error: 'Invalid ASB UI report.' });
+            return;
+          }
+          const reportedAtMs = now();
+          uiClients.delete(body.clientId);
+          uiClients.set(body.clientId, { ...body, reportedAtMs });
+          while (uiClients.size > 16) uiClients.delete(uiClients.keys().next().value);
+          sendJson(response, 200, { received: true, reportedAtMs });
+        }
+      } catch (error) {
+        sendJson(response, error.statusCode || 500, { error: error.statusCode === 400 ? 'Invalid ASB UI report.' : 'Cannot read ASB agent state.' });
+      }
+      return;
+    }
     if (phoneReadRoute || phoneActionRoute) {
       response.setHeader('Cache-Control', 'no-store');
       if (!sourceTokenAllowed(request)) {
@@ -182,15 +226,21 @@ export function createAsbServer({
             sendJson(response, 400, { error: 'Invalid app source action.' });
             return;
           }
-          if (removeSourceMatch) await removeSource(removeSourceMatch[1]);
-          else await updateSource(body.source);
+          const match = request.headers['if-match'];
+          if (match !== undefined && (typeof match !== 'string' || !/^"[a-f0-9]{64}"$/.test(match))) {
+            sendJson(response, 400, { error: 'If-Match must contain one quoted app source revision.' });
+            return;
+          }
+          const revision = match?.slice(1, -1);
+          if (removeSourceMatch) await removeSource(removeSourceMatch[1], revision);
+          else await updateSource(body.source, revision);
           invalidateDashboard('asb-sources');
         }
         const dashboard = await dashboardForRequest({ force: actionRoute });
         sendJson(response, 200, { ...(actionRoute ? { changed: true } : {}), ...await listSources(dashboard) });
       } catch (error) {
         sendJson(response, error.statusCode || 500, { error: error instanceof SyntaxError ? 'Invalid app source action.'
-          : error.statusCode === 400 ? error.message : 'Cannot update ASB app sources.' });
+          : [400, 409].includes(error.statusCode) ? error.message : 'Cannot update ASB app sources.' });
       }
       return;
     }

@@ -71,10 +71,10 @@ async function fixture(t) {
     unit: path.join(env.XDG_CONFIG_HOME, 'systemd/user/asb.service'), runtime: path.join(env.XDG_RUNTIME_DIR, 'asb/service.json') };
 }
 
-async function ready(child) {
-  if (child.output.includes('ASB service:')) return;
+async function ready(child, prefix = 'ASB service:') {
+  if (child.output.includes(prefix)) return;
   await new Promise((resolve, reject) => {
-    const data = () => { if (child.output.includes('ASB service:')) { cleanup(); resolve(); } };
+    const data = () => { if (child.output.includes(prefix)) { cleanup(); resolve(); } };
     const close = () => { cleanup(); reject(new Error(`Service did not start: ${child.errors}`)); };
     const cleanup = () => { child.stdout.off('data', data); child.off('close', close); };
     child.stdout.on('data', data);
@@ -215,14 +215,58 @@ test('the desktop attaches without replacing or stopping the running service', {
   assert.deepEqual(await readServiceRuntime(f.env), runtime);
 });
 
-test('a stale desktop runtime file falls back to its owned server and stays intact', async (t) => {
+test('a stale desktop runtime file is replaced and cleaned with the owned server', async (t) => {
   const f = await fixture(t);
   const stale = { schema: 1, pid: 2147483647, port: Number(f.env.PORT), sourceToken: 'a'.repeat(64) };
   await writeRuntime(f, stale);
   const desktop = f.launch([desktopScript]);
   assert.equal((await desktop.closed)[0], 0, desktop.errors);
   assert.match(desktop.output, /ASB: http:\/\/127\.0\.0\.1:/);
-  assert.deepEqual(await readServiceRuntime(f.env), stale);
+  await assert.rejects(stat(f.runtime), { code: 'ENOENT' });
+});
+
+test('the desktop publishes protected discovery metadata and rejects a second desktop', { timeout: 10_000 }, async (t) => {
+  const f = await fixture(t);
+  const native = path.join(f.home, 'synthetic-native');
+  await writeFile(native, `#!${process.execPath}\nsetInterval(() => {}, 1000);\n`, { mode: 0o755 });
+  const desktop = f.launch([desktopScript], { ASB_PYTHON: native });
+  await ready(desktop, 'ASB:');
+  const runtime = await readServiceRuntime(f.env);
+  assert.equal(runtime.pid, desktop.pid);
+  assert.equal((await stat(f.runtime)).mode & 0o777, 0o600);
+  assert.equal((await stat(path.dirname(f.runtime))).mode & 0o777, 0o700);
+  assert.equal(await findRunningService(f.env), null);
+  const response = await fetch(`http://127.0.0.1:${runtime.port}/api/agent/status`, { headers: { 'X-ASB-Source-Token': runtime.sourceToken } });
+  const status = await response.json();
+  assert.equal(status.pid, desktop.pid);
+  assert.equal(status.mode, 'desktop');
+  const second = f.launch([desktopScript]);
+  assert.equal((await second.closed)[0], 1);
+  assert.match(second.errors, /belongs to a running process/);
+  assert.deepEqual(await readServiceRuntime(f.env), runtime);
+  desktop.kill('SIGTERM');
+  assert.equal((await desktop.closed)[0], 0, desktop.errors);
+  await assert.rejects(stat(f.runtime), { code: 'ENOENT' });
+});
+
+test('desktop startup keeps malformed runtime metadata and shutdown keeps a replacement', async (t) => {
+  const f = await fixture(t);
+  await mkdir(path.dirname(f.runtime), { recursive: true, mode: 0o700 });
+  await writeFile(f.runtime, '{', { mode: 0o600 });
+  const refused = f.launch([desktopScript]);
+  assert.equal((await refused.closed)[0], 1);
+  assert.match(refused.errors, /kept an invalid service.json/);
+  assert.equal(await readFile(f.runtime, 'utf8'), '{');
+  await rm(f.runtime);
+  const native = path.join(f.home, 'synthetic-native');
+  await writeFile(native, `#!${process.execPath}\nsetInterval(() => {}, 1000);\n`, { mode: 0o755 });
+  const desktop = f.launch([desktopScript], { ASB_PYTHON: native });
+  await ready(desktop, 'ASB:');
+  const replacement = { schema: 1, pid: process.pid, port: 12345, sourceToken: 'b'.repeat(64) };
+  await writeRuntime(f, replacement);
+  desktop.kill('SIGTERM');
+  assert.equal((await desktop.closed)[0], 0, desktop.errors);
+  assert.deepEqual(await readServiceRuntime(f.env), replacement);
 });
 
 test('runtime validation rejects malformed, unsafe, or linked manifests', async (t) => {

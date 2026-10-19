@@ -16,6 +16,7 @@ const launcher = (await readFile(launcherUrl, 'utf8')).replace(/^import[^\n]*\n/
   .replaceAll('import.meta.url', 'launcherUrl');
 // The launcher gets a silent player; tests never play sound.
 const silentPlayer = () => {};
+const runtimeStubs = { prepareInstanceRuntime: async () => null, publishInstanceRuntime: async () => null, removeInstanceRuntimeSync: () => {} };
 const disabledGateway = () => ({ start: async () => {}, status: async () => ({ error: '' }), stop: async () => {} });
 
 for (const exitCode of [0, 1]) test(`launcher exit ${exitCode} stops its owned synthetic native process`, { timeout: 5_000 }, async (t) => {
@@ -30,7 +31,7 @@ for (const exitCode of [0, 1]) test(`launcher exit ${exitCode} stops its owned s
   let native;
   t.after(() => { if (native?.exitCode === null && native?.signalCode === null) native.kill('SIGKILL'); });
   const launch = vm.runInNewContext(launcher, { process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, randomBytes, readFileSync,
-    findRunningService: async () => null, createPhoneGateway: disabledGateway,
+    ...runtimeStubs, findRunningService: async () => null, createPhoneGateway: disabledGateway,
     createSoundPlayer: () => silentPlayer, createSwitchboardServer: () => server, switchboardPort: () => 4629, registerAppIcon: async () => {},
     console: { log() {}, error() {}, warn() {} },
     spawn: (_program, args) => {
@@ -66,7 +67,7 @@ test('icon registration failure keeps its message and still launches the owned n
   server.closeAllConnections = () => {};
   t.after(() => { if (native?.exitCode === null && native?.signalCode === null) native.kill('SIGKILL'); });
   const launch = vm.runInNewContext(launcher, { process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, randomBytes, readFileSync,
-    findRunningService: async () => null, createPhoneGateway: disabledGateway,
+    ...runtimeStubs, findRunningService: async () => null, createPhoneGateway: disabledGateway,
     createSoundPlayer: () => silentPlayer, createSwitchboardServer: (options) => { sourceToken = options.sourceToken; return server; }, switchboardPort: () => 4629,
     registerAppIcon: async () => { throw new Error('Synthetic registration failure'); },
     console: { log(message) { printed.push(message); }, error(message) { errors.push(message); }, warn(message) { printed.push(message); } },
@@ -147,7 +148,7 @@ for (const failure of ['', 'reported', 'thrown']) test(`launcher owns the phone 
   server.closeAllConnections = () => {};
   const launch = vm.runInNewContext(launcher, { process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, randomBytes, readFileSync,
     switchboardPort: () => 12345, registerAppIcon: async () => {},
-    findRunningService: async () => null, createPhoneGateway: (options) => {
+    ...runtimeStubs, findRunningService: async () => null, createPhoneGateway: (options) => {
       assert.deepEqual({ ...options }, { localPort: 12345, asbVersion: '1.8.1' });
       calls.push('create-gateway');
       return gateway;
@@ -188,7 +189,7 @@ test('a stop during gateway startup cannot launch a window later', async () => {
   server.close = () => {};
   server.closeAllConnections = () => {};
   const launch = vm.runInNewContext(launcher, { process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, randomBytes, readFileSync,
-    findRunningService: async () => null, createPhoneGateway: () => ({ start: () => { started.resolve(); return starting.promise; }, status: async () => ({ error: '' }), stop: async () => { stopped += 1; } }),
+    ...runtimeStubs, findRunningService: async () => null, createPhoneGateway: () => ({ start: () => { started.resolve(); return starting.promise; }, status: async () => ({ error: '' }), stop: async () => { stopped += 1; } }),
     createSoundPlayer: () => silentPlayer, createSwitchboardServer: () => server, switchboardPort: () => 12345, registerAppIcon: async () => {},
     console: { log() {}, error() {}, warn() {} }, spawn: () => assert.fail('The launcher already stopped.'),
   });
@@ -208,7 +209,7 @@ test('an attached desktop gives the window the service URL and token without own
   native.exitCode = 0;
   await vm.runInNewContext(launcher, { process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, randomBytes,
     switchboardPort: () => 12345,
-    findRunningService: async () => ({ pid: 12, port: 23456, sourceToken: 'service-token' }),
+    ...runtimeStubs, findRunningService: async () => ({ pid: 12, port: 23456, sourceToken: 'service-token' }),
     createPhoneGateway: () => assert.fail('The service owns its gateway.'),
     createSwitchboardServer: () => assert.fail('The service owns its loopback server.'),
     registerAppIcon: async () => { registered += 1; return {}; },

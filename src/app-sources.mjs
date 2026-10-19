@@ -61,8 +61,13 @@ export function numberAppSources(sources) {
   }));
 }
 
-async function storeIdentity(source) {
-  let root = source.dataDir;
+export function appSourcesRevision(sources) {
+  const config = numberAppSources(sources).map((source) => Object.fromEntries(SOURCE_FIELDS.map((field) => [field, source[field]])));
+  return createHash('sha256').update(JSON.stringify(config)).digest('hex');
+}
+
+export async function storeIdentity(source) {
+  let root = path.resolve(source.dataDir);
   try { root = await fs.realpath(root); } catch {}
   // Resolve the actual database too, so linked copies of one Codex store cannot be added twice.
   if (source.provider === 'codex') {
@@ -183,9 +188,10 @@ export class AppSourceRegistry {
     this.warning = '';
   }
 
-  async update(source) {
+  async update(source, expectedRevision) {
     const action = this.write.catch(() => {}).then(async () => {
       await this.read();
+      this.checkRevision(expectedRevision);
       const existing = typeof source?.id === 'string' ? this.sources.find((item) => item.id === source.id) : null;
       const next = await this.validate(source, { checkLauncher: source?.enabled !== false || !existing });
       if (next.id && !existing) throw invalid('This app source is not registered.');
@@ -206,9 +212,10 @@ export class AppSourceRegistry {
     await action;
   }
 
-  async remove(id) {
+  async remove(id, expectedRevision) {
     const action = this.write.catch(() => {}).then(async () => {
       await this.read();
+      this.checkRevision(expectedRevision);
       const source = this.sources.find((item) => item.id === id);
       if (!source) throw invalid('This app source is not registered.');
       if (source.builtin) throw invalid('Default app sources cannot be removed.');
@@ -218,9 +225,15 @@ export class AppSourceRegistry {
     await action;
   }
 
+  checkRevision(expectedRevision) {
+    if (expectedRevision !== undefined && expectedRevision !== appSourcesRevision(this.sources)) {
+      throw Object.assign(new Error('App sources changed. Reload Profiles before saving or removing a source.'), { statusCode: 409 });
+    }
+  }
+
   async report(dashboard) {
     const sources = numberAppSources(await this.read());
-    return { sources: sources.map((source) => {
+    return { revision: appSourcesRevision(sources), sources: sources.map((source) => {
       const provider = dashboard.providers?.find((item) => item.id === source.id);
       return { ...source, sessionCount: dashboard.threads?.filter((row) => (row.sourceId || row.provider) === source.id).length || 0,
         status: !source.enabled ? 'disabled' : provider?.status || 'missing',

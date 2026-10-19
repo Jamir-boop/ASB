@@ -28,6 +28,10 @@ test('the bridge runtime whitelist has exactly the eleven required files', () =>
     || file === '.agents/plugins/marketplace.json' || file === 'scripts/asb-bridge.mjs'), bridgeRuntimeFiles);
 });
 
+test('agent commands and shared discovery are in the runtime payload', () => {
+  for (const file of ['scripts/asb-agent.mjs', 'scripts/asb-instance.mjs']) assert.ok(RUNTIME_FILES.includes(file));
+});
+
 test('ASB payload imports are complete', async () => {
   for (const file of RUNTIME_FILES.filter((name) => name.endsWith('.mjs'))) {
     const source = await readFile(path.join(sourceRoot, file), 'utf8');

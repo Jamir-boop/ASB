@@ -9,7 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { mkdtemp, mkdir, writeFile, readFile, rm, stat, chmod, symlink, link } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { AppSourceRegistry, MAX_APP_SOURCES, numberAppSources, validateSourceLauncher } from '../src/app-sources.mjs';
+import { AppSourceRegistry, MAX_APP_SOURCES, appSourcesRevision, numberAppSources, validateSourceLauncher } from '../src/app-sources.mjs';
 import { buildSwitchboardDashboard, createSwitchboardServer, loadSwitchboardDashboard, openSwitchboardThread, PendingTracker } from '../src/switchboard.mjs';
 
 const uuid = '123e4567-e89b-12d3-a456-426614174000';
@@ -38,6 +38,58 @@ async function serve(t, options) {
     method: 'POST', headers: { origin: base, 'content-type': 'application/json', ...headers }, body: JSON.stringify(body),
   }) };
 }
+
+test('source revisions use normalized settings only and leave schema 1 unchanged', async (t) => {
+  const { registry } = await fixture(t);
+  const sources = await registry.read();
+  const revision = appSourcesRevision(sources);
+  assert.match(revision, /^[a-f0-9]{64}$/);
+  assert.equal(appSourcesRevision(sources.map((source) => Object.fromEntries(Object.entries(source).reverse()))), revision);
+  assert.equal(appSourcesRevision(sources.map(({ color, showMarker, ...source }) => source)), revision);
+  const first = await registry.report({ providers: [], threads: [] });
+  const busy = await registry.report({ providers: [{ id: 'codex', status: 'ready' }], threads: [{ sourceId: 'codex' }] });
+  assert.equal(first.revision, revision);
+  assert.equal(busy.revision, revision);
+  assert.notDeepEqual(first.sources, busy.sources);
+  assert.equal(appSourcesRevision(busy.sources), revision);
+  for (const change of [{ label: 'Changed' }, { dataDir: '/synthetic/store' }, { launcher: '/synthetic/codex' },
+    { enabled: false }, { color: '#123456' }, { showMarker: false }]) {
+    assert.notEqual(appSourcesRevision([{ ...sources[0], ...change }, sources[1]]), revision);
+  }
+  const { builtin, ...edit } = sources[0];
+  await registry.update(edit, revision);
+  assert.equal(appSourcesRevision(await registry.read()), revision);
+  const stored = JSON.parse(await readFile(registry.configPath, 'utf8'));
+  assert.deepEqual(Object.keys(stored).sort(), ['sources', 'version']);
+  assert.equal(stored.version, 1);
+});
+
+test('queued source changes check the current revision and stale edits or removals preserve saved settings', async (t) => {
+  const { registry, homeDir, source } = await fixture(t);
+  await registry.update(source(path.join(homeDir, 'second')));
+  const sources = await registry.read();
+  const revision = appSourcesRevision(sources);
+  const { builtin, ...edit } = sources.at(-1);
+  const results = await Promise.allSettled([
+    registry.update({ ...edit, label: 'Saved label' }, revision),
+    registry.update({ ...edit, color: '#123456' }, revision),
+  ]);
+  assert.equal(results[0].status, 'fulfilled');
+  assert.equal(results[1].status, 'rejected');
+  assert.equal(results[1].reason.statusCode, 409);
+  assert.match(results[1].reason.message, /Reload Profiles/);
+  const saved = await readFile(registry.configPath, 'utf8');
+  await assert.rejects(registry.remove(edit.id, revision), { statusCode: 409 });
+  assert.equal(await readFile(registry.configPath, 'utf8'), saved);
+  const current = appSourcesRevision(await registry.read());
+  const external = JSON.parse(saved);
+  external.sources.at(-1).label = 'External label';
+  await writeFile(registry.configPath, JSON.stringify(external));
+  await assert.rejects(registry.update({ ...edit, label: 'Stale label' }, current), { statusCode: 409 });
+  assert.equal((await registry.read()).at(-1).label, 'External label');
+  await registry.remove(edit.id, appSourcesRevision(await registry.read()));
+  assert.equal((await registry.read()).length, 2);
+});
 
 test('source edits validate local app paths, protect defaults, and save only ASB settings with owner access', async (t) => {
   const { registry, homeDir, source, launcher } = await fixture(t);

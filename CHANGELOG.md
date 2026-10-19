@@ -6,6 +6,9 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 - Fixed native theme colors with RGB channels outside `0..1`. Color conversion now limits each channel to a byte, so the theme editor and phone palette receive valid `#RRGGBB` values.
 - Shortened the ASB Bridge peer message prefix.
+- Added `asb agent status` and `sources list/get/add/update/remove`, with `--json`, bounded JSON file or stdin input, partial updates, and idempotent source operations. The CLI uses the authenticated local API and reports saved, backend, and recent native UI state separately. UI reports do not prove visual display. Desktop and service modes share a private runtime descriptor; the phone gateway cannot access agent or source settings routes.
+- Added stable source settings revisions and optional `If-Match` checks. Stale source updates and removals return `409` without overwriting settings. Profiles now reloads when visible and after a source revision change, keeps unsaved edits and Add drafts, and shows conflicts when an edited source changes elsewhere. The source file stays at schema `1`.
+
 - Added explicit `asb bridge link-claude <profile-home> <shared-home>` setup for cross-profile peer discovery and messaging. It links only the native Claude registry and IPC keys, keeps app data and provider credentials separate, preserves the original directory in a private backup, and refuses unsafe paths, unknown files, conflicts, and detected source changes. Install and uninstall keep the shared registry and backup. Native directory-link behavior was checked in Claude Code `2.1.303` and has no compatibility promise.
 
 - Changed the Android app ID to `io.github.jamir_boop.asb` for F-Droid. The new ID installs as a new app beside the old `local.asb.companion` app, so pair the phone again and uninstall the old app. The channel sounds now use the app's own package name.

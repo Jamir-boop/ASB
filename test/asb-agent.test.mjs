@@ -1,0 +1,300 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { AppSourceRegistry, appSourcesRevision } from '../src/app-sources.mjs';
+import { createSwitchboardServer } from '../src/switchboard.mjs';
+import { findRunningService, readServiceRuntime } from '../scripts/asb-instance.mjs';
+
+const script = fileURLToPath(new URL('../scripts/asb-agent.mjs', import.meta.url));
+const launcher = fileURLToPath(new URL('../scripts/asb', import.meta.url));
+const clientId = '11111111-1111-4111-8111-111111111111';
+
+async function fixture(t, mode = 'desktop') {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'asb-agent-test-'));
+  const env = { HOME: home, XDG_CONFIG_HOME: path.join(home, 'config'), XDG_STATE_HOME: path.join(home, 'state'),
+    XDG_RUNTIME_DIR: path.join(home, 'runtime'), XDG_CACHE_HOME: path.join(home, 'cache'), XDG_DATA_HOME: path.join(home, 'data'),
+    CODEX_HOME: path.join(home, 'codex'), CLAUDE_APP_DIR: path.join(home, 'claude'), CLAUDE_CONFIG_DIR: path.join(home, 'claude-code'),
+    CLAUDE_CODE_CONFIG_DIR: path.join(home, 'claude-code'), ASB_NODE: process.execPath, PATH: '/usr/bin:/bin' };
+  const registry = new AppSourceRegistry({ homeDir: home, env, discoverPersonal: false });
+  const server = createSwitchboardServer({ sourceToken: 'a'.repeat(64), sourceRegistry: registry, serviceMode: mode === 'service',
+    phoneGateway: {}, pendingStatePath: false, palettePath: false,
+    loadDashboard: async ({ sources }) => ({ providers: sources.map((source) => ({ id: source.id, status: 'ok' })), threads: [] }) });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+    await rm(home, { recursive: true, force: true });
+  });
+  const port = server.address().port;
+  const runtime = path.join(env.XDG_RUNTIME_DIR, 'asb/service.json');
+  const manifest = { schema: 1, pid: process.pid, port, sourceToken: 'a'.repeat(64) };
+  await mkdir(path.dirname(runtime), { recursive: true, mode: 0o700 });
+  await chmod(path.dirname(runtime), 0o700);
+  await writeFile(runtime, JSON.stringify(manifest), { mode: 0o600 });
+  const bin = path.join(home, 'bin');
+  await mkdir(bin);
+  const appLauncher = path.join(bin, 'chatgpt-test');
+  await writeFile(appLauncher, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const dataDir = path.join(home, 'profile');
+  await mkdir(dataDir);
+  const input = path.join(home, 'source.json');
+  const posts = [];
+  server.on('request', (request) => {
+    if (request.method === 'POST' && request.url.startsWith('/api/sources')) posts.push({ route: request.url, revision: request.headers['if-match'] });
+  });
+  const command = async (args, { stdin, shell = false, extraEnv = {} } = {}) => {
+    const child = spawn(shell ? launcher : process.execPath, shell ? ['agent', ...args] : [script, ...args],
+      { env: { ...env, ...extraEnv }, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.stdin.end(stdin);
+    const [code, signal] = await once(child, 'close');
+    assert.equal(signal, null);
+    assert.ok(!stdout.includes(manifest.sourceToken) && !stderr.includes(manifest.sourceToken), 'The source token must stay private.');
+    return { code, stdout, stderr, result: args.includes('--json') ? JSON.parse((code ? stderr : stdout).trim().split('\n').at(-1)) : undefined };
+  };
+  const jsonFile = async (value) => { await writeFile(input, JSON.stringify(value)); return input; };
+  const reportUi = async (overrides = {}) => {
+    const revision = appSourcesRevision(await registry.read());
+    const response = await fetch(`http://127.0.0.1:${port}/api/agent/ui`, { method: 'POST', headers: {
+      'X-ASB-Source-Token': manifest.sourceToken, origin: `http://127.0.0.1:${port}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ clientId, sourcesRevision: revision, profilesRevision: revision, profilesVisible: true, dirty: false, ...overrides }) });
+    assert.equal(response.status, 200);
+  };
+  return { home, env, registry, server, runtime, manifest, dataDir, appLauncher, input, posts, command, jsonFile, reportUi };
+}
+
+for (const mode of ['desktop', 'service']) test(`agent status authenticates the ${mode} instance and shell dispatch`, async (t) => {
+  const f = await fixture(t, mode);
+  const reply = await f.command(['status', '--json'], { shell: true });
+  assert.equal(reply.code, 0, reply.stderr);
+  assert.equal(reply.result.instance.mode, mode);
+  assert.equal(reply.result.instance.pid, process.pid);
+  assert.equal(reply.result.instance.sourcesPath, f.registry.configPath);
+  assert.equal(await findRunningService(f.env) !== null, mode === 'service');
+  assert.match((await f.command(['status'])).stdout, new RegExp(`${mode}, PID ${process.pid}`));
+});
+
+test('agent source commands preserve partial fields and repeat without duplicate writes', async (t) => {
+  const f = await fixture(t);
+  const list = await f.command(['sources', 'list', '--json']);
+  assert.equal(list.code, 0, list.stderr);
+  assert.equal(list.result.sources.length, 2);
+  const source = { provider: 'codex', label: 'Test profile', dataDir: f.dataDir, launcher: f.appLauncher,
+    enabled: true, color: '#A28CAA', showMarker: false };
+  await f.jsonFile(source);
+  const added = await f.command(['sources', 'add', '--file', f.input, '--json']);
+  assert.equal(added.code, 0, added.stderr);
+  assert.equal(added.result.changed, true);
+  assert.equal(added.result.verification.saved.status, 'verified');
+  assert.equal(added.result.verification.backend.status, 'verified');
+  assert.equal(added.result.verification.ui.status, 'not-open');
+  assert.equal(f.posts[0].revision, `"${list.result.revision}"`);
+  const id = added.result.source.id;
+  const alias = path.join(f.home, 'alias');
+  await symlink(f.dataDir, alias);
+  const repeated = await f.command(['sources', 'add', '--file', '-','--json'], { stdin: JSON.stringify({ ...source, dataDir: alias }) });
+  assert.equal(repeated.code, 0, repeated.stderr);
+  assert.equal(repeated.result.changed, false);
+  assert.equal(f.posts.length, 1);
+  await f.jsonFile({ ...source, label: 'Other label' });
+  const duplicate = await f.command(['sources', 'add', '--file', f.input, '--json']);
+  assert.equal(duplicate.code, 1);
+  assert.equal(duplicate.result.error.code, 'source_exists');
+  assert.match(duplicate.result.error.message, new RegExp(`sources update ${id}`));
+  assert.equal(f.posts.length, 1);
+  await f.jsonFile({ enabled: false });
+  const updated = await f.command(['sources', 'update', id, '--file', f.input, '--json']);
+  assert.equal(updated.code, 0, updated.stderr);
+  assert.equal(updated.result.source.enabled, false);
+  for (const field of ['provider', 'label', 'dataDir', 'launcher', 'showMarker']) assert.equal(updated.result.source[field], source[field]);
+  assert.equal(updated.result.source.color, '#a28caa');
+  const fetched = await f.command(['sources', 'get', id, '--json']);
+  assert.equal(fetched.result.source.label, source.label);
+  const repeatUpdate = await f.command(['sources', 'update', id, '--file', f.input, '--json']);
+  assert.equal(repeatUpdate.result.changed, false);
+  assert.equal(f.posts.length, 2);
+  const removed = await f.command(['sources', 'remove', id, '--json']);
+  assert.equal(removed.code, 0, removed.stderr);
+  assert.equal(removed.result.changed, true);
+  assert.equal((await f.command(['sources', 'remove', id, '--json'])).result.changed, false);
+  assert.equal(f.posts.length, 3);
+  assert.equal((await f.command(['sources', 'get', id, '--json'])).result.error.code, 'source_not_found');
+  assert.equal((await f.registry.read()).length, 2);
+});
+
+test('agent repeats Add for a missing source folder without duplicate writes', async (t) => {
+  const f = await fixture(t);
+  const dataDir = path.join(f.home, 'missing-profile');
+  const source = { provider: 'codex', label: 'Missing profile', dataDir: `${dataDir}/`, launcher: f.appLauncher, enabled: true };
+  await f.jsonFile(source);
+  const added = await f.command(['sources', 'add', '--file', f.input, '--json']);
+  assert.equal(added.code, 0, added.stderr);
+  assert.equal(added.result.changed, true);
+  assert.equal(added.result.source.dataDir, dataDir);
+  for (const suffix of ['/', '/.']) {
+    await f.jsonFile({ ...source, dataDir: `${dataDir}${suffix}` });
+    const repeated = await f.command(['sources', 'add', '--file', f.input, '--json']);
+    assert.equal(repeated.code, 0, repeated.stderr);
+    assert.equal(repeated.result.changed, false);
+    assert.equal(repeated.result.source.id, added.result.source.id);
+    assert.equal(f.posts.length, 1);
+  }
+});
+
+test('agent changes an additional Claude source to Codex without its transcript folder', async (t) => {
+  const f = await fixture(t);
+  const source = { provider: 'claude-desktop-code', label: 'Test profile', dataDir: f.dataDir, launcher: f.appLauncher,
+    enabled: true, projectsDir: path.join(f.home, 'projects'), color: '#123456', showMarker: false };
+  await f.jsonFile(source);
+  const added = await f.command(['sources', 'add', '--file', f.input, '--json']);
+  assert.equal(added.code, 0, added.stderr);
+  const id = added.result.source.id;
+  const codexLauncher = path.join(f.home, 'bin', 'codex-test');
+  await writeFile(codexLauncher, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const input = { provider: 'codex', dataDir: path.join(f.home, 'codex-profile'), launcher: codexLauncher };
+  await f.jsonFile({ ...input, projectsDir: source.projectsDir });
+  const invalid = await f.command(['sources', 'update', id, '--file', f.input, '--json']);
+  assert.equal(invalid.code, 1);
+  assert.equal(invalid.result.error.code, 'invalid_source');
+  assert.equal((await f.registry.read()).find((item) => item.id === id).provider, source.provider);
+  await f.jsonFile(input);
+  const updated = await f.command(['sources', 'update', id, '--file', f.input, '--json']);
+  assert.equal(updated.code, 0, updated.stderr);
+  assert.equal(updated.result.changed, true);
+  assert.equal(updated.result.verification.saved.status, 'verified');
+  assert.equal(updated.result.verification.backend.status, 'verified');
+  const saved = (await f.registry.read()).find((item) => item.id === id);
+  for (const result of [updated.result.source, saved]) {
+    assert.equal(result.id, id);
+    assert.equal(Object.hasOwn(result, 'projectsDir'), false);
+    for (const field of ['provider', 'dataDir', 'launcher']) assert.equal(result[field], input[field]);
+    for (const field of ['label', 'enabled', 'color', 'showMarker']) assert.equal(result[field], source[field]);
+  }
+});
+
+test('agent rejects unsafe or stale discovery without changing source files', async (t) => {
+  const f = await fixture(t);
+  for (const value of [{ ...f.manifest, pid: process.pid + 1 }, { ...f.manifest, sourceToken: 'b'.repeat(64) },
+    { ...f.manifest, unexpected: true }, 'x'.repeat(5000), '{']) {
+    await writeFile(f.runtime, typeof value === 'string' ? value : JSON.stringify(value));
+    const reply = await f.command(['status', '--json']);
+    assert.equal(reply.code, 1);
+  }
+  await writeFile(f.runtime, JSON.stringify(f.manifest));
+  const foreignOwner = path.join(f.home, 'foreign-owner.mjs');
+  await writeFile(foreignOwner, 'process.getuid = () => 98765;\n');
+  assert.equal((await f.command(['status', '--json'], { extraEnv: { NODE_OPTIONS: `--import=${foreignOwner}` } })).code, 1);
+  await chmod(f.runtime, 0o644);
+  assert.equal(await readServiceRuntime(f.env), null);
+  assert.equal((await f.command(['sources', 'list', '--json'])).code, 1);
+  assert.equal(f.posts.length, 0);
+  await assert.rejects(readFile(f.registry.configPath), { code: 'ENOENT' });
+});
+
+test('agent rejects strict command and input errors before source writes', async (t) => {
+  const f = await fixture(t);
+  const bad = [[], ['status', '--file', 'x'], ['status', '--json', '--json'], ['sources', 'get'], ['sources', 'remove', '../bad'],
+    ['sources', 'add'], ['sources', 'add', '--file', f.input, 'extra'], ['sources', 'update', 'codex', '--file']];
+  for (const args of bad) {
+    const reply = await f.command([...args, '--json']);
+    assert.equal(reply.code, 2, reply.stderr);
+    assert.equal(reply.result.error.code, 'usage');
+  }
+  for (const value of [{ id: 'codex', label: 'Changed' }, { builtin: false }, { sourceToken: 'secret' }, {}, [], null]) {
+    await f.jsonFile(value);
+    assert.equal((await f.command(['sources', 'update', 'codex', '--file', f.input, '--json'])).result.error.code, 'invalid_input');
+  }
+  await writeFile(f.input, '{');
+  assert.equal((await f.command(['sources', 'add', '--file', f.input, '--json'])).result.error.code, 'invalid_input');
+  await writeFile(f.input, 'x'.repeat(65 * 1024));
+  assert.equal((await f.command(['sources', 'add', '--file', f.input, '--json'])).result.error.code, 'invalid_input');
+  assert.equal(f.posts.length, 0);
+  await assert.rejects(readFile(f.registry.configPath), { code: 'ENOENT' });
+});
+
+test('agent reports a revision conflict without overwriting a concurrent edit', async (t) => {
+  const f = await fixture(t);
+  const original = f.registry.update.bind(f.registry);
+  let conflict = true;
+  f.registry.update = async (source, revision) => {
+    if (conflict) {
+      conflict = false;
+      const current = (await f.registry.read()).find((source) => source.id === 'codex');
+      const { builtin, ...saved } = current;
+      await original({ ...saved, label: 'Concurrent edit' });
+    }
+    return original(source, revision);
+  };
+  await f.jsonFile({ label: 'CLI edit' });
+  const reply = await f.command(['sources', 'update', 'codex', '--file', f.input, '--json']);
+  assert.equal(reply.code, 1);
+  assert.equal(reply.result.error.code, 'revision_conflict');
+  assert.equal((await f.registry.read()).find((source) => source.id === 'codex').label, 'Concurrent edit');
+  assert.equal(f.posts.length, 1);
+});
+
+test('agent reports saved/backend evidence separately from current UI reports', async (t) => {
+  const f = await fixture(t);
+  await f.reportUi();
+  const reports = [];
+  const updateUi = (request, response) => {
+    if (request.method === 'POST' && request.url === '/api/sources') response.once('finish', () => { reports.push(f.reportUi()); });
+  };
+  f.server.on('request', updateUi);
+  await f.jsonFile({ showMarker: false });
+  const reply = await f.command(['sources', 'update', 'codex', '--file', f.input, '--json']);
+  await Promise.all(reports);
+  assert.equal(reply.code, 0, reply.stderr);
+  assert.equal(reply.result.verification.saved.status, 'verified');
+  assert.equal(reply.result.verification.backend.status, 'verified');
+  assert.equal(reply.result.verification.ui.status, 'verified');
+  f.server.off('request', updateUi);
+  await f.reportUi({ dirty: true });
+  await f.jsonFile({ color: '#123456' });
+  // A dirty editor must not count as visual confirmation.
+  const dirty = await f.command(['sources', 'update', 'codex', '--file', f.input, '--json']);
+  await Promise.all(reports);
+  assert.equal(dirty.result.verification.saved.status, 'verified');
+  assert.equal(dirty.result.verification.backend.status, 'verified');
+  assert.equal(dirty.result.verification.ui.status, 'pending');
+  assert.equal(dirty.result.verification.ui.clients[0].dirty, true);
+  await f.reportUi({ sourcesRevision: '0'.repeat(64), profilesRevision: '0'.repeat(64) });
+  await f.jsonFile({ enabled: false });
+  const pending = await f.command(['sources', 'update', 'codex', '--file', f.input, '--json']);
+  assert.equal(pending.code, 0, pending.stderr);
+  assert.equal(pending.result.verification.saved.status, 'verified');
+  assert.equal(pending.result.verification.backend.status, 'verified');
+  assert.equal(pending.result.verification.ui.status, 'pending');
+});
+
+test('agent waits for a current dirty UI report after a source write', async (t) => {
+  const f = await fixture(t);
+  await f.reportUi({ dirty: true });
+  let saved = false;
+  let polls = 0;
+  const reports = [];
+  f.server.on('request', (request, response) => {
+    if (request.method === 'POST' && request.url === '/api/sources') response.once('finish', () => { saved = true; });
+    if (saved && request.url === '/api/agent/status' && ++polls === 2) {
+      response.once('finish', () => { reports.push(f.reportUi({ dirty: true })); });
+    }
+  });
+  await f.jsonFile({ showMarker: false });
+  const reply = await f.command(['sources', 'update', 'codex', '--file', f.input, '--json']);
+  await Promise.all(reports);
+  assert.equal(reply.code, 0, reply.stderr);
+  assert.ok(polls >= 3, 'The command must wait for a current UI report.');
+  assert.equal(reply.result.verification.ui.status, 'dirty');
+  const client = reply.result.verification.ui.clients[0];
+  assert.equal(client.dirty, true);
+  assert.equal(client.sourcesRevision, reply.result.revision);
+  assert.equal(client.profilesRevision, reply.result.revision);
+});
