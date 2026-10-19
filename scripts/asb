@@ -7,8 +7,10 @@ ASB_ROOT=$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")/.." && pwd)
 ASB_PACKAGE_COMMAND=
 if [ "${1:-}" = --package ]; then ASB_PACKAGE_COMMAND="${2:-}"; fi
 if [ "${1:-}" = agent ]; then ASB_PACKAGE_COMMAND=agent; fi
+if [ "${1:-}" = group ]; then ASB_PACKAGE_COMMAND=group; fi
+if [ "${1:-}" = network ]; then ASB_PACKAGE_COMMAND=network; fi
 for ASB_CANDIDATE in "${ASB_NODE:-}" "$HOME/.local/bin/node" /usr/local/bin/node /usr/bin/node; do
-  if [ -n "$ASB_CANDIDATE" ] && [ -x "$ASB_CANDIDATE" ] && "$ASB_CANDIDATE" --input-type=module -e 'if (Number(process.versions.node.split(".")[0]) < 20) process.exit(1); if (!["build","uninstall","agent"].includes(process.argv[1])) { try { await import("node:sqlite"); } catch { const {execFileSync}=await import("node:child_process"); execFileSync("sqlite3",["--version"],{stdio:"ignore"}); } }' "$ASB_PACKAGE_COMMAND" >/dev/null 2>&1; then
+  if [ -n "$ASB_CANDIDATE" ] && [ -x "$ASB_CANDIDATE" ] && "$ASB_CANDIDATE" --input-type=module -e 'if (Number(process.versions.node.split(".")[0]) < 20) process.exit(1); if (!["build","uninstall","agent","group","network"].includes(process.argv[1])) { try { await import("node:sqlite"); } catch { const {execFileSync}=await import("node:child_process"); execFileSync("sqlite3",["--version"],{stdio:"ignore"}); } }' "$ASB_PACKAGE_COMMAND" >/dev/null 2>&1; then
     export ASB_NODE="$ASB_CANDIDATE"
     if [ "${1:-}" = --package ]; then
       shift
@@ -17,6 +19,12 @@ for ASB_CANDIDATE in "${ASB_NODE:-}" "$HOME/.local/bin/node" /usr/local/bin/node
     if [ "${1:-}" = agent ]; then
       shift
       exec "$ASB_CANDIDATE" "$ASB_ROOT/scripts/asb-agent.mjs" "$@"
+    fi
+    if [ "${1:-}" = group ]; then
+      exec "$ASB_CANDIDATE" "$ASB_ROOT/scripts/asb-group.mjs" "$@"
+    fi
+    if [ "${1:-}" = network ]; then
+      exec "$ASB_CANDIDATE" "$ASB_ROOT/scripts/asb-group.mjs" "$@"
     fi
     if [ "${1:-}" = bridge ]; then
       shift

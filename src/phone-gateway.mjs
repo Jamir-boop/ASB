@@ -31,14 +31,14 @@ export function phoneTlsDir(env = process.env) {
   return path.join(path.dirname(phoneSettingsPath(env)), 'phone-tls');
 }
 
-function privateIPv4(address) {
+export function privateIPv4(address) {
   if (typeof address !== 'string' || !isIPv4(address)) return false;
   const [first, second] = address.split('.').map(Number);
   return first === 10 || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168);
 }
 
 // 100.64.0.0/10 is also carrier NAT and hotspot space, so it counts only on a Tailscale interface.
-function tailscaleIPv4(address) {
+export function tailscaleIPv4(address) {
   if (typeof address !== 'string' || !isIPv4(address)) return false;
   const [first, second] = address.split('.').map(Number);
   return first === 100 && second >= 64 && second <= 127;
@@ -113,7 +113,8 @@ function readBody(request) {
 }
 
 export function createPhoneGateway({ localPort, asbVersion, settingsPath = phoneSettingsPath(), tlsDir = phoneTlsDir(),
-  now = Date.now, openssl = 'openssl', hostName = os.hostname(), listAddresses = listPhoneAddresses }) {
+  now = Date.now, openssl = 'openssl', hostName = os.hostname(), listAddresses = listPhoneAddresses,
+  peer = null, onPhonePaired = () => {}, onPhoneRevoked = () => {} }) {
   if (!Number.isInteger(localPort) || localPort < 1 || localPort > 65535) throw invalid('Invalid ASB port.');
   let settings = defaults();
   let loaded = false;
@@ -241,7 +242,8 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     if (!selected.length) return;
     // https.Server ignores a `secureContext` option, so every listener gets the same key and certificate.
     let options;
-    try { options = { ...(await certificate()), minVersion: 'TLSv1.3' }; }
+    // Phones send no client certificate; group members send theirs, and the peer routes check it (plan 9.4).
+    try { options = { ...(await certificate()), minVersion: 'TLSv1.3', requestCert: true, rejectUnauthorized: false }; }
     catch { fingerprint = ''; error = 'ASB cannot create the phone certificate. Install openssl.'; return; }
     const group = selected.map(({ address, kind }) => {
       const server = https.createServer(options, (request, response) => { handle(request, response, group, kind); });
@@ -313,6 +315,51 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     upstream.end(body);
   }
 
+  // The member routes of the machine group; only `join` takes a certificate that is not a member's.
+  async function handlePeer(request, response, group, route, reject) {
+    const method = ['join', 'leave'].includes(route) ? 'POST' : 'GET';
+    if (request.method !== method) { response.setHeader('allow', method); reject(405, 'Method not allowed.'); return; }
+    const raw = request.socket.getPeerCertificate(true)?.raw;
+    const caller = raw ? hash(raw) : '';
+    // A removed machine learns it from a member; this reply does not count toward the throttle.
+    if (caller && route !== 'join' && peer.removedFingerprint(caller)) { request.resume(); sendJson(response, 410, { error: 'This machine was removed from the group.' }); return; }
+    if (!caller || (route !== 'join' && !peer.memberFingerprint(caller))) { reject(401, 'This machine is not in the group.'); return; }
+    try {
+      const body = method === 'POST' ? await readBody(request) : null;
+      if (response.destroyed || group !== listeners) return;
+      let value;
+      try { value = body && JSON.parse(body.toString('utf8')); } catch {}
+      let result;
+      if (route === 'join') {
+        if (!fields(value, ['code', 'name', 'addresses', 'port']) || typeof value.code !== 'string' || typeof value.name !== 'string') {
+          reject(400, 'Invalid join request.'); return;
+        }
+        result = await peer.join(value, caller);
+      } else if (route === 'leave') {
+        if (!fields(value, [])) { reject(400, 'Invalid leave request.'); return; }
+        result = await peer.leave(caller);
+      } else if (route === 'sessions') {
+        const answer = await peer.sessions(request.headers['if-none-match']);
+        if (response.destroyed) return;
+        response.setHeader('vary', 'Accept-Encoding');
+        if (answer.etag) response.setHeader('etag', answer.etag);
+        if (answer.status === 304) { response.writeHead(304); response.end(); return; }
+        const gzip = answer.status === 200 && acceptsGzip(request.headers['accept-encoding']);
+        response.writeHead(answer.status, { 'content-type': 'application/json; charset=utf-8', ...(gzip ? { 'content-encoding': 'gzip' } : {}) });
+        if (!gzip) { response.end(answer.body); return; }
+        const stream = createGzip();
+        stream.on('error', () => response.destroy());
+        stream.pipe(response);
+        stream.end(answer.body);
+        return;
+      } else result = { status: 200, body: route === 'hello' ? await peer.hello() : await peer.group() };
+      if (response.destroyed) return;
+      if (result.status === 401) reject(401, result.body.error); else sendJson(response, result.status, result.body);
+    } catch (cause) {
+      if (!response.destroyed) reject(cause.statusCode === 413 ? 413 : 500, cause.statusCode === 413 ? 'Request body too large.' : 'ASB cannot answer.');
+    }
+  }
+
   async function handle(request, response, group, kind) {
     const address = request.socket.remoteAddress;
     if (!isAllowedRemote(address, kind)) { request.socket.destroy(); return; }
@@ -329,6 +376,8 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     try { url = new URL(request.url, 'https://asb'); }
     catch { reject(400, 'Invalid request URL.'); return; }
     pairRoute = url.pathname === '/phone/v1/pair';
+    const peerRoute = peer && url.pathname.match(/^\/peer\/v1\/(join|hello|group|sessions|leave)$/);
+    if (peerRoute) { await handlePeer(request, response, group, peerRoute[1], reject); return; }
     const match = url.pathname.match(/^\/phone\/v1\/threads\/([^/]{1,512})\/(open|mark-read|mark-unread|pin|unpin|move-pin|discard-result|keep-result|drawer-in|drawer-out)$/);
     const hello = url.pathname === '/phone/v1/hello';
     const dashboard = url.pathname === '/phone/v1/dashboard';
@@ -344,7 +393,11 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
           if (!token) return null;
           const digest = Buffer.from(hash(token), 'hex');
           const found = settings.devices.find((item) => equal(digest, Buffer.from(item.tokenSha256, 'hex')));
-          if (!found) return null;
+          if (!found) {
+            // A phone paired on another group member; its last-seen time is not saved here.
+            const shared = peer?.phones().find((item) => equal(digest, Buffer.from(item.tokenHash, 'hex')));
+            return shared ? { id: shared.deviceId, name: shared.name } : null;
+          }
           found.lastSeenAtMs = now();
           dirty = true;
           if (now() - (seenSavedAt.get(found.id) || 0) >= 600_000) {
@@ -363,6 +416,7 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
         if (!fields(value, ['code', 'deviceName']) || typeof value.code !== 'string' || typeof value.deviceName !== 'string') {
           reject(400, 'Invalid pairing request.'); return;
         }
+        let paired = null;
         await serialize(async () => {
           if (response.destroyed || group !== listeners) return;
           const current = activePairing();
@@ -375,10 +429,13 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
           let id;
           do { id = randomBytes(6).toString('hex'); } while (settings.devices.some((item) => item.id === id));
           const name = Array.from(value.deviceName.trim().replace(/[\x00-\x1f\x7f-\x9f]/g, '')).slice(0, 64).join('') || 'Phone';
-          await save({ ...settings, devices: [...settings.devices, { id, name, tokenSha256: hash(token), createdAtMs: now(), lastSeenAtMs: 0 }] });
+          paired = { id, name, tokenSha256: hash(token), createdAtMs: now() };
+          await save({ ...settings, devices: [...settings.devices, { ...paired, lastSeenAtMs: 0 }] });
           pairing = null;
           sendJson(response, 200, { deviceId: id, token, serverName: hostName, asbVersion, api: PHONE_API_VERSION });
         });
+        // After the queue: the hook can call `devices()`.
+        if (paired) await onPhonePaired(paired);
       } else if (hello) {
         sendJson(response, 200, { api: PHONE_API_VERSION, asbVersion, deviceId: device.id, serverName: hostName,
           addresses: listening(), port: settings.port });
@@ -443,12 +500,21 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
       return { uri: `asb://pair?${Object.entries(values).map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join('&')}`,
         expiresAtMs: pairing.expiresAtMs };
     }),
-    revokeDevice: (id) => serialize(async () => {
+    revokeDevice: async (id) => {
+      const result = await serialize(async () => {
+        await load();
+        if (typeof id !== 'string' || !/^[a-f0-9]{12}$/.test(id)) throw invalid('Invalid phone ID.');
+        await save({ ...settings, devices: settings.devices.filter((device) => device.id !== id) });
+        seenSavedAt.delete(id);
+        return status();
+      });
+      await onPhoneRevoked(id);
+      return result;
+    },
+    devices: () => serialize(async () => {
       await load();
-      if (typeof id !== 'string' || !/^[a-f0-9]{12}$/.test(id)) throw invalid('Invalid phone ID.');
-      await save({ ...settings, devices: settings.devices.filter((device) => device.id !== id) });
-      seenSavedAt.delete(id);
-      return status();
+      return settings.devices.map(({ id, name, tokenSha256, createdAtMs }) => ({ id, name, tokenSha256, createdAtMs }));
     }),
+    credentials: () => serialize(async () => ({ ...(await certificate()), fingerprint })),
   };
 }

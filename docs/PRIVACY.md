@@ -1,6 +1,6 @@
 # ASB privacy
 
-ASB runs locally. Its default native and browser launch commands read no login credentials, make no model calls, send no telemetry, and make no network requests outside loopback. The optional phone gateway is off by default. When you turn it on, it accepts connections from paired phones on the private LAN, ZeroTier, or Tailscale addresses that you select.
+ASB runs locally. Its default native and browser launch commands read no login credentials, make no model calls, send no telemetry, and make no network requests outside loopback. The optional phone gateway is off by default. When you turn it on, it accepts connections from paired phones and from the members of an optional machine group, on the private LAN, ZeroTier, or Tailscale addresses that you select.
 
 This document covers `npm start`, `npm run desktop`, the packaged `asb` launcher, and the optional `asb service`. The optional bridge and the optional Android companion are described below.
 
@@ -43,7 +43,8 @@ Remote cache observations can be incomplete or old. ASB uses the newest response
 | `~/.config/asb/theme.json` | Custom colors. |
 | `~/.config/asb/sources.json` | Registered source IDs, app names, profile labels/colors, local data/transcript folders, installed launcher paths, and enabled flags. |
 | `~/.config/asb/phone.json` | Phone access on or off, selected addresses, port, and paired phones: ID, name, pairing and last-seen times, and the SHA-256 of the token. |
-| `~/.config/asb/phone-tls/` | The phone certificate and its private key. The engine creates them at start, also when phone access is off: the first 16 characters of the certificate fingerprint are the machine ID in the local dashboard rows (`machineId`, `globalId`). |
+| `~/.config/asb/phone-tls/` | The phone certificate and its private key. The engine creates them at start, also when phone access is off: the first 16 characters of the certificate fingerprint are the machine ID in the local dashboard rows (`machineId`, `globalId`) and in the machine group. |
+| `~/.config/asb/group.json` | Only in a machine group: the group ID, machine IDs, names, certificate fingerprints, addresses, ports, removed machines, and group phones with the SHA-256 of their tokens. See below. |
 | `~/.local/state/asb/palette.json` | The last color palette of the ASB window: the GNOME or Custom mode and seven colors. |
 | `$XDG_RUNTIME_DIR/asb/service.json` | Shared desktop/service descriptor: schema, pid, port, and per-run ASB source token. Mode `0600` in a user-owned `0700` folder. |
 | `~/.config/systemd/user/asb.service` | The user service unit, only after `asb service install`. |
@@ -73,6 +74,16 @@ A paired phone receives the same dashboard data as the local view: chat titles, 
 Each phone gets its own 256-bit random token. The PC saves only the SHA-256 of each token. The phone keeps the token in app-private storage, and the app turns off Android backup and device transfer. **Remove** in Preferences > Phone ends that phone's access at once. The pairing code works once and ends after 10 minutes. Repeated failed attempts from one address are blocked for one minute.
 
 Phone notifications show the session title and the source name. The app marks them private, so a secure lock screen can show only "A session needs attention", according to your Android settings. Anyone who unlocks the phone can see the session titles and folders in the app.
+
+## Optional machine group
+
+The machine group is off until you make one (`asb group invite`) or join one (`asb group join`). It needs network access on (`asb network enable <address>`), on the same private LAN, ZeroTier, or Tailscale addresses as phone access. Members talk directly to each other with mutual TLS 1.3. Each side pins the certificate of the other. ASB uses no cloud service and no relay.
+
+Each member sends its local session rows to the other members. A row has only these fields: the row and app session IDs, the app name and label, CLI or app, the title, the folder and project name, the archive state, the update time, the subagent count, the execution state and reason, the working time, the native unread mark and read state, the question and action flags, the last outcome and its times, the usage-limit reset time, and the source ID, label, color, and marker settings. It also sends the native session IDs of its rows and the sender IDs and times of incoming session messages, so that message lines can join sessions on two machines. It never sends message text, prompts, answers, transcripts, credentials, or the app links. Rows from the claude.ai cache and rows from other members are not sent again. Hello replies have the machine ID and name, the group ID, the ASB version, and the listening addresses and port.
+
+`~/.config/asb/group.json` (mode `0600`) stores the group ID, this machine's ID and name, each member's ID, name, certificate fingerprint, addresses, and port, removed machines, and the group phones with their names and the SHA-256 of their tokens. It never stores a token. The phone certificate is the machine identity, also in the group. A phone that you pair while in the group is added to the group list, so every member accepts its token. An invalid file moves to `group.json.bad`.
+
+Read, Unread, pins, the drawer, and Mute on a card from another machine change only the `pending.json` of the machine where you select them. ASB does not open or discard a session on another machine.
 
 ## Local API and app opens
 

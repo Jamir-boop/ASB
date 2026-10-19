@@ -6,7 +6,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
-import { createSwitchboardServer, localMachineName, switchboardPort } from '../src/switchboard.mjs';
+import { createSwitchboardServer, switchboardPort } from '../src/switchboard.mjs';
+import { createMachineGroup } from '../src/machine-group.mjs';
 import { createPhoneGateway } from '../src/phone-gateway.mjs';
 import { createSoundPlayer } from '../src/asb-sounds.mjs';
 import { findRunningService, instanceRuntimePath, prepareInstanceRuntime, publishInstanceRuntime, removeInstanceRuntime, requestInstance } from './asb-instance.mjs';
@@ -24,10 +25,14 @@ export async function runEngine({ env = process.env } = {}) {
   const port = switchboardPort(env.PORT);
   const sourceToken = randomBytes(32).toString('hex');
   const asbVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
-  const gateway = createPhoneGateway({ localPort: port, asbVersion });
+  // Decision B: the group reads the gateway and the server lazily, so it is made first.
+  const group = createMachineGroup({ gateway: () => gateway, server: () => server, asbVersion,
+    onChange: () => server.invalidateDashboard('peer-sessions', { hard: false }) });
+  const gateway = createPhoneGateway({ localPort: port, asbVersion, peer: group.peer,
+    onPhonePaired: group.onPhonePaired, onPhoneRevoked: group.onPhoneRevoked });
   let machineId = '';
-  const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, serviceMode: true, playSound: createSoundPlayer(),
-    machineIdentity: () => ({ machineId, machineName: localMachineName() }),
+  const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, machineGroup: group, serviceMode: true, playSound: createSoundPlayer(),
+    machineIdentity: () => ({ machineId, machineName: group.selfName() }),
     onStop: () => shutdown('the stop request') });
   let stopping = false;
   let cleanup;
@@ -47,10 +52,15 @@ export async function runEngine({ env = process.env } = {}) {
         } finally {
           const closed = new Promise((resolve) => server.close(resolve));
           server.closeAllConnections();
-          step = 'phone access stop';
-          try { await gateway.stop(); } finally {
-            step = 'server close';
-            await closed;
+          try {
+            step = 'machine links stop';
+            await group.stop();
+          } finally {
+            step = 'phone access stop';
+            try { await gateway.stop(); } finally {
+              step = 'server close';
+              await closed;
+            }
           }
         }
       } finally { step = 'none'; }
@@ -75,6 +85,8 @@ export async function runEngine({ env = process.env } = {}) {
       if (status.error) console.error(`Cannot start ASB phone access: ${status.error}`);
     } catch (error) { console.error(`Cannot start ASB phone access: ${error.message}`); }
     machineId = await gateway.identity().catch(() => '');
+    if (stopping) return;
+    try { await group.start(); } catch (error) { console.error(`Cannot start the ASB machine group: ${error.message}`); }
     if (stopping) return;
     runtimeRecord = await publishInstanceRuntime(prepared, { schema: 1, pid: process.pid, port, sourceToken });
     if (!stopping && shouldStartTray(env)) {

@@ -162,6 +162,18 @@ In Comfortable, the bottom line of a CLI card shows the terminal glyph and `CLI`
 
 A click or Enter on a CLI card does nothing, the card gets no Ctrl number, and the row panel button says **Runs in a terminal** and is insensitive. The tooltip says **CLI session. Runs in a terminal. ASB does not open CLI sessions.** Read, Unread, pins, the drawer, Mute, and Discard work as for other chats. The title of a Claude Code CLI card is the session name, then the title that you set in the CLI, else `Claude Code session` and the start of the session ID. ASB never uses prompt text as the title.
 
+## Machines
+
+The machine group shows the sessions of your other computers that run ASB. Each machine shows the cards of the other machines next to its own. The commands work through the running ASB engine. The Preferences page for machines is not in this version.
+
+1. On each machine, turn on network access: `asb network enable <address>`. `asb network status` lists the addresses of the PC. Network access is the same setting as phone access. Use a private LAN, ZeroTier, or Tailscale address.
+2. On the first machine, run `asb group invite`. It prints a join link, the fingerprint in groups of four characters, and the time until which the link works. The link works one time for 10 minutes.
+3. On the other machine, run `asb group join '<link>'`, optionally with `--name <name>`. It prints the name and fingerprint of the inviter and asks `Does the other machine show this fingerprint? [y/N]`. Compare the fingerprint, then answer `y`. When the name is taken, ASB suggests another one.
+
+`asb group status` lists the machines (online, or offline with the last-seen time) and the group phones. `asb group remove <name>` removes a machine. `asb group leave` makes this machine leave the group; it keeps its paired phones. A removed machine leaves the group by itself when it next reaches a member. To join again, it needs a new identity: if `asb group status` still shows a group, run `asb group leave`; then stop ASB (`asb engine stop`), run `asb group reset-identity`, and start ASB again. Paired phones must then pair again. `asb network disable` turns network access off.
+
+A card from another machine shows that machine's name in the bottom line. It does not open from ASB. Read, Unread, pins, the drawer, and Mute work and change only the marks of this machine. Discard does not work on it. A Done card of another machine plays the Done sound. When a machine does not answer for 3 polls, its cards show Unknown with `<name> is not reachable.` After 10 minutes, its cards go away. Each machine of the group also accepts the token of a phone that is paired with another machine of the group.
+
 ## Preferences and local settings
 
 Select the toolbar settings button to open **Preferences**. It is one separate native window. You can still use the main window. Selecting the button again raises the same Preferences window. Closing Preferences keeps ASB running and keeps form edits for the next open.

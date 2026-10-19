@@ -13,7 +13,7 @@ export const DEBIAN_DEPENDS = 'nodejs (>= 20), sqlite3, python3, python3-gi, gir
 // Keep this list explicit. A source checkout can contain private local files.
 export const RUNTIME_FILES = [
   'LICENSE', 'package.json', 'install.sh', 'uninstall.sh',
-  'scripts/asb', 'scripts/asb-package.mjs', 'scripts/asb-desktop.mjs', 'scripts/asb-service.mjs', 'scripts/asb-engine.mjs', 'scripts/asb-tray.py', 'scripts/asb-agent.mjs', 'scripts/asb-instance.mjs', 'scripts/asb-icon.mjs', 'scripts/asb-native.py',
+  'scripts/asb', 'scripts/asb-package.mjs', 'scripts/asb-desktop.mjs', 'scripts/asb-service.mjs', 'scripts/asb-engine.mjs', 'scripts/asb-tray.py', 'scripts/asb-agent.mjs', 'scripts/asb-group.mjs', 'scripts/asb-instance.mjs', 'scripts/asb-icon.mjs', 'scripts/asb-native.py',
   'public/switchboard.html', 'public/switchboard.css', 'public/switchboard.js', 'public/icon.svg',
   'assets/icons/local.asb.AgentSwitchBoard.svg', 'assets/icons/asb-claude-symbolic.svg', 'assets/icons/asb-openai-symbolic.svg', 'assets/icons/asb-opencode-symbolic.svg',
   'assets/icons/asb-machine-symbolic.svg', 'assets/icons/asb-terminal-symbolic.svg',
@@ -22,7 +22,7 @@ export const RUNTIME_FILES = [
   'assets/sounds/opencode-LICENSE.txt',
   'src/switchboard.mjs', 'src/app-sources.mjs', 'src/asb-server.mjs', 'src/dashboard-snapshot.mjs', 'src/local-http.mjs', 'src/session-opener.mjs',
   'src/codex-data.mjs', 'src/claude-data.mjs', 'src/claude-registry.mjs', 'src/claude-cli-data.mjs', 'src/claude-remote-data.mjs', 'src/insights.mjs', 'src/data-cache.mjs',
-  'src/thread-classification.mjs', 'src/phone-gateway.mjs', 'src/asb-sounds.mjs', 'src/opencode-data.mjs',
+  'src/thread-classification.mjs', 'src/phone-gateway.mjs', 'src/machine-group.mjs', 'src/machine-peers.mjs', 'src/asb-sounds.mjs', 'src/opencode-data.mjs',
   '.agents/plugins/marketplace.json',
   'bridge/.codex-plugin/plugin.json', 'bridge/.mcp.json', 'bridge/hooks/hooks.json',
   'bridge/dist/server.js', 'bridge/dist/hook.js', 'bridge/LICENSE',

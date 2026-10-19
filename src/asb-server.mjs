@@ -33,7 +33,7 @@ function readPalette(palettePath) {
 
 export function createAsbServer({
   markUnreadThread = null, markReadThread = null, setUnreadSettings = null, pinThread = null, discardThread = null, drawerThread = null, muteThread = null,
-  listSources = null, updateSource = null, removeSource = null, sourceToken = '', phoneGateway = null, serviceMode = false, onStop = null,
+  listSources = null, updateSource = null, removeSource = null, sourceToken = '', phoneGateway = null, machineGroup = null, serviceMode = false, onStop = null,
   appVersion = '', rootDir = '', sourcesPath = '', readSourcesRevision = async () => null,
   palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, now = Date.now, ...snapshotOptions
 } = {}) {
@@ -89,13 +89,16 @@ export function createAsbServer({
     const phoneReadRoute = phoneGateway && ['/api/phone', '/api/service'].includes(url.pathname);
     const phoneRevoke = phoneGateway && url.pathname.match(/^\/api\/phone\/devices\/([a-f0-9]{12})\/revoke$/);
     const phoneActionRoute = phoneGateway && (['/api/phone/settings', '/api/phone/pairing'].includes(url.pathname) || Boolean(phoneRevoke));
+    const groupRoute = machineGroup && url.pathname.match(/^\/api\/group(?:\/(invite|join|remove|leave))?$/);
     const eventRoute = url.pathname === '/api/events';
     const paletteRoute = url.pathname === '/api/palette';
     const engineStopRoute = Boolean(onStop) && url.pathname === '/api/engine/stop';
     const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute
-      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute;
+      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute
+      || Boolean(groupRoute?.[1]);
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
-    const readApiRoute = url.pathname === '/api/dashboard' || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute;
+    const readApiRoute = url.pathname === '/api/dashboard' || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute
+      || Boolean(groupRoute && !groupRoute[1]);
     const readRoute = readApiRoute || staticRoutes.includes(url.pathname);
     if (!readRoute && !actionRoute) {
       sendJson(response, 404, { error: 'Route is not available in ASB.' });
@@ -207,6 +210,38 @@ export function createAsbServer({
       } catch (error) {
         sendJson(response, error.statusCode || 500, { error: error instanceof SyntaxError ? 'Invalid phone action.'
           : error.statusCode === 400 ? error.message : 'Cannot update ASB phone access.' });
+      }
+      return;
+    }
+    if (groupRoute) {
+      response.setHeader('Cache-Control', 'no-store');
+      if (!sourceTokenAllowed(request)) {
+        sendJson(response, 403, { error: 'Use machine group actions from ASB.' });
+        return;
+      }
+      try {
+        const action = groupRoute[1];
+        let result;
+        if (!action) result = await machineGroup.status();
+        else {
+          const body = await readBody(request);
+          const fields = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join(',') : 'invalid';
+          const valid = action === 'join' ? fields === 'link,name' && typeof body.link === 'string' && typeof body.name === 'string'
+            : action === 'remove' ? fields === 'machineId' && typeof body.machineId === 'string' : fields === '';
+          if (!valid) {
+            sendJson(response, 400, { error: 'Invalid machine group action.' });
+            return;
+          }
+          result = action === 'invite' ? await machineGroup.invite() : action === 'join' ? await machineGroup.join(body)
+            : action === 'remove' ? await machineGroup.remove(body.machineId) : await machineGroup.leave();
+          invalidateDashboard('asb-group', { hard: false });
+        }
+        sendJson(response, 200, result);
+      } catch (error) {
+        if (error instanceof SyntaxError) sendJson(response, 400, { error: 'Invalid machine group action.' });
+        else if ([400, 409, 502].includes(error.statusCode)) {
+          sendJson(response, error.statusCode, { error: error.message, ...(error.suggestion ? { suggestion: error.suggestion } : {}) });
+        } else sendJson(response, error.statusCode === 413 ? 413 : 500, { error: 'Cannot update the ASB machine group.' });
       }
       return;
     }
@@ -322,7 +357,8 @@ export function createAsbServer({
           sendJson(response, 200, { changed: true, threadId: thread.id, pinnedOrder });
         }
       } catch (error) {
-        sendJson(response, error.statusCode || 500, { error: 'Cannot update this ASB session.' });
+        sendJson(response, error.statusCode || 500, { error: error.statusCode === 400 && error.expose ? error.message
+          : 'Cannot update this ASB session.' });
       }
       return;
     }
@@ -383,5 +419,8 @@ export function createAsbServer({
   });
   snapshot.attach(server);
   server.boardOpen = () => { expireUiClients(); return uiClients.size > 0; };
+  // The machine group reads the dashboard for its export and refreshes it after a member's new rows.
+  server.dashboardForRequest = dashboardForRequest;
+  server.invalidateDashboard = invalidateDashboard;
   return server;
 }

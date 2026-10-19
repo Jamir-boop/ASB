@@ -23,6 +23,7 @@ const READ_FIELDS = ['questionSeen', 'questionAck', 'nativeAt', 'nativeAck', 'na
   'discard', 'discardedAt', 'discardStart', 'discardEnd', 'discardNative', 'drawerSeen'];
 const RETAINED_SOURCES = ['native-unread', 'observed-completion', 'observed-failure'];
 const STOPPED_KINDS = ['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled'];
+const MESSAGE_KEYS = Symbol('ASB session message keys');
 const TITLE_LIMIT = 300;
 const MAX_SESSION_MESSAGES = 50;
 const BRIDGE_ALIAS = /^(?:session|cse)_([A-Za-z0-9_-]{1,128})$/;
@@ -253,7 +254,13 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
   board.refreshIntervalMs = switchboardRefreshInterval(board);
   board.messages = resolveSessionMessages(normalizedThreads, board.threads,
     { sinceMs: nowMs - SESSION_MESSAGE_WINDOW_MS, untilMs: nowMs + 5_000 });
+  Object.defineProperty(board, MESSAGE_KEYS, { value: board.messages[MESSAGE_KEYS] });
   return board;
+}
+
+// The native message keys of each row and the incoming messages whose sender is not a local key, for the machine group.
+export function sessionMessageKeys(dashboard) {
+  return dashboard?.[MESSAGE_KEYS] || { keysByRow: new Map(), ambiguous: [], unresolved: [] };
 }
 
 // Maps the native session IDs of the sources to row IDs, and returns only row ID pairs and times.
@@ -278,17 +285,32 @@ export function resolveSessionMessages(threads, rows, { sinceMs, untilMs }) {
     for (const alias of Array.isArray(thread.bridgeSessionIds) ? thread.bridgeSessionIds : []) addBridge(alias, rowId);
   }
   const messages = new Map();
+  const unresolved = new Map();
   for (const thread of threads) {
     if (!Array.isArray(thread.incomingMessages)) continue;
     const to = rowOf(thread);
     for (const message of to ? thread.incomingMessages : []) {
-      const from = lookup.get(String(message?.from || ''));
+      const key = String(message?.from || '');
+      const from = lookup.get(key);
       const atMs = Number(message?.atMs);
-      if (!from || from === to || !(atMs >= sinceMs && atMs <= untilMs)) continue;
+      if (!(atMs >= sinceMs && atMs <= untilMs)) continue;
+      // A sender that is not a local key can be a session on another machine.
+      if (from === undefined && key) unresolved.set(`${key}\0${to}\0${atMs}`, { to, from: key, atMs });
+      if (!from || from === to) continue;
       messages.set(`${from}\0${to}\0${atMs}`, { from, to, atMs });
     }
   }
-  return [...messages.values()].sort((a, b) => a.atMs - b.atMs || (a.from < b.from ? -1 : a.from > b.from ? 1 : 0)
+  const keysByRow = new Map();
+  for (const [key, rowId] of lookup) if (rowId) keysByRow.set(rowId, [...(keysByRow.get(rowId) || []), key]);
+  const result = sortSessionMessages([...messages.values()]);
+  const ambiguous = [...lookup].filter(([, rowId]) => rowId === null).map(([key]) => key);
+  Object.defineProperty(result, MESSAGE_KEYS, { value: { keysByRow, ambiguous, unresolved: [...unresolved.values()] } });
+  return result;
+}
+
+// Sorted by time, then sender and receiver row IDs; the newest 50.
+export function sortSessionMessages(messages) {
+  return messages.sort((a, b) => a.atMs - b.atMs || (a.from < b.from ? -1 : a.from > b.from ? 1 : 0)
     || (a.to < b.to ? -1 : a.to > b.to ? 1 : 0)).slice(-MAX_SESSION_MESSAGES);
 }
 
@@ -713,8 +735,10 @@ export function createSwitchboardServer(options = {}) {
     ...options,
     loadDashboard: async () => {
       const sources = registeredLoad ? await registry.read() : null;
-      const dashboard = await tracker.observe(await load({ ...(sources ? { sources } : {}),
-        machine: options.machineIdentity?.() || { machineId: '', machineName: localMachineName() } }));
+      const loaded = await load({ ...(sources ? { sources } : {}),
+        machine: options.machineIdentity?.() || { machineId: '', machineName: localMachineName() } });
+      options.machineGroup?.merge(loaded);
+      const dashboard = await tracker.observe(loaded);
       dashboard.sourcesRevision = sources ? appSourcesRevision(sources) : null;
       sound?.(dashboard);
       if (registeredLoad && registry.warning) dashboard.providers.push({ id: 'asb-sources', label: 'ASB', status: 'warning', message: registry.warning });
@@ -732,7 +756,10 @@ export function createSwitchboardServer(options = {}) {
       await tracker.acknowledge(thread.id);
       tracker.apply(thread);
     },
-    discardThread: (thread, enabled) => tracker.setDiscard(thread, enabled),
+    discardThread: (thread, enabled) => {
+      if (thread.remote) throw Object.assign(new Error('Discard does not work on a session on another machine.'), { statusCode: 400, expose: true });
+      return tracker.setDiscard(thread, enabled);
+    },
     drawerThread: (thread, enabled) => tracker.setDrawer(thread, enabled),
     muteThread: (thread, enabled) => tracker.setMuted(thread, enabled),
     setUnreadSettings: (enabled, dashboard) => tracker.setPersistentUnread(enabled, dashboard),

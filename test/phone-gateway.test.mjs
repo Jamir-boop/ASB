@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, X509Certificate } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
@@ -12,6 +12,7 @@ import { gunzipSync } from 'node:zlib';
 import { createPhoneGateway, DEFAULT_PHONE_PORT, PHONE_API_VERSION, phoneSettingsPath, phoneTlsDir,
   listPhoneAddresses, isAllowedRemote, acceptsGzip } from '../src/phone-gateway.mjs';
 import { RUNTIME_FILES } from '../scripts/asb-package.mjs';
+import { createMachineGroup } from '../src/machine-group.mjs';
 
 let hasOpenSsl = true;
 try { execFileSync('openssl', ['version'], { stdio: 'ignore' }); } catch { hasOpenSsl = false; }
@@ -755,4 +756,150 @@ gatewayTest('the machine identity is the first 16 fingerprint characters, also w
   t.after(() => missing.stop());
   await missing.start();
   assert.equal(await missing.identity(), '');
+});
+
+async function clientIdentity(dir, name) {
+  const key = path.join(dir, `${name}-key.pem`);
+  const cert = path.join(dir, `${name}-cert.pem`);
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', key,
+    '-out', cert, '-days', '2', '-subj', `/CN=${name}`], { stdio: 'ignore' });
+  const tls = { key: await readFile(key), cert: await readFile(cert) };
+  return { tls, fingerprint: sha256(new X509Certificate(tls.cert).raw) };
+}
+
+// The gateway with the real machine group behind its peer routes, on a 127.0.0.x address.
+async function peerFixture(t, options = {}) {
+  let fx;
+  const store = await storage(t);
+  const exportBoard = { threads: [{ id: 'codex:1', externalId: '1', provider: 'codex', title: 'Shared row', state: 'idle', remote: false }], messages: [] };
+  const logs = [];
+  const group = createMachineGroup({ file: path.join(store.home, 'group.json'), gateway: () => fx.gateway, addressOk: () => true,
+    hostName: 'debian', log: (line) => logs.push(line),
+    server: () => ({ dashboardForRequest: async () => group.merge(structuredClone(exportBoard)) }) });
+  const address = options.address || '127.0.0.2';
+  fx = await fixture(t, { enabled: false, gateway: { peer: group.peer, onPhonePaired: group.onPhonePaired, onPhoneRevoked: group.onPhoneRevoked,
+    listAddresses: () => [{ address, interface: 'lo', kind: 'lan' }] } });
+  await fx.gateway.updateSettings({ enabled: true, bindAddresses: [address], port: fx.port });
+  await group.start();
+  t.after(() => group.stop());
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'asb-peer-certs-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const [joiner, stranger] = await Promise.all([clientIdentity(dir, 'joiner'), clientIdentity(dir, 'stranger')]);
+  const peer = (route, { as, ...rest } = {}) => fx.request(route, { host: address, ...(as ? { tls: as.tls } : {}), ...rest });
+  const joinBody = (code, name = 'laptop') => ({ code, name, addresses: [{ kind: 'lan', address: '127.0.0.9' }], port: 4999 });
+  const code = async () => new URL((await group.invite()).link.replace('asb://', 'https://')).searchParams.get('c');
+  const pair = async (deviceName) => {
+    const value = new URL((await fx.gateway.createPairing()).uri).searchParams.get('c');
+    return fx.request('/phone/v1/pair', { host: address, method: 'POST', body: { code: value, deviceName } });
+  };
+  return { ...fx, group, logs, joiner, stranger, peer, joinBody, code, pair };
+}
+
+gatewayTest('peer routes need a member certificate; join takes any certificate with a valid code', async (t) => {
+  const { group, peer, joiner, stranger, joinBody, code, gateway, logs } = await peerFixture(t);
+  assert.equal((await peer('/peer/v1/hello')).status, 401);
+  assert.equal((await peer('/peer/v1/hello', { as: joiner })).status, 401);
+  assert.equal((await peer('/peer/v1/hello', { method: 'POST', as: joiner })).status, 405);
+  const first = await code();
+  const join = (body, as = joiner) => peer('/peer/v1/join', { method: 'POST', as, body });
+  assert.deepEqual([(await peer('/peer/v1/join', { method: 'POST', body: joinBody(first) })).status], [401]);
+  assert.equal((await join({ ...joinBody(first), extra: 1 })).status, 400);
+  const wrong = await join(joinBody('x'.repeat(27)));
+  assert.deepEqual([wrong.status, wrong.json.error], [401, 'This join code is not valid. Make a new invite.']);
+  const taken = await join(joinBody(first, 'DEBIAN'));
+  assert.deepEqual([taken.status, taken.json], [409, { error: 'Another machine in the group has this name.', suggestion: 'DEBIAN-2' }]);
+  const invalid = await join(joinBody(first, 'my laptop'));
+  assert.deepEqual([invalid.status, invalid.json.suggestion], [409, 'mylaptop']);
+  const joined = await join(joinBody(first));
+  assert.equal(joined.status, 200);
+  const status = await group.status();
+  assert.deepEqual(Object.keys(joined.json), ['groupId', 'group']);
+  assert.equal(joined.json.groupId, status.groupId);
+  assert.equal('self' in joined.json.group, false);
+  assert.deepEqual(joined.json.group.members.map((item) => [item.name, item.machineId]),
+    [['debian', status.self.machineId], ['laptop', joiner.fingerprint.slice(0, 16)]]);
+  // One use.
+  assert.equal((await join(joinBody(first, 'again'), stranger)).status, 401);
+  // A member gets the member routes.
+  const hello = await peer('/peer/v1/hello', { as: joiner });
+  assert.deepEqual([hello.status, hello.json.machineId, hello.json.name, hello.json.groupId, hello.json.api, hello.json.asbVersion],
+    [200, status.self.machineId, 'debian', status.groupId, 1, '']);
+  assert.deepEqual((await peer('/peer/v1/group', { as: joiner })).json, joined.json.group);
+  assert.equal((await peer('/peer/v1/group', { as: stranger })).status, 401);
+  const again = await join(joinBody(await code(), 'other'));
+  assert.deepEqual([again.status, again.json.error], [409, 'This machine is already in the group.']);
+  // Leave adds a tombstone; the machine cannot come back with the same certificate.
+  assert.equal((await peer('/peer/v1/leave', { method: 'POST', as: joiner, body: { x: 1 } })).status, 400);
+  assert.deepEqual((await peer('/peer/v1/leave', { method: 'POST', as: joiner, body: {} })).json, { left: true });
+  assert.equal((await peer('/peer/v1/hello', { as: joiner })).status, 410);
+  const removed = await join(joinBody(await code(), 'laptop'));
+  assert.deepEqual([removed.status, removed.json.error], [409, 'This machine was removed. Reset its identity and join again.']);
+  assert.deepEqual((await group.status()).members.map((item) => item.name), ['debian']);
+  // Eight wrong codes void the invite.
+  const last = await code();
+  for (let index = 0; index < 8; index += 1) assert.equal((await join(joinBody('y'.repeat(27)), stranger)).status, 401);
+  assert.equal((await join(joinBody(last, 'stranger'), stranger)).status, 401);
+  assert.equal((await gateway.credentials()).fingerprint, (await gateway.status()).fingerprint);
+  assert.deepEqual(logs, []);
+});
+
+gatewayTest('a removed certificate gets 410 on the member routes, and 410 does not count toward the throttle', async (t) => {
+  const { group, peer, joiner, stranger, joinBody, code } = await peerFixture(t);
+  assert.equal((await peer('/peer/v1/join', { method: 'POST', as: joiner, body: joinBody(await code()) })).status, 200);
+  await group.remove((await group.status()).members.find((item) => item.name === 'laptop').machineId);
+  for (const [route, method] of [['/peer/v1/hello', 'GET'], ['/peer/v1/group', 'GET'], ['/peer/v1/sessions', 'GET'], ['/peer/v1/leave', 'POST']]) {
+    const reply = await peer(route, { method, as: joiner, ...(method === 'POST' ? { body: {} } : {}) });
+    assert.deepEqual([reply.status, reply.json], [410, { error: 'This machine was removed from the group.' }], route);
+  }
+  for (let index = 0; index < 25; index += 1) assert.equal((await peer('/peer/v1/sessions', { as: joiner })).status, 410);
+  assert.equal((await peer('/peer/v1/hello', { as: stranger })).status, 401);
+  const again = await peer('/peer/v1/join', { method: 'POST', as: joiner, body: joinBody(await code(), 'laptop') });
+  assert.deepEqual([again.status, again.json.error], [409, 'This machine was removed. Reset its identity and join again.']);
+});
+
+gatewayTest('a non-member certificate counts toward the throttle on peer routes', async (t) => {
+  const { peer, stranger, advance } = await peerFixture(t);
+  for (let index = 0; index < 20; index += 1) assert.equal((await peer('/peer/v1/sessions', { as: stranger })).status, 401);
+  assert.equal((await peer('/peer/v1/sessions', { as: stranger })).status, 429);
+  advance(60_000);
+  assert.equal((await peer('/peer/v1/sessions', { as: stranger })).status, 401);
+});
+
+gatewayTest('the sessions route gives 304 for the same tag and gzip when the member accepts it', async (t) => {
+  const { peer, joiner, joinBody, code } = await peerFixture(t, { address: '127.0.0.3' });
+  assert.equal((await peer('/peer/v1/join', { method: 'POST', as: joiner, body: joinBody(await code()) })).status, 200);
+  const plain = await peer('/peer/v1/sessions', { as: joiner });
+  assert.deepEqual([plain.status, plain.headers.vary, plain.headers['content-encoding'], plain.headers['cache-control']],
+    [200, 'Accept-Encoding', undefined, 'no-store']);
+  assert.deepEqual([plain.json.api, plain.json.name, plain.json.rows.map((row) => row.title)], [1, 'debian', ['Shared row']]);
+  assert.match(plain.headers.etag, /^"[a-f0-9]{64}"$/);
+  const zipped = await peer('/peer/v1/sessions', { as: joiner, headers: { 'accept-encoding': 'gzip' } });
+  assert.equal(zipped.headers['content-encoding'], 'gzip');
+  assert.deepEqual(JSON.parse(gunzipSync(zipped.raw)).rows, plain.json.rows);
+  const cached = await peer('/peer/v1/sessions', { as: joiner, headers: { 'if-none-match': plain.headers.etag } });
+  assert.deepEqual([cached.status, cached.text, cached.headers.etag], [304, '', plain.headers.etag]);
+});
+
+gatewayTest('a group phone token works on the phone routes, and pairing and revoking follow the group', async (t) => {
+  const { group, request, pair, gateway, records } = await peerFixture(t);
+  const peerless = await fixture(t);
+  assert.equal((await peerless.request('/peer/v1/hello')).status, 404);
+  const before = (await pair('Before')).json;
+  await group.invite();
+  assert.deepEqual((await group.status()).phones.map((item) => item.name), ['Before']);
+  const token = randomBytes(32).toString('base64url');
+  await group.onPhonePaired({ id: 'abcdefabcdef', name: 'Shared', tokenSha256: sha256(token), createdAtMs: 1 });
+  const hello = await request('/phone/v1/hello', { host: '127.0.0.2', token });
+  assert.deepEqual([hello.status, hello.json.deviceId], [200, 'abcdefabcdef']);
+  assert.equal((await request('/phone/v1/dashboard', { host: '127.0.0.2', token })).status, 200);
+  assert.equal(records.at(-1).url, '/api/dashboard');
+  assert.deepEqual((await gateway.status()).devices.map((item) => item.name), ['Before']);
+  // A phone paired while in the group joins the group list; a revoked phone gets a tombstone.
+  const after = (await pair('After')).json;
+  assert.equal((await request('/phone/v1/hello', { host: '127.0.0.2', token: after.token })).status, 200);
+  assert.deepEqual((await group.status()).phones.map((item) => item.name), ['Before', 'Shared', 'After']);
+  assert.deepEqual((await gateway.devices()).map((item) => Object.keys(item).sort()), Array(2).fill(['createdAtMs', 'id', 'name', 'tokenSha256']));
+  await gateway.revokeDevice(before.deviceId);
+  assert.deepEqual((await group.status()).phones.map((item) => item.name), ['Shared', 'After']);
+  assert.equal((await request('/phone/v1/hello', { host: '127.0.0.2', token: before.token })).status, 401);
 });
