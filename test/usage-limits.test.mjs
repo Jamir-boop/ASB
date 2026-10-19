@@ -301,7 +301,8 @@ test('a limited row hides its unread mark until the reset and adds the reset to 
   assert.equal(board.nextStatusCheckAtMs, resetMs);
   const plain = buildSwitchboardDashboard([thread({ limitResetsAtMs: 0 })], [], now);
   // The row JSON has only the one new field.
-  const rowKeys = ['id', 'externalId', 'provider', 'providerLabel', 'title', 'cwd', 'projectName', 'archived', 'updatedAtMs',
+  const rowKeys = ['id', 'externalId', 'provider', 'providerLabel', 'surface', 'machineId', 'machineName', 'remote', 'globalId',
+    'remoteCache', 'title', 'cwd', 'projectName', 'archived', 'updatedAtMs',
     'subagentCount', 'state', 'reason', 'workingSinceMs', 'nativeUnread', 'readStatus', 'questionPending', 'actionRequired',
     'lastOutcome', 'failedAtMs', 'completionAtMs', 'canOpen', 'appDeepLink', 'limitResetsAtMs'];
   assert.deepEqual(Object.keys(board.threads[0]), rowKeys);

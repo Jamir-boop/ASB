@@ -736,3 +736,23 @@ gatewayTest('stopping closes a pending proxy request and its loopback connection
   await pending;
   await disconnected.promise;
 });
+
+gatewayTest('the machine identity is the first 16 fingerprint characters, also while phone access is off', async (t) => {
+  const store = await storage(t);
+  const gateway = createPhoneGateway({ localPort: 4629, asbVersion: '1.8.1', ...store, listAddresses: loopback });
+  t.after(() => gateway.stop());
+  await gateway.start();
+  assert.equal((await gateway.status()).enabled, false);
+  const id = await gateway.identity();
+  assert.match(id, /^[0-9a-f]{16}$/);
+  assert.equal(id, (await gateway.status()).fingerprint.slice(0, 16));
+  assert.equal(await gateway.identity(), id);
+  const failing = await storage(t);
+  const openssl = path.join(failing.home, 'openssl');
+  await writeFile(openssl, '#!/bin/sh\nexit 1\n');
+  await chmod(openssl, 0o755);
+  const missing = createPhoneGateway({ localPort: 4629, asbVersion: '1.8.1', ...failing, openssl, listAddresses: loopback });
+  t.after(() => missing.stop());
+  await missing.start();
+  assert.equal(await missing.identity(), '');
+});

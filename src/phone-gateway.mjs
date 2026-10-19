@@ -413,6 +413,11 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
       if (dirty) await save();
     }),
     status: () => serialize(async () => { await load(); return status(); }),
+    // The certificate is the machine identity, also while phone access is off: the ID is its first 16 fingerprint characters.
+    identity: () => serialize(async () => {
+      try { await certificate(); } catch { return ''; }
+      return fingerprint.slice(0, 16);
+    }),
     updateSettings: (value) => serialize(async () => {
       await load();
       if (!fields(value, ['enabled', 'bindAddresses', 'port']) || typeof value.enabled !== 'boolean' || !validAddresses(value.bindAddresses)) {

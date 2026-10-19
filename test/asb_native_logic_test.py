@@ -1143,6 +1143,84 @@ class DataChecks(unittest.TestCase):
                 if view == "comfortable":
                     widget.asb_age_label.set_label.assert_called_with("4h ago")
                 self.assertEqual(widget.asb_accessible_label, "Open Chat in Codex. Idle.")
+        # A limited remote row keeps the limit look and says where it runs: "workLP · 4h32m", or "Resets 4h32m · workLP".
+        remote = {**row, "canOpen": False, "remote": True, "machineName": "workLP", "limitResetsAtMs": NOW + 16_330_000}
+        self.assertEqual(asb.view_only_tone(remote), "")
+        for view, state, where in (("comfortable", "Resets in", "workLP ·"), ("compact", "Resets 4h32m", "· workLP")):
+            window.view = view
+            window.clear_read_feedback = window.update_card_actions = window.update_drawer_style = Mock()
+            classes = set()
+            widget = SimpleNamespace(asb_view=view, asb_thread={}, asb_time_signature=None, set_activatable=Mock(), asb_mark=Mock(),
+                                     asb_source_badge=Mock(), asb_where_icon=Mock() if view == "comfortable" else None,
+                                     asb_where_label=Mock(), asb_dot=Mock(), asb_folder=Mock(), asb_state_label=Mock(),
+                                     asb_age_label=Mock(), asb_title_label=Mock(), asb_limit_clock=Mock(),
+                                     add_css_class=classes.add, remove_css_class=classes.discard, set_sensitive=Mock(),
+                                     update_property=Mock(), update_state=Mock())
+            with patch.dict(SCOPE, {"Gtk": gtk}):
+                window.update_session_row(widget, remote)
+                window.update_row_text(widget, NOW)  # The row update uses the real clock.
+            widget.asb_where_label.set_label.assert_called_with(where)
+            widget.asb_state_label.set_label.assert_called_with(state)
+            if view == "comfortable":
+                widget.asb_where_icon.set_from_icon_name.assert_called_with("asb-machine-symbolic")
+                widget.asb_age_label.set_label.assert_called_with("4h32m")
+            self.assertEqual(classes & {"asb-limited", "asb-view-only-quiet", "asb-view-only-rest"}, {"asb-limited"})
+            self.assertEqual(widget.asb_accessible_label,
+                             "Session Chat in Codex. Idle. Usage limit. Resets in 4 hours 32 minutes. On workLP. View only.")
+
+    def test_view_only_rows_where_and_grey_tone(self):
+        remote = {"remote": True, "machineName": "homeLP", "surface": "app"}
+        cli = {"surface": "cli", "machineName": "This PC"}
+        for row, view_only, where in ((remote, True, ("asb-machine-symbolic", "homeLP")),
+                                      (cli, True, ("asb-terminal-symbolic", "CLI")),
+                                      ({**remote, "surface": "cli"}, True, ("asb-machine-symbolic", "homeLP")),
+                                      ({**remote, "machineName": ""}, True, ("asb-machine-symbolic", "another machine")),
+                                      ({"surface": "app", "remote": False}, False, (None, "")),
+                                      ({"provider": "opencode", "surface": "app", "canOpen": False}, False, (None, "")),
+                                      ({}, False, (None, ""))):
+            self.assertEqual((asb.is_view_only(row), asb.row_where(row)), (view_only, where))
+        tone = asb.view_only_tone
+        for extra, expected in (({"state": "idle"}, "rest"), ({"state": "unknown"}, "rest"), ({"state": "working"}, "quiet"),
+                                ({"state": "waiting"}, "quiet"), ({"state": "idle", "unread": True}, ""),
+                                ({"state": "waiting", "questionAttention": True}, ""), ({"state": "idle", "pending": True}, ""),
+                                ({"state": "idle", "limitResetsAtMs": NOW}, "")):
+            self.assertEqual(tone({**cli, **extra}), expected)
+            self.assertEqual(tone({**remote, **extra}), expected)
+        self.assertEqual(tone({"state": "idle", "surface": "app"}), "")
+        # The card shows the where text and the tone classes in both views; a desktop row hides them.
+        window = object.__new__(Window)
+        window.clear_read_feedback = window.update_card_actions = window.update_row_text = window.update_drawer_style = Mock()
+        window.open_errors = {}
+        for view in ("comfortable", "compact"):
+            window.view = view
+            classes = set()
+            widget = SimpleNamespace(asb_view=view, asb_thread={}, set_activatable=Mock(), asb_mark=Mock(), asb_source_badge=Mock(),
+                                     asb_where_icon=Mock() if view == "comfortable" else None, asb_where_label=Mock(),
+                                     asb_dot=Mock(), asb_state_label=Mock(), asb_folder=Mock(),
+                                     add_css_class=classes.add, remove_css_class=classes.discard)
+            base = {"id": "a", "provider": "claude-desktop-code", "canOpen": False, "unread": False, "pending": False}
+            for row, label, icon, css in (({**base, **cli, "state": "idle"}, "CLI", "asb-terminal-symbolic",
+                                           {"asb-view-only-quiet", "asb-view-only-rest"}),
+                                          ({**base, **remote, "state": "working"}, "homeLP", "asb-machine-symbolic", {"asb-view-only-quiet"}),
+                                          ({**base, **cli, "state": "idle", "unread": True}, "CLI", "asb-terminal-symbolic", set()),
+                                          ({**base, "canOpen": True, "state": "idle"}, "", None, set())):
+                window.update_session_row(widget, row)
+                widget.asb_where_label.set_label.assert_called_with(("" if not label else label + " ·") if view == "comfortable"
+                                                                     else ("" if not label else "· " + label))
+                widget.asb_where_label.set_visible.assert_called_with(bool(label))
+                if view == "comfortable":
+                    widget.asb_where_icon.set_visible.assert_called_with(bool(label))
+                    if icon:
+                        widget.asb_where_icon.set_from_icon_name.assert_called_with(icon)
+                self.assertEqual(classes & {"asb-view-only-quiet", "asb-view-only-rest"}, css)
+                widget.set_activatable.assert_called_with(row["canOpen"])
+        # A Working remote card offers no discard; a local CLI card keeps the offer.
+        window.view = "comfortable"
+        widget.asb_view, widget.asb_thread = "comfortable", {}
+        widget.asb_where_icon = Mock()
+        for row, offer in (({**base, **remote, "state": "working"}, False), ({**base, **cli, "state": "working"}, True)):
+            window.update_session_row(widget, row)
+            widget.asb_dot.set_visible.assert_called_with(offer)
 
     def test_filters_state_order_pending_and_archive(self):
         self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE)], ["second", "claude:local_mock", "first", "unknown"])
@@ -2026,7 +2104,7 @@ class NativeLogicChecks(unittest.TestCase):
             for provider in ("codex", "claude-desktop-code"):
                 window.view = view
                 badge = Mock()
-                widget = SimpleNamespace(asb_view=view, asb_thread={}, asb_mark=Mock(), asb_source_badge=badge,
+                widget = SimpleNamespace(asb_view=view, asb_thread={}, asb_mark=Mock(), asb_source_badge=badge, asb_where_icon=(Mock() if view == "comfortable" else None), asb_where_label=Mock(),
                                          asb_dot=Mock(), asb_state_label=Mock(), asb_folder=Mock(), set_child=Mock(),
                                          set_activatable=Mock(), add_css_class=Mock(), remove_css_class=Mock())
                 row = {"id": "profile-chat", "provider": provider, "state": "working", "unread": True}
@@ -2123,6 +2201,10 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(controls(working), {"unread": (False, "mark-unread"), "drawer": (False, None), "muted": (False, "mute"),
                                              "pinned": (False, "pin"), "discard": (False, "discard-result")})
         self.assertEqual(controls({**working, "discardResult": True})["discard"], (True, "keep-result"))
+        for remote in (working, {**working, "discardResult": True}):
+            self.assertNotIn("discard", controls({**remote, "remote": True}))
+            self.assertFalse({"discard-result", "keep-result"} & {action for _title, action in SCOPE["row_menu_actions"]({**remote, "remote": True})})
+        self.assertEqual(controls({**working, "surface": "cli"})["discard"], (False, "discard-result"))
         self.assertEqual(note({**working, "unread": True}), "")
         drawer = {"state": "idle", "drawer": True}
         self.assertEqual(controls(drawer)["unread"], (True, "mark-read"))
@@ -2188,7 +2270,7 @@ class NativeLogicChecks(unittest.TestCase):
         window = object.__new__(Window)
         window.view, window.update_row_text, window.open_errors = "compact", Mock(), {}
         widget = SimpleNamespace(asb_view="compact", asb_thread={}, set_activatable=Mock(), set_child=Mock(), asb_mark=Mock(),
-                                 asb_source_badge=Mock(), asb_dot=Mock(), asb_state_label=Mock(),
+                                 asb_source_badge=Mock(), asb_where_icon=None, asb_where_label=Mock(), asb_dot=Mock(), asb_state_label=Mock(),
                                  add_css_class=Mock(), remove_css_class=Mock())
         glyph = widget.asb_dot.get_first_child.return_value
         row = {"id": "a", "provider": "codex", "state": "working", "questionAttention": True}
@@ -2368,7 +2450,7 @@ class NativeLogicChecks(unittest.TestCase):
         window = object.__new__(Window)
         window.view, window.update_row_text, window.open_errors = "compact", Mock(), {}
         widget = SimpleNamespace(asb_view="compact", asb_thread={}, set_activatable=Mock(), set_child=Mock(), asb_mark=Mock(),
-                                 asb_source_badge=Mock(), asb_dot=Mock(), asb_state_label=Mock(),
+                                 asb_source_badge=Mock(), asb_where_icon=None, asb_where_label=Mock(), asb_dot=Mock(), asb_state_label=Mock(),
                                  add_css_class=Mock(), remove_css_class=Mock())
         row = {"id": "a", "provider": "codex", "state": "working", "discardResult": True, "workingSinceMs": 1}
         window.update_session_row(widget, row)
@@ -2441,6 +2523,15 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual((value["app"], value["flags"]),
                          ("OpenCode", "Pinned · No direct link. OpenCode cannot open one session from a link."))
         self.assertIn("OpenCode cannot open one session from a link.", description(value))
+        # A view-only row says where it runs in place of "No direct link".
+        for extra, flags in (({"surface": "cli", "pinned": True}, "Pinned · CLI session. Runs in a terminal. ASB does not open CLI sessions."),
+                             ({"remote": True, "machineName": "homeLP"}, "On homeLP. Open it on homeLP."),
+                             ({"remote": True, "machineName": "homeLP", "surface": "cli"}, "On homeLP · CLI session. Open it on homeLP."),
+                             ({"remote": True, "machineName": ""}, "On another machine. Open it on another machine."),
+                             ({"surface": "app"}, "No direct link")):
+            value = model({**base, "canOpen": False, **extra}, 223_000, "/home/test")
+            self.assertEqual(value["flags"], flags)
+            self.assertIn(flags, description(value))
 
     def test_tooltip_query_reuses_content_and_rebuilds_on_rendered_changes_without_reads(self):
         window = object.__new__(Window)
@@ -3466,7 +3557,7 @@ class NativeLogicChecks(unittest.TestCase):
                     widget.asb_focus_key = row["id"]
                     for name in ("asb_mark", "asb_source_badge", "asb_dot", "asb_state_label", "asb_title_label",
                                  "asb_folder", "asb_age_label", "asb_read_button", "asb_pin_button", "asb_drawer_button",
-                                 "set_activatable", "set_sensitive", "update_property", "update_state", "remove_css_class"):
+                                 "asb_where_icon", "asb_where_label", "set_activatable", "set_sensitive", "update_property", "update_state", "remove_css_class"):
                         control = Mock()
                         setattr(widget, name, control)
                         controls.append(control)
@@ -3688,7 +3779,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.view, window.update_row_text, window.open_errors = "compact", Mock(), {}
         row = {"id": "a", "provider": "codex", "state": "working", "updatedAtMs": 10, "unread": False}
         widget = SimpleNamespace(asb_view="compact", asb_thread=dict(row), set_activatable=Mock(),
-                                 set_child=Mock(), asb_mark=Mock(), asb_source_badge=Mock(), asb_dot=Mock(), asb_state_label=Mock(),
+                                 set_child=Mock(), asb_mark=Mock(), asb_source_badge=Mock(), asb_where_icon=None, asb_where_label=Mock(), asb_dot=Mock(), asb_state_label=Mock(),
                                  add_css_class=Mock(), remove_css_class=Mock())
         row.update(updatedAtMs=20, unread=True, state="waiting", pinned=True)
         window.update_session_row(widget, row)
@@ -3798,7 +3889,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.clear_read_feedback = window.update_card_actions = window.update_row_text = Mock()
         window.open_errors = {}
         classes = set()
-        widget = SimpleNamespace(asb_view="comfortable", asb_thread={}, set_activatable=Mock(), asb_mark=Mock(), asb_source_badge=Mock(),
+        widget = SimpleNamespace(asb_view="comfortable", asb_thread={}, set_activatable=Mock(), asb_mark=Mock(), asb_source_badge=Mock(), asb_where_icon=Mock(), asb_where_label=Mock(),
                                  asb_dot=Mock(), asb_state_label=Mock(), asb_folder=Mock(),
                                  add_css_class=classes.add, remove_css_class=classes.discard)
         row = {"id": "a", "provider": "codex", "state": "idle", "unread": False, "pending": False}
@@ -3844,7 +3935,7 @@ class NativeLogicChecks(unittest.TestCase):
         read_row = dict(row, unread=False, nativeAttention=False)
         widget = SimpleNamespace(asb_view="comfortable", asb_thread=dict(row), asb_focus_key="a",
                                  asb_read_timer=None, asb_read_generation=1, asb_read_button=Mock(),
-                                 asb_pin_button=Mock(), asb_mark=Mock(), asb_source_badge=Mock(), asb_dot=Mock(), asb_folder=Mock(),
+                                 asb_pin_button=Mock(), asb_mark=Mock(), asb_source_badge=Mock(), asb_where_icon=Mock(), asb_where_label=Mock(), asb_dot=Mock(), asb_folder=Mock(),
                                  asb_state_label=Mock(), set_activatable=Mock(), add_css_class=Mock(), remove_css_class=Mock())
         window = object.__new__(Window)
         window.closed, window.view, window.base = False, "comfortable", "http://127.0.0.1:1"

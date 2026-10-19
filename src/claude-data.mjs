@@ -7,7 +7,7 @@ import { enrichThreadRuntime } from './insights.mjs';
 import { readLiveClaudeRegistry } from './claude-registry.mjs';
 import { openCommandForUrl, runOpener } from './session-opener.mjs';
 
-const DEFAULT_CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
+export const DEFAULT_CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 export function defaultClaudeAppDir(platform = process.platform, homeDir = os.homedir(), env = process.env) {
   if (platform === 'linux') return path.join(env.XDG_CONFIG_HOME || path.join(homeDir, '.config'), 'Claude');
   if (platform === 'win32') return path.join(env.APPDATA || path.join(homeDir, 'AppData', 'Roaming'), 'Claude');
@@ -15,9 +15,9 @@ export function defaultClaudeAppDir(platform = process.platform, homeDir = os.ho
 }
 const DEFAULT_CLAUDE_APP_DIR = defaultClaudeAppDir();
 const DEFAULT_MAX_COUNT = 80;
-const DEFAULT_MAX_JSONL_BYTES = 8 * 1024 * 1024;
+export const DEFAULT_MAX_JSONL_BYTES = 8 * 1024 * 1024;
 const MAX_ASB_SESSION_COUNT = 5000;
-const SIGNAL_CONCURRENCY = 6;
+export const SIGNAL_CONCURRENCY = 6;
 const CLAUDE_APPEND_GUARD_BYTES = 64;
 const CLAUDE_ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 // A subagent log writes its end before the task notification reaches the root, so an open link stays open work for this time.
@@ -165,6 +165,8 @@ function initialSignals() {
     version: '',
     model: '',
     gitBranch: '',
+    customTitle: '',
+    agentName: '',
     firstUserMessage: '',
     latestUserMessage: '',
     latestMeaningfulUserMessage: '',
@@ -454,6 +456,10 @@ function applyClaudeSignalLine(signals, line, lifecycleOnly = false) {
   signals.version ||= String(event.version || event.claude_code_version || '');
   signals.gitBranch ||= String(event.gitBranch || event.git_branch || '');
 
+  // Title records: only these two fields are read; the last one wins.
+  if (event.type === 'custom-title' && typeof event.customTitle === 'string') signals.customTitle = event.customTitle;
+  if (event.type === 'agent-name' && typeof event.agentName === 'string') signals.agentName = event.agentName;
+
   if (event.type === 'user') {
     handleUserEvent(signals, event, timestampMs);
     return;
@@ -639,7 +645,7 @@ export function retainClaudeDataSources(sources) {
   claudeSourceRoots = roots;
 }
 
-async function mapWithConcurrency(items, concurrency, mapper) {
+export async function mapWithConcurrency(items, concurrency, mapper) {
   const results = new Array(items.length);
   let nextIndex = 0;
   await Promise.all(Array.from({ length: Math.min(items.length, Math.max(1, Number.parseInt(concurrency, 10) || 1)) }, async () => {
@@ -675,16 +681,19 @@ function deriveClaudeDesktopCodeTitle(session = {}) {
     session.metadata?.title,
     session.metadata?.name,
   );
-  const title = compactInlineText(panelTitle);
-  return truncateText(title || CLAUDE_DESKTOP_CODE_DEFAULT_TITLE);
+  return claudeTitle(compactInlineText(panelTitle) || CLAUDE_DESKTOP_CODE_DEFAULT_TITLE);
 }
 
-function projectNameFromCwd(cwd, fallback) {
+export function claudeTitle(value) {
+  return truncateText(compactInlineText(value));
+}
+
+export function projectNameFromCwd(cwd, fallback) {
   if (!cwd) return fallback;
   return path.basename(cwd) || fallback;
 }
 
-function baseClaudeThread({
+export function baseClaudeThread({
   id,
   externalId,
   provider,
@@ -762,7 +771,7 @@ function baseClaudeThread({
 
 // A permission prompt leaves no transcript signal, so a live registry record in the waiting status adds one.
 // Other statuses change nothing: the transcript stays the source for Working, Done, and questions.
-function applyLiveClaudeStatus(thread, records, nowMs) {
+export function applyLiveClaudeStatus(thread, records, nowMs) {
   const newest = (list) => list.sort((a, b) => b.statusUpdatedAt - a.statusUpdatedAt)[0];
   const sessionIds = new Set([thread.cliSessionId, ...(thread.priorCliSessionIds || [])].filter(Boolean));
   const host = records.filter((record) => record.hostSessionId === thread.externalId);
@@ -948,7 +957,7 @@ async function scanClaudeSignalRecords(filePath, stat, state, start = 0, guard =
   return { state, signals: finishClaudeSignals(visible), offset, guard: Buffer.from(guard) };
 }
 
-async function readClaudeRootSignals(entry, subagents, options, agentLogs = new Map()) {
+export async function readClaudeRootSignals(entry, subagents, options, agentLogs = new Map()) {
   const signals = await readSignalsForFile(entry.filePath, options);
   const root = signals.lifecycle;
   const childrenById = new Map((subagents || []).map((child) => [path.basename(child.filePath, '.jsonl'), child]));
@@ -1036,7 +1045,7 @@ async function readClaudeRootSignals(entry, subagents, options, agentLogs = new 
   };
 }
 
-async function indexClaudeProjectFiles(projectsDir = DEFAULT_CLAUDE_PROJECTS_DIR) {
+export async function indexClaudeProjectFiles(projectsDir = DEFAULT_CLAUDE_PROJECTS_DIR) {
   const pending = claudeProjectIndexReads.get(projectsDir);
   if (pending) {
     claudeCacheMetrics.projectIndexHits += 1;

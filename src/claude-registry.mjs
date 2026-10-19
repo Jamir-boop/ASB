@@ -4,6 +4,7 @@ import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
 
 const MAX_RECORD_BYTES = 256 * 1024;
+const BRIDGE_SESSION = /^(?:cse|session)_[A-Za-z0-9_-]{1,128}$/;
 const text = (value) => typeof value === 'string' ? value : null;
 
 export async function processStart(pid) {
@@ -54,7 +55,10 @@ export async function readLiveClaudeRegistry(roots) {
         hostSessionId: text(record.hostSessionId), name: record.name, status: text(record.status),
         waitingFor: typeof record.waitingFor === 'string' && record.waitingFor.length <= 64 ? record.waitingFor : undefined,
         statusUpdatedAt: Number.isFinite(record.statusUpdatedAt) ? record.statusUpdatedAt : 0,
-        cwd: text(record.cwd), kind: text(record.kind), entrypoint: text(record.entrypoint) });
+        cwd: text(record.cwd), kind: text(record.kind), entrypoint: text(record.entrypoint),
+        startedAt: Number.isFinite(record.startedAt) ? record.startedAt : 0,
+        bridgeSessionId: typeof record.bridgeSessionId === 'string' && BRIDGE_SESSION.test(record.bridgeSessionId)
+          ? record.bridgeSessionId : undefined });
     }
   }
   return [...records.values()];

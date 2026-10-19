@@ -26,6 +26,8 @@ const STOPPED_KINDS = ['turn_aborted', 'turn_cancelled', 'task_cancelled', 'canc
 const TITLE_LIMIT = 300;
 const MAX_SESSION_MESSAGES = 50;
 const BRIDGE_ALIAS = /^(?:session|cse)_([A-Za-z0-9_-]{1,128})$/;
+// The Codex thread sources of terminal tasks; `src/insights.mjs` also treats `terminal` and `tui` as CLI.
+const CODEX_CLI_SOURCES = ['cli', 'exec', 'terminal', 'tui'];
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const APP_VERSION = JSON.parse(readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8')).version;
 
@@ -34,6 +36,11 @@ function capTitle(title) {
   if (title.length <= TITLE_LIMIT) return title;
   const points = [...title];
   return points.length > TITLE_LIMIT ? `${points.slice(0, TITLE_LIMIT - 1).join('')}…` : title;
+}
+
+// The short host name, safe for a card label.
+export function localMachineName(hostName = os.hostname()) {
+  return String(hostName || '').split('.')[0].replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32) || 'This PC';
 }
 
 export function switchboardRefreshInterval(dashboard) {
@@ -88,6 +95,7 @@ export function switchboardStatus(thread, nowMs = Date.now()) {
       : thread.liveWaitingFor === 'input needed' ? 'Claude waits for your answer.' : 'Claude waits for your permission.' };
   }
   if (thread.groupChildWaiting) return { state: 'waiting', reason: 'A linked child is waiting for an answer.' };
+  if (thread.cliNoTranscript) return { state: 'idle', reason: 'The CLI session has no task yet.' };
   if (thread.lifecycleRunning === false) return { state: 'idle', reason: 'The last task ended.' };
   if (thread.lifecycleRunning === true) {
     const activityAtMs = Number(thread.agentActivityAtMs ?? thread.latestLifecycleAtMs);
@@ -154,7 +162,8 @@ function codexGroupLifecycle(thread, byId, nowMs) {
   };
 }
 
-export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.now()) {
+export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.now(),
+  machine = { machineId: '', machineName: localMachineName() }) {
   const normalizedThreads = normalizeDashboardThreads(threads, nowMs);
   const byId = new Map(normalizedThreads.map((thread) => [thread.id, thread]));
   const roots = normalizedThreads.filter(isSwitchboardRoot).map((thread) => codexGroupLifecycle(thread, byId, nowMs));
@@ -171,6 +180,10 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
         : validClaude ? `claude://code/continue?session=${encodeURIComponent(thread.externalId)}`
           : thread.provider === 'claude-desktop-code' && thread.source === 'claude-remote-cache'
             ? claudeRemoteDeepLink(thread.externalId) : '';
+      const surface = isCodex ? (CODEX_CLI_SOURCES.includes(String(thread.source).toLowerCase()) ? 'cli' : 'app')
+        : thread.surface === 'cli' ? 'cli' : 'app';
+      // A CLI session or a session on another machine shows as a card but never opens from ASB.
+      const viewOnly = surface === 'cli' || thread.remote === true;
       const status = switchboardStatus(thread, nowMs);
       const startedAtMs = Number(thread.lifecycleRunning === true ? thread.agentStartedAtMs
         : thread.provider === 'claude-desktop-code' ? thread.latestUserMessageAtMs : 0);
@@ -181,7 +194,14 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
           sourceNumber: thread.sourceNumber, sourceCount: thread.sourceCount, sourceColor: thread.sourceColor,
           sourceShowMarker: thread.sourceShowMarker } : {}),
         provider: isCodex ? 'codex' : thread.provider,
-        providerLabel: isCodex ? 'Codex' : thread.provider === 'opencode' ? 'OpenCode' : 'Claude Desktop Code',
+        providerLabel: isCodex ? (surface === 'cli' ? 'Codex CLI' : 'Codex') : thread.provider === 'opencode' ? 'OpenCode'
+          : surface === 'cli' ? 'Claude Code CLI' : 'Claude Desktop Code',
+        surface,
+        machineId: machine.machineId,
+        machineName: machine.machineName,
+        remote: false,
+        globalId: machine.machineId ? `${machine.machineId}:${thread.id}` : '',
+        remoteCache: thread.source === 'claude-remote-cache',
         title: capTitle(thread.title || 'Untitled session'),
         cwd: thread.cwd || '',
         projectName: thread.cwd ? path.basename(thread.cwd) || thread.cwd
@@ -203,8 +223,8 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
         completionAtMs: thread.groupCompletionAtMs ?? (['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled', 'failed'].includes(thread.latestLifecycleKind) ? 0
           : Math.max(thread.latestLifecycleKind === 'task_complete' ? Number(thread.latestLifecycleAtMs || 0) : 0,
             Number(thread.latestAgentFinalAtMs || 0))),
-        canOpen: Boolean(appDeepLink) && thread.sourceCanOpen !== false,
-        appDeepLink,
+        canOpen: !viewOnly && Boolean(appDeepLink) && thread.sourceCanOpen !== false,
+        appDeepLink: viewOnly ? '' : appDeepLink,
       };
       // A usage limit stopped the session, and its reset is still in the future.
       const limit = Number(thread.limitResetsAtMs || 0);
@@ -295,6 +315,7 @@ export async function loadSwitchboardDashboard({
   codexOptions = {},
   claudeOptions = {},
   sources = null,
+  machine,
 } = {}) {
   const inputs = sources ? numberAppSources(sources) : [
     { id: 'codex', provider: 'codex', label: 'Codex', enabled: true },
@@ -351,11 +372,21 @@ export async function loadSwitchboardDashboard({
         sourceCanOpen: source.builtin || Boolean(source.launcher), sourceDataDir: source.dataDir };
     });
   });
-  return buildSwitchboardDashboard(threads, providers, nowMs);
+  // Two Claude sources that share a registry folder (`asb bridge link-claude`) both list a live CLI session:
+  // keep one row, the one with a transcript, else the first in source order.
+  const cliRows = new Map();
+  for (const thread of threads) {
+    if (thread.source !== 'claude-cli') continue;
+    const kept = cliRows.get(thread.externalId);
+    if (!kept || (kept.cliNoTranscript && !thread.cliNoTranscript)) cliRows.set(thread.externalId, thread);
+  }
+  const unique = threads.filter((thread) => thread.source !== 'claude-cli' || cliRows.get(thread.externalId) === thread);
+  return buildSwitchboardDashboard(unique, providers, nowMs, machine);
 }
 
 export async function openSwitchboardThread(thread, options = {}) {
   if (thread.provider === 'opencode') throw new Error('OpenCode cannot open one session from a link.');
+  if (thread.surface === 'cli' || thread.remote === true) throw new Error('This session cannot open from ASB.');
   const externalId = thread.externalId || thread.id;
   const valid = (thread.provider === 'codex' && UUID.test(externalId)
     && thread.appDeepLink === `codex://threads/${externalId}`)
@@ -682,7 +713,8 @@ export function createSwitchboardServer(options = {}) {
     ...options,
     loadDashboard: async () => {
       const sources = registeredLoad ? await registry.read() : null;
-      const dashboard = await tracker.observe(await load(sources ? { sources } : undefined));
+      const dashboard = await tracker.observe(await load({ ...(sources ? { sources } : {}),
+        machine: options.machineIdentity?.() || { machineId: '', machineName: localMachineName() } }));
       dashboard.sourcesRevision = sources ? appSourcesRevision(sources) : null;
       sound?.(dashboard);
       if (registeredLoad && registry.warning) dashboard.providers.push({ id: 'asb-sources', label: 'ASB', status: 'warning', message: registry.warning });

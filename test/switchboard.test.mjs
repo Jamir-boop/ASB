@@ -13,7 +13,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { defaultClaudeAppDir, normalizeClaudeDesktopCodeSession, loadClaudeDesktopCodeThreads, parseClaudeJsonlSignals } from '../src/claude-data.mjs';
 import { loadCodexDashboard, readThreads, discoverCodexStateDatabase, parseRolloutSignals, readRolloutSignals, getCodexCacheStats, codexNativeReadStatus } from '../src/codex-data.mjs';
-import { buildSwitchboardDashboard, createSwitchboardServer, loadSwitchboardDashboard, openSwitchboardThread, switchboardStatus, switchboardWatchPaths, PendingTracker } from '../src/switchboard.mjs';
+import { buildSwitchboardDashboard, createSwitchboardServer, loadSwitchboardDashboard, localMachineName, openSwitchboardThread, switchboardStatus, switchboardWatchPaths, PendingTracker } from '../src/switchboard.mjs';
 import { AppSourceRegistry } from '../src/app-sources.mjs';
 
 const id = '123e4567-e89b-12d3-a456-426614174000';
@@ -1817,4 +1817,89 @@ test('the registered OpenCode source loads from its fixed folder, is watched the
   assert.deepEqual([spec.path, spec.optional], [dataDir, true]);
   assert.deepEqual(['opencode.db', 'opencode.db-wal', 'opencode.db-shm', 'auth.json', 'log', ''].map((name) => spec.acceptEvent(name)),
     [true, true, false, false, false, true]);
+});
+
+test('localMachineName keeps a short safe host name', () => {
+  assert.equal(localMachineName('homeLP.lan'), 'homeLP');
+  assert.equal(localMachineName('work lp_2-x.example.com'), 'worklp_2-x');
+  assert.equal(localMachineName('a'.repeat(40)), 'a'.repeat(32));
+  assert.equal(localMachineName('..'), 'This PC');
+  assert.equal(localMachineName('ö€'), 'This PC');
+  assert.equal(localMachineName(''), 'This PC');
+});
+
+test('rows carry the surface and machine fields, and CLI rows are view only', () => {
+  const codexId = '019de5f1-9dc2-7f82-9e2d-5f0d4a7d2f11';
+  const desktopId = 'local_019de5f1-9dc2-7f82-9e2d-5f0d4a7d2f12';
+  const codex = (id, source) => ({ id, externalId: id, provider: 'codex', source, title: source, updatedAtMs: now - 1000 });
+  const threads = [
+    codex(codexId, 'vscode'),
+    ...['cli', 'exec', 'Terminal', 'tui'].map((source, index) => codex(`019de5f1-9dc2-7f82-9e2d-5f0d4a7d2f2${index}`, source)),
+    { id: 'claude-desktop-code:desktop', externalId: desktopId, provider: 'claude-desktop-code', source: 'claude-desktop-code', title: 'Desktop' },
+    { id: 'cli:abc', externalId: 'abc', provider: 'claude-desktop-code', source: 'claude-cli', surface: 'cli', title: 'CLI',
+      cliNoTranscript: true },
+    { id: 'ses_one', externalId: 'ses_one', provider: 'opencode', source: 'opencode-db', title: 'OpenCode' },
+  ];
+  const machine = { machineId: '0123456789abcdef', machineName: 'homeLP' };
+  const board = buildSwitchboardDashboard(threads, [], now, machine);
+  const byTitle = Object.fromEntries(board.threads.map((row) => [row.title, row]));
+  const fields = (row) => [row.surface, row.providerLabel, row.canOpen, row.appDeepLink];
+  assert.deepEqual(fields(byTitle.vscode), ['app', 'Codex', true, `codex://threads/${codexId}`]);
+  for (const source of ['cli', 'exec', 'Terminal', 'tui']) assert.deepEqual(fields(byTitle[source]), ['cli', 'Codex CLI', false, '']);
+  assert.deepEqual(fields(byTitle.Desktop), ['app', 'Claude Desktop Code', true, `claude://code/continue?session=${encodeURIComponent(desktopId)}`]);
+  assert.deepEqual(fields(byTitle.CLI), ['cli', 'Claude Code CLI', false, '']);
+  assert.deepEqual(fields(byTitle.OpenCode), ['app', 'OpenCode', false, '']);
+  assert.deepEqual([byTitle.CLI.state, byTitle.CLI.reason], ['idle', 'The CLI session has no task yet.']);
+  for (const row of board.threads) {
+    assert.deepEqual([row.machineId, row.machineName, row.remote, row.globalId, row.remoteCache],
+      ['0123456789abcdef', 'homeLP', false, `0123456789abcdef:${row.id}`, false]);
+  }
+  // Without a machine ID (no gateway or no certificate) the global ID is empty.
+  const plain = buildSwitchboardDashboard(threads.slice(0, 1), [], now);
+  assert.deepEqual([plain.threads[0].machineId, plain.threads[0].machineName, plain.threads[0].globalId],
+    ['', localMachineName(), '']);
+});
+
+test('a CLI or remote session never opens from ASB', async () => {
+  const id = '019de5f1-9dc2-7f82-9e2d-5f0d4a7d2f11';
+  const row = { id, externalId: id, provider: 'codex', canOpen: true, appDeepLink: `codex://threads/${id}` };
+  const calls = [];
+  const runCommand = async (...args) => { calls.push(args); };
+  for (const blocked of [{ ...row, surface: 'cli' }, { ...row, surface: 'app', remote: true }]) {
+    await assert.rejects(openSwitchboardThread(blocked, { runCommand }), /This session cannot open from ASB\./);
+  }
+  assert.equal(calls.length, 0);
+});
+
+test('one Claude CLI row stays per session when two sources list it', async () => {
+  const cli = (id, externalId, extra = {}) => ({ id, externalId, provider: 'claude-desktop-code', source: 'claude-cli', surface: 'cli',
+    title: id, updatedAtMs: now - 1000, ...extra });
+  const board = await loadSwitchboardDashboard({ nowMs: now, loadCodex: async () => ({ threads: [] }),
+    loadClaude: async () => ({ threads: [
+      cli('first:cli:s1', 's1', { cliNoTranscript: true }), cli('second:cli:s1', 's1'),
+      cli('first:cli:s2', 's2'), cli('second:cli:s2', 's2'),
+      cli('first:cli:s3', 's3', { cliNoTranscript: true }), cli('second:cli:s3', 's3', { cliNoTranscript: true }),
+    ] }) });
+  assert.deepEqual(board.threads.map((row) => row.id).sort(), ['first:cli:s2', 'first:cli:s3', 'second:cli:s1']);
+});
+
+test('the server passes the machine identity to the dashboard load', async (t) => {
+  const seen = [];
+  let identity = { machineId: '', machineName: 'homeLP' };
+  const server = createSwitchboardServer({ pendingStatePath: false, dashboardWatchPaths: [], machineIdentity: () => identity,
+    loadDashboard: async (options) => { seen.push(options); return { providers: [], threads: [] }; } });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  await fetch(`${base}/api/dashboard?force=1`).then((response) => response.json());
+  identity = { machineId: '0123456789abcdef', machineName: 'homeLP' };
+  await fetch(`${base}/api/dashboard?force=1`).then((response) => response.json());
+  assert.deepEqual(seen.map((options) => options.machine), [{ machineId: '', machineName: 'homeLP' },
+    { machineId: '0123456789abcdef', machineName: 'homeLP' }]);
+  const plain = createSwitchboardServer({ pendingStatePath: false, dashboardWatchPaths: [],
+    loadDashboard: async (options) => { seen.push(options); return { providers: [], threads: [] }; } });
+  await new Promise((resolve) => plain.listen(0, '127.0.0.1', resolve));
+  t.after(() => { plain.closeAllConnections(); return new Promise((resolve) => plain.close(resolve)); });
+  await fetch(`http://127.0.0.1:${plain.address().port}/api/dashboard`).then((response) => response.json());
+  assert.deepEqual(seen.at(-1).machine, { machineId: '', machineName: localMachineName() });
 });

@@ -122,7 +122,7 @@ def row_menu_actions(row):
     actions.append(("Unpin", "unpin") if row.get("pinned") else ("Pin", "pin"))
     if row.get("pinned"):
         actions.extend((("Move pin earlier", "pin-up"), ("Move pin later", "pin-down")))
-    if row.get("state") == "working" and not row.get("muted"):
+    if row.get("state") == "working" and not row.get("muted") and not row.get("remote"):
         actions.append(("Keep result", "keep-result") if row.get("discardResult") else ("Discard result", "discard-result"))
     return actions
 
@@ -604,6 +604,28 @@ def row_meta(row, now_ms=None):
     return " · ".join(parts)
 
 
+def is_view_only(row):
+    """A CLI session or a session on another machine shows as a card but does not open from ASB."""
+    return bool(row.get("remote")) or row.get("surface") == "cli"
+
+
+def row_where(row):
+    """The (icon, text) that says where a view-only session runs; (None, "") for other rows."""
+    if row.get("remote"):
+        return "asb-machine-symbolic", row.get("machineName") or "another machine"
+    if row.get("surface") == "cli":
+        return "asb-terminal-symbolic", "CLI"
+    return None, ""
+
+
+def view_only_tone(row):
+    """The Grey tone of a view-only row with no attention: "quiet" keeps the state color, "rest" also dims the state."""
+    if (not is_view_only(row) or row.get("unread") or row.get("questionAttention") or row.get("pending")
+            or (row.get("limitResetsAtMs") or 0) > 0):
+        return ""
+    return "quiet" if row.get("state") in ("working", "waiting") else "rest"
+
+
 def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
     full_path = row.get("cwd") or row.get("projectName") or "No project folder"
     path = full_path
@@ -652,7 +674,12 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
     elif row.get("questionPending"):
         note = "A question is still open in the chat."
     flags = " · ".join(text for key, text in (("pinned", "Pinned"), ("archived", "Archived"), ("drawer", "In the drawer"), ("muted", "Muted")) if row.get(key))
-    if not row.get("canOpen"):
+    if is_view_only(row):
+        machine = row.get("machineName") or "another machine"
+        where = " · ".join(([f"On {machine}"] if row.get("remote") else []) + (["CLI session"] if row.get("surface") == "cli" else []))
+        flags += (" · " if flags else "") + where
+        flags += f". Open it on {machine}." if row.get("remote") else ". Runs in a terminal. ASB does not open CLI sessions."
+    elif not row.get("canOpen"):
         flags += (" · " if flags else "") + "No direct link"
         if row.get("provider") == "opencode":
             flags += ". OpenCode cannot open one session from a link."
@@ -2666,13 +2693,20 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             limited_hover = f"mix(@window_bg_color, @window_fg_color, {hover_fraction})"
         # A drawer row is quiet as a read row, but not while the Drawer pill shows it as unread.
         quiet = [base + ".asb-comfortable .asb-idle-read:not(.asb-limited):not(.asb-drawer-lit):not(:hover):not(:focus-within)"]
-        parts = (" .asb-title", " .asb-folder", " .asb-state", " .asb-age", " .asb-limit-clock", " .asb-mute-glyph")
+        parts = (" .asb-title", " .asb-folder", " .asb-state", " .asb-age", " .asb-limit-clock", " .asb-mute-glyph", " .asb-where",
+                 " .asb-where-icon")
+        # The Grey tone of a view-only row with no attention, in both views; hover and focus bring the normal colors back.
+        calm = ":not(.asb-limited):not(.asb-drawer-lit):not(:hover):not(:focus-within)"
+        view_only, view_only_rest = f"{base} .asb-view-only-quiet{calm}", f"{base} .asb-view-only-rest{calm}"
         css += f"""
 {", ".join(row + " .asb-title" for row in quiet)} {{ color: {quiet_title}; opacity: 1; }}
 {", ".join(row + part for row in quiet for part in (" .asb-folder", " .asb-state", " .asb-age"))} {{ color: {quiet_caption}; opacity: 1; }}
 {", ".join(base + " .asb-limited" + part for part in parts)} {{ color: {limited}; opacity: 1; }}
 {", ".join(base + " .asb-limited" + state + part for state in (":hover", ":focus-within") for part in parts)} {{ color: {limited_hover}; }}
 {base} .asb-limited:not(.asb-message-lit) .asb-provider {{ opacity: .4; }}
+{view_only} .asb-title {{ color: {quiet_title}; opacity: 1; }}
+{", ".join(view_only + part for part in (" .asb-folder", " .asb-age", " .asb-where", " .asb-where-icon"))} {{ color: {quiet_caption}; opacity: 1; }}
+{view_only_rest} .asb-state {{ color: {quiet_caption}; opacity: 1; }}
 """
         self.css.load_from_string(css)
         self.hover_colors = colors
@@ -3925,7 +3959,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.asb_action_signature = None
             self.cancel_card_copy(widget)
             for name in ("asb_folder", "asb_pin_button", "asb_read_button", "asb_drawer_button", "asb_copy_button", "asb_age_label", "asb_limited",
-                         "asb_mute_glyph"):
+                         "asb_mute_glyph", "asb_where_icon", "asb_where_label"):
                 if hasattr(widget, name):
                     delattr(widget, name)
             content = Gtk.Box(spacing=6, margin_start=5, margin_end=5, valign=Gtk.Align.CENTER)
@@ -3998,10 +4032,24 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 age.add_css_class("asb-age")
                 age.add_css_class("dim-label")
                 age.set_ellipsize(Pango.EllipsizeMode.END)
-                age.set_hexpand(True)
                 age.set_halign(Gtk.Align.END)
                 widget.asb_age_label = age
-                metadata.append(age)
+                # Where a view-only session runs, before the age; the machine name ellipsizes first.
+                right = Gtk.Box(spacing=4, hexpand=True, halign=Gtk.Align.END)
+                where_icon = Gtk.Image(pixel_size=11, visible=False)
+                where_icon.add_css_class("asb-where-icon")
+                where_icon.add_css_class("dim-label")
+                where = label("", "caption")
+                where.add_css_class("asb-where")
+                where.add_css_class("dim-label")
+                where.set_ellipsize(Pango.EllipsizeMode.END)
+                where.set_max_width_chars(12)
+                where.set_visible(False)
+                right.append(where_icon)
+                right.append(where)
+                right.append(age)
+                widget.asb_where_icon, widget.asb_where_label = where_icon, where
+                metadata.append(right)
                 content.append(metadata)
                 overlay = Gtk.Overlay(child=content)
                 actions = Gtk.Box(spacing=2, halign=Gtk.Align.END, valign=Gtk.Align.START,
@@ -4034,15 +4082,33 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 overlay.set_measure_overlay(actions, False)
                 content = overlay
             else:
-                for child in (mark_overlay, title, clock, dot, state, mute):
+                where = label("", "caption")
+                where.add_css_class("asb-where")
+                where.add_css_class("dim-label")
+                where.set_ellipsize(Pango.EllipsizeMode.END)
+                where.set_max_width_chars(10)
+                where.set_visible(False)
+                widget.asb_where_icon, widget.asb_where_label = None, where
+                for child in (mark_overlay, title, clock, dot, state, where, mute):
                     content.append(child)
             widget.set_child(content)
         widget.asb_mark.set_from_icon_name(provider_icon(row["provider"]))
         widget.asb_source_badge.set_color(source_marker_color(row))
+        where_icon, where = row_where(row)
+        if widget.asb_where_icon:
+            if where_icon:
+                widget.asb_where_icon.set_from_icon_name(where_icon)
+            widget.asb_where_icon.set_visible(bool(where))
+        widget.asb_where_label.set_label((where + " ·" if widget.asb_where_icon else "· " + where) if where else "")
+        widget.asb_where_label.set_visible(bool(where))
+        tone = view_only_tone(row)
+        (widget.add_css_class if tone else widget.remove_css_class)("asb-view-only-quiet")
+        (widget.add_css_class if tone == "rest" else widget.remove_css_class)("asb-view-only-rest")
         indicator = attention_indicator(row, True)
         (widget.add_css_class if indicator == "dot" else widget.remove_css_class)("asb-unread")
         (widget.add_css_class if indicator == "dot" and not row.get("unread") else widget.remove_css_class)("asb-drawer")
-        discard_offer = self.view == "comfortable" and row.get("state") == "working" and not indicator and not row.get("muted")
+        discard_offer = self.view == "comfortable" and row.get("state") == "working" and not indicator and not row.get("muted") \
+            and not row.get("remote")
         if getattr(widget, "asb_mute_glyph", None):
             widget.asb_mute_glyph.set_visible(bool(row.get("muted")))
         widget.asb_dot.set_visible(bool(indicator) or discard_offer)
@@ -4086,7 +4152,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return
         widget.asb_action_signature = signature
         unread = indicator in ("question", "dot") and not row.get("actionRequired")
-        discard = row.get("state") == "working" and indicator not in ("question", "dot") and not row.get("muted")
+        discard = row.get("state") == "working" and indicator not in ("question", "dot") and not row.get("muted") and not row.get("remote")
         if discard and widget.asb_read_timer:
             self.clear_read_feedback(widget)
         confirmed = bool(widget.asb_read_timer)
@@ -4237,7 +4303,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         drawer = " In the drawer. Still unread." if row.get("drawer") else ""
         muted = " Muted." if row.get("muted") else ""
         limit = f" Usage limit. Resets in {spoken_limit(left)}." if left else ""
-        widget.asb_accessible_label = f"{action} {row.get('title', 'Untitled session')} in {row.get('providerLabel', '')}. {state_text}.{limit}{manual}{native_unread}{pinned}{question}{retained}{outcome}{discard}{drawer}{muted}"
+        where = (f" On {row.get('machineName') or 'another machine'}." if row.get("remote") else "") \
+            + (" CLI session." if row.get("surface") == "cli" else "") + (" View only." if is_view_only(row) else "")
+        widget.asb_accessible_label = f"{action} {row.get('title', 'Untitled session')} in {row.get('providerLabel', '')}. {state_text}.{limit}{manual}{native_unread}{pinned}{question}{retained}{outcome}{discard}{drawer}{muted}{where}"
         self.update_open_state(widget, now_ms)
 
     def row_key(self, _controller, key, _code, _state, identity):
@@ -4411,7 +4479,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         reference = session_reference(row)
         signature = (model["title"], model["path"], model["state_text"], model["state"], unread, model["app"], row.get("provider"),
                      bool(row.get("canOpen")), tuple(controls.items()), row_panel_note(row), pending, self.open_errors.get(row["id"], ""),
-                     reference, panel.asb_copy_error)
+                     reference, panel.asb_copy_error, row_where(row))
         if signature == panel.asb_signature:
             return
         panel.asb_signature = signature
@@ -4438,8 +4506,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         error = self.open_errors.get(row["id"], "") or panel.asb_copy_error
         panel.asb_error.set_label(error)
         panel.asb_error.set_visible(bool(error))
-        panel.asb_open.set_label("Open in " + model["app"])
-        panel.asb_open.set_sensitive(bool(row.get("canOpen")) and not pending and row["id"] not in self.opening)
+        if is_view_only(row):
+            panel.asb_open.set_label(f"On {row_where(row)[1]}" if row.get("remote") else "Runs in a terminal")
+            panel.asb_open.set_sensitive(False)
+        else:
+            panel.asb_open.set_label("Open in " + model["app"])
+            panel.asb_open.set_sensitive(bool(row.get("canOpen")) and not pending and row["id"] not in self.opening)
         panel.asb_updating = True
         for key, control in panel.asb_switches.items():
             control.set_visible(key in controls)

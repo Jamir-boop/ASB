@@ -52,6 +52,10 @@ The current source includes the Android companion and the user service; publishe
 
 The current source also lists OpenCode 2 sessions from the local OpenCode database. OpenCode cards show state, the last result, and unread, but ASB cannot open them: OpenCode 2 has no link that opens one session. See [OpenCode](ASB.md#opencode).
 
+## CLI sessions (view only)
+
+ASB also shows Claude Code CLI and Codex CLI sessions as view-only cards: a terminal glyph and `CLI` before the age, and a click does nothing. See [CLI sessions](ASB.md#cli-sessions).
+
 ## Local agent commands
 
 The current source adds `asb agent status` and `asb agent sources` commands to list, get, add, update, or remove a source, with `--json` output and JSON files for edits. Commands use the running desktop or service and report saved, backend, and recent UI state separately. Profiles refreshes after external changes and keeps unsaved edits. See [commands and conflict handling](ASB.md#local-agent-commands). Published `1.8.1` packages and the unmanaged `npm start` server do not support these commands.

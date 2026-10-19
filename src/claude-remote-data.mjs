@@ -3,6 +3,7 @@ import path from 'node:path';
 import * as zlib from 'node:zlib';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { claudeDesktopCodeDeepLink, defaultClaudeAppDir, loadClaudeDesktopCodeThreads } from './claude-data.mjs';
+import { loadClaudeCliThreads } from './claude-cli-data.mjs';
 
 const INITIAL_MAGIC = 0xfcfb6d1ba7725c30n;
 const FINAL_MAGIC = 0xf4fa6f45970d41d8n;
@@ -475,8 +476,13 @@ export async function loadSwitchboardClaudeThreads(options = {}) {
   const results = await Promise.allSettled([loadClaudeDesktopCodeThreads(options), loadClaudeRemoteThreads(options)]);
   const local = results[0].status === 'fulfilled' ? results[0].value : null;
   const remote = results[1].status === 'fulfilled' ? results[1].value : null;
-  if (!local && !remote?.threads.length) throw results[0].reason;
-  if (local?.provider?.status === 'error' && !remote?.threads.length) return local;
+  // A desktop session can also be in the projects folder; it stays a desktop row.
+  const desktopSessionIds = new Set((local?.threads || []).flatMap((thread) => [thread.cliSessionId, ...(thread.priorCliSessionIds || [])])
+    .filter(Boolean));
+  const cli = await loadClaudeCliThreads({ projectsDir: options.projectsDir, nowMs: options.nowMs, cacheScope: options.cacheScope,
+    desktopSessionIds }).catch(() => null);
+  if (!local && !remote?.threads.length && !cli?.threads.length) throw results[0].reason;
+  if (local?.provider?.status === 'error' && !remote?.threads.length && !cli?.threads.length) return local;
   const localThreads = local?.threads || [];
   const aliases = new Map();
   for (const thread of localThreads) {
@@ -489,13 +495,13 @@ export async function loadSwitchboardClaudeThreads(options = {}) {
       }
     }
   }
-  const threads = [...localThreads, ...(remote?.threads || []).filter((thread) => {
+  const threads = [...localThreads, ...(cli?.threads || []), ...(remote?.threads || []).filter((thread) => {
     const key = thread.remoteEnvironmentKind === 'bridge'
       ? `bridge:${thread.externalId.replace(/^(?:cse|session)_/, '')}` : thread.externalId;
     return !aliases.get(key);
   })];
   const warning = !local || local.provider?.status === 'warning' || local.provider?.status === 'error'
-    || results[1].status === 'rejected' || remote?.partial;
+    || results[1].status === 'rejected' || remote?.partial || cli === null;
   return { threads, provider: { ...local?.provider, installed: threads.length > 0,
     status: warning ? 'warning' : local?.provider?.status || 'desktop',
     message: remote?.partial ? 'The remote cache contains only observed sessions. Claude has not cached a complete list.' : '' } };

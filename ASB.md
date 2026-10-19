@@ -1,6 +1,6 @@
 # ASB user guide
 
-ASB lists Codex and Claude Desktop Code chats. It also lists remote Code sessions observed in Claude's local cache, and OpenCode 2 sessions (list only; see [OpenCode](#opencode)). Select a row to open that chat in its original app. The Linux native window uses GTK and Libadwaita. ASB makes no model calls and does not send prompts.
+ASB lists Codex and Claude Desktop Code chats. It also lists remote Code sessions observed in Claude's local cache, OpenCode 2 sessions (list only; see [OpenCode](#opencode)), and Claude Code CLI and Codex CLI sessions (view only; see [CLI sessions](#cli-sessions)). Select a row to open that chat in its original app. The Linux native window uses GTK and Libadwaita. ASB makes no model calls and does not send prompts.
 
 See [README.md](README.md) for v1.8.1 packages and runtime requirements.
 
@@ -153,6 +153,14 @@ OpenCode cards do not open. OpenCode 2 has no link that opens one session. A cli
 Unread comes from OpenCode's own read mark. A session is unread when its last finished turn (`time_idle`) is later than the time that OpenCode last showed it (`time_viewed`). Viewing the session in the OpenCode TUI or desktop app clears it. A session with no finished turn has unknown read state. OpenCode has no Needs input in ASB: OpenCode keeps permission asks and questions only in memory, not in its database, so an OpenCode card never shows Waiting or a `?`.
 
 The **OpenCode** app pill, the OpenCode choices in Preferences > Sessions, and the `oc:` and `opencode:` search prefixes select OpenCode cards.
+
+## CLI sessions
+
+ASB shows Claude Code CLI and Codex CLI sessions as view-only cards. A Codex CLI task (`codex`, `codex exec`) no longer opens from ASB. Claude Code CLI cards show each running `claude` session, and each CLI transcript with activity in the last 7 days. A running session with no transcript yet shows Idle. A Claude session that the Desktop app owns stays a Claude Desktop Code card.
+
+In Comfortable, the bottom line of a CLI card shows the terminal glyph and `CLI` before the age, for example `Idle` and `CLI · 12m ago`. In Compact, `· CLI` follows the state, for example `Idle · CLI`. A CLI card with no attention uses the Grey tone: its title and text use the quiet colors, and its state keeps its color while it is Working or Waiting. An unread dot, a `?`, and the usage-limit look keep full strength. Hover or keyboard focus restores the normal colors.
+
+A click or Enter on a CLI card does nothing, the card gets no Ctrl number, and the row panel button says **Runs in a terminal** and is insensitive. The tooltip says **CLI session. Runs in a terminal. ASB does not open CLI sessions.** Read, Unread, pins, the drawer, Mute, and Discard work as for other chats. The title of a Claude Code CLI card is the session name, then the title that you set in the CLI, else `Claude Code session` and the start of the session ID. ASB never uses prompt text as the title.
 
 ## Preferences and local settings
 

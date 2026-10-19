@@ -67,6 +67,11 @@ async function openSession(entry) {
   }
 }
 
+// Where a view-only session runs: the machine name for a remote row, `CLI` for a local CLI row, else ''.
+function rowWhere(thread) {
+  return thread.remote ? thread.machineName || 'another machine' : thread.surface === 'cli' ? 'CLI' : '';
+}
+
 function sessionRow(thread) {
   let entry = rowCache.get(thread.id);
   if (!entry) {
@@ -87,7 +92,8 @@ function sessionRow(thread) {
     rowCache.set(thread.id, entry);
   }
   entry.thread = thread;
-  const signature = JSON.stringify([thread.title, thread.providerLabel, thread.state, thread.reason, thread.canOpen,
+  const where = rowWhere(thread);
+  const signature = JSON.stringify([thread.title, thread.providerLabel, thread.state, thread.reason, thread.canOpen, where, thread.surface,
     thread.pinned, thread.archived, thread.actionRequired, thread.questionAttention, thread.unread,
     thread.lastOutcome, thread.failedAttention, thread.completionAttention]);
   setText(entry.age, relativeTime(thread.updatedAtMs));
@@ -99,16 +105,23 @@ function sessionRow(thread) {
     : indicator === 'question' ? 'A question needs your answer.' : indicator === 'dot' ? 'Unread in ASB.' : '';
   const outcome = thread.lastOutcome === 'stopped' ? 'Task stopped.' : thread.lastOutcome === 'failed' || thread.failedAttention
     ? 'Task failed.' : thread.completionAttention ? 'Task completed.' : '';
-  const { row, title, meta, state } = entry;
+  const { row, title, meta, state, age } = entry;
+  const viewOnly = (thread.remote ? ` On ${where}.` : '') + (thread.surface === 'cli' ? ' CLI session.' : '') + (where ? ' View only.' : '');
   row.disabled = entry.opening || !thread.canOpen;
-  row.setAttribute('aria-label', `Open ${thread.title} in ${thread.providerLabel}. ${labels[thread.state]}. ${attention} ${outcome}`.trim());
-  row.title = thread.canOpen ? `Open in ${thread.providerLabel}` : 'This session has no direct desktop link.';
+  row.setAttribute('aria-label', `Open ${thread.title} in ${thread.providerLabel}. ${labels[thread.state]}.${viewOnly} ${attention} ${outcome}`.trim());
+  row.title = thread.remote ? `On ${where}. Open it on ${where}.` : where ? 'CLI session. ASB does not open CLI sessions.'
+    : thread.canOpen ? `Open in ${thread.providerLabel}` : 'This session has no direct desktop link.';
   if (attention) row.title += ` ${attention}`;
   if (outcome) row.title += ` ${outcome}`;
   setText(title, thread.title);
   state.className = `state ${thread.state}`;
   setText(state, labels[thread.state] || 'Unknown');
   state.title = thread.reason;
+  if (where && !entry.where) {
+    entry.where = [element('span', 'session-where'), element('span', '', '·')];
+    for (const part of entry.where) meta.insertBefore(part, age);
+  } else if (!where && entry.where) { for (const part of entry.where) part.remove(); entry.where = null; }
+  if (entry.where) setText(entry.where[0], where);
   for (const [key, text] of [['pinned', '· Pinned'], ['archived', '· Archived']]) {
     if (thread[key] && !entry[key]) {
       entry[key] = element('span', '', text);

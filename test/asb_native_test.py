@@ -1238,7 +1238,13 @@ class WidgetCheck(unittest.TestCase):
                         self.assertFalse(metadata.get_first_child().get_visible())  # The usage-limit clock.
                         self.assertEqual(metadata.get_first_child().get_next_sibling().get_text(), "Working")
                         self.assertIs(card.asb_dot.get_ancestor(asb.Gtk.Button), card.asb_read_button)
-                        self.assertEqual(metadata.get_last_child().get_ellipsize(), asb.Pango.EllipsizeMode.END)
+                        # The right part: the where glyph and label (hidden for a desktop row), then the age.
+                        right, sample = metadata.get_last_child(), window.focus_widgets["sample-15"]
+                        self.assertIs(right.get_first_child(), sample.asb_where_icon)
+                        self.assertIs(sample.asb_where_icon.get_next_sibling(), sample.asb_where_label)
+                        self.assertIs(sample.asb_where_label.get_next_sibling(), sample.asb_age_label)
+                        self.assertFalse(sample.asb_where_icon.get_visible() or sample.asb_where_label.get_visible())
+                        self.assertEqual(right.get_last_child().get_ellipsize(), asb.Pango.EllipsizeMode.END)
                     else:
                         self.assertEqual(card.get_child().get_orientation(), asb.Gtk.Orientation.HORIZONTAL)
                         self.assertTrue(title.get_single_line_mode())
@@ -2006,6 +2012,64 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(limited.asb_limit_clock.get_visible())
         self.assertEqual(hex_color(limited.asb_title_label), hex_color(normal.asb_title_label))
 
+    def test_view_only_cards_show_where_they_run_in_the_grey_tone_and_do_not_open(self):
+        now = time.time() * 1000
+        def row(identity, **extra):
+            return {"id": identity, "externalId": identity, "provider": "claude-desktop-code", "providerLabel": "Claude Code CLI",
+                    "title": "Check the " + identity, "cwd": "/example/" + identity, "projectName": identity, "state": "idle",
+                    "canOpen": False, "appDeepLink": "", "updatedAtMs": now - 720_000, "unread": False, "pending": False, **extra}
+        rows = [row("cli", surface="cli"), row("remote", surface="app", remote=True, machineName="homeLP", state="working"),
+                row("desktop", providerLabel="Claude Desktop Code", surface="app", canOpen=True,
+                    appDeepLink="claude://code/continue?session=local_x"),
+                row("unread", surface="cli", unread=True, pendingSource="observed-completion", completionAttention=True)]
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", {"generatedAtMs": now, "providers": [], "threads": rows},
+                                       theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(720, 500)
+        window.present(); window.set_focus(None); self.drain(.3)
+        theme = asb.Gtk.IconTheme.get_for_display(window.get_display())
+        self.assertTrue(theme.has_icon("asb-machine-symbolic") and theme.has_icon("asb-terminal-symbolic"))
+        hex_color = lambda widget: asb.SwitchboardWindow.hex_color(widget.get_color())
+        for view in (0, 1):
+            window.view_filter.set_selected(view); self.settle(window)
+            cards = {identity: window.focus_widgets[identity] for identity in ("cli", "remote", "desktop", "unread")}
+            comfortable = window.view == "comfortable"
+            for identity, text, icon in (("cli", "CLI", "asb-terminal-symbolic"), ("remote", "homeLP", "asb-machine-symbolic")):
+                card = cards[identity]
+                self.assertEqual(card.asb_where_label.get_text(), text + " ·" if comfortable else "· " + text)
+                self.assertTrue(card.asb_where_label.get_visible())
+                self.assertFalse(card.get_activatable())
+                if comfortable:
+                    self.assertEqual((card.asb_where_icon.get_icon_name(), card.asb_where_icon.get_visible()), (icon, True))
+                    self.assertIs(card.asb_where_label.get_next_sibling(), card.asb_age_label)
+                    self.assertEqual(card.asb_age_label.get_text(), "12m ago")
+                else:
+                    self.assertIsNone(card.asb_where_icon)
+                    self.assertIs(card.asb_state_label.get_next_sibling(), card.asb_where_label)
+            self.assertFalse(cards["desktop"].asb_where_label.get_visible())
+            self.assertTrue(cards["desktop"].get_activatable())
+            # The Grey tone: a resting view-only row dims its title and state, a Working one keeps the state color.
+            self.assertEqual((cards["cli"].has_css_class("asb-view-only-quiet"), cards["cli"].has_css_class("asb-view-only-rest")), (True, True))
+            self.assertEqual((cards["remote"].has_css_class("asb-view-only-quiet"), cards["remote"].has_css_class("asb-view-only-rest")),
+                             (True, False))
+            self.assertFalse(cards["unread"].has_css_class("asb-view-only-quiet"))
+            self.assertNotEqual(hex_color(cards["cli"].asb_title_label), hex_color(cards["unread"].asb_title_label))
+            self.assertNotEqual(hex_color(cards["cli"].asb_state_label), hex_color(cards["remote"].asb_state_label))
+            self.assertRegex(cards["cli"].asb_accessible_label, r"^Session Check the cli in Claude Code CLI\. Idle\. CLI session\. View only\.$")
+            self.assertRegex(cards["remote"].asb_accessible_label, r"^Session Check the remote in Claude Code CLI\. Working\. On homeLP\. View only\.$")
+            self.assert_accessible_label(cards["cli"], cards["cli"].asb_accessible_label)
+        # The row panel says why the card does not open.
+        for identity, label in (("cli", "Runs in a terminal"), ("remote", "On homeLP")):
+            window.show_context(window.focus_widgets[identity]); self.drain(.3)
+            panel = window.context_menu
+            self.assertEqual((panel.asb_open.get_label(), panel.asb_open.get_sensitive()), (label, False))
+            panel.popdown(); self.drain(.2)
+
     def test_drawer_pill_card_button_views_peek_and_narrow_column(self):
         def row(n, **extra):
             return {"id": f"s{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Summarize the open issues into one short note {n}",
@@ -2324,9 +2388,9 @@ class WidgetCheck(unittest.TestCase):
             found, rectangle = widget.compute_bounds(card)
             self.assertTrue(found)
             return rectangle.origin.x, rectangle.origin.y, rectangle.size.width, rectangle.size.height
-        def beside(card, before):
+        def beside(card, before, sibling=None):
             glyph = card.asb_mute_glyph
-            self.assertIs(glyph.get_prev_sibling(), before)
+            self.assertIs(glyph.get_prev_sibling(), sibling or before)
             self.assertTrue(glyph.get_visible() and glyph.get_mapped())
             self.assertEqual((glyph.get_icon_name(), glyph.get_pixel_size()), ("notifications-disabled-symbolic", 12))
             self.assertTrue(glyph.has_css_class("asb-mute-glyph") and glyph.has_css_class("dim-label"))
@@ -2362,12 +2426,14 @@ class WidgetCheck(unittest.TestCase):
         beside(read, read.asb_folder)
         window.width_control.set_value(240); settle()
 
-        # Compact: the icon follows the state.
+        # Compact: the icon follows the state and the where label, which is hidden on these app rows.
         window.view_filter.set_selected(0); self.drain(.3); settle()
         self.assertEqual({identity: card.asb_mute_glyph.get_visible() for identity, card in cards.items()},
                          {"read": True, "busy": True, "plain": False, "asked": True, "other": False})
         for identity in ("read", "busy", "asked"):
-            beside(cards[identity], cards[identity].asb_state_label)
+            self.assertIs(cards[identity].asb_where_label.get_prev_sibling(), cards[identity].asb_state_label)
+            self.assertFalse(cards[identity].asb_where_label.get_visible())
+            beside(cards[identity], cards[identity].asb_state_label, cards[identity].asb_where_label)
         window.view_filter.set_selected(1); self.drain(.3); settle()
 
         # The row panel: Muted comes right after In the drawer, with its subtitle, and sends mute and then unmute.

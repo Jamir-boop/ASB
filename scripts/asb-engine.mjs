@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
-import { createSwitchboardServer, switchboardPort } from '../src/switchboard.mjs';
+import { createSwitchboardServer, localMachineName, switchboardPort } from '../src/switchboard.mjs';
 import { createPhoneGateway } from '../src/phone-gateway.mjs';
 import { createSoundPlayer } from '../src/asb-sounds.mjs';
 import { findRunningService, instanceRuntimePath, prepareInstanceRuntime, publishInstanceRuntime, removeInstanceRuntime, requestInstance } from './asb-instance.mjs';
@@ -25,7 +25,9 @@ export async function runEngine({ env = process.env } = {}) {
   const sourceToken = randomBytes(32).toString('hex');
   const asbVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
   const gateway = createPhoneGateway({ localPort: port, asbVersion });
+  let machineId = '';
   const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, serviceMode: true, playSound: createSoundPlayer(),
+    machineIdentity: () => ({ machineId, machineName: localMachineName() }),
     onStop: () => shutdown('the stop request') });
   let stopping = false;
   let cleanup;
@@ -72,6 +74,7 @@ export async function runEngine({ env = process.env } = {}) {
       const status = await gateway.status();
       if (status.error) console.error(`Cannot start ASB phone access: ${status.error}`);
     } catch (error) { console.error(`Cannot start ASB phone access: ${error.message}`); }
+    machineId = await gateway.identity().catch(() => '');
     if (stopping) return;
     runtimeRecord = await publishInstanceRuntime(prepared, { schema: 1, pid: process.pid, port, sourceToken });
     if (!stopping && shouldStartTray(env)) {

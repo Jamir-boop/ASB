@@ -423,3 +423,31 @@ test('browser refresh keeps adaptive polling and the hidden, visible, and pagehi
   assert.equal(h.streams[1].closed, true);
   assert.equal(h.timers.size, 0);
 });
+
+test('CLI and remote rows say where they run, say why they do not open, and send no open request', async () => {
+  const initial = board(3);
+  Object.assign(initial.threads[1], { surface: 'cli', providerLabel: 'Claude Code CLI', canOpen: false, appDeepLink: '' });
+  Object.assign(initial.threads[2], { surface: 'app', remote: true, machineName: 'homeLP', canOpen: false, appDeepLink: '' });
+  const h = harness(initial);
+  await settle();
+  const cli = h.row('synthetic-1');
+  const remote = h.row('synthetic-2');
+  const meta = (row) => row.children[0].children[1].children.map((child) => child.textContent);
+  assert.deepEqual(meta(cli).slice(1, 4), ['·', 'CLI', '·']);
+  assert.deepEqual(meta(remote).slice(1, 4), ['·', 'homeLP', '·']);
+  assert.equal(meta(h.row('synthetic-0')).length, 3);
+  assert.equal(cli.title, 'CLI session. ASB does not open CLI sessions.');
+  assert.equal(remote.title, 'On homeLP. Open it on homeLP.');
+  assert.match(cli.attributes['aria-label'], /in Claude Code CLI\. \w+\. CLI session\. View only\.$/);
+  assert.match(remote.attributes['aria-label'], /\. On homeLP\. View only\.$/);
+  const requests = h.requests.length;
+  for (const row of [cli, remote]) {
+    assert.equal(row.disabled, true);
+    await row.emit('click');
+  }
+  assert.equal(h.requests.length, requests);
+  // The label follows the row: a row that is no longer view-only loses it.
+  Object.assign(initial.threads[1], { surface: 'app', providerLabel: 'Codex' });
+  await h.refresh(response(initial));
+  assert.equal(meta(h.row('synthetic-1')).length, 3);
+});
