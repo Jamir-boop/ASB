@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { createInterface } from 'node:readline';
 import { rememberBounded, sameFileSignature, SourceCache, statSignature } from './data-cache.mjs';
 import { enrichThreadRuntime } from './insights.mjs';
+import { readLiveClaudeRegistry } from './claude-registry.mjs';
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
@@ -767,6 +768,21 @@ function baseClaudeThread({
   return enrichThreadRuntime(thread, nowMs);
 }
 
+// A permission prompt leaves no transcript signal, so a live registry record in the waiting status adds one.
+// Other statuses change nothing: the transcript stays the source for Working, Done, and questions.
+function applyLiveClaudeStatus(thread, records, nowMs) {
+  const newest = (list) => list.sort((a, b) => b.statusUpdatedAt - a.statusUpdatedAt)[0];
+  const sessionIds = new Set([thread.cliSessionId, ...(thread.priorCliSessionIds || [])].filter(Boolean));
+  const host = records.filter((record) => record.hostSessionId === thread.externalId);
+  const record = newest(host.length ? host : records.filter((item) => sessionIds.has(item.sessionId)));
+  if (record?.status !== 'waiting') return thread;
+  const atMs = record.statusUpdatedAt || nowMs;
+  const input = record.waitingFor === 'input needed';
+  return enrichThreadRuntime({ ...thread, awaitingPermission: true, questionNonBlocking: false,
+    pendingToolAtMs: Math.max(thread.pendingToolAtMs || 0, atMs), liveWaitingFor: record.waitingFor || 'permission prompt',
+    ...(input ? { awaitingUserInput: true, latestUserQuestionAtMs: Math.max(thread.latestUserQuestionAtMs || 0, atMs) } : {}) }, nowMs);
+}
+
 function dedupeClaudeDesktopCodeThreads(threads) {
   const bySession = new Map();
 
@@ -1124,10 +1140,13 @@ export async function loadClaudeDesktopCodeThreads({
       return null;
     }
   });
+  // The registry is best effort: a read failure keeps the transcript state.
+  const live = await readLiveClaudeRegistry([path.join(path.dirname(projectsDir), 'sessions')]).catch(() => []);
   const threads = dedupeClaudeDesktopCodeThreads(parsed
     .filter(Boolean)
     .map((entry) => normalizeClaudeDesktopCodeSession(entry.session, entry, nowMs))
-    .filter((thread) => thread.externalId));
+    .filter((thread) => thread.externalId))
+    .map((thread) => applyLiveClaudeStatus(thread, live, nowMs));
 
   return {
     provider: {

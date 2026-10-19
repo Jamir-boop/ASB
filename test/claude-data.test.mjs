@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFile, mkdir, mkdtemp, rename, rm, utimes, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { appendFile, mkdir, mkdtemp, readFile, rename, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -851,6 +853,69 @@ test('a message from another session starts a turn only in an idle chat', async 
   await appendFile(fixture.file, jsonl([resumePrompt(-30_000), resumeWork(-29_000), message(-28_000)]));
   const busy = await fixture.load();
   assert.deepEqual([busy.lifecycleRunning, busy.latestTaskStartedAtMs, busy.agentStartedAtMs], [true, resumeNowMs - 30_000, resumeNowMs - 30_000]);
+});
+
+test('a live Claude registry record in the waiting status shows a permission prompt or a question as Waiting', async (t) => {
+  const fixture = await signalFixture(t, [resumePrompt(-50_000), resumeWork(-49_000)]);
+  const sessions = path.join(path.dirname(fixture.projectsDir), 'sessions');
+  await mkdir(sessions);
+  const children = [];
+  t.after(() => Promise.all(children.map(async (child) => {
+    if (child.exitCode === null && child.signalCode === null) { child.kill(); await once(child, 'exit'); }
+  })));
+  const start = async () => {
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { env: {}, stdio: 'ignore' });
+    children.push(child);
+    await once(child, 'spawn');
+    return { child, pid: child.pid, procStart: (await readFile(`/proc/${child.pid}/stat`, 'utf8')).split(') ').pop().split(' ')[19] };
+  };
+  const record = (peer, fields = {}) => writeFile(path.join(sessions, `${peer.pid}.json`), JSON.stringify({ pid: peer.pid,
+    procStart: peer.procStart, sessionId: 'other-cli', hostSessionId: 'local_root', name: 'synthetic', status: 'waiting',
+    waitingFor: 'permission prompt', statusUpdatedAt: resumeNowMs - 1_000, ...fields }));
+  const tracker = new PendingTracker(false);
+  const view = async () => {
+    const { thread, row } = await observeFixture(fixture.projectsDir, resumeNowMs, tracker);
+    return { thread, row, summary: [row.state, row.actionRequired, row.questionPending, row.questionAttention, row.pending] };
+  };
+  const working = ['working', false, false, false, false];
+  // An ordinary Bash call leaves no transcript wait signal.
+  assert.deepEqual((await view()).summary, working);
+  const live = await start();
+  await record(live);
+  const permission = await view();
+  assert.deepEqual(permission.summary, ['waiting', true, false, false, true]);
+  assert.deepEqual([permission.row.reason, permission.row.pendingSource, permission.thread.liveWaitingFor, permission.thread.pendingToolAtMs],
+    ['Claude waits for your permission.', 'user-action', 'permission prompt', resumeNowMs - 1_000]);
+  // Each load starts from the transcript, so a later status leaves no stale overlay.
+  await record(live, { status: 'busy', statusUpdatedAt: resumeNowMs - 900 });
+  assert.deepEqual((await view()).summary, working);
+  await record(live, { procStart: '1' });
+  assert.deepEqual((await view()).summary, working);
+  const dead = await start();
+  dead.child.kill();
+  await once(dead.child, 'exit');
+  await record(dead);
+  assert.deepEqual((await view()).summary, working);
+  await record(live, { waitingFor: 'input needed', statusUpdatedAt: resumeNowMs - 800 });
+  const question = await view();
+  assert.deepEqual(question.summary, ['waiting', false, true, true, true]);
+  assert.deepEqual([question.row.reason, question.row.pendingSource], ['Claude waits for your answer.', 'user-question']);
+  await tracker.acknowledge(question.row.id);
+  assert.equal((await view()).row.questionAttention, false);
+  await record(live, { status: 'busy', statusUpdatedAt: resumeNowMs - 700 });
+  await view();
+  await record(live, { waitingFor: 'input needed', statusUpdatedAt: resumeNowMs - 600 });
+  assert.equal((await view()).row.questionAttention, true);
+  // Without a host match, the CLI session id selects records, and the newest one wins.
+  const other = await start();
+  await record(live, { hostSessionId: null, sessionId: 'cli_root', statusUpdatedAt: resumeNowMs - 500 });
+  await record(other, { hostSessionId: null, sessionId: 'cli_root', status: 'busy', statusUpdatedAt: resumeNowMs - 400 });
+  assert.equal((await view()).row.state, 'working');
+  await record(live, { hostSessionId: null, sessionId: 'cli_root', statusUpdatedAt: resumeNowMs - 300 });
+  assert.equal((await view()).row.actionRequired, true);
+  // A host match wins over a newer CLI session match.
+  await record(other, { status: 'busy', statusUpdatedAt: resumeNowMs - 1_000 });
+  assert.equal((await view()).row.state, 'working');
 });
 
 // The Desktop app ends some turns with a wrap-up tool. Its result ends the turn; the app can write more records after it.

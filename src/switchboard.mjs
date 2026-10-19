@@ -53,6 +53,8 @@ export function switchboardWatchPaths({ homeDir = os.homedir(), appDir = default
     { path: path.join(appDir, 'Cache', 'Cache_Data'), source: 'claude', optional: true,
       acceptEvent: (filename, event) => isClaudeRemoteCacheEvent(path.join(appDir, 'Cache', 'Cache_Data'), filename, event) },
     { path: projectsDir, source: 'claude', recursive: true, acceptEvent: directoryOrFile(/\.jsonl$/) },
+    { path: path.join(path.dirname(projectsDir), 'sessions'), source: 'claude', optional: true,
+      acceptEvent: directoryOrFile(/^[1-9][0-9]*\.json$/) },
   ];
 }
 
@@ -78,7 +80,8 @@ export function switchboardStatus(thread, nowMs = Date.now()) {
     return { state: 'waiting', reason: 'The current tool is waiting for an answer.' };
   }
   if ((thread.awaitingPermission || thread.pendingToolCount) && !thread.questionNonBlocking && !pendingToolStale(thread, nowMs)) {
-    return { state: 'waiting', reason: 'A user action is required.' };
+    return { state: 'waiting', reason: !thread.liveWaitingFor ? 'A user action is required.'
+      : thread.liveWaitingFor === 'input needed' ? 'Claude waits for your answer.' : 'Claude waits for your permission.' };
   }
   if (thread.groupChildWaiting) return { state: 'waiting', reason: 'A linked child is waiting for an answer.' };
   if (thread.lifecycleRunning === false) return { state: 'idle', reason: 'The last task ended.' };

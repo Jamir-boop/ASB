@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Fixed a Claude session that waits for a permission prompt showing Working; it now shows Waiting.
 - Fixed native theme colors with RGB channels outside `0..1`. Color conversion now limits each channel to a byte, so the theme editor and phone palette receive valid `#RRGGBB` values.
 - Shortened the ASB Bridge peer message prefix.
 - Added `asb agent status` and `sources list/get/add/update/remove`, with `--json`, bounded JSON file or stdin input, partial updates, and idempotent source operations. The CLI uses the authenticated local API and reports saved, backend, and recent native UI state separately. UI reports do not prove visual display. Desktop and service modes share a private runtime descriptor; the phone gateway cannot access agent or source settings routes.

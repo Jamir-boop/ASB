@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { storeIdentity } from '../src/app-sources.mjs';
+import { processStart, readLiveClaudeRegistry } from '../src/claude-registry.mjs';
 import { readServiceRuntime, requestInstance } from './asb-instance.mjs';
 
 const editable = ['provider', 'label', 'dataDir', 'launcher', 'enabled', 'projectsDir', 'color', 'showMarker'];
@@ -146,7 +147,6 @@ async function verify(runtime, target, acknowledgedAfter) {
 }
 
 const canonical = (value) => realpath(value).catch(() => path.resolve(value));
-const text = (value) => typeof value === 'string' ? value : null;
 
 function findSource(list, selector) {
   const exact = list.find((source) => source.id === selector);
@@ -154,25 +154,6 @@ function findSource(list, selector) {
   const named = list.filter((source) => source.name === selector);
   if (named.length > 1) throw failure('source_ambiguous', `More than one app source uses the name ${selector}. Use its id.`);
   return named[0];
-}
-
-async function readRecord(file) {
-  let handle;
-  try { handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return null; }
-  try {
-    const info = await handle.stat();
-    if (!info.isFile() || info.uid !== process.getuid() || info.size > 256 * 1024) return null;
-    const bytes = await readHandle(handle, 256 * 1024);
-    return bytes.length > 256 * 1024 ? null : JSON.parse(bytes);
-  } catch { return null; } finally { await handle.close(); }
-}
-
-async function processStart(pid) {
-  try {
-    if ((await stat(`/proc/${pid}`)).uid !== process.getuid()) return null;
-    const fields = (await readFile(`/proc/${pid}/stat`, 'utf8')).split(') ').pop().split(' ');
-    return fields[0] === 'Z' ? null : fields[19] ?? null;
-  } catch { return null; }
 }
 
 // Keep only the two home variables; the rest of the peer's environment is never decoded.
@@ -197,41 +178,27 @@ async function listPeers(list) {
   const codexStores = await Promise.all(list.filter((source) => source.provider === 'codex').map(async (source) => ({ name: source.name, home: await canonical(source.dataDir) })));
   const claudeStores = await Promise.all(list.filter((source) => source.provider === 'claude-desktop-code' && source.projectsDir)
     .map(async (source) => ({ name: source.name, home: await canonical(path.dirname(source.projectsDir)) })));
-  const roots = new Set();
-  for (const root of [...list.filter((source) => source.provider === 'claude-desktop-code' && source.projectsDir)
-    .map((source) => path.join(path.dirname(source.projectsDir), 'sessions')), path.join(os.homedir(), '.claude', 'sessions')]) {
-    const real = await realpath(root).catch(() => null);
-    if (real) roots.add(real);
-  }
-  const accepted = new Map();
+  const records = await readLiveClaudeRegistry([...list.filter((source) => source.provider === 'claude-desktop-code' && source.projectsDir)
+    .map((source) => path.join(path.dirname(source.projectsDir), 'sessions')), path.join(os.homedir(), '.claude', 'sessions')]);
+  const peers = [];
   const unregistered = new Map();
-  for (const root of roots) {
-    let files;
-    try { files = await readdir(root); } catch (error) { if (['ENOENT', 'ENOTDIR'].includes(error.code)) continue; throw error; }
-    for (const file of files.filter((name) => /^[1-9][0-9]*\.json$/.test(name))) {
-      const record = await readRecord(path.join(root, file));
-      if (!object(record) || record.pid !== Number(file.slice(0, -5)) || typeof record.name !== 'string' || typeof record.sessionId !== 'string'
-        || record.procStart === undefined || record.procStart === null) continue;
-      const start = await processStart(record.pid);
-      if (start === null || start !== String(record.procStart)) continue;
-      const homes = await processHomes(record.pid);
-      if (await processStart(record.pid) !== start) continue;
-      const codex = record.entrypoint === 'codex-asb-bridge';
-      let instance = 'unknown';
-      const value = homes?.[codex ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR'];
-      // The CLI cannot resolve a relative path against another process's working directory.
-      const home = homes && (value === undefined || path.isAbsolute(value))
-        && await canonical(value ?? path.join(os.homedir(), codex ? '.codex' : '.claude'));
-      if (home) {
-        const matches = (codex ? codexStores : claudeStores).filter((store) => store.home === home);
-        if (matches.length === 1) instance = matches[0].name;
-        if (!codex && !matches.length) unregistered.set(`claude-desktop-code\0${home}`, { provider: 'claude-desktop-code', home });
-      }
-      accepted.set(`${record.pid}:${start}`, { instance, name: record.name, address: `${instance}/${record.name}`, sessionId: record.sessionId,
-        pid: record.pid, status: text(record.status), cwd: text(record.cwd), kind: text(record.kind), entrypoint: text(record.entrypoint) });
+  for (const record of records) {
+    const homes = await processHomes(record.pid);
+    if (await processStart(record.pid) !== record.procStart) continue;
+    const codex = record.entrypoint === 'codex-asb-bridge';
+    let instance = 'unknown';
+    const value = homes?.[codex ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR'];
+    // The CLI cannot resolve a relative path against another process's working directory.
+    const home = homes && (value === undefined || path.isAbsolute(value))
+      && await canonical(value ?? path.join(os.homedir(), codex ? '.codex' : '.claude'));
+    if (home) {
+      const matches = (codex ? codexStores : claudeStores).filter((store) => store.home === home);
+      if (matches.length === 1) instance = matches[0].name;
+      if (!codex && !matches.length) unregistered.set(`claude-desktop-code\0${home}`, { provider: 'claude-desktop-code', home });
     }
+    peers.push({ instance, name: record.name, address: `${instance}/${record.name}`, sessionId: record.sessionId,
+      pid: record.pid, status: record.status, cwd: record.cwd, kind: record.kind, entrypoint: record.entrypoint });
   }
-  const peers = [...accepted.values()];
   for (const peer of peers) peer.duplicate = peers.filter((other) => other.name === peer.name).length > 1;
   peers.sort((left, right) => left.address < right.address ? -1 : left.address > right.address ? 1 : left.pid - right.pid);
   for (const entry of await readdir(os.homedir()).catch(() => [])) {

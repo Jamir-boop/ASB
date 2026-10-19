@@ -20,7 +20,7 @@ export const RUNTIME_FILES = [
   'assets/sounds/opencode_staplebops_01.mp3', 'assets/sounds/opencode_staplebops_02.mp3', 'assets/sounds/opencode_nope_03.mp3',
   'assets/sounds/opencode-LICENSE.txt',
   'src/switchboard.mjs', 'src/app-sources.mjs', 'src/asb-server.mjs', 'src/dashboard-snapshot.mjs', 'src/local-http.mjs', 'src/session-opener.mjs',
-  'src/codex-data.mjs', 'src/claude-data.mjs', 'src/claude-remote-data.mjs', 'src/insights.mjs', 'src/data-cache.mjs',
+  'src/codex-data.mjs', 'src/claude-data.mjs', 'src/claude-registry.mjs', 'src/claude-remote-data.mjs', 'src/insights.mjs', 'src/data-cache.mjs',
   'src/thread-classification.mjs', 'src/phone-gateway.mjs', 'src/asb-sounds.mjs',
   '.agents/plugins/marketplace.json',
   'bridge/.codex-plugin/plugin.json', 'bridge/.mcp.json', 'bridge/hooks/hooks.json',
