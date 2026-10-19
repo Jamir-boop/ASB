@@ -28,7 +28,9 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import kotlinx.serialization.json.Json
 import local.asb.companion.data.Thread
 import local.asb.companion.data.Endpoint
+import local.asb.companion.data.Engine
 import local.asb.companion.net.AsbApi
+import local.asb.companion.net.MemoryEngines
 import local.asb.companion.net.MemoryPaths
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.sha256Hex
@@ -66,6 +68,8 @@ class SessionsViewModelTest {
     private lateinit var fingerprint: String
     private lateinit var certificates: HandshakeCertificates
     private var revoked = false
+    private val networks = MutableStateFlow(0L)
+    private val helloReply = MockResponse().setBody("""{"api":1,"asbVersion":"1.8.1","deviceId":"0123456789ab","serverName":"Test PC"}""")
 
     @Before fun start() {
         Dispatchers.setMain(dispatcher)
@@ -89,14 +93,15 @@ class SessionsViewModelTest {
     private fun model(
         mutex: Mutex = Mutex(),
         initiallyRevoked: Boolean = false,
-        loadBaseline: () -> Map<String, Int>? = { baselines.lastOrNull() },
-        saveBaseline: (Map<String, Int>) -> Unit = { baselines += it },
+        loadBaseline: (String) -> Map<String, Int>? = { baselines.lastOrNull() },
+        saveBaseline: (Map<String, Int>, String) -> Unit = { baseline, _ -> baselines += baseline },
         initialView: String = "comfortable",
         savePalette: (Palette) -> Unit = { palettes += it },
-        networks: MutableStateFlow<Long> = MutableStateFlow(0L),
+        networks: MutableStateFlow<Long> = this.networks,
         paths: MemoryPaths = MemoryPaths(listOf(Endpoint("lan", "127.0.0.1"))),
+        engines: MemoryEngines = MemoryEngines(),
     ): SessionsViewModel {
-        val api = AsbApi(paths, server.port, fingerprint, "t".repeat(43)) { revoked = true }
+        val api = AsbApi(paths, server.port, fingerprint, "t".repeat(43), engines) { revoked = true }
         return SessionsViewModel(api, "Test PC", initiallyRevoked, saveBaseline, mutex, loadBaseline, initialView, savePalette,
             networkChanges = networks).also { models.put("sessions", it) }
     }
@@ -117,6 +122,12 @@ class SessionsViewModelTest {
 
     private fun advance(ms: Long) { scheduler.advanceTimeBy(ms); scheduler.runCurrent() }
 
+    // The poll reads hello once after its first good dashboard; then it waits for a network change or its next read.
+    private suspend fun takeHello(flow: MutableStateFlow<Long> = networks) {
+        assertEquals("/phone/v1/hello", server.takeRequest().path)
+        await { flow.subscriptionCount.value > 0 }
+    }
+
     private suspend fun load(model: SessionsViewModel, dashboard: Dashboard) {
         server.enqueue(response(dashboard))
         model.refresh()
@@ -130,6 +141,7 @@ class SessionsViewModelTest {
             threads = listOf(Thread(id = "one", state = "working", completionAttention = true)))
         val idle = working.copy(generatedAtMs = 2, refreshIntervalMs = 123)
         server.enqueue(response(working, "one"))
+        server.enqueue(helloReply)
         server.enqueue(MockResponse().setResponseCode(304))
         server.enqueue(response(idle, "two"))
         server.enqueue(MockResponse().setResponseCode(304))
@@ -137,6 +149,7 @@ class SessionsViewModelTest {
         val first = poll(model)
         await { baselines.size == 1 }
         assertNull(server.takeRequest().getHeader("If-None-Match"))
+        takeHello()
         assertEquals(mapOf("one" to 1), baselines.single())
         val dashboard = model.state.value.dashboard
         val duplicate = poll(model)
@@ -144,7 +157,7 @@ class SessionsViewModelTest {
         assertTrue(duplicate.isCompleted)
 
         advance(1999)
-        assertEquals(1, server.requestCount)
+        assertEquals(2, server.requestCount)
         advance(1)
         await { baselines.size == 2 }
         assertEquals("one", server.takeRequest().getHeader("If-None-Match"))
@@ -153,19 +166,20 @@ class SessionsViewModelTest {
         await { model.state.value.dashboard?.generatedAtMs == 2L }
         assertEquals("one", server.takeRequest().getHeader("If-None-Match"))
         advance(4999)
-        assertEquals(3, server.requestCount)
+        assertEquals(4, server.requestCount)
         advance(1)
         await { baselines.size == 4 }
         assertEquals("two", server.takeRequest().getHeader("If-None-Match"))
         first.cancel()
         scheduler.runCurrent()
         advance(60000)
-        assertEquals(4, server.requestCount)
+        assertEquals(5, server.requestCount)
     }
 
     @Test fun offlineBackoffKeepsCachedDataCapsAt30SecondsAndResetsOnSuccess() = runBlocking {
         val dashboard = Dashboard(1, threads = listOf(Thread(id = "cached")))
         server.enqueue(response(dashboard))
+        server.enqueue(helloReply)
         repeat(4) { server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)) }
         server.enqueue(response(dashboard.copy(generatedAtMs = 2)))
         server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
@@ -174,11 +188,12 @@ class SessionsViewModelTest {
         poll(model)
         await { model.state.value.dashboard != null }
         server.takeRequest()
+        takeHello()
 
         for ((index, waitMs) in listOf(5000L, 5000L, 10000L, 30000L).withIndex()) {
             model.clearError()
             advance(waitMs - 1)
-            assertEquals(index + 1, server.requestCount)
+            assertEquals(index + 2, server.requestCount)
             advance(1)
             await { model.state.value.lastError != null }
             assertTrue(model.state.value.offline)
@@ -186,7 +201,7 @@ class SessionsViewModelTest {
             server.takeRequest()
         }
         advance(29999)
-        assertEquals(5, server.requestCount)
+        assertEquals(6, server.requestCount)
         advance(1)
         await { model.state.value.dashboard?.generatedAtMs == 2L }
         assertFalse(model.state.value.offline)
@@ -197,7 +212,7 @@ class SessionsViewModelTest {
         await { model.state.value.offline }
         server.takeRequest()
         advance(4999)
-        assertEquals(7, server.requestCount)
+        assertEquals(8, server.requestCount)
         advance(1)
         await { model.state.value.dashboard?.generatedAtMs == 3L }
         assertFalse(model.state.value.offline)
@@ -206,6 +221,7 @@ class SessionsViewModelTest {
     @Test fun aNetworkChangeWakesTheOfflinePollRetriesAfter3SecondsAndLearnsNewAddresses() = runBlocking {
         val dashboard = Dashboard(1, threads = listOf(Thread(id = "cached")))
         server.enqueue(response(dashboard))
+        server.enqueue(helloReply)
         repeat(5) { server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)) }
         server.enqueue(response(dashboard.copy(generatedAtMs = 2)))
         val lan = Endpoint("lan", "127.0.0.1")
@@ -218,28 +234,29 @@ class SessionsViewModelTest {
         poll(model)
         await { model.state.value.dashboard != null }
         server.takeRequest()
+        takeHello(networks)
         // The normal backoff reaches the 30 s step.
         for ((index, waitMs) in listOf(5000L, 5000L, 10000L).withIndex()) {
             model.clearError()
             advance(waitMs)
             await { model.state.value.lastError != null }
-            assertEquals(index + 2, server.requestCount)
+            assertEquals(index + 3, server.requestCount)
             server.takeRequest()
         }
         // The user turns on ZeroTier: the poll reads now, not after 30 s.
         model.clearError()
         networks.value = 1L
         await { model.state.value.lastError != null }
-        assertEquals(5, server.requestCount)
+        assertEquals(6, server.requestCount)
         server.takeRequest()
         model.clearError()
         advance(2999)
-        assertEquals(5, server.requestCount)
+        assertEquals(6, server.requestCount)
         advance(1)
         await { model.state.value.lastError != null }
         server.takeRequest()
         advance(4999)
-        assertEquals(6, server.requestCount)
+        assertEquals(7, server.requestCount)
         advance(1)
         await { model.state.value.dashboard?.generatedAtMs == 2L }
         assertEquals("/phone/v1/dashboard", server.takeRequest().path)
@@ -295,10 +312,10 @@ class SessionsViewModelTest {
             assertTrue(mutex.isLocked)
             reads++
             stored
-        }, saveBaseline = {
+        }, saveBaseline = { baseline, _ ->
             assertTrue(mutex.isLocked)
-            stored = it
-            baselines += it
+            stored = baseline
+            baselines += baseline
         })
         server.enqueue(response(limited))
         model.refresh()
@@ -333,19 +350,21 @@ class SessionsViewModelTest {
     @Test fun serverDashboardFailureKeepsCachedRowsOfflineUntil304AndRetriesAfter5Seconds() = runBlocking {
         val dashboard = Dashboard(1, refreshIntervalMs = 2000, threads = listOf(Thread(id = "cached")))
         server.enqueue(response(dashboard, "cached"))
+        server.enqueue(helloReply)
         server.enqueue(MockResponse().setResponseCode(500).setBody("{\"error\":\"Refresh failed\"}"))
         server.enqueue(MockResponse().setResponseCode(304))
         val model = model()
         poll(model)
         await { model.state.value.dashboard != null }
         server.takeRequest()
+        takeHello()
         advance(2000)
         await { model.state.value.lastError == "Refresh failed" }
         assertTrue(model.state.value.offline)
         assertEquals(dashboard, model.state.value.dashboard)
         assertEquals("cached", server.takeRequest().getHeader("If-None-Match"))
         advance(4999)
-        assertEquals(2, server.requestCount)
+        assertEquals(3, server.requestCount)
         assertTrue(model.state.value.offline)
         advance(1)
         await { baselines.size == 2 }
@@ -359,9 +378,12 @@ class SessionsViewModelTest {
         val dashboard = Dashboard(1, threads = listOf(Thread(id = "cached")))
         server.protocols = listOf(Protocol.HTTP_1_1)
         server.enqueue(response(dashboard).setHeader("Connection", "close"))
+        server.enqueue(helloReply.setHeader("Connection", "close"))
         val model = model()
         poll(model)
         await { model.state.value.dashboard != null }
+        server.takeRequest()
+        takeHello()
         val other = HeldCertificate.Builder().commonName("Different PC").ecdsa256().build()
         server.useHttps(HandshakeCertificates.Builder().heldCertificate(other).build().sslSocketFactory(), false)
         server.enqueue(MockResponse().setResponseCode(304))
@@ -591,9 +613,12 @@ class SessionsViewModelTest {
         val dashboard = Dashboard(1, threads = listOf(Thread(id = "one", canOpen = true)))
         val model = model()
         server.enqueue(response(dashboard))
+        server.enqueue(helloReply)
         server.enqueue(MockResponse().setResponseCode(401).setBody("{}"))
         val polling = poll(model)
         await { model.state.value.dashboard != null }
+        server.takeRequest()
+        takeHello()
         advance(5000)
         await { model.state.value.revoked && polling.isCompleted }
         assertTrue(revoked)
@@ -601,7 +626,7 @@ class SessionsViewModelTest {
         model.refresh()
         model.action("one", "open")
         advance(60000)
-        assertEquals(2, server.requestCount)
+        assertEquals(3, server.requestCount)
     }
 
     @Test fun rotationKeepsFiltersSearchViewAndAnchorInTheRetainedModel() {
@@ -647,5 +672,60 @@ class SessionsViewModelTest {
         assertEquals(setOf("one"), model.state.value.readConfirmedIds)
         advance(1)
         assertTrue(model.state.value.readConfirmedIds.isEmpty())
+    }
+
+    @Test fun thePollReadsHelloOnceAtItsStart() = runBlocking {
+        server.enqueue(response(Dashboard(1)))
+        server.enqueue(helloReply)
+        server.enqueue(response(Dashboard(2)))
+        val model = model()
+        poll(model)
+        await { model.state.value.dashboard != null }
+        assertEquals("/phone/v1/dashboard", server.takeRequest().path)
+        takeHello()
+        advance(5000)
+        await { model.state.value.dashboard?.generatedAtMs == 2L }
+        assertEquals("/phone/v1/dashboard", server.takeRequest().path)
+        assertEquals(3, server.requestCount)
+    }
+
+    @Test fun actionsGoToTheEngineOfTheDashboardOnScreen() = runBlocking {
+        val certificate = HeldCertificate.Builder().commonName("ASB workLP").ecdsa256().build()
+        val other = MockWebServer().apply {
+            useHttps(HandshakeCertificates.Builder().heldCertificate(certificate).build().sslSocketFactory(), false)
+            start(InetAddress.getByName("127.0.0.1"), 0)
+        }
+        try {
+            val pin = sha256Hex(certificate.certificate.encoded)
+            val engines = MemoryEngines(listOf(Engine(pin.take(16), "workLP", other.port, pin, listOf(Endpoint("lan", "127.0.0.1")))))
+            // The paired PC is down, so the other engine gives the dashboard.
+            val model = model(paths = MemoryPaths(listOf(Endpoint("lan", "127.0.0.2"))), engines = engines)
+            val dashboard = Dashboard(1, threads = listOf(Thread(id = "m:x:one", canOpen = true)))
+            other.enqueue(response(dashboard))
+            model.refresh()
+            await { !model.state.value.refreshing }
+            assertEquals(pin.take(16), model.state.value.engine)
+            other.takeRequest()
+            other.enqueue(MockResponse().setBody("""{"opened":true}"""))
+            other.enqueue(response(dashboard))
+            model.action("m:x:one", "open")
+            await { model.state.value.banner != null }
+            assertEquals("POST", other.takeRequest().method)
+            assertEquals("Opened on workLP", model.state.value.banner)
+            assertEquals(0, server.requestCount)
+        } finally { other.shutdown() }
+    }
+
+    @Test fun viewOnlyCardsSayWhereTheSessionRuns() = runBlocking {
+        val model = model()
+        load(model, Dashboard(1, threads = listOf(Thread(id = "remote", remote = true, machineName = "homeLP"),
+            Thread(id = "nameless", remote = true), Thread(id = "cli", surface = "cli"), Thread(id = "app"))))
+        for ((id, banner) in listOf("remote" to "On homeLP. Open it on homeLP.", "nameless" to "On another machine. Open it on another machine.",
+            "cli" to "Runs in a terminal. ASB does not open CLI sessions.", "app" to "This session has no direct link.")) {
+            model.action(id, "open")
+            assertEquals(banner, model.state.value.banner)
+            model.dismissBanner()
+        }
+        assertEquals(1, server.requestCount)
     }
 }

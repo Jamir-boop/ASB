@@ -6,10 +6,13 @@ import local.asb.companion.data.Thread
 import local.asb.companion.notify.BIT_DONE
 import local.asb.companion.notify.BIT_FAILED
 import local.asb.companion.notify.BIT_INPUT
+import local.asb.companion.notify.NotificationRow
+import local.asb.companion.notify.actionExtras
 import local.asb.companion.notify.actionOpened
 import local.asb.companion.notify.diff
 import local.asb.companion.notify.mergeActionBaseline
 import local.asb.companion.notify.notificationId
+import local.asb.companion.notify.notificationRow
 import local.asb.companion.notify.notificationTag
 import local.asb.companion.notify.shouldPost
 import local.asb.companion.notify.update
@@ -67,5 +70,23 @@ class NotificationActionsTest {
         assertEquals("row:4", notificationTag("row", BIT_INPUT))
         assertEquals(notificationId("Aa", BIT_DONE), notificationId("BB", BIT_DONE))
         assertFalse(notificationTag("Aa", BIT_DONE) == notificationTag("BB", BIT_DONE))
+    }
+
+    @Test fun actionExtrasNameTheRowOnItsEngineAndTheKeyOnEveryEngine() {
+        val row = Thread(id = "m:bbbbbbbbbbbbbbbb:codex:1", globalId = "aaaaaaaaaaaaaaaa:codex:1")
+        assertEquals(mapOf("id" to row.id, "key" to row.key, "engine" to "bbbbbbbbbbbbbbbb", "action" to "mark-read", "kind" to BIT_DONE,
+            "notificationId" to notificationId("aaaaaaaaaaaaaaaa:codex:1", BIT_DONE), "deviceId" to "012345abcdef"),
+            actionExtras(row, BIT_DONE, "mark-read", "bbbbbbbbbbbbbbbb", "012345abcdef"))
+        assertEquals(NotificationRow(row.id, row.key, "bbbbbbbbbbbbbbbb"), notificationRow(row.id, row.key, "bbbbbbbbbbbbbbbb"))
+        // A notification from before the update has only the row ID: the key is the ID and the engine is the paired PC.
+        assertEquals(NotificationRow("codex:1", "codex:1", ""), notificationRow("codex:1", null, null))
+        assertEquals(NotificationRow("codex:1", "codex:1", ""), notificationRow("codex:1", "", null))
+        assertNull(notificationRow("", "key", ""))
+        assertNull(notificationRow(null, "key", ""))
+    }
+
+    @Test fun actionBaselineMergesByKey() {
+        val row = Thread(id = "m:bbbbbbbbbbbbbbbb:codex:1", globalId = "aaaaaaaaaaaaaaaa:codex:1")
+        assertEquals(mapOf("aaaaaaaaaaaaaaaa:codex:1" to 0), mergeActionBaseline(mapOf("aaaaaaaaaaaaaaaa:codex:1" to BIT_DONE), row, 1000))
     }
 }

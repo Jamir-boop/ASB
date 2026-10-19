@@ -28,24 +28,31 @@ internal fun actionOpened(reply: JsonObject): Boolean = (reply["opened"] as? Jso
 
 // A merge may only clear bits: a bit that the action reply adds was never notified.
 internal fun mergeActionBaseline(baseline: Map<String, Int>?, row: Thread, nowMs: Long): Map<String, Int>? =
-    baseline?.let { it + (row.id to ((it[row.id] ?: 0) and update(it, listOf(row), nowMs).getValue(row.id))) }
+    baseline?.let { it + (row.key to ((it[row.key] ?: 0) and update(it, listOf(row), nowMs).getValue(row.key))) }
+
+/** The session of a notification action; a notification from before the machine group has no key and no engine. */
+internal data class NotificationRow(val id: String, val key: String, val engine: String)
+
+internal fun notificationRow(id: String?, key: String?, engine: String?): NotificationRow? =
+    id?.takeIf { it.isNotEmpty() }?.let { NotificationRow(it, key?.takeIf { value -> value.isNotEmpty() } ?: it, engine.orEmpty()) }
 
 class ActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val app = context.applicationContext as AsbApp
         if (intent.action == ACTION_DISMISS) { app.notifier.dismissed(); return }
         if (intent.action != ACTION_NOTIFICATION) return
-        val id = intent.getStringExtra("id")?.takeIf { it.isNotEmpty() } ?: return
+        val (id, key, engine) = notificationRow(intent.getStringExtra("id"), intent.getStringExtra("key"),
+            intent.getStringExtra("engine")) ?: return
         val action = intent.getStringExtra("action")?.takeIf { it == "open" || it == "mark-read" } ?: return
         val kind = intent.getIntExtra("kind", 0)
         if (kind !in setOf(BIT_DONE, BIT_FAILED, BIT_INPUT)) return
-        val notificationId = notificationId(id, kind)
+        val notificationId = notificationId(key, kind)
         if (!intent.hasExtra("notificationId") || intent.getIntExtra("notificationId", 0) != notificationId) return
         val deviceId = intent.getStringExtra("deviceId") ?: return
         val token = synchronized(app.store) {
             if (!app.store.paired || app.store.revoked || app.store.deviceId != deviceId) null else app.store.token
         } ?: return
-        val tag = notificationTag(id, kind)
+        val tag = notificationTag(key, kind)
         val pending = goAsync()
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             var succeeded = false
@@ -56,7 +63,7 @@ class ActionReceiver : BroadcastReceiver() {
                             if (app.store.token != token || app.store.revoked || app.store.deviceId != deviceId) null
                             else app.api()
                         } ?: return@withLock
-                        val reply = api.action(id, action)
+                        val reply = api.action(id, action, engine = engine)
                         val row = if (action == "mark-read") {
                             val value = reply["thread"] ?: throw AsbError.Server("ASB sent an invalid response.")
                             AsbJson.decodeFromJsonElement<Thread>(value).also {
@@ -68,15 +75,15 @@ class ActionReceiver : BroadcastReceiver() {
                         }
                         succeeded = true
                         val updated = row ?: try {
-                            (api.dashboard(null, false) as? DashboardResult.Fetched)?.dashboard?.threads?.find { it.id == id }
+                            (api.dashboard(null, false) as? DashboardResult.Fetched)?.dashboard?.threads?.find { it.key == key }
                         } catch (_: AsbError) { null }
                         // Commit a successful Read before cancellation can release the shared lock.
                         withContext(NonCancellable + Dispatchers.Main.immediate) {
                             synchronized(app.store) {
                                 if (app.store.token == token) {
-                                    if (!app.store.revoked && updated != null) mergeActionBaseline(app.store.loadBaselineIfPaired(token),
+                                    if (!app.store.revoked && updated != null) mergeActionBaseline(app.store.loadBaselineIfPaired(token, engine),
                                         updated, System.currentTimeMillis())?.let {
-                                        app.store.saveBaselineIfPaired(token, AsbJson.encodeToString(it))
+                                        app.store.saveBaselineIfPaired(token, AsbJson.encodeToString(it), engine)
                                     }
                                     app.notifier.cancel(tag, notificationId)
                                     if (app.store.revoked) app.notifier.postRevoked()

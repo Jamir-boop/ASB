@@ -203,7 +203,7 @@ gatewayTest('eight paired devices prevent a ninth device', async (t) => {
 });
 
 gatewayTest('bearer authentication needs the exact token and hello reports the paired device', async (t) => {
-  const { request, pair, port } = await fixture(t);
+  const { request, pair, port, gateway } = await fixture(t);
   const paired = (await pair()).json;
   for (const authorization of ['', `Bearer ${randomBytes(32).toString('base64url')}`, `bearer ${paired.token}`,
     `Bearer ${paired.token}=`, `Bearer ${paired.token} extra`, 'Basic xxx']) {
@@ -215,8 +215,31 @@ gatewayTest('bearer authentication needs the exact token and hello reports the p
   }
   const response = await request('/phone/v1/hello', { token: paired.token });
   assert.equal(response.status, 200);
+  // No group: the machine ID is the first 16 fingerprint characters, and no other engine is listed.
+  const machineId = (await gateway.status()).fingerprint.slice(0, 16);
+  assert.match(machineId, /^[0-9a-f]{16}$/);
   assert.deepEqual(response.json, { api: 1, asbVersion: '1.8.1', deviceId: paired.deviceId, serverName: 'Test PC & lab',
-    addresses: [{ kind: 'lan', address: '127.0.0.1' }], port });
+    addresses: [{ kind: 'lan', address: '127.0.0.1' }], port, machineId, engines: [] });
+});
+
+gatewayTest('hello lists the group engines with the live values of this engine, also for a phone paired on another member', async (t) => {
+  const sharedToken = randomBytes(32).toString('base64url');
+  const other = { machineId: 'b'.repeat(16), name: 'homeLP', port: 4630, fingerprint: 'b'.repeat(64), addresses: [{ kind: 'zerotier', address: '10.147.0.2' }] };
+  let self = null;
+  const peer = { engines: () => [self, other].map((item) => structuredClone(item)),
+    phones: () => [{ deviceId: 'shared-phone', name: 'Pixel', tokenHash: createHash('sha256').update(sharedToken).digest('hex') }] };
+  const { request, pair, port, gateway } = await fixture(t, { gateway: { peer } });
+  const fingerprint = (await gateway.status()).fingerprint;
+  // The saved member entry of this engine is old; hello gives the listening addresses and the port of now.
+  self = { machineId: fingerprint.slice(0, 16), name: 'debian', port: 4999, fingerprint, addresses: [{ kind: 'lan', address: '192.168.1.10' }] };
+  const engines = [{ ...self, addresses: [{ kind: 'lan', address: '127.0.0.1' }], port }, other];
+  const paired = (await pair()).json;
+  const own = await request('/phone/v1/hello', { token: paired.token });
+  assert.deepEqual(Object.keys(own.json), ['api', 'asbVersion', 'deviceId', 'serverName', 'addresses', 'port', 'machineId', 'engines']);
+  assert.deepEqual([own.json.machineId, own.json.engines], [fingerprint.slice(0, 16), engines]);
+  const shared = await request('/phone/v1/hello', { token: sharedToken });
+  assert.equal(shared.status, 200);
+  assert.deepEqual(shared.json, { ...own.json, deviceId: 'shared-phone' });
 });
 
 gatewayTest('twenty failures throttle the remote for one minute and use a sliding window', async (t) => {
@@ -794,6 +817,20 @@ async function peerFixture(t, options = {}) {
   };
   return { ...fx, group, logs, joiner, stranger, peer, joinBody, code, pair };
 }
+
+gatewayTest('the machine group gives hello its active members, with this engine at its live addresses', async (t) => {
+  const { group, peer, joiner, joinBody, code, pair, port, request } = await peerFixture(t);
+  const phone = (await pair('Pixel')).json;
+  const alone = await request('/phone/v1/hello', { host: '127.0.0.2', token: phone.token });
+  assert.deepEqual(alone.json.engines, []);
+  assert.equal((await peer('/peer/v1/join', { method: 'POST', as: joiner, body: joinBody(await code()) })).status, 200);
+  const status = await group.status();
+  const hello = await request('/phone/v1/hello', { host: '127.0.0.2', token: phone.token });
+  assert.equal(hello.json.machineId, status.self.machineId);
+  assert.deepEqual(hello.json.engines, [
+    { machineId: status.self.machineId, name: 'debian', port, fingerprint: hello.fingerprint, addresses: [{ kind: 'lan', address: '127.0.0.2' }] },
+    { machineId: joiner.fingerprint.slice(0, 16), name: 'laptop', port: 4999, fingerprint: joiner.fingerprint, addresses: [{ kind: 'lan', address: '127.0.0.9' }] }]);
+});
 
 gatewayTest('peer routes need a member certificate; join takes any certificate with a valid code', async (t) => {
   const { group, peer, joiner, stranger, joinBody, code, gateway, logs } = await peerFixture(t);

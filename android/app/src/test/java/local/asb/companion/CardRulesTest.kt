@@ -1,17 +1,22 @@
 package local.asb.companion
 
+import local.asb.companion.R
 import local.asb.companion.data.Palette
 import local.asb.companion.data.Thread
 import local.asb.companion.ui.CardTones
 import local.asb.companion.ui.CornerControl
 import local.asb.companion.ui.cardTones
 import local.asb.companion.ui.cornerControls
+import local.asb.companion.ui.isViewOnly
 import local.asb.companion.ui.COMFORTABLE_CARD_GAP
 import local.asb.companion.ui.COMFORTABLE_MIN_CARD_GAP
 import local.asb.companion.ui.comfortableCardHeight
 import local.asb.companion.ui.compactRowHeight
 import local.asb.companion.ui.packColumns
 import local.asb.companion.ui.quietRow
+import local.asb.companion.ui.rowMenuActions
+import local.asb.companion.ui.rowWhere
+import local.asb.companion.ui.viewOnlyTone
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -133,5 +138,54 @@ class CardRulesTest {
         assertEquals((339f - 4 * 68f) / 3, landscape.gap, .001f)
         // Compact keeps no gap.
         assertEquals(0f, packColumns((0 until 40).toList(), 800, 343, rowHeight = 48f).gap, .001f)
+    }
+
+    private val remote = idle.copy(remote = true, machineName = "homeLP")
+    private val cli = idle.copy(surface = "cli")
+
+    @Test fun viewOnlyRowsSayWhereTheyRun() {
+        assertTrue(isViewOnly(remote))
+        assertTrue(isViewOnly(cli))
+        assertFalse(isViewOnly(idle))
+        assertEquals(R.drawable.ic_machine to "homeLP", rowWhere(remote))
+        assertEquals(R.drawable.ic_terminal to "CLI", rowWhere(cli))
+        // A remote CLI row names its machine.
+        assertEquals(R.drawable.ic_machine to "homeLP", rowWhere(remote.copy(surface = "cli")))
+        assertEquals(R.drawable.ic_machine to "another machine", rowWhere(remote.copy(machineName = "")))
+        assertEquals(null to "", rowWhere(idle))
+    }
+
+    @Test fun viewOnlyToneIsQuietWithNoAttention() {
+        assertEquals("", viewOnlyTone(idle))
+        assertEquals("rest", viewOnlyTone(remote))
+        assertEquals("rest", viewOnlyTone(cli.copy(state = "unknown")))
+        for (state in listOf("working", "waiting")) assertEquals("quiet", viewOnlyTone(remote.copy(state = state)))
+        for (row in listOf(remote.copy(unread = true), remote.copy(questionAttention = true), remote.copy(pending = true),
+            remote.copy(limitResetsAtMs = now + 60_000))) assertEquals(row.toString(), "", viewOnlyTone(row))
+    }
+
+    @Test fun viewOnlyCardsUseTheQuietColorsAndTheLimitWins() {
+        val working = remote.copy(state = "working")
+        // In both views; a Working row keeps its state color.
+        for (comfortable in listOf(true, false)) {
+            assertEquals(CardTones(gnome.quietTitle, gnome.quietCaption, gnome.success), cardTones(gnome, working, comfortable, false, false, now))
+            assertEquals(CardTones(gnome.quietTitle, gnome.quietCaption, gnome.quietCaption), cardTones(gnome, remote, comfortable, false, false, now))
+        }
+        assertEquals(CardTones(custom.quietTitle, custom.quietCaption, custom.warning),
+            cardTones(custom, cli.copy(state = "waiting"), false, false, false, now))
+        assertEquals(CardTones(gnome.limited, gnome.limited, gnome.limited),
+            cardTones(gnome, working.copy(limitResetsAtMs = now + 60_000), false, false, false, now))
+        // Pressed and the drawer view of a drawer row keep the normal roles.
+        assertEquals(CardTones(gnome.text, gnome.muted, gnome.success), cardTones(gnome, working, false, false, true, now))
+        assertEquals(CardTones(gnome.text, gnome.muted, gnome.success), cardTones(gnome, working.copy(drawer = true), false, true, false, now))
+        // Attention keeps full strength.
+        assertEquals(CardTones(gnome.text, gnome.muted, gnome.muted), cardTones(gnome, remote.copy(unread = true), false, false, false, now))
+    }
+
+    @Test fun aRemoteWorkingRowHasNoDiscard() {
+        val actions = rowMenuActions(remote.copy(state = "working")).map { it.action }
+        assertFalse("discard-result" in actions)
+        assertTrue("discard-result" in rowMenuActions(idle.copy(state = "working")).map { it.action })
+        assertTrue("discard-result" in rowMenuActions(cli.copy(state = "working")).map { it.action })
     }
 }

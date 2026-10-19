@@ -131,7 +131,15 @@ data class Thread(
     val unread: Boolean = false,
     val pending: Boolean = false,
     val pendingSource: String = "",
-)
+    val machineId: String = "",
+    val machineName: String = "",
+    val remote: Boolean = false,
+    val surface: String = "app",
+    val globalId: String = "",
+) {
+    /** The ID that is the same on every engine of a machine group; older PCs send no globalId. */
+    val key: String get() = globalId.ifEmpty { id }
+}
 
 @Serializable
 data class Provider(
@@ -148,6 +156,18 @@ data class Hello(
     val deviceId: String = "",
     val serverName: String = "",
     /** The addresses the gateway listens on now; empty from a PC before version 2 links. */
+    val addresses: List<Endpoint> = emptyList(),
+    val machineId: String = "",
+    val engines: List<Engine> = emptyList(),
+)
+
+/** Another ASB engine of the paired PC's machine group (hello `engines`); the phone token is the same on all. */
+@Serializable
+data class Engine(
+    val machineId: String = "",
+    val name: String = "",
+    val port: Int = 0,
+    val fingerprint: String = "",
     val addresses: List<Endpoint> = emptyList(),
 )
 

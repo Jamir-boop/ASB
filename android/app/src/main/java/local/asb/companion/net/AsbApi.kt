@@ -16,16 +16,19 @@ import kotlinx.serialization.json.put
 import local.asb.companion.data.AsbJson
 import local.asb.companion.data.Dashboard
 import local.asb.companion.data.Endpoint
+import local.asb.companion.data.Engine
 import local.asb.companion.data.ErrorReply
 import local.asb.companion.data.Hello
 import local.asb.companion.data.PairReply
 import local.asb.companion.data.PairingInfo
 import local.asb.companion.data.endpointLabel
 import local.asb.companion.data.orderEndpoints
+import local.asb.companion.data.otherEngines
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
@@ -51,26 +54,48 @@ interface Paths {
 
 class MemoryPaths(override var endpoints: List<Endpoint>, override var current: Endpoint? = null) : Paths
 
+/** The other engines of the group and the one that answered last ("" is the paired engine); the Store keeps them. */
+interface Engines {
+    var list: List<Engine>
+    var current: String
+    var endpoint: Endpoint?
+}
+
+class MemoryEngines(override var list: List<Engine> = emptyList(), override var current: String = "",
+    override var endpoint: Endpoint? = null) : Engines
+
 sealed interface DashboardResult {
-    data class Fetched(val dashboard: Dashboard, val etag: String?) : DashboardResult
+    /** [engine] is the engine that answered ("" is the paired one); actions on these rows go to it. */
+    data class Fetched(val dashboard: Dashboard, val etag: String?, val engine: String = "") : DashboardResult
     data object NotModified : DashboardResult
 }
 
 /**
- * A GET tries the current endpoint, then the others in order, and the first that answers becomes current.
- * A POST goes only to one endpoint and is never sent again to another one, so an action cannot run twice.
+ * A GET tries the current engine, then the paired engine, then the other engines of the group, each at its endpoints
+ * in order, and the first that answers becomes current. A POST goes only to the first endpoint of one engine and is
+ * never sent again to another one, so an action cannot run twice.
  */
 class AsbApi(
     private val paths: Paths,
     private val port: Int,
-    fingerprint: String,
+    private val fingerprint: String,
     private val token: String = "",
+    private val engines: Engines = MemoryEngines(),
+    private val clock: () -> Long = System::currentTimeMillis,
     private val onNotPaired: () -> Unit = {},
 ) {
     private val client = pinnedClient(fingerprint)
+    private val clients = mutableMapOf(fingerprint to client)
+    @Volatile private var pairedTriedAtMs: Long? = null
 
-    /** The endpoint that answered last, or null before the first answer on this network. */
-    val endpoint: Endpoint? get() = paths.current
+    /** The endpoint that answered last on the current engine, or null before the first answer on this network. */
+    val endpoint: Endpoint? get() = if (engines.current.isEmpty()) paths.current else engines.endpoint
+
+    /** The engine that answered last; "" is the paired engine. */
+    val engine: String get() = engines.current
+
+    /** The name of another engine of the group; null for the paired engine or an unknown ID. */
+    fun engineName(id: String): String? = if (id.isEmpty()) null else engines.list.firstOrNull { it.machineId == id }?.name
 
     companion object {
         suspend fun pair(info: PairingInfo, deviceName: String): PairReply {
@@ -93,81 +118,154 @@ class AsbApi(
     }
 
     suspend fun hello(): Hello {
-        val reply = decode<Hello>(request("hello").body)
-        if (reply.api != 1 || !reply.deviceId.matches(Regex("[0-9a-f]{12}"))) invalidReply()
-        val fresh = orderEndpoints(reply.addresses)
-        if (fresh.isNotEmpty() && fresh != paths.endpoints) {
-            paths.endpoints = fresh
-            if (paths.current !in fresh) paths.current = null
+        val response = request("hello")
+        val reply = validHello(response.body) ?: invalidReply()
+        // Only the paired PC gives the addresses of the pairing; another engine lists its own.
+        if (response.engine.isEmpty()) {
+            val fresh = orderEndpoints(reply.addresses)
+            if (fresh.isNotEmpty() && fresh != paths.endpoints) {
+                paths.endpoints = fresh
+                if (paths.current !in fresh) paths.current = null
+            }
+        }
+        val list = otherEngines(reply.engines, fingerprint)
+        if (list != engines.list) {
+            engines.list = list
+            if (engines.current.isNotEmpty() && list.none { it.machineId == engines.current }) useEngine("", null)
         }
         return reply
     }
 
-    suspend fun dashboard(etag: String? = null, force: Boolean = false): DashboardResult {
-        val response = request("dashboard", etag = etag, force = force, allowNotModified = true)
-        return if (response.code == 304) DashboardResult.NotModified
-        else DashboardResult.Fetched(decode<Dashboard>(response.body), response.etag)
+    /** A hello to one engine only, which changes no current value or list; true when it answers as ASB. */
+    suspend fun probe(engine: String): Boolean = try {
+        validHello(request("hello", only = engine, probe = true).body) != null
+    } catch (cause: AsbError) {
+        false
     }
 
-    suspend fun action(id: String, action: String, body: String = "{}"): JsonObject {
+    private fun validHello(body: String): Hello? = try {
+        AsbJson.decodeFromString<Hello>(body).takeIf { it.api == 1 && it.deviceId.matches(Regex("[0-9a-f]{12}")) }
+    } catch (_: SerializationException) {
+        null
+    }
+
+    suspend fun dashboard(etag: String? = null, force: Boolean = false, etagEngine: String = ""): DashboardResult {
+        val response = request("dashboard", etag = etag, etagEngine = etagEngine, force = force, allowNotModified = true)
+        return if (response.code == 304) DashboardResult.NotModified
+        else DashboardResult.Fetched(decode<Dashboard>(response.body), response.etag, response.engine)
+    }
+
+    suspend fun action(id: String, action: String, body: String = "{}", engine: String = ""): JsonObject {
         if (id.isEmpty() || id == "." || id == "..") throw AsbError.Server("Invalid session ID.")
         if (action !in setOf("open", "mark-read", "mark-unread", "pin", "unpin", "move-pin",
             "discard-result", "keep-result", "drawer-in", "drawer-out")) throw AsbError.Server("Invalid ASB action.")
         val parsed = try { AsbJson.parseToJsonElement(body) } catch (_: SerializationException) { null }
         if (parsed !is JsonObject) throw AsbError.Server("Invalid action body.")
-        return decode<JsonObject>(request("threads", id, action, body = body).body)
+        return decode<JsonObject>(request("threads", id, action, body = body, only = engine).body)
     }
 
-    suspend fun setPersistentUnread(value: Boolean) {
+    suspend fun setPersistentUnread(value: Boolean, engine: String = "") {
         val body = buildJsonObject { put("persistentUnread", value) }
-        request("settings", "unread", body = body.toString())
+        request("settings", "unread", body = body.toString(), only = engine)
     }
 
-    private data class Reply(val code: Int, val body: String, val etag: String?)
+    private data class Reply(val code: Int, val body: String, val etag: String?, val engine: String = "")
+
+    /** One engine to try: "" is the paired PC; another engine has its own addresses, port, and pin. */
+    private class Target(val id: String, val endpoints: List<Endpoint>, val port: Int, val client: OkHttpClient)
+
+    private fun pairedTarget(): Target {
+        val endpoints = paths.endpoints
+        val first = paths.current?.takeIf { it in endpoints } ?: endpoints.firstOrNull()
+        return Target("", first?.let { listOf(it) + (endpoints - it) }.orEmpty(), port, client)
+    }
+
+    private fun engineTarget(engine: Engine): Target {
+        val first = engines.endpoint?.takeIf { engines.current == engine.machineId && it in engine.addresses }
+        val endpoints = first?.let { listOf(it) + (engine.addresses - it) } ?: engine.addresses
+        val pinned = synchronized(clients) { clients.getOrPut(engine.fingerprint) { pinnedClient(engine.fingerprint) } }
+        return Target(engine.machineId, endpoints, engine.port, pinned)
+    }
+
+    private fun target(id: String): Target? =
+        if (id.isEmpty()) pairedTarget() else engines.list.firstOrNull { it.machineId == id }?.let(::engineTarget)
+
+    private fun getOrder(): List<Target> {
+        val list = engines.list
+        val current = engines.current.takeIf { id -> list.any { it.machineId == id } }.orEmpty()
+        val others = list.filter { it.machineId != current }.map(::engineTarget)
+        if (current.isEmpty()) return listOf(pairedTarget()) + others
+        // A phone on another engine tries its paired PC first again once a minute, so it returns when that PC is back.
+        val retry = pairedTriedAtMs?.let { clock() - it >= 60_000 } ?: true
+        val first = listOfNotNull(target(current))
+        return if (retry) listOf(pairedTarget()) + first + others else first + pairedTarget() + others
+    }
+
+    private fun useEngine(id: String, endpoint: Endpoint?) {
+        if (engines.current != id) engines.current = id
+        if (engines.endpoint != endpoint) engines.endpoint = endpoint
+    }
 
     private suspend fun request(
         vararg segments: String,
         body: String? = null,
         authenticated: Boolean = true,
         etag: String? = null,
+        etagEngine: String = "",
         force: Boolean = false,
         allowNotModified: Boolean = false,
         secret: String = "",
+        only: String? = null,
+        probe: Boolean = false,
     ): Reply = withContext(Dispatchers.IO) {
-        val endpoints = paths.endpoints
-        val first = paths.current?.takeIf { it in endpoints } ?: endpoints.firstOrNull()
-            ?: throw AsbError.Offline()
-        val order = if (body == null) listOf(first) + (endpoints - first) else listOf(first)
+        // A POST names its engine, because remote row IDs differ per engine.
+        val targets = if (only != null || body != null) listOfNotNull(target(only.orEmpty())) else getOrder()
+        var tried = 0
+        var hints = emptyList<Endpoint>()
         var pinMismatches = 0
         var response: Reply? = null
-        for (endpoint in order) {
-            ensureActive()
-            val url = HttpUrl.Builder().scheme("https").host(endpoint.host).port(port).addPathSegments("phone/v1").apply {
-                segments.forEach { addPathSegment(it) }
-                if (force) addQueryParameter("force", "1")
-            }.build()
-            val request = Request.Builder().url(url).apply {
-                if (authenticated) header("Authorization", "Bearer $token")
-                if (etag != null) header("If-None-Match", etag)
-                if (body != null) post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
-            }.build()
-            try {
-                response = send(request)
-            } catch (cause: IOException) {
-                // A pin mismatch can be another device at the same private address on this network.
-                if (pinMismatch(cause)) pinMismatches++
-                continue
+        search@ for (target in targets) {
+            if (target.id.isEmpty() && !probe) pairedTriedAtMs = clock()
+            // The away-from-home hint names every overlay of a tried engine, also when a POST tried only one endpoint.
+            hints = hints + target.endpoints
+            for (endpoint in if (body == null) target.endpoints else target.endpoints.take(1)) {
+                ensureActive()
+                tried++
+                val url = HttpUrl.Builder().scheme("https").host(endpoint.host).port(target.port).addPathSegments("phone/v1").apply {
+                    segments.forEach { addPathSegment(it) }
+                    if (force) addQueryParameter("force", "1")
+                }.build()
+                val request = Request.Builder().url(url).apply {
+                    if (authenticated) header("Authorization", "Bearer $token")
+                    if (etag != null && target.id == etagEngine) header("If-None-Match", etag)
+                    if (body != null) post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                }.build()
+                val reply = try {
+                    send(target.client, request).copy(engine = target.id)
+                } catch (cause: IOException) {
+                    // A pin mismatch can be another device at the same private address on this network.
+                    if (pinMismatch(cause)) pinMismatches++
+                    continue
+                }
+                // Another engine that does not know the phone yet (or left the group) is not an answer.
+                if (reply.code == 401 && target.id.isNotEmpty()) continue@search
+                if (!probe) {
+                    if (target.id.isEmpty()) {
+                        if (body == null) useEngine("", null)
+                        if (endpoint != paths.current) paths.current = endpoint
+                    } else if (body == null) useEngine(target.id, endpoint)
+                }
+                response = reply
+                break@search
             }
-            if (endpoint != paths.current) paths.current = endpoint
-            break
         }
         if (response == null) {
-            if (pinMismatches == order.size) throw AsbError.PinMismatch
-            throw AsbError.Offline(endpoints.filter { it.kind != "lan" }.map { endpointLabel(it.kind) }.distinct())
+            if (tried > 0 && pinMismatches == tried) throw AsbError.PinMismatch
+            throw AsbError.Offline(hints.filter { it.kind != "lan" }.map { endpointLabel(it.kind) }.distinct())
         }
         when {
             response.code == 401 -> {
-                if (authenticated) onNotPaired()
+                if (authenticated && !probe) onNotPaired()
                 throw AsbError.NotPaired
             }
             response.code == 429 -> throw AsbError.Throttled
@@ -183,7 +281,7 @@ class AsbApi(
         }
     }
 
-    private suspend fun send(request: Request): Reply = suspendCancellableCoroutine { continuation ->
+    private suspend fun send(client: OkHttpClient, request: Request): Reply = suspendCancellableCoroutine { continuation ->
         val call = client.newCall(request)
         continuation.invokeOnCancellation { call.cancel() }
         call.enqueue(object : Callback {

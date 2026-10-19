@@ -484,8 +484,11 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
         // After the queue: the hook can call `devices()`.
         if (paired) await onPhonePaired(paired);
       } else if (hello) {
+        const machineId = fingerprint.slice(0, 16);
         sendJson(response, 200, { api: PHONE_API_VERSION, asbVersion, deviceId: device.id, serverName: hostName,
-          addresses: listening(), port: settings.port });
+          addresses: listening(), port: settings.port, machineId,
+          engines: (peer?.engines() || []).map((engine) => engine.machineId === machineId
+            ? { ...engine, addresses: listening(), port: settings.port } : engine) });
       } else {
         const target = dashboard ? `/api/dashboard${url.searchParams.get('force') === '1' ? '?force=1' : ''}`
           : unread ? '/api/settings/unread' : `/api/threads/${match[1]}/${match[2]}`;

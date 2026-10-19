@@ -70,6 +70,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
@@ -77,9 +78,11 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import local.asb.companion.data.Endpoint
+import local.asb.companion.data.Engine
 import local.asb.companion.data.Hello
 import local.asb.companion.data.Store
 import local.asb.companion.data.endpointLabel
+import local.asb.companion.data.otherEngines
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.DashboardResult
@@ -110,6 +113,14 @@ fun SettingsScreen(
     val requests = remember(api) { Mutex() }
     val currentOnPersistentUnreadChanged by rememberUpdatedState(onPersistentUnreadChanged)
     var hello by remember(api) { mutableStateOf<Hello?>(null) }
+    // The engine that answered the hello ("" is the paired PC).
+    var helloEngine by remember(api) { mutableStateOf("") }
+    var engines by remember(api) { mutableStateOf(otherEngines(store.engines, store.fingerprint)) }
+    // Engine ID to Online (true), Offline (false), or Checking (null).
+    var engineOnline by remember(api) { mutableStateOf<Map<String, Boolean?>>(emptyMap()) }
+    var engineInUse by remember(api) { mutableStateOf(api.engine) }
+    // The engine of the dashboard that Settings read; the Persistent unread change goes to it.
+    var unreadEngine by remember(api) { mutableStateOf("") }
     var connectionError by remember(api) { mutableStateOf<String?>(null) }
     var persistentUnread by remember(api) { mutableStateOf<Boolean?>(null) }
     var settingsError by remember(api) { mutableStateOf<String?>(null) }
@@ -153,9 +164,11 @@ fun SettingsScreen(
                     currentCoroutineContext().ensureActive()
                     if (reply.deviceId != store.deviceId) throw AsbError.Server("ASB sent an invalid response. Try again.")
                     hello = reply
+                    helloEngine = api.engine
                     try {
                         val result = api.dashboard(null, force = true)
                         currentCoroutineContext().ensureActive()
+                        unreadEngine = (result as? DashboardResult.Fetched)?.engine.orEmpty()
                         persistentUnread = (result as? DashboardResult.Fetched)?.dashboard?.persistentUnread
                             ?: throw AsbError.Server("ASB did not return the current setting. Check connection and try again.")
                     } catch (cause: AsbError) {
@@ -168,6 +181,20 @@ fun SettingsScreen(
                     connectionError = cause.message
                     if (cause === AsbError.NotPaired) { revoked = true; hello = null }
                 } finally { refreshing = false }
+            }
+            // The hello can change the engine list; then each engine answers a hello of its own, all at once.
+            engines = otherEngines(store.engines, store.fingerprint)
+            engineInUse = api.engine
+            if (engines.isNotEmpty()) {
+                val ids = listOf("") + engines.map { it.machineId }
+                engineOnline = ids.associateWith { null }
+                coroutineScope {
+                    for (id in ids) launch {
+                        val online = api.probe(id)
+                        engineOnline = engineOnline + (id to online)
+                    }
+                }
+                engineInUse = api.engine
             }
             awaitCancellation()
         }
@@ -190,9 +217,12 @@ fun SettingsScreen(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     SettingsHeading("Connection")
-                    Text(hello?.serverName?.takeIf { it.isNotBlank() } ?: store.serverName.ifBlank { "Paired PC" },
-                        style = MaterialTheme.typography.titleMedium)
+                    // Another engine of the group can answer the hello; the title names the paired PC.
+                    val pairedName = (if (helloEngine.isEmpty()) hello?.serverName else null)
+                        ?.takeIf { it.isNotBlank() } ?: store.serverName.ifBlank { "Paired PC" }
+                    Text(pairedName, style = MaterialTheme.typography.titleMedium)
                     EndpointList(store.endpoints, store.currentEndpoint, store.port)
+                    if (engines.isNotEmpty()) EngineList(pairedName, engines, engineOnline, engineInUse)
                     Text(
                         when {
                             refreshing -> "Checking ASB…"
@@ -227,11 +257,12 @@ fun SettingsScreen(
                             scope.launch {
                                 requests.withLock {
                                     try {
-                                        api.setPersistentUnread(checked)
+                                        api.setPersistentUnread(checked, unreadEngine)
                                         currentCoroutineContext().ensureActive()
                                         currentOnPersistentUnreadChanged()
                                         val result = api.dashboard(null, force = true)
                                         currentCoroutineContext().ensureActive()
+                                        unreadEngine = (result as? DashboardResult.Fetched)?.engine.orEmpty()
                                         persistentUnread = (result as? DashboardResult.Fetched)?.dashboard?.persistentUnread
                                             ?: throw AsbError.Server("ASB did not return the current setting. Check connection and try again.")
                                     } catch (cause: AsbError) {
@@ -373,6 +404,25 @@ fun EndpointList(endpoints: List<Endpoint>, current: Endpoint?, port: Int) {
                 "${endpointLabel(endpoint.kind)}: ${endpoint.host}:$port" + if (endpoint == current) " · Current" else "",
                 style = MaterialTheme.typography.bodyLarge,
             )
+        }
+    }
+}
+
+/** One Machines line: null [online] is a check that still runs. */
+fun engineLine(name: String, online: Boolean?, inUse: Boolean): String =
+    "$name: " + when (online) {
+        true -> "Online"
+        false -> "Offline"
+        null -> "Checking…"
+    } + if (inUse) " · In use" else ""
+
+/** The engines of the machine group, the paired PC first, with the one that answered last marked In use. */
+@Composable
+private fun EngineList(pairedName: String, engines: List<Engine>, online: Map<String, Boolean?>, inUse: String) {
+    Text("Machines", style = MaterialTheme.typography.labelLarge)
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }) {
+        for ((id, name) in listOf("" to pairedName) + engines.map { it.machineId to it.name }) {
+            Text(engineLine(name, online[id], id == inUse), style = MaterialTheme.typography.bodyLarge)
         }
     }
 }

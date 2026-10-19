@@ -396,6 +396,10 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
       removedFingerprint: (fingerprint) => Boolean(group) && group.removed.some((item) => item.certFingerprint === fingerprint),
       memberFingerprint: (fingerprint) => Boolean(group) && activeMembers(group).some((member) => member.certFingerprint === fingerprint),
       phones: () => group ? activePhones(group).map(({ deviceId, name, tokenHash }) => ({ deviceId, name, tokenHash })) : [],
+      // The phone hello lists the members, so a phone can change to another engine (plan 15.1).
+      engines: () => group ? activeMembers(group).map((member) => ({ machineId: member.machineId, name: member.name,
+        port: member.port, fingerprint: member.certFingerprint,
+        addresses: (pollers.get(member.machineId)?.state?.member.addresses || member.addresses).map((item) => ({ ...item })) })) : [],
       hello: async () => {
         const status = await gateway().status();
         return { api: 1, machineId: group.self.machineId, name: group.self.name, groupId: group.groupId, asbVersion,

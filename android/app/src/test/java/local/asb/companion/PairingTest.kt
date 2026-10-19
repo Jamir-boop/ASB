@@ -2,8 +2,10 @@ package local.asb.companion
 
 import local.asb.companion.data.ENDPOINT_KINDS
 import local.asb.companion.data.Endpoint
+import local.asb.companion.data.Engine
 import local.asb.companion.data.endpointLabel
 import local.asb.companion.data.orderEndpoints
+import local.asb.companion.data.otherEngines
 import local.asb.companion.data.parsePairingUri
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -104,5 +106,31 @@ class PairingTest {
             Endpoint("tailscale", "100.101.102.103"), Endpoint("vpn", "10.0.0.9"), Endpoint("zerotier", "10.147.17.4"),
             Endpoint("lan", "192.168.50.4"), Endpoint("lan", "not an address"), Endpoint("zerotier", "192.168.50.4"))))
         assertEquals(listOf("Home network", "ZeroTier", "Tailscale"), ENDPOINT_KINDS.map(::endpointLabel))
+    }
+
+    @Test fun otherEnginesKeepValidMembersInOrderWithoutThePairedPc() {
+        val paired = "a".repeat(64)
+        fun engine(n: Int, vararg addresses: Endpoint) = Engine("%016x".format(n), "pc$n", 4630, "%064x".format(n), addresses.toList())
+        val zerotier = Endpoint("zerotier", "10.147.0.2")
+        val lan = Endpoint("lan", "192.168.1.20")
+        val good = engine(1, zerotier, Endpoint("vpn", "10.0.0.1"), lan)
+        val list = listOf(
+            engine(9, lan).copy(fingerprint = paired),
+            good,
+            engine(2, lan).copy(machineId = "B".repeat(16)),
+            engine(3, lan).copy(fingerprint = "f".repeat(63)),
+            engine(4, lan).copy(port = 0),
+            engine(5, lan).copy(port = 65536),
+            engine(6, lan).copy(name = "my laptop"),
+            engine(7, lan).copy(name = "-pc"),
+            engine(8, Endpoint("lan", "not an address")),
+            engine(10, lan).copy(machineId = good.machineId),
+            engine(11, lan).copy(fingerprint = good.fingerprint),
+            engine(12, lan).copy(name = "a".repeat(32)),
+        )
+        assertEquals(listOf(good.copy(addresses = listOf(lan, zerotier)), engine(12, lan).copy(name = "a".repeat(32))),
+            otherEngines(list, paired))
+        assertEquals(32, otherEngines((1..40).map { engine(it, lan) }, paired).size)
+        assertEquals("%016x".format(1), otherEngines((1..40).map { engine(it, lan) }, paired).first().machineId)
     }
 }

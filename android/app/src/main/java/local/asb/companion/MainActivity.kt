@@ -215,11 +215,11 @@ private fun PairedApp(
             viewModelFactory {
                 initializer {
                     SessionsViewModel(api, serverName, store.revoked,
-                        saveBaseline = { baseline ->
-                            if (app.resumed) store.saveBaselineIfPaired(token, AsbJson.encodeToString(baseline))
+                        saveBaseline = { baseline, engine ->
+                            if (app.resumed) store.saveBaselineIfPaired(token, AsbJson.encodeToString(baseline), engine)
                         },
                         notificationMutex = app.notificationMutex,
-                        loadBaseline = { store.loadBaselineIfPaired(token) },
+                        loadBaseline = { engine -> store.loadBaselineIfPaired(token, engine) },
                         initialView = store.view,
                         savePalette = app::usePalette,
                         showLive = { app.liveUpdates.value = LiveUpdate(it.threads, System.currentTimeMillis()) },

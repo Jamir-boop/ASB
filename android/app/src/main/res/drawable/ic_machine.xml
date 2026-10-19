@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Drawn for ASB, no outside source: a screen on a stand (assets/icons/asb-machine-symbolic.svg). Tinted in code. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="12dp"
+    android:height="12dp"
+    android:viewportWidth="12"
+    android:viewportHeight="12">
+    <path
+        android:fillColor="#000000"
+        android:fillType="evenOdd"
+        android:pathData="M2 1h8a1.5 1.5 0 0 1 1.5 1.5V7A1.5 1.5 0 0 1 10 8.5H2A1.5 1.5 0 0 1 .5 7V2.5A1.5 1.5 0 0 1 2 1zm0 1.5V7h8V2.5z" />
+    <path
+        android:fillColor="#000000"
+        android:pathData="M5.25 8.5h1.5V10H9v1.5H3V10h2.25z" />
+</vector>

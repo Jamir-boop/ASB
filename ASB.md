@@ -259,7 +259,7 @@ The commands need a current desktop or service with a safe `$XDG_RUNTIME_DIR/asb
 
 ## Phone access
 
-Open **Phone** in Preferences to use the optional ASB Android app. Phone access is off by default. See [the Android guide](android/README.md) to build and install the app.
+Open **Phone** in Preferences to use the optional ASB Android app. Phone access is off by default. See [the Android guide](android/README.md) to build and install the app. In a [machine group](#machines), a paired phone uses another machine of the group when the paired PC does not answer, and goes back to the paired PC when it answers again.
 
 | Field | Select |
 | --- | --- |

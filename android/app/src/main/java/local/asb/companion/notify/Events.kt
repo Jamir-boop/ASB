@@ -28,7 +28,8 @@ fun diff(
     if (baseline == null) return emptyList()
     return buildList {
         for (row in threads) {
-            val old = baseline[row.id] ?: 0
+            // The key is the same on every engine of a group, so a change of engine does not post again.
+            val old = baseline[row.key] ?: 0
             var added = bits(row) and old.inv()
             // Stored attention survives a limit; suppress its first restoration after the reset.
             // shortcut: A result after reset can be missed between polls; use event history if all results must notify.
@@ -48,8 +49,8 @@ fun update(
 ): Map<String, Int> = (baseline ?: emptyMap()).toMutableMap().apply {
     for (row in threads) {
         val current = bits(row)
-        put(row.id, if (!row.archived && limitLeft(row, nowMs) > 0) {
-            (current and BIT_INPUT) or ((baseline?.get(row.id) ?: 0) and (BIT_DONE or BIT_FAILED)) or BIT_LIMITED
+        put(row.key, if (!row.archived && limitLeft(row, nowMs) > 0) {
+            (current and BIT_INPUT) or ((baseline?.get(row.key) ?: 0) and (BIT_DONE or BIT_FAILED)) or BIT_LIMITED
         } else current)
     }
 }

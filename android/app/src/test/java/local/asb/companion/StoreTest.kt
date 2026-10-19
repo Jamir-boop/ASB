@@ -2,6 +2,7 @@ package local.asb.companion
 
 import android.content.SharedPreferences
 import local.asb.companion.data.Endpoint
+import local.asb.companion.data.Engine
 import local.asb.companion.data.PairReply
 import local.asb.companion.data.PairingInfo
 import local.asb.companion.data.Store
@@ -116,5 +117,73 @@ class StoreTest {
         assertFalse(next.notifyFailed)
         assertFalse(next.notifyInput)
         assertFalse(next.liveNotification)
+    }
+
+    private val homeLp = Engine("b".repeat(16), "homeLP", 4630, "b".repeat(64), listOf(zerotier))
+
+    @Test fun enginesAndTheCurrentEngineAreSavedOnlyForTheCurrentPairing() {
+        val preferences = MemoryPreferences(mutableMapOf("token" to token))
+        val store = Store(preferences)
+        store.saveEnginesIfPaired("old", listOf(homeLp))
+        assertEquals(emptyList<Engine>(), store.engines)
+        store.saveEnginesIfPaired(token, listOf(homeLp))
+        assertEquals(listOf(homeLp), Store(preferences).engines)
+        store.saveCurrentEngineIfPaired("old", homeLp.machineId, zerotier)
+        assertEquals("", store.currentEngine)
+        store.saveCurrentEngineIfPaired(token, homeLp.machineId, zerotier)
+        assertEquals(homeLp.machineId, store.currentEngine)
+        assertEquals(zerotier, store.currentEngineEndpoint)
+        // An endpoint that is not an address of the current engine reads as none.
+        store.saveCurrentEngineIfPaired(token, homeLp.machineId, lan)
+        assertNull(store.currentEngineEndpoint)
+        // An engine that is no longer in the list reads as the paired PC.
+        store.saveEnginesIfPaired(token, emptyList())
+        assertEquals("", store.currentEngine)
+        store.saveEnginesIfPaired(token, listOf(homeLp))
+        store.saveCurrentEngineIfPaired(token, "", null)
+        assertFalse(preferences.contains("currentEngine"))
+        assertFalse(preferences.contains("currentEngineEndpoint"))
+        preferences.values["engines"] = "not JSON"
+        assertEquals(emptyList<Engine>(), store.engines)
+    }
+
+    @Test fun aNewNetworkForgetsOnlyTheEndpointOfTheCurrentEngine() {
+        val preferences = MemoryPreferences(mutableMapOf("token" to token))
+        val store = Store(preferences)
+        store.saveEnginesIfPaired(token, listOf(homeLp))
+        store.saveCurrentEngineIfPaired(token, homeLp.machineId, zerotier)
+        assertTrue(store.networkChanged(9))
+        assertEquals(homeLp.machineId, store.currentEngine)
+        assertNull(store.currentEngineEndpoint)
+    }
+
+    @Test fun pairingAndUnpairRemoveTheEnginesAndTheBaselineBelongsToOneEngine() {
+        val preferences = MemoryPreferences(mutableMapOf("token" to token))
+        val store = Store(preferences)
+        store.saveEnginesIfPaired(token, listOf(homeLp))
+        store.saveCurrentEngineIfPaired(token, homeLp.machineId, zerotier)
+        store.saveBaselineIfPaired(token, """{"one":1}""", homeLp.machineId)
+        assertEquals(mapOf("one" to 1), store.loadBaselineIfPaired(token, homeLp.machineId))
+        assertNull(store.loadBaselineIfPaired(token, ""))
+        assertNull(store.loadBaselineIfPaired("old", homeLp.machineId))
+        store.saveBaselineIfPaired("old", """{"two":1}""", "")
+        assertEquals(mapOf("one" to 1), store.loadBaselineIfPaired(token, homeLp.machineId))
+        store.save(PairingInfo(listOf(lan), 4630, "ab".repeat(32), "c".repeat(27), "PC"),
+            PairReply(deviceId = "012345abcdef", token = token, serverName = "PC", api = 1))
+        for (key in listOf("engines", "currentEngine", "currentEngineEndpoint", "baseline", "baselineEngine")) assertFalse(key, preferences.contains(key))
+        store.saveEnginesIfPaired(token, listOf(homeLp))
+        store.saveCurrentEngineIfPaired(token, homeLp.machineId, zerotier)
+        store.saveBaselineIfPaired(token, "{}", "")
+        store.clear()
+        for (key in listOf("engines", "currentEngine", "currentEngineEndpoint", "baseline", "baselineEngine")) assertFalse(key, preferences.contains(key))
+    }
+
+    @Test fun aBaselineFromBeforeTheEnginesReadsAsNoneOnce() {
+        // The first poll after the update then starts a new baseline and posts nothing.
+        val preferences = MemoryPreferences(mutableMapOf("token" to token, "baseline" to """{"one":1}"""))
+        val store = Store(preferences)
+        assertNull(store.loadBaselineIfPaired(token, ""))
+        store.saveBaselineIfPaired(token, """{"one":1}""", "")
+        assertEquals(mapOf("one" to 1), store.loadBaselineIfPaired(token, ""))
     }
 }

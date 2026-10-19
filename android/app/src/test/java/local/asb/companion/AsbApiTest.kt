@@ -14,14 +14,17 @@ import kotlinx.coroutines.withTimeout
 import local.asb.companion.data.AsbJson
 import local.asb.companion.data.Dashboard
 import local.asb.companion.data.Endpoint
+import local.asb.companion.data.Engine
 import local.asb.companion.data.Message
 import local.asb.companion.data.PairingInfo
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.DashboardResult
+import local.asb.companion.net.MemoryEngines
 import local.asb.companion.net.MemoryPaths
 import local.asb.companion.net.offlineMessage
 import local.asb.companion.net.sha256Hex
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.TlsVersion
@@ -60,10 +63,15 @@ class AsbApiTest {
         }
     }
 
-    @After fun stop() { server.shutdown() }
+    private val peers = mutableListOf<MockWebServer>()
+
+    @After fun stop() {
+        server.shutdown()
+        peers.forEach { it.shutdown() }
+    }
 
     private fun api(pin: String = fingerprint, onNotPaired: () -> Unit = {}) =
-        AsbApi(MemoryPaths(listOf(Endpoint("lan", "127.0.0.1"))), server.port, pin, token, onNotPaired)
+        AsbApi(MemoryPaths(listOf(Endpoint("lan", "127.0.0.1"))), server.port, pin, token, onNotPaired = onNotPaired)
 
     private suspend fun failure(block: suspend () -> Unit): AsbError {
         try { block() } catch (error: AsbError) { return error }
@@ -300,5 +308,192 @@ class AsbApiTest {
         assertEquals(listOf(Endpoint("lan", "192.168.50.4"), Endpoint("zerotier", "10.147.17.4"),
             Endpoint("tailscale", "100.101.102.103")), paths.endpoints)
         assertNull(paths.current)
+    }
+
+    // Another engine of the group: its own server, certificate, port, and pin.
+    private class Peer(val server: MockWebServer, val engine: Engine)
+
+    private fun peer(name: String): Peer {
+        val certificate = HeldCertificate.Builder().commonName("ASB $name").ecdsa256().build()
+        val peerServer = MockWebServer().apply {
+            useHttps(HandshakeCertificates.Builder().heldCertificate(certificate).build().sslSocketFactory(), false)
+            start(InetAddress.getByName("127.0.0.1"), 0)
+        }
+        peers += peerServer
+        val pin = sha256Hex(certificate.certificate.encoded)
+        return Peer(peerServer, Engine(pin.take(16), name, peerServer.port, pin, listOf(Endpoint("lan", "127.0.0.1"))))
+    }
+
+    // Nothing listens on 127.0.0.2, so the paired PC is down.
+    private val down = MemoryPaths(listOf(Endpoint("lan", "127.0.0.2")))
+    private val up get() = MemoryPaths(listOf(Endpoint("lan", "127.0.0.1")))
+    private val board = """{"generatedAtMs":1,"threads":[{"id":"one"}]}"""
+
+    private fun api(paths: MemoryPaths, engines: MemoryEngines, pin: String = fingerprint, clock: () -> Long = { 0L },
+        onNotPaired: () -> Unit = {}) = AsbApi(paths, server.port, pin, token, engines, clock, onNotPaired)
+
+    @Test fun anotherEngineAnswersWhenThePairedPcIsDownAndBecomesCurrent() = runBlocking {
+        val b = peer("workLP")
+        val c = peer("homeLP")
+        val engines = MemoryEngines(listOf(b.engine, c.engine))
+        b.server.enqueue(MockResponse().setBody(board))
+        val result = api(down, engines).dashboard() as DashboardResult.Fetched
+        assertEquals(b.engine.machineId, result.engine)
+        assertEquals(b.engine.machineId, engines.current)
+        assertEquals(Endpoint("lan", "127.0.0.1"), engines.endpoint)
+        assertEquals(0, c.server.requestCount)
+        // The current engine is tried first; then the paired PC; then the others.
+        val api = api(down, engines)
+        assertEquals(b.engine.machineId, api.engine)
+        assertEquals("workLP", api.engineName(b.engine.machineId))
+        assertNull(api.engineName(""))
+        assertEquals(Endpoint("lan", "127.0.0.1"), api.endpoint)
+        b.server.shutdown()
+        c.server.enqueue(MockResponse().setBody(board))
+        assertEquals(c.engine.machineId, (api.dashboard() as DashboardResult.Fetched).engine)
+        assertEquals(c.engine.machineId, engines.current)
+    }
+
+    @Test fun onAnotherEngineThePairedPcIsTriedFirstOnceAMinute() = runBlocking {
+        val b = peer("workLP")
+        val engines = MemoryEngines(listOf(b.engine), b.engine.machineId, b.engine.addresses.single())
+        var now = 0L
+        val paths = up
+        val api = api(paths, engines, clock = { now })
+        // A new object counts as never tried: the paired PC first.
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+        b.server.enqueue(MockResponse().setBody(board))
+        assertEquals(b.engine.machineId, (api.dashboard() as DashboardResult.Fetched).engine)
+        assertEquals(listOf(1, 1), listOf(server.requestCount, b.server.requestCount))
+        now = 59_999
+        b.server.enqueue(MockResponse().setBody(board))
+        assertEquals(b.engine.machineId, (api.dashboard() as DashboardResult.Fetched).engine)
+        assertEquals(listOf(1, 2), listOf(server.requestCount, b.server.requestCount))
+        now = 60_000
+        server.enqueue(MockResponse().setBody(board))
+        assertEquals("", (api.dashboard() as DashboardResult.Fetched).engine)
+        assertEquals(listOf(2, 2), listOf(server.requestCount, b.server.requestCount))
+        assertEquals(listOf("", null), listOf(engines.current, engines.endpoint))
+        assertEquals(Endpoint("lan", "127.0.0.1"), paths.current)
+        // Another new object on the other engine goes to the paired PC first again.
+        engines.current = b.engine.machineId
+        server.enqueue(MockResponse().setBody(board))
+        assertEquals("", (api(up, engines).dashboard() as DashboardResult.Fetched).engine)
+        assertEquals(2, b.server.requestCount)
+    }
+
+    @Test fun eachEngineHasItsOwnPin() = runBlocking {
+        val b = peer("workLP")
+        val c = peer("homeLP")
+        // B with the pin of the paired PC fails for B only.
+        val engines = MemoryEngines(listOf(b.engine.copy(fingerprint = fingerprint), c.engine))
+        c.server.enqueue(MockResponse().setBody(board))
+        assertEquals(c.engine.machineId, (api(down, engines).dashboard() as DashboardResult.Fetched).engine)
+        assertEquals(0, b.server.requestCount)
+        // Every endpoint of every engine with a pin mismatch.
+        val other = sha256Hex(HeldCertificate.Builder().build().certificate.encoded)
+        val wrong = MemoryEngines(listOf(b.engine.copy(fingerprint = other)))
+        assertSame(AsbError.PinMismatch, failure { api(up, wrong, pin = other).dashboard() })
+        // A down PC and a mismatch are Offline.
+        assertTrue(failure { api(down, wrong).dashboard() } is AsbError.Offline)
+    }
+
+    @Test fun unauthorizedFromAnotherEngineIsNotAnAnswerButFromThePairedPcRevokes() = runBlocking {
+        val b = peer("workLP")
+        val c = peer("homeLP")
+        var revoked = false
+        b.server.enqueue(MockResponse().setResponseCode(401).setBody("{}"))
+        c.server.enqueue(MockResponse().setBody(board))
+        val engines = MemoryEngines(listOf(b.engine, c.engine))
+        assertEquals(c.engine.machineId, (api(down, engines) { revoked = true }.dashboard() as DashboardResult.Fetched).engine)
+        assertFalse(revoked)
+        b.server.enqueue(MockResponse().setResponseCode(401).setBody("{}"))
+        val alone = MemoryEngines(listOf(b.engine))
+        assertTrue(failure { api(down, alone) { revoked = true }.dashboard() } is AsbError.Offline)
+        assertFalse(revoked)
+        assertEquals("", alone.current)
+        server.enqueue(MockResponse().setResponseCode(401).setBody("{}"))
+        assertSame(AsbError.NotPaired, failure { api(up, MemoryEngines(listOf(c.engine))) { revoked = true }.dashboard() })
+        assertTrue(revoked)
+    }
+
+    @Test fun aPostGoesOnlyToTheNamedEngineAndOnlyOnce() = runBlocking {
+        val b = peer("workLP")
+        val engines = MemoryEngines(listOf(b.engine))
+        b.server.enqueue(MockResponse().setBody("{}"))
+        api(up, engines).action("m:x:one", "mark-read", engine = b.engine.machineId)
+        assertEquals("/phone/v1/threads/m:x:one/mark-read", b.server.takeRequest().path)
+        assertEquals(0, server.requestCount)
+        // The paired PC is down: no request to another engine.
+        assertTrue(failure { api(down, engines).action("one", "open") } is AsbError.Offline)
+        assertTrue(failure { api(down, engines).setPersistentUnread(true) } is AsbError.Offline)
+        b.server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+        assertTrue(failure { api(up, engines).setPersistentUnread(true, b.engine.machineId) } is AsbError.Offline)
+        assertTrue(failure { api(up, engines).action("one", "open", engine = "cccccccccccccccc") } is AsbError.Offline)
+        assertEquals(listOf(0, 2), listOf(server.requestCount, b.server.requestCount))
+        assertEquals("", engines.current)
+    }
+
+    @Test fun theEtagGoesOnlyToItsEngine() = runBlocking {
+        val b = peer("workLP")
+        val engines = MemoryEngines(listOf(b.engine))
+        b.server.enqueue(MockResponse().setHeader("ETag", "b1").setBody(board))
+        val fetched = api(down, engines).dashboard("\"a1\"", etagEngine = "") as DashboardResult.Fetched
+        assertEquals(listOf("b1", b.engine.machineId), listOf(fetched.etag, fetched.engine))
+        assertNull(b.server.takeRequest().getHeader("If-None-Match"))
+        b.server.enqueue(MockResponse().setResponseCode(304))
+        assertSame(DashboardResult.NotModified, api(down, engines).dashboard("b1", etagEngine = b.engine.machineId))
+        assertEquals("b1", b.server.takeRequest().getHeader("If-None-Match"))
+    }
+
+    private fun helloWith(vararg engines: Engine, addresses: String = "") = hello.dropLast(1) +
+        ""","machineId":"0123456789abcdef","addresses":[$addresses],"engines":${AsbJson.encodeToString(engines.toList())}}"""
+
+    @Test fun helloFromAnotherEngineListsTheEnginesButKeepsTheAddressesOfThePairing() = runBlocking {
+        val b = peer("workLP")
+        val c = peer("homeLP")
+        val paired = Engine("0123456789abcdef", "debian", server.port, fingerprint, listOf(Endpoint("lan", "127.0.0.1")))
+        val engines = MemoryEngines(listOf(b.engine))
+        b.server.enqueue(MockResponse().setBody(helloWith(paired, b.engine, c.engine, c.engine.copy(name = "bad name"),
+            addresses = """{"kind":"lan","address":"192.168.9.9"}""")))
+        val paths = down
+        api(paths, engines).hello()
+        assertEquals(listOf(Endpoint("lan", "127.0.0.2")), paths.endpoints)
+        assertEquals(listOf(b.engine, c.engine), engines.list)
+        assertEquals(b.engine.machineId, engines.current)
+        // An engine that no longer lists itself (it left the group) ends its use.
+        b.server.enqueue(MockResponse().setBody(helloWith()))
+        api(paths, engines).hello()
+        assertEquals(listOf(emptyList<Engine>(), ""), listOf(engines.list, engines.current))
+        // The paired PC gives the addresses of the pairing.
+        server.enqueue(MockResponse().setBody(helloWith(paired, c.engine,
+            addresses = """{"kind":"lan","address":"127.0.0.1"},{"kind":"zerotier","address":"127.0.0.3"}""")))
+        val pairing = up
+        api(pairing, engines).hello()
+        assertEquals(listOf(Endpoint("lan", "127.0.0.1"), Endpoint("zerotier", "127.0.0.3")), pairing.endpoints)
+        assertEquals(listOf(c.engine), engines.list)
+    }
+
+    @Test fun aProbeAsksOneEngineAndChangesNothing() = runBlocking {
+        val b = peer("workLP")
+        val c = peer("homeLP")
+        var revoked = false
+        val engines = MemoryEngines(listOf(b.engine, c.engine))
+        val paths = up
+        val api = api(paths, engines) { revoked = true }
+        b.server.enqueue(MockResponse().setBody(hello))
+        assertTrue(api.probe(b.engine.machineId))
+        assertEquals(listOf("", null, null), listOf(engines.current, engines.endpoint, paths.current))
+        assertEquals(0, server.requestCount + c.server.requestCount)
+        c.server.enqueue(MockResponse().setBody("not JSON"))
+        assertFalse(api.probe(c.engine.machineId))
+        server.enqueue(MockResponse().setResponseCode(401).setBody("{}"))
+        assertFalse(api.probe(""))
+        assertFalse(revoked)
+        assertFalse(api.probe("cccccccccccccccc"))
+        assertFalse(api(down, engines).probe(""))
+        server.enqueue(MockResponse().setBody(hello))
+        assertTrue(api.probe(""))
+        assertEquals(listOf(null, listOf(b.engine, c.engine)), listOf(paths.current, engines.list))
     }
 }

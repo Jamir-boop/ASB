@@ -2,9 +2,15 @@ package local.asb.companion
 
 import local.asb.companion.data.AsbJson
 import local.asb.companion.data.Dashboard
+import local.asb.companion.data.Endpoint
+import local.asb.companion.data.Engine
+import local.asb.companion.data.Hello
+import local.asb.companion.data.Thread
+import kotlinx.serialization.encodeToString
 import local.asb.companion.data.Message
 import kotlinx.serialization.SerializationException
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -100,5 +106,26 @@ class ModelsTest {
     @Test fun decodingKeepsOrderDuplicatesAndOldMessagesForSelectionRules() {
         val values = messages("""[{"from":"a","to":"b","atMs":1},{"from":"a","to":"b","atMs":1},{"from":"b","to":"a","atMs":0}]""")
         assertEquals(listOf(Message("a", "b", 1), Message("a", "b", 1), Message("b", "a", 0)), values)
+    }
+
+    @Test fun threadMachineFieldsDefaultToALocalAppRowAndTheKeyIsTheGlobalId() {
+        val local = AsbJson.decodeFromString<Thread>("""{"id":"codex:1"}""")
+        assertEquals(listOf("", "", false, "app", ""), listOf(local.machineId, local.machineName, local.remote, local.surface, local.globalId))
+        assertEquals("codex:1", local.key)
+        val remote = AsbJson.decodeFromString<Thread>("""{"id":"m:bbbbbbbbbbbbbbbb:codex:1","machineId":"bbbbbbbbbbbbbbbb",
+            "machineName":"homeLP","remote":true,"surface":"cli","globalId":"bbbbbbbbbbbbbbbb:codex:1"}""")
+        assertEquals("bbbbbbbbbbbbbbbb:codex:1", remote.key)
+        assertTrue(remote.remote)
+        assertEquals("cli", remote.surface)
+        // The key has no backing field, so it is not sent or saved.
+        assertFalse("key" in AsbJson.encodeToString(remote))
+    }
+
+    @Test fun helloReadsTheMachineIdAndEnginesAndOlderPcsSendNeither() {
+        assertEquals(Pair("", emptyList<Engine>()), AsbJson.decodeFromString<Hello>("""{"api":1}""").let { it.machineId to it.engines })
+        val hello = AsbJson.decodeFromString<Hello>("""{"api":1,"machineId":"aaaaaaaaaaaaaaaa","engines":[{"machineId":"bbbbbbbbbbbbbbbb",
+            "name":"homeLP","port":4630,"fingerprint":"${"b".repeat(64)}","addresses":[{"kind":"zerotier","address":"10.147.0.2"}],"future":1}]}""")
+        assertEquals("aaaaaaaaaaaaaaaa", hello.machineId)
+        assertEquals(listOf(Engine("bbbbbbbbbbbbbbbb", "homeLP", 4630, "b".repeat(64), listOf(Endpoint("zerotier", "10.147.0.2")))), hello.engines)
     }
 }

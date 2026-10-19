@@ -47,7 +47,7 @@ On Windows, ASB has statuses only: the engine reads Codex and Claude on that PC 
 
 ## Android companion (optional)
 
-The ASB Android app shows your sessions on your phone over your local network, or away from home through ZeroTier or Tailscale. It can open a chat on the PC, use the row actions, and change Persistent unread. It shows Done, Failed, and Needs input notifications.
+The ASB Android app shows your sessions on your phone over your local network, or away from home through ZeroTier or Tailscale. It can open a chat on the PC, use the row actions, and change Persistent unread. It shows Done, Failed, and Needs input notifications. In a machine group, the app uses another machine of the group when the paired PC does not answer.
 
 Phone access is off by default. In ASB, open Preferences > Phone, select **Allow phone access**, select one or more addresses (Home network, ZeroTier, or Tailscale), and select **Apply**. Then select **Pair a phone** and scan the QR code with **Scan QR code** in the ASB app or with the phone camera, or paste the pairing link in the app. Compare the certificate fingerprint on the PC and the phone. See the [Android guide](android/README.md) to build and install the app.
 

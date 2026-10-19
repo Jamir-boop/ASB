@@ -43,15 +43,17 @@ data class UiState(
     val actionErrors: Map<String, String> = emptyMap(),
     /** The kind of endpoint that gave the last dashboard: lan, zerotier, or tailscale. */
     val path: String? = null,
+    /** The engine of the dashboard on screen ("" is the paired PC); actions on its rows go to it. */
+    val engine: String = "",
 )
 
 class SessionsViewModel(
     private val api: AsbApi,
     private val serverName: String,
     initiallyRevoked: Boolean = false,
-    private val saveBaseline: (Map<String, Int>) -> Unit = {},
+    private val saveBaseline: (Map<String, Int>, String) -> Unit = { _, _ -> },
     private val notificationMutex: Mutex = Mutex(),
-    private val loadBaseline: () -> Map<String, Int>? = { null },
+    private val loadBaseline: (String) -> Map<String, Int>? = { null },
     initialView: String = "comfortable",
     private val savePalette: (Palette) -> Unit = {},
     private val showLive: (Dashboard) -> Unit = {},
@@ -65,11 +67,13 @@ class SessionsViewModel(
     var anchorId: String? = null
     private val pollMutex = Mutex()
     private var etag: String? = null
+    // Only the engine that gave the etag can answer 304 to it.
+    private var etagEngine = ""
     private var offlineFailures = 0
     private var seenNetwork = networkChanges.value
     /**
-     * After a network change the next good dashboard also reads hello, so new PC addresses (ZeroTier selected
-     * later on the PC) reach the phone. The Connection screen reads hello at each app start.
+     * At each poll start and after a network change the next good dashboard also reads hello, so new PC addresses
+     * (ZeroTier selected later on the PC) and the engines of the machine group reach the phone.
      */
     private var learnAddresses = false
     private val readTimers = mutableMapOf<String, Job>()
@@ -81,6 +85,7 @@ class SessionsViewModel(
 
     suspend fun poll() {
         if (!pollMutex.tryLock()) return
+        learnAddresses = true
         try {
             while (currentCoroutineContext().isActive && !state.value.revoked) {
                 // Also a change while the screen was stopped: the user turns on ZeroTier in its own app.
@@ -119,7 +124,13 @@ class SessionsViewModel(
         if (state.value.revoked || id in state.value.busyIds) return
         val row = state.value.dashboard?.threads?.find { it.id == id } ?: return
         if (action == "open" && !row.canOpen) {
-            mutableState.update { it.copy(banner = "This session has no direct link.") }
+            val name = row.machineName.ifEmpty { "another machine" }
+            val banner = when {
+                row.remote -> "On $name. Open it on $name."
+                row.surface == "cli" -> "Runs in a terminal. ASB does not open CLI sessions."
+                else -> "This session has no direct link."
+            }
+            mutableState.update { it.copy(banner = banner) }
             return
         }
         mutableState.update { it.copy(busyIds = it.busyIds + id,
@@ -139,13 +150,13 @@ class SessionsViewModel(
                         }
                         apiAction = "move-pin"
                     }
-                    val reply = api.action(id, apiAction, body)
+                    val reply = api.action(id, apiAction, body, state.value.engine)
                     currentCoroutineContext().ensureActive()
                     if (action == "open") {
                         if (reply["opened"] != JsonPrimitive(true)) {
                             throw AsbError.Server("ASB did not open this session. Try again.")
                         }
-                        mutableState.update { it.copy(banner = "Opened on $serverName") }
+                        mutableState.update { it.copy(banner = "Opened on ${api.engineName(state.value.engine) ?: serverName}") }
                     }
                     // The row stays busy until the board refresh below, so its controls never act on the old row.
                     // The snackbar of the old failure closes with the row's error.
@@ -179,24 +190,28 @@ class SessionsViewModel(
     private suspend fun fetchDashboard(force: Boolean = false): Long {
         if (state.value.revoked) return 5000L
         return try {
-            val result = api.dashboard(if (force) null else etag, force)
+            val result = api.dashboard(if (force) null else etag, force, etagEngine)
             withContext(Dispatchers.Main.immediate) {
                 ensureActive()
                 val dashboard = when (result) {
                     is DashboardResult.Fetched -> result.dashboard
                     DashboardResult.NotModified -> state.value.dashboard
                 }
-                dashboard?.let { saveBaseline(updateBaseline(loadBaseline(), it.threads)) }
+                val engine = if (result is DashboardResult.Fetched) result.engine else state.value.engine
+                dashboard?.let { saveBaseline(updateBaseline(loadBaseline(engine), it.threads), engine) }
                 Palette.parse(dashboard?.palette)?.let(savePalette)
                 dashboard?.let(showLive)
-                if (result is DashboardResult.Fetched) etag = result.etag
+                if (result is DashboardResult.Fetched) {
+                    etag = result.etag
+                    etagEngine = result.engine
+                }
                 offlineFailures = 0
                 mutableState.update { old ->
                     val before = old.dashboard?.threads.orEmpty().associate { it.id to it.state }
                     val now = dashboard?.threads.orEmpty().associate { it.id to it.state }
                     // A row that leaves the board or changes state loses its action error, as on the desktop.
                     val kept = old.actionErrors.filterKeys { id -> id in now && now[id] == before[id] }
-                    old.copy(dashboard = dashboard, offline = false, path = api.endpoint?.kind,
+                    old.copy(dashboard = dashboard, offline = false, path = api.endpoint?.kind, engine = engine,
                         // A poll that ends an offline state (a dashboard failure, or an action that could not reach
                         // ASB) clears its stale message; another action error stays for its snackbar until its row error goes.
                         lastError = if (old.offline || old.lastError in (old.actionErrors - kept.keys).values) null else old.lastError,

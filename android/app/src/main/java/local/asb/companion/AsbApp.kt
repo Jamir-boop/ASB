@@ -11,9 +11,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import local.asb.companion.data.Endpoint
+import local.asb.companion.data.Engine
 import local.asb.companion.data.Palette
 import local.asb.companion.data.Store
+import local.asb.companion.data.otherEngines
 import local.asb.companion.net.AsbApi
+import local.asb.companion.net.Engines
 import local.asb.companion.net.Paths
 import local.asb.companion.net.pinnedConnections
 import local.asb.companion.notify.CheckWorker
@@ -96,7 +99,19 @@ class AsbApp : Application() {
                 get() = store.currentEndpoint
                 set(value) = store.saveCurrentEndpointIfPaired(token, value)
         }
-        AsbApi(paths, store.port, store.fingerprint, token) {
+        // AsbApi writes current before endpoint, so the two keys never disagree.
+        val engines = object : Engines {
+            override var list: List<Engine>
+                get() = otherEngines(store.engines, store.fingerprint)
+                set(value) = store.saveEnginesIfPaired(token, value)
+            override var current: String
+                get() = store.currentEngine
+                set(value) = store.saveCurrentEngineIfPaired(token, value, null)
+            override var endpoint: Endpoint?
+                get() = store.currentEngineEndpoint
+                set(value) = store.saveCurrentEngineIfPaired(token, store.currentEngine, value)
+        }
+        AsbApi(paths, store.port, store.fingerprint, token, engines) {
             store.revokeIfPaired(token)
         }
     }

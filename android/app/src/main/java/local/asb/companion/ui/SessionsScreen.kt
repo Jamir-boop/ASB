@@ -839,6 +839,8 @@ private fun SessionCard(
         "stop" -> "Stopped"
         else -> ""
     }
+    val viewOnly = isViewOnly(row)
+    val (whereGlyph, where) = rowWhere(row)
     val description = listOf(
         row.title, row.projectName, state,
         if (limited) "Usage limit. Resets in ${spokenLimit(left)}" else working.ifEmpty { idleAge(row.updatedAtMs, nowMs) },
@@ -846,11 +848,16 @@ private fun SessionCard(
         if (row.pinned) "Pinned" else "",
         if (row.drawer) "In the drawer" else "",
         row.sourceLabel.ifEmpty { row.providerLabel },
-        if (!row.canOpen) "No direct link" else "",
+        if (!row.canOpen && !viewOnly) "No direct link" else "",
+        // As the board label: On homeLP. CLI session. View only.
+        if (row.remote) "On ${row.machineName.ifEmpty { "another machine" }}" else "",
+        if (row.surface == "cli") "CLI session" else "",
+        if (viewOnly) "View only" else "",
         if (opening) "Opening" else "",
     ).filter { it.isNotBlank() }.joinToString(". ")
     val title = if (opening) "Opening…" else row.title
-    val fontScale = LocalDensity.current.fontScale
+    val density = LocalDensity.current
+    val fontScale = density.fontScale
     val card = modifier.fillMaxWidth().onPlaced { coordinates.value = it }
         .heightIn(min = (if (comfortable) comfortableCardHeight(fontScale) else compactRowHeight(fontScale)).dp)
         .combinedClickable(
@@ -885,6 +892,8 @@ private fun SessionCard(
         Text(if (limited) "Resets $countdown" else state + if (working.isNotEmpty()) " ·$working" else "",
             fontSize = 11.sp, lineHeight = 14.sp, color = hexColor(tones.state), maxLines = 1,
             modifier = Modifier.clearAndSetSemantics { })
+        if (viewOnly) Text("· $where", fontSize = 11.sp, lineHeight = 14.sp, color = hexColor(tones.caption), maxLines = 1,
+            overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = with(density) { 66.sp.toDp() }).clearAndSetSemantics { })
     } else Box(card.semantics { contentDescription = description }) {
         Column(
             modifier = Modifier.fillMaxWidth().align(Alignment.CenterStart)
@@ -905,9 +914,18 @@ private fun SessionCard(
                 if (limited) LimitClock(tones.state)
                 Text(if (limited) "Resets in" else state, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
                     color = hexColor(tones.state), maxLines = 1)
-                Text(countdown.ifEmpty { working.ifEmpty { idleAge(row.updatedAtMs, nowMs) } }, fontSize = 11.sp,
-                    lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(tones.caption), maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    textAlign = TextAlign.End, modifier = Modifier.weight(1f))
+                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    if (whereGlyph != null) Icon(painterResource(whereGlyph), contentDescription = null, tint = hexColor(tones.caption),
+                        modifier = Modifier.size(11.dp))
+                    // About 12 characters of the 11 sp caption; the machine name ellipsizes before the age.
+                    if (viewOnly) Text("$where ·", fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(tones.caption),
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false).widthIn(max = with(density) { 80.sp.toDp() }))
+                    Text(countdown.ifEmpty { working.ifEmpty { idleAge(row.updatedAtMs, nowMs) } }, fontSize = 11.sp,
+                        lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(tones.caption), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.End)
+                }
             }
         }
         Row(Modifier.align(Alignment.TopEnd).padding(end = 5.dp, top = 2.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -1203,7 +1221,12 @@ private fun SessionInspector(
                             .clickable(enabled = canOpen, role = Role.Button, onClick = onOpen),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text("Open in $app", fontSize = 13.sp,
+                        val label = when {
+                            row.remote -> "On ${row.machineName.ifEmpty { "another machine" }}"
+                            row.surface == "cli" -> "Runs in a terminal"
+                            else -> "Open in $app"
+                        }
+                        Text(label, fontSize = 13.sp,
                             fontWeight = FontWeight.Bold, color = text, maxLines = 1, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.padding(horizontal = 12.dp))
                     }

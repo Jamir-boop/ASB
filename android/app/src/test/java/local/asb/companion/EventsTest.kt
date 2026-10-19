@@ -212,4 +212,16 @@ class EventsTest {
         assertEquals(emptyList<Event>(), diff(saved, listOf(done), reset + 15_000))
         assertEquals(mapOf(row.id to BIT_DONE), update(saved, listOf(done), reset + 15_000))
     }
+
+    @Test fun theBaselineUsesTheGlobalIdSoAnotherEngineDoesNotPostAgain() {
+        // The same session on the paired PC and as a remote row of another engine has two row IDs and one key.
+        val local = Thread(id = "codex:1", globalId = "aaaaaaaaaaaaaaaa:codex:1", completionAttention = true)
+        val remote = local.copy(id = "m:aaaaaaaaaaaaaaaa:codex:1", remote = true)
+        val seen = update(mapOf(local.key to 0), listOf(local), now)
+        assertEquals(mapOf("aaaaaaaaaaaaaaaa:codex:1" to BIT_DONE), seen)
+        assertEquals(emptyList<Event>(), diff(seen, listOf(remote), now))
+        assertEquals(seen, update(seen, listOf(remote), now))
+        // An older PC sends no globalId: the key is the row ID.
+        assertEquals(mapOf("old" to BIT_DONE), update(null, listOf(Thread(id = "old", completionAttention = true)), now))
+    }
 }

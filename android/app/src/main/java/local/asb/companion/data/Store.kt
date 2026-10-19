@@ -23,6 +23,17 @@ class Store(private val preferences: SharedPreferences) {
     val deviceId: String get() = preferences.getString("deviceId", "").orEmpty()
     val serverName: String get() = preferences.getString("serverName", "").orEmpty()
     val paired: Boolean get() = token.isNotEmpty()
+    /** The other engines of the machine group, from the last hello. */
+    val engines: List<Engine> get() = preferences.getString("engines", null)?.let {
+        try { AsbJson.decodeFromString<List<Engine>>(it) } catch (_: SerializationException) { null }
+    }.orEmpty()
+    /** The engine that answered last; "" is the paired engine. */
+    val currentEngine: String get() = preferences.getString("currentEngine", "").orEmpty()
+        .takeIf { id -> engines.any { it.machineId == id } }.orEmpty()
+    /** The endpoint that answered for the current engine when it is not the paired one. */
+    val currentEngineEndpoint: Endpoint? get() = preferences.getString("currentEngineEndpoint", null)?.let {
+        try { AsbJson.decodeFromString<Endpoint>(it) } catch (_: SerializationException) { null }
+    }?.takeIf { endpoint -> engines.firstOrNull { it.machineId == currentEngine }?.addresses.orEmpty().contains(endpoint) }
     var etag: String? = null
 
     var revoked: Boolean
@@ -84,6 +95,10 @@ class Store(private val preferences: SharedPreferences) {
             .putString("serverName", reply.serverName)
             .putBoolean("revoked", false)
             .remove("baseline")
+            .remove("baselineEngine")
+            .remove("engines")
+            .remove("currentEngine")
+            .remove("currentEngineEndpoint")
             .apply()
         etag = null
     }
@@ -107,6 +122,24 @@ class Store(private val preferences: SharedPreferences) {
         }.apply()
     }
 
+    @Synchronized
+    fun saveEnginesIfPaired(token: String, value: List<Engine>) {
+        if (token.isEmpty() || this.token != token) return
+        preferences.edit().putString("engines", AsbJson.encodeToString(value)).apply()
+    }
+
+    @Synchronized
+    fun saveCurrentEngineIfPaired(token: String, engine: String, endpoint: Endpoint?) {
+        if (token.isEmpty() || this.token != token) return
+        preferences.edit().apply {
+            if (engine.isEmpty()) remove("currentEngine").remove("currentEngineEndpoint")
+            else {
+                putString("currentEngine", engine)
+                if (endpoint == null) remove("currentEngineEndpoint") else putString("currentEngineEndpoint", AsbJson.encodeToString(endpoint))
+            }
+        }.apply()
+    }
+
     /**
      * A new Android default network starts the endpoint order again; the same network keeps it, also after a restart.
      * Returns true for a new network.
@@ -114,18 +147,20 @@ class Store(private val preferences: SharedPreferences) {
     @Synchronized
     fun networkChanged(handle: Long): Boolean {
         if (preferences.contains("network") && preferences.getLong("network", 0) == handle) return false
-        preferences.edit().putLong("network", handle).remove("currentEndpoint").apply()
+        preferences.edit().putLong("network", handle).remove("currentEndpoint").remove("currentEngineEndpoint").apply()
         return true
     }
 
+    // Each engine keeps its own read marks, so the first dashboard of another engine only starts a new baseline.
     @Synchronized
-    fun saveBaselineIfPaired(token: String, value: String) {
-        if (token.isNotEmpty() && this.token == token) baseline = value
+    fun saveBaselineIfPaired(token: String, value: String, engine: String) {
+        if (token.isNotEmpty() && this.token == token) preferences.edit().putString("baseline", value).putString("baselineEngine", engine).apply()
     }
 
     @Synchronized
-    fun loadBaselineIfPaired(token: String): Map<String, Int>? {
+    fun loadBaselineIfPaired(token: String, engine: String): Map<String, Int>? {
         if (token.isEmpty() || this.token != token) return null
+        if (preferences.getString("baselineEngine", null) != engine) return null
         val value = baseline ?: return null
         return try { AsbJson.decodeFromString<Map<String, Int>>(value) }
             catch (_: SerializationException) { null }

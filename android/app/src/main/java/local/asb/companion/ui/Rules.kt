@@ -150,9 +150,27 @@ fun rowMenuActions(row: Thread): List<MenuAction> = buildList {
         add(MenuAction("Move pin earlier", "pin-up"))
         add(MenuAction("Move pin later", "pin-down"))
     }
-    if (row.state == "working") add(
+    // A session on another machine cannot be discarded from here.
+    if (row.state == "working" && !row.remote) add(
         if (row.discardResult) MenuAction("Keep result", "keep-result") else MenuAction("Discard result", "discard-result"),
     )
+}
+
+// Port of is_view_only
+fun isViewOnly(row: Thread): Boolean = row.remote || row.surface == "cli"
+
+// Port of row_where: the glyph and the text that say where a view-only session runs.
+fun rowWhere(row: Thread): Pair<Int?, String> = when {
+    row.remote -> R.drawable.ic_machine to row.machineName.ifEmpty { "another machine" }
+    row.surface == "cli" -> R.drawable.ic_terminal to "CLI"
+    else -> null to ""
+}
+
+// Port of view_only_tone
+fun viewOnlyTone(row: Thread): String = when {
+    !isViewOnly(row) || row.unread || row.questionAttention || row.pending || row.limitResetsAtMs > 0 -> ""
+    row.state == "working" || row.state == "waiting" -> "quiet"
+    else -> "rest"
 }
 
 /** One row panel control: its state, and the action a change runs, or null when the change is not offered. */
@@ -342,6 +360,11 @@ fun cardTones(
         // GNOME drops dim-label for Pending; Custom keeps the muted state color.
         row.pending && !palette.custom -> palette.text
         else -> palette.muted
+    }
+    // The Grey tone of a view-only card with no attention; Working and Waiting keep their state color.
+    if (!pressed && !(drawerView && row.drawer)) when (viewOnlyTone(row)) {
+        "quiet" -> return CardTones(palette.quietTitle, palette.quietCaption, state)
+        "rest" -> return CardTones(palette.quietTitle, palette.quietCaption, palette.quietCaption)
     }
     return CardTones(palette.text, palette.muted, state)
 }

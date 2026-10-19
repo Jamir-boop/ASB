@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Drawn for ASB, no outside source: a window with a prompt (assets/icons/asb-terminal-symbolic.svg). Tinted in code. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="12dp"
+    android:height="12dp"
+    android:viewportWidth="12"
+    android:viewportHeight="12">
+    <path
+        android:fillColor="#000000"
+        android:fillType="evenOdd"
+        android:pathData="M2 1h8a1.5 1.5 0 0 1 1.5 1.5v7A1.5 1.5 0 0 1 10 11H2A1.5 1.5 0 0 1 .5 9.5v-7A1.5 1.5 0 0 1 2 1zm0 1.5v7h8v-7z" />
+    <path
+        android:fillColor="#000000"
+        android:pathData="M3.67 3.83 5.85 6 3.67 8.17 2.83 7.33 4.15 6 2.83 4.67z" />
+    <path
+        android:fillColor="#000000"
+        android:pathData="M6 7.4h2.6v1.1H6z" />
+</vector>

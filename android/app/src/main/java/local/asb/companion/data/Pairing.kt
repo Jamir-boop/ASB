@@ -25,6 +25,16 @@ fun orderEndpoints(list: List<Endpoint>): List<Endpoint> =
     list.filter { it.kind in ENDPOINT_KINDS && isIpv4(it.host) }.distinctBy { it.host }
         .sortedBy { ENDPOINT_KINDS.indexOf(it.kind) }
 
+/** The other engines that the phone may use: valid entries, addresses in endpoint order, not the paired PC, at most 32. */
+fun otherEngines(list: List<Engine>, pairedFingerprint: String): List<Engine> = list.mapNotNull { engine ->
+    val addresses = orderEndpoints(engine.addresses)
+    engine.copy(addresses = addresses).takeIf {
+        engine.machineId.matches(Regex("[0-9a-f]{16}")) && engine.fingerprint.matches(Regex("[0-9a-f]{64}")) &&
+            engine.fingerprint != pairedFingerprint && engine.port in 1..65535 &&
+            engine.name.matches(Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")) && addresses.isNotEmpty()
+    }
+}.distinctBy { it.machineId }.distinctBy { it.fingerprint }.take(32)
+
 private fun isIpv4(text: String): Boolean = text.split('.').let { octets ->
     octets.size == 4 && octets.all { it.matches(Regex("0|[1-9][0-9]{0,2}")) && it.toInt() <= 255 }
 }

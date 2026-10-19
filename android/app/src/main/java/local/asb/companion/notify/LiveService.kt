@@ -146,6 +146,8 @@ class LiveService : Service() {
         var api: AsbApi? = null
         var apiToken = ""
         var etag: String? = null
+        // Only the engine that gave the etag can answer 304 to it.
+        var etagEngine = ""
         var seenNetwork = app.networkChanges.value
         var afterNetworkChange = false
         // The first good read also reads hello, so new PC addresses reach the phone.
@@ -170,18 +172,19 @@ class LiveService : Service() {
             app.notificationMutex.withLock {
                 try {
                     // Decoding a large dashboard stays off the main thread.
-                    val reply = withContext(Dispatchers.Default) { current.dashboard(etag) }
+                    val reply = withContext(Dispatchers.Default) { current.dashboard(etag, etagEngine = etagEngine) }
                     val nowMs = System.currentTimeMillis()
                     when (reply) {
                         is DashboardResult.Fetched -> {
                             // A read while the app shows Settings or Connection must not mark new attention as seen.
                             etag = if (app.resumed) null else reply.etag
+                            etagEngine = reply.engine
                             val threads = reply.dashboard.threads
                             synchronized(app.store) {
                                 if (!app.resumed && app.store.token == token && !app.store.revoked) {
-                                    val baseline = app.store.loadBaselineIfPaired(token)
-                                    app.notifier.post(diff(baseline, threads, nowMs))
-                                    app.store.saveBaselineIfPaired(token, AsbJson.encodeToString(update(baseline, threads, nowMs)))
+                                    val baseline = app.store.loadBaselineIfPaired(token, reply.engine)
+                                    app.notifier.post(diff(baseline, threads, nowMs), reply.engine)
+                                    app.store.saveBaselineIfPaired(token, AsbJson.encodeToString(update(baseline, threads, nowMs)), reply.engine)
                                 }
                             }
                             own = LiveUpdate(threads, nowMs).also { app.liveUpdates.value = it }

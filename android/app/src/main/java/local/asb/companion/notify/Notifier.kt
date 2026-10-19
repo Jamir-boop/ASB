@@ -16,6 +16,7 @@ import android.os.Build
 import local.asb.companion.AsbApp
 import local.asb.companion.MainActivity
 import local.asb.companion.R
+import local.asb.companion.data.Thread
 import local.asb.companion.ui.rowMenuActions
 
 internal const val ACTION_NOTIFICATION = "local.asb.companion.NOTIFICATION"
@@ -28,6 +29,11 @@ private const val STATUS_TAG = "asb-status"
 
 internal fun notificationId(id: String, kind: Int): Int = "$id:$kind".hashCode()
 internal fun notificationTag(id: String, kind: Int): String = "$id:$kind"
+
+/** The extras of a notification action: [key] names the session on every engine, [engine] gets the action. */
+internal fun actionExtras(row: Thread, kind: Int, action: String, engine: String, deviceId: String): Map<String, Any> = mapOf(
+    "id" to row.id, "key" to row.key, "engine" to engine, "action" to action, "kind" to kind,
+    "notificationId" to notificationId(row.key, kind), "deviceId" to deviceId)
 
 class Notifier(private val app: AsbApp) {
     private val manager = app.getSystemService(NotificationManager::class.java)
@@ -58,7 +64,8 @@ class Notifier(private val app: AsbApp) {
         ))
     }
 
-    fun post(events: List<Event>) {
+    /** [engine] gave the rows of [events]; their actions go to it. */
+    fun post(events: List<Event>, engine: String) {
         // Most reads find no new event; this skips the binder calls of the group check.
         if (events.isEmpty() || !canPost()) return
         val children = children().toMutableSet()
@@ -75,14 +82,15 @@ class Notifier(private val app: AsbApp) {
                 BIT_FAILED -> "Failed"
                 else -> if (row.actionRequired) "Waiting for approval" else "Needs your answer"
             }
-            val tag = notificationTag(row.id, event.kind)
-            val id = notificationId(row.id, event.kind)
+            // The key, so the same session from another engine of the group replaces its notification.
+            val tag = notificationTag(row.key, event.kind)
+            val id = notificationId(row.key, event.kind)
             val builder = builder(channel).setContentTitle(title)
                 .setContentText(row.title.ifBlank { row.projectName }).setSubText(row.sourceLabel)
                 .setContentIntent(contentIntent(tag, id)).setAutoCancel(true)
-                .setDeleteIntent(broadcast(event, "dismiss", ACTION_DISMISS))
+                .setDeleteIntent(broadcast(event, engine, "dismiss", ACTION_DISMISS))
             fun action(label: String, action: String) = Notification.Action.Builder(
-                Icon.createWithResource(app, R.drawable.ic_stat_asb), label, broadcast(event, action),
+                Icon.createWithResource(app, R.drawable.ic_stat_asb), label, broadcast(event, engine, action),
             ).build()
             if (row.canOpen) builder.addAction(action("Open on PC", "open"))
             if (rowMenuActions(row).any { it.action == "mark-read" }) builder.addAction(action("Read", "mark-read"))
@@ -181,13 +189,13 @@ class Notifier(private val app: AsbApp) {
         return PendingIntent.getActivity(app, id, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
 
-    private fun broadcast(event: Event, action: String, intentAction: String = ACTION_NOTIFICATION): PendingIntent {
+    private fun broadcast(event: Event, engine: String, action: String, intentAction: String = ACTION_NOTIFICATION): PendingIntent {
         val intent = Intent(app, ActionReceiver::class.java).setAction(intentAction)
-            .setData(Uri.Builder().scheme("asb").authority("notification").appendPath(app.store.deviceId).appendPath(event.row.id)
+            .setData(Uri.Builder().scheme("asb").authority("notification").appendPath(app.store.deviceId).appendPath(event.row.key)
                 .appendPath(event.kind.toString()).appendPath(action).build())
-            .putExtra("id", event.row.id).putExtra("action", action).putExtra("kind", event.kind)
-            .putExtra("notificationId", notificationId(event.row.id, event.kind))
-            .putExtra("deviceId", app.store.deviceId)
+        for ((name, value) in actionExtras(event.row, event.kind, action, engine, app.store.deviceId)) {
+            if (value is Int) intent.putExtra(name, value) else intent.putExtra(name, value as String)
+        }
         return PendingIntent.getBroadcast(app, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
 }

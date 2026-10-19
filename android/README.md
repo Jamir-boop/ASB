@@ -98,6 +98,18 @@ answers and the pairing has a ZeroTier or Tailscale address, the error tells
 you to turn on that app on the phone. Install and join ZeroTier or Tailscale on
 the PC and on the phone to use ASB away from home.
 
+## Several machines
+
+In a machine group, the phone learns the other ASB engines of the group from
+hello. When the paired PC does not answer, the app uses another engine of the
+group, with the same token and the pinned certificate of that engine. While it
+uses another engine, it checks the paired PC once a minute and goes back to it
+when it answers again. An action goes only to the engine that showed the list.
+Cards of sessions on another machine and CLI sessions are view only: they show
+the machine name or `CLI` before the age, and a tap says where the session
+runs. Settings > Connection lists the machines with Online or Offline and marks
+the one in use.
+
 ## Themes, views, and motion
 
 The app is dark only and follows the PC theme. The dashboard `palette` field
@@ -399,7 +411,10 @@ librsvg SVG loader) renders the unchanged source to the 432 × 432 RGBA file
 `app/src/main/res/drawable-nodpi/ic_launcher_disc.png`. This keeps its masks,
 gradients, and screen blending. The foreground XML adds a 21 dp inset to keep
 the disc within the adaptive icon's safe area. The notification icon uses
-monochrome geometry from the same approved source. The app includes the
+monochrome geometry from the same approved source. The view-only card glyphs
+`ic_machine.xml` and `ic_terminal.xml` use the paths of
+`assets/icons/asb-machine-symbolic.svg` and `asb-terminal-symbolic.svg`, which
+were drawn for ASB with no outside source. The app includes the
 repository's MIT license in `app/src/main/assets/licenses/asb-LICENSE.txt`.
 
 ## Third-party assets

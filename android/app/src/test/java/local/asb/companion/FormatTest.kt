@@ -2,6 +2,7 @@ package local.asb.companion
 
 import local.asb.companion.ui.connectionText
 import local.asb.companion.ui.durationText
+import local.asb.companion.ui.engineLine
 import local.asb.companion.ui.idleAge
 import local.asb.companion.ui.limitText
 import local.asb.companion.ui.searchOpen
@@ -133,5 +134,12 @@ class FormatTest {
         assertTrue(searchOpen(opened = true, query = ""))
         assertTrue(searchOpen(opened = false, query = "cl:"))
         assertTrue(searchOpen(opened = true, query = "x"))
+    }
+
+    @Test fun settingsMachineLinesNameTheStateAndTheEngineInUse() {
+        assertEquals("debian: Online · In use", engineLine("debian", true, true))
+        assertEquals("homeLP: Offline", engineLine("homeLP", false, false))
+        assertEquals("workLP: Checking…", engineLine("workLP", null, false))
+        assertEquals("workLP: Checking… · In use", engineLine("workLP", null, true))
     }
 }

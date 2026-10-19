@@ -40,11 +40,13 @@ class CheckWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
                 if (reply is DashboardResult.Fetched) withContext(Dispatchers.Main.immediate) {
                     synchronized(app.store) {
                         if (app.store.token == token && !app.store.revoked) {
-                            val baseline = app.store.loadBaselineIfPaired(token)
+                            val baseline = app.store.loadBaselineIfPaired(token, reply.engine)
                             val nowMs = System.currentTimeMillis()
-                            if (shouldPost(inputData.getBoolean("manual", false), app.resumed)) app.notifier.post(diff(baseline, reply.dashboard.threads, nowMs))
+                            if (shouldPost(inputData.getBoolean("manual", false), app.resumed)) {
+                                app.notifier.post(diff(baseline, reply.dashboard.threads, nowMs), reply.engine)
+                            }
                             app.store.saveBaselineIfPaired(token,
-                                AsbJson.encodeToString(update(baseline, reply.dashboard.threads, nowMs)))
+                                AsbJson.encodeToString(update(baseline, reply.dashboard.threads, nowMs)), reply.engine)
                         }
                     }
                 }
