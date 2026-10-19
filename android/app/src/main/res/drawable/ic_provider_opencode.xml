@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The ASB desktop mark from assets/icons/asb-opencode-symbolic.svg (OpenCode logo, MIT).
+     The width keeps the 4:5 view box: the vector scales each axis on its own. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="11.2dp"
+    android:height="14dp"
+    android:viewportWidth="256"
+    android:viewportHeight="320">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M256 320H0V0H256V320ZM192 64H64V256H192V64Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillAlpha="0.5"
+        android:pathData="M192 128V256H64V128H192Z" />
+</vector>

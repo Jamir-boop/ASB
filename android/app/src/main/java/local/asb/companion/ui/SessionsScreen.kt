@@ -936,7 +936,7 @@ private fun ProviderMark(
     }
     Box(modifier.size(PROVIDER_MARK_SIZE.dp)) {
         Icon(
-            painterResource(if (row.provider == "codex") R.drawable.ic_provider_openai else R.drawable.ic_provider_claude),
+            painterResource(providerIcon(row.provider)),
             contentDescription = null,
             tint = if (messageLit) hexColor(palette.accent) else text.copy(alpha = if (limited) .4f else .65f),
             modifier = Modifier.fillMaxSize(),
@@ -1057,7 +1057,7 @@ private fun FilterSheet(filter: Filter, onChange: (Filter) -> Unit, onDismiss: (
                 Text("Filters", style = MaterialTheme.typography.headlineSmall)
                 Spacer(Modifier.height(8.dp))
                 Text("App", style = MaterialTheme.typography.titleMedium)
-                listOf("all" to "All", "codex" to "Codex", "claude-desktop-code" to "Claude").forEach { (app, label) ->
+                APP_FILTERS.forEach { (app, label) ->
                     Row(
                         modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
                             .selectable(selected = filter.app == app, role = Role.RadioButton,

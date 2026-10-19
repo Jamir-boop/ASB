@@ -6,6 +6,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import local.asb.companion.data.Thread
 import local.asb.companion.data.Message
+import local.asb.companion.ui.APP_FILTERS
 import local.asb.companion.ui.Filter
 import local.asb.companion.ui.MESSAGE_FLIGHT_LIMIT
 import local.asb.companion.ui.MESSAGE_MAX_AGE_MS
@@ -24,6 +25,7 @@ import local.asb.companion.ui.messageDuration
 import local.asb.companion.ui.newMessages
 import local.asb.companion.ui.panelFocusReturn
 import local.asb.companion.ui.pinMoveBody
+import local.asb.companion.ui.providerIcon
 import local.asb.companion.ui.providerQuery
 import local.asb.companion.ui.rowMenuActions
 import local.asb.companion.ui.rowPanelControls
@@ -95,6 +97,23 @@ class RulesTest {
         assertEquals("notes: <b>" to "all", providerQuery("notes: <b>"))
         assertEquals(listOf("literal"), ids(listOf(fixture[0].copy(id = "literal", title = "notes: <b>Literal title</b>")),
             Filter(query = "notes: <b>")))
+    }
+
+    @Test fun openCodePrefixesFilterAndIconSelectOpenCodeRows() {
+        val rows = fixture + fixture[0].copy(id = "opencode:ses_mock", provider = "opencode", providerLabel = "OpenCode")
+        for (prefix in listOf("oc:", "opencode:", " OC : ", "OpenCode: ")) {
+            assertEquals(prefix, "" to "opencode", providerQuery(prefix, "codex"))
+            assertEquals(prefix, listOf("opencode:ses_mock"), ids(rows, Filter(query = prefix, archived = true)))
+        }
+        assertEquals("find" to "codex", providerQuery("cx: FIND", "opencode"))
+        assertEquals("ocean" to "all", providerQuery("OCEAN"))
+        assertEquals(listOf("opencode:ses_mock"), ids(rows, Filter(app = "opencode", archived = true)))
+        assertEquals(listOf("all", "codex", "claude-desktop-code", "opencode"), APP_FILTERS.map { it.first })
+        assertEquals("OpenCode", APP_FILTERS.toMap()["opencode"])
+        assertEquals(R.drawable.ic_provider_openai, providerIcon("codex"))
+        assertEquals(R.drawable.ic_provider_opencode, providerIcon("opencode"))
+        assertEquals(R.drawable.ic_provider_claude, providerIcon("claude-desktop-code"))
+        assertEquals(R.drawable.ic_provider_claude, providerIcon(""))
     }
 
     @Test fun pythonWhitespaceAndMultilineQueriesKeepTheirMeaning() {
