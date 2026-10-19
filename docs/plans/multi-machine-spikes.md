@@ -94,7 +94,30 @@ This file records the Phase 0 spikes of `multi-machine.md`. It holds no addresse
 - Gate: PASS for all checks that a program can make. Phase 4 includes the tray and the Run value, and writes the Run value from Node. The icon on the screen and the start at logon stay in the Phase 4 acceptance (the user confirms through RDP).
 - Cleanup: the scheduled tasks, the Run value, the folders, and all spike processes removed (checked).
 
-## S3, S4: not run yet
+## S3: Windows Claude Code registry rows (homeLP, SSH and a one-time interactive scheduled task)
 
-- S3 (Windows Claude registry rows) and S4 (Windows Codex transports) gate only phase 7. By the user's order they run later, after Mute and Phase 1.
-- Plan for the later run: start the apps in the user's desktop session with a one-time interactive scheduled task, check everything programmatically, and remove every task, file, and Run value afterwards. A real logon for the Run value cannot be checked over SSH.
+- Date: 2026-10-19. Claude Code 2.1.303 (the native `claude.exe` of the npm package).
+- Commands: a static search of `claude.exe` for the messaging address and the key file name. Then a one-time interactive scheduled task (`/it /rl LIMITED`) started `claude.exe` with no prompt (no model use), with `DISABLE_AUTOUPDATER=1` and a hidden window, in the user's desktop session. The probe printed only field names, types, lengths, and masked shapes of the new registry row. It did not open the key file. Then `taskkill /T /F` stopped the process tree.
+- Seen:
+  - In a new folder that Claude Code did not trust yet, no row came in 25 s (the trust prompt was open). In a folder that was trusted before, the row `~/.claude/sessions/<pid>.json` came at once. Its `pid` was the `claude.exe` PID.
+  - Row fields: `pid`, `sessionId`, `cwd`, `startedAt`, `procStart`, `version`, `peerProtocol`, `peerFeatures` (array), `kind` (`interactive`), `entrypoint` (`cli`), `pidDomain`, `messagingSocketPath`, `name`, `nameSource`, `nameSince`. Before the first prompt the row had no `status`. It had no `procStartFt` and no `hostSessionId`.
+  - `procStart` is the process creation time as a Windows FILETIME in decimal (18 digits). It matched the creation time from `Win32_Process` to the microsecond.
+  - `pidDomain` is `win32:<computer name in lower case>`.
+  - `messagingSocketPath` is a named pipe `\\.\pipe\LOCAL\cc-msg-<hex>`, and the pipe was listed while the session ran.
+  - The key file is `<pid>.<sha256 of the lower-case pipe path>.key` (116 bytes). The SHA-256 of the pipe path with its original case did not match. Static search: a client sends the `peerToken` of that file in an `auth` frame first, and Windows requires it.
+  - A forced stop left the row and the key file. The probe removed them by name.
+- Gate: PASS. A Windows proxy row is the Linux row with a named pipe, a FILETIME `procStart`, the `win32:` `pidDomain`, and its own key file named from the lower-case pipe path. As on Linux (S1), the relay must remove its rows and key files itself.
+- Cleanup: the scheduled task, the rows, the key files, and the `%TEMP%` folder removed; no `claude.exe` process left; the trusted folder had the same entries before and after.
+
+## S4: Windows Codex transports (homeLP, SSH, static and Bun)
+
+- Date: 2026-10-19. codex-cli 0.163.0, Codex desktop (MSIX) 26.908, Bun 1.3.14, Node v24.14.1.
+- Commands: a Bun and Node script in a new `%TEMP%` folder tested AF_UNIX sockets. `codex app-server --help` and `codex app-server daemon --help`. A static search of the desktop `app.asar` for the IPC and the daemon socket.
+- Seen:
+  - Desktop IPC: the desktop app's IPC router listens on the fixed named pipe `\\.\pipe\codex-ipc` on Windows (on Linux, `$CODEX_HOME/ipc/ipc.sock` in a `0700` folder). The client side connects to the same address with `net.connect`.
+  - The desktop app uses the shared app-server daemon (`$CODEX_HOME/app-server-control/app-server-control.sock`) only when the platform is not Windows and `CODEX_APP_SERVER_USE_LOCAL_DAEMON=1`. On Windows it always runs its own app-server over stdio, so the bridge cannot reach that app-server.
+  - The CLI has `codex app-server --listen` with `stdio://`, `unix://`, `unix://PATH`, `ws://IP:PORT`, and `off`, and `codex app-server daemon start|stop|restart|...`. `app-server-control.sock` on homeLP is an AF_UNIX socket file.
+  - Bun on Windows listened on and connected to an AF_UNIX path (`bun-ping`), and Bun `node:net` connected to it (`net-ping`). Node `listen` on an AF_UNIX path failed with `EACCES`.
+  - Not tested live: the Codex desktop app was not started (it opens a window on the user's screen), so a connection to `\\.\pipe\codex-ipc` was not made.
+- Gate: PASS with a limit. On Windows the bridge uses the `desktop` target on `\\.\pipe\codex-ipc`; the `app-server` target applies only to a CLI daemon, which Bun can reach over AF_UNIX. The live desktop pipe connection is part of the Phase 7 acceptance.
+- Cleanup: the `%TEMP%` folder removed (`Test-Path` returned False).
