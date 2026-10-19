@@ -455,7 +455,15 @@ test('source launchers receive one validated app URL and default sources retain 
   assert.equal(calls.length, count);
 });
 
+// Under systemd a launch starts a real user scope; these tests, and the child process that inherits this environment, run without one.
+function withoutInvocation(t) {
+  const invocation = Object.hasOwn(process.env, 'INVOCATION_ID') ? process.env.INVOCATION_ID : undefined;
+  delete process.env.INVOCATION_ID;
+  t.after(() => { if (invocation !== undefined) process.env.INVOCATION_ID = invocation; });
+}
+
 test('a source app stays alive after the opener exits and beyond the old launch timeout', async (t) => {
+  withoutInvocation(t);
   const { homeDir, launcher } = await fixture(t);
   const startedPath = path.join(homeDir, 'started.json');
   const stoppedPath = path.join(homeDir, 'stopped');
@@ -487,6 +495,7 @@ console.log(JSON.stringify(await openSwitchboardThread(${JSON.stringify(row)}, {
 });
 
 test('source spawn errors and missing launchers preserve ASB unread attention', async (t) => {
+  withoutInvocation(t);
   const { homeDir, registry, source, launcher } = await fixture(t);
   const dataDir = path.join(homeDir, 'second');
   await mkdir(dataDir);

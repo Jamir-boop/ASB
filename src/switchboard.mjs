@@ -9,7 +9,7 @@ import { loadSwitchboardClaudeThreads, claudeRemoteDeepLink, claudeRemoteStatus,
 import { normalizeDashboardThreads } from './insights.mjs';
 import { createAsbServer } from './asb-server.mjs';
 import { createSoundPlayer, createSoundWatcher } from './asb-sounds.mjs';
-import { openThreadInCodex } from './session-opener.mjs';
+import { openThreadInCodex, scopedCommand } from './session-opener.mjs';
 import { AppSourceRegistry, appSourcesRevision, numberAppSources, sourceName, validateSourceLauncher } from './app-sources.mjs';
 import { spawn } from 'node:child_process';
 
@@ -361,7 +361,8 @@ export async function openSwitchboardThread(thread, options = {}) {
     const launchOptions = { detached: true, stdio: 'ignore' };
     if (options.runCommand) await options.runCommand(launcher, [thread.appDeepLink], launchOptions);
     else await new Promise((resolve, reject) => {
-      const app = spawn(launcher, [thread.appDeepLink], launchOptions);
+      const scoped = scopedCommand(launcher, [thread.appDeepLink]);
+      const app = spawn(scoped.command, scoped.args, launchOptions);
       app.once('error', reject);
       app.once('spawn', () => { app.unref(); resolve(); });
     });

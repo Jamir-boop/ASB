@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { createAsbServer } from '../src/asb-server.mjs';
+import { runOpener, scopedCommand } from '../src/session-opener.mjs';
 import { openSwitchboardThread } from '../src/switchboard.mjs';
 
 const id = '11111111-2222-3333-4444-555555555555';
@@ -26,9 +30,49 @@ test('ASB keeps all validated existing-session URL commands and opener results',
       if (codex) assert.deepEqual(Object.keys(result), ['opened', 'method']);
       const command = platform === 'linux' ? 'xdg-open' : platform === 'darwin' ? 'open' : 'cmd';
       const args = platform === 'win32' ? ['/c', 'start', '', thread.appDeepLink] : [thread.appDeepLink];
-      assert.deepEqual(calls, [codex ? [command, args, { timeout: 5000 }] : [command, args]]);
+      assert.deepEqual(calls, [[command, args, { timeout: 5000 }]]);
     }
   }
+});
+
+test('openers under systemd run in their own user scope', () => {
+  const wrapped = ['systemd-run', '--user', '--scope', '--collect', '--quiet', '--', 'xdg-open', 'claude://code/x'];
+  assert.deepEqual(scopedCommand('xdg-open', ['claude://code/x'], { env: { INVOCATION_ID: 'abc' }, platform: 'linux' }),
+    { command: wrapped[0], args: wrapped.slice(1) });
+  assert.deepEqual(scopedCommand('xdg-open', ['claude://code/x'], { env: {}, platform: 'linux' }), { command: 'xdg-open', args: ['claude://code/x'] });
+  assert.deepEqual(scopedCommand('open', ['claude://code/x'], { env: { INVOCATION_ID: 'abc' }, platform: 'darwin' }), { command: 'open', args: ['claude://code/x'] });
+});
+
+// The fake opener runs outside systemd, so no real scope starts.
+async function openerFixture(t, body) {
+  const invocation = Object.hasOwn(process.env, 'INVOCATION_ID') ? process.env.INVOCATION_ID : undefined;
+  delete process.env.INVOCATION_ID;
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'asb-opener-'));
+  t.after(async () => {
+    if (invocation !== undefined) process.env.INVOCATION_ID = invocation;
+    // Only the app that this fake opener started, also after a timeout; then the folder.
+    const pid = Number(await readFile(path.join(dir, 'app.pid'), 'utf8').catch(() => ''));
+    if (pid > 0) try { process.kill(pid); } catch {}
+    await rm(dir, { recursive: true, force: true });
+  });
+  const script = path.join(dir, 'opener');
+  await writeFile(script, `#!/bin/sh\n${body}\n`);
+  await chmod(script, 0o755);
+  return { dir, script };
+}
+
+test('an opener that starts a long-running app finishes when the opener exits', { timeout: 5000 }, async (t) => {
+  // The app inherits the opener's stdio, as xdg-open passes it to Claude Desktop or ChatGPT.
+  const { dir, script } = await openerFixture(t, 'sleep 30 &\necho "$!" > "$1"\necho output\nexit 0');
+  const pidFile = path.join(dir, 'app.pid');
+  const started = Date.now();
+  await runOpener(script, [pidFile], { timeout: 5000 });
+  assert.ok(Date.now() - started < 2000, `The open took ${Date.now() - started} ms.`);
+});
+
+test('a failed opener rejects with its exit code', async (t) => {
+  const { script } = await openerFixture(t, 'exit 4');
+  await assert.rejects(runOpener(script, [], { timeout: 5000 }), /exit code 4/);
 });
 
 test('ASB rejects changed IDs, providers, links, and unavailable opens before it runs a command', async () => {

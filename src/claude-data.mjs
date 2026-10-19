@@ -1,14 +1,12 @@
-import { execFile } from 'node:child_process';
 import { createReadStream, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { createInterface } from 'node:readline';
 import { rememberBounded, sameFileSignature, SourceCache, statSignature } from './data-cache.mjs';
 import { enrichThreadRuntime } from './insights.mjs';
 import { readLiveClaudeRegistry } from './claude-registry.mjs';
+import { openCommandForUrl, runOpener } from './session-opener.mjs';
 
-const execFileAsync = promisify(execFile);
 const DEFAULT_CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 export function defaultClaudeAppDir(platform = process.platform, homeDir = os.homedir(), env = process.env) {
   if (platform === 'linux') return path.join(env.XDG_CONFIG_HOME || path.join(homeDir, '.config'), 'Claude');
@@ -668,12 +666,6 @@ export function claudeDesktopCodeDeepLink(cliSessionId, localSessionId = '') {
   return `claude://resume?session=${encodeURIComponent(sessionId)}`;
 }
 
-function openCommandForUrl(url, platform = process.platform) {
-  if (platform === 'darwin') return { command: 'open', args: [url] };
-  if (platform === 'win32') return { command: 'cmd', args: ['/c', 'start', '', url] };
-  return { command: 'xdg-open', args: [url] };
-}
-
 function deriveClaudeDesktopCodeTitle(session = {}) {
   const panelTitle = firstPresent(
     session.title,
@@ -1166,13 +1158,13 @@ export async function loadClaudeDesktopCodeThreads({
 
 export async function openClaudeThread(thread, {
   platform = process.platform,
-  runCommand = execFileAsync,
+  runCommand = runOpener,
 } = {}) {
   const appDeepLink = thread.provider === 'claude-desktop-code'
     ? thread.appDeepLink || claudeDesktopCodeDeepLink(thread.cliSessionId, thread.externalId) : '';
   if (!appDeepLink) throw new Error('This session has no direct desktop link.');
   const { command, args } = openCommandForUrl(appDeepLink, platform);
-  await runCommand(command, args);
+  await runCommand(command, args, { timeout: 5000 });
   return {
     opened: true,
     method: 'claude-desktop-deeplink',
