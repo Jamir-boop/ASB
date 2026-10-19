@@ -154,6 +154,12 @@ class WidgetCheck(unittest.TestCase):
         cls.g_free = ctypes.CDLL(ctypes.util.find_library("glib-2.0")).g_free
         cls.g_free.argtypes = (ctypes.c_void_p,)
 
+    def setUp(self):
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-font-name", settings.get_property("gtk-font-name"))
+        # Exact pixel checks use one font; the font-height test checks other metrics.
+        settings.set_property("gtk-font-name", "Cantarell 11")
+
     def assert_accessible_label(self, widget, expected):
         # GTK's exact property check is variadic and is not exposed by PyGObject.
         error = self.gtk_check(self.capsule_pointer(widget.__gpointer__, None), int(asb.Gtk.AccessibleProperty.LABEL),

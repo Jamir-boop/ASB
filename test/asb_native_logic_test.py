@@ -973,6 +973,13 @@ class DataChecks(unittest.TestCase):
         self.assertEqual([row["id"] for row in asb.filtered_rows(board)], ["unknown", "first", "second", "claude:local_mock"])
         self.assertEqual([row["id"] for row in asb.filtered_rows(board, "cx:", state={"working", "idle"})], ["first", "second"])
 
+    def test_hex_color_clamps_extended_theme_channels_to_rgb_bytes(self):
+        for channels, expected in (((0, .5, 1), "#0080ff"),
+                                   ((.5043112636, .8172299862, 1.2187165022), "#81d0ff"),
+                                   ((-.1, 1.1, .25), "#00ff40")):
+            with self.subTest(channels=channels):
+                self.assertEqual(Window.hex_color(SimpleNamespace(red=channels[0], green=channels[1], blue=channels[2])), expected)
+
     def test_theme_validation_atomic_save_and_reset(self):
         with TemporaryDirectory(prefix="asb-theme-test-") as directory:
             path = Path(directory) / "asb" / "theme.json"

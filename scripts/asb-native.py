@@ -2202,7 +2202,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     @staticmethod
     def hex_color(color):
-        return "#" + "".join(f"{round(channel * 255):02x}" for channel in (color.red, color.green, color.blue))
+        return "#" + "".join(f"{max(0, min(255, round(channel * 255))):02x}" for channel in (color.red, color.green, color.blue))
 
     def native_colors(self):
         context = self.get_style_context()

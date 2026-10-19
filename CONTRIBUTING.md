@@ -12,6 +12,8 @@ Before a pull request:
 
 Native widget tests need a GTK display. Run them only when UI testing is in scope, with synthetic fixtures. Do not open real chats during tests.
 
+The exact pixel checks use the installed Cantarell font (`Cantarell 11`) and Adwaita icons. A separate font test checks row packing with larger font metrics. The app keeps the user's system font.
+
 ASB pins and Read/Unread marks are independent of the original apps. Preserve that behavior. Pending remains an attention marker beside the real execution state.
 
 ASB releases use Semantic Versioning. Version `1.0.0` is the first public ASB release. Keep the inherited Agent Mission Control history and original MIT license separate from ASB's version series. Use Conventional Commits for commits.
