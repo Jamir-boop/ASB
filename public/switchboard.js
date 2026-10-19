@@ -45,6 +45,7 @@ function relativeTime(value) {
 
 async function openSession(entry) {
   const { thread, row: button } = entry;
+  if (!thread.canOpen) return;
   entry.opening = true;
   button.disabled = true;
   button.classList.add('opening');
@@ -230,7 +231,7 @@ function render() {
     }
     const noSessions = !dashboard.threads.length;
     setText(emptyState.title, noSessions ? 'No desktop sessions found' : 'No matching sessions');
-    setText(emptyState.detail, noSessions ? 'Create a session in Codex or Claude Desktop Code, then refresh.' : 'Change the search or filters to see more sessions.');
+    setText(emptyState.detail, noSessions ? 'Create a session in Codex, Claude Desktop Code, or OpenCode, then refresh.' : 'Change the search or filters to see more sessions.');
     sections.push(emptyState.empty);
   }
   syncChildren(controls.sessions, sections);

@@ -85,7 +85,8 @@ test('ASB rejects changed IDs, providers, links, and unavailable opens before it
   ]);
   let calls = 0;
   for (const thread of invalid) {
-    await assert.rejects(openSwitchboardThread(thread, { runCommand: async () => { calls += 1; } }), /no direct desktop link/);
+    await assert.rejects(openSwitchboardThread(thread, { runCommand: async () => { calls += 1; } }),
+      thread.provider === 'opencode' ? /OpenCode cannot open one session from a link/ : /no direct desktop link/);
   }
   assert.equal(calls, 0);
 });

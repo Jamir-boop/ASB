@@ -4,6 +4,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlin.math.abs
 import kotlin.math.hypot
+import local.asb.companion.R
 import local.asb.companion.data.Message
 import local.asb.companion.data.Palette
 import local.asb.companion.data.Thread
@@ -26,7 +27,7 @@ data class MenuAction(val label: String, val action: String)
 private const val PYTHON_SPACE = """[\u0009-\u000D\u001C-\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]"""
 private val pythonSpace = Regex(PYTHON_SPACE)
 private val providerPrefix = Regex(
-    "^$PYTHON_SPACE*(cl|claude|cx|codex)$PYTHON_SPACE*:$PYTHON_SPACE*(.*)$",
+    "^$PYTHON_SPACE*(cl|claude|cx|codex|oc|opencode)$PYTHON_SPACE*:$PYTHON_SPACE*(.*)$",
     setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
 )
 
@@ -90,10 +91,20 @@ fun attentionIndicator(row: Thread, drawer: Boolean = false, nowMs: Long = Syste
 // Port of provider_query
 fun providerQuery(query: String, app: String = "all"): Pair<String, String> {
     val match = providerPrefix.matchEntire(query)
-    val selectedApp = if (match == null) app else
-        if (match.groupValues[1].equals("cl", true) || match.groupValues[1].equals("claude", true))
-            "claude-desktop-code" else "codex"
+    val selectedApp = if (match == null) app else when (match.groupValues[1].lowercase()) {
+        "cl", "claude" -> "claude-desktop-code"
+        "oc", "opencode" -> "opencode"
+        else -> "codex"
+    }
     return casefold((match?.groupValues?.get(2) ?: query).trim { pythonSpace.matches(it.toString()) }) to selectedApp
+}
+
+val APP_FILTERS = listOf("all" to "All", "codex" to "Codex", "claude-desktop-code" to "Claude", "opencode" to "OpenCode")
+
+fun providerIcon(provider: String): Int = when (provider) {
+    "codex" -> R.drawable.ic_provider_openai
+    "opencode" -> R.drawable.ic_provider_opencode
+    else -> R.drawable.ic_provider_claude
 }
 
 // Port of filtered_rows

@@ -125,7 +125,7 @@ test('healthy watchers reuse clean active scans and reconcile missed events at f
   await f.scan();
   assert.equal(f.loads(), 2);
   // A Claude registry record write makes the next scan reload, so live waiting state is current.
-  const registry = f.paths.at(-1);
+  const registry = f.paths.find((entry) => entry.path === path.join(f.dir, '.claude', 'sessions'));
   const { acceptEvent, ...spec } = registry;
   assert.deepEqual(spec, { path: path.join(f.dir, '.claude', 'sessions'), source: 'claude', optional: true });
   assert.deepEqual([['123.json', 'change'], ['0.json', 'change'], ['123.json.tmp', 'change'], ['123.key', 'change'], ['tmp', 'rename']]

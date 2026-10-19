@@ -90,7 +90,7 @@ test('agent source commands preserve partial fields and repeat without duplicate
   const f = await fixture(t);
   const list = await f.command(['sources', 'list', '--json']);
   assert.equal(list.code, 0, list.stderr);
-  assert.equal(list.result.sources.length, 2);
+  assert.deepEqual(list.result.sources.map((item) => item.provider), ['codex', 'claude-desktop-code', 'opencode']);
   const source = { provider: 'codex', label: 'Test profile', dataDir: f.dataDir, launcher: f.appLauncher,
     enabled: true, color: '#A28CAA', showMarker: false };
   await f.jsonFile(source);
@@ -131,7 +131,7 @@ test('agent source commands preserve partial fields and repeat without duplicate
   assert.equal((await f.command(['sources', 'remove', id, '--json'])).result.changed, false);
   assert.equal(f.posts.length, 3);
   assert.equal((await f.command(['sources', 'get', id, '--json'])).result.error.code, 'source_not_found');
-  assert.equal((await f.registry.read()).length, 2);
+  assert.equal((await f.registry.read()).length, 3);
 });
 
 test('agent repeats Add for a missing source folder without duplicate writes', async (t) => {
