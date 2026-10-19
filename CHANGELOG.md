@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Added Ctrl number keys to the native window: hold Ctrl to show the numbers 1–9 on the first nine whole cards, and press Ctrl+1 to Ctrl+9 to open that card.
 - Fixed a Claude session that waits for a permission prompt showing Working; it now shows Waiting.
 - Fixed native theme colors with RGB channels outside `0..1`. Color conversion now limits each channel to a byte, so the theme editor and phone palette receive valid `#RRGGBB` values.
 - Shortened the ASB Bridge peer message prefix.

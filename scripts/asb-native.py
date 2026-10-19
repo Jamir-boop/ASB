@@ -21,6 +21,7 @@ LOCAL_HTTP = build_opener(ProxyHandler({}))
 ROW_HEIGHT = 22
 COMFORTABLE_ROW_HEIGHT = 68
 DEFAULT_COLUMN_WIDTH = 240
+NUMBER_HOLD_MS = 400
 APP_ID = "local.asb.AgentSwitchBoard"
 STATES = ("working", "waiting", "idle", "unknown")
 SOURCE_PROVIDERS = ("codex", "claude-desktop-code")
@@ -220,6 +221,25 @@ THEME_PATH = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") 
 LAYOUT_PATH = THEME_PATH.with_name("layout.json")
 
 
+def number_key_rows(rows, bounds, viewport):
+    """The IDs that Ctrl+1 to Ctrl+9 open: openable rows fully in the viewport, in board order."""
+    width, height = viewport
+    keys = []
+    for row in rows:
+        box = bounds.get(row["id"])
+        if row.get("canOpen") and box and box[2] > 0 and box[3] > 0 and width > 0 and height > 0 \
+                and box[0] >= -.5 and box[1] >= -.5 and box[0] + box[2] <= width + .5 and box[1] + box[3] <= height + .5:
+            keys.append(row["id"])
+            if len(keys) == 9:
+                break
+    return keys
+
+
+def number_key(keyval):
+    """1 to 9 for the digit and keypad digit keys (X keysyms), else 0."""
+    return keyval - 0x30 if 0x31 <= keyval <= 0x39 else keyval - 0xffb0 if 0xffb1 <= keyval <= 0xffb9 else 0
+
+
 def motion_allowed(previous, current, animations, mapped):
     # The first render and a change of columns, capacity, column width, or view show the result at once.
     return bool(animations and mapped and previous is not None and previous[1:5] == current[1:5])
@@ -355,6 +375,16 @@ def quiet_color(colors, key, fraction, highlight):
 def limited_color(colors):
     """The text color of a limited row: the dimmest mix of text into the background with 4.5:1 on the background."""
     return quiet_color(colors, "text", 0, colors["background"])
+
+
+def number_badge_colors(colors):
+    """Custom Ctrl-number badge: 17% text into the background, less only as far as the text needs for 4.5:1."""
+    for percent in range(17, -1, -1):
+        fill = mix_color(colors["background"], colors["text"], percent / 100)
+        if contrast(colors["text"], fill) >= 4.5:
+            break
+    pressed = max(("#000000", "#ffffff"), key=lambda ink: contrast(colors["accent"], ink))
+    return fill, mix_color(colors["background"], colors["text"], .36), pressed
 
 
 def validate_theme(value):
@@ -1947,6 +1977,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     drawer_view, drawer_peek, drawer_count, column_pixel_width = False, False, 0, DEFAULT_COLUMN_WIDTH
     wide_controls, tiny_controls, search_expanded, show_app_pills = False, False, False, False
     message_seen = None
+    number_hold = number_idle = number_scroll = number_pressed = None
+    numbers_shown = False
+    number_keys = open_popovers = ()
 
     def __init__(self, application, base, initial_dashboard=None, theme_path=THEME_PATH, layout_path=LAYOUT_PATH):
         super().__init__(application=application, title="ASB · Agent Switch Board",
@@ -2031,6 +2064,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.search_popover.set_child(self.search)
         self.search.set_size_request(240, -1)
         self.search_popover.connect("closed", lambda *_args: setattr(self, "search_expanded", False))
+        # The narrow search popover gets its own key events; the number keys work there as on the board.
+        popover_keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        popover_keys.connect("key-pressed", lambda _controller, key, _code, modifiers: bool(self.number_key_pressed(key, modifiers)))
+        popover_keys.connect("key-released", self.window_key_released)
+        self.search_popover.add_controller(popover_keys)
+        # Any other popover blocks the number keys, also one that does not take the focus.
+        self.open_popovers = set()
+        self.popover_hooks = [(name, GObject.add_emission_hook(Gtk.Popover, name, self.popover_visibility, name))
+                              for name in ("map", "unmap")]
         self.search_button = Gtk.Button(icon_name="system-search-symbolic", tooltip_text="Find a session or folder", valign=Gtk.Align.START)
         self.search_button.add_css_class("asb-toolbar-button")
         self.search_button.update_property([Gtk.AccessibleProperty.LABEL], ["Search sessions"])
@@ -2277,11 +2319,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         target = Adw.CallbackAnimationTarget.new(self.advance_motion)
         self.motion_animation = Adw.SpringAnimation.new(self.scroll, 1, 0, Adw.SpringParams.new(1, 1, 400), target)
         self.motion_animation.set_epsilon(.0001)
-        self.scroll.after_layout = self.start_motion
+        self.scroll.after_layout = self.after_layout
         self.scroll.connect("unmap", self.cancel_motion)
         self.scroll.get_hadjustment().connect("value-changed", self.scroll_position_changed)
         self.scroll.get_hadjustment().connect("changed", self.cancel_scroll)
         self.scroll.connect("unmap", self.cancel_scroll)
+        # A press on the scrollbar is a board scroll, as the wheel is; programmatic scrolls keep the numbers.
+        scrollbar_press = Gtk.GestureClick(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        scrollbar_press.connect("pressed", self.hide_numbers)
+        self.scroll.get_hscrollbar().add_controller(scrollbar_press)
         body.append(self.scroll)
         wheel = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.BOTH_AXES,
                                           propagation_phase=Gtk.PropagationPhase.CAPTURE)
@@ -2301,7 +2347,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.set_content(body)
         keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
         keys.connect("key-pressed", self.window_key)
+        keys.connect("key-released", self.window_key_released)
         self.add_controller(keys)
+        self.connect("notify::is-active", self.active_changed)
+        self.connect("unmap", self.hide_numbers)
         self.preferences_window = PreferencesWindow(self, sessions, appearance)
         try:
             saved = read_theme(theme_path)
@@ -2375,6 +2424,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-source-badge {{ min-width: 6px; min-height: 6px; padding: 0; border: 1px solid @window_bg_color;
     border-radius: 50%; box-shadow: none; opacity: 1; }}
 {base} .asb-column {{ background: transparent; }}
+{base} .asb-number {{ min-width: 16px; min-height: 15px; padding: 0; border: 1px solid alpha(@window_fg_color, .36);
+    border-bottom-width: 2px; border-radius: 3px; background: mix(@window_bg_color, @window_fg_color, .17);
+    color: @window_fg_color; font-size: 11px; font-weight: bold; line-height: 15px; opacity: 0;
+    transition: opacity 100ms ease-out; }}
+{base}:not(.asb-comfortable) .asb-number {{ min-width: 14px; min-height: 13px; line-height: 13px; }}
+{base} .asb-numbers-shown .asb-number {{ opacity: 1; transition: opacity 140ms ease-out; }}
+{base} .asb-number.asb-number-pressed {{ background: @accent_bg_color; color: @accent_fg_color; }}
 {base} .asb-column + .asb-column {{ border-left: 1px solid @borders; }}
 {base} .asb-dot, .asb-tooltip .asb-dot {{ min-width: 7px; min-height: 7px; border-radius: 50%; background: @accent_color; }}
 {base} .asb-dot.asb-question, .asb-tooltip .asb-dot.asb-question {{ min-width: 0; min-height: 0; border-radius: 0; background: none; color: @accent_color;
@@ -2446,6 +2502,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             scope = base + ".asb-custom"
             # The row panel is lifted from the board: 6% text in the background.
             surface = mix_color(colors["background"], colors["text"], .06)
+            number_fill, number_edge, number_pressed = number_badge_colors(colors)
             css += f"""
 {scope}, {scope} headerbar, {scope} popover contents {{ background: {colors['background']}; color: {colors['text']}; }}
 {scope} popover > contents {{ border: 1px solid {edge_color(colors['background'], colors['text'], .36, (colors['background'],))}; }}
@@ -2461,6 +2518,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} .asb-dot.asb-discard, .asb-tooltip.asb-custom .asb-dot.asb-discard {{ background: none; border-color: {colors['text']}; }}
 {scope} .asb-discard-offer .asb-discard {{ border-color: {colors['muted']}; }}
 {scope} .asb-column + .asb-column {{ border-color: {colors['divider']}; }}
+{scope} .asb-number {{ background: {number_fill}; border-color: {number_edge}; color: {colors['text']}; }}
+{scope} .asb-number.asb-number-pressed {{ background: {colors['accent']}; color: {number_pressed}; }}
 {scope} .asb-session:hover, {scope} .asb-session:focus-within {{ background: {highlight_color(colors)}; }}
 {scope} entry, {scope} button, {scope} dropdown {{ color: {colors['text']}; }}
 {scope}.asb-preferences .asb-preferences-nav {{ background: alpha({colors['text']}, .04); }}
@@ -2910,6 +2969,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return any(abs(x - (index * step - 6)) <= 6 for index in range(1, getattr(self, "actual_columns", 0)))
 
     def scroll_horizontal(self, controller, dx, dy):
+        self.hide_numbers()
         delta = dx if dx else dy
         if self.closed or not delta:
             return True
@@ -2965,6 +3025,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             animation.reset()
 
     def scroll_position_changed(self, *_args):
+        self.queue_number_keys(scrolled=True)
         self.scroll_hover_blocked = True
         self.list_body.clear_hover()
         self.redraw_visible_columns()
@@ -2994,6 +3055,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 places[identity] = (bounds.origin.x + x * strip.motion_progress, bounds.origin.y + y * strip.motion_progress,
                                     fade * strip.motion_progress)
         return places
+
+    def after_layout(self):
+        self.start_motion()
+        self.queue_number_keys()
 
     def start_motion(self):
         self.redraw_visible_columns()
@@ -3102,6 +3167,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         focus = self.get_focus()
         if focus is not None and type(focus).__name__ not in ("ListBox", "SessionColumn"):
             self.focus_generation += 1
+        if (self.numbers_shown or self.number_hold) and self.numbers_blocked():
+            self.hide_numbers()
 
     def key_focus_changed(self, *_args):
         # Focus from a mouse click must not change the row, so the row has a class only while the focus in it is visible.
@@ -3133,7 +3200,128 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.present()
         self.open_search()
 
+    def popover_visibility(self, widget, name):
+        # The hook runs for every widget that maps; only the popovers of this window count.
+        if isinstance(widget, Gtk.Popover) and widget is not self.search_popover and widget.get_root() is self:
+            if name == "map":
+                self.open_popovers.add(widget)
+                self.hide_numbers()
+            else:
+                self.open_popovers.discard(widget)
+        return True
+
+    def numbers_blocked(self):
+        # The narrow search popover is part of the board; the row panel and every other popup block the numbers.
+        if not self.is_active() or (self.context_menu and self.context_menu.get_visible()) \
+                or any(popover.get_mapped() for popover in self.open_popovers):
+            return True
+        focus = self.get_focus()
+        popover = focus.get_ancestor(Gtk.Popover) if focus else None
+        return popover is not None and popover is not self.search_popover
+
+    def number_key_pressed(self, key, modifiers):
+        """Hold Ctrl alone to show the numbers; Ctrl+1 to Ctrl+9 open a card. None keeps the usual key handling."""
+        held = modifiers & (SHORTCUT_MASK | Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.HYPER_MASK)
+        if key in (Gdk.KEY_Control_L, Gdk.KEY_Control_R):
+            # The state is from before the press: key repeat and a hold that a popup interrupted already have Control.
+            if not held and not self.number_hold and not self.numbers_blocked():
+                self.number_hold = GLib.timeout_add(NUMBER_HOLD_MS, self.show_numbers)
+            return False
+        number = number_key(key)
+        if number and held == Gdk.ModifierType.CONTROL_MASK and not self.numbers_blocked():
+            self.open_number(number)
+            return True
+        if held & Gdk.ModifierType.CONTROL_MASK:
+            self.hide_numbers()
+        return None
+
+    def window_key_released(self, _controller, key, _code, _modifiers):
+        if key in (Gdk.KEY_Control_L, Gdk.KEY_Control_R):
+            self.hide_numbers()
+
+    def active_changed(self, *_args):
+        if not self.is_active():
+            self.hide_numbers()
+
+    def show_numbers(self):
+        self.number_hold = None
+        if not self.closed and not self.numbers_blocked():
+            self.update_number_keys()
+            self.numbers_shown = True
+            self.list_body.add_css_class("asb-numbers-shown")
+        return False
+
+    def hide_numbers(self, *_args):
+        if self.number_hold:
+            GLib.source_remove(self.number_hold)
+            self.number_hold = None
+        if self.numbers_shown:
+            self.numbers_shown = False
+            self.list_body.remove_css_class("asb-numbers-shown")
+        if self.number_pressed:
+            self.number_pressed.remove_css_class("asb-number-pressed")
+            self.number_pressed = None
+
+    def open_number(self, number):
+        # The current geometry decides, and the shown numbers follow it, so the key opens the card that shows its number.
+        self.update_number_keys()
+        if number <= len(self.number_keys):
+            widget = self.focus_widgets[self.number_keys[number - 1]]
+            if self.number_pressed:
+                self.number_pressed.remove_css_class("asb-number-pressed")
+            self.number_pressed = widget.asb_number_label
+            self.number_pressed.add_css_class("asb-number-pressed")
+            self.open_row(None, widget)
+
+    def queue_number_keys(self, scrolled=False):
+        if self.closed:
+            return
+        if scrolled:
+            # A wheel spring changes the position on each frame; number the cards once it settles.
+            if self.number_scroll:
+                GLib.source_remove(self.number_scroll)
+            self.number_scroll = GLib.timeout_add(100, self.number_keys_due, "number_scroll")
+        elif not self.number_idle:
+            self.number_idle = GLib.idle_add(self.number_keys_due, "number_idle")
+
+    def number_keys_due(self, source):
+        setattr(self, source, None)
+        self.update_number_keys()
+        return False
+
+    def update_number_keys(self):
+        if self.closed:
+            return
+        viewport = self.scroll.get_child()
+        bounds = {}
+        for identity, widget in self.focus_widgets.items():
+            found, box = widget.compute_bounds(viewport)
+            if found:
+                bounds[identity] = (box.origin.x, box.origin.y, box.size.width, box.size.height)
+        keys = number_key_rows([widget.asb_thread for widget in self.focus_widgets.values()], bounds,
+                               (viewport.get_width(), viewport.get_height()))
+        for identity in set(self.number_keys) - set(keys):
+            widget = self.row_cache.get(identity)
+            if widget:
+                self.set_row_number(widget, 0)
+        for index, identity in enumerate(keys):
+            if getattr(self.focus_widgets[identity], "asb_number", 0) != index + 1:
+                self.set_row_number(self.focus_widgets[identity], index + 1)
+        self.number_keys = keys
+
+    def set_row_number(self, widget, number):
+        widget.asb_number = number
+        widget.asb_number_label.set_label(str(number) if number else "")
+        widget.asb_number_label.set_visible(bool(number))
+        if number:
+            widget.update_property([Gtk.AccessibleProperty.KEY_SHORTCUTS], [f"Control+{number}"])
+        else:
+            widget.reset_property(Gtk.AccessibleProperty.KEY_SHORTCUTS)
+
     def window_key(self, _controller, key, _code, modifiers):
+        handled = self.number_key_pressed(key, modifiers)
+        if handled is not None:
+            return handled
         if modifiers & SHORTCUT_MASK or (self.context_menu and self.context_menu.get_visible()):
             return False
         focus = self.get_focus()
@@ -3398,6 +3586,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.drawer_only.update_property([Gtk.AccessibleProperty.LABEL], ["Drawer only. " + description])
         if repack or reveal_focus or preserve_action:
             GLib.idle_add(self.restore_position, focused, position, reveal_focus, focused_action, self.focus_generation, panel_focus)
+        self.queue_number_keys()
         # After the queued restore, so that a panel control that gets its focus back does not cancel the scroll restore.
         self.sync_row_panel()
 
@@ -3634,6 +3823,17 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             mark_overlay.add_overlay(badge)
             mark_overlay.set_measure_overlay(badge, False)
             widget.asb_source_badge = badge
+            # The Ctrl-number keycap covers the provider mark and its Soft dot, with no layout change.
+            number = getattr(widget, "asb_number", 0)
+            number_label = label(str(number) if number else "", "asb-number")
+            number_label.set_xalign(.5)
+            number_label.set_halign(Gtk.Align.CENTER)
+            number_label.set_valign(Gtk.Align.CENTER)
+            number_label.set_can_target(False)
+            number_label.set_visible(bool(number))
+            mark_overlay.add_overlay(number_label)
+            mark_overlay.set_measure_overlay(number_label, False)
+            widget.asb_number_label = number_label
             title = label("")
             title.add_css_class("asb-title")
             title.set_single_line_mode(True)
@@ -3891,6 +4091,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return True
 
     def show_context(self, widget, x=None, y=None, gesture=None):
+        self.hide_numbers()
         if self.context_menu:
             self.context_menu.popdown()
         widget.grab_focus()
@@ -4234,6 +4435,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.preferences_window.dispose()
         self.cancel_scroll()
         self.cancel_motion()
+        self.hide_numbers()
+        for source in (self.number_idle, self.number_scroll):
+            if source:
+                GLib.source_remove(source)
+        self.number_idle = self.number_scroll = None
+        for name, hook in getattr(self, "popover_hooks", ()):
+            GObject.remove_emission_hook(Gtk.Popover, name, hook)
+        self.popover_hooks, self.open_popovers = [], set()
         self.list_body.clear_hover()
         self.list_body.clear_flights()
         self.events.close()

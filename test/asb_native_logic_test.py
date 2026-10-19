@@ -856,7 +856,7 @@ class DataChecks(unittest.TestCase):
     def test_scroll_and_layout_restore_cached_empty_columns_once(self):
         window = object.__new__(Window)
         window.closed, window.scroll_updating, window.motion_from = False, True, None
-        window.list_body = Mock()
+        window.list_body, window.queue_number_keys = Mock(), Mock()
         position, width = [1500], [500]
         viewport = SimpleNamespace(get_width=lambda: width[0])
         adjustment = SimpleNamespace(get_value=lambda: position[0], get_page_size=lambda: width[0])
@@ -1214,7 +1214,7 @@ class DataChecks(unittest.TestCase):
     def test_narrow_escape_collapses_search_and_keeps_filters(self):
         window = object.__new__(Window)
         window.search_expanded, window.wide_controls, window.context_menu = True, False, None
-        window.cancel_scroll = Mock()
+        window.cancel_scroll, window.number_key_pressed = Mock(), Mock(return_value=None)
         window.search_popover, window.search_button = Mock(), Mock()
         window.apps, window.states = {"codex"}, {"waiting"}
         text = ["cl: example"]
@@ -2512,7 +2512,7 @@ class NativeLogicChecks(unittest.TestCase):
         window = object.__new__(Window)
         window.view, window.closed, window.dragging = "comfortable", False, False
         window.scroll_target, window.scroll_updating = None, False
-        window.list_body = Mock()
+        window.list_body, window.queue_number_keys = Mock(), Mock()
         window.list_body.pick.return_value = None
         window.cancel_scroll = Mock()
         position = [True, 100, 200]
@@ -2545,6 +2545,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.closed, window.scroll_target = False, None
         window.scroll_direction, window.scroll_updating = 0, False
         window.list_body, window.refresh, window.render = Mock(), Mock(), Mock()
+        window.queue_number_keys = Mock()
         settings = Mock(get_property=Mock(return_value=True))
         window.get_settings = lambda: settings
         adjustment = SimpleNamespace(value=10.0, lower=10.0, upper=210.0, page=100.0, step=32.0)
@@ -4031,6 +4032,170 @@ class NativeLogicChecks(unittest.TestCase):
             window.open_row(None, widget)
             self.assertEqual(request.call_args.args[1], "/api/threads/a/open")
             self.assertEqual(request.call_count, 2)
+
+    def test_number_keys_take_whole_openable_cards_down_then_across(self):
+        rows = [{"id": f"r{index}", "canOpen": index != 1} for index in range(14)]
+        # Two columns of five 22px rows, 252px apart; the third column is cut at the right edge.
+        bounds = {f"r{index}": (4 + 252 * (index // 5), 22 * (index % 5), 240, 22) for index in range(14)}
+        keys = asb.number_key_rows(rows, bounds, (600, 120))
+        self.assertEqual(keys, ["r0", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9"])
+        self.assertEqual(asb.number_key_rows(rows[:4], bounds, (600, 120)), ["r0", "r2", "r3"])
+        # Half a pixel outside still counts; more does not.
+        edge = {"r0": (-.5, 0, 240, 22), "r2": (0, 98.5, 240, 22), "r3": (360.6, 0, 240, 22)}
+        self.assertEqual(asb.number_key_rows(rows, edge, (600, 120)), ["r0", "r2"])
+        self.assertEqual(asb.number_key_rows(rows, {"r0": (0, 0, 0, 22), "r2": (0, 0, 240, 0)}, (600, 120)), [])
+        self.assertEqual(asb.number_key_rows(rows, bounds, (0, 120)), [])
+        self.assertEqual(asb.number_key_rows(rows, {"r0": (601, 0, 240, 22)}, (600, 120)), [])
+        self.assertEqual([asb.number_key(key) for key in (0x30, 0x31, 0x39, 0x3a, 0xffb0, 0xffb1, 0xffb9, 0x66)],
+                         [0, 1, 9, 0, 0, 1, 9, 0])
+
+    def test_number_badge_colors_keep_text_contrast(self):
+        fill, edge, pressed = asb.number_badge_colors(CUSTOM)
+        self.assertEqual((fill, edge), (asb.mix_color(CUSTOM["background"], CUSTOM["text"], .17),
+                                        asb.mix_color(CUSTOM["background"], CUSTOM["text"], .36)))
+        self.assertEqual(pressed, "#000000")
+        # A valid palette whose 17% mix leaves the text below 4.5:1 lowers the fill toward the background.
+        low = asb.validate_theme({"background": "#000000", "text": "#7c7c7c", "accent": "#ff0000", "muted": "#999999", "divider": "#333333"})
+        fill, edge, pressed = asb.number_badge_colors(low)
+        self.assertLess(asb.contrast(low["text"], asb.mix_color(low["background"], low["text"], .17)), 4.5)
+        self.assertGreaterEqual(asb.contrast(low["text"], fill), 4.5)
+        self.assertGreater(asb.luminance(fill), asb.luminance(low["background"]))
+        self.assertEqual(edge, asb.mix_color(low["background"], low["text"], .36))
+        self.assertGreaterEqual(asb.contrast(low["accent"], pressed), 4.5)
+
+    def test_ctrl_hold_shows_numbers_and_ctrl_digit_opens_the_card(self):
+        timers, removed = {}, []
+        def timeout_add(delay, callback, *args):
+            timers[len(timers) + 1] = (delay, callback, args)
+            return len(timers)
+        glib = SimpleNamespace(timeout_add=timeout_add, source_remove=removed.append, idle_add=Mock())
+        modifiers = SimpleNamespace(SHIFT_MASK=1, CONTROL_MASK=4, ALT_MASK=8, SUPER_MASK=16, META_MASK=32, HYPER_MASK=64)
+        gdk = SimpleNamespace(KEY_Control_L=0xffe3, KEY_Control_R=0xffe4, KEY_Escape=27, KEY_space=32, KEY_Return=13,
+                              KEY_KP_Enter=14, ModifierType=modifiers, keyval_to_unicode=lambda key: key)
+        popover = type("Popover", (), {})
+        gtk = SimpleNamespace(Popover=popover, AccessibleProperty=SimpleNamespace(KEY_SHORTCUTS=7),
+                              Editable=type("Editable", (), {}), TextView=type("TextView", (), {}), ScrollUnit=None)
+        window = object.__new__(Window)
+        window.closed, window.context_menu, window.focus_generation = False, None, 0
+        window.search_popover, other_popup = popover(), popover()
+        active, focus = [True], [None]
+        window.is_active, window.get_focus = lambda: active[0], lambda: focus[0]
+        window.list_body, window.open_row = Mock(), Mock()
+        viewport = SimpleNamespace(get_width=lambda: 500, get_height=lambda: 66)
+        window.scroll = SimpleNamespace(get_child=lambda: viewport)
+        places = {f"r{index}": (4 + 252 * (index // 3), 22 * (index % 3)) for index in range(6)}
+        def card(identity):
+            return SimpleNamespace(asb_thread={"id": identity, "canOpen": identity != "r1"}, asb_number_label=Mock(),
+                                   update_property=Mock(), reset_property=Mock(),
+                                   compute_bounds=lambda _viewport: (True, SimpleNamespace(
+                                       origin=SimpleNamespace(x=places[identity][0], y=places[identity][1]),
+                                       size=SimpleNamespace(width=240, height=22))))
+        window.focus_widgets = {identity: card(identity) for identity in places}
+        window.row_cache = dict(window.focus_widgets)
+        cards = window.focus_widgets
+        def entry(ancestor=None):
+            return SimpleNamespace(get_ancestor=lambda _type: ancestor)
+        control = modifiers.CONTROL_MASK
+        with patch.dict(SCOPE, {"GLib": glib, "Gdk": gdk, "Gtk": gtk, "SHORTCUT_MASK": 4 | 8 | 16 | 32}):
+            self.assertFalse(window.window_key(None, gdk.KEY_Control_L, 0, 0))
+            self.assertEqual(timers[1][0], 400)
+            self.assertFalse(window.window_key(None, gdk.KEY_Control_L, 0, control))  # Key repeat.
+            self.assertEqual(len(timers), 1)
+            timers[1][1]()
+            self.assertTrue(window.numbers_shown)
+            window.list_body.add_css_class.assert_called_once_with("asb-numbers-shown")
+            self.assertEqual(window.number_keys, ["r0", "r2", "r3", "r4", "r5"])
+            cards["r3"].asb_number_label.set_label.assert_called_with("3")
+            cards["r3"].update_property.assert_called_with([7], ["Control+3"])
+            cards["r1"].asb_number_label.set_label.assert_not_called()
+            # Ctrl+3 and keypad 3 open the third card, also from the search entry and the narrow search popover.
+            for key, where in ((0x33, None), (0xffb3, entry()), (0x33, entry(window.search_popover))):
+                focus[0] = where
+                window.open_row.reset_mock()
+                self.assertTrue(window.window_key(None, key, 0, control))
+                window.open_row.assert_called_once_with(None, cards["r3"])
+            cards["r3"].asb_number_label.add_css_class.assert_called_with("asb-number-pressed")
+            self.assertTrue(window.numbers_shown)
+            window.open_row.reset_mock()
+            self.assertTrue(window.window_key(None, 0x39, 0, control))  # An empty slot does nothing.
+            for extra in (modifiers.SHIFT_MASK, modifiers.ALT_MASK, modifiers.SUPER_MASK):
+                self.assertFalse(window.window_key(None, 0x33, 0, control | extra))
+            window.open_row.assert_not_called()
+            self.assertFalse(window.numbers_shown)  # Another key while Ctrl is down hides the numbers.
+            cards["r3"].asb_number_label.remove_css_class.assert_called_with("asb-number-pressed")
+            self.assertFalse(window.window_key(None, gdk.KEY_Control_R, 0, control))
+            self.assertEqual(len(timers), 1)  # No new hold until Ctrl is released.
+            window.window_key_released(None, gdk.KEY_Control_L, 0, control)
+            # Ctrl+F cancels a hold before it shows the numbers.
+            focus[0] = None
+            window.window_key(None, gdk.KEY_Control_R, 0, 0)
+            self.assertFalse(window.window_key(None, ord("f"), 0, control))
+            self.assertEqual(removed[-1], 2)
+            self.assertIsNone(window.number_hold)
+            window.window_key_released(None, gdk.KEY_Control_R, 0, control)
+            # The row panel and other popups block the keys; release still clears the state.
+            for blocked in ("panel", "popup"):
+                window.context_menu = Mock(get_visible=Mock(return_value=True)) if blocked == "panel" else None
+                focus[0] = entry(other_popup) if blocked == "popup" else None
+                count = len(timers)
+                self.assertFalse(window.window_key(None, gdk.KEY_Control_L, 0, 0))
+                self.assertEqual(len(timers), count)
+                self.assertFalse(window.window_key(None, 0x33, 0, control))
+                window.open_row.assert_not_called()
+                window.window_key_released(None, gdk.KEY_Control_L, 0, control)
+                self.assertEqual((window.numbers_shown, window.number_hold), (False, None))
+            # A popup that had the keys missed the release: Control still down (repeat) starts nothing; a fresh hold does.
+            focus[0] = entry(other_popup)
+            self.assertFalse(window.window_key(None, gdk.KEY_Control_L, 0, 0))
+            focus[0], count = None, len(timers)
+            self.assertFalse(window.window_key(None, gdk.KEY_Control_L, 0, control))
+            self.assertEqual(len(timers), count)
+            self.assertFalse(window.window_key(None, gdk.KEY_Control_L, 0, 0))
+            self.assertEqual(len(timers), count + 1)
+            window.window_key_released(None, gdk.KEY_Control_L, 0, control)
+            window.context_menu, focus[0] = None, None
+            # A popup that takes the focus, inactivity, and a board scroll hide the numbers, with no reshow.
+            for hide in ("focus", "inactive", "scroll", "release"):
+                active[0], focus[0] = True, None
+                window.window_key(None, gdk.KEY_Control_L, 0, 0)
+                timers[len(timers)][1]()
+                self.assertTrue(window.numbers_shown, hide)
+                if hide == "focus":
+                    focus[0] = entry(other_popup)
+                    window.focus_changed()
+                elif hide == "inactive":
+                    active[0] = False
+                    window.active_changed()
+                    active[0] = True
+                    window.active_changed()
+                elif hide == "scroll":
+                    window.scroll_horizontal(None, 0, 0)
+                else:
+                    window.window_key_released(None, gdk.KEY_Control_R, 0, control)
+                self.assertFalse(window.numbers_shown, hide)
+                count = len(timers)
+                if hide in ("focus", "scroll"):
+                    focus[0] = None
+                    window.window_key(None, gdk.KEY_Control_L, 0, control)
+                    self.assertEqual(len(timers), count, hide)
+                window.window_key_released(None, gdk.KEY_Control_L, 0, control)
+            # A repack renumbers in place, keeps the numbers shown, and clears the old accessible key.
+            window.window_key(None, gdk.KEY_Control_L, 0, 0)
+            timers[len(timers)][1]()
+            window.list_body.remove_css_class.reset_mock()
+            places.update(r0=(4, 44), r2=(4, 0), r5=(508, 0))
+            window.queue_number_keys()
+            window.number_keys_due(*glib.idle_add.call_args.args[1:])
+            self.assertEqual(window.number_keys, ["r0", "r2", "r3", "r4"])
+            cards["r2"].asb_number_label.set_label.assert_called_with("2")
+            cards["r5"].reset_property.assert_called_with(7)
+            cards["r5"].asb_number_label.set_visible.assert_called_with(False)
+            self.assertTrue(window.numbers_shown)
+            window.list_body.remove_css_class.assert_not_called()
+            window.queue_number_keys(scrolled=True)
+            window.queue_number_keys(scrolled=True)
+            self.assertEqual(removed[-1], len(timers) - 1)  # A scroll settles once.
+            self.assertEqual(timers[len(timers)][0], 100)
 
 
 class NativeIOAuditChecks(unittest.TestCase):

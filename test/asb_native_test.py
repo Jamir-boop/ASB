@@ -1348,6 +1348,91 @@ class WidgetCheck(unittest.TestCase):
                     self.drain(1)
                 render.assert_not_called()
 
+    def test_ctrl_number_keycaps_cover_the_mark_in_both_views_and_keep_the_row_height(self):
+        patcher = patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", mock_dashboard(), theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(680, 248)
+        window.present(); self.drain(.5); window.check_geometry(); self.drain()
+        for selected, row_height, size in ((0, asb.ROW_HEIGHT, 16), (1, asb.COMFORTABLE_ROW_HEIGHT, 18)):
+            with self.subTest(selected=selected):
+                window.view_filter.set_selected(selected); self.drain(.5)
+                window.update_number_keys()
+                window.list_body.add_css_class("asb-numbers-shown"); self.drain(.3)
+                # Whole cards only: two complete columns of the 680px window.
+                self.assertEqual(window.number_keys, window.row_order[:min(9, window.columns * window.capacity)])
+                for number, identity in enumerate(window.number_keys, 1):
+                    card = window.focus_widgets[identity]
+                    badge = card.asb_number_label
+                    self.assertEqual((badge.get_label(), badge.get_visible(), badge.get_can_target()), (str(number), True, False))
+                    self.assertFalse(badge.get_parent().get_measure_overlay(badge))
+                    found, box = badge.compute_bounds(badge.get_parent())  # The border box.
+                    self.assertEqual((box.size.width, box.size.height), (size, size))
+                    # The keycap is centered on the provider mark and covers it.
+                    found, mark = card.asb_mark.compute_bounds(badge.get_parent())
+                    self.assertTrue(found)
+                    self.assertAlmostEqual(box.origin.x * 2 + size, mark.origin.x * 2 + mark.size.width, delta=1)
+                    self.assertAlmostEqual(box.origin.y * 2 + size, mark.origin.y * 2 + mark.size.height, delta=1)
+                hidden = window.focus_widgets[window.row_order[len(window.number_keys)]].asb_number_label
+                self.assertEqual((hidden.get_label(), hidden.get_visible()), ("", False))
+                self.assertTrue(all(row.get_height() == row_height for row in self.widget_rows(window)))
+                window.list_body.remove_css_class("asb-numbers-shown")
+        window.set_palette({"background": "#000000", "text": "#7c7c7c", "accent": "#ff0000", "muted": "#999999", "divider": "#333333"})
+        self.drain()
+        badge = window.focus_widgets[window.number_keys[0]].asb_number_label
+        found, box = badge.compute_bounds(badge.get_parent())
+        self.assertEqual((box.size.width, box.size.height), (18, 18))
+        if not (shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10")):
+            return  # Real keys need xdotool and a nested test display (DISPLAY=:9 or :10).
+        import gi
+        gi.require_version("GdkX11", "4.0")
+        from gi.repository import GdkX11  # noqa: F401  The X11 surface gives the window ID for the key focus.
+        opened = []
+        window.open_row = lambda _listing, widget: opened.append(widget.asb_thread["id"])
+        def keys(*args, wait=.1):
+            subprocess.run(["xdotool", *args], check=True)
+            self.drain(wait)
+        window.set_default_size(420, 400); self.drain(.3); window.check_geometry(); self.drain()
+        subprocess.run(["xdotool", "windowfocus", str(window.get_surface().get_xid())], check=True); self.drain(.3)
+        # The narrow search popover gets the keys itself; the number keys work there and keep the search focus.
+        window.open_search(); self.drain(.3)
+        self.assertTrue(window.search_popover.get_visible())
+        keys("keydown", "Control_L", wait=.45)
+        self.assertTrue(window.numbers_shown)
+        keys("key", "3")
+        self.assertEqual(opened, [window.number_keys[2]])
+        self.assertTrue(window.get_focus().is_ancestor(window.search))
+        keys("keyup", "Control_L", wait=.2)
+        self.assertFalse(window.numbers_shown)
+        # Any other popover hides and blocks the numbers, also one that does not take the focus.
+        quiet = asb.Gtk.Popover(autohide=False, child=asb.Gtk.Label(label="Synthetic non-focus popup"))
+        quiet.set_parent(window.menu_button)
+        keys("keydown", "Control_L", wait=.45)
+        self.assertTrue(window.numbers_shown)
+        quiet.popup(); self.drain(.2)
+        self.assertFalse(window.numbers_shown)
+        keys("key", "3")
+        self.assertEqual(len(opened), 1)
+        keys("keyup", "Control_L", wait=.2)
+        quiet.popdown(); quiet.unparent(); self.drain()
+        # A popover that takes the keys misses the release; closing it shows nothing, and a new hold works.
+        grab = asb.Gtk.Popover(child=asb.Gtk.Entry())
+        grab.set_parent(window.menu_button)
+        keys("keydown", "Control_L", wait=.45)
+        self.assertTrue(window.numbers_shown)
+        grab.popup(); self.drain(.3)
+        self.assertFalse(window.numbers_shown)
+        keys("keyup", "Control_L", wait=.2)
+        grab.popdown(); self.drain(.6)
+        self.assertFalse(window.numbers_shown)
+        keys("keydown", "Control_L", wait=.45)
+        self.assertTrue(window.numbers_shown)
+        keys("keyup", "Control_L", wait=.2)
+        self.assertFalse(window.numbers_shown)
+        grab.unparent()
+
     def test_a_title_with_line_breaks_keeps_the_card_height_and_a_wide_window_keeps_the_pill_width(self):
         dashboard = mock_dashboard()
         dashboard["threads"][5]["title"] = "\n".join(["A title with line breaks"] * 12)
