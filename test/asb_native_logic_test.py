@@ -646,6 +646,91 @@ class PhoneChecks(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Cannot change this session"):
                 asb.request_json("http://127.0.0.1:1", "/api/threads/a/pin", "POST", {})
 
+    def test_machine_texts_view_and_join_link_summary(self):
+        member = {"machineId": "8c41e9d27b3a05f6", "name": "laptop", "online": True, "lastOkAtMs": NOW,
+                  "addresses": [{"kind": "lan", "address": "192.168.1.24"}, {"kind": "zerotier", "address": "10.147.20.31"}]}
+        self.assertEqual(asb.machine_status_text({**member, "isSelf": True}), "This machine")
+        self.assertEqual(asb.machine_status_text(member), "Online")
+        self.assertEqual(asb.machine_status_text({**member, "online": False}, NOW + 3 * 3_600_000 + 600_000),
+                         "Offline · last seen 3h ago")
+        self.assertEqual(asb.machine_status_text({**member, "online": False, "lastOkAtMs": 0}, NOW), "Offline")
+        self.assertEqual(asb.machine_addresses_text(member), "192.168.1.24 (Home network) · 10.147.20.31 (ZeroTier)")
+        self.assertEqual(asb.machine_addresses_text({"addresses": [{"kind": "wireguard", "address": "10.9.0.2"}]}),
+                         "10.9.0.2 (wireguard)")
+        self.assertEqual(asb.machine_addresses_text({"addresses": []}), "")
+        self.assertEqual(asb.machine_member_subtitle(member, NOW),
+                         "Online · ID 8c41e9d2\n192.168.1.24 (Home network) · 10.147.20.31 (ZeroTier)")
+        self.assertEqual(asb.machine_member_subtitle({**member, "addresses": []}, NOW), "Online · ID 8c41e9d2")
+        self.assertEqual(asb.machine_phones_text([]), "")
+        self.assertEqual(asb.machine_phones_text([{"name": "Pixel 8"}, {"name": "Tablet"}]),
+                         "Phones in the group: Pixel 8, Tablet. A phone paired on one machine works with all of them.")
+        own = {"machineId": "3f9a2c71e0b4d58a", "name": "atlas", "isSelf": True}
+        studio = {**member, "machineId": "51b7f0aa3c8e2d9b", "name": "studio", "online": False}
+        self.assertEqual(asb.machines_view({"groupId": "", "networkEnabled": True, "members": []}),
+                         {"off": False, "grouped": False, "others": [], "add": True, "join": True,
+                          "join_visible": True, "leave_visible": False})
+        self.assertEqual(asb.machines_view({"groupId": "7d2e91c4b06fa358", "networkEnabled": False,
+                                            "members": [studio, own, member]}),
+                         {"off": True, "grouped": True, "others": [studio, member], "add": False, "join": False,
+                          "join_visible": False, "leave_visible": True})
+        self.assertEqual(asb.machine_confirm_body(["laptop"], "studio"),
+                         "studio leaves the group. This PC and laptop stop showing its sessions, and it stops showing theirs. "
+                         "To join again, studio must reset its identity first.")
+        self.assertEqual(asb.machine_confirm_body([], "studio"),
+                         "studio leaves the group. This PC stops showing its sessions, and it stops showing theirs. "
+                         "To join again, studio must reset its identity first.")
+        self.assertEqual(asb.machine_confirm_body(["laptop", "studio"]),
+                         "This PC stops showing the sessions of laptop and studio, and they stop showing its sessions. "
+                         "Phones that were paired on another machine stop working with this PC.")
+        self.assertEqual(asb.machine_confirm_body(["a", "b", "c"]).split(",")[0:2], ["This PC stops showing the sessions of a", " b and c"])
+        self.assertEqual(asb.machine_confirm_body([]), "Phones that were paired on another machine stop working with this PC.")
+        fingerprint = "3f9a2c71e0b4d58a6c13f7e29b0d4a8851c6e3f70a9b2d4e8c1f5a7b3e6d9c20"
+        link = ("asb://join?v=1&g=7d2e91c4b06fa358&a=lan:192.168.1.10,zerotier:10.147.20.12&p=4630"
+                f"&f={fingerprint}&c=Q3vX9kR2mT7wLp4sN8bYc1HfDj6Ga0Ze5Uo&n=atlas")
+        self.assertEqual(asb.join_link_summary(link), {"name": "atlas", "fingerprint": fingerprint})
+        self.assertEqual(asb.join_link_summary(" \n" + link + "\n "), {"name": "atlas", "fingerprint": fingerprint})
+        for bad in ("", "atlas", "asb://pair?v=1", link + "&n=atlas", link.replace("v=1", "v=2"),
+                    link.replace(fingerprint, fingerprint[:63]), link.replace(fingerprint, fingerprint.upper()),
+                    link.replace("n=atlas", "n=-atlas"), link.replace("n=atlas", "n=at%20las"), link.replace("&p=4630", ""),
+                    link + "&x=1", link.replace("p=4630", "p=4630=1"), link.replace("p=4630", "p")):
+            with self.subTest(bad=bad):
+                self.assertIsNone(asb.join_link_summary(bad))
+        with patch.object(SCOPE["time"], "localtime", side_effect=lambda seconds: SCOPE["time"].gmtime(seconds)):
+            self.assertEqual(asb.machine_invite_text(NOW + 600_000),
+                             "On the other machine, open Preferences > Machines, select Join a group, and paste this link. "
+                             "The link works once and ends at " + SCOPE["time"].strftime("%H:%M", SCOPE["time"].gmtime(NOW / 1000 + 600)) + ".")
+
+    def test_machine_group_http_token_replies_errors_and_timeouts(self):
+        import io
+        token = "ef" * 32
+        for route, method, timeout in (("/api/group", "GET", 15), ("/api/group/invite", "POST", 15), ("/api/group/remove", "POST", 15),
+                                       ("/api/group/join", "POST", 30), ("/api/group/leave", "POST", 30)):
+            with self.subTest(route=route):
+                transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(b'{"groupId": ""}')))
+                with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": token}):
+                    self.assertEqual(asb.request_json("http://127.0.0.1:1", route, method, {}), {"groupId": ""})
+                request = transport.open.call_args.args[0]
+                self.assertEqual(request.get_header("X-asb-source-token"), token)
+                self.assertEqual(transport.open.call_args.kwargs["timeout"], timeout)
+        transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(b'{}')))
+        with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": token}):
+            asb.request_json("http://127.0.0.1:1", "/api/groupx")
+            self.assertIsNone(transport.open.call_args.args[0].get_header("X-asb-source-token"))
+            self.assertEqual(transport.open.call_args.kwargs["timeout"], 15)
+        for payload, message in ((b'{"error":"This name is taken.","suggestion":"laptop-2"}', "This name is taken. Try the name laptop-2."),
+                                 (b'{"error":"This name is taken.","suggestion":"-bad name"}', "This name is taken."),
+                                 (b'{"error":"This name is taken.","suggestion":7}', "This name is taken."),
+                                 (b'{"suggestion":"laptop-2"}', "Cannot load or change the machine group. "
+                                                                 "Check that ASB is running, then try again.")):
+            failure = SCOPE["HTTPError"]("http://127.0.0.1:1/api/group/join", 409, "Conflict", {}, io.BytesIO(payload))
+            with patch.dict(SCOPE, {"LOCAL_HTTP": Mock(open=Mock(side_effect=failure))}):
+                with self.assertRaises(RuntimeError) as raised:
+                    asb.request_json("http://127.0.0.1:1", "/api/group/join", "POST", {"link": "", "name": ""})
+            self.assertEqual(str(raised.exception), message)
+        with patch.dict(SCOPE, {"LOCAL_HTTP": Mock(open=Mock(side_effect=OSError()))}):
+            with self.assertRaisesRegex(RuntimeError, "^Cannot load or change the machine group. Check that ASB is running, then try again.$"):
+                asb.request_json("http://127.0.0.1:1", "/api/group")
+
     def test_status_refresh_keeps_form_edits_and_lists_device_dates(self):
         editor = self.editor()
         device = {"id": "a", "name": "Test <phone> & tablet", "createdAtMs": NOW, "lastSeenAtMs": NOW - 60_000}
@@ -882,13 +967,14 @@ class PhoneChecks(unittest.TestCase):
     def test_preferences_loads_phone_once_and_stops_it_on_page_and_window_hide(self):
         preferences = object.__new__(Preferences)
         preferences.owner, preferences.closed = SimpleNamespace(closed=False, report_ui=Mock()), False
-        preferences.profiles_editor = preferences.phone_editor = None
-        preferences.phone = Mock()
+        preferences.profiles_editor = preferences.phone_editor = preferences.machines_editor = preferences.tabs_reveal = None
+        preferences.phone, preferences.machines = Mock(), Mock()
+        preferences.tabs_scroll = Mock(get_visible=Mock(return_value=False))
         preferences.stack = Mock(get_visible_child_name=Mock(return_value="sessions"))
         preferences.get_visible = Mock(return_value=True)
         preferences.get_mapped = Mock(return_value=True)
-        editor = Mock()
-        with patch.dict(SCOPE, {"PhoneEditor": Mock(return_value=editor)}):
+        editor, machines = Mock(), Mock()
+        with patch.dict(SCOPE, {"PhoneEditor": Mock(return_value=editor), "MachinesEditor": Mock(return_value=machines)}):
             preferences.section_changed()
             SCOPE["PhoneEditor"].assert_not_called()
             preferences.stack.get_visible_child_name.return_value = "phone"
@@ -908,6 +994,18 @@ class PhoneChecks(unittest.TestCase):
             preferences.get_visible.return_value = False
             preferences.section_changed()
             editor.set_active.assert_called_with(False)
+            SCOPE["MachinesEditor"].assert_not_called()
+            preferences.get_visible.return_value = True
+            preferences.stack.get_visible_child_name.return_value = "machines"
+            preferences.section_changed()
+            preferences.section_changed()
+            SCOPE["MachinesEditor"].assert_called_once_with(preferences.owner, preferences)
+            preferences.machines.append.assert_called_once_with(machines)
+            machines.set_active.assert_called_with(True)
+            editor.set_active.assert_called_with(False)
+            preferences.stack.get_visible_child_name.return_value = "phone"
+            preferences.section_changed()
+            machines.set_active.assert_called_with(False)
 
 
 class DataChecks(unittest.TestCase):
@@ -1944,6 +2042,8 @@ class NativeLogicChecks(unittest.TestCase):
         owner.closed = False
         preferences = object.__new__(Preferences)
         preferences.owner, preferences.closed, preferences.profiles_editor, preferences.phone_editor = owner, False, None, None
+        preferences.machines_editor = preferences.tabs_reveal = None
+        preferences.tabs_scroll = Mock(get_visible=Mock(return_value=False))
         preferences.get_visible = Mock(return_value=True)
         preferences.get_mapped = Mock(return_value=True)
         preferences.stack = Mock(get_visible_child_name=Mock(return_value="sessions"))

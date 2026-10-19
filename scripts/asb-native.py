@@ -14,7 +14,7 @@ import tempfile
 import time
 import uuid
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
 LOCAL_HTTP = build_opener(ProxyHandler({}))
@@ -781,11 +781,88 @@ def qr_matrix(uri):
     return code.get_matrix()
 
 
+MACHINE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}")
+MACHINE_INTRO = ("Machines in a group show each other's sessions as view-only cards. "
+                 "They connect over the addresses that you select in Phone.")
+MACHINE_ALONE = "This machine is not in a group. Add a machine to make a group, or join the group of another machine."
+MACHINE_OFF = "Network access is off. Machines connect over the same private addresses as phones."
+
+
+def machine_status_text(member, now_ms=None):
+    if member.get("isSelf"):
+        return "This machine"
+    if member.get("online"):
+        return "Online"
+    if not member.get("lastOkAtMs"):
+        return "Offline"
+    return "Offline · last seen " + row_meta({"updatedAtMs": member["lastOkAtMs"]}, now_ms).split(" · ", 1)[1]
+
+
+def machine_addresses_text(member):
+    return " · ".join(f"{item['address']} ({PHONE_KINDS.get(item['kind'], item['kind'])})" for item in member.get("addresses", []))
+
+
+def machine_member_subtitle(member, now_ms=None):
+    return "\n".join(filter(None, (f"{machine_status_text(member, now_ms)} · ID {member['machineId'][:8]}",
+                                    machine_addresses_text(member))))
+
+
+def machine_phones_text(phones):
+    if not phones:
+        return ""
+    return ("Phones in the group: " + ", ".join(phone["name"] for phone in phones)
+            + ". A phone paired on one machine works with all of them.")
+
+
+def machines_view(group):
+    on, grouped = bool(group.get("networkEnabled")), bool(group.get("groupId"))
+    return {"off": not on, "grouped": grouped, "others": [member for member in group.get("members", []) if not member.get("isSelf")],
+            "add": on, "join": on, "join_visible": not grouped, "leave_visible": grouped}
+
+
+def machine_names_text(names):
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def machine_confirm_body(others, removed=""):
+    """The alert body for Remove (removed is the machine name) or Leave; others are the other active machine names."""
+    if removed:
+        stop = f"This PC and {machine_names_text(others)} stop" if others else "This PC stops"
+        return (f"{removed} leaves the group. {stop} showing its sessions, and it stops showing theirs. "
+                f"To join again, {removed} must reset its identity first.")
+    return " ".join(filter(None, (f"This PC stops showing the sessions of {machine_names_text(others)}, and they stop showing its sessions."
+                                  if others else "", "Phones that were paired on another machine stop working with this PC.")))
+
+
+def join_link_summary(text):
+    """The inviter name and fingerprint to compare, or None. The engine checks the rest of the link."""
+    text = text.strip()
+    if not text.startswith("asb://join?"):
+        return None
+    values = {}
+    for part in text[len("asb://join?"):].split("&"):
+        pieces = part.split("=")
+        if len(pieces) != 2 or pieces[0] in values:
+            return None
+        values[pieces[0]] = unquote(pieces[1])
+    if set(values) != set("vgapfcn") or values["v"] != "1" or not re.fullmatch(r"[a-f0-9]{64}", values["f"]) \
+            or not MACHINE_NAME.fullmatch(values["n"]):
+        return None
+    return {"name": values["n"], "fingerprint": values["f"]}
+
+
+def machine_invite_text(expires_at_ms):
+    ends = time.strftime("%H:%M", time.localtime(expires_at_ms / 1000))
+    return ("On the other machine, open Preferences > Machines, select Join a group, and paste this link. "
+            f"The link works once and ends at {ends}.")
+
+
 def request_json(base, route, method="GET", body=None, etag=None, headers=None):
     headers = {"Accept": "application/json", **(headers or {})}
     path = route.split("?", 1)[0]
     source_route = path == "/api/sources" or path.startswith("/api/sources/")
     phone_route = path == "/api/phone" or path.startswith("/api/phone/")
+    group_route = path == "/api/group" or path.startswith("/api/group/")
     service_route = path == "/api/service"
     palette_route = path == "/api/palette"
     agent_route = path.startswith("/api/agent/")
@@ -793,19 +870,21 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
     data = None
     if etag and etag[0] and method == "GET" and route.split("?")[0] == "/api/dashboard":
         headers["If-None-Match"] = etag[0]
-    if SOURCE_TOKEN and ((source_route and method == "POST") or phone_route or service_route or palette_route or agent_route or engine_route):
+    if SOURCE_TOKEN and ((source_route and method == "POST") or phone_route or group_route or service_route or palette_route or agent_route or engine_route):
         headers["X-ASB-Source-Token"] = SOURCE_TOKEN
     if method == "POST":
         headers.update({"Origin": base, "Content-Type": "application/json"})
         data = json.dumps(body or {}).encode()
     request = Request(base + route, data=data, headers=headers, method=method)
     try:
-        with LOCAL_HTTP.open(request, timeout=15) as response:
+        # Join and leave wait for the other machines.
+        timeout = 30 if method == "POST" and path in ("/api/group/join", "/api/group/leave") else 15
+        with LOCAL_HTTP.open(request, timeout=timeout) as response:
             result = json.load(response)
         if not isinstance(result, dict):
             raise ValueError("The ASB response is not an object.")
         success = "opened" if route.endswith("/open") else "marked" if route.endswith("/mark-unread") else "changed"
-        if method == "POST" and not (phone_route or service_route or palette_route or agent_route or engine_route) and not result.get(success):
+        if method == "POST" and not (phone_route or group_route or service_route or palette_route or agent_route or engine_route) and not result.get(success):
             raise ValueError("The session action did not succeed.")
         if etag is not None:
             etag[0] = response.headers.get("ETag")
@@ -814,16 +893,19 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
         if isinstance(error, HTTPError) and error.code == 304 and "If-None-Match" in headers:
             error.close()
             return None
-        if source_route or phone_route or service_route or palette_route or agent_route or engine_route:
+        if source_route or phone_route or group_route or service_route or palette_route or agent_route or engine_route:
             detail = ""
             if isinstance(error, HTTPError):
                 try:
                     payload = json.loads(error.read(8192))
                     if isinstance(payload, dict) and isinstance(payload.get("error"), str):
                         detail = payload["error"]
+                        suggestion = payload.get("suggestion")
+                        if group_route and isinstance(suggestion, str) and MACHINE_NAME.fullmatch(suggestion):
+                            detail += f" Try the name {suggestion}."
                 except (HTTPException, OSError, ValueError):
                     pass
-            subject = "phone access" if phone_route else "the ASB service" if service_route \
+            subject = "phone access" if phone_route else "the machine group" if group_route else "the ASB service" if service_route \
                 else "the phone palette" if palette_route else "the native UI status" if agent_route else "ASB" if engine_route else "app sources"
             raise RuntimeError(detail or f"Cannot load or change {subject}. Check that ASB is running, then try again.") from error
         action = "open this session" if route.endswith("/open") else "change the unread setting" if route == "/api/settings/unread" \
@@ -1979,11 +2061,393 @@ class PhoneEditor(Gtk.Box):
         self.closed = True
 
 
+class MachinesEditor(Gtk.Box):
+    def __init__(self, owner, preferences):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.owner, self.preferences, self.base = owner, preferences, owner.base
+        self.closed = self.active = self.loaded = self.loading = self.poll_loading = False
+        self.generation, self.poll_timer, self.dialog = 0, None, None
+        self.group, self.view, self.summary = {}, machines_view({}), None
+        self.invite_link, self.invite_expires, self.invite_ids, self.matrix = "", 0, set(), None
+        self.remove_buttons, self.rows_shown = [], None
+        self.body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, visible=False)
+        self.off = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.off.append(self.text(MACHINE_OFF, "warning"))
+        phone = Gtk.Button(label="Open Phone settings", halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
+        phone.connect("clicked", lambda *_args: self.preferences.stack.set_visible_child_name("phone"))
+        self.off.append(phone)
+        self.body.append(self.off)
+        self.body.append(self.text(MACHINE_INTRO))
+        self.body.append(label("This machine", "heading"))
+        self.self_row = Adw.ActionRow(use_markup=False)
+        self.self_row.set_subtitle_lines(0)
+        self.body.append(self.boxed(self.self_row))
+        self.others_heading = label("Other machines", "heading")
+        self.others = self.boxed()
+        self.empty = self.text("No other machine is in the group.")
+        self.phones = self.text("")
+        self.alone = self.text(MACHINE_ALONE)
+        for widget in (self.others_heading, self.others, self.empty, self.phones, self.alone):
+            self.body.append(widget)
+        self.actions = Gtk.Box(spacing=8)
+        self.add_button = self.button("Add a machine", self.invite)
+        self.leave_button = self.button("Leave the group", self.confirm_leave, "destructive-action")
+        self.join_open = self.button("Join a group", self.open_join)
+        for widget in (self.add_button, self.leave_button, self.join_open):
+            self.actions.append(widget)
+        self.body.append(self.actions)
+        self.body.append(self.invite_panel())
+        self.body.append(self.join_panel())
+        self.append(self.body)
+        self.message = self.text("Loading the machine group…", "warning", selectable=True)
+        self.append(self.message)
+        self.retry = self.button("Retry", lambda *_args: self.request_group())
+        self.retry.set_visible(False)
+        self.append(self.retry)
+        self.update_controls()
+
+    @staticmethod
+    def text(value, css="caption", width=64, selectable=False):
+        widget = label(value, css)
+        widget.set_wrap(True)
+        widget.set_max_width_chars(width)
+        widget.set_selectable(selectable)
+        return widget
+
+    @staticmethod
+    def boxed(*rows):
+        box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        box.add_css_class("boxed-list")
+        for row in rows:
+            box.append(row)
+        return box
+
+    @staticmethod
+    def button(value, clicked, css=None):
+        widget = Gtk.Button(label=value, halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
+        if css:
+            widget.add_css_class(css)
+        widget.connect("clicked", clicked)
+        return widget
+
+    @staticmethod
+    def show_fingerprint(widget, value):
+        widget.set_label(group_fingerprint(value))
+        # A new text replaces the accessible label of a Gtk.Label.
+        widget.update_property([Gtk.AccessibleProperty.LABEL], ["Certificate fingerprint"])
+
+    def invite_panel(self):
+        self.invite_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, visible=False)
+        self.invite_box.append(label("Add a machine", "heading"))
+        self.invite_help = self.text("")
+        self.invite_box.append(self.invite_help)
+        share = Gtk.Box(spacing=16)
+        self.qr = Gtk.DrawingArea(content_width=156, content_height=156, halign=Gtk.Align.START, valign=Gtk.Align.START)
+        self.qr.set_draw_func(lambda area, context, width, height: PhoneEditor.draw_qr(self, area, context, width, height))
+        self.qr.update_property([Gtk.AccessibleProperty.LABEL], ["Machine join QR code"])
+        share.append(self.qr)
+        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.link = self.text("", "monospace", 44, selectable=True)
+        self.link.set_wrap_mode(Pango.WrapMode.CHAR)
+        side.append(self.link)
+        side.append(self.button("Copy link", self.copy_link))
+        self.qr_help = self.text("Install python3-qrcode to show a QR code.")
+        side.append(self.qr_help)
+        share.append(side)
+        self.invite_box.append(share)
+        self.invite_box.append(label("Fingerprint of this machine", "heading"))
+        self.own_fingerprint = self.text("", "monospace", 40, selectable=True)
+        self.invite_box.append(self.own_fingerprint)
+        self.invite_box.append(self.text("The other machine shows this fingerprint before it joins. Check that both are the same."))
+        waiting = Gtk.Box(spacing=8)
+        self.spinner = Gtk.Spinner(spinning=True)
+        waiting.append(self.spinner)
+        waiting.append(self.text("Waiting for the other machine…", None))
+        row = Gtk.Box(spacing=8)
+        row.append(waiting)
+        self.invite_cancel = self.button("Cancel", lambda *_args: self.close_invite())
+        row.append(self.invite_cancel)
+        self.invite_box.append(row)
+        return self.invite_box
+
+    def join_panel(self):
+        self.join_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, visible=False)
+        self.join_box.append(label("Join a group", "heading"))
+        self.join_link = Adw.EntryRow(title="Join link")
+        self.join_link.connect("changed", self.join_link_changed)
+        self.join_box.append(self.boxed(self.join_link))
+        self.compare = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, visible=False)
+        self.compare_heading = label("", "heading")
+        self.compare_heading.set_wrap(True)
+        self.inviter_fingerprint = self.text("", "monospace", 40, selectable=True)
+        self.compare_help = self.text("")
+        self.same = Gtk.CheckButton(label="It is the same")
+        self.same.connect("toggled", lambda *_args: self.update_controls())
+        for widget in (self.compare_heading, self.inviter_fingerprint, self.compare_help, self.same):
+            self.compare.append(widget)
+        self.join_box.append(self.compare)
+        self.not_link = self.text("This is not an ASB join link.")
+        self.not_link.set_visible(False)
+        self.join_box.append(self.not_link)
+        self.join_name = Adw.EntryRow(title="Name for this machine")
+        self.join_name.connect("changed", lambda *_args: self.update_controls())
+        self.join_box.append(self.boxed(self.join_name))
+        row = Gtk.Box(spacing=8)
+        self.join_button = self.button("Join", self.join_group, "suggested-action")
+        row.append(self.join_button)
+        self.join_cancel = self.button("Cancel", lambda *_args: self.close_join())
+        row.append(self.join_cancel)
+        self.join_box.append(row)
+        return self.join_box
+
+    def set_active(self, active):
+        active = bool(active and not self.closed and not self.owner.closed and not self.preferences.closed)
+        if self.active == active:
+            return
+        self.active = active
+        if not active:
+            if self.dialog:
+                self.dialog.force_close()
+            self.generation += 1
+            self.loading = self.poll_loading = False
+            if self.poll_timer:
+                GLib.source_remove(self.poll_timer)
+            self.poll_timer = None
+            self.close_invite()
+        else:
+            # Members change while the page is hidden, so each open reads the group again; a poll keeps the panels.
+            self.request_group()
+            self.poll_timer = GLib.timeout_add_seconds(5, self.poll)
+
+    def show_message(self, text):
+        self.message.set_label(text)
+        self.message.set_visible(bool(text))
+
+    def update_controls(self):
+        busy = self.loading or self.closed
+        ready = self.loaded and not busy
+        self.add_button.set_sensitive(ready and self.view["add"])
+        self.join_open.set_sensitive(ready and self.view["join"])
+        self.leave_button.set_sensitive(ready)
+        for widget in self.remove_buttons + [self.invite_cancel, self.join_cancel]:
+            widget.set_sensitive(ready)
+        name = self.join_name.get_text().strip()
+        self.join_button.set_sensitive(ready and self.summary is not None and self.same.get_active()
+                                       and bool(MACHINE_NAME.fullmatch(name)))
+        self.retry.set_sensitive(not busy)
+
+    def render_others(self, others, rows):
+        self.rows_shown = rows
+        child = self.others.get_first_child()
+        while child:
+            self.others.remove(child)
+            child = self.others.get_first_child()
+        self.remove_buttons = []
+        for member, (_identity, name, subtitle, _online) in zip(others, rows):
+            row = Adw.ActionRow(title=name, subtitle=subtitle, use_markup=False)
+            row.set_subtitle_lines(0)
+            if not member.get("online"):
+                row.add_css_class("dim-label")
+            remove = Gtk.Button(label="Remove", halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
+            remove.update_property([Gtk.AccessibleProperty.LABEL], ["Remove " + member["name"]])
+            remove.connect("clicked", lambda _button, item=member: self.confirm_remove(item))
+            row.add_suffix(remove)
+            self.remove_buttons.append(remove)
+            self.others.append(row)
+
+    def render(self, group):
+        self.group, self.view, self.loaded = group, machines_view(group), True
+        own = group["self"]
+        self.self_row.set_title(own["name"])
+        self.self_row.set_subtitle("ID " + own["machineId"][:8])
+        self.off.set_visible(self.view["off"])
+        grouped, others = self.view["grouped"], self.view["others"]
+        now_ms = time.time() * 1000
+        rows = [(member["machineId"], member["name"], machine_member_subtitle(member, now_ms), bool(member.get("online")))
+                for member in others]
+        # A poll every 5 s must not make the same rows again: that drops the keyboard focus of a Remove button.
+        if rows != self.rows_shown:
+            self.render_others(others, rows)
+        phones = machine_phones_text(group.get("phones", []))
+        self.phones.set_label(phones)
+        for widget, visible in ((self.others_heading, grouped), (self.others, grouped and bool(others)),
+                                (self.empty, grouped and not others), (self.phones, grouped and bool(phones)),
+                                (self.alone, not grouped), (self.leave_button, self.view["leave_visible"]),
+                                (self.join_open, self.view["join_visible"])):
+            widget.set_visible(visible)
+        if self.join_box.get_visible() and grouped:
+            self.close_join()
+        self.body.set_visible(True)
+
+    def request_group(self, route="/api/group", method="GET", body=None, poll=False, feedback="", done=None):
+        """A GET renders the group and shows feedback; a POST calls done with the reply."""
+        if self.closed or self.owner.closed or not self.active or self.loading or (poll and self.poll_loading):
+            return
+        if poll:
+            self.poll_loading = True
+        else:
+            self.generation += 1
+            self.poll_loading = False
+            self.loading = True
+            if not self.loaded:
+                self.show_message("Loading the machine group…")
+            self.retry.set_visible(False)
+            self.update_controls()
+        generation = self.generation
+        def finished(result, error):
+            if self.closed or self.owner.closed or not self.active or generation != self.generation:
+                return False
+            if poll:
+                self.poll_loading = False
+            else:
+                self.loading = False
+            if not error and (not isinstance(result, dict) or (route == "/api/group/invite"
+                    and (not isinstance(result.get("link"), str) or not result["link"].startswith("asb://join?")
+                         or not isinstance(result.get("fingerprint"), str) or type(result.get("expiresAtMs")) is not int))
+                    or (method == "GET" and (not isinstance(result.get("self"), dict) or not isinstance(result.get("members"), list)))):
+                error = "The machine group response is not valid. Try again."
+            if error:
+                self.show_message(error)
+                self.retry.set_visible(not self.loaded)
+            elif method == "GET":
+                first = not self.loaded
+                self.render(result)
+                new = [member for member in self.view["others"] if member["machineId"] not in self.invite_ids]
+                if self.invite_link and new:
+                    self.close_invite()
+                    self.show_message("Joined: " + new[-1]["name"])
+                elif not poll or first:
+                    self.show_message(feedback)
+            else:
+                done(result)
+            self.update_controls()
+            return False
+        request_async(self.base, route, finished, GLib.idle_add, method, body)
+
+    def poll(self):
+        if not self.active or self.closed or self.owner.closed:
+            self.poll_timer = None
+            return False
+        if not self.expire_invite():
+            self.request_group(poll=True)
+        return True
+
+    def invite(self, *_args):
+        if not self.loaded or self.loading or not self.active or not self.view["add"]:
+            return
+        self.close_join()
+        def opened(result):
+            self.invite_link, self.invite_expires = result["link"], result["expiresAtMs"]
+            self.invite_ids = {member["machineId"] for member in self.view["others"]}
+            self.matrix = qr_matrix(self.invite_link)
+            self.qr.set_visible(self.matrix is not None)
+            self.qr_help.set_visible(self.matrix is None)
+            self.qr.queue_draw()
+            self.link.set_label(self.invite_link)
+            self.invite_help.set_label(machine_invite_text(self.invite_expires))
+            self.show_fingerprint(self.own_fingerprint, result["fingerprint"])
+            self.actions.set_visible(False)
+            self.invite_box.set_visible(True)
+            self.show_message("")
+        self.request_group("/api/group/invite", "POST", {}, done=opened)
+
+    def copy_link(self, *_args):
+        if self.active and self.invite_link and not self.expire_invite():
+            self.get_clipboard().set(self.invite_link)
+
+    def expire_invite(self):
+        if self.invite_expires and time.time() * 1000 >= self.invite_expires:
+            self.close_invite()
+            self.show_message("This join link has expired. Select Add a machine to make a new one.")
+            return True
+        return False
+
+    def close_invite(self):
+        self.invite_link, self.invite_expires, self.invite_ids, self.matrix = "", 0, set(), None
+        self.invite_box.set_visible(False)
+        self.link.set_label("")
+        self.actions.set_visible(not self.join_box.get_visible())
+
+    def open_join(self, *_args):
+        if not self.loaded or self.loading or not self.active or not self.view["join"] or self.view["grouped"]:
+            return
+        self.close_invite()
+        self.join_link.set_text("")
+        self.join_name.set_text(self.group["self"]["name"])
+        self.show_message("")
+        self.actions.set_visible(False)
+        self.join_box.set_visible(True)
+        self.join_link.grab_focus()
+
+    def close_join(self):
+        self.join_box.set_visible(False)
+        self.actions.set_visible(not self.invite_link)
+
+    def join_link_changed(self, *_args):
+        text = self.join_link.get_text()
+        self.summary = join_link_summary(text)
+        self.same.set_active(False)  # Each new link needs a new check.
+        if self.summary:
+            name = self.summary["name"]
+            self.compare_heading.set_label(f"Does {name} show this fingerprint?")
+            self.show_fingerprint(self.inviter_fingerprint, self.summary["fingerprint"])
+            self.compare_help.set_label(f"On {name}, open Preferences > Machines. The fingerprint is under Add a machine.")
+        self.compare.set_visible(self.summary is not None)
+        self.not_link.set_visible(self.summary is None and bool(text.strip()))
+        self.update_controls()
+
+    def join_group(self, *_args):
+        if not self.join_button.get_sensitive() or not self.active:
+            return
+        inviter = self.summary["name"]
+        def joined(_result):
+            self.close_join()
+            self.request_group(feedback=f"Joined the group of {inviter}.")
+        # A pasted link often ends with a line break; the engine does not strip it.
+        self.request_group("/api/group/join", "POST", {"link": self.join_link.get_text().strip(),
+                                                       "name": self.join_name.get_text().strip()}, done=joined)
+
+    def alert(self, heading, body, response, clicked):
+        dialog = Adw.AlertDialog(heading=heading, body=body)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response(response, response.capitalize())
+        dialog.set_response_appearance(response, Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        def chosen(_dialog, choice):
+            if choice == response and self.active and self.loaded and not self.loading:
+                clicked()
+        dialog.connect("response", chosen)
+        dialog.connect("closed", lambda closed: setattr(self, "dialog", None) if self.dialog is closed else None)
+        self.dialog = dialog
+        dialog.present(self.preferences)
+
+    def confirm_remove(self, member):
+        if not self.loaded or self.loading or not self.active:
+            return
+        name = member["name"]
+        others = [item["name"] for item in self.view["others"] if item["machineId"] != member["machineId"]]
+        self.alert(f"Remove {name}?", machine_confirm_body(others, name), "remove", lambda: self.request_group(
+            "/api/group/remove", "POST", {"machineId": member["machineId"]},
+            done=lambda _result: self.request_group(feedback=f"{name} was removed from the group.")))
+
+    def confirm_leave(self, *_args):
+        if not self.loaded or self.loading or not self.active or not self.view["grouped"]:
+            return
+        others = [item["name"] for item in self.view["others"]]
+        self.alert("Leave the group?", machine_confirm_body(others), "leave", lambda: self.request_group(
+            "/api/group/leave", "POST", {}, done=lambda _result: self.request_group(feedback="This machine left the group.")))
+
+    def close(self):
+        self.set_active(False)
+        self.closed = True
+
+
 class PreferencesWindow(Adw.Window):
     def __init__(self, owner, sessions, appearance):
         super().__init__(application=owner.get_application(), transient_for=owner, destroy_with_parent=True,
                          title="Preferences", default_width=780, default_height=560)
-        self.owner, self.closed, self.profiles_editor, self.phone_editor = owner, False, None, None
+        self.owner, self.closed, self.profiles_editor, self.phone_editor, self.machines_editor = owner, False, None, None, None
         self.set_size_request(420, 360)
         self.add_css_class("asb-column-flow")
         self.add_css_class("asb-preferences")
@@ -1997,17 +2461,24 @@ class PreferencesWindow(Adw.Window):
         self.sidebar = Gtk.StackSidebar(stack=self.stack)
         self.sidebar.set_size_request(150, -1)
         self.sidebar.add_css_class("asb-preferences-nav")
-        self.tabs = Gtk.StackSwitcher(stack=self.stack, visible=False, halign=Gtk.Align.FILL,
+        self.tabs = Gtk.StackSwitcher(stack=self.stack, halign=Gtk.Align.FILL,
                                       margin_start=6, margin_end=6, margin_top=6, margin_bottom=6)
         self.tabs.get_layout_manager().set_homogeneous(False)
-        body.append(self.tabs)
+        # Five tabs do not fit in 420 px; the row scrolls instead of making the window wider.
+        self.tabs_scroll = Gtk.ScrolledWindow(child=self.tabs, visible=False, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
+                                              vscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True)
+        self.tabs_scroll.get_hadjustment().connect("changed", self.scroll_tabs)
+        self.tabs_reveal = None
+        body.append(self.tabs_scroll)
         layout = Gtk.Box()
         layout.append(self.sidebar)
         layout.append(self.stack)
         body.append(layout)
         self.profiles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.phone = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        for title, content in (("Sessions", sessions), ("Appearance", appearance), ("Profiles", self.profiles), ("Phone", self.phone)):
+        self.machines = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        for title, content in (("Sessions", sessions), ("Appearance", appearance), ("Profiles", self.profiles), ("Phone", self.phone),
+                               ("Machines", self.machines)):
             page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16,
                            margin_top=20, margin_bottom=20, margin_start=20, margin_end=20)
             page.append(label(title, "title-2"))
@@ -2019,7 +2490,7 @@ class PreferencesWindow(Adw.Window):
         self.set_content(body)
         breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 600px"))
         breakpoint.add_setter(self.sidebar, "visible", False)
-        breakpoint.add_setter(self.tabs, "visible", True)
+        breakpoint.add_setter(self.tabs_scroll, "visible", True)
         self.add_breakpoint(breakpoint)
         self.stack.update_property([Gtk.AccessibleProperty.LABEL], ["Preferences sections"])
         keys = Gtk.EventControllerKey()
@@ -2039,7 +2510,32 @@ class PreferencesWindow(Adw.Window):
             self.phone.append(self.phone_editor)
         if self.phone_editor:
             self.phone_editor.set_active(phone_visible)
+        machines_visible = not self.closed and self.get_visible() and self.get_mapped() and self.stack.get_visible_child_name() == "machines"
+        if machines_visible and self.machines_editor is None:
+            self.machines_editor = MachinesEditor(self.owner, self)
+            self.machines.append(self.machines_editor)
+        if self.machines_editor:
+            self.machines_editor.set_active(machines_visible)
+        self.scroll_tabs()
         self.owner.report_ui()
+
+    def scroll_tabs(self, *_args):
+        # The switcher updates its buttons and the tab row gets its size after this signal, so the scroll waits.
+        if self.tabs_reveal is None and self.tabs_scroll.get_visible() and not self.closed:
+            self.tabs_reveal = GLib.idle_add(self.reveal_tab)
+
+    def reveal_tab(self):
+        self.tabs_reveal = None
+        button = self.tabs.get_first_child()
+        while button and not button.get_active():
+            button = button.get_next_sibling()
+        found, bounds = button.compute_bounds(self.tabs_scroll) if button and not self.closed else (False, None)
+        if found:
+            adjustment = self.tabs_scroll.get_hadjustment()
+            value = adjustment.get_value()
+            left, right = value + bounds.get_x() - 6, value + bounds.get_x() + bounds.get_width() + 6
+            adjustment.set_value(min(max(value, right - adjustment.get_page_size()), left))
+        return False
 
     def window_key(self, _controller, key, _code, modifiers):
         if key == Gdk.KEY_Escape and not modifiers & SHORTCUT_MASK:
@@ -2067,6 +2563,8 @@ class PreferencesWindow(Adw.Window):
             self.profiles_editor.close()
         if self.phone_editor:
             self.phone_editor.close()
+        if self.machines_editor:
+            self.machines_editor.close()
         self.cancel_dialogs()
         self.destroy()
 
@@ -2644,6 +3142,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} .asb-number.asb-number-pressed {{ background: {colors['accent']}; color: {number_pressed}; }}
 {scope} .asb-session:hover, {scope} .asb-session:focus-within {{ background: {highlight_color(colors)}; }}
 {scope} entry, {scope} button, {scope} dropdown {{ color: {colors['text']}; }}
+{scope} button.destructive-action, {scope} button.destructive {{ color: @destructive_color; }}
 {scope}.asb-preferences .asb-preferences-nav {{ background: alpha({colors['text']}, .04); }}
 {scope}.asb-preferences entry, {scope}.asb-preferences button, {scope}.asb-preferences dropdown {{ background: alpha({colors['text']}, .08); }}
 {scope}.asb-preferences row:selected, {scope}.asb-preferences button:checked {{ background: {colors['accent']}; color: {colors['background']}; }}

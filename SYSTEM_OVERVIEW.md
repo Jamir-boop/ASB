@@ -97,7 +97,7 @@ The current source package whitelist names 61 runtime files, including 11 ASB Br
 | `scripts/asb-agent.mjs` | Local agent status, source commands, partial updates, and saved/backend/UI verification. |
 | `scripts/asb-group.mjs` | `asb group` and `asb network` commands through the running engine. |
 | `scripts/asb-instance.mjs` | Shared private runtime descriptor, instance requests, and owner cleanup. |
-| `scripts/asb-native.py` | Native rows, filters, search, layout, theme, input, local label clock, and the Preferences Phone page. |
+| `scripts/asb-native.py` | Native rows, filters, search, layout, theme, input, local label clock, and the Preferences Phone and Machines pages. |
 | `docs/benchmarks/` | Historical frontend comparisons, numeric samples, acceptance coverage, and X11 timing limits. |
 | `scripts/asb-icon.mjs` | ASB icon and desktop entry registration. |
 | `scripts/asb-package.mjs` | Linux package build, runtime check, and per-user install/uninstall. |
@@ -120,7 +120,8 @@ The current source package whitelist names 61 runtime files, including 11 ASB Br
 | `test/asb-agent.test.mjs` | Synthetic CLI, source operations, verification, and runtime safety checks. |
 | `test/asb-agent-api.test.mjs` | Agent authentication, revisions, stale writes, strict UI reports, client bounds, and expiry. |
 | `test/asb-docs.test.mjs` | ASB install, media, privacy, and credit checks. |
-| `test/asb_native_logic_test.py` | Native data, layout, theme, search/filter, scheduling, and row-reuse checks with no GTK display. |
+| `test/asb_native_logic_test.py` | Native data, layout, theme, search/filter, scheduling, and row-reuse checks with no GTK display, and the machine texts, join link summary, and group requests. |
+| `test/asb_native_test.py` | Native GTK checks on a hidden display, including the Preferences pages, the Machines page flows and dialogs, and the narrow tab scroller. |
 | `docs/status-mapping.html` | Status mapping worksheet; update it when a state, icon, or Pending rule changes. |
 | `demo/` | Separate Remotion project with synthetic public demo data. |
 
@@ -487,6 +488,10 @@ The peer client (`peerRequest`) uses `https.request` with TLS 1.3, its own certi
 The merge (`mergePeerRows`) runs before `PendingTracker.observe`, so Read, Unread, Pin, the drawer, Mute, sounds, and the phone work on remote rows with the normal rules. They change only this engine's `pending.json`. A remote row has the ID `m:<machineId>:<row id>`, `remote: true`, `machineId` and `machineName` of the member, `globalId`, `canOpen: false`, and `appDeepLink: ""`. It keeps the member's `providerLabel`, `surface`, and `source*` fields. The rows of an offline member are Unknown with `<name> is not reachable.` for 10 minutes after its last good poll; then they leave. A local remote-cache row leaves when a member row has one of its `bridge:` keys. Messages use one key map of local and member keys (a key with two rows is not used), with the normal window, limit, and order. Open and Discard refuse a remote row (`Discard does not work on a session on another machine.`, 400).
 
 `GET /api/group` gives `{ groupId, self: { machineId, name }, networkEnabled, members: [{ machineId, name, online, lastOkAtMs, addresses, isSelf }], phones: [{ deviceId, name }] }`. Without a group, `groupId` is `""`, `self.name` is the suggestion, and the lists are empty. The group routes use the phone route checks (source token, local Host, local Origin for POST, `no-store`, exact bodies). Errors are 400, 409 `{ error, suggestion? }`, or 502.
+
+Preferences > Machines (`MachinesEditor` in `scripts/asb-native.py`, the approved option A) is made on its first selection, like Phone. Each open reads `GET /api/group`; while the page shows, one `GLib.timeout_add_seconds` timer reads it again every 5 s, and the timer stops when the page hides or Preferences closes. A poll shows no loading text and keeps the open panel and its form text. **Add a machine** posts `invite` and shows the link, a 156 px QR code (`qr_matrix`, as Phone), and the fingerprint; a poll with a new member closes it with `Joined: <name>`, and the expiry closes it. **Join a group** checks the pasted link with `join_link_summary` (exact keys `v,g,a,p,f,c,n`, `v` 1, 64 hex `f`, a valid `n`; the engine checks the rest) and posts `{ link, name }` only after **It is the same**. Remove and Leave use an `Adw.AlertDialog`; the page closes it when it hides. The pure helpers before the GTK import are `machine_status_text`, `machine_addresses_text`, `machine_member_subtitle`, `machine_phones_text`, `machines_view`, `machine_confirm_body`, `join_link_summary`, and `machine_invite_text`. `request_json` treats `/api/group*` like the phone routes: it sends the source token, a POST reply needs no `changed`, an error shows the server `error` (with `Try the name <suggestion>.` for a valid suggestion), and join and leave wait 30 s instead of 15 s.
+
+In a narrow Preferences window, the tabs are in a horizontal `Gtk.ScrolledWindow`, so five tabs do not make the window wider; after a page change or a size change, an idle scrolls the selected tab into view. In custom colors, `button.destructive-action` keeps the GNOME destructive color as its text color.
 
 `asb group status [--json] | invite | join <link> [--name N] [--yes] | remove <name> | leave | reset-identity` and `asb network status [--json] | enable <address>... | disable` (`scripts/asb-group.mjs`) use these routes and `/api/phone` through `service.json`. `join` prints the inviter name and fingerprint from the link and asks `Does the other machine show this fingerprint? [y/N]` unless `--yes`. `reset-identity` refuses while the engine runs or while `group.json` exists, then deletes only `phone-tls/key.pem` and `phone-tls/cert.pem`.
 

@@ -327,7 +327,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(preferences.get_destroy_with_parent())
         self.assertFalse(preferences.get_modal())
         self.assertTrue(preferences.sidebar.get_visible())
-        self.assertFalse(preferences.tabs.get_visible())
+        self.assertFalse(preferences.tabs_scroll.get_visible())
         self.assert_accessible_label(window.menu_button, "Open Preferences")
         window.open_preferences()
         self.assertEqual(sum(isinstance(item, asb.PreferencesWindow) for item in self.application.get_windows()), 1)
@@ -404,7 +404,7 @@ class WidgetCheck(unittest.TestCase):
         preferences.set_default_size(420, 560); self.drain(.3)
         self.assertEqual(preferences.get_width(), 420)
         self.assertFalse(preferences.sidebar.get_visible())
-        self.assertTrue(preferences.tabs.get_visible())
+        self.assertTrue(preferences.tabs_scroll.get_visible())
         capture("profiles-narrow")
         preferences.stack.set_visible_child_name("sessions"); self.drain(.2)
         self.assertEqual(preferences.get_width(), 420)
@@ -438,6 +438,250 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(editor.cancellable.is_cancelled())
         self.assertFalse(callback({"sources": []}, None))
         self.assertEqual(editor.sources, sources)
+
+    def test_preferences_machines_page_flows_dialogs_timer_and_narrow_tabs(self):
+        requests = []
+        def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None):
+            if route != "/api/palette":
+                requests.append((route, callback, method, body))
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                   (asb, "request_async", request)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        fingerprint = "3f9a2c71e0b4d58a6c13f7e29b0d4a8851c6e3f70a9b2d4e8c1f5a7b3e6d9c20"
+        link = ("asb://join?v=1&g=7d2e91c4b06fa358&a=lan:192.168.1.10,zerotier:10.147.20.12&p=4630"
+                f"&f={fingerprint}&c=Q3vX9kR2mT7wLp4sN8bYc1HfDj6Ga0Ze5Uo&n=atlas")
+        own = {"machineId": "3f9a2c71e0b4d58a", "name": "atlas"}
+        laptop = {"machineId": "8c41e9d27b3a05f6", "name": "laptop", "online": True, "lastOkAtMs": NOW, "isSelf": False,
+                  "addresses": [{"kind": "lan", "address": "192.168.1.24"}, {"kind": "zerotier", "address": "10.147.20.31"}]}
+        studio = {"machineId": "51b7f0aa3c8e2d9b", "name": "studio", "online": False, "lastOkAtMs": 0, "isSelf": False,
+                  "addresses": [{"kind": "zerotier", "address": "10.147.20.77"}]}
+        alone = {"groupId": "", "self": own, "networkEnabled": True, "members": [], "phones": []}
+        grouped = {"groupId": "7d2e91c4b06fa358", "self": own, "networkEnabled": True, "phones": [{"name": "Pixel 8"}],
+                   "members": [{**own, "isSelf": True, "online": True, "lastOkAtMs": NOW, "addresses": []}, laptop, studio]}
+        def reply(value, route="/api/group", method="GET", body=None):
+            self.assertEqual(requests[-1][0::2] + (requests[-1][3],), (route, method, body))
+            requests[-1][1](copy.deepcopy(value), None)
+            self.drain(.05)
+        def routes():
+            return [item[0] for item in requests]
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", copy.deepcopy(FIXTURE),
+                                      theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.present(); self.drain(.2)
+        preferences = window.preferences_window
+        window.open_preferences(); self.drain(.2)
+        preferences.stack.set_visible_child_name("phone"); self.drain(.1)
+        self.assertIsNone(preferences.machines_editor)
+        self.assertNotIn("/api/group", routes())
+        preferences.stack.set_visible_child_name("machines"); self.drain(.1)
+        editor = preferences.machines_editor
+        self.assertIsNotNone(editor)
+        self.assertEqual(routes()[-1], "/api/group")
+        self.assertFalse(editor.body.get_visible())
+        self.assertEqual(editor.message.get_label(), "Loading the machine group…")
+        requests[-1][1](None, "Cannot load or change the machine group. Check that ASB is running, then try again.")
+        self.assertTrue(editor.retry.get_visible())
+        editor.retry.emit("clicked")
+        reply(alone)
+        self.assertTrue(editor.body.get_visible())
+        self.assertFalse(editor.retry.get_visible())
+        self.assertFalse(editor.message.get_visible())
+        self.assertEqual((editor.self_row.get_title(), editor.self_row.get_subtitle()), ("atlas", "ID 3f9a2c71"))
+        self.assertEqual([widget.get_visible() for widget in (editor.off, editor.alone, editor.others_heading, editor.others,
+                                                              editor.phones, editor.join_open, editor.leave_button)],
+                         [False, True, False, False, False, True, False])
+        self.assertTrue(editor.add_button.get_sensitive() and editor.join_open.get_sensitive())
+        self.assertEqual(self.poll_calls.call_args.args[:2], (5, editor.poll))
+        count = len(requests)
+        with patch.object(asb.GLib, "source_remove") as remove:
+            editor.poll_timer = 77
+            preferences.stack.set_visible_child_name("sessions"); self.drain(.1)
+        remove.assert_called_once_with(77)
+        self.assertIsNone(editor.poll_timer)
+        self.assertEqual(len(requests), count)
+        preferences.stack.set_visible_child_name("machines"); self.drain(.1)
+        self.assertEqual(self.poll_calls.call_args.args[:2], (5, editor.poll))
+        reply(grouped)
+        self.assertEqual([widget.get_visible() for widget in (editor.off, editor.alone, editor.others_heading, editor.others,
+                                                              editor.empty, editor.phones, editor.join_open, editor.leave_button)],
+                         [False, False, True, True, False, True, False, True])
+        rows = [editor.others.get_row_at_index(index) for index in range(2)]
+        self.assertIsNone(editor.others.get_row_at_index(2))
+        self.assertEqual([(row.get_title(), row.get_subtitle(), row.has_css_class("dim-label")) for row in rows],
+                         [("laptop", "Online · ID 8c41e9d2\n192.168.1.24 (Home network) · 10.147.20.31 (ZeroTier)", False),
+                          ("studio", "Offline · ID 51b7f0aa\n10.147.20.77 (ZeroTier)", True)])
+        self.assertEqual(editor.phones.get_label(),
+                         "Phones in the group: Pixel 8. A phone paired on one machine works with all of them.")
+        self.assert_accessible_label(editor.remove_buttons[1], "Remove studio")
+        self.assertTrue(editor.leave_button.has_css_class("destructive-action"))
+        # A poll with the same rows keeps them, so a focused Remove button keeps the focus.
+        focused = editor.remove_buttons[1]
+        self.assertTrue(focused.grab_focus())
+        editor.poll()
+        reply(grouped)
+        self.assertIs(editor.remove_buttons[1], focused)
+        self.assertIs(preferences.get_focus(), focused)
+        editor.poll()
+        reply({**grouped, "members": [grouped["members"][0], {**laptop, "online": False, "lastOkAtMs": int(time.time() * 1000)}, studio]})
+        row = editor.others.get_row_at_index(0)
+        self.assertEqual(row.get_subtitle(), "Offline · last seen Just now · ID 8c41e9d2\n"
+                                             "192.168.1.24 (Home network) · 10.147.20.31 (ZeroTier)")
+        self.assertTrue(row.has_css_class("dim-label"))
+        editor.poll()
+        self.assertEqual(routes()[-1], "/api/group")
+        reply({**grouped, "members": grouped["members"][:2]})
+        self.assertTrue(editor.empty.get_visible() is False and editor.others.get_row_at_index(1) is None)
+        editor.request_group()
+        reply({**grouped, "members": grouped["members"][:1]})
+        self.assertEqual((editor.empty.get_visible(), editor.others.get_visible()), (True, False))
+
+        # Network off: the actions are off and the button opens Phone.
+        preferences.stack.set_visible_child_name("sessions"); self.drain(.05)
+        preferences.stack.set_visible_child_name("machines"); self.drain(.05)
+        reply({**alone, "networkEnabled": False})
+        self.assertTrue(editor.off.get_visible())
+        self.assertEqual((editor.add_button.get_sensitive(), editor.join_open.get_sensitive()), (False, False))
+        count = len(requests)
+        editor.add_button.emit("clicked")
+        self.assertEqual(len(requests), count)
+        editor.off.get_last_child().emit("clicked"); self.drain(.1)
+        self.assertEqual(preferences.stack.get_visible_child_name(), "phone")
+        self.assertFalse(editor.active)
+
+        # Invite: the panel replaces the actions until a new machine joins or the link expires.
+        preferences.stack.set_visible_child_name("machines"); self.drain(.05)
+        reply(alone)
+        expires = int(time.time() * 1000) + 600_000
+        editor.add_button.emit("clicked")
+        reply({"link": link, "fingerprint": fingerprint, "expiresAtMs": expires}, "/api/group/invite", "POST", {})
+        self.assertEqual((editor.invite_box.get_visible(), editor.actions.get_visible()), (True, False))
+        self.assertEqual(editor.link.get_label(), link)
+        self.assertEqual(editor.own_fingerprint.get_label(), asb.group_fingerprint(fingerprint))
+        self.assertEqual(editor.invite_help.get_label(), asb.machine_invite_text(expires))
+        self.assertEqual((editor.qr.get_visible(), editor.qr_help.get_visible()),
+                         (asb.qr_matrix(link) is not None, asb.qr_matrix(link) is None))
+        self.assert_accessible_label(editor.qr, "Machine join QR code")
+        self.assert_accessible_label(editor.own_fingerprint, "Certificate fingerprint")
+        editor.poll()
+        reply({**grouped, "members": grouped["members"][:1]})
+        self.assertTrue(editor.invite_box.get_visible())
+        editor.poll()
+        reply({**grouped, "members": grouped["members"][:2]})
+        self.assertEqual((editor.invite_box.get_visible(), editor.actions.get_visible()), (False, True))
+        self.assertEqual(editor.message.get_label(), "Joined: laptop")
+        editor.request_group()
+        reply(alone)
+        editor.add_button.emit("clicked")
+        reply({"link": link, "fingerprint": fingerprint, "expiresAtMs": expires}, "/api/group/invite", "POST", {})
+        count = len(requests)
+        with patch.object(asb.time, "time", return_value=expires / 1000):
+            editor.poll()
+        self.assertEqual(len(requests), count)
+        self.assertFalse(editor.invite_box.get_visible())
+        self.assertEqual(editor.message.get_label(), "This join link has expired. Select Add a machine to make a new one.")
+
+        # Join: no request until Join, and an error keeps the panel and its text.
+        editor.join_open.emit("clicked")
+        self.assertEqual((editor.join_box.get_visible(), editor.actions.get_visible()), (True, False))
+        self.assertEqual(len(requests), count)
+        self.assertEqual(editor.join_name.get_text(), "atlas")
+        editor.join_link.set_text("https://example.com/not-a-link")
+        self.assertEqual((editor.not_link.get_visible(), editor.compare.get_visible()), (True, False))
+        self.assertFalse(editor.join_button.get_sensitive())
+        editor.join_link.set_text(link + "\n")
+        self.assertEqual((editor.not_link.get_visible(), editor.compare.get_visible()), (False, True))
+        self.assertEqual(editor.compare_heading.get_label(), "Does atlas show this fingerprint?")
+        self.assertEqual(editor.inviter_fingerprint.get_label(), asb.group_fingerprint(fingerprint))
+        self.assertFalse(editor.same.get_active())
+        self.assertFalse(editor.join_button.get_sensitive())
+        editor.same.set_active(True)
+        self.assertTrue(editor.join_button.get_sensitive())
+        editor.join_name.set_text("bad name")
+        self.assertFalse(editor.join_button.get_sensitive())
+        editor.join_name.set_text(" laptop ")
+        self.assertTrue(editor.join_button.get_sensitive())
+        self.assertEqual(len(requests), count)
+        editor.join_button.emit("clicked")
+        self.assertEqual(requests[-1][2:], ("POST", {"link": link, "name": "laptop"}))
+        self.assertFalse(editor.join_button.get_sensitive())
+        requests[-1][1](None, "This name is taken. Try the name laptop-2.")
+        self.assertTrue(editor.join_box.get_visible())
+        self.assertEqual((editor.join_link.get_text(), editor.join_name.get_text()), (link + "\n", " laptop "))
+        self.assertEqual(editor.message.get_label(), "This name is taken. Try the name laptop-2.")
+        self.assertTrue(editor.join_button.get_sensitive())
+        editor.join_link.set_text(link)
+        self.assertFalse(editor.same.get_active())
+        editor.same.set_active(True)
+        editor.join_button.emit("clicked")
+        reply({"joined": True}, "/api/group/join", "POST", {"link": link, "name": "laptop"})
+        self.assertFalse(editor.join_box.get_visible())
+        reply(grouped)
+        self.assertEqual(editor.message.get_label(), "Joined the group of atlas.")
+
+        # Remove and Leave ask first; Cancel sends nothing.
+        for button, heading, response, route, body in (
+                (editor.remove_buttons[1], "Remove studio?", "remove", "/api/group/remove", {"machineId": studio["machineId"]}),
+                (editor.leave_button, "Leave the group?", "leave", "/api/group/leave", {})):
+            count = len(requests)
+            button.emit("clicked"); self.drain(.1)
+            dialog = editor.dialog
+            self.assertEqual(dialog.get_heading(), heading)
+            self.assertEqual(dialog.get_default_response(), "cancel")
+            self.assertEqual(dialog.get_response_appearance(response), asb.Adw.ResponseAppearance.DESTRUCTIVE)
+            dialog.emit("response", "cancel")
+            dialog.force_close(); self.drain(.1)
+            self.assertIsNone(editor.dialog)
+            self.assertEqual(len(requests), count)
+            button.emit("clicked"); self.drain(.1)
+            editor.dialog.emit("response", response)
+            editor.dialog.force_close(); self.drain(.1)
+            self.assertEqual(requests[-1][0::2] + (requests[-1][3],), (route, "POST", body))
+            reply({}, route, "POST", body)
+            reply(grouped)
+        self.assertEqual(editor.message.get_label(), "This machine left the group.")
+        self.assertEqual(editor.dialog, None)
+        editor.remove_buttons[0].emit("clicked"); self.drain(.1)
+        self.assertEqual(editor.dialog.get_body(), asb.machine_confirm_body(["studio"], "laptop"))
+        preferences.stack.set_visible_child_name("sessions"); self.drain(.1)
+        self.assertIsNone(editor.dialog)
+        preferences.stack.set_visible_child_name("machines"); self.drain(.1)
+        reply(grouped)
+
+        # Narrow: the tabs scroll and the selected tab is in view.
+        preferences.set_default_size(420, 560); self.drain(.3)
+        self.assertIs(preferences.tabs.get_ancestor(asb.Gtk.ScrolledWindow), preferences.tabs_scroll)
+        self.assertTrue(preferences.tabs_scroll.get_visible())
+        tab = preferences.tabs.get_last_child()
+        self.assertTrue(tab.get_active())
+        found, bounds = tab.compute_bounds(preferences.tabs_scroll)
+        self.assertTrue(found)
+        self.assertGreaterEqual(bounds.get_x(), 0)
+        self.assertLessEqual(bounds.get_x() + bounds.get_width(), preferences.tabs_scroll.get_width())
+        preferences.stack.set_visible_child_name("sessions"); self.drain(.1)
+        self.assertEqual(preferences.tabs_scroll.get_hadjustment().get_value(), 0)
+        preferences.stack.set_visible_child_name("machines"); self.drain(.1)
+        reply(grouped)
+        self.assertGreater(preferences.tabs_scroll.get_hadjustment().get_value(), 0)
+
+        # The custom theme keeps destructive text red.
+        normal = editor.add_button.get_color()
+        window.set_theme_pickers(CUSTOM)
+        window.theme_mode.set_selected(1)
+        window.apply_theme(); self.drain(.1)
+        self.assertNotEqual(editor.leave_button.get_color().to_string(), editor.add_button.get_color().to_string())
+        self.assertNotEqual(editor.add_button.get_color().to_string(), normal.to_string())
+        window.reset_theme()
+        with patch.object(asb.GLib, "source_remove") as remove:
+            editor.poll_timer = 78
+            preferences.close(); self.drain(.1)
+        remove.assert_called_once_with(78)
+        self.assertFalse(editor.active)
+        self.assertIsNone(editor.poll_timer)
+        window.close(); self.drain(.1)
+        self.assertTrue(editor.closed)
 
     def test_native_columns_rows_focus_scroll_and_snapshots(self):
         application = self.application

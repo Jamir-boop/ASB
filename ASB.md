@@ -164,7 +164,9 @@ A click or Enter on a CLI card does nothing, the card gets no Ctrl number, and t
 
 ## Machines
 
-The machine group shows the sessions of your other computers that run ASB. Each machine shows the cards of the other machines next to its own. The commands work through the running ASB engine. The Preferences page for machines is not in this version.
+The machine group shows the sessions of your other computers that run ASB. Each machine shows the cards of the other machines next to its own. The commands work through the running ASB engine.
+
+**Preferences > Machines** does the same work as the commands. It shows this machine, the other machines (online, or offline with the last-seen time, their ID and addresses, and **Remove**), and the group phones. **Add a machine** shows the join link, a QR code, and the fingerprint of this machine until the other machine joins or the link ends. **Join a group** takes a pasted link, shows the fingerprint of the inviter, and joins only after you select **It is the same**. **Leave the group** and **Remove** ask first. When network access is off, **Open Phone settings** opens the Phone page. The page reads the group again every 5 seconds while it is open. The command steps:
 
 1. On each machine, turn on network access: `asb network enable <address>`. `asb network status` lists the addresses of the PC. Network access is the same setting as phone access. Use a private LAN, ZeroTier, or Tailscale address.
 2. On the first machine, run `asb group invite`. It prints a join link, the fingerprint in groups of four characters, and the time until which the link works. The link works one time for 10 minutes.
