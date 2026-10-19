@@ -462,15 +462,15 @@ class WidgetCheck(unittest.TestCase):
                     self.assertIn(row.asb_thread["cwd"], row.asb_tooltip)
                 self.assertEqual(displayed, window.row_order)
                 self.assertEqual(len(set(displayed)), 106)
-                self.assertEqual(window.focus_widgets["sample-0"].get_child().get_last_child().get_text(), "Waiting")
-                self.assertEqual(window.focus_widgets["sample-4"].get_child().get_last_child().get_text(), "Idle")
+                self.assertEqual(window.focus_widgets["sample-0"].asb_state_label.get_text(), "Waiting")
+                self.assertEqual(window.focus_widgets["sample-4"].asb_state_label.get_text(), "Idle")
                 question = window.focus_widgets["sample-0"]
-                self.assertTrue(question.get_child().get_last_child().get_prev_sibling().has_css_class("asb-dot"))
+                self.assertTrue(question.asb_state_label.get_prev_sibling().has_css_class("asb-dot"))
                 self.assert_accessible_label(question, "Open Account settings in Codex. Waiting. Question needs your answer.")
-                self.assertEqual(window.focus_widgets["sample-12"].get_child().get_last_child().get_text(), "Working")
-                self.assertEqual(window.focus_widgets["sample-94"].get_child().get_last_child().get_text(), "Unknown")
+                self.assertEqual(window.focus_widgets["sample-12"].asb_state_label.get_text(), "Working")
+                self.assertEqual(window.focus_widgets["sample-94"].asb_state_label.get_text(), "Unknown")
                 native = window.focus_widgets["sample-15"]
-                dot = native.get_child().get_last_child().get_prev_sibling()
+                dot = native.asb_state_label.get_prev_sibling()
                 self.assertTrue(dot.has_css_class("asb-dot"))
                 self.assertFalse(dot.get_visible())
                 self.assertFalse(native.asb_thread["unread"])
@@ -606,7 +606,7 @@ class WidgetCheck(unittest.TestCase):
                 self.assertTrue(panel.asb_state.get_label().startswith("Unknown · "))
                 self.assertEqual(panel.asb_open.get_label(), "Open in Codex")
                 self.assertFalse(panel.asb_open.get_sensitive())
-                self.assertEqual(switches(panel), {"unread": (False, True), "drawer": (False, False), "pinned": (False, True)})
+                self.assertEqual(switches(panel), {"unread": (False, True), "drawer": (False, False), "muted": (False, True), "pinned": (False, True)})
                 self.assertFalse(panel.asb_switches["order"].get_visible())
                 self.assertFalse(window.row_key(None, asb.Gdk.KEY_Down, 0, 0, "unknown"))
                 panel.popdown()
@@ -643,7 +643,7 @@ class WidgetCheck(unittest.TestCase):
             window.open_errors.pop("second")
             window.sync_row_panel()
             self.assertFalse(panel.asb_error.get_visible())
-            self.assertEqual(switches(panel), {"unread": (True, True), "drawer": (False, True), "pinned": (True, True)})
+            self.assertEqual(switches(panel), {"unread": (True, True), "drawer": (False, True), "muted": (False, True), "pinned": (True, True)})
             self.assertEqual(panel.asb_switches["unread"].get_subtitle(), "Finished. Not read yet.")
             self.assertTrue(panel.asb_switches["order"].get_visible())
             self.assertEqual(panel.asb_up.get_tooltip_text(), "Move pin earlier")
@@ -702,8 +702,8 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(276 <= panel.get_child().get_width() <= 284, panel.get_child().get_width())
             self.assertTrue(panel.asb_state.get_label().startswith("Working"))
             self.assertTrue(panel.asb_state.has_css_class("success"))
-            self.assertEqual(switches(panel), {"unread": (False, True), "drawer": (False, False), "pinned": (False, True),
-                                               "discard": (False, True)})
+            self.assertEqual(switches(panel), {"unread": (False, True), "drawer": (False, False), "muted": (False, True),
+                                               "pinned": (False, True), "discard": (False, True)})
             self.assertEqual(panel.asb_switches["discard"].get_subtitle(), "Go to read Idle when this task ends")
             # The state line ticks with the cards.
             shown = panel.asb_state.get_label()
@@ -718,12 +718,12 @@ class WidgetCheck(unittest.TestCase):
             self.assertFalse(panel.get_visible())
             panel = window.context_menu
             self.assertEqual(panel.asb_open.get_label(), "Open in Claude Desktop Code")
-            self.assertEqual(switches(panel), {"unread": (True, True), "drawer": (True, True), "pinned": (False, True)})
+            self.assertEqual(switches(panel), {"unread": (True, True), "drawer": (True, True), "muted": (False, True), "pinned": (False, True)})
             self.assertEqual(panel.asb_switches["unread"].get_subtitle(), "Marked unread.")
             window.show_context(window.focus_widgets["claude:local_mock"])
             self.drain()
             panel = window.context_menu
-            self.assertEqual(switches(panel), {"unread": (True, False), "drawer": (False, False), "pinned": (False, True)})
+            self.assertEqual(switches(panel), {"unread": (True, False), "drawer": (False, False), "muted": (False, True), "pinned": (False, True)})
             self.assertEqual(panel.asb_switches["unread"].get_subtitle(), "Waits for your permission.")
             self.assertTrue(panel.asb_state.has_css_class("warning"))
             # Open runs the card open path and closes the panel.
@@ -900,13 +900,13 @@ class WidgetCheck(unittest.TestCase):
                 self.assertEqual(window.focus_widgets["sample-15"].asb_title_label.get_text(), "<b>Current literal title</b>")
                 self.assertFalse(window.notice.get_visible())
                 self.assertEqual((window.window_handle.get_height(), window.scroll.get_height()), geometry)
-                self.assertEqual(window.focus_widgets["sample-15"].get_child().get_last_child().get_text(), "Working")
+                self.assertEqual(window.focus_widgets["sample-15"].asb_state_label.get_text(), "Working")
                 acknowledged = copy.deepcopy(changed)
                 acknowledged["threads"][15].update(unread=False, nativeAttention=False, pending=False)
                 window.apply_dashboard(acknowledged, None)
                 self.drain()
                 read_row = window.focus_widgets["sample-15"]
-                self.assertEqual(read_row.get_child().get_last_child().get_text(), "Working")
+                self.assertEqual(read_row.asb_state_label.get_text(), "Working")
                 self.assertFalse(read_row.asb_dot.get_visible())
                 calls[-1][1](changed, None)
                 window.open_row(None, window.focus_widgets["sample-15"])
@@ -1052,7 +1052,7 @@ class WidgetCheck(unittest.TestCase):
         activate("sample-30", "Unread")
         self.assertEqual(received[0], ("/api/threads/sample-30/mark-unread", {}, base))
         self.assertTrue(window.focus_widgets["sample-30"].asb_thread["manualUnread"])
-        dot = window.focus_widgets["sample-30"].get_child().get_last_child().get_prev_sibling()
+        dot = window.focus_widgets["sample-30"].asb_state_label.get_prev_sibling()
         self.assertTrue(dot.has_css_class("asb-dot"))
         self.assertEqual(dot.get_width(), 7)
         activate("sample-30", "Read")
@@ -2283,6 +2283,109 @@ class WidgetCheck(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
                          "Real pointer clicks need xdotool and a nested test display (DISPLAY=:9 or :10).")
+    def test_muted_card_icon_by_the_name_panel_switch_and_no_discard_ring(self):
+        def row(identity, **extra):
+            return {"id": identity, "provider": "codex", "providerLabel": "Codex", "title": "Summarize the open issues " + identity,
+                    "cwd": "/example/field-notes", "projectName": "field-notes", "state": "idle", "canOpen": True,
+                    "updatedAtMs": NOW, **extra}
+        dashboard = {"generatedAtMs": NOW, "providers": [], "threads": [
+            row("read", muted=True), row("busy", state="working", muted=True), row("plain", state="working"),
+            row("asked", state="waiting", muted=True, pending=True, questionAttention=True, questionPending=True),
+            row("other", updatedAtMs=NOW - 60_000)]}
+        requests = []
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "request_async", lambda *args: requests.append(args))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(520, 400)
+        window.present(); window.set_focus(None); self.drain(.3)
+        window.view_filter.set_selected(1); self.drain(.3); window.check_geometry(); self.drain()
+        settle = lambda: self.settle(window)
+        settle()
+        cards, hover = window.focus_widgets, asb.Gtk.StateFlags.PRELIGHT
+        def bounds(widget, card):
+            found, rectangle = widget.compute_bounds(card)
+            self.assertTrue(found)
+            return rectangle.origin.x, rectangle.origin.y, rectangle.size.width, rectangle.size.height
+        def beside(card, before):
+            glyph = card.asb_mute_glyph
+            self.assertIs(glyph.get_prev_sibling(), before)
+            self.assertTrue(glyph.get_visible() and glyph.get_mapped())
+            self.assertEqual((glyph.get_icon_name(), glyph.get_pixel_size()), ("notifications-disabled-symbolic", 12))
+            self.assertTrue(glyph.has_css_class("asb-mute-glyph") and glyph.has_css_class("dim-label"))
+            x, y, width, height = bounds(glyph, card)
+            bx, by, bwidth, bheight = bounds(before, card)
+            self.assertGreaterEqual(x, bx + bwidth)
+            self.assertLessEqual(x, bx + bwidth + 8)
+            self.assertLessEqual(abs((y + height / 2) - (by + bheight / 2)), 2)
+            self.assertLessEqual(x + width, card.get_width())
+            return x
+
+        # Comfortable: the icon follows the folder name on the top line, only for a muted row.
+        self.assertEqual({identity: card.asb_mute_glyph.get_visible() for identity, card in cards.items()},
+                         {"read": True, "busy": True, "plain": False, "asked": True, "other": False})
+        for identity in ("read", "busy", "asked"):
+            beside(cards[identity], cards[identity].asb_folder)
+        # A muted Working card has no Discard ring, also on hover; an unmuted one keeps it.
+        busy, plain = cards["busy"], cards["plain"]
+        busy.set_state_flags(hover, False); plain.set_state_flags(hover, False); settle()
+        self.assertFalse(busy.asb_read_button.get_visible())
+        self.assertFalse(busy.asb_read_button.has_css_class("asb-discard-offer"))
+        self.assertEqual(self.ink(busy.asb_dot), 0)
+        self.assertTrue(plain.asb_read_button.get_visible() and plain.asb_read_button.has_css_class("asb-discard-offer"))
+        self.assertGreater(self.ink(plain.asb_dot), 0)
+        busy.unset_state_flags(hover); plain.unset_state_flags(hover); settle()
+        # A narrow column ellipsizes a long folder name first; the icon stays visible inside the card.
+        dashboard["threads"][0]["projectName"] = "a-very-long-project-folder-name-for-the-mute-check"
+        window.apply_dashboard(copy.deepcopy(dashboard), None); settle()
+        window.width_control.set_value(160); settle()
+        self.assertLess(window.column_pixel_width, 190)
+        read = cards["read"]
+        self.assertTrue(read.asb_folder.get_layout().is_ellipsized())
+        beside(read, read.asb_folder)
+        window.width_control.set_value(240); settle()
+
+        # Compact: the icon follows the state.
+        window.view_filter.set_selected(0); self.drain(.3); settle()
+        self.assertEqual({identity: card.asb_mute_glyph.get_visible() for identity, card in cards.items()},
+                         {"read": True, "busy": True, "plain": False, "asked": True, "other": False})
+        for identity in ("read", "busy", "asked"):
+            beside(cards[identity], cards[identity].asb_state_label)
+        window.view_filter.set_selected(1); self.drain(.3); settle()
+
+        # The row panel: Muted comes right after In the drawer, with its subtitle, and sends mute and then unmute.
+        other = cards["other"]
+        window.show_context(other); self.drain()
+        panel = window.context_menu
+        muted = panel.asb_switches["muted"]
+        self.assertEqual(list(panel.asb_switches)[:3], ["unread", "drawer", "muted"])
+        self.assertIs(panel.asb_switches["drawer"].get_next_sibling(), muted)
+        self.assertEqual((muted.get_title(), muted.get_subtitle()), ("Muted", "Finished tasks stay read. Questions still alert."))
+        self.assertTrue(muted.get_visible() and not muted.get_active())
+        muted.set_active(True)
+        self.assertEqual(requests[-1][1], "/api/threads/other/mute")
+        requests[-1][2]({"changed": True, "threadId": "other", "thread": dict(other.asb_thread, muted=True)}, None); settle()
+        self.assertIs(window.context_menu, panel)
+        self.assertTrue(muted.get_active())
+        self.assertTrue(other.asb_mute_glyph.get_visible())
+        muted.set_active(False)
+        self.assertEqual(requests[-1][1], "/api/threads/other/unmute")
+        requests[-1][2]({"changed": True, "threadId": "other", "thread": dict(other.asb_thread, muted=False)}, None); settle()
+        self.assertFalse(muted.get_active())
+        self.assertFalse(other.asb_mute_glyph.get_visible())
+        self.assertEqual([request[1] for request in requests if request[1].startswith("/api/threads/")],
+                         ["/api/threads/other/mute", "/api/threads/other/unmute"])
+        panel.popdown(); self.drain()
+        # A muted Working row offers no Discard switch.
+        window.show_context(busy); self.drain()
+        self.assertFalse(window.context_menu.asb_switches["discard"].get_visible())
+        self.assertTrue(window.context_menu.asb_switches["muted"].get_active())
+        window.context_menu.popdown(); self.drain()
+
     def test_message_courier_flight_paint_lit_icons_and_hidden_rows(self):
         def row(n, title):
             return {"id": f"m{n}", "provider": "codex", "providerLabel": "Codex", "title": title, "cwd": "/example/notes",

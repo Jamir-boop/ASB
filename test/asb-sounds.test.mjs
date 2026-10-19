@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { BIT_DONE, BIT_FAILED, BIT_INPUT, SOUND_DIR, createSoundPlayer, createSoundWatcher, soundBaseline, soundBits, soundEvents } from '../src/asb-sounds.mjs';
-import { createSwitchboardServer } from '../src/switchboard.mjs';
+import { createSwitchboardServer, PendingTracker } from '../src/switchboard.mjs';
 
 const now = Date.parse('2026-10-07T14:00:00Z');
 const row = (fields = {}) => ({ id: 'a', ...fields });
@@ -143,4 +143,19 @@ test('the switchboard server plays the injected player once after a Working to I
   await scan();
   assert.ok(loads >= 2);
   assert.deepEqual(played, [BIT_DONE]);
+});
+
+test('a muted session plays no Done sound but still plays Failed and Needs input', async () => {
+  const thread = (state, extra = {}) => ({ providers: [], threads: [{ id: 'a', state, nativeUnread: null, completionAtMs: 0, ...extra }] });
+  const events = async (end) => {
+    const tracker = new PendingTracker(false);
+    const [first] = (await tracker.observe(thread('idle'))).threads;
+    await tracker.setMuted(first, true);
+    const baseline = soundBaseline(null, (await tracker.observe(thread('working'))).threads, now);
+    return kinds(soundEvents(baseline, (await tracker.observe(end)).threads, now));
+  };
+  assert.deepEqual(await events(thread('idle', { completionAtMs: 10 })), []);
+  assert.deepEqual(await events(thread('idle', { completionAtMs: 10, nativeUnread: true })), []);
+  assert.deepEqual(await events(thread('idle', { failedAtMs: 10 })), [['a', BIT_FAILED]]);
+  assert.deepEqual(await events(thread('waiting', { questionPending: true })), [['a', BIT_INPUT]]);
 });

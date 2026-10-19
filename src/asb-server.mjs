@@ -32,7 +32,7 @@ function readPalette(palettePath) {
 }
 
 export function createAsbServer({
-  markUnreadThread = null, markReadThread = null, setUnreadSettings = null, pinThread = null, discardThread = null, drawerThread = null,
+  markUnreadThread = null, markReadThread = null, setUnreadSettings = null, pinThread = null, discardThread = null, drawerThread = null, muteThread = null,
   listSources = null, updateSource = null, removeSource = null, sourceToken = '', phoneGateway = null, serviceMode = false,
   appVersion = '', rootDir = '', sourcesPath = '', readSourcesRevision = async () => null,
   palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, now = Date.now, ...snapshotOptions
@@ -80,7 +80,7 @@ export function createAsbServer({
       sendJson(response, 403, { error: 'Use the local ASB address.' });
       return;
     }
-    const localAction = url.pathname.match(/^\/api\/threads\/([^/]+)\/(mark-unread|mark-read|pin|unpin|move-pin|discard-result|keep-result|drawer-in|drawer-out)$/);
+    const localAction = url.pathname.match(/^\/api\/threads\/([^/]+)\/(mark-unread|mark-read|pin|unpin|move-pin|discard-result|keep-result|drawer-in|drawer-out|mute|unmute)$/);
     const unreadSettingsRoute = url.pathname === '/api/settings/unread';
     const sourcesRoute = url.pathname === '/api/sources' && Boolean(listSources);
     const removeSourceMatch = removeSource && url.pathname.match(/^\/api\/sources\/([a-z0-9][a-z0-9-]{0,79})\/remove$/);
@@ -292,6 +292,10 @@ export function createAsbServer({
         } else if (action === 'drawer-in' || action === 'drawer-out') {
           await drawerThread(thread, action === 'drawer-in');
           invalidateDashboard('asb-drawer', { hard: false, dirty: false });
+          sendJson(response, 200, { changed: true, threadId: thread.id, thread });
+        } else if (action === 'mute' || action === 'unmute') {
+          await muteThread(thread, action === 'mute');
+          invalidateDashboard('asb-mute', { hard: false, dirty: false });
           sendJson(response, 200, { changed: true, threadId: thread.id, thread });
         } else {
           if (body.targetId && !await findThreadForAction(body.targetId)) { threadNotFound(response); return; }

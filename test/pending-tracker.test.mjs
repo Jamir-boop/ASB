@@ -189,3 +189,128 @@ test('the save warning clears after a later successful save', async (t) => {
   assert.equal(stateWarning(await tracker.observe(plain('idle', { completionAtMs: 5 }))), undefined);
   assert.equal(JSON.parse(await readFile(tracker.statePath, 'utf8')).version, 1);
 });
+
+// Mute: a muted session takes the discarded-success path for each task that ends with success after Mute is on.
+const scanRow = async (tracker, state, extra) => (await tracker.observe(plain(state, extra))).threads[0];
+async function mutedTracker(statePath = false, before = {}) {
+  const tracker = new PendingTracker(statePath);
+  const row = await scanRow(tracker, 'idle', before);
+  await tracker.setMuted(row, true);
+  assert.equal(row.muted, true);
+  return tracker;
+}
+const attention = (row) => [row.unread, row.pending, row.completionAttention, row.nativeAttention, row.failedAttention,
+  row.questionAttention, row.pendingSource];
+
+test('a muted session stays read when a task ends with success, also with a late native unread', async () => {
+  for (const persistent of [true, false]) {
+    const tracker = await mutedTracker();
+    await tracker.setPersistentUnread(persistent, { threads: [] });
+    await scanRow(tracker, 'working');
+    const ended = await scanRow(tracker, 'idle', { completionAtMs: 10 });
+    assert.deepEqual(attention(ended), [false, false, false, false, false, false, ''], `persistent ${persistent}`);
+    assert.deepEqual([ended.muted, ended.retainedUnread], [true, false]);
+    assert.deepEqual(attention(await scanRow(tracker, 'idle', { completionAtMs: 10 })), attention(ended));
+    // The app sets its own unread for the same task in a later scan.
+    const late = await scanRow(tracker, 'idle', { completionAtMs: 10, nativeUnread: true });
+    assert.deepEqual(attention(late), attention(ended), `late native, persistent ${persistent}`);
+  }
+  const tracker = await mutedTracker(false, { nativeUnread: false });
+  await scanRow(tracker, 'working', { nativeUnread: false });
+  for (let scan = 0; scan < 2; scan += 1) {
+    const row = await scanRow(tracker, 'idle', { completionAtMs: 10, nativeUnread: true });
+    assert.deepEqual([row.nativeAttention, row.unread, row.pending], [false, false, false], `native in scan ${scan}`);
+  }
+});
+
+test('a muted failure, question, and manual Unread still show', async () => {
+  for (const end of [{ failedAtMs: 10 }, { completionAtMs: 5, failedAtMs: 10 }]) {
+    const tracker = await mutedTracker();
+    await scanRow(tracker, 'working');
+    const failed = await scanRow(tracker, 'idle', end);
+    assert.deepEqual([failed.failedAttention, failed.unread, failed.pendingSource], [true, true, 'observed-failure'], JSON.stringify(end));
+  }
+  const asked = await mutedTracker();
+  const question = await scanRow(asked, 'waiting', { questionPending: true });
+  assert.deepEqual([question.questionAttention, question.pending], [true, true]);
+  const marked = await mutedTracker();
+  await marked.markUnread(id);
+  const manual = await scanRow(marked, 'idle');
+  assert.deepEqual([manual.manualUnread, manual.unread, manual.pendingSource], [true, true, 'manual-unread']);
+});
+
+test('Mute keeps an older dot until a later muted success clears only an older success dot', async () => {
+  const marks = {
+    success: async (tracker) => { await scanRow(tracker, 'working'); return scanRow(tracker, 'idle', { completionAtMs: 10 }); },
+    failure: async (tracker) => { await scanRow(tracker, 'working'); return scanRow(tracker, 'idle', { failedAtMs: 10 }); },
+    manual: async (tracker) => { await tracker.markUnread(id); return scanRow(tracker, 'idle'); },
+  };
+  for (const [name, mark] of Object.entries(marks)) {
+    const tracker = new PendingTracker(false);
+    await scanRow(tracker, 'idle');
+    const dot = await mark(tracker);
+    assert.equal(dot.unread, true, name);
+    await tracker.setMuted(dot, true);
+    assert.deepEqual([dot.muted, dot.unread], [true, true], `${name} right after Mute`);
+    const same = name === 'manual' ? {} : name === 'success' ? { completionAtMs: 10 } : { failedAtMs: 10 };
+    for (let scan = 0; scan < 2; scan += 1) assert.equal((await scanRow(tracker, 'idle', same)).unread, true, `${name} scan ${scan}`);
+    await scanRow(tracker, 'working', same);
+    const later = await scanRow(tracker, 'idle', { ...same, completionAtMs: 20 });
+    assert.equal(later.completionAttention, false, name);
+    assert.equal(later.unread, name !== 'success', `${name} after a later muted success`);
+    assert.equal((await scanRow(tracker, 'idle', { ...same, completionAtMs: 20 })).unread, name !== 'success', `${name} next scan`);
+  }
+});
+
+test('Unmute gives the next completion its dot', async () => {
+  const tracker = await mutedTracker();
+  await scanRow(tracker, 'working');
+  const muted = await scanRow(tracker, 'idle', { completionAtMs: 10 });
+  await tracker.setMuted(muted, false);
+  assert.deepEqual([muted.muted, muted.unread], [false, false]);
+  await scanRow(tracker, 'working', { completionAtMs: 10 });
+  const ended = await scanRow(tracker, 'idle', { completionAtMs: 20 });
+  assert.deepEqual([ended.muted, ended.unread, ended.completionAttention], [false, true, true]);
+  await assert.rejects(new PendingTracker(false).setMuted({ id }, true), { statusCode: 400, message: 'This session is not known to ASB.' });
+});
+
+test('pending.json keeps Mute across save and load, and a bad value loads as 0', async (t) => {
+  const statePath = path.join(await temp(t), 'pending.json');
+  await mutedTracker(statePath);
+  const saved = JSON.parse(await readFile(statePath, 'utf8'));
+  assert.equal(saved.records[id].muted, 1);
+  const restarted = await scanRow(new PendingTracker(statePath), 'idle');
+  assert.equal(restarted.muted, true);
+  for (const muted of ['1', 7, -1, true, null, 0]) {
+    await writeFile(statePath, JSON.stringify({ ...saved, records: { [id]: { ...saved.records[id], muted } } }));
+    const invalid = new PendingTracker(statePath);
+    const loaded = await invalid.observe(plain('idle'));
+    assert.deepEqual([invalid.records[id].muted, loaded.threads[0].muted, stateWarning(loaded)], [0, false, undefined], JSON.stringify(muted));
+  }
+  const fresh = new PendingTracker(false);
+  assert.equal((await scanRow(fresh, 'idle')).muted, false);
+  assert.equal(fresh.records[id].muted, 0);
+});
+
+test('mute and unmute are local session actions with an empty body', async (t) => {
+  const tracker = new PendingTracker(false);
+  const server = createSwitchboardServer({ pendingTracker: tracker, dashboardWatchPaths: [], openThread: async () => ({ opened: true }),
+    loadDashboard: async () => ({ providers: [], threads: [{ id, provider: 'codex', state: 'idle', nativeUnread: null, completionAtMs: 0 }] }) });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = (action, body = '{}', thread = id) => fetch(`${base}/api/threads/${thread}/${action}`, { method: 'POST', headers: { Origin: base }, body });
+  const reply = async (response) => [response.status, await response.json()];
+  for (const action of ['mute', 'unmute']) {
+    assert.equal((await post(action, '{"enabled":true}')).status, 400, action);
+    assert.equal((await post(action, '[]')).status, 400, action);
+    assert.deepEqual(await reply(await post(action, '{}', 'missing')), await reply(await post('mark-read', '{}', 'missing')), action);
+    assert.equal((await post(action, '{}', 'missing')).status, 404, action);
+  }
+  const muted = await (await post('mute')).json();
+  assert.deepEqual([muted.changed, muted.threadId, muted.thread.muted], [true, id, true]);
+  assert.equal((await (await fetch(`${base}/api/dashboard`)).json()).threads[0].muted, true);
+  const unmuted = await (await post('unmute')).json();
+  assert.deepEqual([unmuted.changed, unmuted.threadId, unmuted.thread.muted], [true, id, false]);
+  assert.equal(tracker.records[id].muted, 0);
+});

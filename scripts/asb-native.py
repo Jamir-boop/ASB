@@ -97,10 +97,11 @@ def row_menu_actions(row):
         actions.append(("Take out of drawer", "drawer-out"))
     elif attention_indicator(row) == "dot":
         actions.append(("Put in drawer", "drawer-in"))
+    actions.append(("Unmute", "unmute") if row.get("muted") else ("Mute", "mute"))
     actions.append(("Unpin", "unpin") if row.get("pinned") else ("Pin", "pin"))
     if row.get("pinned"):
         actions.extend((("Move pin earlier", "pin-up"), ("Move pin later", "pin-down")))
-    if row.get("state") == "working":
+    if row.get("state") == "working" and not row.get("muted"):
         actions.append(("Keep result", "keep-result") if row.get("discardResult") else ("Discard result", "discard-result"))
     return actions
 
@@ -111,6 +112,7 @@ def row_panel_controls(row):
     pick = lambda *names: next((name for name in names if name in offered), None)
     controls = {"unread": ("mark-unread" not in offered, pick("mark-read", "mark-unread")),
                 "drawer": ("drawer-out" in offered, pick("drawer-out", "drawer-in")),
+                "muted": ("unmute" in offered, pick("unmute", "mute")),
                 "pinned": ("unpin" in offered, pick("unpin", "pin"))}
     if "pin-up" in offered:
         controls["order"] = (True, "pin-up")
@@ -627,7 +629,7 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
         note = "Discard is on for this task."
     elif row.get("questionPending"):
         note = "A question is still open in the chat."
-    flags = " · ".join(text for key, text in (("pinned", "Pinned"), ("archived", "Archived"), ("drawer", "In the drawer")) if row.get(key))
+    flags = " · ".join(text for key, text in (("pinned", "Pinned"), ("archived", "Archived"), ("drawer", "In the drawer"), ("muted", "Muted")) if row.get(key))
     if not row.get("canOpen"):
         flags += (" · " if flags else "") + "No direct link"
     source = "App source: " + (source_label or source_id) if source_label or source_id else ""
@@ -2031,7 +2033,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.preferences_window = None
         self.drag_identity = None
         for name in ("mark-unread", "mark-read", "pin", "unpin", "pin-up", "pin-down", "discard-result", "keep-result",
-                     "drawer-in", "drawer-out"):
+                     "drawer-in", "drawer-out", "mute", "unmute"):
             action = Gio.SimpleAction.new(name, GLib.VariantType.new("s"))
             action.connect("activate", self.row_action, name)
             self.add_action(action)
@@ -2589,7 +2591,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             limited_hover = f"mix(@window_bg_color, @window_fg_color, {hover_fraction})"
         # A drawer row is quiet as a read row, but not while the Drawer pill shows it as unread.
         quiet = [base + ".asb-comfortable .asb-idle-read:not(.asb-limited):not(.asb-drawer-lit):not(:hover):not(:focus-within)"]
-        parts = (" .asb-title", " .asb-folder", " .asb-state", " .asb-age", " .asb-limit-clock")
+        parts = (" .asb-title", " .asb-folder", " .asb-state", " .asb-age", " .asb-limit-clock", " .asb-mute-glyph")
         css += f"""
 {", ".join(row + " .asb-title" for row in quiet)} {{ color: {quiet_title}; opacity: 1; }}
 {", ".join(row + part for row in quiet for part in (" .asb-folder", " .asb-state", " .asb-age"))} {{ color: {quiet_caption}; opacity: 1; }}
@@ -3836,7 +3838,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.asb_view = self.view
             widget.asb_action_signature = None
             self.cancel_card_copy(widget)
-            for name in ("asb_folder", "asb_pin_button", "asb_read_button", "asb_drawer_button", "asb_copy_button", "asb_age_label", "asb_limited"):
+            for name in ("asb_folder", "asb_pin_button", "asb_read_button", "asb_drawer_button", "asb_copy_button", "asb_age_label", "asb_limited",
+                         "asb_mute_glyph"):
                 if hasattr(widget, name):
                     delattr(widget, name)
             content = Gtk.Box(spacing=6, margin_start=5, margin_end=5, valign=Gtk.Align.CENTER)
@@ -3874,6 +3877,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             clock = Gtk.Image(icon_name="preferences-system-time-symbolic", pixel_size=12, visible=False)
             clock.add_css_class("asb-limit-clock")
             widget.asb_limit_clock = clock
+            mute = Gtk.Image(icon_name="notifications-disabled-symbolic", pixel_size=12, visible=False, valign=Gtk.Align.CENTER)
+            mute.add_css_class("asb-mute-glyph")
+            mute.add_css_class("dim-label")
+            widget.asb_mute_glyph = mute
             if self.view == "comfortable":
                 content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_start=8,
                                   margin_end=8, margin_top=2, margin_bottom=2, valign=Gtk.Align.CENTER)
@@ -3884,9 +3891,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 folder.add_css_class("asb-folder")
                 folder.add_css_class("dim-label")
                 folder.set_ellipsize(Pango.EllipsizeMode.END)
-                folder.set_hexpand(True)
+                # The folder does not expand, so it ellipsizes before the mute icon, which stays right after the name.
+                folder.set_hexpand(False)
                 widget.asb_folder = folder
                 workspace.append(folder)
+                workspace.append(mute)
                 content.append(workspace)
                 title.set_single_line_mode(False)
                 title.set_wrap(True)
@@ -3939,7 +3948,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 overlay.set_measure_overlay(actions, False)
                 content = overlay
             else:
-                for child in (mark_overlay, title, clock, dot, state):
+                for child in (mark_overlay, title, clock, dot, state, mute):
                     content.append(child)
             widget.set_child(content)
         widget.asb_mark.set_from_icon_name("asb-openai-symbolic" if row["provider"] == "codex" else "asb-claude-symbolic")
@@ -3947,7 +3956,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         indicator = attention_indicator(row, True)
         (widget.add_css_class if indicator == "dot" else widget.remove_css_class)("asb-unread")
         (widget.add_css_class if indicator == "dot" and not row.get("unread") else widget.remove_css_class)("asb-drawer")
-        discard_offer = self.view == "comfortable" and row.get("state") == "working" and not indicator
+        discard_offer = self.view == "comfortable" and row.get("state") == "working" and not indicator and not row.get("muted")
+        if getattr(widget, "asb_mute_glyph", None):
+            widget.asb_mute_glyph.set_visible(bool(row.get("muted")))
         widget.asb_dot.set_visible(bool(indicator) or discard_offer)
         widget.asb_dot.get_first_child().set_visible(indicator == "question")
         (widget.asb_dot.add_css_class if indicator == "question" else widget.asb_dot.remove_css_class)("asb-question")
@@ -3983,13 +3994,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         pending = row["id"] in self.session_actions
         indicator = attention_indicator(row, True)
         signature = (indicator, row.get("state"), row.get("actionRequired"), row.get("discardResult"),
-                     row.get("pinned"), row.get("drawer"), row.get("title"), pending, bool(widget.asb_read_timer),
+                     row.get("pinned"), row.get("drawer"), row.get("muted"), row.get("title"), pending, bool(widget.asb_read_timer),
                      self.column_pixel_width >= 190, bool(getattr(widget, "asb_copy_timer", None)))
         if signature == getattr(widget, "asb_action_signature", None):
             return
         widget.asb_action_signature = signature
         unread = indicator in ("question", "dot") and not row.get("actionRequired")
-        discard = row.get("state") == "working" and indicator not in ("question", "dot")
+        discard = row.get("state") == "working" and indicator not in ("question", "dot") and not row.get("muted")
         if discard and widget.asb_read_timer:
             self.clear_read_feedback(widget)
         confirmed = bool(widget.asb_read_timer)
@@ -4138,8 +4149,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             if row.get("lastOutcome") == "failed" or row.get("failedAttention") else " Task completed." if row.get("completionAttention") else ""
         discard = " Discard is on." if row.get("discardResult") else ""
         drawer = " In the drawer. Still unread." if row.get("drawer") else ""
+        muted = " Muted." if row.get("muted") else ""
         limit = f" Usage limit. Resets in {spoken_limit(left)}." if left else ""
-        widget.asb_accessible_label = f"{action} {row.get('title', 'Untitled session')} in {row.get('providerLabel', '')}. {state_text}.{limit}{manual}{native_unread}{pinned}{question}{retained}{outcome}{discard}{drawer}"
+        widget.asb_accessible_label = f"{action} {row.get('title', 'Untitled session')} in {row.get('providerLabel', '')}. {state_text}.{limit}{manual}{native_unread}{pinned}{question}{retained}{outcome}{discard}{drawer}{muted}"
         self.update_open_state(widget, now_ms)
 
     def row_key(self, _controller, key, _code, _state, identity):
@@ -4200,7 +4212,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         controls = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
         controls.add_css_class("boxed-list")
         panel.asb_switches = {}
-        for key, title in (("unread", "Unread"), ("drawer", "In the drawer"), ("pinned", "Pinned"), ("order", None),
+        for key, title in (("unread", "Unread"), ("drawer", "In the drawer"), ("muted", "Muted"), ("pinned", "Pinned"), ("order", None),
                            ("discard", "Discard result")):
             if key == "order":
                 control = Adw.ActionRow(title="Pin order", activatable=False, focusable=False)
@@ -4219,6 +4231,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 control = Adw.SwitchRow(title=title)
                 if key == "discard":
                     control.set_subtitle("Go to read Idle when this task ends")
+                elif key == "muted":
+                    control.set_subtitle("Finished tasks stay read. Questions still alert.")
                 control.connect("notify::active", self.panel_toggle, key)
             panel.asb_switches[key] = control
             controls.append(control)

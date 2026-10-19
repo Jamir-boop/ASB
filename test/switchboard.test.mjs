@@ -746,7 +746,7 @@ test('Pending observes complete scans, preserves native truth, and persists comp
   assert.equal((await new PendingTracker(statePath).observe(board([{ id: 'hidden', state: 'idle', completionAtMs: 200 }]))).threads[0].pending, false);
   const saved = JSON.parse(await readFile(statePath, 'utf8'));
   assert.deepEqual(Object.keys(saved.records.hidden).sort(), ['ack', 'discard', 'discardEnd', 'discardNative', 'discardStart', 'discardedAt',
-    'drawer', 'drawerSeen', 'manual', 'nativeAck', 'nativeAt', 'nativeSeen', 'pending', 'pendingKind', 'questionAck', 'questionSeen', 'retained', 'seen', 'working']);
+    'drawer', 'drawerSeen', 'manual', 'muted', 'nativeAck', 'nativeAt', 'nativeSeen', 'pending', 'pendingKind', 'questionAck', 'questionSeen', 'retained', 'seen', 'working']);
   assert.equal((await stat(statePath)).mode & 0o777, 0o600);
   await tracker.observe(board([{ id: 'aborted', state: 'working' }]));
   assert.equal((await tracker.observe(board([{ id: 'aborted', state: 'idle', completionAtMs: 0 }]))).threads[0].pending, false);

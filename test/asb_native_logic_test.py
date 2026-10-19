@@ -1915,12 +1915,12 @@ class NativeLogicChecks(unittest.TestCase):
         controls, note, edge = SCOPE["row_panel_controls"], SCOPE["row_panel_note"], SCOPE["edge_color"]
         contrast = SCOPE["contrast"]
         idle = {"state": "idle", "unread": True, "pinned": True, "pendingSource": "observed-completion"}
-        self.assertEqual(controls(idle), {"unread": (True, "mark-read"), "drawer": (False, "drawer-in"),
+        self.assertEqual(controls(idle), {"unread": (True, "mark-read"), "drawer": (False, "drawer-in"), "muted": (False, "mute"),
                                           "pinned": (True, "unpin"), "order": (True, "pin-up")})
         self.assertEqual(note(idle), "Finished. Not read yet.")
         self.assertEqual(note({**idle, "manualUnread": True}), "Marked unread.")
         working = {"state": "working"}
-        self.assertEqual(controls(working), {"unread": (False, "mark-unread"), "drawer": (False, None),
+        self.assertEqual(controls(working), {"unread": (False, "mark-unread"), "drawer": (False, None), "muted": (False, "mute"),
                                              "pinned": (False, "pin"), "discard": (False, "discard-result")})
         self.assertEqual(controls({**working, "discardResult": True})["discard"], (True, "keep-result"))
         self.assertEqual(note({**working, "unread": True}), "")
@@ -1934,7 +1934,13 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(note(waiting), "Waits for your permission.")
         self.assertEqual(note({"state": "idle", "questionAttention": True}), "Asks a question.")
         self.assertEqual(note({"state": "idle"}), "")
-        for row in (idle, working, drawer, waiting):
+        # A muted row offers Unmute and no Discard, Working or not.
+        for row in (idle, working, {**working, "discardResult": True}):
+            muted = {**row, "muted": True}
+            self.assertEqual(controls(muted)["muted"], (True, "unmute"))
+            self.assertNotIn("discard", controls(muted))
+            self.assertEqual(list(controls(muted)), [key for key in controls(row) if key != "discard"])
+        for row in (idle, working, drawer, waiting, {**idle, "muted": True}, {**working, "muted": True}):
             offered = {action for _title, action in SCOPE["row_menu_actions"](row)}
             self.assertEqual({action for _on, action in controls(row).values() if action} - {"pin-up"}, offered - {"pin-up", "pin-down"})
         self.assertEqual(edge("#0f0f0f", "#ffb900", .7, ("#000000", "#0f0f0f")), "#b78605")
@@ -1965,7 +1971,11 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertEqual(actions(row)[0], ("Read", "mark-read"))
             self.assertNotIn(("Unread", "mark-unread"), actions(row))
         self.assertEqual(actions({"nativeUnread": True, "nativeAttention": False})[0], ("Unread", "mark-unread"))
-        self.assertEqual([action for _, action in actions({"pinned": True})], ["mark-unread", "unpin", "pin-up", "pin-down"])
+        self.assertEqual([action for _, action in actions({"pinned": True})], ["mark-unread", "mute", "unpin", "pin-up", "pin-down"])
+        self.assertEqual(actions({"pinned": True, "muted": True})[1], ("Unmute", "unmute"))
+        self.assertEqual(actions({"state": "working"})[-2:], [("Pin", "pin"), ("Discard result", "discard-result")])
+        self.assertEqual(actions({"state": "working", "muted": True}), [("Unread", "mark-unread"), ("Unmute", "unmute"), ("Pin", "pin")])
+        self.assertEqual(actions({"state": "working", "muted": True, "discardResult": True})[-1], ("Pin", "pin"))
 
     def test_attention_indicator_prefers_question_and_working_rows_hide_unread_text(self):
         indicator = SCOPE["attention_indicator"]
@@ -2020,8 +2030,8 @@ class NativeLogicChecks(unittest.TestCase):
                               ({**stop, "state": "working"}, "")):
             self.assertEqual(indicator(row), expected)
         self.assertEqual(actions(stop)[0], ("Unread", "mark-unread"))
-        self.assertEqual(actions(wait), [("Pin", "pin")])
-        self.assertEqual(actions({**wait, "pinned": True}), [("Unpin", "unpin"),
+        self.assertEqual(actions(wait), [("Mute", "mute"), ("Pin", "pin")])
+        self.assertEqual(actions({**wait, "pinned": True}), [("Mute", "mute"), ("Unpin", "unpin"),
                          ("Move pin earlier", "pin-up"), ("Move pin later", "pin-down")])
         window = object.__new__(Window)
         window.session_actions = set()
@@ -2119,6 +2129,36 @@ class NativeLogicChecks(unittest.TestCase):
                 widget.asb_read_button.remove_css_class.assert_any_call("asb-read-confirmed")
                 widget.asb_read_button.set_action_name.assert_called_with("win.keep-result" if armed else "win.discard-result")
             self.assertEqual(window.clear_read_feedback.call_count, 2)
+
+    def test_a_muted_row_has_the_muted_flag_and_label_and_no_discard_ring(self):
+        row = {"id": "a", "title": "Chat", "provider": "codex", "providerLabel": "Codex", "state": "idle", "muted": True, "canOpen": True}
+        self.assertEqual(SCOPE["tooltip_model"](row, 100_000, "/home/test")["flags"], "Muted")
+        self.assertEqual(SCOPE["tooltip_model"]({**row, "pinned": True}, 100_000, "/home/test")["flags"], "Pinned · Muted")
+        self.assertEqual(SCOPE["tooltip_model"]({**row, "muted": False}, 100_000, "/home/test")["flags"], "")
+        window = object.__new__(Window)
+        window.view, window.opening, window.open_errors, window.session_actions = "compact", set(), {}, set()
+        text = SimpleNamespace(asb_thread=dict(row), asb_time_signature=None, asb_state_label=Mock(), asb_title_label=Mock(),
+                               set_sensitive=Mock(), update_property=Mock(), update_state=Mock())
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1),
+                              AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        with patch.dict(SCOPE, {"Gtk": gtk}):
+            window.update_row_text(text, 100_000)
+            self.assertEqual(text.asb_accessible_label, "Open Chat in Codex. Idle. Muted.")
+            text.asb_thread, text.asb_time_signature = {**row, "muted": False}, None
+            window.update_row_text(text, 100_000)
+            self.assertNotIn("Muted", text.asb_accessible_label)
+            widget = SimpleNamespace(asb_view="comfortable", asb_thread={**row, "state": "working"}, asb_read_timer=None,
+                                     asb_read_button=Mock(), asb_pin_button=Mock())
+            window.update_card_actions(widget)
+            widget.asb_read_button.set_visible.assert_called_with(False)
+            widget.asb_read_button.set_action_name.assert_called_with(None)
+            widget.asb_read_button.remove_css_class.assert_any_call("asb-discard-button")
+            widget.asb_read_button.remove_css_class.assert_any_call("asb-discard-offer")
+            # Unmute changes the signature, so the ring comes back.
+            widget.asb_thread = {**widget.asb_thread, "muted": False}
+            window.update_card_actions(widget)
+            widget.asb_read_button.set_visible.assert_called_with(True)
+            widget.asb_read_button.set_action_name.assert_called_with("win.discard-result")
         source = SOURCE.read_text()
         self.assertIn("min-width: 6px; min-height: 6px; border: 1.5px solid @window_fg_color", source)
         self.assertIn(".asb-discard-button.asb-discard-offer {{ opacity: 0;", source)
@@ -3881,11 +3921,12 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(indicator(tucked), "")
         self.assertEqual(indicator({**tucked, "lastOutcome": "stopped"}), "stop")
 
-        self.assertEqual(actions(unread), [("Read", "mark-read"), ("Put in drawer", "drawer-in"), ("Pin", "pin")])
-        self.assertEqual(actions(tucked), [("Read", "mark-read"), ("Take out of drawer", "drawer-out"), ("Pin", "pin")])
+        self.assertEqual(actions(unread), [("Read", "mark-read"), ("Put in drawer", "drawer-in"), ("Mute", "mute"), ("Pin", "pin")])
+        self.assertEqual(actions(tucked), [("Read", "mark-read"), ("Take out of drawer", "drawer-out"), ("Mute", "mute"), ("Pin", "pin")])
         self.assertEqual(actions({**tucked, "state": "working"}),
-                         [("Read", "mark-read"), ("Take out of drawer", "drawer-out"), ("Pin", "pin"), ("Discard result", "discard-result")])
-        self.assertEqual(actions({**tucked, "actionRequired": True}), [("Take out of drawer", "drawer-out"), ("Pin", "pin")])
+                         [("Read", "mark-read"), ("Take out of drawer", "drawer-out"), ("Mute", "mute"), ("Pin", "pin"),
+                          ("Discard result", "discard-result")])
+        self.assertEqual(actions({**tucked, "actionRequired": True}), [("Take out of drawer", "drawer-out"), ("Mute", "mute"), ("Pin", "pin")])
         for row in (base, {**base, "questionAttention": True}, {**unread, "questionAttention": True}, {**unread, "actionRequired": True}):
             self.assertFalse({"drawer-in", "drawer-out"} & {action for _title, action in actions(row)})
 
@@ -3991,7 +4032,7 @@ class NativeLogicChecks(unittest.TestCase):
         for rule in ("{base} .asb-unread:hover .asb-dot,", "{base} .asb-drawer:not(.asb-drawer-lit) .asb-dot {{ opacity: 0; }}",
                      "{base} .asb-unread:hover .asb-read-cue,", "{base} .asb-drawer.asb-drawer-lit:not(:hover) .asb-state {{ opacity: 1; }}"):
             self.assertIn(rule, css)
-        self.assertIn('"drawer-in", "drawer-out"):', css)
+        self.assertIn('"drawer-in", "drawer-out", "mute", "unmute"):', css)
 
     def test_working_rows_keep_their_place_while_only_the_update_time_changes(self):
         filtered = SCOPE["filtered_rows"]

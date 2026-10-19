@@ -71,7 +71,7 @@ When a usage limit stops a chat, its row is grey and shows a clock with **Resets
 
 ## Read and Unread
 
-Right-click a row, or use Menu or Shift+F10. The menu offers **Read** for an ASB dot or question attention and **Unread** when neither is present. A current permission wait has no Read action. A passive stop square can still be marked Unread. An unread row also offers **Put in drawer**. A row in the drawer offers **Take out of drawer** and **Read**, and no **Unread**. The last row, **App and session ID**, shows the app host and the app's own session ID, for example `claude-proxy/local_…`; select the row or its copy button to copy it. In Comfortable, the copy button at the top right of a card copies the same text while the pointer is on the card or the card has keyboard focus. The panel has the same background as the board.
+Right-click a row, or use Menu or Shift+F10. The menu offers **Read** for an ASB dot or question attention and **Unread** when neither is present. A current permission wait has no Read action. A passive stop square can still be marked Unread. An unread row also offers **Put in drawer**. A row in the drawer offers **Take out of drawer** and **Read**, and no **Unread**. The **Muted** switch comes right after **In the drawer**; see [Mute](#mute). The last row, **App and session ID**, shows the app host and the app's own session ID, for example `claude-proxy/local_…`; select the row or its copy button to copy it. In Comfortable, the copy button at the top right of a card copies the same text while the pointer is on the card or the card has keyboard focus. The panel has the same background as the board.
 
 **Unread** adds an ASB mark and includes the chat in Pending-only. It survives read changes in the original app. **Read** clears ASB attention. Neither action changes execution or the original chat store.
 
@@ -120,6 +120,20 @@ A native unread mark for the discarded success can arrive late. ASB suppresses t
 **Persistent unread** in **Sessions** is on by default when no valid saved setting exists. An explicit saved off setting stays off. It keeps native, completion, and failure attention after source Read and successful opens. Choose **Read** to clear it. A question is attention only while it is open. When you answer it in the original app, its `?` goes and no retained dot stays. Turning the setting off keeps existing dots and restores acknowledgment on successful opens. Retained marks follow the Working rule above: they are hidden while the chat is Working. Every visible retained dot counts as Pending.
 
 All ASB clients share this attention and pin state. Filters do not limit what the tracker observes.
+
+## Mute
+
+Turn on **Muted** in the row panel (subtitle **Finished tasks stay read. Questions still alert.**) to keep a chat read when its tasks end. A muted chat shows a small muted-bell icon after the folder name in Comfortable and after the state in Compact.
+
+- A task of a muted chat that ends with success gives no dot, no Done sound, and no Done phone notification. ASB handles it as a success with **Discard result** on, also for a native unread mark of that task that arrives late. **Persistent unread** does not keep it.
+- Questions and permission waits still show the `?` and play the Needs input sound and phone notification.
+- A failed task still shows its dot and plays the Failed sound.
+- Mute applies to tasks that end after you turn it on.
+- Turning Mute on does not clear a dot at once. A dot from before stays until you read it, or until a later task of the muted chat ends with success. Failure dots and manual Unread stay until you read them.
+- **Unread** in ASB still works on a muted chat. An Unread mark that the original app sets with no new finished task still shows.
+- A muted chat has no **Discard result**: no card ring and no row panel switch. A Discard that you armed before Mute stays as it is.
+
+ASB saves Mute for each chat in its own `pending.json`, like the drawer. The phone and the browser view get the `muted` row field, but they have no Mute control.
 
 ## Preferences and local settings
 

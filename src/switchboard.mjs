@@ -406,6 +406,7 @@ export class PendingTracker {
             this.records[id].discard = record.discard === 1 ? 1 : 0;
             this.records[id].discardNative = record.discardNative === 1 ? 1 : 0;
             this.records[id].drawer = record.drawer === 1 ? 1 : 0;
+            this.records[id].muted = record.muted === 1 ? 1 : 0;
           } else this.bad = true;
         }
         if (Array.isArray(value.pinnedOrder)) {
@@ -444,16 +445,19 @@ export class PendingTracker {
       if (!record) record = this.records[row.id] = { seen: completion, working: 0, pending: 0, ack: 0, manual: 0, retained: '',
         questionSeen: 0, questionAck: 0, nativeAt: 0, nativeAck: 0, nativeSeen: 0,
         discard: 0, discardedAt: 0, discardStart: 0, discardEnd: 0, discardNative: 0,
-        drawer: 0, drawerSeen: 0 };
+        drawer: 0, drawerSeen: 0, muted: 0 };
       const task = row[DISCARD_TASK] || { atMs: completion, kind: row.lastOutcome === 'failed' ? 'failed' : completion ? 'task_complete' : '' };
       const newRoot = row.state === 'working' && task.rootStart > record.discardStart
         && task.rootEnd > record.discardStart && task.rootStart > task.rootEnd;
       const discardEnded = record.discard === 1 && (row.state === 'idle'
         || row.state === 'working' && (task.atMs > record.discardEnd || newRoot));
-      const discardedSuccess = discardEnded && task.atMs > record.discardEnd && task.kind === 'task_complete';
+      // A muted success takes the discarded-success path, so it leaves no new attention.
+      const mutedSuccess = record.muted === 1 && row.state === 'idle' && !row.archived && completion > record.seen
+        && task.kind !== 'failed' && !(Number(row.failedAtMs || 0) > Number(row.completionAtMs || 0));
+      const discardedSuccess = discardEnded && task.atMs > record.discardEnd && task.kind === 'task_complete' || mutedSuccess;
       if (discardEnded) record.discard = 0;
       if (discardedSuccess) {
-        record.discardedAt = task.atMs;
+        record.discardedAt = task.atMs || completion;
         record.discardNative = 0;
         if (record.pendingKind !== 'failed') record.ack = Math.max(record.ack, record.pending);
         if (['native-unread', 'observed-completion'].includes(record.retained)) record.retained = '';
@@ -522,6 +526,7 @@ export class PendingTracker {
       || !(record.manual === 1 || record.retained || record.pending > record.ack
         || row.nativeUnread !== false && record.nativeAt > record.nativeAck))) record.drawer = 0;
     row.drawer = record?.drawer === 1;
+    row.muted = record?.muted === 1;
     // A Working or usage-limited row shows only question attention. Stored marks stay and show again after Working or the limit ends.
     const working = row.state === 'working' || row.limitResetsAtMs > 0;
     row.unread = !working && !row.drawer && (row.manualUnread || row.nativeAttention || row.completionAttention || row.failedAttention || row.retainedUnread);
@@ -559,6 +564,15 @@ export class PendingTracker {
     if (!enabled && record.drawer !== 1) throw Object.assign(new Error('This session is not in the drawer.'), { statusCode: 400 });
     record.drawer = enabled ? 1 : 0;
     if (enabled) record.drawerSeen = record.seen;
+    await this.save();
+    this.apply(row);
+  }
+
+  async setMuted(row, enabled) {
+    await this.load();
+    const record = this.records[row.id];
+    if (!record) throw Object.assign(new Error('This session is not known to ASB.'), { statusCode: 400 });
+    record.muted = enabled ? 1 : 0;
     await this.save();
     this.apply(row);
   }
@@ -677,6 +691,7 @@ export function createSwitchboardServer(options = {}) {
     },
     discardThread: (thread, enabled) => tracker.setDiscard(thread, enabled),
     drawerThread: (thread, enabled) => tracker.setDrawer(thread, enabled),
+    muteThread: (thread, enabled) => tracker.setMuted(thread, enabled),
     setUnreadSettings: (enabled, dashboard) => tracker.setPersistentUnread(enabled, dashboard),
     pinThread: async (thread, action, body) => {
       const order = action === 'move-pin' ? await tracker.movePin(thread.id, body)
