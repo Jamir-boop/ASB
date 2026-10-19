@@ -76,20 +76,35 @@ async function runService() {
   let stopping = false;
   let cleanup;
   let startup;
+  let step = 'startup';
   const stop = () => {
     stopping = true;
     return cleanup ||= (async () => {
-      await startup.catch(() => {});
       try {
-        await removeInstanceRuntime(runtimeRecord);
-      } finally {
-        const closed = new Promise((resolve) => server.close(resolve));
-        server.closeAllConnections();
-        try { await gateway.stop(); } finally { await closed; }
-      }
+        await startup.catch(() => {});
+        try {
+          step = 'manifest removal';
+          await removeInstanceRuntime(runtimeRecord);
+        } finally {
+          const closed = new Promise((resolve) => server.close(resolve));
+          server.closeAllConnections();
+          step = 'phone access stop';
+          try { await gateway.stop(); } finally {
+            step = 'server close';
+            await closed;
+          }
+        }
+      } finally { step = 'none'; }
     })();
   };
-  const onSignal = () => { stop().catch((error) => { console.error(`Cannot stop ASB service: ${error.message}`); process.exitCode = 1; }); };
+  const onSignal = (signal) => {
+    // A cleanup step that never ends must not keep the service until systemd kills it; a clean stop exits at once.
+    setTimeout(() => {
+      console.error(`ASB service is still running 5 s after ${signal}. Pending cleanup step: ${step}. Open resources: ${process.getActiveResourcesInfo().join(', ') || 'none'}.`);
+      process.exit(1);
+    }, 5000).unref();
+    stop().catch((error) => { console.error(`Cannot stop ASB service: ${error.message}`); process.exitCode = 1; });
+  };
   process.once('SIGTERM', onSignal);
   process.once('SIGINT', onSignal);
   startup = (async () => {

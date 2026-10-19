@@ -344,6 +344,20 @@ test('manifest removal failure still closes the service and reports the failed c
   assert.equal(await findRunningService(f.env), null);
 });
 
+test('a cleanup step that never ends stops the service 5 s after the signal and logs the step', { timeout: 15_000 }, async (t) => {
+  const f = await fixture(t);
+  const preload = path.join(f.home, 'hang-removal.mjs');
+  await writeFile(preload, `import fs from 'node:fs';\nimport {syncBuiltinESMExports} from 'node:module';\nconst remove=fs.promises.rm;\nfs.promises.rm=(file,...args)=>String(file).endsWith('/service.json')?new Promise(()=>{}):remove(file,...args);\nsyncBuiltinESMExports();\n`);
+  const child = f.launch(['--import', preload, serviceScript, 'run']);
+  await ready(child);
+  const started = Date.now();
+  child.kill('SIGTERM');
+  assert.equal((await child.closed)[0], 1);
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed >= 4500 && elapsed <= 9000, `The service stopped after ${elapsed} ms.`);
+  assert.match(child.errors, /ASB service is still running 5 s after SIGTERM\. Pending cleanup step: manifest removal\. Open resources: .*TCPServerWrap/);
+});
+
 test('an unavailable phone gateway does not prevent the headless ASB server from starting', async (t) => {
   const f = await fixture(t);
   await mkdir(path.join(f.env.XDG_CONFIG_HOME, 'asb'), { recursive: true });
