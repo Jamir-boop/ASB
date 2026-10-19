@@ -121,3 +121,21 @@ This file records the Phase 0 spikes of `multi-machine.md`. It holds no addresse
   - Not tested live: the Codex desktop app was not started (it opens a window on the user's screen), so a connection to `\\.\pipe\codex-ipc` was not made.
 - Gate: PASS with a limit. On Windows the bridge uses the `desktop` target on `\\.\pipe\codex-ipc`; the `app-server` target applies only to a CLI daemon, which Bun can reach over AF_UNIX. The live desktop pipe connection is part of the Phase 7 acceptance.
 - Cleanup: the `%TEMP%` folder removed (`Test-Path` returned False).
+
+## S3b: Windows Claude Code address rules, key file, and process start (homeLP, SSH, static and a one-time interactive scheduled task)
+
+- Date: 2026-10-19. Claude Code 2.1.304 (the native `claude.exe` of the npm package), Bun 1.3.14.
+- Commands: a static search of `claude.exe` for the pipe name rules, the key file write, and `pidDomain`. Then a one-time interactive scheduled task (`/it /rl LIMITED`) started `claude.exe` with no prompt (no model use) in a trusted folder. The probe compared the new row's `procStart` and `pidDomain` with a Bun FFI read and printed only true or false. It did not open the key file. Then `taskkill /T /F` stopped the process tree.
+- Seen (static):
+  - Claude accepts a Windows messaging address only when the pipe name matches `^(?:LOCAL\\)?cc-msg-[0-9a-f]{32}$` (case-insensitive) under `\\.\pipe\` (or `//./pipe/`). Other pipe names are not local socket addresses for Claude.
+  - The key file name is `<pid>.<sha256 of the canonical address>.key`, and Claude writes it through `<name>.tmp.<hex>`. For a pipe, the canonical address is `\\.\pipe\` plus the lower-case pipe name. For a socket file, it is the resolved path.
+  - Claude writes its own key file with mode `0600` in `sessions` (`0700`): `{ peerToken, procStart, procStartFt?, pidDomain }`. `peerToken` is 16 random bytes in hex (32 characters). A reader accepts `{ peerToken (32 hex), procStart?, procStartFt?, pidDomain? }`.
+  - The first line on a connection is `{"type":"auth","token":"<peerToken>"}`. Windows requires it.
+  - `pidDomain` on Windows is `win32:` plus `os.hostname()` in lower case.
+- Seen (live):
+  - `procStart` equals the process creation FILETIME from `GetProcessTimes` exactly (18 digits; also equal to `(Get-Process).StartTime.ToFileTimeUtc()`). A Bun FFI call (`kernel32` `OpenProcess` with `0x1000`, `GetProcessTimes`, `CloseHandle`) gave the same value in 0.14 ms per read.
+  - `pidDomain` equals `win32:` plus Bun `os.hostname()` in lower case (also equal to `COMPUTERNAME` in lower case on homeLP).
+  - `messagingSocketPath` matched `\\.\pipe\LOCAL\cc-msg-<32 hex>`.
+  - A forced stop left the row and the key file again; the probe removed them by name.
+- Gate: PASS. A Windows row that ASB writes uses a `\\.\pipe\LOCAL\cc-msg-<32 hex>` pipe, `procStart` from `GetProcessTimes`, `pidDomain` `win32:<host name>`, and its own key file, and its inbox checks the `auth` line.
+- Cleanup: the scheduled task, the row, the key file, and the `%TEMP%` folder removed; no `claude.exe` process left; the number of files in `sessions` was the same before and after.

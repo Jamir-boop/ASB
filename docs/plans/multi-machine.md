@@ -1299,33 +1299,136 @@ Add the optional `remoteClaude` field to Claude sources in
 
 ## 17. Phase 7: Windows bridge
 
-Gate: spikes S3, S4, and S5 passed. Else stop and report; Windows stays
-statuses only.
+Gate: spikes S3, S3b, S4, and S5 passed (2026-10-19). This section was updated
+with their results before the code.
 
-Expected work (adjust it to the spike results and update this section
-before you code):
+Today every uid and mode check in the bridge fails on Windows
+(`process.getuid` does not exist), so `peers()` is always empty and no
+receiver starts. This phase ports the bridge, its installer, and the relay.
+Linux and macOS behavior does not change.
 
-1. `bridge/src/platform.ts`: socket folder, inbox address (named pipe form
-   from S3), `checkSocket`, `ownedJson`, `privateDirectory`, and
-   `processStart` per platform. Windows skips uid and mode checks and refuses
-   reparse points. Cache `processStart` per PID if it is slow.
-2. Inbox authentication on Windows: write the receiver's key file in the
-   format from S3, and check the `auth` line on each connection (Claude on
-   Windows requires it).
-3. Codex transports on Windows from S4 (app-server and desktop IPC).
-4. `scripts/asb-bridge.mjs` on Windows: find `bun` and `codex` with PATHEXT;
-   run `codex.cmd` safely (fixed arguments only); `linkClaudeRegistry` refuses
-   on Windows with a clear message.
-5. Relay on Windows: placeholder `C:\Windows\System32\findstr.exe x` with a
-   stdin pipe; named pipe sockets.
-6. Windows CI for the bridge's platform-neutral tests.
+### 17.1 Platform module
+
+New `bridge/src/platform.ts`; `claude.ts`, `codex.ts`, `outbound.ts`,
+`hook.ts`, `bridge.ts`, and `relay.ts` use it.
+
+- `ownedJson`, `privateDirectory`: Linux and macOS as now. Windows: `lstat`
+  must give a file (or a folder) that is not a symbolic link or junction
+  (refuse reparse points), and the size limit applies. No uid or mode check:
+  the folders are in the user profile, which Windows keeps private to the
+  user. No `O_NOFOLLOW` (the `lstat` check comes first).
+- `checkPeerSocket(path)`: Linux and macOS as `checkSocket` now. Windows:
+  the path must match Claude's rule `^\\\\\.\\pipe\\(?:LOCAL\\)?cc-msg-[0-9a-f]{32}$`
+  (case-insensitive; S3b). No file check on a pipe.
+- `processStart(pid)`: Linux and macOS as now. Windows: the creation
+  FILETIME from `GetProcessTimes` as a decimal string, through `bun:ffi`
+  (`kernel32` `OpenProcess(0x1000)`, `GetProcessTimes`, `CloseHandle`). It
+  equals Claude's `procStart` exactly (S3b). No cache.
+- `pidDomain()`: Windows `win32:${os.hostname().toLowerCase()}`; macOS
+  `darwin` (as now); Linux none (as now).
+- `inboxPath(directory)`: Linux and macOS `<directory>/<pid>.sock` (as now).
+  Windows `\\.\pipe\LOCAL\cc-msg-<32 random hex>`.
+- `outboxPath(inbox)`: Linux and macOS replace `.sock` with `.out` (as now).
+  Windows `\\.\pipe\LOCAL\asb-out-<the same 32 hex>`.
+- `keyName(pid, address)`: `<pid>.<sha256(canonical)>.key`. Canonical is
+  `\\.\pipe\` plus the lower-case pipe name for a pipe, else the path as now.
+- No `umask` or `chmod` on Windows.
+
+### 17.2 Key files and the `auth` line
+
+- On Windows, `register()` (the bridge receiver) and the relay (each proxy
+  row) first write their key file `sessions/<pid>.<hash>.key` with
+  `{ peerToken, procStart, pidDomain }` (`peerToken` 16 random bytes in hex;
+  through `<name>.tmp.<hex>` and a rename, mode `0600`), then the row with
+  `pidDomain`. They remove the key file with the row.
+- On Windows, the inbox needs `{"type":"auth","token":"<peerToken>"}` as the
+  first line of each connection (constant-time compare, within the 30 s
+  deadline); else it closes the connection. Linux and macOS keep ignoring the
+  `auth` line.
+- `sendFrames` on Windows: the key file is required (Windows receivers need
+  `auth`); a missing key file is the error
+  `Claude peer key is missing; list sessions again`.
+- The outbound server (`.out`) on Windows also needs the `auth` line with the
+  receiver's `peerToken`. The MCP server process reads it from the
+  receiver's key file, as `sendFrames` does.
+
+### 17.3 Stop and cleanup on Windows
+
+A signal on Windows ends a process with no handler (`TerminateProcess`).
+
+- Hook `SessionEnd` on Windows: after the stop and the exit, it deletes the
+  receiver's row and key file when they still have that `pid` and
+  `procStart`.
+- The engine stops the relay on Windows by ending its stdin (the relay exits
+  cleanly, 16.1), waits up to 2 s, then kills it. At start the relay removes
+  stale proxy rows and their key files (16.1).
+
+### 17.4 Codex transports on Windows (S4)
+
+- Desktop: `\\.\pipe\codex-ipc` (a fixed name; no file check). The Codex
+  home goes to `discoverTarget` as its own argument (today it is derived from
+  the IPC path).
+- App-server daemon: `$CODEX_HOME\app-server-control\app-server-control.sock`
+  over AF_UNIX (Bun connects; S4). On Windows the WebSocket uses
+  `ws://localhost/` with the `ws` option `createConnection: () =>
+  net.connect(path)`, because `ws+unix://` splits a `C:\` path at the colon.
+  The folder check is `privateDirectory`; the socket file must exist (it is a
+  reparse point on Windows, so the reparse refusal does not apply to this one
+  file).
+- The revive path in `hook.ts` uses the same two transports.
+
+### 17.5 Installer (`scripts/asb-bridge.mjs`) on Windows
+
+- `executable(name)`: on Windows, search each `PATH` folder with each
+  `PATHEXT` extension (default `.COM;.EXE;.BAT;.CMD`); return the full path.
+- `codex.cmd`: run it through `cmd.exe /d /s /c` with fixed arguments only.
+  Each argument is put in double quotes and must not contain `"`, `%`, `^`,
+  `&`, `|`, `<`, `>`, `!`, or a line break; else the command stops with
+  `This path cannot go to codex.cmd safely.` `.exe` files run directly.
+- The check of `bun` on the PATH of a running Codex app-server stays
+  Linux-only.
+- Linking Claude registry folders refuses on Windows:
+  `Linking Claude session folders is not supported on Windows.`
+
+### 17.6 Relay on Windows
+
+- The supervisor also starts the relay on Windows (16.1 condition with
+  `bun.exe` found through `PATHEXT` and `%SystemRoot%\System32\findstr.exe`
+  in place of `/usr/bin/cat`).
+- Placeholder: `findstr.exe x` with a stdin pipe and ignored output (S5).
+- Proxy sockets are `cc-msg-` pipes with key files and the `auth` check
+  (17.1, 17.2).
+
+### 17.7 Tests and CI
+
+- Linux-only tests (Unix socket files, `/proc`, `/tmp`, modes, symbolic
+  links, signals) skip on Windows with a reason.
+- New tests that run on all platforms: the platform helpers; an inbox and
+  `sendFrames` round trip with a key file in a temporary `sessions` folder
+  (on Windows through a `cc-msg-` pipe, with a wrong and a missing `auth`
+  line refused); `processStart` of the test process equals the value from the
+  operating system (Windows: `Get-Process` `StartTime.ToFileTimeUtc()`).
+- Windows CI: a `bridge` job on `windows-latest` with Bun runs
+  `bun run check` and `bun test`.
+
+### 17.8 Documents
+
+`bridge/README.md` (Windows), `bridge/PROTOCOL-COVERAGE.md` (Windows pipes,
+key files, `auth`), `SYSTEM_OVERVIEW.md`, `ASB.md` (bridge install on
+Windows), `CHANGELOG.md` (Unreleased).
 
 ### Phase 7 acceptance
 
-On homeLP: Claude `/list-agents` lists a local Codex task (the local bridge
-works on Windows) and the Debian sessions; messages work in both directions
-between Debian and homeLP for Codex to Claude, Codex to Codex, and a proxy
-Claude profile to Claude.
+- Checks pass on Linux, and the Windows list passes on homeLP.
+- On homeLP (no model use): `asb bridge install` adds the plugin for Codex;
+  `asb bridge status` is good. A receiver row that ASB writes has the S3b
+  shape (pipe, key file, `pidDomain`, `procStart`), and a test sender with the
+  key reaches it while a sender without the key cannot.
+- Live (ask the user first; it uses model quota and an RDP session): Claude
+  `/list-agents` on homeLP lists a local Codex task (the local bridge works on
+  Windows) and the Debian sessions; messages work in both directions between
+  Debian and homeLP for Codex to Claude, Codex to Codex, and a proxy Claude
+  profile to Claude. The Codex desktop app answers on `\\.\pipe\codex-ipc`.
 
 ## 18. Phase 8: documents
 
