@@ -455,6 +455,8 @@ code.
   at once for a row with `canOpen: false`.
 - The Android drawable `ic_provider_opencode.xml` is 11.2 x 14 dp, to keep the
   4:5 shape of the view box.
+- The reader does not read the `version` column, so the schema check does not
+  require it.
 
 ## Appendix A: OpenCode mark
 

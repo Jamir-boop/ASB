@@ -120,7 +120,7 @@ ASB loads enabled app sources independently. One failed source does not remove a
 | Claude transcript signals | Matched JSONL files under `~/.claude/projects`. |
 | Claude remote Code | Session-list and watch response bodies in Claude's `Cache/Cache_Data`. |
 | ASB Bridge messages | Read-only `<CODEX_HOME>/plugin-state/asb-bridge/<thread>.sqlite` files, for session messages only. |
-| OpenCode | Read-only `$XDG_DATA_HOME/opencode/opencode.db`, or `~/.local/share/opencode/opencode.db`. From `session_v2`, root sessions (`parent_id is null`) with `id`, `title`, `slug`, `directory`, `version`, `time_created`, `time_updated`, `time_suspended`, `time_idle`, `idle_outcome`, `time_viewed`, and `time_archived`, and the count of subagent sessions per `parent_id`. From `session_message`, only `session_id` and `time_created`, for the last message time of each root and its subagents. |
+| OpenCode | Read-only `$XDG_DATA_HOME/opencode/opencode.db`, or `~/.local/share/opencode/opencode.db`. From `session_v2`, root sessions (`parent_id is null`) with `id`, `title`, `slug`, `directory`, `time_created`, `time_updated`, `time_suspended`, `time_idle`, `idle_outcome`, `time_viewed`, and `time_archived`, and the count of subagent sessions per `parent_id`. From `session_message`, only `session_id` and `time_created`, for the last message time of each root and its subagents. |
 
 ### App-source registry
 

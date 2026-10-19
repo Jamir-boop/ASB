@@ -11,7 +11,7 @@ import { buildSwitchboardDashboard } from '../src/switchboard.mjs';
 const now = Date.parse('2026-10-19T12:00:00Z');
 const minute = 60 * 1000;
 const hour = 60 * minute;
-const SESSION_COLUMNS = ['id', 'project_id', 'parent_id', 'slug', 'directory', 'title', 'version', 'time_created', 'time_updated',
+const SESSION_COLUMNS = ['id', 'project_id', 'parent_id', 'slug', 'directory', 'title', 'time_created', 'time_updated',
   'time_archived', 'time_suspended', 'time_idle', 'time_viewed', 'idle_outcome'];
 const SECRET = 'fake-token-do-not-read';
 const PROMPT = 'private prompt text';
@@ -50,7 +50,7 @@ function recordingQuery() {
   return { sql, query };
 }
 
-const base = { directory: '/work/app', version: '2.0.32', time_created: now - 2 * hour, time_updated: now - 2 * hour };
+const base = { directory: '/work/app', time_created: now - 2 * hour, time_updated: now - 2 * hour };
 
 function seed(database) {
   addSession(database, { ...base, id: 'ses_working', title: 'Working session', slug: 'brave-otter',
@@ -82,9 +82,9 @@ test('OpenCode roots map to threads and rows with states, outcomes, unread, arch
   const threads = Object.fromEntries(result.threads.map((thread) => [thread.id, thread]));
   assert.equal(threads.ses_child, undefined);
   assert.deepEqual(threads.ses_working, {
-    id: 'ses_working', externalId: 'ses_working', provider: 'opencode', providerLabel: 'OpenCode', source: 'opencode-db',
-    title: 'Working session', cwd: '/work/app', version: '2.0.32', archived: false, createdAtMs: now - 2 * hour,
-    updatedAtMs: now - minute, subagentCount: 1, embeddedSubagentCount: 1, lifecycleRunning: true,
+    id: 'ses_working', externalId: 'ses_working', provider: 'opencode', source: 'opencode-db',
+    title: 'Working session', cwd: '/work/app', archived: false, createdAtMs: now - 2 * hour,
+    updatedAtMs: now - minute, embeddedSubagentCount: 1, lifecycleRunning: true,
     agentStartedAtMs: now - 10 * minute, agentActivityAtMs: now - minute, latestLifecycleKind: 'task_complete',
     latestLifecycleAtMs: now - hour, latestTaskEndedAtMs: now - hour, nativeUnread: false, readStatus: 'read',
   });

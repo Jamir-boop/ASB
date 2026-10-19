@@ -4,7 +4,7 @@ import { querySqliteJson } from './codex-data.mjs';
 
 const MAX_THREADS = 5000;
 const SCHEMA_WARNING = 'ASB reads OpenCode 2 sessions only. Update OpenCode.';
-const SESSION_COLUMNS = ['id', 'parent_id', 'title', 'slug', 'directory', 'version', 'time_created', 'time_updated',
+const SESSION_COLUMNS = ['id', 'parent_id', 'title', 'slug', 'directory', 'time_created', 'time_updated',
   'time_suspended', 'time_idle', 'idle_outcome', 'time_viewed', 'time_archived'];
 const MESSAGE_COLUMNS = ['session_id', 'time_created'];
 const LIFECYCLE_KINDS = { succeeded: 'task_complete', failed: 'failed', interrupted: 'turn_aborted' };
@@ -34,22 +34,18 @@ function openCodeThread(row, subagents, activity) {
   const idleAt = time(row.time_idle);
   const suspendedAt = time(row.time_suspended);
   const nativeUnread = idleAt == null ? null : idleAt > (time(row.time_viewed) ?? 0);
-  const subagentCount = Number(subagents.get(row.id) || 0);
   return {
     id: row.id,
     externalId: row.id,
     provider: 'opencode',
-    providerLabel: 'OpenCode',
     source: 'opencode-db',
     title: row.title || row.slug || '',
     cwd: row.directory || '',
-    version: row.version || '',
     archived: row.time_archived != null,
     createdAtMs: Number(row.time_created || 0),
     updatedAtMs: Math.max(Number(row.time_updated || 0), idleAt || 0, activity || 0),
-    subagentCount,
     // The dashboard counts listed children; OpenCode subagents are not listed.
-    embeddedSubagentCount: subagentCount,
+    embeddedSubagentCount: Number(subagents.get(row.id) || 0),
     lifecycleRunning: suspendedAt != null,
     agentStartedAtMs: suspendedAt,
     agentActivityAtMs: activity || suspendedAt,
@@ -81,7 +77,7 @@ export async function loadOpenCodeDashboard({ dataDir, nowMs = Date.now(), maxCo
   } else {
     const limit = Math.min(Math.max(Number.parseInt(maxCount, 10) || MAX_THREADS, 1), MAX_THREADS);
     const [roots, subagentRows, activityRows] = await Promise.all([
-      query(databasePath, `select id, title, slug, directory, version, time_created, time_updated,
+      query(databasePath, `select id, title, slug, directory, time_created, time_updated,
         time_suspended, time_idle, idle_outcome, time_viewed, time_archived
         from session_v2 where parent_id is null order by time_updated desc limit ${limit};`),
       query(databasePath, `select parent_id, count(*) as n from session_v2
