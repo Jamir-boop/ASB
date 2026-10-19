@@ -79,7 +79,22 @@ This file records the Phase 0 spikes of `multi-machine.md`. It holds no addresse
 - Gate: PASS. The `openssl.exe` fallback was not needed.
 - Cleanup: `cert.pfx`, `cert.cer`, and the folder removed; no `CN=ASB` certificate left in `Cert:\CurrentUser\My`.
 
-## S3, S4, S7: not run yet
+## S7: Windows tray and Run value (homeLP, SSH and a one-time interactive scheduled task)
 
-- S3 (Windows Claude registry rows), S4 (Windows Codex transports), and S7 (Windows tray and Run value) gate only phases 4 and 7. By the user's order they run later, after Mute and Phase 1.
+- Date: 2026-10-19. Windows 10 21H2, PowerShell 5.1, Node v24.14.1.
+- Commands: a PowerShell `NotifyIcon` script (the Appendix B part 2 outline) in a new `%TEMP%` folder. A one-time interactive scheduled task (`/it /rl LIMITED`) started it in the user's desktop session with the Run command form `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "<folder>\tray.ps1"`. The script started `node.exe` (`UseShellExecute = $false`, `CreateNoWindow = $true`), made a 32 px icon, and added a `ContextMenuStrip` with **Copy phone pairing link** and **Quit ASB**. A timer clicked **Quit ASB** (`PerformClick`) when a flag file appeared. Then a round trip of an HKCU `Run` value.
+- Seen (two runs):
+  - The script ran in session 1. Its console window existed and was not visible.
+  - `NotifyIcon.Visible` was true, and the menu had the two items.
+  - `node.exe` ran in session 1 with no main window.
+  - **Quit ASB** stopped `node.exe`, removed the icon, and ended the script. No process was left.
+  - Run value: `reg.exe add /d` from PowerShell 5.1 lost the quotes inside the command (a known PowerShell 5.1 problem with native arguments). Node `execFileSync('reg', ['add', <key>, '/v', <name>, '/t', 'REG_SZ', '/d', <command>, '/f'])` stored the exact command (the read-back was equal), and `reg delete` removed it.
+  - Not confirmed: the icon on the screen. UI Automation from the task found no taskbar buttons, the toolbar handle lookup failed, and a capture of the screen corner showed no taskbar (it can be hidden). A real logon with the Run value was not tested, because it needs a sign-out.
+  - Also seen (read-only): the firewall has inbound Allow rules for `C:\Program Files\nodejs\node.exe` on the Private profile and Block rules on the Public profile. The Ethernet adapter is Private, and the ZeroTier adapter is Public. So members reach an engine on homeLP over the LAN, not over ZeroTier, until the user adds the `asb setup` firewall rule.
+- Gate: PASS for all checks that a program can make. Phase 4 includes the tray and the Run value, and writes the Run value from Node. The icon on the screen and the start at logon stay in the Phase 4 acceptance (the user confirms through RDP).
+- Cleanup: the scheduled tasks, the Run value, the folders, and all spike processes removed (checked).
+
+## S3, S4: not run yet
+
+- S3 (Windows Claude registry rows) and S4 (Windows Codex transports) gate only phase 7. By the user's order they run later, after Mute and Phase 1.
 - Plan for the later run: start the apps in the user's desktop session with a one-time interactive scheduled task, check everything programmatically, and remove every task, file, and Run value afterwards. A real logon for the Run value cannot be checked over SSH.
