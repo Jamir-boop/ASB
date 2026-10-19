@@ -3912,8 +3912,9 @@ class NativeLogicChecks(unittest.TestCase):
         put, out = "Put in drawer: look read here, keep it under Drawer", "Take out of drawer: show as unread again"
         row = {**unread, "id": "a"}
         widget = SimpleNamespace(asb_view="comfortable", asb_thread=dict(row), asb_focus_key="a", asb_read_timer=None,
-                                 asb_read_generation=1, asb_read_button=Mock(), asb_pin_button=Mock(), asb_drawer_button=Mock())
-        drawer, corner = widget.asb_drawer_button, widget.asb_drawer_button.get_parent.return_value
+                                 asb_read_generation=1, asb_read_button=Mock(), asb_pin_button=Mock(), asb_drawer_button=Mock(),
+                                 asb_copy_button=Mock(), asb_copy_timer=None)
+        drawer, corner = widget.asb_drawer_button, widget.asb_copy_button.get_parent.return_value
         window = object.__new__(Window)
         window.closed, window.view, window.base = False, "comfortable", "http://127.0.0.1:1"
         window.session_actions, window.open_errors, window.focus_widgets = set(), {}, {"a": widget}
@@ -3931,7 +3932,7 @@ class NativeLogicChecks(unittest.TestCase):
             drawer.set_tooltip_text.assert_called_with(put)
             drawer.update_property.assert_called_with([0], [put + ": Chat"])
             drawer.update_state.assert_called_with([0, 1], [False, False])
-            corner.add_css_class.assert_called_with("asb-corner-drawer")
+            corner.add_css_class.assert_called_with("asb-corner-wide")
 
             window.session_action("a", "drawer-in")
             window.session_action("a", "drawer-in")
@@ -3975,7 +3976,8 @@ class NativeLogicChecks(unittest.TestCase):
                 widget.asb_thread, window.column_pixel_width = {**thread, "id": "a"}, width
                 window.update_card_actions(widget)
                 drawer.set_visible.assert_called_with(shown)
-                (corner.add_css_class if shown else corner.remove_css_class).assert_called_with("asb-corner-drawer")
+                # Copy is in every wide corner, so the fade follows the width, not the drawer button.
+                (corner.add_css_class if width >= 190 else corner.remove_css_class).assert_called_with("asb-corner-wide")
         css = SOURCE.read_text()
         for rule in ("{base} .asb-unread:hover .asb-dot,", "{base} .asb-drawer:not(.asb-drawer-lit) .asb-dot {{ opacity: 0; }}",
                      "{base} .asb-unread:hover .asb-read-cue,", "{base} .asb-drawer.asb-drawer-lit:not(:hover) .asb-state {{ opacity: 1; }}"):
@@ -4083,6 +4085,106 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertEqual(len(timers), 3)
             panel.asb_copy.set_icon_name.assert_called_once_with("edit-copy-symbolic")
             window.update_row_panel.assert_called_with(panel, row)
+
+    def test_card_copy_is_local_shows_a_check_and_keeps_failures_on_the_row(self):
+        timers, removed = {}, []
+        def timeout_add(delay, callback):
+            timers[len(timers) + 1] = (delay, callback)
+            return len(timers)
+        glib = SimpleNamespace(timeout_add=timeout_add, source_remove=removed.append, Error=type("GError", (Exception,), {}))
+        rows = [{"id": "claude-proxy-1:local_1", "externalId": "local_1", "provider": "claude-desktop-code", "sourceName": "claude-proxy"},
+                {"id": "123e4567", "externalId": "123e4567", "provider": "codex"},
+                {"id": "local_2", "externalId": "local_2", "provider": "claude-desktop-code"}]
+        window = object.__new__(Window)
+        window.closed, window.open_errors = False, {}
+        window.session_actions = {row["id"] for row in rows}  # A pending server action does not block a copy.
+        # The real card update runs, so the copy button shows the actual feedback.
+        window.update_card_actions = Mock(side_effect=lambda widget: Window.update_card_actions(window, widget))
+        window.update_open_state = Mock()
+        clipboard = Mock()
+        window.get_clipboard = lambda: clipboard
+        widgets = {row["id"]: SimpleNamespace(asb_thread=row, asb_focus_key=row["id"], asb_view="comfortable", asb_copy_timer=None,
+                                              asb_read_timer=None, asb_read_button=Mock(), asb_pin_button=Mock(), asb_copy_button=Mock())
+                   for row in rows}
+        window.focus_widgets = dict(widgets)
+        request = Mock()
+        target = lambda identity: SimpleNamespace(get_string=lambda: identity)
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        def feedback(widget):
+            button = widget.asb_copy_button
+            return (widget.asb_copy_timer, button.get_child().set_from_icon_name.call_args.args[0], button.set_tooltip_text.call_args.args[0],
+                    button.update_property.call_args.args if button.update_property.call_args.args[0] == [1] else button.reset_property.call_args.args)
+        with patch.dict(SCOPE, {"GLib": glib, "request_async": request, "Gtk": gtk}):
+            for row, text in zip(rows, ("claude-proxy/local_1", "codex/123e4567", "claude-desktop-code/local_2")):
+                window.copy_reference(None, target(row["id"]))
+                self.assertEqual(clipboard.set.call_args.args, (text,))
+            request.assert_not_called()
+            self.assertEqual([timers[index][0] for index in timers], [1600, 1600, 1600])
+            first = widgets[rows[0]["id"]]
+            window.update_card_actions.assert_called_with(widgets[rows[2]["id"]])
+            # A second copy starts the 1.6 seconds again; the end restores the copy button.
+            window.copy_reference(None, target(rows[0]["id"]))
+            self.assertEqual((removed, first.asb_copy_timer), ([1], 4))
+            window.update_card_actions.reset_mock()
+            timers[4][1]()
+            self.assertIsNone(first.asb_copy_timer)
+            window.update_card_actions.assert_called_once_with(first)
+            # Release removes a running timer; a late end for a row that left the board changes nothing.
+            window.copy_reference(None, target(rows[0]["id"]))
+            window.cancel_card_copy(first)
+            self.assertEqual((removed[-1], first.asb_copy_timer), (5, None))
+            window.focus_widgets.pop(rows[1]["id"])
+            window.update_card_actions.reset_mock()
+            timers[2][1]()
+            window.update_card_actions.assert_not_called()
+            # Success, then a failure within 1.6 seconds: the check ends and the copy button comes back.
+            third = widgets[rows[2]["id"]]
+            self.assertEqual(feedback(third), (3, "object-select-symbolic", "Copied", ([1], ["Copied"])))
+            third.asb_copy_button.reset_mock()
+            clipboard.set.side_effect = TypeError("no clipboard")
+            window.copy_reference(None, target(rows[2]["id"]))
+            self.assertEqual(removed[-1], 3)
+            self.assertEqual(feedback(third), (None, "edit-copy-symbolic", "Copy app and session ID", (1,)))
+            self.assertEqual(window.open_errors, {rows[2]["id"]: "Cannot copy the app and session ID: no clipboard"})
+            window.update_open_state.assert_called_once_with(third)
+            self.assertEqual(len(timers), 5)
+            # A later success clears the old copy error from the row tooltip, and an open error stays.
+            clipboard.set.side_effect = None
+            window.copy_reference(None, target(rows[2]["id"]))
+            self.assertEqual(window.open_errors, {})
+            self.assertEqual(window.update_open_state.call_count, 2)
+            self.assertEqual(feedback(third), (6, "object-select-symbolic", "Copied", ([1], ["Copied"])))
+            window.open_errors[rows[2]["id"]] = "The server did not answer."
+            window.copy_reference(None, target(rows[2]["id"]))
+            self.assertEqual(window.open_errors, {rows[2]["id"]: "The server did not answer."})
+            request.assert_not_called()
+
+    def test_card_copy_button_shows_its_check_and_never_takes_a_pending_state(self):
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        row = {"id": "a", "title": "Chat", "state": "idle"}
+        widget = SimpleNamespace(asb_view="comfortable", asb_thread=dict(row), asb_focus_key="a", asb_read_timer=None, asb_copy_timer=None,
+                                 asb_read_button=Mock(), asb_pin_button=Mock(), asb_copy_button=Mock())
+        copy, corner = widget.asb_copy_button, widget.asb_copy_button.get_parent.return_value
+        window = object.__new__(Window)
+        window.session_actions = {"a"}
+        with patch.dict(SCOPE, {"Gtk": gtk}):
+            for width, copied in ((240, False), (240, True), (189, False)):
+                window.column_pixel_width, widget.asb_copy_timer = width, 7 if copied else None
+                window.update_card_actions(widget)
+                copy.set_visible.assert_called_with(width >= 190)
+                (corner.add_css_class if width >= 190 else corner.remove_css_class).assert_called_with("asb-corner-wide")
+                copy.set_action_name.assert_called_with("win.copy-reference")
+                copy.get_child().set_from_icon_name.assert_called_with("object-select-symbolic" if copied else "edit-copy-symbolic")
+                (copy.add_css_class if copied else copy.remove_css_class).assert_called_with("asb-copy-confirmed")
+                copy.set_tooltip_text.assert_called_with("Copied" if copied else "Copy app and session ID")
+                copy.update_property.assert_any_call([0], ["Copy app and session ID: Chat"])
+                if copied:
+                    copy.update_property.assert_called_with([1], ["Copied"])
+                else:
+                    copy.reset_property.assert_called_with(1)
+            self.assertNotIn(("asb-action-pending",), [call.args for call in copy.add_css_class.call_args_list])
+            copy.update_state.assert_not_called()
+            copy.set_sensitive.assert_not_called()
 
     def test_number_keys_take_whole_openable_cards_down_then_across(self):
         rows = [{"id": f"r{index}", "canOpen": index != 1} for index in range(14)]

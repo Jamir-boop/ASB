@@ -2022,10 +2022,20 @@ class WidgetCheck(unittest.TestCase):
                          {"s1": True, "s2": True, "s3": False, "s4": False, "s5": False})
         one, question = cards["s1"], cards["s5"]
         drawer, read, cue = one.asb_drawer_button, one.asb_read_button, one.asb_read_button.get_child().get_last_child()
+        copy_button = one.asb_copy_button
+        # Copy is first: copy, drawer, read, pin. Every state has it, and every wide corner fades the title for it.
+        self.assertIs(drawer.get_parent().get_first_child(), copy_button)
+        self.assertIs(copy_button.get_next_sibling(), drawer)
         self.assertIs(drawer.get_next_sibling().get_first_child(), read)
         self.assertIs(drawer.get_next_sibling().get_next_sibling(), one.asb_pin_button)
-        self.assertTrue(drawer.get_parent().has_css_class("asb-corner-drawer"))
-        self.assertFalse(question.asb_drawer_button.get_parent().has_css_class("asb-corner-drawer"))
+        self.assertEqual((copy_button.get_width(), copy_button.get_height(), copy_button.get_action_name(), copy_button.get_child().get_icon_name()),
+                         (24, 24, "win.copy-reference", "edit-copy-symbolic"))
+        self.assertEqual(copy_button.get_child().get_pixel_size(), 12)
+        self.assertEqual(copy_button.get_tooltip_text(), "Copy app and session ID")
+        self.assert_accessible_label(copy_button, "Copy app and session ID: " + one.asb_thread["title"])
+        self.assertTrue(all(card.asb_copy_button.get_visible() and card.asb_copy_button.get_parent().has_css_class("asb-corner-wide")
+                            for card in cards.values()))
+        self.assertEqual(self.ink(cards["s3"].asb_copy_button.get_parent()), 0)  # A corner at rest has no ink.
         self.assertEqual((drawer.get_width(), drawer.get_height(), drawer.get_action_name()), (24, 24, "win.drawer-in"))
         self.assertEqual(drawer.get_tooltip_text(), put)
         self.assert_accessible_label(drawer, put + ": " + one.asb_thread["title"])
@@ -2035,30 +2045,31 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(one.asb_title_label.get_width(), one.get_width() - 16 - 21 - 54)
         self.assertEqual((one.get_height(), one.asb_title_label.get_height()), (68, 32))
         self.assertEqual((self.ink(one.asb_dot), self.ink(cue), self.ink(drawer), self.ink(one.asb_state_label)), (255, 0, 0, 255))
+        self.assertEqual(self.ink(copy_button), 0)
         one.set_state_flags(hover, False); question.set_state_flags(hover, False); settle()
-        self.assertEqual((self.ink(one.asb_dot), self.ink(drawer)), (0, 255))
+        self.assertEqual((self.ink(one.asb_dot), self.ink(drawer), self.ink(copy_button), self.ink(question.asb_copy_button)), (0, 255, 255, 255))
         self.assertGreater(self.ink(cue), 0)
         self.assertLess(self.ink(one.asb_state_label), 255)  # The read tone.
         self.assertGreater(self.ink(question.asb_dot), 0)  # A ? does not change.
         one.unset_state_flags(hover); question.unset_state_flags(hover); settle()
-        self.assertEqual((self.ink(one.asb_dot), self.ink(cue), self.ink(drawer)), (255, 0, 0))
+        self.assertEqual((self.ink(one.asb_dot), self.ink(cue), self.ink(drawer), self.ink(copy_button)), (255, 0, 0, 0))
         # Focus from a mouse click (not visible) does not change the row. Visible keyboard focus shows the controls.
-        shown = lambda: (self.ink(one.asb_dot), self.ink(drawer), self.ink(cue) > 0, self.ink(one.asb_state_label))
-        for focus in (one, read, drawer):
+        shown = lambda: (self.ink(one.asb_dot), self.ink(drawer), self.ink(cue) > 0, self.ink(one.asb_state_label), self.ink(copy_button))
+        for focus in (one, read, drawer, copy_button):
             window.set_focus(focus); window.set_focus_visible(False); settle()
             self.assertFalse(one.has_css_class("asb-key-focus"))
             if focus is one:
-                self.assertEqual(shown(), (255, 0, False, 255))
+                self.assertEqual(shown(), (255, 0, False, 255, 0))
                 self.assertGreater(self.ink(one.asb_pin_button), 0)  # The pin rule of 1.5.0 stays.
-            self.assertEqual((self.ink(one.asb_dot), self.ink(drawer)), (255, 0))
+            self.assertEqual((self.ink(one.asb_dot), self.ink(drawer), self.ink(copy_button)), (255, 0, 0))
             window.set_focus_visible(True); settle()
             self.assertTrue(one.has_css_class("asb-key-focus"))
-            self.assertEqual(shown(), (0, 255, True, 255))
+            self.assertEqual(shown(), (0, 255, True, 255, 255))
         window.set_focus(cards["s2"]); settle()
         self.assertFalse(one.has_css_class("asb-key-focus"))
-        self.assertEqual(shown(), (255, 0, False, 255))
-        window.set_focus(one)  # Tab goes to drawer, read, pin.
-        for control in (drawer, read, one.asb_pin_button):
+        self.assertEqual(shown(), (255, 0, False, 255, 0))
+        window.set_focus(one)  # Tab goes to copy, drawer, read, pin.
+        for control in (copy_button, drawer, read, one.asb_pin_button):
             self.assertTrue(one.child_focus(asb.Gtk.DirectionType.TAB_FORWARD))
             self.assertIs(window.get_focus(), control)
         window.set_focus(None); window.set_focus_visible(False); settle()
@@ -2102,6 +2113,18 @@ class WidgetCheck(unittest.TestCase):
             for view in (0, 1):
                 window.view_filter.set_selected(view); settle(); window.set_focus(None); settle()
                 one, two = cards["s1"], cards["s2"]
+                if view:  # Copy and its corner have no ink at rest, also with the check of a copy.
+                    window.activate_action("win.copy-reference", asb.GLib.Variant("s", "s3")); settle()
+                    rest = cards["s3"].asb_copy_button
+                    self.assertTrue(rest.has_css_class("asb-copy-confirmed"))
+                    self.assertEqual((self.ink(rest), self.ink(rest.get_parent()), self.ink(two.asb_copy_button)), (0, 0, 0))
+                    cards["s3"].set_state_flags(hover, False); two.set_state_flags(hover, False)
+                    two.asb_copy_button.set_state_flags(hover, False); settle()
+                    self.assertEqual(self.ink(rest), 255)
+                    if palette:  # Only the check uses the accent; the copy icon keeps the text color.
+                        self.assertEqual((window.hex_color(rest.get_color()), window.hex_color(two.asb_copy_button.get_color())),
+                                         (palette["accent"], palette["text"]))
+                    cards["s3"].unset_state_flags(hover); two.unset_state_flags(hover); two.asb_copy_button.unset_state_flags(hover); settle()
                 colors = lambda card: [getattr(card, name).get_color().to_string() for name in
                                        ("asb_title_label", "asb_folder", "asb_state_label", "asb_age_label") if hasattr(card, name)]
                 with patch.object(window, "render") as render:
@@ -2187,8 +2210,8 @@ class WidgetCheck(unittest.TestCase):
         # A column narrower than 190 px has no drawer button; the corner is the Read and Pin pair.
         window.width_control.set_value(160); settle()
         self.assertLess(window.column_pixel_width, 190)
-        self.assertFalse(any(card.asb_drawer_button.get_visible() or card.asb_drawer_button.get_parent().has_css_class("asb-corner-drawer")
-                             for card in cards.values()))
+        self.assertFalse(any(card.asb_drawer_button.get_visible() or card.asb_copy_button.get_visible()
+                             or card.asb_copy_button.get_parent().has_css_class("asb-corner-wide") for card in cards.values()))
         self.assertTrue(one.asb_read_button.get_visible() and one.asb_pin_button.get_visible())
         self.assertIn(("Put in drawer", "drawer-in"), asb.row_menu_actions(one.asb_thread))
         window.width_control.set_value(240); settle()
@@ -2419,6 +2442,14 @@ class WidgetCheck(unittest.TestCase):
             self.drain(.4)
             return [request[1] for request in requests]
         failed = lambda: (requests[-1][2](None, "Cannot change this session."), self.drain(.3))
+        # Copy is local: no request, no open, and the nested display's clipboard has the exact reference.
+        self.assertEqual(click(cards["s4"].asb_copy_button), [])
+        self.assertEqual(window.opening, set())
+        copied = []
+        clipboard = window.get_clipboard()
+        clipboard.read_text_async(None, lambda source, result: copied.append(source.read_text_finish(result))); self.drain(.3)
+        self.assertEqual(copied, [asb.session_reference(cards["s4"].asb_thread)])
+        self.assertEqual(cards["s4"].asb_copy_button.get_child().get_icon_name(), "object-select-symbolic")
         self.assertEqual(click(cards["s2"].asb_drawer_button), ["/api/threads/s2/drawer-in"])
         pending = list(requests)
         self.assertEqual(click(cards["s2"].asb_title_label), [])  # The card does not open while its action is in flight.
@@ -2451,16 +2482,24 @@ class WidgetCheck(unittest.TestCase):
                               self.ink(card.asb_drawer_button))
         self.assertEqual(shown(one), (255, False, 0))
         self.assertGreater(self.ink(one.asb_pin_button), 0)  # The pin rule of 1.5.0.
-        # The keyboard makes the focus visible. Tab from the row goes to drawer, read, pin, with the controls shown.
+        # The keyboard makes the focus visible. Tab from the row goes to copy, drawer, read, pin, with the controls shown.
         xdo("windowfocus", xid)
         xdo("key", "Up"); self.settle(window)
         self.assertIs(window.get_focus(), two)
         self.assertEqual((window.get_focus_visible(), two.has_css_class("asb-key-focus"), one.has_css_class("asb-key-focus")), (True, True, False))
         self.assertEqual((shown(one), shown(two)), ((255, False, 0), (0, True, 255)))
-        for control in (two.asb_drawer_button, two.asb_read_button, two.asb_pin_button):
+        for control in (two.asb_copy_button, two.asb_drawer_button, two.asb_read_button, two.asb_pin_button):
             xdo("key", "Tab"); self.settle(window)
             self.assertIs(window.get_focus(), control)
             self.assertEqual(shown(two), (0, True, 255))
+            self.assertEqual(self.ink(two.asb_copy_button), 255)
+        # Space and Enter on the focused Copy go through the row keys: a copy, with no request and no open.
+        two.asb_copy_button.grab_focus(); self.settle(window)
+        for key in ("space", "Return"):
+            del requests[:]
+            xdo("key", key); self.drain(.3)
+            self.assertEqual((requests, window.opening), ([], set()))
+            self.assertEqual(two.asb_copy_button.get_child().get_icon_name(), "object-select-symbolic")
         window.close(); self.drain(.03)
 
 

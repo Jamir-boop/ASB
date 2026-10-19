@@ -71,7 +71,7 @@ When a usage limit stops a chat, its row is grey and shows a clock with **Resets
 
 ## Read and Unread
 
-Right-click a row, or use Menu or Shift+F10. The menu offers **Read** for an ASB dot or question attention and **Unread** when neither is present. A current permission wait has no Read action. A passive stop square can still be marked Unread. An unread row also offers **Put in drawer**. A row in the drawer offers **Take out of drawer** and **Read**, and no **Unread**. The last row, **App and session ID**, shows the app host and the app's own session ID, for example `claude-proxy/local_…`; select the row or its copy button to copy it. The panel has the same background as the board.
+Right-click a row, or use Menu or Shift+F10. The menu offers **Read** for an ASB dot or question attention and **Unread** when neither is present. A current permission wait has no Read action. A passive stop square can still be marked Unread. An unread row also offers **Put in drawer**. A row in the drawer offers **Take out of drawer** and **Read**, and no **Unread**. The last row, **App and session ID**, shows the app host and the app's own session ID, for example `claude-proxy/local_…`; select the row or its copy button to copy it. In Comfortable, the copy button at the top right of a card copies the same text while the pointer is on the card or the card has keyboard focus. The panel has the same background as the board.
 
 **Unread** adds an ASB mark and includes the chat in Pending-only. It survives read changes in the original app. **Read** clears ASB attention. Neither action changes execution or the original chat store.
 

@@ -2035,6 +2035,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             action = Gio.SimpleAction.new(name, GLib.VariantType.new("s"))
             action.connect("activate", self.row_action, name)
             self.add_action(action)
+        # Copy is local: it sends no request, so a pending server action does not block it.
+        copy = Gio.SimpleAction.new("copy-reference", GLib.VariantType.new("s"))
+        copy.connect("activate", self.copy_reference)
+        self.add_action(copy)
         self.geometry = None
         self.layout_signature = None
         self.geometry_idle = self.surface_signal = None
@@ -2476,8 +2480,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-session:hover .asb-drawer-button, {base} .asb-key-focus .asb-drawer-button {{ opacity: 1; }}
 {base} .asb-drawer-button.asb-drawer-filled {{ color: @accent_color; }}
 {base} .asb-drawer-button:hover, {base} .asb-drawer-button:focus-visible {{ background: alpha(@accent_color, .15); }}
-{base} .asb-corner-drawer {{ padding: 0 0 2px 16px; border-radius: 0 0 0 12px; }}
-{base} .asb-session:hover .asb-corner-drawer, {base} .asb-key-focus .asb-corner-drawer {{
+{base} .asb-copy-button {{ opacity: 0; background: alpha(@window_fg_color, .08); }}
+{base} .asb-session:hover .asb-copy-button, {base} .asb-key-focus .asb-copy-button {{ opacity: 1; }}
+{base} .asb-copy-button:hover, {base} .asb-copy-button:focus-visible {{ background: alpha(@accent_color, .15); }}
+{base} .asb-copy-button.asb-copy-confirmed {{ color: @success_color; background: alpha(@success_color, .12); }}
+{base} .asb-corner-wide {{ padding: 0 0 2px 16px; border-radius: 0 0 0 12px; }}
+{base} .asb-session:hover .asb-corner-wide, {base} .asb-key-focus .asb-corner-wide {{
     background: linear-gradient(to right, alpha(@window_bg_color, 0), @window_bg_color 16px); }}
 {base} .asb-unread:hover .asb-dot, {base} .asb-unread.asb-key-focus .asb-read-button .asb-dot,
 {base} .asb-drawer:not(.asb-drawer-lit) .asb-dot {{ opacity: 0; }}
@@ -2554,7 +2562,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} .asb-drawer-button {{ background: alpha({colors['text']}, .08); }}
 {scope} .asb-drawer-button.asb-drawer-filled {{ color: {colors['accent']}; }}
 {scope} .asb-drawer-button:hover, {scope} .asb-drawer-button:focus-visible {{ background: alpha({colors['accent']}, .15); }}
-{scope} .asb-session:hover .asb-corner-drawer, {scope} .asb-key-focus .asb-corner-drawer {{
+{scope} .asb-copy-button {{ background: alpha({colors['text']}, .08); }}
+{scope} .asb-copy-button:hover, {scope} .asb-copy-button:focus-visible {{ background: alpha({colors['accent']}, .15); }}
+{scope} .asb-copy-button.asb-copy-confirmed {{ color: {colors['accent']}; background: alpha({colors['accent']}, .15); }}
+{scope} .asb-session:hover .asb-corner-wide, {scope} .asb-key-focus .asb-corner-wide {{
     background: linear-gradient(to right, alpha({colors['background']}, 0), {colors['background']} 16px); }}
 .asb-tooltip.asb-custom {{ color: {colors['text']}; }}
 .asb-tooltip.asb-custom .asb-tooltip-muted, .asb-tooltip.asb-custom .asb-state {{ color: {colors['muted']}; }}
@@ -3675,6 +3686,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget.asb_view = None
         widget.asb_handlers = []
         widget.asb_read_timer, widget.asb_read_generation = None, 0
+        widget.asb_copy_timer = None
         widget.asb_light_timer, widget.asb_light_generation = None, 0
         widget.asb_last_read_at = None
         widget.asb_tooltip_content = widget.asb_tooltip_key = None
@@ -3695,6 +3707,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def release_row(self, widget):
         self.clear_read_feedback(widget)
+        self.cancel_card_copy(widget)
         self.clear_message_light(widget)
         widget.asb_last_read_at = None
         widget.asb_tooltip_content = widget.asb_tooltip_key = None
@@ -3821,7 +3834,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if layout_changed:
             widget.asb_view = self.view
             widget.asb_action_signature = None
-            for name in ("asb_folder", "asb_pin_button", "asb_read_button", "asb_drawer_button", "asb_age_label", "asb_limited"):
+            self.cancel_card_copy(widget)
+            for name in ("asb_folder", "asb_pin_button", "asb_read_button", "asb_drawer_button", "asb_copy_button", "asb_age_label", "asb_limited"):
                 if hasattr(widget, name):
                     delattr(widget, name)
             content = Gtk.Box(spacing=6, margin_start=5, margin_end=5, valign=Gtk.Align.CENTER)
@@ -3906,13 +3920,16 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 read = Gtk.Button(child=read_icon)
                 pin = Gtk.Button(child=Gtk.Image(icon_name="view-pin-symbolic", pixel_size=12))
                 drawer = Gtk.Button(child=self.drawer_glyph())
-                for button, name in ((drawer, "drawer"), (read, "read"), (pin, "pin")):
+                copy = Gtk.Button(child=Gtk.Image(icon_name="edit-copy-symbolic", pixel_size=12))
+                for button, name in ((copy, "copy"), (drawer, "drawer"), (read, "read"), (pin, "pin")):
                     button.add_css_class("flat")
                     button.add_css_class("asb-card-action")
                     button.add_css_class("asb-" + name + "-button")
                     button.asb_card_action = name
                     button.set_action_target_value(GLib.Variant("s", row["id"]))
                 widget.asb_drawer_button, widget.asb_read_button, widget.asb_pin_button = drawer, read, pin
+                widget.asb_copy_button = copy
+                actions.append(copy)
                 actions.append(drawer)
                 read_slot.append(read)
                 actions.append(read_slot)
@@ -3966,7 +3983,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         indicator = attention_indicator(row, True)
         signature = (indicator, row.get("state"), row.get("actionRequired"), row.get("discardResult"),
                      row.get("pinned"), row.get("drawer"), row.get("title"), pending, bool(widget.asb_read_timer),
-                     self.column_pixel_width >= 190)
+                     self.column_pixel_width >= 190, bool(getattr(widget, "asb_copy_timer", None)))
         if signature == getattr(widget, "asb_action_signature", None):
             return
         widget.asb_action_signature = signature
@@ -4002,7 +4019,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             shown = self.column_pixel_width >= 190 and (tucked or indicator == "dot")
             drawer.set_visible(shown)
             (drawer.add_css_class if tucked else drawer.remove_css_class)("asb-drawer-filled")
-            (drawer.get_parent().add_css_class if shown else drawer.get_parent().remove_css_class)("asb-corner-drawer")
             drawer.set_action_name(("win.drawer-out" if tucked else "win.drawer-in") if not pending else None)
             controls.append((drawer, "Take out of drawer: show as unread again" if tucked
                              else "Put in drawer: look read here, keep it under Drawer", not pending))
@@ -4012,6 +4028,51 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             button.set_tooltip_text(text)
             button.update_property([Gtk.AccessibleProperty.LABEL], [text + ": " + row.get("title", "Untitled session")])
             button.update_state([Gtk.AccessibleState.BUSY, Gtk.AccessibleState.DISABLED], [pending, not enabled])
+        copy = getattr(widget, "asb_copy_button", None)
+        if copy:
+            # Copy sends no request, so it has no pending state. The corner fades the title for it at every width that shows it.
+            wide, copied = self.column_pixel_width >= 190, bool(widget.asb_copy_timer)
+            copy.set_visible(wide)
+            (copy.get_parent().add_css_class if wide else copy.get_parent().remove_css_class)("asb-corner-wide")
+            copy.set_action_name("win.copy-reference")
+            copy.get_child().set_from_icon_name("object-select-symbolic" if copied else "edit-copy-symbolic")
+            (copy.add_css_class if copied else copy.remove_css_class)("asb-copy-confirmed")
+            copy.set_tooltip_text("Copied" if copied else "Copy app and session ID")
+            copy.update_property([Gtk.AccessibleProperty.LABEL], ["Copy app and session ID: " + row.get("title", "Untitled session")])
+            if copied:
+                copy.update_property([Gtk.AccessibleProperty.DESCRIPTION], ["Copied"])
+            else:
+                copy.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
+
+    def copy_reference(self, _action, target):
+        identity = target.get_string()
+        widget = self.focus_widgets.get(identity)
+        if not widget or self.closed:
+            return
+        # The check of an earlier copy must not stay on after this one fails.
+        self.cancel_card_copy(widget)
+        try:
+            self.get_clipboard().set(session_reference(widget.asb_thread))
+        except (GLib.Error, TypeError) as error:
+            self.open_errors[identity] = f"Cannot copy the app and session ID: {error}"
+            self.update_card_actions(widget)
+            self.update_open_state(widget)
+            return
+        if self.open_errors.get(identity, "").startswith("Cannot copy the app and session ID: "):
+            self.open_errors.pop(identity)
+            self.update_open_state(widget)
+        def clear():
+            widget.asb_copy_timer = None
+            if not self.closed and self.focus_widgets.get(identity) is widget and widget.asb_view == "comfortable":
+                self.update_card_actions(widget)
+            return False
+        widget.asb_copy_timer = GLib.timeout_add(1600, clear)
+        self.update_card_actions(widget)
+
+    def cancel_card_copy(self, widget):
+        if getattr(widget, "asb_copy_timer", None):
+            GLib.source_remove(widget.asb_copy_timer)
+        widget.asb_copy_timer = None
 
     def confirm_read(self, widget):
         self.clear_read_feedback(widget)

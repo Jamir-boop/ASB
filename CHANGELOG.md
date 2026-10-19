@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Added a copy button to the Comfortable card. It copies the app and session ID, the same text as in the row panel, and shows while the pointer is on the card or the card has keyboard focus.
 - Fixed a session open that never finished when it started Claude Desktop, and took 5 s when it started ChatGPT. The open also kept the ASB service from stopping until systemd killed it after 90 s. ASB now starts apps without its output pipes and, under systemd, in their own scope.
 - The ASB service now exits at most 5 s after a stop signal, and logs the pending cleanup step and the open Node resources.
 - Made the list in the native row panel flat on the board background, with thin neutral lines around it and between its rows.
