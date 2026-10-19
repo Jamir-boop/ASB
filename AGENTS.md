@@ -10,7 +10,7 @@ This repository is ASB (Agent Switch Board). When the user says "ASB", "Agent Sw
 
 ## Product Context
 
-ASB is a native GNOME switch board for Codex and Claude Desktop Code chats. It reads local app stores and opens existing chats in their original apps. Original app stores stay read-only. ASB saves its own local marks, pins, and settings. Its runtime reads no credentials and makes no model calls. The main server binds only `127.0.0.1` (default port `4629`).
+ASB is a native GNOME switch board for Codex and Claude Desktop Code chats. It reads local app stores and opens existing chats in their original apps. ASB also lists OpenCode 2 sessions (list only: it cannot open them). Original app stores stay read-only. ASB saves its own local marks, pins, and settings. Its runtime reads no credentials and makes no model calls. The main server binds only `127.0.0.1` (default port `4629`).
 
 The optional phone gateway (`src/phone-gateway.mjs`) is off by default. When the user turns it on in Preferences > Phone, it binds only the selected private LAN or overlay (ZeroTier, Tailscale) addresses (default port `4630`). It uses TLS 1.3, a pinned self-signed certificate, and per-phone bearer tokens. It forwards only allowlisted session routes to the loopback server. The optional `asb service` user service runs the server and the gateway without the window. The Android companion app is in `android/`.
 

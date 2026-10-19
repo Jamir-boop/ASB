@@ -4,6 +4,10 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Added OpenCode 2 sessions, list only. ASB reads the root sessions of `opencode.db` read-only: `session_v2`, the subagent count, and only `session_id` and `time_created` of `session_message`. It never reads `auth.json`, the `account`, `control_account`, `credential`, or `kv` tables, or `session_message.data`. OpenCode's execution claim gives Working (Unknown with no message in 6 hours), `idle_outcome` gives Done, Failed, or the stop square, and OpenCode's own read mark gives unread. OpenCode cards do not open, because OpenCode 2 has no link that opens one session, and they have no Needs input, because OpenCode keeps permission asks and questions only in memory.
+- Added OpenCode as a third default source with a fixed folder (`$XDG_DATA_HOME/opencode` or `~/.local/share/opencode`) and no launcher. You can turn it off in Profiles, but you cannot add another OpenCode source. A settings file without it gets it in memory, unless the file already has 8 sources.
+- Added the OpenCode mark, the **OpenCode** app pill, the OpenCode choices in Preferences > Sessions (each app and each pair of apps), and the `oc:` and `opencode:` search prefixes to the native window, and the same mark, filter, and prefixes to the Android app. With app pills hidden, the app chip names every selected app, for example **Codex, OpenCode**.
+
 - Added a copy button to the Comfortable card. It copies the app and session ID, the same text as in the row panel, and shows while the pointer is on the card or the card has keyboard focus.
 - Fixed a session open that never finished when it started Claude Desktop, and took 5 s when it started ChatGPT. The open also kept the ASB service from stopping until systemd killed it after 90 s. ASB now starts apps without its output pipes and, under systemd, in their own scope.
 - The ASB service now exits at most 5 s after a stop signal, and logs the pending cleanup step and the open Node resources.

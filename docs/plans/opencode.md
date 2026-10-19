@@ -1,6 +1,6 @@
 # OpenCode 2 sessions in ASB: implementation plan
 
-Status: approved plan, in progress. Written 2026-10-19 for an implementing
+Status: implemented on branch feat/opencode-sessions; documents updated. Written 2026-10-19 for an implementing
 agent (a worker model). The decisions in section 2 come from an interview with
 the user. The user approved the planner decisions in section 3 on 2026-10-19.
 Do not change any of them without asking the user.
@@ -426,6 +426,35 @@ and the exact columns read; the registry's third default source), PRIVACY.md
 (what ASB reads and never reads, section 4.1), PRODUCT.md (capabilities),
 DESIGN.md (provider marks and pills), `docs/status-mapping.html` (the OpenCode
 state mapping of 7.2), and CHANGELOG.md (Unreleased).
+
+## 11. Deviations from the plan
+
+The code differs from this plan in these points. The documents describe the
+code.
+
+- The reader also sets `embeddedSubagentCount` to the subagent count. The
+  dashboard counts only listed children, and OpenCode subagents are not
+  listed, so without this field the count was lost.
+- When a saved `sources.json` has the `opencode` source, the registry replaces
+  its saved folder with the default folder and its launcher with an empty
+  value.
+- A saved settings file that already has 8 sources (`MAX_APP_SOURCES`) does
+  not gain the OpenCode source.
+- `src/dashboard-snapshot.mjs` has no OpenCode file hint. The watcher event
+  only marks the snapshot dirty, and the reader cache compares the size and
+  time of `opencode.db` and `opencode.db-wal` on each load. The planned
+  OpenCode branch in `dashboardSourceChanged` was removed.
+- With app pills hidden, every restricted app selection gets an app chip,
+  including a pair of apps. The chip names the selected apps, for example
+  `Codex, OpenCode`.
+- The tooltip note is on the flags line: `No direct link. OpenCode cannot
+  open one session from a link.`
+- The launcher placeholder of the OpenCode source in Profiles is
+  `Not used: OpenCode cannot open one session from a link.`
+- The web view (`public/switchboard.js`) also guards `openSession`: it returns
+  at once for a row with `canOpen: false`.
+- The Android drawable `ic_provider_opencode.xml` is 11.2 x 14 dp, to keep the
+  4:5 shape of the view box.
 
 ## Appendix A: OpenCode mark
 
