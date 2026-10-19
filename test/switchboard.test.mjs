@@ -13,7 +13,8 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { defaultClaudeAppDir, normalizeClaudeDesktopCodeSession, loadClaudeDesktopCodeThreads, parseClaudeJsonlSignals } from '../src/claude-data.mjs';
 import { loadCodexDashboard, readThreads, discoverCodexStateDatabase, parseRolloutSignals, readRolloutSignals, getCodexCacheStats, codexNativeReadStatus } from '../src/codex-data.mjs';
-import { buildSwitchboardDashboard, createSwitchboardServer, loadSwitchboardDashboard, openSwitchboardThread, switchboardStatus, PendingTracker } from '../src/switchboard.mjs';
+import { buildSwitchboardDashboard, createSwitchboardServer, loadSwitchboardDashboard, openSwitchboardThread, switchboardStatus, switchboardWatchPaths, PendingTracker } from '../src/switchboard.mjs';
+import { AppSourceRegistry } from '../src/app-sources.mjs';
 
 const id = '123e4567-e89b-12d3-a456-426614174000';
 const localId = `local_${id}`;
@@ -1752,4 +1753,68 @@ test('a row title is limited to 300 characters and keeps whole code points', () 
   assert.deepEqual([[...long].length, long.endsWith('😀…')], [300, true]);
   assert.equal(row('😀'.repeat(300)).title, '😀'.repeat(300));
   assert.equal(row('').title, 'Untitled session');
+});
+
+test('OpenCode rows are list-only with OpenCode outcomes and unread, and opens are refused', async () => {
+  const thread = (id, extra) => ({ id, externalId: id, provider: 'opencode', providerLabel: 'OpenCode', source: 'opencode-db',
+    title: id, cwd: '/work/app', createdAtMs: now - 60_000, updatedAtMs: now - 1_000, lifecycleRunning: false, ...extra });
+  const rows = Object.fromEntries(buildSwitchboardDashboard([
+    thread('ses_done', { latestLifecycleKind: 'task_complete', latestLifecycleAtMs: now - 5_000, latestTaskEndedAtMs: now - 5_000,
+      nativeUnread: true, readStatus: 'unread' }),
+    thread('ses_failed', { latestLifecycleKind: 'failed', latestLifecycleAtMs: now - 6_000, latestTaskEndedAtMs: now - 6_000,
+      nativeUnread: false, readStatus: 'read' }),
+    thread('ses_stopped', { latestLifecycleKind: 'turn_aborted', latestLifecycleAtMs: now - 7_000, latestTaskEndedAtMs: now - 7_000,
+      nativeUnread: null, readStatus: 'unknown' }),
+    thread('ses_working', { lifecycleRunning: true, agentStartedAtMs: now - 30_000, agentActivityAtMs: now - 2_000 }),
+  ], [], now).threads.map((row) => [row.id, row]));
+  for (const row of Object.values(rows)) {
+    assert.deepEqual([row.provider, row.providerLabel, row.canOpen, row.appDeepLink], ['opencode', 'OpenCode', false, '']);
+  }
+  assert.deepEqual([rows.ses_done.state, rows.ses_done.lastOutcome, rows.ses_done.completionAtMs, rows.ses_done.nativeUnread, rows.ses_done.readStatus],
+    ['idle', '', now - 5_000, true, 'unread']);
+  assert.deepEqual([rows.ses_failed.lastOutcome, rows.ses_failed.failedAtMs, rows.ses_failed.completionAtMs, rows.ses_failed.readStatus],
+    ['failed', now - 6_000, 0, 'read']);
+  assert.deepEqual([rows.ses_stopped.lastOutcome, rows.ses_stopped.completionAtMs, rows.ses_stopped.nativeUnread], ['stopped', 0, null]);
+  assert.deepEqual([rows.ses_working.state, rows.ses_working.workingSinceMs, rows.ses_working.lastOutcome], ['working', now - 30_000, '']);
+  let calls = 0;
+  const runCommand = async () => { calls += 1; };
+  for (const row of [rows.ses_done, { ...rows.ses_done, canOpen: true, appDeepLink: 'opencode://session/ses_done' }]) {
+    await assert.rejects(openSwitchboardThread(row, { runCommand }), { message: 'OpenCode cannot open one session from a link.' });
+    await assert.rejects(openSwitchboardThread(row, { runCommand, launcher: '/usr/bin/codex' }), { message: 'OpenCode cannot open one session from a link.' });
+  }
+  assert.equal(calls, 0);
+});
+
+test('the registered OpenCode source loads from its fixed folder, is watched there, and stays off when disabled', async (t) => {
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'asb-opencode-source-'));
+  t.after(() => rm(homeDir, { recursive: true, force: true }));
+  const registry = new AppSourceRegistry({ homeDir, env: {}, platform: 'linux', discoverPersonal: false });
+  const sources = await registry.read();
+  const dataDir = path.join(homeDir, '.local', 'share', 'opencode');
+  const calls = [];
+  const loadOpenCode = async (options) => {
+    calls.push(options);
+    return { provider: { installed: true, status: 'ready' }, threads: [{ id: 'ses_one', externalId: 'ses_one', provider: 'opencode',
+      source: 'opencode-db', title: 'One', lifecycleRunning: false, nativeUnread: true, readStatus: 'unread' }] };
+  };
+  const load = (list) => loadSwitchboardDashboard({ sources: list, nowMs: now, loadOpenCode,
+    loadCodex: async () => ({ threads: [] }), loadClaude: async () => ({ threads: [] }) });
+  const missing = await load(sources);
+  assert.equal(calls.length, 0);
+  assert.equal(missing.providers.find((item) => item.id === 'opencode').status, 'missing');
+  await mkdir(dataDir, { recursive: true });
+  const board = await load(sources);
+  assert.deepEqual(calls, [{ dataDir, cacheScope: dataDir, nowMs: now, maxCount: 5000 }]);
+  assert.equal(board.providers.find((item) => item.id === 'opencode').status, 'ready');
+  const row = board.threads.find((item) => item.provider === 'opencode');
+  assert.deepEqual([row.id, row.externalId, row.sourceId, row.sourceLabel, row.canOpen, row.nativeUnread],
+    ['ses_one', 'ses_one', 'opencode', 'OpenCode', false, true]);
+  const disabled = await load(sources.map((item) => item.id === 'opencode' ? { ...item, enabled: false } : item));
+  assert.equal(calls.length, 1);
+  assert.equal(disabled.providers.find((item) => item.id === 'opencode').status, 'disabled');
+  assert.equal(disabled.threads.some((item) => item.provider === 'opencode'), false);
+  const spec = switchboardWatchPaths({ homeDir, openCodeDir: dataDir }).find((item) => item.source === 'opencode');
+  assert.deepEqual([spec.path, spec.optional], [dataDir, true]);
+  assert.deepEqual(['opencode.db', 'opencode.db-wal', 'opencode.db-shm', 'auth.json', 'log', ''].map((name) => spec.acceptEvent(name)),
+    [true, true, false, false, false, true]);
 });

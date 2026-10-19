@@ -6,7 +6,8 @@ import { defaultClaudeAppDir } from './claude-data.mjs';
 import { discoverCodexStateDatabase } from './codex-data.mjs';
 
 export const MAX_APP_SOURCES = 8;
-const PROVIDERS = ['codex', 'claude-desktop-code'];
+const PROVIDERS = ['codex', 'claude-desktop-code', 'opencode'];
+const BUILTIN_IDS = ['codex', 'claude-desktop-code', 'opencode'];
 const SOURCE_FIELDS = ['id', 'provider', 'label', 'dataDir', 'launcher', 'enabled', 'projectsDir', 'color', 'showMarker'];
 const SOURCE_COLORS = ['#8296b4', '#b28f80', '#a28caa', '#899e91'];
 const APP_LAUNCHER = /^(?:chatgpt|codex|claude)(?:[-_.][a-z0-9][a-z0-9._-]*)?(?:\.exe)?$/i;
@@ -16,6 +17,7 @@ function defaultSourceColor(id) {
   if (id === 'codex') return SOURCE_COLORS[0];
   if (id === 'codex-personal') return SOURCE_COLORS[1];
   if (id === 'claude-desktop-code') return SOURCE_COLORS[2];
+  if (id === 'opencode') return SOURCE_COLORS[3];
   return SOURCE_COLORS[createHash('sha256').update(id).digest()[0] % SOURCE_COLORS.length];
 }
 
@@ -49,6 +51,8 @@ export function defaultAppSources({ homeDir = os.homedir(), env = process.env, p
     { id: 'claude-desktop-code', provider: 'claude-desktop-code', label: 'Claude Desktop Code',
       dataDir: defaultClaudeAppDir(platform, homeDir, env), projectsDir: path.join(homeDir, '.claude', 'projects'),
       launcher: '', enabled: true, builtin: true },
+    { id: 'opencode', provider: 'opencode', label: 'OpenCode',
+      dataDir: path.join(env.XDG_DATA_HOME || path.join(homeDir, '.local', 'share'), 'opencode'), launcher: '', enabled: true, builtin: true },
   ].map((source) => ({ ...source, color: defaultSourceColor(source.id), showMarker: true }));
 }
 
@@ -89,6 +93,7 @@ export class AppSourceRegistry {
     this.homeDir = homeDir;
     this.configPath = configPath;
     this.sources = defaultAppSources({ homeDir, env, platform });
+    this.openCodeSource = this.sources.find((source) => source.id === 'opencode');
     this.discoverPersonal = discoverPersonal;
     this.signature = null;
     this.initialized = false;
@@ -149,7 +154,12 @@ export class AppSourceRegistry {
             const source = sources.find((item) => item.id === builtin);
             if (!source || source.provider !== builtin) throw invalid('Default app sources must stay registered.');
           }
-          for (const source of sources) source.builtin = ['codex', 'claude-desktop-code'].includes(source.id);
+          const openCode = sources.find((item) => item.id === 'opencode' || item.provider === 'opencode');
+          if (openCode && (openCode.id !== 'opencode' || openCode.provider !== 'opencode')) throw invalid('Invalid app source settings.');
+          // The OpenCode folder is fixed; a file from before OpenCode support gets the default source.
+          if (openCode) Object.assign(openCode, { dataDir: this.openCodeSource.dataDir, launcher: '' });
+          else if (sources.length < MAX_APP_SOURCES) sources.push({ ...this.openCodeSource });
+          for (const source of sources) source.builtin = BUILTIN_IDS.includes(source.id);
           await this.validateStores(sources);
           this.sources = sources;
           this.warning = '';
@@ -198,6 +208,9 @@ export class AppSourceRegistry {
       await this.read();
       this.checkRevision(expectedRevision);
       const existing = typeof source?.id === 'string' ? this.sources.find((item) => item.id === source.id) : null;
+      if (source?.provider === 'opencode' && existing?.id !== 'opencode') throw invalid('Only the default OpenCode source is supported.');
+      if (existing?.id === 'opencode' && (typeof source.dataDir !== 'string' || path.resolve(source.dataDir) !== existing.dataDir)) throw invalid('The OpenCode data folder cannot change.');
+      if (existing?.id === 'opencode' && source.launcher !== '') throw invalid('The OpenCode source takes no launcher.');
       const next = await this.validate(source, { checkLauncher: source?.enabled !== false || !existing });
       if (next.id && !existing) throw invalid('This app source is not registered.');
       if (existing?.builtin && next.provider !== existing.provider) throw invalid('The default source provider cannot change.');

@@ -7,6 +7,7 @@ import { defaultClaudeAppDir, invalidateClaudeData, openClaudeThread, retainClau
 import { loadSwitchboardClaudeThreads, claudeRemoteDeepLink, claudeRemoteStatus,
   invalidateClaudeRemoteData, isClaudeRemoteCacheEvent, shutdownClaudeRemoteParser } from './claude-remote-data.mjs';
 import { normalizeDashboardThreads } from './insights.mjs';
+import { loadOpenCodeDashboard, invalidateOpenCodeData, retainOpenCodeDataScopes } from './opencode-data.mjs';
 import { createAsbServer } from './asb-server.mjs';
 import { createSoundPlayer, createSoundWatcher } from './asb-sounds.mjs';
 import { openThreadInCodex, scopedCommand } from './session-opener.mjs';
@@ -40,7 +41,8 @@ export function switchboardRefreshInterval(dashboard) {
 }
 
 export function switchboardWatchPaths({ homeDir = os.homedir(), appDir = defaultClaudeAppDir(),
-  codexDir = path.join(homeDir, '.codex'), projectsDir = path.join(homeDir, '.claude', 'projects') } = {}) {
+  codexDir = path.join(homeDir, '.codex'), projectsDir = path.join(homeDir, '.claude', 'projects'),
+  openCodeDir = path.join(process.env.XDG_DATA_HOME || path.join(homeDir, '.local', 'share'), 'opencode') } = {}) {
   const directoryOrFile = (pattern) => (filename, event) => !filename || pattern.test(path.basename(filename))
     || (event === 'rename' && !path.extname(path.basename(filename)));
   return [
@@ -55,6 +57,8 @@ export function switchboardWatchPaths({ homeDir = os.homedir(), appDir = default
     { path: projectsDir, source: 'claude', recursive: true, acceptEvent: directoryOrFile(/\.jsonl$/) },
     { path: path.join(path.dirname(projectsDir), 'sessions'), source: 'claude', optional: true,
       acceptEvent: directoryOrFile(/^[1-9][0-9]*\.json$/) },
+    { path: openCodeDir, source: 'opencode', optional: true,
+      acceptEvent: (filename) => !filename || /^opencode\.db(?:-wal)?$/.test(filename) },
   ];
 }
 
@@ -177,7 +181,7 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
           sourceNumber: thread.sourceNumber, sourceCount: thread.sourceCount, sourceColor: thread.sourceColor,
           sourceShowMarker: thread.sourceShowMarker } : {}),
         provider: isCodex ? 'codex' : thread.provider,
-        providerLabel: isCodex ? 'Codex' : 'Claude Desktop Code',
+        providerLabel: isCodex ? 'Codex' : thread.provider === 'opencode' ? 'OpenCode' : 'Claude Desktop Code',
         title: capTitle(thread.title || 'Untitled session'),
         cwd: thread.cwd || '',
         projectName: thread.cwd ? path.basename(thread.cwd) || thread.cwd
@@ -269,13 +273,14 @@ export function resolveSessionMessages(threads, rows, { sinceMs, untilMs }) {
 }
 
 function sourceCacheScope(source) {
-  return source.provider === 'codex' ? source.dataDir
+  return source.provider !== 'claude-desktop-code' ? source.dataDir
     : `${source.dataDir}\0${source.projectsDir || path.join(os.homedir(), '.claude', 'projects')}`;
 }
 
 function retainSourceCaches(sources) {
   const enabled = sources.filter((source) => source.enabled);
   retainCodexDataScopes(enabled.filter((source) => source.provider === 'codex').map(sourceCacheScope));
+  retainOpenCodeDataScopes(enabled.filter((source) => source.provider === 'opencode').map(sourceCacheScope));
   retainClaudeDataSources(enabled.filter((source) => source.provider === 'claude-desktop-code').map((source) => ({
     cacheScope: sourceCacheScope(source), appDir: source.dataDir,
     projectsDir: source.projectsDir || path.join(os.homedir(), '.claude', 'projects'),
@@ -286,6 +291,7 @@ export async function loadSwitchboardDashboard({
   nowMs = Date.now(),
   loadCodex = loadCodexDashboard,
   loadClaude = loadSwitchboardClaudeThreads,
+  loadOpenCode = loadOpenCodeDashboard,
   codexOptions = {},
   claudeOptions = {},
   sources = null,
@@ -304,10 +310,12 @@ export async function loadSwitchboardDashboard({
         databasePath: await discoverCodexStateDatabase(source.dataDir),
         sessionIndexPath: path.join(source.dataDir, 'session_index.jsonl'),
         globalStatePath: path.join(source.dataDir, '.codex-global-state.json'),
-      } : { appDir: source.dataDir, projectsDir: source.projectsDir || path.join(os.homedir(), '.claude', 'projects') };
+      } : source.provider === 'opencode' ? { dataDir: source.dataDir }
+        : { appDir: source.dataDir, projectsDir: source.projectsDir || path.join(os.homedir(), '.claude', 'projects') };
       sourceOptions.cacheScope = sourceCacheScope(source);
       if (source.provider === 'codex' && loadCodex === loadCodexDashboard) await fs.stat(sourceOptions.databasePath);
     }
+    if (source.provider === 'opencode') return loadOpenCode({ ...sourceOptions, nowMs, maxCount: 5000 });
     return source.provider === 'codex' ? loadCodex({
       ...codexOptions, ...sourceOptions, nowMs,
       codexNativeReadEnabled: true,
@@ -347,6 +355,7 @@ export async function loadSwitchboardDashboard({
 }
 
 export async function openSwitchboardThread(thread, options = {}) {
+  if (thread.provider === 'opencode') throw new Error('OpenCode cannot open one session from a link.');
   const externalId = thread.externalId || thread.id;
   const valid = (thread.provider === 'codex' && UUID.test(externalId)
     && thread.appDeepLink === `codex://threads/${externalId}`)
@@ -637,9 +646,9 @@ export function createSwitchboardServer(options = {}) {
       ...(registry.configPath ? [{ path: path.dirname(registry.configPath), optional: true,
         acceptEvent: (filename) => !filename || filename === path.basename(registry.configPath) }] : []),
       ...sources.filter((source) => source.enabled).flatMap((source) => switchboardWatchPaths(
-        source.provider === 'codex' ? { codexDir: source.dataDir }
+        source.provider === 'codex' ? { codexDir: source.dataDir } : source.provider === 'opencode' ? { openCodeDir: source.dataDir }
           : { appDir: source.dataDir, projectsDir: source.projectsDir }).filter((spec) =>
-            spec.source === (source.provider === 'codex' ? 'codex' : 'claude'))),
+            spec.source === (['codex', 'opencode'].includes(source.provider) ? source.provider : 'claude'))),
     ];
   };
   const server = createAsbServer({
@@ -665,8 +674,8 @@ export function createSwitchboardServer(options = {}) {
       return dashboard;
     },
     listSources: (dashboard) => registry.report(dashboard),
-    updateSource: async (source, revision) => { const saved = await registry.update(source, revision); retainSourceCaches(await registry.read()); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); return saved; },
-    removeSource: async (id, revision) => { const saved = await registry.remove(id, revision); retainSourceCaches(await registry.read()); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); return saved; },
+    updateSource: async (source, revision) => { const saved = await registry.update(source, revision); retainSourceCaches(await registry.read()); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); invalidateOpenCodeData(); return saved; },
+    removeSource: async (id, revision) => { const saved = await registry.remove(id, revision); retainSourceCaches(await registry.read()); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); invalidateOpenCodeData(); return saved; },
     markUnreadThread: async (thread) => {
       await tracker.markUnread(thread.id);
       tracker.apply(thread);

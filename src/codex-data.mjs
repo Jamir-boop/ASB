@@ -72,7 +72,7 @@ function safeLimit(limit) {
   return Math.min(Math.max(number, 1), DEFAULT_THREAD_LIMIT);
 }
 
-async function querySqliteJson(databasePath, sql) {
+export async function querySqliteJson(databasePath, sql) {
   const sqlite = await nativeSqlite;
   if (sqlite?.DatabaseSync) {
     const database = new sqlite.DatabaseSync(databasePath, { readOnly: true });
