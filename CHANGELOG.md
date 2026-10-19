@@ -5,6 +5,9 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 ## Unreleased
 
 - Fixed native theme colors with RGB channels outside `0..1`. Color conversion now limits each channel to a byte, so the theme editor and phone palette receive valid `#RRGGBB` values.
+- Shortened the ASB Bridge peer message prefix.
+- Added explicit `asb bridge link-claude <profile-home> <shared-home>` setup for cross-profile peer discovery and messaging. It links only the native Claude registry and IPC keys, keeps app data and provider credentials separate, preserves the original directory in a private backup, and refuses unsafe paths, unknown files, conflicts, and detected source changes. Install and uninstall keep the shared registry and backup. Native directory-link behavior was checked in Claude Code `2.1.303` and has no compatibility promise.
+
 - Changed the Android app ID to `io.github.jamir_boop.asb` for F-Droid. The new ID installs as a new app beside the old `local.asb.companion` app, so pair the phone again and uninstall the old app. The channel sounds now use the app's own package name.
 - Replaced the Google code scanner in the Android app with an in-app scanner made with CameraX and ZXing, so the app has no Google Play services. **Scan QR code** asks for the camera permission on first use. The phone camera or any QR scanner app also works: the `asb://pair` link opens ASB on the Check the PC screen. Paste still works. The Android release build has no dependency metadata block, signs with the key from `android/keystore.properties` when that file exists, and has Fastlane store text. Android releases use `android-v<version>` tags.
 

@@ -15,6 +15,8 @@ In the tables, `yes` means implemented, `partial` means some of the behavior, `n
 
 A registry row `$CLAUDE_CONFIG_DIR/sessions/<pid>.json` holds the PID, `sessionId`, name, status, protocol version, `messagingSocketPath`, and capabilities. The filename must match the recorded PID. The socket basename is free: Claude falls back to `<pid>-<8-hex>.sock` or random hex on a collision and accepts an explicit path. The bridge honors the recorded path. It accepts protocol 1 and checks the process start time, socket owner, private directory, and socket type. Trust is same-user: the bridge does not read kernel peer credentials.
 
+Claude Code `2.1.303` uses the same config-home `sessions` directory for registry rows and `<PID>.<64-hex-socket-hash>.key` IPC authentication files. It has no dedicated registry override and follows a directory link at `sessions`. The explicit `asb bridge link-claude <profile-home> <shared-home>` setup uses this behavior to share discovery across selected profiles. It preserves app-data isolation, but grants the linked profiles access to shared peer metadata and IPC keys. This is an unpublished compatibility boundary. The setup refuses unknown files, including unrecognized heartbeat files. Root `test/asb-bridge.test.mjs` covers copies, backups, conflicts, permissions, rollback, and concurrent changes with temporary profiles. These fixtures do not prove a future native version will keep the same behavior.
+
 The socket carries newline-delimited UTF-8 JSON, at most 1,048,576 characters per line. `from` is `uds:` plus the socket path, with every byte outside `[A-Za-z0-9:_/.\\-]` percent-encoded in uppercase. The registry keeps the raw path.
 
 | Frame | Fields | Bridge |

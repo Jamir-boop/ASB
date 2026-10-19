@@ -1,5 +1,7 @@
 # Startup on stock Codex
 
+Separate Claude profiles discover peers in their own `<config-home>/sessions` directory by default. The explicit `asb bridge link-claude <profile-home> <shared-home>` setup in [README.md](README.md#link-claude-profiles) shares only that registry. Native Claude Code `2.1.303` follows the directory link. App profiles and Codex task state stay separate. Install, restart recovery, and uninstall do not create or remove this link.
+
 The goal is to open a normal Codex CLI or desktop chat, type nothing, and let Claude discover the chat and start its first turn. The plugin must work with stock Codex on other machines.
 
 ## Result

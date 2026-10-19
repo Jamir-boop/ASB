@@ -4,6 +4,8 @@ A Codex plugin that lets Codex tasks and Claude Code sessions message each other
 
 Claude Code lists and messages its other sessions through its own local registry. This plugin registers each Codex task in that registry, so Claude finds the task with `ListAgents` and writes to it with `SendMessage`. Claude needs no flags, plugins, or launchers. A bundled MCP server gives the Codex side `list_sessions` and `send_message`. Messages travel over Unix domain sockets in private per-user directories.
 
+Separate Claude profiles have separate registries by default. To share discovery and messaging, use the explicit setup below.
+
 ## Requirements
 
 - Stock Codex with its shared local app-server daemon. CLI tasks on the daemon and desktop tasks it owns work. Older desktop tasks use the desktop IPC fallback. CLI sessions started with `--no-daemon` have no inbox. Real-runtime checks cover Codex 0.159.0, 0.159.2, and 0.159.3.
@@ -43,6 +45,26 @@ A task registers when its `SessionStart` hook runs, which Codex does on the firs
 ## Usage skills
 
 Type `/bridge` in Claude Code or `$bridge` in Codex to load the usage guide. Both skills load on demand only. The manual plugin commands above do not install them; use the ASB install command for the skill folders.
+
+## Link Claude profiles
+
+Choose an existing Claude config home as the shared home. Then run:
+
+```bash
+asb bridge link-claude /path/to/profile-home /path/to/shared-home
+```
+
+This opt-in command links only `<profile-home>/sessions` to `<shared-home>/sessions`. Both homes and both registry directories must already exist and belong to your user. The registry directories must have mode `0700`. Config homes can have mode `0755` or `0775`; the command does not change permissions. It refuses linked parents, public write access, unknown entries, and conflicting filenames. It accepts native `<PID>.json` peer records and `<PID>.<64-hex-hash>.key` IPC authentication files. It permits identical files and never overwrites a target file. An unknown heartbeat file causes refusal.
+
+Native JSON metadata can have mode `0664` inside the private registry. JSON files must not be writable by everyone. IPC key files must have no group or other-user permissions. Setup keeps existing file permissions and creates new copies with mode `0600`.
+
+The profiles share peer metadata and IPC authentication keys. Their app data, settings, transcripts, logins, model-provider credentials, and Codex homes stay separate. Every linked profile can discover and message peers in the shared registry. A message can start a turn in the receiving app under that app's own settings.
+
+The command keeps the original directory at the private backup path that it prints, then creates the link. Repeat runs with the same target change nothing. Install and uninstall keep the link, shared registry, and backup. No background service or file mirror is added.
+
+Setup checks for concurrent changes and refuses when it detects one. On failure, it restores the source when the path is free and removes only unchanged files that it copied. If another process creates the source path or changes a copied file, the error reports what it kept. Keep the backup until you have checked both profiles. It is a snapshot, not a live copy. To undo the link later, stop the affected peers, preserve any new shared entries, remove only the link, and restore the saved directory. Uninstall does not undo this opt-in setup.
+
+The directory link follows the unpublished native registry behavior checked in Claude Code `2.1.303`. Claude has no dedicated registry override in that version. Future versions can change this behavior. See [PROTOCOL-COVERAGE.md](PROTOCOL-COVERAGE.md).
 
 ## Check that it works
 

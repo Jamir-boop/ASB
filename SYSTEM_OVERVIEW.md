@@ -81,7 +81,7 @@ The current source package whitelist names 48 runtime files, including 11 ASB Br
 | `docs/benchmarks/` | Historical frontend comparisons, numeric samples, acceptance coverage, and X11 timing limits. |
 | `scripts/asb-icon.mjs` | ASB icon and desktop entry registration. |
 | `scripts/asb-package.mjs` | Linux package build, runtime check, and per-user install/uninstall. |
-| `scripts/asb-bridge.mjs` | Optional bridge status and per-provider install/uninstall command. |
+| `scripts/asb-bridge.mjs` | Optional bridge status, per-provider install/uninstall, and explicit Claude registry linking. |
 | `.agents/plugins/marketplace.json` | Local `asb` marketplace for the `asb-bridge` Codex plugin. |
 | `bridge/` | Optional ASB Bridge plugin, Bun/TypeScript source and tests, committed bundles, and on-demand usage skills. |
 | `android/` | Optional Android companion: Kotlin and Compose app, Gradle build, and JVM tests. See `android/README.md`. |
@@ -396,6 +396,8 @@ XDG state/config/data overrides apply. The per-user package also installs ASB un
 Only when the user runs them with targets, `asb bridge install` and `asb bridge uninstall` change Codex plugin configuration through the `codex` CLI. They copy or remove the Codex `$bridge` and Claude Code `/bridge` skill folders. Without targets, they show usage and change nothing.
 
 The optional bridge plugin runs inside Codex. It writes per-task state under `<CODEX_HOME>/plugin-state/asb-bridge/` and registry rows under `<Claude home>/sessions/`. The Claude home is `$CLAUDE_CONFIG_DIR` or `~/.claude`. Uninstall keeps the per-task message history.
+
+`asb bridge link-claude <profile-home> <shared-home>` is a separate opt-in write operation. It shares only the native `sessions` registry, which holds peer metadata and IPC authentication keys. It leaves settings, transcripts, app data, logins, provider credentials, Codex homes, and the ASB source registry separate. Both existing registry directories must be real, user-owned, and `0700`; owned `0755` and `0775` config homes are supported without a permission change. The command validates known JSON/key entries, checks conflicts before writes, copies with exclusive creation, keeps the original source in a private backup, and creates a directory link to the shared registry. A correct existing link is unchanged. Unknown files, path containment, unsafe paths, and changing source files cause refusal. Rollback restores the source when its path is free and removes only unchanged copies. A recreated source path or changed copy is kept and reported, with the backup. Install and uninstall keep the link and all registry data. Native Claude Code `2.1.303` follows this link and has no separate registry override; this internal behavior has no compatibility promise. See [the setup guide](bridge/README.md#link-claude-profiles).
 
 ## Checks and release
 

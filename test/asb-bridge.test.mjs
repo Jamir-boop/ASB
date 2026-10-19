@@ -6,7 +6,7 @@ import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { codexBunOnPath, hasOldPlugin, skillState } from '../scripts/asb-bridge.mjs';
+import { codexBunOnPath, hasOldPlugin, linkClaudeRegistry, skillState } from '../scripts/asb-bridge.mjs';
 
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const SCRIPT = path.join(ROOT, 'scripts/asb-bridge.mjs');
@@ -481,4 +481,216 @@ test('status uses shipped plugin metadata without bridge package.json and missin
   passed(result);
   assert.equal(JSON.parse(result.stdout).codex[0].plugin.expectedVersion, '0.3.0');
   await assert.rejects(lstat(path.join(root, 'bridge/package.json')), { code: 'ENOENT' });
+});
+
+async function registryFixture(t) {
+  const f = await fixture(t), shared = path.join(f.home, '.claude-shared');
+  for (const directory of [f.home, f.claude]) await chmod(directory, 0o700);
+  await mkdir(shared, { mode: 0o700 });
+  const source = path.join(f.claude, 'sessions'), target = path.join(shared, 'sessions');
+  for (const directory of [source, target]) await mkdir(directory, { mode: 0o700 });
+  const key = `101.${'a'.repeat(64)}.key`;
+  const rows = { '101.json': '{ "pid": 101, "sessionId": "synthetic-source" }\n', [key]: `{"peerToken":"${'b'.repeat(32)}","procStart":"101"}\n` };
+  for (const [name, bytes] of Object.entries(rows)) await writeFile(path.join(source, name), bytes, { mode: 0o600 });
+  await writeFile(path.join(target, '202.json'), '{"pid":202,"sessionId":"synthetic-target"}\n', { mode: 0o600 });
+  const fault = async (code) => {
+    const preload = path.join(f.temporary, 'fault.mjs');
+    await writeFile(preload, `import fs from 'node:fs';\nimport {syncBuiltinESMExports} from 'node:module';\nconst source=${JSON.stringify(source)}, target=${JSON.stringify(target)};\n${code}\nsyncBuiltinESMExports();\n`);
+    return f.run(['link-claude', f.claude, shared], { NODE_OPTIONS: `--import=${preload}` });
+  };
+  return { ...f, shared, source, target, key, rows, fault };
+}
+
+test('Claude registry linking preserves both registries, keeps a private original backup, and is repeatable', async (t) => {
+  const f = await registryFixture(t), destination = await snapshot(f.target), original = await snapshot(f.source);
+  for (const name of ['settings.json', 'credentials.json', 'transcript.jsonl']) await writeFile(path.join(f.claude, name), `Synthetic ${name}\n`);
+  const result = await linkClaudeRegistry(f.claude, f.shared);
+  assert.equal(result.registry, f.target);
+  assert.equal(result.linked, true);
+  assert.equal(await readlink(f.source), f.target);
+  assert.deepEqual(await snapshot(result.backup), original);
+  for (const directory of [path.dirname(result.backup), result.backup, f.target]) assert.equal((await lstat(directory)).mode & 0o777, 0o700);
+  assert.deepEqual(await snapshot(f.target), { ...destination, ...original });
+  for (const name of Object.keys(f.rows)) assert.equal((await lstat(path.join(f.target, name))).mode & 0o777, 0o600);
+  for (const name of ['settings.json', 'credentials.json', 'transcript.jsonl']) assert.equal(await readFile(path.join(f.claude, name), 'utf8'), `Synthetic ${name}\n`);
+  const before = await snapshot(f.home);
+  passed(f.run(['link-claude', f.claude, f.shared]));
+  assert.deepEqual(await linkClaudeRegistry(f.claude, f.shared), { home: f.claude, registry: f.target, backup: null, linked: false });
+  assert.deepEqual(await snapshot(f.home), before);
+  assert.deepEqual(await f.calls(), []);
+  passed(f.run(['uninstall', '--claude']));
+  assert.deepEqual(await snapshot(f.target), { ...destination, ...original });
+  assert.deepEqual(await snapshot(result.backup), original);
+  assert.equal(await readlink(f.source), f.target);
+});
+
+test('Claude registry linking permits identical files and refuses conflicts before any write', async (t) => {
+  const f = await registryFixture(t);
+  await writeFile(path.join(f.target, '101.json'), '{"pid":101,"sessionId":"other"}\n', { mode: 0o600 });
+  const before = await snapshot(f.home);
+  await assert.rejects(linkClaudeRegistry(f.claude, f.shared), /Conflicting registry file: 101.json/);
+  assert.deepEqual(await snapshot(f.home), before);
+  await writeFile(path.join(f.target, '101.json'), f.rows['101.json']);
+  const existing = await lstat(path.join(f.target, '101.json'));
+  await linkClaudeRegistry(f.claude, f.shared);
+  assert.equal((await lstat(path.join(f.target, '101.json'))).ino, existing.ino);
+});
+
+test('Claude registry linking keeps owned 0755 and 0775 home permissions', async (t) => {
+  for (const mode of [0o755, 0o775]) {
+    const f = await registryFixture(t);
+    for (const directory of [f.claude, f.shared]) await chmod(directory, mode);
+    await linkClaudeRegistry(f.claude, f.shared);
+    for (const directory of [f.claude, f.shared]) assert.equal((await lstat(directory)).mode & 0o777, mode);
+  }
+});
+
+test('Claude registry linking accepts native 0664 JSON metadata and preserves existing permissions', async (t) => {
+  const f = await registryFixture(t), source = path.join(f.source, '101.json'), target = path.join(f.target, '202.json');
+  for (const file of [source, target]) await chmod(file, 0o664);
+  const existing = await lstat(target), before = await snapshot(f.target);
+  const result = await linkClaudeRegistry(f.claude, f.shared);
+  assert.equal((await lstat(path.join(result.backup, '101.json'))).mode & 0o777, 0o664);
+  assert.equal((await lstat(target)).mode & 0o777, 0o664);
+  assert.equal((await lstat(target)).ino, existing.ino);
+  assert.equal((await lstat(path.join(f.target, '101.json'))).mode & 0o777, 0o600);
+  assert.equal((await snapshot(f.target))['202.json'], before['202.json']);
+  assert.equal(await readFile(path.join(f.target, '101.json'), 'utf8'), f.rows['101.json']);
+});
+
+test('Claude registry linking refuses world-writable JSON metadata without permission changes', async (t) => {
+  for (const side of ['source', 'target']) {
+    const f = await registryFixture(t), file = path.join(f[side], side === 'source' ? '101.json' : '202.json');
+    await chmod(file, 0o666);
+    const before = await snapshot(f.home);
+    await assert.rejects(linkClaudeRegistry(f.claude, f.shared), /Unsafe registry file/);
+    assert.equal((await lstat(file)).mode & 0o777, 0o666);
+    assert.deepEqual(await snapshot(f.home), before);
+  }
+});
+
+test('Claude registry linking refuses group-readable or group-writable IPC keys', async (t) => {
+  for (const side of ['source', 'target']) {
+    for (const mode of [0o640, 0o620]) {
+      const f = await registryFixture(t), file = path.join(f[side], f.key);
+      if (side === 'target') await writeFile(file, f.rows[f.key], { mode: 0o600 });
+      await chmod(file, mode);
+      const before = await snapshot(f.home);
+      await assert.rejects(linkClaudeRegistry(f.claude, f.shared), /Unsafe registry file/);
+      assert.equal((await lstat(file)).mode & 0o777, mode);
+      assert.deepEqual(await snapshot(f.home), before);
+    }
+  }
+});
+
+test('Claude registry linking refuses unknown files, invalid JSON, nonfiles, and linked leaves', async (t) => {
+  for (const kind of ['unknown', 'heartbeat', 'invalid', 'directory', 'link']) {
+    const f = await registryFixture(t), file = path.join(f.source, kind === 'unknown' ? 'settings.json' : kind === 'heartbeat' ? '.heartbeat' : '303.json');
+    if (kind === 'directory') await mkdir(file);
+    else if (kind === 'link') await symlink(path.join(f.target, '202.json'), file);
+    else await writeFile(file, kind === 'invalid' ? '{' : '{}', { mode: 0o600 });
+    const before = await snapshot(f.home);
+    await assert.rejects(linkClaudeRegistry(f.claude, f.shared), /Unsupported registry entry|Invalid registry JSON|Unsafe registry file|ELOOP/);
+    assert.deepEqual(await snapshot(f.home), before);
+  }
+});
+
+test('Claude registry linking refuses public targets, changed links, unsafe parents, and path containment', async (t) => {
+  const f = await registryFixture(t);
+  await chmod(f.target, 0o755);
+  await assert.rejects(linkClaudeRegistry(f.claude, f.shared), /private \(0700\)/);
+  await chmod(f.target, 0o700);
+  const alias = path.join(f.home, 'shared-alias');
+  await symlink(f.shared, alias);
+  await assert.rejects(linkClaudeRegistry(f.claude, alias), /linked or non-directory/);
+  await assert.rejects(linkClaudeRegistry(f.claude, f.claude), /must not contain/);
+  const nested = path.join(f.source, 'nested');
+  await mkdir(path.join(nested, 'sessions'), { recursive: true, mode: 0o700 });
+  await assert.rejects(linkClaudeRegistry(f.claude, nested), /must not contain/);
+  await rm(nested, { recursive: true });
+  await chmod(f.shared, 0o777);
+  await assert.rejects(linkClaudeRegistry(f.claude, f.shared), /Unsafe registry parent/);
+  await chmod(f.shared, 0o700);
+  await rm(f.source, { recursive: true });
+  await symlink(f.claude, f.source);
+  const before = await snapshot(f.home);
+  await assert.rejects(linkClaudeRegistry(f.claude, f.shared), /Registry link has another target/);
+  assert.deepEqual(await snapshot(f.home), before);
+});
+
+test('Claude registry linking refuses a foreign owner', async (t) => {
+  const f = await registryFixture(t), before = await snapshot(f.home);
+  const result = await f.fault("const lstat=fs.promises.lstat;fs.promises.lstat=async(file,...args)=>{const row=await lstat(file,...args);if(file===target)row.uid++;return row;};");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /owned by the current user/);
+  assert.deepEqual(await snapshot(f.home), before);
+});
+
+test('Claude registry setup rolls back an insertion failure and removes only its own copies', async (t) => {
+  const f = await registryFixture(t), before = await snapshot(f.home);
+  const result = await f.fault("fs.promises.symlink=async()=>{throw new Error('Synthetic link failure');};");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Synthetic link failure/);
+  assert.deepEqual(await snapshot(f.home), before);
+});
+
+test('Claude registry setup refuses a concurrent target collision without overwriting its bytes', async (t) => {
+  const f = await registryFixture(t), source = await snapshot(f.source);
+  const result = await f.fault("const open=fs.promises.open;fs.promises.open=async(file,...args)=>{if(file===target+'/101.json'&&typeof args[0]==='number'&&(args[0]&fs.constants.O_EXCL))await fs.promises.writeFile(file,'{\"pid\":101,\"other\":true}\\n',{flag:'wx',mode:0o600});return open(file,...args);};");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /EEXIST/);
+  assert.deepEqual(await snapshot(f.source), source);
+  assert.deepEqual(JSON.parse(await readFile(path.join(f.target, '101.json'))), { pid: 101, other: true });
+  await assert.rejects(lstat(path.join(f.target, f.key)), { code: 'ENOENT' });
+});
+
+test('Claude registry setup detects source changes before finalization and preserves the updated source', async (t) => {
+  const f = await registryFixture(t), target = await snapshot(f.target);
+  const result = await f.fault("const rename=fs.promises.rename; fs.promises.rename=async(from,to)=>{await rename(from,to);if(from===source)await fs.promises.writeFile(to+'/101.json','{\"pid\":101,\"changed\":true}\\n');};");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Registry changed during setup/);
+  assert.equal((await lstat(f.source)).isDirectory(), true);
+  assert.deepEqual(JSON.parse(await readFile(path.join(f.source, '101.json'))), { pid: 101, changed: true });
+  assert.deepEqual(await snapshot(f.target), target);
+});
+
+test('Claude registry rollback preserves a changed shared copy instead of deleting another process update', async (t) => {
+  const f = await registryFixture(t);
+  const result = await f.fault("fs.promises.symlink=async()=>{await fs.promises.writeFile(target+'/101.json','{\"pid\":101,\"changed\":true}\\n');throw new Error('Synthetic link failure');};");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Shared registry file kept at/);
+  assert.equal((await lstat(f.source)).isDirectory(), true);
+  assert.deepEqual(JSON.parse(await readFile(path.join(f.target, '101.json'))), { pid: 101, changed: true });
+  await assert.rejects(lstat(path.join(f.target, f.key)), { code: 'ENOENT' });
+});
+
+test('Claude registry setup never replaces a source path recreated during the link gap', async (t) => {
+  const f = await registryFixture(t), original = await snapshot(f.source);
+  const result = await f.fault("fs.promises.symlink=async(to,from)=>{await fs.promises.mkdir(from,{mode:0o700});await fs.promises.writeFile(from+'/303.json','{\"pid\":303}\\n',{mode:0o600});const error=new Error('Synthetic source path collision');error.code='EEXIST';throw error;};");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Original registry backup kept at/);
+  assert.deepEqual(await snapshot(f.source), { '303.json': Buffer.from('{"pid":303}\n').toString('base64') });
+  const backup = (await readdir(f.claude)).find((name) => name.startsWith('.asb-bridge-sessions-'));
+  assert.deepEqual(await snapshot(path.join(f.claude, backup, 'sessions')), original);
+  for (const [name, bytes] of Object.entries(f.rows)) assert.equal(await readFile(path.join(f.target, name), 'utf8'), bytes);
+});
+
+test('Claude registry setup detects a source path replaced after link creation and keeps the backup', async (t) => {
+  const f = await registryFixture(t), original = await snapshot(f.source);
+  const result = await f.fault("const symlink=fs.promises.symlink;fs.promises.symlink=async(to,from,...args)=>{await symlink(to,from,...args);await fs.promises.unlink(from);await fs.promises.mkdir(from,{mode:0o700});};");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Registry link changed during setup.*Original registry backup kept at/);
+  assert.deepEqual(await snapshot(f.source), {});
+  const backup = (await readdir(f.claude)).find((name) => name.startsWith('.asb-bridge-sessions-'));
+  assert.deepEqual(await snapshot(path.join(f.claude, backup, 'sessions')), original);
+});
+
+test('Claude registry CLI requires exactly two explicit absolute homes and never installs detected targets', async (t) => {
+  const f = await registryFixture(t), before = await snapshot(f.home);
+  for (const args of [[], [f.claude], [f.claude, f.shared, '--force'], ['--all', f.shared], ['relative', f.shared], [f.claude, `${f.shared}\n`]]) {
+    const result = f.run(['link-claude', ...args]);
+    assert.equal(result.status, 1);
+    assert.deepEqual(await snapshot(f.home), before);
+    assert.deepEqual(await f.calls(), []);
+  }
 });

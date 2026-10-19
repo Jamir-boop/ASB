@@ -5,7 +5,7 @@
 // https://github.com/PeterSR/claude-code-socket-transport/tree/480bd83c0bf1c63161c5afdb0976bbff849c926b
 import net from 'node:net';
 import { createHash, randomUUID } from 'node:crypto';
-import { constants, openSync, closeSync, fstatSync, readFileSync, readdirSync, lstatSync, chmodSync, mkdirSync, writeFileSync, unlinkSync, renameSync } from 'node:fs';
+import { constants, openSync, closeSync, fstatSync, readFileSync, readdirSync, lstatSync, realpathSync, chmodSync, mkdirSync, writeFileSync, unlinkSync, renameSync } from 'node:fs';
 import { dirname, join, basename, isAbsolute } from 'node:path';
 import { once } from 'node:events';
 import { homedir } from 'node:os';
@@ -161,8 +161,9 @@ function uniqueName(configDir: string, base: string, sessionId: string) {
 }
 
 export async function register(configDir: string, sessionId: string, address: string, cwd: string, status: string) {
-  const directory = join(configDir, 'sessions');
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const sessions = join(configDir, 'sessions');
+  mkdirSync(sessions, { recursive: true, mode: 0o700 });
+  const directory = realpathSync(sessions);
   privateDirectory(directory);
   const path = join(directory, `${process.pid}.json`);
   let base = nameBase(cwd, sessionId);

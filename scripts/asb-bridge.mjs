@@ -1,14 +1,14 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, rename, rm, rmdir, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 export const NEXT_STEPS = 'Next: open Codex, go to Plugins > ASB Bridge, and trust both hooks. Then restart Codex.\nUse $bridge in Codex and /bridge in Claude Code when you want the usage guide.\nAfter an ASB upgrade, run `asb bridge install` again.';
-const USAGE = 'Use: asb bridge status [--json]\n     asb bridge install (--all | --codex-home <path> ... | --claude) [--force]\n     asb bridge uninstall (--all | --codex-home <path> ... | --claude) [--force]';
+const USAGE = 'Use: asb bridge status [--json]\n     asb bridge install (--all | --codex-home <path> ... | --claude) [--force]\n     asb bridge uninstall (--all | --codex-home <path> ... | --claude) [--force]\n     asb bridge link-claude <profile-home> <shared-home>';
 const RECORD = '.asb-bridge.json';
 const OLD_PLUGIN = 'claude-uds-bridge@leonkohli';
 const OLD_WARNING = 'the old claude-uds-bridge plugin is installed here; run bridge/scripts/migrate-from-claude-uds-bridge.mjs first';
@@ -34,6 +34,115 @@ async function safeParents(file) {
   for (let directory = path.dirname(file); directory !== path.dirname(directory); directory = path.dirname(directory)) {
     const entry = await info(directory);
     if (entry && !entry.isDirectory()) throw new Error(`ASB will not write through a linked or non-directory path: ${directory}`);
+  }
+}
+const sameFile = (left, right) => left && right && left.dev === right.dev && left.ino === right.ino;
+async function registryDirectory(directory, privateMode = true) {
+  const entry = await info(directory);
+  if (!entry?.isDirectory() || entry.uid !== process.getuid?.() || (privateMode ? (entry.mode & 0o777) !== 0o700 : (entry.mode & 0o002))) {
+    throw new Error(`Registry directory must be ${privateMode ? 'private (0700), ' : ''}owned by the current user, and not linked: ${directory}`);
+  }
+  return entry;
+}
+async function registryParents(file) {
+  await safeParents(file);
+  for (let directory = path.dirname(file); directory !== path.dirname(directory); directory = path.dirname(directory)) {
+    const entry = await info(directory);
+    if (entry && (![0, process.getuid?.()].includes(entry.uid) || ((entry.mode & (directory === path.dirname(file) ? 0o002 : 0o022)) && !(entry.uid === 0 && (entry.mode & 0o1000))))) {
+      throw new Error(`Unsafe registry parent: ${directory}`);
+    }
+  }
+}
+async function registryFiles(directory) {
+  await registryDirectory(directory);
+  const files = new Map();
+  for (const name of (await readdir(directory)).sort()) {
+    const key = /^[1-9][0-9]*\.[a-f0-9]{64}\.key$/.test(name);
+    if (!key && !/^[1-9][0-9]*\.json$/.test(name)) throw new Error(`Unsupported registry entry: ${path.join(directory, name)}`);
+    const file = path.join(directory, name), handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const entry = await handle.stat();
+      if (!entry.isFile() || entry.uid !== process.getuid?.() || entry.nlink !== 1 || (entry.mode & (key ? 0o077 : 0o002)) || entry.size > (key ? 4096 : 256 * 1024)) throw new Error(`Unsafe registry file: ${file}`);
+      const bytes = await handle.readFile(), after = await handle.stat();
+      if (!sameFile(entry, await info(file)) || entry.size !== after.size || entry.mtimeMs !== after.mtimeMs || entry.ctimeMs !== after.ctimeMs) throw new Error(`Registry changed during setup: ${directory}`);
+      let row;
+      try { row = JSON.parse(bytes); } catch { throw new Error(`Invalid registry JSON: ${file}`); }
+      if (key ? !/^[a-f0-9]{32}$/.test(row?.peerToken) : !Number.isSafeInteger(row?.pid) || name !== `${row.pid}.json`) throw new Error(`Invalid registry entry: ${file}`);
+      files.set(name, { bytes, entry });
+    } finally { await handle.close(); }
+  }
+  return files;
+}
+function sameRegistry(left, right) {
+  return left.size === right.size && [...left].every(([name, value]) => {
+    const other = right.get(name);
+    return other && sameFile(value.entry, other.entry) && value.entry.mtimeMs === other.entry.mtimeMs && value.entry.ctimeMs === other.entry.ctimeMs && value.bytes.equals(other.bytes);
+  });
+}
+export async function linkClaudeRegistry(home, sharedHome) {
+  home = absolute(home); sharedHome = absolute(sharedHome);
+  const source = path.join(home, 'sessions'), target = path.join(sharedHome, 'sessions');
+  if (source === target || source.startsWith(`${target}${path.sep}`) || target.startsWith(`${source}${path.sep}`)) throw new Error('Registry paths must be separate and must not contain each other.');
+  for (const file of [source, target]) await registryParents(file);
+  for (const directory of [home, sharedHome]) await registryDirectory(directory, false);
+  const targetDirectory = await registryDirectory(target), sourceDirectory = await info(source);
+  if (sourceDirectory?.isSymbolicLink()) {
+    if (sourceDirectory.uid !== process.getuid?.() || path.resolve(home, await readlink(source)) !== target) throw new Error(`Registry link has another target: ${source}`);
+    await registryFiles(target);
+    return { home, registry: target, backup: null, linked: false };
+  }
+  await registryDirectory(source);
+  const original = await registryFiles(source), destination = await registryFiles(target), copied = new Map();
+  for (const [name, value] of original) {
+    if (destination.has(name) && !value.bytes.equals(destination.get(name).bytes)) throw new Error(`Conflicting registry file: ${name}`);
+  }
+  let holder, backup, moved = false, link;
+  try {
+    for (const [name, value] of original) {
+      if (destination.has(name)) continue;
+      const handle = await open(path.join(target, name), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      try {
+        const entry = await handle.stat();
+        copied.set(name, { ...value, entry });
+        await handle.writeFile(value.bytes);
+      } finally { await handle.close(); }
+    }
+    if (!sameRegistry(original, await registryFiles(source))) throw new Error(`Registry changed during setup: ${source}`);
+    if (!sameFile(sourceDirectory, await info(source)) || !sameFile(targetDirectory, await registryDirectory(target))) throw new Error('Registry directory changed during setup.');
+    holder = await mkdtemp(path.join(home, '.asb-bridge-sessions-'));
+    backup = path.join(holder, 'sessions');
+    await rename(source, backup); moved = true;
+    if (!sameFile(sourceDirectory, await info(backup)) || !sameRegistry(original, await registryFiles(backup))) throw new Error(`Registry changed during setup: ${backup}`);
+    const merged = await registryFiles(target);
+    if ([...original].some(([name, value]) => !merged.get(name)?.bytes.equals(value.bytes))) throw new Error(`Shared registry changed during setup: ${target}`);
+    await symlink(target, source, 'dir');
+    link = await info(source);
+    if (!sameRegistry(original, await registryFiles(backup))) throw new Error(`Registry changed during setup: ${backup}`);
+    if (!link?.isSymbolicLink() || !sameFile(link, await info(source)) || await readlink(source) !== target || !sameFile(targetDirectory, await registryDirectory(target))) throw new Error('Registry link changed during setup.');
+    return { home, registry: target, backup, linked: true };
+  } catch (error) {
+    const retained = [];
+    if (moved) {
+      try {
+        if (link && sameFile(link, await info(source)) && (await info(source))?.isSymbolicLink() && await readlink(source) === target) await unlink(source);
+        if (await info(source)) throw new Error('The source path was created by another process.');
+        if (!sameFile(sourceDirectory, await info(backup))) throw new Error('The backup directory changed.');
+        await rename(backup, source); moved = false;
+      } catch { retained.push(`Original registry backup kept at ${backup}.`); }
+    }
+    if (!moved && sameFile(targetDirectory, await info(target))) {
+      for (const [name, value] of copied) {
+        const file = path.join(target, name);
+        try {
+          if (!sameFile(value.entry, await info(file)) || !(await contents(file))?.equals(value.bytes) || !sameFile(value.entry, await info(file))) throw new Error('Copied file changed.');
+          await unlink(file);
+        } catch (cleanupError) { if (cleanupError.code !== 'ENOENT') retained.push(`Shared registry file kept at ${file}.`); }
+      }
+    }
+    if (holder && !moved) {
+      try { await rmdir(holder); } catch { retained.push(`Backup folder kept at ${holder}.`); }
+    }
+    throw new Error(`${error.message}${retained.length ? ` ${retained.join(' ')}` : ''}`, { cause: error });
   }
 }
 async function treeFiles(root, prefix = '') {
@@ -288,6 +397,12 @@ export async function status(options = {}) {
 }
 export async function main(args = process.argv.slice(2), context = {}) {
   const command = args.shift() || 'status';
+  if (command === 'link-claude') {
+    if (args.length !== 2 || args.some((arg) => arg.startsWith('--'))) throw new Error(USAGE);
+    const result = await linkClaudeRegistry(...args);
+    console.log(`Claude ${result.home}: registry ${result.registry}; ${result.linked ? `linked; original registry backup ${result.backup}` : 'already linked'}`);
+    return 0;
+  }
   if (command === 'status') {
     if (args.length && (args.length !== 1 || args[0] !== '--json')) throw new Error(USAGE);
     const result = await status(context);
