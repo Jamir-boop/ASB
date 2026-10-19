@@ -3,23 +3,30 @@ import { constants } from 'node:fs';
 import { chmod, link, lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
+import { runtimeDir } from '../src/platform-paths.mjs';
 
-export const instanceRuntimePath = (env = process.env) => typeof env.XDG_RUNTIME_DIR === 'string' && path.isAbsolute(env.XDG_RUNTIME_DIR)
-  ? path.join(env.XDG_RUNTIME_DIR, 'asb', 'service.json') : null;
-const owned = (info) => !process.getuid || info.uid === process.getuid();
+export const instanceRuntimePath = (env = process.env, platform = process.platform) => {
+  const directory = runtimeDir(env, platform);
+  return directory && path.join(directory, 'service.json');
+};
+// Windows has no POSIX owner or mode bits; there the folder ACL (icacls) limits access, and links are still refused.
+const owned = (info, platform = process.platform) => platform === 'win32' || !process.getuid || info.uid === process.getuid();
+const privateMode = (info, mode, platform = process.platform) => platform === 'win32' || (info.mode & 0o777) === mode;
 const validRuntime = (value) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).sort().join(',') === 'pid,port,schema,sourceToken' && value.schema === 1
   && Number.isSafeInteger(value.pid) && value.pid > 0 && value.pid <= 2147483647
   && Number.isInteger(value.port) && value.port >= 1 && value.port <= 65535
   && typeof value.sourceToken === 'string' && /^[a-f0-9]{64}$/.test(value.sourceToken);
 
-async function runtimeContents(file) {
+async function runtimeContents(file, platform = process.platform) {
   const directory = await lstat(path.dirname(file));
-  if (!directory.isDirectory() || !owned(directory) || (directory.mode & 0o777) !== 0o700) throw new Error('Unsafe ASB runtime folder.');
-  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  if (!directory.isDirectory() || !owned(directory, platform) || !privateMode(directory, 0o700, platform)) throw new Error('Unsafe ASB runtime folder.');
+  // Windows has no O_NOFOLLOW, so a link check comes first there.
+  if (platform === 'win32' && (await lstat(file)).isSymbolicLink()) throw new Error('Unsafe ASB runtime file.');
+  const handle = await open(file, platform === 'win32' ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const info = await handle.stat();
-    if (!info.isFile() || !owned(info) || (info.mode & 0o777) !== 0o600 || info.size > 4096) throw new Error('Unsafe ASB runtime file.');
+    if (!info.isFile() || !owned(info, platform) || !privateMode(info, 0o600, platform) || info.size > 4096) throw new Error('Unsafe ASB runtime file.');
     const bytes = Buffer.alloc(4097);
     const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
     if (bytesRead > 4096) throw new Error('ASB runtime file is too large.');
@@ -27,11 +34,11 @@ async function runtimeContents(file) {
   } finally { await handle.close(); }
 }
 
-export async function readServiceRuntime(env = process.env) {
-  const file = instanceRuntimePath(env);
+export async function readServiceRuntime(env = process.env, platform = process.platform) {
+  const file = instanceRuntimePath(env, platform);
   if (!file) return null;
   try {
-    const value = JSON.parse(await runtimeContents(file));
+    const value = JSON.parse(await runtimeContents(file, platform));
     return validRuntime(value) ? value : null;
   } catch { return null; }
 }
@@ -71,32 +78,40 @@ export function requestInstance(runtime, route, { method = 'GET', body, headers 
   });
 }
 
-export async function findRunningService(env = process.env) {
-  const runtime = await readServiceRuntime(env);
-  if (!runtime) return null;
+// The engine of this runtime record answers as itself.
+export async function serviceAnswers(runtime, request = requestInstance) {
   try {
-    const reply = await requestInstance(runtime, '/api/service', { maxBytes: 4096 });
-    return reply.statusCode === 200 && reply.body?.service === true && reply.body.pid === runtime.pid ? runtime : null;
-  } catch { return null; }
+    const reply = await request(runtime, '/api/service', { maxBytes: 4096 });
+    return reply.statusCode === 200 && reply.body?.service === true && reply.body.pid === runtime.pid;
+  } catch { return false; }
 }
 
-export async function prepareInstanceRuntime(env = process.env) {
-  const file = instanceRuntimePath(env);
-  const root = file && await lstat(env.XDG_RUNTIME_DIR).catch(() => null);
-  if (!root?.isDirectory() || !owned(root)) throw new Error('ASB service run needs an absolute, existing XDG_RUNTIME_DIR folder owned by the user.');
-  const directory = path.dirname(file);
+export async function findRunningService(env = process.env, platform = process.platform) {
+  const runtime = await readServiceRuntime(env, platform);
+  return runtime && await serviceAnswers(runtime) ? runtime : null;
+}
+
+export async function prepareInstanceRuntime(env = process.env, { platform = process.platform, answers = serviceAnswers,
+  file = instanceRuntimePath(env, platform) } = {}) {
+  const directory = file && path.dirname(file);
+  if (platform === 'win32') await mkdir(path.dirname(directory), { recursive: true });
+  const root = file && await lstat(platform === 'win32' ? path.dirname(directory) : env.XDG_RUNTIME_DIR).catch(() => null);
+  if (!root?.isDirectory() || !owned(root, platform)) {
+    throw new Error(platform === 'win32' ? 'ASB will not use a linked or missing LOCALAPPDATA\\asb folder.'
+      : 'ASB service run needs an absolute, existing XDG_RUNTIME_DIR folder owned by the user.');
+  }
   const previousDirectory = await lstat(directory).catch((error) => { if (error.code !== 'ENOENT') throw error; });
-  if (previousDirectory && (!previousDirectory.isDirectory() || !owned(previousDirectory))) {
+  if (previousDirectory && (!previousDirectory.isDirectory() || !owned(previousDirectory, platform))) {
     throw new Error('ASB will not use a linked or foreign runtime folder.');
   }
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  if (previousDirectory && (previousDirectory.mode & 0o777) !== 0o700) {
+  if (previousDirectory && !privateMode(previousDirectory, 0o700, platform)) {
     const existing = await lstat(file).catch((error) => { if (error.code !== 'ENOENT') throw error; });
     if (existing) throw new Error('ASB kept an invalid service.json. Check its runtime folder permissions.');
   }
-  await chmod(directory, 0o700);
+  if (platform !== 'win32') await chmod(directory, 0o700);
   let previous = null;
-  try { previous = await runtimeContents(file); }
+  try { previous = await runtimeContents(file, platform); }
   catch (error) {
     if (error.code !== 'ENOENT') throw new Error('ASB kept an invalid service.json. Remove it before starting ASB.');
   }
@@ -104,31 +119,46 @@ export async function prepareInstanceRuntime(env = process.env) {
     let saved;
     try { saved = JSON.parse(previous); } catch {}
     if (!validRuntime(saved)) throw new Error('ASB kept an invalid service.json. Remove it before starting ASB.');
-    try { process.kill(saved.pid, 0); throw new Error('The ASB runtime file belongs to a running process.'); }
-    catch (error) { if (error.code !== 'ESRCH') throw error; }
+    let alive = true;
+    try { process.kill(saved.pid, 0); } catch (error) { if (error.code !== 'ESRCH') throw error; alive = false; }
+    // Windows soon gives an old PID to a new process, so there a live PID counts only when that engine answers.
+    if (alive && (platform !== 'win32' || await answers(saved))) throw new Error('The ASB runtime file belongs to a running process.');
   }
-  return { file, previous };
+  return { file, previous, platform };
 }
 
 export async function publishInstanceRuntime(prepared, runtime) {
   if (!prepared) return null;
-  const { file, previous } = prepared;
+  const { file, previous, platform } = prepared;
   const temporary = `${file}.${randomBytes(6).toString('hex')}.tmp`;
   try {
     await writeFile(temporary, JSON.stringify(runtime) + '\n', { flag: 'wx', mode: 0o600 });
     if (previous === null) await link(temporary, file);
     else {
-      if (!(await runtimeContents(file)).equals(previous)) throw new Error('ASB kept a runtime file that changed during startup.');
+      if (!(await runtimeContents(file, platform)).equals(previous)) throw new Error('ASB kept a runtime file that changed during startup.');
       await rename(temporary, file);
     }
   } finally { await rm(temporary, { force: true }); }
-  return { file, runtime };
+  return { file, runtime, platform };
 }
 
 export async function removeInstanceRuntime(record) {
   if (!record) return;
   let current;
-  try { current = JSON.parse(await runtimeContents(record.file)); }
+  try { current = JSON.parse(await runtimeContents(record.file, record.platform)); }
   catch { return; }
   if (validRuntime(current) && current.pid === record.runtime.pid && current.sourceToken === record.runtime.sourceToken) await rm(record.file);
+}
+
+// Limits a Windows folder to the current user (plan 14.3). With no user name in the environment, it only warns.
+export async function protectWindowsFolder(folder, { env = process.env, execFile, log = console.error } = {}) {
+  const user = env.USERDOMAIN && env.USERNAME ? `${env.USERDOMAIN}\\${env.USERNAME}` : env.USERNAME;
+  if (!user) { log(`ASB cannot limit ${folder} to this user: USERNAME is not set.`); return false; }
+  try {
+    await execFile('icacls', [folder, '/inheritance:r', '/grant:r', `${user}:(OI)(CI)F`], { windowsHide: true });
+    return true;
+  } catch (error) {
+    log(`ASB cannot limit ${folder} to this user: ${error.message}`);
+    return false;
+  }
 }

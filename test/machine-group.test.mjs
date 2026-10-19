@@ -86,12 +86,16 @@ test('the merge keeps the newest 256 tombstones and 32 members', () => {
 test('group.json saves atomically with mode 0600 and an invalid file moves to group.json.bad', async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'asb-group-test-'));
   t.after(() => rm(home, { recursive: true, force: true }));
-  const file = groupPath({ HOME: home, XDG_CONFIG_HOME: path.join(home, 'config') });
-  assert.equal(file, path.join(home, 'config/asb/group.json'));
-  assert.equal(groupPath({ HOME: home }), path.join(home, '.config/asb/group.json'));
+  const file = path.join(home, 'config', 'asb', 'group.json');
+  // The Linux folder rules and file modes; Windows uses APPDATA and has no POSIX modes (this file is in the Windows CI list).
+  const linux = process.platform !== 'win32';
+  if (linux) {
+    assert.equal(groupPath({ HOME: home, XDG_CONFIG_HOME: path.join(home, 'config') }), file);
+    assert.equal(groupPath({ HOME: home }), path.join(home, '.config/asb/group.json'));
+  }
   assert.deepEqual(await loadGroup(file), { group: null, warning: '' });
   await saveGroup(file, group());
-  assert.equal((await stat(file)).mode & 0o777, 0o600);
+  if (linux) assert.equal((await stat(file)).mode & 0o777, 0o600);
   assert.deepEqual(await readdir(path.dirname(file)), ['group.json']);
   assert.deepEqual(await loadGroup(file), { group: group(), warning: '' });
   await writeFile(file, JSON.stringify({ ...group(), schema: 7 }));

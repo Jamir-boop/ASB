@@ -170,7 +170,7 @@ The machine group shows the sessions of your other computers that run ASB. Each 
 
 1. On each machine, turn on network access: `asb network enable <address>`. `asb network status` lists the addresses of the PC. Network access is the same setting as phone access. Use a private LAN, ZeroTier, or Tailscale address.
 2. On the first machine, run `asb group invite`. It prints a join link, the fingerprint in groups of four characters, and the time until which the link works. The link works one time for 10 minutes.
-3. On the other machine, run `asb group join '<link>'`, optionally with `--name <name>`. It prints the name and fingerprint of the inviter and asks `Does the other machine show this fingerprint? [y/N]`. Compare the fingerprint, then answer `y`. When the name is taken, ASB suggests another one.
+3. On the other machine, run `asb group join '<link>'`, optionally with `--name <name>`. With no link, `asb group join` asks `Paste the join link: ` and reads one line; an empty answer stops with `No join link.`. Use this form on Windows: `cmd.exe` splits a typed link at each `&`. It prints the name and fingerprint of the inviter and asks `Does the other machine show this fingerprint? [y/N]`. Compare the fingerprint, then answer `y`. When the name is taken, ASB suggests another one.
 
 `asb group status` lists the machines (online, or offline with the last-seen time) and the group phones. `asb group remove <name>` removes a machine. `asb group leave` makes this machine leave the group; it keeps its paired phones. A removed machine leaves the group by itself when it next reaches a member. To join again, it needs a new identity: if `asb group status` still shows a group, run `asb group leave`; then stop ASB (`asb engine stop`), run `asb group reset-identity`, and start ASB again. Paired phones must then pair again. `asb network disable` turns network access off.
 
@@ -275,6 +275,15 @@ To pair a phone, select **Pair a phone**. In the ASB app, select **Scan QR code*
 
 **Paired phones** lists each phone with its pairing date and last-seen time. **Remove** removes that phone at once. The phone then shows that it was removed. To stop all phone access, clear **Allow phone access** and select **Apply**.
 
+The same actions work from a terminal while the engine runs. Network access must be on (`asb network enable <address>`).
+
+| Command | Effect |
+| --- | --- |
+| `asb phone status [--json]` | List the paired phones with their ID, pairing date, and last-seen time. |
+| `asb phone pair` | Print a one-time pairing link and the time when it ends. Scan it as a QR code or paste it in the ASB app. |
+| `asb phone remove <name>` | Remove the phone with this name. When more than one phone has the name, ASB lists their IDs. |
+| `asb phone remove --id <id>` | Remove the phone with this ID. |
+
 ## Start and stop
 
 Installed packages launch with `asb` or the ASB Applications entry. The per-user command `~/.local/bin/asb` starts the shipped `scripts/asb`. If the recorded Node.js is not usable, `scripts/asb` tries `~/.local/bin/node`, `/usr/local/bin/node`, then `/usr/bin/node`, and prints a message if none is usable. ASB appends `/usr/local/bin:/usr/bin:/bin` to the caller's `PATH`, so apps started from ASB keep the caller's `PATH` order. From source:
@@ -319,6 +328,43 @@ physical display FPS or complete UI parity. Their harnesses are no longer in
 this tree.
 
 Default Codex opens use `codex://threads/<id>`. Default Claude opens use `claude://code/continue?session=local_<uuid>` for local chats and `claude://code/<id>` for validated `cse_` or `session_` remote IDs. The apps must handle these links. An additional source's installed launcher receives the validated link for that profile. Invalid Claude local IDs remain visible with the open action disabled. Opens run in the background. **Opening…** appears in the row; a failure adds details to its tooltip.
+
+## Windows
+
+On Windows, ASB has statuses only. The engine reads Codex and Claude on that PC and gives their sessions to paired phones and to the other machines of the group. It has no window, no sounds, and no bridge yet. A paired phone shows the sessions and can open them on the Windows PC. A Linux board in the group shows them as remote cards. Claude web sessions are not read on Windows. Windows needs Node.js `22.13` or later.
+
+```bash
+npm install -g github:Jamir-boop/ASB
+asb setup
+```
+
+`asb setup` does these steps:
+
+1. It writes the autostart value and starts the engine, then waits up to 20 s for the engine to answer.
+2. It lists the network addresses of the PC and asks which to turn on. `--yes` keeps the saved addresses (else the first home network address). `--address <address>` selects an address with no question; you can give it more than once.
+3. It prints the firewall rule for the selected addresses and the phone port. ASB never runs this rule and never changes the firewall. To let phones and other machines reach ASB, run the rule in an administrator PowerShell. When Windows already allows `node.exe` on private networks, the rule is not needed.
+4. It prints the command to join a machine group. On Windows, run `asb group join --name <name>` and paste the link when it asks.
+
+On Linux, `asb setup` installs `asb.service` in step 1 and also prints the bridge install command.
+
+| Command | Effect |
+| --- | --- |
+| `asb engine install` | Make the engine start when you sign in, then start it. |
+| `asb engine uninstall` | Remove the autostart value, then stop the engine. |
+| `asb engine start` | Start the engine and its tray icon when none runs. |
+| `asb engine stop` | Stop the engine and phone access. |
+| `asb engine status` | Show whether the engine runs, its PID and port. |
+| `asb engine run` | Run the engine in this terminal. |
+
+`asb` with no command shows the engine status. Autostart is the `ASB` value in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. It starts a hidden PowerShell tray script (`scripts\asb-tray.ps1`) with the `node.exe` that installed ASB. The tray icon menu has **Copy phone pairing link** and **Quit ASB**. The tray starts the engine again after a failure, at most 5 times in 10 minutes. After that, it shows "ASB stopped after repeated failures." and stops.
+
+| File | Path |
+| --- | --- |
+| Settings, phone settings, the certificate, and the group | `%APPDATA%\asb` |
+| Marks, pins, and `engine.log` | `%LOCALAPPDATA%\asb\state` |
+| The engine runtime file (`service.json`) | `%LOCALAPPDATA%\asb\run` |
+
+ASB limits these folders to your Windows user with `icacls`. Windows has no POSIX file modes, so ASB does not check them there; it still refuses linked files. The phone certificate is `cert.pfx` with its passphrase in `pfx-pass` and the public part in `cert.cer`, which Windows PowerShell creates. A session link opens with `start` only when it has plain URL characters; ASB refuses the others with "This session link cannot open on Windows."
 
 ## Refresh and data limits
 

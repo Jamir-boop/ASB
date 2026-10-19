@@ -444,7 +444,7 @@ test('source launchers receive one validated app URL and default sources retain 
   ], [], now).threads;
   for (const row of rows) {
     assert.equal((await openSwitchboardThread(row, { launcher, runCommand })).opened, true);
-    assert.deepEqual(calls.at(-1), [launcher, [row.appDeepLink], { detached: true, stdio: 'ignore' }]);
+    assert.deepEqual(calls.at(-1), [launcher, [row.appDeepLink], { detached: true, stdio: 'ignore', windowsHide: true }]);
   }
   assert.equal((await openSwitchboardThread(rows[0], { platform: 'linux', runCommand })).opened, true);
   assert.deepEqual(calls.at(-1), ['xdg-open', [`codex://threads/${uuid}`], { timeout: 5000 }]);

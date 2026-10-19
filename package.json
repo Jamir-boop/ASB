@@ -4,6 +4,32 @@
   "version": "1.8.1",
   "license": "MIT",
   "type": "module",
+  "bin": {
+    "asb": "scripts/asb.mjs"
+  },
+  "files": [
+    "src/",
+    "scripts/*.mjs",
+    "scripts/asb",
+    "scripts/asb-native.py",
+    "scripts/asb-tray.py",
+    "scripts/asb-tray.ps1",
+    "public/",
+    "assets/",
+    "bridge/dist/",
+    "bridge/hooks/",
+    "bridge/agent-skills/",
+    "bridge/.codex-plugin/",
+    "bridge/.mcp.json",
+    "bridge/package.json",
+    "bridge/LICENSE",
+    "bridge/README.md",
+    ".agents/plugins/marketplace.json",
+    "LICENSE",
+    "README.md",
+    "install.sh",
+    "uninstall.sh"
+  ],
   "keywords": [
     "agent",
     "codex",

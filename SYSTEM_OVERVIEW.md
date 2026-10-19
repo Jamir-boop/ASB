@@ -9,6 +9,10 @@ Read [README.md](README.md) for installation, [ASB.md](ASB.md) for controls, and
 ## Runtime path
 
 ```text
+scripts/asb.mjs (the asb command and npm bin; scripts/asb runs it on Linux after it finds Node)
+  -> engine, service (Linux), agent, bridge, group, network, phone, setup, and --package (Linux)
+  -> no command: scripts/asb-desktop.mjs on Linux, the engine status on Windows
+
 scripts/asb-desktop.mjs (board launcher, never hosts the server)
   -> scripts/asb-engine.mjs startEngine, finds or starts the engine
   -> scripts/asb-native.py, GTK/Libadwaita window, with the engine URL and source token
@@ -29,8 +33,14 @@ scripts/asb-engine.mjs run (asb engine run, asb service run, or asb.service)
   -> scripts/asb-instance.mjs, $XDG_RUNTIME_DIR/asb/service.json, port and source token for the window
   -> scripts/asb-tray.py, Linux tray icon (StatusNotifierItem and dbusmenu on the session bus)
 
-scripts/asb-group.mjs (asb group, asb network)
+scripts/asb-tray.ps1 (Windows, from the HKCU Run value or asb engine start)
+  -> node scripts/asb.mjs engine run, restarted after a failure
+
+scripts/asb-group.mjs (asb group, asb network, asb phone)
   -> scripts/asb-instance.mjs, loopback group and phone routes of the running engine
+
+scripts/asb-setup.mjs (asb setup)
+  -> asb service install (Linux) or asb engine install (Windows), then the loopback phone settings route
 
 scripts/asb-agent.mjs (asb agent)
   -> scripts/asb-instance.mjs, safe runtime discovery and authenticated loopback requests
@@ -43,7 +53,7 @@ android/ (Android companion)
 
 The board launcher never hosts the server. It calls `startEngine`: when `findRunningService()` answers, it uses that engine. Else, when `systemctl --user is-enabled asb.service` prints `enabled`, it runs `systemctl --user start asb.service`. Else it spawns `node scripts/asb-engine.mjs run` detached, with stdout and stderr in `$XDG_STATE_HOME/asb/engine.log` (`0600`, truncated at each start). It then polls `findRunningService()` every 200 ms for at most 10 s. Without an absolute `XDG_RUNTIME_DIR`, it refuses at once with `ASB cannot start its engine: XDG_RUNTIME_DIR must be an absolute folder.` When the engine does not answer, the launcher prints `ASB cannot start its engine. See <log or journalctl --user -u asb.service>.` and exits 1. Then it spawns the Python window with the engine URL and the engine's source token in `ASB_SOURCE_TOKEN`. When the window exits, the launcher exits with the window's code; the engine keeps running. The launcher checks the engine PID every 2 s and sends SIGTERM to the window when the PID is gone, so a window never outlives its engine or keeps a stale token. An icon registration error stays visible and does not prevent the native window from opening. Launching from source (`npm run desktop` or `scripts/asb`) keeps an installed desktop entry and reports the conflict. It replaces a source-run entry, including one from another checkout. The launcher attaches only to a running ASB engine, never to another process on the port. The server binds only to `127.0.0.1`; `HOST` cannot change that. The default port is `4629`. `npm start` creates no gateway and no tray.
 
-`asb engine run|start|stop|status` (`scripts/asb-engine.mjs`): `start` uses the `startEngine` rules above. `stop` sends `POST /api/engine/stop` through `service.json` and waits up to 10 s for the engine PID to end. `status` prints the PID, the port, and `user service` when `systemctl --user show -p MainPID --value asb.service` prints that PID, else `detached`; it exits 1 when no engine runs. Other arguments print usage and exit 2. The engine commands need Linux.
+`asb engine run|start|stop|status` (`scripts/asb-engine.mjs`): `start` uses the `startEngine` rules above. `stop` sends `POST /api/engine/stop` through `service.json` and waits up to 10 s for the engine PID to end. `status` prints the PID, the port, and `user service` when `systemctl --user show -p MainPID --value asb.service` prints that PID, else `detached`; it exits 1 when no engine runs. Other arguments print usage and exit 2. The engine commands need Linux or Windows; see the Windows engine below.
 
 Tray: after the engine publishes `service.json`, on Linux with `DBUS_SESSION_BUS_ADDRESS` set and `ASB_TRAY` not `0`, it spawns `python3 scripts/asb-tray.py` (or `ASB_PYTHON`) with `ASB_ENGINE_PID`, `ASB_ENGINE_URL`, `ASB_SOURCE_TOKEN`, and `ASB_LAUNCHER` (`ASB_INSTALLED_LAUNCHER` when absolute, else `scripts/asb` of this checkout). The tray owns `org.kde.StatusNotifierItem-<pid>-1`, exports `/StatusNotifierItem` and the dbusmenu `/MenuBar` (Open ASB, a separator, Quit ASB), and registers with `org.kde.StatusNotifierWatcher` each time the watcher appears. Without a watcher for 60 s, it exits 0 silently. Its icon is `local.asb.AgentSwitchBoard` from the checkout's `assets/icons`. Its tooltip is `Running.` or `Running. Phone access on.` from `GET /api/phone` every 30 s. **Open ASB** and a left click spawn `ASB_LAUNCHER` without the engine variables, under systemd in its own `systemd-run --user --scope`. **Quit ASB** posts `/api/engine/stop`. The tray exits when the engine PID is gone (checked every 5 s) or on SIGTERM; the engine sends SIGTERM when it stops. A tray error prints one line and never stops the engine.
 
@@ -52,6 +62,28 @@ Tray: after the engine publishes `service.json`, on Linux with `DBUS_SESSION_BUS
 Engine discovery: `findRunningService()` reads `service.json`. The file must be a regular file with mode `0600` in a `0700` folder, both owned by the user. It then sends `GET /api/service` with the token and a two-second timeout, and accepts only `{ service: true }` with the same pid. An ASB `1.8.1` or older launcher has no attach mode and reports a port conflict while an engine runs.
 
 `scripts/asb-instance.mjs` shares descriptor validation, publication, requests, and owner cleanup. It rejects linked or foreign runtime folders and unsafe files, keeps invalid descriptors, and refuses to replace one whose pid is still alive. Cleanup removes only a descriptor with the owner's pid and token. The agent CLI uses this file, then verifies `apiVersion` and pid through `/api/agent/status`; it does not scan ports or edit `sources.json` directly. The unmanaged `npm start` server has no descriptor and no usable agent interface.
+
+### Dispatcher, npm package, and setup
+
+`scripts/asb.mjs` is the one `asb` command. `package.json` names it in `bin`, so `npm install -g github:Jamir-boop/ASB` links it. On Linux, `scripts/asb` keeps its Node discovery and SQLite check (with no SQLite check for `build`, `uninstall`, `agent`, `group`, `network`, `phone`, and `setup`), then runs `scripts/asb.mjs` for every command. Each command file exports `main()`. The dispatcher keeps the error prefixes of each file (`ASB engine: `, `ASB Bridge failed: `, `ASB service: `). When `scripts/asb.mjs` runs as the entry, it hides only the `node:sqlite` ExperimentalWarning (Node.js 22 and early 24 print it with every command) and prints other warnings as `<name>: <message>`. On Windows, Node.js older than `22.13` gives `ASB needs Node.js 22.13 or later on Windows.` (exit 1), because the engine needs `node:sqlite`. With no command, Windows prints the engine status and `ASB has no window on Windows. Use the phone or a Linux board.`; `service`, `--package`, and other commands print usage (exit 2). The `files` list of `package.json` ships `src/`, `scripts/*.mjs`, `scripts/asb`, the two Python scripts, `scripts/asb-tray.ps1`, `public/`, `assets/`, the bridge runtime files, the Codex marketplace file, `LICENSE`, `README.md`, `install.sh`, and `uninstall.sh`. It ships no tests, docs, `android/`, or `demo/`; `test/asb-package.test.mjs` checks this with `npm pack --dry-run`. The Windows-only `scripts/asb-tray.ps1` and `assets/icons/asb-tray-32.png` are only in the npm list, not in `RUNTIME_FILES`.
+
+`asb setup [--yes] [--address <address>]...` (`scripts/asb-setup.mjs`): 1. it runs `asb service install` on Linux or `asb engine install` on Windows; 2. it polls `findRunningService()` for up to 20 s (else `The ASB engine does not answer. Check asb engine status.`); 3. it reads `GET /api/phone` and saves `POST /api/phone/settings` with `enabled: true`, the chosen addresses, and the current port, as `asb network enable` does. `--address` must name listed addresses with no repeats. `--yes` keeps the saved addresses that are listed now, else the first LAN address (else the first address). With neither flag, it lists the addresses and reads numbers from the terminal; an empty answer or the end of the input keeps the defaults. 4. On Windows it prints the `New-NetFirewallRule` command (TCP, the phone port, the chosen addresses in one `-LocalAddress` value, and `-Program` with `node.exe`); it never runs it. 5. It prints the bridge line (Linux `asb bridge install --all`; Windows `The bridge is not available on Windows yet.`) and the group join line (on Windows: `asb group join --name <name>, then paste the link`). Errors print `asb setup: <message>`.
+
+`asb group join [<link>] [--name <name>] [--yes]`: with no link, it asks `Paste the join link: ` and reads one line (the end of the input gives `No join link.`, exit 1); `--yes` skips only the fingerprint question. Windows needs this form: npm runs `asb` there through `asb.cmd`, and `cmd.exe` splits the link at each `&`. One line reader serves both questions, so piped answers are kept. The invite text adds `On Windows, run asb group join and paste the link when it asks.`.
+
+`asb phone status [--json] | pair | remove <name> | remove --id <id>` (`scripts/asb-group.mjs`) uses the loopback phone routes of the running engine: the list of paired phones, a new pairing link with its end time, and the removal of one phone. A name that matches more than one phone prints their IDs and asks for `--id`.
+
+### Windows engine (statuses only)
+
+`src/platform-paths.mjs` gives the ASB folders: Linux keeps the XDG values byte for byte (`configDir`, `stateDir`, and `runtimeDir`, which is `null` without an absolute `XDG_RUNTIME_DIR`); Windows uses `%APPDATA%\asb`, `%LOCALAPPDATA%\asb\state`, and `%LOCALAPPDATA%\asb\run`, with `<home>\AppData\Roaming` or `Local` when the variable is not absolute. The win32 branches take injected `platform`, `env`, and `execFile`, so `test/asb-windows.test.mjs` and `test/asb-win32-files.test.mjs` check them on Linux.
+
+- File safety: win32 skips the uid and mode checks of `service.json` and its folder, still refuses a link (`lstat`, then an `O_RDONLY` open), and does not `chmod`. A live PID in an old `service.json` refuses a new engine only when that engine answers `GET /api/service` with the same PID in 2 s, because Windows reuses PIDs. At start, the engine limits the config, state, and runtime folders with `icacls <folder> /inheritance:r /grant:r <USERDOMAIN\USERNAME>:(OI)(CI)F`; a failure logs `ASB cannot limit <folder> to this user: <reason>` and the engine continues.
+- Certificate: win32 creates `cert.pfx`, `pfx-pass` (a random passphrase), and `cert.cer` with one Windows PowerShell script (`WINDOWS_CERTIFICATE_SCRIPT`, ECDSA P-256) that gets the folder and passphrase only in `ASB_TLS_DIR` and `ASB_PFX_PASS`. A failure removes all three files. The fingerprint is the SHA-256 of `cert.cer`. `credentials()` gives `{ pfx, passphrase, fingerprint }` on win32 and `{ key, cert, fingerprint }` on Linux; the peer client passes whichever TLS fields it gets. `asb group reset-identity` removes the three win32 files there.
+- Network names: `addressKind` treats `/^tailscale/i` and `/^(zt|zerotier)/i` adapter names as Tailscale and ZeroTier, so the Windows adapter names `Tailscale` and `ZeroTier One [...]` also work.
+- Engine and tray: `asb engine run|start|stop|status|install|uninstall`. `install` writes the `ASB` value of `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` from Node with `reg add` (PowerShell 5.1 drops the quotes of a native argument), then does `start`. `start` runs a short `powershell.exe -NoProfile -NonInteractive -Command Start-Process ...` that starts the hidden tray with the Run value text in `ASB_TRAY_ARGS` (`-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "<root>\scripts\asb-tray.ps1" "<node.exe>"`), because a detached child has no console and `powershell.exe` then exits at once. A failed start gives `ASB cannot start its tray. Windows PowerShell failed.`. Then it waits up to 20 s for the engine. `uninstall` deletes the value only when `reg query` finds it, then stops the engine. `status` prints `running. PID <pid>, port <port>, tray.`. `run` writes its output to `%LOCALAPPDATA%\asb\state\engine.log` when it has no console or `ASB_ENGINE_LOG=1`, which the tray sets because its hidden console is a TTY. The tray script holds the mutex `Local\ASB-tray`, starts `node --disable-warning=ExperimentalWarning scripts\asb.mjs engine run`, and starts it again after a failure; after more than 5 failures in 10 minutes it shows `ASB stopped after repeated failures.` and exits. An engine exit with code 0 ends the tray. Its menu has **Copy phone pairing link** (the loopback pairing route with the source token, to the clipboard) and **Quit ASB** (`POST /api/engine/stop`). Its icon is `assets/icons/asb-tray-32.png`. The engine plays no sounds on win32.
+- Readers and opens: the Claude app folder is `%APPDATA%\Claude`, else the first existing `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude` (sorted), else `%APPDATA%\Claude`. The remote cache reader is off on win32; the Claude source warns `Claude web sessions are not read on Windows.` only when the cache folder exists. A win32 source launcher must be an existing `.exe` with an app name; the execute bit is not checked. Openers spawn with `windowsHide`. A win32 session link opens with `cmd /c start "" <url>` only when it matches `^[A-Za-z][A-Za-z0-9+.-]*:[A-Za-z0-9/?=._:~-]*$`; else `This session link cannot open on Windows.`.
+
+The `windows-test` CI job (`windows-latest`, Node.js `22.13.0` and `24`) runs the test files that `test/windows-tests.json` lists. Tests that start the full switchboard server or use real home paths are not in the list. `test/asb-package.test.mjs` checks on Linux that each listed file exists.
 
 Python 3 needs PyGObject, GTK `>=4.12`, and Libadwaita `>=1.4`. Node.js `>=22.13` uses built-in SQLite with read-only connections. Older supported Node.js (`>=20`) uses `sqlite3 -readonly`; the Debian package keeps that dependency. ASB's runtime has no external npm dependencies. Development tests use Node.js `>=22.13` and built-in SQLite fixtures, without the SQLite CLI.
 
@@ -69,7 +101,7 @@ Production ASB uses Python at `1.8.1`.
 
 ASB uses `DashboardSnapshot` in `src/dashboard-snapshot.mjs` for snapshots, source events, watchers, caches, and request coalescing. It also uses local HTTP utilities, Codex open helpers, and provider cache helpers.
 
-The current source package whitelist names 61 runtime files, including 11 ASB Bridge files, `src/phone-gateway.mjs`, `src/machine-group.mjs`, `src/machine-peers.mjs`, `scripts/asb-service.mjs`, `scripts/asb-engine.mjs`, `scripts/asb-tray.py`, `scripts/asb-agent.mjs`, `scripts/asb-group.mjs`, and `scripts/asb-instance.mjs`. The published ASB `1.8.1` package shipped 30 runtime files, including the app-source registry. ASB `1.8.0`, `1.7.0`, `1.6.1`, `1.6.0`, `1.5.0`, and `1.4.0` also shipped 30. ASB `1.3.0` shipped 32. ASB `1.2.0` shipped 31, down from 42 in ASB `1.1.0`.
+The current source package whitelist names 64 runtime files, including 11 ASB Bridge files, `scripts/asb.mjs`, `scripts/asb-setup.mjs`, `src/platform-paths.mjs`, `src/phone-gateway.mjs`, `src/machine-group.mjs`, `src/machine-peers.mjs`, `scripts/asb-service.mjs`, `scripts/asb-engine.mjs`, `scripts/asb-tray.py`, `scripts/asb-agent.mjs`, `scripts/asb-group.mjs`, and `scripts/asb-instance.mjs`. The published ASB `1.8.1` package shipped 30 runtime files, including the app-source registry. ASB `1.8.0`, `1.7.0`, `1.6.1`, `1.6.0`, `1.5.0`, and `1.4.0` also shipped 30. ASB `1.3.0` shipped 32. ASB `1.2.0` shipped 31, down from 42 in ASB `1.1.0`.
 
 ## Main files
 
@@ -95,7 +127,11 @@ The current source package whitelist names 61 runtime files, including 11 ASB Br
 | `scripts/asb-desktop.mjs` | Native launcher, owned child-process cleanup, phone gateway start, and service attach mode. |
 | `scripts/asb-service.mjs` | Optional `asb service` user service (`run`, `install`, `uninstall`, `status`) and its runtime file. |
 | `scripts/asb-agent.mjs` | Local agent status, source commands, partial updates, and saved/backend/UI verification. |
-| `scripts/asb-group.mjs` | `asb group` and `asb network` commands through the running engine. |
+| `scripts/asb.mjs` | The `asb` command and npm bin: dispatches every subcommand; on Windows, the engine status with no command. |
+| `scripts/asb-setup.mjs` | `asb setup`: autostart, the engine wait, the network addresses, and the Windows firewall text. |
+| `scripts/asb-tray.ps1` | Windows tray: one instance, the engine restart limit, **Copy phone pairing link**, and **Quit ASB**. |
+| `src/platform-paths.mjs` | The ASB config, state, and runtime folders on Linux and Windows. |
+| `scripts/asb-group.mjs` | `asb group`, `asb network`, and `asb phone` commands through the running engine. |
 | `scripts/asb-instance.mjs` | Shared private runtime descriptor, instance requests, and owner cleanup. |
 | `scripts/asb-native.py` | Native rows, filters, search, layout, theme, input, local label clock, and the Preferences Phone and Machines pages. |
 | `docs/benchmarks/` | Historical frontend comparisons, numeric samples, acceptance coverage, and X11 timing limits. |
@@ -114,7 +150,11 @@ The current source package whitelist names 61 runtime files, including 11 ASB Br
 | `test/machine-group.test.mjs` | Group merge, names, strict validation, `group.json`, invites, join links, and the leave on a tombstone. |
 | `test/machine-peers.test.mjs` | Export whitelist, merge, offline rows, messages across machines, the pinned TLS client, and poller back-off. |
 | `test/machine-link.test.mjs` | Two in-process engines on `127.0.0.2` and `127.0.0.3`: invite, join, remote cards, actions, sound, offline, leave, and remove. |
-| `test/asb-group.test.mjs` | The `asb group` and `asb network` commands with a fake engine. |
+| `test/asb-group.test.mjs` | The `asb group`, `asb network`, `asb phone`, and `asb setup` commands with a fake engine. |
+| `test/platform-paths.test.mjs` | The folders, adapter names, certificate script, Claude folder search, URL rule, launcher rule, Run value, firewall text, and Node.js check on both systems. |
+| `test/asb-windows.test.mjs` | The win32 certificate, `icacls`, remote cache, engine commands, and dispatcher with injected `execFile` and `spawn`. |
+| `test/asb-win32-files.test.mjs` | Linux only: the win32 runtime-file rules with real links and modes, Linux credentials, and the tray icon. |
+| `test/windows-tests.json` | The test files of the Windows CI job. |
 | `test/asb-phone-api.test.mjs` | Loopback phone and service routes, token, Host/Origin, and strict-body checks. |
 | `test/asb-service.test.mjs` | Service unit, install/uninstall, runtime file, and attach-mode checks with a fake `systemctl`. |
 | `test/asb-agent.test.mjs` | Synthetic CLI, source operations, verification, and runtime safety checks. |
@@ -508,6 +548,8 @@ In a narrow Preferences window, the tabs are in a horizontal `Gtk.ScrolledWindow
 | `~/.config/asb/phone-tls/` | Phone certificate `cert.pem` and key `key.pem`, mode `0600`, folder `0700`. The certificate is also the machine identity. |
 | `~/.config/asb/group.json` | Machine group: members, tombstones, and group phones with token SHA-256 values, mode `0600`. An invalid file moves to `group.json.bad`. |
 | `$XDG_RUNTIME_DIR/asb/service.json` | Shared desktop/service descriptor: schema, pid, port, and per-run source token, mode `0600`, user-owned folder `0700`. |
+| Windows: `%APPDATA%\asb`, `%LOCALAPPDATA%\asb\state`, `%LOCALAPPDATA%\asb\run` | The same files as the config, state, and runtime folders, plus `engine.log` in `state`. The phone certificate is `cert.pfx`, `pfx-pass`, and `cert.cer`. The folders are limited to the user with `icacls`. |
+| Windows: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value `ASB` | The tray command, only after `asb engine install` or `asb setup`. ASB never changes the firewall. |
 | `~/.config/systemd/user/asb.service` | User service unit, only after `asb service install`. |
 | `~/.local/share/applications/local.asb.AgentSwitchBoard.desktop` | Per-user launcher. |
 | `~/.local/share/icons/hicolor/scalable/apps/local.asb.AgentSwitchBoard.svg` | Per-user app icon. |

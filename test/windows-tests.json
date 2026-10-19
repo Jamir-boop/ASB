@@ -1,0 +1,13 @@
+[
+  "test/platform-paths.test.mjs",
+  "test/asb-windows.test.mjs",
+  "test/machine-group.test.mjs",
+  "test/machine-peers.test.mjs",
+  "test/asb-docs.test.mjs",
+  "test/asb-browser.test.mjs",
+  "test/asb-server.test.mjs",
+  "test/codex-rollout-scan.test.mjs",
+  "test/codex-asb-reader.test.mjs",
+  "test/opencode-data.test.mjs",
+  "test/insights.test.mjs"
+]

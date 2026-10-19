@@ -308,3 +308,27 @@ test('install records reject traversal, ambiguous separators, controls, versions
     assert.equal(await readFile(outside, 'utf8'), 'Outside file.\n');
   }
 });
+
+test('the Windows CI list names existing test files once, and the workflow runs that list', async () => {
+  const list = JSON.parse(await readFile(new URL('./windows-tests.json', import.meta.url), 'utf8'));
+  assert.ok(list.length > 0 && new Set(list).size === list.length);
+  for (const file of list) {
+    assert.match(file, /^test\/[a-z0-9-]+\.test\.mjs$/);
+    assert.ok((await lstat(new URL(`../${file}`, import.meta.url))).isFile(), file);
+  }
+  for (const file of ['test/machine-group.test.mjs', 'test/machine-peers.test.mjs', 'test/platform-paths.test.mjs']) assert.ok(list.includes(file), file);
+  const workflow = await readFile(new URL('../.github/workflows/test.yml', import.meta.url), 'utf8');
+  assert.ok(workflow.includes("require('./test/windows-tests.json')"));
+  assert.match(workflow, /runs-on: windows-latest/);
+});
+
+test('the npm package has the runtime files, the asb command, and no tests, documents, Android, or demo files', () => {
+  const pkg = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: fileURLToPath(new URL('..', import.meta.url)),
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }))[0];
+  const files = pkg.files.map((item) => item.path);
+  for (const file of RUNTIME_FILES) assert.ok(files.includes(file), file);
+  for (const file of ['scripts/asb.mjs', 'scripts/asb-tray.ps1', 'assets/icons/asb-tray-32.png']) assert.ok(files.includes(file), file);
+  assert.deepEqual(files.filter((file) => /^(android|demo|docs|test|\.impeccable|bridge\/src|bridge\/test)\//.test(file)), []);
+  // npm links bin files; the POSIX launcher needs the execute bit too.
+  assert.ok(pkg.files.find((item) => item.path === 'scripts/asb.mjs').mode & 0o111);
+});

@@ -1,8 +1,14 @@
 import { spawn } from 'node:child_process';
 
+// cmd parses & | ^ % < > and quotes in its command line, so a Windows link may use only plain URL characters.
+const WINDOWS_SAFE_URL = /^[A-Za-z][A-Za-z0-9+.-]*:[A-Za-z0-9/?=._:~-]*$/;
+
 export function openCommandForUrl(url, platform = process.platform) {
   if (platform === 'darwin') return { command: 'open', args: [url] };
-  if (platform === 'win32') return { command: 'cmd', args: ['/c', 'start', '', url] };
+  if (platform === 'win32') {
+    if (!WINDOWS_SAFE_URL.test(url)) throw new Error('This session link cannot open on Windows.');
+    return { command: 'cmd', args: ['/c', 'start', '', url] };
+  }
   return { command: 'xdg-open', args: [url] };
 }
 
@@ -16,7 +22,7 @@ export function scopedCommand(command, args, { env = process.env, platform = pro
 export function runOpener(command, args, { timeout }) {
   const scoped = scopedCommand(command, args);
   return new Promise((resolve, reject) => {
-    const child = spawn(scoped.command, scoped.args, { stdio: 'ignore', timeout });
+    const child = spawn(scoped.command, scoped.args, { stdio: 'ignore', timeout, windowsHide: true });
     child.once('error', reject);
     child.once('exit', (code, signal) => (code === 0 ? resolve() : reject(new Error(`${command} failed (${signal || `exit code ${code}`}).`))));
   });

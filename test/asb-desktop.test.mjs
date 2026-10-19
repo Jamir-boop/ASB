@@ -7,8 +7,9 @@ import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 
 const launcherUrl = new URL('../scripts/asb-desktop.mjs', import.meta.url);
-const launcher = (await readFile(launcherUrl, 'utf8')).replace(/^import[^\n]*\n/gm, '')
-  .replaceAll('import.meta.url', 'launcherUrl');
+// The script body runs in a context with fake modules; its main() is called as the file entry would.
+const launcher = (await readFile(launcherUrl, 'utf8')).replace(/^import[^\n]*\n/gm, '').replace(/^export /m, '')
+  .replace(/\nif \(process\.argv\[1\][^\n]*\n$/, '\nmain();\n').replaceAll('import.meta.url', 'launcherUrl');
 const engine = { pid: 12, port: 23456, sourceToken: 'service-token' };
 const pick = (watch) => ({ setInterval: watch.setInterval, clearInterval: watch.clearInterval });
 // The engine watch timer is captured; tests run its callback by hand.

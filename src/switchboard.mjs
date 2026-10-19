@@ -12,6 +12,7 @@ import { createAsbServer } from './asb-server.mjs';
 import { createSoundPlayer, createSoundWatcher } from './asb-sounds.mjs';
 import { openThreadInCodex, scopedCommand } from './session-opener.mjs';
 import { AppSourceRegistry, appSourcesRevision, numberAppSources, sourceName, validateSourceLauncher } from './app-sources.mjs';
+import { stateDir } from './platform-paths.mjs';
 import { spawn } from 'node:child_process';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -420,7 +421,7 @@ export async function openSwitchboardThread(thread, options = {}) {
   if (!thread.canOpen || !valid) throw new Error('This session has no direct desktop link.');
   if (options.launcher) {
     const launcher = await validateSourceLauncher(options.launcher);
-    const launchOptions = { detached: true, stdio: 'ignore' };
+    const launchOptions = { detached: true, stdio: 'ignore', windowsHide: true };
     if (options.runCommand) await options.runCommand(launcher, [thread.appDeepLink], launchOptions);
     else await new Promise((resolve, reject) => {
       const scoped = scopedCommand(launcher, [thread.appDeepLink]);
@@ -434,7 +435,7 @@ export async function openSwitchboardThread(thread, options = {}) {
 }
 
 export class PendingTracker {
-  constructor(statePath = path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'), 'asb', 'pending.json')) {
+  constructor(statePath = path.join(stateDir(), 'pending.json')) {
     this.statePath = statePath;
     this.records = Object.create(null);
     this.pinnedOrder = [];
@@ -726,7 +727,7 @@ export function createSwitchboardServer(options = {}) {
     rootDir: ROOT_DIR,
     sourcesPath: registry.configPath,
     readSourcesRevision: async () => appSourcesRevision(await registry.read()),
-    palettePath: path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'), 'asb', 'palette.json'),
+    palettePath: path.join(stateDir(), 'palette.json'),
     dashboardWatchPaths: registeredLoad ? sourceWatchPaths : [],
     dashboardSourceChanged: (source, hint) => {
       if (source === 'codex') invalidateCodexData(hint);

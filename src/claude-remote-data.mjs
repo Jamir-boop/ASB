@@ -433,8 +433,13 @@ export function claudeRemoteStatus(thread, nowMs = Date.now()) {
   return { state: 'unknown', reason: 'The cached remote worker state is not known.' };
 }
 
-export async function loadClaudeRemoteThreads({ appDir = defaultClaudeAppDir(), nowMs = Date.now() } = {}) {
+export async function loadClaudeRemoteThreads({ appDir = defaultClaudeAppDir(), nowMs = Date.now(), platform = process.platform } = {}) {
   const root = path.join(appDir, 'Cache', 'Cache_Data');
+  // Windows Claude uses the Chromium blockfile cache, not the simple cache that this reader parses (spike S2).
+  if (platform === 'win32') {
+    const unread = await fs.stat(root).then((info) => info.isDirectory(), () => false);
+    return { threads: [], partial: false, unread, provider: { installed: false, status: unread ? 'warning' : 'desktop' } };
+  }
   let cache = caches.get(root);
   if (!cache) {
     cache = { directorySignature: '', keys: new Map(), responses: new Map(), read: null };
@@ -501,10 +506,11 @@ export async function loadSwitchboardClaudeThreads(options = {}) {
     return !aliases.get(key);
   })];
   const warning = !local || local.provider?.status === 'warning' || local.provider?.status === 'error'
-    || results[1].status === 'rejected' || remote?.partial || cli === null;
+    || results[1].status === 'rejected' || remote?.partial || remote?.unread || cli === null;
   return { threads, provider: { ...local?.provider, installed: threads.length > 0,
     status: warning ? 'warning' : local?.provider?.status || 'desktop',
-    message: remote?.partial ? 'The remote cache contains only observed sessions. Claude has not cached a complete list.' : '' } };
+    message: remote?.unread ? 'Claude web sessions are not read on Windows.'
+      : remote?.partial ? 'The remote cache contains only observed sessions. Claude has not cached a complete list.' : '' } };
 }
 
 export function invalidateClaudeRemoteData({ filePath = '', index = false } = {}) {

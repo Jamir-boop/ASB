@@ -9,6 +9,8 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { main } from '../scripts/asb-group.mjs';
+import { main as setup } from '../scripts/asb-setup.mjs';
+import { readServiceRuntime } from '../scripts/asb-instance.mjs';
 import { buildJoinLink, groupPath } from '../src/machine-group.mjs';
 import { phoneTlsDir } from '../src/phone-gateway.mjs';
 
@@ -62,7 +64,7 @@ async function fixture(t, { service = false } = {}) {
 
 test('the group and network commands check their arguments', async (t) => {
   const { run, records } = await fixture(t);
-  for (const args of [[], ['group'], ['group', 'join'], ['group', 'join', link, '--name'], ['group', 'join', link, '--force'],
+  for (const args of [[], ['group'], ['group', 'join', '--force'], ['group', 'join', '--name'], ['group', 'join', link, '--name'], ['group', 'join', link, '--force'],
     ['group', 'status', '--yaml'], ['group', 'remove'], ['group', 'invite', 'x'], ['network', 'enable'], ['network', 'disable', 'x'], ['agent', 'status']]) {
     const result = await run(args);
     assert.equal(result.code, 2, args.join(' '));
@@ -81,6 +83,7 @@ test('group status, invite, remove, and leave use the loopback group routes with
   const invite = await run(['group', 'invite']);
   assert.equal(invite.code, 0);
   assert.match(invite.out, /^Join link: asb:\/\/join\?v=1&.*\nFingerprint: 0123 4567 89ab cdef 0123 /);
+  assert.match(invite.out, /\nOn the other machine, run: asb group join '<link>'\nOn Windows, run asb group join and paste the link when it asks\.$/);
   const removed = await run(['group', 'remove', 'HOMELP']);
   assert.deepEqual([removed.code, removed.out], [0, 'homeLP was removed from the group.']);
   const missing = await run(['group', 'remove', 'workLP']);
@@ -105,6 +108,23 @@ test('join shows the inviter fingerprint and asks unless --yes, and prints a nam
   const taken = await run(['group', 'join', link, '--name', 'laptop', '--yes']);
   assert.deepEqual([taken.code, taken.err], [1, 'asb group: Another machine in the group has this name. Use another name, for example: --name laptop-2']);
   assert.deepEqual([(await run(['group', 'join', 'asb://join?v=1', '--yes'])).err], ['asb group: This join link is not valid.']);
+});
+
+test('join with no link asks for it, because cmd.exe splits a typed link at each &', async (t) => {
+  const { run, posts } = await fixture(t);
+  const asked = await run(['group', 'join'], `${link}\ny\n`);
+  assert.equal(asked.code, 0, asked.err);
+  assert.equal(asked.out.split('\n').at(-1), 'This machine joined the group of debian.');
+  // --yes does not skip the link question.
+  assert.equal((await run(['group', 'join', '--name', 'x', '--yes'], `  ${link}  \n`)).code, 0);
+  assert.equal((await run(['group', 'join', link, '--name', 'y'], 'y\n')).code, 0);
+  assert.deepEqual(posts().map((item) => item.body), [{ link, name: '' }, { link, name: 'x' }, { link, name: 'y' }]);
+  for (const answer of ['', '\n']) {
+    const empty = await run(['group', 'join', '--yes'], answer);
+    assert.deepEqual([empty.code, empty.err], [1, 'asb group: No join link.']);
+  }
+  assert.equal((await run(['group', 'join'], `${link}\n`)).err, 'asb group: ASB did not join the group.');
+  assert.equal(posts().length, 3);
 });
 
 test('network enable and disable send the phone settings with the current port', async (t) => {
@@ -146,4 +166,88 @@ test('the asb launcher dispatches group and network without the SQLite check', a
     assert.equal(code, expected, args.join(' '));
     if (expected === 0) assert.ok(JSON.parse(stdout));
   }
+});
+
+const devices = [{ id: '0123456789ab', name: 'Pixel', createdAtMs: Date.UTC(2026, 9, 1), lastSeenAtMs: 0 },
+  { id: 'aaaaaaaaaaaa', name: 'Tablet', createdAtMs: Date.UTC(2026, 9, 2), lastSeenAtMs: Date.UTC(2026, 9, 3) },
+  { id: 'bbbbbbbbbbbb', name: 'tablet', createdAtMs: Date.UTC(2026, 9, 4), lastSeenAtMs: 0 }];
+
+test('asb phone status, pair, and remove use the phone routes and refuse an unclear name', async (t) => {
+  const { run, replies, posts, records } = await fixture(t);
+  replies.set('GET /api/phone', [200, { ...phone, devices }]);
+  replies.set('POST /api/phone/pairing', [200, { uri: 'asb://pair?v=2&c=synthetic', expiresAtMs: Date.UTC(2026, 9, 19, 12, 10) }]);
+  replies.set('POST /api/phone/devices/0123456789ab/revoke', [200, phone]);
+  replies.set('POST /api/phone/devices/bbbbbbbbbbbb/revoke', [200, phone]);
+  const status = await run(['phone', 'status']);
+  assert.equal(status.code, 0);
+  assert.deepEqual(status.out.split('\n').map((line) => line.replace(/paired .*, last seen .*/, 'paired D, last seen T')),
+    ['Network access is on, port 4630: 192.168.1.10 (lan).', 'Paired phones:', '  Pixel (0123456789ab): paired D, last seen T',
+      '  Tablet (aaaaaaaaaaaa): paired D, last seen T', '  tablet (bbbbbbbbbbbb): paired D, last seen T']);
+  assert.match(status.out, /Pixel \(0123456789ab\): paired .*, last seen never/);
+  assert.deepEqual(JSON.parse((await run(['phone', 'status', '--json'])).out).devices, devices);
+  const pair = await run(['phone', 'pair']);
+  assert.equal(pair.code, 0);
+  assert.match(pair.out, /^Pairing link: asb:\/\/pair\?v=2&c=synthetic\nThe link works one time until .+\.\nScan it as a QR code or paste it in the ASB app on the phone\.$/);
+  assert.deepEqual(await run(['phone', 'remove', 'PIXEL']), { code: 0, out: 'Pixel was removed.', err: '' });
+  assert.deepEqual(await run(['phone', 'remove', 'Tablet']), { code: 1, out: '',
+    err: 'asb phone: More than one phone is named Tablet: aaaaaaaaaaaa, bbbbbbbbbbbb. Use asb phone remove --id <id>.' });
+  assert.deepEqual(await run(['phone', 'remove', '--id', 'bbbbbbbbbbbb']), { code: 0, out: 'tablet was removed.', err: '' });
+  assert.equal((await run(['phone', 'remove', 'Watch'])).err, 'asb phone: No phone named Watch is paired.');
+  assert.equal((await run(['phone', 'remove', '--id', 'cccccccccccc'])).err, 'asb phone: No phone with the ID cccccccccccc is paired.');
+  assert.deepEqual(posts().map((item) => [item.route, item.body]), [['POST /api/phone/pairing', {}],
+    ['POST /api/phone/devices/0123456789ab/revoke', {}], ['POST /api/phone/devices/bbbbbbbbbbbb/revoke', {}]]);
+  assert.ok(records.every((item) => item.token === token));
+  for (const args of [['phone'], ['phone', 'pair', 'x'], ['phone', 'remove'], ['phone', 'remove', '--id'], ['phone', 'status', '--yaml']]) {
+    assert.equal((await run(args)).code, 2, args.join(' '));
+  }
+});
+
+async function runSetup(state, args, { platform = 'linux', answer = '' } = {}) {
+  const out = [];
+  const err = [];
+  const installs = [];
+  const code = await setup(args, { env: state.env, platform, input: Readable.from([answer]), output: { write: () => {} },
+    print: (line) => out.push(line), printError: (line) => err.push(line), node: 'C:\\Program Files\\nodejs\\node.exe', waitMs: 500,
+    installService: async (argv) => { installs.push(['service', argv]); return 0; },
+    installEngine: async (argv) => { installs.push(['engine', argv]); return 0; },
+    find: (env) => readServiceRuntime(env) });
+  return { code, out, err, installs };
+}
+
+test('asb setup installs the autostart, turns on the chosen addresses, and prints the next steps', async (t) => {
+  const state = await fixture(t);
+  const off = { ...phone, enabled: false, bindAddresses: [] };
+  state.replies.set('GET /api/phone', [200, off]);
+  const linux = await runSetup(state, ['--yes']);
+  assert.equal(linux.code, 0, linux.err.join('\n'));
+  assert.deepEqual(linux.installs, [['service', ['install']]]);
+  assert.deepEqual(linux.out, ['Network access is on, port 4630: 192.168.1.10 (lan).', 'To let agents send messages, run: asb bridge install --all',
+    "On a machine in the group: asb group invite. Here: asb group join '<link>' --name <name>."]);
+  const chosen = await runSetup(state, ['--address', '10.147.0.1', '--address', '192.168.1.10', '--yes']);
+  assert.equal(chosen.code, 0);
+  const asked = await runSetup(state, [], { answer: '2\n' });
+  assert.equal(asked.code, 0);
+  assert.deepEqual(asked.out.slice(0, 3), ['Network addresses on this PC:', '  1. 192.168.1.10 (home network, wlan0)', '  2. 10.147.0.1 (ZeroTier, ztabc)']);
+  const kept = await runSetup(state, [], { answer: '' });
+  assert.equal(kept.code, 0);
+  state.replies.set('GET /api/phone', [200, phone]);
+  const windows = await runSetup(state, ['--yes'], { platform: 'win32' });
+  assert.equal(windows.code, 0);
+  assert.deepEqual(windows.installs, [['engine', ['install']]]);
+  assert.deepEqual(windows.out.slice(1), ['Run this command in an administrator PowerShell to let other machines and phones reach ASB:',
+    '  New-NetFirewallRule -DisplayName "ASB engine" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 4630 -LocalAddress 192.168.1.10 '
+      + '-Program "C:\\Program Files\\nodejs\\node.exe"',
+    'Windows can already allow node.exe on private networks; then this rule is not needed.', 'The bridge is not available on Windows yet.',
+    'On a machine in the group: asb group invite. Here: asb group join --name <name>, then paste the link.']);
+  assert.deepEqual(state.posts().map((item) => item.body), [
+    { enabled: true, bindAddresses: ['192.168.1.10'], port: 4630 }, { enabled: true, bindAddresses: ['10.147.0.1', '192.168.1.10'], port: 4630 },
+    { enabled: true, bindAddresses: ['10.147.0.1'], port: 4630 }, { enabled: true, bindAddresses: ['192.168.1.10'], port: 4630 },
+    // --yes keeps the saved selection that is on this PC now.
+    { enabled: true, bindAddresses: ['192.168.1.10'], port: 4630 }]);
+  const wrong = await runSetup(state, ['--address', '192.168.1.99']);
+  assert.deepEqual([wrong.code, wrong.err], [1, ['asb setup: Choose network addresses on this PC: 192.168.1.10, 10.147.0.1.']]);
+  const badNumber = await runSetup(state, [], { answer: '7\n' });
+  assert.deepEqual([badNumber.code, badNumber.err], [1, ['asb setup: Enter numbers from 1 to 2.']]);
+  assert.equal((await runSetup(state, ['--address'])).code, 2);
+  assert.equal(state.posts().length, 5);
 });

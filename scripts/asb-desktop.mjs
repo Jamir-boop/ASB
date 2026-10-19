@@ -1,12 +1,9 @@
 import { spawn } from 'node:child_process';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startEngine } from './asb-engine.mjs';
 import { registerAppIcon } from './asb-icon.mjs';
 
-if (process.platform !== 'linux') {
-  console.error('The ASB desktop launcher requires Linux. Use npm start and open the local address.');
-  process.exit(1);
-}
 let window;
 let engineWatch;
 let stopping = false;
@@ -46,10 +43,19 @@ async function start() {
   }, 2000);
   console.log(`ASB: ${url}`);
 }
-process.once('SIGINT', () => stop());
-process.once('SIGTERM', () => stop());
-process.once('exit', stop);
-start().catch((error) => {
-  console.error(error.message.startsWith('ASB cannot') ? error.message : `ASB cannot start: ${error.message}`);
-  stop(1);
-});
+// Opens the board: starts the engine when it is not running, then the native window as its client.
+export function main() {
+  if (process.platform !== 'linux') {
+    console.error('The ASB desktop launcher requires Linux. Use npm start and open the local address.');
+    process.exit(1);
+  }
+  process.once('SIGINT', () => stop());
+  process.once('SIGTERM', () => stop());
+  process.once('exit', stop);
+  return start().catch((error) => {
+    console.error(error.message.startsWith('ASB cannot') ? error.message : `ASB cannot start: ${error.message}`);
+    stop(1);
+  });
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

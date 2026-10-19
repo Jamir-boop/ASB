@@ -14,6 +14,8 @@ ASB is a native GNOME switch board for Codex and Claude Desktop Code chats. It r
 
 The optional phone gateway (`src/phone-gateway.mjs`) is off by default. When the user turns it on in Preferences > Phone, it binds only the selected private LAN or overlay (ZeroTier, Tailscale) addresses (default port `4630`). It uses TLS 1.3, a pinned self-signed certificate, and per-phone bearer tokens. It forwards only allowlisted session routes to the loopback server. It also serves the member routes of the optional machine group (`/peer/v1/*`, mutual TLS with pinned certificates; `src/machine-group.mjs`, `src/machine-peers.mjs`). The optional `asb service` user service runs the server and the gateway without the window. The Android companion app is in `android/`.
 
+On Windows, ASB runs only the engine (statuses only): no window, no sounds, and no bridge yet. `asb engine install` writes the HKCU Run value from Node, and `scripts/asb-tray.ps1` keeps the engine running. Paths come from `src/platform-paths.mjs`; win32 branches take injected `platform`, `env`, and `execFile`, so their tests run on Linux. The Windows CI job runs the files in `test/windows-tests.json`.
+
 The release target is a GitHub-friendly open-source version. Be conservative about privacy:
 
 - Do not commit local Codex/Claude state, logs, screenshots with private text, cookies, tokens, API keys, or machine-specific secrets.
@@ -24,6 +26,7 @@ The release target is a GitHub-friendly open-source version. Be conservative abo
 
 - Use existing patterns in `src/*`, `public/*`, and `test/*`.
 - Keep the app dependency-light unless the user explicitly approves adding a package.
+- The npm package (`npm install -g github:Jamir-boop/ASB`) ships only the `files` list in `package.json`. Keep it honest: add each new runtime file, and keep tests, docs, `android/`, and `demo/` out. Check with `npm pack --dry-run`.
 - Run `npm test` after behavior changes.
 - `bridge/` is a Bun and TypeScript package with its own tests: after bridge changes, run `cd bridge && bun run check && bun test && bun run build`, and commit `bridge/dist/`.
 - `android/` is a Kotlin and Gradle project with its own tests: after Android changes, run `cd android && ./gradlew --no-daemon testDebugUnitTest lint assembleDebug assembleRelease`. See `android/README.md` for the toolchain.

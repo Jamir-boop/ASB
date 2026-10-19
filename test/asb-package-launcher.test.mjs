@@ -42,8 +42,8 @@ test('the launcher forwards bridge arguments to the bridge command before starti
   const directory = await temporaryDirectory(t);
   const scripts = path.join(directory, 'source/scripts');
   await mkdir(scripts, { recursive: true });
-  await copyFile(path.join(sourceRoot, 'scripts/asb'), path.join(scripts, 'asb'));
-  await writeFile(path.join(scripts, 'asb-bridge.mjs'), 'console.log(JSON.stringify({ node: process.env.ASB_NODE, args: process.argv.slice(2) }));\n');
+  for (const name of ['asb', 'asb.mjs']) await copyFile(path.join(sourceRoot, 'scripts', name), path.join(scripts, name));
+  await writeFile(path.join(scripts, 'asb-bridge.mjs'), 'export const main = (args) => { console.log(JSON.stringify({ node: process.env.ASB_NODE, args })); return 0; };\n');
   const args = ['install', '--codex-home', path.join(directory, "Codex home's $(not-a-command)"), '--claude'];
   const checked = JSON.parse(execFileSync(path.join(scripts, 'asb'), ['bridge', ...args], {
     encoding: 'utf8', env: { ...process.env, ASB_NODE: process.execPath, HOME: directory },
@@ -57,15 +57,15 @@ test('the launcher exports its checked stable Node candidate and the installer k
   await symlink(process.execPath, candidate);
   const scripts = path.join(directory, 'source/scripts');
   await mkdir(scripts, { recursive: true });
-  await copyFile(path.join(sourceRoot, 'scripts/asb'), path.join(scripts, 'asb'));
-  await writeFile(path.join(scripts, 'asb-package.mjs'), 'console.log(JSON.stringify({ node: process.env.ASB_NODE, args: process.argv.slice(2) }));\n');
+  for (const name of ['asb', 'asb.mjs']) await copyFile(path.join(sourceRoot, 'scripts', name), path.join(scripts, name));
+  await writeFile(path.join(scripts, 'asb-package.mjs'), 'export const main = (args) => { console.log(JSON.stringify({ node: process.env.ASB_NODE, args })); return 0; };\n');
   const checked = JSON.parse(execFileSync(path.join(scripts, 'asb'), ['--package', 'uninstall', '--synthetic-flag'], {
     encoding: 'utf8', env: { ...process.env, ASB_NODE: candidate },
   }));
   assert.equal(checked.node, candidate);
   assert.deepEqual(checked.args, ['uninstall', '--synthetic-flag']);
   // A source run passes no installed launcher, so it cannot replace an installed GNOME entry.
-  await writeFile(path.join(scripts, 'asb-desktop.mjs'), 'console.log(JSON.stringify({ launcher: process.env.ASB_INSTALLED_LAUNCHER ?? null }));\n');
+  await writeFile(path.join(scripts, 'asb-desktop.mjs'), 'export const main = () => console.log(JSON.stringify({ launcher: process.env.ASB_INSTALLED_LAUNCHER ?? null }));\n');
   const { ASB_INSTALLED_LAUNCHER: _installed, ...sourceEnv } = process.env;
   assert.deepEqual(JSON.parse(execFileSync(path.join(scripts, 'asb'), [], { encoding: 'utf8', env: { ...sourceEnv, ASB_NODE: candidate } })), { launcher: null });
   const previousNode = process.env.ASB_NODE;

@@ -30,3 +30,18 @@ jobs:
             dist/asb_*_all.deb
             dist/asb-*-linux.tar.gz
             dist/SHA256SUMS
+  windows-test:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        node-version:
+          - 22.13.0
+          - 24
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      # Only the platform-neutral tests (test/windows-tests.json): no POSIX modes, /bin/sh, systemctl, or Unix sockets.
+      - run: node --test --no-experimental-strip-types $(node -p "require('./test/windows-tests.json').join(' ')")
+        shell: bash

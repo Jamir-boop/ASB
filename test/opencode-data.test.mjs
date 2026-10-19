@@ -144,26 +144,28 @@ test('OpenCode reports a missing database, an old schema, and a missing column w
 test('OpenCode reuses its result until the database or its WAL changes, and never writes OpenCode files', async (t) => {
   const { dataDir, databasePath } = await fixture(t);
   const writer = createDatabase(databasePath, { wal: true });
-  t.after(() => writer.close());
-  addSession(writer, { ...base, id: 'ses_one', title: 'One' });
-  const { sql, query } = recordingQuery();
-  const first = await loadOpenCodeDashboard({ dataDir, nowMs: now, cacheScope: dataDir, query });
-  const count = sql.length;
-  assert.equal(first.threads.length, 1);
-  assert.equal(await loadOpenCodeDashboard({ dataDir, nowMs: now, cacheScope: dataDir, query }), first);
-  assert.equal(sql.length, count);
-  const main = await readFile(databasePath);
-  addSession(writer, { ...base, id: 'ses_two', title: 'Two' });
-  assert.deepEqual(await readFile(databasePath), main);
-  const second = await loadOpenCodeDashboard({ dataDir, nowMs: now, cacheScope: dataDir, query });
-  assert.deepEqual(second.threads.map((thread) => thread.id).sort(), ['ses_one', 'ses_two']);
-  invalidateOpenCodeData();
-  const third = await loadOpenCodeDashboard({ dataDir, nowMs: now, cacheScope: dataDir, query });
-  assert.notEqual(third, second);
-  assert.deepEqual(third.threads, second.threads);
-  await writeFile(path.join(dataDir, 'auth.json'), SECRET);
-  const wal = await readFile(`${databasePath}-wal`);
-  await loadOpenCodeDashboard({ dataDir, nowMs: now, cacheScope: 'other', query });
-  assert.deepEqual(await readFile(`${databasePath}-wal`), wal);
-  assert.deepEqual(await readFile(databasePath), main);
+  // Windows cannot remove an open database, and t.after hooks run in the order they were added, so the writer closes here.
+  try {
+    addSession(writer, { ...base, id: 'ses_one', title: 'One' });
+    const { sql, query } = recordingQuery();
+    const first = await loadOpenCodeDashboard({ dataDir, nowMs: now, cacheScope: dataDir, query });
+    const count = sql.length;
+    assert.equal(first.threads.length, 1);
+    assert.equal(await loadOpenCodeDashboard({ dataDir, nowMs: now, cacheScope: dataDir, query }), first);
+    assert.equal(sql.length, count);
+    const main = await readFile(databasePath);
+    addSession(writer, { ...base, id: 'ses_two', title: 'Two' });
+    assert.deepEqual(await readFile(databasePath), main);
+    const second = await loadOpenCodeDashboard({ dataDir, nowMs: now, cacheScope: dataDir, query });
+    assert.deepEqual(second.threads.map((thread) => thread.id).sort(), ['ses_one', 'ses_two']);
+    invalidateOpenCodeData();
+    const third = await loadOpenCodeDashboard({ dataDir, nowMs: now, cacheScope: dataDir, query });
+    assert.notEqual(third, second);
+    assert.deepEqual(third.threads, second.threads);
+    await writeFile(path.join(dataDir, 'auth.json'), SECRET);
+    const wal = await readFile(`${databasePath}-wal`);
+    await loadOpenCodeDashboard({ dataDir, nowMs: now, cacheScope: 'other', query });
+    assert.deepEqual(await readFile(`${databasePath}-wal`), wal);
+    assert.deepEqual(await readFile(databasePath), main);
+  } finally { writer.close(); }
 });

@@ -123,8 +123,10 @@ function requestOnce({ address, port, fingerprint, path, method, body, etag, tls
     };
     const timer = setTimeout(() => done(Object.assign(new Error('timeout'), { code: 'timeout' })), timeoutMs);
     const bytes = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
+    // key and cert on Linux, pfx and passphrase on Windows; the own fingerprint is not a TLS option.
+    const { fingerprint: _own, ...clientCertificate } = tls;
     const request = https.request({ host: address, port, path, method, agent: false, minVersion: 'TLSv1.3', rejectUnauthorized: false,
-      key: tls.key, cert: tls.cert,
+      ...clientCertificate,
       headers: { 'accept-encoding': 'gzip', ...(etag ? { 'if-none-match': etag } : {}),
         ...(bytes ? { 'content-type': 'application/json', 'content-length': bytes.length } : {}) } }, (response) => {
       const chunks = [];

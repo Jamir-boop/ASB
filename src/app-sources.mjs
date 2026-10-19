@@ -4,6 +4,7 @@ import { constants, promises as fs } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { defaultClaudeAppDir } from './claude-data.mjs';
 import { discoverCodexStateDatabase } from './codex-data.mjs';
+import { configDir } from './platform-paths.mjs';
 
 export const MAX_APP_SOURCES = 8;
 const PROVIDERS = ['codex', 'claude-desktop-code', 'opencode'];
@@ -33,14 +34,17 @@ function absolute(value, field) {
   return path.resolve(value);
 }
 
-export async function validateSourceLauncher(launcher) {
+// Windows has no execute bit, so there only an existing .exe file counts as a launcher.
+const launcherName = (name, platform) => APP_LAUNCHER.test(name) && (platform !== 'win32' || /\.exe$/i.test(name));
+
+export async function validateSourceLauncher(launcher, platform = process.platform) {
   if (launcher === '') return '';
   const value = absolute(launcher, 'Launcher');
-  if (!APP_LAUNCHER.test(path.basename(value))) throw invalid('Select an installed ChatGPT, Codex, or Claude launcher.');
+  if (!launcherName(path.basename(value), platform)) throw invalid('Select an installed ChatGPT, Codex, or Claude launcher.');
   try {
     const target = await fs.realpath(value);
-    if (!APP_LAUNCHER.test(path.basename(target)) || !(await fs.stat(target)).isFile()) throw invalid('Invalid app launcher.');
-    await fs.access(target, constants.X_OK);
+    if (!launcherName(path.basename(target), platform) || !(await fs.stat(target)).isFile()) throw invalid('Invalid app launcher.');
+    if (platform !== 'win32') await fs.access(target, constants.X_OK);
   } catch { throw invalid('The app launcher must be an existing executable app file.'); }
   return value;
 }
@@ -88,7 +92,7 @@ export async function storeIdentity(source) {
 
 export class AppSourceRegistry {
   constructor({ homeDir = os.homedir(), env = process.env, platform = process.platform,
-    configPath = path.join(env.XDG_CONFIG_HOME || path.join(homeDir, '.config'), 'asb', 'sources.json'),
+    configPath = path.join(configDir(env, platform, homeDir), 'sources.json'),
     discoverPersonal = true } = {}) {
     this.homeDir = homeDir;
     this.configPath = configPath;

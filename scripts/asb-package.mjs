@@ -13,7 +13,7 @@ export const DEBIAN_DEPENDS = 'nodejs (>= 20), sqlite3, python3, python3-gi, gir
 // Keep this list explicit. A source checkout can contain private local files.
 export const RUNTIME_FILES = [
   'LICENSE', 'package.json', 'install.sh', 'uninstall.sh',
-  'scripts/asb', 'scripts/asb-package.mjs', 'scripts/asb-desktop.mjs', 'scripts/asb-service.mjs', 'scripts/asb-engine.mjs', 'scripts/asb-tray.py', 'scripts/asb-agent.mjs', 'scripts/asb-group.mjs', 'scripts/asb-instance.mjs', 'scripts/asb-icon.mjs', 'scripts/asb-native.py',
+  'scripts/asb', 'scripts/asb.mjs', 'scripts/asb-setup.mjs', 'scripts/asb-package.mjs', 'scripts/asb-desktop.mjs', 'scripts/asb-service.mjs', 'scripts/asb-engine.mjs', 'scripts/asb-tray.py', 'scripts/asb-agent.mjs', 'scripts/asb-group.mjs', 'scripts/asb-instance.mjs', 'scripts/asb-icon.mjs', 'scripts/asb-native.py',
   'public/switchboard.html', 'public/switchboard.css', 'public/switchboard.js', 'public/icon.svg',
   'assets/icons/local.asb.AgentSwitchBoard.svg', 'assets/icons/asb-claude-symbolic.svg', 'assets/icons/asb-openai-symbolic.svg', 'assets/icons/asb-opencode-symbolic.svg',
   'assets/icons/asb-machine-symbolic.svg', 'assets/icons/asb-terminal-symbolic.svg',
@@ -22,7 +22,7 @@ export const RUNTIME_FILES = [
   'assets/sounds/opencode-LICENSE.txt',
   'src/switchboard.mjs', 'src/app-sources.mjs', 'src/asb-server.mjs', 'src/dashboard-snapshot.mjs', 'src/local-http.mjs', 'src/session-opener.mjs',
   'src/codex-data.mjs', 'src/claude-data.mjs', 'src/claude-registry.mjs', 'src/claude-cli-data.mjs', 'src/claude-remote-data.mjs', 'src/insights.mjs', 'src/data-cache.mjs',
-  'src/thread-classification.mjs', 'src/phone-gateway.mjs', 'src/machine-group.mjs', 'src/machine-peers.mjs', 'src/asb-sounds.mjs', 'src/opencode-data.mjs',
+  'src/thread-classification.mjs', 'src/phone-gateway.mjs', 'src/machine-group.mjs', 'src/machine-peers.mjs', 'src/asb-sounds.mjs', 'src/opencode-data.mjs', 'src/platform-paths.mjs',
   '.agents/plugins/marketplace.json',
   'bridge/.codex-plugin/plugin.json', 'bridge/.mcp.json', 'bridge/hooks/hooks.json',
   'bridge/dist/server.js', 'bridge/dist/hook.js', 'bridge/LICENSE',
@@ -30,7 +30,7 @@ export const RUNTIME_FILES = [
   'bridge/agent-skills/codex/bridge/agents/openai.yaml', 'scripts/asb-bridge.mjs',
 ].sort();
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
-const executable = (file) => file.endsWith('.sh') || file === 'scripts/asb';
+const executable = (file) => file.endsWith('.sh') || file === 'scripts/asb' || file === 'scripts/asb.mjs';
 const quote = (value) => `'${value.replace(/'/g, "'\\''")}'`;
 const safeRelativeFile = (name) => name.split('/').every((part) => /^[A-Za-z0-9._-]+$/.test(part) && part !== '.' && part !== '..');
 
@@ -338,15 +338,18 @@ export async function build({ sourceRoot = ROOT, outputDir = path.join(ROOT, 'di
   } finally { await rm(temporary, { recursive: true, force: true }); }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const command = process.argv[2];
+export async function main(args = process.argv.slice(2)) {
+  const command = args[0];
   const commands = { build, install, uninstall, check: checkRuntime };
   try {
-    if (!Object.hasOwn(commands, command) || process.argv.length !== 3) throw new Error('Use: asb-package.mjs build|install|uninstall|check');
+    if (!Object.hasOwn(commands, command) || args.length !== 1) throw new Error('Use: asb-package.mjs build|install|uninstall|check');
     console.log(JSON.stringify(await commands[command](), null, 2));
+    return 0;
   } catch (error) {
     console.error(`ASB ${command || 'package'} failed: ${error.message}`);
     if (error.stderr) console.error(String(error.stderr).trim());
-    process.exitCode = error.signal === 'SIGINT' ? 130 : error.signal === 'SIGTERM' ? 143 : 1;
+    return error.signal === 'SIGINT' ? 130 : error.signal === 'SIGTERM' ? 143 : 1;
   }
 }
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) process.exitCode = await main();

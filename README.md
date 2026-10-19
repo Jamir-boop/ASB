@@ -32,6 +32,19 @@ cd asb-1.8.1
 
 [User guide](ASB.md) · [Privacy](docs/PRIVACY.md) · [Source setup](ASB.md#start-and-stop) · [Contributing](CONTRIBUTING.md)
 
+## Install with npm (Linux and Windows)
+
+The current source also installs as an npm package. Linux needs the same packages as above. Windows needs Node.js `22.13` or later.
+
+```bash
+npm install -g github:Jamir-boop/ASB
+asb setup
+```
+
+`asb setup` makes the engine start when you sign in, waits for it, and asks which network addresses to turn on. On Windows it also prints the firewall rule to run. ASB never runs that rule itself.
+
+On Windows, ASB has statuses only: the engine reads Codex and Claude on that PC for the phone and the machine group. It has no window and no bridge yet. See [Windows](ASB.md#windows).
+
 ## Android companion (optional)
 
 The ASB Android app shows your sessions on your phone over your local network, or away from home through ZeroTier or Tailscale. It can open a chat on the PC, use the row actions, and change Persistent unread. It shows Done, Failed, and Needs input notifications.

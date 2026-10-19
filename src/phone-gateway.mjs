@@ -9,6 +9,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { createGzip } from 'node:zlib';
 import { sendJson } from './local-http.mjs';
+import { configDir } from './platform-paths.mjs';
 
 export const PHONE_API_VERSION = 1;
 export const DEFAULT_PHONE_PORT = 4630;
@@ -23,13 +24,26 @@ const validPort = (port) => Number.isInteger(port) && port >= 1024 && port <= 65
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const equal = (left, right) => left.length === right.length && timingSafeEqual(left, right);
 
-export function phoneSettingsPath(env = process.env) {
-  return path.join(env.XDG_CONFIG_HOME || path.join(env.HOME || os.homedir(), '.config'), 'asb', 'phone.json');
+export function phoneSettingsPath(env = process.env, platform = process.platform) {
+  return path.join(configDir(env, platform, env.HOME || os.homedir()), 'phone.json');
 }
 
-export function phoneTlsDir(env = process.env) {
-  return path.join(path.dirname(phoneSettingsPath(env)), 'phone-tls');
+export function phoneTlsDir(env = process.env, platform = process.platform) {
+  return path.join(path.dirname(phoneSettingsPath(env, platform)), 'phone-tls');
 }
+
+// The files of the machine certificate: openssl PEM files on Linux, PowerShell exports on Windows (plan 14.4).
+export const tlsFiles = (platform = process.platform) => platform === 'win32' ? ['cert.pfx', 'pfx-pass', 'cert.cer'] : ['key.pem', 'cert.pem'];
+
+// Appendix B part 1. The folder and the passphrase come only from the environment, never from the script text.
+export const WINDOWS_CERTIFICATE_SCRIPT = `$ErrorActionPreference = 'Stop'
+$c = New-SelfSignedCertificate -Subject 'CN=ASB' -KeyAlgorithm ECDSA_nistP256 -KeyExportPolicy Exportable \`
+  -CertStoreLocation Cert:\\CurrentUser\\My -NotAfter (Get-Date).AddYears(10)
+try {
+  $p = ConvertTo-SecureString -String $env:ASB_PFX_PASS -AsPlainText -Force
+  Export-PfxCertificate -Cert $c -FilePath (Join-Path $env:ASB_TLS_DIR 'cert.pfx') -Password $p | Out-Null
+  Export-Certificate -Cert $c -FilePath (Join-Path $env:ASB_TLS_DIR 'cert.cer') -Type CERT | Out-Null
+} finally { Remove-Item -LiteralPath $c.PSPath }`;
 
 export function privateIPv4(address) {
   if (typeof address !== 'string' || !isIPv4(address)) return false;
@@ -44,10 +58,11 @@ export function tailscaleIPv4(address) {
   return first === 100 && second >= 64 && second <= 127;
 }
 
-function addressKind(name, address) {
-  if (name.startsWith('tailscale') && tailscaleIPv4(address)) return 'tailscale';
+// Linux names (tailscale0, zt...) and Windows adapter names (Tailscale, ZeroTier One [...]).
+export function addressKind(name, address) {
+  if (/^tailscale/i.test(name) && tailscaleIPv4(address)) return 'tailscale';
   if (!privateIPv4(address)) return '';
-  return name.startsWith('zt') ? 'zerotier' : 'lan';
+  return /^(zt|zerotier)/i.test(name) ? 'zerotier' : 'lan';
 }
 
 export function listPhoneAddresses(interfaces = os.networkInterfaces()) {
@@ -114,7 +129,8 @@ function readBody(request) {
 
 export function createPhoneGateway({ localPort, asbVersion, settingsPath = phoneSettingsPath(), tlsDir = phoneTlsDir(),
   now = Date.now, openssl = 'openssl', hostName = os.hostname(), listAddresses = listPhoneAddresses,
-  peer = null, onPhonePaired = () => {}, onPhoneRevoked = () => {} }) {
+  peer = null, onPhonePaired = () => {}, onPhoneRevoked = () => {}, platform = process.platform, env = process.env,
+  execFile: run = execFileAsync }) {
   if (!Number.isInteger(localPort) || localPort < 1 || localPort > 65535) throw invalid('Invalid ASB port.');
   let settings = defaults();
   let loaded = false;
@@ -201,8 +217,34 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     await closed;
   }
 
+  const exists = (file) => fs.access(file).then(() => true, (cause) => {
+    if (cause.code !== 'ENOENT') throw cause;
+    return false;
+  });
+
+  async function windowsCertificate() {
+    const [pfxPath, passPath, cerPath] = tlsFiles('win32').map((name) => path.join(tlsDir, name));
+    const files = [pfxPath, passPath, cerPath];
+    if (!(await Promise.all(files.map(exists))).every(Boolean)) {
+      try {
+        await Promise.all(files.map((file) => fs.rm(file, { force: true })));
+        const passphrase = randomBytes(32).toString('hex');
+        await fs.writeFile(passPath, passphrase, { flag: 'wx', mode: 0o600 });
+        await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_CERTIFICATE_SCRIPT],
+          { env: { ...env, ASB_TLS_DIR: tlsDir, ASB_PFX_PASS: passphrase }, windowsHide: true, timeout: 30_000 });
+      } catch (cause) {
+        await Promise.all(files.map((file) => fs.rm(file, { force: true })));
+        throw cause;
+      }
+    }
+    const [pfx, passphrase, cer] = await Promise.all(files.map((file) => fs.readFile(file)));
+    fingerprint = new X509Certificate(cer).fingerprint256.replaceAll(':', '').toLowerCase();
+    return { pfx, passphrase: passphrase.toString('utf8').trim() };
+  }
+
   async function certificate() {
     await fs.mkdir(tlsDir, { recursive: true, mode: 0o700 });
+    if (platform === 'win32') return windowsCertificate();
     await fs.chmod(tlsDir, 0o700);
     const keyPath = path.join(tlsDir, 'key.pem');
     const certPath = path.join(tlsDir, 'cert.pem');
@@ -244,7 +286,12 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     let options;
     // Phones send no client certificate; group members send theirs, and the peer routes check it (plan 9.4).
     try { options = { ...(await certificate()), minVersion: 'TLSv1.3', requestCert: true, rejectUnauthorized: false }; }
-    catch { fingerprint = ''; error = 'ASB cannot create the phone certificate. Install openssl.'; return; }
+    catch {
+      fingerprint = '';
+      error = platform === 'win32' ? 'ASB cannot create the phone certificate. Windows PowerShell failed.'
+        : 'ASB cannot create the phone certificate. Install openssl.';
+      return;
+    }
     const group = selected.map(({ address, kind }) => {
       const server = https.createServer(options, (request, response) => { handle(request, response, group, kind); });
       server.requestTimeout = 15_000;

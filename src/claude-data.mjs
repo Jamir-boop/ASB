@@ -1,4 +1,4 @@
-import { createReadStream, promises as fs } from 'node:fs';
+import { createReadStream, existsSync, promises as fs, readdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
@@ -8,10 +8,23 @@ import { readLiveClaudeRegistry } from './claude-registry.mjs';
 import { openCommandForUrl, runOpener } from './session-opener.mjs';
 
 export const DEFAULT_CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
-export function defaultClaudeAppDir(platform = process.platform, homeDir = os.homedir(), env = process.env) {
-  if (platform === 'linux') return path.join(env.XDG_CONFIG_HOME || path.join(homeDir, '.config'), 'Claude');
-  if (platform === 'win32') return path.join(env.APPDATA || path.join(homeDir, 'AppData', 'Roaming'), 'Claude');
-  return path.join(homeDir, 'Library', 'Application Support', 'Claude');
+// Windows: the classic installer uses %APPDATA%\Claude; the Store (MSIX) app keeps its store in its package folder (spike S2).
+export function defaultClaudeAppDir(platform = process.platform, homeDir = os.homedir(), env = process.env,
+  { exists = existsSync, list = readdirSync } = {}) {
+  if (platform === 'linux') return path.posix.join(env.XDG_CONFIG_HOME || path.posix.join(homeDir, '.config'), 'Claude');
+  if (platform === 'win32') {
+    const roaming = path.win32.join(env.APPDATA || path.win32.join(homeDir, 'AppData', 'Roaming'), 'Claude');
+    if (exists(roaming)) return roaming;
+    const packages = path.win32.join(env.LOCALAPPDATA || path.win32.join(homeDir, 'AppData', 'Local'), 'Packages');
+    let names = [];
+    try { names = list(packages).filter((name) => name.startsWith('Claude_')).sort(); } catch {}
+    for (const name of names) {
+      const store = path.win32.join(packages, name, 'LocalCache', 'Roaming', 'Claude');
+      if (exists(store)) return store;
+    }
+    return roaming;
+  }
+  return path.posix.join(homeDir, 'Library', 'Application Support', 'Claude');
 }
 const DEFAULT_CLAUDE_APP_DIR = defaultClaudeAppDir();
 const DEFAULT_MAX_COUNT = 80;
