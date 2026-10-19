@@ -310,6 +310,24 @@ test('browser opens use current row data, remain busy during refresh, and queue 
   assert.ok(h.controls.notice.textContent.includes('The app did not open.'));
 });
 
+test('OpenCode rows show their app label, filter by app, and send no open request', async () => {
+  const initial = board(2);
+  initial.providers = [...providers, { id: 'opencode', label: 'OpenCode' }];
+  Object.assign(initial.threads[1], { provider: 'opencode', providerLabel: 'OpenCode', canOpen: false, appDeepLink: '' });
+  const h = harness(initial);
+  await settle();
+  const row = h.row('synthetic-1');
+  assert.ok(row.attributes['aria-label'].includes('in OpenCode'));
+  assert.equal(row.disabled, true);
+  const requests = h.requests.length;
+  await row.emit('click');
+  assert.equal(h.requests.length, requests);
+  assert.equal(row.classList.contains('opening'), false);
+  h.controls.app.value = 'opencode';
+  await h.controls.app.emit('change');
+  assert.deepEqual(h.rows().map((node) => node.dataset.threadId), ['synthetic-1']);
+});
+
 test('conditional browser reads skip list work on 304 and refresh relative ages each minute', async () => {
   const initial = board();
   initial.threads[0].updatedAtMs = epoch - 59_000;

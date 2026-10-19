@@ -25,6 +25,13 @@ NUMBER_HOLD_MS = 400
 APP_ID = "local.asb.AgentSwitchBoard"
 STATES = ("working", "waiting", "idle", "unknown")
 SOURCE_PROVIDERS = ("codex", "claude-desktop-code")
+APP_PILLS = (("codex", "Codex"), ("claude-desktop-code", "Claude"), ("opencode", "OpenCode"))
+APP_NAMES = {"codex": "Codex", "claude-desktop-code": "Claude Desktop Code", "opencode": "OpenCode"}
+# The Preferences app list; every app selected is "All apps".
+APP_CHOICES = (("All apps", frozenset()), ("Codex", frozenset({"codex"})), ("Claude", frozenset({"claude-desktop-code"})),
+               ("OpenCode", frozenset({"opencode"})), ("Codex and Claude", frozenset({"codex", "claude-desktop-code"})),
+               ("Codex and OpenCode", frozenset({"codex", "opencode"})),
+               ("Claude and OpenCode", frozenset({"claude-desktop-code", "opencode"})))
 SOURCE_COLOR_PRESETS = (("Slate blue", "#8296b4"), ("Clay", "#b28f80"), ("Plum", "#a28caa"), ("Sage", "#899e91"))
 
 
@@ -38,8 +45,22 @@ def source_marker_color(row):
         return ""
 
 
+def provider_icon(provider):
+    return {"codex": "asb-openai-symbolic", "opencode": "asb-opencode-symbolic"}.get(provider, "asb-claude-symbolic")
+
+
+def app_filter(apps):
+    """The provider filter of a selected-app set: no app or every app shows all."""
+    return "all" if not apps or set(apps) >= {provider for provider, _title in APP_PILLS} else set(apps)
+
+
+def app_choice(apps):
+    return next((index for index, (_title, choice) in enumerate(APP_CHOICES) if choice == app_filter(apps)), 0)
+
+
 def source_form_body(provider, name, data_dir, launcher, enabled, identity="", projects_dir="", color=None, show_marker=None):
-    if provider not in SOURCE_PROVIDERS or type(enabled) is not bool:
+    # Only the default OpenCode source exists; new sources stay Codex or Claude.
+    if provider not in SOURCE_PROVIDERS and not (provider == "opencode" and identity == "opencode") or type(enabled) is not bool:
         raise ValueError("Choose an app and its Enabled setting.")
     if not isinstance(name, str) or not name.strip() or len(name) > 80 or re.search(r"[\x00-\x1f\x7f]", name):
         raise ValueError("Name must have 1–80 characters with no control characters.")
@@ -121,7 +142,7 @@ def row_panel_controls(row):
 
 def session_reference(row):
     """The app host and the app's own session ID, for example claude-proxy/local_<uuid>; never the ASB row ID."""
-    host = row.get("sourceName") or ("codex" if row.get("provider") == "codex" else "claude-desktop-code")
+    host = row.get("sourceName") or (row["provider"] if row.get("provider") in ("codex", "opencode") else "claude-desktop-code")
     return host + "/" + str(row.get("externalId", ""))
 
 
@@ -181,9 +202,10 @@ def ignore_discard_after_read(action, last_read_at, now=None):
 
 
 def provider_query(query, app="all"):
-    match = re.match(r"^\s*(cl|claude|cx|codex)\s*:\s*(.*)$", query, re.IGNORECASE | re.DOTALL)
+    match = re.match(r"^\s*(cl|claude|cx|codex|oc|opencode)\s*:\s*(.*)$", query, re.IGNORECASE | re.DOTALL)
     if match:
-        app = "claude-desktop-code" if match[1].lower() in ("cl", "claude") else "codex"
+        app = {"cl": "claude-desktop-code", "claude": "claude-desktop-code", "cx": "codex",
+               "codex": "codex", "oc": "opencode", "opencode": "opencode"}[match[1].lower()]
         query = match[2]
     return query.strip().casefold(), app
 
@@ -195,7 +217,7 @@ def filtered_rows(dashboard, query="", app="all", state="all", archived=False, p
     rows = [row for row in dashboard.get("threads", [])
             if (archived or not row.get("archived"))
             and (not drawer_only or row.get("drawer"))
-            and (app == "all" or row.get("provider") == app)
+            and (app == "all" or row.get("provider") in ({app} if isinstance(app, str) else app))
             and ((row.get("state") == "working" or row.get("pending") or row.get("unread") or row.get("questionAttention"))
                  if working_or_unread else row.get("state") in states and (not pending_only or row.get("pending")))
             and (not query or query in "\n".join(str(row.get(key, "")) for key in
@@ -493,8 +515,8 @@ def write_layout(path, width=None, view=None, show_app_pills=None):
 
 def filter_chips(apps, states, archived, show_app_pills=False):
     chips = []
-    if len(apps) == 1 and not show_app_pills:
-        title = "Codex" if apps == {"codex"} else "Claude"
+    if app_filter(apps) != "all" and not show_app_pills:
+        title = ", ".join(name for provider, name in APP_PILLS if provider in apps)
         chips.append(("app", title, f"Clear app filter: {title}"))
     if set(states) not in (set(STATES), {"working"}):
         names = ", ".join(state.capitalize() for state in STATES if state in states)
@@ -591,7 +613,7 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
     state = row.get("state", "unknown")
     state = state if state in STATES else "unknown"
     state_text = state.capitalize() + " · " + (working_duration(row, now_ms) or row_meta(row, now_ms).split(" · ")[1])
-    provider = row.get("providerLabel") or {"codex": "Codex", "claude-desktop-code": "Claude Desktop Code"}.get(row.get("provider"), "Unknown app")
+    provider = row.get("providerLabel") or APP_NAMES.get(row.get("provider"), "Unknown app")
     source_label, source_id = row.get("sourceLabel", ""), row.get("sourceId", "")
     app = provider + (" · " + source_label if source_label and source_label != provider else "")
     indicator = attention_indicator(row, True)
@@ -630,6 +652,8 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
     flags = " · ".join(text for key, text in (("pinned", "Pinned"), ("archived", "Archived"), ("drawer", "In the drawer")) if row.get(key))
     if not row.get("canOpen"):
         flags += (" · " if flags else "") + "No direct link"
+        if row.get("provider") == "opencode":
+            flags += ". OpenCode cannot open one session from a link."
     source = "App source: " + (source_label or source_id) if source_label or source_id else ""
     if source_label and source_id:
         source += " (" + source_id + ")"
@@ -1198,7 +1222,7 @@ class AppSourcesEditor(Gtk.Box):
         self.name.set_max_length(80)
         self.projects_dir.set_placeholder_text("Default: ~/.claude/projects")
         self.launcher.set_placeholder_text("Installed app launcher required")
-        self.transcript_widgets = []
+        self.transcript_widgets, self.choose_buttons, self.fixed_provider = [], [], ""
         for title, widget, folder in (("Name", self.name, None), ("App", self.provider, None),
                 ("Session folder", self.data_dir, True), ("Open with", self.launcher, False),
                 ("Transcript folder", self.projects_dir, True)):
@@ -1217,6 +1241,13 @@ class AppSourcesEditor(Gtk.Box):
                 choose.update_property([Gtk.AccessibleProperty.LABEL], ["Choose " + title.lower()])
                 choose.connect("clicked", lambda _button, entry=widget, directory=folder: self.choose_path(entry, directory))
                 line.append(choose)
+                if widget is not self.projects_dir:
+                    self.choose_buttons.append(choose)
+            if widget is self.provider:
+                self.provider_text = label("")
+                self.provider_text.set_xalign(0)
+                self.provider_text.set_visible(False)
+                line.append(self.provider_text)
             if widget is self.projects_dir:
                 self.transcript_widgets = [field]
         self.source_color = Gtk.ColorDialogButton.new(Gtk.ColorDialog(title="Profile color", with_alpha=False))
@@ -1334,6 +1365,8 @@ class AppSourcesEditor(Gtk.Box):
         self.table.set_sensitive(self.loaded and not form_busy)
         self.form.set_sensitive(self.editing and not form_busy)
         self.provider.set_sensitive(not current.get("builtin"))
+        for button in self.choose_buttons:
+            button.set_sensitive(not self.fixed_provider)
         self.add_button.set_sensitive(self.loaded and not busy and len(self.sources) < self.max_sources)
         self.save_button.set_sensitive(self.loaded and not busy and self.editing)
         self.remove_button.set_sensitive(self.loaded and not busy and bool(current) and not current.get("builtin"))
@@ -1343,7 +1376,7 @@ class AppSourcesEditor(Gtk.Box):
 
     def provider_changed(self, *_args):
         for widget in self.transcript_widgets:
-            widget.set_visible(self.provider.get_selected() == 1)
+            widget.set_visible(self.provider.get_selected() == 1 and not self.fixed_provider)
         self.form_changed()
 
     def set_source_status(self, source):
@@ -1360,7 +1393,15 @@ class AppSourcesEditor(Gtk.Box):
         self.editing, self.editing_id = True, source.get("id", "")
         self.form_title.set_label("Edit app source" if self.editing_id else "Add app source")
         self.source_id.set_label("ID: " + (self.editing_id or "Assigned when saved"))
-        self.provider.set_selected(SOURCE_PROVIDERS.index(source.get("provider", "codex")))
+        provider = source.get("provider", "codex")
+        # The default OpenCode source keeps its app, folder, and empty launcher.
+        self.fixed_provider = provider if provider not in SOURCE_PROVIDERS else ""
+        self.provider.set_visible(not self.fixed_provider)
+        self.provider_text.set_label(APP_NAMES.get(provider, provider))
+        self.provider_text.set_visible(bool(self.fixed_provider))
+        self.provider.set_selected(0 if self.fixed_provider else SOURCE_PROVIDERS.index(provider))
+        for entry in (self.data_dir, self.launcher):
+            entry.set_editable(not self.fixed_provider)
         for entry, key in ((self.name, "label"), (self.data_dir, "dataDir"),
                            (self.launcher, "launcher"), (self.projects_dir, "projectsDir")):
             entry.set_text(source.get(key, ""))
@@ -1374,7 +1415,8 @@ class AppSourcesEditor(Gtk.Box):
         for accessible in (self.source_color, self.source_color.get_first_child()):
             accessible.update_property([Gtk.AccessibleProperty.LABEL], ["Profile color for " + source.get("label", "new app source")])
         self.color_changed()
-        self.launcher.set_placeholder_text("Default app link handler" if source.get("builtin") else "Installed app launcher required")
+        self.launcher.set_placeholder_text("Not used: OpenCode cannot open one session from a link." if self.fixed_provider
+                                           else "Default app link handler" if source.get("builtin") else "Installed app launcher required")
         self.set_source_status(source)
         self.provider_changed()
         self.form_baseline = self.form_values()
@@ -1414,7 +1456,7 @@ class AppSourcesEditor(Gtk.Box):
         for index, source in enumerate(self.sources):
             row = existing.get(source["id"])
             if row is None or row.asb_source != source:
-                provider = "Codex" if source["provider"] == "codex" else "Claude Desktop Code"
+                provider = APP_NAMES.get(source["provider"], source["provider"])
                 marker = SourceMarker(self.owner, source.get("color", ""))
                 marker.set_valign(Gtk.Align.CENTER)
                 name_cell = Gtk.Box(spacing=6)
@@ -1539,7 +1581,7 @@ class AppSourcesEditor(Gtk.Box):
             self.message.set_label("This app source changed outside this form. Your edits are kept. Select Cancel to load the saved source, then edit and save again.")
             return
         try:
-            body = source_form_body(SOURCE_PROVIDERS[self.provider.get_selected()], self.name.get_text(),
+            body = source_form_body(self.fixed_provider or SOURCE_PROVIDERS[self.provider.get_selected()], self.name.get_text(),
                                     self.data_dir.get_text(), self.launcher.get_text(), self.enabled.get_active(),
                                     self.editing_id, self.projects_dir.get_text(),
                                     self.owner.hex_color(self.source_color.get_rgba()), self.show_marker.get_active())
@@ -2065,7 +2107,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.search = Gtk.SearchEntry(placeholder_text="Find a session or folder", hexpand=True)
         self.search.set_search_delay(0)
         self.search.set_size_request(0, -1)
-        self.search.set_tooltip_text("Search title or folder. cl: or claude: selects Claude; cx: or codex: selects Codex.")
+        self.search.set_tooltip_text("Search title or folder. cl: or claude: selects Claude; cx: or codex: selects Codex; "
+                                     "oc: or opencode: selects OpenCode.")
         self.search.connect("search-changed", self.filter_changed)
         self.search.connect("stop-search", self.clear_search)
         # No arrow: the custom 1px popover edge is on the contents node only.
@@ -2096,7 +2139,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         sessions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         appearance = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.apps, self.syncing_apps = set(), False
-        self.app_filter = Gtk.DropDown.new_from_strings(["All apps", "Codex", "Claude", "Both apps"])
+        self.app_filter = Gtk.DropDown.new_from_strings([title for title, _apps in APP_CHOICES])
         self.states, self.updating_states = set(STATES), False
         self.state_summary = label("All states", "caption")
         state_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -2248,12 +2291,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.app_pills = {}
         self.app_pill_labels = {}
         self.app_pill_icons = {}
-        for provider, title in (("codex", "Codex"), ("claude-desktop-code", "Claude")):
-            pill = Gtk.ToggleButton(tooltip_text=f"Select {title}. No selected apps or both apps shows all sessions.")
+        for provider, title in APP_PILLS:
+            pill = Gtk.ToggleButton(tooltip_text=f"Select {title}. No selected apps or all apps shows all sessions.")
             pill.add_css_class("asb-filter-pill")
             pill.update_property([Gtk.AccessibleProperty.LABEL], [f"Select {title}"])
             content = Gtk.Box(spacing=3)
-            icon = Gtk.Image(icon_name="asb-openai-symbolic" if provider == "codex" else "asb-claude-symbolic", pixel_size=14)
+            icon = Gtk.Image(icon_name=provider_icon(provider), pixel_size=14)
             content.append(icon)
             name = label(title)
             content.append(name)
@@ -3365,8 +3408,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return False
 
     def visible_rows(self):
-        app = next(iter(self.apps)) if len(self.apps) == 1 else "all"
-        return filtered_rows(self.dashboard, self.search.get_text(), app, self.states, self.archive.get_active(),
+        return filtered_rows(self.dashboard, self.search.get_text(), app_filter(self.apps), self.states, self.archive.get_active(),
                              self.pending_only.get_active(), self.drawer_view)
 
     def filter_changed(self, *_args):
@@ -3440,14 +3482,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.apps = set(apps)
         for provider, pill in self.app_pills.items():
             pill.set_active(provider in self.apps)
-        self.app_filter.set_selected(3 if len(self.apps) == 2 else 1 if self.apps == {"codex"}
-                                     else 2 if self.apps == {"claude-desktop-code"} else 0)
+        self.app_filter.set_selected(app_choice(self.apps))
         self.syncing_apps = False
         self.filter_changed()
 
     def apps_from_preferences(self, *_args):
         if not self.syncing_apps:
-            self.select_apps([set(), {"codex"}, {"claude-desktop-code"}, {"codex", "claude-desktop-code"}][self.app_filter.get_selected()])
+            self.select_apps(APP_CHOICES[self.app_filter.get_selected()][1])
 
     def apps_from_pills(self, *_args):
         if not self.syncing_apps:
@@ -3747,8 +3788,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.set_margin_start(indent)
             return widget
         path = Gtk.Box(spacing=7)
-        mark = Gtk.Image(icon_name="asb-openai-symbolic" if row.get("provider") == "codex" else "asb-claude-symbolic",
-                         pixel_size=14, valign=Gtk.Align.START)
+        mark = Gtk.Image(icon_name=provider_icon(row.get("provider")), pixel_size=14, valign=Gtk.Align.START)
         mark.add_css_class("asb-provider")
         path.append(mark)
         path_label = text(model["path"], "asb-tooltip-path")
@@ -3941,7 +3981,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 for child in (mark_overlay, title, clock, dot, state):
                     content.append(child)
             widget.set_child(content)
-        widget.asb_mark.set_from_icon_name("asb-openai-symbolic" if row["provider"] == "codex" else "asb-claude-symbolic")
+        widget.asb_mark.set_from_icon_name(provider_icon(row["provider"]))
         widget.asb_source_badge.set_color(source_marker_color(row))
         indicator = attention_indicator(row, True)
         (widget.add_css_class if indicator == "dot" else widget.remove_css_class)("asb-unread")
@@ -4325,7 +4365,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             # An insensitive control loses the focus; it gets it back when the action ends.
             panel.asb_return_focus = focus
         panel.update_property([Gtk.AccessibleProperty.LABEL], [model["title"]])
-        panel.asb_icon.set_from_icon_name("asb-openai-symbolic" if row.get("provider") == "codex" else "asb-claude-symbolic")
+        panel.asb_icon.set_from_icon_name(provider_icon(row.get("provider")))
         panel.asb_folder.set_label(model["path"])
         panel.asb_title.set_label(" ".join(model["title"].split()))
         panel.asb_state.set_label(model["state_text"])

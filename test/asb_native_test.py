@@ -361,10 +361,23 @@ class WidgetCheck(unittest.TestCase):
                    {"id": "studio", "provider": "claude-desktop-code", "label": "Studio", "enabled": False,
                     "dataDir": "/example/profiles/studio", "launcher": "/example/apps/studio.desktop",
                     "projectsDir": "/example/transcripts", "color": "#b28f80", "showMarker": False,
-                    "sessionCount": 3, "status": "disabled"}]
+                    "sessionCount": 3, "status": "disabled"},
+                   {"id": "opencode", "provider": "opencode", "label": "OpenCode", "enabled": True, "builtin": True,
+                    "dataDir": "/example/profiles/opencode", "launcher": "", "color": "#899e91", "showMarker": True,
+                    "sessionCount": 2, "status": "ok"}]
         requests[-1][1]({"sources": sources, "maxSources": 8}, None)
         self.assertFalse(editor.provider.get_sensitive())
         self.assertFalse(editor.remove_button.get_sensitive())
+        editor.table.select_row(editor.table.get_row_at_index(2))
+        self.assertEqual((editor.provider.get_visible(), editor.provider_text.get_visible(), editor.provider_text.get_label()),
+                         (False, True, "OpenCode"))
+        self.assertEqual((editor.data_dir.get_editable(), editor.launcher.get_editable()), (False, False))
+        self.assertTrue(all(not button.get_sensitive() for button in editor.choose_buttons))
+        self.assertFalse(any(widget.get_visible() for widget in editor.transcript_widgets))
+        editor.table.select_row(editor.table.get_row_at_index(0))
+        self.assertEqual((editor.provider.get_visible(), editor.provider_text.get_visible(), editor.data_dir.get_editable()),
+                         (True, False, True))
+        self.assertTrue(all(button.get_sensitive() for button in editor.choose_buttons))
         capture("profiles-wide")
         editor.add_source()
         editor.name.set_text("Draft profile")
@@ -1257,7 +1270,7 @@ class WidgetCheck(unittest.TestCase):
                 self.assertEqual(window.app_filter.get_selected(), 1)
                 self.assertTrue(all(row["provider"] == "codex" for row in window.visible_rows()))
                 window.app_pills["claude-desktop-code"].set_active(True)
-                self.assertEqual(window.app_filter.get_selected(), 3)
+                self.assertEqual(window.app_filter.get_selected(), 4)
                 self.assertEqual(len(window.focus_widgets), 106)
                 window.app_filter.set_selected(2)
                 self.assertFalse(window.app_pills["codex"].get_active())

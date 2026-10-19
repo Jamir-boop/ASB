@@ -176,6 +176,7 @@ class ProfileSyncChecks(unittest.TestCase):
         editor.edit_revision = editor.form_baseline = editor.baseline_source = None
         editor.sources = [self.source(), self.source(id="other", label="Other", enabled=False)]
         editor.transcript_widgets, editor.preset_markers, editor.table_markers = [], [], []
+        editor.choose_buttons, editor.fixed_provider, editor.provider_text = [Mock(), Mock()], "", Mock()
         editor.table = self.Table()
         editor.table.editor = editor
         editor.table_line = Mock()
@@ -1140,7 +1141,7 @@ class DataChecks(unittest.TestCase):
     def test_filter_chip_groups_clear_only_their_constraint(self):
         chips = asb.filter_chips
         self.assertEqual(chips(set(), set(asb.STATES), False), ())
-        self.assertEqual(chips(set(asb.SOURCE_PROVIDERS), set(asb.STATES), False), ())
+        self.assertEqual(chips({"codex", "claude-desktop-code", "opencode"}, set(asb.STATES), False), ())
         self.assertEqual(chips({"codex"}, set(), True), (
             ("app", "Codex", "Clear app filter: Codex"),
             ("states", "No states", "Clear state filter: No states"),
@@ -1336,6 +1337,46 @@ class DataChecks(unittest.TestCase):
             window.persistent_unread.set_active.assert_called_with(expected)
         self.assertFalse(window.syncing_unread_setting)
 
+    def test_provider_icon_names_each_app_mark(self):
+        self.assertEqual([asb.provider_icon(provider) for provider in ("codex", "claude-desktop-code", "opencode", None)],
+                         ["asb-openai-symbolic", "asb-claude-symbolic", "asb-opencode-symbolic", "asb-claude-symbolic"])
+
+    def test_three_app_selection_shows_all_for_none_or_every_app(self):
+        board = {"threads": [{"id": provider, "provider": provider, "state": "idle"}
+                             for provider in ("codex", "claude-desktop-code", "opencode")]}
+        every = {"codex", "claude-desktop-code", "opencode"}
+        for apps, expected in ((set(), ["claude-desktop-code", "codex", "opencode"]), (every, ["claude-desktop-code", "codex", "opencode"]),
+                               ({"opencode"}, ["opencode"]), ({"codex", "claude-desktop-code"}, ["claude-desktop-code", "codex"]),
+                               ({"codex", "opencode"}, ["codex", "opencode"])):
+            with self.subTest(apps=apps):
+                self.assertEqual(sorted(row["id"] for row in asb.filtered_rows(board, app=asb.app_filter(apps))), expected)
+        self.assertEqual((asb.app_filter(set()), asb.app_filter(every)), ("all", "all"))
+        self.assertEqual([asb.app_choice(apps) for apps in (set(), every, {"codex"}, {"claude-desktop-code"}, {"opencode"},
+                                                            {"codex", "claude-desktop-code"}, {"codex", "opencode"},
+                                                            {"claude-desktop-code", "opencode"})], [0, 0, 1, 2, 3, 4, 5, 6])
+        self.assertEqual([asb.app_filter(apps) for _title, apps in asb.APP_CHOICES][1:],
+                         [set(apps) for _title, apps in asb.APP_CHOICES][1:])
+        self.assertEqual(asb.filter_chips(every, set(asb.STATES), False), ())
+        self.assertEqual(asb.filter_chips({"opencode"}, set(asb.STATES), False),
+                         (("app", "OpenCode", "Clear app filter: OpenCode"),))
+        self.assertEqual(asb.filter_chips({"opencode", "codex"}, set(asb.STATES), False),
+                         (("app", "Codex, OpenCode", "Clear app filter: Codex, OpenCode"),))
+        self.assertEqual(asb.filter_chips({"opencode", "codex"}, set(asb.STATES), False, True), ())
+        window = object.__new__(Window)
+        window.syncing_apps, window.filter_changed = False, Mock()
+        window.app_pills = {provider: SimpleNamespace(active=False) for provider in every}
+        for pill in window.app_pills.values():
+            pill.set_active = lambda value, pill=pill: setattr(pill, "active", value)
+            pill.get_active = lambda pill=pill: pill.active
+        window.app_filter = SimpleNamespace(selected=0, set_selected=lambda value: setattr(window.app_filter, "selected", value),
+                                            get_selected=lambda: window.app_filter.selected)
+        window.select_apps({"codex", "opencode"})
+        self.assertEqual(window.app_filter.selected, 5)
+        window.app_filter.selected = 3
+        window.apps_from_preferences()
+        self.assertEqual((window.apps, {provider for provider, pill in window.app_pills.items() if pill.active}),
+                         ({"opencode"}, {"opencode"}))
+
     def test_provider_prefixes(self):
         for prefix, provider in (("cl:", "claude-desktop-code"), ("claude:", "claude-desktop-code"),
                                  (" CL : ", "claude-desktop-code"), ("ClaUde: ", "claude-desktop-code"),
@@ -1350,6 +1391,13 @@ class DataChecks(unittest.TestCase):
         self.assertEqual(asb.filtered_rows(FIXTURE, "claude:", state="working"), [])
         literal = {"threads": [{**FIXTURE["threads"][0], "id": "literal", "title": "notes: <b>Literal title</b>"}]}
         self.assertEqual(asb.provider_query("notes: <b>"), ("notes: <b>", "all"))
+        for prefix in ("oc:", "opencode:", " OC : ", "OpenCode:", "  opencode  :  "):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(asb.provider_query(prefix + " Calm Squid", "codex"), ("calm squid", "opencode"))
+        self.assertEqual(asb.provider_query("ocx: text"), ("ocx: text", "all"))
+        opencode = {"threads": [{**FIXTURE["threads"][0], "id": "oc", "provider": "opencode", "providerLabel": "OpenCode"},
+                                {**FIXTURE["threads"][0], "id": "cx"}]}
+        self.assertEqual([row["id"] for row in asb.filtered_rows(opencode, "OC:", app="codex")], ["oc"])
         self.assertEqual(asb.filtered_rows(literal, "notes: <b>")[0]["id"], "literal")
 
     def test_combined_states_and_asb_pin_order(self):
@@ -1565,6 +1613,49 @@ class NativeLogicChecks(unittest.TestCase):
                 fields = dict(provider="claude-desktop-code", name="Claude", data_dir="/profile", launcher="", enabled=True)
                 body(**{**fields, key: value})
 
+    def test_only_the_default_opencode_source_is_accepted_and_its_editor_is_fixed(self):
+        body = SCOPE["source_form_body"]
+        self.assertEqual(body("opencode", " Work ", "/data/opencode", "", False, "opencode", "/ignored", "#899e91", True),
+                         {"source": {"id": "opencode", "provider": "opencode", "label": "Work", "dataDir": "/data/opencode",
+                                     "launcher": "", "enabled": False, "color": "#899e91", "showMarker": True}})
+        for identity in ("", "codex", "opencode-2"):
+            with self.subTest(identity=identity), self.assertRaises(ValueError):
+                body("opencode", "OpenCode", "/data/opencode", "", True, identity)
+        self.assertEqual(asb.SOURCE_PROVIDERS, ("codex", "claude-desktop-code"))
+        window = object.__new__(SourcesEditor)
+        window.owner = SimpleNamespace(rgba=lambda color: color, hex_color=lambda color: color)
+        for name in ("form_title", "source_id", "provider", "name", "data_dir", "launcher", "projects_dir", "enabled",
+                     "show_marker", "source_color", "source_color_hex", "source_status", "provider_text"):
+            setattr(window, name, Mock())
+        window.provider.get_selected.return_value = 0
+        window.source_color.get_rgba.return_value = "#899e91"
+        window.transcript_widgets, window.choose_buttons = [Mock()], [Mock(), Mock()]
+        window.update_controls = Mock()
+        default = {"id": "opencode", "provider": "opencode", "label": "OpenCode", "builtin": True, "enabled": True,
+                   "launcher": "", "dataDir": "/data/opencode", "color": "#899e91"}
+        with patch.dict(SCOPE, {"Gtk": SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0))}):
+            window.set_form(default)
+            self.assertEqual(window.fixed_provider, "opencode")
+            window.provider.set_visible.assert_called_with(False)
+            window.provider_text.set_label.assert_called_with("OpenCode")
+            window.provider_text.set_visible.assert_called_with(True)
+            for entry in (window.data_dir, window.launcher):
+                entry.set_editable.assert_called_with(False)
+            window.transcript_widgets[0].set_visible.assert_called_with(False)
+            window.closed = window.loading = window.choosing = window.conflict = False
+            window.loaded, window.editing_id, window.request_sources = True, "opencode", Mock()
+            window.name.get_text.return_value, window.data_dir.get_text.return_value = "OpenCode", "/data/opencode"
+            window.launcher.get_text.return_value = window.projects_dir.get_text.return_value = ""
+            window.enabled.get_active.return_value = window.show_marker.get_active.return_value = True
+            window.save_source()
+            self.assertEqual(window.request_sources.call_args.args[2]["source"]["provider"], "opencode")
+            window.set_form({"provider": "codex"})
+            self.assertEqual(window.fixed_provider, "")
+            window.provider.set_visible.assert_called_with(True)
+            window.provider_text.set_visible.assert_called_with(False)
+            for entry in (window.data_dir, window.launcher):
+                entry.set_editable.assert_called_with(True)
+
     def test_source_requests_serialize_keep_failed_form_and_refresh_after_changes(self):
         window = object.__new__(SourcesEditor)
         builtin = {"id": "codex", "provider": "codex", "builtin": True, "dataDir": "/default"}
@@ -1575,7 +1666,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.owner = SimpleNamespace(closed=False, refresh=Mock(),
                                        hex_color=Mock(return_value="#b28f80"))
         window.source_color = Mock(get_rgba=Mock(return_value=object()))
-        window.provider = Mock(get_selected=Mock(return_value=0))
+        window.provider, window.fixed_provider, window.choose_buttons = Mock(get_selected=Mock(return_value=0)), "", []
         for name, value in (("name", "Personal"), ("data_dir", "/profile"), ("launcher", "/bin/chatgpt-personal"), ("projects_dir", "")):
             setattr(window, name, Mock(get_text=Mock(return_value=value)))
         window.enabled = Mock(get_active=Mock(return_value=True))
@@ -1713,7 +1804,7 @@ class NativeLogicChecks(unittest.TestCase):
         window = object.__new__(SourcesEditor)
         window.owner = SimpleNamespace(rgba=lambda color: color, hex_color=lambda color: color)
         for name in ("form_title", "source_id", "provider", "name", "data_dir", "launcher", "projects_dir", "enabled",
-                     "show_marker", "source_color", "source_color_hex", "source_status"):
+                     "show_marker", "source_color", "source_color_hex", "source_status", "provider_text"):
             setattr(window, name, Mock())
         window.source_color.get_rgba.return_value = "#404040"
         window.provider_changed = window.update_controls = Mock()
@@ -2189,6 +2280,12 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertEqual(model({**source, **extra}, 223_000, "/home/test")["app_color"], "")
         long_path = "/work/" + "directory/" * 100
         self.assertEqual(model({**base, "cwd": long_path}, 223_000, "/home/test")["path"], long_path)
+        opencode = {**base, "provider": "opencode", "providerLabel": "", "canOpen": False, "pinned": True,
+                    "sourceLabel": "OpenCode", "sourceId": "opencode"}
+        value = model(opencode, 223_000, "/home/test")
+        self.assertEqual((value["app"], value["flags"]),
+                         ("OpenCode", "Pinned · No direct link. OpenCode cannot open one session from a link."))
+        self.assertIn("OpenCode cannot open one session from a link.", description(value))
 
     def test_tooltip_query_reuses_content_and_rebuilds_on_rendered_changes_without_reads(self):
         window = object.__new__(Window)
