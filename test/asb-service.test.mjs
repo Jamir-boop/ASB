@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
@@ -10,11 +10,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setImmediate as turn } from 'node:timers/promises';
 import { findRunningService, readServiceRuntime, serviceUnit } from '../scripts/asb-service.mjs';
+import { engineLogPath, shouldStartTray, startEngine, trayLauncher } from '../scripts/asb-engine.mjs';
 import { createSwitchboardServer } from '../src/switchboard.mjs';
 import { RUNTIME_FILES } from '../scripts/asb-package.mjs';
 
 const serviceScript = fileURLToPath(new URL('../scripts/asb-service.mjs', import.meta.url));
 const desktopScript = fileURLToPath(new URL('../scripts/asb-desktop.mjs', import.meta.url));
+const engineScript = fileURLToPath(new URL('../scripts/asb-engine.mjs', import.meta.url));
 const launcherScript = fileURLToPath(new URL('../scripts/asb', import.meta.url));
 
 async function freePort() {
@@ -44,10 +46,10 @@ async function fixture(t) {
     CODEX_HOME: path.join(home, 'codex'), CLAUDE_APP_DIR: path.join(home, 'claude'), CLAUDE_CONFIG_DIR: path.join(home, 'claude-code'),
     CLAUDE_CODE_CONFIG_DIR: path.join(home, 'claude-code'), ASB_SYSTEM_INSTALL: '1', ASB_PYTHON: '/bin/true',
     ASB_NODE: process.execPath, PATH: `${path.join(home, 'bin')}:/usr/bin:/bin`, ASB_SYSTEMCTL_LOG: path.join(home, 'systemctl.jsonl'),
-    PORT: String(await freePort()) };
+    PORT: String(await freePort()), ASB_TRAY: '0' };
   await mkdir(env.XDG_RUNTIME_DIR, { mode: 0o700 });
   await mkdir(path.join(home, 'bin'));
-  await writeFile(path.join(home, 'bin/systemctl'), `#!${process.execPath}\nconst fs = require('node:fs');\nconst args=process.argv.slice(2);\nfs.appendFileSync(process.env.ASB_SYSTEMCTL_LOG, JSON.stringify(args)+'\\n');\nif (process.env.ASB_SYSTEMCTL_FAIL && args.includes(process.env.ASB_SYSTEMCTL_FAIL)) process.exit(1);\nif (args.includes('is-active')) console.log('active');\n`, { mode: 0o755 });
+  await writeFile(path.join(home, 'bin/systemctl'), `#!${process.execPath}\nconst fs = require('node:fs');\nconst args=process.argv.slice(2);\nfs.appendFileSync(process.env.ASB_SYSTEMCTL_LOG, JSON.stringify(args)+'\\n');\nif (process.env.ASB_SYSTEMCTL_FAIL && args.includes(process.env.ASB_SYSTEMCTL_FAIL)) process.exit(1);\nif (args.includes('is-active')) console.log('active');\nif (args.includes('show')) console.log('1');\n`, { mode: 0o755 });
   const launch = (args, extra = {}, program = process.execPath) => {
     const child = spawn(program, args, { env: { ...env, ...extra }, stdio: ['ignore', 'pipe', 'pipe'] });
     children.push(child);
@@ -198,9 +200,9 @@ for (const signal of ['SIGTERM', 'SIGINT']) test(`service run protects its manif
   await assert.rejects(stat(f.runtime), { code: 'ENOENT' });
 });
 
-test('the desktop attaches without replacing or stopping the running service', { timeout: 10_000 }, async (t) => {
+test('the board launcher attaches to a running engine, and a second engine refuses to start', { timeout: 10_000 }, async (t) => {
   const f = await fixture(t);
-  const service = f.launch([serviceScript, 'run']);
+  const service = f.launch([engineScript, 'run']);
   await ready(service);
   const runtime = await readServiceRuntime(f.env);
   assert.deepEqual(await findRunningService(f.env), runtime);
@@ -209,64 +211,32 @@ test('the desktop attaches without replacing or stopping the running service', {
   assert.match(desktop.output, new RegExp(`ASB: http://127\\.0\\.0\\.1:${runtime.port}`));
   assert.equal(service.exitCode, null);
   assert.deepEqual(await findRunningService(f.env), runtime);
-  const second = await f.command(['run'], { PORT: String(await freePort()) });
-  assert.equal(second.code, 1);
-  assert.match(second.stderr, /belongs to a running process/);
-  assert.deepEqual(await readServiceRuntime(f.env), runtime);
-});
-
-test('a stale desktop runtime file is replaced and cleaned with the owned server', async (t) => {
-  const f = await fixture(t);
-  const stale = { schema: 1, pid: 2147483647, port: Number(f.env.PORT), sourceToken: 'a'.repeat(64) };
-  await writeRuntime(f, stale);
-  const desktop = f.launch([desktopScript]);
-  assert.equal((await desktop.closed)[0], 0, desktop.errors);
-  assert.match(desktop.output, /ASB: http:\/\/127\.0\.0\.1:/);
-  await assert.rejects(stat(f.runtime), { code: 'ENOENT' });
-});
-
-test('the desktop publishes protected discovery metadata and rejects a second desktop', { timeout: 10_000 }, async (t) => {
-  const f = await fixture(t);
-  const native = path.join(f.home, 'synthetic-native');
-  await writeFile(native, `#!${process.execPath}\nsetInterval(() => {}, 1000);\n`, { mode: 0o755 });
-  const desktop = f.launch([desktopScript], { ASB_PYTHON: native });
-  await ready(desktop, 'ASB:');
-  const runtime = await readServiceRuntime(f.env);
-  assert.equal(runtime.pid, desktop.pid);
-  assert.equal((await stat(f.runtime)).mode & 0o777, 0o600);
-  assert.equal((await stat(path.dirname(f.runtime))).mode & 0o777, 0o700);
-  assert.equal(await findRunningService(f.env), null);
-  const response = await fetch(`http://127.0.0.1:${runtime.port}/api/agent/status`, { headers: { 'X-ASB-Source-Token': runtime.sourceToken } });
-  const status = await response.json();
-  assert.equal(status.pid, desktop.pid);
-  assert.equal(status.mode, 'desktop');
-  const second = f.launch([desktopScript]);
+  assert.deepEqual(await f.systemctlCalls(), []);
+  const second = f.launch([engineScript, 'run'], { PORT: String(await freePort()) });
   assert.equal((await second.closed)[0], 1);
   assert.match(second.errors, /belongs to a running process/);
   assert.deepEqual(await readServiceRuntime(f.env), runtime);
-  desktop.kill('SIGTERM');
-  assert.equal((await desktop.closed)[0], 0, desktop.errors);
+});
+
+test('the engine replaces a stale runtime file and removes it on stop', { timeout: 10_000 }, async (t) => {
+  const f = await fixture(t);
+  await writeRuntime(f, { schema: 1, pid: 2147483647, port: Number(f.env.PORT), sourceToken: 'a'.repeat(64) });
+  const child = f.launch([engineScript, 'run']);
+  await ready(child);
+  assert.equal((await readServiceRuntime(f.env)).pid, child.pid);
+  child.kill('SIGTERM');
+  assert.equal((await child.closed)[0], 0, child.errors);
   await assert.rejects(stat(f.runtime), { code: 'ENOENT' });
 });
 
-test('desktop startup keeps malformed runtime metadata and shutdown keeps a replacement', async (t) => {
+test('the engine keeps malformed runtime metadata and refuses to start', async (t) => {
   const f = await fixture(t);
   await mkdir(path.dirname(f.runtime), { recursive: true, mode: 0o700 });
   await writeFile(f.runtime, '{', { mode: 0o600 });
-  const refused = f.launch([desktopScript]);
+  const refused = f.launch([engineScript, 'run']);
   assert.equal((await refused.closed)[0], 1);
   assert.match(refused.errors, /kept an invalid service.json/);
   assert.equal(await readFile(f.runtime, 'utf8'), '{');
-  await rm(f.runtime);
-  const native = path.join(f.home, 'synthetic-native');
-  await writeFile(native, `#!${process.execPath}\nsetInterval(() => {}, 1000);\n`, { mode: 0o755 });
-  const desktop = f.launch([desktopScript], { ASB_PYTHON: native });
-  await ready(desktop, 'ASB:');
-  const replacement = { schema: 1, pid: process.pid, port: 12345, sourceToken: 'b'.repeat(64) };
-  await writeRuntime(f, replacement);
-  desktop.kill('SIGTERM');
-  assert.equal((await desktop.closed)[0], 0, desktop.errors);
-  assert.deepEqual(await readServiceRuntime(f.env), replacement);
 });
 
 test('runtime validation rejects malformed, unsafe, or linked manifests', async (t) => {
@@ -355,7 +325,7 @@ test('a cleanup step that never ends stops the service 5 s after the signal and 
   assert.equal((await child.closed)[0], 1);
   const elapsed = Date.now() - started;
   assert.ok(elapsed >= 4500 && elapsed <= 9000, `The service stopped after ${elapsed} ms.`);
-  assert.match(child.errors, /ASB service is still running 5 s after SIGTERM\. Pending cleanup step: manifest removal\. Open resources: .*TCPServerWrap/);
+  assert.match(child.errors, /ASB engine is still running 5 s after SIGTERM\. Pending cleanup step: manifest removal\. Open resources: .*TCPServerWrap/);
 });
 
 test('an unavailable phone gateway does not prevent the headless ASB server from starting', async (t) => {
@@ -407,4 +377,153 @@ test('service-only polling observes completion with no clients and close cancels
   assert.equal(timers.size, 0);
   await stale.callback();
   assert.deepEqual(seen, ['working', 'idle', 'idle']);
+});
+
+test('the engine helpers choose the tray, the tray launcher, and the log path', () => {
+  const bus = { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1/bus' };
+  assert.equal(shouldStartTray(bus, 'linux'), true);
+  assert.equal(shouldStartTray({ ...bus, ASB_TRAY: '0' }, 'linux'), false);
+  assert.equal(shouldStartTray({}, 'linux'), false);
+  assert.equal(shouldStartTray(bus, 'win32'), false);
+  assert.equal(trayLauncher({ ASB_INSTALLED_LAUNCHER: '/opt/asb/bin/asb' }), '/opt/asb/bin/asb');
+  for (const env of [{}, { ASB_INSTALLED_LAUNCHER: 'bin/asb' }]) assert.equal(trayLauncher(env), launcherScript);
+  assert.equal(engineLogPath({ XDG_STATE_HOME: '/state' }), '/state/asb/engine.log');
+  assert.equal(engineLogPath({}), path.join(os.homedir(), '.local/state/asb/engine.log'));
+});
+
+test('engine start uses the enabled user service, a detached engine, or the running engine', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'asb-engine-start-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const env = { XDG_STATE_HOME: path.join(home, 'state'), XDG_RUNTIME_DIR: path.join(home, 'runtime') };
+  const runtime = { schema: 1, pid: 12, port: 23456, sourceToken: 'a'.repeat(64) };
+  const fake = ({ enabled = false, startFails = false, answerAt = 3 } = {}) => {
+    const calls = [];
+    let finds = 0;
+    return { calls, options: { env, intervalMs: 1,
+      execFile: async (program, args) => {
+        calls.push([program, ...args]);
+        if (args[1] === 'is-enabled') { if (!enabled) throw Object.assign(new Error('disabled'), { stdout: 'disabled\n' }); return { stdout: 'enabled\n' }; }
+        if (startFails) throw new Error('Synthetic start failure');
+        return { stdout: '' };
+      },
+      spawn: (program, args, options) => {
+        calls.push(['spawn', program, ...args]);
+        assert.equal(options.detached, true);
+        assert.equal(options.env, env);
+        assert.equal(options.stdio[0], 'ignore');
+        assert.ok(Number.isInteger(options.stdio[1]) && options.stdio[1] === options.stdio[2]);
+        const child = new EventEmitter();
+        child.unref = () => calls.push(['unref']);
+        return child;
+      },
+      find: async () => (finds++ === answerAt ? runtime : null) } };
+  };
+  const enabled = fake({ enabled: true });
+  assert.equal(await startEngine(enabled.options), runtime);
+  assert.deepEqual(enabled.calls, [['systemctl', '--user', 'is-enabled', 'asb.service'], ['systemctl', '--user', 'start', 'asb.service']]);
+  const log = path.join(env.XDG_STATE_HOME, 'asb/engine.log');
+  const detached = fake();
+  assert.equal(await startEngine(detached.options), runtime);
+  assert.deepEqual(detached.calls, [['systemctl', '--user', 'is-enabled', 'asb.service'], ['spawn', process.execPath, engineScript, 'run'], ['unref']]);
+  assert.equal((await stat(log)).mode & 0o777, 0o600);
+  await writeFile(log, 'old output');
+  await assert.rejects(startEngine({ ...fake({ answerAt: -1 }).options, timeoutMs: 50 }), { message: `ASB cannot start its engine. See ${log}.` });
+  assert.equal(await readFile(log, 'utf8'), '');
+  await assert.rejects(startEngine(fake({ enabled: true, startFails: true }).options),
+    { message: 'ASB cannot start its engine. See journalctl --user -u asb.service.' });
+  const running = fake({ answerAt: 0 });
+  assert.equal(await startEngine(running.options), runtime);
+  assert.deepEqual(running.calls, []);
+  for (const XDG_RUNTIME_DIR of [undefined, '', 'relative']) {
+    const missing = fake({ answerAt: 0 });
+    await assert.rejects(startEngine({ ...missing.options, env: { ...env, XDG_RUNTIME_DIR }, find: async () => assert.fail('No runtime folder.') }),
+      { message: 'ASB cannot start its engine: XDG_RUNTIME_DIR must be an absolute folder.' });
+    assert.deepEqual(missing.calls, []);
+  }
+});
+
+test('the engine stop route needs the token, a local POST, and an empty body, then the engine exits 0', { timeout: 15_000 }, async (t) => {
+  const f = await fixture(t);
+  const child = f.launch([engineScript, 'run']);
+  await ready(child);
+  const runtime = await readServiceRuntime(f.env);
+  const base = `http://127.0.0.1:${runtime.port}`;
+  const stop = (options = {}) => fetch(`${base}/api/engine/stop`, { method: 'POST', body: '{}',
+    ...options, headers: { origin: base, 'content-type': 'application/json', 'X-ASB-Source-Token': runtime.sourceToken, ...options.headers } });
+  assert.equal((await stop({ headers: { 'X-ASB-Source-Token': '' } })).status, 403);
+  assert.ok(await findRunningService(f.env));
+  assert.equal((await fetch(`${base}/api/engine/stop`, { headers: { 'X-ASB-Source-Token': runtime.sourceToken } })).status, 405);
+  assert.equal((await stop({ headers: { origin: 'http://example.com' } })).status, 403);
+  const invalid = await stop({ body: '{"x":1}' });
+  assert.equal(invalid.status, 400);
+  assert.equal(invalid.headers.get('cache-control'), 'no-store');
+  assert.ok(await findRunningService(f.env));
+  const stopped = await stop();
+  assert.equal(stopped.status, 200);
+  assert.deepEqual(await stopped.json(), { stopping: true });
+  assert.equal((await child.closed)[0], 0, child.errors);
+  await assert.rejects(stat(f.runtime), { code: 'ENOENT' });
+});
+
+test('engine status and stop work through the shell launcher with a detached engine', { timeout: 20_000 }, async (t) => {
+  const f = await fixture(t);
+  const child = f.launch([engineScript, 'run']);
+  await ready(child);
+  const engine = async (args) => {
+    const command = f.launch(['engine', ...args], {}, launcherScript);
+    const [code] = await command.closed;
+    return { code, stdout: command.output, stderr: command.errors };
+  };
+  const running = await engine(['status']);
+  assert.equal(running.code, 0, running.stderr);
+  assert.equal(running.stdout, `ASB engine: running. PID ${child.pid}, port ${f.env.PORT}, detached.\n`);
+  const stopped = await engine(['stop']);
+  assert.equal(stopped.code, 0, stopped.stderr);
+  assert.equal(stopped.stdout, 'ASB engine stopped.\n');
+  assert.equal((await child.closed)[0], 0, child.errors);
+  const missing = await engine(['status']);
+  assert.equal(missing.code, 1);
+  assert.equal(missing.stdout, 'ASB engine: not running.\n');
+  assert.equal((await engine(['stop'])).stdout, 'ASB engine is not running.\n');
+  const usage = await engine(['restart']);
+  assert.equal(usage.code, 2);
+  assert.equal(usage.stderr, 'Usage: asb engine run|start|stop|status\n');
+  assert.deepEqual(await f.systemctlCalls(), [['--user', 'show', '-p', 'MainPID', '--value', 'asb.service']]);
+});
+
+test('the engine starts the tray with its environment, stops it, and survives a tray failure', { timeout: 20_000 }, async (t) => {
+  const f = await fixture(t);
+  const record = path.join(f.home, 'tray.env');
+  const tray = path.join(f.home, 'fake-tray');
+  await writeFile(tray, `#!/bin/sh\nprintf '%s\\n' "$ASB_ENGINE_PID" "$ASB_ENGINE_URL" "$ASB_LAUNCHER" "\${#ASB_SOURCE_TOKEN}" "$1" > "${record}.tmp"\nmv "${record}.tmp" "${record}"\n[ -n "$ASB_TRAY_FAIL" ] && exit 3\nexec sleep 60\n`, { mode: 0o755 });
+  const extra = { ASB_TRAY: '', ASB_PYTHON: tray, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/nonexistent', ASB_INSTALLED_LAUNCHER: '/opt/asb/bin/asb' };
+  const recorded = async () => {
+    for (let tries = 0; tries < 100; tries += 1) {
+      const text = await readFile(record, 'utf8').catch(() => null);
+      if (text) return text.trim().split('\n');
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.fail('The tray did not start.');
+  };
+  const child = f.launch([engineScript, 'run'], extra);
+  await ready(child);
+  const values = await recorded();
+  assert.deepEqual(values.slice(0, 4), [String(child.pid), `http://127.0.0.1:${f.env.PORT}`, '/opt/asb/bin/asb', '64']);
+  assert.ok(values[4].endsWith('/scripts/asb-tray.py'));
+  const trayPid = Number((await readFile(`/proc/${child.pid}/task/${child.pid}/children`, 'utf8')).trim().split(/\s+/)[0]);
+  assert.ok(trayPid > 0);
+  const runtime = await readServiceRuntime(f.env);
+  const base = `http://127.0.0.1:${runtime.port}`;
+  const reply = await fetch(`${base}/api/engine/stop`, { method: 'POST', body: '{}',
+    headers: { origin: base, 'content-type': 'application/json', 'X-ASB-Source-Token': runtime.sourceToken } });
+  assert.equal(reply.status, 200);
+  assert.equal((await child.closed)[0], 0, child.errors);
+  assert.throws(() => process.kill(trayPid, 0), { code: 'ESRCH' });
+  await rm(record);
+  const failing = f.launch([engineScript, 'run'], { ...extra, ASB_TRAY_FAIL: '1' });
+  await ready(failing);
+  await recorded();
+  for (let tries = 0; tries < 100 && !failing.errors.includes('exit code 3'); tries += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(failing.errors, 'ASB tray icon stopped with exit code 3.\n');
+  assert.ok(await findRunningService(f.env));
 });

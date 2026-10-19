@@ -4,6 +4,10 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Split ASB into an engine and a window. The engine runs the server and phone access without a window; `asb` starts it when none runs (through `asb.service` when that is enabled, else detached with its output in `~/.local/state/asb/engine.log`), then opens the window as a client. Closing the window keeps the engine and phone access running. Added `asb engine run`, `start`, `stop`, and `status`, and the loopback route `POST /api/engine/stop`, which the phone gateway never forwards. A window closes when its engine stops.
+- Added a Linux tray icon for the engine, with **Open ASB** and **Quit ASB** and a tooltip that shows whether phone access is on. It shows only when the desktop has a tray host, for example the GNOME AppIndicator extension. `ASB_TRAY=0` turns it off.
+- Added **Quit ASB** to Preferences > Sessions. It stops ASB and phone access, then closes the window.
+- Changed the PC sounds of the engine to play only while an ASB window is open. Sounds can continue for up to 45 s after the last window closes. The `npm start` browser view keeps its sounds.
 - Added Mute for a session: a muted session stays read when a task ends, with no Done sound or phone alert. Questions and failures still alert. Turn it on with Muted in the row panel; a muted card shows a muted-bell icon by its name.
 - Fixed the keyboard focus that sometimes jumped to the first card of a column when ASB packed the cards again, for example after a window resize.
 - Added a copy button to the Comfortable card. It copies the app and session ID, the same text as in the row panel, and shows while the pointer is on the card or the card has keyboard focus.

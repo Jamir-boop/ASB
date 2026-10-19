@@ -15,6 +15,26 @@ test('release runtime includes the Claude remote reader imported by the switchbo
 });
 
 const sourceRoot = fileURLToPath(new URL('..', import.meta.url));
+
+// The launcher starts a detached engine; it gets a private runtime folder and a fake systemctl, and the test stops it.
+async function isolatedEngine(t, directory) {
+  const runtimeDir = path.join(directory, 'runtime');
+  const fakeBin = path.join(directory, 'fake-bin');
+  await mkdir(runtimeDir, { mode: 0o700 });
+  await mkdir(fakeBin);
+  await writeFile(path.join(fakeBin, 'systemctl'), '#!/bin/sh\necho disabled\nexit 1\n', { mode: 0o755 });
+  const engines = [];
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const stop = async () => {
+    const runtime = JSON.parse(await readFile(path.join(runtimeDir, 'asb/service.json'), 'utf8'));
+    engines.push(runtime.pid);
+    process.kill(runtime.pid, 'SIGTERM');
+    for (let tries = 0; tries < 100 && alive(runtime.pid); tries += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(alive(runtime.pid), false);
+  };
+  t.after(() => { for (const pid of engines) if (alive(pid)) process.kill(pid, 'SIGKILL'); });
+  return { fakeBin, stop, env: { XDG_RUNTIME_DIR: runtimeDir, ASB_TRAY: '0' } };
+}
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const bridgeRuntimeFiles = [
   '.agents/plugins/marketplace.json', 'bridge/.codex-plugin/plugin.json', 'bridge/.mcp.json',
@@ -102,12 +122,14 @@ test('release payloads are reproducible and the user installer preserves other f
   const { port } = holder.address();
   await new Promise((resolve) => holder.close(resolve));
   const launchHome = path.join(temporary, 'launch-home');
-  const launched = execFileSync(path.join(extracted, 'usr/lib/asb/scripts/asb'), [], { cwd: temporary, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: {
-    ASB_SYSTEM_INSTALL: '1', ASB_NODE: process.execPath, ASB_PYTHON: '/bin/true', PATH: '/usr/bin:/bin', PORT: String(port), HOME: launchHome,
+  const engine = await isolatedEngine(t, temporary);
+  const launched = execFileSync(path.join(extracted, 'usr/lib/asb/scripts/asb'), [], { cwd: temporary, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...engine.env,
+    ASB_SYSTEM_INSTALL: '1', ASB_NODE: process.execPath, ASB_PYTHON: '/bin/true', PATH: `${engine.fakeBin}:/usr/bin:/bin`, PORT: String(port), HOME: launchHome,
     XDG_DATA_HOME: path.join(launchHome, 'data'), XDG_CONFIG_HOME: path.join(launchHome, 'config'), XDG_STATE_HOME: path.join(launchHome, 'state'),
     XDG_CACHE_HOME: path.join(launchHome, 'cache'), CODEX_HOME: path.join(launchHome, 'codex'), CLAUDE_APP_DIR: path.join(launchHome, 'claude'),
     CLAUDE_CODE_CONFIG_DIR: path.join(launchHome, 'claude-code'),
   } });
+  await engine.stop();
   assert.ok(launched.includes(`ASB: http://127.0.0.1:${port}\n`), launched);
   await assert.rejects(lstat(path.join(launchHome, 'data/applications')), { code: 'ENOENT' });
   assert.equal((await lstat(path.join(extracted, 'usr/bin/asb'))).mode & 0o777, 0o755);

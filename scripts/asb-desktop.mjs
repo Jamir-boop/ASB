@@ -1,60 +1,25 @@
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { createSwitchboardServer, switchboardPort } from '../src/switchboard.mjs';
-import { createPhoneGateway } from '../src/phone-gateway.mjs';
-import { createSoundPlayer } from '../src/asb-sounds.mjs';
-import { findRunningService, prepareInstanceRuntime, publishInstanceRuntime, removeInstanceRuntimeSync } from './asb-instance.mjs';
+import { startEngine } from './asb-engine.mjs';
 import { registerAppIcon } from './asb-icon.mjs';
 
 if (process.platform !== 'linux') {
   console.error('The ASB desktop launcher requires Linux. Use npm start and open the local address.');
   process.exit(1);
 }
-let port = switchboardPort();
-let sourceToken = randomBytes(32).toString('hex');
-let gateway;
-let server;
 let window;
-let runtimeRecord;
+let engineWatch;
 let stopping = false;
 function stop(code = 0) {
   if (stopping) return;
   stopping = true;
+  clearInterval(engineWatch);
   process.exitCode = code;
-  try { removeInstanceRuntimeSync(runtimeRecord); }
-  catch (error) { console.error(`Cannot remove the ASB runtime file: ${error.message}`); process.exitCode = 1; }
   if (window && window.exitCode === null) window.kill('SIGTERM');
-  server?.close();
-  server?.closeAllConnections();
-  gateway?.stop().catch((error) => console.error(`Cannot stop ASB phone access: ${error.message}`));
 }
 
 async function start() {
-  const service = await findRunningService();
-  if (stopping) return;
-  if (service) {
-    port = service.port;
-    sourceToken = service.sourceToken;
-  } else {
-    const prepared = await prepareInstanceRuntime(process.env, { required: false });
-    if (stopping) return;
-    const asbVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
-    gateway = createPhoneGateway({ localPort: port, asbVersion });
-    server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, playSound: createSoundPlayer() });
-    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
-    if (stopping) return;
-    runtimeRecord = await publishInstanceRuntime(prepared, { schema: 1, pid: process.pid, port, sourceToken });
-    if (stopping) { removeInstanceRuntimeSync(runtimeRecord); return; }
-    try {
-      await gateway.start();
-      const status = await gateway.status();
-      if (status.error) console.error(`Cannot start ASB phone access: ${status.error}`);
-    } catch (error) {
-      console.error(`Cannot start ASB phone access: ${error.message}`);
-    }
-  }
+  const service = await startEngine();
   if (stopping) return;
   try {
     if (process.env.ASB_SYSTEM_INSTALL !== '1') {
@@ -65,21 +30,26 @@ async function start() {
     console.error(`Cannot register the ASB icon: ${error.message}`);
   }
   if (stopping) return;
-  const url = `http://127.0.0.1:${port}`;
+  const url = `http://127.0.0.1:${service.port}`;
   window = spawn(process.env.ASB_PYTHON || '/usr/bin/python3', [fileURLToPath(new URL('./asb-native.py', import.meta.url)), url], {
-    stdio: ['ignore', 'inherit', 'inherit'], env: { ...process.env, ASB_SOURCE_TOKEN: sourceToken },
+    stdio: ['ignore', 'inherit', 'inherit'], env: { ...process.env, ASB_SOURCE_TOKEN: service.sourceToken },
   });
   window.once('error', (error) => {
     console.error(`Cannot open the native ASB window: ${error.message}. Use system Python 3 or npm start for the web view.`);
     stop(1);
   });
   window.once('exit', (code, signal) => stop(signal ? 1 : code || 0));
+  // The window closes when its engine stops, for example after Quit ASB in the tray; a restarted engine has a new token.
+  engineWatch = setInterval(() => {
+    try { process.kill(service.pid, 0); }
+    catch (error) { if (error.code === 'ESRCH') stop(0); }
+  }, 2000);
   console.log(`ASB: ${url}`);
 }
 process.once('SIGINT', () => stop());
 process.once('SIGTERM', () => stop());
 process.once('exit', stop);
 start().catch((error) => {
-  console.error(error.code === 'EADDRINUSE' ? `ASB cannot start. Port ${port} is in use.` : `ASB cannot start: ${error.message}`);
+  console.error(error.message.startsWith('ASB cannot') ? error.message : `ASB cannot start: ${error.message}`);
   stop(1);
 });

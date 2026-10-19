@@ -40,7 +40,11 @@ Phone access is off by default. In ASB, open Preferences > Phone, select **Allow
 
 ## Run without the window (optional)
 
-`asb service install` installs and starts the `asb.service` systemd user service. It runs the ASB server and phone access without the window, so the phone stays connected when you close the window. `asb service status` shows the service state. `asb service uninstall` stops and removes it. While the service runs, the ASB window attaches to it. An ASB `1.8.1` or older window cannot attach and reports a port conflict.
+The ASB engine (the server and phone access) runs without the window. `asb` starts the engine when none runs, then opens the window. Closing the window keeps the engine and phone access running. To stop them, select **Quit ASB** in Preferences > Sessions or in the tray icon menu. `asb engine start`, `asb engine stop`, and `asb engine status` do the same from a terminal.
+
+On Linux, the engine shows a tray icon with **Open ASB** and **Quit ASB**. The icon shows only when the desktop has a tray host, for example the GNOME AppIndicator extension. Without a tray host, the engine runs with no icon.
+
+`asb service install` installs and starts the `asb.service` systemd user service, so the engine also starts with your session. `asb service status` shows the service state. `asb service uninstall` stops and removes it. When the service is installed, `asb` starts the engine through it. An ASB `1.8.1` or older window cannot attach and reports a port conflict.
 
 The current source includes the Android companion and the user service; published `1.8.1` packages do not.
 

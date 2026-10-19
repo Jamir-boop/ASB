@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { constants, lstatSync, readFileSync, rmSync } from 'node:fs';
+import { constants } from 'node:fs';
 import { chmod, link, lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
@@ -80,9 +80,8 @@ export async function findRunningService(env = process.env) {
   } catch { return null; }
 }
 
-export async function prepareInstanceRuntime(env = process.env, { required = true } = {}) {
+export async function prepareInstanceRuntime(env = process.env) {
   const file = instanceRuntimePath(env);
-  if (!required && !env.XDG_RUNTIME_DIR) return null;
   const root = file && await lstat(env.XDG_RUNTIME_DIR).catch(() => null);
   if (!root?.isDirectory() || !owned(root)) throw new Error('ASB service run needs an absolute, existing XDG_RUNTIME_DIR folder owned by the user.');
   const directory = path.dirname(file);
@@ -124,18 +123,6 @@ export async function publishInstanceRuntime(prepared, runtime) {
     }
   } finally { await rm(temporary, { force: true }); }
   return { file, runtime };
-}
-
-export function removeInstanceRuntimeSync(record) {
-  if (!record) return;
-  try {
-    const directory = lstatSync(path.dirname(record.file));
-    const info = lstatSync(record.file);
-    if (!directory.isDirectory() || !owned(directory) || (directory.mode & 0o777) !== 0o700
-      || !info.isFile() || !owned(info) || (info.mode & 0o777) !== 0o600 || info.size > 4096) return;
-    const current = JSON.parse(readFileSync(record.file, 'utf8'));
-    if (validRuntime(current) && current.pid === record.runtime.pid && current.sourceToken === record.runtime.sourceToken) rmSync(record.file);
-  } catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
 }
 
 export async function removeInstanceRuntime(record) {

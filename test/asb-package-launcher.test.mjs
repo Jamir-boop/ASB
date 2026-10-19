@@ -12,6 +12,26 @@ const sourceRoot = fileURLToPath(new URL('..', import.meta.url));
 const check = async () => ({ nodeExecutable: process.execPath, pythonExecutable: '/usr/bin/python3' });
 const shellQuote = (value) => `'${value.replace(/'/g, "'\\''")}'`;
 
+// The launcher starts a detached engine; it gets a private runtime folder and a fake systemctl, and the test stops it.
+async function isolatedEngine(t, directory) {
+  const runtimeDir = path.join(directory, 'runtime');
+  const fakeBin = path.join(directory, 'fake-bin');
+  await mkdir(runtimeDir, { mode: 0o700 });
+  await mkdir(fakeBin);
+  await writeFile(path.join(fakeBin, 'systemctl'), '#!/bin/sh\necho disabled\nexit 1\n', { mode: 0o755 });
+  const engines = [];
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const stop = async () => {
+    const runtime = JSON.parse(await readFile(path.join(runtimeDir, 'asb/service.json'), 'utf8'));
+    engines.push(runtime.pid);
+    process.kill(runtime.pid, 'SIGTERM');
+    for (let tries = 0; tries < 100 && alive(runtime.pid); tries += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(alive(runtime.pid), false);
+  };
+  t.after(() => { for (const pid of engines) if (alive(pid)) process.kill(pid, 'SIGKILL'); });
+  return { fakeBin, stop, env: { XDG_RUNTIME_DIR: runtimeDir, ASB_TRAY: '0' } };
+}
+
 async function temporaryDirectory(t) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'asb-package-launcher-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -84,6 +104,7 @@ test('the installed command starts ASB through the shipped launcher, keeps the c
   await symlink(process.execPath, path.join(home, '.local/bin/node'));
   const candidate = path.join(directory, 'node');
   await symlink(process.execPath, candidate);
+  const engine = await isolatedEngine(t, directory);
   const window = path.join(directory, 'window');
   await writeFile(window, '#!/bin/sh\nprintf \'PATH=%s\\n\' "$PATH"\n', { mode: 0o755 });
   const previousNode = process.env.ASB_NODE;
@@ -102,13 +123,14 @@ test('the installed command starts ASB through the shipped launcher, keeps the c
     await new Promise((resolve) => holder.listen(0, '127.0.0.1', resolve));
     const { port } = holder.address();
     await new Promise((resolve) => holder.close(resolve));
-    const stdout = execFileSync(result.launcher, [], { cwd: directory, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: {
-      PATH: `${first}:/usr/bin:/bin`, PORT: String(port), HOME: home, XDG_DATA_HOME: dataDir,
+    const stdout = execFileSync(result.launcher, [], { cwd: directory, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...engine.env,
+      PATH: `${engine.fakeBin}:${first}:/usr/bin:/bin`, PORT: String(port), HOME: home, XDG_DATA_HOME: dataDir,
       XDG_CONFIG_HOME: path.join(home, 'config'), XDG_STATE_HOME: path.join(home, 'state'), XDG_CACHE_HOME: path.join(home, 'cache'),
       CODEX_HOME: path.join(home, 'codex'), CLAUDE_APP_DIR: path.join(home, 'claude'), CLAUDE_CODE_CONFIG_DIR: path.join(home, 'claude-code'),
     } });
+    await engine.stop();
     assert.ok(stdout.includes(`ASB: http://127.0.0.1:${port}\n`), stdout);
-    assert.ok(stdout.includes(`PATH=${first}:/usr/bin:/bin:${sqliteDirectory}:`), stdout);
+    assert.ok(stdout.includes(`PATH=${engine.fakeBin}:${first}:/usr/bin:/bin:${sqliteDirectory}:`), stdout);
   }
 });
 

@@ -643,7 +643,9 @@ export function createSwitchboardServer(options = {}) {
   const registry = options.sourceRegistry || new AppSourceRegistry();
   const registeredLoad = !options.loadDashboard || Boolean(options.sourceRegistry);
   // Only real entry points pass a player, so tests and imports stay silent.
-  const sound = options.playSound ? createSoundWatcher(options.playSound) : null;
+  // The engine plays sounds only while a native window reports itself; the npm start web view keeps playing them.
+  let boardOpen = () => false;
+  const sound = options.playSound ? createSoundWatcher(options.playSound, () => !options.serviceMode || boardOpen()) : null;
   const sourceWatchPaths = async () => {
     const sources = await registry.read();
     retainSourceCaches(sources);
@@ -715,6 +717,7 @@ export function createSwitchboardServer(options = {}) {
     },
     sourceToken: options.sourceToken || '',
   });
+  boardOpen = () => server.boardOpen();
   const close = server.close.bind(server);
   server.close = (...args) => {
     const result = close(...args);

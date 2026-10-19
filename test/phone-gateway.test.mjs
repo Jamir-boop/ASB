@@ -245,7 +245,7 @@ gatewayTest('the route allowlist blocks other APIs and checks methods before bea
     assert.equal(response.json.error, 'Route is not available.');
   }
   for (const route of ['/api/sources', '/api/phone', '/api/phone/settings', '/api/palette',
-    '/api/agent/status', '/api/agent/ui', '/phone/v1/agent/status', '/phone/v1/agent/ui']) {
+    '/api/agent/status', '/api/agent/ui', '/phone/v1/agent/status', '/phone/v1/agent/ui', '/api/engine/stop', '/phone/v1/engine/stop']) {
     for (const method of ['GET', 'POST']) {
       const response = await request(route, { method, token, ...(method === 'POST' ? { body: {} } : {}) });
       assert.equal(response.status, 404, `${method} ${route}`);

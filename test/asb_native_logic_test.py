@@ -483,6 +483,50 @@ class ProfileSyncChecks(unittest.TestCase):
                 window.report_ui()
             self.assertEqual(self.request.call_count, 4)
 
+    def test_engine_stop_sends_the_token_and_keeps_the_server_error(self):
+        import io
+        token = "ef" * 32
+        transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(b'{"stopping": true}')))
+        with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": token}):
+            self.assertEqual(asb.request_json("http://127.0.0.1:1", "/api/engine/stop", "POST", {}), {"stopping": True})
+        request = transport.open.call_args.args[0]
+        self.assertEqual(request.get_header("X-asb-source-token"), token)
+        self.assertEqual(request.get_header("Origin"), "http://127.0.0.1:1")
+        self.assertEqual(request.data, b"{}")
+        failure = SCOPE["HTTPError"]("http://127.0.0.1:1/api/engine/stop", 403, "Forbidden", {},
+                                      io.BytesIO(b'{"error":"Use the current ASB source token to stop ASB."}'))
+        with patch.dict(SCOPE, {"LOCAL_HTTP": Mock(open=Mock(side_effect=failure)), "SOURCE_TOKEN": token}):
+            with self.assertRaisesRegex(RuntimeError, "^Use the current ASB source token to stop ASB\\.$"):
+                asb.request_json("http://127.0.0.1:1", "/api/engine/stop", "POST", {})
+        with patch.dict(SCOPE, {"LOCAL_HTTP": Mock(open=Mock(side_effect=OSError())), "SOURCE_TOKEN": token}):
+            with self.assertRaisesRegex(RuntimeError, "^Cannot load or change ASB\\. Check that ASB is running, then try again\\.$"):
+                asb.request_json("http://127.0.0.1:1", "/api/engine/stop", "POST", {})
+
+    def test_quit_engine_posts_the_stop_and_closes_only_on_success(self):
+        window = object.__new__(Window)
+        window.base, window.closed = "http://127.0.0.1:1", False
+        window.quit_engine_button, window.quit_engine_error, window.close = Mock(), Mock(), Mock()
+        requests = []
+        with patch.dict(SCOPE, {"request_async": lambda *args: requests.append(args)}):
+            window.quit_engine()
+            base, route, finished, _dispatch, method, body = requests.pop()
+            self.assertEqual((base, route, method, body), ("http://127.0.0.1:1", "/api/engine/stop", "POST", {}))
+            window.quit_engine_button.set_sensitive.assert_called_once_with(False)
+            window.quit_engine_error.set_label.assert_called_once_with("")
+            self.assertFalse(finished(None, "Cannot load or change ASB."))
+            window.close.assert_not_called()
+            window.quit_engine_button.set_sensitive.assert_called_with(True)
+            window.quit_engine_error.set_label.assert_called_with("Cannot load or change ASB.")
+            window.quit_engine()
+            self.assertFalse(requests.pop()[2]({"stopping": True}, None))
+            window.close.assert_called_once_with()
+            self.assertEqual(window.quit_engine_button.set_sensitive.call_args_list[-1].args, (False,))
+            window.quit_engine()
+            window.closed = True
+            self.assertFalse(requests.pop()[2](None, "late"))
+            window.close.assert_called_once_with()
+            self.assertEqual(window.quit_engine_error.set_label.call_args_list[-1].args, ("",))
+
     def test_agent_token_routing_and_optional_conditional_headers(self):
         import io
         token = "ab" * 32

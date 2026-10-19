@@ -33,7 +33,7 @@ function readPalette(palettePath) {
 
 export function createAsbServer({
   markUnreadThread = null, markReadThread = null, setUnreadSettings = null, pinThread = null, discardThread = null, drawerThread = null, muteThread = null,
-  listSources = null, updateSource = null, removeSource = null, sourceToken = '', phoneGateway = null, serviceMode = false,
+  listSources = null, updateSource = null, removeSource = null, sourceToken = '', phoneGateway = null, serviceMode = false, onStop = null,
   appVersion = '', rootDir = '', sourcesPath = '', readSourcesRevision = async () => null,
   palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, now = Date.now, ...snapshotOptions
 } = {}) {
@@ -91,8 +91,9 @@ export function createAsbServer({
     const phoneActionRoute = phoneGateway && (['/api/phone/settings', '/api/phone/pairing'].includes(url.pathname) || Boolean(phoneRevoke));
     const eventRoute = url.pathname === '/api/events';
     const paletteRoute = url.pathname === '/api/palette';
+    const engineStopRoute = Boolean(onStop) && url.pathname === '/api/engine/stop';
     const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute
-      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute;
+      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute;
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
     const readApiRoute = url.pathname === '/api/dashboard' || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute;
     const readRoute = readApiRoute || staticRoutes.includes(url.pathname);
@@ -118,6 +119,23 @@ export function createAsbServer({
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
     response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    if (engineStopRoute) {
+      response.setHeader('Cache-Control', 'no-store');
+      if (!expectedSourceToken.length || !sourceTokenAllowed(request)) {
+        sendJson(response, 403, { error: 'Use the current ASB source token to stop ASB.' });
+        return;
+      }
+      let body;
+      try { body = await readBody(request); } catch (error) { sendJson(response, error.statusCode || 500, { error: 'Invalid stop request.' }); return; }
+      if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length) {
+        sendJson(response, 400, { error: 'Invalid stop request.' });
+        return;
+      }
+      // The reply goes out before the engine closes its connections.
+      response.once('close', () => onStop());
+      sendJson(response, 200, { stopping: true });
+      return;
+    }
     if (agentStatusRoute || agentUiRoute) {
       response.setHeader('Cache-Control', 'no-store');
       if (!expectedSourceToken.length || !sourceTokenAllowed(request)) {
@@ -364,5 +382,6 @@ export function createAsbServer({
     await serveStatic(request, response, publicDir);
   });
   snapshot.attach(server);
+  server.boardOpen = () => { expireUiClients(); return uiClients.size > 0; };
   return server;
 }

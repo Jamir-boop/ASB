@@ -724,10 +724,11 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
     service_route = path == "/api/service"
     palette_route = path == "/api/palette"
     agent_route = path.startswith("/api/agent/")
+    engine_route = path.startswith("/api/engine/")
     data = None
     if etag and etag[0] and method == "GET" and route.split("?")[0] == "/api/dashboard":
         headers["If-None-Match"] = etag[0]
-    if SOURCE_TOKEN and ((source_route and method == "POST") or phone_route or service_route or palette_route or agent_route):
+    if SOURCE_TOKEN and ((source_route and method == "POST") or phone_route or service_route or palette_route or agent_route or engine_route):
         headers["X-ASB-Source-Token"] = SOURCE_TOKEN
     if method == "POST":
         headers.update({"Origin": base, "Content-Type": "application/json"})
@@ -739,7 +740,7 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
         if not isinstance(result, dict):
             raise ValueError("The ASB response is not an object.")
         success = "opened" if route.endswith("/open") else "marked" if route.endswith("/mark-unread") else "changed"
-        if method == "POST" and not (phone_route or service_route or palette_route or agent_route) and not result.get(success):
+        if method == "POST" and not (phone_route or service_route or palette_route or agent_route or engine_route) and not result.get(success):
             raise ValueError("The session action did not succeed.")
         if etag is not None:
             etag[0] = response.headers.get("ETag")
@@ -748,7 +749,7 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
         if isinstance(error, HTTPError) and error.code == 304 and "If-None-Match" in headers:
             error.close()
             return None
-        if source_route or phone_route or service_route or palette_route or agent_route:
+        if source_route or phone_route or service_route or palette_route or agent_route or engine_route:
             detail = ""
             if isinstance(error, HTTPError):
                 try:
@@ -758,7 +759,7 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
                 except (HTTPException, OSError, ValueError):
                     pass
             subject = "phone access" if phone_route else "the ASB service" if service_route \
-                else "the phone palette" if palette_route else "the native UI status" if agent_route else "app sources"
+                else "the phone palette" if palette_route else "the native UI status" if agent_route else "ASB" if engine_route else "app sources"
             raise RuntimeError(detail or f"Cannot load or change {subject}. Check that ASB is running, then try again.") from error
         action = "open this session" if route.endswith("/open") else "change the unread setting" if route == "/api/settings/unread" \
             else "change this session" if method == "POST" else "load sessions"
@@ -2159,6 +2160,17 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.unread_setting_error.set_wrap(True)
         self.unread_setting_error.set_max_width_chars(32)
         sessions.append(self.unread_setting_error)
+        sessions.append(Gtk.Separator())
+        self.quit_engine_button = Gtk.Button(label="Quit ASB", halign=Gtk.Align.START)
+        self.quit_engine_button.connect("clicked", self.quit_engine)
+        sessions.append(self.quit_engine_button)
+        quit_help = label("Stops ASB and phone access. Closing the window keeps them running.", "caption")
+        quit_help.set_wrap(True)
+        sessions.append(quit_help)
+        self.quit_engine_error = label("", "warning")
+        self.quit_engine_error.set_wrap(True)
+        self.quit_engine_error.set_max_width_chars(32)
+        sessions.append(self.quit_engine_error)
         view_row = Gtk.Box(spacing=12)
         view_name = label("View")
         view_name.set_hexpand(True)
@@ -3659,6 +3671,20 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.syncing_unread_setting = True
         self.persistent_unread.set_active(value if type(value) is bool else True)
         self.syncing_unread_setting = False
+
+    def quit_engine(self, *_args):
+        self.quit_engine_button.set_sensitive(False)
+        self.quit_engine_error.set_label("")
+        def finished(_result, error):
+            if self.closed:
+                return False
+            if error:
+                self.quit_engine_button.set_sensitive(True)
+                self.quit_engine_error.set_label(error)
+            else:
+                self.close()
+            return False
+        request_async(self.base, "/api/engine/stop", finished, GLib.idle_add, "POST", {})
 
     def change_unread_setting(self, *_args):
         if self.syncing_unread_setting or self.unread_setting_loading:

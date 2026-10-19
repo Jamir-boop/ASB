@@ -52,13 +52,14 @@ export function soundBaseline(baseline, rows, nowMs = Date.now()) {
 }
 
 // Plays at most one sound per dashboard update: Needs input, then Failed, then Done.
-export function createSoundWatcher(play) {
+// The baseline moves even when canPlay is false, so a board that opens later hears only new events.
+export function createSoundWatcher(play, canPlay = () => true) {
   let baseline = null;
   return (dashboard, nowMs = Date.now()) => {
     const rows = dashboard.threads || [];
     const kind = Math.max(0, ...soundEvents(baseline, rows, nowMs).map((event) => event.kind));
     baseline = soundBaseline(baseline, rows, nowMs);
-    if (kind) play(kind);
+    if (kind && canPlay()) play(kind);
   };
 }
 

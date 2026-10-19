@@ -159,3 +159,47 @@ test('a muted session plays no Done sound but still plays Failed and Needs input
   assert.deepEqual(await events(thread('idle', { failedAtMs: 10 })), [['a', BIT_FAILED]]);
   assert.deepEqual(await events(thread('waiting', { questionPending: true })), [['a', BIT_INPUT]]);
 });
+
+test('a watcher that cannot play moves its baseline and plays only new events later', () => {
+  const played = [];
+  let open = false;
+  const watch = createSoundWatcher((kind) => played.push(kind), () => open);
+  watch({ threads: [] }, now);
+  watch({ threads: [row({ completionAttention: true })] }, now);
+  assert.deepEqual(played, []);
+  open = true;
+  watch({ threads: [row({ completionAttention: true })] }, now);
+  assert.deepEqual(played, []);
+  watch({ threads: [row({ completionAttention: true }), row({ id: 'b', failedAttention: true })] }, now);
+  assert.deepEqual(played, [BIT_FAILED]);
+});
+
+for (const reported of [false, true]) test(`the engine plays a completion sound only with a reporting window (${reported ? 'window' : 'no window'})`, async (t) => {
+  let clock = now;
+  let loads = 0;
+  const played = [];
+  const server = createSwitchboardServer({ serviceMode: true, sourceToken: 'window-token', now: () => clock, pendingStatePath: false,
+    dashboardWatchPaths: [], playSound: (kind) => played.push(kind),
+    loadDashboard: async () => {
+      loads += 1;
+      return { generatedAtMs: clock, providers: [], threads: [{ id: 'a', state: loads === 1 ? 'working' : 'idle', nativeUnread: null,
+        completionAtMs: loads === 1 ? 0 : clock }] };
+    } });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const scan = () => fetch(`${base}/api/dashboard`).then((response) => response.json());
+  assert.equal((await scan()).threads[0].state, 'working');
+  if (reported) {
+    const report = { clientId: '123e4567-e89b-12d3-a456-426614174000', sourcesRevision: null, profilesRevision: null, profilesVisible: false, dirty: false };
+    const response = await fetch(`${base}/api/agent/ui`, { method: 'POST', body: JSON.stringify(report),
+      headers: { origin: base, 'content-type': 'application/json', 'x-asb-source-token': 'window-token' } });
+    assert.equal(response.status, 200);
+  }
+  clock += 2_000;
+  assert.equal((await scan()).threads[0].completionAttention, true);
+  clock += 2_000;
+  await scan();
+  assert.ok(loads >= 2);
+  assert.deepEqual(played, reported ? [BIT_DONE] : []);
+});

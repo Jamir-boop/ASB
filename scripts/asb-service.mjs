@@ -1,15 +1,13 @@
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { constants, readFileSync } from 'node:fs';
+import { constants } from 'node:fs';
 import { access, link, lstat, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { createSwitchboardServer, switchboardPort } from '../src/switchboard.mjs';
-import { createPhoneGateway } from '../src/phone-gateway.mjs';
-import { createSoundPlayer } from '../src/asb-sounds.mjs';
-import { readServiceRuntime, prepareInstanceRuntime, publishInstanceRuntime, removeInstanceRuntime } from './asb-instance.mjs';
+import { readServiceRuntime } from './asb-instance.mjs';
+import { runEngine } from './asb-engine.mjs';
 export { readServiceRuntime, findRunningService } from './asb-instance.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -65,71 +63,13 @@ async function managedUnit(file) {
   return bytes;
 }
 
-async function runService() {
-  const prepared = await prepareInstanceRuntime();
-  let runtimeRecord;
-  const port = switchboardPort();
-  const sourceToken = randomBytes(32).toString('hex');
-  const asbVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
-  const gateway = createPhoneGateway({ localPort: port, asbVersion });
-  const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, serviceMode: true, playSound: createSoundPlayer() });
-  let stopping = false;
-  let cleanup;
-  let startup;
-  let step = 'startup';
-  const stop = () => {
-    stopping = true;
-    return cleanup ||= (async () => {
-      try {
-        await startup.catch(() => {});
-        try {
-          step = 'manifest removal';
-          await removeInstanceRuntime(runtimeRecord);
-        } finally {
-          const closed = new Promise((resolve) => server.close(resolve));
-          server.closeAllConnections();
-          step = 'phone access stop';
-          try { await gateway.stop(); } finally {
-            step = 'server close';
-            await closed;
-          }
-        }
-      } finally { step = 'none'; }
-    })();
-  };
-  const onSignal = (signal) => {
-    // A cleanup step that never ends must not keep the service until systemd kills it; a clean stop exits at once.
-    setTimeout(() => {
-      console.error(`ASB service is still running 5 s after ${signal}. Pending cleanup step: ${step}. Open resources: ${process.getActiveResourcesInfo().join(', ') || 'none'}.`);
-      process.exit(1);
-    }, 5000).unref();
-    stop().catch((error) => { console.error(`Cannot stop ASB service: ${error.message}`); process.exitCode = 1; });
-  };
-  process.once('SIGTERM', onSignal);
-  process.once('SIGINT', onSignal);
-  startup = (async () => {
-    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
-    if (stopping) return;
-    try {
-      await gateway.start();
-      const status = await gateway.status();
-      if (status.error) console.error(`Cannot start ASB phone access: ${status.error}`);
-    } catch (error) { console.error(`Cannot start ASB phone access: ${error.message}`); }
-    if (stopping) return;
-    runtimeRecord = await publishInstanceRuntime(prepared, { schema: 1, pid: process.pid, port, sourceToken });
-    if (!stopping) console.log(`ASB service: http://127.0.0.1:${port}`);
-  })();
-  try { await startup; }
-  catch (error) { await stop(); throw error; }
-}
-
-async function main(args) {
+export async function main(args) {
   if (process.platform !== 'linux') throw new Error('The ASB user service requires Linux.');
   if (args.length !== 1 || !['run', 'install', 'uninstall', 'status'].includes(args[0])) {
     console.error('Usage: asb service run|install|uninstall|status');
     return 2;
   }
-  if (args[0] === 'run') { await runService(); return 0; }
+  if (args[0] === 'run') { await runEngine(); return 0; }
   if (args[0] === 'status') {
     let code = 0;
     try { console.log((await execFileAsync('systemctl', ['--user', 'is-active', 'asb.service'])).stdout.trim()); }

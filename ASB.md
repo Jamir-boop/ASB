@@ -66,7 +66,7 @@ When a usage limit stops a chat, its row is grey and shows a clock with **Resets
 - Claude permission tools, pending `ExitPlanMode`, and fresh remote `requires_action` show Waiting with a passive `?` until resolved in Claude. Read and successful opens cannot clear this wait. Pin stays available. A pending Claude permission, plan approval, or question tool gives Waiting and Pending only for six hours after its tool event. After that, the usual rules apply, and an old open task gives Unknown.
 - A stopped root or group shows Idle with a small muted square, including historical stops. It adds no unread mark. New work or a later end removes the square. Existing question or unread attention has priority.
 - A terminal failure shows Idle. With unknown native read state, a failed-task dot requires an observed Working-to-Idle change and a new failure. Historical failures get no new dot on first load. Codex uses non-null `task_complete.error`; Claude uses terminal `result.is_error`, a linked failed task notification that ends the group (a queued or transcript-only copy), or fresh remote session `failed`. A delivered failed notification starts a reply turn, and the end of that turn sets the outcome. Ordinary tool errors and interruptions are not task failures. Native read truth keeps its own rule.
-- The PC plays a sound when a chat gets a new Done, Needs input, or Failed mark, like the phone. It plays one sound per update at most, and no sound for the marks that exist when ASB starts.
+- The PC plays a sound when a chat gets a new Done, Needs input, or Failed mark, like the phone. It plays one sound per update at most, and no sound for the marks that exist when ASB starts. The engine plays sounds only while an ASB window is open; sounds can continue for up to 45 s after the last window closes. The `npm start` browser view keeps its sounds.
 - Codex approval wait remains unsupported. ASB has no reliable unanswered approval signal in its local file sources and does not read the app-server `waitingOnApproval` flag.
 
 ## Read and Unread
@@ -240,7 +240,16 @@ Installed packages launch with `asb` or the ASB Applications entry. The per-user
 npm run desktop
 ```
 
-The initial window is about 420×900 pixels. Closing it stops the backend that the launcher started. An icon registration error stays visible, but the window still opens. A source run keeps an installed GNOME entry and reports the conflict. It replaces a source-run entry, including one from another checkout. A busy port produces an error. ASB attaches only to its own running user service (see below), not to another server. Use `PORT=4729 npm run desktop` to select a different port.
+The initial window is about 420×900 pixels. The window is a view of the ASB engine, which runs the server and phone access. When no engine runs, `asb` starts one: through `asb.service` when that user service is enabled, else as a detached `asb engine run` process that writes its output to `~/.local/state/asb/engine.log`. The window opens when the engine answers. If the engine does not answer in 10 s, `asb` prints `ASB cannot start its engine. See <log>.` and exits; a busy port is the usual cause. Closing the window keeps the engine and phone access running. When the engine stops (Quit ASB in the tray, `asb engine stop`, or a restart of `asb.service`), open windows close. To stop them, select **Quit ASB** in Preferences > Sessions or in the tray icon menu. An icon registration error stays visible, but the window still opens. A source run keeps an installed GNOME entry and reports the conflict. It replaces a source-run entry, including one from another checkout. ASB attaches only to its own engine, not to another server. Use `PORT=4729 npm run desktop` to select a different port.
+
+| Command | Effect |
+| --- | --- |
+| `asb engine start` | Start the engine when none runs, then print its PID and port. |
+| `asb engine stop` | Stop the engine and phone access. |
+| `asb engine status` | Show whether the engine runs, its PID and port, and whether it runs as the user service or detached. |
+| `asb engine run` | Run the engine in this terminal. |
+
+On Linux, the engine shows a tray icon when the desktop has a tray host, for example the GNOME AppIndicator extension. Its tooltip shows `Running.` or `Running. Phone access on.`. Its menu has **Open ASB** and **Quit ASB**, and a left click opens ASB. Without a tray host, the engine runs with no icon. Set `ASB_TRAY=0` to start the engine without the tray icon. From a source checkout, use `scripts/asb engine` in place of `asb engine`.
 
 The optional browser view starts with `npm start` at [http://127.0.0.1:4629/](http://127.0.0.1:4629/). Both modes bind only to `127.0.0.1`. `HOST` does not change the address. `npm start` does not start phone access.
 
@@ -248,7 +257,7 @@ ASB uses two ports. The ASB server uses `4629` on `127.0.0.1`, or the `PORT` val
 
 ### User service
 
-The optional `asb.service` systemd user service runs the ASB server and phone access without the window. Phones then stay connected when you close the window. From a source checkout, use `scripts/asb service` in place of `asb service`.
+The optional `asb.service` systemd user service runs the ASB engine, so the engine starts with the graphical session. Without the service, `asb` starts a detached engine, which writes its output to `~/.local/state/asb/engine.log`. From a source checkout, use `scripts/asb service` in place of `asb service`.
 
 | Command | Effect |
 | --- | --- |
@@ -256,7 +265,7 @@ The optional `asb.service` systemd user service runs the ASB server and phone ac
 | `asb service uninstall` | Stop and disable the service, then remove the unit file. |
 | `asb service status` | Show the service state and whether its runtime file is valid. |
 
-The service starts with the graphical session and restarts after a failure. Apps that ASB opened stay open when the service stops. Under systemd, each app that ASB opens runs in its own scope, outside `asb.service`. The service exits at most 5 s after a stop signal. While the service runs, `asb` attaches to it: it opens only the window and uses the service's port. Closing the window does not stop the service. An ASB `1.8.1` or older window cannot attach and reports a port conflict. After you install a new ASB package or move the checkout, run `asb service install` again to point the service to it. The user service needs Linux with systemd. The browser view has no Drawer pill and no drawer actions.
+The service starts with the graphical session and restarts after a failure. Apps that ASB opened stay open when the service stops. Under systemd, each app that ASB opens runs in its own scope, outside `asb.service`. The service exits at most 5 s after a stop signal. While the service runs, `asb` attaches to it: it opens only the window and uses the service's port. When the service is enabled but stopped, `asb` and `asb engine start` start it with `systemctl --user start asb.service`. Closing the window does not stop the service. **Quit ASB** and `asb engine stop` stop it with exit code 0, so systemd does not restart it; it starts again with the next login or `asb`. An ASB `1.8.1` or older window cannot attach and reports a port conflict. After you install a new ASB package or move the checkout, run `asb service install` again to point the service to it. The user service needs Linux with systemd. The browser view has no Drawer pill and no drawer actions.
 
 The unreleased Rust and Qt frontends were removed after evaluation. The normal
 launcher and installers use Python at ASB `1.8.1`. Archived [Rust results](docs/benchmarks/python-rust-2026-10-12.md)
