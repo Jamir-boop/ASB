@@ -10,13 +10,14 @@
     :root { --bg: #17171a; --fg: #e8e8ea; --dim: #9a9aa2; --line: #34343a; --card: #1f1f23; --accent: #f0a93a; --changed: #33290f; }
   }
   body { margin: 0; padding: 24px 16px 48px; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, sans-serif; }
-  main { max-width: 1280px; margin: 0 auto; }
+  main { max-width: 1280px; min-width: min-content; margin: 0 auto; }
   h1 { font-size: 20px; margin: 0 0 4px; }
   p { margin: 0 0 16px; color: var(--dim); }
-  .scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
-  table { border-collapse: collapse; width: 100%; min-width: 1280px; }
+  /* The header sticks to the window only if no box around it scrolls; separate borders keep its line under it. */
+  .scroll { overflow: clip; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+  table { border-collapse: separate; border-spacing: 0; width: 100%; min-width: 1280px; }
   th, td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
-  th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); white-space: nowrap; }
+  th { position: sticky; top: 0; background: var(--card); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); white-space: nowrap; }
   tr:last-child td { border-bottom: 0; }
   td:first-child { font-weight: 600; min-width: 150px; border-left: 3px solid transparent; }
   tr.changed td { background: var(--changed); }
