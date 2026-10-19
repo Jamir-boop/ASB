@@ -176,6 +176,16 @@ The machine group shows the sessions of your other computers that run ASB. Each 
 
 A card from another machine shows that machine's name in the bottom line. It does not open from ASB. Read, Unread, pins, the drawer, and Mute work and change only the marks of this machine. Discard does not work on it. A Done card of another machine plays the Done sound. When a machine does not answer for 3 polls, its cards show Unknown with `<name> is not reachable.` After 10 minutes, its cards go away. Each machine of the group also accepts the token of a phone that is paired with another machine of the group.
 
+### Messages between machines (Linux)
+
+Claude Code sessions and Codex tasks on one machine can message the sessions on the other machines of the group. Each Linux machine needs Bun on the `PATH` of its ASB engine; a Codex task also needs ASB Bridge. The engine starts its message relay by itself while the group has at least one other machine, and stops it when this machine is alone or leaves the group.
+
+- In Claude Code, `/list-agents` shows each session of another machine as `<machine>-<session>`, for example `laptop-codex-fix-tests-3f`. Ask Claude to message it as usual.
+- In Codex, `list_sessions` shows the other machines' sessions after the local ones, with `remote: true` and `machine`. Send to one with `send_message` by its `sessionId`.
+- A reply comes back the same way: the receiving session sees the sender under the name of the sending machine.
+- A message to a machine that is offline, or to a session that has ended, is refused at once with a short reason, for example `laptop is not reachable.`. ASB keeps no queue: send the message again when the machine is back.
+- Idle subscriptions (`notify_when_idle`) do not work across machines yet.
+
 ## Preferences and local settings
 
 Select the toolbar settings button to open **Preferences**. It is one separate native window. You can still use the main window. Selecting the button again raises the same Preferences window. Closing Preferences keeps ASB running and keeps form edits for the next open.

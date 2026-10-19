@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { outboundServer, refreshReceiver, sendViaReceiver } from './outbound';
 import { PeerGuard } from './guard';
 import { DeliveryRefused } from './delivery';
+import { engineRequest, engineRuntime, remotePeers, type EngineRuntime, type RemotePeer } from './engine';
 
 type Message = { id: string; peer_id: string; direction: string; text: string; status: string; turn_id: string | null;
   peer_address: string | null; peer_start: string | null; from_mode: string | null; expires_at: number | null; kind: string;
@@ -18,6 +19,15 @@ export const policySchema = z.enum(['default', 'accept', 'hold', 'refuse']);
 export const expirySchema = z.enum(['60s', '5m', '10m', 'never']);
 type Policy = z.infer<typeof policySchema>;
 const subscriptionLifetime = 12 * 60 * 60 * 1000;
+const relayReply = z.union([z.strictObject({ ok: z.literal(true), outcome: z.literal('socket-written') }),
+  z.strictObject({ ok: z.literal(false), reason: z.enum(['machine-offline', 'target-unavailable', 'too-large', 'rate-limited', 'refused']) })]);
+const remoteRefusals: Record<'machine-offline' | 'target-unavailable' | 'too-large' | 'rate-limited' | 'refused', (machine: string) => string> = {
+  'machine-offline': machine => `${machine} is not reachable. Nothing sent.`,
+  'target-unavailable': machine => `The session on ${machine} is not available. Nothing sent.`,
+  'too-large': () => 'Message too large for the other machine. Nothing sent.',
+  'rate-limited': () => 'Too many messages to this session just now. Nothing sent; wait or batch the text.',
+  refused: machine => `${machine} refused the message. Nothing sent.`,
+};
 
 export class Bridge {
   private db: Database;
@@ -259,6 +269,12 @@ export class Bridge {
     return this.exclusive(async () => {
       await this.expireSubscriptions();
       if (sessionId === this.threadId) throw new Error('Cannot send to this task itself');
+      // A session that no local registry row has can be on another machine of the group (plan 16.4).
+      if (!peers(this.configDir).some(peer => peer.sessionId === sessionId && peer.entrypoint !== 'asb-relay')) {
+        const runtime = engineRuntime();
+        const remote = runtime ? (await remotePeers(runtime).catch(() => [])).find(peer => peer.sessionId === sessionId) : undefined;
+        if (runtime && remote) return this.sendRemote(runtime, remote, text, notifyWhenIdle);
+      }
       const peer = findPeer(this.configDir, sessionId);
       if (!text && !notifyWhenIdle) throw new Error('A message or notify_when_idle is required');
       if (notifyWhenIdle && (!peer.peerFeatures.includes('notify_idle') || this.policy() === 'refuse')) {
@@ -296,6 +312,42 @@ export class Bridge {
       return { messageId: id, subscriptionId, status: id
         ? this.db.query<{ status: string }, [string]>('SELECT status FROM messages WHERE id=?').get(id)?.status : 'socket-written' };
     });
+  }
+
+  // Runs inside sendMessage's exclusive section.
+  private async sendRemote(runtime: EngineRuntime, target: RemotePeer, text: string | undefined, notifyWhenIdle: boolean) {
+    if (notifyWhenIdle) throw new Error('Idle subscriptions do not work across machines yet.');
+    if (!text) throw new Error('A message or notify_when_idle is required');
+    const receiver = this.receiver();
+    const address = peerAddress(receiver.messagingSocketPath);
+    const mode = this.runtime().mode;
+    const hops = [...await this.outgoingHops(), ...(this.ownHop() ? [this.ownHop()!] : [])].slice(-32);
+    const id = randomUUID();
+    // The same limit as a local send: the frame that a local send would write.
+    serializeFrame(userFrame({ sessionId: target.sessionId }, address, receiver.name, this.threadId, id, text, mode, null, hops));
+    let machineId: string;
+    try { machineId = z.object({ machineId: z.string().regex(/^[a-f0-9]{16}$/) }).parse(await engineRequest(runtime, '/api/relay/homes')).machineId; }
+    catch { throw new SendRefused('The local ASB engine did not answer. Nothing sent.'); }
+    // A receipt that comes back through the proxy row of this session updates the message like a local one.
+    const proxy = peers(this.configDir).find(peer => peer.entrypoint === 'asb-relay' && peer.sessionId === target.sessionId);
+    this.db.run("INSERT INTO messages (id,peer_id,direction,text,status,peer_address,peer_start) VALUES (?,?,'out',?,'submitting',?,?)",
+      [id, target.sessionId, text, proxy ? peerAddress(proxy.messagingSocketPath) : null, proxy?.procStart ?? null]);
+    let reply: z.infer<typeof relayReply>;
+    try {
+      reply = relayReply.parse(await engineRequest(runtime, '/api/relay/send', { method: 'POST', body: { machineId: target.machineId, targetSessionId: target.sessionId,
+        sender: { machineId, sessionId: this.threadId, name: receiver.name, mode: ['prompting', 'bypass'].includes(mode) ? mode : 'unknown', agent: 'codex' },
+        message: { msgId: id, text, hopChain: hops } } }));
+    } catch {
+      this.db.run("UPDATE messages SET status='unknown' WHERE id=? AND status='submitting'", [id]);
+      throw new Error(`Send outcome unknown for ${id}; inspect status before sending again`);
+    }
+    if (!reply.ok) {
+      const reason = remoteRefusals[reply.reason](target.machineName);
+      this.db.run("UPDATE messages SET status='not-sent',status_reason=? WHERE id=? AND status='submitting'", [reason, id]);
+      throw new SendRefused(reason);
+    }
+    this.db.run("UPDATE messages SET status='socket-written' WHERE id=? AND status='submitting'", [id]);
+    return { messageId: id, subscriptionId: null, status: this.db.query<{ status: string }, [string]>('SELECT status FROM messages WHERE id=?').get(id)?.status };
   }
 
   private async receive(frame: Frame) {

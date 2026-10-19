@@ -104,6 +104,8 @@ The app-server transport uses `turn/start` with `toolOutput`, which starts or jo
 
 `send_message` addresses a peer by `sessionId`, not by name. An ambiguous registration is refused.
 
+A `sessionId` that only the ASB engine lists (a session on another machine of the group, Linux) goes to the engine, which sends it to that machine. The bridge finds the engine through `$XDG_RUNTIME_DIR/asb/service.json`, so `.mcp.json` passes `XDG_RUNTIME_DIR` to the MCP server. The text limit is the same as for a local send. A refusal leaves the message `not-sent` with one of these reasons: `<machine> is not reachable. Nothing sent.`, `The session on <machine> is not available. Nothing sent.`, `Message too large for the other machine. Nothing sent.`, `Too many messages to this session just now. Nothing sent; wait or batch the text.`, or `<machine> refused the message. Nothing sent.` When the engine does not answer, the outcome is `unknown`. `notify_when_idle` to another machine is refused: `Idle subscriptions do not work across machines yet.`
+
 ## Control what arrives
 
 The receive setting belongs to one task. When the permission modes of sender and receiver differ, a native dialog opens, also between turns. Held text reaches the model only after you release it.
@@ -123,7 +125,7 @@ The sender sees Claude's status notices, among them `held`, `delivered`, `denied
 
 | Tool | Use |
 | --- | --- |
-| `list_sessions` | List local agents with ID, name, agent type, working directory, status, and start time. |
+| `list_sessions` | List local agents with ID, name, agent type, working directory, status, and start time. In an ASB machine group, the sessions on the other machines follow, with `remote: true`, `machine`, the name `<machine>-<session>`, and no working directory or start time. |
 | `send_message` | Send text to one agent. Set `notify_when_idle` for one notice when that agent next goes idle. |
 | `status` | Show the receiver and recent transport outcomes. |
 | `inbox` | Open a dialog where you set the receive policy and hold expiry, or review the oldest held message. |

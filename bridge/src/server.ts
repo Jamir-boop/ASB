@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { homedir } from 'node:os';
 import { extname, isAbsolute, join } from 'node:path';
 import { maxLineLength, peers, uuid } from './claude';
+import { engineRuntime, remotePeers } from './engine';
 import { Bridge, expirySchema, policySchema } from './bridge';
 import { HeldDialogs } from './held-dialogs';
 import { version } from './version';
@@ -60,14 +61,23 @@ server.registerTool('session_start', { description: 'Bind the native SessionStar
   return { content: [] };
 });
 
-server.registerTool('list_sessions', { description: 'List the live local agents, most recently started first. Pick one by sessionId: names and working directories repeat across agents, and status tells you idle or busy right now, not how long an agent has sat idle. Start time separates them.',
-  inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false } }, async (_args, extra) =>
-  result(peers(configDir).filter(peer => peer.sessionId !== callerThread(extra._meta) && peer.entrypoint !== 'asb-relay')
+server.registerTool('list_sessions', { description: 'List the live agents on this machine and, in a machine group, on the other machines (remote: true), most recently started first. Pick one by sessionId: names and working directories repeat across agents, and status tells you idle or busy right now, not how long an agent has sat idle. Start time separates them.',
+  inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false } }, async (_args, extra) => {
+  const caller = callerThread(extra._meta);
+  // ASB relay proxy rows stand for remote sessions; the engine lists those below with their machine.
+  const local = peers(configDir).filter(peer => peer.entrypoint !== 'asb-relay');
+  const rows = local.filter(peer => peer.sessionId !== caller)
     .map(peer => ({ sessionId: peer.sessionId, name: peer.name,
       agent: peer.entrypoint === 'codex-asb-bridge' ? 'codex' : 'claude',
       cwd: peer.cwd, status: peer.status,
       startedAt: peer.startedAt === undefined ? null : new Date(peer.startedAt).toISOString() }))
-    .sort((first, second) => (second.startedAt ?? '').localeCompare(first.startedAt ?? ''))));
+    .sort((first, second) => (second.startedAt ?? '').localeCompare(first.startedAt ?? ''));
+  const runtime = engineRuntime();
+  const remote = runtime ? await remotePeers(runtime).catch(() => []) : [];
+  const seen = new Set([caller, ...local.map(peer => peer.sessionId)]);
+  return result([...rows, ...remote.filter(peer => !seen.has(peer.sessionId)).map(peer => ({ sessionId: peer.sessionId,
+    name: `${peer.machineName}-${peer.name}`, agent: peer.agent, cwd: null, status: peer.status, startedAt: null, remote: true, machine: peer.machineName }))]);
+});
 server.registerTool('send_message', { description: 'Send text to one listed agent, or set notify_when_idle alone to subscribe without sending. Its answer enters the current Codex turn, or starts one when this task is idle. Batch what you have to say into one message: a rapid burst to the same agent is refused.',
   inputSchema: { sessionId: uuid, text: z.string().min(1).max(maxLineLength).optional(), notify_when_idle: z.boolean().default(false) }, annotations: { openWorldHint: true } },
   async ({ sessionId, text, notify_when_idle }, extra) => result(await current(extra._meta).sendMessage(sessionId, text, notify_when_idle)));

@@ -252,7 +252,7 @@ export function hopChain(text: string) {
 }
 
 // fromName must be the registered name: the receiver replies to what its ListAgents listing shows.
-export function userFrame(peer: Peer, address: string, fromName: string, fromSession: string, id: string, text: string, mode: string, token: string | null, previous: string[] = []) {
+export function userFrame(peer: Pick<Peer, 'sessionId'>, address: string, fromName: string, fromSession: string, id: string, text: string, mode: string, token: string | null, previous: string[] = []) {
   const body = text.replaceAll('</cross-session-message', '<\\/cross-session-message');
   const chain = [...previous, ...(token ? [token] : [])].slice(-32).join(',');
   return { msgV: 1, msg_id: id, type: 'user', priority: 'next', from: address,

@@ -13,6 +13,8 @@ import { Bridge } from '../src/bridge';
 import { findPeer, frameSchema, hopChain, inbox, maxLineLength, peerAddress, peers, sendFrames, sessionName, socketPath, userFrame } from '../src/claude';
 import { receiver } from './desktop-fixture';
 import { appServer } from './app-server-fixture';
+import { fakeEngine } from './engine-fixture';
+import { processStart } from '../src/claude';
 
 async function fixture(prefix = '/tmp/uds-protocol-') {
   const root = mkdtempSync(prefix);
@@ -998,4 +1000,91 @@ test('a leading auth line from a peer is ignored and the frame after it is deliv
     await f.bridge.setPolicy('default');
     await until(() => f.desktop.submissions.length === 1);
   } finally { await f.close(); }
+});
+
+// Plan 16.4: sessions on other machines of the group, through a fake engine in the test runtime folder.
+const remoteSession = (sessionId = randomUUID()) => ({ machineId: 'b'.repeat(16), machineName: 'beta', online: true, sessionId,
+  name: 'codex-task', agent: 'codex', status: 'idle', remoteControl: false });
+const runtimeDir = () => z.string().parse(process.env.XDG_RUNTIME_DIR);
+
+test('list_sessions adds the sessions on other machines after the local ones, and only the local ones without an engine', async () => {
+  const f = await fixture();
+  const client = new Client({ name: 'list-test', version: '1.0.0' });
+  const caller = randomUUID();
+  const remote = remoteSession();
+  const engine = fakeEngine(runtimeDir(), () => ({ peers: [{ ...remote, sessionId: f.peerId }, remoteSession(caller), { ...remote, name: '' }, remote] }));
+  try {
+    await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, '../src/server.ts')],
+      env: { ...process.env, CODEX_HOME: f.root, CLAUDE_CONFIG_DIR: f.configDir } }));
+    const list = async () => JSON.parse(z.array(z.object({ text: z.string() }))
+      .parse((await client.callTool({ name: 'list_sessions', arguments: {}, _meta: { threadId: caller } })).content)[0]!.text);
+    const rows = await list();
+    expect(rows.map((row: { sessionId: string }) => row.sessionId)).toEqual([f.desktop.threadId, f.peerId, remote.sessionId]);
+    expect(rows[2]).toEqual({ sessionId: remote.sessionId, name: 'beta-codex-task', agent: 'codex', cwd: null, status: 'idle', startedAt: null,
+      remote: true, machine: 'beta' });
+    expect(engine.calls.map(call => call.route)).toEqual(['/api/relay/remote-peers']);
+    engine.close();
+    expect((await list()).map((row: { sessionId: string }) => row.sessionId)).toEqual([f.desktop.threadId, f.peerId]);
+  } finally { engine.close(); await client.close(); await f.close(); }
+});
+
+test('a send to a remote session goes to the engine with the relay body, and each refusal reason has its text', async () => {
+  const f = await fixture();
+  const remote = remoteSession();
+  let reply: unknown = { ok: true, outcome: 'socket-written' };
+  const engine = fakeEngine(runtimeDir(), route => route === '/api/relay/remote-peers' ? { peers: [remote] }
+    : route === '/api/relay/homes' ? { machineId: 'a'.repeat(16), machineName: 'alpha', homes: [] } : reply);
+  const row = (id: string) => f.db.query<{ status: string; status_reason: string | null; peer_address: string | null }, [string]>(
+    'SELECT status,status_reason,peer_address FROM messages WHERE id=?').get(id);
+  try {
+    const sent = await f.bridge.sendMessage(remote.sessionId, 'to beta');
+    const hop = f.db.query<{ hop_token: string }, []>('SELECT hop_token FROM runtime').get()!.hop_token;
+    expect(sent).toMatchObject({ subscriptionId: null, status: 'socket-written' });
+    const body = engine.calls.find(call => call.route === '/api/relay/send')!.body;
+    expect(body).toEqual({ machineId: remote.machineId, targetSessionId: remote.sessionId,
+      sender: { machineId: 'a'.repeat(16), sessionId: f.desktop.threadId, name: f.bridge.status().name, mode: 'prompting', agent: 'codex' },
+      message: { msgId: sent.messageId, text: 'to beta', hopChain: [hop] } });
+    expect(row(z.string().parse(sent.messageId))).toEqual({ status: 'socket-written', status_reason: null, peer_address: null });
+    for (const [reason, text] of [['machine-offline', 'beta is not reachable. Nothing sent.'],
+      ['target-unavailable', 'The session on beta is not available. Nothing sent.'], ['too-large', 'Message too large for the other machine. Nothing sent.'],
+      ['rate-limited', 'Too many messages to this session just now. Nothing sent; wait or batch the text.'], ['refused', 'beta refused the message. Nothing sent.']]) {
+      reply = { ok: false, reason };
+      await expect(f.bridge.sendMessage(remote.sessionId, `refused ${reason}`)).rejects.toThrow(text!);
+      const id = z.string().parse((engine.calls.at(-1)!.body as { message: { msgId: string } }).message.msgId);
+      expect(row(id)).toMatchObject({ status: 'not-sent', status_reason: text });
+    }
+    // An outcome that is not known: an engine error or another reply shape.
+    for (const answer of [new Response('{}', { status: 500 }), { ok: true }]) {
+      reply = answer;
+      await expect(f.bridge.sendMessage(remote.sessionId, 'unknown outcome')).rejects.toThrow('Send outcome unknown');
+      const id = z.string().parse((engine.calls.at(-1)!.body as { message: { msgId: string } }).message.msgId);
+      expect(row(id)?.status).toBe('unknown');
+    }
+    const sends = engine.calls.filter(call => call.route === '/api/relay/send').length;
+    await expect(f.bridge.sendMessage(remote.sessionId, undefined, true)).rejects.toThrow('Idle subscriptions do not work across machines yet.');
+    await expect(f.bridge.sendMessage(remote.sessionId, 'x'.repeat(maxLineLength))).rejects.toThrow('Message too large');
+    expect(engine.calls.filter(call => call.route === '/api/relay/send')).toHaveLength(sends);
+    // Without the engine, an unknown session keeps the local error.
+    engine.close();
+    await expect(f.bridge.sendMessage(remote.sessionId, 'no engine')).rejects.toThrow('unavailable or ambiguous');
+  } finally { engine.close(); await f.close(); }
+});
+
+test('a remote send records the proxy row address, so a receipt through the proxy row updates it', async () => {
+  const f = await fixture();
+  const remote = remoteSession();
+  const engine = fakeEngine(runtimeDir(), route => route === '/api/relay/remote-peers' ? { peers: [remote] }
+    : route === '/api/relay/homes' ? { machineId: 'a'.repeat(16), machineName: 'alpha', homes: [] } : { ok: true, outcome: 'socket-written' });
+  const placeholder = Bun.spawn(['/usr/bin/cat'], { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' });
+  const proxy = await inbox(join(f.root, 's'), () => {}, `${placeholder.pid}.sock`);
+  try {
+    writeFileSync(join(f.configDir, 'sessions', `${placeholder.pid}.json`), JSON.stringify({ pid: placeholder.pid, sessionId: remote.sessionId,
+      messagingSocketPath: socketPath(proxy.address), cwd: '', name: 'beta-codex-task', peerProtocol: 1, entrypoint: 'asb-relay',
+      procStart: await processStart(placeholder.pid) }), { mode: 0o600 });
+    const sent = await f.bridge.sendMessage(remote.sessionId, 'through the proxy row');
+    const id = z.string().parse(sent.messageId);
+    expect(f.db.query<{ peer_address: string }, [string]>('SELECT peer_address FROM messages WHERE id=?').get(id)?.peer_address).toBe(proxy.address);
+    await f.transmit({ type: 'control', from: proxy.address, action: 'peer_message_status', orig_msg_id: id, status: 'delivered' });
+    await until(() => f.bridge.status().messages.some(message => message.id === id && message.status === 'delivered'));
+  } finally { engine.close(); await proxy.close(); placeholder.kill(); await f.close(); }
 });

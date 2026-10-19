@@ -63,6 +63,8 @@ The current source includes the Android companion and the user service; publishe
 
 The current source can also join ASB on several of your computers in one machine group: each machine then shows the sessions of the others as cards. See [Machines](ASB.md#machines).
 
+In a machine group, Claude and Codex sessions on one machine can message sessions on the other machines (Linux; Windows later). The other sessions appear in `/list-agents` (Claude) and `list_sessions` (Codex) with the machine name first. A message to a machine that is offline is refused at once; ASB keeps no queue.
+
 ## OpenCode sessions (list only)
 
 The current source also lists OpenCode 2 sessions from the local OpenCode database. OpenCode cards show state, the last result, and unread, but ASB cannot open them: OpenCode 2 has no link that opens one session. See [OpenCode](ASB.md#opencode).
