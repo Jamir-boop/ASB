@@ -11,5 +11,6 @@
   "test/opencode-data.test.mjs",
   "test/insights.test.mjs",
   "test/bridge-windows.test.mjs",
-  "test/session-references.test.mjs"
+  "test/session-references.test.mjs",
+  "test/session-targets.test.mjs"
 ]

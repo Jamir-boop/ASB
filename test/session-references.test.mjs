@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { formatReference, parseReference, referenceType, rowReference, scopeInput, shortReference,
+import { formatReference, parseReference, parseShortReference, referenceType, rowReference, scopeInput, shortReference,
   MAX_REFERENCE_BYTES } from '../src/session-references.mjs';
 import { X509Certificate } from 'node:crypto';
 import { createPhoneGateway, referenceScopeTagger } from '../src/phone-gateway.mjs';
@@ -134,6 +134,21 @@ test('the short reference is the text that the board copies, only when it is one
   // Full text is never read as the short form.
   assert.throws(() => parseReference(`claude-personal/local_${UUID}`), { code: 'invalid-reference' });
   assert.throws(() => parseReference(`${valid}x`), { code: 'invalid-reference' });
+});
+
+test('the short form parser accepts only <host>/<app-id> and never reads full text as short', () => {
+  assert.deepEqual(parseShortReference(`claude-personal/local_${UUID}`), { host: 'claude-personal', appId: `local_${UUID}` });
+  assert.deepEqual(parseShortReference(`codex/${MIXED}`), { host: 'codex', appId: MIXED });
+  assert.deepEqual(parseShortReference('claude-desktop-code/cse_abc-1'), { host: 'claude-desktop-code', appId: 'cse_abc-1' });
+  assert.deepEqual(parseShortReference('opencode/ses_x'), { host: 'opencode', appId: 'ses_x' });
+  const host = `a${'b'.repeat(79)}`;
+  assert.equal(parseShortReference(`${host}/x`).host, host);
+  for (const text of [valid, `asb:/${UUID}`, 'asb:x/y', `asb/${UUID}`.replace('asb', 'asb:'), '', `/${UUID}`, `codex/`, `codex/${UUID}/x`,
+    `codex//${UUID}`, `Codex/${UUID}`, `-codex/${UUID}`, `${host}b/x`, `co dex/${UUID}`, `codex/${UUID} `, `codex/${UUID}\n`,
+    `codex\\${UUID}`, `codex/${UUID}?x`, `codex/${UUID}#x`, `codex/%2e%2e`, `codex/..`, `codex/${'x'.repeat(129)}`, `codex/caf\u00e9`,
+    `codex/${'x'.repeat(MAX_REFERENCE_BYTES)}`, null, undefined, 1, {}, ['codex', UUID]]) {
+    assert.throws(() => parseShortReference(text), { code: 'invalid-reference' }, JSON.stringify(text));
+  }
 });
 
 test('the scope input is unambiguous and uses the effective Claude default', () => {

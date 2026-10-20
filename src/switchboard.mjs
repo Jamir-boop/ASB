@@ -14,6 +14,7 @@ import { openThreadInCodex, scopedCommand } from './session-opener.mjs';
 import { AppSourceRegistry, appSourcesRevision, numberAppSources, sourceName, validateSourceLauncher } from './app-sources.mjs';
 import { stateDir } from './platform-paths.mjs';
 import { rowReference, shortReference } from './session-references.mjs';
+import { resolveSessionReference } from './session-targets.mjs';
 import { spawn } from 'node:child_process';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -767,6 +768,15 @@ export function createSwitchboardServer(options = {}) {
       if (registeredLoad && registry.warning) dashboard.providers.push({ id: 'asb-sources', label: 'ASB', status: 'warning', message: registry.warning });
       dashboard.refreshIntervalMs = switchboardRefreshInterval(dashboard);
       return dashboard;
+    },
+    // Read-only: the cached rows, the registered sources and tags, and the member list that the engine already has.
+    resolveSession: async (request, dashboard) => {
+      const sources = registeredLoad ? await registry.read() : null;
+      const machine = options.machineIdentity?.() || { machineId: '', machineName: localMachineName() };
+      const tagger = machine.machineId ? options.referenceScopes?.() || null : null;
+      const members = options.machineGroup ? (await options.machineGroup.status()).members.filter((member) => !member.isSelf) : [];
+      return resolveSessionReference(request, { threads: dashboard.threads || [], sources: sources || [], tags: sourceScopes(sources, tagger),
+        machine: { machineId: tagger ? machine.machineId : '', machineName: machine.machineName }, members });
     },
     listSources: (dashboard) => registry.report(dashboard),
     updateSource: async (source, revision) => { const saved = await registry.update(source, revision); retainSourceCaches(await registry.read()); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); invalidateOpenCodeData(); return saved; },

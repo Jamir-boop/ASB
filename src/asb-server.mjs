@@ -9,6 +9,7 @@ import { DEFAULT_PUBLIC_DIR, parseBooleanSearchParam, readJsonBody, sendJson, se
 const PALETTE_KEYS = ['background', 'text', 'accent', 'muted', 'divider', 'success', 'warning'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SOURCE_REVISION = /^[a-f0-9]{64}$/;
+const SOURCE_ID = /^[a-z0-9][a-z0-9-]{0,79}$/;
 
 // Returns the palette with lowercase colors in a fixed key order, or null when the value is not exactly a palette.
 function validPalette(value) {
@@ -34,7 +35,7 @@ function readPalette(palettePath) {
 export function createAsbServer({
   markUnreadThread = null, markReadThread = null, setUnreadSettings = null, pinThread = null, discardThread = null, drawerThread = null, muteThread = null,
   listSources = null, updateSource = null, removeSource = null, sourceToken = '', phoneGateway = null, machineGroup = null, serviceMode = false, onStop = null,
-  machineRelay = null, readSources = async () => [],
+  machineRelay = null, readSources = async () => [], resolveSession = null,
   appVersion = '', rootDir = '', sourcesPath = '', readSourcesRevision = async () => null,
   palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, now = Date.now, ...snapshotOptions
 } = {}) {
@@ -95,8 +96,9 @@ export function createAsbServer({
     const eventRoute = url.pathname === '/api/events';
     const paletteRoute = url.pathname === '/api/palette';
     const engineStopRoute = Boolean(onStop) && url.pathname === '/api/engine/stop';
+    const resolveRoute = Boolean(resolveSession) && url.pathname === '/api/agent/resolve-session';
     const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute
-      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute
+      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute || resolveRoute
       || Boolean(groupRoute?.[1]) || relayRoute === 'send';
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
     const readApiRoute = url.pathname === '/api/dashboard' || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute
@@ -139,6 +141,25 @@ export function createAsbServer({
       // The reply goes out before the engine closes its connections.
       response.once('close', () => onStop());
       sendJson(response, 200, { stopping: true });
+      return;
+    }
+    if (resolveRoute) {
+      response.setHeader('Cache-Control', 'no-store');
+      if (!expectedSourceToken.length || !sourceTokenAllowed(request)) {
+        sendJson(response, 403, { error: 'Use the current ASB source token for agent access.' });
+        return;
+      }
+      let body;
+      try { body = await readBody(request, 8 * 1024); } catch (error) { sendJson(response, error.statusCode === 413 ? 413 : 400, { error: 'Invalid resolve request.' }); return; }
+      const fields = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join(',') : 'invalid';
+      if (!['reference', 'reference,sourceId'].includes(fields) || typeof body.reference !== 'string'
+        || (fields === 'reference,sourceId' && (typeof body.sourceId !== 'string' || !SOURCE_ID.test(body.sourceId)))) {
+        sendJson(response, 400, { error: 'Invalid resolve request.' });
+        return;
+      }
+      // Read-only: the cached dashboard, never a forced scan.
+      try { sendJson(response, 200, await resolveSession({ reference: body.reference, ...(fields === 'reference' ? {} : { sourceId: body.sourceId }) }, await dashboardForRequest())); }
+      catch { sendJson(response, 500, { error: 'Cannot resolve the session reference.' }); }
       return;
     }
     if (agentStatusRoute || agentUiRoute) {

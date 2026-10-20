@@ -25,6 +25,7 @@ export const RUNTIME_FILES = [
   'src/codex-data.mjs', 'src/claude-data.mjs', 'src/claude-registry.mjs', 'src/claude-cli-data.mjs', 'src/claude-remote-data.mjs', 'src/insights.mjs', 'src/data-cache.mjs',
   'src/thread-classification.mjs', 'src/phone-gateway.mjs', 'src/machine-group.mjs', 'src/machine-peers.mjs', 'src/machine-relay.mjs', 'src/asb-sounds.mjs', 'src/opencode-data.mjs', 'src/platform-paths.mjs',
   'src/session-references.mjs',
+  'src/session-targets.mjs',
   '.agents/plugins/marketplace.json',
   'bridge/.codex-plugin/plugin.json', 'bridge/.mcp.json', 'bridge/hooks/hooks.json',
   'bridge/dist/server.js', 'bridge/dist/hook.js', 'bridge/dist/relay.js', 'bridge/LICENSE',

@@ -203,3 +203,76 @@ test('source API writes support quoted revisions, preserve stale edits and remov
   assert.equal((await registry.read())[0].label, 'Legacy edit');
   assert.equal((await registry.read())[0].showMarker, true);
 });
+
+const RESOLVE = '/api/agent/resolve-session';
+const MACHINE_ID = '0123456789abcdef';
+const SESSION = '11111111-1111-4111-8111-111111111111';
+
+test('the resolve route is a token-only POST action with exact Host, Origin, and fetch site', async (t) => {
+  const calls = [];
+  const actions = [];
+  const spy = (name) => async () => { actions.push(name); };
+  const { request } = await serve(t, { resolveSession: async (body, dashboard) => { calls.push({ body, threads: dashboard.threads.length });
+    return { apiVersion: 1, ok: true, form: 'short', identity: null, display: null, location: null, availability: 'not-found' }; },
+  markUnreadThread: spy('mark-unread'), markReadThread: spy('mark-read'), pinThread: spy('pin'), discardThread: spy('discard'),
+  drawerThread: spy('drawer'), muteThread: spy('mute'), updateSource: spy('update'), removeSource: spy('remove'), onStop: spy('stop'),
+  openThreadInCodex: spy('open'), openThreadInClaude: spy('open') });
+  const body = { reference: `codex/${SESSION}` };
+  for (const token of ['', 'window-tokem']) assert.equal((await request(RESOLVE, { method: 'POST', token, body })).status, 403);
+  for (const headers of [{ host: 'example.invalid' }, { host: '127.0.0.1' }, { origin: 'https://example.invalid' }, { 'sec-fetch-site': 'cross-site' },
+    { 'sec-fetch-site': 'same-site' }, { 'sec-fetch-site': 'none' }]) {
+    assert.equal((await request(RESOLVE, { method: 'POST', body, headers })).status, 403, JSON.stringify(headers));
+  }
+  assert.equal((await request(RESOLVE, { method: 'POST', body, origin: null })).status, 403);
+  const get = await request(RESOLVE);
+  assert.deepEqual([get.status, get.headers.get('allow')], [405, 'POST']);
+  for (const invalid of ['{', 'null', '[]', '"x"', '{}', { reference: 1 }, { reference: null }, { reference: 'x', extra: 1 },
+    { reference: 'x', sourceId: 'Bad' }, { reference: 'x', sourceId: 1 }, { reference: 'x', sourceId: '' }, { sourceId: 'codex' },
+    { reference: 'x', sourceId: 'a'.repeat(81) }]) {
+    const response = await request(RESOLVE, { method: 'POST', body: invalid });
+    assert.equal(response.status, 400, JSON.stringify(invalid));
+    assert.deepEqual(response.json(), { error: 'Invalid resolve request.' });
+  }
+  assert.equal((await request(RESOLVE, { method: 'POST', body: { reference: 'x'.repeat(8 * 1024) } })).status, 413);
+  assert.deepEqual(calls, []);
+  const reply = await request(RESOLVE, { method: 'POST', body });
+  assert.equal(reply.status, 200);
+  assert.equal(reply.headers.get('cache-control'), 'no-store');
+  assert.equal(reply.json().availability, 'not-found');
+  await request(RESOLVE, { method: 'POST', body: { ...body, sourceId: 'work-2' }, headers: { 'sec-fetch-site': 'same-origin' } });
+  assert.deepEqual(calls, [{ body, threads: 0 }, { body: { ...body, sourceId: 'work-2' }, threads: 0 }]);
+  assert.deepEqual(actions, []);
+  // A server with no resolver has no route; a server with no configured token refuses it.
+  assert.equal((await (await serve(t)).request(RESOLVE, { method: 'POST', body })).status, 404);
+  const open = await serve(t, { sourceToken: '', resolveSession: async () => { throw new Error('must not run'); } });
+  assert.equal((await open.request(RESOLVE, { method: 'POST', body })).status, 403);
+});
+
+test('the engine resolves a full reference from its cached rows and writes no state', async (t) => {
+  const { homeDir, registry } = await fixture(t);
+  const pendingStatePath = path.join(homeDir, 'pending.json');
+  const tag = () => 'ab'.repeat(16);
+  let loads = 0;
+  const { request } = await serve(t, { switchboard: true, sourceRegistry: registry, pendingStatePath,
+    machineIdentity: () => ({ machineId: MACHINE_ID, machineName: 'synthetic-pc' }), referenceScopes: () => tag,
+    machineGroup: { status: async () => ({ members: [{ machineId: MACHINE_ID, name: 'synthetic-pc', online: true, isSelf: true }] }), merge: () => {} },
+    loadDashboard: async () => { loads += 1; return { providers: [], threads: [{ id: SESSION, externalId: SESSION, provider: 'codex',
+      providerLabel: 'Codex', surface: 'app', sourceId: 'codex', sourceName: 'codex', state: 'idle', title: 'Secret title',
+      cwd: '/synthetic/private' }] }; } });
+  const board = (await request('/api/dashboard')).json();
+  const reference = board.threads[0].reference;
+  assert.equal(reference, `asb:1/${MACHINE_ID}/codex/${'ab'.repeat(16)}/codex:${SESSION}`);
+  const before = await readFile(pendingStatePath, 'utf8').catch((error) => error.code);
+  const reply = await request(RESOLVE, { method: 'POST', body: { reference } });
+  assert.equal(reply.status, 200);
+  assert.deepEqual(reply.json(), { apiVersion: 1, ok: true, form: 'full',
+    identity: { reference, machineId: MACHINE_ID, sourceId: 'codex', scopeTag: 'ab'.repeat(16), type: 'codex', appId: SESSION },
+    display: { machineName: 'synthetic-pc', sourceName: 'codex', providerLabel: 'Codex' }, location: 'local', availability: 'found' });
+  assert.equal(reply.text.includes('Secret title') || reply.text.includes('/synthetic/'), false);
+  const short = (await request(RESOLVE, { method: 'POST', body: { reference: `codex/${SESSION}`, sourceId: 'codex' } })).json();
+  assert.deepEqual([short.form, short.availability, short.identity.reference], ['short', 'found', reference]);
+  const failed = await request(RESOLVE, { method: 'POST', body: { reference, sourceId: 'opencode' } });
+  assert.deepEqual([failed.status, failed.json().ok, failed.json().code], [200, false, 'scope-mismatch']);
+  assert.equal(loads, 1, 'the resolver uses the cached dashboard');
+  assert.equal(await readFile(pendingStatePath, 'utf8').catch((error) => error.code), before);
+});

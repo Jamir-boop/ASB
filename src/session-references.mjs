@@ -40,6 +40,19 @@ export function parseReference(text) {
   return { version: 1, machineId, sourceId, scopeTag, type, appId };
 }
 
+// The short form <host>/<app-id> that the board copies. It has no machine or scope, so it is read only on this machine.
+// Text that starts with asb: is always the full form.
+export function parseShortReference(text) {
+  if (typeof text !== 'string' || text.length > MAX_REFERENCE_BYTES || !PRINTABLE.test(text) || text.startsWith('asb:')) {
+    throw failure('invalid-reference');
+  }
+  const parts = text.split('/');
+  if (parts.length !== 2 || !SOURCE.test(parts[0]) || !Object.values(APP_IDS).some((pattern) => pattern.test(parts[1]))) {
+    throw failure('invalid-reference');
+  }
+  return { host: parts[0], appId: parts[1] };
+}
+
 export function formatReference({ machineId, sourceId, scopeTag, type, appId } = {}) {
   const text = `asb:1/${machineId}/${sourceId}/${scopeTag}/${type}:${appId}`;
   // The parser checks every field, so a field cannot add a segment or hide another one.
@@ -69,6 +82,8 @@ export function rowReference(row, { machineId, sourceId, scopeTag }, noScope = '
 }
 
 export const validScopeTag = (value) => matches(SCOPE, value);
+export const validMachineId = (value) => matches(MACHINE, value);
+export const validSourceId = (value) => matches(SOURCE, value);
 
 // The keyed input of a source scope tag: the provider and its configured folders, as the registry stores them.
 // A JSON array of strings is unambiguous, and the first item separates this use from all others.

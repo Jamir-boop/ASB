@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Added `asb agent resolve-session`: it shows the machine, the source, and the state of a full or short session reference. It only reads and sends nothing.
 - The mute icon on the cards now has one gray tone. Some icon themes drew its slash brighter than its bell.
 - The engine now gives each session a full session reference (machine, source, and app session ID) for the coming copy action and resolver. A keyed source scope tag in the reference changes when the folders of the source change. The rows of an older group member get no full reference.
 - Fixed the message relay: when a Claude profile's `sessions` folder was a link to another home's, Claude listed each remote session two times. ASB now uses each real `sessions` folder once.

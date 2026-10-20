@@ -15,7 +15,7 @@ const script = fileURLToPath(new URL('../scripts/asb-agent.mjs', import.meta.url
 const launcher = fileURLToPath(new URL('../scripts/asb', import.meta.url));
 const clientId = '11111111-1111-4111-8111-111111111111';
 
-async function fixture(t, mode = 'desktop', { onScan } = {}) {
+async function fixture(t, mode = 'desktop', { onScan, threads = [], serverOptions = {} } = {}) {
   const home = await mkdtemp(path.join(os.tmpdir(), 'asb-agent-test-'));
   const env = { HOME: home, XDG_CONFIG_HOME: path.join(home, 'config'), XDG_STATE_HOME: path.join(home, 'state'),
     XDG_RUNTIME_DIR: path.join(home, 'runtime'), XDG_CACHE_HOME: path.join(home, 'cache'), XDG_DATA_HOME: path.join(home, 'data'),
@@ -26,8 +26,8 @@ async function fixture(t, mode = 'desktop', { onScan } = {}) {
     phoneGateway: {}, pendingStatePath: false, palettePath: false,
     loadDashboard: async ({ sources }) => {
       await onScan?.(sources);
-      return { providers: sources.map((source) => ({ id: source.id, status: 'ok' })), threads: [] };
-    } });
+      return { providers: sources.map((source) => ({ id: source.id, status: 'ok' })), threads: structuredClone(threads) };
+    }, ...serverOptions });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => {
     server.closeAllConnections();
@@ -468,4 +468,45 @@ test('agent waits for a current dirty UI report after a source write', async (t)
   assert.equal(client.dirty, true);
   assert.equal(client.sourcesRevision, reply.result.revision);
   assert.equal(client.profilesRevision, reply.result.revision);
+});
+
+test('agent resolve-session parses its arguments, sends the request body, and fails with the stable code', async (t) => {
+  const session = '22222222-2222-4222-8222-222222222222';
+  const scope = 'cd'.repeat(16);
+  const f = await fixture(t, 'service', { threads: [{ id: session, externalId: session, provider: 'codex', providerLabel: 'Codex', surface: 'app',
+    sourceId: 'codex', sourceName: 'codex', state: 'idle', title: 'Secret title', cwd: '/synthetic/private' }],
+  serverOptions: { machineIdentity: () => ({ machineId: '0123456789abcdef', machineName: 'synthetic-pc' }), referenceScopes: () => () => scope } });
+  const bodies = [];
+  f.server.on('request', (request) => {
+    if (request.url !== '/api/agent/resolve-session') return;
+    let text = '';
+    request.on('data', (chunk) => { text += chunk; });
+    request.on('end', () => bodies.push(JSON.parse(text)));
+  });
+  const reference = `asb:1/0123456789abcdef/codex/${scope}/codex:${session}`;
+  for (const args of [[], ['--source', 'codex'], [reference, '--source'], [reference, '--source', 'Bad'], [reference, '--source', 'codex', 'x'],
+    [reference, '--other', 'codex'], [reference, reference], ['--json', '--json', reference]]) {
+    const reply = await f.command(['resolve-session', ...args, '--json']);
+    assert.equal(reply.code, 2, JSON.stringify(args));
+    assert.equal(reply.result.error.code, 'usage');
+  }
+  assert.deepEqual(bodies, []);
+  const found = await f.command(['resolve-session', reference, '--json']);
+  assert.equal(found.code, 0, found.stderr);
+  assert.deepEqual(found.result, { apiVersion: 1, ok: true, form: 'full', command: 'resolve-session',
+    identity: { reference, machineId: '0123456789abcdef', sourceId: 'codex', scopeTag: scope, type: 'codex', appId: session },
+    display: { machineName: 'synthetic-pc', sourceName: 'codex', providerLabel: 'Codex' }, location: 'local', availability: 'found' });
+  assert.equal(found.stdout.includes('Secret title') || found.stdout.includes('/synthetic/'), false);
+  const short = await f.command(['resolve-session', `codex/${session}`, '--source', 'codex']);
+  assert.equal(short.code, 0, short.stderr);
+  assert.equal(short.stdout, `Session reference (short): found.\nReference: ${reference}\nMachine: synthetic-pc. Source: codex. App: Codex.\nLocation: local.\n`);
+  const mismatch = await f.command(['resolve-session', reference, '--source', 'opencode', '--json']);
+  assert.equal(mismatch.code, 1);
+  assert.deepEqual(mismatch.result, { ok: false, command: 'resolve-session', error: { code: 'scope-mismatch',
+    message: 'The --source value is not the source in this full reference.' } });
+  const invalid = await f.command(['resolve-session', 'not a reference']);
+  assert.equal(invalid.code, 1);
+  assert.equal(invalid.stderr, 'ASB agent: This is not a valid session reference.\n');
+  assert.deepEqual(bodies, [{ reference }, { reference: `codex/${session}`, sourceId: 'codex' }, { reference, sourceId: 'opencode' },
+    { reference: 'not a reference' }]);
 });

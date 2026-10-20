@@ -12,13 +12,21 @@ const editable = ['provider', 'label', 'dataDir', 'launcher', 'enabled', 'projec
 const revision = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
 const failure = (code, message, details = {}) => Object.assign(new Error(message), { code, ...details });
-const usage = 'Usage: asb agent status [--json] | peers [--json] | sources list [--json] | sources get <id|name> [--json] | sources add --file <json-file|-> [--json] | sources update <id|name> --file <json-file|-> [--json] | sources remove <id|name> [--json]';
+const usage = 'Usage: asb agent status [--json] | peers [--json] | sources list [--json] | sources get <id|name> [--json] | sources add --file <json-file|-> [--json] | sources update <id|name> --file <json-file|-> [--json] | sources remove <id|name> [--json] | resolve-session <reference> [--source <source-id>] [--json]';
+const SOURCE_ID = /^[a-z0-9][a-z0-9-]{0,79}$/;
 
 function parseArgs(args) {
   const json = args.includes('--json');
   if (args.filter((arg) => arg === '--json').length > 1) throw failure('usage', usage);
   args = args.filter((arg) => arg !== '--json');
   if (args.length === 1 && ['status', 'peers'].includes(args[0])) return { command: args[0], json };
+  if (args[0] === 'resolve-session') {
+    const [, reference, flag, sourceId] = args;
+    if (!reference || reference.startsWith('--') || !(args.length === 2 || (args.length === 4 && flag === '--source' && SOURCE_ID.test(sourceId)))) {
+      throw failure('usage', usage);
+    }
+    return { command: args[0], reference, ...(sourceId === undefined ? {} : { sourceId }), json };
+  }
   if (args[0] !== 'sources') throw failure('usage', usage);
   const command = `sources.${args[1]}`;
   if (args[1] === 'list' && args.length === 2) return { command, json };
@@ -220,6 +228,13 @@ async function run(args, rememberRuntime) {
   rememberRuntime(runtime);
   const instance = await status(runtime);
   if (parsed.command === 'status') return { ok: true, command: parsed.command, instance };
+  if (parsed.command === 'resolve-session') {
+    const body = { reference: parsed.reference, ...(parsed.sourceId === undefined ? {} : { sourceId: parsed.sourceId }) };
+    const value = await api(runtime, '/api/agent/resolve-session', { method: 'POST', body, timeoutMs: 15_000, maxBytes: 16 * 1024 });
+    if (!object(value) || value.apiVersion !== 1 || typeof value.ok !== 'boolean') throw failure('invalid_response', 'ASB sent an invalid resolve result.');
+    if (!value.ok) throw failure(typeof value.code === 'string' ? value.code : 'invalid_response', typeof value.message === 'string' ? value.message : 'ASB could not resolve the reference.');
+    return { ...value, ok: true, command: parsed.command };
+  }
   const report = await sources(runtime);
   if (parsed.command === 'peers') return listPeers(report.sources);
   if (parsed.command === 'sources.list') return { ok: true, command: parsed.command, ...report };
@@ -274,6 +289,14 @@ function human(result) {
   }
   if (result.command === 'sources.list') return result.sources.map((source) => `${source.id}\t${source.name ?? ''}\t${source.provider}\t${source.enabled ? 'enabled' : 'disabled'}\t${source.label}\t${source.dataDir}`).join('\n') || 'No app sources.';
   if (result.command === 'sources.get') return JSON.stringify(result.source, null, 2);
+  if (result.command === 'resolve-session') {
+    const lines = [`Session reference (${result.form}): ${result.availability}.`];
+    if (result.identity) lines.push(`Reference: ${printable(result.identity.reference)}`);
+    if (result.referenceUnavailable) lines.push(`No full reference: ${printable(result.referenceUnavailable)}.`);
+    if (result.display) lines.push(`Machine: ${printable(result.display.machineName ?? 'unknown')}. Source: ${printable(result.display.sourceName ?? 'unknown')}.${result.display.providerLabel ? ` App: ${printable(result.display.providerLabel)}.` : ''}`);
+    if (result.location) lines.push(`Location: ${result.location}.`);
+    return lines.join('\n');
+  }
   return `App sources ${result.changed ? 'saved' : 'unchanged'}.\nSaved: ${result.verification.saved.status}. Backend: ${result.verification.backend.status}. UI: ${result.verification.ui.status}.${result.verification.error ? `\n${result.verification.error.message}` : ''}`;
 }
 
