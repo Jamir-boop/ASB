@@ -10,5 +10,6 @@
   "test/codex-asb-reader.test.mjs",
   "test/opencode-data.test.mjs",
   "test/insights.test.mjs",
-  "test/bridge-windows.test.mjs"
+  "test/bridge-windows.test.mjs",
+  "test/session-references.test.mjs"
 ]

@@ -57,10 +57,11 @@ export async function runEngine({ env = process.env, platform = process.platform
     peer: { ...group.peer, peers: () => relay.peerPeers(), deliver: (value, fingerprint) => relay.peerDeliver(value, fingerprint) },
     onPhonePaired: group.onPhonePaired, onPhoneRevoked: group.onPhoneRevoked });
   let machineId = '';
+  let referenceScopes = null;
   // Windows has no board, so it never plays sounds (phase 1 rule).
   const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, machineGroup: group, machineRelay: relay, serviceMode: true,
     playSound: platform === 'win32' ? undefined : createSoundPlayer(),
-    machineIdentity: () => ({ machineId, machineName: group.selfName() }),
+    machineIdentity: () => ({ machineId, machineName: group.selfName() }), referenceScopes: () => referenceScopes,
     onStop: () => shutdown('the stop request') });
   let stopping = false;
   let cleanup;
@@ -118,6 +119,7 @@ export async function runEngine({ env = process.env, platform = process.platform
       if (status.error) console.error(`Cannot start ASB phone access: ${status.error}`);
     } catch (error) { console.error(`Cannot start ASB phone access: ${error.message}`); }
     machineId = await gateway.identity().catch(() => '');
+    if (machineId) referenceScopes = await gateway.referenceScopes().catch(() => null);
     if (stopping) return;
     try { await group.start(); } catch (error) { console.error(`Cannot start the ASB machine group: ${error.message}`); }
     if (stopping) return;

@@ -90,6 +90,34 @@ test('the merge adds the remote rows, replaces the remote-cache row, and joins m
   assert.equal(dashboard.refreshIntervalMs, 2000);
 });
 
+test('members export their scope tag, and the observer makes the full reference from the pinned member only', () => {
+  const tag = 'f'.repeat(32);
+  const tagged = boardB();
+  for (const row of tagged.threads) Object.assign(row, { sourceId: 'claude-desktop-code', referenceScope: tag,
+    reference: 'asb:1/must/not/go', referenceUnavailable: 'x', sessionReference: 'x/y' });
+  const exported = exportLocalSessions(tagged, B, nowMs);
+  assert.equal(exported.rows[0].referenceScope, tag);
+  assert.deepEqual(['reference', 'referenceUnavailable', 'sessionReference'].filter((key) => key in exported.rows[0]), []);
+  // An invalid tag drops the row; a member-sent reference and machine ID are ignored.
+  for (const referenceScope of ['F'.repeat(32), 'f'.repeat(31), 42, '']) {
+    assert.deepEqual(validExport({ ...exported, rows: [{ ...exported.rows[0], referenceScope }] }, B).rows, []);
+  }
+  const hostile = { ...exported, rows: [{ ...exported.rows[0], reference: `asb:1/${A.machineId}/x/${tag}/claude-local:${local(9)}`,
+    machineId: A.machineId, machineName: 'spoofed' }] };
+  const merged = mergePeerRows(boardA(), [peerState(hostile)], A, nowMs);
+  const remote = merged.threads.at(-1);
+  assert.equal(remote.reference, `asb:1/${B.machineId}/claude-desktop-code/${tag}/claude-local:${local(5)}`);
+  assert.deepEqual([remote.machineId, remote.machineName, 'referenceScope' in remote, 'referenceUnavailable' in remote],
+    [B.machineId, 'engine-b', false, false]);
+  // An old member sends no tag: its rows stay, with no full reference.
+  const old = exportLocalSessions(boardB(), B, nowMs);
+  const oldRemote = mergePeerRows(boardA(), [peerState(old)], A, nowMs).threads.at(-1);
+  assert.deepEqual([oldRemote.id, oldRemote.reference, oldRemote.referenceUnavailable],
+    [`m:${B.machineId}:claude-desktop-code:${local(5)}`, undefined, 'old-peer']);
+  const bad = { ...exported, rows: [{ ...exported.rows[0], externalId: 'not-an-id' }] };
+  assert.equal(mergePeerRows(boardA(), [peerState(bad)], A, nowMs).threads.at(-1).referenceUnavailable, 'invalid-app-id');
+});
+
 test('an offline member gives Unknown rows with the note, and its rows leave after 10 minutes', () => {
   const exported = exportLocalSessions(boardB(), B, nowMs);
   const offline = mergePeerRows(boardA(), [peerState(exported, { online: false, lastOkAtMs: nowMs - 599_000 })], A, nowMs);

@@ -13,6 +13,7 @@ import { createSoundPlayer, createSoundWatcher } from './asb-sounds.mjs';
 import { openThreadInCodex, scopedCommand } from './session-opener.mjs';
 import { AppSourceRegistry, appSourcesRevision, numberAppSources, sourceName, validateSourceLauncher } from './app-sources.mjs';
 import { stateDir } from './platform-paths.mjs';
+import { rowReference, shortReference } from './session-references.mjs';
 import { spawn } from 'node:child_process';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -709,6 +710,15 @@ export function createSwitchboardServer(options = {}) {
   // The engine plays sounds only while a native window reports itself; the npm start web view keeps playing them.
   let boardOpen = () => false;
   const sound = options.playSound ? createSoundWatcher(options.playSound, () => !options.serviceMode || boardOpen()) : null;
+  // The scope tag of each registered source, made again only when the sources or the machine identity change.
+  let scopes = { revision: null, tagger: null, tags: new Map() };
+  const sourceScopes = (sources, tagger) => {
+    const revision = sources ? appSourcesRevision(sources) : null;
+    if (scopes.revision !== revision || scopes.tagger !== tagger) {
+      scopes = { revision, tagger, tags: new Map(tagger && sources ? sources.map((source) => [source.id, tagger(source)]) : []) };
+    }
+    return scopes.tags;
+  };
   const sourceWatchPaths = async () => {
     const sources = await registry.read();
     retainSourceCaches(sources);
@@ -737,8 +747,19 @@ export function createSwitchboardServer(options = {}) {
     ...options,
     loadDashboard: async () => {
       const sources = registeredLoad ? await registry.read() : null;
-      const loaded = await load({ ...(sources ? { sources } : {}),
-        machine: options.machineIdentity?.() || { machineId: '', machineName: localMachineName() } });
+      const machine = options.machineIdentity?.() || { machineId: '', machineName: localMachineName() };
+      const loaded = await load({ ...(sources ? { sources } : {}), machine });
+      // The npm start server has no machine identity, so its rows get no full reference.
+      const tagger = machine.machineId ? options.referenceScopes?.() || null : null;
+      const tags = sourceScopes(sources, tagger);
+      for (const row of loaded.threads || []) {
+        if (row.remote) continue;
+        // Only a registered source has a tag.
+        const scopeTag = tags.get(row.sourceId);
+        const sessionReference = shortReference(row);
+        Object.assign(row, rowReference(row, { machineId: tagger ? machine.machineId : '', sourceId: row.sourceId, scopeTag }),
+          scopeTag ? { referenceScope: scopeTag } : {}, sessionReference ? { sessionReference } : {});
+      }
       options.machineGroup?.merge(loaded);
       const dashboard = await tracker.observe(loaded);
       dashboard.sourcesRevision = sources ? appSourcesRevision(sources) : null;

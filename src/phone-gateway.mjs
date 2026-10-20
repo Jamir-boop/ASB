@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { createHash, randomBytes, timingSafeEqual, X509Certificate } from 'node:crypto';
+import { createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual, X509Certificate } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 import { createGzip } from 'node:zlib';
 import { sendJson } from './local-http.mjs';
 import { configDir } from './platform-paths.mjs';
+import { scopeInput } from './session-references.mjs';
 
 export const PHONE_API_VERSION = 1;
 export const DEFAULT_PHONE_PORT = 4630;
@@ -30,6 +31,14 @@ export function phoneSettingsPath(env = process.env, platform = process.platform
 
 export function phoneTlsDir(env = process.env, platform = process.platform) {
   return path.join(path.dirname(phoneSettingsPath(env, platform)), 'phone-tls');
+}
+
+// The source scope tag of session references: a keyed digest of the configured source folders.
+// The key comes with HKDF from the identity secret (the private key PEM on Linux, the PFX passphrase on Windows) and stays in memory.
+export function referenceScopeTagger(secret) {
+  if (!secret?.length) throw new Error('No machine identity secret.');
+  const key = Buffer.from(hkdfSync('sha256', secret, Buffer.alloc(0), 'asb session reference scope v1', 32));
+  return (source) => createHmac('sha256', key).update(scopeInput(source)).digest().subarray(0, 16).toString('hex');
 }
 
 // The files of the machine certificate: openssl PEM files on Linux, PowerShell exports on Windows (plan 14.4).
@@ -527,6 +536,13 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     identity: () => serialize(async () => {
       try { await certificate(); } catch { return ''; }
       return fingerprint.slice(0, 16);
+    }),
+    // The scope-tag function of the same identity, or null with no identity.
+    referenceScopes: () => serialize(async () => {
+      try {
+        const material = await certificate();
+        return referenceScopeTagger(platform === 'win32' ? material.passphrase : material.key);
+      } catch { return null; }
     }),
     updateSettings: (value) => serialize(async () => {
       await load();

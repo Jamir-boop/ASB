@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { gunzip } from 'node:zlib';
 import { sessionMessageKeys, sortSessionMessages, switchboardRefreshInterval } from './switchboard.mjs';
 import { SESSION_MESSAGE_WINDOW_MS } from './codex-data.mjs';
+import { rowReference, validScopeTag } from './session-references.mjs';
 
 const gunzipAsync = promisify(gunzip);
 export const MAX_REPLY_BYTES = 4 * 1024 * 1024;
@@ -24,6 +25,7 @@ export const EXPORT_FIELDS = {
   nativeUnread: (value) => value === null || BOOLEAN(value), readStatus: STRING, questionPending: BOOLEAN, actionRequired: BOOLEAN,
   lastOutcome: STRING, failedAtMs: NUMBER, completionAtMs: NUMBER, limitResetsAtMs: NUMBER,
   sourceId: STRING, sourceLabel: STRING, sourceColor: (value) => value === null || STRING(value), sourceShowMarker: BOOLEAN, sourceCount: NUMBER,
+  referenceScope: validScopeTag,
 };
 const pick = (row) => Object.fromEntries(Object.keys(EXPORT_FIELDS).filter((key) => row[key] !== undefined).map((key) => [key, row[key]]));
 
@@ -71,8 +73,10 @@ export function mergePeerRows(dashboard, peerStates, self, nowMs = Date.now()) {
     const offline = !peer.online;
     if (offline && nowMs - peer.lastOkAtMs >= OFFLINE_KEEP_MS) continue;
     const rowId = (id) => `m:${member.machineId}:${id}`;
-    for (const row of sessions.rows) {
-      peerRows.push({ ...row, id: rowId(row.id), machineId: member.machineId, machineName: member.name, remote: true,
+    for (const { referenceScope, ...row } of sessions.rows) {
+      // The machine comes only from the pinned member; a member with no scope tag is an older ASB.
+      const reference = rowReference(row, { machineId: member.machineId, sourceId: row.sourceId, scopeTag: referenceScope }, 'old-peer');
+      peerRows.push({ ...row, ...reference, id: rowId(row.id), machineId: member.machineId, machineName: member.name, remote: true,
         globalId: `${member.machineId}:${row.id}`, remoteCache: false, canOpen: false, appDeepLink: '',
         ...(offline ? { state: 'unknown', reason: `${member.name} is not reachable.`, workingSinceMs: 0 } : {}) });
     }
