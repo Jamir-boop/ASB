@@ -22,7 +22,8 @@ test('documents ASB installation, video, privacy limits, and upstream credit', a
   assert.match(readme, /^https:\/\/github\.com\/user-attachments\/assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/mi);
   assert.match(privacy, /banner and Remotion demo use synthetic chats and folders/);
   assert.match(privacy, /not a capture of local conversations/);
-  assert.match(privacy, /^\| `~\/\.cache\/asb\/readers\/positions\.json` \| Engine reader positions\..*No message text, title, path, or folder name\. Mode `0600` in a `0700` folder\./m);
+  assert.match(privacy, /^\| `~\/\.cache\/asb\/readers\/positions\.json` \| Engine reader positions\. For each Codex session log and each Claude transcript larger than 8 MiB:.*No message text, title, path, or folder name\. Mode `0600` in a `0700` folder\./m);
+  assert.match(privacy, /The file has at most 5000 Codex records, 5000 Claude records, and 8 MiB\./);
   assert.match(privacy, /`%LOCALAPPDATA%\\asb\\cache` holds the reader positions file\. ASB limits these four folders/);
   assert.doesNotMatch(privacy, /transcript checkpoint/);
   assert.ok(readme.includes(`[Download v${version}](https://github.com/Jamir-boop/ASB/releases/tag/v${version})`));

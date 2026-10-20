@@ -880,6 +880,103 @@ async function readSignalsForFile(filePath, options = {}) {
   finally { if (claudeSignalReads.get(key) === read) claudeSignalReads.delete(key); }
 }
 
+// Reader positions on disk (src/reader-positions.mjs), only for transcripts larger than the tail. Only the engine sets them;
+// without them the reader keeps all state in memory. A record holds the committed lifecycle, never the text fields of the tail.
+const CLAUDE_POSITION_ID_RE = /^[A-Za-z0-9_:-]{1,160}$/;
+const CLAUDE_POSITION_KINDS = new Set(['', 'task_started', 'task_complete', 'failed', 'cancelled']);
+const CLAUDE_AGENT_KINDS = new Set(['', 'task_complete', 'failed', 'cancelled']);
+const CLAUDE_POSITION_KEYS = ['atMs', 'ctimeMs', 'dev', 'guard', 'guardBytes', 'ino', 'k', 'lifecycle', 'mtimeMs', 'offset', 'size'].join();
+const CLAUDE_LIFECYCLE_KEYS = Object.keys(initialClaudeLifecycle()).sort().join();
+const CLAUDE_LIFECYCLE_TIMES = ['startedAtMs', 'promptStartedAtMs', 'activityAtMs', 'eventAtMs', 'finalAtMs', 'endedAtMs', 'limitResetsAtMs'];
+let claudePositions = null;
+
+// `source` is { take(filePath) -> saved record or null, digest(bytes) -> hex }, or null to turn the positions off.
+export function useClaudePositions(source) {
+  claudePositions = source;
+}
+
+const finiteNumber = (value) => typeof value === 'number' && Number.isFinite(value);
+const count = (value) => Number.isInteger(value) && value >= 0;
+const positionId = (value) => typeof value === 'string' && CLAUDE_POSITION_ID_RE.test(value);
+const rows = (value, length, check) => Array.isArray(value) && value.every((row) => Array.isArray(row) && row.length === length && check(row))
+  && new Set(value.map((row) => row[0])).size === value.length;
+
+// The checks of one saved record at save and at load: numbers, booleans, fixed kinds, and IDs, never text or paths.
+// reader-positions.mjs checks `k`, `guard`, and `atMs`.
+export function validClaudeRecord(record) {
+  if (!record || typeof record !== 'object' || Object.keys(record).sort().join() !== CLAUDE_POSITION_KEYS) return false;
+  if (![record.dev, record.ino, record.size, record.offset, record.guardBytes].every(count) || record.offset > record.size
+    || record.guardBytes !== Math.min(CLAUDE_APPEND_GUARD_BYTES, record.size) || !finiteNumber(record.mtimeMs)
+    || !finiteNumber(record.ctimeMs)) return false;
+  const life = record.lifecycle;
+  return Boolean(life) && typeof life === 'object' && Object.keys(life).sort().join() === CLAUDE_LIFECYCLE_KEYS
+    && [true, false, null].includes(life.running) && CLAUDE_LIFECYCLE_TIMES.every((name) => finiteNumber(life[name]))
+    && CLAUDE_POSITION_KINDS.has(life.kind) && CLAUDE_POSITION_KINDS.has(life.endKind)
+    && rows(life.agents, 7, ([id, launchedAtMs, startedAtMs, requestStartedAtMs, endedAtMs, kind, runId]) => positionId(id)
+      && [launchedAtMs, startedAtMs, requestStartedAtMs, endedAtMs].every(finiteNumber) && CLAUDE_AGENT_KINDS.has(kind)
+      && (runId === null || positionId(runId)))
+    && rows(life.agentTools, 4, ([id, startedAtMs, requestStartedAtMs, workflow]) => positionId(id)
+      && finiteNumber(startedAtMs) && finiteNumber(requestStartedAtMs) && [0, 1].includes(workflow))
+    && rows(life.wrapUps, 2, ([id, ask]) => positionId(id) && [0, 1].includes(ask))
+    && Array.isArray(life.messages) && life.messages.length <= MAX_INCOMING_MESSAGES
+    && life.messages.every((message) => Array.isArray(message) && message.length === 2 && positionId(message[0]) && finiteNumber(message[1]));
+}
+
+// The lifecycle checkpoints of large transcripts, as plain records with the raw guard bytes (memory only). Map order is kept,
+// because rememberBounded evicts by insertion order. Two tail limits of one file give one record: the larger offset.
+export function claudePositionRecords() {
+  const byPath = new Map();
+  for (const [cacheKey, entry] of claudeJsonlSignalCache) {
+    const split = cacheKey.lastIndexOf('\0');
+    const filePath = cacheKey.slice(0, split);
+    if (!entry.state || !Buffer.isBuffer(entry.guard) || !finiteNumber(entry.atMs)
+      || !(entry.signature.size > Number(cacheKey.slice(split + 1)))) continue;
+    if (byPath.get(filePath)?.offset >= entry.offset) continue;
+    const life = entry.state.lifecycle;
+    const { signature } = entry;
+    byPath.set(filePath, { atMs: entry.atMs, dev: signature.dev, ino: signature.ino, size: signature.size,
+      mtimeMs: signature.mtimeMs, ctimeMs: signature.ctimeMs, offset: entry.offset, guard: entry.guard, guardBytes: entry.guard.length,
+      lifecycle: { running: life.running, startedAtMs: life.startedAtMs, promptStartedAtMs: life.promptStartedAtMs,
+        activityAtMs: life.activityAtMs, eventAtMs: life.eventAtMs, kind: life.kind, finalAtMs: life.finalAtMs, endedAtMs: life.endedAtMs,
+        endKind: life.endKind, limitResetsAtMs: life.limitResetsAtMs,
+        agents: [...life.agents].map(([id, agent]) => [id, agent.launchedAtMs, agent.startedAtMs, agent.requestStartedAtMs,
+          agent.endedAtMs, agent.kind, agent.runId ?? null]),
+        agentTools: [...life.agentTools].map(([id, tool]) => [id, tool.startedAtMs, tool.requestStartedAtMs, tool.workflow ? 1 : 0]),
+        wrapUps: [...life.wrapUps].map(([id, ask]) => [id, ask ? 1 : 0]),
+        messages: life.messages.map((message) => [message.from, message.atMs]) } });
+  }
+  return [...byPath];
+}
+
+// A saved lifecycle for a transcript with no state in memory, after the full-read checks of the design (section 3, rules 2-6).
+// It returns new objects, so the cache entry made from it never shares state with the record.
+async function savedClaudePosition(filePath, stat) {
+  const record = claudePositions.take(filePath);
+  const now = statSignature(stat);
+  if (!record || !validClaudeRecord(record) || record.dev !== now.dev || record.ino !== now.ino || now.size < record.size
+    || (now.size === record.size && (record.mtimeMs !== now.mtimeMs || record.ctimeMs !== now.ctimeMs))) return null;
+  const guard = Buffer.alloc(record.guardBytes);
+  const handle = await fs.open(filePath, 'r');
+  try {
+    const { bytesRead } = await handle.read(guard, 0, guard.length, record.size - guard.length);
+    claudeCacheMetrics.jsonlSignalBytesRead += bytesRead;
+    if (bytesRead !== guard.length || claudePositions.digest(guard) !== record.guard) return null;
+  } finally {
+    await handle.close();
+  }
+  const life = record.lifecycle;
+  return { offset: record.offset, guardBefore: guard.subarray(0, Math.max(0, guard.length - (record.size - record.offset))),
+    lifecycle: { running: life.running, startedAtMs: life.startedAtMs, promptStartedAtMs: life.promptStartedAtMs,
+      activityAtMs: life.activityAtMs, eventAtMs: life.eventAtMs, kind: life.kind, finalAtMs: life.finalAtMs, endedAtMs: life.endedAtMs,
+      endKind: life.endKind, limitResetsAtMs: life.limitResetsAtMs,
+      agents: new Map(life.agents.map(([id, launchedAtMs, startedAtMs, requestStartedAtMs, endedAtMs, kind, runId]) => [id,
+        { launchedAtMs, startedAtMs, requestStartedAtMs, endedAtMs, kind, ...(runId === null ? {} : { runId }) }])),
+      agentTools: new Map(life.agentTools.map(([id, startedAtMs, requestStartedAtMs, workflow]) => [id,
+        { startedAtMs, requestStartedAtMs, workflow: workflow === 1 }])),
+      wrapUps: new Map(life.wrapUps.map(([id, ask]) => [id, ask === 1])),
+      messages: life.messages.map(([from, atMs]) => ({ from, atMs })) } };
+}
+
 async function readClaudeSignalFile(filePath, { maxBytes = DEFAULT_MAX_JSONL_BYTES, cacheScope = '' } = {}) {
   try {
     // The cached file index does not refresh transcript stats, so each read gets a current one.
@@ -923,16 +1020,22 @@ async function readClaudeSignalFile(filePath, { maxBytes = DEFAULT_MAX_JSONL_BYT
       applyClaudeSignalLine(visible, tail.text.slice(lastNewline + 1));
       parsed = { state, signals: finishClaudeSignals(visible), offset: tail.offset, guard: tail.guard };
       if (fileStat.size > maxBytes) {
-        const recovery = await scanClaudeSignalRecords(filePath, fileStat, initialSignals(), 0, Buffer.alloc(0), true);
+        // With no state in memory, a saved position that agrees with the file starts the lifecycle scan at its offset.
+        const seed = !cached && claudePositions ? await savedClaudePosition(filePath, fileStat).catch(() => null) : null;
+        const recovery = seed
+          ? await scanClaudeSignalRecords(filePath, fileStat, { ...initialSignals(), lifecycle: seed.lifecycle }, seed.offset, seed.guardBefore, true)
+          : await scanClaudeSignalRecords(filePath, fileStat, initialSignals(), 0, Buffer.alloc(0), true);
         parsed.state.lifecycle = recovery.state.lifecycle;
         parsed.signals.lifecycle = recovery.signals.lifecycle;
         parsed.offset = recovery.offset;
         parsed.guard = recovery.guard;
       }
     }
+    // The entry does not change after this: an append works on structuredClone(cached.state) above, and a recovery makes new
+    // objects, so a save of the positions never sees state that a running scan changes.
     claudeJsonlSignalCache.remember(
       cacheKey,
-      { signature, ...parsed },
+      { signature, ...parsed, ...(claudePositions ? { atMs: Date.now() } : {}) },
       cacheScope,
       MAX_ASB_SESSION_COUNT,
       claudeCacheMetrics,
