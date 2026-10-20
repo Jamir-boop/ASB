@@ -129,6 +129,36 @@ posix('sending through a shared registry uses its native authentication key and 
   } finally { await f.close(); }
 });
 
+posix('a native key with procStartFt authenticates only the process that the row names', async () => {
+  const f = await fixture();
+  try {
+    const hash = createHash('sha256').update(f.socketPath).digest('hex');
+    const keyPath = join(f.sessions, `${process.pid}.${hash}.key`);
+    const token = '0123456789abcdef0123456789abcdef';
+    writeFileSync(keyPath, JSON.stringify({ peerToken: token, procStartFt: f.procStart }), { mode: 0o600 });
+    expect(await sendFrames(f.configDir, findPeer(f.configDir, f.sessionId), [f.frame])).toBe(true);
+    expect(f.frames).toEqual([{ type: 'auth', token }, f.frame]);
+    // procStartFt wins when a key has both fields.
+    writeFileSync(keyPath, JSON.stringify({ peerToken: token, procStart: f.procStart, procStartFt: 'other' }), { mode: 0o600 });
+    await expect(sendFrames(f.configDir, findPeer(f.configDir, f.sessionId), [f.frame])).rejects.toThrow('Claude peer key belongs to a different process');
+    expect(f.frames).toHaveLength(2);
+  } finally { await f.close(); }
+});
+
+posix('a native key with another procStartFt or no start time sends nothing', async () => {
+  const f = await fixture();
+  try {
+    const hash = createHash('sha256').update(f.socketPath).digest('hex');
+    const keyPath = join(f.sessions, `${process.pid}.${hash}.key`);
+    const token = '0123456789abcdef0123456789abcdef';
+    for (const key of [{ peerToken: token, procStartFt: `${f.procStart}0` }, { peerToken: token }]) {
+      writeFileSync(keyPath, JSON.stringify(key), { mode: 0o600 });
+      await expect(sendFrames(f.configDir, findPeer(f.configDir, f.sessionId), [f.frame])).rejects.toThrow('Claude peer key belongs to a different process');
+    }
+    expect(f.frames).toEqual([]);
+  } finally { await f.close(); }
+});
+
 posix.each(['public', 'wrong owner', 'file'])('registration refuses an unsafe shared registry target: %s', async kind => {
   const f = await fixture();
   let owner: ReturnType<typeof spyOn> | undefined;

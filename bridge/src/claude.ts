@@ -311,9 +311,10 @@ export async function sendFrames(configDir: string, peer: Peer, frames: unknown[
 // The token of a peer's key file. Claude on Windows always writes one; elsewhere a missing key sends without auth.
 export function peerKey(configDir: string, peer: Pick<Peer, 'pid' | 'messagingSocketPath' | 'procStart'>) {
   try {
-    const key = z.object({ peerToken: z.string().regex(/^[a-f0-9]{32}$/), procStart: z.string().optional() })
+    const key = z.object({ peerToken: z.string().regex(/^[a-f0-9]{32}$/), procStart: z.string().optional(), procStartFt: z.string().optional() })
       .parse(ownedJson(join(configDir, 'sessions', keyName(peer.pid, peer.messagingSocketPath)), 4096));
-    if (peer.procStart && key.procStart !== peer.procStart) throw new Error('Claude peer key belongs to a different process');
+    // Claude Code 2.1.304 on Windows writes the start time as procStartFt in its key file.
+    if (peer.procStart && (key.procStartFt ?? key.procStart) !== peer.procStart) throw new Error('Claude peer key belongs to a different process');
     return key.peerToken;
   } catch (error) {
     if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
