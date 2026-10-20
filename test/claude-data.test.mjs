@@ -378,6 +378,10 @@ test('deduplicates Claude Desktop Code metadata that points at the same CLI sess
     lastActivityAt: Date.parse('2026-05-09T01:10:00.000Z'),
     title: 'Newer duplicate',
   }));
+  // Two quick writes often get the same mtime (coarse file clock); then the order of the stat replies picked the kept file.
+  for (const [name, atMs] of [['local_old', Date.parse('2026-05-09T01:05:00.000Z')], ['local_new', Date.parse('2026-05-09T01:10:00.000Z')]]) {
+    await utimes(path.join(desktopDir, `${name}.json`), atMs / 1000, atMs / 1000);
+  }
 
   const result = await loadClaudeDesktopCodeThreads({
     appDir,

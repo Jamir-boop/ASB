@@ -410,9 +410,14 @@ test('Claude profiles share directory checks and derived indices through source 
   assert.equal(cold.jsonlSignals.misses - beforeCold.jsonlSignals.misses, 1);
   const originalStat = fs.stat;
   let directoryChecks = 0;
-  t.mock.method(fs, 'stat', async (file, ...args) => {
+  // One stat at a time, in call order. Pool threads can answer out of order; then the second profile asked for the
+  // projects index after the first read ended and checked the 2001 folders again.
+  let previous = Promise.resolve();
+  t.mock.method(fs, 'stat', (file, ...args) => {
     if (String(file).startsWith(projectsDir) && !String(file).endsWith('.jsonl')) directoryChecks++;
-    return originalStat(file, ...args);
+    const result = previous.then(() => originalStat(file, ...args));
+    previous = result.catch(() => {});
+    return result;
   });
   await scan();
   assert.equal(directoryChecks, 2001);
