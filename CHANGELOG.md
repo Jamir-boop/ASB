@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Fixed the message relay: when a Claude profile's `sessions` folder was a link to another home's, Claude listed each remote session two times. ASB now uses each real `sessions` folder once.
 - The native context menu now closes when the pointer leaves it. Keyboard access stays available.
 - Fixed ASB Bridge and the message relay: messages to a Claude Code 2.1.304 session on Windows failed, because its key file has the start time in `procStartFt`. ASB now reads `procStartFt` or `procStart`.
 - Fixed ASB Bridge: a Codex desktop task did not start its receiver when an old Codex app-server socket file was present (on Windows, and on Linux when the socket had no listener). A failed connection to the Codex app-server now falls back to the Codex desktop app.

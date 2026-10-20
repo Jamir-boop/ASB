@@ -110,6 +110,17 @@ test('the homes list dedupes real folders, keeps the first override, adds the de
   assert.deepEqual((await relayHomes([], { homeDir: dir, env: { CLAUDE_CONFIG_DIR: 'extra' } })), []);
 });
 
+test('the homes list uses a sessions folder once when a profile links it to the default home', async (t) => {
+  const dir = await temporary(t);
+  const homeDir = path.join(dir, 'home');
+  const profile = path.join(dir, 'profile');
+  await mkdir(path.join(homeDir, '.claude', 'sessions'), { recursive: true });
+  await mkdir(profile);
+  await symlink(path.join(homeDir, '.claude', 'sessions'), path.join(profile, 'sessions'));
+  const sources = [{ provider: 'claude-desktop-code', enabled: true, projectsDir: path.join(profile, 'projects'), remoteClaude: 'bridge' }];
+  assert.deepEqual(await relayHomes(sources, { homeDir, env: {} }), [{ path: profile, remoteClaude: 'bridge', hasRemoteControl: false }]);
+});
+
 // A child process double: it prints `line`, and exits with `exitCode` when that is set.
 function fakeChild({ line, exitCode = null, ignoreTerm = false } = {}) {
   const child = new EventEmitter();

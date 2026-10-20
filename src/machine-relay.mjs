@@ -67,7 +67,7 @@ export function validPeerList(value) {
 const isFolder = async (folder) => (await fs.stat(folder).catch(() => null))?.isDirectory() === true;
 
 // GET /api/relay/homes: the Claude config homes of the enabled Claude sources, then ~/.claude and CLAUDE_CONFIG_DIR.
-// The first home of each real folder wins. A folder that does not exist gets no proxy rows.
+// The first home of each real sessions folder wins (a profile's sessions can link to another home's). A folder that does not exist gets no proxy rows.
 export async function relayHomes(sources, { env = process.env, homeDir = os.homedir() } = {}) {
   const candidates = [
     ...sources.filter((source) => source.enabled && source.provider === 'claude-desktop-code' && source.projectsDir)
@@ -79,9 +79,10 @@ export async function relayHomes(sources, { env = process.env, homeDir = os.home
   for (const candidate of candidates) {
     if (!await isFolder(candidate.path)) continue;
     const real = await fs.realpath(candidate.path);
-    if (homes.has(real)) continue;
+    const sessions = await fs.realpath(path.join(real, 'sessions')).catch(() => path.join(real, 'sessions'));
+    if (homes.has(sessions)) continue;
     const records = await readLiveClaudeRegistry([path.join(real, 'sessions')]).catch(() => []);
-    homes.set(real, { path: real, remoteClaude: candidate.remoteClaude,
+    homes.set(sessions, { path: real, remoteClaude: candidate.remoteClaude,
       hasRemoteControl: records.some((record) => record.bridgeSessionId && record.entrypoint !== 'asb-relay') });
   }
   return [...homes.values()];
