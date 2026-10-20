@@ -87,7 +87,8 @@ export function createReaderPositions({ file, key, platform = process.platform, 
 
   const ready = () => loading ||= (async () => {
     let timer;
-    const wait = new Promise((resolve) => { timer = setTimeout(resolve, keyWaitMs, null); timer.unref?.(); });
+    // A referenced timer: the wait must keep the event loop alive until the key or the time limit comes.
+    const wait = new Promise((resolve) => { timer = setTimeout(resolve, keyWaitMs, null); });
     try { hmacKey = await Promise.race([Promise.resolve().then(key), wait]); }
     catch { hmacKey = null; }
     finally { clearTimeout(timer); }
