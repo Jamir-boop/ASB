@@ -43,7 +43,7 @@ async function enginePaths({ nodeExecutable = process.execPath, launcherExecutab
   return { node, launcher };
 }
 
-const unitText = ({ node, launcher }) => `${unitMarker}\n[Unit]\nDescription=ASB (Agent Switch Board) server\nPartOf=graphical-session.target\nAfter=graphical-session.target\n\n[Service]\nType=simple\nEnvironment=ASB_NODE=${node}\nExecStart=${launcher} service run\nRestart=on-failure\nRestartSec=5\n# Apps that ASB opens must survive a service stop or restart.\nKillMode=process\n\n[Install]\nWantedBy=graphical-session.target\n`;
+const unitText = ({ node, launcher }) => `${unitMarker}\n[Unit]\nDescription=ASB (Agent Switch Board) server\nPartOf=graphical-session.target\nAfter=graphical-session.target\nStartLimitIntervalSec=60\nStartLimitBurst=5\n\n[Service]\nType=simple\nEnvironment=ASB_NODE=${node}\nExecStart=${launcher} service run\nRestart=on-failure\nRestartSec=5\n# Apps that ASB opens must survive a service stop or restart.\nKillMode=process\n\n[Install]\nWantedBy=graphical-session.target\n`;
 export const serviceUnit = async (options) => unitText(await enginePaths(options));
 
 // The XDG autostart entry (plan Appendix E). Without ASB_NODE, the launcher sees only the desktop PATH at login.
@@ -168,11 +168,10 @@ export async function main(args, { env = process.env, execFile = execFileAsync, 
   await mkdir(path.dirname(own), { recursive: true, mode: 0o700 });
   await atomicWrite(own, Buffer.from(mode === 'systemd' ? unitText(paths) : entryText(paths)), previous, 0o644);
   if (mode === 'systemd') {
-    if (other) {
-      await removeEntry(entryFile, other, log);
-      // The engine of the entry stops first. Else the unit engine refuses the runtime record and restarts again and again.
-      await stop(await find(env), log);
-    }
+    if (other) await removeEntry(entryFile, other, log);
+    // Any running engine stops first (detached, of the entry, or of the unit). Else the unit engine refuses the runtime record and restarts again and again.
+    const running = await find(env);
+    if (running) await stop(running, log);
     await execFile('systemctl', ['--user', 'daemon-reload']);
     await execFile('systemctl', ['--user', 'enable', '--now', 'asb.service']);
     log('ASB user service is installed and started.');
