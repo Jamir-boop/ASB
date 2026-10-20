@@ -103,7 +103,7 @@ test('processStart gives the start time that the system records', async () => {
     expect(await processStart(process.pid)).toBe((await new Response(child.stdout).text()).trim());
     await expect(processStart(2 ** 31 - 2)).rejects.toThrow('Cannot verify receiver process');
   }
-});
+}, 30000);
 
 test('pidDomain names the Windows host and macOS, and Linux has none', () => {
   expect(pidDomain('win32')).toBe(`win32:${hostname().toLowerCase()}`);

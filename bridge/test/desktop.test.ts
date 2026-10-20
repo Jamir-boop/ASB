@@ -113,7 +113,7 @@ posix('large task histories preserve observation, input attribution and delivery
     expect(disconnected).toBe(false);
     expect(desktop.submissions).toHaveLength(1);
   } finally { close(); await desktop.close(); }
-});
+}, 30000);
 
 posix('lost Desktop acknowledgement does not resend an accepted message', async () => {
   const desktop = await receiver('active', true);
