@@ -180,8 +180,8 @@ const fakeIo = (overrides = {}) => {
     ...overrides };
   return { io, calls };
 };
-const bind = async (reference, { io = fakeIo().io, remainingMs = 10_000, ...overrides } = {}) => {
-  const result = await bindLocalTarget({ reference, caller: { runtimeSessionId: CALLER, configDir: '/synthetic/claude' }, msgId: MSG, remainingMs },
+const bind = async (reference, { io = fakeIo().io, remainingMs = 10_000, pipeProof, ...overrides } = {}) => {
+  const result = await bindLocalTarget({ reference, caller: { runtimeSessionId: CALLER, configDir: '/synthetic/claude' }, msgId: MSG, remainingMs, pipeProof },
     { ...boundContext, ...overrides }, io);
   const text = JSON.stringify(result);
   for (const value of [SECRET.title, SECRET.cwd, SECRET.message, SECRET.path]) assert.equal(text.includes(value), false, `${value} must not be in the result`);
@@ -215,7 +215,8 @@ test('exact binding failures come in check order, and steps 1 to 6 use no io', a
   await early(soloRow.reference, 'ambiguous-identity', { threads: [soloRow, { ...soloRow, id: 'copy' }] });
   await early(full(OLD, 'codex', SCOPE_M, 'codex', UUID_2), 'peer-upgrade-required');
   await early(memberFound.reference, 'member-target');
-  await early(soloRow.reference, 'unsupported-platform', { io: { ...io, platform: 'win32' } });
+  await early(soloRow.reference, 'unsupported-platform', { io: { ...io, platform: 'darwin' } });
+  await early(soloRow.reference, 'unsupported-platform', { io: { ...io, platform: 'darwin' }, pipeProof: true });
   await early(full(SELF, 'claude-desktop-code', SCOPE_B, 'claude-local', `local_${UUID_4}`), 'unsupported-type');
   await early(cacheRow.reference, 'unsupported-type');
   await early(full(SELF, 'off', SCOPE, 'codex', UUID_3), 'source-disabled');
@@ -238,6 +239,39 @@ test('exact binding failures come in check order, and steps 1 to 6 use no io', a
   for (const claim of [null, { pid: 31, proc_start: '300' }, { pid: 30, proc_start: '301' }]) {
     failed(await bind(soloRow.reference, { io: fakeIo({ receiverClaim: async () => claim }).io }), 'not-mapped');
   }
+});
+
+// Windows: the records have pipe paths and a FILETIME string procStart. The engine binds only for a bridge that proves the pipe.
+const pipe = (pid) => `\\\\.\\pipe\\LOCAL\\cc-msg-${String(pid).padStart(32, '0')}`;
+const winRecord = (pid, sessionId, entrypoint) => record(pid, sessionId, entrypoint, { procStart: `13300000000000000${pid}`, messagingSocketPath: pipe(pid) });
+const winIo = (overrides = {}) => fakeIo({ platform: 'win32', registry: async () => ({ root: ROOT, records: [winRecord(10, CALLER, 'codex-asb-bridge'),
+  winRecord(20, UUID_4, 'cli'), winRecord(30, UUID_3, 'codex-asb-bridge')] }),
+  receiverClaim: async () => ({ pid: 30, proc_start: '1330000000000000030' }), ...overrides });
+
+test('on Windows an exact local target binds only for a bridge that proves the pipe, after the member check and before any io', async () => {
+  assert.deepEqual(await bind(cliRow.reference, { io: winIo().io, pipeProof: true }), { apiVersion: 1, ok: true, pid: 999, binding: { registryHome: ROOT,
+    runtimeSessionId: UUID_4, pid: 20, procStart: '1330000000000000020', messagingSocketPath: pipe(20), msgId: MSG, expiresAtMs: 11_000 } });
+  assert.equal((await bind(soloRow.reference, { io: winIo().io, pipeProof: true })).binding.messagingSocketPath, pipe(30));
+  const { io, calls } = winIo();
+  for (const pipeProof of [undefined, false, 'true', 1]) failed(await bind(soloRow.reference, { io, pipeProof }), 'bridge-upgrade-required');
+  // An old Windows bridge still reaches send-member.
+  failed(await bind(memberFound.reference, { io }), 'member-target');
+  failed(await bind('asb:1/x', { io }), 'invalid-reference');
+  assert.deepEqual(calls, []);
+});
+
+test('on Windows referencesForList binds local items only for a bridge that proves the pipe; remote items stay unsupported', async () => {
+  const list = [winRecord(10, CALLER, 'codex-asb-bridge'), winRecord(20, UUID_4, 'cli'), winRecord(30, UUID_3, 'codex-asb-bridge')];
+  const listed = [{ machineId: MEMBER, sessionId: UUID_2 }];
+  const io = () => winIo({ registry: async () => ({ root: ROOT, records: list }) }).io;
+  assert.deepEqual((await listFor(list, { io: io(), listed, pipeProof: true })).result, { apiVersion: 1, ok: true, pid: 999,
+    local: [{ sessionId: UUID_4, reference: cliRow.reference }, { sessionId: UUID_3, reference: soloRow.reference }],
+    remote: [{ machineId: MEMBER, sessionId: UUID_2, referenceUnavailable: 'unsupported-platform' }] });
+  assert.deepEqual((await listFor(list, { io: io(), listed })).result, { apiVersion: 1, ok: true, pid: 999,
+    local: [{ sessionId: UUID_4, referenceUnavailable: 'bridge-upgrade-required' }, { sessionId: UUID_3, referenceUnavailable: 'bridge-upgrade-required' }],
+    remote: [{ machineId: MEMBER, sessionId: UUID_2, referenceUnavailable: 'unsupported-platform' }] });
+  // Member sends stay Linux only until later phases.
+  failed(await memberTarget({ reference: memberFound.reference, caller }, boundContext, io()), 'unsupported-platform');
 });
 
 // Exact member sends: the sending engine's checks (memberTarget) and the receiving engine's binding (bindMemberTarget).
@@ -285,9 +319,9 @@ const UUID_7 = '99999999-9999-4999-8999-999999999999';
 const UUID_8 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const UUID_9 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const UUID_10 = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
-const listFor = async (list, { io, listed = [], ...overrides } = {}) => {
+const listFor = async (list, { io, listed = [], pipeProof, ...overrides } = {}) => {
   const fake = io ?? fakeIo({ registry: async (configDir) => { fake.calls.push(['registry', configDir]); return { root: ROOT, records: list }; } });
-  const result = await referencesForList({ caller }, { ...boundContext, ...overrides }, fake.io ?? fake, listed);
+  const result = await referencesForList({ caller, pipeProof }, { ...boundContext, ...overrides }, fake.io ?? fake, listed);
   const text = JSON.stringify(result);
   for (const value of ['/synthetic/', 'procStart', 'returnTo', 'binding', 'messagingSocketPath', SECRET.title, SECRET.cwd, '"name"']) {
     assert.equal(text.includes(value), false, `${value} must not be in the reply`);
@@ -334,8 +368,8 @@ test('referencesForList gives each listed session its reference or the reason th
   assert.deepEqual(twice.result.remote, [{ machineId: MEMBER, sessionId: UUID_2, referenceUnavailable: 'ambiguous-source' }]);
 });
 
-test('referencesForList refuses off Linux or without one caller registration, and caps each list at 256', async () => {
-  failed((await listFor([callerRecord], { io: { ...fakeIo().io, platform: 'win32' } })).result, 'unsupported-platform');
+test('referencesForList refuses off Linux and Windows or without one caller registration, and caps each list at 256', async () => {
+  failed((await listFor([callerRecord], { io: { ...fakeIo().io, platform: 'darwin' } })).result, 'unsupported-platform');
   for (const list of [[], [record(10, CALLER, 'cli')], [callerRecord, record(11, CALLER, 'codex-asb-bridge')]]) {
     failed((await listFor(list)).result, 'caller-unregistered');
   }
@@ -391,7 +425,7 @@ test('every code has a not-sent message that ends with a period and has no em da
     'stale-source', 'stale-source-scope', 'ambiguous-identity', 'evidence-incomplete', 'member-target', 'peer-upgrade-required', 'local-target',
     'unsupported-platform', 'unsupported-type', 'source-disabled', 'not-found', 'caller-unregistered', 'native-scope-unavailable', 'ambiguous-source',
     'not-live', 'not-mapped', 'machine-offline', 'capability-unknown', 'refused', 'too-large', 'rate-limited', 'target-unavailable',
-    'relay-unavailable', 'binding-expired', 'target-changed', 'invalid-request']) {
+    'relay-unavailable', 'binding-expired', 'target-changed', 'invalid-request', 'bridge-upgrade-required']) {
     assert.match(notSentMessage(code) ?? '', /^[^—]+\.$/, code);
   }
   assert.equal(notSentMessage('remote-exact-unsupported'), undefined);

@@ -184,7 +184,7 @@ Claude Code sessions and Codex tasks on one machine can message the sessions on 
 
 - In Claude Code, `/list-agents` shows each session of another machine as `<machine>-<session>`, for example `laptop-codex-fix-tests-3f`. Ask Claude to message it as usual.
 - For each Claude profile, **Remote Claude sessions** in Preferences > Profiles sets how Claude reaches Claude sessions on other machines. Claude Remote Control works per session: with **Automatic** or **Claude Remote Control only**, a local session that is not on Remote Control does not see a remote Claude session that ASB leaves out.
-- In Codex, `list_sessions` shows the other machines' sessions after the local ones, with `remote: true` and `machine`. On Linux, each entry also has its full session reference (`reference`), or the reason that a send cannot use one (`referenceUnavailable`). Send to one with `send_message` by its `sessionId`. Or send by its full session reference (`asb:1/...`): ASB then sends to exactly that Codex or Claude Code CLI session (Linux on both machines), or it sends nothing and gives the reason.
+- In Codex, `list_sessions` shows the other machines' sessions after the local ones, with `remote: true` and `machine`. On Linux and Windows, each entry also has its full session reference (`reference`), or the reason that a send cannot use one (`referenceUnavailable`). Send to one with `send_message` by its `sessionId`. Or send by its full session reference (`asb:1/...`): ASB then sends to exactly that Codex or Claude Code CLI session (on the same Linux or Windows PC, or Linux on both machines), or it sends nothing and gives the reason.
 - A reply comes back the same way: the receiving session sees the sender under the name of the sending machine.
 - A message to a machine that is offline, or to a session that has ended, is refused at once with a short reason, for example `laptop is not reachable.`. ASB keeps no queue: send the message again when the machine is back.
 - Idle subscriptions (`notify_when_idle`) do not work across machines yet.
@@ -395,7 +395,7 @@ To let Codex tasks and Claude Code sessions message each other on Windows, insta
 asb bridge install --all
 ```
 
-The bridge uses named pipes and key files on Windows. `asb bridge link-claude` does not work on Windows. See [ASB Bridge on Windows](bridge/README.md#windows). With Bun on the engine's `PATH`, the engine also runs the message relay of the machine group.
+The bridge uses named pipes and key files on Windows. A send by full session reference to a session on the same PC works on Windows: before the first byte, the bridge checks that the pipe belongs to the target process of the same Windows user. `asb bridge link-claude` does not work on Windows. See [ASB Bridge on Windows](bridge/README.md#windows). With Bun on the engine's `PATH`, the engine also runs the message relay of the machine group.
 
 ASB limits these folders to your Windows user with `icacls`. Windows has no POSIX file modes, so ASB does not check them there; it still refuses linked files. The phone certificate is `cert.pfx` with its passphrase in `pfx-pass` and the public part in `cert.cer`, which Windows PowerShell creates. A session link opens with `start` only when it has plain URL characters; ASB refuses the others with "This session link cannot open on Windows."
 

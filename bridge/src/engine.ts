@@ -84,7 +84,9 @@ export type ListedReference = { reference: string } | { referenceUnavailable: st
 export async function listReferences(runtime: EngineRuntime, caller: { runtimeSessionId: string; configDir: string }) {
   const found = new Map<string, ListedReference>();
   let reply: z.infer<typeof listReply>;
-  try { reply = listReply.parse(await engineRequest(runtime, '/api/agent/list-references', { method: 'POST', body: { caller } })); }
+  // On Windows the engine binds only for a bridge that proves the pipe server before each bound write.
+  try { reply = listReply.parse(await engineRequest(runtime, '/api/agent/list-references', { method: 'POST',
+    body: { caller, ...(isWindows() ? { pipeProof: true } : {}) } })); }
   catch { return found; }
   if (reply.pid !== runtime.pid) return found;
   const value = (item: { reference?: string; referenceUnavailable?: string }): ListedReference =>

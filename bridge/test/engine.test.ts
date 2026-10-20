@@ -128,7 +128,8 @@ posix('listReferences posts the caller and keeps only valid items, keyed by sess
     const runtime = engineRuntime({ XDG_RUNTIME_DIR: root }, 'linux')!;
     answer = reply();
     expect([...await listReferences(runtime, caller)]).toEqual([[local, { reference }], [`${machineId}:${remote}`, { referenceUnavailable: 'old-peer' }]]);
-    expect(engine.calls[0]).toMatchObject({ method: 'POST', route: '/api/agent/list-references', body: { caller } });
+    expect(engine.calls[0]).toMatchObject({ method: 'POST', route: '/api/agent/list-references' });
+    expect(engine.calls[0]!.body).toEqual({ caller });
     // A wrong pid, a refusal, another shape, or an engine error: an empty map.
     for (const value of [reply({ pid: process.pid + 1 }), { apiVersion: 1, ok: false, code: 'caller-unregistered', message: 'x.' }, reply({ extra: 1 }),
       reply({ apiVersion: 2 }), { ...reply(), local: undefined }, new Response('{}', { status: 500 }), new Response('{')]) {
@@ -149,5 +150,18 @@ posix('listReferences posts the caller and keeps only valid items, keyed by sess
     answer = reply({ local: ids.map(sessionId => ({ sessionId, referenceUnavailable: 'not-live' })),
       remote: ids.map(sessionId => ({ machineId, sessionId, referenceUnavailable: 'not-found' })) });
     expect((await listReferences(runtime, caller)).size).toBe(512);
+  } finally { engine.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+// Windows only: the engine binds a Windows target only for a bridge that proves the pipe server, so the body asks for it.
+test.skipIf(process.platform !== 'win32')('on Windows, listReferences asks for a pipe proof', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'asb-engine-windows-'));
+  const engine = fakeEngine(root, () => ({ apiVersion: 1, ok: true, pid: process.pid, local: [], remote: [] }), join(root, 'asb', 'run'));
+  const caller = { runtimeSessionId: crypto.randomUUID(), configDir: 'C:\\synthetic\\claude' };
+  try {
+    const runtime = engineRuntime({ LOCALAPPDATA: root }, 'win32');
+    expect(runtime).not.toBeNull();
+    expect((await listReferences(runtime!, caller)).size).toBe(0);
+    expect(engine.calls.map(call => [call.route, call.body])).toEqual([['/api/agent/list-references', { caller, pipeProof: true }]]);
   } finally { engine.close(); rmSync(root, { recursive: true, force: true }); }
 });

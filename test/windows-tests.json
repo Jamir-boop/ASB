@@ -12,5 +12,6 @@
   "test/insights.test.mjs",
   "test/bridge-windows.test.mjs",
   "test/session-references.test.mjs",
-  "test/session-targets.test.mjs"
+  "test/session-targets.test.mjs",
+  "test/claude-registry.test.mjs"
 ]

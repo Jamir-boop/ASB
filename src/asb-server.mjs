@@ -189,19 +189,21 @@ export function createAsbServer({
       try { body = await readBody(request, 8 * 1024); } catch (error) { sendJson(response, error.statusCode === 413 ? 413 : 400, { error: 'Invalid resolve request.' }); return; }
       const fields = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join(',') : 'invalid';
       if (listReferencesRoute) {
-        if (fields !== 'caller' || !validCaller(body.caller)) {
+        if (!['caller', 'caller,pipeProof'].includes(fields) || !validCaller(body.caller)
+          || (fields === 'caller,pipeProof' && body.pipeProof !== true)) {
           sendJson(response, 400, { error: 'Invalid resolve request.' });
           return;
         }
         // Reads the cached rows, the registries, and the relay lists; no key file, no socket, no state write.
-        try { sendJson(response, 200, await listReferences({ caller: { runtimeSessionId: body.caller.runtimeSessionId, configDir: body.caller.configDir } },
-          await dashboardForRequest())); }
+        try { sendJson(response, 200, await listReferences({ caller: { runtimeSessionId: body.caller.runtimeSessionId, configDir: body.caller.configDir },
+          ...(body.pipeProof === true ? { pipeProof: true } : {}) }, await dashboardForRequest())); }
         catch { sendJson(response, 500, { error: 'Cannot resolve the session reference.' }); }
         return;
       }
       if (resolveBoundRoute) {
         const caller = body?.caller;
-        if (fields !== 'caller,msgId,reference,remainingMs' || typeof body.reference !== 'string' || !validCaller(caller)
+        if (!['caller,msgId,reference,remainingMs', 'caller,msgId,pipeProof,reference,remainingMs'].includes(fields)
+          || (fields.includes('pipeProof') && body.pipeProof !== true) || typeof body.reference !== 'string' || !validCaller(caller)
           || typeof body.msgId !== 'string' || !UUID.test(body.msgId)
           || !Number.isInteger(body.remainingMs) || body.remainingMs < 0 || body.remainingMs > 20_000) {
           sendJson(response, 400, { error: 'Invalid resolve request.' });
@@ -209,7 +211,8 @@ export function createAsbServer({
         }
         // Reads the cached rows and the registries; no key file, no socket, no state write.
         try { sendJson(response, 200, await resolveBound({ reference: body.reference, caller: { runtimeSessionId: caller.runtimeSessionId,
-          configDir: caller.configDir }, msgId: body.msgId, remainingMs: body.remainingMs }, await dashboardForRequest())); }
+          configDir: caller.configDir }, msgId: body.msgId, remainingMs: body.remainingMs, ...(body.pipeProof === true ? { pipeProof: true } : {}) },
+          await dashboardForRequest())); }
         catch { sendJson(response, 500, { error: 'Cannot resolve the session reference.' }); }
         return;
       }

@@ -305,7 +305,8 @@ test('the resolve-bound route is a token-only POST action with an exact body', a
     { ...body, caller: { configDir: caller.configDir } }, { ...body, caller: { ...caller, runtimeSessionId: 'x' } },
     { ...body, caller: { ...caller, configDir: 'relative/dir' } }, { ...body, caller: { ...caller, configDir: 7 } },
     { ...body, caller: { ...caller, configDir: `/${'x'.repeat(4096)}` } }, { ...body, msgId: 'x' }, { ...body, msgId: null },
-    { ...body, remainingMs: -1 }, { ...body, remainingMs: 20_001 }, { ...body, remainingMs: 1.5 }, { ...body, remainingMs: '10' }]) {
+    { ...body, remainingMs: -1 }, { ...body, remainingMs: 20_001 }, { ...body, remainingMs: 1.5 }, { ...body, remainingMs: '10' },
+    { ...body, pipeProof: false }, { ...body, pipeProof: 'true' }, { ...body, pipeProof: 1 }, { ...body, pipeProof: null }]) {
     const response = await request(BOUND, { method: 'POST', body: invalid });
     assert.equal(response.status, 400, JSON.stringify(invalid).slice(0, 200));
     assert.deepEqual(response.json(), { error: 'Invalid resolve request.' });
@@ -316,7 +317,10 @@ test('the resolve-bound route is a token-only POST action with an exact body', a
     const reply = await request(BOUND, { method: 'POST', body: { ...body, remainingMs } });
     assert.deepEqual([reply.status, reply.headers.get('cache-control'), reply.json().code], [200, 'no-store', 'not-live']);
   }
-  assert.deepEqual(calls, [{ body: { ...body, remainingMs: 0 }, threads: 0 }, { body: { ...body, remainingMs: 20_000 }, threads: 0 }]);
+  // Only a bridge that proves the pipe server sends pipeProof, and only exactly true passes.
+  assert.equal((await request(BOUND, { method: 'POST', body: { ...body, pipeProof: true } })).json().code, 'not-live');
+  assert.deepEqual(calls, [{ body: { ...body, remainingMs: 0 }, threads: 0 }, { body: { ...body, remainingMs: 20_000 }, threads: 0 },
+    { body: { ...body, pipeProof: true }, threads: 0 }]);
   const failing = await serve(t, { resolveBound: async () => { throw new Error('/synthetic/secret'); } });
   const error = await failing.request(BOUND, { method: 'POST', body });
   assert.deepEqual([error.status, error.headers.get('cache-control'), error.json()], [500, 'no-store', { error: 'Cannot resolve the session reference.' }]);
@@ -385,6 +389,41 @@ test('the engine binds a live local codex or CLI target from a private registry 
   assert.equal(await readFile(pendingStatePath, 'utf8').catch((error) => error.code), before);
 });
 
+// The Windows registry rules on any host: pipe paths, a FILETIME string procStart, a live PID, and no mode check.
+test('on Windows the engine binds a live local CLI target only for a bridge that proves the pipe', async (t) => {
+  const { homeDir, registry } = await fixture(t);
+  const CLI = '77777777-7777-4777-8777-777777777777';
+  const sessions = path.join(homeDir, '.claude', 'sessions');
+  await mkdir(sessions, { recursive: true });
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  t.after(() => child.kill());
+  const pipe = (pid) => `\\\\.\\pipe\\LOCAL\\cc-msg-${String(pid).padStart(32, '0')}`;
+  const write = (pid, fields) => writeFile(path.join(sessions, `${pid}.json`), JSON.stringify({ pid, name: 'Secret name', cwd: '/synthetic/private',
+    peerProtocol: 1, messagingSocketPath: pipe(pid), procStart: `13300000000${pid}`, ...fields }));
+  await write(process.pid, { sessionId: CALLER, entrypoint: 'codex-asb-bridge' });
+  await write(child.pid, { sessionId: CLI, entrypoint: 'cli' });
+  const { request } = await serve(t, { switchboard: true, platform: 'win32', sourceRegistry: registry, pendingStatePath: path.join(homeDir, 'pending.json'),
+    machineIdentity: () => ({ machineId: MACHINE_ID, machineName: 'synthetic-pc' }), referenceScopes: () => () => 'ab'.repeat(16),
+    machineGroup: { status: async () => ({ members: [{ machineId: MACHINE_ID, name: 'synthetic-pc', online: true, isSelf: true }] }), merge: () => {} },
+    loadDashboard: async () => ({ providers: [], threads: [
+      { id: `cli:${CLI}`, externalId: CLI, provider: 'claude-desktop-code', providerLabel: 'Claude Code CLI', surface: 'cli', sourceId: 'claude-desktop-code',
+        sourceName: 'claude-desktop-code', state: 'idle', title: 'Secret title' }] }) });
+  const [reference] = (await request('/api/dashboard')).json().threads.map((row) => row.reference);
+  const bind = async (fields = {}) => {
+    const reply = await request(BOUND, { method: 'POST', body: boundBody({ reference, caller: { runtimeSessionId: CALLER, configDir: path.join(homeDir, '.claude') },
+      ...fields }) });
+    assert.equal(reply.status, 200);
+    assert.equal(/Secret|private/.test(reply.text), false);
+    return reply.json();
+  };
+  const bound = await bind({ pipeProof: true });
+  assert.deepEqual({ ...bound.binding, expiresAtMs: 0 }, { registryHome: await realpath(sessions), runtimeSessionId: CLI, pid: child.pid,
+    procStart: `13300000000${child.pid}`, messagingSocketPath: pipe(child.pid), msgId: MSG, expiresAtMs: 0 });
+  assert.equal((await bind()).code, 'bridge-upgrade-required');
+  await write(child.pid, { sessionId: CLI, entrypoint: 'cli', messagingSocketPath: `/synthetic/s/${child.pid}.sock` });
+  assert.equal((await bind({ pipeProof: true })).code, 'not-live');
+});
+
 const LIST = '/api/agent/list-references';
 
 test('the list-references route is a token-only POST action with exactly the caller', async (t) => {
@@ -402,7 +441,8 @@ test('the list-references route is a token-only POST action with exactly the cal
   assert.deepEqual([get.status, get.headers.get('allow')], [405, 'POST']);
   for (const invalid of ['{', 'null', '[]', '{}', { ...body, extra: 1 }, { ...body, reference: 'asb:1/x' }, { caller: null }, { caller: [] },
     { caller: { ...caller, extra: 1 } }, { caller: { configDir: caller.configDir } }, { caller: { ...caller, runtimeSessionId: 'x' } },
-    { caller: { ...caller, configDir: 'relative/dir' } }, { caller: { ...caller, configDir: 7 } }, { caller: { ...caller, configDir: `/${'x'.repeat(4096)}` } }]) {
+    { caller: { ...caller, configDir: 'relative/dir' } }, { caller: { ...caller, configDir: 7 } }, { caller: { ...caller, configDir: `/${'x'.repeat(4096)}` } },
+    { caller, pipeProof: false }, { caller, pipeProof: 'true' }, { caller, pipeProof: 1 }, { caller, pipeProof: null }]) {
     const response = await request(LIST, { method: 'POST', body: invalid });
     assert.equal(response.status, 400, JSON.stringify(invalid).slice(0, 200));
     assert.deepEqual(response.json(), { error: 'Invalid resolve request.' });
@@ -411,7 +451,8 @@ test('the list-references route is a token-only POST action with exactly the cal
   assert.deepEqual(calls, []);
   const reply = await request(LIST, { method: 'POST', body });
   assert.deepEqual([reply.status, reply.headers.get('cache-control'), reply.json()], [200, 'no-store', { apiVersion: 1, ok: true, pid: process.pid, local: [], remote: [] }]);
-  assert.deepEqual(calls, [{ body, threads: 0 }]);
+  assert.equal((await request(LIST, { method: 'POST', body: { caller, pipeProof: true } })).status, 200);
+  assert.deepEqual(calls, [{ body, threads: 0 }, { body: { caller, pipeProof: true }, threads: 0 }]);
   const failing = await serve(t, { listReferences: async () => { throw new Error('/synthetic/secret'); } });
   const error = await failing.request(LIST, { method: 'POST', body });
   assert.deepEqual([error.status, error.headers.get('cache-control'), error.json()], [500, 'no-store', { error: 'Cannot resolve the session reference.' }]);

@@ -61,7 +61,7 @@ export async function runEngine({ env = process.env, platform = process.platform
   let machineId = '';
   let referenceScopes = null;
   // Windows has no board, so it never plays sounds (phase 1 rule).
-  const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, machineGroup: group, machineRelay: relay, serviceMode: true,
+  const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, machineGroup: group, machineRelay: relay, serviceMode: true, platform,
     playSound: platform === 'win32' ? undefined : createSoundPlayer(),
     machineIdentity: () => ({ machineId, machineName: group.selfName() }), referenceScopes: () => referenceScopes,
     onStop: () => shutdown('the stop request') });

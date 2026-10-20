@@ -208,3 +208,27 @@ linux('B1: send_message takes exactly one of sessionId or a well-formed referenc
     rmSync(root, { recursive: true });
   }
 });
+
+// Windows only: the engine binds a Windows target only for a bridge that proves the pipe server, so the body asks for it.
+// The Linux body stays exact (protocol.test.ts B2).
+test.skipIf(process.platform !== 'win32')('on Windows, resolve-bound asks for a pipe proof', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'asb-bound-windows-'));
+  const local = z.string().parse(process.env.LOCALAPPDATA);
+  const engine = fakeEngine(local, () => ({ apiVersion: 1, ok: false, code: 'not-found', message: 'No session.' }), join(local, 'asb', 'run'));
+  const threadId = randomUUID();
+  const configDir = join(root, 'claude');
+  mkdirSync(join(configDir, 'sessions'), { recursive: true });
+  writeFileSync(join(configDir, 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: threadId,
+    messagingSocketPath: `\\\\.\\pipe\\LOCAL\\cc-msg-${'ab'.repeat(16)}`, cwd: root, peerProtocol: 1, entrypoint: 'codex-asb-bridge' }));
+  const bridge = new Bridge(threadId, configDir, join(root, 'state'), join(root, 'unavailable.sock'));
+  const reference = `asb:1/${'a'.repeat(16)}/codex/${'ab'.repeat(16)}/codex:${randomUUID()}`;
+  try {
+    await expect(bridge.sendReference(reference, 'hello')).rejects.toThrow('No session. Nothing sent (not-found).');
+    expect(engine.calls.map(call => [call.route, call.body])).toEqual([['/api/agent/resolve-bound', { reference,
+      caller: { runtimeSessionId: threadId, configDir }, msgId: expect.any(String), remainingMs: 10_000, pipeProof: true }]]);
+  } finally {
+    await bridge.close();
+    engine.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

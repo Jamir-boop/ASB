@@ -39,7 +39,8 @@ function boundFrames(binding: Binding, list: unknown[]) {
 
 // The one registry record that still has every bound field; else undefined.
 export function boundPeer(configDir: string, binding: Binding): Peer | undefined {
-  try { if (realpathSync(join(configDir, 'sessions')) !== binding.registryHome) return undefined; } catch { return undefined; }
+  // The native realpath, as the engine's Node fs.promises.realpath: the JS-style realpathSync keeps Windows 8.3 short names.
+  try { if (realpathSync.native(join(configDir, 'sessions')) !== binding.registryHome) return undefined; } catch { return undefined; }
   const matches = peers(configDir).filter(peer => peer.entrypoint !== 'asb-relay' && peer.sessionId === binding.runtimeSessionId);
   const peer = matches.length === 1 ? matches[0] : undefined;
   return peer && peer.pid === binding.pid && peer.procStart === binding.procStart && peer.messagingSocketPath === binding.messagingSocketPath

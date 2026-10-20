@@ -740,11 +740,14 @@ export function createSwitchboardServer(options = {}) {
     return { threads: dashboard.threads || [], sources: sources || [], tags: sourceScopes(sources, tagger),
       machine: { machineId: tagger ? machine.machineId : '', machineName: machine.machineName }, members };
   };
-  // The registry folder of the sending task, only when it is private to this user.
+  const platform = options.platform ?? process.platform;
+  // The registry folder of the sending task, only when it is private to this user. Windows has no mode bits:
+  // there ASB Bridge proves the user of the target at the write.
   const privateRegistry = async (configDir) => {
     try {
       const root = await fs.realpath(path.join(configDir, 'sessions'));
       const info = await fs.stat(root);
+      if (platform === 'win32') return info.isDirectory() ? { root, records: await readLiveClaudeRegistry([root], { windows: true }) } : null;
       if (!info.isDirectory() || info.uid !== process.getuid() || (info.mode & 0o077) !== 0) return null;
       return { root, records: await readLiveClaudeRegistry([root]) };
     } catch { return null; }
@@ -753,7 +756,7 @@ export function createSwitchboardServer(options = {}) {
   const claudeRoot = (source) => fs.realpath(path.join(path.dirname(source.projectsDir || DEFAULT_CLAUDE_PROJECTS_DIR), 'sessions')).catch(() => null);
   const receiverClaim = async (source, appId) => (await querySqliteJson(path.join(source.dataDir, 'plugin-state', 'asb-bridge', `${appId}.sqlite`),
     'select pid, proc_start from receiver where singleton = 1;').catch(() => []))[0] ?? null;
-  const boundIo = { platform: process.platform, now: Date.now, pid: process.pid, registry: privateRegistry, claudeRoot, receiverClaim };
+  const boundIo = { platform, now: Date.now, pid: process.pid, registry: privateRegistry, claudeRoot, receiverClaim };
   // The homes where the receiving engine looks for the target of an exact member send: a CLI session only in its own
   // source home, a Codex task in the homes that the relay serves.
   const targetHomes = async (type, source) => type === 'claude-cli' ? [path.dirname(source.projectsDir || DEFAULT_CLAUDE_PROJECTS_DIR)]

@@ -75,7 +75,8 @@ const BOUND_MESSAGES = {
   'member-target': 'This reference is for a session on another machine. This version of ASB Bridge cannot send to it.',
   'peer-upgrade-required': 'The member machine has an older ASB that cannot take a message for one exact session. Update ASB on that machine.',
   'local-target': 'This reference is for a session on this machine, not on another machine.',
-  'unsupported-platform': 'ASB can send by reference only on Linux now.',
+  'unsupported-platform': 'ASB can send by reference only on Linux and Windows, and to another machine only between Linux machines.',
+  'bridge-upgrade-required': 'This version of ASB Bridge cannot send by reference on Windows. Update ASB Bridge.',
   'unsupported-type': 'ASB can send by reference only to Codex and Claude Code CLI sessions.',
   'source-disabled': 'The source of this session is disabled.',
   'not-found': 'ASB has no session with this reference.',
@@ -99,6 +100,8 @@ const refuse = (code) => ({ apiVersion: 1, ok: false, code, message: BOUND_MESSA
 const BINDING_LIFE_MS = 10_000;
 const BOUND_TYPES = ['codex', 'claude-cli'];
 const CONTROLS = /[\x00-\x1f\x7f-\x9f]/g;
+// A writer must prove its target before the first byte: Linux checks the socket owner, and on Windows ASB Bridge proves the pipe server.
+const exactPlatform = (io) => io.platform === 'linux' || io.platform === 'win32';
 
 // The message for a send that did not go out: the bound codes first, then the resolver codes.
 export const notSentMessage = (code) => BOUND_MESSAGES[code] ?? MESSAGES[code];
@@ -139,13 +142,14 @@ async function bindIn(identity, reference, context, io, registries, msgId, remai
 
 // The live local process of one full reference, for one send by the ASB Bridge (SYSTEM_OVERVIEW.md, "Session references").
 // Steps 1 to 6 use only the given rows; io reads the registries and the bridge receiver row. The first failure is the reply.
-export async function bindLocalTarget({ reference, caller, msgId, remainingMs }, context, io) {
+export async function bindLocalTarget({ reference, caller, msgId, remainingMs, pipeProof }, context, io) {
   if (typeof reference !== 'string' || !reference.startsWith('asb:')) return fail('invalid-reference');
   const resolved = resolveSessionReference({ reference }, context);
   if (!resolved.ok) return resolved.code === 'evidence-incomplete' ? refuse('peer-upgrade-required') : resolved;
   const { identity, availability } = resolved;
   if (identity.machineId !== context.machine?.machineId) return refuse('member-target');
-  if (io.platform !== 'linux') return refuse('unsupported-platform');
+  if (!exactPlatform(io)) return refuse('unsupported-platform');
+  if (io.platform === 'win32' && pipeProof !== true) return refuse('bridge-upgrade-required');
   if (!BOUND_TYPES.includes(identity.type)) return refuse('unsupported-type');
   if (['source-disabled', 'not-found'].includes(availability)) return refuse(availability);
   const own = await callerRecord(caller, io);
@@ -176,8 +180,8 @@ const LOCAL_TYPES = ['cli', 'codex-asb-bridge'];
 
 // The references that a send of this caller accepts now, for list_sessions (SYSTEM_OVERVIEW.md, "Session references").
 // The caller registry is read one time; each item is checked like a send, and only the reference or the reason code goes out.
-export async function referencesForList({ caller }, context, io, listed = []) {
-  if (io.platform !== 'linux') return refuse('unsupported-platform');
+export async function referencesForList({ caller, pipeProof }, context, io, listed = []) {
+  if (!exactPlatform(io)) return refuse('unsupported-platform');
   const own = await callerRecord(caller, io);
   if (!own) return refuse('caller-unregistered');
   const once = { ...io, registry: async () => own.registry };
@@ -200,7 +204,7 @@ export async function referencesForList({ caller }, context, io, listed = []) {
     const item = same.length > 1 ? { referenceUnavailable: 'ambiguous-identity' }
       : !LOCAL_TYPES.includes(same[0].entrypoint) ? { referenceUnavailable: 'unsupported-type' }
         : await check(context.threads.filter((row) => !row.remote && row.externalId === sessionId),
-          (reference) => bindLocalTarget({ reference, caller, msgId: null, remainingMs: 0 }, context, once));
+          (reference) => bindLocalTarget({ reference, caller, msgId: null, remainingMs: 0, pipeProof }, context, once));
     local.push({ sessionId, ...item });
   }
   const remote = [];

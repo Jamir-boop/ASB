@@ -443,3 +443,15 @@ windowsOnly('a pipe served by another process or with another start time gets 0 
     expect(await server.closed()).toBeGreaterThan(0);
   } finally { server.child.kill(); await server.child.exited; rmSync(root, { recursive: true, force: true }); }
 }, 90000);
+
+// boundPeer compares its realpath with the registryHome that the engine gets from Node fs.promises.realpath (design risk 6).
+// The temporary folder of a Windows runner has 8.3 short names (RUNNER~1).
+windowsOnly('the realpath of boundPeer equals the realpath of the Node engine for a temporary folder', async () => {
+  const root = temporary('asb-realpath-');
+  try {
+    const node = Bun.spawn(['node', '-e', 'require("node:fs").promises.realpath(process.argv[1]).then(path => process.stdout.write(path))', root],
+      { stdout: 'pipe' });
+    const path = await new Response(node.stdout).text();
+    expect({ code: await node.exited, path }).toEqual({ code: 0, path: realpathSync.native(root) });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
