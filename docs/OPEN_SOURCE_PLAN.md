@@ -2,6 +2,18 @@
 
 ## Latest publication
 
+ASB [1.9.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.9.0) was published on `2026-10-20` (Lima). Its source and tag use commit [5561ee4](https://github.com/Jamir-boop/ASB/commit/5561ee40c7d7ae13cdbce2da4fa1b4201c7fcd8f). ASB Bridge is `0.5.0` in this release.
+
+- Uploaded `asb_1.9.0_all.deb`, `asb-1.9.0-linux.tar.gz`, and `SHA256SUMS`. All three downloads matched the local build byte-for-byte. A second build from a clean export gave the same SHA-256 sums. [Exact-source CI](https://github.com/Jamir-boop/ASB/actions/runs/39468169730) passed on Node.js `22.13.0` and `24` on Linux and Windows, and the [Bridge](https://github.com/Jamir-boop/ASB/actions/runs/39468169779) and [Distros](https://github.com/Jamir-boop/ASB/actions/runs/39468169762) workflows passed.
+- Local checks passed 664 Node tests, 148 native logic tests, 29 GTK widget tests on hidden Xephyr with synthetic data, and 132 ASB Bridge tests with Bun. The bridge bundles matched a fresh build, and `npm pack --dry-run` listed 78 files.
+- Each package payload had 73 runtime files, all matching source bytes. The Debian `Installed-Size` was 1735 KiB.
+- The current-user install used a clean export of the tagged commit. All 73 installed runtime files matched source bytes. After a restart of the user service, the engine, the window, and the tray ran from the `1.9.0` release folder, and `asb agent status` reported Backend and UI verified.
+- `asb bridge install --all` installed ASB Bridge `0.5.0` for two Codex homes and for Claude Code. A running Codex task loads it after a restart of the Codex app.
+- A privacy scan of the lines added since `v1.8.1` found no private addresses, keys, or tokens. Two of its three hits were synthetic test certificates, and the third was a sample host name in a plan.
+- No Debian `apt install`, real-app opens, machine group on real machines, real phone, Windows, macOS, or FPS check on the real display was run. The Windows member of the test group was offline, so its update waits. See [release notes](releases/v1.9.0.md) for check limits.
+
+## Earlier publications
+
 ASB [1.8.1](https://github.com/Jamir-boop/ASB/releases/tag/v1.8.1) was published on `2026-10-13` (Lima). Its source and tag use commit [a73a935](https://github.com/Jamir-boop/ASB/commit/a73a9353df0bf7138516509229a1b3a6d261c4e0).
 
 - Uploaded `asb_1.8.1_all.deb`, `asb-1.8.1-linux.tar.gz`, and `SHA256SUMS`. All three downloads matched the local build byte-for-byte. [Exact-source CI](https://github.com/Jamir-boop/ASB/actions/runs/38381855768) passed on Node.js `22.13.0` and `24`.
@@ -12,8 +24,6 @@ ASB [1.8.1](https://github.com/Jamir-boop/ASB/releases/tag/v1.8.1) was published
 - All four settings/state files kept their bytes and modes during installation. After start, theme and sources kept their bytes. Layout saved explicit `showAppPills: false` for the previous missing field; effective width, view, and app-pill visibility stayed unchanged. Manual marks, pin order, Persistent unread, and the 173-record count stayed unchanged.
 - Privacy preflight checks covered 24 existing history commits, 385 unique blobs, and 107 tracked files plus the new notes. Reviews covered 16 source-release files and 11 patch files; no private material was added. The MIT license, credit, exact README video URL, and 17 public media/icon/font files stayed unchanged.
 - No Debian `apt install`, real profile edits, real-app opens, full GTK widget suite, Node.js `20` + SQLite CLI reader check, or new FPS measurement was run. Known X11 scrolling and resize limits remain. See [release notes](releases/v1.8.1.md) for check limits.
-
-## Earlier publications
 
 ASB [1.8.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.8.0) was published on `2026-10-13` (Lima). Its source and tag use commit [ec6a253](https://github.com/Jamir-boop/ASB/commit/ec6a253e2513971700a57b2d9b8920fd59e4959c). Version `1.8.1` supersedes it with the duplicate toolbar chip correction.
 
