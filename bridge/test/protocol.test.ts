@@ -1261,3 +1261,61 @@ linux('B7: a binding for this task itself is refused', async () => {
     expect([f.frames.length, x.rows()]).toEqual([0, 0]);
   } finally { x.engine.close(); await f.close(); }
 });
+
+// Exact member sends: the engine says member-target, and the bridge asks /api/agent/send-member once.
+const MEMBER_REFERENCE = `asb:1/${'b'.repeat(16)}/codex/${'cd'.repeat(16)}/codex:${randomUUID()}`;
+
+linux('B8: a member reference goes to send-member once; not-sent and unknown map honestly, and idle is refused', async () => {
+  const f = await fixture();
+  const ok = (body: { message: { msgId: string } }) => ({ apiVersion: 1, pid: process.pid, msgId: body.message.msgId, outcome: 'submitted' });
+  let member: (body: { message: { msgId: string } }) => unknown = ok;
+  const engine = fakeEngine(runtimeDir(), (route, body) => route === '/api/agent/resolve-bound'
+    ? { apiVersion: 1, ok: false, code: 'member-target', message: 'This reference is for a session on another machine. This version of ASB Bridge cannot send to it.' }
+    : route === '/api/agent/send-member' ? member(body as { message: { msgId: string } }) : new Response('{}', { status: 404 }));
+  const row = (text: string) => f.db.query<{ id: string; peer_id: string; peer_address: string | null; peer_start: string | null; status: string;
+    status_reason: string | null }, [string]>('SELECT id,peer_id,peer_address,peer_start,status,status_reason FROM messages WHERE text=?').get(text);
+  const routes = () => engine.calls.map(call => call.route);
+  try {
+    const sent = await f.bridge.sendReference(MEMBER_REFERENCE, 'member hello');
+    expect(sent).toEqual({ messageId: expect.any(String), subscriptionId: null, status: 'socket-written' });
+    expect(routes()).toEqual(['/api/agent/resolve-bound', '/api/agent/send-member']);
+    expect(z.object({ msgId: z.string() }).parse(engine.calls[0]!.body).msgId).toBe(z.string().parse(sent.messageId));
+    expect(engine.calls[1]!.body).toEqual({ reference: MEMBER_REFERENCE, caller: { runtimeSessionId: f.desktop.threadId, configDir: f.configDir },
+      mode: 'prompting', message: { msgId: sent.messageId, text: 'member hello', hopChain: expect.any(Array) }, remainingMs: 10_000 });
+    expect(row('member hello')).toEqual({ id: z.string().parse(sent.messageId), peer_id: MEMBER_REFERENCE, peer_address: null, peer_start: null,
+      status: 'socket-written', status_reason: null });
+    // A receipt frame does not change the row: it has no peer address.
+    await f.transmit({ type: 'control', action: 'peer_message_status', orig_msg_id: sent.messageId, status: 'denied' });
+    await Bun.sleep(100);
+    expect(row('member hello')?.status).toBe('socket-written');
+    expect(f.frames).toHaveLength(0);
+
+    member = body => ({ apiVersion: 1, pid: process.pid, msgId: body.message.msgId, outcome: 'not-sent', code: 'machine-offline',
+      message: 'The member machine is not reachable now.' });
+    const offline = 'The member machine is not reachable now. Nothing sent (machine-offline).';
+    await expect(f.bridge.sendReference(MEMBER_REFERENCE, 'offline')).rejects.toThrow(offline);
+    expect(row('offline')).toMatchObject({ status: 'not-sent', status_reason: offline });
+    for (const [index, reply] of ([
+      () => new Response('{}', { status: 500 }),
+      body => ({ ...ok(body), pid: process.pid + 1 }),
+      () => ({ ...ok({ message: { msgId: randomUUID() } }) }),
+      body => ({ ...ok(body), extra: 1 }),
+      body => ({ ...ok(body), outcome: 'not-sent' }),
+      body => ({ ...ok(body), code: 'refused', message: 'x' }),
+      () => null,
+    ] as ((body: { message: { msgId: string } }) => unknown)[]).entries()) {
+      member = reply;
+      await expect(f.bridge.sendReference(MEMBER_REFERENCE, `unknown ${index}`)).rejects.toThrow(/^Send outcome unknown for [0-9a-f-]{36}; inspect status before sending again$/);
+      expect(row(`unknown ${index}`)?.status).toBe('unknown');
+    }
+
+    const before = { calls: engine.calls.length, rows: f.db.query<{ total: number }, []>('SELECT count(*) AS total FROM messages').get()!.total };
+    for (const text of [undefined, 'with idle']) {
+      await expect(f.bridge.sendReference(MEMBER_REFERENCE, text, true))
+        .rejects.toThrow('Idle subscriptions do not work across machines yet. Nothing sent (remote-idle-unsupported).');
+    }
+    expect(routes().slice(before.calls)).toEqual(['/api/agent/resolve-bound', '/api/agent/resolve-bound']);
+    expect(f.db.query<{ total: number }, []>('SELECT (SELECT count(*) FROM messages)+(SELECT count(*) FROM idle_requests) AS total').get()!.total).toBe(before.rows);
+    expect(routes().every(route => ['/api/agent/resolve-bound', '/api/agent/send-member'].includes(route))).toBe(true);
+  } finally { engine.close(); await f.close(); }
+});

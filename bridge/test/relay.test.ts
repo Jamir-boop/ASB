@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { hopChain, inbox, peers, processStart, sendFrames, socketPath, userFrame, type Frame } from '../src/claude';
@@ -276,3 +276,99 @@ linux('two relays carry a message, the reply, a receipt, and an offline refusal 
     rmSync(root, { recursive: true, force: true });
   }
 }, 60_000);
+
+linux('/deliver-bound writes one frame to the bound record only, and the receipt of an exact message stays on this machine', async () => {
+  const root = mkdtempSync('/tmp/asb-relay-bound-');
+  const dirs = Object.fromEntries(['h1/claude/sessions', 'h2/claude/sessions', 'h1/s', 'h2/s'].map(item => {
+    mkdirSync(join(root, item), { recursive: true, mode: 0o700 });
+    return [item, join(root, item)];
+  }));
+  const home1 = join(root, 'h1', 'claude'), home2 = join(root, 'h2', 'claude');
+  const sends: any[] = [];
+  const engine = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
+    if (request.headers.get('x-asb-source-token') !== SOURCE_TOKEN) return new Response(null, { status: 403 });
+    const path = new URL(request.url).pathname;
+    if (path === '/api/relay/homes') return Response.json({ machineId: 'a'.repeat(16), machineName: 'alpha',
+      homes: [{ path: home1, remoteClaude: 'auto', hasRemoteControl: false }, { path: home2, remoteClaude: 'auto', hasRemoteControl: false }] });
+    if (path === '/api/relay/remote-peers') return Response.json({ peers: [] });
+    sends.push(await request.json());
+    return Response.json({ ok: true, outcome: 'socket-written' });
+  } });
+  const first = await agent(home1, dirs['h1/s']!, 'cli-one', 'cli');
+  const second = await agent(home2, dirs['h2/s']!, 'cli-two', 'cli');
+  // The same session UUID in two homes, as two config profiles can have.
+  const row = (configDir: string) => peers(configDir).find(peer => peer.entrypoint !== 'asb-relay')!;
+  const twin = row(home2);
+  writeFileSync(join(home2, 'sessions', `${twin.pid}.json`), JSON.stringify({ ...twin, sessionId: first.sessionId }), { mode: 0o600 });
+  const target = row(home1);
+  let relay: Relay | undefined;
+  try {
+    relay = await startRelay(engine.port!, join(root, 'relay'));
+    const sender = { machineId: 'b'.repeat(16), sessionId: randomUUID(), name: 'codex-task', mode: 'prompting', agent: 'codex' };
+    const binding = (fields: Record<string, unknown> = {}) => ({ registryHome: realpathSync(join(home1, 'sessions')), runtimeSessionId: first.sessionId,
+      pid: target.pid, procStart: target.procStart, messagingSocketPath: target.messagingSocketPath, msgId: fields.msgId ?? msgId, expiresAtMs: Date.now() + 10_000, ...fields });
+    const msgId = randomUUID();
+    const message = (id = msgId) => ({ msgId: id, text: 'exact hello', hopChain: [] });
+    const deliverBound = (body: unknown) => fetch(`http://127.0.0.1:${relay!.port}/deliver-bound`, { method: 'POST',
+      headers: { authorization: `Bearer ${relay!.token}` }, body: JSON.stringify(body) });
+    const changed = [{ pid: target.pid + 100_000 }, { procStart: 'other' }, { messagingSocketPath: '/tmp/other.sock' }, { runtimeSessionId: randomUUID() },
+      { registryHome: realpathSync(join(home2, 'sessions')) }, { registryHome: '/tmp/none/sessions' }];
+    for (const fields of changed) {
+      expect(await (await deliverBound({ binding: binding(fields), sender, message: message() })).json()).toEqual({ outcome: 'not-sent', reason: 'target-changed' });
+    }
+    // The binding is for another message ID than the frame.
+    expect(await (await deliverBound({ binding: binding({ msgId: randomUUID() }), sender, message: message() })).json())
+      .toEqual({ outcome: 'not-sent', reason: 'target-changed' });
+    expect(await (await deliverBound({ binding: binding({ expiresAtMs: Date.now() - 1 }), sender, message: message() })).json())
+      .toEqual({ outcome: 'not-sent', reason: 'binding-expired' });
+    for (const body of [{ binding: binding(), sender, message: message(), extra: 1 }, { binding: binding(), sender }, null]) {
+      expect((await deliverBound(body)).status).toBe(400);
+    }
+    expect(first.frames).toEqual([]);
+    expect(second.frames).toEqual([]);
+
+    expect(await (await deliverBound({ binding: binding(), sender, message: message() })).json()).toEqual({ outcome: 'submitted' });
+    const received = await until(() => first.frames.find(frame => frame.type === 'user'));
+    const reverse = await until(() => proxyRows(home1).find(item => item.sessionId === sender.sessionId));
+    if (received.type !== 'user') throw new Error('Expected a user frame');
+    expect([received.msg_id, received.session_id, received.from]).toEqual([msgId, first.sessionId, `uds:${reverse.messagingSocketPath}`]);
+    expect(received.message.content).toContain(`from-name="${reverse.name}"`);
+    expect(received.message.content).toContain('\nexact hello\n');
+    expect(first.frames).toHaveLength(1);
+    expect(second.frames).toEqual([]);
+    // The v1 route still searches by session ID: two homes have it.
+    expect(await relayCall(relay, '/deliver', { targetSessionId: first.sessionId, sender, message: message(randomUUID()) }))
+      .toEqual({ ok: false, reason: 'target-unavailable' });
+
+    // A receipt for the exact message makes no engine call; a receipt for another ID keeps the legacy forward without the exact ID.
+    const otherId = randomUUID();
+    const receipt = (fields: Record<string, unknown>) => ({ msgV: 1, type: 'control', msg_id: randomUUID(), from: first.address,
+      session_id: sender.sessionId, action: 'peer_message_status', ...fields });
+    await sendFrames(home1, reverse, [receipt({ orig_msg_id: msgId, status: 'delivered' }),
+      receipt({ orig_msg_id: otherId, status: 'dropped', drop_reason: 'queue-full', dropped_msg_ids: [msgId, otherId] })]);
+    await until(() => sends.length > 0);
+    await Bun.sleep(200);
+    expect(sends).toHaveLength(1);
+    expect(sends[0]).toMatchObject({ machineId: sender.machineId, targetSessionId: sender.sessionId,
+      control: { orig_msg_id: otherId, status: 'dropped', dropped_msg_ids: [otherId] } });
+    // A new user message from the target keeps the legacy path.
+    await sendFrames(home1, reverse, [userFrame(reverse, first.address, 'cli-one', first.sessionId, randomUUID(), 'answer', 'prompting', null, [])]);
+    await until(() => sends.length > 1);
+    expect(sends[1].message.text).toBe('answer');
+
+    // The target answers with its receipt at once, inside the 150 ms flush of the relay write: the receipt still stays here.
+    const fastId = randomUUID();
+    const pending = deliverBound({ binding: binding({ msgId: fastId }), sender, message: message(fastId) });
+    await until(() => first.frames.some(frame => frame.type === 'user' && frame.msg_id === fastId), 2000);
+    await sendFrames(home1, reverse, [receipt({ orig_msg_id: fastId, status: 'delivered' })]);
+    expect(await (await pending).json()).toEqual({ outcome: 'submitted' });
+    await Bun.sleep(200);
+    expect(sends).toHaveLength(2);
+  } finally {
+    relay?.child.kill('SIGKILL');
+    await first.close();
+    await second.close();
+    engine.stop(true);
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);

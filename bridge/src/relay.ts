@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { hopChain, inbox, maxLineLength, ownedJson, peerAddress, peers, privateDirectory, processStart, removePeerKey, senderMode, sendFrames,
   SendRefused, serializeFrame, socketPath, userFrame, uuid, writePeerKey, type Frame, type Peer } from './claude';
 import { isWindows, keyName, pidDomain } from './platform';
+import { bindingSchema, boundPeer, sendBound } from './outbound';
 
 const homeSchema = z.object({ path: z.string().refine(isAbsolute), remoteClaude: z.enum(['auto', 'bridge', 'native']), hasRemoteControl: z.boolean() });
 const homesSchema = z.object({ machineId: z.string(), machineName: z.string(), homes: z.array(homeSchema) });
@@ -15,11 +16,14 @@ const remoteSchema = z.object({ machineId: z.string().regex(/^[a-f0-9]{16}$/), m
   sessionId: uuid, name: z.string(), agent: z.enum(['claude', 'codex']), status: z.string(), remoteControl: z.boolean() });
 const statuses = z.enum(['held', 'denied', 'expired', 'delivered', 'refused', 'dropped']);
 // The body of POST /deliver (plan 9.7); src/machine-relay.mjs checks the same rules in the engine.
+const senderSchema = z.strictObject({ machineId: z.string().regex(/^[a-f0-9]{16}$/), sessionId: uuid,
+  name: z.string().min(1).max(128).regex(/^[^\x00-\x1f\x7f-\x9f]*$/), mode: z.enum(['prompting', 'bypass', 'unknown']), agent: z.enum(['claude', 'codex']) });
+const messageSchema = z.strictObject({ msgId: uuid, text: z.string().min(1).max(maxLineLength), hopChain: z.array(z.string().regex(/^[a-f0-9]{24}$/)).max(32) });
+type Sender = z.infer<typeof senderSchema>;
 const deliverSchema = z.strictObject({
   targetSessionId: uuid,
-  sender: z.strictObject({ machineId: z.string().regex(/^[a-f0-9]{16}$/), sessionId: uuid,
-    name: z.string().min(1).max(128).regex(/^[^\x00-\x1f\x7f-\x9f]*$/), mode: z.enum(['prompting', 'bypass', 'unknown']), agent: z.enum(['claude', 'codex']) }),
-  message: z.strictObject({ msgId: uuid, text: z.string().min(1).max(maxLineLength), hopChain: z.array(z.string().regex(/^[a-f0-9]{24}$/)).max(32) }).optional(),
+  sender: senderSchema,
+  message: messageSchema.optional(),
   control: z.strictObject({ action: z.literal('peer_message_status'), orig_msg_id: uuid, status: statuses, status_detail: z.string().max(64).optional(),
     reason: z.string().max(1000).optional(), drop_reason: z.string().max(64).optional(), dropped_msg_ids: z.array(uuid).max(256).optional() }).optional(),
 }).refine(value => (value.message === undefined) !== (value.control === undefined));
@@ -33,6 +37,11 @@ export type RemotePeer = z.infer<typeof remoteSchema>;
 // `peer` is the data of the last delivery that needed the row, for a sender that is not listed yet.
 export type ReverseNeed = { home: string; machineId: string; sessionId: string; atMs: number; peer: RemotePeer };
 type Reply = z.infer<typeof replySchema>;
+// The body of POST /deliver-bound: the engine's own binding of one exact member send (src/machine-relay.mjs).
+const deliverBoundSchema = z.strictObject({ binding: bindingSchema, sender: senderSchema, message: messageSchema });
+type BoundReply = { outcome: 'submitted' | 'unknown' } | { outcome: 'not-sent'; reason: string };
+// Step 5c replaces the receipt drop with exact receipts.
+const EXACT_IDS = 1024;
 
 const REVERSE_MS = 30 * 60_000;
 const UNLISTED_MS = 120_000;
@@ -259,8 +268,19 @@ async function main() {
     return undefined;
   }
 
+  // The last message IDs of exact member sends: their receipts never go back on the v1 path, also after a reverse row
+  // that lives longer than 30 minutes. No age limit; the oldest ID goes out first.
+  const exactIds = new Set<string>();
+  const isExact = (id: string) => exactIds.has(id);
+  const keepExact = (id: string) => {
+    exactIds.delete(id);
+    exactIds.add(id);
+    while (exactIds.size > EXACT_IDS) exactIds.delete(exactIds.values().next().value!);
+  };
+
   async function forward(row: Row, frame: Frame) {
     if (frame.type === 'control' && frame.action !== 'peer_message_status') return;
+    if (frame.type === 'control' && isExact(frame.orig_msg_id)) return;
     const sender = await findSender(row.home, frame.from);
     if (!sender) return;
     const target = { machineId: row.peer.machineId, targetSessionId: row.peer.sessionId };
@@ -271,7 +291,7 @@ async function main() {
       if (frame.action !== 'peer_message_status') return;
       const { action, orig_msg_id, status, status_detail, reason, drop_reason, dropped_msg_ids } = frame;
       const control = Object.fromEntries(Object.entries({ action, orig_msg_id, status, status_detail: status_detail?.slice(0, 64),
-        reason: reason?.slice(0, 1000), drop_reason: drop_reason?.slice(0, 64), dropped_msg_ids }).filter(([, value]) => value !== undefined));
+        reason: reason?.slice(0, 1000), drop_reason: drop_reason?.slice(0, 64), dropped_msg_ids: dropped_msg_ids?.filter(id => !isExact(id)) }).filter(([, value]) => value !== undefined));
       await call('/api/relay/send', { ...target, sender: from('unknown'), control }).catch(() => {});
       return;
     }
@@ -287,6 +307,48 @@ async function main() {
       action: 'peer_message_status', orig_msg_id: frame.msg_id, status: 'expired', status_detail: 'refused', reason: REASONS[outcome](row.peer.machineName) }]);
   }
 
+  // The row of the sender in this home, so that the target can answer it (plan 16.3).
+  function reverseRow(home: string, sender: Sender) {
+    return serialize(async () => {
+      const key = rowKey(home, sender.machineId, sender.sessionId);
+      const listed = remote.find(peer => peer.machineId === sender.machineId && peer.sessionId === sender.sessionId);
+      const machineName = remote.find(peer => peer.machineId === sender.machineId)?.machineName ?? sender.machineId.slice(0, 8);
+      const peer = listed ?? { machineId: sender.machineId, machineName, online: true, sessionId: sender.sessionId,
+        name: sender.name, agent: sender.agent, status: 'idle', remoteControl: false };
+      needs.set(key, { home, machineId: sender.machineId, sessionId: sender.sessionId, atMs: Date.now(), peer });
+      const existing = rows.get(key);
+      if (existing) return existing;
+      if (closing) throw new Error('The relay is stopping.');
+      return addRow(home, peer);
+    });
+  }
+
+  // One exact member send: only the bound record of the bound home, never a search by session ID, never an engine call.
+  async function deliverBound(value: unknown): Promise<BoundReply | undefined> {
+    const parsed = deliverBoundSchema.safeParse(value);
+    if (!parsed.success) return undefined;
+    const { binding, sender, message } = parsed.data;
+    const notSent = (reason: string): BoundReply => ({ outcome: 'not-sent', reason });
+    const home = self.homes.find(item => { try { return realpathSync(join(item.path, 'sessions')) === binding.registryHome; } catch { return false; } });
+    const target = home ? boundPeer(home.path, binding) : undefined;
+    if (!home || !target) return notSent('target-changed');
+    let reverse: Row;
+    try { reverse = await reverseRow(home.path, sender); } catch { return notSent('target-unavailable'); }
+    const frame = userFrame(target, reverse.address, reverse.record.name, sender.sessionId, message.msgId, message.text, sender.mode, null, message.hopChain);
+    try { serializeFrame(frame); } catch { return notSent('too-large'); }
+    // Before the write: the target can send its receipt within the 150 ms flush of sendFrames. A not-sent write
+    // gives the target no frame, so no receipt with this ID comes.
+    keepExact(message.msgId);
+    try { await sendBound(home.path, binding, [frame], () => !closing); }
+    catch (error) {
+      if (!(error instanceof SendRefused)) return { outcome: 'unknown' };
+      // A refusal without a code is the burst budget of the target.
+      const code = (error as SendRefused & { code?: string }).code;
+      return notSent(code === 'receiver-stopped' ? 'relay-unavailable' : code ?? 'rate-limited');
+    }
+    return { outcome: 'submitted' };
+  }
+
   // Plan 16.5: a frame from another machine for a local session. Proxy rows never receive one, so relays cannot loop.
   async function deliver(value: unknown): Promise<Reply | undefined> {
     const parsed = deliverSchema.safeParse(value);
@@ -300,20 +362,7 @@ async function main() {
     if (!match) return { ok: false, reason: 'target-unavailable' };
     const { home, target } = match;
     let reverse: Row;
-    try {
-      reverse = await serialize(async () => {
-        const key = rowKey(home, sender.machineId, sender.sessionId);
-        const listed = remote.find(peer => peer.machineId === sender.machineId && peer.sessionId === sender.sessionId);
-        const machineName = remote.find(peer => peer.machineId === sender.machineId)?.machineName ?? sender.machineId.slice(0, 8);
-        const peer = listed ?? { machineId: sender.machineId, machineName, online: true, sessionId: sender.sessionId,
-          name: sender.name, agent: sender.agent, status: 'idle', remoteControl: false };
-        needs.set(key, { home, machineId: sender.machineId, sessionId: sender.sessionId, atMs: Date.now(), peer });
-        const existing = rows.get(key);
-        if (existing) return existing;
-        if (closing) throw new Error('The relay is stopping.');
-        return addRow(home, peer);
-      });
-    } catch { return { ok: false, reason: 'target-unavailable' }; }
+    try { reverse = await reverseRow(home, sender); } catch { return { ok: false, reason: 'target-unavailable' }; }
     let frame: unknown;
     if (message) {
       frame = userFrame(target, reverse.address, reverse.record.name, sender.sessionId, message.msgId, message.text, sender.mode, null, message.hopChain);
@@ -344,6 +393,10 @@ async function main() {
     if (pathname === '/peers' && request.method === 'GET') return Response.json({ peers: listPeers() });
     if (pathname === '/deliver' && request.method === 'POST') {
       const reply = await deliver(await request.json().catch(() => undefined));
+      return reply ? Response.json(reply) : Response.json({ error: 'Invalid relay request.' }, { status: 400 });
+    }
+    if (pathname === '/deliver-bound' && request.method === 'POST') {
+      const reply = await deliverBound(await request.json().catch(() => undefined));
       return reply ? Response.json(reply) : Response.json({ error: 'Invalid relay request.' }, { status: 400 });
     }
     return Response.json({ error: 'Not found.' }, { status: 404 });

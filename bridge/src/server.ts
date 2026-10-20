@@ -79,7 +79,7 @@ server.registerTool('list_sessions', { description: 'List the live agents on thi
   return result([...rows, ...remote.filter(peer => !seen.has(peer.sessionId)).map(peer => ({ sessionId: peer.sessionId,
     name: `${peer.machineName}-${peer.name}`, agent: peer.agent, cwd: null, status: peer.status, startedAt: null, remote: true, machine: peer.machineName }))]);
 });
-server.registerTool('send_message', { description: 'Send text to one listed agent, or set notify_when_idle alone to subscribe without sending. Its answer enters the current Codex turn, or starts one when this task is idle. Batch what you have to say into one message: a rapid burst to the same agent is refused. Instead of sessionId, reference takes a full ASB session reference (asb:1/...) as it is and sends to exactly that session on this machine.',
+server.registerTool('send_message', { description: 'Send text to one listed agent, or set notify_when_idle alone to subscribe without sending. Its answer enters the current Codex turn, or starts one when this task is idle. Batch what you have to say into one message: a rapid burst to the same agent is refused. Instead of sessionId, reference takes a full ASB session reference (asb:1/...) as it is and sends to exactly that session, on this machine or on another machine of the machine group. notify_when_idle with a reference works only for a session on this machine.',
   inputSchema: { sessionId: uuid.optional(), reference: z.string().max(384).regex(/^asb:[\x21-\x7e]+$/).optional(),
     text: z.string().min(1).max(maxLineLength).optional(), notify_when_idle: z.boolean().default(false) }, annotations: { openWorldHint: true } },
   async ({ sessionId, reference, text, notify_when_idle }, extra) => {

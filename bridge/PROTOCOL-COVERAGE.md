@@ -67,7 +67,31 @@ Send outcomes between machines (one attempt, one message ID through all hops):
 - Submitted (`socket-written`): the target relay wrote the frame. This does not prove that the model accepted it or will reply.
 - Unknown: a handoff can have happened. The engine reason `unknown` (only on the loopback reply, never on the member wire), an older engine's `target-unavailable`, an engine error, or a reply of another shape give message status `unknown`. Do not send again or use another route without a check of the status.
 
-The engine sends a delivery POST to a member at most one time: after `request.end` it does not try the next member address. The limits nest: bridge 12 s and relay proxy call 30 s, member POST 10 s total, receiver relay call 8 s total, relay write 5 s total plus the 150 ms flush. Mixed versions: a new bridge with an older engine, or a new engine with an older member, can still give the old outcomes, for example "Nothing sent" after a timeout. The member wire stays v1.
+The engine sends a delivery POST to a member at most one time: after `request.end` it does not try the next member address. The limits nest: bridge 12 s and relay proxy call 30 s, member POST 10 s total, receiver relay call 8 s total, relay write 5 s total plus the 150 ms flush. Mixed versions: a new bridge with an older engine, or a new engine with an older member, can still give the old outcomes, for example "Nothing sent" after a timeout. The v1 member wire does not change. v2 has only the two exact routes below.
+
+Exact member sends (Linux at both ends, Codex senders, `codex` and `claude-cli` targets): when the engine answers `resolve-bound` with `member-target`, `send_message` with a full reference sends through `POST /api/agent/send-member`. The sending engine first makes a read-only `POST /peer/v2/resolve-session` to the machine of the reference. Only a valid v2 `ready` reply lets it make one `POST /peer/v2/deliver` with the text. The member binds the reference to one live record in the homes of the target source, and its relay writes the frame with `POST /deliver-bound` to that record only, from the reverse row of the sender. A changed record gives `target-changed`. There is never a fallback to a session ID search, a v1 route, another session, or another machine. The row of the sending task has the reference as `peer_id` and no peer address, so receipts do not change it: it stays `socket-written` (submitted). The relay of the target drops each `peer_message_status` receipt for an exact message ID (it keeps the last 1024 exact message IDs, with no age limit), so an exact send makes no v1 traffic. Exact receipts are not in this step. Idle subscriptions to a member reference are refused with `remote-idle-unsupported`, with no row. Test: `relay`, `protocol`.
+
+| Sender bridge / sender engine / member | Result |
+| --- | --- |
+| New / new / new | Exact delivery with honest outcomes. |
+| New / new / older ASB with scope tags | The resolve gets 404: not sent, `peer-upgrade-required`. No text goes out. |
+| New / new / ASB older than scope tags | `peer-upgrade-required` with no request. |
+| New / new / new engine with an older `relay.js` | The resolve is `ready`, then the relay answers 404: not sent, `relay-unavailable`. |
+| New / engine of the exact local step | `remote-exact-unsupported`. |
+| New / engine older than the exact local step | `engine-unavailable`. |
+| Bridge of the exact local step / new engine | `... Nothing sent (member-target).` |
+| Older sender engine / new member | It does not use v2; v1 does not change. |
+
+| Step of an exact member send | Limit |
+| --- | --- |
+| Bridge `POST /api/agent/send-member` | 16 s; body `remainingMs: 10000` (the delivery budget) |
+| Engine resolve (its own deadline) | 4 s total for all addresses |
+| Engine `POST /peer/v2/deliver` | `min(10 s, remainingMs - local work)` total |
+| v2 body `remainingMs` | deliver timeout - 1 s |
+| Member deadline | `min(remainingMs - 500 ms, 8 s)` |
+| Binding `expiresAtMs` | `min(10 s life, member deadline - 5.5 s)` |
+| Member to relay `POST /deliver-bound` | member deadline - now |
+| Relay write | 5 s for connect and write, then the 150 ms flush |
 
 ## Parity
 
@@ -85,7 +109,8 @@ The engine sends a delivery POST to a member at most one time: after `request.en
 | Names | partial | `<prefix>-<title>-<suffix>` from the Codex task title, or `<prefix>-<directory>-<suffix>` without a title. The prefix is `codex` for the default home, else the `CODEX_HOME` folder name, with `codex-` added when it does not start with `codex`. The suffix is lengthened when another live peer holds the name. A long title keeps its first 22 characters. A long Codex folder name keeps its first and last part. The name refreshes when the task status changes. Missing: `/rename`, `--name`, `nameSource`, `rename` frame. | protocol |
 | Registry fields | partial | The row carries `status`. `tempo`, `state`, `detail`, `needs`, and `waitingFor` are not written. | none |
 | Same name, several sessions | yes | Sending uses the full UUID. | protocol |
-| Exact local send by full reference | partial | Linux only, to `codex` and `claude-cli` sessions in the registry of the sending task. The engine binds the reference to one live record, and the outbox checks the binding again before the first byte; a changed record gives `target-changed`, with no fallback to the session ID or another machine. `claude-local`, `claude-remote`, `opencode`, references to another machine, Windows, and macOS are refused. | protocol, bridge |
+| Exact local send by full reference | partial | Linux only, to `codex` and `claude-cli` sessions in the registry of the sending task. The engine binds the reference to one live record, and the outbox checks the binding again before the first byte; a changed record gives `target-changed`, with no fallback to the session ID or another machine. `claude-local`, `claude-remote`, `opencode`, Windows, and macOS are refused. | protocol, bridge |
+| Exact member send by full reference | partial | Linux at both ends, to `codex` and `claude-cli` sessions of another machine of the group. A resolve, then one deliver; the member binds one live record, and its relay writes only to that record. No receipts and no idle subscriptions yet. | relay, protocol |
 | Own row, send to self | yes | The row is hidden and the send refused. | protocol |
 | Capability `notify_idle` | yes | | protocol |
 | Capabilities `reply_across_default_dirs`, `artifact_yield` | no | The first needs peer process evidence that regular Bun cannot provide. The second needs an Artifact watcher. | none |

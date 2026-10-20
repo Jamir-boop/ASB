@@ -72,7 +72,9 @@ function resolveFull(reference, sourceId, { threads, sources, tags, machine, mem
 }
 
 const BOUND_MESSAGES = {
-  'remote-exact-unsupported': 'This reference is for a session on another machine. ASB cannot send to it by reference yet.',
+  'member-target': 'This reference is for a session on another machine. This version of ASB Bridge cannot send to it.',
+  'peer-upgrade-required': 'The member machine has an older ASB that cannot take a message for one exact session. Update ASB on that machine.',
+  'local-target': 'This reference is for a session on this machine, not on another machine.',
   'unsupported-platform': 'ASB can send by reference only on Linux now.',
   'unsupported-type': 'ASB can send by reference only to Codex and Claude Code CLI sessions.',
   'source-disabled': 'The source of this session is disabled.',
@@ -82,39 +84,50 @@ const BOUND_MESSAGES = {
   'ambiguous-source': 'More than one source can have this session. ASB does not select one.',
   'not-live': 'The target session has no live receiver now.',
   'not-mapped': 'The live receiver of this session does not belong to the source in this reference.',
+  'machine-offline': 'The member machine is not reachable now.',
+  'capability-unknown': 'ASB cannot tell if the member machine can send to one exact session.',
+  refused: 'The member machine refused the request.',
+  'too-large': 'The message is too large for the member machine.',
+  'rate-limited': 'Too many messages to this session just now. Wait, or send the text in one message.',
+  'target-unavailable': 'The target session on the member machine is not available now.',
+  'relay-unavailable': 'The message relay on the member machine is not available now.',
+  'binding-expired': 'The time for this send ended before the write.',
+  'target-changed': 'The target session changed after ASB found it.',
+  'invalid-request': 'ASB cannot make a valid request for this message.',
 };
 const refuse = (code) => ({ apiVersion: 1, ok: false, code, message: BOUND_MESSAGES[code] });
 const BINDING_LIFE_MS = 10_000;
+const BOUND_TYPES = ['codex', 'claude-cli'];
+const CONTROLS = /[\x00-\x1f\x7f-\x9f]/g;
 
-// The live local process of one full reference, for one send by the ASB Bridge (SYSTEM_OVERVIEW.md, "Session references").
-// Steps 1 to 6 use only the given rows; io reads the registries and the bridge receiver row. The first failure is the reply.
-export async function bindLocalTarget({ reference, caller, msgId, remainingMs }, context, io) {
-  if (typeof reference !== 'string' || !reference.startsWith('asb:')) return fail('invalid-reference');
-  const resolved = resolveSessionReference({ reference }, context);
-  if (!resolved.ok) return resolved.code === 'evidence-incomplete' ? refuse('remote-exact-unsupported') : resolved;
-  const { identity, availability } = resolved;
-  if (identity.machineId !== context.machine?.machineId) return refuse('remote-exact-unsupported');
-  if (io.platform !== 'linux') return refuse('unsupported-platform');
-  if (!['codex', 'claude-cli'].includes(identity.type)) return refuse('unsupported-type');
-  if (['source-disabled', 'not-found'].includes(availability)) return refuse(availability);
+// The message for a send that did not go out: the bound codes first, then the resolver codes.
+export const notSentMessage = (code) => BOUND_MESSAGES[code] ?? MESSAGES[code];
+
+// The one live registration of the sending task in its private registry, or null.
+async function callerRecord(caller, io) {
   const registry = await io.registry(caller.configDir);
   const own = registry?.records.filter((record) => record.sessionId === caller.runtimeSessionId) ?? [];
-  if (own.length !== 1 || own[0].entrypoint !== 'codex-asb-bridge') return refuse('caller-unregistered');
+  return own.length === 1 && own[0].entrypoint === 'codex-asb-bridge' ? { registry, record: own[0] } : null;
+}
+
+// The live receiver of the identity in the given registries. It never selects one of more candidates.
+async function bindIn(identity, reference, context, io, registries, msgId, remainingMs) {
   const source = context.sources.find((item) => item.id === identity.sourceId);
   if (identity.type === 'codex') {
     if (context.threads.some((row) => !row.remote && row.provider === 'codex' && row.externalId === identity.appId
       && row.reference !== reference)) return refuse('ambiguous-source');
   } else {
-    if (await io.claudeRoot(source) !== registry.root) return refuse('native-scope-unavailable');
+    const root = await io.claudeRoot(source);
+    if (!registries.some((registry) => registry.root === root)) return refuse('native-scope-unavailable');
     for (const other of context.sources) {
-      if (other.id !== source.id && other.provider === 'claude-desktop-code' && await io.claudeRoot(other) === registry.root) return refuse('ambiguous-source');
+      if (other.id !== source.id && other.provider === 'claude-desktop-code' && await io.claudeRoot(other) === root) return refuse('ambiguous-source');
     }
   }
-  const candidates = registry.records.filter((record) => record.entrypoint !== 'asb-relay' && record.sessionId === identity.appId
-    && typeof record.messagingSocketPath === 'string');
+  const candidates = registries.flatMap((registry) => registry.records.filter((record) => record.entrypoint !== 'asb-relay'
+    && record.sessionId === identity.appId && typeof record.messagingSocketPath === 'string').map((record) => ({ registry, record })));
   if (!candidates.length) return refuse('not-live');
   if (candidates.length > 1) return fail('ambiguous-identity');
-  const [target] = candidates;
+  const [{ registry, record: target }] = candidates;
   if (identity.type === 'codex') {
     const claim = target.entrypoint === 'codex-asb-bridge' ? await io.receiverClaim(source, identity.appId) : null;
     if (claim?.pid !== target.pid || String(claim.proc_start) !== target.procStart) return refuse('not-mapped');
@@ -122,4 +135,52 @@ export async function bindLocalTarget({ reference, caller, msgId, remainingMs },
   return { apiVersion: 1, ok: true, pid: io.pid, binding: { registryHome: registry.root, runtimeSessionId: target.sessionId,
     pid: target.pid, procStart: target.procStart, messagingSocketPath: target.messagingSocketPath, msgId,
     expiresAtMs: io.now() + Math.min(remainingMs, BINDING_LIFE_MS) } };
+}
+
+// The live local process of one full reference, for one send by the ASB Bridge (SYSTEM_OVERVIEW.md, "Session references").
+// Steps 1 to 6 use only the given rows; io reads the registries and the bridge receiver row. The first failure is the reply.
+export async function bindLocalTarget({ reference, caller, msgId, remainingMs }, context, io) {
+  if (typeof reference !== 'string' || !reference.startsWith('asb:')) return fail('invalid-reference');
+  const resolved = resolveSessionReference({ reference }, context);
+  if (!resolved.ok) return resolved.code === 'evidence-incomplete' ? refuse('peer-upgrade-required') : resolved;
+  const { identity, availability } = resolved;
+  if (identity.machineId !== context.machine?.machineId) return refuse('member-target');
+  if (io.platform !== 'linux') return refuse('unsupported-platform');
+  if (!BOUND_TYPES.includes(identity.type)) return refuse('unsupported-type');
+  if (['source-disabled', 'not-found'].includes(availability)) return refuse(availability);
+  const own = await callerRecord(caller, io);
+  if (!own) return refuse('caller-unregistered');
+  return bindIn(identity, reference, context, io, [own.registry], msgId, remainingMs);
+}
+
+// The sending engine's checks for an exact send to a member (SYSTEM_OVERVIEW.md, "Exact member sends"). The member decides
+// if the session exists, so the cached member rows are not used here. The first failure is the reply.
+export async function memberTarget({ reference, caller }, context, io) {
+  if (typeof reference !== 'string' || !reference.startsWith('asb:')) return fail('invalid-reference');
+  const resolved = resolveSessionReference({ reference }, context);
+  if (!resolved.ok) return resolved.code === 'evidence-incomplete' ? refuse('peer-upgrade-required') : resolved;
+  const { identity } = resolved;
+  if (identity.machineId === context.machine?.machineId) return refuse('local-target');
+  if (io.platform !== 'linux') return refuse('unsupported-platform');
+  if (!BOUND_TYPES.includes(identity.type)) return refuse('unsupported-type');
+  const own = await callerRecord(caller, io);
+  if (!own) return refuse('caller-unregistered');
+  const name = typeof own.record.name === 'string' ? own.record.name.replace(CONTROLS, ' ').slice(0, 128) : '';
+  return { ok: true, identity, name: name || 'Codex' };
+}
+
+// The receiving engine's own binding for an exact send from a member: no caller registry, only the homes of the target source.
+export async function bindMemberTarget({ reference, msgId, remainingMs }, context, io) {
+  const resolved = resolveSessionReference({ reference }, context);
+  if (!resolved.ok) return resolved;
+  const { identity, availability } = resolved;
+  if (identity.machineId !== context.machine?.machineId) return fail('unknown-machine');
+  if (io.platform !== 'linux') return refuse('unsupported-platform');
+  if (!BOUND_TYPES.includes(identity.type)) return refuse('unsupported-type');
+  if (['source-disabled', 'not-found'].includes(availability)) return refuse(availability);
+  const source = context.sources.find((item) => item.id === identity.sourceId);
+  const registries = (await Promise.all((await io.targetHomes(identity.type, source)).map((home) => io.registry(home)))).filter(Boolean);
+  // No private registry to read: no live receiver can be checked.
+  if (!registries.length) return refuse('not-live');
+  return bindIn(identity, reference, context, io, registries, msgId, remainingMs);
 }

@@ -14,7 +14,7 @@ import { openThreadInCodex, scopedCommand } from './session-opener.mjs';
 import { AppSourceRegistry, appSourcesRevision, numberAppSources, sourceName, validateSourceLauncher } from './app-sources.mjs';
 import { stateDir } from './platform-paths.mjs';
 import { rowReference, shortReference } from './session-references.mjs';
-import { bindLocalTarget, resolveSessionReference } from './session-targets.mjs';
+import { bindLocalTarget, bindMemberTarget, memberTarget, notSentMessage, resolveSessionReference } from './session-targets.mjs';
 import { readLiveClaudeRegistry } from './claude-registry.mjs';
 import { spawn } from 'node:child_process';
 
@@ -743,6 +743,11 @@ export function createSwitchboardServer(options = {}) {
   const claudeRoot = (source) => fs.realpath(path.join(path.dirname(source.projectsDir || DEFAULT_CLAUDE_PROJECTS_DIR), 'sessions')).catch(() => null);
   const receiverClaim = async (source, appId) => (await querySqliteJson(path.join(source.dataDir, 'plugin-state', 'asb-bridge', `${appId}.sqlite`),
     'select pid, proc_start from receiver where singleton = 1;').catch(() => []))[0] ?? null;
+  const boundIo = { platform: process.platform, now: Date.now, pid: process.pid, registry: privateRegistry, claudeRoot, receiverClaim };
+  // The homes where the receiving engine looks for the target of an exact member send: a CLI session only in its own
+  // source home, a Codex task in the homes that the relay serves.
+  const targetHomes = async (type, source) => type === 'claude-cli' ? [path.dirname(source.projectsDir || DEFAULT_CLAUDE_PROJECTS_DIR)]
+    : options.machineRelay ? (await options.machineRelay.homes(registeredLoad ? await registry.read() : [])).homes.map((home) => home.path) : [];
   const sourceWatchPaths = async () => {
     const sources = await registry.read();
     retainSourceCaches(sources);
@@ -793,8 +798,19 @@ export function createSwitchboardServer(options = {}) {
       return dashboard;
     },
     resolveSession: async (request, dashboard) => resolveSessionReference(request, await referenceContext(dashboard)),
-    resolveBound: async (request, dashboard) => bindLocalTarget(request, await referenceContext(dashboard), { platform: process.platform,
-      now: Date.now, pid: process.pid, registry: privateRegistry, claudeRoot, receiverClaim }),
+    resolveBound: async (request, dashboard) => bindLocalTarget(request, await referenceContext(dashboard), boundIo),
+    sendMember: async ({ reference, caller, mode, message, remainingMs }, dashboard) => {
+      const startedAt = Date.now();
+      const reply = (outcome, code) => ({ apiVersion: 1, pid: process.pid, msgId: message?.msgId ?? null, outcome,
+        ...(outcome === 'not-sent' ? { code, message: notSentMessage(code) } : {}) });
+      const target = await memberTarget({ reference, caller }, await referenceContext(dashboard), boundIo);
+      if (!target.ok) return reply('not-sent', target.code);
+      if (!options.machineRelay?.sendExact) return reply('not-sent', 'unknown-machine');
+      const result = await options.machineRelay.sendExact({ identity: target.identity,
+        sender: { sessionId: caller.runtimeSessionId, name: target.name, mode, agent: 'codex' }, message,
+        remainingMs: Math.max(0, remainingMs - (Date.now() - startedAt)) });
+      return reply(result.outcome, result.reason);
+    },
     listSources: (dashboard) => registry.report(dashboard),
     updateSource: async (source, revision) => { const saved = await registry.update(source, revision); retainSourceCaches(await registry.read()); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); invalidateOpenCodeData(); return saved; },
     removeSource: async (id, revision) => { const saved = await registry.remove(id, revision); retainSourceCaches(await registry.read()); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); invalidateOpenCodeData(); return saved; },
@@ -836,6 +852,8 @@ export function createSwitchboardServer(options = {}) {
     sourceToken: options.sourceToken || '',
   });
   boardOpen = () => server.boardOpen();
+  // The receiving side of an exact member send (src/machine-relay.mjs): this engine's own binding, from the cached rows.
+  server.bindMemberTarget = async (request) => bindMemberTarget(request, await referenceContext(await server.dashboardForRequest()), { ...boundIo, targetHomes });
   const close = server.close.bind(server);
   server.close = (...args) => {
     const result = close(...args);

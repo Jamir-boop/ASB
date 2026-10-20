@@ -10,6 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { requestInstance } from '../scripts/asb-instance.mjs';
 import { createMachineGroup, groupPath } from '../src/machine-group.mjs';
 import { peerRequest } from '../src/machine-peers.mjs';
+import { createRelaySupervisor } from '../src/machine-relay.mjs';
 import { createPhoneGateway, phoneSettingsPath, phoneTlsDir } from '../src/phone-gateway.mjs';
 import { buildSwitchboardDashboard, createSwitchboardServer } from '../src/switchboard.mjs';
 
@@ -49,7 +50,7 @@ function fakeTimers() {
   };
 }
 
-async function engine(t, name, address, clock) {
+async function engine(t, name, address, clock, peer = {}) {
   const home = await mkdtemp(path.join(os.tmpdir(), `asb-link-${name}-`));
   t.after(() => rm(home, { recursive: true, force: true }));
   const env = { HOME: home, XDG_CONFIG_HOME: path.join(home, 'config') };
@@ -65,7 +66,7 @@ async function engine(t, name, address, clock) {
     addressOk: () => true, hostName: name, timers, log: (line) => logs.push(line),
     onChange: () => server.invalidateDashboard('peer-sessions', { hard: false }) });
   const gateway = createPhoneGateway({ localPort: port, asbVersion: 'test', settingsPath: phoneSettingsPath(env), tlsDir: phoneTlsDir(env),
-    listAddresses: () => [{ address, interface: 'lo', kind: 'lan' }], peer: group.peer,
+    listAddresses: () => [{ address, interface: 'lo', kind: 'lan' }], peer: { ...group.peer, ...peer },
     onPhonePaired: group.onPhonePaired, onPhoneRevoked: group.onPhoneRevoked });
   server = createSwitchboardServer({ sourceToken: token, phoneGateway: gateway, machineGroup: group, serviceMode: true,
     playSound: (kind) => sounds.push(kind), pendingStatePath: path.join(home, 'pending.json'), palettePath: false,
@@ -170,7 +171,8 @@ test('two engines join one group and show each other\'s sessions as remote cards
   const credentials = await a.gateway.credentials();
   const member = { machineId: b.machineId, certFingerprint: (await b.gateway.credentials()).fingerprint,
     addresses: [{ kind: 'lan', address: '127.0.0.3' }], port: b.gatewayPort };
-  for (const route of ['/api/group', '/api/group/invite', '/api/group/join', '/api/engine/stop', '/api/agent/status', '/api/agent/resolve-session', '/api/agent/resolve-bound']) {
+  for (const route of ['/api/group', '/api/group/invite', '/api/group/join', '/api/engine/stop', '/api/agent/status', '/api/agent/resolve-session', '/api/agent/resolve-bound',
+    '/api/agent/send-member']) {
     for (const method of ['GET', 'POST']) {
       const reply = await peerRequest({ member, path: route, method, ...(method === 'POST' ? { body: {} } : {}), tls: credentials });
       assert.equal(reply.status, 404, `${method} ${route}`);
@@ -221,4 +223,46 @@ test('two engines join one group and show each other\'s sessions as remote cards
   assert.deepEqual(c.timers.pending, []);
   assert.deepEqual([...a.logs, ...b.logs], []);
   assert.deepEqual(c.logs, ['ASB: this machine was removed from the machine group.']);
+});
+
+// Exact member sends over real mutual TLS: the sender's resolve, then one deliver, with the v2 functions of the member.
+test('an exact member send asks an old member once with no text, and a new member gets one resolve and one deliver', { skip: hasOpenSsl ? false : 'openssl is not on PATH.' }, async (t) => {
+  const clock = { now: Date.now() };
+  const calls = [];
+  const a = await engine(t, 'engine-a', '127.0.0.5', clock);
+  const b = await engine(t, 'engine-b', '127.0.0.6', clock, {
+    resolveExact: async (value, fingerprint) => { calls.push(['resolve', value, fingerprint]); return { status: 200, body: { api: 2, outcome: 'ready' } }; },
+    deliverExact: async (value, fingerprint) => { calls.push(['deliver', value, fingerprint]);
+      return { status: 200, body: { api: 2, msgId: value.message.msgId, outcome: 'submitted' } }; } });
+  const old = await engine(t, 'engine-old', '127.0.0.7', clock);
+  for (const member of [b, old]) {
+    const invite = await a.api('/api/group/invite', { method: 'POST', body: {} });
+    assert.equal((await member.api('/api/group/join', { method: 'POST', body: { link: invite.body.link, name: member.name } })).status, 200);
+  }
+  // Two pollers: each check fires the sessions timers that are due, until both members answer.
+  await waitFor(() => {
+    for (const handle of a.timers.pending.filter((item) => [2000, 5000, 10_000].includes(item.ms))) {
+      a.timers.pending.splice(a.timers.pending.indexOf(handle), 1);
+      handle.run();
+    }
+    return a.group.peerStates().length === 2 && a.group.peerStates().every((state) => state.online);
+  }, 'both members online');
+  const sent = [];
+  const relay = createRelaySupervisor({ group: a.group, port: a.port, sourceToken: 'x', request: (options) => { sent.push(options); return peerRequest(options); } });
+  const target = { sourceId: 'codex', scopeTag: 'c'.repeat(32), type: 'codex', appId: uuid(7) };
+  const send = (machineId) => relay.sendExact({ identity: { reference: '', machineId, ...target },
+    sender: { sessionId: uuid(8), name: 'codex-task', mode: 'prompting', agent: 'codex' }, message: { msgId: uuid(9), text: 'secret text', hopChain: [] },
+    remainingMs: 10_000 });
+
+  assert.deepEqual(await send(old.machineId), { outcome: 'not-sent', reason: 'peer-upgrade-required' });
+  assert.deepEqual(sent.map((item) => [item.path, item.member.machineId]), [['/peer/v2/resolve-session', old.machineId]]);
+  assert.equal(JSON.stringify(sent[0].body).includes('secret text'), false);
+  sent.length = 0;
+  assert.deepEqual(await send(b.machineId), { outcome: 'submitted' });
+  assert.deepEqual(sent.map((item) => item.path), ['/peer/v2/resolve-session', '/peer/v2/deliver']);
+  const fingerprint = (await a.gateway.credentials()).fingerprint;
+  assert.deepEqual(calls.map(([route, , caller]) => [route, caller]), [['resolve', fingerprint], ['deliver', fingerprint]]);
+  assert.deepEqual(calls[0][1], { api: 2, target });
+  assert.deepEqual(calls[1][1], { api: 2, target, sender: { machineId: a.machineId, sessionId: uuid(8), name: 'codex-task', mode: 'prompting', agent: 'codex' },
+    message: { msgId: uuid(9), text: 'secret text', hopChain: [] }, remainingMs: 9_000 });
 });

@@ -8,7 +8,9 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { createAsbServer } from '../src/asb-server.mjs';
 import { processStart } from '../src/claude-registry.mjs';
-import { createRelaySupervisor, RELAY_STOPPED, relayHomes, validPeerList, validRelayBody, validRelayReply } from '../src/machine-relay.mjs';
+import { createRelaySupervisor, EXACT_REASONS, RELAY_STOPPED, relayHomes, validPeerList, validRelayBody, validRelayReply } from '../src/machine-relay.mjs';
+import { formatReference } from '../src/session-references.mjs';
+import { notSentMessage } from '../src/session-targets.mjs';
 
 const A = 'a'.repeat(16);
 const B = 'b'.repeat(16);
@@ -416,4 +418,209 @@ test('the loopback relay routes need the source token, local Host, and local Ori
   await new Promise((resolve) => plain.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => { plain.closeAllConnections(); plain.close(resolve); }));
   assert.equal((await fetch(`http://127.0.0.1:${plain.address().port}/api/relay/homes`, { headers: { 'x-asb-source-token': TOKEN } })).status, 404);
+});
+
+// Exact member sends (v2): the sending side (sendExact) and the member side (peerResolveExact, peerDeliverExact).
+const SCOPE_TAG = 'c'.repeat(32);
+const target = () => ({ sourceId: 'codex', scopeTag: SCOPE_TAG, type: 'codex', appId: ID });
+const identity = (machineId = B) => ({ reference: formatReference({ machineId, ...target() }), machineId, ...target() });
+const exactSender = () => ({ sessionId: ID2, name: 'codex-task', mode: 'prompting', agent: 'codex' });
+const exactMessage = () => ({ msgId: ID, text: 'hello', hopChain: ['1'.repeat(24)] });
+
+test('every exact member reason has a not-sent message', () => {
+  for (const reason of EXACT_REASONS) assert.match(notSentMessage(reason) ?? '', /^[^—]+\.$/, reason);
+});
+
+test('sendExact resolves first, then makes at most one deliver to the reference machine only, with honest outcomes', async (t) => {
+  const requests = [];
+  let resolve = async () => ({ status: 200, body: { api: 2, outcome: 'ready' }, address: '10.0.0.9' });
+  let deliver = async (options) => ({ status: 200, body: { api: 2, msgId: options.body.message.msgId, outcome: 'submitted' }, address: '10.0.0.9' });
+  const f = await supervisorFixture(t, { group: fakeGroup([B, 'c'.repeat(16)]), supervisor: { request: async (options) => {
+    requests.push(options);
+    return options.path === '/peer/v2/resolve-session' ? resolve(options) : deliver(options);
+  } } });
+  f.group.states[0].lastAddress = '10.0.0.2';
+  f.group.states[1].online = false;
+  const send = (edit = {}) => f.supervisor.sendExact({ identity: identity(), sender: exactSender(), message: exactMessage(), remainingMs: 10_000, ...edit });
+  const notSent = (reason) => ({ outcome: 'not-sent', reason });
+
+  assert.deepEqual(await send(), { outcome: 'submitted' });
+  assert.equal(requests.length, 2);
+  const [resolved, delivered] = requests;
+  assert.deepEqual([resolved.path, resolved.method, resolved.timeoutMs, resolved.lastAddress, resolved.member.machineId, resolved.tls],
+    ['/peer/v2/resolve-session', 'POST', 4_000, '10.0.0.2', B, { fingerprint: 'own' }]);
+  assert.deepEqual(resolved.body, { api: 2, target: target() });
+  // The deliver goes to the address that answered the resolve.
+  assert.deepEqual([delivered.path, delivered.method, delivered.timeoutMs, delivered.lastAddress, delivered.member.machineId],
+    ['/peer/v2/deliver', 'POST', 10_000, '10.0.0.9', B]);
+  assert.deepEqual(delivered.body, { api: 2, target: target(), sender: { ...exactSender(), machineId: A }, message: exactMessage(), remainingMs: 9_000 });
+  requests.length = 0;
+  assert.deepEqual(await send({ remainingMs: 5_000 }), { outcome: 'submitted' });
+  assert.deepEqual([requests[1].timeoutMs, requests[1].body.remainingMs], [5_000, 4_000]);
+
+  // No request for a machine that is not another member, or for an offline member.
+  requests.length = 0;
+  assert.deepEqual(await send({ identity: identity('f'.repeat(16)) }), notSent('unknown-machine'));
+  assert.deepEqual(await send({ identity: identity(A) }), notSent('unknown-machine'));
+  assert.deepEqual(await send({ identity: identity('c'.repeat(16)) }), notSent('machine-offline'));
+  assert.deepEqual(requests, []);
+  // A short budget or a body that fails the v2 check: the resolve only.
+  for (const [edit, reason] of [[{ remainingMs: 1_000 }, 'binding-expired'], [{ remainingMs: 0 }, 'binding-expired'],
+    [{ sender: { ...exactSender(), name: '' } }, 'invalid-request'], [{ message: { ...exactMessage(), text: '' } }, 'invalid-request']]) {
+    requests.length = 0;
+    assert.deepEqual(await send(edit), notSent(reason));
+    assert.deepEqual(requests.map((item) => item.path), ['/peer/v2/resolve-session']);
+  }
+
+  const failure = (handedOff) => async () => { throw Object.assign(new Error('timeout'), { code: 'timeout', handedOff }); };
+  const answer = (status, body) => async () => ({ status, body, address: '10.0.0.9' });
+  // The resolve: no text went out, so every result is not-sent.
+  for (const [reply, reason] of [
+    [async () => { throw new Error('no-address'); }, 'machine-offline'], [failure(false), 'machine-offline'],
+    [answer(404, { error: 'x' }), 'peer-upgrade-required'],
+    ...[400, 401, 403, 410, 429].map((status) => [answer(status, { error: 'x' }), 'refused']),
+    [answer(200, { api: 2, outcome: 'unavailable', reason: 'not-live' }), 'not-live'],
+    [answer(200, { api: 2, outcome: 'unavailable', reason: 'relay-unavailable' }), 'relay-unavailable'],
+    [failure(true), 'capability-unknown'], [answer(500, { error: 'x' }), 'capability-unknown'], [answer(413, {}), 'capability-unknown'],
+    [answer(200, { api: 2, outcome: 'ready', extra: 1 }), 'capability-unknown'], [answer(200, { api: 1, outcome: 'ready' }), 'capability-unknown'],
+    [answer(200, { api: 2, outcome: 'unavailable', reason: 'weird' }), 'capability-unknown'], [answer(200, null), 'capability-unknown'],
+  ]) {
+    resolve = reply;
+    requests.length = 0;
+    assert.deepEqual(await send(), notSent(reason), reason);
+    assert.deepEqual(requests.map((item) => item.path), ['/peer/v2/resolve-session']);
+  }
+  resolve = answer(200, { api: 2, outcome: 'ready' });
+  // The deliver.
+  const valid = (outcome, reason) => async (options) => ({ status: 200, address: '10.0.0.9',
+    body: { api: 2, msgId: options.body.message.msgId, outcome, ...(reason ? { reason } : {}) } });
+  for (const [reply, result] of [
+    [failure(false), notSent('machine-offline')], [failure(true), { outcome: 'unknown' }],
+    [async () => { throw Object.assign(new Error('invalid-json'), { handedOff: true }); }, { outcome: 'unknown' }],
+    [answer(404, { error: 'x' }), notSent('peer-upgrade-required')],
+    ...[400, 401, 403, 410, 429].map((status) => [answer(status, { error: 'x' }), notSent('refused')]),
+    [answer(413, { error: 'x' }), notSent('too-large')],
+    [valid('submitted'), { outcome: 'submitted' }], [valid('unknown'), { outcome: 'unknown' }],
+    [valid('not-sent', 'target-changed'), notSent('target-changed')], [valid('not-sent', 'rate-limited'), notSent('rate-limited')],
+    [valid('not-sent', 'weird'), { outcome: 'unknown' }], [valid('submitted', 'x'), { outcome: 'unknown' }],
+    [answer(200, { api: 2, msgId: ID2, outcome: 'submitted' }), { outcome: 'unknown' }],
+    [answer(200, { api: 2, outcome: 'submitted' }), { outcome: 'unknown' }],
+    [answer(500, { error: 'x' }), { outcome: 'unknown' }], [answer(502, null), { outcome: 'unknown' }],
+  ]) {
+    deliver = reply;
+    requests.length = 0;
+    assert.deepEqual(await send(), result);
+    assert.deepEqual(requests.map((item) => [item.path, item.member.machineId]), [['/peer/v2/resolve-session', B], ['/peer/v2/deliver', B]]);
+  }
+});
+
+test('the member routes of an exact send bind first, clamp the deadline, and never answer 404', async (t) => {
+  const caller = B + 'f'.repeat(48);
+  const binds = [];
+  let binder = async (request) => ({ apiVersion: 1, ok: true, pid: 1, binding: { registryHome: '/synthetic/sessions', runtimeSessionId: ID, pid: 5,
+    procStart: '50', messagingSocketPath: '/synthetic/5.sock', msgId: request.msgId, expiresAtMs: clock + 10_000 } });
+  let clock = 1_000_000;
+  let clockStep = null;
+  // The member list polls of a running relay get no answer: no network in this test.
+  const options = { now: () => clockStep ? clockStep() : clock, bindTarget: async (request) => { binds.push(request); return binder(request); },
+    request: async () => { throw new Error('offline'); } };
+  const results = [];
+  const check = async (promise, expected) => { const result = await promise; results.push(result); assert.deepEqual(result, expected); };
+  const reference = formatReference({ machineId: A, ...target() });
+  const deliverBody = () => ({ api: 2, target: target(), sender: { ...exactSender(), machineId: B }, message: exactMessage(), remainingMs: 9_000 });
+  const ok = (outcome, reason) => ({ status: 200, body: { api: 2, msgId: ID, outcome, ...(reason ? { reason } : {}) } });
+  const unavailable = (reason) => ({ status: 200, body: { api: 2, outcome: 'unavailable', reason } });
+  const invalid = { status: 400, body: { error: 'Invalid relay request.' } };
+
+  // No relay.
+  const f = await supervisorFixture(t, { group: fakeGroup([]), supervisor: options });
+  for (const body of [{ api: 2, target: target(), extra: 1 }, { api: 1, target: target() }, { api: 2, target: { ...target(), appId: 'x' } },
+    { api: 2, target: { ...target(), type: 'claude-local' } }, { api: 2, target: { ...target(), sourceId: 7 } }, { api: 2 }, null]) {
+    await check(f.supervisor.peerResolveExact(body, caller), invalid);
+  }
+  assert.deepEqual(binds, []);
+  await check(f.supervisor.peerResolveExact({ api: 2, target: target() }, caller), unavailable('relay-unavailable'));
+  assert.equal(binds[0].reference, reference);
+  assert.match(binds[0].msgId, /^[0-9a-f-]{36}$/);
+  assert.equal(binds[0].remainingMs, 0);
+  binder = async () => ({ apiVersion: 1, ok: false, code: 'not-live', message: 'x' });
+  await check(f.supervisor.peerResolveExact({ api: 2, target: target() }, caller), unavailable('not-live'));
+  binder = async () => ({ apiVersion: 1, ok: false, code: 'caller-unregistered', message: 'x' });
+  await check(f.supervisor.peerResolveExact({ api: 2, target: target() }, caller), unavailable('target-unavailable'));
+  binder = async () => { throw new Error('boom'); };
+  await check(f.supervisor.peerResolveExact({ api: 2, target: target() }, caller), unavailable('target-unavailable'));
+
+  binds.length = 0;
+  for (const edit of [(body) => { body.extra = 1; }, (body) => { body.remainingMs = 10_001; }, (body) => { body.remainingMs = 1.5; },
+    (body) => { body.api = 1; }, (body) => { body.sender.name = 'a\nb'; }, (body) => { body.message.hopChain = 'x'; }, (body) => { body.target.appId = 'x'; }]) {
+    const body = deliverBody();
+    edit(body);
+    await check(f.supervisor.peerDeliverExact(body, caller), invalid);
+  }
+  await check(f.supervisor.peerDeliverExact({ ...deliverBody(), sender: { ...exactSender(), machineId: A } }, caller),
+    { status: 403, body: { error: 'The sender machine does not match.' } });
+  assert.deepEqual(binds, []);
+  await check(f.supervisor.peerDeliverExact(deliverBody(), caller), ok('not-sent', 'target-unavailable'));
+  binder = async () => ({ apiVersion: 1, ok: false, code: 'target-changed', message: 'x' });
+  await check(f.supervisor.peerDeliverExact(deliverBody(), caller), ok('not-sent', 'target-changed'));
+  binder = async () => ({ apiVersion: 1, ok: false, code: 'scope-required', message: 'x' });
+  await check(f.supervisor.peerDeliverExact(deliverBody(), caller), ok('not-sent', 'target-unavailable'));
+  binder = async (request) => ({ apiVersion: 1, ok: true, pid: 1, binding: { registryHome: '/synthetic/sessions', runtimeSessionId: ID, pid: 5,
+    procStart: '50', messagingSocketPath: '/synthetic/5.sock', msgId: request.msgId, expiresAtMs: clock + 10_000 } });
+  await check(f.supervisor.peerDeliverExact(deliverBody(), caller), ok('not-sent', 'relay-unavailable'));
+  // The member deadline is min(remainingMs - 500, 8 s); the binding must end 5.5 s before it.
+  assert.deepEqual(binds.at(-1), { reference, msgId: ID, remainingMs: 8_000 });
+  binds.length = 0;
+  for (const remainingMs of [6_000, 500, 0]) await check(f.supervisor.peerDeliverExact({ ...deliverBody(), remainingMs }, caller), ok('not-sent', 'binding-expired'));
+
+  // With a relay.
+  const relay = await fakeRelay(t, { 'POST /deliver-bound': [200, { outcome: 'submitted' }] });
+  const live = await supervisorFixture(t, { child: () => fakeChild({ line: relay.line }), supervisor: options });
+  await live.supervisor.start();
+  await check(live.supervisor.peerResolveExact({ api: 2, target: target() }, caller), { status: 200, body: { api: 2, outcome: 'ready' } });
+  await check(live.supervisor.peerDeliverExact(deliverBody(), caller), ok('submitted'));
+  const sent = relay.calls.at(-1);
+  assert.deepEqual([sent.method, sent.url], ['POST', '/deliver-bound']);
+  assert.deepEqual(sent.body, { binding: { registryHome: '/synthetic/sessions', runtimeSessionId: ID, pid: 5, procStart: '50',
+    messagingSocketPath: '/synthetic/5.sock', msgId: ID, expiresAtMs: clock + 2_500 }, sender: { ...exactSender(), machineId: B }, message: exactMessage() });
+  // A short remainingMs: the relay write must end before the member deadline.
+  await check(live.supervisor.peerDeliverExact({ ...deliverBody(), remainingMs: 6_100 }, caller), ok('submitted'));
+  assert.equal(relay.calls.at(-1).body.binding.expiresAtMs, clock + 100);
+  binds.length = 0;
+  const count = relay.calls.length;
+  await check(live.supervisor.peerDeliverExact({ ...deliverBody(), remainingMs: 6_000 }, caller), ok('not-sent', 'binding-expired'));
+  assert.equal(relay.calls.length, count);
+
+  const replies = async (routes) => {
+    const other = await fakeRelay(t, routes);
+    const fixture = await supervisorFixture(t, { child: () => fakeChild({ line: other.line }), supervisor: options });
+    await fixture.supervisor.start();
+    return fixture.supervisor.peerDeliverExact(deliverBody(), caller);
+  };
+  // An older relay.js has no /deliver-bound route (404); 400 and 401 are its checks before any write.
+  await check(replies({}), ok('not-sent', 'relay-unavailable'));
+  await check(replies({ 'POST /deliver-bound': [400, { error: 'x' }] }), ok('not-sent', 'relay-unavailable'));
+  await check(replies({ 'POST /deliver-bound': [401, { error: 'x' }] }), ok('not-sent', 'relay-unavailable'));
+  await check(replies({ 'POST /deliver-bound': [500, { error: 'x' }] }), ok('unknown'));
+  await check(replies({ 'POST /deliver-bound': [200, { outcome: 'not-sent', reason: 'target-changed' }] }), ok('not-sent', 'target-changed'));
+  await check(replies({ 'POST /deliver-bound': [200, { outcome: 'unknown' }] }), ok('unknown'));
+  for (const body of [{ outcome: 'not-sent', reason: 'weird' }, { outcome: 'submitted', extra: 1 }, { ok: true }, null]) {
+    await check(replies({ 'POST /deliver-bound': [200, body] }), ok('unknown'));
+  }
+
+  // A relay that does not answer: unknown when the member deadline ends. The clock jumps forward after the binding check,
+  // so the relay call has 100 ms left.
+  const hang = http.createServer(() => {});
+  await new Promise((resolve) => hang.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => { hang.closeAllConnections(); hang.close(resolve); }));
+  const slow = await supervisorFixture(t, { supervisor: options,
+    child: () => fakeChild({ line: JSON.stringify({ port: hang.address().port, token: 'e'.repeat(64) }) }) });
+  await slow.supervisor.start();
+  let reads = 0;
+  clockStep = () => clock + (++reads >= 4 ? 7_900 : 0);
+  const started = Date.now();
+  await check(slow.supervisor.peerDeliverExact(deliverBody(), caller), ok('unknown'));
+  clockStep = null;
+  assert.ok(Date.now() - started < 2_000);
+  for (const result of results) assert.notEqual(result.status, 404);
 });

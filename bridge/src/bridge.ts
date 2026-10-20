@@ -28,6 +28,11 @@ const relayReply = z.union([z.strictObject({ ok: z.literal(true), outcome: z.lit
 const boundReply = z.union([
   z.strictObject({ apiVersion: z.literal(1), ok: z.literal(true), pid: z.number().int().positive(), binding: bindingSchema }),
   z.strictObject({ apiVersion: z.literal(1), ok: z.literal(false), code: z.string().regex(/^[a-z][a-z-]{0,63}$/), message: z.string().min(1).max(512) })]);
+// The reply of /api/agent/send-member; any other shape, pid, or msgId means that the outcome is unknown.
+const memberReply = z.union([
+  z.strictObject({ apiVersion: z.literal(1), pid: z.number().int().positive(), msgId: uuid, outcome: z.enum(['submitted', 'unknown']) }),
+  z.strictObject({ apiVersion: z.literal(1), pid: z.number().int().positive(), msgId: uuid, outcome: z.literal('not-sent'),
+    code: z.string().regex(/^[a-z][a-z-]{0,63}$/), message: z.string().min(1).max(512) })]);
 const engineUnavailable = () => new SendRefused('The local ASB engine did not answer. Nothing sent (engine-unavailable).');
 const remoteRefusals: Record<'machine-offline' | 'too-large' | 'rate-limited' | 'refused', (machine: string) => string> = {
   'machine-offline': machine => `${machine} is not reachable. Nothing sent.`,
@@ -313,6 +318,10 @@ export class Bridge {
         reply = boundReply.parse(await engineRequest(runtime, '/api/agent/resolve-bound', { method: 'POST', timeoutMs: 5_000, body: { reference,
           caller: { runtimeSessionId: this.threadId, configDir: resolve(this.configDir) }, msgId, remainingMs: 10_000 } }));
       } catch { throw engineUnavailable(); }
+      if (!reply.ok && reply.code === 'member-target') {
+        if (notifyWhenIdle) throw new SendRefused('Idle subscriptions do not work across machines yet. Nothing sent (remote-idle-unsupported).');
+        return this.sendMember(runtime, reference, ids.id!, text!);
+      }
       if (!reply.ok) throw new SendRefused(`${reply.message} Nothing sent (${reply.code}).`);
       if (reply.pid !== runtime.pid || reply.binding.msgId !== msgId) throw engineUnavailable();
       const { binding } = reply;
@@ -360,6 +369,37 @@ export class Bridge {
     }
     return { messageId: id, subscriptionId, status: id
       ? this.db.query<{ status: string }, [string]>('SELECT status FROM messages WHERE id=?').get(id)?.status : 'socket-written' };
+  }
+
+  // One exact session on a member machine, through the local engine only. It never lists peers, never uses /api/relay/*,
+  // and never sends again by itself. Runs inside sendReference's exclusive section.
+  private async sendMember(runtime: EngineRuntime, reference: string, id: string, text: string) {
+    const receiver = this.receiver();
+    const address = peerAddress(receiver.messagingSocketPath);
+    const mode = this.runtime().mode;
+    const hops = [...await this.outgoingHops(), ...(this.ownHop() ? [this.ownHop()!] : [])].slice(-32);
+    // The same limit as a local send; any UUID has the length of the target session ID.
+    serializeFrame(userFrame({ sessionId: randomUUID() }, address, receiver.name, this.threadId, id, text, mode, null, hops));
+    this.db.run("INSERT INTO messages (id,peer_id,direction,text,status,peer_address,peer_start) VALUES (?,?,'out',?,'submitting',NULL,NULL)",
+      [id, reference, text]);
+    let reply: z.infer<typeof memberReply> | undefined;
+    try {
+      reply = memberReply.parse(await engineRequest(runtime, '/api/agent/send-member', { method: 'POST', timeoutMs: 16_000, body: { reference,
+        caller: { runtimeSessionId: this.threadId, configDir: resolve(this.configDir) }, mode: ['prompting', 'bypass'].includes(mode) ? mode : 'unknown',
+        message: { msgId: id, text, hopChain: hops }, remainingMs: 10_000 } }));
+      if (reply.pid !== runtime.pid || reply.msgId !== id) reply = undefined;
+    } catch { reply = undefined; }
+    if (reply?.outcome === 'not-sent') {
+      const reason = `${reply.message} Nothing sent (${reply.code}).`;
+      this.db.run("UPDATE messages SET status='not-sent',status_reason=? WHERE id=? AND status='submitting'", [reason, id]);
+      throw new SendRefused(reason);
+    }
+    if (reply?.outcome !== 'submitted') {
+      this.db.run("UPDATE messages SET status='unknown' WHERE id=? AND status='submitting'", [id]);
+      throw new Error(`Send outcome unknown for ${id}; inspect status before sending again`);
+    }
+    this.db.run("UPDATE messages SET status='socket-written' WHERE id=? AND status='submitting'", [id]);
+    return { messageId: id, subscriptionId: null, status: this.db.query<{ status: string }, [string]>('SELECT status FROM messages WHERE id=?').get(id)?.status };
   }
 
   // Runs inside sendMessage's exclusive section.

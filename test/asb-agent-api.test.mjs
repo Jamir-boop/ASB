@@ -384,3 +384,58 @@ test('the engine binds a live local codex or CLI target from a private registry 
   assert.equal((await bind(references[1])).code, 'not-live');
   assert.equal(await readFile(pendingStatePath, 'utf8').catch((error) => error.code), before);
 });
+
+const SEND = '/api/agent/send-member';
+const MEMBER_ID = 'fedcba9876543210';
+const sendBody = (fields = {}) => ({ reference: `asb:1/${MEMBER_ID}/codex/${'cd'.repeat(16)}/codex:${SESSION}`,
+  caller: { runtimeSessionId: CALLER, configDir: '/synthetic/claude' }, mode: 'prompting',
+  message: { msgId: MSG, text: 'hello', hopChain: [] }, remainingMs: 10_000, ...fields });
+
+test('the send-member route is a token-only POST action with an exact body of up to 2 MiB', async (t) => {
+  const calls = [];
+  // A slow dashboard read: its time comes out of the delivery budget.
+  let clock = 1_000_000;
+  const { request } = await serve(t, { now: () => clock, loadDashboard: async () => { clock += 300; return { providers: [], threads: [] }; },
+    sendMember: async (body, dashboard) => { calls.push({ body, threads: dashboard.threads.length });
+      return { apiVersion: 1, pid: 1, msgId: MSG, outcome: 'submitted' }; } });
+  const body = sendBody();
+  for (const token of ['', 'window-tokem']) assert.equal((await request(SEND, { method: 'POST', token, body })).status, 403);
+  for (const headers of [{ host: 'example.invalid' }, { origin: 'https://example.invalid' }, { 'sec-fetch-site': 'cross-site' }, { 'sec-fetch-site': 'none' }]) {
+    assert.equal((await request(SEND, { method: 'POST', body, headers })).status, 403, JSON.stringify(headers));
+  }
+  assert.equal((await request(SEND, { method: 'POST', body, origin: null })).status, 403);
+  const get = await request(SEND);
+  assert.deepEqual([get.status, get.headers.get('allow')], [405, 'POST']);
+  const caller = body.caller;
+  for (const invalid of ['{', 'null', '[]', '{}', { ...body, extra: 1 }, { ...body, msgId: MSG }, (({ mode, ...rest }) => rest)(body),
+    { ...body, reference: 1 }, { ...body, caller: null }, { ...body, caller: { ...caller, extra: 1 } }, { ...body, caller: { ...caller, runtimeSessionId: 'x' } },
+    { ...body, caller: { ...caller, configDir: 'relative' } }, { ...body, mode: 'auto' }, { ...body, mode: null },
+    { ...body, remainingMs: -1 }, { ...body, remainingMs: 20_001 }, { ...body, remainingMs: 1.5 }, { ...body, remainingMs: '10' }]) {
+    const response = await request(SEND, { method: 'POST', body: invalid });
+    assert.equal(response.status, 400, JSON.stringify(invalid).slice(0, 200));
+    assert.deepEqual(response.json(), { error: 'Invalid send request.' });
+  }
+  assert.equal((await request(SEND, { method: 'POST', body: sendBody({ message: { msgId: MSG, text: 'x'.repeat(2 * 1024 * 1024), hopChain: [] } }) })).status, 413);
+  assert.deepEqual(calls, []);
+  const large = sendBody({ message: { msgId: MSG, text: 'x'.repeat(1_500_000), hopChain: [] } });
+  const reply = await request(SEND, { method: 'POST', body: large });
+  assert.deepEqual([reply.status, reply.headers.get('cache-control'), reply.json()], [200, 'no-store', { apiVersion: 1, pid: 1, msgId: MSG, outcome: 'submitted' }]);
+  assert.deepEqual(calls, [{ body: { ...large, remainingMs: 9_700 }, threads: 0 }]);
+  const failing = await serve(t, { sendMember: async () => { throw new Error('/synthetic/secret'); } });
+  const error = await failing.request(SEND, { method: 'POST', body });
+  assert.deepEqual([error.status, error.headers.get('cache-control'), error.json()], [500, 'no-store', { error: 'Cannot send the message.' }]);
+  const open = await serve(t, { sourceToken: '', sendMember: async () => { throw new Error('must not run'); } });
+  assert.equal((await open.request(SEND, { method: 'POST', body })).status, 403);
+});
+
+test('the engine answers a member send without a group as not sent, never 404', async (t) => {
+  const { homeDir, registry } = await fixture(t);
+  const { request } = await serve(t, { switchboard: true, sourceRegistry: registry, pendingStatePath: path.join(homeDir, 'pending.json'),
+    machineIdentity: () => ({ machineId: MACHINE_ID, machineName: 'synthetic-pc' }), referenceScopes: () => () => 'ab'.repeat(16) });
+  const reply = await request(SEND, { method: 'POST', body: sendBody() });
+  assert.deepEqual([reply.status, reply.headers.get('cache-control')], [200, 'no-store']);
+  assert.deepEqual(reply.json(), { apiVersion: 1, pid: process.pid, msgId: MSG, outcome: 'not-sent', code: 'unknown-machine',
+    message: 'The machine in this reference is not this machine or a member of its machine group.' });
+  const local = await request(SEND, { method: 'POST', body: sendBody({ reference: `asb:1/${MACHINE_ID}/codex/${'ab'.repeat(16)}/codex:${SESSION}` }) });
+  assert.equal(local.json().code, 'local-target');
+});

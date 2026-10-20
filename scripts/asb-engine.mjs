@@ -53,9 +53,10 @@ export async function runEngine({ env = process.env, platform = process.platform
   // Decision B: the group reads the gateway and the server lazily, so it is made first.
   const group = createMachineGroup({ gateway: () => gateway, server: () => server, asbVersion,
     onChange: () => { server.invalidateDashboard('peer-sessions', { hard: false }); relay.check(); } });
-  const relay = createRelaySupervisor({ group, port, sourceToken, env, platform });
+  const relay = createRelaySupervisor({ group, port, sourceToken, env, platform, bindTarget: (request) => server.bindMemberTarget(request) });
   const gateway = createPhoneGateway({ localPort: port, asbVersion,
-    peer: { ...group.peer, peers: () => relay.peerPeers(), deliver: (value, fingerprint) => relay.peerDeliver(value, fingerprint) },
+    peer: { ...group.peer, peers: () => relay.peerPeers(), deliver: (value, fingerprint) => relay.peerDeliver(value, fingerprint),
+      resolveExact: (value, fingerprint) => relay.peerResolveExact(value, fingerprint), deliverExact: (value, fingerprint) => relay.peerDeliverExact(value, fingerprint) },
     onPhonePaired: group.onPhonePaired, onPhoneRevoked: group.onPhoneRevoked });
   let machineId = '';
   let referenceScopes = null;

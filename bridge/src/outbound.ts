@@ -20,7 +20,7 @@ const boundMessages = {
   'receiver-stopped': 'The receiver of this task stopped before the write.',
 };
 type BoundCode = keyof typeof boundMessages;
-export const refuse = (code: BoundCode) => new SendRefused(`${boundMessages[code]} Nothing sent (${code}).`);
+export const refuse = (code: BoundCode) => Object.assign(new SendRefused(`${boundMessages[code]} Nothing sent (${code}).`), { code });
 
 // The first frame carries the msgId of the binding, and each frame for a session names the bound one.
 function boundFrames(binding: Binding, list: unknown[]) {

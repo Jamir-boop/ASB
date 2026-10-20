@@ -917,6 +917,42 @@ gatewayTest('the relay member routes need a member certificate, check methods, a
   assert.equal(calls.length, 1);
 });
 
+gatewayTest('the exact member routes exist only with their function, use the member checks, and take up to 2 MiB for deliver', async (t) => {
+  const calls = [];
+  const relay = { resolveExact: async (value, fingerprint) => { calls.push(['resolve', value, fingerprint]); return { status: 200, body: { api: 2, outcome: 'ready' } }; },
+    deliverExact: async (value, fingerprint) => { calls.push(['deliver', value, fingerprint]); return { status: 400, body: { error: 'Invalid relay request.' } }; } };
+  const { group, peer, joiner, stranger, joinBody, code } = await peerFixture(t, { address: '127.0.0.5', relay });
+  for (const route of ['/peer/v2/resolve-session', '/peer/v2/deliver']) assert.equal((await peer(route, { method: 'POST', as: stranger, body: {} })).status, 401);
+  assert.equal((await peer('/peer/v1/join', { method: 'POST', as: joiner, body: joinBody(await code()) })).status, 200);
+  const resolved = await peer('/peer/v2/resolve-session', { method: 'POST', as: joiner, body: { api: 2 } });
+  assert.deepEqual([resolved.status, resolved.json, resolved.headers['cache-control']], [200, { api: 2, outcome: 'ready' }, 'no-store']);
+  for (const route of ['/peer/v2/resolve-session', '/peer/v2/deliver']) assert.equal((await peer(route, { as: joiner })).status, 405);
+  assert.equal((await peer('/peer/v2/resolve-session', { method: 'POST', as: joiner, body: { text: 'x'.repeat(70 * 1024) } })).status, 413);
+  const large = { text: 'x'.repeat(1_500_000) };
+  assert.deepEqual((await peer('/peer/v2/deliver', { method: 'POST', as: joiner, body: large })).json, { error: 'Invalid relay request.' });
+  assert.equal((await peer('/peer/v2/deliver', { method: 'POST', as: joiner, body: { text: 'x'.repeat(2 * 1024 * 1024) } })).status, 413);
+  assert.deepEqual(calls, [['resolve', { api: 2 }, joiner.fingerprint], ['deliver', large, joiner.fingerprint]]);
+  // Every other /peer/v2 path is not a route.
+  for (const route of ['/peer/v2/capabilities', '/peer/v2/peers', '/peer/v2/hello', '/peer/v2/deliver/x', '/peer/v2/']) {
+    assert.equal((await peer(route, { method: 'POST', as: joiner, body: {} })).status, 404, route);
+  }
+  await group.remove((await group.status()).members.find((item) => item.name === 'laptop').machineId);
+  for (const route of ['/peer/v2/resolve-session', '/peer/v2/deliver']) {
+    assert.equal((await peer(route, { method: 'POST', as: joiner, body: {} })).status, 410, route);
+  }
+  assert.equal(calls.length, 2);
+});
+
+gatewayTest('an engine without the exact functions has no v2 routes: 404', async (t) => {
+  const { peer, joiner, joinBody, code } = await peerFixture(t, { address: '127.0.0.6', relay: { resolveExact: async () => ({ status: 200, body: {} }) } });
+  assert.equal((await peer('/peer/v1/join', { method: 'POST', as: joiner, body: joinBody(await code()) })).status, 200);
+  assert.equal((await peer('/peer/v2/deliver', { method: 'POST', as: joiner, body: {} })).status, 404);
+  assert.equal((await peer('/peer/v2/resolve-session', { method: 'POST', as: joiner, body: {} })).status, 200);
+  const old = await peerFixture(t, { address: '127.0.0.7' });
+  assert.equal((await old.peer('/peer/v1/join', { method: 'POST', as: old.joiner, body: old.joinBody(await old.code()) })).status, 200);
+  for (const route of ['/peer/v2/resolve-session', '/peer/v2/deliver']) assert.equal((await old.peer(route, { method: 'POST', as: old.joiner, body: {} })).status, 404);
+});
+
 gatewayTest('a non-member certificate counts toward the throttle on peer routes', async (t) => {
   const { peer, stranger, advance } = await peerFixture(t);
   for (let index = 0; index < 20; index += 1) assert.equal((await peer('/peer/v1/sessions', { as: stranger })).status, 401);

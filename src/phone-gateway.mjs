@@ -373,7 +373,7 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
 
   // The member routes of the machine group; only `join` takes a certificate that is not a member's.
   async function handlePeer(request, response, group, route, reject) {
-    const method = ['join', 'leave', 'deliver'].includes(route) ? 'POST' : 'GET';
+    const method = ['join', 'leave', 'deliver', 'v2/resolve-session', 'v2/deliver'].includes(route) ? 'POST' : 'GET';
     if (request.method !== method) { response.setHeader('allow', method); reject(405, 'Method not allowed.'); return; }
     const raw = request.socket.getPeerCertificate(true)?.raw;
     const caller = raw ? hash(raw) : '';
@@ -382,7 +382,7 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     if (!caller || (route !== 'join' && !peer.memberFingerprint(caller))) { reject(401, 'This machine is not in the group.'); return; }
     try {
       // A relayed message can be 1 MiB of text (plan 9.7).
-      const body = method === 'POST' ? await readBody(request, route === 'deliver' ? 2 * 1024 * 1024 : 64 * 1024) : null;
+      const body = method === 'POST' ? await readBody(request, ['deliver', 'v2/deliver'].includes(route) ? 2 * 1024 * 1024 : 64 * 1024) : null;
       if (response.destroyed || group !== listeners) return;
       let value;
       try { value = body && JSON.parse(body.toString('utf8')); } catch {}
@@ -397,6 +397,8 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
         result = await peer.leave(caller);
       } else if (route === 'peers') result = await peer.peers();
       else if (route === 'deliver') result = await peer.deliver(value, caller);
+      else if (route === 'v2/resolve-session') result = await peer.resolveExact(value, caller);
+      else if (route === 'v2/deliver') result = await peer.deliverExact(value, caller);
       else if (route === 'sessions') {
         const answer = await peer.sessions(request.headers['if-none-match']);
         if (response.destroyed) return;
@@ -437,6 +439,12 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     pairRoute = url.pathname === '/phone/v1/pair';
     const peerRoute = peer && url.pathname.match(/^\/peer\/v1\/(join|hello|group|sessions|leave|peers|deliver)$/);
     if (peerRoute) { await handlePeer(request, response, group, peerRoute[1], reject); return; }
+    // The exact member routes (v2) exist only when the engine gives their function; every other /peer/v2 path is 404.
+    const exactRoute = peer && url.pathname.match(/^\/peer\/v2\/(resolve-session|deliver)$/)?.[1];
+    if (exactRoute && typeof peer[exactRoute === 'deliver' ? 'deliverExact' : 'resolveExact'] === 'function') {
+      await handlePeer(request, response, group, `v2/${exactRoute}`, reject);
+      return;
+    }
     const match = url.pathname.match(/^\/phone\/v1\/threads\/([^/]{1,512})\/(open|mark-read|mark-unread|pin|unpin|move-pin|discard-result|keep-result|drawer-in|drawer-out)$/);
     const hello = url.pathname === '/phone/v1/hello';
     const dashboard = url.pathname === '/phone/v1/dashboard';

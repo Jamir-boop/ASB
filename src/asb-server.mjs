@@ -10,6 +10,11 @@ const PALETTE_KEYS = ['background', 'text', 'accent', 'muted', 'divider', 'succe
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SOURCE_REVISION = /^[a-f0-9]{64}$/;
 const SOURCE_ID = /^[a-z0-9][a-z0-9-]{0,79}$/;
+// The sending task of an exact send: exactly its runtime session ID and its absolute config folder.
+const validCaller = (caller) => Boolean(caller) && typeof caller === 'object' && !Array.isArray(caller)
+  && Object.keys(caller).sort().join(',') === 'configDir,runtimeSessionId'
+  && typeof caller.runtimeSessionId === 'string' && UUID.test(caller.runtimeSessionId)
+  && typeof caller.configDir === 'string' && caller.configDir.length <= 4096 && path.isAbsolute(caller.configDir);
 
 // Returns the palette with lowercase colors in a fixed key order, or null when the value is not exactly a palette.
 function validPalette(value) {
@@ -35,7 +40,7 @@ function readPalette(palettePath) {
 export function createAsbServer({
   markUnreadThread = null, markReadThread = null, setUnreadSettings = null, pinThread = null, discardThread = null, drawerThread = null, muteThread = null,
   listSources = null, updateSource = null, removeSource = null, sourceToken = '', phoneGateway = null, machineGroup = null, serviceMode = false, onStop = null,
-  machineRelay = null, readSources = async () => [], resolveSession = null, resolveBound = null,
+  machineRelay = null, readSources = async () => [], resolveSession = null, resolveBound = null, sendMember = null,
   appVersion = '', rootDir = '', sourcesPath = '', readSourcesRevision = async () => null,
   palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, now = Date.now, ...snapshotOptions
 } = {}) {
@@ -98,8 +103,9 @@ export function createAsbServer({
     const engineStopRoute = Boolean(onStop) && url.pathname === '/api/engine/stop';
     const resolveRoute = Boolean(resolveSession) && url.pathname === '/api/agent/resolve-session';
     const resolveBoundRoute = Boolean(resolveBound) && url.pathname === '/api/agent/resolve-bound';
+    const sendMemberRoute = Boolean(sendMember) && url.pathname === '/api/agent/send-member';
     const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute
-      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute || resolveRoute || resolveBoundRoute
+      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute || resolveRoute || resolveBoundRoute || sendMemberRoute
       || Boolean(groupRoute?.[1]) || relayRoute === 'send';
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
     const readApiRoute = url.pathname === '/api/dashboard' || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute
@@ -144,6 +150,32 @@ export function createAsbServer({
       sendJson(response, 200, { stopping: true });
       return;
     }
+    if (sendMemberRoute) {
+      // The delivery budget counts from here, so the body read and the dashboard wait use it too.
+      const startedAtMs = now();
+      response.setHeader('Cache-Control', 'no-store');
+      if (!expectedSourceToken.length || !sourceTokenAllowed(request)) {
+        sendJson(response, 403, { error: 'Use the current ASB source token for agent access.' });
+        return;
+      }
+      let body;
+      try { body = await readBody(request, 2 * 1024 * 1024); } catch (error) { sendJson(response, error.statusCode === 413 ? 413 : 400, { error: 'Invalid send request.' }); return; }
+      const fields = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join(',') : 'invalid';
+      if (fields !== 'caller,message,mode,reference,remainingMs' || typeof body.reference !== 'string' || !validCaller(body.caller)
+        || !['prompting', 'bypass', 'unknown'].includes(body.mode)
+        || !Number.isInteger(body.remainingMs) || body.remainingMs < 0 || body.remainingMs > 20_000) {
+        sendJson(response, 400, { error: 'Invalid send request.' });
+        return;
+      }
+      // The cached rows and the caller registry, then the member's resolve and deliver routes; no state write here.
+      try {
+        const dashboard = await dashboardForRequest();
+        sendJson(response, 200, await sendMember({ reference: body.reference, caller: { runtimeSessionId: body.caller.runtimeSessionId,
+          configDir: body.caller.configDir }, mode: body.mode, message: body.message, remainingMs: Math.max(0, body.remainingMs - (now() - startedAtMs)) }, dashboard));
+      }
+      catch { sendJson(response, 500, { error: 'Cannot send the message.' }); }
+      return;
+    }
     if (resolveRoute || resolveBoundRoute) {
       response.setHeader('Cache-Control', 'no-store');
       if (!expectedSourceToken.length || !sourceTokenAllowed(request)) {
@@ -155,10 +187,7 @@ export function createAsbServer({
       const fields = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join(',') : 'invalid';
       if (resolveBoundRoute) {
         const caller = body?.caller;
-        if (fields !== 'caller,msgId,reference,remainingMs' || typeof body.reference !== 'string'
-          || !caller || typeof caller !== 'object' || Array.isArray(caller) || Object.keys(caller).sort().join(',') !== 'configDir,runtimeSessionId'
-          || typeof caller.runtimeSessionId !== 'string' || !UUID.test(caller.runtimeSessionId)
-          || typeof caller.configDir !== 'string' || caller.configDir.length > 4096 || !path.isAbsolute(caller.configDir)
+        if (fields !== 'caller,msgId,reference,remainingMs' || typeof body.reference !== 'string' || !validCaller(caller)
           || typeof body.msgId !== 'string' || !UUID.test(body.msgId)
           || !Number.isInteger(body.remainingMs) || body.remainingMs < 0 || body.remainingMs > 20_000) {
           sendJson(response, 400, { error: 'Invalid resolve request.' });

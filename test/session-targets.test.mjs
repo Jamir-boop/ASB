@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { formatReference, rowReference, shortReference } from '../src/session-references.mjs';
-import { bindLocalTarget, resolveSessionReference } from '../src/session-targets.mjs';
+import { bindLocalTarget, bindMemberTarget, memberTarget, notSentMessage, resolveSessionReference } from '../src/session-targets.mjs';
 
 // Synthetic data only. Platform-neutral (test/windows-tests.json).
 const SELF = '0123456789abcdef';
@@ -213,8 +213,8 @@ test('exact binding failures come in check order, and steps 1 to 6 use no io', a
   await early(full(SELF, 'gone', SCOPE, 'codex', UUID_3), 'stale-source');
   await early(full(SELF, 'codex', SCOPE_B, 'codex', UUID_3), 'stale-source-scope');
   await early(soloRow.reference, 'ambiguous-identity', { threads: [soloRow, { ...soloRow, id: 'copy' }] });
-  await early(full(OLD, 'codex', SCOPE_M, 'codex', UUID_2), 'remote-exact-unsupported');
-  await early(memberFound.reference, 'remote-exact-unsupported');
+  await early(full(OLD, 'codex', SCOPE_M, 'codex', UUID_2), 'peer-upgrade-required');
+  await early(memberFound.reference, 'member-target');
   await early(soloRow.reference, 'unsupported-platform', { io: { ...io, platform: 'win32' } });
   await early(full(SELF, 'claude-desktop-code', SCOPE_B, 'claude-local', `local_${UUID_4}`), 'unsupported-type');
   await early(cacheRow.reference, 'unsupported-type');
@@ -238,4 +238,91 @@ test('exact binding failures come in check order, and steps 1 to 6 use no io', a
   for (const claim of [null, { pid: 31, proc_start: '300' }, { pid: 30, proc_start: '301' }]) {
     failed(await bind(soloRow.reference, { io: fakeIo({ receiverClaim: async () => claim }).io }), 'not-mapped');
   }
+});
+
+// Exact member sends: the sending engine's checks (memberTarget) and the receiving engine's binding (bindMemberTarget).
+const caller = { runtimeSessionId: CALLER, configDir: '/synthetic/claude' };
+const member = (reference, { io = fakeIo().io, ...overrides } = {}) => memberTarget({ reference, caller }, { ...boundContext, ...overrides }, io);
+
+test('memberTarget checks in order with no io before the caller check, and does not use the cached member rows', async () => {
+  const { io, calls } = fakeIo();
+  const early = async (reference, code, overrides = {}) => failed(await member(reference, { io, ...overrides }), code);
+  await early(`codex/${UUID_2}`, 'invalid-reference');
+  await early(7, 'invalid-reference');
+  await early('asb:1/x', 'invalid-reference');
+  await early(`asb:2/${MEMBER}/codex/${SCOPE_M}/codex:${UUID_2}`, 'unsupported-reference-version');
+  await early(memberFound.reference, 'no-machine-identity', { machine: {} });
+  await early(full(OTHER, 'codex', SCOPE, 'codex', UUID_2), 'unknown-machine');
+  await early(full(OLD, 'codex', SCOPE_M, 'codex', UUID_2), 'peer-upgrade-required');
+  await early(soloRow.reference, 'local-target');
+  await early(memberFound.reference, 'unsupported-platform', { io: { ...io, platform: 'darwin' } });
+  await early(full(MEMBER, 'codex', SCOPE_M, 'claude-local', `local_${UUID_2}`), 'unsupported-type');
+  await early(full(MEMBER, 'codex', SCOPE_M, 'opencode', 'abc'), 'unsupported-type');
+  assert.deepEqual(calls, []);
+  for (const list of [[], [record(10, CALLER, 'cli')], [callerRecord, record(11, CALLER, 'codex-asb-bridge')]]) {
+    failed(await member(memberFound.reference, { io: records(list) }), 'caller-unregistered');
+  }
+  failed(await member(memberFound.reference, { io: fakeIo({ registry: async () => null }).io }), 'caller-unregistered');
+
+  const { io: okIo, calls: okCalls } = fakeIo();
+  assert.deepEqual(await member(memberFound.reference, { io: okIo }), { ok: true, identity: ident(memberFound.reference, MEMBER, 'codex', SCOPE_M, 'codex', UUID_2),
+    name: SECRET.title });
+  assert.deepEqual(okCalls, [['registry', '/synthetic/claude']]);
+  // The member decides not-found and offline, not the cached rows of this engine.
+  const missing = full(MEMBER, 'claude-desktop-code', SCOPE_M, 'claude-cli', UUID);
+  assert.equal((await member(missing)).ok, true);
+  assert.equal((await member(memberFound.reference, { members: [{ ...members[1], online: false }] })).ok, true);
+  const named = async (name) => (await member(memberFound.reference, { io: records([{ ...callerRecord, name }]) })).name;
+  assert.equal(await named('a\nb\x7fc'), 'a b c');
+  assert.equal(await named('x'.repeat(200)), 'x'.repeat(128));
+  for (const name of ['', undefined, 7]) assert.equal(await named(name), 'Codex');
+});
+
+const HOME_1 = '/synthetic/h1';
+const HOME_2 = '/synthetic/h2';
+const homeIo = (homes, overrides = {}) => {
+  const calls = [];
+  const io = { platform: 'linux', pid: 999, now: () => 1_000,
+    targetHomes: async (type, source) => { calls.push(['targetHomes', type, source.id]); return type === 'claude-cli' ? ['/synthetic/claude'] : Object.keys(homes); },
+    registry: async (home) => { calls.push(['registry', home]); return homes[home] ? { root: `${home}/sessions`, records: homes[home] } : null; },
+    claudeRoot: async (source) => { calls.push(['claudeRoot', source.id]); return source.id === 'claude-desktop-code' ? ROOT : '/synthetic/other/sessions'; },
+    receiverClaim: async (source, appId) => { calls.push(['receiverClaim', source.id, appId]); return { pid: 30, proc_start: '300' }; },
+    ...overrides };
+  return { io, calls };
+};
+const bindMember = (reference, io, overrides = {}) => bindMemberTarget({ reference, msgId: MSG, remainingMs: 10_000 }, { ...boundContext, ...overrides }, io);
+
+test('bindMemberTarget binds in the homes of the target source only, with no caller registry', async () => {
+  const { io, calls } = homeIo({ [HOME_1]: [cliTarget], [HOME_2]: [codexTarget] });
+  assert.deepEqual(await bindMember(soloRow.reference, io), { apiVersion: 1, ok: true, pid: 999, binding: { registryHome: `${HOME_2}/sessions`,
+    runtimeSessionId: UUID_3, pid: 30, procStart: '300', messagingSocketPath: '/synthetic/s/30.sock', msgId: MSG, expiresAtMs: 11_000 } });
+  assert.deepEqual(calls, [['targetHomes', 'codex', 'codex'], ['registry', HOME_1], ['registry', HOME_2], ['receiverClaim', 'codex', UUID_3]]);
+  failed(await bindMember(soloRow.reference, homeIo({ [HOME_1]: [codexTarget], [HOME_2]: [{ ...codexTarget, pid: 31 }] }).io), 'ambiguous-identity');
+  // A CLI session counts only in its own source home: the record in another home is not live for it.
+  const cli = homeIo({ '/synthetic/claude': [], [HOME_1]: [cliTarget] });
+  failed(await bindMember(cliRow.reference, cli.io), 'not-live');
+  assert.deepEqual(cli.calls.slice(0, 2), [['targetHomes', 'claude-cli', 'claude-desktop-code'], ['registry', '/synthetic/claude']]);
+  const bound = await bindMember(cliRow.reference, homeIo({ '/synthetic/claude': [cliTarget] }, { claudeRoot: async (source) =>
+    source.id === 'claude-desktop-code' ? '/synthetic/claude/sessions' : '/synthetic/other/sessions' }).io);
+  assert.equal(bound.binding.registryHome, '/synthetic/claude/sessions');
+  failed(await bindMember(soloRow.reference, homeIo({}).io), 'not-live');
+  // The binder's own checks: another machine, the 5a refusals, and the resolver failures pass through.
+  failed(await bindMember(memberFound.reference, io), 'unknown-machine');
+  failed(await bindMember(full(SELF, 'gone', SCOPE, 'codex', UUID_3), io), 'stale-source');
+  failed(await bindMember(soloRow.reference, { ...io, platform: 'win32' }), 'unsupported-platform');
+  failed(await bindMember(full(SELF, 'off', SCOPE, 'codex', UUID_3), io), 'source-disabled');
+  failed(await bindMember(full(SELF, 'codex', SCOPE, 'codex', UUID_4), io), 'not-found');
+  failed(await bindMember(cacheRow.reference, io), 'unsupported-type');
+  failed(await bindMember(codexRow.reference, io), 'ambiguous-source');
+});
+
+test('every code has a not-sent message that ends with a period and has no em dash', () => {
+  for (const code of ['invalid-reference', 'unsupported-reference-version', 'scope-mismatch', 'scope-required', 'no-machine-identity', 'unknown-machine',
+    'stale-source', 'stale-source-scope', 'ambiguous-identity', 'evidence-incomplete', 'member-target', 'peer-upgrade-required', 'local-target',
+    'unsupported-platform', 'unsupported-type', 'source-disabled', 'not-found', 'caller-unregistered', 'native-scope-unavailable', 'ambiguous-source',
+    'not-live', 'not-mapped', 'machine-offline', 'capability-unknown', 'refused', 'too-large', 'rate-limited', 'target-unavailable',
+    'relay-unavailable', 'binding-expired', 'target-changed', 'invalid-request']) {
+    assert.match(notSentMessage(code) ?? '', /^[^—]+\.$/, code);
+  }
+  assert.equal(notSentMessage('remote-exact-unsupported'), undefined);
 });
