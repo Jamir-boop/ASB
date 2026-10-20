@@ -68,7 +68,7 @@ Source colors are ASB settings in the same schema `1` file. They change only the
 
 ASB Bridge runs inside Codex. It stores the text of peer messages in per-task SQLite files under `<CODEX_HOME>/plugin-state/asb-bridge/`. ASB does not upload them. A message that the bridge delivers starts a turn in the receiving app. The receiving app uses its own model and network settings.
 
-On Linux, `list_sessions` asks the local ASB engine for the full session reference of each listed session, or the reason code when a send cannot use one. The model of the Codex task then sees these references: the machine IDs of this machine and of the other members, the source IDs, the scope tags, and the session types. The reply has no path, PID, socket, or token.
+On Linux and Windows, `list_sessions` asks the local ASB engine for the full session reference of each listed session, or the reason code when a send cannot use one. The model of the Codex task then sees these references: the machine IDs of this machine and of the other members, the source IDs, the scope tags, and the session types. The reply has no path, PID, socket, or token.
 
 Only when you run `asb bridge link-claude <profile-home> <shared-home>`, setup links the profile's native `sessions` directory to the selected shared registry. This shares peer metadata and local IPC authentication keys across those profiles. It does not share settings, transcripts, app data, logins, model-provider credentials, or Codex homes. Linked peers can discover and message each other, and a message can start a model turn in the receiving app. This broadens local messaging access within your user account.
 
