@@ -1660,7 +1660,9 @@ class WidgetCheck(unittest.TestCase):
                         content = card.get_child().get_child()
                         self.assertEqual(content.get_orientation(), asb.Gtk.Orientation.VERTICAL)
                         top = content.get_first_child()
-                        self.assertEqual(top.get_first_child().get_child().get_icon_name(), "asb-claude-symbolic")
+                        mark = top.get_first_child().get_child()
+                        self.assertEqual((mark.get_icon_name(), mark.get_gicon().get_file().get_basename()), (None, "asb-claude-symbolic.svg"))
+                        self.assertTrue(mark.get_gicon().get_file().query_exists(None))
                         self.assertEqual(top.get_first_child().get_next_sibling().get_text(), "Tools")
                         self.assertEqual(card.asb_pin_button.get_child().get_icon_name(), "view-pin-symbolic")
                         self.assertTrue(title.get_wrap())
@@ -2557,7 +2559,10 @@ class WidgetCheck(unittest.TestCase):
                 self.assertTrue(card.asb_where_label.get_visible())
                 self.assertFalse(card.get_activatable())
                 if comfortable:
-                    self.assertEqual((card.asb_where_icon.get_icon_name(), card.asb_where_icon.get_visible()), (icon, True))
+                    glyph = card.asb_where_icon
+                    self.assertEqual((glyph.get_icon_name(), glyph.get_gicon().get_file().get_basename(), glyph.get_visible()),
+                                     (None, icon + ".svg", True))
+                    self.assertTrue(glyph.get_gicon().get_file().query_exists(None))
                     self.assertIs(card.asb_where_label.get_next_sibling(), card.asb_age_label)
                     self.assertEqual(card.asb_age_label.get_text(), "12m ago")
                 else:
@@ -2581,6 +2586,19 @@ class WidgetCheck(unittest.TestCase):
             panel = window.context_menu
             self.assertEqual((panel.asb_open.asb_label.get_label(), panel.asb_open.get_sensitive()), (label, False))
             panel.popdown(); self.drain(.2)
+        # The provider marks load as file icons, so that GTK recolors them with the card CSS.
+        file_icon = lambda image: (image.get_icon_name(), image.get_gicon().get_file().get_basename(), image.get_gicon().get_file().query_exists(None))
+        self.assertEqual(file_icon(window.app_pills["codex"].get_child().get_first_child()), (None, "asb-openai-symbolic.svg", True))
+        tooltip = SimpleNamespace(set_custom=lambda content: setattr(tooltip, "content", content))
+        self.assertTrue(window.query_row_tooltip(window.focus_widgets["desktop"], 0, 0, False, tooltip))
+        mark = tooltip.content.get_first_child().get_first_child()
+        self.assertTrue(mark.has_css_class("asb-provider"))
+        self.assertEqual(file_icon(mark), (None, "asb-claude-symbolic.svg", True))
+        # A reused card that changes its provider shows the new mark.
+        card = window.focus_widgets["desktop"]
+        self.assertEqual(file_icon(card.asb_mark), (None, "asb-claude-symbolic.svg", True))
+        window.update_session_row(card, {**card.asb_thread, "provider": "codex"})
+        self.assertEqual(file_icon(card.asb_mark), (None, "asb-openai-symbolic.svg", True))
 
     def test_drawer_pill_card_button_views_peek_and_narrow_column(self):
         def row(n, **extra):

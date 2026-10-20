@@ -41,6 +41,8 @@ Preferences = SCOPE["PreferencesWindow"]
 PhoneEditor = SCOPE["PhoneEditor"]
 Marker = SCOPE["SourceMarker"]
 REQUEST_ASYNC = SCOPE["request_async"]
+# The real set_icon() loads a Gio.FileIcon; the GTK suite checks the files.
+SCOPE["set_icon"] = Mock()
 asb = SimpleNamespace(**SCOPE)
 FIXTURE_PATH = Path(__file__).with_name("asb_native_test.py")
 FIXTURE_TREE = ast.parse(FIXTURE_PATH.read_text())
@@ -1272,13 +1274,14 @@ class DataChecks(unittest.TestCase):
                                      asb_age_label=Mock(), asb_title_label=Mock(), asb_limit_clock=Mock(),
                                      add_css_class=classes.add, remove_css_class=classes.discard, set_sensitive=Mock(),
                                      update_property=Mock(), update_state=Mock())
+            SCOPE["set_icon"].reset_mock()
             with patch.dict(SCOPE, {"Gtk": gtk}):
                 window.update_session_row(widget, remote)
                 window.update_row_text(widget, NOW)  # The row update uses the real clock.
             widget.asb_where_label.set_label.assert_called_with(where)
             widget.asb_state_label.set_label.assert_called_with(state)
             if view == "comfortable":
-                widget.asb_where_icon.set_from_icon_name.assert_called_with("asb-machine-symbolic")
+                SCOPE["set_icon"].assert_any_call(widget.asb_where_icon, "asb-machine-symbolic")
                 widget.asb_age_label.set_label.assert_called_with("4h32m")
             self.assertEqual(classes & {"asb-limited", "asb-view-only-quiet", "asb-view-only-rest"}, {"asb-limited"})
             self.assertEqual(widget.asb_accessible_label,
@@ -1320,6 +1323,7 @@ class DataChecks(unittest.TestCase):
                                           ({**base, **remote, "state": "working"}, "homeLP", "asb-machine-symbolic", {"asb-view-only-quiet"}),
                                           ({**base, **cli, "state": "idle", "unread": True}, "CLI", "asb-terminal-symbolic", set()),
                                           ({**base, "canOpen": True, "state": "idle"}, "", None, set())):
+                SCOPE["set_icon"].reset_mock()
                 window.update_session_row(widget, row)
                 widget.asb_where_label.set_label.assert_called_with(("" if not label else label + " ·") if view == "comfortable"
                                                                      else ("" if not label else "· " + label))
@@ -1327,7 +1331,8 @@ class DataChecks(unittest.TestCase):
                 if view == "comfortable":
                     widget.asb_where_icon.set_visible.assert_called_with(bool(label))
                     if icon:
-                        widget.asb_where_icon.set_from_icon_name.assert_called_with(icon)
+                        SCOPE["set_icon"].assert_called_with(widget.asb_where_icon, icon)
+                SCOPE["set_icon"].assert_any_call(widget.asb_mark, "asb-claude-symbolic")
                 self.assertEqual(classes & {"asb-view-only-quiet", "asb-view-only-rest"}, css)
                 widget.set_activatable.assert_called_with(row["canOpen"])
         # A Working remote card offers no discard; a local CLI card keeps the offer.

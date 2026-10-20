@@ -2968,7 +2968,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             pill.add_css_class("asb-filter-pill")
             pill.update_property([Gtk.AccessibleProperty.LABEL], [f"Select {title}"])
             content = Gtk.Box(spacing=3)
-            icon = Gtk.Image(icon_name=provider_icon(provider), pixel_size=14)
+            icon = Gtk.Image(pixel_size=14)
+            set_icon(icon, provider_icon(provider))
             content.append(icon)
             name = label(title)
             content.append(name)
@@ -4534,7 +4535,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.set_margin_start(indent)
             return widget
         path = Gtk.Box(spacing=7)
-        mark = Gtk.Image(icon_name=provider_icon(row.get("provider")), pixel_size=14, valign=Gtk.Align.START)
+        mark = Gtk.Image(pixel_size=14, valign=Gtk.Align.START)
+        set_icon(mark, provider_icon(row.get("provider")))
         mark.add_css_class("asb-provider")
         path.append(mark)
         path_label = text(model["path"], "asb-tooltip-path")
@@ -4758,12 +4760,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             # Tooltips set before the card is rooted cause no tooltip query.
             self.update_card_actions(widget)
             widget.set_child(content)
-        widget.asb_mark.set_from_icon_name(provider_icon(row["provider"]))
+        set_icon(widget.asb_mark, provider_icon(row["provider"]))
         widget.asb_source_badge.set_color(source_marker_color(row))
         where_icon, where = row_where(row)
         if widget.asb_where_icon:
             if where_icon:
-                widget.asb_where_icon.set_from_icon_name(where_icon)
+                set_icon(widget.asb_where_icon, where_icon)
             widget.asb_where_icon.set_visible(bool(where))
         widget.asb_where_label.set_label((where + " ·" if widget.asb_where_icon else "· " + where) if where else "")
         widget.asb_where_label.set_visible(bool(where))
