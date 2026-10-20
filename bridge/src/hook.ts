@@ -137,6 +137,7 @@ async function revive() {
     try {
       const db = new Database(join(stateDir, file), { readonly: true });
       try {
+        db.exec('PRAGMA busy_timeout=5000;');
         const lifecycle = db.query<{ generation: string; ended_at?: unknown }, []>('SELECT * FROM lifecycle WHERE singleton=1').get();
         const end = lifecycle?.ended_at;
         const endedAt = typeof end === 'number' && Number.isSafeInteger(end) && end > 0 && end <= now ? end : undefined;

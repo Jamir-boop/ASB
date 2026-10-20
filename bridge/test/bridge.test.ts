@@ -153,3 +153,32 @@ posix('registered peers can initiate contact; unknown senders and wrong targets 
     rmSync(root, { recursive: true });
   }
 });
+
+posix('a new Bridge waits for a lock that another process holds on its state database', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'uds-lock-'));
+  const threadId = randomUUID();
+  const holder = new Database(join(root, `${threadId}.sqlite`), { create: true });
+  holder.exec('BEGIN EXCLUSIVE');
+  try {
+    const child = Bun.spawn([process.execPath, '-e', `
+      const { Bridge } = await import(${JSON.stringify(join(import.meta.dir, '../src/bridge.ts'))});
+      process.stdout.write('ready\\n');
+      try { await new Bridge(${JSON.stringify(threadId)}, ${JSON.stringify(root)}, ${JSON.stringify(root)}, ${JSON.stringify(join(root, 'unavailable.sock'))}).close(); console.log('opened'); }
+      catch (error) { console.log(String(error)); process.exit(1); }`], { stdout: 'pipe', stderr: 'inherit' });
+    const reader = child.stdout.getReader();
+    const decoder = new TextDecoder();
+    let output = '';
+    while (!output.includes('ready\n')) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      output += decoder.decode(value);
+    }
+    await Bun.sleep(100);
+    holder.exec('COMMIT');
+    for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) output += decoder.decode(chunk.value);
+    expect({ code: await child.exited, output }).toEqual({ code: 0, output: 'ready\nopened\n' });
+  } finally {
+    holder.close();
+    rmSync(root, { recursive: true });
+  }
+});

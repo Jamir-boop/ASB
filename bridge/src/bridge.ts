@@ -49,8 +49,9 @@ export class Bridge {
     const path = join(stateDir, `${threadId}.sqlite`);
     this.db = new Database(path, { create: true, strict: true });
     chmodSync(path, 0o600);
-    this.db.exec(`PRAGMA journal_mode=WAL;
-      PRAGMA busy_timeout=5000;
+    // The busy timeout comes first: the journal-mode change can meet another process's lock.
+    this.db.exec(`PRAGMA busy_timeout=5000;
+      PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS receiver (
         singleton INTEGER PRIMARY KEY CHECK(singleton=1), pid INTEGER NOT NULL, proc_start TEXT NOT NULL
       );
