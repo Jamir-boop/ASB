@@ -18,10 +18,13 @@ export function stateDir(env = process.env, platform = process.platform, home = 
   return path.posix.join(env.XDG_STATE_HOME || path.posix.join(home, '.local', 'state'), 'asb');
 }
 
-// Linux needs an absolute XDG_RUNTIME_DIR; without it there is no runtime folder (null).
+// Linux uses an absolute XDG_RUNTIME_DIR. Without it, asb/run in an absolute XDG_STATE_HOME, else in <home>/.local/state
+// (plan L7, the same rule as ASB Bridge). stateDir keeps the old rule for the logs.
+const absolute = (value) => typeof value === 'string' && path.posix.isAbsolute(value);
 export function runtimeDir(env = process.env, platform = process.platform, home = os.homedir()) {
   if (platform === 'win32') return path.win32.join(windowsBase(env, 'LOCALAPPDATA', home, 'Local'), 'asb', 'run');
-  return typeof env.XDG_RUNTIME_DIR === 'string' && path.posix.isAbsolute(env.XDG_RUNTIME_DIR) ? path.posix.join(env.XDG_RUNTIME_DIR, 'asb') : null;
+  return absolute(env.XDG_RUNTIME_DIR) ? path.posix.join(env.XDG_RUNTIME_DIR, 'asb')
+    : path.posix.join(absolute(env.XDG_STATE_HOME) ? env.XDG_STATE_HOME : path.posix.join(home, '.local', 'state'), 'asb', 'run');
 }
 
 // The PATH search of a shell, with the file it found ('' when none). Windows splits PATH with ';' and tries

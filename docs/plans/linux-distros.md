@@ -2,7 +2,8 @@
 
 Status: approved by the user on 2026-10-20, in progress. Phase 0 is done
 (2026-10-20: CI run 39408877913 passed all 16 jobs). Phase 1 passed the
-review on 2026-10-20 and is in `main` (`a604525`). Written 2026-10-19
+review on 2026-10-20 and is in `main` (`a604525`). Phase 2 is in `main`
+(`452e8d2`, 2026-10-20). Written 2026-10-19
 for an implementing agent (a worker model). Section 2 has the user's
 decisions from the interview. Section 3 has the planner decisions, which the
 user approved. Do not change any of them without asking the user.
@@ -742,6 +743,10 @@ merge).
 
 ## 12. Phase 3: autostart and runtime folder without systemd (L6, L7)
 
+The line numbers in this section come from `main` after the phase 2 merge.
+Phases 1 and 2 did not change `scripts/asb-service.mjs`,
+`src/platform-paths.mjs`, or `scripts/asb-instance.mjs`.
+
 ### 12.1 Autostart mode
 
 1. In `scripts/asb-service.mjs`, add `autostartMode({ env, execFile })`:
@@ -762,32 +767,52 @@ merge).
    - `none`: change nothing. Print `No desktop session was found. Run asb
      service install from your desktop session, or run <launcher> engine
      start after you log in.` and exit with code 1. `asb setup` step 1
-     (`scripts/asb-setup.mjs:63-64`) then stops with its current message;
+     (`scripts/asb-setup.mjs:70-71`) then stops with its current message;
      keep that (a machine without a desktop session is out of scope,
      section 2).
    - When the other mode's file exists and has ASB's marker, remove it
      (for the unit: `systemctl --user disable --now asb.service` first).
+     When that `systemctl` call fails (no user manager), keep the unit, print
+     `ASB kept <file>: systemctl --user disable failed.`, and continue. The
+     runtime record lets only one engine run. Write the own mode's file
+     first, then remove the other one. When a `systemd` install removed the
+     autostart entry, stop the running engine before `enable --now`;
+     else the new unit loops on `Restart=on-failure` while the old engine
+     runs.
 3. `asb service uninstall`: remove the unit (as today) or the autostart
    entry (marker checked), then stop the engine with `POST /api/engine/stop`
-   in the `xdg` case.
+   in the `xdg` case. Use the code of `asb engine stop` (`stopRunning` in
+   `scripts/asb-engine.mjs:189`); do not write a second stop request.
 4. `asb service status`: print the mode and the state. `systemd`: the
-   current output. `xdg`: `XDG autostart entry: <path>` and `Engine: running`
-   or `Engine: not running`.
-5. `asb doctor`: add the check `Autostart` (`systemd user service`, `XDG
-   autostart`, or `not installed`).
+   current output, byte for byte. `xdg`: `XDG autostart entry: <path>` (or
+   `XDG autostart entry: not installed`) and `Engine: running` or
+   `Engine: not running`. `none`: `No desktop session was found.` and the
+   same engine line. In `xdg` and `none` mode, exit with code 0 when the
+   engine runs, else 3 (as `systemctl is-active` does).
+5. `asb doctor`: add the check `Autostart` in the Options group after Bun
+   (`ok` with `systemd user service` or `XDG autostart`, from the file with
+   ASB's marker; else `info` with `not installed`). Doctor only reads the
+   two files; it runs no new program.
+6. `main` of `scripts/asb-service.mjs` (`:66`) reads `process.platform`,
+   `process.env`, and `execFileAsync` directly. Give it injected `env`,
+   `execFile`, `platform`, and `log` values with these defaults, as
+   `scripts/asb-engine.mjs` `main` (`:261`) has, so that the tests can fake
+   the three modes.
 
 ### 12.2 Runtime folder
 
 1. `runtimeDir` (`src/platform-paths.mjs:21-25`), Linux branch:
    `$XDG_RUNTIME_DIR/asb` when `XDG_RUNTIME_DIR` is absolute, else
-   `path.posix.join(stateDir(env, platform, home), 'run')`, which is
-   `${XDG_STATE_HOME:-~/.local/state}/asb/run`. Change the comment at `:21`.
+   `asb/run` in `XDG_STATE_HOME` when it is absolute, else in
+   `<home>/.local/state`. A relative folder would depend on the current
+   folder, so that two engines could start. (`stateDir` keeps its old rule
+   for the logs.) Change the comment at `:21`.
    `instanceRuntimePath` (`scripts/asb-instance.mjs:8-11`) then never gives
    `null` on Linux.
 2. `prepareInstanceRuntime` (`asb-instance.mjs:94-128`), root check
    (`:98-102`): with an absolute `XDG_RUNTIME_DIR`, keep the current check
    (an absolute `XDG_RUNTIME_DIR` that does not exist is still refused).
-   With the fallback, the root is `stateDir`: create it with
+   With the fallback, the root is the `asb` folder above `run`: create it with
    `mkdir(..., { recursive: true, mode: 0o700 })` when it is missing, then
    check that it is a folder owned by the user and not a link. The `run`
    folder gets the same mode 0700 and owner checks as today. Change the
@@ -797,9 +822,26 @@ merge).
    folder survives a restart, so its PID can belong to another process now.
    With `XDG_RUNTIME_DIR` (a `tmpfs` that a restart clears), keep the
    current rule.
-4. Remove the refusal in `startEngine` (`asb-engine.mjs:149`).
-5. `asb doctor`: add the check `Runtime folder` (the folder in use, and
-   `XDG_RUNTIME_DIR is not set` as info).
+4. Remove the refusal in `startEngine` (`asb-engine.mjs:159`).
+5. `asb doctor`: add the check `Runtime folder` after `Autostart` (`ok` with
+   the folder in use; with the fallback, `info` with the folder and
+   `XDG_RUNTIME_DIR is not set`).
+6. ASB Bridge: `engineRuntime` (`bridge/src/engine.ts:18-34`) finds the
+   engine at `$XDG_RUNTIME_DIR/asb` when that is absolute, else at
+   `/run/user/<uid>/asb` (an agent process can lack `XDG_RUNTIME_DIR` while
+   the engine has it). Keep that first candidate as it is, and add the
+   fallback folder of step 1 as the second candidate (`XDG_STATE_HOME` when
+   absolute, else `$HOME/.local/state`, then `asb/run`). Use the first
+   candidate whose `service.json` passes the current checks. (Phase 3
+   review: `/run/user/<uid>` is not a candidate when `XDG_RUNTIME_DIR` is
+   absolute, so that the bridge tests, which set it to a temporary folder,
+   never find the user's engine.) Add cases to
+   `bridge/test/engine.test.ts`. Then run the bridge checks of `AGENTS.md`
+   and include `bridge/dist/`.
+7. The message relay (`src/machine-relay.mjs`, `runtimeDir` at `:204` and
+   `:232`) then also runs without `XDG_RUNTIME_DIR`. Its folder gets mode
+   0700 and the owner check (`bridge/src/relay.ts:151-153`). No change is
+   expected; the relay tests must still pass.
 
 ### 12.3 Tests
 
@@ -807,7 +849,7 @@ merge).
   environment; install, status, and uninstall in `xdg` mode with a temporary
   `XDG_CONFIG_HOME`; a foreign autostart file is kept; a mode change removes
   the other file.
-- `test/asb-service.test.mjs:175-183` (`service run needs an absolute
+- `test/asb-service.test.mjs:183-191` (`service run needs an absolute
   existing runtime directory`): change it. An empty or relative
   `XDG_RUNTIME_DIR` now starts the engine with its record in
   `<XDG_STATE_HOME>/asb/run/service.json` (folder 0700, file 0600; stop the
@@ -913,6 +955,12 @@ merge).
    `PhoneEditor`, and check `alert` with a fake `Adw` with and without
    `AlertDialog`. Check that `start_messages` lights the rows and starts no
    flight when the fake `Gsk` has no `PathBuilder`.
+9. Window start time (found after phase 2): `scripts/asb-desktop.mjs`
+   `start()` runs `boardCheck` (about 105 ms on the Debian PC) after
+   `startEngine()`. Start both at the same time
+   (`Promise.all([startEngine(), boardCheck({ env: process.env })])`). Keep
+   the order of the rest: the board result decides before
+   `registerAppIcon`. Add a desktop test that both start before either ends.
 
 ### Phase 5 acceptance
 
@@ -924,8 +972,9 @@ merge).
   -q -D null <file>` exits with code 0 for each WAV file. Do not play the
   sounds on the speakers.
 - Phase 8 proves the board on AlmaLinux 9 (GTK 4.12, Libadwaita 1.4).
-- Commits: `fix(sounds): play WAV files with PipeWire, PulseAudio, or ALSA`
-  and `fix(board): run on GTK 4.12, Libadwaita 1.4, and GLib 2.88`.
+- Commits: `fix(sounds): play WAV files with PipeWire, PulseAudio, or ALSA`,
+  `fix(board): run on GTK 4.12, Libadwaita 1.4, and GLib 2.88`, and
+  `perf(desktop): run the board check while the engine starts` (step 9).
 
 ## 15. Phase 6: app link check (L10)
 

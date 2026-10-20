@@ -15,14 +15,7 @@ export type RemotePeer = z.infer<typeof remotePeerSchema>;
 
 // The same rules as readServiceRuntime in scripts/asb-instance.mjs: a private folder, an owned 0600 file, exact keys, a live PID.
 // Windows has no modes: <LOCALAPPDATA>\asb\run\service.json, with no links (src/platform-paths.mjs runtimeDir).
-export function engineRuntime(env: Record<string, string | undefined> = process.env, platform: string = process.platform): EngineRuntime | null {
-  let folder: string;
-  if (isWindows(platform)) {
-    if (!env.LOCALAPPDATA || !win32.isAbsolute(env.LOCALAPPDATA)) return null;
-    folder = join(env.LOCALAPPDATA, 'asb', 'run');
-  } else if (platform === 'linux') {
-    folder = join(env.XDG_RUNTIME_DIR && isAbsolute(env.XDG_RUNTIME_DIR) ? env.XDG_RUNTIME_DIR : `/run/user/${process.getuid?.()}`, 'asb');
-  } else return null;
+function folderRuntime(folder: string, platform: string): EngineRuntime | null {
   const file = join(folder, 'service.json');
   try {
     privateDirectory(folder, platform);
@@ -31,6 +24,26 @@ export function engineRuntime(env: Record<string, string | undefined> = process.
     process.kill(runtime.pid, 0);
     return runtime;
   } catch { return null; }
+}
+
+// The first candidate folder whose service.json passes the checks.
+export function engineRuntime(env: Record<string, string | undefined> = process.env, platform: string = process.platform): EngineRuntime | null {
+  const folders: string[] = [];
+  if (isWindows(platform)) {
+    if (!env.LOCALAPPDATA || !win32.isAbsolute(env.LOCALAPPDATA)) return null;
+    folders.push(join(env.LOCALAPPDATA, 'asb', 'run'));
+  } else if (platform === 'linux') {
+    // An agent process can lack XDG_RUNTIME_DIR while the engine has it. An engine without it uses the state folder (plan L7).
+    folders.push(join(env.XDG_RUNTIME_DIR && isAbsolute(env.XDG_RUNTIME_DIR) ? env.XDG_RUNTIME_DIR : `/run/user/${process.getuid?.()}`, 'asb'));
+    const state = env.XDG_STATE_HOME && isAbsolute(env.XDG_STATE_HOME) ? env.XDG_STATE_HOME
+      : env.HOME && isAbsolute(env.HOME) ? join(env.HOME, '.local', 'state') : '';
+    if (state) folders.push(join(state, 'asb', 'run'));
+  } else return null;
+  for (const folder of folders) {
+    const runtime = folderRuntime(folder, platform);
+    if (runtime) return runtime;
+  }
+  return null;
 }
 
 export async function engineRequest(runtime: EngineRuntime, route: string, { method = 'GET', body, timeoutMs }: { method?: 'GET' | 'POST'; body?: unknown; timeoutMs?: number } = {}) {
