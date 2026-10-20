@@ -14,7 +14,7 @@ export const DEBIAN_DEPENDS = 'nodejs (>= 20), sqlite3, python3, python3-gi, gir
 // Keep this list explicit. A source checkout can contain private local files.
 export const RUNTIME_FILES = [
   'LICENSE', 'package.json', 'install.sh', 'uninstall.sh',
-  'scripts/asb', 'scripts/asb.mjs', 'scripts/asb-setup.mjs', 'scripts/asb-package.mjs', 'scripts/asb-desktop.mjs', 'scripts/asb-service.mjs', 'scripts/asb-engine.mjs', 'scripts/asb-tray.py', 'scripts/asb-agent.mjs', 'scripts/asb-group.mjs', 'scripts/asb-instance.mjs', 'scripts/asb-icon.mjs', 'scripts/asb-native.py',
+  'scripts/asb', 'scripts/asb.mjs', 'scripts/asb-setup.mjs', 'scripts/asb-package.mjs', 'scripts/asb-desktop.mjs', 'scripts/asb-service.mjs', 'scripts/asb-engine.mjs', 'scripts/asb-tray.py', 'scripts/asb-agent.mjs', 'scripts/asb-group.mjs', 'scripts/asb-instance.mjs', 'scripts/asb-icon.mjs', 'scripts/asb-board.py', 'scripts/asb-native.py',
   'public/switchboard.html', 'public/switchboard.css', 'public/switchboard.js', 'public/icon.svg',
   'assets/icons/local.asb.AgentSwitchBoard.svg', 'assets/icons/asb-claude-symbolic.svg', 'assets/icons/asb-openai-symbolic.svg', 'assets/icons/asb-opencode-symbolic.svg',
   'assets/icons/asb-machine-symbolic.svg', 'assets/icons/asb-terminal-symbolic.svg', 'assets/icons/asb-drawer-symbolic.svg',

@@ -36,7 +36,7 @@ test('the window gets the engine URL and token and its exit code without stoppin
     console: { log() {}, error() {}, warn() {} },
     spawn: (program, args, options) => {
       assert.equal(program, '/opt/python3');
-      assert.match(args[0], /asb-native\.py$/);
+      assert.match(args[0], /asb-board\.py$/);
       assert.equal(args[1], 'http://127.0.0.1:23456');
       assert.equal(options.env.ASB_SOURCE_TOKEN, 'service-token');
       return native;
@@ -92,7 +92,7 @@ for (const exitCode of [0, 1]) test(`launcher exit ${exitCode} stops its synthet
     startEngine: async () => engine, registerAppIcon: async () => {},
     console: { log() {}, error() {}, warn() {} },
     spawn: (_program, args) => {
-      assert.match(args[0], /asb-native\.py$/);
+      assert.match(args[0], /asb-board\.py$/);
       native = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', env: {} });
       return native;
     },

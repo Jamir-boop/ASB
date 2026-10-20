@@ -37,7 +37,7 @@ async function start() {
   }
   if (stopping) return;
   const url = `http://127.0.0.1:${service.port}`;
-  window = spawn(board.python, [fileURLToPath(new URL('./asb-native.py', import.meta.url)), url], {
+  window = spawn(board.python, [fileURLToPath(new URL('./asb-board.py', import.meta.url)), url], {
     stdio: ['ignore', 'inherit', 'inherit'], env: { ...process.env, ASB_SOURCE_TOKEN: service.sourceToken },
   });
   window.once('error', (error) => {

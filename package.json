@@ -11,6 +11,7 @@
     "src/",
     "scripts/*.mjs",
     "scripts/asb",
+    "scripts/asb-board.py",
     "scripts/asb-native.py",
     "scripts/asb-tray.py",
     "scripts/asb-tray.ps1",

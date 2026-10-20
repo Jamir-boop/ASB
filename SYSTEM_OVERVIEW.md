@@ -16,7 +16,7 @@ scripts/asb.mjs (the asb command and npm bin; scripts/asb runs it on Linux after
 scripts/asb-desktop.mjs (board launcher, never hosts the server)
   -> scripts/asb-engine.mjs startEngine, finds or starts the engine
   -> src/linux-system.mjs boardCheck; when it fails: no icon registration, no window, the reason, exit 3 (the engine keeps running)
-  -> scripts/asb-native.py, GTK/Libadwaita window, with the engine URL and source token
+  -> scripts/asb-board.py loads scripts/asb-native.py as a module: GTK/Libadwaita window, with the engine URL and source token
        -> local dashboard, event, open, and ASB state APIs
 
 src/switchboard.mjs
@@ -140,6 +140,7 @@ The ASB `1.9.0` package whitelist names 73 runtime files, including 12 ASB Bridg
 | `scripts/asb-doctor.mjs` | `asb doctor [--json]`: the Engine, Window, and Options checks, and the install commands that it prints and never runs. When the engine runs with phone access on and firewalld or ufw is active, it also prints the firewall rules for the selected addresses (`commands.firewall` in the JSON). |
 | `scripts/asb-group.mjs` | `asb group`, `asb network`, and `asb phone` commands through the running engine. |
 | `scripts/asb-instance.mjs` | Shared private runtime descriptor, instance requests, and owner cleanup. |
+| `scripts/asb-board.py` | The board launcher. It keeps the compiled board code in `~/.cache/asb/pycache` (`XDG_CACHE_HOME`), not next to the source, because the install refuses a release folder with other files. |
 | `scripts/asb-native.py` | Native rows, filters, search, layout, theme, input, local label clock, and the Preferences Phone and Machines pages. |
 | `docs/benchmarks/` | Historical frontend comparisons, numeric samples, acceptance coverage, and X11 timing limits. |
 | `scripts/asb-icon.mjs` | ASB icon and desktop entry registration. |
