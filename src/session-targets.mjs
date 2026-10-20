@@ -75,7 +75,7 @@ const BOUND_MESSAGES = {
   'member-target': 'This reference is for a session on another machine. This version of ASB Bridge cannot send to it.',
   'peer-upgrade-required': 'The member machine has an older ASB that cannot take a message for one exact session. Update ASB on that machine.',
   'local-target': 'This reference is for a session on this machine, not on another machine.',
-  'unsupported-platform': 'ASB can send by reference only on Linux and Windows. A send to another machine must start on Linux.',
+  'unsupported-platform': 'ASB can send by reference only on Linux and Windows.',
   'bridge-upgrade-required': 'This version of ASB Bridge cannot send by reference on Windows. Update ASB Bridge.',
   'unsupported-type': 'ASB can send by reference only to Codex and Claude Code CLI sessions.',
   'source-disabled': 'The source of this session is disabled.',
@@ -165,14 +165,15 @@ export async function memberTarget({ reference, caller }, context, io) {
   if (!resolved.ok) return resolved.code === 'evidence-incomplete' ? refuse('peer-upgrade-required') : resolved;
   const { identity } = resolved;
   if (identity.machineId === context.machine?.machineId) return refuse('local-target');
-  if (io.platform !== 'linux') return refuse('unsupported-platform');
+  // No pipe proof here: the bridge writes no pipe in this path, and on Windows the relay proves the pipe of each receipt.
+  if (!exactPlatform(io)) return refuse('unsupported-platform');
   if (!BOUND_TYPES.includes(identity.type)) return refuse('unsupported-type');
   const own = await callerRecord(caller, io);
   if (!own) return refuse('caller-unregistered');
   const name = typeof own.record.name === 'string' ? own.record.name.replace(CONTROLS, ' ').slice(0, 128) : '';
   // Internal: the receipts of the member go to the outbox of this receiver process only. No route reply has it.
   const { sessionId: runtimeSessionId, pid, procStart, messagingSocketPath } = own.record;
-  return { ok: true, identity, name: name || 'Codex', returnTo: { runtimeSessionId, pid, procStart, messagingSocketPath } };
+  return { ok: true, identity, name: name || 'Codex', returnTo: { runtimeSessionId, pid, procStart, messagingSocketPath, configDir: caller.configDir } };
 }
 
 const LIST_MAX = 256;

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import net from 'node:net';
 import { once } from 'node:events';
 import { inbox, peers, register, sendFrames, socketPath, type Frame } from '../src/claude';
-import { outboundServer, refreshReceiver, sendBound, sendBoundViaReceiver } from '../src/outbound';
+import { outboundServer, refreshReceiver, requestReceiver, sendBound, sendBoundViaReceiver } from '../src/outbound';
 import { checkPeerSocket, checkSocketFile, inboxPath, keyName, outboxPath, ownedJson, pidDomain, pipeProof, privateDirectory, processStart, type WindowsApi } from '../src/platform';
 
 const windows = process.platform === 'win32';
@@ -399,6 +399,29 @@ windowsOnly('a proved bound send through the receiver outbox answers written, an
     await until(() => target.frames.length === 2, 20000);
     expect(target.frames.map(frame => frame.type === 'user' && frame.message.content)).toEqual(['bound', big]);
   } finally { await close(); await sender.close(); await target.close(); }
+}, 60000);
+
+// The receipt write of POST /outbox in relay.ts: requestReceiver with the proof, to a receiver made only from the receipt fields.
+windowsOnly('a proved receipt reaches the receiver outbox, and a receipt for another PID or start time is not sent', async () => {
+  const f = await receiver();
+  let receipts = 0;
+  const close = await outboundServer(outboxPath(f.path), f.configDir, f.listener.address, () => true, () => {}, f.token, () => ++receipts);
+  try {
+    const procStart = await processStart(process.pid);
+    const exactReceipt = (pid: number, start: string) => ({ runtimeSessionId: randomUUID(), pid, procStart: start, reference: `asb:1/${'b'.repeat(16)}/x`,
+      msgIds: [randomUUID()], status: 'delivered' });
+    const notSent = new Error('Nothing sent.');
+    const write = (pid: number, start: string) => requestReceiver(f.configDir, { pid, procStart: start, messagingSocketPath: f.path },
+      { exactReceipt: exactReceipt(pid, start) }, () => notSent, true);
+    expect(await write(process.pid, procStart)).toEqual({ applied: 1 });
+    // Another PID with its own key file: the key file passes, and the proof refuses before any byte.
+    const other = process.pid + 1;
+    writeFileSync(join(f.configDir, 'sessions', keyName(other, f.path)), JSON.stringify({ peerToken: f.token, procStart }));
+    await expect(write(other, procStart)).rejects.toBe(notSent);
+    // Another start time: the key file of this process refuses before the pipe opens.
+    await expect(write(process.pid, '1')).rejects.toBe(notSent);
+    expect(receipts).toBe(1);
+  } finally { await close(); await f.close(); }
 }, 60000);
 
 // A child Bun process serves a cc-msg pipe and prints the bytes of each connection when it closes.

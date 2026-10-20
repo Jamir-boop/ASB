@@ -260,18 +260,19 @@ test('on Windows an exact local target binds only for a bridge that proves the p
   assert.deepEqual(calls, []);
 });
 
-test('on Windows referencesForList binds local items only for a bridge that proves the pipe; remote items stay unsupported', async () => {
+test('on Windows referencesForList binds local items only for a bridge that proves the pipe; remote items need no proof', async () => {
   const list = [winRecord(10, CALLER, 'codex-asb-bridge'), winRecord(20, UUID_4, 'cli'), winRecord(30, UUID_3, 'codex-asb-bridge')];
   const listed = [{ machineId: MEMBER, sessionId: UUID_2 }];
   const io = () => winIo({ registry: async () => ({ root: ROOT, records: list }) }).io;
   assert.deepEqual((await listFor(list, { io: io(), listed, pipeProof: true })).result, { apiVersion: 1, ok: true, pid: 999,
     local: [{ sessionId: UUID_4, reference: cliRow.reference }, { sessionId: UUID_3, reference: soloRow.reference }],
-    remote: [{ machineId: MEMBER, sessionId: UUID_2, referenceUnavailable: 'unsupported-platform' }] });
+    remote: [{ machineId: MEMBER, sessionId: UUID_2, reference: memberFound.reference }] });
   assert.deepEqual((await listFor(list, { io: io(), listed })).result, { apiVersion: 1, ok: true, pid: 999,
     local: [{ sessionId: UUID_4, referenceUnavailable: 'bridge-upgrade-required' }, { sessionId: UUID_3, referenceUnavailable: 'bridge-upgrade-required' }],
-    remote: [{ machineId: MEMBER, sessionId: UUID_2, referenceUnavailable: 'unsupported-platform' }] });
-  // Member sends stay Linux only until later phases.
-  failed(await memberTarget({ reference: memberFound.reference, caller }, boundContext, io()), 'unsupported-platform');
+    remote: [{ machineId: MEMBER, sessionId: UUID_2, reference: memberFound.reference }] });
+  // A member send from Windows: the receipts go to the pipe of the caller receiver, through the relay with its configDir.
+  assert.deepEqual((await memberTarget({ reference: memberFound.reference, caller }, boundContext, io())).returnTo,
+    { runtimeSessionId: CALLER, pid: 10, procStart: '1330000000000000010', messagingSocketPath: pipe(10), configDir: caller.configDir });
 });
 
 // Exact member sends: the sending engine's checks (memberTarget) and the receiving engine's binding (bindMemberTarget).
@@ -290,8 +291,8 @@ test('memberTarget checks in order with no io before the caller check, and does 
   await early(full(OLD, 'codex', SCOPE_M, 'codex', UUID_2), 'peer-upgrade-required');
   await early(soloRow.reference, 'local-target');
   await early(memberFound.reference, 'unsupported-platform', { io: { ...io, platform: 'darwin' } });
-  // The sender gate stays Linux only: a Windows sender cannot send to another machine yet.
-  await early(memberFound.reference, 'unsupported-platform', { io: { ...io, platform: 'win32' } });
+  // A Windows sender passes with a Windows caller record and no pipe proof: the bridge writes no pipe in this path.
+  assert.equal((await member(memberFound.reference, { io: winIo().io })).returnTo.messagingSocketPath, pipe(10));
   await early(full(MEMBER, 'codex', SCOPE_M, 'claude-local', `local_${UUID_2}`), 'unsupported-type');
   await early(full(MEMBER, 'codex', SCOPE_M, 'opencode', 'abc'), 'unsupported-type');
   assert.deepEqual(calls, []);
@@ -302,7 +303,7 @@ test('memberTarget checks in order with no io before the caller check, and does 
 
   const { io: okIo, calls: okCalls } = fakeIo();
   assert.deepEqual(await member(memberFound.reference, { io: okIo }), { ok: true, identity: ident(memberFound.reference, MEMBER, 'codex', SCOPE_M, 'codex', UUID_2),
-    name: SECRET.title, returnTo: { runtimeSessionId: CALLER, pid: 10, procStart: '100', messagingSocketPath: '/synthetic/s/10.sock' } });
+    name: SECRET.title, returnTo: { runtimeSessionId: CALLER, pid: 10, procStart: '100', messagingSocketPath: '/synthetic/s/10.sock', configDir: '/synthetic/claude' } });
   assert.deepEqual(okCalls, [['registry', '/synthetic/claude']]);
   // The member decides not-found and offline, not the cached rows of this engine.
   const missing = full(MEMBER, 'claude-desktop-code', SCOPE_M, 'claude-cli', UUID);
@@ -325,7 +326,7 @@ const listFor = async (list, { io, listed = [], pipeProof, ...overrides } = {}) 
   const fake = io ?? fakeIo({ registry: async (configDir) => { fake.calls.push(['registry', configDir]); return { root: ROOT, records: list }; } });
   const result = await referencesForList({ caller, pipeProof }, { ...boundContext, ...overrides }, fake.io ?? fake, listed);
   const text = JSON.stringify(result);
-  for (const value of ['/synthetic/', 'procStart', 'returnTo', 'binding', 'messagingSocketPath', SECRET.title, SECRET.cwd, '"name"']) {
+  for (const value of ['/synthetic/', 'procStart', 'returnTo', 'configDir', 'binding', 'messagingSocketPath', SECRET.title, SECRET.cwd, '"name"']) {
     assert.equal(text.includes(value), false, `${value} must not be in the reply`);
   }
   assert.equal(text.split('"pid"').length, result.ok ? 2 : 1);

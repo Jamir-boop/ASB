@@ -590,6 +590,6 @@ test('a member send gives sendExact the receiver record of the caller as returnT
   const reply = await request(SEND, { method: 'POST', body: sendBody({ caller: { runtimeSessionId: CALLER, configDir: path.join(homeDir, '.claude') } }) });
   assert.deepEqual([reply.status, reply.json()], [200, { apiVersion: 1, pid: process.pid, msgId: MSG, outcome: 'submitted' }]);
   assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0].returnTo, { runtimeSessionId: CALLER, pid: process.pid, procStart, messagingSocketPath: socket });
-  for (const value of [socket, procStart, 'Secret', 'private']) assert.equal(reply.text.includes(value), false, value);
+  assert.deepEqual(calls[0].returnTo, { runtimeSessionId: CALLER, pid: process.pid, procStart, messagingSocketPath: socket, configDir: path.join(homeDir, '.claude') });
+  for (const value of [socket, procStart, 'Secret', 'private', 'configDir', homeDir]) assert.equal(reply.text.includes(value), false, value);
 });

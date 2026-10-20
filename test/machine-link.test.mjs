@@ -290,7 +290,7 @@ test('a receipt control from the target member reaches the outbox of the sending
   relay = createRelaySupervisor({ group: a.group, port: a.port, sourceToken: 'x', outbox: async (...args) => { writes.push(args); return 1; } });
   const target = { sourceId: 'codex', scopeTag: 'c'.repeat(32), type: 'codex', appId: uuid(7) };
   const reference = `asb:1/${b.machineId}/codex/${'c'.repeat(32)}/codex:${uuid(7)}`;
-  const returnTo = { runtimeSessionId: uuid(8), pid: 4242, procStart: '4242000', messagingSocketPath: '/synthetic/run/4242.sock' };
+  const returnTo = { runtimeSessionId: uuid(8), pid: 4242, procStart: '4242000', messagingSocketPath: '/synthetic/run/4242.sock', configDir: '/synthetic/codex' };
   assert.deepEqual(await relay.sendExact({ identity: { reference, machineId: b.machineId, ...target },
     sender: { sessionId: uuid(8), name: 'codex-task', mode: 'prompting', agent: 'codex' }, message: { msgId: uuid(9), text: 'secret text', hopChain: [] },
     remainingMs: 10_000, returnTo }), { outcome: 'submitted' });
@@ -309,5 +309,5 @@ test('a receipt control from the target member reaches the outbox of the sending
   const reply = await toA(b, uuid(9));
   assert.deepEqual([reply.status, reply.body], [200, { api: 2, msgId: uuid(9), outcome: 'submitted' }]);
   assert.deepEqual(writes, [[returnTo.messagingSocketPath, { exactReceipt: { runtimeSessionId: uuid(8), pid: 4242, procStart: '4242000', reference,
-    msgIds: [uuid(9)], status: 'delivered' } }, 2_000]]);
+    msgIds: [uuid(9)], status: 'delivered' } }, 2_000, returnTo.configDir]]);
 });

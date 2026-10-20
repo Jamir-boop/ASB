@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { hopChain, inbox, maxLineLength, ownedJson, peerAddress, peers, privateDirectory, processStart, removePeerKey, senderMode, sendFrames,
   SendRefused, serializeFrame, socketPath, userFrame, uuid, writePeerKey, type Frame, type Peer } from './claude';
 import { isWindows, keyName, pidDomain } from './platform';
-import { bindingSchema, boundPeer, sendBound } from './outbound';
+import { bindingSchema, boundPeer, exactReceiptSchema, requestReceiver, sendBound } from './outbound';
 
 const homeSchema = z.object({ path: z.string().refine(isAbsolute), remoteClaude: z.enum(['auto', 'bridge', 'native']), hasRemoteControl: z.boolean() });
 const homesSchema = z.object({ machineId: z.string(), machineName: z.string(), homes: z.array(homeSchema) });
@@ -39,6 +39,9 @@ export type ReverseNeed = { home: string; machineId: string; sessionId: string; 
 type Reply = z.infer<typeof replySchema>;
 // The body of POST /deliver-bound: the engine's own binding of one exact member send (src/machine-relay.mjs).
 const deliverBoundSchema = z.strictObject({ binding: bindingSchema, sender: senderSchema, message: messageSchema });
+// The body of POST /outbox: a receipt of an exact member send for the receiver of a local task (a Windows engine, src/machine-relay.mjs).
+const outboxSchema = z.strictObject({ configDir: z.string().refine(isAbsolute), messagingSocketPath: z.string().min(1),
+  request: z.strictObject({ exactReceipt: exactReceiptSchema }) });
 type BoundReply = { outcome: 'submitted' | 'unknown' } | { outcome: 'not-sent'; reason: string };
 // The last exact member sends of this relay (oldest out first), and the window of their receipts.
 const EXACT_IDS = 1024;
@@ -386,6 +389,22 @@ async function main() {
     return { outcome: 'submitted' };
   }
 
+  // The receipt of an exact member send, to the receiver of a local task. The receiver is only the request fields, not a registry
+  // row: on Windows the proof checks the PID, the start time, and the user at the write, and the receiver checks that the receipt names it.
+  async function writeReceipt(value: unknown): Promise<{ applied: number } | { outcome: 'not-sent' | 'unknown' } | undefined> {
+    const parsed = outboxSchema.safeParse(value);
+    if (!parsed.success) return undefined;
+    const { configDir, messagingSocketPath, request } = parsed.data;
+    const notSent = new Error('Nothing sent.');
+    let reply: unknown;
+    try {
+      reply = await requestReceiver(configDir, { pid: request.exactReceipt.pid, procStart: request.exactReceipt.procStart, messagingSocketPath },
+        request, () => notSent, true);
+    } catch (error) { return { outcome: error === notSent ? 'not-sent' : 'unknown' }; }
+    const applied = z.strictObject({ applied: z.number().int().nonnegative() }).safeParse(reply);
+    return applied.success ? applied.data : { outcome: 'unknown' };
+  }
+
   // Plan 16.5: a frame from another machine for a local session. Proxy rows never receive one, so relays cannot loop.
   async function deliver(value: unknown): Promise<Reply | undefined> {
     const parsed = deliverSchema.safeParse(value);
@@ -434,6 +453,10 @@ async function main() {
     }
     if (pathname === '/deliver-bound' && request.method === 'POST') {
       const reply = await deliverBound(await request.json().catch(() => undefined));
+      return reply ? Response.json(reply) : Response.json({ error: 'Invalid relay request.' }, { status: 400 });
+    }
+    if (pathname === '/outbox' && request.method === 'POST') {
+      const reply = await writeReceipt(await request.json().catch(() => undefined));
       return reply ? Response.json(reply) : Response.json({ error: 'Invalid relay request.' }, { status: 400 });
     }
     return Response.json({ error: 'Not found.' }, { status: 404 });

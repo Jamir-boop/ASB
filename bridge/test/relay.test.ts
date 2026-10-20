@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, 
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { hopChain, inbox, peers, processStart, sendFrames, socketPath, userFrame, type Frame } from '../src/claude';
+import { outboundServer, type ExactReceipt } from '../src/outbound';
 import { engineCaller, forwardOutcome, proxyName, proxyPlan, receiptParts, type ExactEntry, type Home, type RemotePeer } from '../src/relay';
 // Linux only: the engine starts the relay only on Linux and Windows, and this test uses Unix sockets and the /usr/bin/cat placeholder.
 const linux = test.skipIf(process.platform !== 'linux');
@@ -434,6 +435,47 @@ linux('/deliver-bound writes one frame to the bound record only, and the receipt
     await first.close();
     await second.close();
     await third.close();
+    engine.stop(true);
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+linux('/outbox writes the receipt of an exact member send to the receiver outbox and checks its body strictly', async () => {
+  const root = mkdtempSync('/tmp/asb-relay-outbox-');
+  const socketDir = join(root, 's');
+  mkdirSync(join(root, 'claude', 'sessions'), { recursive: true, mode: 0o700 });
+  mkdirSync(socketDir, { mode: 0o700 });
+  const engine = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
+    if (request.headers.get('x-asb-source-token') !== SOURCE_TOKEN) return new Response(null, { status: 403 });
+    const path = new URL(request.url).pathname;
+    if (path === '/api/relay/homes') return Response.json({ machineId: 'a'.repeat(16), machineName: 'alpha', homes: [] });
+    return Response.json({ peers: [] });
+  } });
+  const receipts: ExactReceipt[] = [];
+  const close = await outboundServer(join(socketDir, 'r.out'), join(root, 'claude'), 'uds:/dev/null', () => true, () => {}, undefined,
+    receipt => { receipts.push(receipt); return 1; });
+  let relay: Relay | undefined;
+  try {
+    relay = await startRelay(engine.port!, join(root, 'relay'));
+    const exactReceipt = { runtimeSessionId: randomUUID(), pid: 4242, procStart: '4242000', reference: `asb:1/${'b'.repeat(16)}/x`,
+      msgIds: [randomUUID()], status: 'delivered' as const };
+    const body = (fields: Record<string, unknown> = {}) => ({ configDir: join(root, 'claude'), messagingSocketPath: join(socketDir, 'r.sock'),
+      request: { exactReceipt }, ...fields });
+    const outbox = (value: unknown) => fetch(`http://127.0.0.1:${relay!.port}/outbox`, { method: 'POST',
+      headers: { authorization: `Bearer ${relay!.token}` }, body: JSON.stringify(value) });
+    for (const value of [{ ...body(), extra: 1 }, body({ configDir: 'claude' }), body({ request: {} }), body({ request: { exactReceipt, frames: [] } }),
+      body({ messagingSocketPath: '' }), body({ request: { exactReceipt: { ...exactReceipt, text: 'hello' } } }), null]) {
+      expect((await outbox(value)).status).toBe(400);
+    }
+    expect(receipts).toEqual([]);
+    expect(await (await outbox(body())).json()).toEqual({ applied: 1 });
+    expect(receipts).toEqual([exactReceipt]);
+    // No outbox next to this inbox: nothing went out.
+    expect(await (await outbox(body({ messagingSocketPath: join(socketDir, 'missing.sock') }))).json()).toEqual({ outcome: 'not-sent' });
+    expect(receipts).toHaveLength(1);
+  } finally {
+    relay?.child.kill('SIGKILL');
+    await close();
     engine.stop(true);
     rmSync(root, { recursive: true, force: true });
   }

@@ -168,7 +168,8 @@ export async function refreshReceiver(configDir: string, receiver: Peer) {
 // The receiver of this task listens next to its inbox; on Windows its key file gives the auth line.
 // With unsent, a failure before the request goes out throws its error: nothing went out.
 // With prove on Windows, the request and the reply go only through a handle whose server is the receiver process.
-async function requestReceiver(configDir: string, receiver: Peer, request: unknown, unsent?: () => Error, prove = false) {
+export async function requestReceiver(configDir: string, receiver: Pick<Peer, 'pid' | 'procStart' | 'messagingSocketPath'>, request: unknown,
+  unsent?: () => Error, prove = false) {
   let path: string;
   let token: string | undefined;
   try {

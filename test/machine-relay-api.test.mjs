@@ -165,7 +165,7 @@ async function supervisorFixture(t, options = {}) {
   const group = options.group || fakeGroup();
   const supervisor = createRelaySupervisor({ group, port: 4659, sourceToken: TOKEN, root: dir, platform: 'linux',
     env: { PATH: path.join(dir, 'bin'), XDG_RUNTIME_DIR: path.join(dir, 'run') }, log: (line) => logs.push(line), firstLineMs: 200, stopMs: 50,
-    catPath: '/usr/bin/cat', ...options.supervisor,
+    catPath: '/usr/bin/cat', ...(typeof options.supervisor === 'function' ? options.supervisor(dir) : options.supervisor),
     spawn: (command, args, spawnOptions) => {
       const child = (options.child || (() => fakeChild({ line: JSON.stringify({ port: 1, token: 'e'.repeat(64) }) })))(spawns.length);
       spawns.push({ command, args, options: spawnOptions, child });
@@ -631,21 +631,22 @@ test('the member routes of an exact send bind first, clamp the deadline, and nev
 });
 
 // Exact member receipts: the sending engine keeps its attempts; the target member sends the control variant of /peer/v2/deliver.
-const RETURN_TO = { runtimeSessionId: ID2, pid: 4242, procStart: '4242000', messagingSocketPath: '/synthetic/run/4242.sock' };
+const RETURN_TO = { runtimeSessionId: ID2, pid: 4242, procStart: '4242000', messagingSocketPath: '/synthetic/run/4242.sock', configDir: '/synthetic/codex' };
 const receiptControl = (orig, fields = {}) => ({ api: 2, control: { action: 'peer_message_status', orig_msg_id: orig, status: 'delivered', ...fields } });
 
-async function receiptFixture(t, { deliver } = {}) {
+// `supervisor(dir)` gives more supervisor options; `outbox: null` uses the default receipt writer of the platform.
+async function receiptFixture(t, { deliver, child, supervisor = () => ({}) } = {}) {
   const clock = { now: 1_000_000 };
   const requests = [];
   const writes = [];
   let write = async () => 1;
-  const f = await supervisorFixture(t, { group: fakeGroup([B, 'c'.repeat(16)]), supervisor: { now: () => clock.now,
+  const f = await supervisorFixture(t, { group: fakeGroup([B, 'c'.repeat(16)]), child, supervisor: (dir) => ({ now: () => clock.now,
     outbox: async (...args) => { writes.push(args); return write(...args); },
     request: async (options) => {
       requests.push(options);
       if (options.path === '/peer/v2/resolve-session') return { status: 200, body: { api: 2, outcome: 'ready' }, address: '10.0.0.9' };
       return (deliver ?? (async () => ({ status: 200, body: { api: 2, msgId: options.body.message.msgId, outcome: 'submitted' } })))(options);
-    } } });
+    }, ...supervisor(dir) }) });
   const send = (msgId, { reference = identity().reference, returnTo = RETURN_TO } = {}) => f.supervisor.sendExact({ identity: { ...identity(), reference },
     sender: exactSender(), message: { ...exactMessage(), msgId }, remainingMs: 10_000, returnTo });
   return { ...f, clock, requests, writes, send, setWrite(value) { write = value; } };
@@ -724,7 +725,7 @@ test('peerReceipt checks the shape, then the attempt, the caller, the time, and 
   const fields = { status: 'expired', status_detail: 'refused', reason: 'Refused by the inbox policy.' };
   assert.deepEqual(await receipt(receiptControl(one, fields)), { status: 200, body: { api: 2, msgId: one, outcome: 'submitted' } });
   assert.deepEqual(f.writes, [[RETURN_TO.messagingSocketPath, { exactReceipt: { runtimeSessionId: ID2, pid: 4242, procStart: '4242000',
-    reference: identity().reference, msgIds: [one], ...fields } }, 2_000]]);
+    reference: identity().reference, msgIds: [one], ...fields } }, 2_000, RETURN_TO.configDir]]);
   // dropped_msg_ids: only live attempts with the same reference and the same receiver; never for another status.
   f.writes.length = 0;
   await receipt(receiptControl(two, { status: 'dropped', drop_reason: 'queue-full', dropped_msg_ids: [two, one, otherReference, otherReturn, randomUUID()] }));
@@ -750,6 +751,59 @@ test('peerReceipt checks the shape, then the attempt, the caller, the time, and 
   f.clock.now += 30 * 60_000;
   assert.deepEqual(await receipt(receiptControl(otherReturn)), expired(otherReturn));
   assert.deepEqual(f.writes, []);
+});
+
+test('without an outbox option, a Windows engine gives each receipt to its relay with POST /outbox; a Linux engine does not', async (t) => {
+  const caller = B + 'f'.repeat(48);
+  const routes = {};
+  const relay = await fakeRelay(t, routes);
+  const windows = async (child) => {
+    const f = await receiptFixture(t, { child, supervisor: (dir) => ({ outbox: null, platform: 'win32', env: { PATH: path.join(dir, 'bin'), LOCALAPPDATA: dir },
+      catPath: path.join(dir, 'findstr.exe') }) });
+    await writeFile(path.join(f.dir, 'bin', 'bun.exe'), '');
+    await writeFile(path.join(f.dir, 'findstr.exe'), '');
+    await f.supervisor.start();
+    return f;
+  };
+  const f = await windows(() => fakeChild({ line: relay.line }));
+  assert.equal(f.supervisor.running(), true);
+  const outcome = async ([status, body]) => {
+    routes['POST /outbox'] = [status, body];
+    const msgId = randomUUID();
+    await f.send(msgId);
+    return (await f.supervisor.peerDeliverExact(receiptControl(msgId), caller)).body;
+  };
+  const one = randomUUID();
+  routes['POST /outbox'] = [200, { applied: 1 }];
+  await f.send(one);
+  assert.deepEqual((await f.supervisor.peerDeliverExact(receiptControl(one), caller)).body, { api: 2, msgId: one, outcome: 'submitted' });
+  assert.deepEqual(f.writes, []);
+  const [call] = relay.calls;
+  assert.deepEqual([relay.calls.length, call.method, call.url, call.authorization], [1, 'POST', '/outbox', `Bearer ${'e'.repeat(64)}`]);
+  assert.deepEqual(call.body, { configDir: RETURN_TO.configDir, messagingSocketPath: RETURN_TO.messagingSocketPath, request: { exactReceipt: {
+    runtimeSessionId: ID2, pid: 4242, procStart: '4242000', reference: identity().reference, msgIds: [one], status: 'delivered' } } });
+  for (const reply of [[200, { outcome: 'not-sent' }], [400, { error: 'Invalid relay request.' }], [401, { error: 'Unauthorized.' }], [404, { error: 'Not found.' }]]) {
+    assert.deepEqual(Object.values(await outcome(reply)).slice(2), ['not-sent', 'target-unavailable'], JSON.stringify(reply));
+  }
+  for (const reply of [[200, { outcome: 'unknown' }], [500, { error: 'Failed.' }], [200, { applied: -1 }], [200, { applied: 1, extra: true }]]) {
+    assert.deepEqual(Object.values(await outcome(reply)).slice(2), ['unknown'], JSON.stringify(reply));
+  }
+  assert.equal(relay.calls.length, 9);
+  // No relay process: nothing goes out.
+  const none = await windows(() => fakeChild({ line: 'not json' }));
+  assert.equal(none.supervisor.running(), false);
+  const two = randomUUID();
+  await none.send(two);
+  assert.deepEqual((await none.supervisor.peerDeliverExact(receiptControl(two), caller)).body, { api: 2, msgId: two, outcome: 'not-sent', reason: 'target-unavailable' });
+  assert.equal(relay.calls.length, 9);
+  // Linux: writeOutbox. The synthetic outbox is missing, so the result is not-sent, and the relay gets no request.
+  const linux = await receiptFixture(t, { child: () => fakeChild({ line: relay.line }), supervisor: () => ({ outbox: null }) });
+  await linux.supervisor.start();
+  assert.equal(linux.supervisor.running(), true);
+  const three = randomUUID();
+  await linux.send(three);
+  assert.deepEqual((await linux.supervisor.peerDeliverExact(receiptControl(three), caller)).body, { api: 2, msgId: three, outcome: 'not-sent', reason: 'target-unavailable' });
+  assert.equal(relay.calls.length, 9);
 });
 
 test('sendReceipt makes one control POST to the sending member only, and none for an offline or unknown member', async (t) => {

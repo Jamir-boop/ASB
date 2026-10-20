@@ -99,10 +99,12 @@ const privateEntry = async (file, isKind) => {
   if (!isKind(info) || info.uid !== process.getuid() || (info.mode & 0o077) !== 0) throw new Error('The outbox is not private.');
 };
 
+// An error with `unsent` means that nothing was written.
+const unsent = (message) => Object.assign(new Error(message), { unsent: true });
+
 // One request to the outbox socket of a bridge receiver (Linux), next to its inbox `<name>.sock` (bridge/src/platform.ts).
-// The reply is the `applied` count. An error with `unsent` means that nothing was written.
+// The reply is the `applied` count.
 export async function writeOutbox(inbox, request, timeoutMs = OUTBOX_MS) {
-  const unsent = (message) => Object.assign(new Error(message), { unsent: true });
   if (typeof inbox !== 'string' || !path.isAbsolute(inbox) || !inbox.endsWith('.sock') || inbox.split('/').includes('..')) throw unsent('Invalid outbox path.');
   const outbox = `${inbox.slice(0, -'.sock'.length)}.out`;
   const deadline = Date.now() + timeoutMs;
@@ -226,7 +228,7 @@ function memberOutcome({ status, body }) {
 export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, env = process.env, platform = process.platform,
   spawn = spawnProcess, request = peerRequest, log = (line) => console.error(line), now = Date.now,
   catPath = platform === 'win32' ? path.win32.join(env.SystemRoot || 'C:\\Windows', 'System32', 'findstr.exe') : '/usr/bin/cat',
-  firstLineMs = 10_000, stopMs = 2_000, bindTarget = async () => { throw new Error('No exact binder.'); }, outbox = writeOutbox }) {
+  firstLineMs = 10_000, stopMs = 2_000, bindTarget = async () => { throw new Error('No exact binder.'); }, outbox = null }) {
   const relayJs = path.join(root, 'bridge', 'dist', 'relay.js');
   let child = null;
   let relay = null;
@@ -352,10 +354,22 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
     const { status, status_detail, reason, drop_reason } = control;
     const fields = Object.fromEntries(Object.entries({ status_detail, reason, drop_reason }).filter(([, item]) => item !== undefined));
     try {
-      await outbox(messagingSocketPath, { exactReceipt: { runtimeSessionId, pid, procStart, reference: attempt.reference, msgIds, status, ...fields } }, OUTBOX_MS);
+      await writeReceipt(messagingSocketPath, { exactReceipt: { runtimeSessionId, pid, procStart, reference: attempt.reference, msgIds, status, ...fields } },
+        OUTBOX_MS, attempt.returnTo?.configDir);
       return reply('submitted');
     } catch (error) { return error?.unsent ? reply('not-sent', 'target-unavailable') : reply('unknown'); }
   }
+
+  // Windows: Node cannot prove a pipe server and the engine reads no key file, so the relay (Bun) writes the receipt.
+  async function relayOutbox(inbox, request, timeoutMs, configDir) {
+    if (!relay) throw unsent('The message relay is not running.');
+    let reply;
+    try { reply = await relayRequest('/outbox', { method: 'POST', body: { configDir, messagingSocketPath: inbox, request }, timeoutMs }); }
+    catch (error) { throw [400, 401, 404].includes(error?.status) ? unsent(error.message) : error; }
+    if (keys(reply, ['applied']) && Number.isInteger(reply.applied) && reply.applied >= 0) return reply.applied;
+    throw reply?.outcome === 'not-sent' ? unsent('The relay did not write the receipt.') : new Error('The message relay sent an invalid reply.');
+  }
+  const writeReceipt = outbox ?? (platform === 'win32' ? relayOutbox : writeOutbox);
 
   // One total deadline: a relay that sends headers and then stalls fails too.
   async function relayRequest(target, { method = 'GET', body, timeoutMs = method === 'GET' ? RELAY_LIST_MS : RELAY_DELIVER_MS } = {}) {
