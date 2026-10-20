@@ -4,6 +4,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Changed the engine to use less CPU: with full file watch coverage, it scans when a session file changes, when another machine of the group sends a change, or when a status time limit comes, with a safety scan every 30 seconds. The Codex reader no longer queries the Codex database again when the database did not change.
+- Changed the machine group: archived sessions of another machine no longer show in the Archive filter.
 - Fixed the Codex reader for Codex database changes: a missing column no longer empties the Codex list.
 - Fixed `asb service install` and `asb setup` after `asb`: the user service restarted every 5 seconds while the engine that `asb` started was running.
 - Fixed **Check now** in the Android app: it now shows the notifications that it finds, and an automatic check while the app is open no longer marks new events as seen.

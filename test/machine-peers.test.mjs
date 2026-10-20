@@ -58,6 +58,20 @@ test('the export has only local rows with whitelisted fields, their keys, and th
   assert.equal(JSON.stringify(exportLocalSessions({ threads: [], messages: [] }, B, nowMs).keys), '{}');
 });
 
+test('the export interval counts only the exported rows, and archived rows stay out with their keys and messages', () => {
+  const others = [{ id: 'm:member:row', remote: true, state: 'working' }, { id: 'cache', remoteCache: true, state: 'working' }];
+  assert.equal(exportLocalSessions({ threads: [...others, { id: 'local', state: 'idle' }], messages: [] }, B, nowMs).refreshIntervalMs, 5000);
+  assert.equal(exportLocalSessions({ threads: [...others, { id: 'local', state: 'working' }], messages: [] }, B, nowMs).refreshIntervalMs, 2000);
+  const archived = `claude-desktop-code:${local(7)}`;
+  const withArchived = board([claude(7, { archived: true, cliSessionId: uuid(970), incomingMessages: [{ from: 'unknown-key', atMs: nowMs - 3000 }] }),
+    claude(8, { incomingMessages: [{ from: 'other-key', atMs: nowMs - 2000 }] })], B);
+  assert.equal(withArchived.threads.find((row) => row.id === archived).archived, true);
+  const exported = exportLocalSessions(withArchived, B, nowMs);
+  assert.deepEqual(exported.rows.map((row) => row.id), [`claude-desktop-code:${local(8)}`]);
+  assert.deepEqual(Object.keys(exported.keys), [`claude-desktop-code:${local(8)}`]);
+  assert.deepEqual(exported.incoming, [{ to: `claude-desktop-code:${local(8)}`, from: 'other-key', atMs: nowMs - 2000 }]);
+});
+
 test('a received export keeps only valid rows and whitelisted fields', () => {
   const exported = exportLocalSessions(boardB(), B, nowMs);
   assert.equal(validExport({ ...exported, machineId: A.machineId }, B), null);

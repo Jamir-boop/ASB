@@ -801,12 +801,15 @@ export function createSwitchboardServer(options = {}) {
         Object.assign(row, row[SHARED_CLI] && reference.reference ? { referenceUnavailable: 'ambiguous-source' } : reference,
           scopeTag && !row[SHARED_CLI] ? { referenceScope: scopeTag } : {}, sessionReference ? { sessionReference } : {});
       }
+      // Before the merge, the rows are local only: they set the scan interval of this engine.
+      const localRefreshIntervalMs = switchboardRefreshInterval(loaded);
       options.machineGroup?.merge(loaded);
       const dashboard = await tracker.observe(loaded);
       dashboard.sourcesRevision = sources ? appSourcesRevision(sources) : null;
       sound?.(dashboard);
       if (registeredLoad && registry.warning) dashboard.providers.push({ id: 'asb-sources', label: 'ASB', status: 'warning', message: registry.warning });
       dashboard.refreshIntervalMs = switchboardRefreshInterval(dashboard);
+      Object.defineProperty(dashboard, 'localRefreshIntervalMs', { value: localRefreshIntervalMs });
       return dashboard;
     },
     resolveSession: async (request, dashboard) => resolveSessionReference(request, await referenceContext(dashboard)),

@@ -414,6 +414,27 @@ test('service-only polling observes completion with no clients and close cancels
   assert.deepEqual(seen, ['working', 'idle', 'idle']);
 });
 
+test('a Working member row keeps the 2 s board interval but not the 2 s service scans', async (t) => {
+  let localState = 'idle';
+  const timers = [];
+  const server = createSwitchboardServer({ serviceMode: true, pendingStatePath: false,
+    dashboardSetTimeout: (callback, delay) => { const timer = { callback, delay }; timers.push(timer); return timer; },
+    dashboardClearTimeout: () => {},
+    machineGroup: { merge: (dashboard) => { dashboard.threads.push({ id: 'm:member:row', remote: true, state: 'working', nativeUnread: null }); } },
+    loadDashboard: async () => ({ providers: [], threads: [{ id: 'local', state: localState, nativeUnread: null }] }) });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  while (!timers.length) await turn();
+  assert.equal(timers[0].delay, 5000);
+  const dashboard = await (await fetch(`http://127.0.0.1:${server.address().port}/api/dashboard`)).json();
+  assert.equal(dashboard.refreshIntervalMs, 2000);
+  assert.equal('localRefreshIntervalMs' in dashboard, false);
+  localState = 'working';
+  server.invalidateDashboard('test', { hard: true });
+  await timers[0].callback();
+  assert.equal(timers.at(-1).delay, 2000);
+});
+
 test('the engine helpers choose the tray, the tray launcher, and the log path', () => {
   const bus = { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1/bus' };
   assert.equal(shouldStartTray(bus, 'linux'), true);

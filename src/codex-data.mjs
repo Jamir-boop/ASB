@@ -48,6 +48,8 @@ const rolloutSignalCache = new SourceCache(DEFAULT_THREAD_LIMIT);
 const rolloutActivityCache = new SourceCache(DEFAULT_THREAD_LIMIT);
 const codexMetadataCache = new SourceCache(32);
 const bridgeMessageCache = new SourceCache(DEFAULT_THREAD_LIMIT);
+// The last thread query result of each state database, with its file signature and limit.
+const threadQueryCache = new Map();
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const BRIDGE_DELIVERED_STATUSES = new Set(['accepted', 'started', 'steered']);
 export const SESSION_MESSAGE_WINDOW_MS = 2 * 60 * 1000;
@@ -172,6 +174,8 @@ export function invalidateCodexData({ filePath = '' } = {}) {
     if (filePath) cache.delete(filePath);
     else cache.clear();
   }
+  if (filePath) threadQueryCache.delete(filePath.replace(/-wal$/, ''));
+  else threadQueryCache.clear();
 }
 
 export function retainCodexDataScopes(scopes) {
@@ -298,18 +302,34 @@ export async function discoverCodexStateDatabase(codexDir = DEFAULT_CODEX_DIR) {
   return latest ? path.join(codexDir, latest) : path.join(codexDir, 'state_5.sqlite');
 }
 
+// The signature of the database and its WAL file, or '' while a file changed in the last second:
+// a later write in the same timestamp can keep the same size and time (the racy index case).
+async function threadDatabaseSignature(databasePath) {
+  const files = await Promise.all([fs.stat(databasePath), fs.stat(`${databasePath}-wal`).catch(() => null)]);
+  const statAtMs = Date.now();
+  if (files.some((info) => info && !(statAtMs - info.mtimeMs > 1_000))) return '';
+  return JSON.stringify(files.map((info) => info && [info.dev, info.ino, info.size, info.mtimeMs]));
+}
+
 export async function readThreads({ databasePath, limit = DEFAULT_THREAD_LIMIT } = {}) {
   databasePath ||= await discoverCodexStateDatabase();
   const cappedLimit = safeLimit(limit);
+  // The stat comes before the queries, so a write during the queries changes the next signature.
+  const signature = await threadDatabaseSignature(databasePath);
+  const kept = threadQueryCache.get(databasePath);
+  if (signature && kept?.signature === signature && kept.limit === cappedLimit) return kept.rows.map((row) => ({ ...row }));
   const columns = new Set((await querySqliteJson(databasePath, 'pragma table_info(threads);')).map((row) => row.name));
   const sql = readThreadsSql(cappedLimit, { includeGoals: true, columns });
 
+  let rows;
   try {
-    return await querySqliteJson(databasePath, sql);
+    rows = await querySqliteJson(databasePath, sql);
   } catch {
     // Codex can drop or change thread_goals; read the threads without goals, and report only that error.
-    return querySqliteJson(databasePath, readThreadsSql(cappedLimit, { includeGoals: false, columns }));
+    rows = await querySqliteJson(databasePath, readThreadsSql(cappedLimit, { includeGoals: false, columns }));
   }
+  threadQueryCache.set(databasePath, { signature, limit: cappedLimit, rows });
+  return rows.map((row) => ({ ...row }));
 }
 
 function threadRowUpdatedAtMs(row = {}) {

@@ -6,6 +6,10 @@ import { getCodexCacheStats } from './codex-data.mjs';
 import { durationSince, hitRatePercent, positiveInteger } from './local-http.mjs';
 
 const DEFAULT_DASHBOARD_WATCH_DEBOUNCE_MS = 500;
+// Service mode with full watch coverage: watch events, peer changes, and status expiries start scans; this is the safety scan.
+const SERVICE_SAFETY_SCAN_MS = 30_000;
+// The scan interval comes from the local rows; the JSON interval also counts member rows, for the board and the phone.
+const scanIntervalMs = (dashboard) => (dashboard?.localRefreshIntervalMs ?? dashboard?.refreshIntervalMs) === 2_000 ? 2_000 : 5_000;
 
 export class DashboardSnapshot {
   constructor({
@@ -67,8 +71,8 @@ export class DashboardSnapshot {
     const performanceSnapshot = () => {
       const memory = process.memoryUsage();
       const dashboardCacheAgeMs = dashboardCache?.cachedAtMs ? Math.max(0, now() - dashboardCache.cachedAtMs) : null;
-      const cacheTtlMs = dashboardWatchCoverage && !serviceMode ? 5_000
-        : dashboardCache?.dashboard?.refreshIntervalMs === 2_000 ? 2_000 : 5_000;
+      const cacheTtlMs = !dashboardWatchCoverage ? scanIntervalMs(dashboardCache?.dashboard)
+        : serviceMode ? SERVICE_SAFETY_SCAN_MS : 5_000;
 
       return {
         generatedAtMs: now(),
@@ -112,8 +116,8 @@ export class DashboardSnapshot {
     const loadSharedDashboard = ({ force = false } = {}) => {
       const cachedAtMs = Number(dashboardCache?.cachedAtMs || 0);
       const cacheAgeMs = now() - cachedAtMs;
-      const refreshIntervalMs = dashboardCache?.dashboard?.refreshIntervalMs === 2_000 ? 2_000 : 5_000;
-      const cacheTtlMs = dashboardWatchCoverage && !serviceMode ? 5_000 : refreshIntervalMs;
+      const refreshIntervalMs = scanIntervalMs(dashboardCache?.dashboard);
+      const cacheTtlMs = !dashboardWatchCoverage ? refreshIntervalMs : serviceMode ? SERVICE_SAFETY_SCAN_MS : 5_000;
       const clockExpired = now() >= Number(dashboardCache?.dashboard?.nextStatusCheckAtMs || Infinity);
       const busyThrottled = dashboardDirty && refreshIntervalMs === 2_000
         && now() - dashboardLastScanStartedAtMs < 2_000;
@@ -206,6 +210,8 @@ export class DashboardSnapshot {
       broadcastDashboardEvent('dashboard', { version: dashboardEventVersion, reason, sources: { ...dashboardSources } });
       dashboardSources.codex = false;
       dashboardSources.claude = false;
+      // No file event follows a peer change: the service gets the follow-up scan of a source event, also with no reader.
+      if (serviceMode && dirty && !hard && !dashboardClosed) scheduleDashboardInvalidation(reason);
     };
 
     const scheduleDashboardInvalidation = (reason = 'dashboard-change') => {
@@ -213,7 +219,7 @@ export class DashboardSnapshot {
       dashboardInvalidationReason = reason;
       if (dashboardInvalidationTimer) return;
 
-      const busy = dashboardCache?.dashboard?.refreshIntervalMs === 2_000;
+      const busy = scanIntervalMs(dashboardCache?.dashboard) === 2_000;
       const delayMs = Math.max(dashboardWatchDebounceMs, dashboardRetryAfterMs - now(),
         busy ? 2_000 - (now() - dashboardLastScanStartedAtMs) : 0);
       dashboardInvalidationTimer = dashboardSetTimeout(() => {
@@ -381,7 +387,12 @@ export class DashboardSnapshot {
     const pollServiceDashboard = async () => {
       if (dashboardClosed) return;
       let delay = 5_000;
-      try { delay = (await loadSharedDashboard()).refreshIntervalMs === 2_000 ? 2_000 : 5_000; } catch {}
+      try {
+        const dashboard = await loadSharedDashboard();
+        delay = !dashboardWatchCoverage ? scanIntervalMs(dashboard)
+          : Math.max(2_000, Math.min(Number(dashboardCache?.cachedAtMs ?? now()) + SERVICE_SAFETY_SCAN_MS,
+            Number(dashboard.nextStatusCheckAtMs || Infinity)) - now());
+      } catch {}
       if (dashboardClosed) return;
       dashboardServiceTimer = dashboardSetTimeout(pollServiceDashboard, delay);
       dashboardServiceTimer.unref?.();

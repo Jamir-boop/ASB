@@ -5,7 +5,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { codexNativeReadStatus, loadCodexDashboard, parseRolloutSignals, parseSessionIndex, readThreads } from '../src/codex-data.mjs';
+import { codexNativeReadStatus, invalidateCodexData, loadCodexDashboard, parseRolloutSignals, parseSessionIndex, readThreads } from '../src/codex-data.mjs';
 import { normalizeThread } from '../src/insights.mjs';
 import { buildSwitchboardDashboard } from '../src/switchboard.mjs';
 
@@ -130,4 +130,48 @@ test('Codex cached native read status keeps identity, local host, UUID, and exac
   }
   assert.deepEqual(codexNativeReadStatus({ ...thread, creatorUserId: 'other-user' }, cachedState), unknown);
   assert.deepEqual(codexNativeReadStatus({ id }, cachedState), unknown);
+});
+
+test('the thread query runs again only when the database signature changes or is too recent', async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'asb-codex-kept-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const databasePath = path.join(directory, 'state_5.sqlite');
+  const setup = new DatabaseSync(databasePath);
+  setup.exec(`create table threads (id text primary key, title text, updated_at_ms integer, archived integer);
+    insert into threads values ('00000000-0000-4000-8000-000000000001', 'One', 1, 0);`);
+  setup.close();
+  // Same length titles keep the file size, and utimes puts back the same time: only the query can see the change.
+  const retitle = async (title, mtimeSeconds) => {
+    const database = new DatabaseSync(databasePath);
+    database.prepare('update threads set title = ?').run(title);
+    database.close();
+    await fs.utimes(databasePath, mtimeSeconds, mtimeSeconds);
+  };
+  const title = async () => (await readThreads({ databasePath }))[0].title;
+  const old = Math.floor(Date.now() / 1000) - 60;
+  await fs.utimes(databasePath, old, old);
+  const first = await readThreads({ databasePath });
+  assert.equal(first[0].title, 'One');
+  await retitle('Two', old);
+  const second = await readThreads({ databasePath });
+  assert.equal(second[0].title, 'One');
+  // Each caller gets its own row objects.
+  assert.notEqual(second[0], first[0]);
+  second[0].title = 'Changed by a caller';
+  assert.equal(await title(), 'One');
+  // A changed time runs the query again.
+  await fs.utimes(databasePath, old + 1, old + 1);
+  assert.equal(await title(), 'Two');
+  // A source event for the database or its WAL file drops the kept result.
+  await retitle('Six', old + 1);
+  assert.equal(await title(), 'Two');
+  invalidateCodexData({ filePath: `${databasePath}-wal` });
+  assert.equal(await title(), 'Six');
+  // A file changed less than 1 s before the stat is not a stable signature. A time ahead of the clock counts
+  // the same, and a slow test machine cannot make it older than 1 s.
+  const recent = Date.now() / 1000 + 30;
+  await retitle('Ten', recent);
+  assert.equal(await title(), 'Ten');
+  await retitle('Two', recent);
+  assert.equal(await title(), 'Two');
 });

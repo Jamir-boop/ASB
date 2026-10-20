@@ -338,3 +338,79 @@ test('real linux watches follow a new directory, a file written into it at once,
   await writeFile(path.join(f.root, 'rollout-new-root.jsonl'), '{}\n');
   await until(dirty);
 });
+
+// A service-mode snapshot with fake timers on a fake clock; run(ms) fires the due timers in time order.
+async function serviceFixture(t, { covered = true, dashboard = () => ({ threads: [], refreshIntervalMs: 2_000 }) } = {}) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'asb-service-scan-'));
+  const timers = new Set();
+  let clock = Date.parse('2026-10-20T10:00:00Z');
+  const start = clock;
+  const scans = [];
+  const watches = [];
+  const snapshot = new DashboardSnapshot({
+    serviceMode: true, now: () => clock, dashboardPlatform: 'linux', dashboardWatchDebounceMs: 250,
+    dashboardWatchPaths: covered ? [{ path: dir, source: 'codex' }] : [],
+    dashboardSetTimeout(callback, milliseconds) { const timer = { callback, at: clock + milliseconds, unref() {} }; timers.add(timer); return timer; },
+    dashboardClearTimeout(timer) { timers.delete(timer); },
+    watchDashboardPath(target, options, callback) {
+      const watcher = new EventEmitter();
+      watcher.close = () => {};
+      watches.push(callback);
+      return watcher;
+    },
+    loadDashboard: async () => { scans.push(clock - start); return dashboard(clock); },
+  });
+  const server = new EventEmitter();
+  server.close = () => {};
+  snapshot.attach(server);
+  t.after(async () => { server.close(); await rm(dir, { recursive: true, force: true }); });
+  const settle = async () => { for (let count = 0; count < 5; count += 1) await delay(1); };
+  server.emit('listening');
+  await settle();
+  return { snapshot, scans, watches,
+    async run(milliseconds) {
+      const end = clock + milliseconds;
+      for (;;) {
+        const next = [...timers].sort((a, b) => a.at - b.at)[0];
+        if (!next || next.at > end) break;
+        timers.delete(next);
+        clock = Math.max(clock, next.at);
+        await next.callback();
+        await settle();
+      }
+      clock = end;
+    } };
+}
+
+const workingDashboard = () => ({ threads: [{ id: 'local', state: 'working' }], refreshIntervalMs: 2_000 });
+
+test('service mode with full watch coverage scans on a change, a status expiry, or the 30 s safety scan', async (t) => {
+  const quiet = await serviceFixture(t, { dashboard: workingDashboard });
+  await quiet.run(60_000);
+  assert.deepEqual(quiet.scans, [0, 30_000, 60_000]);
+  // A watch event gives one follow-up scan.
+  quiet.watches.at(-1)('change', 'state_5.sqlite-wal');
+  await quiet.run(5_000);
+  assert.deepEqual(quiet.scans, [0, 30_000, 60_000, 62_000]);
+  // A peer change writes no file: it gets the same one follow-up scan, also with no reader.
+  quiet.snapshot.invalidateDashboard('peer-sessions', { hard: false });
+  await quiet.run(5_000);
+  assert.deepEqual(quiet.scans, [0, 30_000, 60_000, 62_000, 65_250]);
+
+  const expiring = await serviceFixture(t, { dashboard: (now) => Object.defineProperty(workingDashboard(), 'nextStatusCheckAtMs', { value: now + 7_000 }) });
+  await expiring.run(8_000);
+  assert.deepEqual(expiring.scans, [0, 7_000]);
+});
+
+test('service mode without full watch coverage keeps the 2 s scans of a Working row', async (t) => {
+  const f = await serviceFixture(t, { covered: false, dashboard: workingDashboard });
+  await f.run(60_000);
+  assert.equal(f.scans.length, 31);
+});
+
+test('the service scan interval comes from the local rows, not from the member rows of the JSON interval', async (t) => {
+  const f = await serviceFixture(t, { covered: false, dashboard: () => Object.defineProperty(
+    { threads: [{ id: 'm:member:row', remote: true, state: 'working' }], refreshIntervalMs: 2_000 }, 'localRefreshIntervalMs', { value: 5_000 }) });
+  await f.run(60_000);
+  assert.equal(f.scans.length, 13);
+});

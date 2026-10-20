@@ -32,14 +32,15 @@ const pick = (row) => Object.fromEntries(Object.keys(EXPORT_FIELDS).filter((key)
   .map((key) => [key, typeof row[key] === 'string' ? row[key].toWellFormed() : row[key]]));
 
 // Plan 9.2: the local rows only, with their native message keys and the incoming messages from senders on other machines.
+// Archived rows stay out, so the Archive filter of a member shows only its own archived rows.
 export function exportLocalSessions(dashboard, self, nowMs = Date.now()) {
-  const rows = (dashboard.threads || []).filter((row) => !row.remote && !row.remoteCache).map(pick);
+  const rows = (dashboard.threads || []).filter((row) => !row.remote && !row.remoteCache && !row.archived).map(pick);
   const ids = new Set(rows.map((row) => row.id));
   const { keysByRow, unresolved } = sessionMessageKeys(dashboard);
   const keys = Object.fromEntries([...keysByRow].filter(([id]) => ids.has(id)));
   const incoming = unresolved.filter((message) => ids.has(message.to)).map(({ to, from, atMs }) => ({ to, from, atMs }));
   return { api: 1, machineId: self.machineId, name: self.name, generatedAtMs: nowMs,
-    refreshIntervalMs: switchboardRefreshInterval(dashboard), rows, keys, incoming };
+    refreshIntervalMs: switchboardRefreshInterval({ threads: rows }), rows, keys, incoming };
 }
 
 // The JSON body and its tag. The tag leaves out the time, so an unchanged list gives 304.
