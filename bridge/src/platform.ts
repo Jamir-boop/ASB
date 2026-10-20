@@ -3,8 +3,8 @@
 import net from 'node:net';
 import { once } from 'node:events';
 import { createHash, randomBytes } from 'node:crypto';
-import { constants, openSync, closeSync, fstatSync, readFileSync, lstatSync, chmodSync } from 'node:fs';
-import { dirname, join, isAbsolute } from 'node:path';
+import { constants, openSync, closeSync, fstatSync, readFileSync, readdirSync, lstatSync, chmodSync } from 'node:fs';
+import { basename, dirname, join, isAbsolute } from 'node:path';
 import { hostname } from 'node:os';
 import { dlopen, FFIType, ptr } from 'bun:ffi';
 
@@ -49,11 +49,13 @@ export function checkPeerSocket(path: string, platform: string = process.platfor
   if (!PEER_PIPE.test(path)) throw new Error('Invalid peer socket');
 }
 
-// Codex's app-server socket on Windows is an AF_UNIX file: a reparse point that lstat does not call a socket.
+// Codex's app-server socket on Windows is an AF_UNIX reparse point that Bun cannot lstat or stat; readdir sees it.
 export function checkSocketFile(path: string, platform: string = process.platform) {
   if (!isWindows(platform)) return checkSocket(path);
   privateDirectory(dirname(path), platform);
-  if (lstatSync(path).isDirectory()) throw new Error('Invalid socket path');
+  const entry = readdirSync(dirname(path), { withFileTypes: true }).find(item => item.name === basename(path));
+  if (!entry) throw Object.assign(new Error(`Socket not found: ${path}`), { code: 'ENOENT' });
+  if (entry.isDirectory()) throw new Error('Invalid socket path');
 }
 
 let kernel32: ReturnType<typeof openKernel32> | undefined;

@@ -57,7 +57,8 @@ async function runReceiver(event: Event) {
     process.send?.({ ready: true }, error => { if (error) void close(); });
     process.disconnect?.();
   } catch (error) {
-    if (process.connected) process.send?.({ error: error instanceof Error ? error.message : 'Receiver startup failed' }, () => {});
+    const message = (error as { message?: unknown } | undefined)?.message;
+    if (process.connected) process.send?.({ error: typeof message === 'string' ? message : 'Receiver startup failed' }, () => {});
     await close();
   }
 }

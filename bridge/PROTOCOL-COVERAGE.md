@@ -51,7 +51,7 @@ A socket write and a receipt are both separate from a model reply.
 
 ### Windows
 
-Claude Code on Windows (checked with 2.1.303 and 2.1.304) uses a named pipe `\\.\pipe\LOCAL\cc-msg-<32 hex>` as `messagingSocketPath`, a `procStart` that is the `GetProcessTimes` creation FILETIME in decimal, and `pidDomain` `win32:<host name in lower case>`. Its key file is `<pid>.<sha256 of \\.\pipe\ plus the lower-case pipe name>.key` with `{ peerToken, procStart, pidDomain }`, and its inbox requires the `auth` line. The bridge does the same: its receivers and the relay proxy rows write a key file before the row, the inbox needs the `auth` line first, and a send without a key file is refused. The outbound socket of a receiver is `\\.\pipe\LOCAL\asb-out-<the same 32 hex>` and needs the same `auth` line. Codex desktop IPC is `\\.\pipe\codex-ipc`. `test/platform.test.ts` covers the pipe rule, the key name, the `auth` line, and a round trip on every system.
+Claude Code on Windows (checked with 2.1.303 and 2.1.304) uses a named pipe `\\.\pipe\LOCAL\cc-msg-<32 hex>` as `messagingSocketPath`, a `procStart` that is the `GetProcessTimes` creation FILETIME in decimal, and `pidDomain` `win32:<host name in lower case>`. Its key file is `<pid>.<sha256 of \\.\pipe\ plus the lower-case pipe name>.key` with `{ peerToken, procStart, pidDomain }`, and its inbox requires the `auth` line. The bridge does the same: its receivers and the relay proxy rows write a key file before the row, the inbox needs the `auth` line first, and a send without a key file is refused. The outbound socket of a receiver is `\\.\pipe\LOCAL\asb-out-<the same 32 hex>` and needs the same `auth` line. Codex desktop IPC is `\\.\pipe\codex-ipc`. Bun cannot `lstat` or `stat` the Codex app-server socket file (an AF_UNIX reparse point), so the bridge finds it with `readdir` in its private folder. `test/platform.test.ts` covers the pipe rule, the key name, the `auth` line, and a round trip on every system.
 
 ### ASB relay proxy rows
 
@@ -69,6 +69,7 @@ Remote entries: with a running ASB engine, `list_sessions` adds the sessions of 
 | --- | --- | --- | --- |
 | Reachable without a manual tool call | yes | `SessionStart` on the first turn registers the receiver. | app-server, native |
 | Untouched chat, Claude starts the first turn | no | Codex runs `SessionStart` inside the first turn. See [STARTUP.md](STARTUP.md). | native `--peer-first` |
+| Transport choice | yes | `SessionStart` uses the app-server daemon when its socket answers and owns the task. A missing, stale, or unreachable app-server socket uses the desktop IPC. | app-server |
 | Resume or process change | yes | The task keeps its ID and gets a new verified process and socket. | hook |
 | Receiver revival | partial | One app-server loaded-thread list per sweep. Desktop IPC has no list: only a valid recorded end within 30 seconds of the newest end in that home permits a one-second total probe. A list error permits this bounded fallback. Old desktop state without an end time waits for `SessionStart`. | revive |
 | Stale record, ambiguous ID | yes | The bridge discards the record or refuses the send. | trust, bridge |

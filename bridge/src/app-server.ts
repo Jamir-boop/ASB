@@ -25,6 +25,12 @@ type Input = NonNullable<Inputs['latest']>;
 export class ThreadUnavailable extends Error {}
 export class AppServerDisconnected extends Error {}
 
+function connectionFailed(event: unknown) {
+  const message = (event as { message?: unknown } | undefined)?.message;
+  return Object.assign(new Error(`App-server connection failed: ${typeof message === 'string' ? message : String(event)}`, { cause: event }),
+    { code: 'ECONNREFUSED' });
+}
+
 export class AppServer {
   private socket: WebSocket;
   private pending = new Map<string, ReturnType<typeof Promise.withResolvers<unknown>>>();
@@ -32,6 +38,7 @@ export class AppServer {
   private settingsReceived = false;
   private stopped = false;
   private disconnectError?: Error;
+  private opened = false;
   private onState?: (state: Runtime) => void;
   private refreshing = false;
   private dirty = false;
@@ -43,7 +50,13 @@ export class AppServer {
     // ws+unix:// takes a POSIX path; on Windows the AF_UNIX file is reached through net.connect (S4).
     this.socket = isWindows() ? new WebSocket('ws://localhost/', { createConnection: () => net.connect(path), ...options })
       : new WebSocket(`ws+unix://${path}:/`, options);
-    this.socket.on('error', error => { this.disconnectError = error; this.fail(error); });
+    this.socket.once('open', () => { this.opened = true; });
+    this.socket.on('error', (event: unknown) => {
+      // Bun's built-in ws reports a failed connect as an ErrorEvent with no code; discovery needs a coded Error.
+      const error = this.opened ? event as Error : connectionFailed(event);
+      this.disconnectError = error;
+      this.fail(error);
+    });
     this.socket.on('close', () => {
       const error = this.disconnectError ?? new AppServerDisconnected('App-server disconnected; delivery may be unknown');
       this.fail(error);
@@ -92,7 +105,9 @@ export class AppServer {
   }
 
   async connectHost() {
-    await once(this.socket, 'open', { signal: AbortSignal.timeout(5000) });
+    // The 'error' handler runs first, so a failed connect throws its coded Error, not the raw event; a timeout stays as it is.
+    try { await once(this.socket, 'open', { signal: AbortSignal.timeout(5000) }); }
+    catch (error) { throw this.opened ? error : this.disconnectError ?? error; }
     await this.request('initialize', { clientInfo: { name: 'asb-bridge', version }, capabilities: { experimentalApi: true } });
     this.socket.send(JSON.stringify({ method: 'initialized' }));
   }

@@ -1,13 +1,42 @@
 import { test, expect } from 'bun:test';
 import { join } from 'node:path';
+import { lstatSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { AppServer, loadedAppServerThreads, withAppServer } from '../src/app-server';
 import { peers } from '../src/claude';
 import { appServer } from './app-server-fixture';
-import { watchCodex } from '../src/codex';
+import { discoverTarget, watchCodex } from '../src/codex';
 import { DeliveryRefused } from '../src/delivery';
 // POSIX only on Windows CI: the Unix socket file of the app-server fixture.
 const posix = test.skipIf(process.platform === 'win32');
+
+// A private listener killed with SIGKILL leaves its socket file with nobody behind it, as Codex does.
+async function staleSocket(path: string) {
+  const child = Bun.spawn([process.execPath, '-e', `process.umask(0o077); require('node:net').createServer().listen(${JSON.stringify(path)}, () => console.log('ready'))`],
+    { stdout: 'pipe', stderr: 'ignore' });
+  const reader = child.stdout.getReader();
+  await reader.read();
+  child.kill('SIGKILL');
+  await child.exited;
+  expect(lstatSync(path).isSocket()).toBe(true);
+}
+
+posix('a missing or stale app-server socket falls back to the desktop target', async () => {
+  const root = mkdtempSync('/tmp/codex-stale-');
+  try {
+    const directory = join(root, 'app-server-control');
+    mkdirSync(directory, { mode: 0o700 });
+    const ipcPath = join(root, 'ipc.sock');
+    const threadId = randomUUID();
+    expect(await discoverTarget(root, ipcPath, threadId)).toEqual({ kind: 'desktop', path: ipcPath });
+    const path = join(directory, 'app-server-control.sock');
+    await staleSocket(path);
+    const failure = await new AppServer(path, threadId).connectHost().then(() => undefined, error => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).toMatchObject({ code: 'ECONNREFUSED', message: expect.stringMatching(/^App-server connection failed: \S/) });
+    expect(await discoverTarget(root, ipcPath, threadId)).toEqual({ kind: 'desktop', path: ipcPath });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 posix('loaded-thread discovery initializes the host without a per-thread read', async () => {
   const server = await appServer();

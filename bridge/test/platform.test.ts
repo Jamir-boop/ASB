@@ -7,7 +7,7 @@ import net from 'node:net';
 import { once } from 'node:events';
 import { inbox, peers, register, sendFrames, socketPath, type Frame } from '../src/claude';
 import { outboundServer, refreshReceiver } from '../src/outbound';
-import { checkPeerSocket, inboxPath, keyName, outboxPath, ownedJson, pidDomain, privateDirectory, processStart } from '../src/platform';
+import { checkPeerSocket, checkSocketFile, inboxPath, keyName, outboxPath, ownedJson, pidDomain, privateDirectory, processStart } from '../src/platform';
 
 const windows = process.platform === 'win32';
 const hex = 'ab'.repeat(16);
@@ -63,6 +63,19 @@ test('owned JSON and private folders refuse a too-large file and a file as a fol
       expect(() => privateDirectory(root, platform)).not.toThrow();
       expect(() => privateDirectory(file, platform)).toThrow('must be private');
     }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('the Windows app-server socket check finds the entry by name in its private folder', () => {
+  const root = temporary('asb-platform-sock-');
+  try {
+    const path = join(root, 'app-server-control.sock');
+    expect(() => checkSocketFile(path, 'win32')).toThrow(expect.objectContaining({ code: 'ENOENT' }));
+    mkdirSync(path);
+    expect(() => checkSocketFile(path, 'win32')).toThrow('Invalid socket path');
+    rmSync(path, { recursive: true });
+    writeFileSync(path, '', { mode: 0o600 });
+    expect(() => checkSocketFile(path, 'win32')).not.toThrow();
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
