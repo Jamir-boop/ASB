@@ -218,7 +218,8 @@ test('the outbound server needs the auth line when it has a token', async () => 
 });
 
 // A fake Win32 api for pipeProof: the server is PID 7, started at 123, the same user; the pipe handle is 40n.
-function fakeApi(change: Partial<Record<keyof WindowsApi, (...args: never[]) => unknown>> = {}, writeSizes: number[] = [], incoming: string[] = []) {
+// A write request larger than `free` takes 0 bytes, as a NOWAIT write larger than the free pipe buffer did on the Windows CI runner.
+function fakeApi(change: Partial<Record<keyof WindowsApi, (...args: never[]) => unknown>> = {}, writeSizes: number[] = [], incoming: string[] = [], free = Infinity) {
   const calls: { name: string; args: unknown[] }[] = [];
   const written: Uint8Array[] = [];
   let open = true;
@@ -232,7 +233,7 @@ function fakeApi(change: Partial<Record<keyof WindowsApi, (...args: never[]) => 
     EqualSid: () => 1,
     SetNamedPipeHandleState: () => 1,
     WriteFile: (_pipe: bigint, bytes: Uint8Array, count: number, done: Uint32Array) => {
-      const size = Math.min(writeSizes.shift() ?? count, count);
+      const size = count > free ? 0 : Math.min(writeSizes.shift() ?? count, count);
       written.push(bytes.slice(0, size));
       done[0] = size;
       return 1;
@@ -326,6 +327,17 @@ test('a proved pipe writes the auth line first and continues partial and empty w
   expect(fake.calls.filter(call => call.name === 'CloseHandle' && call.args[0] === 40n)).toHaveLength(1);
 });
 
+test('a proved pipe splits a large write into 4096-byte requests at the right offsets, also after partial and empty writes', async () => {
+  const fake = fakeApi({}, [4096, 0, 1000], [], 4096);
+  const bytes = new Uint8Array(10_000).map((_, index) => index % 251);
+  await pipeProof(peerPipe, 7, '123', fake.api).write(bytes, AbortSignal.timeout(1000));
+  const requests = fake.calls.filter(call => call.name === 'WriteFile')
+    .map(call => [(call.args[1] as Uint8Array).byteOffset - bytes.byteOffset, (call.args[1] as Uint8Array).length, call.args[2]]);
+  expect(requests).toEqual([[0, 4096, 4096], [4096, 4096, 4096], [4096, 4096, 4096], [5096, 4096, 4096], [9192, 808, 808]]);
+  expect(fake.written.map(chunk => chunk.length)).toEqual([4096, 0, 1000, 4096, 808]);
+  expect(Buffer.concat(fake.written).equals(bytes)).toBe(true);
+});
+
 test('a proved pipe write stops on an aborted signal and on a failed WriteFile', async () => {
   const aborted = fakeApi();
   await expect(pipeProof(peerPipe, 7, '123', aborted.api).write(Buffer.from('x\n'), AbortSignal.abort())).rejects.toThrow();
@@ -373,12 +385,18 @@ windowsOnly('a proved bound send through the receiver outbox answers written, an
   try {
     const [self] = peers(sender.configDir);
     const [peer] = peers(target.configDir);
-    const msgId = randomUUID();
-    const binding = { registryHome: realpathSync(join(target.configDir, 'sessions')), runtimeSessionId: peer!.sessionId, pid: peer!.pid,
-      procStart: peer!.procStart!, messagingSocketPath: peer!.messagingSocketPath, msgId, expiresAtMs: Date.now() + 10_000 };
-    expect(await sendBoundViaReceiver(sender.configDir, self!, binding, [userFrame(sender.listener.address, peer!.sessionId, 'bound', msgId)])).toBe(true);
-    await until(() => target.frames.length, 20000);
-    expect(target.frames.map(frame => frame.type === 'user' && frame.message.content)).toEqual(['bound']);
+    const send = (content: string) => {
+      const msgId = randomUUID();
+      const binding = { registryHome: realpathSync(join(target.configDir, 'sessions')), runtimeSessionId: peer!.sessionId, pid: peer!.pid,
+        procStart: peer!.procStart!, messagingSocketPath: peer!.messagingSocketPath, msgId, expiresAtMs: Date.now() + 10_000 };
+      return sendBoundViaReceiver(sender.configDir, self!, binding, [userFrame(sender.listener.address, peer!.sessionId, content, msgId)]);
+    };
+    expect(await send('bound')).toBe(true);
+    // Near the 1 MiB limit of one serialized frame (maxLineLength).
+    const big = 'y'.repeat(1_040_000);
+    expect(await send(big)).toBe(true);
+    await until(() => target.frames.length === 2, 20000);
+    expect(target.frames.map(frame => frame.type === 'user' && frame.message.content)).toEqual(['bound', big]);
   } finally { await close(); await sender.close(); await target.close(); }
 }, 60000);
 

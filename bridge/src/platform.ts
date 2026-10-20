@@ -160,6 +160,7 @@ function sameUser(api: WindowsApi, owner: Pointer | bigint) {
   } finally { api.CloseHandle(self); }
 }
 
+const PIPE_CHUNK = 4096;
 // shortcut: polls a PIPE_NOWAIT handle every 5 ms; use overlapped I/O if a live check shows lost or slow writes.
 function provedPipe(api: WindowsApi, pipe: bigint): ProvedPipe {
   let pending = Buffer.alloc(0);
@@ -169,7 +170,9 @@ function provedPipe(api: WindowsApi, pipe: bigint): ProvedPipe {
       const done = new Uint32Array(1);
       for (let offset = 0; offset < bytes.length; offset += done[0]!) {
         signal.throwIfAborted();
-        if (!api.WriteFile(pipe, bytes.subarray(offset), bytes.length - offset, done, null)) throw new Error('Pipe write failed');
+        // On the Windows CI runner, a NOWAIT write larger than the free pipe buffer wrote 0 bytes, so ask for one chunk at a time.
+        const size = Math.min(PIPE_CHUNK, bytes.length - offset);
+        if (!api.WriteFile(pipe, bytes.subarray(offset, offset + size), size, done, null)) throw new Error('Pipe write failed');
         if (!done[0]) await Bun.sleep(5);
       }
     },
