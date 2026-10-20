@@ -16,7 +16,7 @@ export const RUNTIME_FILES = [
   'scripts/asb', 'scripts/asb.mjs', 'scripts/asb-setup.mjs', 'scripts/asb-package.mjs', 'scripts/asb-desktop.mjs', 'scripts/asb-service.mjs', 'scripts/asb-engine.mjs', 'scripts/asb-tray.py', 'scripts/asb-agent.mjs', 'scripts/asb-group.mjs', 'scripts/asb-instance.mjs', 'scripts/asb-icon.mjs', 'scripts/asb-native.py',
   'public/switchboard.html', 'public/switchboard.css', 'public/switchboard.js', 'public/icon.svg',
   'assets/icons/local.asb.AgentSwitchBoard.svg', 'assets/icons/asb-claude-symbolic.svg', 'assets/icons/asb-openai-symbolic.svg', 'assets/icons/asb-opencode-symbolic.svg',
-  'assets/icons/asb-machine-symbolic.svg', 'assets/icons/asb-terminal-symbolic.svg',
+  'assets/icons/asb-machine-symbolic.svg', 'assets/icons/asb-terminal-symbolic.svg', 'assets/icons/asb-drawer-symbolic.svg',
   'assets/icons/asb-muted-symbolic.svg',
   'assets/icons/README.md', 'assets/icons/ASB-disc-provenance.md',
   'assets/sounds/opencode_staplebops_01.mp3', 'assets/sounds/opencode_staplebops_02.mp3', 'assets/sounds/opencode_nope_03.mp3',

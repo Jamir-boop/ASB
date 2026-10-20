@@ -73,7 +73,7 @@ When a usage limit stops a chat, its row is grey and shows a clock with **Resets
 
 ## Read and Unread
 
-Right-click a row, or use Menu or Shift+F10. The menu offers **Read** for an ASB dot or question attention and **Unread** when neither is present. A current permission wait has no Read action. A passive stop square can still be marked Unread. An unread row also offers **Put in drawer**. A row in the drawer offers **Take out of drawer** and **Read**, and no **Unread**. The **Muted** switch comes right after **In the drawer**; see [Mute](#mute). The last row, **App and session ID**, shows the app host and the app's own session ID, for example `claude-proxy/local_…`; select the row or its copy button to copy it. In Comfortable, the copy button at the top right of a card copies the same text while the pointer is on the card or the card has keyboard focus. The panel has the same background as the board.
+Right-click a row, or use Menu or Shift+F10. The row panel shows the title, **Open in <app>**, and then only the actions that apply. It offers **Mark read** for an ASB dot or question attention and **Mark unread** when neither is present. A current permission wait has no Read action, and the panel says **Waits for your permission.** A passive stop square can still be marked unread. An unread row also offers **Put in drawer**. A row in the drawer offers **Take out of drawer** and **Mark read**, and no **Mark unread**. **Mute** or **Unmute** comes right after the drawer row; see [Mute](#mute). The last row, **Copy app and session ID**, copies the app host and the app's own session ID, for example `claude-proxy/local_…`; its tooltip shows the text. In Comfortable, the copy button at the top right of a card copies the same text while the pointer is on the card or the card has keyboard focus. The panel has the same background as the board.
 
 **Unread** adds an ASB mark and includes the chat in Pending-only. It survives read changes in the original app. **Read** clears ASB attention. Neither action changes execution or the original chat store.
 
@@ -87,7 +87,7 @@ With **Persistent unread** off, a successful open acknowledges manual, native, c
 
 The drawer holds unread chats that you want out of the way. In the normal list, a chat in the drawer looks read. It has no unread dot, it is not Pending, and it sorts with the read chats. ASB changes nothing in Codex or Claude.
 
-To put a chat in the drawer, open the row panel of an unread row and turn on **In the drawer**. In Comfortable, you can also point at the card, or move keyboard focus to it, and select the drawer button. The card corner then shows three buttons in a row: drawer, read, pin. The title keeps its width. The buttons lie over the end of the first title line, with a short fade to the window background. On a highlighted card this gives a slightly darker pocket behind the buttons. Focus that comes from a mouse click does not show the drawer button. A column narrower than 190 pixels has no drawer button; use the row panel there. Compact has no card buttons; use the row panel.
+To put a chat in the drawer, open the row panel of an unread row and select **Put in drawer**. In Comfortable, you can also point at the card, or move keyboard focus to it, and select the drawer button. The card corner then shows three buttons in a row: drawer, read, pin. The title keeps its width. The buttons lie over the end of the first title line, with a short fade to the window background. On a highlighted card this gives a slightly darker pocket behind the buttons. Focus that comes from a mouse click does not show the drawer button. A column narrower than 190 pixels has no drawer button; use the row panel there. Compact has no card buttons; use the row panel.
 
 Only a row with an unread dot can go in the drawer. A row with a `?`, a required action in the original app, or a Working state cannot.
 
@@ -95,8 +95,8 @@ To see the drawer, select the **Drawer** pill. It shows a drawer glyph and a sma
 
 The drawer has no time limit. A chat leaves the drawer in these ways:
 
-- You take it out. Turn off **In the drawer** in the row panel. In Comfortable, the drawer button of a drawer card has a filled glyph in the accent color; select it. The chat is unread and Pending again.
-- You mark it read: turn off **Unread** in the row panel. In a drawer row, **Unread** and **In the drawer** are on; an Unread action through the local API also takes the chat out.
+- You take it out. Select **Take out of drawer** in the row panel. In Comfortable, the drawer button of a drawer card has a filled glyph in the accent color; select it. The chat is unread and Pending again.
+- You mark it read: select **Mark read** in the row panel. An Unread action through the local API also takes the chat out.
 - You open it. A successful open acknowledges the marks when **Persistent unread** is off. With **Persistent unread** on, an open keeps the marks and the chat stays in the drawer.
 - It gets new attention. The chat comes out as normal unread and Pending when ASB sees a result or failure time that is newer than `drawerSeen`, or when the chat has a question. This includes a task that ASB did not see in its Working phase, for example a short task between two scans. A native unread that is raised again in the original app with no new result does not take the chat out.
 - Its mark is gone. When no stored mark is left, for example the chat was read in the original app and ASB has no other mark for it, the chat leaves the drawer as a read chat. An unknown native read state for a time keeps the chat in the drawer.
@@ -107,7 +107,7 @@ The browser view shows a drawer chat as read. It has no Drawer pill and no drawe
 
 ## Discard result
 
-Use **Discard result** while a task is Working to skip its next successful result dot. In Comfortable, point at the row or use keyboard focus to show the dashed hollow dot beside Pin. Select it to turn Discard on. The solid hollow dot stays visible. Select it again for **Keep result**. Compact keeps the Working timer and shows only the passive armed ring; use the **Discard result** switch in the row panel to change it. The row panel of a Working row has this switch in either view.
+Use **Discard result** while a task is Working to skip its next successful result dot. In Comfortable, point at the row or use keyboard focus to show the dashed hollow dot beside Pin. Select it to turn Discard on. The solid hollow dot stays visible. Select it again for **Keep result**. Compact keeps the Working timer and shows only the passive armed ring; use **Discard result** or **Keep result** in the row panel to change it. The row panel of a Working row has this action in either view.
 
 Discard applies to this task once. A verified successful group end goes to read Idle without new result attention, even with Persistent unread on. The next task uses normal rules. It does not clear manual Unread, questions, or earlier failed-task attention. A failed end still gets its normal dot; cancellation still gets the stop square. A question has priority over the ring and keeps its normal Read or permission-wait behavior. Discard changes no state, Pending filter, pin order, or source-app read flag.
 
@@ -125,7 +125,7 @@ All ASB clients share this attention and pin state. Filters do not limit what th
 
 ## Mute
 
-Turn on **Muted** in the row panel (subtitle **Finished tasks stay read. Questions still alert.**) to keep a chat read when its tasks end. A muted chat shows a small muted-bell icon after the folder name in Comfortable and after the state in Compact.
+Select **Mute** in the row panel to keep a chat read when its tasks end: finished tasks stay read, and questions still alert. **Unmute** turns it off. A muted chat shows a small muted-bell icon after the folder name in Comfortable and after the state in Compact.
 
 - A task of a muted chat that ends with success gives no dot, no Done sound, and no Done phone notification. ASB handles it as a success with **Discard result** on, also for a native unread mark of that task that arrives late. **Persistent unread** does not keep it.
 - Questions and permission waits still show the `?` and play the Needs input sound and phone notification.
@@ -133,7 +133,7 @@ Turn on **Muted** in the row panel (subtitle **Finished tasks stay read. Questio
 - Mute applies to tasks that end after you turn it on.
 - Turning Mute on does not clear a dot at once. A dot from before stays until you read it, or until a later task of the muted chat ends with success. Failure dots and manual Unread stay until you read them.
 - **Unread** in ASB still works on a muted chat. An Unread mark that the original app sets with no new finished task still shows.
-- A muted chat has no **Discard result**: no card ring and no row panel switch. A Discard that you armed before Mute stays as it is.
+- A muted chat has no **Discard result**: no card ring and no row panel action. A Discard that you armed before Mute stays as it is.
 
 ASB saves Mute for each chat in its own `pending.json`, like the drawer. The phone and the browser view get the `muted` row field, but they have no Mute control.
 

@@ -141,36 +141,25 @@ def row_menu_actions(row):
     return actions
 
 
+# The row panel slot and icon of each row_menu_actions action; the slots are in the menu order.
+ROW_PANEL_SLOTS = {"mark-read": ("read", "object-select-symbolic"), "mark-unread": ("read", "mail-unread-symbolic"),
+                   "drawer-out": ("drawer", "asb-drawer-symbolic"), "drawer-in": ("drawer", "asb-drawer-symbolic"),
+                   "unmute": ("mute", "preferences-system-notifications-symbolic"), "mute": ("mute", "asb-muted-symbolic"),
+                   "unpin": ("pin", "view-pin-symbolic"), "pin": ("pin", "view-pin-symbolic"),
+                   "pin-up": ("pin-up", "go-up-symbolic"), "pin-down": ("pin-down", "go-down-symbolic"),
+                   "keep-result": ("discard", "edit-undo-symbolic"), "discard-result": ("discard", "edit-delete-symbolic")}
+
+
 def row_panel_controls(row):
-    """The row panel switches from row_menu_actions: key -> (on, the action a toggle runs, or None when it is not offered)."""
-    offered = {action for _title, action in row_menu_actions(row)}
-    pick = lambda *names: next((name for name in names if name in offered), None)
-    controls = {"unread": ("mark-unread" not in offered, pick("mark-read", "mark-unread")),
-                "drawer": ("drawer-out" in offered, pick("drawer-out", "drawer-in")),
-                "muted": ("unmute" in offered, pick("unmute", "mute")),
-                "pinned": ("unpin" in offered, pick("unpin", "pin"))}
-    if "pin-up" in offered:
-        controls["order"] = (True, "pin-up")
-    if offered & {"discard-result", "keep-result"}:
-        controls["discard"] = ("keep-result" in offered, pick("keep-result", "discard-result"))
-    return controls
+    """The row panel action rows from row_menu_actions, in its order: slot -> (action, label, icon)."""
+    return {ROW_PANEL_SLOTS[action][0]: (action, {"mark-read": "Mark read", "mark-unread": "Mark unread"}.get(action, title),
+                                         ROW_PANEL_SLOTS[action][1]) for title, action in row_menu_actions(row)}
 
 
 def session_reference(row):
     """The app host and the app's own session ID, for example claude-proxy/local_<uuid>; never the ASB row ID."""
     host = row.get("sourceName") or (row["provider"] if row.get("provider") in ("codex", "opencode") else "claude-desktop-code")
     return host + "/" + str(row.get("externalId", ""))
-
-
-def row_panel_note(row):
-    """The subtitle of the panel Unread switch."""
-    if row.get("actionRequired"):
-        return "Waits for your permission."
-    if row.get("questionAttention"):
-        return "Asks a question."
-    if (row.get("unread") or row.get("drawer")) and row.get("state") != "working":
-        return "Marked unread." if row.get("manualUnread") else "Finished. Not read yet."
-    return ""
 
 
 def panel_place(x, y, width, height, window_width, window_height, margin=6):
@@ -1064,6 +1053,20 @@ except (ImportError, ValueError):
     raise SystemExit(1)
 
 SHORTCUT_MASK = Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK | Gdk.ModifierType.SUPER_MASK | Gdk.ModifierType.META_MASK
+
+
+def set_panel_label(button, text):
+    """Set the label of a row panel action row; the label is its accessible name."""
+    button.asb_label.set_label(text)
+    button.update_property([Gtk.AccessibleProperty.LABEL], [text])
+
+
+def set_icon(image, name):
+    """Show a symbolic icon. GTK 4.18 does not recolor symbolic icons from the icon search path, so ASB glyphs load as files."""
+    if name and name.startswith("asb-"):
+        image.set_from_gicon(Gio.FileIcon.new(Gio.File.new_for_path(str(Path(__file__).parents[1] / "assets" / "icons" / f"{name}.svg"))))
+    else:
+        image.set_from_icon_name(name)
 
 
 def label(text, css=None):
@@ -2851,7 +2854,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.persistent_unread = Gtk.CheckButton(label="Persistent unread", active=True)
         self.persistent_unread.connect("toggled", self.change_unread_setting)
         sessions.append(self.persistent_unread)
-        unread_help = label("Turn off Unread in the row panel to clear dots.", "caption")
+        unread_help = label("Use Mark read in the row panel to clear dots.", "caption")
         unread_help.set_wrap(True)
         sessions.append(unread_help)
         self.unread_setting_error = label("", "warning")
@@ -3214,32 +3217,24 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 .asb-tooltip .asb-waiting {{ color: @warning_color; }}
 .asb-tooltip .asb-provider {{ opacity: .65; }}
 .asb-tooltip .asb-source-badge {{ min-width: 6px; min-height: 6px; padding: 0; border: 1px solid @window_bg_color; border-radius: 50%; }}
-{base} popover.asb-row-panel > contents {{ padding: 12px; border: 1px solid alpha(@accent_color, .7); border-radius: 12px; background: @window_bg_color;
+{base} popover.asb-row-panel > contents {{ padding: 8px; border: 1px solid alpha(@accent_color, .7); border-radius: 12px; background: @window_bg_color;
     box-shadow: 0 2px 8px alpha(black, .35), 0 8px 24px alpha(black, .3); }}
-{base} .asb-row-panel .asb-panel-folder, {base} .asb-row-panel .asb-panel-state {{ font-size: 11px; }}
-{base} .asb-row-panel .asb-panel-title {{ font-size: 13px; font-weight: bold; }}
-{base} .asb-row-panel .asb-panel-open {{ min-height: 34px; border-radius: 8px; font-weight: bold; }}
-{base} .asb-row-panel .asb-panel-move {{ min-height: 28px; padding: 0 10px; font-size: 12px; font-weight: normal; }}
-{base} .asb-row-panel row .subtitle {{ color: alpha(@window_fg_color, .72); opacity: 1; }}
-{base} .asb-row-panel .asb-panel-error {{ font-size: 11px; }}
-{base} .asb-row-panel list.boxed-list {{ background-color: @window_bg_color; box-shadow: 0 0 0 1px @borders; }}
-{base} .asb-row-panel list.boxed-list > row {{ border-bottom-color: @borders; }}
+{base} .asb-row-panel .asb-panel-title {{ font-size: 12px; font-weight: bold; margin: 4px 8px 8px; }}
+{base} .asb-row-panel .asb-panel-action {{ min-height: 30px; padding: 0 8px; border-radius: 5px; font-size: 13px; font-weight: normal; }}
+{base} .asb-row-panel separator {{ margin: 4px 0; }}
+{base} .asb-row-panel .asb-panel-note {{ margin: 5px 8px; color: alpha(@window_fg_color, .72); }}
+{base} .asb-row-panel .asb-panel-error {{ margin: 8px 8px 0; font-size: 11px; }}
 """
         if colors:
             colors = validate_theme(colors)
             self.add_css_class("asb-custom")
             scope = base + ".asb-custom"
             number_fill, number_edge, number_pressed = number_badge_colors(colors)
-            # The neutral popover edge, not the divider color, which can be near the background.
-            panel_line = edge_color(colors['background'], colors['text'], .36, (colors['background'],))
             css += f"""
 {scope}, {scope} headerbar, {scope} popover contents {{ background: {colors['background']}; color: {colors['text']}; }}
 {scope} popover > contents {{ border: 1px solid {edge_color(colors['background'], colors['text'], .36, (colors['background'],))}; }}
 {scope} popover.asb-row-panel > contents {{ background: {colors['background']}; border-color: {edge_color(colors['background'], colors['accent'], .7, (colors['background'],))}; }}
-{scope} .asb-row-panel .asb-panel-unread {{ color: {colors['text']}; }}
-{scope} .asb-row-panel list.boxed-list {{ background-color: {colors['background']}; box-shadow: 0 0 0 1px {panel_line}; }}
-{scope} .asb-row-panel list.boxed-list > row {{ border-bottom-color: {panel_line}; }}
-{scope} .asb-row-panel row .subtitle {{ color: {colors['muted']}; opacity: 1; }}
+{scope} .asb-row-panel .asb-panel-note {{ color: {colors['muted']}; }}
 {scope} .asb-state, {scope} .dim-label {{ color: {colors['muted']}; opacity: 1; }}
 {scope} .asb-working, {scope} .asb-waiting {{ color: {colors['accent']}; }}
 {scope} .asb-message-lit .asb-provider {{ color: {colors['accent']}; }}
@@ -4665,10 +4660,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             clock = Gtk.Image(icon_name="preferences-system-time-symbolic", pixel_size=12, visible=False)
             clock.add_css_class("asb-limit-clock")
             widget.asb_limit_clock = clock
-            # A file icon, not an icon name: GTK 4.18 does not recolor symbolic icons from the search path.
-            mute = Gtk.Image(gicon=Gio.FileIcon.new(Gio.File.new_for_path(
-                str(Path(__file__).parents[1] / "assets" / "icons" / "asb-muted-symbolic.svg"))),
-                pixel_size=12, visible=False, valign=Gtk.Align.CENTER)
+            mute = Gtk.Image(pixel_size=12, visible=False, valign=Gtk.Align.CENTER)
+            set_icon(mute, "asb-muted-symbolic")
             mute.add_css_class("asb-mute-glyph")
             mute.add_css_class("dim-label")
             widget.asb_mute_glyph = mute
@@ -5043,96 +5036,47 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         panel = Gtk.Popover(has_arrow=False)
         panel.add_css_class("asb-row-panel")
         panel.asb_identity, panel.asb_signature = row["id"], None
-        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, width_request=276)
-        header = Gtk.Grid(column_spacing=7, row_spacing=3, margin_start=2, margin_end=2, margin_bottom=12)
-        panel.asb_icon = Gtk.Image(pixel_size=14)
-        panel.asb_icon.add_css_class("asb-provider")
-        header.attach(panel.asb_icon, 0, 0, 1, 1)
-        panel.asb_folder = label("", "asb-panel-folder")
-        panel.asb_folder.add_css_class("dim-label")
-        panel.asb_folder.set_ellipsize(Pango.EllipsizeMode.START)
-        # A small natural width keeps a long path or title from widening the panel; the labels fill the panel width.
-        panel.asb_folder.set_max_width_chars(1)
-        panel.asb_folder.set_hexpand(True)
-        header.attach(panel.asb_folder, 1, 0, 1, 1)
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, width_request=260)
         panel.asb_title = label("", "asb-panel-title")
-        panel.asb_title.set_wrap(True)
-        panel.asb_title.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
-        panel.asb_title.set_lines(2)
         panel.asb_title.set_ellipsize(Pango.EllipsizeMode.END)
+        # A small natural width keeps a long title from widening the panel; the label fills the panel width.
         panel.asb_title.set_max_width_chars(1)
-        header.attach(panel.asb_title, 0, 1, 2, 1)
-        panel.asb_state = label("", "asb-panel-state")
-        header.attach(panel.asb_state, 0, 2, 2, 1)
-        root.append(header)
-        panel.asb_open = Gtk.Button(margin_bottom=12)
-        panel.asb_open.add_css_class("asb-panel-open")
-        panel.asb_open.connect("clicked", self.panel_open)
-        root.append(panel.asb_open)
-        controls = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
-        controls.add_css_class("boxed-list")
-        panel.asb_switches = {}
-        for key, title in (("unread", "Unread"), ("drawer", "In the drawer"), ("muted", "Muted"), ("pinned", "Pinned"), ("order", None),
-                           ("discard", "Discard result")):
-            if key == "order":
-                control = Adw.ActionRow(title="Pin order", activatable=False, focusable=False)
-                buttons = Gtk.Box(valign=Gtk.Align.CENTER)
-                buttons.add_css_class("linked")
-                for direction, text in (("up", "Earlier"), ("down", "Later")):
-                    name = "Move pin " + text.lower()
-                    button = Gtk.Button(label=text, tooltip_text=name)
-                    button.add_css_class("asb-panel-move")
-                    button.update_property([Gtk.AccessibleProperty.LABEL], [name])
-                    button.connect("clicked", self.panel_move_pin, direction)
-                    setattr(panel, "asb_" + direction, button)
-                    buttons.append(button)
-                control.add_suffix(buttons)
-            else:
-                control = Adw.SwitchRow(title=title)
-                if key == "discard":
-                    control.set_subtitle("Go to read Idle when this task ends")
-                elif key == "muted":
-                    control.set_subtitle("Finished tasks stay read. Questions still alert.")
-                control.connect("notify::active", self.panel_toggle, key)
-            panel.asb_switches[key] = control
-            controls.append(control)
-        panel.asb_copy_row = Adw.ActionRow(title="App and session ID", focusable=False)
-        panel.asb_copy_row.set_subtitle_lines(1)
-        def subtitle_label(widget):
-            # Adw.ActionRow keeps its subtitle label inside; the ID keeps both ends visible.
-            child = widget.get_first_child()
-            while child:
-                if isinstance(child, Gtk.Label) and child.has_css_class("subtitle"):
-                    return child
-                found = subtitle_label(child)
-                if found:
-                    return found
-                child = child.get_next_sibling()
-            return None
-        subtitle = subtitle_label(panel.asb_copy_row)
-        if subtitle:
-            subtitle.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
-        panel.asb_copy = Gtk.Button(icon_name="edit-copy-symbolic", tooltip_text="Copy app and session ID", valign=Gtk.Align.CENTER)
-        panel.asb_copy.add_css_class("flat")
-        panel.asb_copy.add_css_class("circular")
-        panel.asb_copy.update_property([Gtk.AccessibleProperty.LABEL], ["Copy app and session ID"])
-        panel.asb_copy.connect("clicked", self.panel_copy)
-        panel.asb_copy_row.add_suffix(panel.asb_copy)
-        # The row and its button run one copy: a click on the row activates the button.
-        panel.asb_copy_row.set_activatable_widget(panel.asb_copy)
-        panel.asb_copy_timer, panel.asb_copy_error, panel.asb_reference = None, "", None
-        controls.append(panel.asb_copy_row)
-        root.append(controls)
+        panel.asb_title.set_hexpand(True)
+        root.append(panel.asb_title)
+        def action_row(icon, handler, *data):
+            # One flat button per slot: an update changes its icon and label, so the focus stays on the slot.
+            content = Gtk.Box(spacing=10)
+            button = Gtk.Button(child=content)
+            button.asb_icon, button.asb_label = Gtk.Image(pixel_size=14), Gtk.Label(xalign=0, hexpand=True)
+            set_icon(button.asb_icon, icon)
+            button.asb_label.set_ellipsize(Pango.EllipsizeMode.END)
+            content.append(button.asb_icon)
+            content.append(button.asb_label)
+            button.add_css_class("flat")
+            button.add_css_class("asb-panel-action")
+            button.connect("clicked", handler, *data)
+            root.append(button)
+            return button
+        panel.asb_open = action_row("go-next-symbolic", self.panel_open)
+        root.append(Gtk.Separator())
+        panel.asb_note = label("Waits for your permission.", "asb-panel-note")
+        root.append(panel.asb_note)
+        panel.asb_actions = {}
+        for slot in dict.fromkeys(slot for slot, _icon in ROW_PANEL_SLOTS.values()):
+            panel.asb_actions[slot] = action_row(None, *((self.panel_move_pin, slot[4:]) if slot.startswith("pin-") else (self.panel_action, slot)))
+        root.append(Gtk.Separator())
+        panel.asb_copy = action_row("edit-copy-symbolic", self.panel_copy)
+        set_panel_label(panel.asb_copy, "Copy app and session ID")
+        panel.asb_copy_timer, panel.asb_copy_error, panel.asb_reference, panel.asb_controls = None, "", None, None
         # The card tooltip shows a failed action, but the panel covers the card.
         panel.asb_error = label("", "asb-panel-error")
         panel.asb_error.add_css_class("error")
         panel.asb_error.set_wrap(True)
         panel.asb_error.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
         panel.asb_error.set_max_width_chars(1)
-        panel.asb_error.set_margin_top(8)
         root.append(panel.asb_error)
-        # The clamp keeps a long subtitle or label from widening the panel past about 300px.
-        panel.set_child(Adw.Clamp(maximum_size=276, tightening_threshold=276, child=root))
+        # The clamp keeps a long label from widening the panel past about 280px.
+        panel.set_child(Adw.Clamp(maximum_size=260, tightening_threshold=260, child=root))
         keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
         keys.connect("key-pressed", self.panel_key)
         panel.add_controller(keys)
@@ -5168,11 +5112,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         ok, point = widget.compute_point(self, Graphene.Point().init(x, y))
         if not ok:
             return
-        # A popover measures 0 before it maps; its child plus the 12px padding and the 1px ring on each side is the size.
+        # A popover measures 0 before it maps; its child plus the 8px padding and the 1px ring on each side is the size.
         child = panel.get_child()
         width = child.measure(Gtk.Orientation.HORIZONTAL, -1)[1]
-        height = child.measure(Gtk.Orientation.VERTICAL, width)[1] + 26
-        width += 26
+        height = child.measure(Gtk.Orientation.VERTICAL, width)[1] + 18
+        width += 18
         px, py, side = panel_place(point.x, point.y, width, height, self.get_width(), self.get_height())
         ok, local = self.compute_point(widget, Graphene.Point().init(px, py))
         rectangle = Gdk.Rectangle()
@@ -5183,59 +5127,45 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def update_row_panel(self, panel, row):
         """Show the row data in the open panel; an unchanged row keeps every widget as it is."""
         pending = row["id"] in self.session_actions
-        controls = row_panel_controls(row)
+        # While an action for the row runs, the action rows keep their labels.
+        controls = panel.asb_controls if pending and panel.asb_controls is not None else row_panel_controls(row)
         model = tooltip_model(row, time.time() * 1000, Path.home(), "", self.drawer_view)
-        unread = controls["unread"][0] and model["state"] not in ("working", "waiting")
         reference = session_reference(row)
-        signature = (model["title"], model["path"], model["state_text"], model["state"], unread, model["app"], row.get("provider"),
-                     bool(row.get("canOpen")), tuple(controls.items()), row_panel_note(row), pending, self.open_errors.get(row["id"], ""),
-                     reference, panel.asb_copy_error, row_where(row))
+        signature = (model["title"], model["path"], model["app"], bool(row.get("canOpen")), tuple(controls.items()),
+                     bool(row.get("actionRequired")), pending, row["id"] in self.opening, self.open_errors.get(row["id"], ""), reference,
+                     panel.asb_copy_error, row_where(row))
         if signature == panel.asb_signature:
             return
-        panel.asb_signature = signature
+        panel.asb_signature, panel.asb_controls = signature, controls
         if reference != panel.asb_reference:
             # A new ID ends the feedback of a copy of the old one.
-            self.clear_copy_feedback(panel)
             panel.asb_reference = reference
-            panel.asb_copy_row.set_subtitle(reference)
-            panel.asb_copy_row.set_tooltip_text(reference)
+            self.clear_copy_feedback(panel)
         focus = self.get_focus()
         if pending and focus and focus.is_ancestor(panel):
             # An insensitive control loses the focus; it gets it back when the action ends.
             panel.asb_return_focus = focus
         panel.update_property([Gtk.AccessibleProperty.LABEL], [model["title"]])
-        panel.asb_icon.set_from_icon_name(provider_icon(row.get("provider")))
-        panel.asb_folder.set_label(model["path"])
         panel.asb_title.set_label(" ".join(model["title"].split()))
-        panel.asb_state.set_label(model["state_text"])
-        for css in (*("asb-" + value for value in STATES), "success", "warning", "dim-label", "asb-panel-unread"):
-            panel.asb_state.remove_css_class(css)
-        panel.asb_state.add_css_class("asb-" + model["state"])
-        panel.asb_state.add_css_class("success" if model["state"] == "working" else "warning" if model["state"] == "waiting"
-                                      else "asb-panel-unread" if unread else "dim-label")
+        panel.asb_title.set_tooltip_text(model["path"] + "\n" + reference)
+        panel.asb_note.set_visible(bool(row.get("actionRequired")))
         error = self.open_errors.get(row["id"], "") or panel.asb_copy_error
         panel.asb_error.set_label(error)
         panel.asb_error.set_visible(bool(error))
         if is_view_only(row):
-            panel.asb_open.set_label(f"On {row_where(row)[1]}" if row.get("remote") else "Runs in a terminal")
+            set_panel_label(panel.asb_open, f"On {row_where(row)[1]}" if row.get("remote") else "Runs in a terminal")
             panel.asb_open.set_sensitive(False)
         else:
-            panel.asb_open.set_label("Open in " + model["app"])
+            set_panel_label(panel.asb_open, "Open in " + model["app"])
             panel.asb_open.set_sensitive(bool(row.get("canOpen")) and not pending and row["id"] not in self.opening)
-        panel.asb_updating = True
-        for key, control in panel.asb_switches.items():
-            control.set_visible(key in controls)
-            on, action = controls.get(key, (False, None))
-            if key == "order":
-                panel.asb_up.set_sensitive(not pending)
-                panel.asb_down.set_sensitive(not pending)
-                continue
-            # While an action runs, the switch keeps the state that the user chose.
-            if not pending:
-                control.set_active(on)
-            control.set_sensitive(bool(action) and not pending)
-        panel.asb_switches["unread"].set_subtitle(row_panel_note(row))
-        panel.asb_updating = False
+        for slot, button in panel.asb_actions.items():
+            button.set_visible(slot in controls)
+            if slot in controls:
+                _action, text, icon = controls[slot]
+                set_panel_label(button, text)
+                set_icon(button.asb_icon, icon)
+            button.set_sensitive(not pending)
+        panel.asb_copy.set_sensitive(not pending)
         if not pending and getattr(panel, "asb_return_focus", None):
             GLib.idle_add(self.restore_panel_focus, panel, panel.asb_return_focus)
             panel.asb_return_focus = None
@@ -5257,19 +5187,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         else:
             self.update_row_panel(panel, widget.asb_thread)
 
-    def panel_toggle(self, control, _param, key):
+    def panel_action(self, button, slot):
         # The panel comes from the widget: a panel in the handler data makes a cycle that Python cannot free.
-        panel = control.get_ancestor(Gtk.Popover)
-        if getattr(panel, "asb_updating", False):
-            return
+        panel = button.get_ancestor(Gtk.Popover)
         widget = self.focus_widgets.get(panel.asb_identity)
-        on, action = row_panel_controls(widget.asb_thread).get(key, (False, None)) if widget else (False, None)
-        if action and control.get_active() != on:
+        action = row_panel_controls(widget.asb_thread).get(slot, (None,))[0] if widget else None
+        if action:
             self.activate_action("win." + action, GLib.Variant("s", panel.asb_identity))
-        # An action that sent nothing puts the switch back.
-        if self.context_menu is panel and panel.asb_identity not in self.session_actions:
-            panel.asb_signature = None
-            self.sync_row_panel()
 
     def panel_copy(self, button):
         panel = button.get_ancestor(Gtk.Popover)
@@ -5283,9 +5207,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             panel.asb_copy_error = f"Cannot copy the app and session ID: {error}"
         else:
             panel.asb_copy_error = ""
-            panel.asb_copy.set_icon_name("object-select-symbolic")
+            panel.asb_copy.asb_icon.set_from_icon_name("object-select-symbolic")
             panel.asb_copy.set_tooltip_text("Copied")
-            panel.asb_copy_row.update_property([Gtk.AccessibleProperty.DESCRIPTION], ["Copied"])
+            panel.asb_copy.update_property([Gtk.AccessibleProperty.DESCRIPTION], ["Copied"])
             def clear():
                 panel.asb_copy_timer = None
                 self.clear_copy_feedback(panel)
@@ -5297,9 +5221,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if panel.asb_copy_timer:
             GLib.source_remove(panel.asb_copy_timer)
             panel.asb_copy_timer = None
-        panel.asb_copy.set_icon_name("edit-copy-symbolic")
-        panel.asb_copy.set_tooltip_text("Copy app and session ID")
-        panel.asb_copy_row.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
+        panel.asb_copy.asb_icon.set_from_icon_name("edit-copy-symbolic")
+        panel.asb_copy.set_tooltip_text(panel.asb_reference)
+        panel.asb_copy.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
 
     def panel_move_pin(self, button, direction):
         panel = button.get_ancestor(Gtk.Popover)
@@ -5440,6 +5364,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.opening.add(row["id"])
         self.open_errors.pop(row["id"], None)
         self.update_open_state(widget)
+        self.sync_row_panel()
         def finished(_result, error):
             if not self.closed:
                 self.opening.discard(row["id"])
@@ -5448,6 +5373,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 current = self.focus_widgets.get(row["id"])
                 if current:
                     self.update_open_state(current)
+                self.sync_row_panel()
                 if not error:
                     self.refresh(queue=True)
             return False

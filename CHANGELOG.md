@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- The session menu is now a short action list: the title, Open, then only the actions that apply (Mark read, Pin, Mute, and others), then Copy app and session ID. The switches, the state line, and the large header are gone. The focus stays on the same row when its label changes.
 - Added `asb agent resolve-session`: it shows the machine, the source, and the state of a full or short session reference. It only reads and sends nothing.
 - The mute icon on the cards now has one gray tone. Some icon themes drew its slash brighter than its bell.
 - The engine now gives each session a full session reference (machine, source, and app session ID) for the coming copy action and resolver. A keyed source scope tag in the reference changes when the folders of the source change. The rows of an older group member get no full reference.

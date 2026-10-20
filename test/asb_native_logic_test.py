@@ -2434,42 +2434,49 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual([row["id"] for row in filtered(board, "Personal", state={"working"}, pending_only=True)], ["claude", "personal"])
         self.assertEqual({row["id"] for row in filtered(board, "Personal", app="codex", archived=True)}, {"personal", "archived"})
 
-    def test_row_panel_controls_note_and_edges_follow_the_menu_rules(self):
-        controls, note, edge = SCOPE["row_panel_controls"], SCOPE["row_panel_note"], SCOPE["edge_color"]
+    def test_row_panel_controls_and_edges_follow_the_menu_rules(self):
+        controls, edge, actions = SCOPE["row_panel_controls"], SCOPE["edge_color"], SCOPE["row_menu_actions"]
         contrast = SCOPE["contrast"]
         idle = {"state": "idle", "unread": True, "pinned": True, "pendingSource": "observed-completion"}
-        self.assertEqual(controls(idle), {"unread": (True, "mark-read"), "drawer": (False, "drawer-in"), "muted": (False, "mute"),
-                                          "pinned": (True, "unpin"), "order": (True, "pin-up")})
-        self.assertEqual(note(idle), "Finished. Not read yet.")
-        self.assertEqual(note({**idle, "manualUnread": True}), "Marked unread.")
+        self.assertEqual(controls(idle), {"read": ("mark-read", "Mark read", "object-select-symbolic"),
+                                          "drawer": ("drawer-in", "Put in drawer", "asb-drawer-symbolic"),
+                                          "mute": ("mute", "Mute", "asb-muted-symbolic"),
+                                          "pin": ("unpin", "Unpin", "view-pin-symbolic"),
+                                          "pin-up": ("pin-up", "Move pin earlier", "go-up-symbolic"),
+                                          "pin-down": ("pin-down", "Move pin later", "go-down-symbolic")})
         working = {"state": "working"}
-        self.assertEqual(controls(working), {"unread": (False, "mark-unread"), "drawer": (False, None), "muted": (False, "mute"),
-                                             "pinned": (False, "pin"), "discard": (False, "discard-result")})
-        self.assertEqual(controls({**working, "discardResult": True})["discard"], (True, "keep-result"))
+        self.assertEqual(controls(working), {"read": ("mark-unread", "Mark unread", "mail-unread-symbolic"),
+                                             "mute": ("mute", "Mute", "asb-muted-symbolic"),
+                                             "pin": ("pin", "Pin", "view-pin-symbolic"),
+                                             "discard": ("discard-result", "Discard result", "edit-delete-symbolic")})
+        self.assertEqual(controls({**working, "discardResult": True})["discard"], ("keep-result", "Keep result", "edit-undo-symbolic"))
         for remote in (working, {**working, "discardResult": True}):
             self.assertNotIn("discard", controls({**remote, "remote": True}))
-            self.assertFalse({"discard-result", "keep-result"} & {action for _title, action in SCOPE["row_menu_actions"]({**remote, "remote": True})})
-        self.assertEqual(controls({**working, "surface": "cli"})["discard"], (False, "discard-result"))
-        self.assertEqual(note({**working, "unread": True}), "")
+            self.assertFalse({"discard-result", "keep-result"} & {action for _title, action in actions({**remote, "remote": True})})
+        self.assertEqual(controls({**working, "surface": "cli"})["discard"][0], "discard-result")
         drawer = {"state": "idle", "drawer": True}
-        self.assertEqual(controls(drawer)["unread"], (True, "mark-read"))
-        self.assertEqual(controls(drawer)["drawer"], (True, "drawer-out"))
-        self.assertEqual(note(drawer), "Finished. Not read yet.")
+        self.assertEqual(controls(drawer)["read"][:2], ("mark-read", "Mark read"))
+        self.assertEqual(controls(drawer)["drawer"], ("drawer-out", "Take out of drawer", "asb-drawer-symbolic"))
         waiting = {"state": "waiting", "actionRequired": True, "questionAttention": True}
-        self.assertEqual(controls(waiting)["unread"], (True, None))
-        self.assertEqual(controls(waiting)["drawer"], (False, None))
-        self.assertEqual(note(waiting), "Waits for your permission.")
-        self.assertEqual(note({"state": "idle", "questionAttention": True}), "Asks a question.")
-        self.assertEqual(note({"state": "idle"}), "")
+        self.assertEqual(list(controls(waiting)), ["mute", "pin"])
         # A muted row offers Unmute and no Discard, Working or not.
         for row in (idle, working, {**working, "discardResult": True}):
             muted = {**row, "muted": True}
-            self.assertEqual(controls(muted)["muted"], (True, "unmute"))
+            self.assertEqual(controls(muted)["mute"], ("unmute", "Unmute", "preferences-system-notifications-symbolic"))
             self.assertNotIn("discard", controls(muted))
             self.assertEqual(list(controls(muted)), [key for key in controls(row) if key != "discard"])
-        for row in (idle, working, drawer, waiting, {**idle, "muted": True}, {**working, "muted": True}):
-            offered = {action for _title, action in SCOPE["row_menu_actions"](row)}
-            self.assertEqual({action for _on, action in controls(row).values() if action} - {"pin-up"}, offered - {"pin-up", "pin-down"})
+        # Every action has one slot; the slots follow the menu order, and only the offered actions show.
+        slots = list(dict.fromkeys(slot for slot, _icon in SCOPE["ROW_PANEL_SLOTS"].values()))
+        self.assertEqual(slots, ["read", "drawer", "mute", "pin", "pin-up", "pin-down", "discard"])
+        for row in (idle, working, drawer, waiting, {**idle, "muted": True}, {**working, "muted": True}, {**working, "discardResult": True},
+                    {"state": "idle", "pinned": True}, {"state": "idle", "manualUnread": True, "unread": True},
+                    {"state": "working", "remote": True, "pinned": True}, {"state": "idle", "surface": "cli", "unread": True}):
+            offered = actions(row)
+            self.assertEqual([(action, label) for action, label, _icon in controls(row).values()],
+                             [(action, {"mark-read": "Mark read", "mark-unread": "Mark unread"}.get(action, title)) for title, action in offered])
+            self.assertEqual(list(controls(row)), [slot for slot in slots if slot in controls(row)])
+        self.assertEqual(set(SCOPE["ROW_PANEL_SLOTS"]), {"mark-read", "mark-unread", "drawer-in", "drawer-out", "mute", "unmute", "pin", "unpin",
+                                                          "pin-up", "pin-down", "discard-result", "keep-result"})
         self.assertEqual(edge("#0f0f0f", "#ffb900", .7, ("#000000", "#0f0f0f")), "#b78605")
         dim = edge("#171c22", "#f0f2f5", .36, ("#171c22",))
         self.assertGreaterEqual(contrast(dim, "#171c22"), 3)
@@ -3558,7 +3565,7 @@ class NativeLogicChecks(unittest.TestCase):
         request = Mock()
         glib = SimpleNamespace(idle_add=Mock(), source_remove=Mock(), Variant=lambda _kind, value: value)
         window.visible_rows = lambda: window.dashboard["threads"]
-        with patch.dict(SCOPE, {"Gtk": gtk, "GLib": glib, "Gio": Mock(), "request_async": request,
+        with patch.dict(SCOPE, {"Gtk": gtk, "GLib": glib, "Gio": Mock(), "set_icon": Mock(), "request_async": request,
                                "Pango": SimpleNamespace(EllipsizeMode=SimpleNamespace(END=0), WrapMode=SimpleNamespace(WORD_CHAR=0)),
                                "SourceMarker": lambda _owner: marker, "label": lambda *_args: Mock()}):
             window.update_row_text(widget)
@@ -4746,14 +4753,15 @@ class NativeLogicChecks(unittest.TestCase):
         window.get_clipboard = lambda: clipboard
         row = {"id": "claude-proxy-1:local_1234", "externalId": "local_1234", "provider": "claude-desktop-code", "sourceName": "claude-proxy"}
         window.focus_widgets = {row["id"]: SimpleNamespace(asb_thread=row)}
-        panel = SimpleNamespace(asb_identity=row["id"], asb_copy=Mock(), asb_copy_row=Mock(), asb_copy_timer=None, asb_copy_error="")
+        panel = SimpleNamespace(asb_identity=row["id"], asb_copy=Mock(), asb_copy_timer=None, asb_copy_error="",
+                                asb_reference="claude-proxy/local_1234")
         panel.asb_copy.get_ancestor = lambda _type: panel
         with patch.dict(SCOPE, {"GLib": glib, "Gtk": gtk}):
             window.panel_copy(panel.asb_copy)
             clipboard.set.assert_called_once_with("claude-proxy/local_1234")
-            panel.asb_copy.set_icon_name.assert_called_with("object-select-symbolic")
+            panel.asb_copy.asb_icon.set_from_icon_name.assert_called_with("object-select-symbolic")
             panel.asb_copy.set_tooltip_text.assert_called_with("Copied")
-            panel.asb_copy_row.update_property.assert_called_with([1], ["Copied"])
+            panel.asb_copy.update_property.assert_called_with([1], ["Copied"])
             self.assertEqual(timers[1][0], 1600)
             window.update_row_panel.assert_called_with(panel, row)
             # A second copy starts the 1.6 seconds again.
@@ -4761,9 +4769,10 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertEqual((removed, panel.asb_copy_timer), ([1], 2))
             timers[2][1]()
             self.assertIsNone(panel.asb_copy_timer)
-            panel.asb_copy.set_icon_name.assert_called_with("edit-copy-symbolic")
-            panel.asb_copy.set_tooltip_text.assert_called_with("Copy app and session ID")
-            panel.asb_copy_row.reset_property.assert_called_with(1)
+            panel.asb_copy.asb_icon.set_from_icon_name.assert_called_with("edit-copy-symbolic")
+            # The tooltip is the app and session ID again.
+            panel.asb_copy.set_tooltip_text.assert_called_with("claude-proxy/local_1234")
+            panel.asb_copy.reset_property.assert_called_with(1)
             # Close removes a running timer, so no late callback touches the panel.
             window.panel_copy(panel.asb_copy)
             window.clear_copy_feedback(panel)
@@ -4773,7 +4782,7 @@ class NativeLogicChecks(unittest.TestCase):
             window.panel_copy(panel.asb_copy)
             self.assertEqual(panel.asb_copy_error, "Cannot copy the app and session ID: no clipboard")
             self.assertEqual(len(timers), 3)
-            panel.asb_copy.set_icon_name.assert_called_once_with("edit-copy-symbolic")
+            panel.asb_copy.asb_icon.set_from_icon_name.assert_called_once_with("edit-copy-symbolic")
             window.update_row_panel.assert_called_with(panel, row)
 
     def test_card_copy_is_local_shows_a_check_and_keeps_failures_on_the_row(self):

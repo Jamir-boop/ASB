@@ -14,6 +14,10 @@ test('release runtime includes the Claude remote reader imported by the switchbo
   assert.ok(RUNTIME_FILES.includes('src/claude-remote-data.mjs'));
 });
 
+test('release runtime includes the drawer glyph of the native row panel', () => {
+  assert.ok(RUNTIME_FILES.includes('assets/icons/asb-drawer-symbolic.svg'));
+});
+
 const sourceRoot = fileURLToPath(new URL('..', import.meta.url));
 
 // The launcher starts a detached engine; it gets a private runtime folder and a fake systemctl, and the test stops it.

@@ -905,9 +905,9 @@ class WidgetCheck(unittest.TestCase):
             context_clicks = [controller for controller in window.focus_widgets["unknown"].observe_controllers()
                               if isinstance(controller, asb.Gtk.GestureClick) and controller.get_button() == 3]
             self.assertEqual(len(context_clicks), 1)
-            def switches(panel):
-                return {key: (row.get_active(), row.get_sensitive()) for key, row in panel.asb_switches.items()
-                        if key != "order" and row.get_visible()}
+            def actions(panel):
+                return {slot: (button.asb_label.get_label(), button.get_sensitive()) for slot, button in panel.asb_actions.items()
+                        if button.get_visible()}
             for key, modifier in ((asb.Gdk.KEY_Menu, 0), (asb.Gdk.KEY_F10, asb.Gdk.ModifierType.SHIFT_MASK)):
                 self.assertTrue(window.row_key(None, key, 0, modifier, "unknown"))
                 self.drain()
@@ -919,25 +919,25 @@ class WidgetCheck(unittest.TestCase):
                 self.assertTrue(panel.get_mapped())
                 self.assert_accessible_label(panel, "A session without a desktop link")
                 self.assertEqual(panel.asb_title.get_label(), "A session without a desktop link")
-                self.assertEqual(panel.asb_folder.get_label(), "/example/Tools")
-                self.assertTrue(panel.asb_state.get_label().startswith("Unknown · "))
-                self.assertEqual(panel.asb_open.get_label(), "Open in Codex")
+                self.assertEqual(panel.asb_title.get_tooltip_text(), "/example/Tools\ncodex/")
+                self.assertEqual(panel.asb_open.asb_label.get_label(), "Open in Codex")
+                self.assertEqual(panel.asb_open.asb_icon.get_icon_name(), "go-next-symbolic")
                 self.assertFalse(panel.asb_open.get_sensitive())
-                self.assertEqual(switches(panel), {"unread": (False, True), "drawer": (False, False), "muted": (False, True), "pinned": (False, True)})
-                self.assertFalse(panel.asb_switches["order"].get_visible())
+                self.assertEqual(actions(panel), {"read": ("Mark unread", True), "mute": ("Mute", True), "pin": ("Pin", True)})
+                self.assertFalse(panel.asb_note.get_visible())
                 self.assertFalse(window.row_key(None, asb.Gdk.KEY_Down, 0, 0, "unknown"))
                 panel.popdown()
                 self.drain()
                 self.assertIsNone(window.context_menu)
-            # The panel is about 300px wide with the 12px padding, also for a long title and folder.
+            # The panel is about 280px wide with the 8px padding, also for a long title and folder.
             row = window.focus_widgets["second"]
             row.asb_thread.update(title="A long title " * 12, cwd="/example/" + "folder/" * 20)
             window.show_context(row, 10, 10)
             self.drain()
             panel = window.context_menu
             self.assertTrue(panel.get_mapped())
-            self.assertTrue(276 <= panel.get_child().get_width() <= 284, panel.get_child().get_width())
-            self.assertEqual(panel.asb_title.get_layout().get_line_count(), 2)
+            self.assertTrue(260 <= panel.get_child().get_width() <= 268, panel.get_child().get_width())
+            self.assertEqual(panel.asb_title.get_layout().get_line_count(), 1)
             self.assertTrue(panel.asb_title.get_layout().is_ellipsized())
             panel.popdown()
             row.asb_thread.update(title=fixture["threads"][1]["title"], cwd="/example/ASB")
@@ -947,10 +947,13 @@ class WidgetCheck(unittest.TestCase):
             # The centered panel points inside the window, also for a click near the window edge.
             ok, rectangle = panel.get_pointing_to()
             ok, point = row.compute_point(window, asb.Graphene.Point().init(rectangle.x, rectangle.y))
-            half = 151  # the 302px panel with its ring
+            half = 139  # the 278px panel with its ring
             self.assertTrue(half <= point.x <= window.get_width() - half, (point.x, half, window.get_width()))
-            # Small Earlier and Later buttons keep "Pin order" on one line.
-            self.assertLessEqual(panel.asb_up.get_height(), 30)
+            # One flat row of about 30px per control.
+            for button in (panel.asb_open, panel.asb_copy, *panel.asb_actions.values()):
+                if button.get_visible():
+                    self.assertTrue(button.has_css_class("flat") and button.has_css_class("asb-panel-action"))
+                    self.assertTrue(30 <= button.get_height() <= 32, button.get_height())
             # A failed action shows its error in the panel, which covers the card tooltip.
             self.assertFalse(panel.asb_error.get_visible())
             window.open_errors["second"] = "The server did not answer."
@@ -960,46 +963,73 @@ class WidgetCheck(unittest.TestCase):
             window.open_errors.pop("second")
             window.sync_row_panel()
             self.assertFalse(panel.asb_error.get_visible())
-            self.assertEqual(switches(panel), {"unread": (True, True), "drawer": (False, True), "muted": (False, True), "pinned": (True, True)})
-            self.assertEqual(panel.asb_switches["unread"].get_subtitle(), "Finished. Not read yet.")
-            self.assertTrue(panel.asb_switches["order"].get_visible())
-            self.assertEqual(panel.asb_up.get_tooltip_text(), "Move pin earlier")
-            self.assert_accessible_label(panel.asb_up, "Move pin earlier")
-            self.assert_accessible_label(panel.asb_down, "Move pin later")
-            self.assertTrue(panel.asb_state.has_css_class("asb-panel-unread"))
-            self.assertRegex(panel.asb_state.get_label(), r"^Idle · \d+[mhd] ago$")
+            self.assertEqual(actions(panel), {"read": ("Mark read", True), "drawer": ("Put in drawer", True), "mute": ("Mute", True),
+                                              "pin": ("Unpin", True), "pin-up": ("Move pin earlier", True), "pin-down": ("Move pin later", True)})
+            # ASB glyphs are file icons, so GTK recolors them like the theme icons.
+            icons = [button.asb_icon.get_icon_name() or button.asb_icon.get_gicon().get_file().get_basename()
+                     for button in panel.asb_actions.values() if button.get_visible()]
+            self.assertEqual(icons, ["object-select-symbolic", "asb-drawer-symbolic.svg", "asb-muted-symbolic.svg", "view-pin-symbolic",
+                                     "go-up-symbolic", "go-down-symbolic"])
+            self.assertTrue(all(button.asb_icon.get_gicon().get_file().query_exists(None) for button in panel.asb_actions.values()
+                                if button.get_visible() and not button.asb_icon.get_icon_name()))
+            for button in panel.asb_actions.values():
+                if button.get_visible():
+                    self.assert_accessible_label(button, button.asb_label.get_label())
+            self.assert_accessible_label(panel.asb_open, "Open in Codex")
+            self.assert_accessible_label(panel.asb_copy, "Copy app and session ID")
             self.assertTrue(panel.asb_open.get_sensitive())
             # Earlier and Later at the ends of the pins send nothing.
             with patch.object(window, "session_action") as action:
-                panel.asb_up.emit("clicked")
-                panel.asb_down.emit("clicked")
+                panel.asb_actions["pin-up"].emit("clicked")
+                panel.asb_actions["pin-down"].emit("clicked")
                 action.assert_not_called()
-                panel.asb_switches["drawer"].set_active(True)
+                panel.asb_actions["drawer"].emit("clicked")
                 action.assert_called_once_with("second", "drawer-in")
-                # Nothing was sent, so the switch shows the row data again.
-                self.assertFalse(panel.asb_switches["drawer"].get_active())
                 action.reset_mock()
-                panel.asb_switches["unread"].set_active(False)
+                panel.asb_actions["read"].emit("clicked")
                 action.assert_called_once_with("second", "mark-read")
             self.assertIs(window.context_menu, panel)
+            # While an action runs, every control is insensitive and keeps its label; the focused slot gets the focus
+            # back, with its new label, when the action ends.
+            read, signature = panel.asb_actions["read"], panel.asb_signature
+            read.grab_focus()
+            window.session_actions.add("second")
+            row.asb_thread.update(unread=False, pending=False, pendingSource="")
+            window.sync_row_panel()
+            self.assertFalse(any(button.get_sensitive() for button in (panel.asb_open, panel.asb_copy, *panel.asb_actions.values())))
+            self.assertEqual(actions(panel)["read"], ("Mark read", False))
+            self.assertIn("drawer", actions(panel))
+            self.assertIs(panel.asb_return_focus, read)
+            window.session_actions.discard("second")
+            window.sync_row_panel()
+            self.drain()
+            self.assertIs(panel.asb_actions["read"], read)
+            self.assertEqual((read.asb_label.get_label(), read.asb_icon.get_icon_name()), ("Mark unread", "mail-unread-symbolic"))
+            self.assert_accessible_label(read, "Mark unread")
+            self.assertNotIn("drawer", actions(panel))
+            self.assertIs(window.get_focus(), read)
+            self.assertNotEqual(panel.asb_signature, signature)
+            row.asb_thread.update(unread=True, pending=True, pendingSource="observed-completion")
+            window.sync_row_panel()
+            self.drain()  # Tab order follows the allocation of the shown drawer row.
             # Down and Up move through the controls in Tab order and wrap at the ends.
             keys = [controller for controller in panel.observe_controllers() if isinstance(controller, asb.Gtk.EventControllerKey)]
             capture = next(controller for controller in keys if controller.get_propagation_phase() == asb.Gtk.PropagationPhase.CAPTURE)
             panel.asb_open.grab_focus()
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
-            self.assertIs(window.get_focus(), panel.asb_switches["unread"])
+            self.assertIs(window.get_focus(), panel.asb_actions["read"])
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_open)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_copy)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
-            self.assertIs(window.get_focus(), panel.asb_down)
+            self.assertIs(window.get_focus(), panel.asb_actions["pin-down"])
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_copy)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_open)
             # Escape (the native popover key handler) closes the panel and gives the focus back to the card.
-            panel.asb_switches["pinned"].grab_focus()
+            panel.asb_actions["pin"].grab_focus()
             self.assertTrue(window.get_focus().is_ancestor(panel))
             native = next(controller for controller in keys if controller.get_propagation_phase() == asb.Gtk.PropagationPhase.BUBBLE)
             finalized = []
@@ -1009,40 +1039,39 @@ class WidgetCheck(unittest.TestCase):
             self.assertIsNone(window.context_menu)
             self.assertIs(window.get_focus(), window.focus_widgets["second"])
             # A closed panel is freed: its handlers hold no reference to it.
-            del panel, keys, capture, native
+            del panel, keys, capture, native, read
             gc.collect()
             self.drain()
             self.assertEqual(finalized, [True])
             window.show_context(window.focus_widgets["first"])
             self.drain()
             panel = window.context_menu
-            self.assertTrue(276 <= panel.get_child().get_width() <= 284, panel.get_child().get_width())
-            self.assertTrue(panel.asb_state.get_label().startswith("Working"))
-            self.assertTrue(panel.asb_state.has_css_class("success"))
-            self.assertEqual(switches(panel), {"unread": (False, True), "drawer": (False, False), "muted": (False, True),
-                                               "pinned": (False, True), "discard": (False, True)})
-            self.assertEqual(panel.asb_switches["discard"].get_subtitle(), "Go to read Idle when this task ends")
-            # The state line ticks with the cards.
-            shown = panel.asb_state.get_label()
+            self.assertTrue(260 <= panel.get_child().get_width() <= 268, panel.get_child().get_width())
+            self.assertEqual(actions(panel), {"read": ("Mark unread", True), "mute": ("Mute", True), "pin": ("Pin", True),
+                                              "discard": ("Discard result", True)})
+            self.assertEqual(panel.asb_actions["discard"].asb_icon.get_icon_name(), "edit-delete-symbolic")
+            # A clock tick that changes no shown data changes no widget.
+            shown = panel.asb_signature
             later = time.time() + 2 * 86_400
             with patch.object(asb.time, "time", return_value=later):
                 window.update_clock()
-            self.assertNotEqual(panel.asb_state.get_label(), shown)
-            self.assertTrue(panel.asb_state.get_label().startswith("Working"))
-            self.assertEqual(panel.asb_switches["unread"].get_subtitle(), "")
+            self.assertIs(panel.asb_signature, shown)
             window.show_context(window.focus_widgets["drawer"])
             self.drain()
             self.assertFalse(panel.get_visible())
             panel = window.context_menu
-            self.assertEqual(panel.asb_open.get_label(), "Open in Claude Desktop Code")
-            self.assertEqual(switches(panel), {"unread": (True, True), "drawer": (True, True), "muted": (False, True), "pinned": (False, True)})
-            self.assertEqual(panel.asb_switches["unread"].get_subtitle(), "Marked unread.")
+            self.assertEqual(panel.asb_open.asb_label.get_label(), "Open in Claude Desktop Code")
+            self.assertEqual(actions(panel), {"read": ("Mark read", True), "drawer": ("Take out of drawer", True), "mute": ("Mute", True),
+                                              "pin": ("Pin", True)})
+            self.assertFalse(panel.asb_note.get_visible())
             window.show_context(window.focus_widgets["claude:local_mock"])
             self.drain()
             panel = window.context_menu
-            self.assertEqual(switches(panel), {"unread": (True, False), "drawer": (False, False), "muted": (False, True), "pinned": (False, True)})
-            self.assertEqual(panel.asb_switches["unread"].get_subtitle(), "Waits for your permission.")
-            self.assertTrue(panel.asb_state.has_css_class("warning"))
+            self.assertEqual(actions(panel), {"mute": ("Mute", True), "pin": ("Pin", True)})
+            self.assertTrue(panel.asb_note.get_visible())
+            self.assertEqual(panel.asb_note.get_label(), "Waits for your permission.")
+            # The note comes after Open and its separator.
+            self.assertIs(panel.asb_note.get_prev_sibling().get_prev_sibling(), panel.asb_open)
             # Open runs the card open path and closes the panel.
             with patch.object(window, "open_row") as open_row:
                 panel.asb_open.emit("clicked")
@@ -1071,6 +1100,39 @@ class WidgetCheck(unittest.TestCase):
                 action.assert_called_once_with("unknown", "mark-unread")
             window.close()
             self.drain(.03)
+
+    def test_row_panel_open_follows_the_open_request_start_and_end(self):
+        callbacks = []
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "request_async", lambda *args: callbacks.append(args))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", copy.deepcopy(FIXTURE), theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.present(); self.drain()
+        card = window.focus_widgets["second"]
+        window.show_context(card); self.drain()
+        panel = window.context_menu
+        self.assertTrue(panel.asb_open.get_sensitive())
+        # An open of the row that starts while its panel shows makes Open insensitive at once, and the end of the request
+        # makes it sensitive again, with no other row change and no clock tick.
+        for error in (None, "The app did not open the session."):
+            window.open_row(None, card)
+            self.assertEqual(callbacks[-1][1], "/api/threads/second/open")
+            self.assertIs(window.context_menu, panel)
+            self.assertFalse(panel.asb_open.get_sensitive())
+            callbacks[-1][2](None if error else {"opened": True}, error)
+            self.assertNotIn("second", window.opening)
+            self.assertTrue(panel.asb_open.get_sensitive())
+            self.assertEqual((panel.asb_error.get_visible(), panel.asb_error.get_label()), (bool(error), error or ""))
+        # A clock tick that changes no shown data changes no widget.
+        shown = panel.asb_signature
+        with patch.object(asb.time, "time", return_value=time.time() + 86_400):
+            window.update_clock()
+        self.assertIs(panel.asb_signature, shown)
+        self.assertEqual([args[1] for args in callbacks if args[1].endswith("/open")], ["/api/threads/second/open"] * 2)
 
     @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
                          "Real pointer movement needs xdotool and a nested test display (DISPLAY=:9 or :10).")
@@ -1113,7 +1175,7 @@ class WidgetCheck(unittest.TestCase):
                 int(bounds.origin.y + bounds.size.height / 2 + top))
             self.drain()
 
-        for control in (panel.asb_open, panel.asb_switches["unread"], panel.asb_copy):
+        for control in (panel.asb_open, panel.asb_actions["read"], panel.asb_actions["pin"], panel.asb_copy):
             move_to(control, panel)
             self.assertIs(window.context_menu, panel)
             self.assertTrue(panel.get_mapped())
@@ -1404,32 +1466,32 @@ class WidgetCheck(unittest.TestCase):
             child = widget.get_first_child()
             while child:
                 yield from descendants(child); child = child.get_next_sibling()
-        controls = {"Unread": ("unread", True), "Read": ("unread", False), "Pin": ("pinned", True), "Unpin": ("pinned", False)}
+        # The action, its slot, and the slot label before and after the action.
+        controls = {"Unread": ("read", "Mark unread", "Mark read"), "Read": ("read", "Mark read", "Mark unread"),
+                    "Pin": ("pin", "Pin", "Unpin"), "Unpin": ("pin", "Unpin", "Pin"),
+                    "Move pin earlier": ("pin-up", "Move pin earlier", "Move pin earlier")}
         def activate(identity, text):
             window.show_context(window.focus_widgets[identity])
             self.drain()
             popup = window.context_menu
-            if text in controls:
-                key, on = controls[text]
-                switch = popup.asb_switches[key]
-                self.assertNotEqual(switch.get_active(), on)
-                switch.grab_focus()
-                switch.set_active(on)
-                self.assertFalse(switch.get_sensitive())
-            else:
-                popup.asb_up.grab_focus()
-                popup.asb_up.emit("clicked")
+            slot, before, after = controls[text]
+            button = popup.asb_actions[slot]
+            self.assertEqual(button.asb_label.get_label(), before)
+            button.grab_focus()
+            button.emit("clicked")
+            # The real request runs: every control is insensitive and keeps its label.
+            self.assertFalse(button.get_sensitive() or popup.asb_open.get_sensitive() or popup.asb_copy.get_sensitive())
+            self.assertEqual(button.asb_label.get_label(), before)
             self.drain(.35)
-            # The panel stays open on its row, with the new row data, and keeps the focus.
+            # The panel stays open on its row, with the new row data, and the same slot keeps the focus.
             self.assertIs(window.context_menu, popup)
             self.assertTrue(popup.get_mapped())
             self.assertIs(popup.get_parent(), window.focus_widgets[identity])
-            if text in controls:
-                self.assertEqual(switch.get_active(), on)
-                self.assertTrue(switch.get_sensitive())
-                self.assertIs(window.get_focus(), switch)
-            else:
-                self.assertIs(window.get_focus(), popup.asb_up)
+            self.assertIs(popup.asb_actions[slot], button)
+            self.assertEqual(button.asb_label.get_label(), after)
+            self.assert_accessible_label(button, after)
+            self.assertTrue(button.get_sensitive())
+            self.assertIs(window.get_focus(), button)
             popup.popdown()
             self.drain()
             self.assertIsNone(window.context_menu)
@@ -1760,49 +1822,58 @@ class WidgetCheck(unittest.TestCase):
         window.show_context(window.focus_widgets[row["id"]]); self.drain(.3)
         panel = window.context_menu
         reference = "claude-proxy/local_" + "a" * 36
-        copy_row = panel.asb_copy_row
-        self.assertIsNone(copy_row.get_next_sibling())  # The last row of the list.
-        self.assertEqual((copy_row.get_title(), copy_row.get_subtitle(), copy_row.get_tooltip_text()),
-                         ("App and session ID", reference, reference))
-        def subtitle_of(widget):
-            child = widget.get_first_child()
-            while child:
-                if isinstance(child, asb.Gtk.Label) and child.has_css_class("subtitle"):
-                    return child
-                found = subtitle_of(child)
-                if found:
-                    return found
-                child = child.get_next_sibling()
-        subtitle = subtitle_of(copy_row)
-        self.assertEqual(subtitle.get_ellipsize(), asb.Pango.EllipsizeMode.MIDDLE)
         button = panel.asb_copy
-        self.assertEqual((button.get_icon_name(), button.get_tooltip_text()), ("edit-copy-symbolic", "Copy app and session ID"))
-        self.assertTrue(button.has_css_class("flat") and button.has_css_class("circular"))
+        self.assertIs(button.get_next_sibling(), panel.asb_error)  # The last control of the panel.
+        self.assertIsInstance(button.get_prev_sibling(), asb.Gtk.Separator)
+        self.assertEqual((button.asb_label.get_label(), button.asb_icon.get_icon_name(), button.get_tooltip_text()),
+                         ("Copy app and session ID", "edit-copy-symbolic", reference))
+        self.assertTrue(button.has_css_class("flat"))
         self.assert_accessible_label(button, "Copy app and session ID")
-        # The row and the button copy the exact reference, and the panel stays open.
-        # A click on the row activates its button, which shows a 250 ms press first.
-        copy_row.get_parent().emit("row-activated", copy_row); self.drain(.4)
+        self.assertEqual(panel.asb_title.get_tooltip_text().split("\n")[1], reference)
+        # The button copies the exact reference, and the panel stays open.
+        button.emit("clicked"); self.drain(.1)
         button.emit("clicked"); self.drain(.1)
         self.assertEqual(clipboard.texts, [reference, reference])
         self.assertIs(window.context_menu, panel)
         self.assertTrue(panel.get_visible())
-        self.assertEqual((button.get_icon_name(), button.get_tooltip_text()), ("object-select-symbolic", "Copied"))
+        self.assertEqual((button.asb_icon.get_icon_name(), button.get_tooltip_text()), ("object-select-symbolic", "Copied"))
+        self.assertEqual(button.asb_label.get_label(), "Copy app and session ID")
+        self.assert_accessible_label(button, "Copied", asb.Gtk.AccessibleProperty.DESCRIPTION)
         self.drain(1.7)
-        self.assertEqual((button.get_icon_name(), button.get_tooltip_text()), ("edit-copy-symbolic", "Copy app and session ID"))
+        self.assertEqual((button.asb_icon.get_icon_name(), button.get_tooltip_text()), ("edit-copy-symbolic", reference))
         # Up and Down reach the copy button and wrap at the end.
-        panel.asb_down.grab_focus()
+        last = [control for control in panel.asb_actions.values() if control.get_visible()][-1]
+        last.grab_focus()
         keys = next(controller for controller in panel.observe_controllers()
                     if isinstance(controller, asb.Gtk.EventControllerKey) and controller.get_propagation_phase() == asb.Gtk.PropagationPhase.CAPTURE)
         self.assertTrue(keys.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
         self.assertIs(window.get_focus(), button)
         self.assertTrue(keys.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
         self.assertIs(window.get_focus(), panel.asb_open)
-        # A refresh with a new ID updates the row and ends the feedback of the old copy.
+        # A refresh with a new ID updates the tooltips and ends the feedback of the old copy.
         button.emit("clicked")
         row["externalId"] = "local_" + "b" * 36
         window.render(); window.sync_row_panel(); self.drain(.1)
-        self.assertEqual(copy_row.get_subtitle(), "claude-proxy/local_" + "b" * 36)
-        self.assertEqual(button.get_icon_name(), "edit-copy-symbolic")
+        self.assertEqual(button.get_tooltip_text(), "claude-proxy/local_" + "b" * 36)
+        self.assertEqual(panel.asb_title.get_tooltip_text().split("\n")[1], "claude-proxy/local_" + "b" * 36)
+        self.assertEqual(button.asb_icon.get_icon_name(), "edit-copy-symbolic")
+        # A failed copy keeps the copy icon and shows its error below the list, also after an action error clears.
+        def refuse(_text):
+            raise TypeError("no clipboard")
+        clipboard.set = refuse
+        button.emit("clicked"); self.drain(.1)
+        copy_error = "Cannot copy the app and session ID: no clipboard"
+        self.assertEqual((panel.asb_error.get_label(), panel.asb_error.get_visible()), (copy_error, True))
+        self.assertEqual(button.asb_icon.get_icon_name(), "edit-copy-symbolic")
+        window.open_errors[row["id"]] = "The server did not answer."
+        window.sync_row_panel()
+        self.assertEqual(panel.asb_error.get_label(), "The server did not answer.")
+        window.open_errors.pop(row["id"])
+        window.sync_row_panel()
+        self.assertEqual((panel.asb_error.get_label(), panel.asb_error.get_visible()), (copy_error, True))
+        clipboard.set = clipboard.texts.append
+        button.emit("clicked"); self.drain(.1)
+        self.assertFalse(panel.asb_error.get_visible())
         window.open_errors[row["id"]] = "The server did not answer."
         window.sync_row_panel(); self.drain(.1)
         def render_panel():
@@ -1822,7 +1893,6 @@ class WidgetCheck(unittest.TestCase):
         def bounds_of(widget):
             found, bounds = widget.compute_bounds(panel)
             return bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height
-        listing, unread = copy_row.get_parent(), panel.asb_switches["unread"]
         def text_on(label, background, dimmed=1):
             color = label.get_color()
             # Libadwaita colors can have channels past 1; the screen shows them clamped.
@@ -1835,35 +1905,24 @@ class WidgetCheck(unittest.TestCase):
                 window.set_focus(panel.asb_open); self.drain(.3)
                 pixel = render_panel()
                 found, bounds = panel.get_child().compute_bounds(panel)
-                painted = pixel(bounds.origin.x - 6, bounds.origin.y + 20)  # Inside the 12px padding.
+                painted = pixel(bounds.origin.x - 4, bounds.origin.y + 20)  # Inside the 8px padding.
                 self.assertTrue(near(painted, board), (painted, board))
-                # The list and its rows are flat on the board, with one 1px neutral ring and 1px separators.
-                line = asb.edge_color(board, custom["text"], .36, (board,)) if custom \
-                    else asb.mix_color(board, window.native_colors()["text"], .15)
-                x, y, width, height = bounds_of(listing)
-                _ux, unread_y, _uw, unread_height = bounds_of(unread)
-                for name, point, expected in (("list", (x + 4, unread_y + unread_height / 2), board),
-                                              ("copy row", (x + 4, bounds_of(copy_row)[1] + 6), board),
-                                              ("ring", (x - 1, y + height / 2), line), ("outside ring", (x - 2, y + height / 2), board),
-                                              ("separator", (x + 20, unread_y + unread_height - 1), line),
-                                              ("above separator", (x + 20, unread_y + unread_height - 3), board)):
-                    self.assertTrue(near(pixel(*point), expected, 2), (name, pixel(*point), expected))
-                # Native hover and press still tint an activatable row, and a focused row keeps its focus ring.
-                copy_y = bounds_of(copy_row)[1] + 6
+                # The action rows are flat on the board; native hover and press tint them, and a focused row has its focus ring.
+                x, copy_y, _width, copy_height = bounds_of(button)
+                self.assertTrue(near(pixel(x + 2, copy_y + copy_height / 2), board, 2), pixel(x + 2, copy_y + copy_height / 2))
                 for state in (asb.Gtk.StateFlags.PRELIGHT, asb.Gtk.StateFlags.ACTIVE):
-                    copy_row.set_state_flags(state, False); self.drain(.3)
-                    self.assertFalse(near(render_panel()(x + 4, copy_y), board, 2), state)
-                    copy_row.unset_state_flags(state); self.drain(.3)
-                pinned = panel.asb_switches["pinned"]
-                _px, pinned_y, _pw, pinned_height = bounds_of(pinned)
+                    button.set_state_flags(state, False); self.drain(.3)
+                    self.assertFalse(near(render_panel()(x + 4, copy_y + copy_height / 2), board, 2), state)
+                    button.unset_state_flags(state); self.drain(.3)
+                pinned = panel.asb_actions["pin"]
+                pin_x, pinned_y, _pw, pinned_height = bounds_of(pinned)
                 window.set_focus_visible(True)
                 pinned.grab_focus(); self.drain(.3)
                 self.assertTrue(pinned.has_focus())
-                self.assertFalse(near(render_panel()(x, pinned_y + pinned_height / 2), board, 2))  # The ring is on the row edge.
-                # Adwaita dims .dim-label to 55% opacity; custom colors use the muted role at full opacity.
-                for label, dimmed in ((panel.asb_folder, 1 if custom else .55), (panel.asb_title, 1), (panel.asb_state, 1),
-                                      (subtitle, 1), (panel.asb_error, 1)):
-                    self.assertGreaterEqual(text_on(label, board, dimmed), 4.5, label.get_css_classes())
+                self.assertFalse(near(render_panel()(pin_x + 1, pinned_y + pinned_height / 2), board, 2))  # The ring is on the row edge.
+                # The permission note uses 72% of the text color; custom colors use the muted role.
+                for label in (panel.asb_title, panel.asb_open.asb_label, pinned.asb_label, button.asb_label, panel.asb_note, panel.asb_error):
+                    self.assertGreaterEqual(text_on(label, board), 4.5, label.get_css_classes())
 
     def test_ctrl_number_keycaps_cover_the_mark_in_both_views_and_keep_the_row_height(self):
         patcher = patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)
@@ -2520,7 +2579,7 @@ class WidgetCheck(unittest.TestCase):
         for identity, label in (("cli", "Runs in a terminal"), ("remote", "On homeLP")):
             window.show_context(window.focus_widgets[identity]); self.drain(.3)
             panel = window.context_menu
-            self.assertEqual((panel.asb_open.get_label(), panel.asb_open.get_sensitive()), (label, False))
+            self.assertEqual((panel.asb_open.asb_label.get_label(), panel.asb_open.get_sensitive()), (label, False))
             panel.popdown(); self.drain(.2)
 
     def test_drawer_pill_card_button_views_peek_and_narrow_column(self):
@@ -2893,33 +2952,40 @@ class WidgetCheck(unittest.TestCase):
             beside(cards[identity], cards[identity].asb_state_label, cards[identity].asb_where_label)
         window.view_filter.set_selected(1); self.drain(.3); settle()
 
-        # The row panel: Muted comes right after In the drawer, with its subtitle, and sends mute and then unmute.
+        # The row panel: Mute comes right after the drawer slot and before Pin, and sends mute and then unmute.
         other = cards["other"]
         window.show_context(other); self.drain()
         panel = window.context_menu
-        muted = panel.asb_switches["muted"]
-        self.assertEqual(list(panel.asb_switches)[:3], ["unread", "drawer", "muted"])
-        self.assertIs(panel.asb_switches["drawer"].get_next_sibling(), muted)
-        self.assertEqual((muted.get_title(), muted.get_subtitle()), ("Muted", "Finished tasks stay read. Questions still alert."))
-        self.assertTrue(muted.get_visible() and not muted.get_active())
-        muted.set_active(True)
+        muted = panel.asb_actions["mute"]
+        self.assertEqual(list(panel.asb_actions)[:4], ["read", "drawer", "mute", "pin"])
+        self.assertIs(panel.asb_actions["drawer"].get_next_sibling(), muted)
+        self.assertIs(muted.get_next_sibling(), panel.asb_actions["pin"])
+        # The one-tone ASB mute glyph of the cards, as a file icon.
+        self.assertEqual((muted.asb_label.get_label(), muted.asb_icon.get_icon_name(), muted.asb_icon.get_gicon().get_file().get_basename()),
+                         ("Mute", None, "asb-muted-symbolic.svg"))
+        self.assertTrue(muted.get_visible())
+        muted.grab_focus()
+        muted.emit("clicked")
         self.assertEqual(requests[-1][1], "/api/threads/other/mute")
+        self.assertFalse(muted.get_sensitive())
         requests[-1][2]({"changed": True, "threadId": "other", "thread": dict(other.asb_thread, muted=True)}, None); settle()
         self.assertIs(window.context_menu, panel)
-        self.assertTrue(muted.get_active())
+        self.assertIs(panel.asb_actions["mute"], muted)
+        self.assertEqual((muted.asb_label.get_label(), muted.asb_icon.get_icon_name()), ("Unmute", "preferences-system-notifications-symbolic"))
+        self.assertIs(window.get_focus(), muted)
         self.assertTrue(other.asb_mute_glyph.get_visible())
-        muted.set_active(False)
+        muted.emit("clicked")
         self.assertEqual(requests[-1][1], "/api/threads/other/unmute")
         requests[-1][2]({"changed": True, "threadId": "other", "thread": dict(other.asb_thread, muted=False)}, None); settle()
-        self.assertFalse(muted.get_active())
+        self.assertEqual(muted.asb_label.get_label(), "Mute")
         self.assertFalse(other.asb_mute_glyph.get_visible())
         self.assertEqual([request[1] for request in requests if request[1].startswith("/api/threads/")],
                          ["/api/threads/other/mute", "/api/threads/other/unmute"])
         panel.popdown(); self.drain()
-        # A muted Working row offers no Discard switch.
+        # A muted Working row offers no Discard action.
         window.show_context(busy); self.drain()
-        self.assertFalse(window.context_menu.asb_switches["discard"].get_visible())
-        self.assertTrue(window.context_menu.asb_switches["muted"].get_active())
+        self.assertFalse(window.context_menu.asb_actions["discard"].get_visible())
+        self.assertEqual(window.context_menu.asb_actions["mute"].asb_label.get_label(), "Unmute")
         window.context_menu.popdown(); self.drain()
 
     def test_message_courier_flight_paint_lit_icons_and_hidden_rows(self):
