@@ -2,6 +2,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { collect, engineReady, format } from './asb-doctor.mjs';
 import { main as engineMain } from './asb-engine.mjs';
 import { api, networkText } from './asb-group.mjs';
 import { findRunningService } from './asb-instance.mjs';
@@ -58,7 +59,13 @@ async function chooseAddresses(current, parsed, { input, output, print }) {
 }
 
 async function run(parsed, context) {
-  const { env, platform, print, installService, installEngine, find, waitMs, node } = context;
+  const { env, platform, print, installService, installEngine, find, waitMs, node, doctor } = context;
+  // 0. Check the system, as asb doctor does.
+  if (platform === 'linux') {
+    const data = await doctor();
+    for (const line of format(data)) print(line);
+    if (!engineReady(data)) throw failure('The ASB engine cannot run on this system. Install the missing packages, then run asb setup again.');
+  }
   // 1. Autostart, then wait for the engine.
   const code = platform === 'win32' ? await installEngine(['install']) : await installService(['install']);
   if (code) throw failure('ASB cannot install its autostart.');
@@ -85,11 +92,11 @@ async function run(parsed, context) {
 export async function main(args = process.argv.slice(2), { env = process.env, platform = process.platform, input = process.stdin,
   output = process.stdout, print = (line) => output.write(`${line}\n`), printError = (line) => process.stderr.write(`${line}\n`),
   installService = serviceMain, installEngine = (argv) => engineMain(argv, { platform, env }), find = findRunningService,
-  node = process.execPath, waitMs = 20_000 } = {}) {
+  node = process.execPath, waitMs = 20_000, doctor = () => collect({ env }) } = {}) {
   const parsed = parseArgs(args);
   if (!parsed) { printError(usage); return 2; }
   try {
-    await run(parsed, { env, platform, input, output, print, installService, installEngine, find, waitMs, node });
+    await run(parsed, { env, platform, input, output, print, installService, installEngine, find, waitMs, node, doctor });
     return 0;
   } catch (error) { printError(`asb setup: ${error.message}`); return error.exitCode || 1; }
 }

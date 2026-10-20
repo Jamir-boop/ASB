@@ -14,6 +14,8 @@ Needs Node.js `>=20` (`sqlite3` below `22.13`), Python 3 with PyGObject, GTK `>=
 
 Install Codex and Claude Desktop first, with working `codex:` and `claude:` URL handlers.
 
+The current source has `asb doctor`. Run it to check the system: it prints the install commands for your distribution and never runs them.
+
 **Debian:** [asb_1.8.1_all.deb](https://github.com/Jamir-boop/ASB/releases/download/v1.8.1/asb_1.8.1_all.deb)
 
 ```bash
@@ -44,6 +46,21 @@ asb setup
 `asb setup` makes the engine start when you sign in, waits for it, and asks which network addresses to turn on. On Windows it also prints the firewall rule to run. ASB never runs that rule itself.
 
 On Windows, ASB has statuses only: the engine reads Codex and Claude on that PC for the phone and the machine group. It has no window. ASB Bridge and messages between machines also work on Windows. See [Windows](ASB.md#windows).
+
+## Node.js
+
+ASB needs Node.js 20 or later. Node.js 22.13 or later is recommended: older releases have no built-in SQLite, so ASB then uses the `sqlite3` command. ASB never downloads Node.js. On Linux, the launcher uses the first of: `ASB_NODE` (an absolute path), `node` on `PATH`, `~/.local/bin/node`, `/home/linuxbrew/.linuxbrew/bin/node`, `/usr/local/bin/node`, and `/usr/bin/node`.
+
+When the Node.js package of your distribution is older than 20, use the official route:
+
+| Release | Route |
+| --- | --- |
+| Debian 12, Ubuntu 22.04 and 24.04, and their derivatives | Install Node.js 24 from [NodeSource](https://github.com/nodesource/distributions). |
+| RHEL, AlmaLinux, Rocky, CentOS Stream, and Oracle Linux 9 | `sudo dnf module install nodejs:24` |
+| SteamOS | Unpack the Linux archive from [nodejs.org](https://nodejs.org/en/download) into `~/.local`, so that `~/.local/bin/node` exists. |
+| Other releases | The `nodejs` package of the distribution. |
+
+`asb doctor` prints the route for your system.
 
 ## Android companion (optional)
 

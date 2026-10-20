@@ -12,7 +12,7 @@ import { createPhoneGateway, WINDOWS_CERTIFICATE_SCRIPT } from '../src/phone-gat
 import { loadClaudeRemoteThreads } from '../src/claude-remote-data.mjs';
 import { main as engineMain, RUN_KEY, trayCommand, trayStartArguments, writesEngineLog } from '../scripts/asb-engine.mjs';
 import { protectWindowsFolder } from '../scripts/asb-instance.mjs';
-import { main as dispatch, WINDOWS_HINT } from '../scripts/asb.mjs';
+import { main as dispatch, NODE_HINT, WINDOWS_HINT, WINDOWS_USAGE } from '../scripts/asb.mjs';
 
 // Windows branches with injected platform, execFile, spawn, and engine lookups. Platform-neutral (test/windows-tests.json).
 
@@ -199,7 +199,7 @@ test('the asb dispatcher reaches each command main and shows the Windows hint an
     [['agent', 'status', '--json'], 'asb-agent.mjs', ['status', '--json']], [['bridge', 'status'], 'asb-bridge.mjs', ['status']],
     [['group', 'status'], 'asb-group.mjs', ['group', 'status']], [['network', 'status'], 'asb-group.mjs', ['network', 'status']],
     [['phone', 'pair'], 'asb-group.mjs', ['phone', 'pair']], [['setup', '--yes'], 'asb-setup.mjs', ['--yes']],
-    [['--package', 'check'], 'asb-package.mjs', ['check']]]) {
+    [['--package', 'check'], 'asb-package.mjs', ['check']], [['doctor', '--json'], 'asb-doctor.mjs', ['--json']]]) {
     calls.length = 0;
     assert.equal(await run(argv), 0, argv.join(' '));
     assert.deepEqual(calls.map(([file, values]) => [file, values]), [[name, args]]);
@@ -212,6 +212,20 @@ test('the asb dispatcher reaches each command main and shows the Windows hint an
   assert.equal(await run(['engine', 'status'], 'win32', '22.12.0'), 1);
   assert.equal(logs.at(-1), 'error: ASB needs Node.js 22.13 or later on Windows.');
   assert.equal(calls.length, 1);
+  // doctor is Linux only: Windows keeps its usage error.
+  assert.equal(await run(['doctor'], 'win32', '24.0.0'), 2);
+  assert.equal(logs.at(-1), `error: ${WINDOWS_USAGE}`);
+  // npm skips scripts/asb, so the dispatcher refuses Node.js older than 20 on Linux with the launcher message.
+  assert.equal(await run(['doctor'], 'linux', '18.19.0'), 1);
+  assert.equal(logs.at(-1), `error: ${NODE_HINT}`);
+  assert.equal(await run(['service', 'status'], 'linux', '20.0.0'), 0);
+  assert.equal(calls.length, 2);
+});
+
+test('the POSIX launcher prints the same Node.js message as the dispatcher', async () => {
+  const launcher = await readFile(new URL('../scripts/asb', import.meta.url), 'utf8');
+  assert.ok(NODE_HINT.endsWith(' Install help: https://github.com/Jamir-boop/ASB#nodejs'));
+  assert.ok(launcher.includes(`printf '%s\\n' '${NODE_HINT}' >&2`));
 });
 
 test('the asb entry hides only the SQLite ExperimentalWarning and prints other warnings', async () => {
