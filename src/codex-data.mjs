@@ -725,14 +725,89 @@ async function findQuestionCallLine(handle, buffer, start, size) {
   return lineStart;
 }
 
+// Reader positions on disk (src/reader-positions.mjs). Only the engine sets them; without them the reader keeps all state in memory.
+const ROLLOUT_POSITION_ID_RE = /^[A-Za-z0-9_:-]{1,160}$/;
+const ROLLOUT_POSITION_KINDS = new Set(['', 'task_started', 'task_complete', 'turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled', 'failed']);
+const ROLLOUT_POSITION_KEYS = ['atMs', 'ctimeMs', 'dev', 'full', 'guard', 'guardBytes', 'ino', 'k', 'lifecycle', 'mtimeMs', 'offset', 'questions', 'size'].join();
+const ROLLOUT_LIFECYCLE_KEYS = Object.keys(emptyRolloutLifecycle()).sort().join();
+let rolloutPositions = null;
+
+// `source` is { take(filePath) -> saved record or null, digest(bytes) -> hex }, or null to turn the positions off.
+export function useRolloutPositions(source) {
+  rolloutPositions = source;
+}
+
+const finiteNumber = (value) => typeof value === 'number' && Number.isFinite(value);
+const count = (value) => Number.isInteger(value) && value >= 0;
+
+// The checks of one saved record at save and at load: numbers, booleans, fixed kinds, and IDs, never text or paths.
+// reader-positions.mjs checks `k`, `guard`, and `atMs`.
+export function validRolloutRecord(record) {
+  if (!record || typeof record !== 'object' || Object.keys(record).sort().join() !== ROLLOUT_POSITION_KEYS) return false;
+  const { lifecycle: life, questions } = record;
+  if (![record.dev, record.ino, record.size, record.offset, record.guardBytes].every(count) || record.offset > record.size
+    || record.guardBytes !== Math.min(64, record.size) || !finiteNumber(record.mtimeMs) || !finiteNumber(record.ctimeMs)
+    || typeof record.full !== 'boolean') return false;
+  if (!life || typeof life !== 'object' || Object.keys(life).sort().join() !== ROLLOUT_LIFECYCLE_KEYS
+    || ![true, false, null].includes(life.agentRunning)
+    || ![life.agentStartedAtMs, life.agentActivityAtMs, life.latestLifecycleAtMs].every((value) => value === null || finiteNumber(value))
+    || ![life.latestTaskStartedAtMs, life.latestTaskEndedAtMs, life.limitStoppedAtMs, life.limitWindowAtMs, life.limitResetsAtMs].every(finiteNumber)
+    || !ROLLOUT_POSITION_KINDS.has(life.latestLifecycleKind) || !ROLLOUT_POSITION_KINDS.has(life.latestTaskEndKind)
+    || typeof life.limitStopped !== 'boolean' || !Array.isArray(life.limitWindows) || life.limitWindows.length > 2
+    || !life.limitWindows.every((window) => Array.isArray(window) && window.length === 2 && window.every(finiteNumber))) return false;
+  return Array.isArray(questions) && new Set(questions.map((question) => question?.[0])).size === questions.length
+    && questions.every((question) => Array.isArray(question) && question.length === 4 && typeof question[0] === 'string'
+      && ROLLOUT_POSITION_ID_RE.test(question[0]) && [0, 1].includes(question[1]) && finiteNumber(question[2])
+      && Array.isArray(question[3]) && question[3].every(count));
+}
+
+// The lifecycle checkpoints that a new engine can resume from, as plain records with the raw guard bytes (memory only).
+export function rolloutPositionRecords() {
+  const records = [];
+  for (const [filePath, entry] of rolloutActivityCache) {
+    if (!Buffer.isBuffer(entry.guard) || !finiteNumber(entry.atMs)) continue;
+    records.push([filePath, { atMs: entry.atMs, dev: entry.dev, ino: entry.ino, size: entry.size, mtimeMs: entry.mtimeMs,
+      ctimeMs: entry.ctimeMs, offset: entry.offset, guard: entry.guard, guardBytes: entry.guard.length, full: entry.full,
+      lifecycle: { ...entry.lifecycle, limitWindows: entry.lifecycle.limitWindows.map((window) => [...window]) },
+      questions: [...entry.questions].map(([id, question]) => [id, question.async ? 1 : 0, question.atMs, [...question.remaining]]) }]);
+  }
+  return records;
+}
+
+// A saved checkpoint for a file with no checkpoint in memory, after the full-read checks of the design (section 3, rules 2-6).
+async function savedRolloutPosition(rolloutPath, stat) {
+  const record = rolloutPositions.take(rolloutPath);
+  const now = statSignature(stat);
+  if (!record || !validRolloutRecord(record) || record.dev !== now.dev || record.ino !== now.ino || now.size < record.size
+    || (now.size === record.size && (record.mtimeMs !== now.mtimeMs || record.ctimeMs !== now.ctimeMs))) return null;
+  const guard = Buffer.alloc(record.guardBytes);
+  const handle = await fs.open(rolloutPath, 'r');
+  try {
+    const { bytesRead } = await handle.read(guard, 0, guard.length, record.size - guard.length);
+    codexCacheMetrics.lifecycleBytesRead += bytesRead;
+    if (bytesRead !== guard.length || rolloutPositions.digest(guard) !== record.guard) return null;
+  } finally {
+    await handle.close();
+  }
+  return { size: record.size, mtimeMs: record.mtimeMs, dev: record.dev, ino: record.ino, ctimeMs: record.ctimeMs,
+    offset: record.offset, lifecycle: { ...record.lifecycle }, full: record.full, atMs: Date.now(), guard,
+    questions: new Map(record.questions.map(([id, async, atMs, remaining]) => [id, { async: async === 1, atMs, remaining: new Set(remaining) }])) };
+}
+
 async function scanRolloutLifecycle(rolloutPath, stat, cacheLimit, needLifecycle = true, cacheScope = '') {
-  const cached = rolloutActivityCache.get(rolloutPath, cacheScope, cacheLimit);
+  let cached = rolloutActivityCache.get(rolloutPath, cacheScope, cacheLimit);
+  if (!cached && rolloutPositions) {
+    cached = await savedRolloutPosition(rolloutPath, stat).catch(() => null);
+    // A seed that is not read again stays in memory, so the next save keeps it.
+    if (cached) rolloutActivityCache.remember(rolloutPath, cached, cacheScope, cacheLimit);
+  }
   // A question-only checkpoint has no valid lifecycle, so a caller that needs the lifecycle scans again from the start.
   const append = cached && (cached.full || !needLifecycle) && cached.ino === stat.ino && cached.dev === stat.dev && stat.size >= cached.size
     && (stat.size > cached.size || (stat.mtimeMs === cached.mtimeMs && stat.ctimeMs === cached.ctimeMs));
   const full = needLifecycle || Boolean(append && cached.full);
-  const lifecycle = append ? cached.lifecycle : emptyRolloutLifecycle();
-  const questions = append ? cached.questions : new Map();
+  // Copies: a cache entry never changes after it is saved, so a save during a scan cannot get state past its offset.
+  const lifecycle = append ? structuredClone(cached.lifecycle) : emptyRolloutLifecycle();
+  const questions = append ? structuredClone(cached.questions) : new Map();
   const start = append ? cached.offset : 0;
   if (start === stat.size) {
     codexCacheMetrics.lifecycleHits += 1;
@@ -755,6 +830,7 @@ async function scanRolloutLifecycle(rolloutPath, stat, cacheLimit, needLifecycle
   };
   const buffer = Buffer.allocUnsafe(Math.min(ROLLOUT_SCAN_CHUNK_BYTES, stat.size - start + ROLLOUT_SCAN_OVERLAP_BYTES));
   const partial = [];
+  let guard = null;
   const handle = await fs.open(rolloutPath, 'r');
 
   try {
@@ -778,6 +854,13 @@ async function scanRolloutLifecycle(rolloutPath, stat, cacheLimit, needLifecycle
       } while (from < bytesRead && (full || questions.size));
       pos += from;
     }
+    // The guard of a saved position: the bytes before the scanned size. Read only when the positions are on.
+    if (rolloutPositions) {
+      guard = Buffer.alloc(Math.min(64, stat.size));
+      const { bytesRead } = await handle.read(guard, 0, guard.length, stat.size - guard.length);
+      codexCacheMetrics.lifecycleBytesRead += bytesRead;
+      if (bytesRead !== guard.length) guard = null;
+    }
   } finally {
     await handle.close();
   }
@@ -787,7 +870,8 @@ async function scanRolloutLifecycle(rolloutPath, stat, cacheLimit, needLifecycle
   applyLines(lastLine);
   const pieces = lastLine.split(ROLLOUT_LINE_BREAK_RE);
   const offset = stat.size - (lastLine.endsWith('\r') ? 0 : Buffer.byteLength(pieces.at(-1) || pieces.at(-2) || ''));
-  rolloutActivityCache.remember(rolloutPath, { ...statSignature(stat), offset, lifecycle, questions, full }, cacheScope, cacheLimit);
+  rolloutActivityCache.remember(rolloutPath, { ...statSignature(stat), offset, lifecycle, questions, full,
+    ...(guard ? { atMs: Date.now(), guard } : {}) }, cacheScope, cacheLimit);
   return { ...lifecycle, ...questionSignals(questions) };
 }
 

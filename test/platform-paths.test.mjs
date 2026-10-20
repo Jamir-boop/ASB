@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { configDir, runtimeDir, stateDir } from '../src/platform-paths.mjs';
+import { cacheDir, configDir, runtimeDir, stateDir } from '../src/platform-paths.mjs';
 import { addressKind, listPhoneAddresses, tlsFiles, WINDOWS_CERTIFICATE_SCRIPT } from '../src/phone-gateway.mjs';
 import { defaultClaudeAppDir } from '../src/claude-data.mjs';
 import { openCommandForUrl } from '../src/session-opener.mjs';
@@ -42,6 +42,16 @@ test('the ASB folders keep the Linux values and use APPDATA and LOCALAPPDATA on 
     assert.equal(stateDir(missing, 'win32', winHome), 'C:\\Users\\test\\AppData\\Local\\asb\\state');
     assert.equal(runtimeDir(missing, 'win32', winHome), 'C:\\Users\\test\\AppData\\Local\\asb\\run');
   }
+});
+
+test('the cache folder follows the board launcher on Linux and is in LOCALAPPDATA on Windows', () => {
+  const home = '/home/test';
+  // Only an absolute XDG_CACHE_HOME counts, as in scripts/asb-board.py.
+  assert.equal(cacheDir({}, 'linux', home), '/home/test/.cache/asb');
+  assert.equal(cacheDir({ XDG_CACHE_HOME: '/cache' }, 'linux', home), '/cache/asb');
+  assert.equal(cacheDir({ XDG_CACHE_HOME: 'relative-cache' }, 'linux', home), '/home/test/.cache/asb');
+  assert.equal(cacheDir({ LOCALAPPDATA: 'D:\\Local', XDG_CACHE_HOME: '/ignored' }, 'win32', 'C:\\Users\\test'), 'D:\\Local\\asb\\cache');
+  assert.equal(cacheDir({ LOCALAPPDATA: 'relative' }, 'win32', 'C:\\Users\\test'), 'C:\\Users\\test\\AppData\\Local\\asb\\cache');
 });
 
 test('the network kinds know the Linux and Windows adapter names', () => {

@@ -8,9 +8,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { createPhoneGateway, WINDOWS_CERTIFICATE_SCRIPT } from '../src/phone-gateway.mjs';
+import { createPhoneGateway, readerPositionsKeyFrom, referenceScopeTagger, WINDOWS_CERTIFICATE_SCRIPT } from '../src/phone-gateway.mjs';
 import { loadClaudeRemoteThreads } from '../src/claude-remote-data.mjs';
-import { main as engineMain, RUN_KEY, trayCommand, trayStartArguments, writesEngineLog } from '../scripts/asb-engine.mjs';
+import { engineFolders, main as engineMain, readerPositionsPath, RUN_KEY, trayCommand, trayStartArguments, writesEngineLog } from '../scripts/asb-engine.mjs';
 import { protectWindowsFolder } from '../scripts/asb-instance.mjs';
 import { main as dispatch, NODE_HINT, WINDOWS_HINT, WINDOWS_USAGE } from '../scripts/asb.mjs';
 
@@ -82,6 +82,20 @@ test('a failed Windows certificate leaves no partial files and no identity', asy
   await assert.rejects(gateway.credentials(), /PowerShell failed/);
   assert.deepEqual(await readdir(tlsDir), []);
   assert.equal(await gateway.identity(), '');
+});
+
+test('the Windows engine limits its cache folder too, which holds the reader positions', () => {
+  const env = { APPDATA: 'D:\\Roaming', LOCALAPPDATA: 'D:\\Local' };
+  assert.deepEqual(engineFolders(env, 'win32'), ['D:\\Roaming\\asb', 'D:\\Local\\asb\\state', 'D:\\Local\\asb\\run', 'D:\\Local\\asb\\cache']);
+  assert.equal(readerPositionsPath(env, 'win32'), 'D:\\Local\\asb\\cache\\readers\\positions.json');
+  assert.equal(readerPositionsPath({ XDG_CACHE_HOME: '/cache' }, 'linux'), '/cache/asb/readers/positions.json');
+  // The positions key comes from the identity secret (the PFX passphrase on Windows), with its own label.
+  const key = readerPositionsKeyFrom('passphrase');
+  assert.equal(key.length, 32);
+  assert.deepEqual(readerPositionsKeyFrom('passphrase'), key);
+  assert.notDeepEqual(readerPositionsKeyFrom('other'), key);
+  assert.notEqual(key.toString('hex').slice(0, 32), referenceScopeTagger('passphrase')({ provider: 'codex', dataDir: 'D:\\x' }));
+  assert.throws(() => readerPositionsKeyFrom(''), /No machine identity secret/);
 });
 
 test('the Windows folder limit uses icacls with the user, and warns with no user name', async () => {

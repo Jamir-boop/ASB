@@ -790,7 +790,10 @@ export function createSwitchboardServer(options = {}) {
     loadDashboard: async () => {
       const sources = registeredLoad ? await registry.read() : null;
       const machine = options.machineIdentity?.() || { machineId: '', machineName: localMachineName() };
+      // Only the engine passes reader positions: the first scan waits for their load, and each scan can save them.
+      await options.readerPositions?.ready();
       const loaded = await load({ ...(sources ? { sources } : {}), machine });
+      options.readerPositions?.scanDone();
       // The npm start server has no machine identity, so its rows get no full reference.
       const tagger = machine.machineId ? options.referenceScopes?.() || null : null;
       const tags = sourceScopes(sources, tagger);

@@ -41,6 +41,12 @@ export function referenceScopeTagger(secret) {
   return (source) => createHmac('sha256', key).update(scopeInput(source)).digest().subarray(0, 16).toString('hex');
 }
 
+// The key of the engine reader positions file: HKDF from the same identity secret, with its own label. It stays in memory.
+export function readerPositionsKeyFrom(secret) {
+  if (!secret?.length) throw new Error('No machine identity secret.');
+  return Buffer.from(hkdfSync('sha256', secret, Buffer.alloc(0), 'asb reader positions v1', 32));
+}
+
 // The files of the machine certificate: openssl PEM files on Linux, PowerShell exports on Windows (plan 14.4).
 export const tlsFiles = (platform = process.platform) => platform === 'win32' ? ['cert.pfx', 'pfx-pass', 'cert.cer'] : ['key.pem', 'cert.pem'];
 
@@ -550,6 +556,13 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
       try {
         const material = await certificate();
         return referenceScopeTagger(platform === 'win32' ? material.passphrase : material.key);
+      } catch { return null; }
+    }),
+    // The key of the reader positions file, or null with no identity.
+    readerPositionsKey: () => serialize(async () => {
+      try {
+        const material = await certificate();
+        return readerPositionsKeyFrom(platform === 'win32' ? material.passphrase : material.key);
       } catch { return null; }
     }),
     updateSettings: (value) => serialize(async () => {

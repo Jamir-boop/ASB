@@ -12,7 +12,8 @@ import { createRelaySupervisor } from '../src/machine-relay.mjs';
 import { createPhoneGateway } from '../src/phone-gateway.mjs';
 import { createSoundPlayer } from '../src/asb-sounds.mjs';
 import { boardCheck } from '../src/linux-system.mjs';
-import { configDir, runtimeDir, stateDir } from '../src/platform-paths.mjs';
+import { cacheDir, configDir, runtimeDir, stateDir } from '../src/platform-paths.mjs';
+import { createReaderPositions } from '../src/reader-positions.mjs';
 import { findRunningService, prepareInstanceRuntime, protectWindowsFolder, publishInstanceRuntime,
   removeInstanceRuntime, requestInstance } from './asb-instance.mjs';
 
@@ -37,10 +38,15 @@ export const shouldStartTray = (env, platform = process.platform) => platform ==
 export const trayLauncher = (env) => typeof env.ASB_INSTALLED_LAUNCHER === 'string' && path.isAbsolute(env.ASB_INSTALLED_LAUNCHER)
   ? env.ASB_INSTALLED_LAUNCHER : fileURLToPath(new URL('./asb', import.meta.url));
 export const engineLogPath = (env, platform = process.platform) => path.join(stateDir(env, platform), 'engine.log');
+// The folders that the Windows engine limits to the user with icacls.
+export const engineFolders = (env, platform = process.platform) => [configDir(env, platform), stateDir(env, platform), runtimeDir(env, platform),
+  cacheDir(env, platform)];
+export const readerPositionsPath = (env, platform = process.platform) => (platform === 'win32' ? path.win32 : path.posix)
+  .join(cacheDir(env, platform), 'readers', 'positions.json');
 
 export async function runEngine({ env = process.env, platform = process.platform, execFile = execFileAsync } = {}) {
   if (platform === 'win32') {
-    for (const folder of [configDir(env, platform), stateDir(env, platform), runtimeDir(env, platform)]) {
+    for (const folder of engineFolders(env, platform)) {
       mkdirSync(folder, { recursive: true });
       await protectWindowsFolder(folder, { env, execFile });
     }
@@ -58,10 +64,12 @@ export async function runEngine({ env = process.env, platform = process.platform
     peer: { ...group.peer, peers: () => relay.peerPeers(), deliver: (value, fingerprint) => relay.peerDeliver(value, fingerprint),
       resolveExact: (value, fingerprint) => relay.peerResolveExact(value, fingerprint), deliverExact: (value, fingerprint) => relay.peerDeliverExact(value, fingerprint) },
     onPhonePaired: group.onPhonePaired, onPhoneRevoked: group.onPhoneRevoked });
+  const positions = createReaderPositions({ file: readerPositionsPath(env, platform), key: () => gateway.readerPositionsKey(), platform });
   let machineId = '';
   let referenceScopes = null;
   // Windows has no board, so it never plays sounds (phase 1 rule).
   const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, machineGroup: group, machineRelay: relay, serviceMode: true, platform,
+    readerPositions: positions,
     playSound: platform === 'win32' ? undefined : createSoundPlayer(),
     machineIdentity: () => ({ machineId, machineName: group.selfName() }), referenceScopes: () => referenceScopes,
     onStop: () => shutdown('the stop request') });
@@ -75,6 +83,8 @@ export async function runEngine({ env = process.env, platform = process.platform
     return cleanup ||= (async () => {
       try {
         await startup.catch(() => {});
+        step = 'reader positions save';
+        await positions.flush();
         step = 'tray stop';
         tray?.kill('SIGTERM');
         try {

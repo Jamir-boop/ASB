@@ -27,6 +27,12 @@ export function runtimeDir(env = process.env, platform = process.platform, home 
     : path.posix.join(absolute(env.XDG_STATE_HOME) ? env.XDG_STATE_HOME : path.posix.join(home, '.local', 'state'), 'asb', 'run');
 }
 
+// The cache folder: the rule of scripts/asb-board.py on Linux, where only an absolute XDG_CACHE_HOME counts.
+export function cacheDir(env = process.env, platform = process.platform, home = os.homedir()) {
+  if (platform === 'win32') return path.win32.join(windowsBase(env, 'LOCALAPPDATA', home, 'Local'), 'asb', 'cache');
+  return path.posix.join(absolute(env.XDG_CACHE_HOME) ? env.XDG_CACHE_HOME : path.posix.join(home, '.cache'), 'asb');
+}
+
 // The PATH search of a shell, with the file it found ('' when none). Windows splits PATH with ';' and tries
 // each PATHEXT extension; other systems need the execute bit. scripts/asb-bridge.mjs has the same search.
 export async function findExecutable(name, { platform = process.platform, env = process.env, searchPath = env.PATH || '', cwd = process.cwd() } = {}) {
