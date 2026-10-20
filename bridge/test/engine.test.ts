@@ -36,6 +36,36 @@ posix('the engine runtime needs a private folder, a 0600 file with exactly its k
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+posix('without a valid runtime folder the engine runtime is in the state folder: XDG_STATE_HOME when absolute, else HOME', () => {
+  const root = mkdtempSync('/tmp/asb-engine-state-');
+  const runtime = join(root, 'runtime');
+  const write = (folder: string) => {
+    mkdirSync(folder, { recursive: true, mode: 0o700 });
+    writeFileSync(join(folder, 'service.json'), JSON.stringify(good), { mode: 0o600 });
+  };
+  try {
+    mkdirSync(runtime, { mode: 0o700 });
+    const env = { XDG_RUNTIME_DIR: runtime, XDG_STATE_HOME: join(root, 'state') };
+    expect(engineRuntime(env, 'linux')).toBeNull();
+    write(join(root, 'state', 'asb', 'run'));
+    expect(engineRuntime(env, 'linux')).toEqual(good);
+    // A runtime folder that fails a check gives the next candidate; a valid one comes first.
+    write(join(runtime, 'asb'));
+    chmodSync(join(runtime, 'asb', 'service.json'), 0o644);
+    expect(engineRuntime(env, 'linux')).toEqual(good);
+    writeFileSync(join(runtime, 'asb', 'service.json'), JSON.stringify({ ...good, port: 4660 }), { mode: 0o600 });
+    chmodSync(join(runtime, 'asb', 'service.json'), 0o600);
+    expect(engineRuntime(env, 'linux')).toEqual({ ...good, port: 4660 });
+    rmSync(join(runtime, 'asb'), { recursive: true });
+    chmodSync(join(root, 'state', 'asb', 'run'), 0o755);
+    expect(engineRuntime(env, 'linux')).toBeNull();
+    // A relative XDG_STATE_HOME gives HOME/.local/state.
+    write(join(root, '.local', 'state', 'asb', 'run'));
+    expect(engineRuntime({ XDG_RUNTIME_DIR: runtime, XDG_STATE_HOME: 'relative', HOME: root }, 'linux')).toEqual(good);
+    expect(engineRuntime({ XDG_RUNTIME_DIR: runtime, XDG_STATE_HOME: 'relative', HOME: 'relative' }, 'linux')).toBeNull();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('on Windows the engine runtime is LOCALAPPDATA\\asb\\run\\service.json with exactly its keys and a live PID; macOS has none', () => {
   const root = mkdtempSync(join(tmpdir(), 'asb-engine-windows-'));
   const env = { LOCALAPPDATA: root };

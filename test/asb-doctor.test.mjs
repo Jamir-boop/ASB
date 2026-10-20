@@ -24,7 +24,10 @@ const NODE24 = { path: '/usr/bin/node', version: '24.11.1', sqlite: true };
 const probe = (values) => JSON.stringify({ python: '3.13.5', gi: '3.50.0', gtk: [4, 18, 6], adw: [1, 7, 6], glib: [2, 84, 4],
   cairo: true, qrcode: true, trayHost: true, ...values });
 
-async function fakeSystem(t, { release, bins = ALL_BINS, values = {}, node = NODE24, ostree = false }) {
+const UNIT = '/home/test/.config/systemd/user/asb.service';
+const ENTRY = '/home/test/.config/autostart/asb-engine.desktop';
+
+async function fakeSystem(t, { release, bins = ALL_BINS, values = {}, node = NODE24, ostree = false, files = {}, env = {} }) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'asb-doctor-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const bin = path.join(directory, 'bin');
@@ -33,8 +36,9 @@ async function fakeSystem(t, { release, bins = ALL_BINS, values = {}, node = NOD
   const calls = [];
   const reads = [];
   const deps = {
-    env: { PATH: bin, ASB_PYTHON: PYTHON, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/nonexistent' }, node,
-    read: async (file) => { reads.push(file); return file === '/etc/os-release' ? RELEASES[release] : ''; },
+    env: { PATH: bin, ASB_PYTHON: PYTHON, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/nonexistent', XDG_CONFIG_HOME: '/home/test/.config',
+      XDG_RUNTIME_DIR: '/run/user/1000', ...env }, node,
+    read: async (file) => { reads.push(file); return file === '/etc/os-release' ? RELEASES[release] : files[file] ?? ''; },
     exists: async (file) => { reads.push(file); return file === '/run/ostree-booted' && ostree; },
     execFile: async (file, args) => {
       calls.push([file, ...args]);
@@ -72,10 +76,12 @@ test('Debian 13 with all checks ok prints the checks of Appendix D and no comman
     '  ok       Sounds (pw-play)',
     '  ok       Tray host',
     `  ok       Bun (${system.bin}/bun), for ASB Bridge`,
+    '  info     Autostart: not installed',
+    '  ok       Runtime folder: /run/user/1000/asb',
   ]);
-  // collect runs only the Python probe and openssl version, and reads only os-release and the ostree marker.
+  // collect runs only the Python probe and openssl version, and reads only os-release, the ostree marker, and the two autostart files.
   assert.deepEqual(system.calls, [[path.join(system.bin, 'openssl'), 'version'], [PYTHON, '-c', PYTHON_PROBE]]);
-  assert.deepEqual(system.reads, ['/etc/os-release', '/run/ostree-booted']);
+  assert.deepEqual(system.reads, ['/etc/os-release', '/run/ostree-booted', UNIT, ENTRY]);
 });
 
 test('Fedora without the board packages prints one sudo dnf install line', async (t) => {
@@ -99,6 +105,8 @@ test('Fedora without the board packages prints one sudo dnf install line', async
     '  ok       Sounds (pw-play)',
     '  info     Tray host: not checked (needs PyGObject and a session bus)',
     '  info     Bun: not found. ASB Bridge needs it.',
+    '  info     Autostart: not installed',
+    '  ok       Runtime folder: /run/user/1000/asb',
     '',
     'Install the missing packages:',
     '  sudo dnf install python3-gobject gtk4 gobject-introspection libadwaita',
@@ -112,7 +120,7 @@ test('Ubuntu 22.04 runs without the window and gets no board packages', async (t
   const system = await fakeSystem(t, { release: 'ubuntu2204', values: { python: '3.10.12', gi: '3.42.1', gtk: [4, 6, 9], adw: [1, 1, 7], trayHost: false } });
   const { code, out } = await system.run();
   assert.equal(code, 0);
-  assert.deepEqual(out.slice(6, 15), [
+  assert.deepEqual(out.slice(6, 17), [
     'Window',
     `  ok       PyGObject 3.42.1 (Python 3.10.12, ${PYTHON})`,
     '  old      GTK 4.6.9, needs 4.12 or later',
@@ -122,8 +130,10 @@ test('Ubuntu 22.04 runs without the window and gets no board packages', async (t
     '  ok       Sounds (pw-play)',
     '  info     Tray host: none found. On GNOME, add the AppIndicator extension.',
     `  ok       Bun (${system.bin}/bun), for ASB Bridge`,
+    '  info     Autostart: not installed',
+    '  ok       Runtime folder: /run/user/1000/asb',
   ]);
-  assert.deepEqual(out.slice(15), ['', 'This system has GTK 4.6 and Libadwaita 1.1. The ASB window needs GTK 4.12 and Libadwaita 1.4, '
+  assert.deepEqual(out.slice(17), ['', 'This system has GTK 4.6 and Libadwaita 1.1. The ASB window needs GTK 4.12 and Libadwaita 1.4, '
     + 'so ASB runs without its window. The phone and your other machines still show this machine\'s sessions.']);
   const data = await collect(system.deps);
   assert.deepEqual(data.board, { ok: false, reason: 'GTK 4.6 is older than 4.12. Libadwaita 1.1 is older than 1.4.' });
@@ -203,6 +213,23 @@ test('image-based systems and Gentoo print their notes after the commands', asyn
   const gentoo = await fakeSystem(t, { release: 'gentoo', values, bins: ['openssl', 'xdg-open', 'pw-play', 'sudo'] });
   assert.deepEqual((await gentoo.lines()).slice(-2), ['  sudo emerge --ask --noreplace dev-python/qrcode', 'Build gui-libs/gtk and gui-libs/libadwaita '
     + 'with USE=introspection, dev-python/pygobject with USE=cairo, and media-video/pipewire with USE=extra (for pw-play).']);
+});
+
+test('Autostart counts only a file with the ASB marker, and the runtime folder shows the fallback', async (t) => {
+  const autostart = async (files, env) => (await (await fakeSystem(t, { release: 'debian13', files, env })).lines()).slice(-2);
+  assert.deepEqual(await autostart({ [UNIT]: '# Generated by ASB: asb.service\n[Unit]\n' }),
+    ['  ok       Autostart: systemd user service', '  ok       Runtime folder: /run/user/1000/asb']);
+  assert.deepEqual((await autostart({ [ENTRY]: '[Desktop Entry]\n# Generated by ASB: engine autostart\n' }))[0], '  ok       Autostart: XDG autostart');
+  assert.deepEqual((await autostart({ [UNIT]: '[Service]\nExecStart=/bin/true\n', [ENTRY]: '[Desktop Entry]\nExec=/bin/true\n' }))[0],
+    '  info     Autostart: not installed');
+  for (const XDG_RUNTIME_DIR of [undefined, '', 'relative']) {
+    assert.deepEqual((await autostart({}, { XDG_RUNTIME_DIR, XDG_STATE_HOME: '/home/test/.local/state' }))[1],
+      '  info     Runtime folder: /home/test/.local/state/asb/run (XDG_RUNTIME_DIR is not set)');
+  }
+  // The other XDG_CONFIG_HOME gives the other files.
+  const system = await fakeSystem(t, { release: 'debian13', env: { XDG_CONFIG_HOME: '/config' } });
+  await collect(system.deps);
+  assert.deepEqual(system.reads.slice(-2), ['/config/systemd/user/asb.service', '/config/autostart/asb-engine.desktop']);
 });
 
 test('doctor exit codes, usage, and the read-only programs', async (t) => {

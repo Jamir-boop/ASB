@@ -6,7 +6,8 @@ import { promisify } from 'node:util';
 import { PLAYERS } from '../src/asb-sounds.mjs';
 import { detectFamily, FAMILIES, installCommand, nodeRoute, parseOsRelease } from '../src/linux-distros.mjs';
 import { atLeast, BOARD_FLOORS, boardCheck, engineCheck, pythonCandidates, shortVersion } from '../src/linux-system.mjs';
-import { findExecutable } from '../src/platform-paths.mjs';
+import { findExecutable, runtimeDir } from '../src/platform-paths.mjs';
+import { autostartMarker, autostartPath, unitMarker, unitPath } from './asb-service.mjs';
 
 // asb doctor (plan L5): it checks the system and prints the install commands. It never runs them.
 const execFileAsync = promisify(execFileCallback);
@@ -94,6 +95,14 @@ export async function collect({ env = process.env, execFile = execFileAsync, rea
     : trayHost === false ? 'Tray host: none found. On GNOME, add the AppIndicator extension.' : 'Tray host: not checked (needs PyGObject and a session bus)');
   const bun = await findExecutable('bun', { env });
   add('bun', 'Options', bun ? 'ok' : 'info', bun ? `Bun (${bun}), for ASB Bridge` : 'Bun: not found. ASB Bridge needs it.');
+  // Doctor only reads the two autostart files (plan 12.1). A file counts when it has the ASB marker.
+  const marked = async (file, marker) => (await read(file).catch(() => '')).split('\n').includes(marker);
+  const unit = await marked(unitPath(env), unitMarker);
+  const entry = await marked(autostartPath(env), autostartMarker);
+  const autostart = unit ? 'systemd user service' : entry ? 'XDG autostart' : '';
+  add('autostart', 'Options', autostart ? 'ok' : 'info', `Autostart: ${autostart || 'not installed'}`);
+  const fallback = !(typeof env.XDG_RUNTIME_DIR === 'string' && path.posix.isAbsolute(env.XDG_RUNTIME_DIR));
+  add('runtime', 'Options', fallback ? 'info' : 'ok', `Runtime folder: ${runtimeDir(env)}${fallback ? ' (XDG_RUNTIME_DIR is not set)' : ''}`);
 
   // Commands (plan 10.2). ASB only prints them.
   const route = !facts || nodeOld ? nodeRoute(release, family, { mode }) : null;

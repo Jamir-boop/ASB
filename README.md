@@ -74,7 +74,7 @@ The ASB engine (the server and phone access) runs without the window. `asb` star
 
 On Linux, the engine shows a tray icon with **Open ASB** and **Quit ASB** (only **Quit ASB** when the window cannot run). The icon shows only when the desktop has a tray host, for example the GNOME AppIndicator extension. Without a tray host, the engine runs with no icon.
 
-`asb service install` installs and starts the `asb.service` systemd user service, so the engine also starts with your session. `asb service status` shows the service state. `asb service uninstall` stops and removes it. When the service is installed, `asb` starts the engine through it. An ASB `1.8.1` or older window cannot attach and reports a port conflict.
+`asb service install` installs and starts the `asb.service` systemd user service, so the engine also starts with your session. On a desktop without a systemd graphical session (for example Xfce, MATE, LXQt, or a system without systemd), it writes the XDG autostart entry `~/.config/autostart/asb-engine.desktop` instead and starts the engine. Window managers without XDG autostart must run `asb engine start` after login. `asb service status` shows the service or entry state. `asb service uninstall` stops and removes it. When the service is installed, `asb` starts the engine through it. An ASB `1.8.1` or older window cannot attach and reports a port conflict.
 
 The current source includes the Android companion and the user service; published `1.8.1` packages do not.
 

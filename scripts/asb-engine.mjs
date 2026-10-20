@@ -13,7 +13,7 @@ import { createPhoneGateway } from '../src/phone-gateway.mjs';
 import { createSoundPlayer } from '../src/asb-sounds.mjs';
 import { boardCheck } from '../src/linux-system.mjs';
 import { configDir, runtimeDir, stateDir } from '../src/platform-paths.mjs';
-import { findRunningService, instanceRuntimePath, prepareInstanceRuntime, protectWindowsFolder, publishInstanceRuntime,
+import { findRunningService, prepareInstanceRuntime, protectWindowsFolder, publishInstanceRuntime,
   removeInstanceRuntime, requestInstance } from './asb-instance.mjs';
 
 const execFileAsync = promisify(execFileCallback);
@@ -156,7 +156,6 @@ export async function runEngine({ env = process.env, platform = process.platform
 
 export async function startEngine({ env = process.env, execFile = execFileAsync, spawn = spawnProcess, find = findRunningService,
   timeoutMs = 10_000, intervalMs = 200 } = {}) {
-  if (!instanceRuntimePath(env)) throw new Error('ASB cannot start its engine: XDG_RUNTIME_DIR must be an absolute folder.');
   const running = await find(env);
   if (running) return running;
   let enabled = false;
@@ -186,7 +185,7 @@ export async function startEngine({ env = process.env, execFile = execFileAsync,
   throw new Error(`ASB cannot start its engine. See ${where}.`);
 }
 
-async function stopRunning(runtime, log) {
+export async function stopRunning(runtime, log) {
   if (!runtime) { log('ASB engine is not running.'); return 0; }
   const reply = await requestInstance(runtime, '/api/engine/stop', { method: 'POST', body: {} });
   if (reply.statusCode !== 200) throw new Error(reply.body?.error || `The ASB engine refused the stop (HTTP ${reply.statusCode}).`);

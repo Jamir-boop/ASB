@@ -93,12 +93,17 @@ export async function findRunningService(env = process.env, platform = process.p
 
 export async function prepareInstanceRuntime(env = process.env, { platform = process.platform, answers = serviceAnswers,
   file = instanceRuntimePath(env, platform) } = {}) {
-  const directory = file && path.dirname(file);
-  if (platform === 'win32') await mkdir(path.dirname(directory), { recursive: true });
-  const root = file && await lstat(platform === 'win32' ? path.dirname(directory) : env.XDG_RUNTIME_DIR).catch(() => null);
+  const directory = path.dirname(file);
+  // Without an absolute XDG_RUNTIME_DIR, Linux uses <state>/asb/run and creates its asb folder (plan L7).
+  const fallback = platform !== 'win32' && !(typeof env.XDG_RUNTIME_DIR === 'string' && path.posix.isAbsolute(env.XDG_RUNTIME_DIR));
+  const rootPath = platform === 'win32' || fallback ? path.dirname(directory) : env.XDG_RUNTIME_DIR;
+  if (platform === 'win32') await mkdir(rootPath, { recursive: true });
+  // A failed mkdir gives the folder message below.
+  if (fallback) await mkdir(rootPath, { recursive: true, mode: 0o700 }).catch(() => {});
+  const root = await lstat(rootPath).catch(() => null);
   if (!root?.isDirectory() || !owned(root, platform)) {
     throw new Error(platform === 'win32' ? 'ASB will not use a linked or missing LOCALAPPDATA\\asb folder.'
-      : 'ASB service run needs an absolute, existing XDG_RUNTIME_DIR folder owned by the user.');
+      : `ASB will not use a missing, linked, or foreign runtime folder: ${rootPath}`);
   }
   const previousDirectory = await lstat(directory).catch((error) => { if (error.code !== 'ENOENT') throw error; });
   if (previousDirectory && (!previousDirectory.isDirectory() || !owned(previousDirectory, platform))) {
@@ -121,8 +126,9 @@ export async function prepareInstanceRuntime(env = process.env, { platform = pro
     if (!validRuntime(saved)) throw new Error('ASB kept an invalid service.json. Remove it before starting ASB.');
     let alive = true;
     try { process.kill(saved.pid, 0); } catch (error) { if (error.code !== 'ESRCH') throw error; alive = false; }
-    // Windows soon gives an old PID to a new process, so there a live PID counts only when that engine answers.
-    if (alive && (platform !== 'win32' || await answers(saved))) throw new Error('The ASB runtime file belongs to a running process.');
+    // Windows soon gives an old PID to a new process, and the fallback folder survives a restart,
+    // so there a live PID counts only when that engine answers.
+    if (alive && ((platform !== 'win32' && !fallback) || await answers(saved))) throw new Error('The ASB runtime file belongs to a running process.');
   }
   return { file, previous, platform };
 }

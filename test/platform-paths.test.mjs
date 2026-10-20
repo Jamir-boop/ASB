@@ -21,12 +21,17 @@ test('the ASB folders keep the Linux values and use APPDATA and LOCALAPPDATA on 
     // The old expressions, byte for byte.
     assert.equal(configDir(env, 'linux', home), path.posix.join(env.XDG_CONFIG_HOME || path.posix.join(home, '.config'), 'asb'));
     assert.equal(stateDir(env, 'linux', home), path.posix.join(env.XDG_STATE_HOME || path.posix.join(home, '.local', 'state'), 'asb'));
+    // Without an absolute XDG_RUNTIME_DIR, the run folder in stateDir (plan L7).
     assert.equal(runtimeDir(env, 'linux', home), typeof env.XDG_RUNTIME_DIR === 'string' && env.XDG_RUNTIME_DIR.startsWith('/')
-      ? path.posix.join(env.XDG_RUNTIME_DIR, 'asb') : null);
+      ? path.posix.join(env.XDG_RUNTIME_DIR, 'asb') : path.posix.join(env.XDG_STATE_HOME?.startsWith('/') ? env.XDG_STATE_HOME : '/home/test/.local/state', 'asb', 'run'));
   }
   assert.equal(configDir({}, 'linux', home), '/home/test/.config/asb');
   assert.equal(stateDir({}, 'linux', home), '/home/test/.local/state/asb');
-  assert.equal(runtimeDir({}, 'linux', home), null);
+  assert.equal(runtimeDir({}, 'linux', home), '/home/test/.local/state/asb/run');
+  assert.equal(runtimeDir({ XDG_STATE_HOME: '/state', XDG_RUNTIME_DIR: '' }, 'linux', home), '/state/asb/run');
+  // A relative XDG_STATE_HOME is not used for the runtime folder (the ASB Bridge rule); stateDir keeps it.
+  assert.equal(runtimeDir({ XDG_STATE_HOME: 'relative-state' }, 'linux', home), '/home/test/.local/state/asb/run');
+  assert.equal(stateDir({ XDG_STATE_HOME: 'relative-state' }, 'linux', home), 'relative-state/asb');
   const winHome = 'C:\\Users\\test';
   const env = { APPDATA: 'D:\\Roaming', LOCALAPPDATA: 'D:\\Local', XDG_CONFIG_HOME: '/ignored' };
   assert.equal(configDir(env, 'win32', winHome), 'D:\\Roaming\\asb');
