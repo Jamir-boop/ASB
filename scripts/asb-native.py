@@ -3142,6 +3142,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-toolbar searchentry {{ min-height: 26px; padding-top: 0; padding-bottom: 0; }}
 {base} .asb-state {{ font-size: 11px; }}
 {base} .asb-provider {{ opacity: .65; }}
+{base} .asb-mute-glyph {{ filter: opacity(.35); }}
 {base} .asb-message-lit .asb-provider {{ color: @accent_color; opacity: 1; }}
 {base} .asb-source-badge {{ min-width: 6px; min-height: 6px; padding: 0; border: 1px solid @window_bg_color;
     border-radius: 50%; box-shadow: none; opacity: 1; }}
@@ -4664,7 +4665,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             clock = Gtk.Image(icon_name="preferences-system-time-symbolic", pixel_size=12, visible=False)
             clock.add_css_class("asb-limit-clock")
             widget.asb_limit_clock = clock
-            mute = Gtk.Image(icon_name="notifications-disabled-symbolic", pixel_size=12, visible=False, valign=Gtk.Align.CENTER)
+            # A file icon, not an icon name: GTK 4.18 does not recolor symbolic icons from the search path.
+            mute = Gtk.Image(gicon=Gio.FileIcon.new(Gio.File.new_for_path(
+                str(Path(__file__).parents[1] / "assets" / "icons" / "asb-muted-symbolic.svg"))),
+                pixel_size=12, visible=False, valign=Gtk.Align.CENTER)
             mute.add_css_class("asb-mute-glyph")
             mute.add_css_class("dim-label")
             widget.asb_mute_glyph = mute

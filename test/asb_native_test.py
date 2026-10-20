@@ -2845,7 +2845,11 @@ class WidgetCheck(unittest.TestCase):
             glyph = card.asb_mute_glyph
             self.assertIs(glyph.get_prev_sibling(), sibling or before)
             self.assertTrue(glyph.get_visible() and glyph.get_mapped())
-            self.assertEqual((glyph.get_icon_name(), glyph.get_pixel_size()), ("notifications-disabled-symbolic", 12))
+            # The ASB glyph, a file icon so that GTK recolors it; no theme icon is left on the card.
+            self.assertEqual((glyph.get_storage_type(), glyph.get_icon_name(), glyph.get_pixel_size()),
+                             (asb.Gtk.ImageType.GICON, None, 12))
+            self.assertEqual(glyph.get_gicon().get_file().get_basename(), "asb-muted-symbolic.svg")
+            self.assertTrue(glyph.get_gicon().get_file().query_exists(None))
             self.assertTrue(glyph.has_css_class("asb-mute-glyph") and glyph.has_css_class("dim-label"))
             x, y, width, height = bounds(glyph, card)
             bx, by, bwidth, bheight = bounds(before, card)

@@ -3558,7 +3558,7 @@ class NativeLogicChecks(unittest.TestCase):
         request = Mock()
         glib = SimpleNamespace(idle_add=Mock(), source_remove=Mock(), Variant=lambda _kind, value: value)
         window.visible_rows = lambda: window.dashboard["threads"]
-        with patch.dict(SCOPE, {"Gtk": gtk, "GLib": glib, "request_async": request,
+        with patch.dict(SCOPE, {"Gtk": gtk, "GLib": glib, "Gio": Mock(), "request_async": request,
                                "Pango": SimpleNamespace(EllipsizeMode=SimpleNamespace(END=0), WrapMode=SimpleNamespace(WORD_CHAR=0)),
                                "SourceMarker": lambda _owner: marker, "label": lambda *_args: Mock()}):
             window.update_row_text(widget)
