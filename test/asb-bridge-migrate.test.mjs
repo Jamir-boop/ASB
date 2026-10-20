@@ -36,7 +36,8 @@ async function fixture(t) {
   await writeFile(path.join(bin, 'bun'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   await writeFile(path.join(bin, 'codex'), `#!/bin/sh\nprintf '%s|%s\\n' "$CODEX_HOME" "$*" >> "$BRIDGE_LOG"\nif [ "$*" = 'plugin remove claude-uds-bridge@leonkohli' ] || [ "$*" = 'plugin marketplace remove leonkohli' ]; then\n  awk -v command="$*" '\n    command == "plugin remove claude-uds-bridge@leonkohli" && /^\\[plugins\\."claude-uds-bridge@leonkohli"\\]/ { skip = 1; next }\n    command == "plugin marketplace remove leonkohli" && /^\\[marketplaces\\.leonkohli\\]/ { skip = 1; next }\n    /^\\[/ { skip = 0 }\n    !skip { print }\n  ' "$CODEX_HOME/config.toml" > "$CODEX_HOME/config.toml.tmp" || exit 4\n  mv "$CODEX_HOME/config.toml.tmp" "$CODEX_HOME/config.toml"\nfi\nif [ "$*" = 'plugin add asb-bridge@asb' ]; then\n  if [ -f "\${BRIDGE_FAIL_ADD-}" ]; then rm "$BRIDGE_FAIL_ADD"; exit 5; fi\n  if [ -f "\${BRIDGE_BLOCK_CLAUDE-}" ]; then rm "$BRIDGE_BLOCK_CLAUDE"; printf '%s\\n' 'Synthetic conflict' > "$CLAUDE_CONFIG_DIR/skills"; fi\nfi\n`, { mode: 0o755 });
   const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: claude, CODEX_HOME: codex, PATH: `${bin}:/usr/bin:/bin`, BRIDGE_LOG: log, BRIDGE_PS: ps };
-  const run = (args = [], extra = {}) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env: { ...env, ...extra } });
+  // As scripts/asb.mjs does: Node.js 22 prints the SQLite ExperimentalWarning on stderr.
+  const run = (args = [], extra = {}) => spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', SCRIPT, ...args], { encoding: 'utf8', env: { ...env, ...extra } });
   const calls = async () => {
     try { return (await readFile(log, 'utf8')).trim().split('\n').filter(Boolean); }
     catch (error) { if (error.code === 'ENOENT') return []; throw error; }

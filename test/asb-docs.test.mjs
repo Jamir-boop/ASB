@@ -2,12 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
+// A Windows checkout has CRLF line ends.
+const text = async (path) => (await readFile(new URL(path, import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+
 test('documents ASB installation, video, privacy limits, and upstream credit', async () => {
   const [readme, guide, privacy, changelog] = await Promise.all([
-    readFile(new URL('../README.md', import.meta.url), 'utf8'),
-    readFile(new URL('../ASB.md', import.meta.url), 'utf8'),
-    readFile(new URL('../docs/PRIVACY.md', import.meta.url), 'utf8'),
-    readFile(new URL('../CHANGELOG.md', import.meta.url), 'utf8'),
+    text('../README.md'),
+    text('../ASB.md'),
+    text('../docs/PRIVACY.md'),
+    text('../CHANGELOG.md'),
   ]);
   const download = readme.match(/\[Download v(\d+\.\d+\.\d+)\]/);
   assert.ok(download, 'README should name the published download version');
@@ -21,7 +24,7 @@ test('documents ASB installation, video, privacy limits, and upstream credit', a
   assert.match(privacy, /not a capture of local conversations/);
   assert.ok(readme.includes(`[Download v${version}](https://github.com/Jamir-boop/ASB/releases/tag/v${version})`));
   assert.ok(readme.includes(`[Release notes](docs/releases/v${version}.md)`));
-  const releaseNotes = await readFile(new URL(`../docs/releases/v${version}.md`, import.meta.url), 'utf8');
+  const releaseNotes = await text(`../docs/releases/v${version}.md`);
   assert.ok(releaseNotes.startsWith(`# ASB ${version}\n`));
   assert.ok(readme.includes(`https://github.com/Jamir-boop/ASB/releases/download/v${version}/SHA256SUMS`));
   assert.ok(readme.includes(`https://github.com/Jamir-boop/ASB/releases/download/v${version}/asb_${version}_all.deb`));

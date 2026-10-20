@@ -135,7 +135,7 @@ test('a registered receiver with a key file gets frames only after the right aut
     const [peer] = peers(f.configDir);
     expect(peer?.messagingSocketPath).toBe(f.path);
     const keyFile = join(sessions, keyName(process.pid, f.path));
-    expect(await Bun.file(keyFile).json()).toEqual({ peerToken: f.token, procStart: await processStart(process.pid), ...(windows ? { pidDomain: pidDomain() } : {}) });
+    expect(await Bun.file(keyFile).json()).toEqual({ peerToken: f.token, procStart: await processStart(process.pid), ...(pidDomain() ? { pidDomain: pidDomain() } : {}) });
     if (!windows) expect(statSync(keyFile).mode & 0o777).toBe(0o600);
     expect(readdirSync(sessions).filter(name => name.includes('.tmp.'))).toEqual([]);
     if (windows) expect(f.path).toMatch(/^\\\\\.\\pipe\\LOCAL\\cc-msg-[0-9a-f]{32}$/);

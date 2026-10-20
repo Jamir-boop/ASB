@@ -216,7 +216,8 @@ test('package commands reject extra arguments before checks or writes and instal
     XDG_DATA_HOME: path.join(home, 'data'), XDG_CONFIG_HOME: path.join(home, 'config'), XDG_STATE_HOME: path.join(home, 'state'),
     XDG_CACHE_HOME: path.join(home, 'cache'), CODEX_HOME: codexHome, CLAUDE_CONFIG_DIR: claudeHome,
     ASB_PACKAGE_TEST_LOG: log };
-  const run = (args) => execFileSync(process.execPath, [packageScript, ...args], { env, encoding: 'utf8', stdio: 'pipe' });
+  // As scripts/asb.mjs does: Node.js 22 prints the SQLite ExperimentalWarning on stderr.
+  const run = (args) => execFileSync(process.execPath, ['--disable-warning=ExperimentalWarning', packageScript, ...args], { env, encoding: 'utf8', stdio: 'pipe' });
   for (const args of [[], ['unknown'], ['constructor'], ['install', '--bridge-codex-home'],
     ['install', '--bridge-codex-home', codexHome], ['install', '--bridge-codex-home', '--bridge-claude'],
     ['install', '--bridge-codex-home', ''], ['install', '--bridge-claude'],

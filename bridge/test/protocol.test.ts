@@ -17,6 +17,8 @@ import { fakeEngine } from './engine-fixture';
 import { processStart } from '../src/claude';
 // POSIX only on Windows CI: Unix socket files, /tmp, and file modes.
 const posix = test.skipIf(process.platform === 'win32');
+// The ASB engine runs only on Linux and Windows, and these tests use Unix sockets.
+const linux = test.skipIf(process.platform !== 'linux');
 
 async function fixture(prefix = '/tmp/uds-protocol-') {
   const root = mkdtempSync(prefix);
@@ -563,7 +565,7 @@ posix('list_sessions names the agent kind and start time and leaves out the call
     expect(own).toMatchObject({ agent: 'codex', name: f.bridge.status().name });
     expect(Date.parse(own?.startedAt ?? '')).toBeGreaterThan(1700000000000);
     // An ASB relay proxy row stands for a session on another machine: peers() keeps it, the Codex tools skip it.
-    const placeholder = Bun.spawn(['/usr/bin/cat'], { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' });
+    const placeholder = Bun.spawn(['/bin/cat'], { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' });
     const proxy = await inbox(join(f.root, 's'), () => {}, `${placeholder.pid}.sock`);
     try {
       expect(proxy.address).toBe(peerAddress(join(f.root, 's', `${placeholder.pid}.sock`)));
@@ -1009,7 +1011,7 @@ const remoteSession = (sessionId = randomUUID()) => ({ machineId: 'b'.repeat(16)
   name: 'codex-task', agent: 'codex', status: 'idle', remoteControl: false });
 const runtimeDir = () => z.string().parse(process.env.XDG_RUNTIME_DIR);
 
-posix('list_sessions adds the sessions on other machines after the local ones, and only the local ones without an engine', async () => {
+linux('list_sessions adds the sessions on other machines after the local ones, and only the local ones without an engine', async () => {
   const f = await fixture();
   const client = new Client({ name: 'list-test', version: '1.0.0' });
   const caller = randomUUID();
@@ -1030,7 +1032,7 @@ posix('list_sessions adds the sessions on other machines after the local ones, a
   } finally { engine.close(); await client.close(); await f.close(); }
 });
 
-posix('a send to a remote session goes to the engine with the relay body, and each refusal reason has its text', async () => {
+linux('a send to a remote session goes to the engine with the relay body, and each refusal reason has its text', async () => {
   const f = await fixture();
   const remote = remoteSession();
   let reply: unknown = { ok: true, outcome: 'socket-written' };
@@ -1072,7 +1074,7 @@ posix('a send to a remote session goes to the engine with the relay body, and ea
   } finally { engine.close(); await f.close(); }
 });
 
-posix('a remote send records the proxy row address, so a receipt through the proxy row updates it', async () => {
+linux('a remote send records the proxy row address, so a receipt through the proxy row updates it', async () => {
   const f = await fixture();
   const remote = remoteSession();
   const engine = fakeEngine(runtimeDir(), route => route === '/api/relay/remote-peers' ? { peers: [remote] }

@@ -15,23 +15,23 @@ posix('the engine runtime needs a private folder, a 0600 file with exactly its k
   const file = join(root, 'asb', 'service.json');
   const write = (value: unknown, mode = 0o600) => { writeFileSync(file, JSON.stringify(value), { mode }); chmodSync(file, mode); };
   try {
-    expect(engineRuntime(env)).toBeNull();
+    expect(engineRuntime(env, 'linux')).toBeNull();
     mkdirSync(join(root, 'asb'), { mode: 0o700 });
-    expect(engineRuntime(env)).toBeNull();
+    expect(engineRuntime(env, 'linux')).toBeNull();
     write(good);
-    expect(engineRuntime(env)).toEqual(good);
+    expect(engineRuntime(env, 'linux')).toEqual(good);
     write(good, 0o644);
-    expect(engineRuntime(env)).toBeNull();
+    expect(engineRuntime(env, 'linux')).toBeNull();
     for (const value of [{ ...good, extra: 1 }, { ...good, schema: 2 }, { ...good, port: 0 }, { ...good, sourceToken: 'E'.repeat(64) },
       { ...good, pid: 2147483647 }, { ...good, pid: -1 }, 'not an object']) {
       write(value);
-      expect(engineRuntime(env)).toBeNull();
+      expect(engineRuntime(env, 'linux')).toBeNull();
     }
     writeFileSync(file, '{');
-    expect(engineRuntime(env)).toBeNull();
+    expect(engineRuntime(env, 'linux')).toBeNull();
     write(good);
     chmodSync(join(root, 'asb'), 0o755);
-    expect(engineRuntime(env)).toBeNull();
+    expect(engineRuntime(env, 'linux')).toBeNull();
     chmodSync(join(root, 'asb'), 0o700);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -59,7 +59,7 @@ posix('engine requests send the source token, the local Host, Origin and JSON on
   let answer: unknown = { peers: [] };
   const engine = fakeEngine(root, () => answer);
   try {
-    const runtime = engineRuntime({ XDG_RUNTIME_DIR: root })!;
+    const runtime = engineRuntime({ XDG_RUNTIME_DIR: root }, 'linux')!;
     const origin = `http://127.0.0.1:${runtime.port}`;
     expect(await engineRequest(runtime, '/api/relay/homes')).toEqual({ peers: [] });
     await engineRequest(runtime, '/api/relay/send', { method: 'POST', body: { a: 1 } });

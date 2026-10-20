@@ -52,7 +52,8 @@ async function fixture(t, mode = 'desktop', { onScan } = {}) {
     if (request.method === 'POST' && request.url.startsWith('/api/sources')) posts.push({ route: request.url, revision: request.headers['if-match'] });
   });
   const command = async (args, { stdin, shell = false, extraEnv = {} } = {}) => {
-    const child = spawn(shell ? launcher : process.execPath, shell ? ['agent', ...args] : [script, ...args],
+    // As scripts/asb.mjs does: Node.js 22 prints the SQLite ExperimentalWarning on stderr.
+    const child = spawn(shell ? launcher : process.execPath, shell ? ['agent', ...args] : ['--disable-warning=ExperimentalWarning', script, ...args],
       { env: { ...env, ...extraEnv }, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';

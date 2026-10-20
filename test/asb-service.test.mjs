@@ -51,7 +51,8 @@ async function fixture(t) {
   await mkdir(path.join(home, 'bin'));
   await writeFile(path.join(home, 'bin/systemctl'), `#!${process.execPath}\nconst fs = require('node:fs');\nconst args=process.argv.slice(2);\nfs.appendFileSync(process.env.ASB_SYSTEMCTL_LOG, JSON.stringify(args)+'\\n');\nif (process.env.ASB_SYSTEMCTL_FAIL && args.includes(process.env.ASB_SYSTEMCTL_FAIL)) process.exit(1);\nif (args.includes('is-active')) console.log('active');\nif (args.includes('show')) console.log('1');\n`, { mode: 0o755 });
   const launch = (args, extra = {}, program = process.execPath) => {
-    const child = spawn(program, args, { env: { ...env, ...extra }, stdio: ['ignore', 'pipe', 'pipe'] });
+    // As scripts/asb.mjs does: Node.js 22 prints the SQLite ExperimentalWarning on stderr.
+    const child = spawn(program, program === process.execPath ? ['--disable-warning=ExperimentalWarning', ...args] : args, { env: { ...env, ...extra }, stdio: ['ignore', 'pipe', 'pipe'] });
     children.push(child);
     child.output = '';
     child.errors = '';
