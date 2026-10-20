@@ -181,6 +181,7 @@ A card from another machine shows that machine's name in the bottom line. It doe
 Claude Code sessions and Codex tasks on one machine can message the sessions on the other machines of the group. Each machine needs Bun on the `PATH` of its ASB engine; a Codex task also needs ASB Bridge. The engine starts its message relay by itself while the group has at least one other machine, and stops it when this machine is alone or leaves the group.
 
 - In Claude Code, `/list-agents` shows each session of another machine as `<machine>-<session>`, for example `laptop-codex-fix-tests-3f`. Ask Claude to message it as usual.
+- For each Claude profile, **Remote Claude sessions** in Preferences > Profiles sets how Claude reaches Claude sessions on other machines. Claude Remote Control works per session: with **Automatic** or **Claude Remote Control only**, a local session that is not on Remote Control does not see a remote Claude session that ASB leaves out.
 - In Codex, `list_sessions` shows the other machines' sessions after the local ones, with `remote: true` and `machine`. Send to one with `send_message` by its `sessionId`.
 - A reply comes back the same way: the receiving session sees the sender under the name of the sending machine.
 - A message to a machine that is offline, or to a session that has ended, is refused at once with a short reason, for example `laptop is not reachable.`. ASB keeps no queue: send the message again when the machine is back.
@@ -223,6 +224,7 @@ Automatic refresh keeps unsaved edits and an **Add** draft. If another client ch
 | Session folder (Claude) | That app profile's folder, such as `~/.config/Claude-Work`, with `claude-code-sessions` or `Cache`. |
 | Open with | The supported installed launcher that opens this profile. Default sources can use the default app link handler. |
 | Transcript folder (Claude) | That profile's local transcript folder; empty uses `~/.claude/projects`. |
+| Remote Claude sessions (Claude) | How Claude in this profile reaches Claude sessions on the other machines of the group: **Automatic** (through ASB, unless both machines use Claude Remote Control), **Through ASB** (always through ASB), or **Claude Remote Control only** (ASB adds no Claude sessions of other machines to this profile; Codex tasks of other machines stay). |
 | Enabled | Include this source in ASB reads and the chat list. |
 
 The default Codex, Claude, and OpenCode sources can be edited or disabled, but not removed. **Remove** unregisters an additional source. Disable and Remove do not delete source files or saved ASB attention, pins, unread marks, and settings. One store cannot be added twice. A missing or failed source does not hide other profiles.

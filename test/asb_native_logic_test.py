@@ -192,6 +192,7 @@ class ProfileSyncChecks(unittest.TestCase):
         editor.enabled = self.control(True, "get_active", "set_active")
         editor.show_marker = self.control(True, "get_active", "set_active")
         editor.source_color = self.control("#8296b4", "get_rgba", "set_rgba")
+        editor.remote_claude, editor.remote_claude_note = self.control(0, "get_selected", "set_selected"), Mock()
         for name in ("message", "form", "form_title", "source_id", "source_color_hex", "source_status",
                      "add_button", "save_button", "remove_button", "cancel_button", "reload_button"):
             setattr(editor, name, Mock())
@@ -216,6 +217,7 @@ class ProfileSyncChecks(unittest.TestCase):
         editor.enabled.set_active(False)
         editor.show_marker.set_active(False)
         editor.source_color.set_rgba("#404040")
+        editor.remote_claude.set_selected(2)
         return editor.form_values()
 
     def test_external_add_reuses_selection_and_keeps_every_raw_dirty_field(self):
@@ -238,6 +240,19 @@ class ProfileSyncChecks(unittest.TestCase):
         self.assertFalse(editor.conflict)
         editor.observe_revision(self.REV_B)
         self.request.assert_called_once()
+
+    def test_remote_claude_choice_loads_clean_makes_the_form_dirty_and_is_saved(self):
+        editor = self.editor()
+        editor.render_sources("main")
+        claude = self.source(id="claude", provider="claude-desktop-code", label="Claude", remoteClaude="bridge")
+        editor.set_form(claude)
+        self.assertEqual(editor.remote_claude.get_selected(), 1)
+        self.assertFalse(editor.is_dirty())
+        editor.remote_claude.set_selected(2)
+        self.assertTrue(editor.is_dirty())
+        editor.provider.set_selected(1)
+        editor.save_source()
+        self.assertEqual(self.request.call_args.args[5]["source"]["remoteClaude"], "native")
 
     def test_clean_selected_source_syncs_and_get_can_finish_after_selection_changes(self):
         editor = self.editor()
@@ -1904,6 +1919,21 @@ class NativeLogicChecks(unittest.TestCase):
                 fields = dict(provider="claude-desktop-code", name="Claude", data_dir="/profile", launcher="", enabled=True)
                 body(**{**fields, key: value})
 
+    def test_source_form_sends_remote_claude_only_for_claude_and_only_known_values(self):
+        body = SCOPE["source_form_body"]
+        for value in ("auto", "bridge", "native"):
+            with self.subTest(value=value):
+                self.assertEqual(body("claude-desktop-code", "Claude", "/profile", "", True, remote_claude=value)["source"]["remoteClaude"], value)
+        self.assertNotIn("remoteClaude", body("claude-desktop-code", "Claude", "/profile", "", True)["source"])
+        self.assertNotIn("remoteClaude", body("codex", "Codex", "/profile", "", True, remote_claude="native")["source"])
+        for value in ("Auto", "", 1, True, {}, "remote"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "Automatic, Through ASB, or Claude Remote Control only"):
+                body("claude-desktop-code", "Claude", "/profile", "", True, remote_claude=value)
+        edit_values = SCOPE["source_edit_values"]
+        self.assertEqual(edit_values({"id": "claude"})[-1], "auto")
+        self.assertEqual(edit_values({"id": "claude", "remoteClaude": "native"})[-1], "native")
+        self.assertNotEqual(edit_values({"id": "claude"}), edit_values({"id": "claude", "remoteClaude": "bridge"}))
+
     def test_only_the_default_opencode_source_is_accepted_and_its_editor_is_fixed(self):
         body = SCOPE["source_form_body"]
         self.assertEqual(body("opencode", " Work ", "/data/opencode", "", False, "opencode", "/ignored", "#899e91", True),
@@ -1916,9 +1946,10 @@ class NativeLogicChecks(unittest.TestCase):
         window = object.__new__(SourcesEditor)
         window.owner = SimpleNamespace(rgba=lambda color: color, hex_color=lambda color: color)
         for name in ("form_title", "source_id", "provider", "name", "data_dir", "launcher", "projects_dir", "enabled",
-                     "show_marker", "source_color", "source_color_hex", "source_status", "provider_text"):
+                     "show_marker", "source_color", "source_color_hex", "source_status", "provider_text",
+                     "remote_claude", "remote_claude_note"):
             setattr(window, name, Mock())
-        window.provider.get_selected.return_value = 0
+        window.provider.get_selected.return_value = window.remote_claude.get_selected.return_value = 0
         window.source_color.get_rgba.return_value = "#899e91"
         window.transcript_widgets, window.choose_buttons = [Mock()], [Mock(), Mock()]
         window.update_controls = Mock()
@@ -1962,6 +1993,7 @@ class NativeLogicChecks(unittest.TestCase):
             setattr(window, name, Mock(get_text=Mock(return_value=value)))
         window.enabled = Mock(get_active=Mock(return_value=True))
         window.show_marker = Mock(get_active=Mock(return_value=False))
+        window.remote_claude = Mock(get_selected=Mock(return_value=0))
         for name in ("message", "table", "form", "add_button", "save_button", "remove_button", "cancel_button", "reload_button"):
             setattr(window, name, Mock())
         window.render_sources, window.cancellable = Mock(), Mock()
@@ -2097,7 +2129,8 @@ class NativeLogicChecks(unittest.TestCase):
         window = object.__new__(SourcesEditor)
         window.owner = SimpleNamespace(rgba=lambda color: color, hex_color=lambda color: color)
         for name in ("form_title", "source_id", "provider", "name", "data_dir", "launcher", "projects_dir", "enabled",
-                     "show_marker", "source_color", "source_color_hex", "source_status", "provider_text"):
+                     "show_marker", "source_color", "source_color_hex", "source_status", "provider_text",
+                     "remote_claude", "remote_claude_note"):
             setattr(window, name, Mock())
         window.source_color.get_rgba.return_value = "#404040"
         window.provider_changed = window.update_controls = Mock()
@@ -2114,6 +2147,11 @@ class NativeLogicChecks(unittest.TestCase):
             window.show_marker.set_active.assert_called_with(True)
             window.set_form({"provider": "codex"})
             window.show_marker.set_active.assert_called_with(True)
+            # Remote Claude sessions follows the saved value; a missing or unknown value is Automatic.
+            for remote, index in (("native", 2), ("bridge", 1), (None, 0), ("remote", 0), ({}, 0)):
+                source = {"id": "claude", "provider": "claude-desktop-code", "label": "Claude"}
+                window.set_form(source if remote is None else {**source, "remoteClaude": remote})
+                window.remote_claude.set_selected.assert_called_with(index)
 
     def test_source_http_errors_keep_server_validation_and_post_origin(self):
         import io

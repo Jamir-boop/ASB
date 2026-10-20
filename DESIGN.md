@@ -119,7 +119,7 @@ Use a `Gtk.StackSidebar` on the left at wide widths. An `Adw.Breakpoint` at `max
 
 Machines uses the approved option A: one page like Phone, with the flows open in place. It shows This machine, Other machines (status, ID, and addresses, a dimmed row when offline, and **Remove**), the group phones, and the actions **Add a machine** and **Join a group** or **Leave the group**. The invite panel and the join panel replace the actions row. Remove and Leave ask in an alert with a destructive response. When network access is off, a warning and **Open Phone settings** come first. In custom colors, destructive buttons keep red text.
 
-Profiles embeds the existing source table and editor. Create and load it only on its first selection; section changes and reopening do not reload it. Explicit source actions keep their existing load behavior. Keep form edits across section changes. Add no timer, background source scan, dependency, or backend route. Keep main cards, borders, and scrolling unchanged.
+Profiles embeds the existing source table and editor. Create and load it only on its first selection; section changes and reopening do not reload it. Explicit source actions keep their existing load behavior. Keep form edits across section changes. Add no timer, background source scan, dependency, or backend route. Keep main cards, borders, and scrolling unchanged. Profiles shows **Remote Claude sessions** for Claude profiles (the approved option A): a dropdown under Transcript folder, with a caption note under it that changes with the choice.
 
 ### Session row
 

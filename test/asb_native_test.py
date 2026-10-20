@@ -160,9 +160,10 @@ class WidgetCheck(unittest.TestCase):
         # Exact pixel checks use one font; the font-height test checks other metrics.
         settings.set_property("gtk-font-name", "Cantarell 11")
 
-    def assert_accessible_label(self, widget, expected):
+    def assert_accessible_label(self, widget, expected, prop=None):
         # GTK's exact property check is variadic and is not exposed by PyGObject.
-        error = self.gtk_check(self.capsule_pointer(widget.__gpointer__, None), int(asb.Gtk.AccessibleProperty.LABEL),
+        prop = asb.Gtk.AccessibleProperty.LABEL if prop is None else prop
+        error = self.gtk_check(self.capsule_pointer(widget.__gpointer__, None), int(prop),
                                ctypes.c_char_p(expected.encode()))
         if error:
             message = ctypes.string_at(error).decode()
@@ -301,6 +302,60 @@ class WidgetCheck(unittest.TestCase):
             self.assertFalse(asb.read_layout(path)["showAppPills"])
             window.view_filter.set_selected(1)
             self.assertFalse(asb.read_layout(path)["showAppPills"])
+
+    def test_profiles_show_remote_claude_sessions_only_for_claude_and_save_the_choice(self):
+        requests = []
+        def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None, headers=None):
+            if route != "/api/palette":
+                requests.append((route, callback, method, body))
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                   (asb, "request_async", request)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", copy.deepcopy(FIXTURE),
+                                      theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.present(); self.drain(.2)
+        window.open_preferences(); self.drain(.2)
+        preferences = window.preferences_window
+        preferences.stack.set_visible_child_name("profiles"); self.drain(.1)
+        editor = preferences.profiles_editor
+        sources = [{"id": "codex", "provider": "codex", "label": "Personal", "enabled": True, "builtin": True,
+                    "dataDir": "/example/profiles/codex", "launcher": "", "color": "#8296b4", "showMarker": True,
+                    "sessionCount": 5, "status": "ok"},
+                   {"id": "studio", "provider": "claude-desktop-code", "label": "Studio", "enabled": True,
+                    "dataDir": "/example/profiles/studio", "launcher": "/example/apps/studio.desktop",
+                    "projectsDir": "/example/transcripts", "color": "#b28f80", "showMarker": True,
+                    "sessionCount": 3, "status": "ok", "remoteClaude": "native"}]
+        requests[-1][1]({"sources": sources, "maxSources": 8}, None)
+        transcript, remote = editor.transcript_widgets
+        # The field follows Transcript folder and has the caption, the dropdown, and the note.
+        self.assertIs(transcript.get_next_sibling(), remote)
+        self.assertIs(editor.remote_claude.get_ancestor(asb.Gtk.Box).get_parent(), remote)
+        self.assertIs(remote.get_last_child(), editor.remote_claude_note)
+        self.assert_accessible_label(editor.remote_claude, "Remote Claude sessions")
+        editor.table.select_row(editor.table.get_row_at_index(1)); self.drain(.1)
+        self.assertTrue(remote.get_visible())
+        self.assertEqual(editor.remote_claude.get_selected(), 2)
+        self.assertEqual(editor.remote_claude_note.get_label(), asb.REMOTE_CLAUDE[2][2])
+        self.assertFalse(editor.is_dirty())
+        editor.remote_claude.set_selected(1); self.drain(.05)
+        self.assertEqual(editor.remote_claude_note.get_label(), asb.REMOTE_CLAUDE[1][2])
+        self.assert_accessible_label(editor.remote_claude, asb.REMOTE_CLAUDE[1][2], asb.Gtk.AccessibleProperty.DESCRIPTION)
+        self.assertTrue(editor.is_dirty())
+        editor.save_button.emit("clicked")
+        self.assertEqual((requests[-1][0], requests[-1][2], requests[-1][3]["source"]["remoteClaude"]), ("/api/sources", "POST", "bridge"))
+        requests[-1][1]({"sources": [sources[0], {**sources[1], "remoteClaude": "bridge"}], "maxSources": 8}, None); self.drain(.1)
+        editor.table.select_row(editor.table.get_row_at_index(0)); self.drain(.1)
+        self.assertFalse(remote.get_visible())
+        self.assertEqual(editor.remote_claude.get_selected(), 0)
+        self.assertEqual(editor.remote_claude_note.get_label(), asb.REMOTE_CLAUDE[0][2])
+        editor.save_button.emit("clicked")
+        self.assertEqual((requests[-1][2], requests[-1][3]["source"]["provider"]), ("POST", "codex"))
+        self.assertNotIn("remoteClaude", requests[-1][3]["source"])
+        requests[-1][1]({"sources": sources, "maxSources": 8}, None); self.drain(.1)
 
     def test_preferences_sections_reuse_lazy_profiles_theme_and_narrow_layout(self):
         requests = []

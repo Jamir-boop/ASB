@@ -32,6 +32,10 @@ APP_CHOICES = (("All apps", frozenset()), ("Codex", frozenset({"codex"})), ("Cla
                ("OpenCode", frozenset({"opencode"})), ("Codex and Claude", frozenset({"codex", "claude-desktop-code"})),
                ("Codex and OpenCode", frozenset({"codex", "opencode"})),
                ("Claude and OpenCode", frozenset({"claude-desktop-code", "opencode"})))
+# How Claude in a profile reaches Claude sessions on other machines (`remoteClaude`, plan 9.6).
+REMOTE_CLAUDE = (("auto", "Automatic", "Claude in this profile reaches Claude sessions on other machines through ASB, unless both machines use Claude Remote Control."),
+                 ("bridge", "Through ASB", "Claude in this profile always reaches Claude sessions on other machines through ASB."),
+                 ("native", "Claude Remote Control only", "ASB does not add Claude sessions of other machines to this profile. Codex tasks of other machines stay."))
 SOURCE_COLOR_PRESETS = (("Slate blue", "#8296b4"), ("Clay", "#b28f80"), ("Plum", "#a28caa"), ("Sage", "#899e91"))
 
 
@@ -58,7 +62,8 @@ def app_choice(apps):
     return next((index for index, (_title, choice) in enumerate(APP_CHOICES) if choice == app_filter(apps)), 0)
 
 
-def source_form_body(provider, name, data_dir, launcher, enabled, identity="", projects_dir="", color=None, show_marker=None):
+def source_form_body(provider, name, data_dir, launcher, enabled, identity="", projects_dir="", color=None, show_marker=None,
+                     remote_claude=None):
     # Only the default OpenCode source exists; new sources stay Codex or Claude.
     if provider not in SOURCE_PROVIDERS and not (provider == "opencode" and identity == "opencode") or type(enabled) is not bool:
         raise ValueError("Choose an app and its Enabled setting.")
@@ -90,6 +95,11 @@ def source_form_body(provider, name, data_dir, launcher, enabled, identity="", p
         if type(show_marker) is not bool:
             raise ValueError("Choose the Show profile dot setting.")
         source["showMarker"] = show_marker
+    # Only Claude sources have this setting; the server refuses it for the others.
+    if provider == "claude-desktop-code" and remote_claude is not None:
+        if not isinstance(remote_claude, str) or remote_claude not in {value for value, _title, _note in REMOTE_CLAUDE}:
+            raise ValueError("Remote Claude sessions must be Automatic, Through ASB, or Claude Remote Control only.")
+        source["remoteClaude"] = remote_claude
     return {"source": source}
 
 
@@ -103,7 +113,7 @@ def source_edit_values(source):
     return tuple(source.get(key, default) for key, default in (
         ("id", ""), ("provider", "codex"), ("label", ""), ("dataDir", ""), ("launcher", ""),
         ("projectsDir", ""), ("enabled", True), ("color", SOURCE_COLOR_PRESETS[0][1]),
-        ("showMarker", True), ("builtin", False)))
+        ("showMarker", True), ("builtin", False), ("remoteClaude", "auto")))
 
 
 def refresh_interval(dashboard):
@@ -1376,6 +1386,25 @@ class AppSourcesEditor(Gtk.Box):
                 line.append(self.provider_text)
             if widget is self.projects_dir:
                 self.transcript_widgets = [field]
+        # Claude only, like Transcript folder: the note under the choice says what it does.
+        self.remote_claude = Gtk.DropDown.new_from_strings([title for _value, title, _note in REMOTE_CLAUDE])
+        self.remote_claude.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION],
+                                           ["Remote Claude sessions", REMOTE_CLAUDE[0][2]])
+        caption = label("Remote Claude sessions")
+        caption.set_mnemonic_widget(self.remote_claude)
+        field = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        field.append(caption)
+        line = Gtk.Box(spacing=8)
+        self.remote_claude.set_hexpand(True)
+        line.append(self.remote_claude)
+        field.append(line)
+        self.remote_claude_note = label(REMOTE_CLAUDE[0][2], "caption")
+        self.remote_claude_note.set_wrap(True)
+        self.remote_claude_note.set_xalign(0)
+        field.append(self.remote_claude_note)
+        self.form.append(field)
+        self.transcript_widgets.append(field)
+        self.remote_claude.connect("notify::selected", self.remote_claude_changed)
         self.source_color = Gtk.ColorDialogButton.new(Gtk.ColorDialog(title="Profile color", with_alpha=False))
         for accessible in (self.source_color, self.source_color.get_first_child()):
             accessible.update_property([Gtk.AccessibleProperty.LABEL], ["Profile color"])
@@ -1437,10 +1466,17 @@ class AppSourcesEditor(Gtk.Box):
         self.source_color_hex.set_label(self.owner.hex_color(self.source_color.get_rgba()))
         self.form_changed()
 
+    def remote_claude_changed(self, *_args):
+        note = REMOTE_CLAUDE[self.remote_claude.get_selected()][2]
+        self.remote_claude_note.set_label(note)
+        self.remote_claude.update_property([Gtk.AccessibleProperty.DESCRIPTION], [note])
+        self.form_changed()
+
     def form_values(self):
         return (self.provider.get_selected(), self.name.get_text(), self.data_dir.get_text(),
                 self.launcher.get_text(), self.projects_dir.get_text(), self.enabled.get_active(),
-                self.owner.hex_color(self.source_color.get_rgba()), self.show_marker.get_active())
+                self.owner.hex_color(self.source_color.get_rgba()), self.show_marker.get_active(),
+                self.remote_claude.get_selected())
 
     def is_dirty(self):
         baseline = getattr(self, "form_baseline", None)
@@ -1533,6 +1569,8 @@ class AppSourcesEditor(Gtk.Box):
             entry.set_text(source.get(key, ""))
         self.enabled.set_active(source.get("enabled", True))
         self.show_marker.set_active(source.get("showMarker", True))
+        self.remote_claude.set_selected(next((index for index, (value, _title, _note) in enumerate(REMOTE_CLAUDE)
+                                              if value == source.get("remoteClaude", "auto")), 0))
         try:
             color = validate_source_color(source.get("color", SOURCE_COLOR_PRESETS[0][1]))
         except ValueError:
@@ -1710,7 +1748,8 @@ class AppSourcesEditor(Gtk.Box):
             body = source_form_body(self.fixed_provider or SOURCE_PROVIDERS[self.provider.get_selected()], self.name.get_text(),
                                     self.data_dir.get_text(), self.launcher.get_text(), self.enabled.get_active(),
                                     self.editing_id, self.projects_dir.get_text(),
-                                    self.owner.hex_color(self.source_color.get_rgba()), self.show_marker.get_active())
+                                    self.owner.hex_color(self.source_color.get_rgba()), self.show_marker.get_active(),
+                                    remote_claude=REMOTE_CLAUDE[self.remote_claude.get_selected()][0])
         except ValueError as error:
             self.message.set_label(str(error))
             return
