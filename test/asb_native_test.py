@@ -1898,6 +1898,88 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(window.wide_controls)
         self.assertLessEqual(window.drawer_only.get_width(), window.drawer_only.measure(asb.Gtk.Orientation.HORIZONTAL, -1)[1])
 
+    def test_board_moves_only_changed_cards_sets_tooltips_before_rooting_and_shares_badge_styles(self):
+        clay = dict(asb.SOURCE_COLOR_PRESETS)["Clay"]
+        dashboard = mock_dashboard()
+        for row in dashboard["threads"][:6]:
+            row.update(sourceCount=2, sourceColor=clay)
+        patcher = patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(1080, 248)
+        window.present(); self.drain(.5)
+        self.assertEqual(window.view, "compact")
+        # A view change sets the card tooltips while the new controls have no root, so GTK makes no tooltip query.
+        roots, update = {}, window.update_card_actions
+        def record(widget):
+            button = getattr(widget, "asb_read_button", None)
+            if button is not None:
+                roots.setdefault(widget.asb_thread["id"], button.get_root())
+            return update(widget)
+        with patch.object(window, "update_card_actions", record):
+            window.view_filter.set_selected(1); self.drain(1.5)
+        self.assertEqual(roots.keys(), window.focus_widgets.keys())
+        self.assertEqual(set(roots.values()), {None})
+        self.assertEqual({widget.asb_pin_button.get_tooltip_text() for widget in window.focus_widgets.values()}, {"Pin in ASB"})
+        # The board badges share one style class, and they paint the color of the Profiles preset.
+        displayed = asb.display_source_color(clay, window.profile_surfaces)
+        badges = [window.focus_widgets[row["id"]].asb_source_badge for row in dashboard["threads"][:6]]
+        self.assertEqual([[name for name in badge.get_css_classes() if name.startswith("asb-badge")] for badge in badges],
+                         [["asb-badge-" + displayed[1:]]] * len(badges))
+        self.settle(window)
+        for badge in badges:
+            snapshot = asb.Gtk.Snapshot()
+            asb.Gtk.WidgetPaintable.new(badge).snapshot(snapshot, badge.get_width(), badge.get_height())
+            renderer = asb.Gsk.CairoRenderer()
+            renderer.realize(None)
+            downloader = asb.Gdk.TextureDownloader.new(renderer.render_texture(snapshot.to_node(), None))
+            downloader.set_format(asb.Gdk.MemoryFormat.R8G8B8A8)
+            data, stride = downloader.download_bytes()
+            renderer.unrealize()
+            center = (badge.get_height() // 2) * stride + (badge.get_width() // 2) * 4
+            painted = data.get_data()[center:center + 3]
+            self.assertTrue(all(abs(value - int(displayed[1 + 2 * index:3 + 2 * index], 16)) <= 1
+                                for index, value in enumerate(painted)), (bytes(painted).hex(), displayed))
+        # A reorder to the top moves only the cards that change column or order; every card keeps its widget.
+        hooks = list(window.popover_hooks)
+        widgets = dict(window.focus_widgets)
+        parents = {identity: widget.get_parent() for identity, widget in widgets.items()}
+        last = window.row_order[-1]
+        removed = []
+        for listing in window.list_columns:
+            listing.remove = lambda widget, listing=listing: (removed.append(widget), asb.Gtk.ListBox.remove(listing, widget))[1]
+        window.dashboard["threads"] = [{**row, "pinned": True, "pinIndex": 0} if row["id"] == last else row
+                                       for row in window.dashboard["threads"]]
+        window.render(); self.drain(.2)
+        for listing in window.list_columns:
+            del listing.remove
+        self.assertEqual(window.row_order[0], last)
+        self.assertEqual(window.focus_widgets, widgets)
+        columns = [listing for listing in window.list_columns if listing.get_parent()]
+        for number, listing in enumerate(columns):
+            cards, card = [], listing.get_row_at_index(0)
+            while card is not None:
+                cards.append(card.asb_focus_key)
+                card = listing.get_row_at_index(len(cards))
+            self.assertEqual(cards, window.row_order[number * window.capacity:(number + 1) * window.capacity])
+        moved = {widget.asb_focus_key for widget in removed}
+        # The new first card and the last card of each full column move; all other cards stay in their column.
+        self.assertIn(last, moved)
+        self.assertLessEqual(len(moved), len(columns) + 1)
+        self.assertTrue(all(widgets[identity].get_parent() is parents[identity] for identity in widgets.keys() - moved))
+        # The render puts the popover hooks back, and a popover that opens after it still blocks the numbers.
+        self.assertEqual(len(window.popover_hooks), len(hooks))
+        quiet = asb.Gtk.Popover(autohide=False, child=asb.Gtk.Label(label="Synthetic popup after a render"))
+        quiet.set_parent(window.menu_button)
+        quiet.popup(); self.drain(.2)
+        self.assertIn(quiet, window.open_popovers)
+        self.assertTrue(window.numbers_blocked())
+        quiet.popdown(); quiet.unparent(); self.drain()
+        window.close(); self.drain()
+        self.assertEqual(window.popover_hooks, [])
+
     def test_scrollbar_below_viewport_sets_capacity(self):
         settings = asb.Gtk.Settings.get_default()
         self.addCleanup(settings.reset_property, "gtk-overlay-scrolling")

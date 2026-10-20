@@ -80,6 +80,9 @@ class Box:
     def get_first_child(self):
         return self.children[0] if self.children else None
 
+    def get_row_at_index(self, index):
+        return self.children[index] if index < len(self.children) else None
+
     def get_next_sibling(self):
         siblings = self.parent.children
         index = siblings.index(self) + 1
@@ -2262,40 +2265,56 @@ class NativeLogicChecks(unittest.TestCase):
                 widget.set_child.assert_not_called()
 
     def test_profile_marker_owns_safe_css_and_clamps_only_the_display_color(self):
+        window = object.__new__(Window)
+        window.profile_surfaces, window.badge_css, window.badge_colors = ("#0f0f0f", "#242424"), Mock(), {}
         marker = object.__new__(Marker)
-        marker.owner = SimpleNamespace(profile_surfaces=("#0f0f0f", "#242424"))
-        marker.style_provider, marker.set_visible = Mock(), Mock()
+        marker.owner, marker.color_class = window, ""
+        marker.set_visible, marker.add_css_class, marker.remove_css_class = Mock(), Mock(), Mock()
+        def displayed():
+            # The badge has one color class, and the one shared provider has the rules of that class.
+            css = window.badge_css.load_from_string.call_args.args[0]
+            return SCOPE["re"].search(r"\.asb-source-badge\." + marker.color_class + r" \{ background: (#[0-9a-f]{6});", css)[1]
         marker.set_color("#B28F80")
-        self.assertEqual(marker.configured_color, "#b28f80")
-        css = marker.style_provider.load_from_string.call_args.args[0]
-        self.assertIn("background: #b28f80", css)
-        self.assertIn("border-color: #0f0f0f", css)
-        self.assertIn("border-color: #242424", css)
-        marker.style_provider.load_from_string.reset_mock()
+        self.assertEqual((marker.configured_color, marker.color_class), ("#b28f80", "asb-badge-b28f80"))
+        marker.add_css_class.assert_called_once_with("asb-badge-b28f80")
+        css = window.badge_css.load_from_string.call_args.args[0]
+        self.assertIn(".asb-source-badge.asb-badge-b28f80 { background: #b28f80; border-color: #0f0f0f; }", css)
+        self.assertIn(".asb-session:hover .asb-source-badge.asb-badge-b28f80, "
+                      ".asb-session:focus-within .asb-source-badge.asb-badge-b28f80 { border-color: #242424; }", css)
+        window.badge_css.load_from_string.reset_mock()
+        marker.add_css_class.reset_mock()
         marker.set_color("#b28f80")
-        marker.style_provider.load_from_string.assert_not_called()
-        marker.owner.profile_surfaces = ("#606060", "#707070")
+        window.badge_css.load_from_string.assert_not_called()
+        marker.add_css_class.assert_not_called()
+        # set_palette clears the shared rules when the surfaces change.
+        window.badge_colors.clear()
+        window.profile_surfaces = ("#606060", "#707070")
         marker.set_color(marker.configured_color)
-        css = marker.style_provider.load_from_string.call_args.args[0]
-        displayed = SCOPE["re"].search(r"background: (#[0-9a-f]{6})", css)[1]
-        self.assertNotEqual(displayed, marker.configured_color)
+        marker.remove_css_class.assert_called_once_with("asb-badge-b28f80")
+        self.assertNotEqual(displayed(), marker.configured_color)
         self.assertEqual(marker.configured_color, "#b28f80")
-        for surface in marker.owner.profile_surfaces:
-            self.assertGreaterEqual(SCOPE["contrast"](displayed, surface), 3)
-        marker.owner.profile_surfaces = ("#0f0f0f", "#242424")
+        for surface in window.profile_surfaces:
+            self.assertGreaterEqual(SCOPE["contrast"](displayed(), surface), 3)
+        window.badge_colors.clear()
+        window.profile_surfaces = ("#0f0f0f", "#242424")
+        names = []
         for color in ("#000000", "#404040"):
             marker.set_color(color)
             self.assertEqual(marker.configured_color, color)
-            css = marker.style_provider.load_from_string.call_args.args[0]
-            displayed = SCOPE["re"].search(r"background: (#[0-9a-f]{6})", css)[1]
-            self.assertNotEqual(displayed, marker.configured_color)
-            for surface in marker.owner.profile_surfaces:
-                self.assertGreaterEqual(SCOPE["contrast"](displayed, surface), 3)
+            self.assertNotEqual(displayed(), marker.configured_color)
+            for surface in window.profile_surfaces:
+                self.assertGreaterEqual(SCOPE["contrast"](displayed(), surface), 3)
+            names.append(marker.color_class)
+        # One provider holds the rules of every badge color.
+        css = window.badge_css.load_from_string.call_args.args[0]
+        self.assertTrue(all(".asb-source-badge." + name + " {" in css for name in names))
+        window.badge_css.load_from_string.reset_mock()
         for invalid in ("", None, False, "#8296b4} button{opacity:0", "#12345g"):
             marker.set_color(invalid)
-            self.assertEqual(marker.configured_color, "")
+            self.assertEqual((marker.configured_color, marker.color_class), ("", ""))
             marker.set_visible.assert_called_with(False)
-            marker.style_provider.load_from_string.assert_called_with("")
+        marker.remove_css_class.assert_called_with(names[-1])
+        window.badge_css.load_from_string.assert_not_called()
         for _name, preset in SCOPE["SOURCE_COLOR_PRESETS"]:
             self.assertEqual(SCOPE["validate_source_color"](preset), preset)
 
@@ -2726,6 +2745,7 @@ class NativeLogicChecks(unittest.TestCase):
     def test_tooltip_palette_invalidation_clears_visible_and_hidden_row_cache(self):
         window = object.__new__(Window)
         window.css, window.add_css_class, window.remove_css_class = Mock(), Mock(), Mock()
+        window.badge_css, window.badge_colors = Mock(), {}
         palette = {"background": "#0f0f0f", "text": "#f6f5f4", "muted": "#aaaaaa", "accent": "#cccccc", "divider": "#444444"}
         window.native_colors = lambda: palette
         rows = {name: SimpleNamespace(asb_thread={"id": name}, asb_source_badge=Mock(),
@@ -3134,7 +3154,7 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertIsNone(window.scroll_target)
             adjustment.upper = 210
             window.scroll_horizontal(wheel, 0, 1)
-            window.events, window.get_display, window.css = Mock(), Mock(), object()
+            window.events, window.get_display, window.css, window.badge_css = Mock(), Mock(), object(), object()
             window.timer = window.clock_timer = window.geometry_idle = window.notice_timer = None
             window.surface_signal = window.context_menu = None
             window.focus_widgets, window.row_cache = {}, {}
@@ -3368,9 +3388,9 @@ class NativeLogicChecks(unittest.TestCase):
         window.focus_key = lambda: "a"
         window.search.query = "Unique match"
         window.render()
-        # The repack moved the focused row, so render keeps the focus on it before GTK can move it.
-        window.set_focus.assert_called_once_with(widgets["a"])
-        window.set_focus.reset_mock()
+        # The repack takes the other rows out and leaves the focused row in its place, so render does not set the focus again.
+        self.assertEqual(window.list_body.children[0].children, [widgets["a"]])
+        window.set_focus.assert_not_called()
         callback, *args = SCOPE["GLib"].idle_add.call_args.args
         window.get_focus = lambda: window.search
         window.focus_changed()
@@ -3399,7 +3419,7 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(released, [widgets["b"]])
         self.assertNotIn("b", window.row_cache)
         self.assertFalse(window.open_errors)
-        window.events, window.get_display, window.css = Mock(), Mock(), object()
+        window.events, window.get_display, window.css, window.badge_css = Mock(), Mock(), object(), object()
         window.timer = window.clock_timer = window.geometry_idle = window.notice_timer = None
         window.surface_signal = None
         with patch.dict(SCOPE, {"Gtk": SimpleNamespace(StyleContext=Mock())}):
@@ -3430,15 +3450,17 @@ class NativeLogicChecks(unittest.TestCase):
                      "set_sensitive", "set_tooltip_text", "update_property", "update_state"):
             setattr(widget, name, Mock())
         marker = object.__new__(Marker)
-        marker.owner, marker.style_provider, marker.set_visible = window, Mock(), Mock()
+        marker.owner, marker.color_class, marker.set_visible = window, "", Mock()
+        marker.add_css_class, marker.remove_css_class = Mock(), Mock()
         widget.asb_source_badge = marker
         window.row_cache, window.focus_widgets = {"a": widget}, {}
         window.css, window.add_css_class, window.remove_css_class = Mock(), Mock(), Mock()
+        window.badge_css, window.badge_colors = Mock(), {}
         palette = {"background": "#0f0f0f", "text": "#f6f5f4", "muted": "#aaaaaa", "accent": "#cccccc", "divider": "#444444"}
         window.native_colors = lambda: palette
         window.set_palette(None)
         window.set_palette({**palette, "background": "#202020"})
-        self.assertIn("border-color: #202020", marker.rendered_css)
+        self.assertIn("border-color: #202020", window.badge_css.load_from_string.call_args.args[0])
         self.assertFalse(window.focus_widgets)
         gtk = SimpleNamespace(ListBox=Box, Box=lambda **_kwargs: Mock(), Image=lambda **_kwargs: Mock(),
                               Overlay=lambda **_kwargs: Mock(), Button=lambda **_kwargs: Mock(),
@@ -3600,7 +3622,8 @@ class NativeLogicChecks(unittest.TestCase):
             window.render()
             self.assertEqual(window.row_order, ["b", "a"])
             self.assertEqual(columns[0].children, [widgets["b"], widgets["a"]])
-            self.assertEqual(operations, {"remove": 2, "insert": 2, "append": 0})
+            # Only one row of the swap moves: the focused row "a".
+            self.assertEqual(operations, {"remove": 1, "insert": 1, "append": 0})
             self.assertEqual(window.list_body.children, columns)
             window.list_body.remove.assert_not_called()
             window.list_body.append.assert_not_called()
@@ -3618,6 +3641,100 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertEqual(window.row_order, ["a", "b"])
             window.set_focus.assert_not_called()
             self.assertIs(focus[0], search)
+
+    def test_column_moves_keep_the_longest_ordered_run_and_give_the_target(self):
+        moves = SCOPE["column_moves"]
+        def apply(current, target):
+            removals, inserts = moves(current, target)
+            column = [card for card in current if card not in removals]
+            self.assertEqual([index for index, _card in inserts], sorted(index for index, _card in inserts))
+            for index, card in inserts:
+                column.insert(index, card)
+            self.assertEqual(column, list(target))
+            return len(removals), len(inserts)
+        for current, target, expected in (("abcd", "abcd", (0, 0)), ("abcd", "dabc", (1, 1)), ("abcd", "bacd", (1, 1)),
+                                          ("abcd", "xabc", (1, 1)), ("abc", "ac", (1, 0)), ("", "ab", (0, 2)), ("ab", "", (2, 0)),
+                                          ("abcde", "edcba", (4, 4)), ("", "", (0, 0))):
+            with self.subTest(current=current, target=target):
+                self.assertEqual(apply(list(current), list(target)), expected)
+        random = __import__("random").Random(4629)
+        for _case in range(200):
+            cards = random.sample(range(40), random.randint(0, 20))
+            current = random.sample(cards, random.randint(0, len(cards)))
+            target = random.sample(cards, random.randint(0, len(cards)))
+            removals, inserts = apply(current, target)
+            # The cards that stay are a longest run of current that has the target order.
+            place = {card: index for index, card in enumerate(target)}
+            kept = [place[card] for card in current if card in place]
+            longest = [1] * len(kept)
+            for later in range(len(kept)):
+                for earlier in range(later):
+                    if kept[earlier] < kept[later]:
+                        longest[later] = max(longest[later], longest[earlier] + 1)
+            self.assertEqual(inserts, len(target) - max(longest, default=0))
+            self.assertEqual(removals, len(current) - max(longest, default=0))
+
+    def test_render_takes_the_popover_hooks_off_and_puts_them_back_once(self):
+        window = object.__new__(Window)
+        gobject = SimpleNamespace(add_emission_hook=Mock(side_effect=lambda *_args, ids=itertools.count(10): next(ids)), remove_emission_hook=Mock())
+        window.closed, window.popover_hooks, window.popover_visibility = False, [("map", 1), ("unmap", 2)], Mock()
+        seen = []
+        def board(*args, **kwargs):
+            seen.append((list(window.popover_hooks), args, kwargs))
+            if len(seen) == 1:
+                window.render("nested")
+            return "done"
+        window.render_board = board
+        with patch.dict(SCOPE, {"GObject": gobject, "Gtk": SimpleNamespace(Popover="Popover")}):
+            self.assertEqual(window.render("a", reveal_focus=True), "done")
+            # No hook is on inside a render, also in a nested one, and the hooks come back once.
+            self.assertEqual(seen, [([], ("a",), {"reveal_focus": True}), ([], ("nested",), {})])
+            self.assertEqual([call.args[:2] for call in gobject.remove_emission_hook.call_args_list], [("Popover", "map"), ("Popover", "unmap")])
+            self.assertEqual(gobject.add_emission_hook.call_count, 2)
+            self.assertEqual(window.popover_hooks, [("map", 10), ("unmap", 11)])
+            window.render_board = Mock(side_effect=RuntimeError("render failed"))
+            with self.assertRaises(RuntimeError):
+                window.render()
+            self.assertEqual(window.popover_hooks, [("map", 12), ("unmap", 13)])
+            # A window that closes in a render gets no hooks back.
+            window.render_board = lambda: setattr(window, "closed", True)
+            window.render()
+            self.assertEqual((window.popover_hooks, gobject.add_emission_hook.call_count), ([], 4))
+
+    def test_card_actions_set_a_tooltip_only_when_its_text_changes(self):
+        def button():
+            item = Mock()
+            item.tip = None
+            item.get_tooltip_text.side_effect = lambda: item.tip
+            item.set_tooltip_text.side_effect = lambda text: setattr(item, "tip", text)
+            return item
+        window = object.__new__(Window)
+        window.session_actions, window.column_pixel_width, window.clear_read_feedback = set(), 240, Mock()
+        read, pin, drawer, copy = buttons = [button() for _index in range(4)]
+        widget = SimpleNamespace(asb_view="comfortable", asb_thread={"id": "a", "title": "Chat", "state": "idle", "unread": True},
+                                 asb_read_timer=None, asb_copy_timer=None, asb_read_button=read, asb_pin_button=pin,
+                                 asb_drawer_button=drawer, asb_copy_button=copy)
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1),
+                              AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        with patch.dict(SCOPE, {"Gtk": gtk}):
+            window.update_card_actions(widget)
+            self.assertEqual([item.tip for item in buttons],
+                             ["Mark read in ASB", "Pin in ASB", "Put in drawer: look read here, keep it under Drawer", "Copy app and session ID"])
+            for item in buttons:
+                item.set_tooltip_text.reset_mock()
+            # A new title changes the labels but no tooltip.
+            widget.asb_thread = {**widget.asb_thread, "title": "Chat 2"}
+            window.update_card_actions(widget)
+            read.update_property.assert_called_with([0], ["Mark read in ASB: Chat 2"])
+            for item in buttons:
+                item.set_tooltip_text.assert_not_called()
+            widget.asb_thread = {**widget.asb_thread, "pinned": True}
+            widget.asb_copy_timer = 7
+            window.update_card_actions(widget)
+            pin.set_tooltip_text.assert_called_once_with("Unpin in ASB")
+            copy.set_tooltip_text.assert_called_once_with("Copied")
+            read.set_tooltip_text.assert_not_called()
+            drawer.set_tooltip_text.assert_not_called()
 
     def test_order_only_path_places_every_permutation_in_its_column(self):
         window = object.__new__(Window)
@@ -3900,7 +4017,7 @@ class NativeLogicChecks(unittest.TestCase):
 
             apply("Close warning")
             closing = window.notice_timer
-            window.events, window.get_display, window.css = Mock(), Mock(), object()
+            window.events, window.get_display, window.css, window.badge_css = Mock(), Mock(), object(), object()
             window.list_body = Mock()
             window.clock_timer = window.geometry_idle = window.surface_signal = window.context_menu = None
             window.focus_widgets, window.row_cache = {}, {}

@@ -256,6 +256,29 @@ def pack_columns(rows, width, height, column_width=DEFAULT_COLUMN_WIDTH, row_hei
     return columns, capacity, parts
 
 
+def column_moves(current, target):
+    """The cards to take out of a column and the (index, card) inserts, in index order, that turn current into target.
+    The longest run of cards that already has the target order stays in place."""
+    place = {card: index for index, card in enumerate(target)}
+    kept = [place[card] for card in current if card in place]
+    tails, previous = [], [None] * len(kept)
+    for position, index in enumerate(kept):
+        low, high = 0, len(tails)
+        while low < high:
+            middle = (low + high) // 2
+            if kept[tails[middle]] < index:
+                low = middle + 1
+            else:
+                high = middle
+        previous[position] = tails[low - 1] if low else None
+        tails[low:low + 1] = [position]
+    stay, position = set(), tails[-1] if tails else None
+    while position is not None:
+        stay.add(target[kept[position]])
+        position = previous[position]
+    return [card for card in current if card not in stay], [(index, card) for index, card in enumerate(target) if card not in stay]
+
+
 THEME_KEYS = ("background", "text", "accent", "muted", "divider")
 THEME_PATH = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "asb" / "theme.json"
 LAYOUT_PATH = THEME_PATH.with_name("layout.json")
@@ -1300,8 +1323,7 @@ class SourceMarker(Gtk.Box):
         super().__init__(halign=Gtk.Align.START, valign=Gtk.Align.END, can_target=False)
         self.owner = owner
         self.add_css_class("asb-source-badge")
-        self.style_provider = Gtk.CssProvider()
-        self.get_style_context().add_provider(self.style_provider, Gtk.STYLE_PROVIDER_PRIORITY_USER + 2)
+        self.color_class = ""
         self.set_color(color)
 
     def set_color(self, color):
@@ -1311,14 +1333,13 @@ class SourceMarker(Gtk.Box):
             self.configured_color = ""
         displayed = display_source_color(self.configured_color, self.owner.profile_surfaces) if self.configured_color else ""
         self.set_visible(bool(displayed))
-        css = ""
-        if displayed:
-            background, highlight = self.owner.profile_surfaces
-            css = f""".asb-source-badge {{ background: {displayed}; border-color: {background}; }}
-.asb-session:hover .asb-source-badge, .asb-session:focus-within .asb-source-badge {{ border-color: {highlight}; }}"""
-        if css != getattr(self, "rendered_css", None):
-            self.style_provider.load_from_string(css)
-            self.rendered_css = css
+        name = self.owner.badge_class(displayed) if displayed else ""
+        if name != self.color_class:
+            if self.color_class:
+                self.remove_css_class(self.color_class)
+            if name:
+                self.add_css_class(name)
+            self.color_class = name
 
 
 class AppSourcesEditor(Gtk.Box):
@@ -2676,6 +2697,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.connect("close-request", self.on_close)
         self.css = Gtk.CssProvider()
         Gtk.StyleContext.add_provider_for_display(self.get_display(), self.css, Gtk.STYLE_PROVIDER_PRIORITY_USER + 1)
+        # One provider for all profile badges: a provider per badge made each new card slow.
+        self.badge_css, self.badge_colors = Gtk.CssProvider(), {}
+        Gtk.StyleContext.add_provider_for_display(self.get_display(), self.badge_css, Gtk.STYLE_PROVIDER_PRIORITY_USER + 2)
         Gtk.IconTheme.get_for_display(self.get_display()).add_search_path(str(Path(__file__).parents[1] / "assets" / "icons"))
         self.set_icon_name(APP_ID)
         self.set_palette(None)
@@ -3219,6 +3243,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         palette = colors or self.native_colors()
         highlight = highlight_color(palette) if colors else mix_color(palette["background"], palette["text"], .07)
         self.profile_surfaces = (palette["background"], highlight)
+        self.badge_colors.clear()
+        self.badge_css.load_from_string("")
         quiet_title, title_fraction = quiet_color(palette, "text", .67, highlight)
         quiet_caption, caption_fraction = quiet_color(palette, "muted" if colors else "text", .85 if colors else .5, highlight)
         # A limited row is dimmer than a quiet row: 4.5:1 on the background, and on the highlight while it is shown.
@@ -3256,6 +3282,18 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             (preferences.add_css_class if colors else preferences.remove_css_class)("asb-custom")
             if preferences.profiles_editor:
                 preferences.profiles_editor.update_marker_colors()
+
+    def badge_class(self, displayed):
+        """The style class of a profile badge color; the rules of all badge colors are in self.badge_css."""
+        name = "asb-badge-" + displayed[1:].lower()
+        if name not in self.badge_colors:
+            self.badge_colors[name] = displayed
+            background, highlight = self.profile_surfaces
+            self.badge_css.load_from_string("".join(
+                f""".asb-source-badge.{key} {{ background: {color}; border-color: {background}; }}
+.asb-session:hover .asb-source-badge.{key}, .asb-session:focus-within .asb-source-badge.{key} {{ border-color: {highlight}; }}
+""" for key, color in self.badge_colors.items()))
+        return name
 
     def publish_palette(self):
         if self.closed:
@@ -4122,7 +4160,20 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if not self.updating_states:
             self.select_states({"working"} if self.working_only.get_active() else set(STATES))
 
-    def render(self, preserve_focus=None, reveal_focus=False, preserve_action=None):
+    def render(self, *args, **kwargs):
+        # Card moves map and unmap thousands of widgets, and the popover hook runs in Python for each one.
+        # No popover opens inside a render, and the row panel has its own check in numbers_blocked.
+        hooks, self.popover_hooks = getattr(self, "popover_hooks", []), []
+        for name, hook in hooks:
+            GObject.remove_emission_hook(Gtk.Popover, name, hook)
+        try:
+            return self.render_board(*args, **kwargs)
+        finally:
+            if hooks and not self.closed:
+                self.popover_hooks = [(name, GObject.add_emission_hook(Gtk.Popover, name, self.popover_visibility, name))
+                                      for name in ("map", "unmap")]
+
+    def render_board(self, preserve_focus=None, reveal_focus=False, preserve_action=None):
         if self.dashboard is None or self.closed:
             return
         focused = preserve_focus or self.focus_key()
@@ -4148,8 +4199,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         repack = layout_signature != self.layout_signature
         reorder = repack and self.layout_signature is not None and layout_signature[1:] == self.layout_signature[1:] \
             and set(layout_signature[0]) == set(self.layout_signature[0])
-        old_positions = {identity: (index // self.layout_signature[2], index % self.layout_signature[2])
-                         for index, identity in enumerate(self.layout_signature[0])} if self.layout_signature else {}
         repack = repack and not reorder
         if repack or reorder:
             if getattr(self, "motion_animation", None) and motion_allowed(
@@ -4218,16 +4267,23 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 if not isinstance(child, Gtk.ListBox):
                     self.list_body.remove(child)
                 child = following
-            moved = [(index, self.focus_widgets[row["id"]]) for index, row in enumerate(rows)
-                     if old_positions.get(row["id"]) != (index // self.capacity, index % self.capacity)
-                     or self.focus_widgets[row["id"]].get_parent() is not listings[index // self.capacity]]
+            # Each column moves only the cards outside its longest run in target order; all removals come before the inserts.
+            moves = []
+            for number, listing in enumerate(listings):
+                current, card = [], listing.get_row_at_index(0)
+                while card is not None:
+                    current.append(card)
+                    card = listing.get_row_at_index(len(current))
+                target = [self.focus_widgets[row["id"]] for row in parts[number]] if number < len(parts) else []
+                moves.append((listing, *column_moves(current, target)))
             focus_row = self.focus_widgets.get(self.focus_key())
-            refocus = focus_widget is not None and any(widget is focus_row for _index, widget in moved)
-            for _index, widget in moved:
-                if widget.get_parent():
-                    widget.get_parent().remove(widget)
-            for index, widget in moved:
-                listings[index // self.capacity].insert(widget, index % self.capacity)
+            refocus = focus_widget is not None and any(focus_row in removals for _listing, removals, _inserts in moves)
+            for listing, removals, _inserts in moves:
+                for widget in removals:
+                    listing.remove(widget)
+            for listing, _removals, inserts in moves:
+                for index, widget in inserts:
+                    listing.insert(widget, index)
             # GTK 4 keeps the window focus on a removed row until the next frame, then moves it to the first row of a column;
             # that frame can come before the queued restore, so a repack also sets the focus again now.
             if refocus and focus_widget.get_visible() and focus_widget.get_sensitive():
@@ -4629,6 +4685,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 widget.asb_where_icon, widget.asb_where_label = None, where
                 for child in (mark_overlay, title, clock, dot, state, where, mute):
                     content.append(child)
+            # Tooltips set before the card is rooted cause no tooltip query.
+            self.update_card_actions(widget)
             widget.set_child(content)
         widget.asb_mark.set_from_icon_name(provider_icon(row["provider"]))
         widget.asb_source_badge.set_color(source_marker_color(row))
@@ -4727,7 +4785,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         for button, text, enabled in controls:
             button.set_sensitive(True)
             (button.add_css_class if pending else button.remove_css_class)("asb-action-pending")
-            button.set_tooltip_text(text)
+            # GTK queries the tooltip again at each set, which is slow for a card under the pointer.
+            if button.get_tooltip_text() != text:
+                button.set_tooltip_text(text)
             button.update_property([Gtk.AccessibleProperty.LABEL], [text + ": " + row.get("title", "Untitled session")])
             button.update_state([Gtk.AccessibleState.BUSY, Gtk.AccessibleState.DISABLED], [pending, not enabled])
         copy = getattr(widget, "asb_copy_button", None)
@@ -4739,7 +4799,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             copy.set_action_name("win.copy-reference")
             copy.get_child().set_from_icon_name("object-select-symbolic" if copied else "edit-copy-symbolic")
             (copy.add_css_class if copied else copy.remove_css_class)("asb-copy-confirmed")
-            copy.set_tooltip_text("Copied" if copied else "Copy app and session ID")
+            if copy.get_tooltip_text() != (tip := "Copied" if copied else "Copy app and session ID"):
+                copy.set_tooltip_text(tip)
             copy.update_property([Gtk.AccessibleProperty.LABEL], ["Copy app and session ID: " + row.get("title", "Untitled session")])
             if copied:
                 copy.update_property([Gtk.AccessibleProperty.DESCRIPTION], ["Copied"])
@@ -5315,6 +5376,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.list_body.remove(listing)
         self.list_columns = []
         Gtk.StyleContext.remove_provider_for_display(self.get_display(), self.css)
+        Gtk.StyleContext.remove_provider_for_display(self.get_display(), self.badge_css)
         return False
 
 
