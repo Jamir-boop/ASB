@@ -4,6 +4,9 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+## ASB 1.9.0 - 2026-10-20
+
+- ASB Bridge is `0.5.0` in this release.
 - Fixed the provider marks and the machine and terminal glyphs on the board: they now take the colors of the theme, for example the accent color of a card with a new message. ASB loads them as file icons, because GTK 4.18 does not recolor symbolic icons from the icon search path.
 - Added full session references to `list_sessions` in ASB Bridge (Linux): each entry now has its `reference`, or `referenceUnavailable` with the reason code when a send cannot use one. A listed reference is one that `send_message` accepts now. An entry of another machine with the same session ID as a local session shows only when it has a reference. Without the engine, the list stays the same as before.
 - Added receipts for exact sends to another machine in ASB Bridge (Linux): the receipt of the target session (for example `delivered`, `denied`, or `dropped`) now comes back to the message row of the sending Codex task. Only the receipt of the bound target process counts, and it goes back only to the same receiver process of the sending task. Else the receipt is lost and the message stays submitted. A receipt never goes on the old path between machines, and ASB never makes a receipt itself.
@@ -108,6 +111,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Removed the undocumented bridge target flags from the ASB package installer. Use `asb bridge install` with explicit targets or `--all`.
 - Changed held-message checks from 500 milliseconds to two seconds.
 - Removed four unused MCP thread-ID aliases. Native `x-codex-turn-metadata`, `threadId`, and `thread_id` remain supported.
+
+See [ASB 1.9.0 release notes](docs/releases/v1.9.0.md) for downloads, upgrades, and check limits.
 
 ## ASB 1.8.1 - 2026-10-13
 

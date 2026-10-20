@@ -1,6 +1,6 @@
 # ASB system overview
 
-The current ASB source version is `1.8.1`. See the [publication record](https://github.com/Jamir-boop/ASB/blob/main/docs/OPEN_SOURCE_PLAN.md) for verified release status.
+The current ASB source version is `1.9.0`. See the [publication record](https://github.com/Jamir-boop/ASB/blob/main/docs/OPEN_SOURCE_PLAN.md) for verified release status.
 
 ASB is a local switch board for existing Codex and Claude Desktop Code chats, including remote Code sessions observed in Claude's local cache. Its main view is a small native GNOME window. It observes local files and opens the original app. It makes no model calls.
 
@@ -100,11 +100,11 @@ found no meaningful scroll speed gain in one valid main-monitor manual pair.
 Qt had lower resize callback p95 and higher PSS, with different resize paths.
 Eight bounded Qt native groups passed. These results do not prove complete UI
 parity or physical display FPS. The experiments cannot be run from this tree.
-Production ASB uses Python at `1.8.1`.
+Production ASB uses Python at `1.9.0`.
 
 ASB uses `DashboardSnapshot` in `src/dashboard-snapshot.mjs` for snapshots, source events, watchers, caches, and request coalescing. It also uses local HTTP utilities, Codex open helpers, and provider cache helpers.
 
-The current source package whitelist names 73 runtime files, including 12 ASB Bridge files (with `bridge/dist/relay.js`), `assets/icons/asb-drawer-symbolic.svg`, `assets/icons/asb-muted-symbolic.svg`, `src/session-references.mjs`, `src/session-targets.mjs`, `scripts/asb.mjs`, `scripts/asb-setup.mjs`, `src/platform-paths.mjs`, `src/phone-gateway.mjs`, `src/machine-group.mjs`, `src/machine-peers.mjs`, `src/machine-relay.mjs`, `scripts/asb-service.mjs`, `scripts/asb-engine.mjs`, `scripts/asb-tray.py`, `scripts/asb-agent.mjs`, `scripts/asb-group.mjs`, `scripts/asb-instance.mjs`, `scripts/asb-doctor.mjs`, `src/linux-system.mjs`, and `src/linux-distros.mjs`. The published ASB `1.8.1` package shipped 30 runtime files, including the app-source registry. ASB `1.8.0`, `1.7.0`, `1.6.1`, `1.6.0`, `1.5.0`, and `1.4.0` also shipped 30. ASB `1.3.0` shipped 32. ASB `1.2.0` shipped 31, down from 42 in ASB `1.1.0`.
+The ASB `1.9.0` package whitelist names 73 runtime files, including 12 ASB Bridge files (with `bridge/dist/relay.js`), `assets/icons/asb-drawer-symbolic.svg`, `assets/icons/asb-muted-symbolic.svg`, `src/session-references.mjs`, `src/session-targets.mjs`, `scripts/asb.mjs`, `scripts/asb-setup.mjs`, `src/platform-paths.mjs`, `src/phone-gateway.mjs`, `src/machine-group.mjs`, `src/machine-peers.mjs`, `src/machine-relay.mjs`, `scripts/asb-service.mjs`, `scripts/asb-engine.mjs`, `scripts/asb-tray.py`, `scripts/asb-agent.mjs`, `scripts/asb-group.mjs`, `scripts/asb-instance.mjs`, `scripts/asb-doctor.mjs`, `src/linux-system.mjs`, and `src/linux-distros.mjs`. The published ASB `1.8.1` package shipped 30 runtime files, including the app-source registry. ASB `1.8.0`, `1.7.0`, `1.6.1`, `1.6.0`, `1.5.0`, and `1.4.0` also shipped 30. ASB `1.3.0` shipped 32. ASB `1.2.0` shipped 31, down from 42 in ASB `1.1.0`.
 
 ## Main files
 
@@ -660,7 +660,9 @@ Native SSE retains its connection/header timeout but removes the live read timeo
 
 Native RGB conversion limits extended GNOME color channels to `0..255` before it formats `#RRGGBB`. This keeps theme editor values and phone palettes valid. Native tests use `Cantarell 11` for exact pixel checks and a separate larger-font check for row packing; production font and minimum row sizes stay unchanged.
 
-The source build produces `asb_1.8.1_all.deb`, `asb-1.8.1-linux.tar.gz`, and `SHA256SUMS` in `dist/`. The portable root is `asb-1.8.1/` with `./install.sh`. See [release notes](docs/releases/v1.8.1.md) for upgrades and check limits. Public demo assets use synthetic session names and folders. The current demo source shows four app switches; the existing README video link stays unchanged. Remotion build dependencies are separate from the ASB runtime.
+The source build produces `asb_1.9.0_all.deb`, `asb-1.9.0-linux.tar.gz`, and `SHA256SUMS` in `dist/`. The portable root is `asb-1.9.0/` with `./install.sh`. See [release notes](docs/releases/v1.9.0.md) for upgrades and check limits. Public demo assets use synthetic session names and folders. The current demo source shows four app switches; the existing README video link stays unchanged. Remotion build dependencies are separate from the ASB runtime.
+
+The `1.9.0` release build passed 664 Node tests, 148 native logic tests, 29 GTK widget tests on a hidden X display, and 132 ASB Bridge tests on Linux. A Debian `apt install`, real apps, a machine group on real machines, a real phone, Windows, macOS, and FPS on the real display were not tested for that build. See [1.9.0 release notes](docs/releases/v1.9.0.md) for its check limits.
 
 The published `1.8.1` baseline passed 272 Node tests, 87 native logic tests, and one focused GTK toolbar test on an isolated hidden Xephyr display with Cairo and synthetic data. The full GTK widget suite did not run. Real profile edits were not tested. Resize lag on X11 remains unresolved. That release had no new FPS measurement. See [1.8.1 release notes](docs/releases/v1.8.1.md) for its check limits. Earlier performance samples and their limits remain in the [1.6.1 release notes](docs/releases/v1.6.1.md) and [1.6.0 release notes](docs/releases/v1.6.0.md).
 

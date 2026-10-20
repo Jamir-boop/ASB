@@ -1,6 +1,6 @@
 {
   "name": "asb-bridge",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Discover and message live Claude Code sessions and Codex tasks through local UDS inboxes. Part of ASB.",
   "author": {
     "name": "Jamir-boop"

@@ -8,26 +8,26 @@ https://github.com/user-attachments/assets/c85742f4-d1b0-4ffc-9497-144069fec36b
 
 ## Install on Linux
 
-[Download v1.8.1](https://github.com/Jamir-boop/ASB/releases/tag/v1.8.1) · [Release notes](docs/releases/v1.8.1.md) · [Checksums](https://github.com/Jamir-boop/ASB/releases/download/v1.8.1/SHA256SUMS)
+[Download v1.9.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.9.0) · [Release notes](docs/releases/v1.9.0.md) · [Checksums](https://github.com/Jamir-boop/ASB/releases/download/v1.9.0/SHA256SUMS)
 
-Needs Node.js `>=20` (`sqlite3` below `22.13`), Python 3 with PyGObject, GTK `>=4.12`, Libadwaita `>=1.4`, and `xdg-utils`. The current source also needs `openssl` for the phone certificate. The optional `python3-qrcode` shows the phone pairing QR code.
+Needs Node.js `>=20` (`sqlite3` below `22.13`), Python 3 with PyGObject, GTK `>=4.12`, Libadwaita `>=1.4`, and `xdg-utils`. ASB `1.9.0` also needs `openssl` for the phone certificate. The optional `python3-qrcode` shows the phone pairing QR code.
 
 Install Codex and Claude Desktop first, with working `codex:` and `claude:` URL handlers.
 
-The current source has `asb doctor`. Run it to check the system: it prints the install commands for your distribution and never runs them.
+ASB `1.9.0` has `asb doctor`. Run it to check the system: it prints the install commands for your distribution and never runs them.
 
-**Debian:** [asb_1.8.1_all.deb](https://github.com/Jamir-boop/ASB/releases/download/v1.8.1/asb_1.8.1_all.deb)
+**Debian:** [asb_1.9.0_all.deb](https://github.com/Jamir-boop/ASB/releases/download/v1.9.0/asb_1.9.0_all.deb)
 
 ```bash
-sudo apt install ./asb_1.8.1_all.deb
+sudo apt install ./asb_1.9.0_all.deb
 asb
 ```
 
-**Portable (per-user):** [asb-1.8.1-linux.tar.gz](https://github.com/Jamir-boop/ASB/releases/download/v1.8.1/asb-1.8.1-linux.tar.gz)
+**Portable (per-user):** [asb-1.9.0-linux.tar.gz](https://github.com/Jamir-boop/ASB/releases/download/v1.9.0/asb-1.9.0-linux.tar.gz)
 
 ```bash
-tar -xzf asb-1.8.1-linux.tar.gz
-cd asb-1.8.1
+tar -xzf asb-1.9.0-linux.tar.gz
+cd asb-1.9.0
 ./install.sh
 ~/.local/bin/asb
 ```
@@ -76,7 +76,7 @@ On Linux, the engine shows a tray icon with **Open ASB** and **Quit ASB** (only 
 
 `asb service install` installs and starts the `asb.service` systemd user service, so the engine also starts with your session. On a desktop without a systemd graphical session (for example Xfce, MATE, LXQt, or a system without systemd), it writes the XDG autostart entry `~/.config/autostart/asb-engine.desktop` instead and starts the engine. Window managers without XDG autostart must run `asb engine start` after login. `asb service status` shows the service or entry state. `asb service uninstall` stops and removes it. When the service is installed, `asb` starts the engine through it. An ASB `1.8.1` or older window cannot attach and reports a port conflict.
 
-The current source includes the Android companion and the user service; published `1.8.1` packages do not.
+The ASB `1.9.0` packages include the user service. The Android companion is a separate app: the Linux packages do not include it.
 
 The current source can also join ASB on several of your computers in one machine group: each machine then shows the sessions of the others as cards. See [Machines](ASB.md#machines).
 
@@ -92,13 +92,13 @@ ASB also shows Claude Code CLI and Codex CLI sessions as view-only cards: a term
 
 ## Local agent commands
 
-The current source adds `asb agent status` and `asb agent sources` commands to list, get, add, update, or remove a source, with `--json` output and JSON files for edits. Commands use the running desktop or service and report saved, backend, and recent UI state separately. Profiles refreshes after external changes and keeps unsaved edits. See [commands and conflict handling](ASB.md#local-agent-commands). Published `1.8.1` packages and the unmanaged `npm start` server do not support these commands.
+The current source adds `asb agent status` and `asb agent sources` commands to list, get, add, update, or remove a source, with `--json` output and JSON files for edits. Commands use the running desktop or service and report saved, backend, and recent UI state separately. Profiles refreshes after external changes and keeps unsaved edits. See [commands and conflict handling](ASB.md#local-agent-commands). The ASB `1.9.0` packages include these commands. ASB `1.8.1` or older packages and the unmanaged `npm start` server do not support them.
 
 ## ASB Bridge (optional)
 
 ASB Bridge lets local Claude Code sessions and Codex tasks message each other. When ASB Bridge is installed, a message that one agent sends starts a turn in the receiving app.
 
-The current source includes the bridge; published `1.8.1` packages do not. It needs Bun. From a source checkout, run `scripts/asb bridge install --all`. With a package built from this source, run `asb bridge install --all`. Then open Plugins > ASB Bridge in Codex, trust both hooks, and restart Codex. Without a target flag, `asb bridge install` shows usage and changes nothing. See the [bridge guide](bridge/README.md) for explicit targets and the on-demand skills.
+The ASB `1.9.0` packages include ASB Bridge `0.5.0`; ASB `1.8.1` or older packages do not. It needs Bun. From a source checkout, run `scripts/asb bridge install --all`. With an ASB `1.9.0` package, run `asb bridge install --all`. Then open Plugins > ASB Bridge in Codex, trust both hooks, and restart Codex. Without a target flag, `asb bridge install` shows usage and changes nothing. See the [bridge guide](bridge/README.md) for explicit targets and the on-demand skills.
 
 Separate Claude profiles can opt in to shared peer discovery with `asb bridge link-claude <profile-home> <shared-home>`. This shares only peer metadata and IPC authentication keys. App data and provider credentials stay separate. Read the [setup and backup limits](bridge/README.md#link-claude-profiles) first.
 
