@@ -346,8 +346,9 @@ Notes:
 - ASB never runs `sudo`, `doas`, `pkexec`, `rpm-ostree`,
   `transactional-update`, a package manager, or a firewall change. Tests must
   prove that doctor and setup only print these commands. Read-only queries
-  (`openssl version`, `firewall-cmd --state`, `xdg-mime query default`,
-  `systemctl --user is-active`) are allowed.
+  (`openssl version`, `firewall-cmd --state`,
+  `firewall-cmd --get-zone-of-interface=<interface>`, `xdg-mime query
+  default`, `systemctl --user is-active`) are allowed.
 - Never read credentials or message text. Besides ASB's own files and the
   app folders that ASB already reads, `asb doctor` reads only
   `/etc/os-release`, `/run/ostree-booted`, `PATH`, the session bus names,
@@ -898,13 +899,36 @@ Phases 1 and 2 did not change `scripts/asb-service.mjs`,
    interface) and print the lines of step 2. When the engine does not run
    or access is off, print no firewall lines. Put the lines in
    `commands.firewall` of the JSON output.
-4. `asb setup`, step 3 (`scripts/asb-setup.mjs:73-78`): on Linux, print the
+4. `asb setup`, step 3 (`scripts/asb-setup.mjs:80-85`): on Linux, print the
    lines of step 2 for the chosen addresses and `saved.port`, in the place
-   where Windows prints `firewallCommand`.
+   where Windows prints `firewallCommand`. Step 0 (`:63-68`) runs `collect`
+   without the firewall part, so that setup prints the firewall lines only
+   once, for the new addresses.
 5. Tests: fake `execFile` and `readFile` for firewalld (with and without a
    zone), ufw, and none; doas; the doctor and setup outputs; no command
    other than the read-only queries is ever run (the fake `execFile`
    records every call).
+6. Details (reviewer, before phase 4):
+   - Trust boundary: the printed lines go into a root shell. Print a line
+     only when the address is IPv4 (`net.isIPv4`), the port is an integer
+     from 1 to 65535, the interface name matches `^[A-Za-z0-9._@-]{1,15}$`,
+     and a zone matches `^[A-Za-z0-9_-]{1,64}$`. For another value, print
+     no line for that address and one note: `ASB found an unusual
+     interface or zone name, so it prints no firewall command for <address>.`
+   - JSON: `commands.firewall` is a list of commands, each an array of
+     words with no shell quoting. The text joins the words with spaces and
+     puts a word that has a space or a quote in single quotes, as the
+     rich rule of Appendix D shows.
+   - The root (`sudo` or `doas`) comes from one exported function that
+     `collect` and setup both use.
+   - `collect` takes injected `find` (default `findRunningService`) and
+     `api` (default the `api` of `scripts/asb-group.mjs`, with a 2 s
+     timeout). Every doctor test fakes `find`, so that no test reads the
+     user's engine. When the request fails, doctor prints no firewall
+     lines.
+   - Setup `main` takes injected `execFile` and `read` for the firewall
+     state, with the real defaults. The existing setup tests fake the
+     state `none`, so their output does not change.
 
 ### Phase 4 acceptance
 

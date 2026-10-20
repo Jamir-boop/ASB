@@ -207,17 +207,23 @@ const doctorData = (status = 'ok') => ({ system: { name: 'Test Linux', family: '
   checks: [{ id: 'node', group: 'Engine', status, detail: 'Node.js 24.0.0 (/usr/bin/node), built-in SQLite' }], advice: [] });
 const DOCTOR_LINES = ['ASB doctor: Test Linux, family debian', '', 'Engine', '  ok       Node.js 24.0.0 (/usr/bin/node), built-in SQLite'];
 
-async function runSetup(state, args, { platform = 'linux', answer = '', doctor = async () => doctorData() } = {}) {
+// The firewall fakes: by default no firewall-cmd and no ufw.conf (the state none). `calls` records every program.
+const noProgram = async (file) => { throw Object.assign(new Error(`spawn ${file} ENOENT`), { code: 'ENOENT' }); };
+
+async function runSetup(state, args, { platform = 'linux', answer = '', doctor = async () => doctorData(), execFile = noProgram,
+  read = async () => '' } = {}) {
   const out = [];
   const err = [];
   const installs = [];
+  const calls = [];
   const code = await setup(args, { env: state.env, platform, input: Readable.from([answer]), output: { write: () => {} },
     print: (line) => out.push(line), printError: (line) => err.push(line), node: 'C:\\Program Files\\nodejs\\node.exe', waitMs: 500,
     installService: async (argv) => { installs.push(['service', argv]); return 0; },
     installEngine: async (argv) => { installs.push(['engine', argv]); return 0; },
-    find: (env) => readServiceRuntime(env), doctor });
+    find: (env) => readServiceRuntime(env), doctor, execFile: (file, argv, options) => { calls.push([file, ...argv]); return execFile(file, argv, options); },
+    read });
   // `out` leaves out the four doctor lines of Linux; `all` has them.
-  return { code, out: platform === 'linux' ? out.slice(DOCTOR_LINES.length) : out, all: out, err, installs };
+  return { code, out: platform === 'linux' ? out.slice(DOCTOR_LINES.length) : out, all: out, err, installs, calls };
 }
 
 test('asb setup step 0 prints the doctor output on Linux and stops when the engine cannot run', async (t) => {
@@ -271,4 +277,33 @@ test('asb setup installs the autostart, turns on the chosen addresses, and print
   assert.deepEqual([badNumber.code, badNumber.err], [1, ['asb setup: Enter numbers from 1 to 2.']]);
   assert.equal((await runSetup(state, ['--address'])).code, 2);
   assert.equal(state.posts().length, 5);
+});
+
+test('asb setup on Linux prints the firewalld rule for the chosen addresses and runs only the read-only queries', async (t) => {
+  const state = await fixture(t);
+  // A PATH without sudo and doas gives sudo on every host.
+  const env = { ...state.env, PATH: state.env.HOME };
+  const execFile = async (file, argv) => {
+    if (file === 'firewall-cmd' && argv[0] === '--state') return { stdout: 'running\n' };
+    if (file === 'firewall-cmd' && argv[0] === '--get-zone-of-interface=wlan0') return { stdout: 'home\n' };
+    return noProgram(file);
+  };
+  const reads = [];
+  const result = await runSetup({ ...state, env }, ['--address', '192.168.1.10', '--address', '10.147.0.1', '--yes'],
+    { execFile, read: async (file) => { reads.push(file); return ''; } });
+  assert.equal(result.code, 0, result.err.join('\n'));
+  const rule = (address) => `--add-rich-rule='rule family="ipv4" destination address="${address}" port port="4630" protocol="tcp" accept'`;
+  assert.deepEqual(result.out, ['Network access is on, port 4630: 192.168.1.10 (lan).', 'Phone access and machine links through firewalld:',
+    `  sudo firewall-cmd --permanent --zone=home ${rule('192.168.1.10')}`, `  sudo firewall-cmd --permanent ${rule('10.147.0.1')}`,
+    '  sudo firewall-cmd --reload', 'To let agents send messages, run: asb bridge install --all',
+    "On a machine in the group: asb group invite. Here: asb group join '<link>' --name <name>."]);
+  assert.deepEqual(result.calls, [['firewall-cmd', '--state'], ['firewall-cmd', '--get-zone-of-interface=wlan0'],
+    ['firewall-cmd', '--get-zone-of-interface=ztabc']]);
+  assert.deepEqual(reads, []);
+  // ufw, and Windows runs no firewall query.
+  const ufw = await runSetup({ ...state, env }, ['--address', '10.147.0.1', '--yes'], { read: async (file) => (file === '/etc/ufw/ufw.conf' ? 'ENABLED=yes\n' : '') });
+  assert.deepEqual(ufw.out.slice(1, 3), ['Phone access and machine links through ufw:', '  sudo ufw allow in on ztabc to 10.147.0.1 port 4630 proto tcp']);
+  const windows = await runSetup({ ...state, env }, ['--yes'], { platform: 'win32', execFile });
+  assert.equal(windows.code, 0);
+  assert.deepEqual(windows.calls, []);
 });
