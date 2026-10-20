@@ -110,8 +110,11 @@ posix('a restart revives receivers of registered threads only, and concurrent st
   const live = (id: string) => peers(configDir).filter(peer => peer.sessionId === id);
   const active = (id: string) => {
     const db = new Database(join(stateDir, `${id}.sqlite`), { readonly: true });
-    try { return db.query<{ active: number }, []>('SELECT active FROM lifecycle WHERE singleton=1').get()?.active; }
-    finally { db.close(); }
+    // A receiver that just stopped can still hold the lock while it closes its database (SQLITE_BUSY on the macOS runner).
+    try {
+      db.exec('PRAGMA busy_timeout = 5000');
+      return db.query<{ active: number }, []>('SELECT active FROM lifecycle WHERE singleton=1').get()?.active;
+    } finally { db.close(); }
   };
   const registered = randomUUID();
   const neverStarted = randomUUID();
