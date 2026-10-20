@@ -37,9 +37,12 @@ async function revive(root: string) {
 
 async function stopReceivers(root: string) {
   const configDir = join(root, 'claude');
-  for (const peer of peers(configDir)) process.kill(peer.pid, 'SIGTERM');
+  const pids = peers(configDir).map(peer => peer.pid);
+  for (const pid of pids) process.kill(pid, 'SIGTERM');
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
   const deadline = Date.now() + 3000;
-  while (peers(configDir).length && Date.now() < deadline) await Bun.sleep(10);
+  // A receiver removes its row before it closes its SQLite file, so wait for the processes before the test removes root.
+  while ((peers(configDir).length || pids.some(alive)) && Date.now() < deadline) await Bun.sleep(10);
   expect(peers(configDir)).toHaveLength(0);
 }
 
