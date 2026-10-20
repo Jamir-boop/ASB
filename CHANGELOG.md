@@ -4,6 +4,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Fixed the Codex reader for Codex database changes: a missing column no longer empties the Codex list.
+
 ## ASB 1.9.0 - 2026-10-20
 
 - ASB Bridge is `0.5.0` in this release.

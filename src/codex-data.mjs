@@ -255,7 +255,11 @@ export function applyCodexPinnedThreadIds(rows, pinnedThreadIds = []) {
 }
 
 function readThreadsSql(cappedLimit, { includeGoals = true, columns = new Set() } = {}) {
-  const desktopColumns = ['name', 'is_pinned', 'thread_source', 'originator', 'agent_path', 'creator_account_id', 'creator_user_id']
+  // A column that a Codex migration dropped reads as null, so the scan survives the change.
+  const threadColumns = ['rollout_path', 'created_at', 'updated_at', 'created_at_ms', 'updated_at_ms', 'source',
+    'model_provider', 'cwd', 'title', 'tokens_used', 'archived', 'git_sha', 'git_branch', 'git_origin_url',
+    'agent_nickname', 'agent_role', 'model', 'reasoning_effort',
+    'name', 'is_pinned', 'thread_source', 'originator', 'agent_path', 'creator_account_id', 'creator_user_id']
     .map((name) => columns.has(name) ? `threads.${name} as ${name}` : `null as ${name}`)
     .join(',\n      ');
   const goalColumns = includeGoals ? `
@@ -278,36 +282,13 @@ function readThreadsSql(cappedLimit, { includeGoals = true, columns = new Set() 
   return `
     select
       threads.id as id,
-      threads.rollout_path as rollout_path,
-      threads.created_at as created_at,
-      threads.updated_at as updated_at,
-      threads.created_at_ms as created_at_ms,
-      threads.updated_at_ms as updated_at_ms,
-      threads.source as source,
-      threads.model_provider as model_provider,
-      threads.cwd as cwd,
-      threads.title as title,
-      threads.tokens_used as tokens_used,
-      threads.archived as archived,
-      threads.git_sha as git_sha,
-      threads.git_branch as git_branch,
-      threads.git_origin_url as git_origin_url,
-      threads.agent_nickname as agent_nickname,
-      threads.agent_role as agent_role,
-      threads.model as model,
-      threads.reasoning_effort as reasoning_effort,
-      ${desktopColumns},
+      ${threadColumns},
       ${goalColumns}
     from threads
     ${goalJoin}
-    order by threads.updated_at_ms desc, threads.updated_at desc
+    order by updated_at_ms desc, updated_at desc
     limit ${cappedLimit};
   `;
-}
-
-function isMissingThreadGoalsTable(error) {
-  const text = `${error?.stderr || ''}\n${error?.message || ''}`;
-  return text.includes('no such table: thread_goals');
 }
 
 export async function discoverCodexStateDatabase(codexDir = DEFAULT_CODEX_DIR) {
@@ -325,11 +306,9 @@ export async function readThreads({ databasePath, limit = DEFAULT_THREAD_LIMIT }
 
   try {
     return await querySqliteJson(databasePath, sql);
-  } catch (error) {
-    if (isMissingThreadGoalsTable(error)) {
-      return querySqliteJson(databasePath, readThreadsSql(cappedLimit, { includeGoals: false, columns }));
-    }
-    throw error;
+  } catch {
+    // Codex can drop or change thread_goals; read the threads without goals, and report only that error.
+    return querySqliteJson(databasePath, readThreadsSql(cappedLimit, { includeGoals: false, columns }));
   }
 }
 

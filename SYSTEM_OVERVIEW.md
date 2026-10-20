@@ -179,7 +179,7 @@ ASB loads enabled app sources independently. One failed source does not remove a
 
 | Source | Read path |
 | --- | --- |
-| Codex | Latest `~/.codex/state_N.sqlite`, `session_index.jsonl`, `.codex-global-state.json`, and matched `sessions/**/rollout-*.jsonl`. |
+| Codex | Latest `~/.codex/state_N.sqlite`, `session_index.jsonl`, `.codex-global-state.json`, and matched `sessions/**/rollout-*.jsonl`. In the `threads` query, a column that the table does not have reads as null. When the read with the `thread_goals` join fails, the reader reads the threads again without goals. |
 | Claude Desktop Code on Linux | `$XDG_CONFIG_HOME/Claude/claude-code-sessions/local_*.json`, or `~/.config/Claude/claude-code-sessions/local_*.json`. |
 | Claude transcript signals | Matched JSONL files under `~/.claude/projects`. |
 | Claude Code CLI sessions | Live registry records in `~/.claude/sessions/<pid>.json` with `entrypoint` `cli`, and root JSONL files under `~/.claude/projects` with `entrypoint` `cli`. See [Claude Code CLI sessions](#claude-code-cli-sessions). |

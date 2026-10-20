@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   applySessionIndexTitles,
   applyCodexPinnedThreadIds,
+  loadCodexDashboard,
   parseCodexPinnedThreadIds,
   parseSessionIndex,
   parseRolloutSignals,
@@ -420,4 +421,56 @@ test('finds an active task lifecycle before the bounded rollout tail', async (t)
   assert.equal(signals.agentRunning, true);
   assert.equal(signals.agentStartedAtMs, Date.parse('2026-04-29T07:00:00.000Z'));
   assert.equal(signals.agentActivityAtMs, Date.parse('2026-04-29T07:02:00.000Z'));
+});
+
+async function createSyntheticDb(t, sql) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-codex-columns-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const databasePath = path.join(dir, 'state.sqlite');
+  const database = new DatabaseSync(databasePath);
+  try {
+    database.exec(sql);
+  } finally {
+    database.close();
+  }
+  return { dir, databasePath };
+}
+
+test('reads Codex threads when the threads table lacks selected columns', async (t) => {
+  const { dir, databasePath } = await createSyntheticDb(t, `
+    create table threads (id text primary key, rollout_path text, title text, updated_at_ms integer);
+    insert into threads values ('thread-1', '/tmp/missing-rollout.jsonl', 'Minimal thread', 1800000000000);
+  `);
+
+  const rows = await readThreads({ databasePath });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, 'thread-1');
+  assert.equal(rows[0].title, 'Minimal thread');
+  assert.equal(rows[0].tokens_used, null);
+  assert.equal(rows[0].updated_at, null);
+
+  const dashboard = await loadCodexDashboard({
+    databasePath,
+    sessionIndexPath: path.join(dir, 'missing-index.jsonl'),
+    globalStatePath: path.join(dir, 'missing-global-state.json'),
+    nowMs: 1_800_000_001_000,
+  });
+  assert.equal(dashboard.threads.find((thread) => thread.id === 'thread-1').title, 'Minimal thread');
+});
+
+test('reads Codex threads without goals when thread_goals lacks a goal column', async (t) => {
+  const { databasePath } = await createSyntheticDb(t, `
+    create table threads (id text primary key, rollout_path text, title text, updated_at_ms integer);
+    insert into threads values ('thread-1', '/tmp/a.jsonl', 'First', 2), ('thread-2', '/tmp/b.jsonl', 'Second', 1);
+    create table thread_goals (thread_id text, goal_id text, status text, tokens_used integer,
+      time_used_seconds integer, created_at_ms integer, updated_at_ms integer);
+    insert into thread_goals values ('thread-1', 'goal-1', 'active', 5, 6, 7, 8);
+  `);
+
+  const rows = await readThreads({ databasePath });
+  assert.deepEqual(rows.map((row) => row.id), ['thread-1', 'thread-2']);
+  for (const row of rows) {
+    assert.equal(row.goal_id, null);
+    assert.equal(row.goal_status, null);
+  }
 });
