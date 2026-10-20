@@ -98,7 +98,8 @@ test('members export their scope tag, and the observer makes the full reference 
     reference: 'asb:1/must/not/go', referenceUnavailable: 'x', sessionReference: 'x/y' });
   const exported = exportLocalSessions(tagged, B, nowMs);
   assert.equal(exported.rows[0].referenceScope, tag);
-  assert.deepEqual(['reference', 'referenceUnavailable', 'sessionReference'].filter((key) => key in exported.rows[0]), []);
+  assert.deepEqual(['reference', 'sessionReference'].filter((key) => key in exported.rows[0]), []);
+  assert.equal(exported.rows[0].referenceUnavailable, 'x');
   // An invalid tag drops the row; a member-sent reference and machine ID are ignored.
   for (const referenceScope of ['F'.repeat(32), 'f'.repeat(31), 42, '']) {
     assert.deepEqual(validExport({ ...exported, rows: [{ ...exported.rows[0], referenceScope }] }, B).rows, []);
@@ -117,6 +118,26 @@ test('members export their scope tag, and the observer makes the full reference 
     [`m:${B.machineId}:claude-desktop-code:${local(5)}`, undefined, 'old-peer']);
   const bad = { ...exported, rows: [{ ...exported.rows[0], externalId: 'not-an-id' }] };
   assert.equal(mergePeerRows(boardA(), [peerState(bad)], A, nowMs).threads.at(-1).referenceUnavailable, 'invalid-app-id');
+  // A member-sent code only blocks: with no tag, only 'ambiguous-source' replaces 'old-peer'.
+  const { referenceScope: _tag, ...untagged } = exported.rows[0];
+  const sent = (code) => mergePeerRows(boardA(), [peerState({ ...exported, rows: [{ ...untagged, referenceUnavailable: code }] })], A, nowMs)
+    .threads.at(-1);
+  assert.deepEqual([sent('ambiguous-source').referenceUnavailable, sent('ambiguous-source').reference], ['ambiguous-source', undefined]);
+  for (const code of ['invalid-app-id', 'no-machine-identity', 'x']) assert.equal(sent(code).referenceUnavailable, 'old-peer', code);
+  // With a tag and a valid ID, the observer makes its own reference and drops the member code.
+  const own = mergePeerRows(boardA(), [peerState({ ...exported, rows: [{ ...exported.rows[0], referenceUnavailable: 'ambiguous-source' }] })],
+    A, nowMs).threads.at(-1);
+  assert.deepEqual([own.reference, own.referenceUnavailable], [remote.reference, undefined]);
+});
+
+test('member rows get the checked short reference with the provider host, and none for an invalid ID', () => {
+  const exported = exportLocalSessions(boardB(), B, nowMs);
+  assert.equal(mergePeerRows(boardA(), [peerState(exported)], A, nowMs).threads.at(-1).sessionReference, `claude-desktop-code/${local(5)}`);
+  for (const externalId of ['not-an-id', `${local(5)}\n`]) {
+    const sessions = { ...exported, rows: [{ ...exported.rows[0], externalId }] };
+    const remote = mergePeerRows(boardA(), [{ ...peerState(exported), sessions }], A, nowMs).threads.at(-1);
+    assert.equal('sessionReference' in remote, false, JSON.stringify(externalId));
+  }
 });
 
 test('an offline member gives Unknown rows with the note, and its rows leave after 10 minutes', () => {

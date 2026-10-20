@@ -3832,7 +3832,7 @@ class NativeLogicChecks(unittest.TestCase):
         with patch.dict(SCOPE, {"Gtk": gtk}):
             window.update_card_actions(widget)
             self.assertEqual([item.tip for item in buttons],
-                             ["Mark read in ASB", "Pin in ASB", "Put in drawer: look read here, keep it under Drawer", "Copy app and session ID"])
+                             ["Mark read in ASB", "Pin in ASB", "Put in drawer: look read here, keep it under Drawer", "Copy relative reference"])
             for item in buttons:
                 item.set_tooltip_text.reset_mock()
             # A new title changes the labels but no tooltip.
@@ -4758,50 +4758,166 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(asb.session_reference({"id": "x:cse_remote", "externalId": "cse_remote", "provider": "claude-desktop-code"}),
                          "claude-desktop-code/cse_remote")
 
-    def test_panel_copy_writes_the_reference_and_shows_copied_for_a_moment(self):
+    def test_copy_values_check_both_references_and_give_each_reason(self):
+        full = "asb:1/0123456789abcdef/codex/" + "f" * 32 + "/codex:123e4567-e89b-12d3-a456-426614174000"
+        local = {"id": "x", "externalId": "123e4567-e89b-12d3-a456-426614174000", "provider": "codex",
+                 "sessionReference": "codex/123e4567-e89b-12d3-a456-426614174000", "reference": full}
+        self.assertEqual(asb.copy_values(local), ("codex/123e4567-e89b-12d3-a456-426614174000", None, full, None))
+        short = local["sessionReference"]
+        def off(code, **extra):
+            row = {**local, "referenceUnavailable": code, **extra}
+            row.pop("reference")
+            return asb.copy_values(row)
+        self.assertEqual(off("unknown-source"), (short, None, None, "ASB does not know the profile of this session."))
+        member = off("unknown-source", remote=True, machineName="homeLP")
+        self.assertEqual(member[3], "homeLP did not send the profile of this session.")
+        self.assertEqual(off("old-peer", remote=True, machineName="homeLP")[3], "homeLP has an older ASB. Update ASB on that machine.")
+        self.assertEqual(off("no-machine-identity")[3], "This computer has no ASB machine ID. Run asb doctor.")
+        self.assertEqual(off("ambiguous-source"), (short, None, None, "More than one profile reads this session. ASB cannot pick one."))
+        # An invalid ID has no short value either; both rows have the same reason.
+        invalid = "This session has an ID in a form that ASB does not know."
+        self.assertEqual(off("invalid-app-id", sessionReference=None), (None, invalid, None, invalid))
+        unsupported = "This version of ASB does not know this app. Update ASB on this machine."
+        self.assertEqual(off("unsupported-type", sessionReference=None), (None, unsupported, None, unsupported))
+        fallback = "ASB cannot make a full reference for this session."
+        self.assertEqual(off("new-code")[2:], (None, fallback))
+        self.assertEqual(off(["list"])[2:], (None, fallback))
+        self.assertEqual(asb.copy_values({**local, "reference": full + " x"})[2:], (None, fallback))
+        # An old engine sends no reference keys: the short value comes from session_reference, the full one is off.
+        old = {"id": "x", "externalId": "local_1234", "provider": "claude-desktop-code", "sourceName": "claude-proxy"}
+        self.assertEqual(asb.copy_values(old), ("claude-proxy/local_1234", None, None, "The ASB engine is older. Quit ASB and start it again."))
+        for bad in ("codex/a\nb", "codex/a b", "codex/\u00e9", "c/" + "a" * 383, "codex/\ud800", "", None, 7):
+            self.assertEqual(asb.copy_values({**local, "sessionReference": bad})[:2], (None, invalid), repr(bad))
+            self.assertEqual(asb.copy_values({**local, "reference": bad})[2:], (None, fallback), repr(bad))
+        self.assertEqual(asb.copy_values({**local, "sessionReference": "c/" + "a" * 382})[0], "c/" + "a" * 382)
+        self.assertEqual(asb.copy_values({**old, "externalId": "local_1\n"})[:2], (None, invalid))
+
+    def copy_panel(self, values):
+        """A window and a panel with mock copy rows; the real copy handlers run."""
         timers, removed = {}, []
         def timeout_add(delay, callback):
             timers[len(timers) + 1] = (delay, callback)
             return len(timers)
         glib = SimpleNamespace(timeout_add=timeout_add, source_remove=removed.append, Error=type("GError", (Exception,), {}))
-        gtk = SimpleNamespace(Popover=object, AccessibleProperty=SimpleNamespace(DESCRIPTION=1))
+        gtk = SimpleNamespace(Popover=object, AccessibleProperty=SimpleNamespace(DESCRIPTION=1), AccessibleState=SimpleNamespace(DISABLED=2))
         window = object.__new__(Window)
         window.closed, window.update_row_panel = False, Mock()
         clipboard = Mock()
         window.get_clipboard = lambda: clipboard
-        row = {"id": "claude-proxy-1:local_1234", "externalId": "local_1234", "provider": "claude-desktop-code", "sourceName": "claude-proxy"}
-        window.focus_widgets = {row["id"]: SimpleNamespace(asb_thread=row)}
-        panel = SimpleNamespace(asb_identity=row["id"], asb_copy=Mock(), asb_copy_timer=None, asb_copy_error="",
-                                asb_reference="claude-proxy/local_1234")
-        panel.asb_copy.get_ancestor = lambda _type: panel
-        with patch.dict(SCOPE, {"GLib": glib, "Gtk": gtk}):
-            window.panel_copy(panel.asb_copy)
-            clipboard.set.assert_called_once_with("claude-proxy/local_1234")
-            panel.asb_copy.asb_icon.set_from_icon_name.assert_called_with("object-select-symbolic")
-            panel.asb_copy.set_tooltip_text.assert_called_with("Copied")
-            panel.asb_copy.update_property.assert_called_with([1], ["Copied"])
+        row = {"id": "a"}
+        window.focus_widgets = {"a": SimpleNamespace(asb_thread=row)}
+        panel = SimpleNamespace(asb_identity="a", asb_copy=Mock(), asb_copy_full=Mock(), asb_copy_timer=None, asb_copy_error="",
+                                asb_copy_values=values, asb_copied=None)
+        for button in (panel.asb_copy, panel.asb_copy_full):
+            button.get_ancestor = lambda _type: panel
+        return window, panel, clipboard, timers, removed, glib, gtk, row
+
+    def test_panel_copy_writes_each_reference_and_shows_copied_for_a_moment(self):
+        full = "asb:1/0123456789abcdef/codex/" + "f" * 32 + "/codex:1"
+        window, panel, clipboard, timers, removed, glib, gtk, row = self.copy_panel(("codex/1", None, full, None))
+        short, absolute = panel.asb_copy, panel.asb_copy_full
+        icon = Mock()
+        with patch.dict(SCOPE, {"GLib": glib, "Gtk": gtk, "set_icon": icon}):
+            window.show_copy_rows(panel)
+            self.assertEqual((short.asb_tip, absolute.asb_tip), ("codex/1", full))
+            short.set_tooltip_text.assert_called_with("codex/1")
+            absolute.set_tooltip_text.assert_not_called()  # Row 2 has its own wrapped tooltip.
+            short.asb_caption.set_label.assert_called_with("Relative: in the same app")
+            absolute.asb_caption.set_label.assert_called_with("Absolute: with ASB, any machine")
+            absolute.asb_caption.set_lines.assert_called_with(1)
+            absolute.update_state.assert_called_with([2], [False])
+            absolute.update_property.assert_called_with([1], [full])
+            window.panel_copy(short, "short")
+            clipboard.set.assert_called_once_with("codex/1")
+            icon.assert_any_call(short.asb_icon, "object-select-symbolic")
+            short.add_css_class.assert_any_call("asb-copy-done")
+            short.set_tooltip_text.assert_called_with("Copied")
+            short.update_property.assert_called_with([1], ["Copied"])
+            short.asb_label.set_label.assert_not_called()  # The label stays.
             self.assertEqual(timers[1][0], 1600)
             window.update_row_panel.assert_called_with(panel, row)
-            # A second copy starts the 1.6 seconds again.
-            window.panel_copy(panel.asb_copy)
-            self.assertEqual((removed, panel.asb_copy_timer), ([1], 2))
+            # A copy on row 2 ends the check on row 1 at once.
+            window.panel_copy(absolute, "full")
+            clipboard.set.assert_called_with(full)
+            self.assertEqual((removed, panel.asb_copy_timer, panel.asb_copied), ([1], 2, "full"))
+            icon.assert_any_call(short.asb_icon, "edit-copy-symbolic")
+            icon.assert_called_with(absolute.asb_icon, "object-select-symbolic")
+            short.update_property.assert_called_with([1], ["codex/1"])
+            absolute.update_property.assert_called_with([1], ["Copied"])
+            self.assertEqual(absolute.asb_tip, "Copied")
+            # After 1.6 seconds the description is the exact value again; nothing resets it to empty.
             timers[2][1]()
-            self.assertIsNone(panel.asb_copy_timer)
-            panel.asb_copy.asb_icon.set_from_icon_name.assert_called_with("edit-copy-symbolic")
-            # The tooltip is the app and session ID again.
-            panel.asb_copy.set_tooltip_text.assert_called_with("claude-proxy/local_1234")
-            panel.asb_copy.reset_property.assert_called_with(1)
+            self.assertEqual((panel.asb_copy_timer, panel.asb_copied, absolute.asb_tip), (None, None, full))
+            absolute.update_property.assert_called_with([1], [full])
+            absolute.reset_property.assert_not_called()
             # Close removes a running timer, so no late callback touches the panel.
-            window.panel_copy(panel.asb_copy)
+            window.panel_copy(short, "short")
             window.clear_copy_feedback(panel)
             self.assertEqual((removed[-1], panel.asb_copy_timer), (3, None))
-            clipboard.set.side_effect = TypeError("no clipboard")
-            panel.asb_copy.reset_mock()
-            window.panel_copy(panel.asb_copy)
-            self.assertEqual(panel.asb_copy_error, "Cannot copy the app and session ID: no clipboard")
+            for button, text in ((short, "relative"), (absolute, "absolute")):
+                clipboard.set.side_effect = TypeError("no clipboard")
+                window.panel_copy(button, "short" if button is short else "full")
+                self.assertEqual(panel.asb_copy_error, f"Cannot copy the {text} reference: no clipboard")
+                self.assertIsNone(panel.asb_copied)
             self.assertEqual(len(timers), 3)
-            panel.asb_copy.asb_icon.set_from_icon_name.assert_called_once_with("edit-copy-symbolic")
-            window.update_row_panel.assert_called_with(panel, row)
+            clipboard.set.side_effect = None
+            window.panel_copy(absolute, "full")
+            self.assertEqual(panel.asb_copy_error, "")
+
+    def test_an_unavailable_copy_row_is_focusable_has_no_action_and_shows_its_reason(self):
+        invalid = "This session has an ID in a form that ASB does not know."
+        window, panel, clipboard, timers, _removed, glib, gtk, _row = self.copy_panel((None, invalid, None, invalid))
+        short, absolute = panel.asb_copy, panel.asb_copy_full
+        with patch.dict(SCOPE, {"GLib": glib, "Gtk": gtk}):
+            window.show_copy_rows(panel)
+            for button in (short, absolute):
+                window.panel_copy(button, "short" if button is short else "full")
+                button.update_state.assert_called_with([2], [True])
+                button.add_css_class.assert_any_call("asb-copy-off")
+                button.update_property.assert_called_with([1], [invalid])
+                self.assertEqual(button.asb_tip, invalid)
+                button.set_sensitive.assert_not_called()
+            clipboard.set.assert_not_called()
+            window.update_row_panel.assert_not_called()
+            self.assertEqual(timers, {})
+            # One reason for both rows shows once, under row 2, in at most two lines.
+            short.asb_caption.set_visible.assert_called_with(False)
+            absolute.asb_caption.set_label.assert_called_with(invalid)
+            absolute.asb_caption.set_lines.assert_called_with(2)
+            # Different reasons: each row shows its own.
+            unknown = "ASB does not know the profile of this session."
+            panel.asb_copy_values = (None, invalid, None, unknown)
+            window.show_copy_rows(panel)
+            short.asb_caption.set_label.assert_called_with(invalid)
+            absolute.asb_caption.set_label.assert_called_with(unknown)
+            # Available again: no DISABLED state.
+            panel.asb_copy_values = ("codex/1", None, None, unknown)
+            window.show_copy_rows(panel)
+            short.update_state.assert_called_with([2], [False])
+            short.remove_css_class.assert_any_call("asb-copy-off")
+
+    def test_the_disabled_card_copy_button_has_no_action_and_never_copies(self):
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        row = {"id": "a", "title": "Chat", "state": "idle", "externalId": "bad id", "provider": "codex", "referenceUnavailable": "invalid-app-id"}
+        widget = SimpleNamespace(asb_view="comfortable", asb_thread=row, asb_focus_key="a", asb_read_timer=None, asb_copy_timer=None,
+                                 asb_read_button=Mock(), asb_pin_button=Mock(), asb_copy_button=Mock())
+        copy = widget.asb_copy_button
+        window = object.__new__(Window)
+        window.session_actions, window.column_pixel_width, window.closed, window.open_errors = set(), 240, False, {}
+        window.focus_widgets = {"a": widget}
+        clipboard = Mock()
+        window.get_clipboard = lambda: clipboard
+        with patch.dict(SCOPE, {"Gtk": gtk}):
+            window.update_card_actions(widget)
+            copy.set_visible.assert_called_with(True)
+            copy.set_action_name.assert_called_with(None)
+            copy.add_css_class.assert_any_call("asb-copy-off")
+            copy.update_state.assert_called_with([1], [True])
+            copy.set_tooltip_text.assert_called_with("This session has an ID in a form that ASB does not know.")
+            copy.update_property.assert_any_call([0], ["Copy relative reference: Chat"])
+            window.copy_reference(None, SimpleNamespace(get_string=lambda: "a"))
+            clipboard.set.assert_not_called()
+            self.assertIsNone(widget.asb_copy_timer)
 
     def test_card_copy_is_local_shows_a_check_and_keeps_failures_on_the_row(self):
         timers, removed = {}, []
@@ -4861,8 +4977,8 @@ class NativeLogicChecks(unittest.TestCase):
             clipboard.set.side_effect = TypeError("no clipboard")
             window.copy_reference(None, target(rows[2]["id"]))
             self.assertEqual(removed[-1], 3)
-            self.assertEqual(feedback(third), (None, "edit-copy-symbolic", "Copy app and session ID", (1,)))
-            self.assertEqual(window.open_errors, {rows[2]["id"]: "Cannot copy the app and session ID: no clipboard"})
+            self.assertEqual(feedback(third), (None, "edit-copy-symbolic", "Copy relative reference", (1,)))
+            self.assertEqual(window.open_errors, {rows[2]["id"]: "Cannot copy the relative reference: no clipboard"})
             window.update_open_state.assert_called_once_with(third)
             self.assertEqual(len(timers), 5)
             # A later success clears the old copy error from the row tooltip, and an open error stays.
@@ -4893,14 +5009,15 @@ class NativeLogicChecks(unittest.TestCase):
                 copy.set_action_name.assert_called_with("win.copy-reference")
                 copy.get_child().set_from_icon_name.assert_called_with("object-select-symbolic" if copied else "edit-copy-symbolic")
                 (copy.add_css_class if copied else copy.remove_css_class).assert_called_with("asb-copy-confirmed")
-                copy.set_tooltip_text.assert_called_with("Copied" if copied else "Copy app and session ID")
-                copy.update_property.assert_any_call([0], ["Copy app and session ID: Chat"])
+                copy.set_tooltip_text.assert_called_with("Copied" if copied else "Copy relative reference")
+                copy.update_property.assert_any_call([0], ["Copy relative reference: Chat"])
+                copy.update_state.assert_called_with([1], [False])
                 if copied:
                     copy.update_property.assert_called_with([1], ["Copied"])
                 else:
                     copy.reset_property.assert_called_with(1)
             self.assertNotIn(("asb-action-pending",), [call.args for call in copy.add_css_class.call_args_list])
-            copy.update_state.assert_not_called()
+            self.assertNotIn(("asb-copy-off",), [call.args for call in copy.add_css_class.call_args_list])
             copy.set_sensitive.assert_not_called()
 
     def test_number_keys_take_whole_openable_cards_down_then_across(self):

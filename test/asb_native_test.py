@@ -151,6 +151,9 @@ class WidgetCheck(unittest.TestCase):
         cls.gtk_check = ctypes.CDLL(ctypes.util.find_library("gtk-4")).gtk_test_accessible_check_property
         cls.gtk_check.argtypes = (ctypes.c_void_p, ctypes.c_int)
         cls.gtk_check.restype = ctypes.c_void_p
+        cls.gtk_state = ctypes.CDLL(ctypes.util.find_library("gtk-4")).gtk_test_accessible_check_state
+        cls.gtk_state.argtypes = (ctypes.c_void_p, ctypes.c_int)
+        cls.gtk_state.restype = ctypes.c_void_p
         cls.g_free = ctypes.CDLL(ctypes.util.find_library("glib-2.0")).g_free
         cls.g_free.argtypes = (ctypes.c_void_p,)
 
@@ -170,6 +173,13 @@ class WidgetCheck(unittest.TestCase):
         prop = asb.Gtk.AccessibleProperty.LABEL if prop is None else prop
         error = self.gtk_check(self.capsule_pointer(widget.__gpointer__, None), int(prop),
                                ctypes.c_char_p(expected.encode()))
+        if error:
+            message = ctypes.string_at(error).decode()
+            self.g_free(error)
+            self.fail(message)
+
+    def assert_accessible_disabled(self, widget, expected):
+        error = self.gtk_state(self.capsule_pointer(widget.__gpointer__, None), int(asb.Gtk.AccessibleState.DISABLED), ctypes.c_int(expected))
         if error:
             message = ctypes.string_at(error).decode()
             self.g_free(error)
@@ -949,11 +959,17 @@ class WidgetCheck(unittest.TestCase):
             ok, point = row.compute_point(window, asb.Graphene.Point().init(rectangle.x, rectangle.y))
             half = 139  # the 278px panel with its ring
             self.assertTrue(half <= point.x <= window.get_width() - half, (point.x, half, window.get_width()))
-            # One flat row of about 30px per control.
-            for button in (panel.asb_open, panel.asb_copy, *panel.asb_actions.values()):
+            # One flat row of about 30px per control; a copy row is taller for its caption.
+            for button in (panel.asb_open, *panel.asb_actions.values()):
                 if button.get_visible():
                     self.assertTrue(button.has_css_class("flat") and button.has_css_class("asb-panel-action"))
                     self.assertTrue(30 <= button.get_height() <= 32, button.get_height())
+            for button in (panel.asb_copy, panel.asb_copy_full):
+                self.assertTrue(button.has_css_class("flat") and button.has_css_class("asb-panel-captioned"))
+                # get_height() leaves out the padding: 5px at the top and the bottom.
+                found, box = button.compute_bounds(panel)
+                self.assertEqual(box.size.height, button.get_height() + 10)
+                self.assertGreater(box.size.height, 32)
             # A failed action shows its error in the panel, which covers the card tooltip.
             self.assertFalse(panel.asb_error.get_visible())
             window.open_errors["second"] = "The server did not answer."
@@ -976,7 +992,8 @@ class WidgetCheck(unittest.TestCase):
                 if button.get_visible():
                     self.assert_accessible_label(button, button.asb_label.get_label())
             self.assert_accessible_label(panel.asb_open, "Open in Codex")
-            self.assert_accessible_label(panel.asb_copy, "Copy app and session ID")
+            self.assert_accessible_label(panel.asb_copy, "Copy relative reference")
+            self.assert_accessible_label(panel.asb_copy_full, "Copy absolute reference")
             self.assertTrue(panel.asb_open.get_sensitive())
             # Earlier and Later at the ends of the pins send nothing.
             with patch.object(window, "session_action") as action:
@@ -996,7 +1013,7 @@ class WidgetCheck(unittest.TestCase):
             window.session_actions.add("second")
             row.asb_thread.update(unread=False, pending=False, pendingSource="")
             window.sync_row_panel()
-            self.assertFalse(any(button.get_sensitive() for button in (panel.asb_open, panel.asb_copy, *panel.asb_actions.values())))
+            self.assertFalse(any(button.get_sensitive() for button in (panel.asb_open, panel.asb_copy, panel.asb_copy_full, *panel.asb_actions.values())))
             self.assertEqual(actions(panel)["read"], ("Mark read", False))
             self.assertIn("drawer", actions(panel))
             self.assertIs(panel.asb_return_focus, read)
@@ -1021,11 +1038,15 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_open)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
+            self.assertIs(window.get_focus(), panel.asb_copy_full)
+            self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_copy)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_actions["pin-down"])
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_copy)
+            self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
+            self.assertIs(window.get_focus(), panel.asb_copy_full)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_open)
             # Escape (the native popover key handler) closes the panel and gives the focus back to the card.
@@ -1824,14 +1845,27 @@ class WidgetCheck(unittest.TestCase):
         window.show_context(window.focus_widgets[row["id"]]); self.drain(.3)
         panel = window.context_menu
         reference = "claude-proxy/local_" + "a" * 36
-        button = panel.asb_copy
-        self.assertIs(button.get_next_sibling(), panel.asb_error)  # The last control of the panel.
+        button, full = panel.asb_copy, panel.asb_copy_full
+        self.assertIs(button.get_next_sibling(), full)
+        self.assertIs(full.get_next_sibling(), panel.asb_error)  # The last control of the panel.
         self.assertIsInstance(button.get_prev_sibling(), asb.Gtk.Separator)
         self.assertEqual((button.asb_label.get_label(), button.asb_icon.get_icon_name(), button.get_tooltip_text()),
-                         ("Copy app and session ID", "edit-copy-symbolic", reference))
+                         ("Copy relative reference", "edit-copy-symbolic", reference))
         self.assertTrue(button.has_css_class("flat"))
-        self.assert_accessible_label(button, "Copy app and session ID")
+        self.assert_accessible_label(button, "Copy relative reference")
+        self.assert_accessible_label(button, reference, asb.Gtk.AccessibleProperty.DESCRIPTION)
+        self.assertEqual((button.asb_caption.get_label(), button.asb_caption.get_lines()), ("Relative: in the same app", 1))
         self.assertEqual(panel.asb_title.get_tooltip_text().split("\n")[1], reference)
+        # This mock is an old engine: row 2 says why, has no action, and stays sensitive and focusable.
+        older = "The ASB engine is older. Quit ASB and start it again."
+        self.assertEqual((full.asb_label.get_label(), full.asb_caption.get_label(), full.asb_caption.get_lines(), full.get_sensitive(),
+                          full.get_focusable()), ("Copy absolute reference", older, 2, True, True))
+        self.assert_accessible_label(full, "Copy absolute reference")
+        self.assert_accessible_label(full, older, asb.Gtk.AccessibleProperty.DESCRIPTION)
+        self.assert_accessible_disabled(full, True)
+        self.assert_accessible_disabled(button, False)
+        full.emit("clicked"); self.drain(.1)
+        self.assertEqual(clipboard.texts, [])
         # The button copies the exact reference, and the panel stays open.
         button.emit("clicked"); self.drain(.1)
         button.emit("clicked"); self.drain(.1)
@@ -1839,17 +1873,20 @@ class WidgetCheck(unittest.TestCase):
         self.assertIs(window.context_menu, panel)
         self.assertTrue(panel.get_visible())
         self.assertEqual((button.asb_icon.get_icon_name(), button.get_tooltip_text()), ("object-select-symbolic", "Copied"))
-        self.assertEqual(button.asb_label.get_label(), "Copy app and session ID")
+        self.assertEqual(button.asb_label.get_label(), "Copy relative reference")
         self.assert_accessible_label(button, "Copied", asb.Gtk.AccessibleProperty.DESCRIPTION)
         self.drain(1.7)
         self.assertEqual((button.asb_icon.get_icon_name(), button.get_tooltip_text()), ("edit-copy-symbolic", reference))
-        # Up and Down reach the copy button and wrap at the end.
+        self.assert_accessible_label(button, reference, asb.Gtk.AccessibleProperty.DESCRIPTION)
+        # Up and Down reach both copy rows, also the unavailable one, and wrap at the end.
         last = [control for control in panel.asb_actions.values() if control.get_visible()][-1]
         last.grab_focus()
         keys = next(controller for controller in panel.observe_controllers()
                     if isinstance(controller, asb.Gtk.EventControllerKey) and controller.get_propagation_phase() == asb.Gtk.PropagationPhase.CAPTURE)
         self.assertTrue(keys.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
         self.assertIs(window.get_focus(), button)
+        self.assertTrue(keys.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
+        self.assertIs(window.get_focus(), full)
         self.assertTrue(keys.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
         self.assertIs(window.get_focus(), panel.asb_open)
         # A refresh with a new ID updates the tooltips and ends the feedback of the old copy.
@@ -1864,7 +1901,7 @@ class WidgetCheck(unittest.TestCase):
             raise TypeError("no clipboard")
         clipboard.set = refuse
         button.emit("clicked"); self.drain(.1)
-        copy_error = "Cannot copy the app and session ID: no clipboard"
+        copy_error = "Cannot copy the relative reference: no clipboard"
         self.assertEqual((panel.asb_error.get_label(), panel.asb_error.get_visible()), (copy_error, True))
         self.assertEqual(button.asb_icon.get_icon_name(), "edit-copy-symbolic")
         window.open_errors[row["id"]] = "The server did not answer."
@@ -1923,8 +1960,85 @@ class WidgetCheck(unittest.TestCase):
                 self.assertTrue(pinned.has_focus())
                 self.assertFalse(near(render_panel()(pin_x + 1, pinned_y + pinned_height / 2), board, 2))  # The ring is on the row edge.
                 # The permission note uses 72% of the text color; custom colors use the muted role.
-                for label in (panel.asb_title, panel.asb_open.asb_label, pinned.asb_label, button.asb_label, panel.asb_note, panel.asb_error):
+                for label in (panel.asb_title, panel.asb_open.asb_label, pinned.asb_label, button.asb_label, panel.asb_note, panel.asb_error,
+                              button.asb_caption, full.asb_caption):
                     self.assertGreaterEqual(text_on(label, board), 4.5, label.get_css_classes())
+
+    def test_copy_rows_show_the_absolute_reference_the_reasons_and_the_disabled_card_button(self):
+        patcher = patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        dashboard = mock_dashboard()
+        row, invalid_row = dashboard["threads"][1], dashboard["threads"][2]
+        app_id = "123e4567-e89b-12d3-a456-426614174000"
+        reference = "asb:1/0123456789abcdef/codex/" + "f" * 32 + "/codex:" + app_id
+        row.update(externalId=app_id, sessionReference="codex/" + app_id, reference=reference)
+        invalid_row.update(externalId="bad id", referenceUnavailable="invalid-app-id")
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        clipboard = SimpleNamespace(texts=[])
+        clipboard.set = clipboard.texts.append
+        window.get_clipboard = lambda: clipboard  # No write to a real clipboard.
+        window.set_default_size(680, 600)
+        window.present(); self.drain(.5); window.check_geometry(); self.drain()
+        window.show_context(window.focus_widgets[row["id"]]); self.drain(.3)
+        panel = window.context_menu
+        short, full = panel.asb_copy, panel.asb_copy_full
+        self.assertEqual((full.asb_caption.get_label(), full.asb_caption.get_lines()), ("Absolute: with ASB, any machine", 1))
+        self.assertFalse(full.asb_caption.get_layout().is_ellipsized())
+        self.assertEqual(full.asb_caption.get_layout().get_line_count(), 1)
+        self.assert_accessible_label(full, reference, asb.Gtk.AccessibleProperty.DESCRIPTION)
+        self.assert_accessible_disabled(full, False)
+        # The row 2 tooltip is the exact value, wrapped at about 36 characters.
+        tooltip = SimpleNamespace(set_custom=lambda widget: setattr(tooltip, "widget", widget))
+        self.assertTrue(window.query_copy_tooltip(full, 0, 0, False, tooltip))
+        self.assertEqual((tooltip.widget.get_label(), tooltip.widget.get_max_width_chars(), tooltip.widget.get_wrap_mode()),
+                         (reference, 36, asb.Pango.WrapMode.WORD_CHAR))
+        short.emit("clicked"); self.drain(.1)
+        full.emit("clicked"); self.drain(.1)
+        self.assertEqual(clipboard.texts, ["codex/" + app_id, reference])
+        # A copy on row 2 ends the check on row 1; the label stays.
+        self.assertEqual((short.asb_icon.get_icon_name(), full.asb_icon.get_icon_name(), full.asb_label.get_label()),
+                         ("edit-copy-symbolic", "object-select-symbolic", "Copy absolute reference"))
+        self.assertTrue(full.has_css_class("asb-copy-done"))
+        self.assert_accessible_label(short, "codex/" + app_id, asb.Gtk.AccessibleProperty.DESCRIPTION)
+        # Unknown source: row 2 shows the reason in place of the caption, and keeps the focus.
+        row.pop("reference")
+        row["referenceUnavailable"] = "unknown-source"
+        window.render(); window.sync_row_panel(); self.drain(.1)
+        unknown = "ASB does not know the profile of this session."
+        self.assertEqual((full.asb_caption.get_label(), full.asb_icon.get_icon_name(), full.get_sensitive(), full.get_focusable()),
+                         (unknown, "edit-copy-symbolic", True, True))
+        self.assertTrue(full.has_css_class("asb-copy-off"))
+        self.assert_accessible_disabled(full, True)
+        layout = full.asb_caption.get_layout()
+        self.assertTrue(layout.get_line_count() <= 2 and not layout.is_ellipsized())
+        full.grab_focus(); full.activate(); self.drain(.1)
+        self.assertIs(window.get_focus(), full)
+        self.assertEqual(len(clipboard.texts), 2)
+        panel.popdown(); self.drain(.2)
+        # An invalid ID: both rows are off, the reason shows once, under row 2.
+        window.show_context(window.focus_widgets[invalid_row["id"]]); self.drain(.3)
+        panel = window.context_menu
+        reason = "This session has an ID in a form that ASB does not know."
+        self.assertEqual((panel.asb_copy.asb_caption.get_visible(), panel.asb_copy_full.asb_caption.get_label()), (False, reason))
+        for button in (panel.asb_copy, panel.asb_copy_full):
+            self.assert_accessible_disabled(button, True)
+            self.assert_accessible_label(button, reason, asb.Gtk.AccessibleProperty.DESCRIPTION)
+            button.emit("clicked")
+        self.assertEqual(panel.asb_copy.get_tooltip_text(), reason)
+        self.assertNotIn("\n", panel.asb_title.get_tooltip_text())  # The path only.
+        self.assertEqual(len(clipboard.texts), 2)
+        panel.popdown(); self.drain(.2)
+        # The Comfortable card button stays, with no action and the reason as its tooltip.
+        window.view_filter.set_selected(1); self.drain(1)
+        card = window.focus_widgets[invalid_row["id"]].asb_copy_button
+        self.assertEqual((card.get_visible(), card.get_action_name(), card.get_tooltip_text()), (True, None, reason))
+        self.assertTrue(card.has_css_class("asb-copy-off"))
+        self.assert_accessible_disabled(card, True)
+        self.assert_accessible_label(card, "Copy relative reference: " + invalid_row["title"])
+        card.emit("clicked"); self.drain(.1)
+        self.assertEqual(len(clipboard.texts), 2)
 
     def test_ctrl_number_keycaps_cover_the_mark_in_both_views_and_keep_the_row_height(self):
         patcher = patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)
@@ -2666,8 +2780,8 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual((copy_button.get_width(), copy_button.get_height(), copy_button.get_action_name(), copy_button.get_child().get_icon_name()),
                          (24, 24, "win.copy-reference", "edit-copy-symbolic"))
         self.assertEqual(copy_button.get_child().get_pixel_size(), 12)
-        self.assertEqual(copy_button.get_tooltip_text(), "Copy app and session ID")
-        self.assert_accessible_label(copy_button, "Copy app and session ID: " + one.asb_thread["title"])
+        self.assertEqual(copy_button.get_tooltip_text(), "Copy relative reference")
+        self.assert_accessible_label(copy_button, "Copy relative reference: " + one.asb_thread["title"])
         self.assertTrue(all(card.asb_copy_button.get_visible() and card.asb_copy_button.get_parent().has_css_class("asb-corner-wide")
                             for card in cards.values()))
         self.assertEqual(self.ink(cards["s3"].asb_copy_button.get_parent()), 0)  # A corner at rest has no ink.

@@ -162,6 +162,38 @@ def session_reference(row):
     return host + "/" + str(row.get("externalId", ""))
 
 
+# The board text of each dashboard referenceUnavailable code; <machine> is the row's machineName.
+REFERENCE_REASONS = {"no-machine-identity": "This computer has no ASB machine ID. Run asb doctor.",
+                     "unknown-source": "ASB does not know the profile of this session.",
+                     "invalid-app-id": "This session has an ID in a form that ASB does not know.",
+                     "unsupported-type": "This version of ASB does not know this app. Update ASB on this machine.",
+                     "old-peer": "{machine} has an older ASB. Update ASB on that machine.",
+                     "ambiguous-source": "More than one profile reads this session. ASB cannot pick one."}
+
+
+def copy_values(row):
+    """(relative, its reason, absolute, its reason): a value is None, with the reason text, when it is not one safe line."""
+    def safe(text):
+        # Printable ASCII with no space or line break; the engine checks the grammar.
+        return isinstance(text, str) and 1 <= len(text) <= 384 and all("\x21" <= char <= "\x7e" for char in text)
+    new_engine = "reference" in row or "referenceUnavailable" in row
+    code, machine = row.get("referenceUnavailable"), str(row.get("machineName") or "")
+    short = row.get("sessionReference") if new_engine else session_reference(row)
+    short_reason = None if safe(short) else REFERENCE_REASONS["unsupported-type" if code == "unsupported-type" else "invalid-app-id"]
+    full = row.get("reference")
+    if safe(full):
+        full_reason = None
+    elif not new_engine:
+        full_reason = "The ASB engine is older. Quit ASB and start it again."
+    elif code == "unknown-source" and row.get("remote") is True:
+        full_reason = f"{machine} did not send the profile of this session."
+    elif isinstance(code, str) and code in REFERENCE_REASONS:
+        full_reason = REFERENCE_REASONS[code].format(machine=machine)
+    else:
+        full_reason = "ASB cannot make a full reference for this session."
+    return (None if short_reason else short), short_reason, (None if full_reason else full), full_reason
+
+
 def panel_place(x, y, width, height, window_width, window_height, margin=6):
     """Where a panel of this size, centered on x, points and opens ("bottom" or "top") to stay inside the window."""
     half = width / 2
@@ -3201,6 +3233,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-session:hover .asb-copy-button, {base} .asb-key-focus .asb-copy-button {{ opacity: 1; }}
 {base} .asb-copy-button:hover, {base} .asb-copy-button:focus-visible {{ background: alpha(@accent_color, .15); }}
 {base} .asb-copy-button.asb-copy-confirmed {{ color: @success_color; background: alpha(@success_color, .12); }}
+{base} .asb-session:hover .asb-copy-button.asb-copy-off, {base} .asb-key-focus .asb-copy-button.asb-copy-off {{ opacity: .45; }}
+{base} .asb-copy-button.asb-copy-off, {base} .asb-copy-button.asb-copy-off:hover, {base} .asb-copy-button.asb-copy-off:focus-visible {{ background: none; }}
 {base} .asb-corner-wide {{ padding: 0 0 2px 16px; border-radius: 0 0 0 12px; }}
 {base} .asb-session:hover .asb-corner-wide, {base} .asb-key-focus .asb-corner-wide {{
     background: linear-gradient(to right, alpha(@window_bg_color, 0), @window_bg_color 16px); }}
@@ -3225,6 +3259,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-row-panel separator {{ margin: 4px 0; }}
 {base} .asb-row-panel .asb-panel-note {{ margin: 5px 8px; color: alpha(@window_fg_color, .72); }}
 {base} .asb-row-panel .asb-panel-error {{ margin: 8px 8px 0; font-size: 11px; }}
+{base} .asb-row-panel .asb-panel-caption {{ font-size: 11px; color: alpha(@window_fg_color, .72); opacity: 1; }}
+{base} .asb-row-panel button.asb-panel-captioned {{ padding-top: 5px; padding-bottom: 5px; }}
+{base} .asb-row-panel button.asb-copy-off .asb-panel-label, {base} .asb-row-panel button.asb-copy-off image {{ opacity: .5; }}
+{base} .asb-row-panel button.asb-copy-off:hover, {base} .asb-row-panel button.asb-copy-off:active {{ background: none; }}
+{base} .asb-row-panel button.asb-copy-done image {{ color: @accent_color; }}
 """
         if colors:
             colors = validate_theme(colors)
@@ -3235,7 +3274,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope}, {scope} headerbar, {scope} popover contents {{ background: {colors['background']}; color: {colors['text']}; }}
 {scope} popover > contents {{ border: 1px solid {edge_color(colors['background'], colors['text'], .36, (colors['background'],))}; }}
 {scope} popover.asb-row-panel > contents {{ background: {colors['background']}; border-color: {edge_color(colors['background'], colors['accent'], .7, (colors['background'],))}; }}
-{scope} .asb-row-panel .asb-panel-note {{ color: {colors['muted']}; }}
+{scope} .asb-row-panel .asb-panel-note, {scope} .asb-row-panel .asb-panel-caption {{ color: {colors['muted']}; }}
+{scope} .asb-row-panel button.asb-copy-done image {{ color: {colors['accent']}; }}
 {scope} .asb-state, {scope} .dim-label {{ color: {colors['muted']}; opacity: 1; }}
 {scope} .asb-working, {scope} .asb-waiting {{ color: {colors['accent']}; }}
 {scope} .asb-message-lit .asb-provider {{ color: {colors['accent']}; }}
@@ -3275,6 +3315,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} .asb-copy-button {{ background: alpha({colors['text']}, .08); }}
 {scope} .asb-copy-button:hover, {scope} .asb-copy-button:focus-visible {{ background: alpha({colors['accent']}, .15); }}
 {scope} .asb-copy-button.asb-copy-confirmed {{ color: {colors['accent']}; background: alpha({colors['accent']}, .15); }}
+{scope} .asb-copy-button.asb-copy-off, {scope} .asb-copy-button.asb-copy-off:hover, {scope} .asb-copy-button.asb-copy-off:focus-visible {{ background: none; }}
 {scope} .asb-session:hover .asb-corner-wide, {scope} .asb-key-focus .asb-corner-wide {{
     background: linear-gradient(to right, alpha({colors['background']}, 0), {colors['background']} 16px); }}
 .asb-tooltip.asb-custom {{ color: {colors['text']}; }}
@@ -4829,7 +4870,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         indicator = attention_indicator(row, True)
         signature = (indicator, row.get("state"), row.get("actionRequired"), row.get("discardResult"),
                      row.get("pinned"), row.get("drawer"), row.get("muted"), row.get("title"), pending, bool(widget.asb_read_timer),
-                     self.column_pixel_width >= 190, bool(getattr(widget, "asb_copy_timer", None)))
+                     self.column_pixel_width >= 190, bool(getattr(widget, "asb_copy_timer", None)), copy_values(row)[:2])
         if signature == getattr(widget, "asb_action_signature", None):
             return
         widget.asb_action_signature = signature
@@ -4879,15 +4920,19 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         copy = getattr(widget, "asb_copy_button", None)
         if copy:
             # Copy sends no request, so it has no pending state. The corner fades the title for it at every width that shows it.
-            wide, copied = self.column_pixel_width >= 190, bool(widget.asb_copy_timer)
+            short, reason = copy_values(row)[:2]
+            wide, copied = self.column_pixel_width >= 190, bool(widget.asb_copy_timer and short)
             copy.set_visible(wide)
             (copy.get_parent().add_css_class if wide else copy.get_parent().remove_css_class)("asb-corner-wide")
-            copy.set_action_name("win.copy-reference")
+            # With no relative reference the button keeps its place, but has no action and says why.
+            copy.set_action_name("win.copy-reference" if short else None)
+            (copy.add_css_class if not short else copy.remove_css_class)("asb-copy-off")
+            copy.update_state([Gtk.AccessibleState.DISABLED], [not short])
             copy.get_child().set_from_icon_name("object-select-symbolic" if copied else "edit-copy-symbolic")
             (copy.add_css_class if copied else copy.remove_css_class)("asb-copy-confirmed")
-            if copy.get_tooltip_text() != (tip := "Copied" if copied else "Copy app and session ID"):
+            if copy.get_tooltip_text() != (tip := reason or ("Copied" if copied else "Copy relative reference")):
                 copy.set_tooltip_text(tip)
-            copy.update_property([Gtk.AccessibleProperty.LABEL], ["Copy app and session ID: " + row.get("title", "Untitled session")])
+            copy.update_property([Gtk.AccessibleProperty.LABEL], ["Copy relative reference: " + row.get("title", "Untitled session")])
             if copied:
                 copy.update_property([Gtk.AccessibleProperty.DESCRIPTION], ["Copied"])
             else:
@@ -4896,18 +4941,19 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def copy_reference(self, _action, target):
         identity = target.get_string()
         widget = self.focus_widgets.get(identity)
-        if not widget or self.closed:
+        short = copy_values(widget.asb_thread)[0] if widget else None
+        if not short or self.closed:
             return
         # The check of an earlier copy must not stay on after this one fails.
         self.cancel_card_copy(widget)
         try:
-            self.get_clipboard().set(session_reference(widget.asb_thread))
+            self.get_clipboard().set(short)
         except (GLib.Error, TypeError) as error:
-            self.open_errors[identity] = f"Cannot copy the app and session ID: {error}"
+            self.open_errors[identity] = f"Cannot copy the relative reference: {error}"
             self.update_card_actions(widget)
             self.update_open_state(widget)
             return
-        if self.open_errors.get(identity, "").startswith("Cannot copy the app and session ID: "):
+        if self.open_errors.get(identity, "").startswith("Cannot copy the relative reference: "):
             self.open_errors.pop(identity)
             self.update_open_state(widget)
         def clear():
@@ -5067,9 +5113,26 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         for slot in dict.fromkeys(slot for slot, _icon in ROW_PANEL_SLOTS.values()):
             panel.asb_actions[slot] = action_row(None, *((self.panel_move_pin, slot[4:]) if slot.startswith("pin-") else (self.panel_action, slot)))
         root.append(Gtk.Separator())
-        panel.asb_copy = action_row("edit-copy-symbolic", self.panel_copy)
-        set_panel_label(panel.asb_copy, "Copy app and session ID")
-        panel.asb_copy_timer, panel.asb_copy_error, panel.asb_reference, panel.asb_controls = None, "", None, None
+        panel.asb_copy = action_row("edit-copy-symbolic", self.panel_copy, "short")
+        panel.asb_copy_full = action_row("edit-copy-symbolic", self.panel_copy, "full")
+        for button, text in ((panel.asb_copy, "Copy relative reference"), (panel.asb_copy_full, "Copy absolute reference")):
+            set_panel_label(button, text)
+            button.asb_label.add_css_class("asb-panel-label")
+            # The caption or the reason goes under the label.
+            words = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1, hexpand=True)
+            button.get_child().remove(button.asb_label)
+            words.append(button.asb_label)
+            button.asb_caption = label("", "asb-panel-caption")
+            button.asb_caption.set_wrap(True)
+            button.asb_caption.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            button.asb_caption.set_ellipsize(Pango.EllipsizeMode.END)
+            button.asb_caption.set_max_width_chars(1)
+            words.append(button.asb_caption)
+            button.get_child().append(words)
+        # The absolute reference has no spaces: a plain tooltip would be one very wide line.
+        panel.asb_copy_full.set_has_tooltip(True)
+        panel.asb_copy_full.connect("query-tooltip", self.query_copy_tooltip)
+        panel.asb_copy_timer, panel.asb_copy_error, panel.asb_copy_values, panel.asb_copied, panel.asb_controls = None, "", None, None, None
         # The card tooltip shows a failed action, but the panel covers the card.
         panel.asb_error = label("", "asb-panel-error")
         panel.asb_error.add_css_class("error")
@@ -5132,16 +5195,16 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         # While an action for the row runs, the action rows keep their labels.
         controls = panel.asb_controls if pending and panel.asb_controls is not None else row_panel_controls(row)
         model = tooltip_model(row, time.time() * 1000, Path.home(), "", self.drawer_view)
-        reference = session_reference(row)
+        values = copy_values(row)
         signature = (model["title"], model["path"], model["app"], bool(row.get("canOpen")), tuple(controls.items()),
-                     bool(row.get("actionRequired")), pending, row["id"] in self.opening, self.open_errors.get(row["id"], ""), reference,
-                     panel.asb_copy_error, row_where(row))
+                     bool(row.get("actionRequired")), pending, row["id"] in self.opening, self.open_errors.get(row["id"], ""), values,
+                     panel.asb_copied, panel.asb_copy_error, row_where(row))
         if signature == panel.asb_signature:
             return
         panel.asb_signature, panel.asb_controls = signature, controls
-        if reference != panel.asb_reference:
-            # A new ID ends the feedback of a copy of the old one.
-            panel.asb_reference = reference
+        if values != panel.asb_copy_values:
+            # A new value or an availability change ends the feedback of a copy of the old one.
+            panel.asb_copy_values = values
             self.clear_copy_feedback(panel)
         focus = self.get_focus()
         if pending and focus and focus.is_ancestor(panel):
@@ -5149,7 +5212,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             panel.asb_return_focus = focus
         panel.update_property([Gtk.AccessibleProperty.LABEL], [model["title"]])
         panel.asb_title.set_label(" ".join(model["title"].split()))
-        panel.asb_title.set_tooltip_text(model["path"] + "\n" + reference)
+        panel.asb_title.set_tooltip_text(model["path"] + ("\n" + values[0] if values[0] else ""))
         panel.asb_note.set_visible(bool(row.get("actionRequired")))
         error = self.open_errors.get(row["id"], "") or panel.asb_copy_error
         panel.asb_error.set_label(error)
@@ -5168,6 +5231,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 set_icon(button.asb_icon, icon)
             button.set_sensitive(not pending)
         panel.asb_copy.set_sensitive(not pending)
+        panel.asb_copy_full.set_sensitive(not pending)
         if not pending and getattr(panel, "asb_return_focus", None):
             GLib.idle_add(self.restore_panel_focus, panel, panel.asb_return_focus)
             panel.asb_return_focus = None
@@ -5197,21 +5261,22 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if action:
             self.activate_action("win." + action, GLib.Variant("s", panel.asb_identity))
 
-    def panel_copy(self, button):
+    def panel_copy(self, button, slot):
         panel = button.get_ancestor(Gtk.Popover)
         widget = self.focus_widgets.get(panel.asb_identity)
-        if not widget or self.closed:
+        value = panel.asb_copy_values[0 if slot == "short" else 2] if panel.asb_copy_values else None
+        # An unavailable row is focusable but has no action.
+        if not widget or self.closed or not value:
             return
+        # A copy ends the check on both rows first.
         self.clear_copy_feedback(panel)
         try:
-            self.get_clipboard().set(session_reference(widget.asb_thread))
+            self.get_clipboard().set(value)
         except (GLib.Error, TypeError) as error:
-            panel.asb_copy_error = f"Cannot copy the app and session ID: {error}"
+            panel.asb_copy_error = f"Cannot copy the {'relative' if slot == 'short' else 'absolute'} reference: {error}"
         else:
-            panel.asb_copy_error = ""
-            panel.asb_copy.asb_icon.set_from_icon_name("object-select-symbolic")
-            panel.asb_copy.set_tooltip_text("Copied")
-            panel.asb_copy.update_property([Gtk.AccessibleProperty.DESCRIPTION], ["Copied"])
+            panel.asb_copy_error, panel.asb_copied = "", slot
+            self.show_copy_rows(panel)
             def clear():
                 panel.asb_copy_timer = None
                 self.clear_copy_feedback(panel)
@@ -5223,9 +5288,37 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if panel.asb_copy_timer:
             GLib.source_remove(panel.asb_copy_timer)
             panel.asb_copy_timer = None
-        panel.asb_copy.asb_icon.set_from_icon_name("edit-copy-symbolic")
-        panel.asb_copy.set_tooltip_text(panel.asb_reference)
-        panel.asb_copy.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
+        panel.asb_copied = None
+        self.show_copy_rows(panel)
+
+    def show_copy_rows(self, panel):
+        """Show the two copy rows from the checked values: caption or reason, tooltip, description, and the copied check."""
+        if not panel.asb_copy_values:
+            return
+        short, short_reason, full, full_reason = panel.asb_copy_values
+        for slot, button, value, reason, caption in (("short", panel.asb_copy, short, short_reason, "Relative: in the same app"),
+                                                     ("full", panel.asb_copy_full, full, full_reason, "Absolute: with ASB, any machine")):
+            copied = panel.asb_copied == slot
+            # One reason for both rows shows once, under row 2.
+            note = caption if value else "" if slot == "short" and reason == full_reason else reason
+            button.asb_caption.set_label(note)
+            button.asb_caption.set_lines(1 if value else 2)
+            button.asb_caption.set_visible(bool(note))
+            (button.remove_css_class if value else button.add_css_class)("asb-copy-off")
+            (button.add_css_class if note or not value else button.remove_css_class)("asb-panel-captioned")
+            (button.add_css_class if copied else button.remove_css_class)("asb-copy-done")
+            button.update_state([Gtk.AccessibleState.DISABLED], [not value])
+            set_icon(button.asb_icon, "object-select-symbolic" if copied else "edit-copy-symbolic")
+            button.asb_tip = "Copied" if copied else value or reason
+            if slot == "short":
+                button.set_tooltip_text(button.asb_tip)
+            button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [button.asb_tip])
+
+    def query_copy_tooltip(self, button, _x, _y, _keyboard, tooltip):
+        text = Gtk.Label(label=button.asb_tip, xalign=0, wrap=True, max_width_chars=36)
+        text.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        tooltip.set_custom(text)
+        return True
 
     def panel_move_pin(self, button, direction):
         panel = button.get_ancestor(Gtk.Popover)

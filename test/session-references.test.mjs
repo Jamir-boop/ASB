@@ -7,7 +7,8 @@ import { formatReference, parseReference, parseShortReference, referenceType, ro
   MAX_REFERENCE_BYTES } from '../src/session-references.mjs';
 import { X509Certificate } from 'node:crypto';
 import { createPhoneGateway, referenceScopeTagger } from '../src/phone-gateway.mjs';
-import { createSwitchboardServer } from '../src/switchboard.mjs';
+import { createSwitchboardServer, loadSwitchboardDashboard } from '../src/switchboard.mjs';
+import { resolveSessionReference } from '../src/session-targets.mjs';
 
 // Synthetic data only. Platform-neutral (test/windows-tests.json).
 const MACHINE = '0123456789abcdef';
@@ -292,4 +293,46 @@ test('the server adds the reference fields to local rows and keeps the row IDs',
   assert.equal(untagged.threads[0].referenceUnavailable, 'no-machine-identity');
   identity = { machineId: '', machineName: 'synthetic' };
   assert.equal((await managed()).threads[0].referenceUnavailable, 'no-machine-identity');
+});
+
+test('a CLI session that two Claude sources list has a full reference only when exactly one listing has a transcript', async (t) => {
+  const directory = await folder(t);
+  const sources = ['claude-a', 'claude-b'].map((id) => ({ id, provider: 'claude-desktop-code', label: id, dataDir: path.join(directory, id),
+    projectsDir: path.join(directory, 'projects'), enabled: true, builtin: false, launcher: '' }));
+  for (const source of sources) await mkdir(source.dataDir);
+  const tag = referenceScopeTagger('d'.repeat(64));
+  let transcripts = {};
+  let machineId = MACHINE;
+  const server = createSwitchboardServer({ pendingStatePath: false, dashboardWatchPaths: [],
+    sourceRegistry: { read: async () => sources, report: async () => [], warning: '' },
+    machineIdentity: () => ({ machineId, machineName: 'synthetic' }), referenceScopes: () => tag,
+    loadDashboard: (options) => loadSwitchboardDashboard({ ...options, loadCodex: async () => ({ threads: [] }),
+      loadClaude: async ({ appDir }) => ({ threads: [{ id: `cli:${UUID}`, externalId: UUID, provider: 'claude-desktop-code', surface: 'cli',
+        source: 'claude-cli', cliSessionId: UUID, cliNoTranscript: !transcripts[path.basename(appDir)], title: 'Shared', updatedAtMs: 1 }] }) }) });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const shared = async () => (await (await fetch(`http://127.0.0.1:${server.address().port}/api/dashboard?force=1`)).json()).threads
+    .filter((row) => row.externalId === UUID);
+  // Two listings with a transcript, or none with one: the kept row has no full reference.
+  for (const value of [{ 'claude-a': true, 'claude-b': true }, {}]) {
+    transcripts = value;
+    const rows = await shared();
+    assert.equal(rows.length, 1);
+    assert.deepEqual([rows[0].reference, rows[0].referenceUnavailable, rows[0].referenceScope, rows[0].sessionReference],
+      [undefined, 'ambiguous-source', undefined, `claude-a/${UUID}`]);
+    const found = resolveSessionReference({ reference: `claude-a/${UUID}` }, { threads: rows, machine: { machineId: MACHINE } });
+    assert.deepEqual([found.ok, found.availability, found.referenceUnavailable], [true, 'found', 'ambiguous-source']);
+  }
+  // The earlier reasons come first: with no machine identity, the shared row says so.
+  machineId = '';
+  assert.deepEqual((await shared()).map((row) => [row.referenceUnavailable, row.reference, row.sessionReference]),
+    [['no-machine-identity', undefined, `claude-a/${UUID}`]]);
+  machineId = MACHINE;
+  // Exactly one listing with a transcript (the link-claude case): that row keeps its reference.
+  transcripts = { 'claude-b': true };
+  const [linked] = await shared();
+  assert.equal(linked.reference, `asb:1/${MACHINE}/claude-b/${tag(sources[1])}/claude-cli:${UUID}`);
+  assert.equal(linked.sessionReference, `claude-b/${UUID}`);
+  assert.equal(resolveSessionReference({ reference: `claude-b/${UUID}` }, { threads: [linked], machine: { machineId: MACHINE } }).identity?.reference,
+    linked.reference);
 });

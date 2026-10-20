@@ -22,6 +22,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 const QUESTION_AT = Symbol('ASB question timestamp');
 const SOURCE_DIR = Symbol('ASB session store');
+// A CLI row that more than one source lists, with no single source of origin.
+const SHARED_CLI = Symbol('ASB shared CLI session');
 const DISCARD_TASK = Symbol('ASB discard task signals');
 const READ_FIELDS = ['questionSeen', 'questionAck', 'nativeAt', 'nativeAck', 'nativeSeen',
   'discard', 'discardedAt', 'discardStart', 'discardEnd', 'discardNative', 'drawerSeen'];
@@ -244,6 +246,7 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
         rootEnd: Number(thread.latestTaskEndedAtMs || (thread.lifecycleRunning === false ? thread.latestLifecycleAtMs : 0) || 0),
       } });
       if (thread.sourceDataDir) Object.defineProperty(row, SOURCE_DIR, { value: thread.sourceDataDir });
+      if (thread.cliSharedSource) Object.defineProperty(row, SHARED_CLI, { value: true });
       return row;
     }),
   };
@@ -401,12 +404,19 @@ export async function loadSwitchboardDashboard({
   // Two Claude sources that share a registry folder (`asb bridge link-claude`) both list a live CLI session:
   // keep one row, the one with a transcript, else the first in source order.
   const cliRows = new Map();
+  const cliCounts = new Map();
   for (const thread of threads) {
     if (thread.source !== 'claude-cli') continue;
     const kept = cliRows.get(thread.externalId);
     if (!kept || (kept.cliNoTranscript && !thread.cliNoTranscript)) cliRows.set(thread.externalId, thread);
+    const [listings = 0, transcripts = 0] = cliCounts.get(thread.externalId) || [];
+    cliCounts.set(thread.externalId, [listings + 1, transcripts + (thread.cliNoTranscript ? 0 : 1)]);
   }
-  const unique = threads.filter((thread) => thread.source !== 'claude-cli' || cliRows.get(thread.externalId) === thread);
+  // The origin is known only when exactly one listing has a transcript; the first displayed source is not evidence.
+  const unique = threads.filter((thread) => thread.source !== 'claude-cli' || cliRows.get(thread.externalId) === thread).map((thread) => {
+    const [listings, transcripts] = thread.source === 'claude-cli' ? cliCounts.get(thread.externalId) : [];
+    return listings > 1 && transcripts !== 1 ? { ...thread, cliSharedSource: true } : thread;
+  });
   return buildSwitchboardDashboard(unique, providers, nowMs, machine);
 }
 
@@ -786,8 +796,10 @@ export function createSwitchboardServer(options = {}) {
         // Only a registered source has a tag.
         const scopeTag = tags.get(row.sourceId);
         const sessionReference = shortReference(row);
-        Object.assign(row, rowReference(row, { machineId: tagger ? machine.machineId : '', sourceId: row.sourceId, scopeTag }),
-          scopeTag ? { referenceScope: scopeTag } : {}, sessionReference ? { sessionReference } : {});
+        const reference = rowReference(row, { machineId: tagger ? machine.machineId : '', sourceId: row.sourceId, scopeTag });
+        // A shared CLI row keeps the earlier reasons; it gets no reference and sends no scope tag, so a member cannot make one.
+        Object.assign(row, row[SHARED_CLI] && reference.reference ? { referenceUnavailable: 'ambiguous-source' } : reference,
+          scopeTag && !row[SHARED_CLI] ? { referenceScope: scopeTag } : {}, sessionReference ? { sessionReference } : {});
       }
       options.machineGroup?.merge(loaded);
       const dashboard = await tracker.observe(loaded);
