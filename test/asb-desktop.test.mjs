@@ -11,8 +11,8 @@ const launcherUrl = new URL('../scripts/asb-desktop.mjs', import.meta.url);
 const launcher = (await readFile(launcherUrl, 'utf8')).replace(/^import[^\n]*\n/gm, '').replace(/^export /m, '')
   .replace(/\nif \(process\.argv\[1\][^\n]*\n$/, '\nmain();\n').replaceAll('import.meta.url', 'launcherUrl');
 const engine = { pid: 12, port: 23456, sourceToken: 'service-token' };
-// No test runs the real Python probe; without ASB_PYTHON the window uses the Python of this board check.
-const boardCheck = async () => ({ ok: true, python: '/opt/python3' });
+// No test runs the real Python probe. As the real check does, an absolute ASB_PYTHON is the only candidate.
+const boardCheck = async ({ env }) => ({ ok: true, python: env.ASB_PYTHON || '/opt/python3' });
 const pick = (watch) => ({ setInterval: watch.setInterval, clearInterval: watch.clearInterval });
 // The engine watch timer is captured; tests run its callback by hand.
 const timers = () => {
@@ -48,18 +48,23 @@ test('the window gets the engine URL and token and its exit code without stoppin
   assert.equal(starts, 1);
 });
 
-test('without a Python the window does not start and the launcher exits 1', async () => {
+test('a failed board check keeps the engine, registers nothing, opens no window, and exits 3', async () => {
   const owner = new EventEmitter();
   owner.platform = 'linux';
-  owner.env = { ASB_SYSTEM_INSTALL: '1' };
+  owner.env = { ASB_PYTHON: '/bin/false' };
+  const steps = [];
   const errors = [];
   await vm.runInNewContext(launcher, { ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath,
-    boardCheck: async () => ({ ok: false, python: null }), startEngine: async () => engine,
+    startEngine: async () => { steps.push('engine'); return engine; },
+    boardCheck: async ({ env }) => { steps.push(['board', env.ASB_PYTHON]); return { ok: false, python: null, versions: null, reason: 'Python 3 does not run.' }; },
+    registerAppIcon: async () => assert.fail('An engine-only run registers no icon.'),
     console: { log() {}, error(message) { errors.push(message); }, warn() {} },
     spawn: () => assert.fail('No window may start.'),
   });
-  assert.deepEqual(errors, ['Cannot open the native ASB window: Python 3 was not found. Use system Python 3 or npm start for the web view.']);
-  assert.equal(owner.exitCode, 1);
+  assert.deepEqual(steps, ['engine', ['board', '/bin/false']]);
+  assert.deepEqual(errors, ['ASB runs without its window on this system: Python 3 does not run. The engine runs for the phone and your other machines. '
+    + 'Run asb doctor for details.']);
+  assert.equal(owner.exitCode, 3);
 });
 
 test('an engine that cannot start prints its log path, exits 1, and opens no window', async () => {

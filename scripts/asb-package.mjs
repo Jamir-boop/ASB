@@ -115,7 +115,7 @@ export async function checkRuntime({ env = process.env, platform = process.platf
   const board = await boardCheck({ env, execFile });
   if (!board.ok) warn(`ASB will run without its window: ${board.reason} Run asb doctor for details.`);
   return { nodeExecutable: await realpath(process.execPath), pythonExecutable: board.versions?.gi ? board.python : null,
-    sqliteDirectory: engine.sqlite3 ? path.dirname(engine.sqlite3) : undefined };
+    sqliteDirectory: engine.sqlite3 ? path.dirname(engine.sqlite3) : undefined, boardOk: board.ok };
 }
 
 function locations(options) {
@@ -174,8 +174,12 @@ export async function install(options = {}) {
   if (previous.launcher && (!manifest || digest(previous.launcher) !== manifest.files.launcher || !previous.launcher.toString().includes(MARKER))) {
     throw new Error(`ASB will not replace this launcher: ${paths.launcher}`);
   }
-  const registration = await registerAppIcon({ projectRoot: sourceRoot, dataDir: paths.dataDir, launcherExecutable: paths.launcher, checkOnly: true });
-  if (registration.status === 'conflict') throw new Error(registration.message);
+  // Without the board, ASB writes no icon and no desktop entry, and the install record has neither.
+  const board = runtime.boardOk !== false;
+  if (board) {
+    const registration = await registerAppIcon({ projectRoot: sourceRoot, dataDir: paths.dataDir, launcherExecutable: paths.launcher, checkOnly: true });
+    if (registration.status === 'conflict') throw new Error(registration.message);
+  }
   let existing = false;
   try {
     await lstat(destination);
@@ -223,9 +227,11 @@ export async function install(options = {}) {
     await replace(paths.launcher, wrapper, previous.launcher, 0o755, signal);
     changed.set('launcher', wrapper);
     signal.throwIfAborted();
-    const result = await registerAppIcon({ projectRoot: destination, dataDir: paths.dataDir, launcherExecutable: paths.launcher });
-    if (result.status === 'conflict') throw new Error(result.message);
-    for (const key of ['icon', 'desktop']) changed.set(key, await readFile(paths[key]));
+    if (board) {
+      const result = await registerAppIcon({ projectRoot: destination, dataDir: paths.dataDir, launcherExecutable: paths.launcher });
+      if (result.status === 'conflict') throw new Error(result.message);
+      for (const key of ['icon', 'desktop']) changed.set(key, await readFile(paths[key]));
+    }
     signal.throwIfAborted();
     const files = Object.fromEntries([...changed].map(([key, bytes]) => [key, digest(bytes)]));
     const record = { schema: 1, appId: ASB_APP_ID, version: release, releases: { ...manifest?.releases, [release]: hashes }, files };
@@ -233,6 +239,13 @@ export async function install(options = {}) {
     await replace(paths.manifest, recordBytes, previous.manifest, 0o600, signal);
     changed.set('manifest', recordBytes);
     signal.throwIfAborted();
+    // Without the board, remove ASB's own previous icon and desktop entry (the uninstall ownership rule). Other files stay.
+    if (!board) {
+      for (const key of ['icon', 'desktop']) {
+        const bytes = await contents(paths[key]);
+        if (bytes && manifest?.files[key] && digest(bytes) === manifest.files[key]) await rm(paths[key]);
+      }
+    }
     let retainedBackup;
     if (existing) { try { await rm(backup, { recursive: true }); } catch { retainedBackup = backup; } }
     installed = { version: release, directory: destination, launcher: paths.launcher, nodeExecutable, retainedBackup };

@@ -19,6 +19,14 @@ function stop(code = 0) {
 async function start() {
   const service = await startEngine();
   if (stopping) return;
+  // The check comes before the icon registration, so that a run without the window writes nothing.
+  const board = await boardCheck({ env: process.env });
+  if (stopping) return;
+  if (!board.ok) {
+    console.error(`ASB runs without its window on this system: ${board.reason} The engine runs for the phone and your other machines. Run asb doctor for details.`);
+    stop(3);
+    return;
+  }
   try {
     if (process.env.ASB_SYSTEM_INSTALL !== '1') {
       const registration = await registerAppIcon({ launcherExecutable: process.env.ASB_INSTALLED_LAUNCHER });
@@ -29,14 +37,7 @@ async function start() {
   }
   if (stopping) return;
   const url = `http://127.0.0.1:${service.port}`;
-  const python = process.env.ASB_PYTHON || (await boardCheck({ env: process.env })).python;
-  if (stopping) return;
-  if (!python) {
-    console.error('Cannot open the native ASB window: Python 3 was not found. Use system Python 3 or npm start for the web view.');
-    stop(1);
-    return;
-  }
-  window = spawn(python, [fileURLToPath(new URL('./asb-native.py', import.meta.url)), url], {
+  window = spawn(board.python, [fileURLToPath(new URL('./asb-native.py', import.meta.url)), url], {
     stdio: ['ignore', 'inherit', 'inherit'], env: { ...process.env, ASB_SOURCE_TOKEN: service.sourceToken },
   });
   window.once('error', (error) => {

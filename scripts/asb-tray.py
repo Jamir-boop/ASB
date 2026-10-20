@@ -77,7 +77,10 @@ def tooltip_text(phone):
     return "Running. Phone access on." if isinstance(phone, dict) and phone.get("running") is True else "Running."
 
 
-def menu_layout():
+def menu_layout(board=True):
+    # Without the board (ASB_BOARD=0), the menu has only Quit ASB. Quit keeps its item ID.
+    if not board:
+        return (0, {"children-display": "submenu"}, [(3, {"label": "Quit ASB"}, [])])
     return (0, {"children-display": "submenu"}, [(1, {"label": "Open ASB"}, []), (2, {"type": "separator"}, []), (3, {"label": "Quit ASB"}, [])])
 
 
@@ -104,7 +107,9 @@ def launch_env(env):
     return {key: value for key, value in env.items() if key not in ENGINE_KEYS}
 
 
-def menu_action(item_id, event_id):
+def menu_action(item_id, event_id, board=True):
+    if not board and item_id == 1:
+        return None
     return {(1, "clicked"): "open", (3, "clicked"): "quit"}.get((item_id, event_id))
 
 
@@ -126,7 +131,8 @@ class Tray:
         self.bus_name = f"org.kde.StatusNotifierItem-{os.getpid()}-1"
         self.tooltip = "Running."
         self.registered = False
-        self.items = menu_items(menu_layout())
+        self.board = env.get("ASB_BOARD") != "0"
+        self.items = menu_items(menu_layout(self.board))
 
     def request(self, method, route, timeout):
         headers = {"X-ASB-Source-Token": self.token, "Accept": "application/json"}
@@ -209,9 +215,10 @@ class Tray:
     def method_call(self, _connection, _sender, _path, _interface, method, parameters, invocation):
         args = parameters.unpack()
         if method == "Activate":
-            self.open_asb()
+            if self.board:
+                self.open_asb()
         elif method == "GetLayout":
-            invocation.return_value(GLib.Variant("(u(ia{sv}av))", (1, layout_value(menu_layout()))))
+            invocation.return_value(GLib.Variant("(u(ia{sv}av))", (1, layout_value(menu_layout(self.board)))))
             return
         elif method == "GetGroupProperties":
             ids = args[0] or list(self.items)
@@ -227,10 +234,10 @@ class Tray:
                 invocation.return_value(GLib.Variant("(v)", (GLib.Variant("s", value),)))
             return
         elif method == "Event":
-            self.run_action(menu_action(args[0], args[1]))
+            self.run_action(menu_action(args[0], args[1], self.board))
         elif method == "EventGroup":
             for item_id, event_id, _data, _timestamp in args[0]:
-                self.run_action(menu_action(item_id, event_id))
+                self.run_action(menu_action(item_id, event_id, self.board))
             invocation.return_value(GLib.Variant("(ai)", ([],)))
             return
         elif method == "AboutToShow":

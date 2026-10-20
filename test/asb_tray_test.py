@@ -41,6 +41,34 @@ class TrayLogicTest(unittest.TestCase):
         for item_id, event_id in ((2, "clicked"), (1, "hovered"), (3, "opened"), (0, "clicked")):
             self.assertIsNone(tray.menu_action(item_id, event_id))
 
+    def test_without_the_board_the_menu_has_only_quit(self):
+        self.assertEqual(tray.menu_layout(board=False), (0, {"children-display": "submenu"}, [(3, {"label": "Quit ASB"}, [])]))
+        self.assertEqual(tray.menu_layout(True), tray.menu_layout())
+        self.assertIsNone(tray.menu_action(1, "clicked", board=False))
+        self.assertEqual(tray.menu_action(3, "clicked", board=False), "quit")
+        self.assertEqual(tray.menu_action(1, "clicked", board=True), "open")
+
+    def test_tray_reads_asb_board_once_and_activate_opens_nothing_without_the_board(self):
+        settings = (42, "http://127.0.0.1:4629", "a" * 64, "/opt/asb/bin/asb")
+
+        class Invocation:
+            def return_value(self, value):
+                self.value = value
+
+        for env, board in (({"ASB_BOARD": "0"}, False), ({}, True), ({"ASB_BOARD": "1"}, True)):
+            item = tray.Tray(None, settings, env)
+            opened = []
+            item.open_asb = lambda: opened.append(True)
+            self.assertEqual(item.board, board)
+            self.assertEqual(sorted(item.items), [0, 1, 2, 3] if board else [0, 3])
+            item.method_call(None, None, "/StatusNotifierItem", None, "Activate", tray.GLib.Variant("(ii)", (0, 0)), Invocation())
+            item.method_call(None, None, "/MenuBar", None, "Event",
+                             tray.GLib.Variant("(isvu)", (1, "clicked", tray.GLib.Variant("s", ""), 0)), Invocation())
+            self.assertEqual(opened, [True, True] if board else [])
+            invocation = Invocation()
+            item.method_call(None, None, "/MenuBar", None, "GetLayout", tray.GLib.Variant("(iias)", (0, -1, [])), invocation)
+            self.assertEqual(invocation.value.unpack()[1], tray.menu_layout(board))
+
     def test_engine_settings_need_every_valid_value(self):
         env = {"ASB_ENGINE_PID": "42", "ASB_ENGINE_URL": "http://127.0.0.1:4629", "ASB_SOURCE_TOKEN": "a" * 64, "ASB_LAUNCHER": "/opt/asb/bin/asb"}
         self.assertEqual(tray.engine_settings(env), (42, "http://127.0.0.1:4629", "a" * 64, "/opt/asb/bin/asb"))

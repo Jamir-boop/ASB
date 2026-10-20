@@ -10,6 +10,7 @@ import { install } from '../scripts/asb-package.mjs';
 
 const sourceRoot = fileURLToPath(new URL('..', import.meta.url));
 const check = async () => ({ nodeExecutable: process.execPath, pythonExecutable: '/usr/bin/python3' });
+const PROBE = JSON.stringify({ python: '3.13.5', gi: '3.50.0', gtk: [4, 18, 6], adw: [1, 7, 6], glib: [2, 84, 4], cairo: true, qrcode: true, trayHost: null });
 const shellQuote = (value) => `'${value.replace(/'/g, "'\\''")}'`;
 
 // The launcher starts a detached engine; it gets a private runtime folder and a fake systemctl, and the test stops it.
@@ -106,7 +107,8 @@ test('the installed command starts ASB through the shipped launcher, keeps the c
   await symlink(process.execPath, candidate);
   const engine = await isolatedEngine(t, directory);
   const window = path.join(directory, 'window');
-  await writeFile(window, '#!/bin/sh\nprintf \'PATH=%s\\n\' "$PATH"\n', { mode: 0o755 });
+  // The fake window answers the board probe, then prints its PATH as the window.
+  await writeFile(window, `#!/bin/sh\nif [ "\${1:-}" = -c ]; then printf '%s\\n' '${PROBE}'; exit 0; fi\nprintf 'PATH=%s\\n' "$PATH"\n`, { mode: 0o755 });
   const previousNode = process.env.ASB_NODE;
   t.after(() => { if (previousNode === undefined) delete process.env.ASB_NODE; else process.env.ASB_NODE = previousNode; });
   process.env.ASB_NODE = candidate;
