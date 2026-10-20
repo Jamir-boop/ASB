@@ -130,7 +130,9 @@ function compactInlineText(value = '') {
 function truncateText(value = '', maxLength = 140) {
   const text = compactInlineText(value);
   if (text.length <= maxLength) return text;
-  return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
+  // Cut on code points, so an emoji is never split into a lone surrogate.
+  const points = [...text];
+  return points.length <= maxLength ? text : `${points.slice(0, Math.max(0, maxLength - 3)).join('')}...`;
 }
 
 // Each non-empty user text is a prompt, except the local command records that Claude Code writes itself.

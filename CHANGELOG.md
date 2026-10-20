@@ -7,6 +7,14 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Fixed the Codex reader for Codex database changes: a missing column no longer empties the Codex list.
 - Fixed `asb service install` and `asb setup` after `asb`: the user service restarted every 5 seconds while the engine that `asb` started was running.
 - Fixed **Check now** in the Android app: it now shows the notifications that it finds, and an automatic check while the app is open no longer marks new events as seen.
+- Fixed a Claude Code CLI session with Remote Control that showed as two cards and lost its messages.
+- Fixed cloud cards that went away or flickered when the PC clock ran a little behind the server, and a cloud card that went away for one scan when the cache file changed during the read.
+- Fixed sounds for old events when the engine starts in a machine group: the first rows of a member machine now set its baseline and play nothing.
+- Fixed "machine offline" for an online machine while another machine of the group is off: the message relay now reads the session lists of online machines only.
+- Fixed phone access settings that could not change while a saved ZeroTier or Tailscale address was absent: the gateway now does the only address check.
+- Fixed an engine stop when a member machine sends a bad port: ASB now accepts only ports from 1024 to 65535, and a request with a bad port fails without a later error.
+- Fixed an engine stop when the browser view asks for a file that ASB cannot read.
+- Fixed a board that stopped showing cards because of one bad card: a card with no provider, a usage limit reset time that is not a date, or a title cut inside an emoji. Titles are now cut on whole characters, and ASB repairs broken text in rows from other machines.
 
 ## ASB 1.9.0 - 2026-10-20
 

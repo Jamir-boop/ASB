@@ -12,6 +12,7 @@ import { performance } from 'node:perf_hooks';
 import { loadClaudeRemoteThreads, loadSwitchboardClaudeThreads, parseClaudeRemoteBody, parseClaudeRemoteBodyAsync,
   shutdownClaudeRemoteParser, claudeRemoteDeepLink, getClaudeRemoteCacheStats,
   invalidateClaudeRemoteData, isClaudeRemoteCacheEvent } from '../src/claude-remote-data.mjs';
+import { processStart } from '../src/claude-registry.mjs';
 import { loadSwitchboardDashboard, buildSwitchboardDashboard, openSwitchboardThread, PendingTracker,
   switchboardWatchPaths } from '../src/switchboard.mjs';
 
@@ -508,7 +509,7 @@ test('the newest cache target beyond 512 entries is selected and future or inval
     watch([row(`cse_${index}`)], now - index - 1), { mtimeMs: now - index - 1 });
   const newest = await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions/watch?include_trigger_sessions=true', watch([row('cse_01Newest')]));
   assert.equal((await loadClaudeRemoteThreads({ appDir, nowMs: now })).threads[0].externalId, 'cse_01Newest');
-  await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions/watch?include_trigger_sessions=true', watch([row('cse_01Future')], now + 1));
+  await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions/watch?include_trigger_sessions=true', watch([row('cse_01Future')], now + 5 * 60_000 + 1));
   const future = await loadClaudeRemoteThreads({ appDir, nowMs: now });
   assert.ok(future.threads.every((value) => value.externalId !== 'cse_01Future'));
   await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions/watch?include_trigger_sessions=true',
@@ -580,4 +581,69 @@ test('remote Discard uses explicit successful ends, clears generic Idle, and exp
   await cacheFile(appDir, key, watch([row(undefined, { last_event_at: new Date(now + 10).toISOString() })], now + 10), { mtimeMs: now + 10 });
   const stillRunning = (await tracker.observe(buildSwitchboardDashboard((await loadClaudeRemoteThreads({ appDir, nowMs: now + 10 })).threads, [], now + 10))).threads[0];
   assert.equal(stillRunning.discardResult, true);
+});
+
+test('cloud receipts a little ahead of the PC clock still count', async (t) => {
+  const appDir = await temp(t);
+  await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions?limit=100', JSON.stringify({
+    data: [row('cse_01Ahead')], resume_token: cursor(now + 30_000) }));
+  const result = await loadClaudeRemoteThreads({ appDir, nowMs: now });
+  assert.deepEqual(result.threads.map((thread) => thread.externalId), ['cse_01Ahead']);
+  assert.equal(buildSwitchboardDashboard(result.threads, [], now).threads[0].state, 'working');
+});
+
+test('a watch receipt a little after the PC clock keeps its changes', async (t) => {
+  const appDir = await temp(t);
+  await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions?limit=100', JSON.stringify({
+    data: [row('cse_01Skew')], resume_token: cursor(now - 2000) }), { mtimeMs: now - 2000 });
+  await cacheFile(appDir, `1/0/https://claude.ai/v1/code/sessions/watch?resume_token=${encodeURIComponent(cursor(now - 2000))}`,
+    frame('changed', row('cse_01Skew', { worker_status: 'idle' })) + frame('sync', {}, cursor(now + 500)));
+  const result = await loadClaudeRemoteThreads({ appDir, nowMs: now });
+  assert.equal(buildSwitchboardDashboard(result.threads, [], now).threads[0].state, 'idle');
+});
+
+test('a response file that changes during the read keeps the last parse and is read again', async (t) => {
+  const appDir = await temp(t);
+  const key = '1/0/https://claude.ai/v1/code/sessions/watch';
+  const filePath = await cacheFile(appDir, key, watch([row('cse_01Moving', { title: 'First' })]));
+  const titles = async () => (await loadClaudeRemoteThreads({ appDir, nowMs: now })).threads.map((thread) => thread.title);
+  assert.deepEqual(await titles(), ['First']);
+  await cacheFile(appDir, key, watch([row('cse_01Moving', { title: 'Second' })]), { mtimeMs: now - 1 });
+  const open = fs.open;
+  // The second stat of the response read sees another file; the file on disk does not change.
+  fs.open = async (...args) => {
+    const file = await open(...args);
+    if (args[0] !== filePath) return file;
+    const stat = file.stat.bind(file);
+    let stats = 0;
+    file.stat = async (...statArgs) => {
+      const value = await stat(...statArgs);
+      return ++stats === 2 ? Object.assign(Object.create(Object.getPrototypeOf(value)), value, { mtimeMs: value.mtimeMs + 1 }) : value;
+    };
+    return file;
+  };
+  try { assert.deepEqual(await titles(), ['First']); } finally { fs.open = open; }
+  assert.deepEqual(await titles(), ['Second']);
+});
+
+test('cloud titles cut on whole emoji', async (t) => {
+  const appDir = await temp(t);
+  await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions?limit=100', JSON.stringify({
+    data: [row('cse_01Emoji', { title: `${'x'.repeat(139)}😀y` })], resume_token: cursor(now) }));
+  const [thread] = (await loadClaudeRemoteThreads({ appDir, nowMs: now })).threads;
+  assert.equal(thread.title, `${'x'.repeat(139)}😀`);
+});
+
+test('a CLI session with Remote Control and its cloud row give one CLI row', async (t) => {
+  const appDir = await temp(t);
+  const configDir = path.join(appDir, 'config');
+  await mkdir(path.join(configDir, 'projects'), { recursive: true });
+  await mkdir(path.join(configDir, 'sessions'));
+  await writeFile(path.join(configDir, 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid,
+    procStart: await processStart(process.pid), sessionId: 'cli-remote', name: 'CLI task', cwd: '/work/cli', entrypoint: 'cli',
+    kind: 'interactive', startedAt: now - 120_000, status: 'idle', bridgeSessionId: 'session_01Rc' }));
+  await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions?limit=100', JSON.stringify({
+    data: [row('cse_01Rc')], resume_token: cursor(now) }));
+  const { threads } = await loadSwitchboardClaudeThreads({ appDir, projectsDir: path.join(configDir, 'projects'), nowMs: now });
+  assert.deepEqual(threads.map((thread) => thread.source), ['claude-cli']);
 });

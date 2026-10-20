@@ -6,6 +6,7 @@ import { appendFile, mkdir, mkdtemp, readFile, rename, rm, utimes, writeFile } f
 import os from 'node:os';
 import path from 'node:path';
 import {
+  claudeTitle,
   getClaudeCacheStats,
   invalidateClaudeData,
   loadClaudeDesktopCodeThreads,
@@ -1205,4 +1206,10 @@ test('a launch result that is not a valid Workflow launch makes no link', async 
   assert.deepEqual(await step(), [true, 'working'], 'resumed run');
   assert.deepEqual(await step([resumeNotice(-10_000, 'wtask0001')]), [true, 'working'], 'old task ID');
   assert.deepEqual(await step([resumeNotice(-9_000, 'wtask0002'), resumeEnd(-8_500)]), [false, 'idle'], 'new task ID');
+});
+
+test('a Claude title cut keeps whole emoji', () => {
+  const title = claudeTitle(`${'x'.repeat(136)}😀${'y'.repeat(9)}`);
+  assert.equal(title.isWellFormed(), true);
+  assert.equal(title, `${'x'.repeat(136)}😀...`);
 });

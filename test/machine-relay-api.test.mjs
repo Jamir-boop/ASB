@@ -878,3 +878,20 @@ test('the loopback receipt route needs the source token, local Host, and local O
   assert.equal(typeof sendReceipt, 'function');
   assert.equal((await call(`${await serve(older)}/api/relay/receipt`, { body })).status, 404);
 });
+
+test('the list poll skips an offline member, so its timeouts cannot delay the lists of online members', async (t) => {
+  const relay = await fakeRelay(t, {});
+  const C = 'c'.repeat(16);
+  const requests = [];
+  const group = fakeGroup([B, C]);
+  group.states[1].online = false;
+  const f = await supervisorFixture(t, { group, child: () => fakeChild({ line: relay.line }), supervisor: {
+    request: (options) => {
+      requests.push(options);
+      return options.member.machineId === B ? Promise.resolve({ status: 200, body: { peers: [] } }) : new Promise(() => {});
+    } } });
+  await f.supervisor.start();
+  await until(() => requests.length > 0);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(requests.map((item) => [item.path, item.member.machineId]), [['/peer/v1/peers', B]]);
+});

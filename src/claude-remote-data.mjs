@@ -14,6 +14,10 @@ const MAX_INDEX_ENTRIES = 50_000;
 const MAX_RESPONSES = 512;
 const MAX_PENDING_BODY_BYTES = 6 * MAX_BODY_BYTES;
 const ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
+// Cursor times are server times; a PC clock that runs a little behind must not hide the cloud rows.
+const CLOCK_SKEW_MS = 5 * 60_000;
+// readResponseBody gives this when the file changed during the read: keep the last parse and read it again.
+const CHANGED = Symbol('changed');
 const caches = new Map();
 const metrics = { keyReads: 0, bodyReads: 0, directoryReads: 0, parserStarts: 0, parserJobs: 0 };
 const parserQueue = [];
@@ -65,7 +69,7 @@ function projectName(config) {
       if (name && name.length <= 128 && !/[\x00-\x1f\x7f]/.test(name)) names.push(name);
     } catch { /* Repository metadata can be absent or incomplete. */ }
   }
-  return [...new Set(names)].join(', ').slice(0, 140);
+  return [...[...new Set(names)].join(', ')].slice(0, 140).join('');
 }
 
 function enumValue(value, prefix) {
@@ -76,7 +80,7 @@ function sessionRecord(value) {
   if (!value || typeof value !== 'object' || !claudeRemoteDeepLink(value.id)) return null;
   return {
     id: value.id,
-    title: typeof value.title === 'string' ? value.title.replace(/\s+/g, ' ').trim().slice(0, 140) : '',
+    title: typeof value.title === 'string' ? [...value.title.replace(/\s+/g, ' ').trim()].slice(0, 140).join('') : '',
     projectName: projectName(value.config),
     workerStatus: enumValue(value.worker_status, 'WORKER_STATUS_'),
     sessionStatus: enumValue(value.status, 'SESSION_STATUS_'),
@@ -293,7 +297,8 @@ async function readResponseBody(filePath, key, generation) {
     const length = bodyEnd - key.bodyStart;
     if (length <= 0 || length > MAX_BODY_BYTES) return null;
     let body = await readBytes(file, length, key.bodyStart);
-    if (!body || signature(stat) !== signature(await file.stat())) return null;
+    if (!body) return null;
+    if (signature(stat) !== signature(await file.stat())) return CHANGED;
     if (!complete) {
       let end = body.length;
       while (end > 0 && body[end - 1] === 0) end -= 1;
@@ -376,6 +381,7 @@ async function scanCache(root, cache, nowMs) {
       if (key.signature === stamp) continue;
       try {
         const response = await readResponse(filePath, key, generation);
+        if (response === CHANGED) continue;
         if (response) { cache.responses.set(name, response); boundedResponses(cache, nowMs); }
         else cache.responses.delete(name);
         key.signature = stamp;
@@ -388,7 +394,7 @@ async function scanCache(root, cache, nowMs) {
 
 function currentResponseChain(responses, nowMs) {
   const valid = [...responses].filter((response) => Number.isFinite(response.observedAtMs)
-    && response.observedAtMs > 0 && response.observedAtMs <= nowMs)
+    && response.observedAtMs > 0 && response.observedAtMs <= nowMs + CLOCK_SKEW_MS)
     .sort((a, b) => b.observedAtMs - a.observedAtMs || b.mtimeMs - a.mtimeMs);
   if (!valid.length) return [];
   const chain = [valid[0]], used = new Set(chain);
@@ -416,7 +422,7 @@ function currentSnapshot(responses, nowMs) {
 
 export function claudeRemoteStatus(thread, nowMs = Date.now()) {
   const observed = Number(thread.remoteObservedAtMs || 0);
-  if (!observed || observed > nowMs || nowMs - observed > ACTIVITY_WINDOW_MS) {
+  if (!observed || observed > nowMs + CLOCK_SKEW_MS || nowMs - observed > ACTIVITY_WINDOW_MS) {
     return { state: 'unknown', reason: 'The cached remote observation is missing or too old.' };
   }
   if (!['bridge', 'anthropic_cloud'].includes(thread.remoteEnvironmentKind)
@@ -490,8 +496,8 @@ export async function loadSwitchboardClaudeThreads(options = {}) {
   if (local?.provider?.status === 'error' && !remote?.threads.length && !cli?.threads.length) return local;
   const localThreads = local?.threads || [];
   const aliases = new Map();
-  for (const thread of localThreads) {
-    if (!claudeDesktopCodeDeepLink('', thread.externalId)) continue;
+  for (const thread of [...localThreads, ...(cli?.threads || [])]) {
+    if (thread.source !== 'claude-cli' && !claudeDesktopCodeDeepLink('', thread.externalId)) continue;
     for (const alias of Array.isArray(thread.bridgeSessionIds) ? thread.bridgeSessionIds : []) {
       if (!claudeRemoteDeepLink(alias)) continue;
       // Desktop stores session_<token>; bridge cache rows can use cse_<token>.

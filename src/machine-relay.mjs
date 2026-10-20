@@ -252,7 +252,8 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
 
   async function pollLists() {
     const tls = await group.tls();
-    await Promise.all(others().map(async (state) => {
+    // An offline member's list is not used, and its address timeouts would delay the lists of online members.
+    await Promise.all(others().filter((state) => state.online).map(async (state) => {
       try {
         const reply = await request({ member: state.member, path: '/peer/v1/peers', tls });
         const peers = reply.status === 200 ? validPeerList(reply.body) : null;

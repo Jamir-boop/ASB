@@ -203,3 +203,15 @@ for (const reported of [false, true]) test(`the engine plays a completion sound 
   assert.ok(loads >= 2);
   assert.deepEqual(played, reported ? [BIT_DONE] : []);
 });
+
+test('the first rows of a member machine are its baseline; its later rows play', () => {
+  const played = [];
+  const watch = createSoundWatcher((kind) => played.push(kind));
+  const own = row({ id: 'own' });
+  const member = { id: 'm:b:1', remote: true, machineId: 'b', completionAttention: true };
+  watch({ threads: [own] }, now);
+  watch({ threads: [own, member] }, now);
+  assert.deepEqual(played, []);
+  watch({ threads: [own, member, { id: 'm:b:2', remote: true, machineId: 'b', questionAttention: true }] }, now);
+  assert.deepEqual(played, [BIT_INPUT]);
+});

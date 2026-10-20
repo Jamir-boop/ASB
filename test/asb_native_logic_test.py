@@ -1343,6 +1343,19 @@ class DataChecks(unittest.TestCase):
             window.update_session_row(widget, row)
             widget.asb_dot.set_visible.assert_called_with(offer)
 
+    def test_bad_card_values_do_not_stop_the_render(self):
+        window = object.__new__(Window)
+        window.clear_read_feedback = window.update_card_actions = window.update_row_text = window.update_drawer_style = Mock()
+        window.open_errors = {}
+        window.view = "compact"
+        widget = SimpleNamespace(asb_view="compact", asb_thread={}, set_activatable=Mock(), asb_mark=Mock(), asb_source_badge=Mock(),
+                                 asb_where_icon=None, asb_where_label=Mock(), asb_dot=Mock(), asb_state_label=Mock(),
+                                 asb_folder=Mock(), add_css_class=Mock(), remove_css_class=Mock())
+        # A member row with no provider.
+        window.update_session_row(widget, {"id": "m:a:1", "remote": True, "state": "idle"})
+        # A reset time past the largest JavaScript date.
+        self.assertEqual(asb.tooltip_model({"state": "idle", "limitResetsAtMs": 1e20}, NOW, "/home/u")["limit"], "")
+
     def test_filters_state_order_pending_and_archive(self):
         self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE)], ["second", "claude:local_mock", "first", "unknown"])
         self.assertEqual(len(asb.filtered_rows(FIXTURE, archived=True)), 5)

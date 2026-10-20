@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createAsbServer } from '../src/asb-server.mjs';
 import { DashboardSnapshot } from '../src/dashboard-snapshot.mjs';
@@ -172,4 +175,19 @@ test('malformed JSON bodies get 400 on every action route', async (t) => {
   }
   assert.equal(calls, 0);
   assert.equal((await post('/api/threads/one/open', 'x'.repeat(70_000))).status, 500);
+});
+
+test('a static file that cannot be read does not stop the server', {
+  skip: process.platform === 'win32' || process.getuid?.() === 0 ? 'File modes do not stop this user from reading.' : false,
+}, async (t) => {
+  const publicDir = await mkdtemp(path.join(os.tmpdir(), 'asb-public-'));
+  t.after(() => rm(publicDir, { recursive: true, force: true }));
+  await writeFile(path.join(publicDir, 'switchboard.css'), 'body {}');
+  await chmod(path.join(publicDir, 'switchboard.css'), 0o000);
+  await writeFile(path.join(publicDir, 'switchboard.js'), '// ok');
+  const { base } = await serve(t, { publicDir });
+  await fetch(`${base}/switchboard.css`).then((response) => response.text()).catch(() => {});
+  const response = await fetch(`${base}/switchboard.js`);
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), '// ok');
 });

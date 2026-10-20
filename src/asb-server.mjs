@@ -282,11 +282,6 @@ export function createAsbServer({
               sendJson(response, 400, { error: 'Invalid phone settings. Choose up to eight different addresses and a port from 1024 to 65535 that is different from the ASB port.' });
               return;
             }
-            const listed = (await phoneGateway.status()).addresses;
-            if ((body.enabled && !addresses.length) || !addresses.every((value) => listed.some((item) => item.address === value))) {
-              sendJson(response, 400, { error: 'Choose a phone address on this PC.' });
-              return;
-            }
             result = await phoneGateway.updateSettings(body);
           } else result = phoneRevoke ? await phoneGateway.revokeDevice(phoneRevoke[1]) : await phoneGateway.createPairing();
         }

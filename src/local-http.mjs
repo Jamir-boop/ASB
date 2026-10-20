@@ -1,5 +1,6 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
+import { pipeline } from 'node:stream';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -78,7 +79,8 @@ export async function serveStatic(request, response, publicDir) {
       'content-type': MIME_TYPES.get(path.extname(filePath)) || 'application/octet-stream',
       'cache-control': 'no-store',
     });
-    createReadStream(filePath).pipe(response);
+    // A read error ends the response; it must not throw in the engine.
+    pipeline(createReadStream(filePath), response, () => {});
   } catch {
     response.writeHead(404);
     response.end('Not found');

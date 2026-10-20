@@ -326,3 +326,16 @@ test('the poller backs off after failures, goes offline after 3, and comes back 
   poller.stop();
   assert.deepEqual(timers.pending, []);
 });
+
+test('member text with a lone surrogate comes out well formed', () => {
+  const exported = exportLocalSessions(board([claude(1)], B), B, nowMs);
+  exported.rows[0].title = `Task \ud83d`;
+  const title = validExport(exported, B).rows[0].title;
+  assert.equal(title.isWellFormed(), true);
+});
+
+test('a bad member port rejects at once and leaves no timer that throws later', async () => {
+  const member = { machineId: B.machineId, addresses: [{ kind: 'lan', address: '127.0.0.1' }], port: 70000, certFingerprint: 'f'.repeat(64) };
+  await assert.rejects(peerRequest({ member, path: '/peer/v1/hello', tls: {}, timeoutMs: 20 }), { code: 'ERR_SOCKET_BAD_PORT' });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+});

@@ -76,7 +76,7 @@ test('phone status, settings, pairing, revoke, and service routes return the gat
   assert.equal(revoked.status, 200);
   assert.deepEqual((await revoked.json()).devices, []);
   assert.deepEqual(await (await request('/api/service')).json(), { service: false, pid: process.pid });
-  assert.deepEqual(calls, [['status'], ['status'], ['settings', configuration], ['pairing'], ['revoke', deviceId]]);
+  assert.deepEqual(calls, [['status'], ['settings', configuration], ['pairing'], ['revoke', deviceId]]);
   assert.equal(loads(), 0);
 });
 
@@ -159,11 +159,10 @@ test('phone POST bodies reject malformed JSON, non-objects and unknown fields', 
   assert.equal((await request('/api/phone/devices/ABCDEF123456/revoke', { method: 'POST' })).status, 404);
 });
 
-test('phone settings validate booleans, available addresses, port bounds and the ASB port', async (t) => {
+test('phone settings validate booleans, the address list, port bounds and the ASB port', async (t) => {
   const { gateway, calls } = fakeGateway();
   const { request, port } = await serve(t, { phoneGateway: gateway });
-  for (const extra of [{ enabled: 1 }, { enabled: null }, { bindAddresses: '192.168.50.4' }, { bindAddresses: [1] }, { bindAddresses: [] },
-    { bindAddresses: ['0.0.0.0'] }, { bindAddresses: ['8.8.8.8'] }, { bindAddresses: ['192.168.50.4', '192.168.50.5'] },
+  for (const extra of [{ enabled: 1 }, { enabled: null }, { bindAddresses: '192.168.50.4' }, { bindAddresses: [1] },
     { bindAddresses: ['192.168.50.4', '192.168.50.4'] }, { bindAddresses: Array(9).fill('192.168.50.4') },
     { bindAddress: '192.168.50.4' }, { port: 1023 }, { port: 65536 }, { port: 4630.5 }, { port: '4630' }, { port }, { extra: true }]) {
     assert.equal((await request('/api/phone/settings', { method: 'POST', body: { ...configuration, ...extra } })).status, 400, JSON.stringify(extra));
@@ -193,4 +192,21 @@ test('phone API preserves user errors and hides internal gateway errors', async 
 test('service metadata uses the serviceMode option', async (t) => {
   const { request } = await serve(t, { phoneGateway: fakeGateway().gateway, serviceMode: true });
   assert.deepEqual(await (await request('/api/service')).json(), { service: true, pid: process.pid });
+});
+
+test('phone settings keep a saved address that is absent now and use the gateway check', async (t) => {
+  const { gateway, calls } = fakeGateway();
+  const status = gateway.status;
+  gateway.status = async () => {
+    const value = await status();
+    return { ...value, addresses: value.addresses.filter((item) => item.address !== '100.101.102.103') };
+  };
+  const { request } = await serve(t, { phoneGateway: gateway });
+  const body = { enabled: false, bindAddresses: ['192.168.50.4', '100.101.102.103'], port: 4630 };
+  assert.equal((await request('/api/phone/settings', { method: 'POST', body })).status, 200);
+  assert.deepEqual(calls.at(-1), ['settings', body]);
+  gateway.updateSettings = async () => { throw Object.assign(new Error('Choose a phone address on this PC.'), { statusCode: 400 }); };
+  const refused = await request('/api/phone/settings', { method: 'POST', body: { ...body, enabled: true } });
+  assert.equal(refused.status, 400);
+  assert.deepEqual(await refused.json(), { error: 'Choose a phone address on this PC.' });
 });

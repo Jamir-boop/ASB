@@ -27,7 +27,9 @@ export const EXPORT_FIELDS = {
   sourceId: STRING, sourceLabel: STRING, sourceColor: (value) => value === null || STRING(value), sourceShowMarker: BOOLEAN, sourceCount: NUMBER,
   referenceScope: validScopeTag,
 };
-const pick = (row) => Object.fromEntries(Object.keys(EXPORT_FIELDS).filter((key) => row[key] !== undefined).map((key) => [key, row[key]]));
+// Rows from older engines can carry a lone surrogate, which GTK refuses.
+const pick = (row) => Object.fromEntries(Object.keys(EXPORT_FIELDS).filter((key) => row[key] !== undefined)
+  .map((key) => [key, typeof row[key] === 'string' ? row[key].toWellFormed() : row[key]]));
 
 // Plan 9.2: the local rows only, with their native message keys and the incoming messages from senders on other machines.
 export function exportLocalSessions(dashboard, self, nowMs = Date.now()) {
@@ -121,6 +123,7 @@ function requestOnce({ address, port, fingerprint, path, method, body, etag, tls
   return new Promise((resolve, reject) => {
     let settled = false;
     let handedOff = false;
+    let timer;
     const done = (error, value) => {
       if (settled) return;
       settled = true;
@@ -130,7 +133,6 @@ function requestOnce({ address, port, fingerprint, path, method, body, etag, tls
     };
     const startedAt = Date.now();
     const expire = () => done(Object.assign(new Error('timeout'), { code: 'timeout' }));
-    let timer = setTimeout(expire, Math.min(handoffMs, timeoutMs));
     const bytes = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
     // key and cert on Linux, pfx and passphrase on Windows; the own fingerprint is not a TLS option.
     const { fingerprint: _own, ...clientCertificate } = tls;
@@ -156,6 +158,8 @@ function requestOnce({ address, port, fingerprint, path, method, body, etag, tls
         done(null, { status: response.statusCode, etag: response.headers.etag || '', body: value, address });
       });
     });
+    // After https.request: a bad port throws there, and a timer must not touch a request that does not exist.
+    timer = setTimeout(expire, Math.min(handoffMs, timeoutMs));
     request.on('error', (error) => done(error));
     // The request goes out only after the server certificate matches the pin, so no code or header reaches another machine.
     request.on('socket', (socket) => socket.once('secureConnect', () => {
@@ -253,7 +257,8 @@ export function createPeerPoller({ member, tls, validAddresses, request = peerRe
       const reply = await call('/peer/v1/hello');
       const value = reply.body;
       // The addresses stay in memory only; the next group merge keeps the saved ones.
-      if (reply.status === 200 && value?.machineId === state.member.machineId && validAddresses(value.addresses) && Number.isInteger(value.port)) {
+      if (reply.status === 200 && value?.machineId === state.member.machineId && validAddresses(value.addresses) && Number.isInteger(value.port)
+        && value.port >= 1024 && value.port <= 65535) {
         state.member.addresses = value.addresses;
         state.member.port = value.port;
       }

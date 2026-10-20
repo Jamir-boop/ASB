@@ -55,10 +55,14 @@ export function soundBaseline(baseline, rows, nowMs = Date.now()) {
 // The baseline moves even when canPlay is false, so a board that opens later hears only new events.
 export function createSoundWatcher(play, canPlay = () => true) {
   let baseline = null;
+  // A member's rows can first arrive after the first update; they are its baseline, not new events.
+  const machines = new Set();
   return (dashboard, nowMs = Date.now()) => {
     const rows = dashboard.threads || [];
-    const kind = Math.max(0, ...soundEvents(baseline, rows, nowMs).map((event) => event.kind));
+    const known = rows.filter((row) => !row.remote || machines.has(row.machineId));
+    const kind = Math.max(0, ...soundEvents(baseline, known, nowMs).map((event) => event.kind));
     baseline = soundBaseline(baseline, rows, nowMs);
+    for (const row of rows) if (row.remote) machines.add(row.machineId);
     if (kind && canPlay()) play(kind);
   };
 }

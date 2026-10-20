@@ -620,7 +620,7 @@ def limit_left(row, now_ms=None):
     """Whole seconds, rounded up, until the usage limit that stopped the row resets; 0 when no limit holds the row."""
     now_ms = time.time() * 1000 if now_ms is None else now_ms
     reset = row.get("limitResetsAtMs", 0)
-    if isinstance(reset, bool) or not isinstance(reset, (int, float)) or not math.isfinite(reset) or reset <= now_ms:
+    if isinstance(reset, bool) or not isinstance(reset, (int, float)) or not math.isfinite(reset) or reset <= now_ms or reset > 8.64e15:
         return 0
     return math.ceil((reset - now_ms) / 1000)
 
@@ -4760,7 +4760,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             # Tooltips set before the card is rooted cause no tooltip query.
             self.update_card_actions(widget)
             widget.set_child(content)
-        set_icon(widget.asb_mark, provider_icon(row["provider"]))
+        set_icon(widget.asb_mark, provider_icon(row.get("provider")))
         widget.asb_source_badge.set_color(source_marker_color(row))
         where_icon, where = row_where(row)
         if widget.asb_where_icon:
