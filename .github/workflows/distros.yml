@@ -1,0 +1,72 @@
+name: Distros
+
+on:
+  push:
+    branches:
+      - '**'
+  workflow_dispatch:
+
+jobs:
+  # Install every package of the package table in each image, then probe what the image has.
+  probe:
+    name: probe ${{ matrix.job }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { job: debian-13, image: 'debian:13', runner: ubuntu-latest, family: debian, tier: board, node: repository }
+          - { job: debian-12, image: 'debian:12', runner: ubuntu-latest, family: debian, tier: engine, node: nodesource }
+          - { job: ubuntu-24.04, image: 'ubuntu:24.04', runner: ubuntu-latest, family: debian, tier: board, node: nodesource }
+          - { job: ubuntu-22.04, image: 'ubuntu:22.04', runner: ubuntu-latest, family: debian, tier: engine, node: nodesource }
+          - { job: ubuntu-26.04, image: 'ubuntu:26.04', runner: ubuntu-latest, family: debian, tier: board, node: repository }
+          - { job: fedora-43, image: 'fedora:43', runner: ubuntu-latest, family: fedora, tier: board, node: repository }
+          - { job: fedora-44, image: 'fedora:44', runner: ubuntu-latest, family: fedora, tier: board, node: repository }
+          - { job: alma-10, image: 'almalinux:10', runner: ubuntu-latest, family: fedora, tier: board, node: repository }
+          - { job: alma-9, image: 'almalinux:9', runner: ubuntu-latest, family: fedora, tier: board, node: module }
+          - { job: tumbleweed, image: 'opensuse/tumbleweed', runner: ubuntu-latest, family: opensuse, tier: board, node: repository }
+          - { job: leap-16, image: 'opensuse/leap:16.0', runner: ubuntu-latest, family: opensuse, tier: board, node: repository }
+          - { job: arch, image: 'archlinux:latest', runner: ubuntu-latest, family: arch, tier: board, node: repository }
+          - { job: alpine-3.24, image: 'alpine:3.24', runner: ubuntu-latest, family: alpine, tier: board, node: repository }
+          - { job: void, image: 'ghcr.io/void-linux/void-glibc-full:latest', runner: ubuntu-latest, family: void, tier: board, node: repository }
+          - { job: debian-13-arm, image: 'debian:13', runner: ubuntu-24.04-arm, family: debian, tier: board, node: repository }
+          - { job: fedora-44-arm, image: 'fedora:44', runner: ubuntu-24.04-arm, family: fedora, tier: board, node: repository }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install the packages and probe the image
+        env:
+          IMAGE: ${{ matrix.image }}
+          FAMILY: ${{ matrix.family }}
+          TIER: ${{ matrix.tier }}
+          NODE_ROUTE: ${{ matrix.node }}
+        run: |
+          keys='node sqlite openssl xdg gi gtk adw gicairo qrcode sound xvfb dbus font'
+          # The route installs Node.js on these rows.
+          if [ "$NODE_ROUTE" != repository ]; then keys=${keys#node }; fi
+          install=$(node src/linux-distros.mjs "$FAMILY" $keys)
+          case "$FAMILY" in
+            debian) refresh='export DEBIAN_FRONTEND=noninteractive; apt-get update' ;;
+            arch) refresh='pacman -Syu --noconfirm' ;;
+            alpine) refresh='apk update' ;;
+            void) refresh='xbps-install -Syu xbps' ;;
+            fedora|opensuse) refresh=':' ;;
+            *) echo "No index update for $FAMILY." >&2; exit 1 ;;
+          esac
+          case "$NODE_ROUTE" in
+            repository) route=':' ;;
+            nodesource) route='apt-get install -y curl ca-certificates; curl -fsSL https://deb.nodesource.com/setup_24.x -o /tmp/nodesource.sh; bash /tmp/nodesource.sh; apt-get install -y nodejs' ;;
+            module) route='dnf module install -y nodejs:24' ;;
+            *) echo "No Node.js route $NODE_ROUTE." >&2; exit 1 ;;
+          esac
+          script="$refresh; $route; $install; sh /asb/test/distro-probe.sh $TIER $FAMILY"
+          printf '%s\n' "$script"
+          mkdir -p "$RUNNER_TEMP/out"
+          docker run --rm -v "$PWD:/asb:ro" -v "$RUNNER_TEMP/out:/out" -e ASB_PROBE_OUT=/out/probe.json "$IMAGE" sh -eu -c "$script"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: distro-probe-${{ matrix.job }}
+          path: ${{ runner.temp }}/out/probe.json
