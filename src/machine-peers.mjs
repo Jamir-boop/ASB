@@ -116,16 +116,21 @@ export function addressOrder(addresses, lastAddress = '') {
     || KIND_ORDER.indexOf(left.kind) - KIND_ORDER.indexOf(right.kind));
 }
 
-function requestOnce({ address, port, fingerprint, path, method, body, etag, tls, timeoutMs }) {
+// handoffMs limits the time before request.end; after it the request can use the rest of timeoutMs.
+function requestOnce({ address, port, fingerprint, path, method, body, etag, tls, timeoutMs, handoffMs = timeoutMs }) {
   return new Promise((resolve, reject) => {
     let settled = false;
+    let handedOff = false;
     const done = (error, value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (error) { request.destroy(); reject(error); } else resolve(value);
+      // After request.end the member can have the request: its outcome is not known.
+      if (error) { request.destroy(); reject(Object.assign(error, { handedOff })); } else resolve(value);
     };
-    const timer = setTimeout(() => done(Object.assign(new Error('timeout'), { code: 'timeout' })), timeoutMs);
+    const startedAt = Date.now();
+    const expire = () => done(Object.assign(new Error('timeout'), { code: 'timeout' }));
+    let timer = setTimeout(expire, Math.min(handoffMs, timeoutMs));
     const bytes = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
     // key and cert on Linux, pfx and passphrase on Windows; the own fingerprint is not a TLS option.
     const { fingerprint: _own, ...clientCertificate } = tls;
@@ -156,17 +161,32 @@ function requestOnce({ address, port, fingerprint, path, method, body, etag, tls
     request.on('socket', (socket) => socket.once('secureConnect', () => {
       const raw = socket.getPeerCertificate(true)?.raw;
       if (!raw || sha256(raw) !== fingerprint) { done(Object.assign(new Error('pin-mismatch'), { code: 'pin-mismatch' })); return; }
+      handedOff = true;
+      clearTimeout(timer);
+      timer = setTimeout(expire, timeoutMs - (Date.now() - startedAt));
       request.end(bytes);
     }));
   });
 }
 
 // Tries the member addresses in order; returns { status, etag, body, address } of the first address that answers.
+// A GET tries each address for timeoutMs. Other methods have one total timeoutMs, and go to the next address only when
+// the request did not go out: an error with `handedOff` ends the attempt, so a member never gets the same POST twice.
+// Before the handoff each address of a non-GET request gets an equal share of the time that is left, so one address
+// that hangs does not use it all.
 export async function peerRequest({ member, path, method = 'GET', body, etag, tls, timeoutMs = 4000, lastAddress = '' }) {
   let failure = new Error('no-address');
-  for (const { address } of addressOrder(member.addresses, lastAddress)) {
-    try { return await requestOnce({ address, port: member.port, fingerprint: member.certFingerprint, path, method, body, etag, tls, timeoutMs }); }
-    catch (error) { failure = error; }
+  const deadline = Date.now() + timeoutMs;
+  const addresses = addressOrder(member.addresses, lastAddress);
+  for (const [index, { address }] of addresses.entries()) {
+    const remainingMs = method === 'GET' ? timeoutMs : deadline - Date.now();
+    if (remainingMs <= 0) break;
+    const handoffMs = method === 'GET' ? timeoutMs : remainingMs / (addresses.length - index);
+    try { return await requestOnce({ address, port: member.port, fingerprint: member.certFingerprint, path, method, body, etag, tls, timeoutMs: remainingMs, handoffMs }); }
+    catch (error) {
+      failure = error;
+      if (method !== 'GET' && error.handedOff) throw error;
+    }
   }
   throw failure;
 }
@@ -174,8 +194,8 @@ export async function peerRequest({ member, path, method = 'GET', body, etag, tl
 // One poller per member: sessions, group, and hello, each on its own timer.
 export function createPeerPoller({ member, tls, validAddresses, request = peerRequest, onGroup = () => {}, onChange = () => {},
   onRemoved = () => {}, now = Date.now, timers = { setTimeout, clearTimeout } }) {
-  const state = { member: { ...member }, online: false, lastOkAtMs: 0, sessions: null, error: '' };
-  let lastAddress = '';
+  // lastAddress is the address that the last read-only poll proved; the relay sends its delivery there first.
+  const state = { member: { ...member }, online: false, lastOkAtMs: 0, sessions: null, error: '', lastAddress: '' };
   let etag = '';
   let failures = 0;
   let stopped = false;
@@ -188,8 +208,8 @@ export function createPeerPoller({ member, tls, validAddresses, request = peerRe
   };
   const stop = () => { stopped = true; for (const handle of handles) timers.clearTimeout(handle); handles.clear(); };
   const call = async (path) => {
-    const reply = await request({ member: state.member, path, etag: path === '/peer/v1/sessions' ? etag : undefined, tls: await tls(), lastAddress });
-    lastAddress = reply.address || lastAddress;
+    const reply = await request({ member: state.member, path, etag: path === '/peer/v1/sessions' ? etag : undefined, tls: await tls(), lastAddress: state.lastAddress });
+    state.lastAddress = reply.address || state.lastAddress;
     // The member removed this machine: poll no more.
     if (reply.status === 410) {
       if (!stopped) { stop(); onRemoved(); }

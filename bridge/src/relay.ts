@@ -25,6 +25,9 @@ const deliverSchema = z.strictObject({
 }).refine(value => (value.message === undefined) !== (value.control === undefined));
 const replySchema = z.union([z.strictObject({ ok: z.literal(true), outcome: z.literal('socket-written') }),
   z.strictObject({ ok: z.literal(false), reason: z.enum(['machine-offline', 'target-unavailable', 'too-large', 'rate-limited', 'refused']) })]);
+// The engine's reply to POST /api/relay/send: the member reasons, and `unknown` when the message can have gone out.
+const sendReplySchema = z.union([z.strictObject({ ok: z.literal(true), outcome: z.literal('socket-written') }),
+  z.strictObject({ ok: z.literal(false), reason: z.enum(['machine-offline', 'target-unavailable', 'too-large', 'rate-limited', 'refused', 'unknown']) })]);
 export type Home = z.infer<typeof homeSchema>;
 export type RemotePeer = z.infer<typeof remoteSchema>;
 // `peer` is the data of the last delivery that needed the row, for a sender that is not listed yet.
@@ -42,6 +45,35 @@ const REASONS: Record<Exclude<Reply, { ok: true }>['reason'], (machine: string) 
   'rate-limited': () => 'Too many messages to this session just now.',
   refused: machine => `${machine} refused the message.`,
 };
+// Plan 8.1: the refusal reason that the Claude sender gets, or 'unknown' when no terminal receipt may go back.
+// Only a proved not-sent result gives a receipt. An older engine sends target-unavailable also after a handoff.
+export async function forwardOutcome(send: Promise<unknown>): Promise<keyof typeof REASONS | 'sent' | 'unknown'> {
+  let reply: z.infer<typeof sendReplySchema>;
+  try { reply = sendReplySchema.parse(await send); }
+  catch (error) { return engineNotReached(error) ? 'machine-offline' : 'unknown'; }
+  if (reply.ok) return 'sent';
+  return reply.reason === 'unknown' || reply.reason === 'target-unavailable' ? 'unknown' : reply.reason;
+}
+
+// The request did not reach the engine, or the engine refused it before any send (route checks answer 4xx).
+function engineNotReached(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  const code = (error as { code?: string }).code ?? (error.cause as { code?: string } | undefined)?.code;
+  const status = (error as { status?: number }).status;
+  return code === 'ConnectionRefused' || code === 'ECONNREFUSED' || (status !== undefined && status >= 400 && status < 500);
+}
+
+// A call to the local engine with one total deadline.
+export function engineCaller(engine: string, sourceToken: string, timeoutMs = 30_000) {
+  return async (path: string, body?: unknown) => {
+    const response = await fetch(`${engine}${path}`, { method: body === undefined ? 'GET' : 'POST', signal: AbortSignal.timeout(timeoutMs),
+      headers: { 'x-asb-source-token': sourceToken, ...(body === undefined ? {} : { origin: engine, 'content-type': 'application/json' }) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status });
+    return response.json() as Promise<unknown>;
+  };
+}
+
 const rowKey = (home: string, machineId: string, sessionId: string) => `${home}\0${machineId}\0${sessionId}`;
 // A process that waits on stdin stands in for the remote session: its PID and start time make the row live.
 const PLACEHOLDER = isWindows() ? [join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'findstr.exe'), 'x'] : ['/usr/bin/cat'];
@@ -124,13 +156,7 @@ async function main() {
   };
   removeSockets();
   const log = (line: string) => console.error(line);
-  const call = async (path: string, body?: unknown) => {
-    const response = await fetch(`${engine}${path}`, { method: body === undefined ? 'GET' : 'POST', signal: AbortSignal.timeout(30_000),
-      headers: { 'x-asb-source-token': sourceToken, ...(body === undefined ? {} : { origin: engine, 'content-type': 'application/json' }) },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return response.json() as Promise<unknown>;
-  };
+  const call = engineCaller(engine, sourceToken);
   let self = homesSchema.parse(await call('/api/relay/homes'));
   for (const home of self.homes) await removeStaleRows(home.path);
 
@@ -252,16 +278,13 @@ async function main() {
     try { serializeFrame(frame); } catch { return; }
     const content = frame.message.content;
     const text = (ENVELOPE.exec(content)?.[1] ?? content).replaceAll('<\\/cross-session-message', '</cross-session-message');
-    let reason: string | undefined;
-    try {
-      const reply = replySchema.parse(await call('/api/relay/send', { ...target, sender: from(senderMode(content) ?? 'unknown'),
-        message: { msgId: frame.msg_id, text, hopChain: hopChain(content) } }));
-      if (!reply.ok) reason = REASONS[reply.reason](row.peer.machineName);
-    } catch { reason = REASONS['machine-offline'](row.peer.machineName); }
-    if (reason) {
-      await sendFrames(row.home, sender, [{ msgV: 1, type: 'control', msg_id: randomUUID(), from: row.address, session_id: sender.sessionId,
-        action: 'peer_message_status', orig_msg_id: frame.msg_id, status: 'expired', status_detail: 'refused', reason }]);
-    }
+    const outcome = await forwardOutcome(call('/api/relay/send', { ...target, sender: from(senderMode(content) ?? 'unknown'),
+      message: { msgId: frame.msg_id, text, hopChain: hopChain(content) } }));
+    if (outcome === 'sent') return;
+    // A refused or expired receipt would say that nothing was sent; Claude has no receipt for an unknown outcome.
+    if (outcome === 'unknown') { log(`ASB relay: the send outcome of message ${frame.msg_id} is unknown.`); return; }
+    await sendFrames(row.home, sender, [{ msgV: 1, type: 'control', msg_id: randomUUID(), from: row.address, session_id: sender.sessionId,
+      action: 'peer_message_status', orig_msg_id: frame.msg_id, status: 'expired', status_detail: 'refused', reason: REASONS[outcome](row.peer.machineName) }]);
   }
 
   // Plan 16.5: a frame from another machine for a local session. Proxy rows never receive one, so relays cannot loop.

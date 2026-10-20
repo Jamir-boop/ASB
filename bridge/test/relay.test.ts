@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { hopChain, inbox, peers, processStart, sendFrames, socketPath, userFrame, type Frame } from '../src/claude';
-import { proxyName, proxyPlan, type Home, type RemotePeer } from '../src/relay';
+import { engineCaller, forwardOutcome, proxyName, proxyPlan, type Home, type RemotePeer } from '../src/relay';
 // Linux only: the engine starts the relay only on Linux and Windows, and this test uses Unix sockets and the /usr/bin/cat placeholder.
 const linux = test.skipIf(process.platform !== 'linux');
 
@@ -54,6 +54,35 @@ test('proxy names carry the machine, use safe characters, stay at 64 characters,
   expect(long).toHaveLength(64);
 });
 
+test('a forwarded message gets a refused receipt only when it was not sent', async () => {
+  for (const reason of ['machine-offline', 'too-large', 'rate-limited', 'refused'] as const) {
+    expect(await forwardOutcome(Promise.resolve({ ok: false, reason }))).toBe(reason);
+  }
+  expect(await forwardOutcome(Promise.resolve({ ok: true, outcome: 'socket-written' }))).toBe('sent');
+  // The engine does not know, an older engine says target-unavailable, or the reply has another shape: no receipt.
+  for (const reply of [{ ok: false, reason: 'unknown' }, { ok: false, reason: 'target-unavailable' }, { ok: true }, null]) {
+    expect(await forwardOutcome(Promise.resolve(reply))).toBe('unknown');
+  }
+  let answer: () => Response | Promise<Response> = () => Response.json({ ok: false, reason: 'unknown' });
+  const engine = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => answer() });
+  const url = `http://127.0.0.1:${engine.port}`;
+  const call = engineCaller(url, SOURCE_TOKEN, 200);
+  try {
+    expect(await forwardOutcome(call('/api/relay/send', {}))).toBe('unknown');
+    // The engine has the request and does not answer in time: no receipt.
+    answer = () => new Promise(resolve => setTimeout(() => resolve(Response.json({ ok: true, outcome: 'socket-written' })), 1000));
+    expect(await forwardOutcome(call('/api/relay/send', {}))).toBe('unknown');
+    // A 5xx comes after the route checks; a 4xx is a route check before any send.
+    answer = () => new Response('{}', { status: 500 });
+    expect(await forwardOutcome(call('/api/relay/send', {}))).toBe('unknown');
+    answer = () => new Response('{}', { status: 403 });
+    expect(await forwardOutcome(call('/api/relay/send', {}))).toBe('machine-offline');
+  } finally { engine.stop(true); }
+  // No engine at the port: the request did not go out.
+  // Windows refuses a loopback connection only after about 1 to 2 s; Linux refuses at once.
+  expect(await forwardOutcome(engineCaller(url, SOURCE_TOKEN, 5000)('/api/relay/send', {}))).toBe('machine-offline');
+});
+
 test('the relay refuses an invalid environment', async () => {
   const child = Bun.spawn([process.execPath, join(import.meta.dir, '../src/relay.ts')], { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe',
     env: { PATH: process.env.PATH, ASB_ENGINE_URL: 'http://localhost:1', ASB_SOURCE_TOKEN: 'a'.repeat(64), ASB_RELAY_DIR: '/tmp' } });
@@ -91,7 +120,7 @@ const relayCall = async (relay: Relay, path: string, body?: unknown) => (await f
 
 // A fake engine: the homes and remote-peers routes, and a send route that calls the other relay's /deliver.
 function engine(machineId: string, machineName: string, configDir: string, other: { machineId: string; machineName: string; relay?: Relay }) {
-  const state = { offline: false, hidden: false, listReads: 0 };
+  const state = { offline: false, unknown: false, hidden: false, listReads: 0 };
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
     if (request.headers.get('x-asb-source-token') !== SOURCE_TOKEN) return new Response(null, { status: 403 });
     const path = new URL(request.url).pathname;
@@ -103,6 +132,7 @@ function engine(machineId: string, machineName: string, configDir: string, other
       return Response.json({ peers: listed.peers.map((peer: object) => ({ machineId: other.machineId, machineName: other.machineName, online: true, ...peer })) });
     }
     const { machineId: target, ...body } = await request.json() as { machineId: string };
+    if (state.unknown) return Response.json({ ok: false, reason: 'unknown' });
     if (state.offline || !other.relay || target !== other.machineId) return Response.json({ ok: false, reason: 'machine-offline' });
     return Response.json(await relayCall(other.relay, '/deliver', body));
   } });
@@ -201,12 +231,19 @@ linux('two relays carry a message, the reply, a receipt, and an offline refusal 
     const receipt = await until(() => claude.frames.find(frame => frame.type === 'control' && frame.action === 'peer_message_status' && frame.orig_msg_id === msgId));
     expect(receipt).toMatchObject({ from: `uds:${proxy.messagingSocketPath}`, status: 'delivered' });
 
+    // An unknown outcome gives no receipt; the offline refusal below comes after it.
+    engineA.state.unknown = true;
+    const unknownId = randomUUID();
+    await sendFrames(homeA, proxy, [userFrame(proxy, claude.address, 'claude-fixture', claude.sessionId, unknownId, 'maybe', 'prompting', null, [])]);
+    await Bun.sleep(300);
+    engineA.state.unknown = false;
     // An offline machine: the sender gets the refusal at once.
     engineA.state.offline = true;
     const lostId = randomUUID();
     await sendFrames(homeA, proxy, [userFrame(proxy, claude.address, 'claude-fixture', claude.sessionId, lostId, 'lost', 'prompting', null, [])]);
     const refusal = await until(() => claude.frames.find(frame => frame.type === 'control' && frame.action === 'peer_message_status' && frame.orig_msg_id === lostId), 3000);
     expect(refusal).toMatchObject({ from: `uds:${proxy.messagingSocketPath}`, status: 'expired', status_detail: 'refused', reason: 'beta is not reachable.' });
+    expect(claude.frames.some(frame => frame.type === 'control' && frame.action === 'peer_message_status' && frame.orig_msg_id === unknownId)).toBe(false);
     engineA.state.offline = false;
 
     // A killed relay leaves rows and sockets; its placeholders exit, and the next relay removes what is left.

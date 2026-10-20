@@ -17,6 +17,11 @@ const CONTROLS = /[\x00-\x1f\x7f-\x9f]/;
 const STATUSES = ['held', 'denied', 'expired', 'delivered', 'refused', 'dropped'];
 const REASONS = ['machine-offline', 'target-unavailable', 'too-large', 'rate-limited', 'refused'];
 const LIST_MS = 5_000;
+// The limits nest (bridge/PROTOCOL-COVERAGE.md): the relay writes to the target in at most 5 s plus a 150 ms flush,
+// the receiver waits RELAY_DELIVER_MS for its relay, and the sender waits MEMBER_POST_MS for the member.
+const RELAY_DELIVER_MS = 8_000;
+const RELAY_LIST_MS = 3_000;
+const MEMBER_POST_MS = 10_000;
 const LIST_STALE_MS = 15_000;
 const CHECK_MS = 30_000;
 const RESTARTS = 5;
@@ -129,6 +134,14 @@ const relayError = (message) => Object.assign(new Error(message), { code: 'relay
 const TARGET_UNAVAILABLE = { ok: false, reason: 'target-unavailable' };
 const INVALID = { status: 400, body: { error: 'Invalid relay request.' } };
 
+// Plan 8.4: what a member's reply to POST /peer/v1/deliver proves. `unknown` goes only to the local bridge, never on the member wire.
+// A v1 member also sends target-unavailable, refused, and machine-offline when it is not sure, so these are unknown.
+function memberOutcome({ status, body }) {
+  if ([400, 401, 403, 410].includes(status)) return { ok: false, reason: 'refused' };
+  if (status === 200 && validRelayReply(body) && (body.ok || ['too-large', 'rate-limited'].includes(body.reason))) return body;
+  return { ok: false, reason: 'unknown' };
+}
+
 // Plan 16.1, 17.6: runs bridge/dist/relay.js while this Linux or Windows machine shares a group with another active member.
 // catPath is the placeholder that each proxy row of the relay runs (bridge/src/relay.ts).
 export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, env = process.env, platform = process.platform,
@@ -236,23 +249,25 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
     return checking;
   }
 
-  async function relayRequest(target, { method = 'GET', body } = {}) {
+  // One total deadline: a relay that sends headers and then stalls fails too.
+  async function relayRequest(target, { method = 'GET', body, timeoutMs = method === 'GET' ? RELAY_LIST_MS : RELAY_DELIVER_MS } = {}) {
     if (!relay) throw relayError('The message relay is not running.');
     const { port: relayPort, token } = relay;
     const bytes = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
     return new Promise((resolve, reject) => {
-      const call = http.request({ host: '127.0.0.1', port: relayPort, path: target, method, timeout: 10_000,
+      const finish = (error, value) => { clearTimeout(timer); if (error) { reject(error); call.destroy(); } else resolve(value); };
+      const call = http.request({ host: '127.0.0.1', port: relayPort, path: target, method,
         headers: { authorization: `Bearer ${token}`, ...(bytes ? { 'content-type': 'application/json', 'content-length': bytes.length } : {}) } }, (reply) => {
         const chunks = [];
         reply.on('data', (chunk) => chunks.push(chunk));
-        reply.on('error', reject);
+        reply.on('error', finish);
         reply.on('end', () => {
-          if (reply.statusCode !== 200) { reject(relayError(`The message relay answered HTTP ${reply.statusCode}.`)); return; }
-          try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { reject(relayError('The message relay sent invalid JSON.')); }
+          if (reply.statusCode !== 200) { finish(relayError(`The message relay answered HTTP ${reply.statusCode}.`)); return; }
+          try { finish(null, JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { finish(relayError('The message relay sent invalid JSON.')); }
         });
       });
-      call.on('timeout', () => call.destroy(relayError('The message relay did not answer.')));
-      call.on('error', reject);
+      const timer = setTimeout(() => finish(relayError('The message relay did not answer.')), timeoutMs);
+      call.on('error', finish);
       call.end(bytes);
     });
   }
@@ -306,9 +321,10 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
       if (!state) return { status: 200, body: { ok: false, reason: 'refused' } };
       if (!online(state)) return { status: 200, body: { ok: false, reason: 'machine-offline' } };
       let reply;
-      try { reply = await request({ member: state.member, path: '/peer/v1/deliver', method: 'POST', body: forward, tls: await group.tls(), timeoutMs: 10_000 }); }
-      catch { return { status: 200, body: { ok: false, reason: 'machine-offline' } }; }
-      return { status: 200, body: reply.status === 200 && validRelayReply(reply.body) ? reply.body : { ok: false, reason: 'refused' } };
+      try { reply = await request({ member: state.member, path: '/peer/v1/deliver', method: 'POST', body: forward, tls: await group.tls(), timeoutMs: MEMBER_POST_MS,
+        lastAddress: state.lastAddress }); }
+      catch (error) { return { status: 200, body: { ok: false, reason: error?.handedOff ? 'unknown' : 'machine-offline' } }; }
+      return { status: 200, body: memberOutcome(reply) };
     },
   };
 }

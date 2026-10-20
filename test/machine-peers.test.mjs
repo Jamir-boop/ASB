@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash, X509Certificate } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import https from 'node:https';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -156,7 +157,7 @@ async function tlsServer(t, server, handler) {
     });
   await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => { listener.closeAllConnections(); listener.close(resolve); }));
-  return { port: listener.address().port, records };
+  return { port: listener.address().port, records, listener };
 }
 
 tlsTest('the peer client pins the server certificate, sends its own, and limits replies', async (t) => {
@@ -189,6 +190,62 @@ tlsTest('the peer client pins the server certificate, sends its own, and limits 
   await assert.rejects(peerRequest({ member: member(), path: '/large', tls: client }), { code: 'too-large' });
   reply = () => {};
   await assert.rejects(peerRequest({ member: member(), path: '/slow', tls: client, timeoutMs: 200 }), { code: 'timeout' });
+});
+
+tlsTest('a POST goes to the next address only when it did not go out; a GET tries each address', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'asb-peers-handoff-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const [server, client, other] = await Promise.all([identity(dir, 'server'), identity(dir, 'client'), identity(dir, 'other')]);
+  let reply = () => {};
+  const { port, records } = await tlsServer(t, server, (request, response) => reply(request, response));
+  const twice = { machineId: server.fingerprint.slice(0, 16), certFingerprint: server.fingerprint, port,
+    addresses: [{ kind: 'lan', address: '127.0.0.1' }, { kind: 'zerotier', address: '127.0.0.1' }] };
+  // The first address takes the POST and does not answer: the second address does not get it.
+  // The limits leave time for a slow loopback handshake or refusal on Windows (about 1 to 2 s).
+  await assert.rejects(peerRequest({ member: twice, path: '/peer/v1/deliver', method: 'POST', body: { n: 1 }, tls: client, timeoutMs: 2000 }),
+    (error) => error.code === 'timeout' && error.handedOff === true);
+  assert.equal(records.length, 1);
+  // A GET tries the next address after any failure.
+  await assert.rejects(peerRequest({ member: twice, path: '/peer/v1/peers', tls: client, timeoutMs: 1000 }), { code: 'timeout' });
+  assert.equal(records.length, 3);
+  // A refused connection: the POST goes to the next address.
+  reply = (request, response) => response.end(JSON.stringify({ ok: true }));
+  const refused = { ...twice, addresses: [{ kind: 'lan', address: '127.0.0.9' }, { kind: 'zerotier', address: '127.0.0.1' }] };
+  const second = await peerRequest({ member: refused, path: '/peer/v1/deliver', method: 'POST', body: { n: 2 }, tls: client, timeoutMs: 6000 });
+  assert.deepEqual([second.status, second.address, records.length], [200, '127.0.0.1', 4]);
+  // A wrong certificate at the first address: the request does not go out there, and the second address gets it.
+  const pinned = await tlsServer(t, other, (request, response) => response.end(JSON.stringify({ ok: true })));
+  const listener = pinned.listener;
+  // The TLS socket of a connection takes the context of its time, so only later connections get the pinned certificate.
+  listener.once('connection', () => listener.setSecureContext({ key: server.key, cert: server.cert }));
+  let connections = 0;
+  listener.on('connection', () => { connections += 1; });
+  const third = await peerRequest({ member: { ...twice, port: pinned.port }, path: '/peer/v1/deliver', method: 'POST', body: { n: 3 }, tls: client, timeoutMs: 6000 });
+  assert.deepEqual([third.status, pinned.records.length, connections], [200, 1, 2]);
+});
+
+tlsTest('a POST address that hangs before the handoff gets only its share of the time', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'asb-peers-share-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const [server, client] = await Promise.all([identity(dir, 'server'), identity(dir, 'client')]);
+  const { port, records } = await tlsServer(t, server, (request, response) => response.end(JSON.stringify({ ok: true })));
+  // A TCP listener that never starts TLS, on another loopback address with the same port.
+  const sockets = new Set();
+  const silent = net.createServer((socket) => { sockets.add(socket); socket.resume(); });
+  const bound = await new Promise((resolve) => { silent.once('error', () => resolve(false)); silent.listen(port, '127.0.0.2', () => resolve(true)); });
+  if (!bound) { t.skip('127.0.0.2 cannot be bound here.'); return; }
+  t.after(() => new Promise((resolve) => { for (const socket of sockets) socket.destroy(); silent.close(resolve); }));
+  const member = { machineId: server.fingerprint.slice(0, 16), certFingerprint: server.fingerprint, port,
+    addresses: [{ kind: 'lan', address: '127.0.0.2' }, { kind: 'zerotier', address: '127.0.0.1' }] };
+  const started = Date.now();
+  const reply = await peerRequest({ member, path: '/peer/v1/deliver', method: 'POST', body: { n: 1 }, tls: client, timeoutMs: 4000 });
+  assert.deepEqual([reply.status, reply.address, records.length], [200, '127.0.0.1', 1]);
+  assert.ok(Date.now() - started < 4000);
+  // A GET keeps its full timeout at each address, also before the handoff.
+  const getStarted = Date.now();
+  const listed = await peerRequest({ member, path: '/peer/v1/peers', tls: client, timeoutMs: 1000 });
+  assert.equal(listed.address, '127.0.0.1');
+  assert.ok(Date.now() - getStarted >= 950, `the GET left the first address after ${Date.now() - getStarted} ms`);
 });
 
 function fakeTimers() {

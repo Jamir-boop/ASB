@@ -20,11 +20,12 @@ export const policySchema = z.enum(['default', 'accept', 'hold', 'refuse']);
 export const expirySchema = z.enum(['60s', '5m', '10m', 'never']);
 type Policy = z.infer<typeof policySchema>;
 const subscriptionLifetime = 12 * 60 * 60 * 1000;
+// `unknown` comes only from the local engine. An older engine sends target-unavailable also when the message can have
+// gone out, so it is unknown too.
 const relayReply = z.union([z.strictObject({ ok: z.literal(true), outcome: z.literal('socket-written') }),
-  z.strictObject({ ok: z.literal(false), reason: z.enum(['machine-offline', 'target-unavailable', 'too-large', 'rate-limited', 'refused']) })]);
-const remoteRefusals: Record<'machine-offline' | 'target-unavailable' | 'too-large' | 'rate-limited' | 'refused', (machine: string) => string> = {
+  z.strictObject({ ok: z.literal(false), reason: z.enum(['machine-offline', 'target-unavailable', 'too-large', 'rate-limited', 'refused', 'unknown']) })]);
+const remoteRefusals: Record<'machine-offline' | 'too-large' | 'rate-limited' | 'refused', (machine: string) => string> = {
   'machine-offline': machine => `${machine} is not reachable. Nothing sent.`,
-  'target-unavailable': machine => `The session on ${machine} is not available. Nothing sent.`,
   'too-large': () => 'Message too large for the other machine. Nothing sent.',
   'rate-limited': () => 'Too many messages to this session just now. Nothing sent; wait or batch the text.',
   refused: machine => `${machine} refused the message. Nothing sent.`,
@@ -273,10 +274,17 @@ export class Bridge {
       await this.expireSubscriptions();
       if (sessionId === this.threadId) throw new Error('Cannot send to this task itself');
       // A session that no local registry row has can be on another machine of the group (plan 16.4).
-      if (!peers(this.configDir).some(peer => peer.sessionId === sessionId && peer.entrypoint !== 'asb-relay')) {
-        const runtime = engineRuntime();
-        const remote = runtime ? (await remotePeers(runtime).catch(() => [])).find(peer => peer.sessionId === sessionId) : undefined;
-        if (runtime && remote) return this.sendRemote(runtime, remote, text, notifyWhenIdle);
+      // A local match always wins; a remote one only when exactly one other machine has the session ID.
+      const runtime = peers(this.configDir).some(peer => peer.sessionId === sessionId && peer.entrypoint !== 'asb-relay') ? null : engineRuntime();
+      if (runtime) {
+        let listed: RemotePeer[];
+        try { listed = await remotePeers(runtime); }
+        catch { throw new Error('ASB cannot list the sessions on the other machines. Nothing sent.'); }
+        const matches = listed.filter(peer => peer.sessionId === sessionId);
+        if (new Set(matches.map(peer => peer.machineId)).size > 1) {
+          throw new Error(`More than one other machine has session ${sessionId}. Nothing sent.`);
+        }
+        if (matches[0]) return this.sendRemote(runtime, matches[0], text, notifyWhenIdle);
       }
       const peer = findPeer(this.configDir, sessionId);
       if (!text && !notifyWhenIdle) throw new Error('A message or notify_when_idle is required');
@@ -340,11 +348,12 @@ export class Bridge {
       reply = relayReply.parse(await engineRequest(runtime, '/api/relay/send', { method: 'POST', body: { machineId: target.machineId, targetSessionId: target.sessionId,
         sender: { machineId, sessionId: this.threadId, name: receiver.name, mode: ['prompting', 'bypass'].includes(mode) ? mode : 'unknown', agent: 'codex' },
         message: { msgId: id, text, hopChain: hops } } }));
-    } catch {
-      this.db.run("UPDATE messages SET status='unknown' WHERE id=? AND status='submitting'", [id]);
-      throw new Error(`Send outcome unknown for ${id}; inspect status before sending again`);
-    }
+    } catch { reply = { ok: false, reason: 'unknown' }; }
     if (!reply.ok) {
+      if (reply.reason === 'unknown' || reply.reason === 'target-unavailable') {
+        this.db.run("UPDATE messages SET status='unknown' WHERE id=? AND status='submitting'", [id]);
+        throw new Error(`Send outcome unknown for ${id}; inspect status before sending again`);
+      }
       const reason = remoteRefusals[reply.reason](target.machineName);
       this.db.run("UPDATE messages SET status='not-sent',status_reason=? WHERE id=? AND status='submitting'", [reason, id]);
       throw new SendRefused(reason);

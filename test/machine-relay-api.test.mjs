@@ -282,6 +282,22 @@ test('the member routes use the relay, check the sender machine, and answer with
   assert.deepEqual(await oddLive.supervisor.peerDeliver(fromB, caller), { status: 200, body: { ok: false, reason: 'target-unavailable' } });
 });
 
+test('the call to the relay has one total deadline, also after the reply headers', async (t) => {
+  const server = http.createServer((request, response) => {
+    // Headers, part of the body, and then nothing.
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.write('{"ok":');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
+  const f = await supervisorFixture(t, { child: () => fakeChild({ line: JSON.stringify({ port: server.address().port, token: 'e'.repeat(64) }) }) });
+  await f.supervisor.start();
+  const started = Date.now();
+  await assert.rejects(f.supervisor.relayRequest('/deliver', { method: 'POST', body: message(), timeoutMs: 150 }),
+    { code: 'relay-unavailable', message: 'The message relay did not answer.' });
+  assert.ok(Date.now() - started < 1000);
+});
+
 test('send and remote-peers use the member lists: offline at once, and errors map to the plan 2.3 reasons', async (t) => {
   const relay = await fakeRelay(t, {});
   let clock = 1_000_000;
@@ -306,7 +322,11 @@ test('send and remote-peers use the member lists: offline at once, and errors ma
   const ok = { status: 200, body: { ok: true, outcome: 'socket-written' } };
   assert.deepEqual(await send(), ok);
   const forwarded = requests.at(-1);
-  assert.deepEqual([forwarded.path, forwarded.method, forwarded.timeoutMs, forwarded.member.machineId], ['/peer/v1/deliver', 'POST', 10_000, B]);
+  assert.deepEqual([forwarded.path, forwarded.method, forwarded.timeoutMs, forwarded.member.machineId, forwarded.lastAddress], ['/peer/v1/deliver', 'POST', 10_000, B, undefined]);
+  // The delivery goes first to the address that the read-only polls proved.
+  f.group.states[0].lastAddress = '10.0.0.3';
+  assert.deepEqual(await send(), ok);
+  assert.equal(requests.at(-1).lastAddress, '10.0.0.3');
   assert.deepEqual(forwarded.body, message());
   assert.deepEqual(await send((body) => { body.extra = 1; }), { status: 400, body: { error: 'Invalid relay request.' } });
   assert.deepEqual(await send((body) => { body.sender.machineId = B; }), { status: 400, body: { error: 'Invalid relay request.' } });
@@ -315,15 +335,30 @@ test('send and remote-peers use the member lists: offline at once, and errors ma
   const count = requests.length;
   assert.deepEqual(await send((body) => { body.machineId = 'c'.repeat(16); }), { status: 200, body: { ok: false, reason: 'machine-offline' } });
   assert.equal(requests.filter((item) => item.path === '/peer/v1/deliver').length, requests.slice(0, count).filter((item) => item.path === '/peer/v1/deliver').length);
+  // Plan 8.1, 8.4: "not sent" only with proof; `unknown` when the member can have the message.
+  const failure = (handedOff) => async () => { throw Object.assign(new Error('timeout'), { code: 'timeout', handedOff }); };
+  const answer = (status, body) => async () => ({ status, body });
   for (const [reply, reason] of [
     [async () => { throw new Error('timeout'); }, 'machine-offline'],
-    [async () => ({ status: 401, body: { error: 'x' } }), 'refused'],
-    [async () => ({ status: 200, body: { ok: true } }), 'refused'],
-    [async () => ({ status: 200, body: { ok: false, reason: 'too-large' } }), 'too-large'],
+    [failure(false), 'machine-offline'],
+    [failure(true), 'unknown'],
+    [async () => { throw Object.assign(new Error('invalid-json'), { handedOff: true }); }, 'unknown'],
+    ...[400, 401, 403, 410].map((status) => [answer(status, { error: 'x' }), 'refused']),
+    ...[404, 413, 429, 500, 502].map((status) => [answer(status, { error: 'x' }), 'unknown']),
+    [answer(200, { ok: true }), 'unknown'],
+    [answer(200, null), 'unknown'],
+    [answer(200, { ok: false, reason: 'unknown' }), 'unknown'],
+    [answer(200, { ok: false, reason: 'too-large' }), 'too-large'],
+    [answer(200, { ok: false, reason: 'rate-limited' }), 'rate-limited'],
+    [answer(200, { ok: false, reason: 'target-unavailable' }), 'unknown'],
+    [answer(200, { ok: false, reason: 'refused' }), 'unknown'],
+    [answer(200, { ok: false, reason: 'machine-offline' }), 'unknown'],
   ]) {
     deliver = reply;
     assert.deepEqual(await send(), { status: 200, body: { ok: false, reason } });
   }
+  deliver = answer(200, { ok: true, outcome: 'socket-written' });
+  assert.deepEqual(await send(), ok);
   // A list older than 15 s, or a poller that says offline, is offline.
   deliver = async () => { throw new Error('must not be called'); };
   clock += 16_000;

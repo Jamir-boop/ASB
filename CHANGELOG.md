@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Fixed messages between machines: ASB no longer says "Nothing sent" when it cannot know the result, sends a message to the other machine only one time, and refuses a session ID that more than one other machine has. A Claude sender gets no false refusal when the result is not known. Each wait now has a total limit, and the limits nest.
 - Added `asb doctor` (Linux): it checks Node.js, SQLite, `openssl`, `xdg-open`, the window libraries (Python 3.9, PyGObject, GTK 4.12, Libadwaita 1.4), the QR code, sounds, the tray host, and Bun. It prints the install command for the package manager of your distribution and the Node.js route, and never runs them. `--json` prints the same data. It exits with code 0 when the engine can run. `asb setup` on Linux prints the same checks first.
 - ASB now finds Python and Node.js without fixed paths: Python from `ASB_PYTHON`, `/usr/bin/python3`, or `python3` on `PATH`; Node.js also from `PATH` and Homebrew on Linux. The Node.js message links to the new README section.
 - The per-user install now continues without the window when the window libraries are missing or too old, with `ASB will run without its window: <reason> Run asb doctor for details.` The engine needs are still checked first.

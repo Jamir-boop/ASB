@@ -1049,16 +1049,15 @@ linux('a send to a remote session goes to the engine with the relay body, and ea
       sender: { machineId: 'a'.repeat(16), sessionId: f.desktop.threadId, name: f.bridge.status().name, mode: 'prompting', agent: 'codex' },
       message: { msgId: sent.messageId, text: 'to beta', hopChain: [hop] } });
     expect(row(z.string().parse(sent.messageId))).toEqual({ status: 'socket-written', status_reason: null, peer_address: null });
-    for (const [reason, text] of [['machine-offline', 'beta is not reachable. Nothing sent.'],
-      ['target-unavailable', 'The session on beta is not available. Nothing sent.'], ['too-large', 'Message too large for the other machine. Nothing sent.'],
+    for (const [reason, text] of [['machine-offline', 'beta is not reachable. Nothing sent.'], ['too-large', 'Message too large for the other machine. Nothing sent.'],
       ['rate-limited', 'Too many messages to this session just now. Nothing sent; wait or batch the text.'], ['refused', 'beta refused the message. Nothing sent.']]) {
       reply = { ok: false, reason };
       await expect(f.bridge.sendMessage(remote.sessionId, `refused ${reason}`)).rejects.toThrow(text!);
       const id = z.string().parse((engine.calls.at(-1)!.body as { message: { msgId: string } }).message.msgId);
       expect(row(id)).toMatchObject({ status: 'not-sent', status_reason: text });
     }
-    // An outcome that is not known: an engine error or another reply shape.
-    for (const answer of [new Response('{}', { status: 500 }), { ok: true }]) {
+    // An outcome that is not known: the engine says so, an older engine says target-unavailable, an engine error, or another reply shape.
+    for (const answer of [{ ok: false, reason: 'unknown' }, { ok: false, reason: 'target-unavailable' }, new Response('{}', { status: 500 }), { ok: true }]) {
       reply = answer;
       await expect(f.bridge.sendMessage(remote.sessionId, 'unknown outcome')).rejects.toThrow('Send outcome unknown');
       const id = z.string().parse((engine.calls.at(-1)!.body as { message: { msgId: string } }).message.msgId);
@@ -1071,6 +1070,32 @@ linux('a send to a remote session goes to the engine with the relay body, and ea
     // Without the engine, an unknown session keeps the local error.
     engine.close();
     await expect(f.bridge.sendMessage(remote.sessionId, 'no engine')).rejects.toThrow('unavailable or ambiguous');
+  } finally { engine.close(); await f.close(); }
+});
+
+linux('a session ID goes to the local match, or to exactly one other machine; else nothing is sent', async () => {
+  const f = await fixture();
+  const remote = remoteSession();
+  let listed: unknown = { peers: [remote, { ...remote, machineId: 'c'.repeat(16), machineName: 'gamma' }] };
+  const engine = fakeEngine(runtimeDir(), route => route === '/api/relay/remote-peers' ? listed
+    : route === '/api/relay/homes' ? { machineId: 'a'.repeat(16), machineName: 'alpha', homes: [] } : { ok: true, outcome: 'socket-written' });
+  const routes = () => engine.calls.map(call => call.route);
+  try {
+    // A local match never asks the engine, also when another machine lists the same ID.
+    listed = { peers: [{ ...remote, sessionId: f.peerId }] };
+    await f.bridge.sendMessage(f.peerId, 'local');
+    expect(routes()).toEqual([]);
+    // Two other machines with the ID: refused, and nothing goes to the engine.
+    listed = { peers: [remote, { ...remote, machineId: 'c'.repeat(16), machineName: 'gamma' }] };
+    await expect(f.bridge.sendMessage(remote.sessionId, 'two')).rejects.toThrow(`More than one other machine has session ${remote.sessionId}. Nothing sent.`);
+    // The engine cannot list the other machines: an explicit error, not "not found".
+    listed = new Response('{}', { status: 500 });
+    await expect(f.bridge.sendMessage(remote.sessionId, 'no list')).rejects.toThrow('ASB cannot list the sessions on the other machines. Nothing sent.');
+    expect(routes()).toEqual(['/api/relay/remote-peers', '/api/relay/remote-peers']);
+    // The same machine listed twice is still one match.
+    listed = { peers: [remote, remote] };
+    expect(await f.bridge.sendMessage(remote.sessionId, 'one')).toMatchObject({ status: 'socket-written' });
+    expect(routes().filter(route => route === '/api/relay/send')).toHaveLength(1);
   } finally { engine.close(); await f.close(); }
 });
 

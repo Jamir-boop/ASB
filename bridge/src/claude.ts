@@ -291,12 +291,22 @@ export async function sendFrames(configDir: string, peer: Peer, frames: unknown[
     const socket = net.createConnection(peer.messagingSocketPath);
     let socketError: Error | undefined;
     socket.on('error', error => { socketError = error; });
+    // One deadline for the connect and the write, so a receiver that stops reading cannot hold the sender.
+    const signal = AbortSignal.timeout(options.timeoutMs ?? 5000);
     try {
-      await once(socket, 'connect', { signal: AbortSignal.timeout(options.timeoutMs ?? 5000) });
+      await once(socket, 'connect', { signal });
       if (options.canWrite && !options.canWrite()) return false;
+      signal.throwIfAborted();
       if (token) socket.write(JSON.stringify({ type: 'auth', token }) + '\n');
       written = true;
-      await new Promise<void>((resolve, reject) => socket.write(lines.map(line => line + '\n').join(''), error => error ? reject(error) : resolve()));
+      await new Promise<void>((resolve, reject) => {
+        const abort = () => reject(signal.reason);
+        signal.addEventListener('abort', abort, { once: true });
+        socket.write(lines.map(line => line + '\n').join(''), error => {
+          signal.removeEventListener('abort', abort);
+          if (error) reject(error); else resolve();
+        });
+      });
       // Claude's macOS receiver can lose the last frame on an immediate half-close.
       await Bun.sleep(150);
       if (socketError) throw socketError;
