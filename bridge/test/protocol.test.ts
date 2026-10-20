@@ -12,6 +12,7 @@ import { CancelledNotificationSchema, ElicitRequestSchema } from '@modelcontextp
 import { Bridge } from '../src/bridge';
 import { findPeer, frameSchema, hopChain, inbox, maxLineLength, peerAddress, peers, sendFrames, sessionName, socketPath, userFrame } from '../src/claude';
 import { receiver } from './desktop-fixture';
+import { outboxPath } from '../src/platform';
 import { appServer } from './app-server-fixture';
 import { fakeEngine } from './engine-fixture';
 import { processStart } from '../src/claude';
@@ -1317,5 +1318,87 @@ linux('B8: a member reference goes to send-member once; not-sent and unknown map
     expect(routes().slice(before.calls)).toEqual(['/api/agent/resolve-bound', '/api/agent/resolve-bound']);
     expect(f.db.query<{ total: number }, []>('SELECT (SELECT count(*) FROM messages)+(SELECT count(*) FROM idle_requests) AS total').get()!.total).toBe(before.rows);
     expect(routes().every(route => ['/api/agent/resolve-bound', '/api/agent/send-member'].includes(route))).toBe(true);
+  } finally { engine.close(); await f.close(); }
+});
+
+linux('B9: an exactReceipt on the outbox updates only the member rows of this receiver process, and a final state stays', async () => {
+  const f = await fixture();
+  let outcome = 'submitted';
+  const engine = fakeEngine(runtimeDir(), (route, body) => route === '/api/agent/resolve-bound'
+    ? { apiVersion: 1, ok: false, code: 'member-target', message: 'This reference is for a session on another machine. This version of ASB Bridge cannot send to it.' }
+    : route === '/api/agent/send-member' ? { apiVersion: 1, pid: process.pid, msgId: (body as { message: { msgId: string } }).message.msgId, outcome }
+      : new Response('{}', { status: 404 }));
+  const status = (id: string) => f.db.query<{ status: string; drop_reason: string | null; status_reason: string | null }, [string]>(
+    'SELECT status,drop_reason,status_reason FROM messages WHERE id=?').get(id);
+  const send = async (text: string) => z.string().parse((await f.bridge.sendReference(MEMBER_REFERENCE, text)).messageId);
+  const procStart = z.string().parse(await processStart(process.pid));
+  const outbox = async (request: unknown) => {
+    const path = outboxPath(peers(f.configDir).find(peer => peer.sessionId === f.desktop.threadId)!.messagingSocketPath);
+    const socket = net.createConnection(path);
+    await once(socket, 'connect');
+    socket.setEncoding('utf8');
+    let text = '';
+    socket.on('data', chunk => { text += chunk; });
+    socket.write(JSON.stringify(request) + '\n');
+    await once(socket, 'close');
+    return JSON.parse(text.split('\n')[0]!);
+  };
+  const receipt = (msgIds: string[], fields: Record<string, unknown> = {}) => outbox({ exactReceipt: { runtimeSessionId: f.desktop.threadId,
+    pid: process.pid, procStart, reference: MEMBER_REFERENCE, msgIds, status: 'delivered', ...fields } });
+  try {
+    const first = await send('first');
+    expect(status(first)?.status).toBe('socket-written');
+    expect(await receipt([first], { status: 'held' })).toEqual({ applied: 1 });
+    expect(status(first)?.status).toBe('held');
+    expect(await receipt([first])).toEqual({ applied: 1 });
+    expect(status(first)?.status).toBe('delivered');
+    // A final state stays.
+    expect(await receipt([first], { status: 'held' })).toEqual({ applied: 0 });
+    expect(status(first)?.status).toBe('delivered');
+
+    // A receipt proves that the frame came to the target: unknown moves to its state.
+    outcome = 'unknown';
+    await expect(send('maybe')).rejects.toThrow(/^Send outcome unknown/);
+    const maybe = z.string().parse(f.db.query<{ id: string }, []>("SELECT id FROM messages WHERE text='maybe'").get()?.id);
+    expect(status(maybe)?.status).toBe('unknown');
+    expect(await receipt([maybe])).toEqual({ applied: 1 });
+    expect(status(maybe)?.status).toBe('delivered');
+    outcome = 'submitted';
+
+    const refused = await send('refused');
+    expect(await receipt([refused], { status: 'expired', status_detail: 'refused', reason: 'Refused by the inbox policy.' })).toEqual({ applied: 1 });
+    expect(status(refused)).toEqual({ status: 'refused', drop_reason: null, status_reason: 'Refused by the inbox policy.' });
+    const [d1, d2] = [await send('drop one'), await send('drop two')];
+    expect(await receipt([d1, d2], { status: 'dropped', drop_reason: 'queue-full' })).toEqual({ applied: 2 });
+    expect([status(d1), status(d2)]).toEqual([{ status: 'dropped', drop_reason: 'queue-full', status_reason: null },
+      { status: 'dropped', drop_reason: 'queue-full', status_reason: null }]);
+
+    // An inbox frame with the same ID changes nothing: the row has no peer address.
+    const quiet = await send('quiet');
+    await f.transmit({ type: 'control', action: 'peer_message_status', orig_msg_id: quiet, status: 'denied' });
+    await Bun.sleep(100);
+    expect(status(quiet)?.status).toBe('socket-written');
+    // Another thread, process, start, or reference: nothing.
+    for (const fields of [{ runtimeSessionId: randomUUID() }, { pid: process.pid + 1 }, { procStart: `${procStart}0` },
+      { reference: `asb:1/${'b'.repeat(16)}/codex/${'cd'.repeat(16)}/codex:${randomUUID()}` }]) {
+      expect(await receipt([quiet], fields)).toEqual({ applied: 0 });
+    }
+    // A 5a local row (with a peer address) and a legacy remote row (the session ID as peer_id): nothing.
+    const local = randomUUID(), legacy = randomUUID();
+    f.db.run("INSERT INTO messages (id,peer_id,direction,text,status,peer_address,peer_start) VALUES (?,?,'out','x','socket-written',?,NULL)",
+      [local, MEMBER_REFERENCE, peerAddress(f.peerPath)]);
+    f.db.run("INSERT INTO messages (id,peer_id,direction,text,status,peer_address,peer_start) VALUES (?,?,'out','x','socket-written',NULL,NULL)",
+      [legacy, randomUUID()]);
+    expect(await receipt([local, legacy])).toEqual({ applied: 0 });
+    expect([status(local)?.status, status(legacy)?.status, status(quiet)?.status]).toEqual(['socket-written', 'socket-written', 'socket-written']);
+    // Another shape is refused.
+    for (const request of [{ exactReceipt: { runtimeSessionId: f.desktop.threadId, pid: process.pid, procStart, reference: MEMBER_REFERENCE, msgIds: [quiet],
+      status: 'delivered', extra: 1 } }, { exactReceipt: { runtimeSessionId: f.desktop.threadId, pid: process.pid, procStart, reference: 'codex:x',
+      msgIds: [quiet], status: 'delivered' } }, { exactReceipt: { runtimeSessionId: f.desktop.threadId, pid: process.pid, procStart,
+      reference: MEMBER_REFERENCE, msgIds: [], status: 'delivered' } }]) {
+      expect(await outbox(request)).toEqual({ error: 'Local send failed; inspect status before retrying' });
+    }
+    expect(status(quiet)?.status).toBe('socket-written');
+    expect(f.frames).toHaveLength(0);
   } finally { engine.close(); await f.close(); }
 });

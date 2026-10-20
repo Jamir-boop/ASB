@@ -166,7 +166,9 @@ export async function memberTarget({ reference, caller }, context, io) {
   const own = await callerRecord(caller, io);
   if (!own) return refuse('caller-unregistered');
   const name = typeof own.record.name === 'string' ? own.record.name.replace(CONTROLS, ' ').slice(0, 128) : '';
-  return { ok: true, identity, name: name || 'Codex' };
+  // Internal: the receipts of the member go to the outbox of this receiver process only. No route reply has it.
+  const { sessionId: runtimeSessionId, pid, procStart, messagingSocketPath } = own.record;
+  return { ok: true, identity, name: name || 'Codex', returnTo: { runtimeSessionId, pid, procStart, messagingSocketPath } };
 }
 
 // The receiving engine's own binding for an exact send from a member: no caller registry, only the homes of the target source.

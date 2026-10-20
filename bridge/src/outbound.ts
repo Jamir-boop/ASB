@@ -11,9 +11,16 @@ export const bindingSchema = z.strictObject({ registryHome: z.string().min(1), r
   procStart: z.string().min(1), messagingSocketPath: z.string().min(1), msgId: uuid, expiresAtMs: z.number().int().nonnegative() });
 export type Binding = z.infer<typeof bindingSchema>;
 const frames = z.array(frameSchema).min(1).max(200);
+// The receipt of an exact member send, from the local ASB engine (src/machine-relay.mjs). It names this receiver process.
+export const exactReceiptSchema = z.strictObject({ runtimeSessionId: uuid, pid: z.number().int().positive(), procStart: z.string().min(1),
+  reference: z.string().max(384).regex(/^asb:[\x21-\x7e]+$/), msgIds: z.array(uuid).min(1).max(257),
+  status: z.enum(['held', 'denied', 'expired', 'delivered', 'refused', 'dropped']), status_detail: z.string().max(64).optional(),
+  reason: z.string().max(1000).optional(), drop_reason: z.string().max(64).optional() });
+export type ExactReceipt = z.infer<typeof exactReceiptSchema>;
 const requestSchema = z.union([z.object({ type: z.literal('refresh') }),
   z.object({ sessionId: uuid, socketPath: z.string(), procStart: z.string().nullable(), frames }),
-  z.strictObject({ binding: bindingSchema, frames })]);
+  z.strictObject({ binding: bindingSchema, frames }),
+  z.strictObject({ exactReceipt: exactReceiptSchema })]);
 const boundMessages = {
   'binding-expired': 'The time for this send ended before the write.',
   'target-changed': 'The target session changed after ASB found it.',
@@ -92,7 +99,8 @@ function lineReader(socket: net.Socket) {
 }
 
 // With a token (Windows), the first line must be the auth line of the receiver's key file.
-export async function outboundServer(path: string, configDir: string, address: string, canWrite: (frames: Frame[]) => boolean, onRequest: () => void, token?: string) {
+export async function outboundServer(path: string, configDir: string, address: string, canWrite: (frames: Frame[]) => boolean, onRequest: () => void, token?: string,
+  onReceipt: (receipt: ExactReceipt) => number = () => 0) {
   const connections = new Set<net.Socket>();
   const server = net.createServer(socket => {
     connections.add(socket);
@@ -106,6 +114,10 @@ export async function outboundServer(path: string, configDir: string, address: s
         if ('type' in request) {
           onRequest();
           socket.end(JSON.stringify({ refreshed: true }) + '\n');
+          return;
+        }
+        if ('exactReceipt' in request) {
+          socket.end(JSON.stringify({ applied: onReceipt(request.exactReceipt) }) + '\n');
           return;
         }
         if (request.frames.some(frame => frame.from !== address)) throw new Error('Wrong sending task');

@@ -97,7 +97,9 @@ export function createAsbServer({
     const phoneRevoke = phoneGateway && url.pathname.match(/^\/api\/phone\/devices\/([a-f0-9]{12})\/revoke$/);
     const phoneActionRoute = phoneGateway && (['/api/phone/settings', '/api/phone/pairing'].includes(url.pathname) || Boolean(phoneRevoke));
     const groupRoute = machineGroup && url.pathname.match(/^\/api\/group(?:\/(invite|join|remove|leave))?$/);
-    const relayRoute = machineRelay && url.pathname.match(/^\/api\/relay\/(homes|remote-peers|send)$/)?.[1];
+    // The receipt route exists only when the relay can send exact receipts.
+    const relayRoute = machineRelay && url.pathname.match(machineRelay.sendReceipt ? /^\/api\/relay\/(homes|remote-peers|send|receipt)$/
+      : /^\/api\/relay\/(homes|remote-peers|send)$/)?.[1];
     const eventRoute = url.pathname === '/api/events';
     const paletteRoute = url.pathname === '/api/palette';
     const engineStopRoute = Boolean(onStop) && url.pathname === '/api/engine/stop';
@@ -106,7 +108,7 @@ export function createAsbServer({
     const sendMemberRoute = Boolean(sendMember) && url.pathname === '/api/agent/send-member';
     const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute
       || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute || resolveRoute || resolveBoundRoute || sendMemberRoute
-      || Boolean(groupRoute?.[1]) || relayRoute === 'send';
+      || Boolean(groupRoute?.[1]) || ['send', 'receipt'].includes(relayRoute);
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
     const readApiRoute = url.pathname === '/api/dashboard' || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute
       || Boolean(groupRoute && !groupRoute[1]) || ['homes', 'remote-peers'].includes(relayRoute);
@@ -325,7 +327,10 @@ export function createAsbServer({
       try {
         if (relayRoute === 'homes') sendJson(response, 200, await machineRelay.homes(await readSources()));
         else if (relayRoute === 'remote-peers') sendJson(response, 200, machineRelay.remotePeers());
-        else {
+        else if (relayRoute === 'receipt') {
+          const result = await machineRelay.sendReceipt(await readBody(request, 64 * 1024));
+          sendJson(response, result.status, result.body);
+        } else {
           const result = await machineRelay.send(await readBody(request, 2 * 1024 * 1024));
           sendJson(response, result.status, result.body);
         }

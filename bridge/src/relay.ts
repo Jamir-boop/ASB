@@ -40,8 +40,41 @@ type Reply = z.infer<typeof replySchema>;
 // The body of POST /deliver-bound: the engine's own binding of one exact member send (src/machine-relay.mjs).
 const deliverBoundSchema = z.strictObject({ binding: bindingSchema, sender: senderSchema, message: messageSchema });
 type BoundReply = { outcome: 'submitted' | 'unknown' } | { outcome: 'not-sent'; reason: string };
-// Step 5c replaces the receipt drop with exact receipts.
+// The last exact member sends of this relay (oldest out first), and the window of their receipts.
 const EXACT_IDS = 1024;
+const EXACT_RECEIPT_MS = 30 * 60_000;
+// One exact member send: the reverse row that got the frame, the sending machine, and the bound target process.
+export type ExactEntry = { rowKey: string; machineId: string; pid: number; procStart: string; messagingSocketPath: string; atMs: number };
+type StatusFrame = Extract<Frame, { action: 'peer_message_status' }>;
+type Control = Record<string, unknown> & { orig_msg_id: string };
+
+// Splits one receipt frame into its exact part (for one sending machine) and its legacy part. An exact ID never goes on
+// the legacy path: an exact ID that is not valid is dropped. `writer` is the verified local session that wrote the frame.
+export function receiptParts(frame: StatusFrame, rowKey: string, writer: Pick<Peer, 'pid' | 'procStart' | 'messagingSocketPath'>,
+  exact: ReadonlyMap<string, ExactEntry>, nowMs: number) {
+  const { action, orig_msg_id, status, status_detail, reason, drop_reason, dropped_msg_ids } = frame;
+  const cut = Object.fromEntries(Object.entries({ status_detail: status_detail?.slice(0, 64), reason: reason?.slice(0, 1000),
+    drop_reason: drop_reason?.slice(0, 64) }).filter(([, value]) => value !== undefined));
+  const ids = [...new Set([orig_msg_id, ...(status === 'dropped' ? dropped_msg_ids ?? [] : [])])];
+  const valid = (id: string) => {
+    const entry = exact.get(id);
+    return entry !== undefined && entry.rowKey === rowKey && entry.pid === writer.pid && entry.procStart === writer.procStart
+      && entry.messagingSocketPath === writer.messagingSocketPath && nowMs - entry.atMs < EXACT_RECEIPT_MS;
+  };
+  const machineId = ids.filter(valid).map(id => exact.get(id)!.machineId)[0];
+  const mine = ids.filter(id => valid(id) && exact.get(id)!.machineId === machineId);
+  const result: { exact?: { machineId: string; control: Control }; legacy?: Control } = {};
+  if (machineId !== undefined) {
+    result.exact = { machineId, control: { action, orig_msg_id: mine[0]!, status, ...cut, ...(status === 'dropped' ? { dropped_msg_ids: mine } : {}) } };
+  }
+  const legacyDropped = dropped_msg_ids?.filter(id => !exact.has(id));
+  if (!exact.has(orig_msg_id)) {
+    result.legacy = { action, orig_msg_id, status, ...cut, ...(legacyDropped ? { dropped_msg_ids: legacyDropped } : {}) };
+  } else if (status === 'dropped' && legacyDropped?.length) {
+    result.legacy = { action, orig_msg_id: legacyDropped[0]!, status, ...cut, dropped_msg_ids: legacyDropped };
+  }
+  return result;
+}
 
 const REVERSE_MS = 30 * 60_000;
 const UNLISTED_MS = 120_000;
@@ -224,6 +257,9 @@ async function main() {
 
   async function removeRow(row: Row) {
     rows.delete(row.key);
+    // The receipts of its exact sends are lost. The IDs stay exact, so they never take the legacy path, also when a new
+    // reverse row gets the same key.
+    for (const [id, entry] of exactIds) if (entry.rowKey === row.key) exactIds.set(id, { ...entry, rowKey: '' });
     try {
       const current = z.object({ pid: z.number(), procStart: z.string() }).parse(ownedJson(row.path, 256 * 1024));
       if (current.pid === row.record.pid && current.procStart === row.record.procStart) unlinkSync(row.path);
@@ -270,17 +306,15 @@ async function main() {
 
   // The last message IDs of exact member sends: their receipts never go back on the v1 path, also after a reverse row
   // that lives longer than 30 minutes. No age limit; the oldest ID goes out first.
-  const exactIds = new Set<string>();
-  const isExact = (id: string) => exactIds.has(id);
-  const keepExact = (id: string) => {
+  const exactIds = new Map<string, ExactEntry>();
+  const keepExact = (id: string, entry: ExactEntry) => {
     exactIds.delete(id);
-    exactIds.add(id);
-    while (exactIds.size > EXACT_IDS) exactIds.delete(exactIds.values().next().value!);
+    exactIds.set(id, entry);
+    while (exactIds.size > EXACT_IDS) exactIds.delete(exactIds.keys().next().value!);
   };
 
   async function forward(row: Row, frame: Frame) {
     if (frame.type === 'control' && frame.action !== 'peer_message_status') return;
-    if (frame.type === 'control' && isExact(frame.orig_msg_id)) return;
     const sender = await findSender(row.home, frame.from);
     if (!sender) return;
     const target = { machineId: row.peer.machineId, targetSessionId: row.peer.sessionId };
@@ -289,10 +323,10 @@ async function main() {
       mode: ['prompting', 'bypass'].includes(mode) ? mode : 'unknown' });
     if (frame.type === 'control') {
       if (frame.action !== 'peer_message_status') return;
-      const { action, orig_msg_id, status, status_detail, reason, drop_reason, dropped_msg_ids } = frame;
-      const control = Object.fromEntries(Object.entries({ action, orig_msg_id, status, status_detail: status_detail?.slice(0, 64),
-        reason: reason?.slice(0, 1000), drop_reason: drop_reason?.slice(0, 64), dropped_msg_ids: dropped_msg_ids?.filter(id => !isExact(id)) }).filter(([, value]) => value !== undefined));
-      await call('/api/relay/send', { ...target, sender: from('unknown'), control }).catch(() => {});
+      // Both stay fire and forget; an older engine answers 404 for the exact route.
+      const { exact, legacy } = receiptParts(frame, row.key, sender, exactIds, Date.now());
+      await Promise.all([exact && call('/api/relay/receipt', exact).catch(() => {}),
+        legacy && call('/api/relay/send', { ...target, sender: from('unknown'), control: legacy }).catch(() => {})]);
       return;
     }
     try { serializeFrame(frame); } catch { return; }
@@ -338,10 +372,12 @@ async function main() {
     try { serializeFrame(frame); } catch { return notSent('too-large'); }
     // Before the write: the target can send its receipt within the 150 ms flush of sendFrames. A not-sent write
     // gives the target no frame, so no receipt with this ID comes.
-    keepExact(message.msgId);
+    keepExact(message.msgId, { rowKey: reverse.key, machineId: sender.machineId, pid: binding.pid, procStart: binding.procStart,
+      messagingSocketPath: binding.messagingSocketPath, atMs: Date.now() });
     try { await sendBound(home.path, binding, [frame], () => !closing); }
     catch (error) {
       if (!(error instanceof SendRefused)) return { outcome: 'unknown' };
+      exactIds.delete(message.msgId);
       // A refusal without a code is the burst budget of the target.
       const code = (error as SendRefused & { code?: string }).code;
       return notSent(code === 'receiver-stopped' ? 'relay-unavailable' : code ?? 'rate-limited');

@@ -1,14 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { createAsbServer } from '../src/asb-server.mjs';
 import { processStart } from '../src/claude-registry.mjs';
-import { createRelaySupervisor, EXACT_REASONS, RELAY_STOPPED, relayHomes, validPeerList, validRelayBody, validRelayReply } from '../src/machine-relay.mjs';
+import { createRelaySupervisor, EXACT_REASONS, RELAY_STOPPED, relayHomes, validPeerList, validRelayBody, validRelayReply, writeOutbox } from '../src/machine-relay.mjs';
 import { formatReference } from '../src/session-references.mjs';
 import { notSentMessage } from '../src/session-targets.mjs';
 
@@ -441,7 +443,10 @@ test('sendExact resolves first, then makes at most one deliver to the reference 
   } } });
   f.group.states[0].lastAddress = '10.0.0.2';
   f.group.states[1].online = false;
-  const send = (edit = {}) => f.supervisor.sendExact({ identity: identity(), sender: exactSender(), message: exactMessage(), remainingMs: 10_000, ...edit });
+  // Each send has a new msgId: a msgId that already has an attempt is refused.
+  let sentMessage;
+  const send = (edit = {}) => f.supervisor.sendExact({ identity: identity(), sender: exactSender(),
+    message: sentMessage = { ...exactMessage(), msgId: randomUUID() }, remainingMs: 10_000, ...edit });
   const notSent = (reason) => ({ outcome: 'not-sent', reason });
 
   assert.deepEqual(await send(), { outcome: 'submitted' });
@@ -453,7 +458,7 @@ test('sendExact resolves first, then makes at most one deliver to the reference 
   // The deliver goes to the address that answered the resolve.
   assert.deepEqual([delivered.path, delivered.method, delivered.timeoutMs, delivered.lastAddress, delivered.member.machineId],
     ['/peer/v2/deliver', 'POST', 10_000, '10.0.0.9', B]);
-  assert.deepEqual(delivered.body, { api: 2, target: target(), sender: { ...exactSender(), machineId: A }, message: exactMessage(), remainingMs: 9_000 });
+  assert.deepEqual(delivered.body, { api: 2, target: target(), sender: { ...exactSender(), machineId: A }, message: sentMessage, remainingMs: 9_000 });
   requests.length = 0;
   assert.deepEqual(await send({ remainingMs: 5_000 }), { outcome: 'submitted' });
   assert.deepEqual([requests[1].timeoutMs, requests[1].body.remainingMs], [5_000, 4_000]);
@@ -623,4 +628,253 @@ test('the member routes of an exact send bind first, clamp the deadline, and nev
   clockStep = null;
   assert.ok(Date.now() - started < 2_000);
   for (const result of results) assert.notEqual(result.status, 404);
+});
+
+// Exact member receipts: the sending engine keeps its attempts; the target member sends the control variant of /peer/v2/deliver.
+const RETURN_TO = { runtimeSessionId: ID2, pid: 4242, procStart: '4242000', messagingSocketPath: '/synthetic/run/4242.sock' };
+const receiptControl = (orig, fields = {}) => ({ api: 2, control: { action: 'peer_message_status', orig_msg_id: orig, status: 'delivered', ...fields } });
+
+async function receiptFixture(t, { deliver } = {}) {
+  const clock = { now: 1_000_000 };
+  const requests = [];
+  const writes = [];
+  let write = async () => 1;
+  const f = await supervisorFixture(t, { group: fakeGroup([B, 'c'.repeat(16)]), supervisor: { now: () => clock.now,
+    outbox: async (...args) => { writes.push(args); return write(...args); },
+    request: async (options) => {
+      requests.push(options);
+      if (options.path === '/peer/v2/resolve-session') return { status: 200, body: { api: 2, outcome: 'ready' }, address: '10.0.0.9' };
+      return (deliver ?? (async () => ({ status: 200, body: { api: 2, msgId: options.body.message.msgId, outcome: 'submitted' } })))(options);
+    } } });
+  const send = (msgId, { reference = identity().reference, returnTo = RETURN_TO } = {}) => f.supervisor.sendExact({ identity: { ...identity(), reference },
+    sender: exactSender(), message: { ...exactMessage(), msgId }, remainingMs: 10_000, returnTo });
+  return { ...f, clock, requests, writes, send, setWrite(value) { write = value; } };
+}
+
+test('sendExact saves its attempt before the deliver, deletes it on not-sent, and refuses a repeated msgId with no request', async (t) => {
+  const caller = B + 'f'.repeat(48);
+  let during = null;
+  let deliver = async (options) => ({ status: 200, body: { api: 2, msgId: options.body.message.msgId, outcome: 'submitted' } });
+  const f = await receiptFixture(t, { deliver: async (options) => {
+    // The receipt can come before the reply of the deliver.
+    during = await f.supervisor.peerDeliverExact(receiptControl(options.body.message.msgId), caller);
+    return deliver(options);
+  } });
+  const first = randomUUID();
+  assert.deepEqual(await f.send(first), { outcome: 'submitted' });
+  assert.deepEqual(during.body, { api: 2, msgId: first, outcome: 'submitted' });
+  assert.equal(f.writes.length, 1);
+  f.requests.length = 0;
+  assert.deepEqual(await f.send(first), { outcome: 'not-sent', reason: 'invalid-request' });
+  assert.deepEqual(f.requests, []);
+  // An unknown outcome keeps the attempt; a not-sent result deletes it, so its receipt and a new send of the msgId are as new.
+  deliver = async () => ({ status: 500, body: { error: 'x' } });
+  const unknown = randomUUID();
+  assert.deepEqual(await f.send(unknown), { outcome: 'unknown' });
+  assert.deepEqual(await f.send(unknown), { outcome: 'not-sent', reason: 'invalid-request' });
+  deliver = async () => ({ status: 403, body: { error: 'x' } });
+  const refused = randomUUID();
+  assert.deepEqual(await f.send(refused), { outcome: 'not-sent', reason: 'refused' });
+  f.writes.length = 0;
+  assert.deepEqual((await f.supervisor.peerDeliverExact(receiptControl(refused), caller)).body, { api: 2, msgId: refused, outcome: 'not-sent', reason: 'binding-expired' });
+  assert.deepEqual(f.writes, []);
+  f.requests.length = 0;
+  assert.deepEqual(await f.send(refused), { outcome: 'not-sent', reason: 'refused' });
+  assert.deepEqual(f.requests.map((item) => item.path), ['/peer/v2/resolve-session', '/peer/v2/deliver']);
+  // An attempt lives 30 minutes.
+  deliver = async (options) => ({ status: 200, body: { api: 2, msgId: options.body.message.msgId, outcome: 'submitted' } });
+  f.clock.now += 30 * 60_000;
+  assert.deepEqual(await f.send(first), { outcome: 'submitted' });
+  // At most 1024 attempts: the oldest goes out first.
+  const ids = Array.from({ length: 1024 }, () => randomUUID());
+  for (const id of ids) await f.send(id);
+  f.writes.length = 0;
+  assert.equal((await f.supervisor.peerDeliverExact(receiptControl(first), caller)).body.outcome, 'not-sent');
+  assert.equal((await f.supervisor.peerDeliverExact(receiptControl(ids[0]), caller)).body.outcome, 'submitted');
+  assert.equal(f.writes.length, 1);
+});
+
+test('peerReceipt checks the shape, then the attempt, the caller, the time, and the count, and writes once to the outbox', async (t) => {
+  const caller = B + 'f'.repeat(48);
+  const f = await receiptFixture(t);
+  const [one, two, otherReference, otherReturn] = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+  await f.send(one);
+  await f.send(two);
+  await f.send(otherReference, { reference: formatReference({ machineId: B, ...target(), appId: ID2 }) });
+  await f.send(otherReturn, { returnTo: { ...RETURN_TO, pid: 4243 } });
+  const receipt = (value) => f.supervisor.peerDeliverExact(value, caller);
+  const invalid = { status: 400, body: { error: 'Invalid relay request.' } };
+  for (const edit of [(value) => { value.api = 1; }, (value) => { value.control.action = 'notify_when_idle'; }, (value) => { value.control.status = 'busy'; },
+    (value) => { value.control.orig_msg_id = 'x'; }, (value) => { value.control.text = 'hello'; }, (value) => { value.control.reason = 'r'.repeat(1001); },
+    (value) => { value.control.dropped_msg_ids = ['x']; }, (value) => { value.control = null; }, (value) => { value.target = target(); },
+    (value) => { value.message = exactMessage(); }, (value) => { value.remainingMs = 1000; }, (value) => { value.session_id = ID; }]) {
+    const value = receiptControl(one);
+    edit(value);
+    assert.deepEqual(await receipt(value), invalid, edit.toString());
+  }
+  assert.deepEqual(f.writes, []);
+  const expired = (orig) => ({ status: 200, body: { api: 2, msgId: orig, outcome: 'not-sent', reason: 'binding-expired' } });
+  // The same reply for an unknown ID, another caller, and another member: no write.
+  assert.deepEqual(await receipt(receiptControl(randomUUID())).then((reply) => reply.body.reason), 'binding-expired');
+  assert.deepEqual(await f.supervisor.peerDeliverExact(receiptControl(one), 'c'.repeat(16) + 'f'.repeat(48)), expired(one));
+  assert.deepEqual(await f.supervisor.peerDeliverExact(receiptControl(one), B + 'e'.repeat(48)), expired(one));
+  assert.deepEqual(f.writes, []);
+
+  // One valid write: the status fields, the reference, and the receiver of the sending task; never text.
+  const fields = { status: 'expired', status_detail: 'refused', reason: 'Refused by the inbox policy.' };
+  assert.deepEqual(await receipt(receiptControl(one, fields)), { status: 200, body: { api: 2, msgId: one, outcome: 'submitted' } });
+  assert.deepEqual(f.writes, [[RETURN_TO.messagingSocketPath, { exactReceipt: { runtimeSessionId: ID2, pid: 4242, procStart: '4242000',
+    reference: identity().reference, msgIds: [one], ...fields } }, 2_000]]);
+  // dropped_msg_ids: only live attempts with the same reference and the same receiver; never for another status.
+  f.writes.length = 0;
+  await receipt(receiptControl(two, { status: 'dropped', drop_reason: 'queue-full', dropped_msg_ids: [two, one, otherReference, otherReturn, randomUUID()] }));
+  assert.deepEqual(f.writes[0][1].exactReceipt.msgIds, [two, one]);
+  assert.equal(f.writes[0][1].exactReceipt.drop_reason, 'queue-full');
+  f.writes.length = 0;
+  await receipt(receiptControl(two, { dropped_msg_ids: [one] }));
+  assert.deepEqual(f.writes[0][1].exactReceipt.msgIds, [two]);
+  // At most 4 controls for one attempt (a use as a dropped ID does not count): the fifth writes nothing.
+  f.writes.length = 0;
+  for (const _ of [3, 4]) assert.equal((await receipt(receiptControl(two))).body.outcome, 'submitted');
+  assert.equal(f.writes.length, 2);
+  assert.deepEqual(await receipt(receiptControl(two)), expired(two));
+  assert.equal(f.writes.length, 2);
+  // The outbox write: a failure before the connect is not-sent; after the write, unknown.
+  f.setWrite(async () => { throw Object.assign(new Error('refused'), { unsent: true }); });
+  assert.deepEqual((await receipt(receiptControl(otherReference))).body, { api: 2, msgId: otherReference, outcome: 'not-sent', reason: 'target-unavailable' });
+  f.setWrite(async () => { throw new Error('closed'); });
+  assert.deepEqual((await receipt(receiptControl(otherReference))).body, { api: 2, msgId: otherReference, outcome: 'unknown' });
+  // After 30 minutes the attempt is gone.
+  f.setWrite(async () => 1);
+  f.writes.length = 0;
+  f.clock.now += 30 * 60_000;
+  assert.deepEqual(await receipt(receiptControl(otherReturn)), expired(otherReturn));
+  assert.deepEqual(f.writes, []);
+});
+
+test('sendReceipt makes one control POST to the sending member only, and none for an offline or unknown member', async (t) => {
+  const requests = [];
+  let reply = async () => ({ status: 200, body: { api: 2, msgId: ID, outcome: 'submitted' } });
+  const f = await supervisorFixture(t, { group: fakeGroup([B, 'c'.repeat(16)]), supervisor: { request: async (options) => { requests.push(options); return reply(); } } });
+  f.group.states[0].lastAddress = '10.0.0.2';
+  f.group.states[1].online = false;
+  const control = { action: 'peer_message_status', orig_msg_id: ID, status: 'dropped', drop_reason: 'queue-full', dropped_msg_ids: [ID] };
+  assert.deepEqual(await f.supervisor.sendReceipt({ machineId: B, control }), { status: 200, body: { sent: true } });
+  assert.equal(requests.length, 1);
+  assert.deepEqual([requests[0].path, requests[0].method, requests[0].timeoutMs, requests[0].lastAddress, requests[0].member.machineId, requests[0].body],
+    ['/peer/v2/deliver', 'POST', 4_000, '10.0.0.2', B, { api: 2, control }]);
+  requests.length = 0;
+  for (const machineId of ['c'.repeat(16), 'f'.repeat(16), A]) {
+    assert.deepEqual(await f.supervisor.sendReceipt({ machineId, control }), { status: 200, body: { sent: false } });
+  }
+  for (const body of [{ machineId: B }, { machineId: B, control, extra: 1 }, { machineId: 'B'.repeat(16), control }, { machineId: B, control: { ...control, text: 'x' } },
+    { machineId: B, control: { ...control, status: 'busy' } }, null]) {
+    assert.deepEqual(await f.supervisor.sendReceipt(body), { status: 400, body: { error: 'Invalid relay request.' } });
+  }
+  assert.deepEqual(requests, []);
+  reply = async () => { throw Object.assign(new Error('timeout'), { handedOff: true }); };
+  assert.deepEqual((await f.supervisor.sendReceipt({ machineId: B, control })).body, { sent: true });
+  reply = async () => { throw new Error('no-address'); };
+  assert.deepEqual((await f.supervisor.sendReceipt({ machineId: B, control })).body, { sent: false });
+  assert.equal(requests.length, 2);
+});
+
+test('writeOutbox writes one line to the private outbox next to the inbox and reads one { applied } line', async (t) => {
+  const dir = await temporary(t);
+  const run = path.join(dir, 'run');
+  await mkdir(run, { mode: 0o700 });
+  const inbox = path.join(run, '77.sock');
+  const lines = [];
+  let answer = (socket) => socket.end('{"applied":2}\n');
+  const server = net.createServer((socket) => {
+    let text = '';
+    socket.setEncoding('utf8');
+    socket.on('data', (chunk) => {
+      text += chunk;
+      if (text.includes('\n')) { lines.push(JSON.parse(text.split('\n')[0])); answer(socket); }
+    });
+  });
+  await new Promise((resolve) => server.listen(path.join(run, '77.out'), resolve));
+  t.after(() => new Promise((resolve) => { server.close(resolve); }));
+  await chmod(path.join(run, '77.out'), 0o600);
+  const request = { exactReceipt: { msgIds: [ID] } };
+  assert.equal(await writeOutbox(inbox, request), 2);
+  assert.deepEqual(lines, [request]);
+
+  // Refused before any connect: the path rules and the mode rules.
+  const unsent = async (promise) => assert.equal((await promise.then(() => null, (error) => error)).unsent, true);
+  await writeFile(path.join(run, 'file.out'), '');
+  await chmod(path.join(run, 'file.out'), 0o600);
+  for (const bad of ['relative/77.sock', path.join(run, '77.out'), path.join(run, '77'), `${run}/../run/77.sock`, path.join(run, 'none.sock'),
+    path.join(run, 'file.sock'), 7, undefined]) await unsent(writeOutbox(bad, request));
+  await chmod(path.join(run, '77.out'), 0o660);
+  await unsent(writeOutbox(inbox, request));
+  await chmod(path.join(run, '77.out'), 0o600);
+  await chmod(run, 0o755);
+  await unsent(writeOutbox(inbox, request));
+  await chmod(run, 0o700);
+  // A stale socket file with no listener: the connect fails, so nothing was written.
+  const stale = net.createServer();
+  await new Promise((resolve) => stale.listen(path.join(run, '78.tmp'), resolve));
+  await rename(path.join(run, '78.tmp'), path.join(run, '78.out'));
+  await chmod(path.join(run, '78.out'), 0o600);
+  await new Promise((resolve) => stale.close(resolve));
+  assert.equal((await lstat(path.join(run, '78.out'))).isSocket(), true);
+  await unsent(writeOutbox(path.join(run, '78.sock'), request));
+  assert.equal(lines.length, 1);
+
+  // After the write: a close, an invalid reply, or no reply in time is not `unsent`.
+  const unknown = async (promise) => { const error = await promise.then(() => null, (value) => value); assert.ok(error); assert.notEqual(error.unsent, true); };
+  answer = (socket) => socket.end();
+  await unknown(writeOutbox(inbox, request));
+  for (const reply of ['{"applied":-1}\n', '{"applied":1,"extra":1}\n', '{"error":"x"}\n', 'nope\n', `${'x'.repeat(70 * 1024)}`]) {
+    answer = (socket) => socket.end(reply);
+    await unknown(writeOutbox(inbox, request));
+  }
+  answer = () => {};
+  const started = Date.now();
+  await unknown(writeOutbox(inbox, request, 100));
+  assert.ok(Date.now() - started < 1_000);
+  assert.equal(lines.length, 8);
+});
+
+test('the loopback receipt route needs the source token, local Host, and local Origin, and exists only with sendReceipt', async (t) => {
+  const requests = [];
+  const f = await supervisorFixture(t, { supervisor: { request: async (options) => { requests.push(options); return { status: 200, body: {} }; } } });
+  const machineRelay = { homes: async () => ({}), remotePeers: () => ({ peers: [] }), send: async () => ({ status: 200, body: {} }),
+    sendReceipt: (body) => f.supervisor.sendReceipt(body) };
+  const serve = async (relay) => {
+    const server = createAsbServer({ dashboardWatchPaths: [], loadDashboard: async () => ({ providers: [], threads: [] }), sourceToken: TOKEN, machineRelay: relay });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
+    return `http://127.0.0.1:${server.address().port}`;
+  };
+  const base = await serve(machineRelay);
+  const call = (url, { method = 'POST', token = TOKEN, origin = new URL(url).origin, host, body } = {}) => new Promise((resolve, reject) => {
+    const request = http.request(url, { method, headers: { ...(token ? { 'x-asb-source-token': token } : {}), ...(origin ? { origin } : {}),
+      ...(host ? { host } : {}), 'content-type': 'application/json' } }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, text: Buffer.concat(chunks).toString('utf8') }));
+    });
+    request.on('error', reject);
+    request.end(body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body));
+  });
+  const route = `${base}/api/relay/receipt`;
+  const body = { machineId: B, control: { action: 'peer_message_status', orig_msg_id: ID, status: 'delivered' } };
+  for (const options of [{ token: '' }, { token: 'e'.repeat(64) }, { origin: '' }, { origin: 'http://example.com' }, { host: `localhost:${new URL(base).port}` }]) {
+    assert.equal((await call(route, { body, ...options })).status, 403, JSON.stringify(options));
+  }
+  assert.equal((await call(route, { method: 'GET', origin: '' })).status, 405);
+  for (const invalid of [{}, { ...body, extra: 1 }, { machineId: B, control: { ...body.control, text: 'x' } }, '{', null]) {
+    assert.equal((await call(route, { body: invalid })).status, 400);
+  }
+  assert.equal((await call(route, { body: { ...body, control: { ...body.control, reason: 'x'.repeat(70 * 1024) } } })).status, 413);
+  assert.deepEqual(requests, []);
+  const reply = await call(route, { body });
+  assert.deepEqual([reply.status, JSON.parse(reply.text), reply.headers['cache-control']], [200, { sent: true }, 'no-store']);
+  assert.deepEqual(requests.map((item) => [item.path, item.body]), [['/peer/v2/deliver', { api: 2, control: body.control }]]);
+  const { sendReceipt, ...older } = machineRelay;
+  assert.equal(typeof sendReceipt, 'function');
+  assert.equal((await call(`${await serve(older)}/api/relay/receipt`, { body })).status, 404);
 });

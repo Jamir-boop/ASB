@@ -439,3 +439,26 @@ test('the engine answers a member send without a group as not sent, never 404', 
   const local = await request(SEND, { method: 'POST', body: sendBody({ reference: `asb:1/${MACHINE_ID}/codex/${'ab'.repeat(16)}/codex:${SESSION}` }) });
   assert.equal(local.json().code, 'local-target');
 });
+
+test('a member send gives sendExact the receiver record of the caller as returnTo, and the reply does not contain it', {
+  skip: process.platform !== 'linux' ? 'needs Linux' : false }, async (t) => {
+  const { homeDir, registry } = await fixture(t);
+  const sessions = path.join(homeDir, '.claude', 'sessions');
+  await mkdir(sessions, { recursive: true, mode: 0o700 });
+  const procStart = await processStart(process.pid);
+  assert.ok(procStart);
+  const socket = `/synthetic/s/${process.pid}.sock`;
+  await writeFile(path.join(sessions, `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: CALLER, procStart, name: 'Secret name',
+    cwd: '/synthetic/private', peerProtocol: 1, messagingSocketPath: socket, entrypoint: 'codex-asb-bridge' }), { mode: 0o600 });
+  const calls = [];
+  const { request } = await serve(t, { switchboard: true, sourceRegistry: registry, pendingStatePath: path.join(homeDir, 'pending.json'),
+    machineIdentity: () => ({ machineId: MACHINE_ID, machineName: 'synthetic-pc' }), referenceScopes: () => () => 'ab'.repeat(16),
+    machineGroup: { status: async () => ({ members: [{ machineId: MACHINE_ID, name: 'synthetic-pc', online: true, isSelf: true },
+      { machineId: MEMBER_ID, name: 'synthetic-member', online: true, isSelf: false }] }), merge: () => {} },
+    machineRelay: { sendExact: async (argument) => { calls.push(argument); return { outcome: 'submitted' }; } } });
+  const reply = await request(SEND, { method: 'POST', body: sendBody({ caller: { runtimeSessionId: CALLER, configDir: path.join(homeDir, '.claude') } }) });
+  assert.deepEqual([reply.status, reply.json()], [200, { apiVersion: 1, pid: process.pid, msgId: MSG, outcome: 'submitted' }]);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].returnTo, { runtimeSessionId: CALLER, pid: process.pid, procStart, messagingSocketPath: socket });
+  for (const value of [socket, procStart, 'Secret', 'private']) assert.equal(reply.text.includes(value), false, value);
+});

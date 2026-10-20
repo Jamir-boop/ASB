@@ -808,7 +808,7 @@ export function createSwitchboardServer(options = {}) {
       if (!options.machineRelay?.sendExact) return reply('not-sent', 'unknown-machine');
       const result = await options.machineRelay.sendExact({ identity: target.identity,
         sender: { sessionId: caller.runtimeSessionId, name: target.name, mode, agent: 'codex' }, message,
-        remainingMs: Math.max(0, remainingMs - (Date.now() - startedAt)) });
+        remainingMs: Math.max(0, remainingMs - (Date.now() - startedAt)), returnTo: target.returnTo });
       return reply(result.outcome, result.reason);
     },
     listSources: (dashboard) => registry.report(dashboard),

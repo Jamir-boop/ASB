@@ -172,7 +172,7 @@ test('two engines join one group and show each other\'s sessions as remote cards
   const member = { machineId: b.machineId, certFingerprint: (await b.gateway.credentials()).fingerprint,
     addresses: [{ kind: 'lan', address: '127.0.0.3' }], port: b.gatewayPort };
   for (const route of ['/api/group', '/api/group/invite', '/api/group/join', '/api/engine/stop', '/api/agent/status', '/api/agent/resolve-session', '/api/agent/resolve-bound',
-    '/api/agent/send-member']) {
+    '/api/agent/send-member', '/api/relay/receipt']) {
     for (const method of ['GET', 'POST']) {
       const reply = await peerRequest({ member, path: route, method, ...(method === 'POST' ? { body: {} } : {}), tls: credentials });
       assert.equal(reply.status, 404, `${method} ${route}`);
@@ -265,4 +265,49 @@ test('an exact member send asks an old member once with no text, and a new membe
   assert.deepEqual(calls[0][1], { api: 2, target });
   assert.deepEqual(calls[1][1], { api: 2, target, sender: { machineId: a.machineId, sessionId: uuid(8), name: 'codex-task', mode: 'prompting', agent: 'codex' },
     message: { msgId: uuid(9), text: 'secret text', hopChain: [] }, remainingMs: 9_000 });
+});
+
+// Exact member receipts over real mutual TLS: the target member sends the control variant of /peer/v2/deliver back.
+test('a receipt control from the target member reaches the outbox of the sending task once; another member or an unknown ID writes nothing', { skip: hasOpenSsl ? false : 'openssl is not on PATH.' }, async (t) => {
+  const clock = { now: Date.now() };
+  const writes = [];
+  let relay;
+  const a = await engine(t, 'engine-ra', '127.0.0.8', clock, { deliverExact: (value, fingerprint) => relay.peerDeliverExact(value, fingerprint) });
+  const b = await engine(t, 'engine-rb', '127.0.0.9', clock, { resolveExact: async () => ({ status: 200, body: { api: 2, outcome: 'ready' } }),
+    deliverExact: async (value) => ({ status: 200, body: { api: 2, msgId: value.message.msgId, outcome: 'submitted' } }) });
+  const c = await engine(t, 'engine-rc', '127.0.0.10', clock);
+  for (const member of [b, c]) {
+    const invite = await a.api('/api/group/invite', { method: 'POST', body: {} });
+    assert.equal((await member.api('/api/group/join', { method: 'POST', body: { link: invite.body.link, name: member.name } })).status, 200);
+  }
+  await waitFor(() => {
+    for (const handle of a.timers.pending.filter((item) => [2000, 5000, 10_000].includes(item.ms))) {
+      a.timers.pending.splice(a.timers.pending.indexOf(handle), 1);
+      handle.run();
+    }
+    return a.group.peerStates().length === 2 && a.group.peerStates().every((state) => state.online);
+  }, 'both members online');
+  relay = createRelaySupervisor({ group: a.group, port: a.port, sourceToken: 'x', outbox: async (...args) => { writes.push(args); return 1; } });
+  const target = { sourceId: 'codex', scopeTag: 'c'.repeat(32), type: 'codex', appId: uuid(7) };
+  const reference = `asb:1/${b.machineId}/codex/${'c'.repeat(32)}/codex:${uuid(7)}`;
+  const returnTo = { runtimeSessionId: uuid(8), pid: 4242, procStart: '4242000', messagingSocketPath: '/synthetic/run/4242.sock' };
+  assert.deepEqual(await relay.sendExact({ identity: { reference, machineId: b.machineId, ...target },
+    sender: { sessionId: uuid(8), name: 'codex-task', mode: 'prompting', agent: 'codex' }, message: { msgId: uuid(9), text: 'secret text', hopChain: [] },
+    remainingMs: 10_000, returnTo }), { outcome: 'submitted' });
+
+  const toA = async (from, orig) => {
+    const { member } = from.group.peerStates().find((state) => state.member.machineId === a.machineId);
+    return peerRequest({ member, path: '/peer/v2/deliver', method: 'POST', tls: await from.gateway.credentials(),
+      body: { api: 2, control: { action: 'peer_message_status', orig_msg_id: orig, status: 'delivered' } } });
+  };
+  const expired = (orig) => ({ api: 2, msgId: orig, outcome: 'not-sent', reason: 'binding-expired' });
+  for (const [from, orig] of [[c, uuid(9)], [b, uuid(10)]]) {
+    const reply = await toA(from, orig);
+    assert.deepEqual([reply.status, reply.body], [200, expired(orig)]);
+  }
+  assert.deepEqual(writes, []);
+  const reply = await toA(b, uuid(9));
+  assert.deepEqual([reply.status, reply.body], [200, { api: 2, msgId: uuid(9), outcome: 'submitted' }]);
+  assert.deepEqual(writes, [[returnTo.messagingSocketPath, { exactReceipt: { runtimeSessionId: uuid(8), pid: 4242, procStart: '4242000', reference,
+    msgIds: [uuid(9)], status: 'delivered' } }, 2_000]]);
 });

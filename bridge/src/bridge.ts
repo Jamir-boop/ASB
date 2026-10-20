@@ -6,7 +6,7 @@ import { accountReceipt, findPeer, findPeerProcess, hopChain, inbox, peerAddress
 import type { Runtime } from './desktop';
 import { deliverToCodex, readCodexInputs, readCodexRuntime, targetSchema, type Target } from './codex';
 import { z } from 'zod';
-import { bindingSchema, boundPeer, outboundServer, refreshReceiver, refuse, sendBound, sendBoundViaReceiver, sendViaReceiver, type Binding } from './outbound';
+import { bindingSchema, boundPeer, outboundServer, refreshReceiver, refuse, sendBound, sendBoundViaReceiver, sendViaReceiver, type Binding, type ExactReceipt } from './outbound';
 import { isWindows, outboxPath } from './platform';
 import { PeerGuard } from './guard';
 import { DeliveryRefused } from './delivery';
@@ -49,6 +49,8 @@ export class Bridge {
   private registration?: Awaited<ReturnType<typeof register>>;
   private closing = false;
   private ownsReceiver = false;
+  // The start time of this receiver process, as start() registers it.
+  private procStart?: string;
   private serial: Promise<unknown> = Promise.resolve();
   private expiryTimer?: ReturnType<typeof setTimeout>;
   private incomingMessages = 0;
@@ -193,6 +195,7 @@ export class Bridge {
         if (!claim.changes) throw new Error('Another receiver claimed this task');
       })();
       this.ownsReceiver = true;
+      this.procStart = procStart;
       this.db.run("UPDATE messages SET status='unknown' WHERE status='submitting'");
       // Windows needs the token in the inbox before the row exists (plan 17.2).
       const token = isWindows() ? randomBytes(16).toString('hex') : undefined;
@@ -210,7 +213,7 @@ export class Bridge {
       if (this.closing) throw new Error('Receiver is closing');
       this.closeOutbound = await outboundServer(outboxPath(socketPath(this.listener.address)), this.configDir, this.listener.address,
         frames => !this.closing && (!frames.some(frame => frame.type === 'control' && frame.action === 'peer_idle_notice' && frame.state === 'idle') || this.canNotifyIdle()),
-        () => this.scheduleExpiry(), token);
+        () => this.scheduleExpiry(), token, receipt => this.applyExactReceipt(receipt));
       this.registration = await register(this.configDir, this.threadId, this.listener.address, cwd, this.runtime().status, token);
       if (this.closing) throw new Error('Receiver is closing');
       for (const message of this.db.query<Message, []>("SELECT * FROM messages WHERE direction='in' AND status='pending' ORDER BY created_at,rowid").all()) {
@@ -400,6 +403,17 @@ export class Bridge {
     }
     this.db.run("UPDATE messages SET status='socket-written' WHERE id=? AND status='submitting'", [id]);
     return { messageId: id, subscriptionId: null, status: this.db.query<{ status: string }, [string]>('SELECT status FROM messages WHERE id=?').get(id)?.status };
+  }
+
+  // The receipt of an exact member send, from the local engine through the outbox. It applies only to this receiver
+  // process and to rows of sendMember (the reference as peer_id, no peer address). It never sends anything.
+  private applyExactReceipt(receipt: ExactReceipt) {
+    if (this.closing || !this.ownsReceiver || receipt.runtimeSessionId !== this.threadId || receipt.pid !== process.pid
+      || receipt.procStart !== this.procStart) return 0;
+    const status = receipt.status === 'expired' && receipt.status_detail === 'refused' ? 'refused' : receipt.status;
+    return this.db.transaction(() => receipt.msgIds.reduce((applied, id) => applied + this.db.run(`UPDATE messages SET status=?,drop_reason=?,status_reason=?
+      WHERE id=? AND peer_id=? AND peer_address IS NULL AND direction='out' AND status IN ('submitting','socket-written','unknown','held')`,
+      [status, receipt.drop_reason ?? null, receipt.reason ?? null, id, receipt.reference]).changes, 0))();
   }
 
   // Runs inside sendMessage's exclusive section.

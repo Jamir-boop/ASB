@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, 
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { hopChain, inbox, peers, processStart, sendFrames, socketPath, userFrame, type Frame } from '../src/claude';
-import { engineCaller, forwardOutcome, proxyName, proxyPlan, type Home, type RemotePeer } from '../src/relay';
+import { engineCaller, forwardOutcome, proxyName, proxyPlan, receiptParts, type ExactEntry, type Home, type RemotePeer } from '../src/relay';
 // Linux only: the engine starts the relay only on Linux and Windows, and this test uses Unix sockets and the /usr/bin/cat placeholder.
 const linux = test.skipIf(process.platform !== 'linux');
 
@@ -81,6 +81,48 @@ test('a forwarded message gets a refused receipt only when it was not sent', asy
   // No engine at the port: the request did not go out.
   // Windows refuses a loopback connection only after about 1 to 2 s; Linux refuses at once.
   expect(await forwardOutcome(engineCaller(url, SOURCE_TOKEN, 5000)('/api/relay/send', {}))).toBe('machine-offline');
+});
+
+test('receiptParts sends valid exact IDs to one sending machine, keeps legacy IDs on the legacy path, and never sends an exact ID there', () => {
+  const now = 10_000_000_000;
+  const B = 'b'.repeat(16), C = 'c'.repeat(16);
+  const writer = { pid: 50, procStart: '500', messagingSocketPath: '/synthetic/50.sock' };
+  const entry = (fields: Partial<ExactEntry> = {}): ExactEntry => ({ rowKey: 'row', machineId: B, ...writer, atMs: now - 1000, ...fields });
+  const [x, y, z, l1, l2] = Array.from({ length: 5 }, () => randomUUID() as string) as [string, string, string, string, string];
+  const exact = new Map<string, ExactEntry>([[x, entry()], [y, entry()], [z, entry({ machineId: C })]]);
+  const frame = (fields: Record<string, unknown>) => ({ msgV: 1 as const, type: 'control' as const, from: 'uds:/synthetic/50.sock',
+    action: 'peer_message_status' as const, status: 'delivered' as const, ...fields }) as Parameters<typeof receiptParts>[0];
+  const parts = (value: ReturnType<typeof frame>, rowKey = 'row', who = writer, at = now) => receiptParts(value, rowKey, who, exact, at);
+
+  // A valid exact receipt: the exact part only, with the cuts of the legacy forward.
+  expect(parts(frame({ orig_msg_id: x, status: 'expired', status_detail: 'refused'.padEnd(70, 'x'), reason: 'r'.repeat(1200) }))).toEqual({
+    exact: { machineId: B, control: { action: 'peer_message_status', orig_msg_id: x, status: 'expired', status_detail: 'refused'.padEnd(64, 'x'), reason: 'r'.repeat(1000) } } });
+  // A legacy receipt keeps the legacy forward.
+  expect(parts(frame({ orig_msg_id: l1 }))).toEqual({ legacy: { action: 'peer_message_status', orig_msg_id: l1, status: 'delivered' } });
+  // Another row, another process, or the end of the 30 minute window: dropped, also not legacy.
+  for (const result of [parts(frame({ orig_msg_id: x }), 'other-row'), parts(frame({ orig_msg_id: x }), 'row', { ...writer, pid: 51 }),
+    parts(frame({ orig_msg_id: x }), 'row', { ...writer, procStart: '501' }), parts(frame({ orig_msg_id: x }), 'row', { ...writer, messagingSocketPath: '/synthetic/51.sock' }),
+    parts(frame({ orig_msg_id: x }), 'row', writer, now - 1000 + 30 * 60_000)]) expect(result).toEqual({});
+  expect(parts(frame({ orig_msg_id: x }), 'row', writer, now - 1001 + 30 * 60_000).exact?.control.orig_msg_id).toBe(x);
+  // A target /clear keeps the process: the receipt still passes (the session ID of the frame is not checked).
+  expect(parts(frame({ orig_msg_id: x, session_id: randomUUID() })).exact?.machineId).toBe(B);
+  // A mixed dropped frame: the exact IDs of one machine, then the legacy IDs with the first legacy ID as orig_msg_id.
+  expect(parts(frame({ orig_msg_id: x, status: 'dropped', drop_reason: 'queue-full', dropped_msg_ids: [x, l1, y, z, l2] }))).toEqual({
+    exact: { machineId: B, control: { action: 'peer_message_status', orig_msg_id: x, status: 'dropped', drop_reason: 'queue-full', dropped_msg_ids: [x, y] } },
+    legacy: { action: 'peer_message_status', orig_msg_id: l1, status: 'dropped', drop_reason: 'queue-full', dropped_msg_ids: [l1, l2] } });
+  expect(parts(frame({ orig_msg_id: l1, status: 'dropped', dropped_msg_ids: [z, l1, x] }))).toEqual({
+    exact: { machineId: C, control: { action: 'peer_message_status', orig_msg_id: z, status: 'dropped', dropped_msg_ids: [z] } },
+    legacy: { action: 'peer_message_status', orig_msg_id: l1, status: 'dropped', dropped_msg_ids: [l1] } });
+  // Only exact IDs that are not valid: nothing at all.
+  expect(parts(frame({ orig_msg_id: x, status: 'dropped', dropped_msg_ids: [y] }), 'other-row')).toEqual({});
+  // dropped_msg_ids count only for a dropped status; an exact orig_msg_id then gives no legacy call.
+  expect(parts(frame({ orig_msg_id: x, dropped_msg_ids: [l1] }))).toEqual({
+    exact: { machineId: B, control: { action: 'peer_message_status', orig_msg_id: x, status: 'delivered' } } });
+  expect(parts(frame({ orig_msg_id: l1, dropped_msg_ids: [x, l2] }))).toEqual({
+    legacy: { action: 'peer_message_status', orig_msg_id: l1, status: 'delivered', dropped_msg_ids: [l2] } });
+  // An exact ID in a legacy frame never goes legacy, even when it is not valid.
+  expect(parts(frame({ orig_msg_id: l1, status: 'dropped', dropped_msg_ids: [x, l1] }), 'other-row')).toEqual({
+    legacy: { action: 'peer_message_status', orig_msg_id: l1, status: 'dropped', dropped_msg_ids: [l1] } });
 });
 
 test('the relay refuses an invalid environment', async () => {
@@ -285,22 +327,29 @@ linux('/deliver-bound writes one frame to the bound record only, and the receipt
   }));
   const home1 = join(root, 'h1', 'claude'), home2 = join(root, 'h2', 'claude');
   const sends: any[] = [];
+  const receipts: any[] = [];
   const engine = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
     if (request.headers.get('x-asb-source-token') !== SOURCE_TOKEN) return new Response(null, { status: 403 });
     const path = new URL(request.url).pathname;
     if (path === '/api/relay/homes') return Response.json({ machineId: 'a'.repeat(16), machineName: 'alpha',
       homes: [{ path: home1, remoteClaude: 'auto', hasRemoteControl: false }, { path: home2, remoteClaude: 'auto', hasRemoteControl: false }] });
     if (path === '/api/relay/remote-peers') return Response.json({ peers: [] });
+    if (path === '/api/relay/receipt') {
+      receipts.push(await request.json());
+      return Response.json({ sent: true });
+    }
     sends.push(await request.json());
     return Response.json({ ok: true, outcome: 'socket-written' });
   } });
   const first = await agent(home1, dirs['h1/s']!, 'cli-one', 'cli');
   const second = await agent(home2, dirs['h2/s']!, 'cli-two', 'cli');
+  // Another live session in the bound home: its frames are not the receipts of the bound process.
+  const third = await agent(home1, dirs['h1/s']!, 'cli-three', 'cli');
   // The same session UUID in two homes, as two config profiles can have.
   const row = (configDir: string) => peers(configDir).find(peer => peer.entrypoint !== 'asb-relay')!;
   const twin = row(home2);
   writeFileSync(join(home2, 'sessions', `${twin.pid}.json`), JSON.stringify({ ...twin, sessionId: first.sessionId }), { mode: 0o600 });
-  const target = row(home1);
+  const target = peers(home1).find(peer => peer.sessionId === first.sessionId)!;
   let relay: Relay | undefined;
   try {
     relay = await startRelay(engine.port!, join(root, 'relay'));
@@ -340,14 +389,27 @@ linux('/deliver-bound writes one frame to the bound record only, and the receipt
     expect(await relayCall(relay, '/deliver', { targetSessionId: first.sessionId, sender, message: message(randomUUID()) }))
       .toEqual({ ok: false, reason: 'target-unavailable' });
 
-    // A receipt for the exact message makes no engine call; a receipt for another ID keeps the legacy forward without the exact ID.
+    // The receipt of the bound target goes to the engine's exact route only (one call, no /api/relay/send).
     const otherId = randomUUID();
-    const receipt = (fields: Record<string, unknown>) => ({ msgV: 1, type: 'control', msg_id: randomUUID(), from: first.address,
+    const receipt = (fields: Record<string, unknown>, from = first.address) => ({ msgV: 1, type: 'control', msg_id: randomUUID(), from,
       session_id: sender.sessionId, action: 'peer_message_status', ...fields });
-    await sendFrames(home1, reverse, [receipt({ orig_msg_id: msgId, status: 'delivered' }),
-      receipt({ orig_msg_id: otherId, status: 'dropped', drop_reason: 'queue-full', dropped_msg_ids: [msgId, otherId] })]);
-    await until(() => sends.length > 0);
+    await sendFrames(home1, reverse, [receipt({ orig_msg_id: msgId, status: 'delivered' })]);
+    await until(() => receipts.length > 0);
     await Bun.sleep(200);
+    expect(receipts).toEqual([{ machineId: sender.machineId, control: { action: 'peer_message_status', orig_msg_id: msgId, status: 'delivered' } }]);
+    expect(sends).toEqual([]);
+    // Another agent writes the same ID to the reverse row: no call at all.
+    await sendFrames(home1, reverse, [receipt({ orig_msg_id: msgId, status: 'denied' }, third.address)]);
+    await Bun.sleep(300);
+    expect(receipts).toHaveLength(1);
+    expect(sends).toEqual([]);
+    // A mixed frame: the exact ID on the exact route, the legacy ID on the legacy forward without the exact ID.
+    await sendFrames(home1, reverse, [receipt({ orig_msg_id: otherId, status: 'dropped', drop_reason: 'queue-full', dropped_msg_ids: [msgId, otherId] })]);
+    await until(() => sends.length > 0 && receipts.length > 1);
+    await Bun.sleep(200);
+    expect(receipts).toHaveLength(2);
+    expect(receipts[1]).toEqual({ machineId: sender.machineId, control: { action: 'peer_message_status', orig_msg_id: msgId, status: 'dropped',
+      drop_reason: 'queue-full', dropped_msg_ids: [msgId] } });
     expect(sends).toHaveLength(1);
     expect(sends[0]).toMatchObject({ machineId: sender.machineId, targetSessionId: sender.sessionId,
       control: { orig_msg_id: otherId, status: 'dropped', dropped_msg_ids: [otherId] } });
@@ -356,18 +418,22 @@ linux('/deliver-bound writes one frame to the bound record only, and the receipt
     await until(() => sends.length > 1);
     expect(sends[1].message.text).toBe('answer');
 
-    // The target answers with its receipt at once, inside the 150 ms flush of the relay write: the receipt still stays here.
+    // The target answers with its receipt at once, inside the 150 ms flush of the relay write: the receipt is still exact.
     const fastId = randomUUID();
     const pending = deliverBound({ binding: binding({ msgId: fastId }), sender, message: message(fastId) });
     await until(() => first.frames.some(frame => frame.type === 'user' && frame.msg_id === fastId), 2000);
     await sendFrames(home1, reverse, [receipt({ orig_msg_id: fastId, status: 'delivered' })]);
     expect(await (await pending).json()).toEqual({ outcome: 'submitted' });
+    await until(() => receipts.length > 2);
     await Bun.sleep(200);
+    expect(receipts.at(-1)).toEqual({ machineId: sender.machineId, control: { action: 'peer_message_status', orig_msg_id: fastId, status: 'delivered' } });
+    expect(receipts).toHaveLength(3);
     expect(sends).toHaveLength(2);
   } finally {
     relay?.child.kill('SIGKILL');
     await first.close();
     await second.close();
+    await third.close();
     engine.stop(true);
     rmSync(root, { recursive: true, force: true });
   }

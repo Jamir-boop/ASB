@@ -266,7 +266,7 @@ test('memberTarget checks in order with no io before the caller check, and does 
 
   const { io: okIo, calls: okCalls } = fakeIo();
   assert.deepEqual(await member(memberFound.reference, { io: okIo }), { ok: true, identity: ident(memberFound.reference, MEMBER, 'codex', SCOPE_M, 'codex', UUID_2),
-    name: SECRET.title });
+    name: SECRET.title, returnTo: { runtimeSessionId: CALLER, pid: 10, procStart: '100', messagingSocketPath: '/synthetic/s/10.sock' } });
   assert.deepEqual(okCalls, [['registry', '/synthetic/claude']]);
   // The member decides not-found and offline, not the cached rows of this engine.
   const missing = full(MEMBER, 'claude-desktop-code', SCOPE_M, 'claude-cli', UUID);

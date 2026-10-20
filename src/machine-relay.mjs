@@ -4,6 +4,7 @@ import { spawn as spawnProcess } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,6 +25,12 @@ const LIST_MS = 5_000;
 const RELAY_DELIVER_MS = 8_000;
 const RELAY_LIST_MS = 3_000;
 const MEMBER_POST_MS = 10_000;
+// Exact member receipts: the life of a send attempt, the attempts kept, the controls of one attempt, and the time limits.
+const ATTEMPT_MS = 30 * 60_000;
+const ATTEMPTS = 1024;
+const CONTROLS_PER_ATTEMPT = 4;
+const RECEIPT_POST_MS = 4_000;
+const OUTBOX_MS = 2_000;
 const LIST_STALE_MS = 15_000;
 const CHECK_MS = 30_000;
 const RESTARTS = 5;
@@ -46,6 +53,13 @@ const validMessage = (message) => keys(message, ['msgId', 'text', 'hopChain']) &
   && Array.isArray(message.hopChain) && message.hopChain.length <= 32
   && message.hopChain.every((token) => typeof token === 'string' && /^[a-f0-9]{24}$/.test(token));
 
+// The v1 receipt control: it carries no text and names no destination.
+const validControl = (control) => keys(control, ['action', 'orig_msg_id', 'status'], ['status_detail', 'reason', 'drop_reason', 'dropped_msg_ids'])
+  && control.action === 'peer_message_status' && uuid(control.orig_msg_id) && STATUSES.includes(control.status)
+  && optionalText(control.status_detail, 64) && optionalText(control.reason, 1000) && optionalText(control.drop_reason, 64)
+  && (control.dropped_msg_ids === undefined || (Array.isArray(control.dropped_msg_ids) && control.dropped_msg_ids.length <= 256
+    && control.dropped_msg_ids.every(uuid)));
+
 // Plan 9.7: the body of POST /peer/v1/deliver, and of POST /api/relay/send with the target `machineId`.
 export function validRelayBody(value, { withMachine = false } = {}) {
   const kind = object(value) && Object.hasOwn(value, 'message') ? 'message' : 'control';
@@ -53,11 +67,7 @@ export function validRelayBody(value, { withMachine = false } = {}) {
   const { sender, message, control } = value;
   if ((withMachine && !hex16(value.machineId)) || !uuid(value.targetSessionId) || !validSender(sender)) return false;
   if (kind === 'message') return validMessage(message);
-  return keys(control, ['action', 'orig_msg_id', 'status'], ['status_detail', 'reason', 'drop_reason', 'dropped_msg_ids'])
-    && control.action === 'peer_message_status' && uuid(control.orig_msg_id) && STATUSES.includes(control.status)
-    && optionalText(control.status_detail, 64) && optionalText(control.reason, 1000) && optionalText(control.drop_reason, 64)
-    && (control.dropped_msg_ids === undefined || (Array.isArray(control.dropped_msg_ids) && control.dropped_msg_ids.length <= 256
-      && control.dropped_msg_ids.every(uuid)));
+  return validControl(control);
 }
 
 // The exact member routes (SYSTEM_OVERVIEW.md, "Exact member sends"). The one reason enum of both v2 replies.
@@ -80,6 +90,52 @@ const validOutcome = (value, extra = []) => (keys(value, [...extra, 'outcome']) 
 export const validDeliverReply = (value) => validOutcome(value, ['api', 'msgId']) && value.api === 2 && uuid(value.msgId);
 // The relay's reply to POST /deliver-bound.
 export const validBoundReply = (value) => validOutcome(value);
+// The receipt of an exact member send: POST /api/relay/receipt from the relay, and the control variant of POST /peer/v2/deliver.
+export const validReceiptBody = (value) => keys(value, ['machineId', 'control']) && hex16(value.machineId) && validControl(value.control);
+export const validReceiptRequest = (value) => keys(value, ['api', 'control']) && value.api === 2 && validControl(value.control);
+
+const privateEntry = async (file, isKind) => {
+  const info = await fs.lstat(file);
+  if (!isKind(info) || info.uid !== process.getuid() || (info.mode & 0o077) !== 0) throw new Error('The outbox is not private.');
+};
+
+// One request to the outbox socket of a bridge receiver (Linux), next to its inbox `<name>.sock` (bridge/src/platform.ts).
+// The reply is the `applied` count. An error with `unsent` means that nothing was written.
+export async function writeOutbox(inbox, request, timeoutMs = OUTBOX_MS) {
+  const unsent = (message) => Object.assign(new Error(message), { unsent: true });
+  if (typeof inbox !== 'string' || !path.isAbsolute(inbox) || !inbox.endsWith('.sock') || inbox.split('/').includes('..')) throw unsent('Invalid outbox path.');
+  const outbox = `${inbox.slice(0, -'.sock'.length)}.out`;
+  const deadline = Date.now() + timeoutMs;
+  try {
+    await privateEntry(path.dirname(outbox), (info) => info.isDirectory());
+    await privateEntry(outbox, (info) => info.isSocket());
+  } catch (error) { throw unsent(error.message); }
+  return new Promise((resolve, reject) => {
+    let written = false;
+    let buffer = '';
+    const socket = net.createConnection(outbox);
+    const finish = (error, value) => {
+      clearTimeout(timer);
+      socket.destroy();
+      if (error) reject(written ? error : unsent(error.message));
+      else resolve(value);
+    };
+    const timer = setTimeout(() => finish(new Error('The outbox did not answer.')), Math.max(0, deadline - Date.now()));
+    socket.setEncoding('utf8');
+    socket.on('error', (error) => finish(error));
+    socket.on('close', () => finish(new Error('The outbox closed.')));
+    socket.once('connect', () => { written = true; socket.write(`${JSON.stringify(request)}\n`); });
+    socket.on('data', (chunk) => {
+      buffer += chunk;
+      const end = buffer.indexOf('\n');
+      if (end < 0) { if (Buffer.byteLength(buffer) > 64 * 1024) finish(new Error('The outbox reply is too large.')); return; }
+      let value;
+      try { value = JSON.parse(buffer.slice(0, end)); } catch {}
+      if (keys(value, ['applied']) && Number.isInteger(value.applied) && value.applied >= 0) finish(null, value.applied);
+      else finish(new Error('The outbox sent an invalid reply.'));
+    });
+  });
+}
 
 export const validRelayReply = (value) => (keys(value, ['ok', 'outcome']) && value.ok === true && value.outcome === 'socket-written')
   || (keys(value, ['ok', 'reason']) && value.ok === false && REASONS.includes(value.reason));
@@ -170,7 +226,7 @@ function memberOutcome({ status, body }) {
 export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, env = process.env, platform = process.platform,
   spawn = spawnProcess, request = peerRequest, log = (line) => console.error(line), now = Date.now,
   catPath = platform === 'win32' ? path.win32.join(env.SystemRoot || 'C:\\Windows', 'System32', 'findstr.exe') : '/usr/bin/cat',
-  firstLineMs = 10_000, stopMs = 2_000, bindTarget = async () => { throw new Error('No exact binder.'); } }) {
+  firstLineMs = 10_000, stopMs = 2_000, bindTarget = async () => { throw new Error('No exact binder.'); }, outbox = writeOutbox }) {
   const relayJs = path.join(root, 'bridge', 'dist', 'relay.js');
   let child = null;
   let relay = null;
@@ -182,6 +238,10 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
   let listTimer = null;
   const lists = new Map();
   const ending = new WeakSet();
+  // The exact member sends of this engine, by msgId, in memory only (no text): the receipts of the member come back to them.
+  const attempts = new Map();
+  const pruneAttempts = () => { for (const [id, attempt] of attempts) if (attempt.expiresAtMs <= now()) attempts.delete(id); };
+  const sameReturn = (one, other) => ['runtimeSessionId', 'pid', 'procStart', 'messagingSocketPath'].every((key) => one?.[key] === other?.[key]);
 
   const selfId = () => group.self()?.machineId || '';
   const others = () => group.peerStates().filter((state) => state.member.machineId !== selfId());
@@ -272,6 +332,30 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
     return checking;
   }
 
+  // The control variant of POST /peer/v2/deliver: the receipt of the member for an exact send of this engine. Every failed
+  // check gives the same reply, so the route does not show which message IDs exist.
+  async function peerReceipt(value, fingerprint) {
+    if (!validReceiptRequest(value)) return INVALID;
+    const { control } = value;
+    const msgId = control.orig_msg_id;
+    const reply = (outcome, reason) => ({ status: 200, body: { api: 2, msgId, outcome, ...(reason ? { reason } : {}) } });
+    const live = (attempt) => Boolean(attempt) && now() < attempt.expiresAtMs && attempt.certFingerprint === fingerprint;
+    const attempt = attempts.get(msgId);
+    if (!live(attempt) || ++attempt.controls > CONTROLS_PER_ATTEMPT) return reply('not-sent', 'binding-expired');
+    const msgIds = [msgId];
+    for (const id of control.status === 'dropped' ? control.dropped_msg_ids ?? [] : []) {
+      const other = attempts.get(id);
+      if (!msgIds.includes(id) && live(other) && other.reference === attempt.reference && sameReturn(other.returnTo, attempt.returnTo)) msgIds.push(id);
+    }
+    const { runtimeSessionId, pid, procStart, messagingSocketPath } = attempt.returnTo ?? {};
+    const { status, status_detail, reason, drop_reason } = control;
+    const fields = Object.fromEntries(Object.entries({ status_detail, reason, drop_reason }).filter(([, item]) => item !== undefined));
+    try {
+      await outbox(messagingSocketPath, { exactReceipt: { runtimeSessionId, pid, procStart, reference: attempt.reference, msgIds, status, ...fields } }, OUTBOX_MS);
+      return reply('submitted');
+    } catch (error) { return error?.unsent ? reply('not-sent', 'target-unavailable') : reply('unknown'); }
+  }
+
   // One total deadline: a relay that sends headers and then stalls fails too.
   async function relayRequest(target, { method = 'GET', body, timeoutMs = method === 'GET' ? RELAY_LIST_MS : RELAY_DELIVER_MS } = {}) {
     if (!relay) throw relayError('The message relay is not running.');
@@ -338,8 +422,10 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
       if (!relay) return unavailable('relay-unavailable');
       return { status: 200, body: { api: 2, outcome: 'ready' } };
     },
-    // POST /peer/v2/deliver: one bound write through the relay, inside the sender's deadline.
+    // POST /peer/v2/deliver: one bound write through the relay, inside the sender's deadline, or (with exactly `api` and
+    // `control`) the receipt of an exact send of this engine.
     async peerDeliverExact(value, fingerprint) {
+      if (keys(value, ['api', 'control'])) return peerReceipt(value, fingerprint);
       if (!validDeliverRequest(value, selfId())) return INVALID;
       if (value.sender.machineId !== fingerprint.slice(0, 16)) return { status: 403, body: { error: 'The sender machine does not match.' } };
       const { msgId } = value.message;
@@ -371,6 +457,18 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
       return { peers: others().filter(online).flatMap((state) => lists.get(state.member.machineId).peers.map((peer) => ({
         machineId: state.member.machineId, machineName: state.member.name, online: true, ...peer }))) };
     },
+    // POST /api/relay/receipt: the receipt of an exact send to this machine goes back to the sending member only, as one
+    // control POST. No v1 request. `sent` says that the request went out.
+    async sendReceipt(body) {
+      if (!validReceiptBody(body)) return INVALID;
+      const state = others().find((item) => item.member.machineId === body.machineId);
+      if (!state?.online) return { status: 200, body: { sent: false } };
+      try {
+        await request({ member: state.member, path: '/peer/v2/deliver', method: 'POST', body: { api: 2, control: body.control }, tls: await group.tls(),
+          timeoutMs: RECEIPT_POST_MS, lastAddress: state.lastAddress });
+        return { status: 200, body: { sent: true } };
+      } catch (error) { return { status: 200, body: { sent: Boolean(error?.handedOff) } }; }
+    },
     // POST /api/relay/send.
     async send(body) {
       if (!validRelayBody(body, { withMachine: true }) || body.sender.machineId !== selfId()) return INVALID;
@@ -386,8 +484,11 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
     },
     // The sending side of one exact member send: resolve, then at most one deliver, to the reference's machine only.
     // Never a v1 request, a second deliver, or another member. The reply is { outcome, reason? }.
-    async sendExact({ identity, sender, message, remainingMs }) {
+    // `returnTo` is the registry record of the sending task's receiver: the receipts of the member go to its outbox.
+    async sendExact({ identity, sender, message, remainingMs, returnTo }) {
       const notSent = (reason) => ({ outcome: 'not-sent', reason });
+      pruneAttempts();
+      if (attempts.has(message?.msgId)) return notSent('invalid-request');
       const state = others().find((item) => item.member.machineId === identity.machineId);
       if (!state) return notSent('unknown-machine');
       if (!state.online) return notSent('machine-offline');
@@ -408,18 +509,26 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
       if (deliverMs <= 1_000) return notSent('binding-expired');
       const body = { api: 2, target, sender: { ...sender, machineId: selfId() }, message, remainingMs: deliverMs - 1_000 };
       if (!validDeliverRequest(body, identity.machineId)) return notSent('invalid-request');
-      let reply;
-      try {
-        reply = await request({ member: state.member, path: '/peer/v2/deliver', method: 'POST', body, tls, timeoutMs: deliverMs,
-          lastAddress: resolved.address });
-      } catch (error) { return error?.handedOff ? { outcome: 'unknown' } : notSent('machine-offline'); }
-      if (reply.status === 404) return notSent('peer-upgrade-required');
-      if ([400, 401, 403, 410, 429].includes(reply.status)) return notSent('refused');
-      if (reply.status === 413) return notSent('too-large');
-      if (reply.status === 200 && validDeliverReply(reply.body) && reply.body.msgId === message?.msgId) {
-        return reply.body.outcome === 'not-sent' ? notSent(reply.body.reason) : { outcome: reply.body.outcome };
-      }
-      return { outcome: 'unknown' };
+      // Saved before the deliver: the receipt can come before its reply. A not-sent result gives no receipt.
+      attempts.set(message.msgId, { certFingerprint: state.member.certFingerprint, reference: identity.reference, returnTo,
+        expiresAtMs: now() + ATTEMPT_MS, controls: 0 });
+      while (attempts.size > ATTEMPTS) attempts.delete(attempts.keys().next().value);
+      const result = await (async () => {
+        let reply;
+        try {
+          reply = await request({ member: state.member, path: '/peer/v2/deliver', method: 'POST', body, tls, timeoutMs: deliverMs,
+            lastAddress: resolved.address });
+        } catch (error) { return error?.handedOff ? { outcome: 'unknown' } : notSent('machine-offline'); }
+        if (reply.status === 404) return notSent('peer-upgrade-required');
+        if ([400, 401, 403, 410, 429].includes(reply.status)) return notSent('refused');
+        if (reply.status === 413) return notSent('too-large');
+        if (reply.status === 200 && validDeliverReply(reply.body) && reply.body.msgId === message.msgId) {
+          return reply.body.outcome === 'not-sent' ? notSent(reply.body.reason) : { outcome: reply.body.outcome };
+        }
+        return { outcome: 'unknown' };
+      })();
+      if (result.outcome === 'not-sent') attempts.delete(message.msgId);
+      return result;
     },
   };
 }
