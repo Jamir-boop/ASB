@@ -1072,6 +1072,73 @@ class WidgetCheck(unittest.TestCase):
             window.close()
             self.drain(.03)
 
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real pointer movement needs xdotool and a nested test display (DISPLAY=:9 or :10).")
+    def test_context_menu_closes_on_pointer_exit(self):
+        from gi.repository import GdkX11
+
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "request_async", lambda *_args, **_kwargs: None)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        def xdo(*args):
+            return subprocess.run(["xdotool", *map(str, args)], check=True, capture_output=True, text=True).stdout
+
+        x, y = (line.split("=")[1] for line in xdo("getmouselocation", "--shell").splitlines()[:2])
+        self.addCleanup(xdo, "mousemove", x, y)
+        xdo("mousemove", 1500, 950)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", copy.deepcopy(FIXTURE),
+                                      theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(900, 700)
+        window.present(); self.drain(.3)
+        card = window.focus_widgets["second"]
+        self.assertTrue(window.row_key(None, asb.Gdk.KEY_Menu, 0, 0, "second"))
+        self.drain()
+        panel = window.context_menu
+        self.assertTrue(panel.get_mapped())
+        # A menu opened from the keyboard stays open until the pointer enters and leaves it.
+        xdo("mousemove", 1490, 940); self.drain()
+        self.assertIs(window.context_menu, panel)
+
+        def move_to(widget, root):
+            found, bounds = widget.compute_bounds(root)
+            self.assertTrue(found)
+            left, top = root.get_surface_transform()
+            xdo("mousemove", "--window", GdkX11.X11Surface.get_xid(root.get_surface()),
+                int(bounds.origin.x + bounds.size.width / 2 + left),
+                int(bounds.origin.y + bounds.size.height / 2 + top))
+            self.drain()
+
+        for control in (panel.asb_open, panel.asb_switches["unread"], panel.asb_copy):
+            move_to(control, panel)
+            self.assertIs(window.context_menu, panel)
+            self.assertTrue(panel.get_mapped())
+        panel.asb_copy.emit("clicked")
+        self.assertIsNotNone(panel.asb_copy_timer)
+        finalized = []
+        panel.weak_ref(lambda: finalized.append(True))
+        xdo("mousemove", 1500, 950); self.drain(.3)
+        self.assertIsNone(window.context_menu)
+        self.assertFalse(panel.get_visible())
+        self.assertIsNone(panel.asb_copy_timer)
+        self.assertIs(window.get_focus(), card)
+        del control, panel
+        gc.collect(); self.drain()
+        self.assertEqual(finalized, [True])
+        # Right-click uses the same exit behavior, including leaving for the board without a click.
+        move_to(card, window)
+        xdo("click", 3); self.drain()
+        panel = window.context_menu
+        self.assertIsNotNone(panel)
+        move_to(panel.asb_open, panel)
+        move_to(window.menu_button, window)
+        self.assertIsNone(window.context_menu)
+        self.assertFalse(window.opening or window.session_actions)
+
     def test_compact_short_toolbar_typing_inline_open_and_queued_unread(self):
         with tempfile.TemporaryDirectory(prefix="asb-compact-test-") as temporary:
             window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", mock_dashboard(),

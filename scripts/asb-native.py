@@ -5132,6 +5132,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
         keys.connect("key-pressed", self.panel_key)
         panel.add_controller(keys)
+        motion = Gtk.EventControllerMotion()
+        motion.connect("leave", lambda controller: controller.get_widget().get_ancestor(Gtk.Popover).popdown())
+        # The popup surface also gets grab crossings outside the visible panel.
+        panel.get_child().get_parent().add_controller(motion)
         panel.set_parent(widget)
         def closed(popup):
             # A repack moves the row, which unmaps its panel; GTK maps the panel again with the row.
