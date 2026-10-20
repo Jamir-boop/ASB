@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { promises as fsPromises } from 'node:fs';
 import { mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -136,4 +137,26 @@ test('the Claude source adds CLI rows after the desktop rows and keeps desktop t
   const merged = await loadSwitchboardClaudeThreads({ appDir, projectsDir, nowMs, strictMetadataRead: true });
   assert.deepEqual(merged.threads.map((thread) => [thread.source, thread.externalId]), [
     ['claude-desktop-code', 'local_00000000-0000-4000-8000-000000000001'], ['claude-cli', 'cli-only']]);
+});
+
+test('a Claude CLI session with a transcript copy in more than one project folder gives one row from the newest copy', async (t) => {
+  const nowMs = Date.now();
+  const { projectsDir } = await configHome(t);
+  const files = {};
+  for (const [name, folder, title, ageMs] of [['old', 'a-old', 'Old copy', 60_000], ['current', 'z-new', 'Current copy', 1000]]) {
+    files[name] = path.join(projectsDir, folder, 'moved.jsonl');
+    await mkdir(path.dirname(files[name]), { recursive: true });
+    await writeFile(files[name], jsonl([{ type: 'custom-title', customTitle: title, sessionId: 'moved' },
+      { type: 'user', timestamp: new Date(nowMs - ageMs).toISOString(), sessionId: 'moved', cwd: '/work/cli', entrypoint: 'cli',
+        message: { role: 'user', content: 'Prompt' } }]));
+    await utimes(files[name], (nowMs - ageMs) / 1000, (nowMs - ageMs) / 1000);
+  }
+  // The old copy comes last in walk order, so a reader that keeps the last copy gets the old copy.
+  const readdir = fsPromises.readdir;
+  t.mock.method(fsPromises, 'readdir', async (directory, ...rest) => {
+    if (directory === path.dirname(files.old)) await new Promise((resolve) => setTimeout(resolve, 20));
+    return readdir(directory, ...rest);
+  });
+  const { threads } = await loadClaudeCliThreads({ projectsDir, nowMs });
+  assert.deepEqual(threads.map((thread) => [thread.externalId, thread.title]), [['moved', 'Current copy']]);
 });

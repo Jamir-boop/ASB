@@ -13,6 +13,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Fixed the Codex reader for Codex database changes: a missing column no longer empties the Codex list.
 - Fixed `asb service install` and `asb setup` after `asb`: the user service restarted every 5 seconds while the engine that `asb` started was running.
 - Fixed **Check now** in the Android app: it now shows the notifications that it finds, and an automatic check while the app is open no longer marks new events as seen.
+- Fixed Claude Desktop sessions that moved into a worktree: they now show their current state, because ASB reads the newest copy of the transcript, not an old copy in the previous project folder.
 - Fixed a Claude Code CLI session with Remote Control that showed as two cards and lost its messages.
 - Fixed cloud cards that went away or flickered when the PC clock ran a little behind the server, and a cloud card that went away for one scan when the cache file changed during the read.
 - Fixed sounds for old events when the engine starts in a machine group: the first rows of a member machine now set its baseline and play nothing.

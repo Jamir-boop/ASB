@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { promises as fsPromises } from 'node:fs';
 import { once } from 'node:events';
 import { appendFile, mkdir, mkdtemp, readFile, rename, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -755,6 +756,68 @@ test('a resumed async Agent child makes its chat Working again until the next ta
     // Only the guard and the appended part of the main transcript are read.
     if (maxBytes) assert.equal(getClaudeCacheStats().jsonlSignals.bytesRead - before, 64 + Buffer.byteLength(jsonl(failed)));
   }
+});
+
+// The app moved the session into a worktree: it copied the transcript and its subagent logs into a new project folder.
+// The old copy ends idle; only the new copy has the resume of the background Agent child.
+async function movedSessionFixture(t) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'claude-moved-session-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const appDir = path.join(dir, 'Claude'), projectsDir = path.join(dir, 'projects');
+  await mkdir(path.join(appDir, 'claude-code-sessions'), { recursive: true });
+  await writeFile(path.join(appDir, 'claude-code-sessions', 'local_root.json'), JSON.stringify({ sessionId: 'local_root', cliSessionId: 'cli_root' }));
+  const ended = [...resumeLaunch('kid'), resumeNotice(-44_000, 'kid'), resumeEnd(-43_500)];
+  const childEnded = [resumePrompt(-48_800), resumeWork(-48_500), resumeEnd(-45_000)];
+  const files = {};
+  for (const [name, folder, records, childRecords, offset] of [['old', 'a-old', ended, childEnded, -40_000],
+    ['current', 'z-new', [...ended, ...sendMessage(-20_000, resumeResult('kid'))], [...childEnded, resumeMessage(-19_950), resumeWork(-19_000)], -18_000]]) {
+    const file = path.join(projectsDir, folder, 'cli_root.jsonl'), child = path.join(projectsDir, folder, 'cli_root', 'subagents', 'agent-kid.jsonl');
+    await mkdir(path.dirname(child), { recursive: true });
+    await writeFile(file, jsonl(records));
+    await writeFile(child, jsonl(childRecords));
+    await utimes(file, (resumeNowMs + offset) / 1000, (resumeNowMs + offset) / 1000);
+    files[name] = file;
+  }
+  // The old copy comes last in walk order, so a reader that keeps the last copy gets the old state.
+  const readdir = fsPromises.readdir;
+  t.mock.method(fsPromises, 'readdir', async (directory, ...rest) => {
+    if (directory === path.dirname(files.old)) await new Promise((resolve) => setTimeout(resolve, 20));
+    return readdir(directory, ...rest);
+  });
+  return { files, load: async () => {
+    const { threads } = await loadClaudeDesktopCodeThreads({ appDir, projectsDir, nowMs: resumeNowMs });
+    return [threads[0].lifecycleRunning, buildSwitchboardDashboard(threads, [], resumeNowMs).threads[0].state];
+  } };
+}
+
+test('a Claude Desktop session with a transcript copy in more than one project folder reads the newest copy', async (t) => {
+  const fixture = await movedSessionFixture(t);
+  assert.deepEqual(await fixture.load(), [true, 'working']);
+});
+
+test('the newest transcript copy comes from a current stat, not from the cached project index', async (t) => {
+  const fixture = await movedSessionFixture(t);
+  assert.deepEqual(await fixture.load(), [true, 'working']);
+  await utimes(fixture.files.old, (resumeNowMs - 1000) / 1000, (resumeNowMs - 1000) / 1000);
+  const hits = getClaudeCacheStats().projectIndex.hits;
+  assert.deepEqual(await fixture.load(), [false, 'idle']);
+  assert.equal(getClaudeCacheStats().projectIndex.hits, hits + 1);
+});
+
+test('a Claude Desktop session with one transcript copy gets no extra stat of its transcript', async (t) => {
+  const { step, projectsDir } = await resumeFixture(t, 'kid', [...resumeLaunch('kid'), ...sendMessage(-20_000, resumeResult('kid'))],
+    [resumeMessage(-19_950), resumeWork(-19_000)]);
+  assert.deepEqual(await step(), [true, 'working']);
+  const root = path.join(projectsDir, 'project', 'cli_root.jsonl'), stat = fsPromises.stat;
+  let rootStats = 0;
+  t.mock.method(fsPromises, 'stat', (filePath, ...rest) => {
+    if (filePath === root) rootStats += 1;
+    return stat(filePath, ...rest);
+  });
+  const { threads } = await loadClaudeDesktopCodeThreads({ appDir: path.join(projectsDir, '..', 'Claude'), projectsDir, nowMs: resumeNowMs });
+  assert.equal(threads[0].lifecycleRunning, true);
+  // The signal reader stats the transcript once; the copy lookup adds no stat.
+  assert.equal(rootStats, 1);
 });
 
 test('a resume of an Agent child whose launch is not in the transcript makes its chat Working', async (t) => {

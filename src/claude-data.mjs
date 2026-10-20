@@ -1075,7 +1075,7 @@ export async function indexClaudeProjectFiles(projectsDir = DEFAULT_CLAUDE_PROJE
     }
     claudeCacheMetrics.projectIndexMisses += 1;
     const indexed = indexClaudeTranscripts(files);
-    const result = { files: indexed, sourceFiles: files,
+    const result = { files: indexed, sourceFiles: files, rootCopies: claudeRootCopies(files, projectsDir),
       subagentsBySession: claudeSubagentsByRoot(indexed.values()), agentLogs: claudeAgentLogs(indexed.values()) };
     if (claudeProjectIndexReads.get(projectsDir) === read) rememberBounded(claudeProjectIndexCacheByDir, projectsDir, result, 32,
       claudeCacheMetrics, 'projectIndexWrites');
@@ -1084,6 +1084,27 @@ export async function indexClaudeProjectFiles(projectsDir = DEFAULT_CLAUDE_PROJE
   rememberBounded(claudeProjectIndexReads, projectsDir, read, 32);
   try { return await read; }
   finally { if (claudeProjectIndexReads.get(projectsDir) === read) claudeProjectIndexReads.delete(projectsDir); }
+}
+
+function claudeRootCopies(entries, projectsDir) {
+  // The app copies a transcript into the new project folder when it moves a session into a worktree, and the old copy stays.
+  const copies = new Map();
+  for (const entry of entries) {
+    if (path.dirname(path.dirname(entry.filePath)) !== projectsDir) continue;
+    const sessionId = path.basename(entry.filePath, '.jsonl');
+    copies.set(sessionId, [...(copies.get(sessionId) || []), entry]);
+  }
+  for (const [sessionId, list] of copies) if (list.length < 2) copies.delete(sessionId);
+  return copies;
+}
+
+// The app writes only to the newest copy. The index does not refresh stats, so each copy gets a current one.
+export async function currentClaudeRoot({ files, rootCopies }, sessionId) {
+  const copies = rootCopies?.get(sessionId);
+  if (!copies) return files.get(sessionId);
+  const current = await Promise.all(copies.map(async ({ filePath }) => ({ filePath, stat: await fs.stat(filePath).catch(() => null) })));
+  return current.filter((entry) => entry.stat).sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs || b.stat.size - a.stat.size
+    || (a.filePath < b.filePath ? -1 : 1))[0];
 }
 
 function claudeSubagentParentSessionId(filePath = '') {
@@ -1141,12 +1162,13 @@ export async function loadClaudeDesktopCodeThreads({
   let metadataReadErrors = 0;
   const files = await recentFiles(root, (_filePath, name) => /^local_.*\.json$/.test(name), maxCount,
     strictMetadataRead ? () => { metadataReadErrors += 1; } : null);
-  const { files: indexedProjectFiles, subagentsBySession, agentLogs } = await indexClaudeProjectFiles(projectsDir)
+  const projectIndex = await indexClaudeProjectFiles(projectsDir)
     .catch(() => ({ files: new Map(), subagentsBySession: new Map(), agentLogs: new Map() }));
+  const { subagentsBySession, agentLogs } = projectIndex;
   const parsed = await mapWithConcurrency(files, SIGNAL_CONCURRENCY, async (entry) => {
     try {
       const session = await readJsonFile(entry.filePath, entry.stat, cacheScope);
-      const projectFile = indexedProjectFiles.get(String(session.cliSessionId || ''));
+      const projectFile = await currentClaudeRoot(projectIndex, String(session.cliSessionId || ''));
       const rootSignals = projectFile
         ? await readClaudeRootSignals(projectFile, subagentsBySession.get(projectFile.filePath), { maxBytes, nowMs, cacheScope }, agentLogs)
         : { signals: parseClaudeJsonlSignals('') };
