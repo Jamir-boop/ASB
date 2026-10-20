@@ -363,7 +363,8 @@ async function main() {
     if (!parsed.success) return undefined;
     const { binding, sender, message } = parsed.data;
     const notSent = (reason: string): BoundReply => ({ outcome: 'not-sent', reason });
-    const home = self.homes.find(item => { try { return realpathSync(join(item.path, 'sessions')) === binding.registryHome; } catch { return false; } });
+    // The native realpath, as boundPeer: the engine's registryHome comes from Node fs.promises.realpath, and the JS-style realpathSync keeps Windows 8.3 short names.
+    const home = self.homes.find(item => { try { return realpathSync.native(join(item.path, 'sessions')) === binding.registryHome; } catch { return false; } });
     const target = home ? boundPeer(home.path, binding) : undefined;
     if (!home || !target) return notSent('target-changed');
     let reverse: Row;

@@ -75,7 +75,7 @@ const BOUND_MESSAGES = {
   'member-target': 'This reference is for a session on another machine. This version of ASB Bridge cannot send to it.',
   'peer-upgrade-required': 'The member machine has an older ASB that cannot take a message for one exact session. Update ASB on that machine.',
   'local-target': 'This reference is for a session on this machine, not on another machine.',
-  'unsupported-platform': 'ASB can send by reference only on Linux and Windows, and to another machine only between Linux machines.',
+  'unsupported-platform': 'ASB can send by reference only on Linux and Windows. A send to another machine must start on Linux.',
   'bridge-upgrade-required': 'This version of ASB Bridge cannot send by reference on Windows. Update ASB Bridge.',
   'unsupported-type': 'ASB can send by reference only to Codex and Claude Code CLI sessions.',
   'source-disabled': 'The source of this session is disabled.',
@@ -226,7 +226,8 @@ export async function bindMemberTarget({ reference, msgId, remainingMs }, contex
   if (!resolved.ok) return resolved;
   const { identity, availability } = resolved;
   if (identity.machineId !== context.machine?.machineId) return fail('unknown-machine');
-  if (io.platform !== 'linux') return refuse('unsupported-platform');
+  // No pipe proof here: the write is deliverBound in relay.js of this ASB package, and its sendBound proves the pipe on Windows.
+  if (!exactPlatform(io)) return refuse('unsupported-platform');
   if (!BOUND_TYPES.includes(identity.type)) return refuse('unsupported-type');
   if (['source-disabled', 'not-found'].includes(availability)) return refuse(availability);
   const source = context.sources.find((item) => item.id === identity.sourceId);

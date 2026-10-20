@@ -290,6 +290,8 @@ test('memberTarget checks in order with no io before the caller check, and does 
   await early(full(OLD, 'codex', SCOPE_M, 'codex', UUID_2), 'peer-upgrade-required');
   await early(soloRow.reference, 'local-target');
   await early(memberFound.reference, 'unsupported-platform', { io: { ...io, platform: 'darwin' } });
+  // The sender gate stays Linux only: a Windows sender cannot send to another machine yet.
+  await early(memberFound.reference, 'unsupported-platform', { io: { ...io, platform: 'win32' } });
   await early(full(MEMBER, 'codex', SCOPE_M, 'claude-local', `local_${UUID_2}`), 'unsupported-type');
   await early(full(MEMBER, 'codex', SCOPE_M, 'opencode', 'abc'), 'unsupported-type');
   assert.deepEqual(calls, []);
@@ -413,11 +415,29 @@ test('bindMemberTarget binds in the homes of the target source only, with no cal
   // The binder's own checks: another machine, the 5a refusals, and the resolver failures pass through.
   failed(await bindMember(memberFound.reference, io), 'unknown-machine');
   failed(await bindMember(full(SELF, 'gone', SCOPE, 'codex', UUID_3), io), 'stale-source');
-  failed(await bindMember(soloRow.reference, { ...io, platform: 'win32' }), 'unsupported-platform');
+  failed(await bindMember(soloRow.reference, { ...io, platform: 'darwin' }), 'unsupported-platform');
   failed(await bindMember(full(SELF, 'off', SCOPE, 'codex', UUID_3), io), 'source-disabled');
   failed(await bindMember(full(SELF, 'codex', SCOPE, 'codex', UUID_4), io), 'not-found');
   failed(await bindMember(cacheRow.reference, io), 'unsupported-type');
   failed(await bindMember(codexRow.reference, io), 'ambiguous-source');
+});
+
+test('on Windows bindMemberTarget binds a codex or claude-cli target as on Linux, with no pipe proof', async () => {
+  const win = (homes, overrides = {}) => {
+    const made = homeIo(homes, { platform: 'win32', ...overrides });
+    const claim = made.io.receiverClaim;
+    made.io.receiverClaim = async (source, appId) => ({ ...await claim(source, appId), proc_start: '1330000000000000030' });
+    return made;
+  };
+  const { io, calls } = win({ [HOME_1]: [winRecord(20, UUID_4, 'cli')], [HOME_2]: [winRecord(30, UUID_3, 'codex-asb-bridge')] });
+  assert.deepEqual(await bindMember(soloRow.reference, io), { apiVersion: 1, ok: true, pid: 999, binding: { registryHome: `${HOME_2}/sessions`,
+    runtimeSessionId: UUID_3, pid: 30, procStart: '1330000000000000030', messagingSocketPath: pipe(30), msgId: MSG, expiresAtMs: 11_000 } });
+  assert.deepEqual(calls, [['targetHomes', 'codex', 'codex'], ['registry', HOME_1], ['registry', HOME_2], ['receiverClaim', 'codex', UUID_3]]);
+  const cli = win({ '/synthetic/claude': [winRecord(20, UUID_4, 'cli')] }, { claudeRoot: async (source) =>
+    source.id === 'claude-desktop-code' ? '/synthetic/claude/sessions' : '/synthetic/other/sessions' });
+  assert.deepEqual(await bindMember(cliRow.reference, cli.io), { apiVersion: 1, ok: true, pid: 999, binding: { registryHome: '/synthetic/claude/sessions',
+    runtimeSessionId: UUID_4, pid: 20, procStart: '1330000000000000020', messagingSocketPath: pipe(20), msgId: MSG, expiresAtMs: 11_000 } });
+  assert.deepEqual(cli.calls.slice(0, 2), [['targetHomes', 'claude-cli', 'claude-desktop-code'], ['registry', '/synthetic/claude']]);
 });
 
 test('every code has a not-sent message that ends with a period and has no em dash', () => {
