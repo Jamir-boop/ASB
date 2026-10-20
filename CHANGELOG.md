@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- `asb doctor` and `asb setup` on Linux now print the firewall rule for phone access and machine links when firewalld or ufw is active: for firewalld a rich rule for the phone access port (4630 by default) on each selected address (with the zone of its interface) and one `--reload`, for ufw one `ufw allow` line for each address. ASB never runs these commands. Doctor reads the selected addresses from the running engine; `--json` has them in `commands.firewall`.
 - Added autostart without systemd: when no systemd user manager runs a graphical session, `asb service install` writes the XDG autostart entry `~/.config/autostart/asb-engine.desktop`, which runs `<launcher> engine start` at login, and starts the engine. Without a desktop session, it changes nothing, names `<launcher> engine start`, and exits with code 1. A change of mode removes the ASB file of the other mode. `asb service uninstall` removes the entry and stops the engine. `asb service status` shows the entry and the engine state in this mode.
 - Without an absolute `XDG_RUNTIME_DIR`, the engine now runs and keeps its runtime file in `asb/run` in `XDG_STATE_HOME` when it is absolute, else in `~/.local/state` (mode `0700`, owner checked). A record there whose engine does not answer is replaced. ASB Bridge also looks for the engine there.
 - `asb doctor` shows two more checks: **Autostart** (systemd user service, XDG autostart, or not installed) and **Runtime folder**.

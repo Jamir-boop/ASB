@@ -2,7 +2,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { collect, engineReady, format } from './asb-doctor.mjs';
+import { collect, engineReady, execFileAsync, firewallState, format, linuxFirewallLines, readText, rootCommand } from './asb-doctor.mjs';
 import { main as engineMain } from './asb-engine.mjs';
 import { api, networkText } from './asb-group.mjs';
 import { findRunningService } from './asb-instance.mjs';
@@ -59,7 +59,7 @@ async function chooseAddresses(current, parsed, { input, output, print }) {
 }
 
 async function run(parsed, context) {
-  const { env, platform, print, installService, installEngine, find, waitMs, node, doctor } = context;
+  const { env, platform, print, installService, installEngine, find, waitMs, node, doctor, execFile, read } = context;
   // 0. Check the system, as asb doctor does.
   if (platform === 'linux') {
     const data = await doctor();
@@ -82,6 +82,12 @@ async function run(parsed, context) {
     print('Run this command in an administrator PowerShell to let other machines and phones reach ASB:');
     print(`  ${firewallCommand(addresses, saved.port, node)}`);
     print('Windows can already allow node.exe on private networks; then this rule is not needed.');
+  } else if (platform === 'linux') {
+    // Plan 13 step 4: the firewalld or ufw rule for the chosen addresses.
+    const state = await firewallState({ execFile, readFile: read, env });
+    const chosen = addresses.map((address) => current.addresses.find((item) => item.address === address));
+    const { lines } = await linuxFirewallLines(state, chosen, saved.port, { execFile, root: await rootCommand(env), env });
+    for (const line of lines) print(line);
   }
   // 4. The bridge, and 5. the group.
   print(platform === 'win32' ? 'The bridge is not available on Windows yet.' : 'To let agents send messages, run: asb bridge install --all');
@@ -92,11 +98,11 @@ async function run(parsed, context) {
 export async function main(args = process.argv.slice(2), { env = process.env, platform = process.platform, input = process.stdin,
   output = process.stdout, print = (line) => output.write(`${line}\n`), printError = (line) => process.stderr.write(`${line}\n`),
   installService = serviceMain, installEngine = (argv) => engineMain(argv, { platform, env }), find = findRunningService,
-  node = process.execPath, waitMs = 20_000, doctor = () => collect({ env }) } = {}) {
+  node = process.execPath, waitMs = 20_000, doctor = () => collect({ env, firewall: false }), execFile = execFileAsync, read = readText } = {}) {
   const parsed = parseArgs(args);
   if (!parsed) { printError(usage); return 2; }
   try {
-    await run(parsed, { env, platform, input, output, print, installService, installEngine, find, waitMs, node, doctor });
+    await run(parsed, { env, platform, input, output, print, installService, installEngine, find, waitMs, node, doctor, execFile, read });
     return 0;
   } catch (error) { printError(`asb setup: ${error.message}`); return error.exitCode || 1; }
 }

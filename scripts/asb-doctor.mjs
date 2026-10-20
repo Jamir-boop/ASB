@@ -1,5 +1,6 @@
 import { execFile as execFileCallback } from 'node:child_process';
 import { access, readFile } from 'node:fs/promises';
+import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -7,10 +8,12 @@ import { PLAYERS } from '../src/asb-sounds.mjs';
 import { detectFamily, FAMILIES, installCommand, nodeRoute, parseOsRelease } from '../src/linux-distros.mjs';
 import { atLeast, BOARD_FLOORS, boardCheck, engineCheck, pythonCandidates, shortVersion } from '../src/linux-system.mjs';
 import { findExecutable, runtimeDir } from '../src/platform-paths.mjs';
+import { api as groupApi } from './asb-group.mjs';
+import { findRunningService } from './asb-instance.mjs';
 import { autostartMarker, autostartPath, unitMarker, unitPath } from './asb-service.mjs';
 
 // asb doctor (plan L5): it checks the system and prints the install commands. It never runs them.
-const execFileAsync = promisify(execFileCallback);
+export const execFileAsync = promisify(execFileCallback);
 const USAGE = 'Usage: asb doctor [--json]';
 const GROUPS = ['Engine', 'Window', 'Options'];
 // The needs in words, for systems without an install command.
@@ -20,22 +23,72 @@ const GENTOO_NOTE = 'Build gui-libs/gtk and gui-libs/libadwaita with USE=introsp
   + 'and media-video/pipewire with USE=extra (for pw-play).';
 const RESTART_NOTE = 'Restart the computer to use the new packages.';
 const FLAKE_LINE = 'Use the flake: nix profile install github:Jamir-boop/ASB';
+// The firewall lines go into a root shell, so only these names get a command (plan 13 step 6).
+const INTERFACE_NAME = /^[A-Za-z0-9._@-]{1,15}$/;
+const ZONE_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
-async function readText(file) {
+export async function readText(file) {
   try { return await readFile(file, 'utf8'); } catch (error) { if (error.code === 'ENOENT') return ''; throw error; }
 }
 async function exists(file) {
   try { await access(file); return true; } catch { return false; }
 }
 
+// The root command for the printed commands: doas only when doas is found and sudo is not.
+export const rootCommand = async (env = process.env) => await findExecutable('doas', { env }) && !await findExecutable('sudo', { env }) ? 'doas' : 'sudo';
+
+// A word with a space or a quote gets single quotes, after its `--name=` part.
+const shellWord = (word) => /[\s'"]/.test(word)
+  ? word.replace(/^(--[A-Za-z-]+=)?([^]*)$/, (match, flag = '', rest) => `${flag}'${rest.replaceAll("'", "'\\''")}'`) : word;
+export const shellText = (words) => words.map(shellWord).join(' ');
+
+// Plan 13 step 1: the active firewall. A missing program or file means "not this firewall".
+export async function firewallState({ execFile = execFileAsync, readFile = readText, env = process.env } = {}) {
+  try {
+    if (String((await execFile('firewall-cmd', ['--state'], { env, timeout: 5000 })).stdout).trim() === 'running') return 'firewalld';
+  } catch {}
+  let conf = '';
+  try { conf = String(await readFile('/etc/ufw/ufw.conf')); } catch {}
+  return conf.split('\n').some((line) => line.trim() === 'ENABLED=yes') ? 'ufw' : 'none';
+}
+
+// Plan 13 step 2: the rules for the addresses ({ address, interface }) as arrays of words, and the text lines. ASB only prints them.
+export async function linuxFirewallLines(state, addresses, port, { execFile = execFileAsync, root = 'sudo', env = process.env } = {}) {
+  const commands = [];
+  const notes = [];
+  if (state !== 'firewalld' && state !== 'ufw') return { commands, lines: [] };
+  const portOk = Number.isInteger(port) && port >= 1 && port <= 65535;
+  for (const { address, interface: name } of addresses) {
+    const usual = portOk && net.isIPv4(address) && typeof name === 'string' && INTERFACE_NAME.test(name);
+    let zone = '';
+    // A failed zone query (no zone) gives the rule without --zone.
+    if (usual && state === 'firewalld') {
+      try { zone = String((await execFile('firewall-cmd', [`--get-zone-of-interface=${name}`], { env, timeout: 5000 })).stdout).trim(); } catch {}
+    }
+    if (!usual || (zone && !ZONE_NAME.test(zone))) {
+      notes.push(`ASB found an unusual interface or zone name, so it prints no firewall command for ${address}.`);
+      continue;
+    }
+    commands.push(state === 'ufw' ? [root, 'ufw', 'allow', 'in', 'on', name, 'to', address, 'port', String(port), 'proto', 'tcp']
+      : [root, 'firewall-cmd', '--permanent', ...(zone ? [`--zone=${zone}`] : []),
+        `--add-rich-rule=rule family="ipv4" destination address="${address}" port port="${port}" protocol="tcp" accept`]);
+  }
+  if (state === 'firewalld' && commands.length) commands.push([root, 'firewall-cmd', '--reload']);
+  const lines = commands.length || notes.length
+    ? [`Phone access and machine links through ${state}:`, ...commands.map((words) => `  ${shellText(words)}`), ...notes] : [];
+  return { commands, lines };
+}
+
 // The engine can run when every Engine check is ok.
 export const engineReady = (data) => data.checks.filter((check) => check.group === 'Engine').every((check) => check.status === 'ok');
 
-export async function collect({ env = process.env, execFile = execFileAsync, read = readText, exists: present = exists, node } = {}) {
+// `firewall: false` leaves out the firewall part (asb setup step 0).
+export async function collect({ env = process.env, execFile = execFileAsync, read = readText, exists: present = exists, node,
+  find = findRunningService, api = (runtime, route) => groupApi(runtime, route, { timeoutMs: 2000 }), firewall = true } = {}) {
   const release = parseOsRelease(await read('/etc/os-release'));
   const { family, mode } = detectFamily(release, { ostreeBooted: await present('/run/ostree-booted') });
   const system = { name: release.PRETTY_NAME || release.NAME || 'Linux', id: release.ID || null, versionId: release.VERSION_ID || null, family, mode };
-  const root = await findExecutable('doas', { env }) && !await findExecutable('sudo', { env }) ? 'doas' : 'sudo';
+  const root = await rootCommand(env);
   const checks = [];
   const add = (id, group, status, detail) => checks.push({ id, group, status, detail });
   const required = [];
@@ -137,6 +190,20 @@ export async function collect({ env = process.env, execFile = execFileAsync, rea
   if (family === 'gentoo' && anyCommand) advice.push(GENTOO_NOTE);
   if (mode === 'transactional' && anyCommand) advice.push(RESTART_NOTE);
   if (family === 'nixos' && (required.length || optional.length || nodeOld)) advice.push(FLAKE_LINE);
+  // Plan 13 step 3: the firewall lines for the selected addresses of the running engine. A failed request gives no lines.
+  let phone = null;
+  if (firewall) {
+    try { const runtime = await find(env); phone = runtime ? await api(runtime, '/api/phone') : null; } catch {}
+  }
+  if (phone?.enabled === true && Array.isArray(phone.bindAddresses) && Array.isArray(phone.addresses)) {
+    const entries = phone.bindAddresses.map((address) => phone.addresses.find((item) => item.address === address)).filter(Boolean);
+    if (entries.length) {
+      const state = await firewallState({ execFile, readFile: read, env });
+      const { commands: rules, lines } = await linuxFirewallLines(state, entries, phone.port, { execFile, root, env });
+      commands.firewall = rules;
+      advice.push(...lines);
+    }
+  }
   return { schema: 1, system, checks, board: { ok: board.ok, reason: board.reason }, commands, advice };
 }
 

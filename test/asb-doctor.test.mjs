@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { collect, engineReady, format, main } from '../scripts/asb-doctor.mjs';
+import { collect, engineReady, firewallState, format, linuxFirewallLines, main, shellText } from '../scripts/asb-doctor.mjs';
 import { PYTHON_PROBE } from '../src/linux-system.mjs';
 
 // Each test fakes the system: os-release text, stub files on PATH (never run), the Node.js facts, and execFile.
@@ -27,7 +27,10 @@ const probe = (values) => JSON.stringify({ python: '3.13.5', gi: '3.50.0', gtk: 
 const UNIT = '/home/test/.config/systemd/user/asb.service';
 const ENTRY = '/home/test/.config/autostart/asb-engine.desktop';
 
-async function fakeSystem(t, { release, bins = ALL_BINS, values = {}, node = NODE24, ostree = false, files = {}, env = {} }) {
+// The firewall fakes: `phone` is the /api/phone reply of the running engine (null: no engine), `firewalld` the --state output
+// (null: firewall-cmd is missing), and `zones` the zone of each interface.
+async function fakeSystem(t, { release, bins = ALL_BINS, values = {}, node = NODE24, ostree = false, files = {}, env = {}, phone = null,
+  firewalld = null, zones = {} }) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'asb-doctor-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const bin = path.join(directory, 'bin');
@@ -35,7 +38,15 @@ async function fakeSystem(t, { release, bins = ALL_BINS, values = {}, node = NOD
   for (const name of bins) await writeFile(path.join(bin, name), '#!/bin/sh\nexit 99\n', { mode: 0o755 });
   const calls = [];
   const reads = [];
+  const requests = [];
+  const runtime = { pid: 1234, port: 4629 };
   const deps = {
+    find: async () => (phone ? runtime : null),
+    api: async (record, route) => {
+      requests.push([record, route]);
+      if (phone instanceof Error) throw phone;
+      return phone;
+    },
     env: { PATH: bin, ASB_PYTHON: PYTHON, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/nonexistent', XDG_CONFIG_HOME: '/home/test/.config',
       XDG_RUNTIME_DIR: '/run/user/1000', ...env }, node,
     read: async (file) => { reads.push(file); return file === '/etc/os-release' ? RELEASES[release] : files[file] ?? ''; },
@@ -44,7 +55,16 @@ async function fakeSystem(t, { release, bins = ALL_BINS, values = {}, node = NOD
       calls.push([file, ...args]);
       if (file === PYTHON) return { stdout: `${probe(values)}\n` };
       if (file === path.join(bin, 'openssl')) return { stdout: 'OpenSSL 3.5.1 1 Jul 2025\n' };
-      throw new Error(`Unexpected program: ${file}`);
+      if (file === 'firewall-cmd' && firewalld !== null) {
+        if (args[0] === '--state') {
+          if (firewalld === 'running') return { stdout: 'running\n' };
+          throw Object.assign(new Error('Command failed'), { code: 252, stdout: `${firewalld}\n` });
+        }
+        const name = args[0].replace('--get-zone-of-interface=', '');
+        if (zones[name]) return { stdout: `${zones[name]}\n` };
+        throw Object.assign(new Error('Command failed'), { code: 2, stdout: 'no zone\n' });
+      }
+      throw Object.assign(new Error(`Unexpected program: ${file}`), { code: 'ENOENT' });
     },
   };
   const run = async (argv = []) => {
@@ -52,7 +72,7 @@ async function fakeSystem(t, { release, bins = ALL_BINS, values = {}, node = NOD
     const code = await main(argv, { ...deps, log: (line) => out.push(line), error: (line) => out.push(`error: ${line}`) });
     return { code, out };
   };
-  return { bin, calls, reads, deps, run, lines: async () => format(await collect(deps)) };
+  return { bin, calls, reads, requests, runtime, deps, run, lines: async () => format(await collect(deps)) };
 }
 
 test('Debian 13 with all checks ok prints the checks of Appendix D and no commands', async (t) => {
@@ -252,4 +272,95 @@ test('doctor exit codes, usage, and the read-only programs', async (t) => {
   assert.deepEqual(system.calls, []);
   assert.equal(engineReady({ checks: [{ group: 'Engine', status: 'old' }, { group: 'Window', status: 'ok' }] }), false);
   assert.equal(engineReady({ checks: [{ group: 'Engine', status: 'ok' }, { group: 'Window', status: 'missing' }] }), true);
+});
+
+// Phase 4: the firewall lines. The fake engine reply has one selected address on wlp2s0.
+const UFW = '/etc/ufw/ufw.conf';
+const PHONE = { enabled: true, bindAddresses: ['192.168.1.20'], port: 4630,
+  addresses: [{ address: '192.168.1.20', interface: 'wlp2s0', kind: 'lan' }, { address: '10.147.0.1', interface: 'ztabc', kind: 'zerotier' }] };
+const FEDORA_BARE = { release: 'fedora44', bins: ['openssl', 'xdg-open', 'pw-play', 'sudo'],
+  values: { python: '3.14.8', gi: null, gtk: null, adw: null, glib: null, cairo: false, qrcode: false, trayHost: null } };
+const NOTE = (address) => `ASB found an unusual interface or zone name, so it prints no firewall command for ${address}.`;
+
+test('firewalld with a zone prints the rule of Appendix D after the Optional block, and runs only the read-only queries', async (t) => {
+  const system = await fakeSystem(t, { ...FEDORA_BARE, phone: PHONE, firewalld: 'running', zones: { wlp2s0: 'public' } });
+  const { code, out } = await system.run();
+  assert.equal(code, 0);
+  assert.deepEqual(out.slice(out.indexOf('Install the missing packages:')), [
+    'Install the missing packages:',
+    '  sudo dnf install python3-gobject gtk4 gobject-introspection libadwaita',
+    'Optional:',
+    '  sudo dnf install python3-qrcode-core',
+    'Phone access and machine links through firewalld:',
+    '  sudo firewall-cmd --permanent --zone=public --add-rich-rule=\'rule family="ipv4" destination address="192.168.1.20" port port="4630" protocol="tcp" accept\'',
+    '  sudo firewall-cmd --reload',
+  ]);
+  // Every program that doctor ran: only the read-only queries.
+  assert.deepEqual(system.calls, [[path.join(system.bin, 'openssl'), 'version'], [PYTHON, '-c', PYTHON_PROBE], ['firewall-cmd', '--state'],
+    ['firewall-cmd', '--get-zone-of-interface=wlp2s0']]);
+  assert.deepEqual(system.requests, [[system.runtime, '/api/phone']]);
+  const json = JSON.parse((await system.run(['--json'])).out.join('\n'));
+  assert.deepEqual(json.commands.firewall, [['sudo', 'firewall-cmd', '--permanent', '--zone=public',
+    '--add-rich-rule=rule family="ipv4" destination address="192.168.1.20" port port="4630" protocol="tcp" accept'], ['sudo', 'firewall-cmd', '--reload']]);
+});
+
+test('firewalld without a zone, ufw, ufw turned off, and no firewall', async (t) => {
+  const tail = async (options) => {
+    const system = await fakeSystem(t, { release: 'debian13', phone: { ...PHONE, bindAddresses: ['192.168.1.20', '10.147.0.1'] }, ...options });
+    const data = await collect(system.deps);
+    return { lines: format(data).slice(17), firewall: data.commands.firewall, reads: system.reads };
+  };
+  const rule = (address) => `--add-rich-rule='rule family="ipv4" destination address="${address}" port port="4630" protocol="tcp" accept'`;
+  assert.deepEqual((await tail({ firewalld: 'running' })).lines, ['', 'Phone access and machine links through firewalld:',
+    `  sudo firewall-cmd --permanent ${rule('192.168.1.20')}`, `  sudo firewall-cmd --permanent ${rule('10.147.0.1')}`, '  sudo firewall-cmd --reload']);
+  const ufw = await tail({ firewalld: 'not running', files: { [UFW]: '# comment\nENABLED=yes\nLOGLEVEL=low\n' } });
+  assert.deepEqual(ufw.lines, ['', 'Phone access and machine links through ufw:', '  sudo ufw allow in on wlp2s0 to 192.168.1.20 port 4630 proto tcp',
+    '  sudo ufw allow in on ztabc to 10.147.0.1 port 4630 proto tcp']);
+  assert.deepEqual(ufw.firewall[0], ['sudo', 'ufw', 'allow', 'in', 'on', 'wlp2s0', 'to', '192.168.1.20', 'port', '4630', 'proto', 'tcp']);
+  assert.ok(ufw.reads.includes(UFW));
+  for (const options of [{ files: { [UFW]: 'ENABLED=no\n' } }, {}]) {
+    const none = await tail(options);
+    assert.deepEqual([none.lines, none.firewall], [[], []]);
+  }
+});
+
+test('the firewall lines use doas, and an unusual name or port gives the note and no command', async (t) => {
+  const doas = await fakeSystem(t, { release: 'debian13', bins: ['openssl', 'xdg-open', 'pw-play', 'bun', 'sqlite3', 'doas'], phone: PHONE,
+    files: { [UFW]: 'ENABLED=yes\n' } });
+  assert.deepEqual((await doas.lines()).slice(-1), ['  doas ufw allow in on wlp2s0 to 192.168.1.20 port 4630 proto tcp']);
+  const odd = { ...PHONE, bindAddresses: ['192.168.1.20', '10.147.0.1'],
+    addresses: [{ address: '192.168.1.20', interface: 'wlan0;reboot', kind: 'lan' }, { address: '10.147.0.1', interface: 'ztabc', kind: 'zerotier' }] };
+  const system = await fakeSystem(t, { release: 'debian13', phone: odd, firewalld: 'running', zones: { ztabc: 'trusted zone' } });
+  const data = await collect(system.deps);
+  assert.deepEqual(format(data).slice(-3), ['Phone access and machine links through firewalld:', NOTE('192.168.1.20'), NOTE('10.147.0.1')]);
+  assert.deepEqual(data.commands.firewall, []);
+  // The unusual interface name goes to no program.
+  assert.deepEqual(system.calls.slice(2), [['firewall-cmd', '--state'], ['firewall-cmd', '--get-zone-of-interface=ztabc']]);
+  const port = await fakeSystem(t, { release: 'debian13', phone: { ...PHONE, port: 70000 }, files: { [UFW]: 'ENABLED=yes\n' } });
+  assert.deepEqual((await port.lines()).slice(-2), ['Phone access and machine links through ufw:', NOTE('192.168.1.20')]);
+});
+
+test('doctor prints no firewall lines when the engine is off, access is off, or the request fails', async (t) => {
+  const firewall = { firewalld: 'running', zones: { wlp2s0: 'public' } };
+  for (const phone of [null, { ...PHONE, enabled: false }, { ...PHONE, bindAddresses: ['192.168.1.99'] }, new Error('ASB did not reply.')]) {
+    const system = await fakeSystem(t, { release: 'debian13', phone, ...firewall });
+    const { code, out } = await system.run();
+    assert.equal(code, 0);
+    assert.ok(!out.some((line) => line.includes('firewall') || line.startsWith('error')), String(phone));
+    assert.deepEqual(system.calls.slice(2), []);
+    assert.equal(system.requests.length, phone ? 1 : 0);
+  }
+  // Setup step 0 leaves out the firewall part.
+  const system = await fakeSystem(t, { release: 'debian13', phone: PHONE, ...firewall });
+  assert.deepEqual((await collect({ ...system.deps, firewall: false })).commands.firewall, []);
+  assert.deepEqual(system.requests, []);
+});
+
+test('the firewall functions without the engine', async () => {
+  assert.equal(await firewallState({ execFile: async () => { throw Object.assign(new Error('spawn firewall-cmd ENOENT'), { code: 'ENOENT' }); },
+    readFile: async () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); } }), 'none');
+  assert.equal(await firewallState({ execFile: async () => ({ stdout: 'running\n' }), readFile: async () => 'ENABLED=yes\n' }), 'firewalld');
+  assert.deepEqual(await linuxFirewallLines('none', [{ address: '192.168.1.20', interface: 'wlp2s0' }], 4630,
+    { execFile: async () => { throw new Error('not called'); } }), { commands: [], lines: [] });
+  assert.equal(shellText(['echo', "it's", 'a b', 'plain']), "echo 'it'\\''s' 'a b' plain");
 });
