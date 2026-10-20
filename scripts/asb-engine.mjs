@@ -11,6 +11,7 @@ import { createMachineGroup } from '../src/machine-group.mjs';
 import { createRelaySupervisor } from '../src/machine-relay.mjs';
 import { createPhoneGateway } from '../src/phone-gateway.mjs';
 import { createSoundPlayer } from '../src/asb-sounds.mjs';
+import { boardCheck } from '../src/linux-system.mjs';
 import { configDir, runtimeDir, stateDir } from '../src/platform-paths.mjs';
 import { findRunningService, instanceRuntimePath, prepareInstanceRuntime, protectWindowsFolder, publishInstanceRuntime,
   removeInstanceRuntime, requestInstance } from './asb-instance.mjs';
@@ -125,8 +126,13 @@ export async function runEngine({ env = process.env, platform = process.platform
     if (stopping) return;
     relay.start().catch(() => console.error('ASB cannot start the message relay.'));
     runtimeRecord = await publishInstanceRuntime(prepared, { schema: 1, pid: process.pid, port, sourceToken });
-    if (!stopping && shouldStartTray(env, platform)) {
-      tray = spawnProcess(env.ASB_PYTHON || '/usr/bin/python3', [fileURLToPath(new URL('./asb-tray.py', import.meta.url))], {
+    // The tray needs only GLib, so the first Python with PyGObject is enough.
+    const wantTray = !stopping && shouldStartTray(env, platform);
+    const board = wantTray && !env.ASB_PYTHON ? await boardCheck({ env, execFile }) : null;
+    const trayPython = env.ASB_PYTHON || (board?.versions?.gi ? board.python : '');
+    if (wantTray && !trayPython) console.error('ASB cannot start its tray icon: no Python 3 with PyGObject was found.');
+    if (wantTray && trayPython && !stopping) {
+      tray = spawnProcess(trayPython, [fileURLToPath(new URL('./asb-tray.py', import.meta.url))], {
         stdio: ['ignore', 'ignore', 'inherit'],
         env: { ...env, ASB_ENGINE_PID: String(process.pid), ASB_ENGINE_URL: `http://127.0.0.1:${port}`, ASB_SOURCE_TOKEN: sourceToken, ASB_LAUNCHER: trayLauncher(env) },
       });

@@ -4,6 +4,9 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Added `asb doctor` (Linux): it checks Node.js, SQLite, `openssl`, `xdg-open`, the window libraries (Python 3.9, PyGObject, GTK 4.12, Libadwaita 1.4), the QR code, sounds, the tray host, and Bun. It prints the install command for the package manager of your distribution and the Node.js route, and never runs them. `--json` prints the same data. It exits with code 0 when the engine can run. `asb setup` on Linux prints the same checks first.
+- ASB now finds Python and Node.js without fixed paths: Python from `ASB_PYTHON`, `/usr/bin/python3`, or `python3` on `PATH`; Node.js also from `PATH` and Homebrew on Linux. The Node.js message links to the new README section.
+- The per-user install now continues without the window when the window libraries are missing or too old, with `ASB will run without its window: <reason> Run asb doctor for details.` The engine needs are still checked first.
 - The engine now gives each session a full session reference (machine, source, and app session ID) for the coming copy action and resolver. A keyed source scope tag in the reference changes when the folders of the source change. The rows of an older group member get no full reference.
 - Fixed the message relay: when a Claude profile's `sessions` folder was a link to another home's, Claude listed each remote session two times. ASB now uses each real `sessions` folder once.
 - The native context menu now closes when the pointer leaves it. Keyboard access stays available.

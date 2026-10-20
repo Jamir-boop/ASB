@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { boardCheck } from '../src/linux-system.mjs';
 import { startEngine } from './asb-engine.mjs';
 import { registerAppIcon } from './asb-icon.mjs';
 
@@ -28,7 +29,14 @@ async function start() {
   }
   if (stopping) return;
   const url = `http://127.0.0.1:${service.port}`;
-  window = spawn(process.env.ASB_PYTHON || '/usr/bin/python3', [fileURLToPath(new URL('./asb-native.py', import.meta.url)), url], {
+  const python = process.env.ASB_PYTHON || (await boardCheck({ env: process.env })).python;
+  if (stopping) return;
+  if (!python) {
+    console.error('Cannot open the native ASB window: Python 3 was not found. Use system Python 3 or npm start for the web view.');
+    stop(1);
+    return;
+  }
+  window = spawn(python, [fileURLToPath(new URL('./asb-native.py', import.meta.url)), url], {
     stdio: ['ignore', 'inherit', 'inherit'], env: { ...process.env, ASB_SOURCE_TOKEN: service.sourceToken },
   });
   window.once('error', (error) => {

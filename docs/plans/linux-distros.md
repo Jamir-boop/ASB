@@ -1,6 +1,8 @@
 # ASB on every Linux distribution: implementation plan
 
-Status: approved by the user on 2026-10-20, in progress. Written 2026-10-19
+Status: approved by the user on 2026-10-20, in progress. Phase 0 is done
+(2026-10-20: CI run 39408877913 passed all 16 jobs). Phase 1 passed the
+review on 2026-10-20. Written 2026-10-19
 for an implementing agent (a worker model). Section 2 has the user's
 decisions from the interview. Section 3 has the planner decisions, which the
 user approved. Do not change any of them without asking the user.
@@ -260,7 +262,11 @@ Debian 13 (4.18.6, 1.7.6, Node 20.19), Ubuntu 22.04 (4.6.9, 1.1.7), Ubuntu
 Arch (4.24.1, 1.10.0, Node 26.12), Alpine 3.24 (4.22.4, 1.9.2, Node 24.18),
 and Void (4.22.4, 1.9.1, Node 24.18). The arm64 rows gave the same values.
 Fedora 43 and 44, AlmaLinux 10, and Leap 16.0 failed on package names (the
-notes below), so their GTK values are not measured yet.
+notes below). After the fixes, the second run (run 39408877913) passed all
+16 jobs and measured them: Fedora 43 (4.20.4, 1.8.8, Node 22.22), Fedora 44
+(4.22.5, 1.9.4, Node 22.23), AlmaLinux 10.2 (4.16.7, 1.6.10, Node 22.23,
+Python 3.12.14), and Leap 16.0 (4.18.6, 1.7.5, Node 22.23, Python 3.13.14).
+No release moved to another tier.
 
 | Release (and its derivatives) | GTK | Libadwaita | Node.js in the repository | Init | Tier |
 | --- | --- | --- | --- | --- | --- |
@@ -331,14 +337,16 @@ Notes:
 - Follow `AGENTS.md`. Run `(umask 022; npm test)` after behavior changes:
   with umask 077, the package test fails on file modes.
 - After board or tray changes, run `python3 test/asb_native_logic_test.py`
-  and `python3 -m unittest test/asb_tray_test.py`.
+  and `python3 -m unittest discover -s test -p 'asb_tray_test.py'`.
+  (`python3 -m unittest test/asb_tray_test.py` fails: the module name
+  `test` is the Python standard library test package.)
 - Keep ASB dependency-free: no npm packages, no Python packages besides
   PyGObject and the optional `qrcode`.
 - ASB never runs `sudo`, `doas`, `pkexec`, `rpm-ostree`,
   `transactional-update`, a package manager, or a firewall change. Tests must
   prove that doctor and setup only print these commands. Read-only queries
-  (`firewall-cmd --state`, `xdg-mime query default`, `systemctl --user
-  is-active`) are allowed.
+  (`openssl version`, `firewall-cmd --state`, `xdg-mime query default`,
+  `systemctl --user is-active`) are allowed.
 - Never read credentials or message text. Besides ASB's own files and the
   app folders that ASB already reads, `asb doctor` reads only
   `/etc/os-release`, `/run/ostree-booted`, `PATH`, the session bus names,
@@ -510,6 +518,7 @@ every branch, and `workflow_dispatch` (Goal 6). Use the action versions of
    the SQLite check (the `case` at `:9` and the list at `:11`), so that
    doctor can report a missing SQLite. Add one sentence to the failure
    message (`:17`): `Install help: https://github.com/Jamir-boop/ASB#nodejs`.
+   That link needs the README `Node.js` section of 10.4 in the same phase.
 2. `scripts/asb.mjs`:
    - Dispatch `doctor` to `scripts/asb-doctor.mjs` (Linux only), next to
      `service` (`:34`), as the other commands do.
@@ -541,18 +550,26 @@ every branch, and `workflow_dispatch` (Goal 6). Use the action versions of
      `ok` needs Python 3.9, GTK 4.12, and Libadwaita 1.4 (L2). `reason` is a
      sentence, for example `GTK 4.8 is older than 4.12.` or
      `PyGObject is not installed.`
-   - `engineCheck({ env, execFile })`: Node major version 20, `node:sqlite`
+   - `engineCheck({ env, node })`: Node major version 20, `node:sqlite`
      or `sqlite3` on `PATH`, `openssl` on `PATH`, and `xdg-open` on `PATH`.
-4. `scripts/asb-desktop.mjs:31` and `scripts/asb-engine.mjs:127`: use
+     `node` is the facts of the running Node (10.2); it runs no program.
+4. `scripts/asb-desktop.mjs:31` and `scripts/asb-engine.mjs:129` (`main`
+   at `f1927b6`): use
    `env.ASB_PYTHON`, else the `python` of `boardCheck` (the desktop) or the
    first candidate with `gi` (the tray). Without one, the tray does not start
    and the engine prints one line.
-5. `scripts/asb-package.mjs` `checkRuntime` (`:106-127`): use `engineCheck`
-   (failure refuses the install) and `boardCheck` (failure prints
-   `ASB will run without its window: <reason> Run asb doctor for details.`
-   and the install continues). Keep the `sqliteDirectory` result. Write
-   `ASB_PYTHON` into the launcher (`:224`) only when a Python with `gi` was
-   found. Remove the fixed `/usr/bin/python3` and `/usr/bin/xdg-open` paths.
+5. `scripts/asb-package.mjs` `checkRuntime` (`:107-128` at `f1927b6`): use
+   `engineCheck` (failure refuses the install) and `boardCheck` (failure
+   prints `ASB will run without its window: <reason> Run asb doctor for
+   details.` and the install continues). Keep the `sqliteDirectory` result.
+   Write `ASB_PYTHON` into the launcher (`:225`) only when a Python with `gi`
+   was found. Remove the fixed `/usr/bin/python3` and `/usr/bin/xdg-open`
+   paths.
+6. Add `scripts/asb-doctor.mjs`, `src/linux-system.mjs`, and
+   `src/linux-distros.mjs` to `RUNTIME_FILES` (`scripts/asb-package.mjs:14`),
+   so that the `.deb` and the archive have them. The test "ASB payload
+   imports are complete" (`test/asb-package.test.mjs:55`) checks the static
+   imports, but not the `script()` dispatch of `scripts/asb.mjs`.
 
 ### 10.2 `asb doctor` (L5)
 
@@ -579,6 +596,20 @@ Checks, in this order (Appendix D has the output):
 
 Phases 3, 4, and 6 add the autostart, runtime folder, firewall, and link
 checks.
+
+Sources of the checks:
+
+- The first line is `ASB doctor: <PRETTY_NAME>, family <family>`, with
+  `, <mode>` after it when the mode is not `normal`, and `family unknown`
+  when no family matches.
+- Node.js is the running Node (`process.execPath`, `process.versions.node`,
+  and whether `node:sqlite` imports). `scripts/asb` and `scripts/asb.mjs`
+  refuse Node older than 20 before doctor runs, so `collect` takes these
+  facts as an argument, and the tests fake Node 18 and no Node.
+- Sounds: the first program of the `PLAYERS` list of `src/asb-sounds.mjs`
+  (`:66`) on `PATH`. Export that list; do not copy the names.
+- The Gentoo note and the image-based note of Appendix A are printed after
+  the commands of that family or mode.
 
 Commands after the checks:
 
@@ -632,6 +663,23 @@ tests can fake it (the setup tests are in `test/asb-group.test.mjs` and
   does not refuse the install, and the launcher has no `ASB_PYTHON` line
   when no Python with `gi` was found.
 
+### 10.4 Documents
+
+Phase 1 adds a user command and new reads, so it updates the documents for
+them (section 8). Phase 9 does the full pass.
+
+- `README.md`: a `Node.js` section (anchor `#nodejs`, which the launcher
+  message links) with the Node.js 20 floor and the routes of Appendix B, and
+  one line in "Install on Linux": run `asb doctor` to check the system; it
+  prints the install commands and never runs them.
+- `CHANGELOG.md` (Unreleased): `asb doctor`, the Python and Node.js search,
+  and the install that continues without the window.
+- `SYSTEM_OVERVIEW.md`: rows for `src/linux-system.mjs` and
+  `src/linux-distros.mjs` in the module table (`:136` has the
+  `src/platform-paths.mjs` row), and the new count of the runtime file list
+  (`:106`).
+- `docs/PRIVACY.md`: what doctor reads (section 8).
+
 ### Phase 1 acceptance
 
 - `(umask 022; npm test)` passes.
@@ -641,6 +689,8 @@ tests can fake it (the setup tests are in `test/asb-group.test.mjs` and
 - On the Debian PC, `ASB_PYTHON=/bin/false scripts/asb doctor` reports the
   window as not available and still exits with code 0.
 - `scripts/asb doctor --json | python3 -m json.tool` succeeds.
+- `RUNTIME_FILES` and `npm pack --dry-run` have the three new runtime files,
+  and the README has the `Node.js` heading (10.4).
 - Commit: `feat(doctor): check the system and print the install commands`.
 
 ## 11. Phase 2: engine only (L4)
@@ -650,9 +700,14 @@ tests can fake it (the setup tests are in `test/asb-group.test.mjs` and
    spawn the window. Print `ASB runs without its window on this system:
    <reason> The engine runs for the phone and your other machines. Run asb
    doctor for details.` and exit with code 3. The engine keeps running.
+   Phase 1 runs `boardCheck` there only without `ASB_PYTHON` (to find the
+   Python). Phase 2 runs it always: an absolute `ASB_PYTHON` is then the
+   only candidate.
 2. `scripts/asb-engine.mjs` `runEngine` (tray start at `:126-140`): run
    `boardCheck` once before the tray starts. When it fails, start the tray
-   with `ASB_BOARD=0` in its environment.
+   with `ASB_BOARD=0` in its environment. Phase 1 runs it only without
+   `ASB_PYTHON`, and starts no tray (one error line) when no Python has
+   `gi`. Keep that rule, and run the check always.
 3. `scripts/asb-tray.py`: with `ASB_BOARD=0`, the menu has only **Quit ASB**,
    and a left click (`Activate`) does nothing. Keep the menu layout in the
    pure functions; add cases to `test/asb_tray_test.py`.
@@ -663,12 +718,15 @@ tests can fake it (the setup tests are in `test/asb-group.test.mjs` and
 5. `asb setup`: no change. Step 0 (10.2) already prints the reason.
 6. Tests: `test/asb-desktop.test.mjs` (board check fails: no registration,
    no window, exit code 3, engine started); the tray menu cases; the install
-   record without the desktop keys.
+   record without the desktop keys; `runEngine` with a fake `execFile` (in
+   `test/asb-service.test.mjs`, next to the tray test at `:499`): a board
+   failure starts the tray with `ASB_BOARD=0`, and no Python with `gi`
+   starts no tray and prints one line.
 
 ### Phase 2 acceptance
 
-- `(umask 022; npm test)` and `python3 -m unittest test/asb_tray_test.py`
-  pass. `npm run test:native` passes on the hidden display.
+- `(umask 022; npm test)` and
+  `python3 -m unittest discover -s test -p 'asb_tray_test.py'` pass. `npm run test:native` passes on the hidden display.
 - On the Debian PC, with the user's engine running,
   `ASB_PYTHON=/bin/false scripts/asb` prints the engine-only message and
   exits with code 3. It only reads the user's engine: `scripts/asb engine
@@ -997,7 +1055,7 @@ Extend `.github/workflows/distros.yml` from phase 0:
       check there.
    8. With `PYTHONDONTWRITEBYTECODE=1` (the repository is mounted read-only):
       `python3 /asb/test/asb_native_logic_test.py`, and on the board tier
-      `python3 -m unittest /asb/test/asb_tray_test.py`.
+      `python3 -m unittest discover -s /asb/test -p 'asb_tray_test.py'`.
    9. `./uninstall.sh`.
    10. As root, install the package of the row: `apt-get install -y
        ./asb_*_all.deb`, `dnf install -y ./asb-*.noarch.rpm`, or `zypper
@@ -1030,7 +1088,8 @@ Extend `.github/workflows/distros.yml` from phase 0:
      `installCommand` for that family.
    - The release packages: `.deb`, `.rpm`, `PKGBUILD` (`makepkg -si`), and
      the flake (`nix profile install github:Jamir-boop/ASB`).
-   - A `Node.js` section (anchor `#nodejs`) with Appendix B.
+   - The `Node.js` section of phase 1 (anchor `#nodejs`): check it against
+     Appendix B again.
    - Engine only, autostart without systemd, and the firewall note.
 2. `ASB.md`: `asb doctor`, the autostart modes, engine only, and the link
    check.
@@ -1176,7 +1235,7 @@ Options
   ok       Links: codex: chatgpt.desktop, claude: com.anthropic.Claude.desktop
 
 Install the missing packages:
-  sudo dnf install python3-gobject gtk4 libadwaita
+  sudo dnf install python3-gobject gtk4 gobject-introspection libadwaita
 Optional:
   sudo dnf install python3-qrcode-core
 Phone access and machine links through firewalld:

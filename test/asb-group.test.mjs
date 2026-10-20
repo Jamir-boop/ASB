@@ -202,7 +202,12 @@ test('asb phone status, pair, and remove use the phone routes and refuse an uncl
   }
 });
 
-async function runSetup(state, args, { platform = 'linux', answer = '' } = {}) {
+// Step 0 on Linux: a fake doctor, so that no test runs the Python probe or openssl.
+const doctorData = (status = 'ok') => ({ system: { name: 'Test Linux', family: 'debian', mode: 'normal' },
+  checks: [{ id: 'node', group: 'Engine', status, detail: 'Node.js 24.0.0 (/usr/bin/node), built-in SQLite' }], advice: [] });
+const DOCTOR_LINES = ['ASB doctor: Test Linux, family debian', '', 'Engine', '  ok       Node.js 24.0.0 (/usr/bin/node), built-in SQLite'];
+
+async function runSetup(state, args, { platform = 'linux', answer = '', doctor = async () => doctorData() } = {}) {
   const out = [];
   const err = [];
   const installs = [];
@@ -210,9 +215,24 @@ async function runSetup(state, args, { platform = 'linux', answer = '' } = {}) {
     print: (line) => out.push(line), printError: (line) => err.push(line), node: 'C:\\Program Files\\nodejs\\node.exe', waitMs: 500,
     installService: async (argv) => { installs.push(['service', argv]); return 0; },
     installEngine: async (argv) => { installs.push(['engine', argv]); return 0; },
-    find: (env) => readServiceRuntime(env) });
-  return { code, out, err, installs };
+    find: (env) => readServiceRuntime(env), doctor });
+  // `out` leaves out the four doctor lines of Linux; `all` has them.
+  return { code, out: platform === 'linux' ? out.slice(DOCTOR_LINES.length) : out, all: out, err, installs };
 }
+
+test('asb setup step 0 prints the doctor output on Linux and stops when the engine cannot run', async (t) => {
+  const state = await fixture(t);
+  const failed = await runSetup(state, ['--yes'], { doctor: async () => doctorData('missing') });
+  assert.equal(failed.code, 1);
+  assert.deepEqual(failed.installs, []);
+  assert.deepEqual(failed.all, ['ASB doctor: Test Linux, family debian', '', 'Engine', '  missing  Node.js 24.0.0 (/usr/bin/node), built-in SQLite']);
+  assert.deepEqual(failed.err, ['asb setup: The ASB engine cannot run on this system. Install the missing packages, then run asb setup again.']);
+  assert.equal(state.posts().length, 0);
+  let called = false;
+  const windows = await runSetup(state, ['--address', '192.168.1.99'], { platform: 'win32', doctor: async () => { called = true; return doctorData(); } });
+  assert.equal(windows.code, 1);
+  assert.equal(called, false);
+});
 
 test('asb setup installs the autostart, turns on the chosen addresses, and prints the next steps', async (t) => {
   const state = await fixture(t);
@@ -221,6 +241,7 @@ test('asb setup installs the autostart, turns on the chosen addresses, and print
   const linux = await runSetup(state, ['--yes']);
   assert.equal(linux.code, 0, linux.err.join('\n'));
   assert.deepEqual(linux.installs, [['service', ['install']]]);
+  assert.deepEqual(linux.all.slice(0, DOCTOR_LINES.length), DOCTOR_LINES);
   assert.deepEqual(linux.out, ['Network access is on, port 4630: 192.168.1.10 (lan).', 'To let agents send messages, run: asb bridge install --all',
     "On a machine in the group: asb group invite. Here: asb group join '<link>' --name <name>."]);
   const chosen = await runSetup(state, ['--address', '10.147.0.1', '--address', '192.168.1.10', '--yes']);

@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ASB_APP_ID } from '../scripts/asb-icon.mjs';
-import { build, install, RUNTIME_FILES, uninstall } from '../scripts/asb-package.mjs';
+import { build, checkRuntime, install, RUNTIME_FILES, uninstall } from '../scripts/asb-package.mjs';
 
 test('release runtime includes the Claude remote reader imported by the switchboard', () => {
   assert.ok(RUNTIME_FILES.includes('src/claude-remote-data.mjs'));
@@ -90,7 +90,6 @@ test('release payloads are reproducible and the user installer preserves other f
   assert.equal(architecture, 'Architecture: all');
   assert.equal(depends, 'Depends: nodejs (>= 20), sqlite3, python3, python3-gi, gir1.2-gtk-4.0 (>= 4.12), gir1.2-adw-1 (>= 1.4), xdg-utils, openssl');
   assert.equal(recommends, 'Recommends: python3-qrcode, pipewire-bin');
-  assert.ok((await readFile(path.join(sourceRoot, 'scripts/asb-package.mjs'), 'utf8')).includes(">= (4, 12), 'GTK 4.12 or later is required.'"));
   const extracted = path.join(temporary, 'deb');
   execFileSync('dpkg-deb', ['-x', artifacts[0], extracted]);
   const control = path.join(temporary, 'control');
@@ -200,7 +199,7 @@ test('package commands reject extra arguments before checks or writes and instal
   // Exercise the real argument parser with a display-free runtime check.
   const packageScript = path.join(source, 'scripts/asb-package.mjs');
   const code = await readFile(packageScript, 'utf8');
-  const start = code.indexOf('export async function checkRuntime() {');
+  const start = code.indexOf('export async function checkRuntime(');
   const end = code.indexOf('\nfunction locations(', start);
   assert.ok(start >= 0 && end > start);
   await writeFile(packageScript, code.slice(0, start)
@@ -237,6 +236,46 @@ test('package commands reject extra arguments before checks or writes and instal
   assert.ok((await lstat(path.join(home, '.local/bin/asb'))).isFile());
   await assert.rejects(lstat(path.join(env.XDG_DATA_HOME, 'asb/.install-lock')), { code: 'ENOENT' });
   assert.deepEqual(await readdir(path.dirname(installedRoot)), [version]);
+});
+
+test('the install check refuses without the engine tier and continues without the window', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'asb-package-check-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const bin = path.join(temporary, 'bin');
+  await mkdir(bin);
+  for (const name of ['sqlite3', 'openssl', 'xdg-open']) await writeFile(path.join(bin, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const env = { PATH: bin, ASB_PYTHON: '/opt/python3' };
+  const node = { path: '/usr/bin/node', version: '20.19.2', sqlite: false };
+  const probe = (values) => async (file, args) => {
+    assert.deepEqual([file, args[0]], ['/opt/python3', '-c']);
+    return { stdout: JSON.stringify({ python: '3.11.2', gi: null, gtk: null, adw: null, glib: null, cairo: false, qrcode: false, trayHost: null, ...values }) };
+  };
+  const check = async (values) => {
+    const warnings = [];
+    const result = await checkRuntime({ env, platform: 'linux', node, execFile: probe(values), warn: (line) => warnings.push(line) });
+    return { result, warnings };
+  };
+  const board = await check({ gi: '3.42.2', gtk: [4, 18, 0], adw: [1, 7, 0] });
+  assert.deepEqual([board.result.pythonExecutable, board.result.sqliteDirectory, board.warnings], ['/opt/python3', bin, []]);
+  const old = await check({ gi: '3.42.2', gtk: [4, 8, 3], adw: [1, 2, 2] });
+  assert.equal(old.result.pythonExecutable, '/opt/python3');
+  assert.deepEqual(old.warnings, ['ASB will run without its window: GTK 4.8 is older than 4.12. Libadwaita 1.2 is older than 1.4. Run asb doctor for details.']);
+  const noGi = await check({});
+  assert.equal(noGi.result.pythonExecutable, null);
+  assert.deepEqual(noGi.warnings, ['ASB will run without its window: PyGObject is not installed. Run asb doctor for details.']);
+  await rm(path.join(bin, 'openssl'));
+  await assert.rejects(checkRuntime({ env, platform: 'linux', node, execFile: probe({}), warn: () => {} }), /^Error: openssl is not installed\.$/);
+  await assert.rejects(checkRuntime({ env, platform: 'linux', node: { ...node, version: '18.19.0' }, execFile: probe({}) }), /Node\.js 18\.19\.0 is older than 20\./);
+
+  // The launcher sets ASB_PYTHON only for a Python with PyGObject.
+  for (const pythonExecutable of [null, '/opt/python3']) {
+    const dataDir = path.join(temporary, `data-${Boolean(pythonExecutable)}`);
+    const result = await install({ sourceRoot, dataDir, binDir: path.join(dataDir, 'bin'),
+      check: async () => ({ nodeExecutable: process.execPath, pythonExecutable }) });
+    const wrapper = await readFile(result.launcher, 'utf8');
+    assert.equal(wrapper.includes('ASB_PYTHON'), Boolean(pythonExecutable), wrapper);
+    if (pythonExecutable) assert.ok(wrapper.includes("export ASB_PYTHON='/opt/python3'\n"));
+  }
 });
 
 test('safe unknown install-record files stay managed and edited, linked, or unlisted files stay protected', async (t) => {

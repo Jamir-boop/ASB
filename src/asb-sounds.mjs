@@ -63,7 +63,7 @@ export function createSoundWatcher(play, canPlay = () => true) {
   };
 }
 
-const PLAYERS = [
+export const PLAYERS = [
   ['pw-play', (file) => ['--media-role', 'Notification', '-P', '{ application.name = "ASB" }', file]],
   ['paplay', (file) => ['--client-name=ASB', '--property=media.role=event', file]],
 ];

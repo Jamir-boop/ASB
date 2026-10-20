@@ -5,6 +5,7 @@ import { access, chmod, copyFile, link, lstat, mkdir, mkdtemp, readFile, readdir
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { boardCheck, engineCheck } from '../src/linux-system.mjs';
 import { ASB_APP_ID, registerAppIcon } from './asb-icon.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -23,7 +24,7 @@ export const RUNTIME_FILES = [
   'src/switchboard.mjs', 'src/app-sources.mjs', 'src/asb-server.mjs', 'src/dashboard-snapshot.mjs', 'src/local-http.mjs', 'src/session-opener.mjs',
   'src/codex-data.mjs', 'src/claude-data.mjs', 'src/claude-registry.mjs', 'src/claude-cli-data.mjs', 'src/claude-remote-data.mjs', 'src/insights.mjs', 'src/data-cache.mjs',
   'src/thread-classification.mjs', 'src/phone-gateway.mjs', 'src/machine-group.mjs', 'src/machine-peers.mjs', 'src/machine-relay.mjs', 'src/asb-sounds.mjs', 'src/opencode-data.mjs', 'src/platform-paths.mjs',
-  'src/session-references.mjs',
+  'src/session-references.mjs', 'src/linux-system.mjs', 'src/linux-distros.mjs', 'scripts/asb-doctor.mjs',
   '.agents/plugins/marketplace.json',
   'bridge/.codex-plugin/plugin.json', 'bridge/.mcp.json', 'bridge/hooks/hooks.json',
   'bridge/dist/server.js', 'bridge/dist/hook.js', 'bridge/dist/relay.js', 'bridge/LICENSE',
@@ -104,27 +105,15 @@ async function treeFiles(root, prefix = '') {
   return files.sort();
 }
 
-export async function checkRuntime() {
-  if (process.platform !== 'linux' || Number(process.versions.node.split('.')[0]) < 20) throw new Error('ASB needs Linux and Node.js 20 or later.');
-  let sqliteDirectory;
-  try { await import('node:sqlite'); }
-  catch {
-    execFileSync('sqlite3', ['--version'], { stdio: 'ignore' });
-    for (const directory of (process.env.PATH || '').split(path.delimiter)) {
-      try { await access(path.join(directory, 'sqlite3'), constants.X_OK); sqliteDirectory = path.resolve(directory); break; }
-      catch (error) { if (!['ENOENT', 'EACCES'].includes(error.code)) throw error; }
-    }
-  }
-  const pythonExecutable = '/usr/bin/python3';
-  execFileSync(pythonExecutable, ['-c', `import gi
-gi.require_version('Gtk', '4.0')
-gi.require_version('Adw', '1')
-from gi.repository import Gtk, Adw
-assert (Gtk.get_major_version(), Gtk.get_minor_version()) >= (4, 12), 'GTK 4.12 or later is required.'
-assert (Adw.get_major_version(), Adw.get_minor_version()) >= (1, 4), 'Libadwaita 1.4 or later is required.'
-`], { stdio: 'pipe' });
-  execFileSync('/usr/bin/xdg-open', ['--version'], { stdio: 'ignore' });
-  return { nodeExecutable: await realpath(process.execPath), pythonExecutable, sqliteDirectory };
+// The engine tier must pass. Without the board tier, the install continues and ASB runs without its window.
+export async function checkRuntime({ env = process.env, platform = process.platform, execFile, node, warn = console.warn } = {}) {
+  if (platform !== 'linux') throw new Error('ASB needs Linux and Node.js 20 or later.');
+  const engine = await engineCheck({ env, node });
+  if (!engine.ok) throw new Error(engine.reason);
+  const board = await boardCheck({ env, execFile });
+  if (!board.ok) warn(`ASB will run without its window: ${board.reason} Run asb doctor for details.`);
+  return { nodeExecutable: await realpath(process.execPath), pythonExecutable: board.versions?.gi ? board.python : null,
+    sqliteDirectory: engine.sqlite3 ? path.dirname(engine.sqlite3) : undefined };
 }
 
 function locations(options) {
@@ -222,7 +211,7 @@ export async function install(options = {}) {
     await chmod(staging, 0o755);
     signal.throwIfAborted();
     // scripts/asb finds a fallback Node and appends the system folders, so started apps keep the caller's PATH order.
-    const wrapper = Buffer.from(`#!/bin/sh\n${MARKER}\nset -eu\nexport ASB_NODE=${quote(nodeExecutable)}\nexport ASB_INSTALLED_LAUNCHER=${quote(paths.launcher)}\nexport ASB_PYTHON=${quote(runtime.pythonExecutable)}\n${runtime.sqliteDirectory ? `export PATH="\${PATH:+$PATH:}"${quote(runtime.sqliteDirectory)}\n` : ''}exec ${quote(path.join(destination, 'scripts', 'asb'))} "$@"\n`);
+    const wrapper = Buffer.from(`#!/bin/sh\n${MARKER}\nset -eu\nexport ASB_NODE=${quote(nodeExecutable)}\nexport ASB_INSTALLED_LAUNCHER=${quote(paths.launcher)}\n${runtime.pythonExecutable ? `export ASB_PYTHON=${quote(runtime.pythonExecutable)}\n` : ''}${runtime.sqliteDirectory ? `export PATH="\${PATH:+$PATH:}"${quote(runtime.sqliteDirectory)}\n` : ''}exec ${quote(path.join(destination, 'scripts', 'asb'))} "$@"\n`);
     if (existing) await rename(destination, backup);
     signal.throwIfAborted();
     await rename(staging, destination);
