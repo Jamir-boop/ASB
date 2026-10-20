@@ -79,9 +79,14 @@ server.registerTool('list_sessions', { description: 'List the live agents on thi
   return result([...rows, ...remote.filter(peer => !seen.has(peer.sessionId)).map(peer => ({ sessionId: peer.sessionId,
     name: `${peer.machineName}-${peer.name}`, agent: peer.agent, cwd: null, status: peer.status, startedAt: null, remote: true, machine: peer.machineName }))]);
 });
-server.registerTool('send_message', { description: 'Send text to one listed agent, or set notify_when_idle alone to subscribe without sending. Its answer enters the current Codex turn, or starts one when this task is idle. Batch what you have to say into one message: a rapid burst to the same agent is refused.',
-  inputSchema: { sessionId: uuid, text: z.string().min(1).max(maxLineLength).optional(), notify_when_idle: z.boolean().default(false) }, annotations: { openWorldHint: true } },
-  async ({ sessionId, text, notify_when_idle }, extra) => result(await current(extra._meta).sendMessage(sessionId, text, notify_when_idle)));
+server.registerTool('send_message', { description: 'Send text to one listed agent, or set notify_when_idle alone to subscribe without sending. Its answer enters the current Codex turn, or starts one when this task is idle. Batch what you have to say into one message: a rapid burst to the same agent is refused. Instead of sessionId, reference takes a full ASB session reference (asb:1/...) as it is and sends to exactly that session on this machine.',
+  inputSchema: { sessionId: uuid.optional(), reference: z.string().max(384).regex(/^asb:[\x21-\x7e]+$/).optional(),
+    text: z.string().min(1).max(maxLineLength).optional(), notify_when_idle: z.boolean().default(false) }, annotations: { openWorldHint: true } },
+  async ({ sessionId, reference, text, notify_when_idle }, extra) => {
+    if ((sessionId === undefined) === (reference === undefined)) throw new Error('Give exactly one of sessionId or reference.');
+    const bridge = current(extra._meta);
+    return result(await (reference === undefined ? bridge.sendMessage(sessionId!, text, notify_when_idle) : bridge.sendReference(reference, text, notify_when_idle)));
+  });
 server.registerTool('status', { description: 'Show this task\'s receiver, transport and recent outcomes. The receiver starts at the first turn and when Codex reloads a registered task. A null replyAddress in a turn means untrusted hooks or a failed SessionStart: ask the user to check hook trust. No tool restarts it. Check unknown outcomes before resending.',
   inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false } },
   async (_args, extra) => result(brief(current(extra._meta).status())));

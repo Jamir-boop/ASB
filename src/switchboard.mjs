@@ -2,8 +2,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { promises as fs, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { loadCodexDashboard, invalidateCodexData, discoverCodexStateDatabase, retainCodexDataScopes, SESSION_MESSAGE_WINDOW_MS } from './codex-data.mjs';
-import { defaultClaudeAppDir, invalidateClaudeData, openClaudeThread, retainClaudeDataSources } from './claude-data.mjs';
+import { loadCodexDashboard, invalidateCodexData, discoverCodexStateDatabase, querySqliteJson, retainCodexDataScopes, SESSION_MESSAGE_WINDOW_MS } from './codex-data.mjs';
+import { DEFAULT_CLAUDE_PROJECTS_DIR, defaultClaudeAppDir, invalidateClaudeData, openClaudeThread, retainClaudeDataSources } from './claude-data.mjs';
 import { loadSwitchboardClaudeThreads, claudeRemoteDeepLink, claudeRemoteStatus,
   invalidateClaudeRemoteData, isClaudeRemoteCacheEvent, shutdownClaudeRemoteParser } from './claude-remote-data.mjs';
 import { normalizeDashboardThreads } from './insights.mjs';
@@ -14,7 +14,8 @@ import { openThreadInCodex, scopedCommand } from './session-opener.mjs';
 import { AppSourceRegistry, appSourcesRevision, numberAppSources, sourceName, validateSourceLauncher } from './app-sources.mjs';
 import { stateDir } from './platform-paths.mjs';
 import { rowReference, shortReference } from './session-references.mjs';
-import { resolveSessionReference } from './session-targets.mjs';
+import { bindLocalTarget, resolveSessionReference } from './session-targets.mjs';
+import { readLiveClaudeRegistry } from './claude-registry.mjs';
 import { spawn } from 'node:child_process';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -720,6 +721,28 @@ export function createSwitchboardServer(options = {}) {
     }
     return scopes.tags;
   };
+  // Read-only: the cached rows, the registered sources and tags, and the member list that the engine already has.
+  const referenceContext = async (dashboard) => {
+    const sources = registeredLoad ? await registry.read() : null;
+    const machine = options.machineIdentity?.() || { machineId: '', machineName: localMachineName() };
+    const tagger = machine.machineId ? options.referenceScopes?.() || null : null;
+    const members = options.machineGroup ? (await options.machineGroup.status()).members.filter((member) => !member.isSelf) : [];
+    return { threads: dashboard.threads || [], sources: sources || [], tags: sourceScopes(sources, tagger),
+      machine: { machineId: tagger ? machine.machineId : '', machineName: machine.machineName }, members };
+  };
+  // The registry folder of the sending task, only when it is private to this user.
+  const privateRegistry = async (configDir) => {
+    try {
+      const root = await fs.realpath(path.join(configDir, 'sessions'));
+      const info = await fs.stat(root);
+      if (!info.isDirectory() || info.uid !== process.getuid() || (info.mode & 0o077) !== 0) return null;
+      return { root, records: await readLiveClaudeRegistry([root]) };
+    } catch { return null; }
+  };
+  // The same registry root that src/claude-cli-data.mjs and src/claude-data.mjs read for a Claude source.
+  const claudeRoot = (source) => fs.realpath(path.join(path.dirname(source.projectsDir || DEFAULT_CLAUDE_PROJECTS_DIR), 'sessions')).catch(() => null);
+  const receiverClaim = async (source, appId) => (await querySqliteJson(path.join(source.dataDir, 'plugin-state', 'asb-bridge', `${appId}.sqlite`),
+    'select pid, proc_start from receiver where singleton = 1;').catch(() => []))[0] ?? null;
   const sourceWatchPaths = async () => {
     const sources = await registry.read();
     retainSourceCaches(sources);
@@ -769,15 +792,9 @@ export function createSwitchboardServer(options = {}) {
       dashboard.refreshIntervalMs = switchboardRefreshInterval(dashboard);
       return dashboard;
     },
-    // Read-only: the cached rows, the registered sources and tags, and the member list that the engine already has.
-    resolveSession: async (request, dashboard) => {
-      const sources = registeredLoad ? await registry.read() : null;
-      const machine = options.machineIdentity?.() || { machineId: '', machineName: localMachineName() };
-      const tagger = machine.machineId ? options.referenceScopes?.() || null : null;
-      const members = options.machineGroup ? (await options.machineGroup.status()).members.filter((member) => !member.isSelf) : [];
-      return resolveSessionReference(request, { threads: dashboard.threads || [], sources: sources || [], tags: sourceScopes(sources, tagger),
-        machine: { machineId: tagger ? machine.machineId : '', machineName: machine.machineName }, members });
-    },
+    resolveSession: async (request, dashboard) => resolveSessionReference(request, await referenceContext(dashboard)),
+    resolveBound: async (request, dashboard) => bindLocalTarget(request, await referenceContext(dashboard), { platform: process.platform,
+      now: Date.now, pid: process.pid, registry: privateRegistry, claudeRoot, receiverClaim }),
     listSources: (dashboard) => registry.report(dashboard),
     updateSource: async (source, revision) => { const saved = await registry.update(source, revision); retainSourceCaches(await registry.read()); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); invalidateOpenCodeData(); return saved; },
     removeSource: async (id, revision) => { const saved = await registry.remove(id, revision); retainSourceCaches(await registry.read()); invalidateCodexData(); invalidateClaudeData(); invalidateClaudeRemoteData(); invalidateOpenCodeData(); return saved; },

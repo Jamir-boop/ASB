@@ -116,6 +116,8 @@ The app-server transport uses `turn/start` with `toolOutput`, which starts or jo
 
 `send_message` addresses a peer by `sessionId`, not by name. An ambiguous registration is refused.
 
+On Linux, `send_message` can take `reference` instead of `sessionId`: a full ASB session reference (`asb:1/...`), as ASB gives it. Give exactly one of the two. The ASB engine binds the reference to one live Codex or Claude Code CLI session on this machine, in the session registry of the sending task, and the bridge checks the binding again just before the write. A failure says `Nothing sent (<code>).`, for example `remote-exact-unsupported` for a session on another machine, `unsupported-type` for a Claude Desktop Code session, `not-live`, or `target-changed` after a `/clear`. A reference never falls back to the session ID or to another machine. Without a running ASB engine, the send says `engine-unavailable`.
+
 A `sessionId` that only the ASB engine lists (a session on another machine of the group, Linux) goes to the engine, which sends it to that machine. A local session with the ID always wins, with no engine call. When two or more other machines list the ID, the bridge refuses: `More than one other machine has session <id>. Nothing sent.` When the engine cannot list them: `ASB cannot list the sessions on the other machines. Nothing sent.` The bridge finds the engine through `$XDG_RUNTIME_DIR/asb/service.json`, so `.mcp.json` passes `XDG_RUNTIME_DIR` to the MCP server. The text limit is the same as for a local send. A refusal with proof that nothing went out leaves the message `not-sent` with one of these reasons: `<machine> is not reachable. Nothing sent.`, `Message too large for the other machine. Nothing sent.`, `Too many messages to this session just now. Nothing sent; wait or batch the text.`, or `<machine> refused the message. Nothing sent.` When the message can have gone out (the engine says `unknown`, an older engine says `target-unavailable`, or the engine does not answer), the outcome is `unknown` with `Send outcome unknown for <id>; inspect status before sending again`. The bridge never sends it again by itself, and the engine never sends one delivery to two addresses of the other machine. `socket-written` means only that the other machine wrote the frame. A new bridge with an older engine can still say "Nothing sent" after a timeout. `notify_when_idle` to another machine is refused: `Idle subscriptions do not work across machines yet.`
 
 ## Control what arrives
@@ -138,7 +140,7 @@ The sender sees Claude's status notices, among them `held`, `delivered`, `denied
 | Tool | Use |
 | --- | --- |
 | `list_sessions` | List local agents with ID, name, agent type, working directory, status, and start time. In an ASB machine group, the sessions on the other machines follow, with `remote: true`, `machine`, the name `<machine>-<session>`, and no working directory or start time. |
-| `send_message` | Send text to one agent. Set `notify_when_idle` for one notice when that agent next goes idle. |
+| `send_message` | Send text to one agent by `sessionId`, or on Linux by a full session `reference`. Set `notify_when_idle` for one notice when that agent next goes idle. |
 | `status` | Show the receiver and recent transport outcomes. |
 | `inbox` | Open a dialog where you set the receive policy and hold expiry, or review the oldest held message. |
 

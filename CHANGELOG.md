@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Added exact sends in ASB Bridge (Linux): `send_message` can take a full session reference (`asb:1/...`) instead of `sessionId`. The message goes to exactly that Codex or Claude Code CLI session on this machine, or nothing is sent and the reply tells the reason. A reference never falls back to the session ID or to another machine.
 - Added autostart without systemd: when no systemd user manager runs a graphical session, `asb service install` writes the XDG autostart entry `~/.config/autostart/asb-engine.desktop`, which runs `<launcher> engine start` at login, and starts the engine. Without a desktop session, it changes nothing, names `<launcher> engine start`, and exits with code 1. A change of mode removes the ASB file of the other mode. `asb service uninstall` removes the entry and stops the engine. `asb service status` shows the entry and the engine state in this mode.
 - Without an absolute `XDG_RUNTIME_DIR`, the engine now runs and keeps its runtime file in `asb/run` in `XDG_STATE_HOME` when it is absolute, else in `~/.local/state` (mode `0700`, owner checked). A record there whose engine does not answer is replaced. ASB Bridge also looks for the engine there.
 - `asb doctor` shows two more checks: **Autostart** (systemd user service, XDG autostart, or not installed) and **Runtime folder**.

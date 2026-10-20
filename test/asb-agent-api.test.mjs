@@ -3,11 +3,15 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { processStart } from '../src/claude-registry.mjs';
 import { AppSourceRegistry, appSourcesRevision } from '../src/app-sources.mjs';
 import { createAsbServer } from '../src/asb-server.mjs';
 import { createSwitchboardServer } from '../src/switchboard.mjs';
+
+const sqlite = await import('node:sqlite').catch(() => null);
 
 const clientId = '123e4567-e89b-12d3-a456-426614174000';
 const report = { clientId, sourcesRevision: 'a'.repeat(64), profilesRevision: null, profilesVisible: false, dirty: false };
@@ -274,5 +278,109 @@ test('the engine resolves a full reference from its cached rows and writes no st
   const failed = await request(RESOLVE, { method: 'POST', body: { reference, sourceId: 'opencode' } });
   assert.deepEqual([failed.status, failed.json().ok, failed.json().code], [200, false, 'scope-mismatch']);
   assert.equal(loads, 1, 'the resolver uses the cached dashboard');
+  assert.equal(await readFile(pendingStatePath, 'utf8').catch((error) => error.code), before);
+});
+
+const BOUND = '/api/agent/resolve-bound';
+const CALLER = '55555555-5555-4555-8555-555555555555';
+const MSG = '66666666-6666-4666-8666-666666666666';
+const boundBody = (fields = {}) => ({ reference: `asb:1/${MACHINE_ID}/codex/${'ab'.repeat(16)}/codex:${SESSION}`,
+  caller: { runtimeSessionId: CALLER, configDir: '/synthetic/claude' }, msgId: MSG, remainingMs: 10_000, ...fields });
+
+test('the resolve-bound route is a token-only POST action with an exact body', async (t) => {
+  const calls = [];
+  const { request } = await serve(t, { resolveBound: async (body, dashboard) => { calls.push({ body, threads: dashboard.threads.length });
+    return { apiVersion: 1, ok: false, code: 'not-live', message: 'The target session has no live receiver now.' }; } });
+  const body = boundBody();
+  for (const token of ['', 'window-tokem']) assert.equal((await request(BOUND, { method: 'POST', token, body })).status, 403);
+  for (const headers of [{ host: 'example.invalid' }, { origin: 'https://example.invalid' }, { 'sec-fetch-site': 'cross-site' }, { 'sec-fetch-site': 'none' }]) {
+    assert.equal((await request(BOUND, { method: 'POST', body, headers })).status, 403, JSON.stringify(headers));
+  }
+  assert.equal((await request(BOUND, { method: 'POST', body, origin: null })).status, 403);
+  const get = await request(BOUND);
+  assert.deepEqual([get.status, get.headers.get('allow')], [405, 'POST']);
+  const caller = body.caller;
+  for (const invalid of ['{', 'null', '[]', '{}', { ...body, extra: 1 }, { reference: body.reference, caller, msgId: MSG },
+    { ...body, reference: 1 }, { ...body, caller: null }, { ...body, caller: [] }, { ...body, caller: { ...caller, extra: 1 } },
+    { ...body, caller: { configDir: caller.configDir } }, { ...body, caller: { ...caller, runtimeSessionId: 'x' } },
+    { ...body, caller: { ...caller, configDir: 'relative/dir' } }, { ...body, caller: { ...caller, configDir: 7 } },
+    { ...body, caller: { ...caller, configDir: `/${'x'.repeat(4096)}` } }, { ...body, msgId: 'x' }, { ...body, msgId: null },
+    { ...body, remainingMs: -1 }, { ...body, remainingMs: 20_001 }, { ...body, remainingMs: 1.5 }, { ...body, remainingMs: '10' }]) {
+    const response = await request(BOUND, { method: 'POST', body: invalid });
+    assert.equal(response.status, 400, JSON.stringify(invalid).slice(0, 200));
+    assert.deepEqual(response.json(), { error: 'Invalid resolve request.' });
+  }
+  assert.equal((await request(BOUND, { method: 'POST', body: { ...body, reference: 'x'.repeat(8 * 1024) } })).status, 413);
+  assert.deepEqual(calls, []);
+  for (const remainingMs of [0, 20_000]) {
+    const reply = await request(BOUND, { method: 'POST', body: { ...body, remainingMs } });
+    assert.deepEqual([reply.status, reply.headers.get('cache-control'), reply.json().code], [200, 'no-store', 'not-live']);
+  }
+  assert.deepEqual(calls, [{ body: { ...body, remainingMs: 0 }, threads: 0 }, { body: { ...body, remainingMs: 20_000 }, threads: 0 }]);
+  const failing = await serve(t, { resolveBound: async () => { throw new Error('/synthetic/secret'); } });
+  const error = await failing.request(BOUND, { method: 'POST', body });
+  assert.deepEqual([error.status, error.headers.get('cache-control'), error.json()], [500, 'no-store', { error: 'Cannot resolve the session reference.' }]);
+  // A server with no binder has no route; a server with no configured token refuses it.
+  assert.equal((await (await serve(t)).request(BOUND, { method: 'POST', body })).status, 404);
+  const open = await serve(t, { sourceToken: '', resolveBound: async () => { throw new Error('must not run'); } });
+  assert.equal((await open.request(BOUND, { method: 'POST', body })).status, 403);
+});
+
+test('the engine binds a live local codex or CLI target from a private registry and writes no state', {
+  skip: process.platform !== 'linux' || !sqlite ? 'needs Linux and node:sqlite' : false }, async (t) => {
+  const { homeDir, registry } = await fixture(t);
+  const pendingStatePath = path.join(homeDir, 'pending.json');
+  const CLI = '77777777-7777-4777-8777-777777777777';
+  const sessions = path.join(homeDir, '.claude', 'sessions');
+  await mkdir(sessions, { recursive: true, mode: 0o700 });
+  const children = [0, 1].map(() => spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }));
+  t.after(() => { for (const child of children) child.kill(); });
+  const [codexChild, cliChild] = children;
+  const starts = [];
+  for (const pid of [process.pid, codexChild.pid, cliChild.pid]) {
+    let start = null;
+    for (let tries = 0; start === null && tries < 100; tries += 1) { start = await processStart(pid); if (start === null) await new Promise((resolve) => setTimeout(resolve, 10)); }
+    starts.push(start);
+  }
+  const write = (pid, fields) => writeFile(path.join(sessions, `${pid}.json`), JSON.stringify({ pid, name: 'Secret name', cwd: '/synthetic/private',
+    peerProtocol: 1, messagingSocketPath: `/synthetic/s/${pid}.sock`, ...fields }), { mode: 0o600 });
+  await write(process.pid, { sessionId: CALLER, procStart: starts[0], entrypoint: 'codex-asb-bridge' });
+  await write(codexChild.pid, { sessionId: SESSION, procStart: starts[1], entrypoint: 'codex-asb-bridge' });
+  await write(cliChild.pid, { sessionId: CLI, procStart: starts[2], entrypoint: 'cli' });
+  const stateDir = path.join(homeDir, '.codex', 'plugin-state', 'asb-bridge');
+  await mkdir(stateDir, { recursive: true });
+  const database = new sqlite.DatabaseSync(path.join(stateDir, `${SESSION}.sqlite`));
+  database.exec('CREATE TABLE receiver (singleton INTEGER PRIMARY KEY CHECK(singleton=1), pid INTEGER NOT NULL, proc_start TEXT NOT NULL)');
+  database.prepare('INSERT INTO receiver VALUES (1, ?, ?)').run(codexChild.pid, starts[1]);
+  database.close();
+  const { request } = await serve(t, { switchboard: true, sourceRegistry: registry, pendingStatePath,
+    machineIdentity: () => ({ machineId: MACHINE_ID, machineName: 'synthetic-pc' }), referenceScopes: () => () => 'ab'.repeat(16),
+    machineGroup: { status: async () => ({ members: [{ machineId: MACHINE_ID, name: 'synthetic-pc', online: true, isSelf: true }] }), merge: () => {} },
+    loadDashboard: async () => ({ providers: [], threads: [
+      { id: SESSION, externalId: SESSION, provider: 'codex', providerLabel: 'Codex', surface: 'app', sourceId: 'codex', sourceName: 'codex', state: 'idle', title: 'Secret title' },
+      { id: `cli:${CLI}`, externalId: CLI, provider: 'claude-desktop-code', providerLabel: 'Claude Code CLI', surface: 'cli', sourceId: 'claude-desktop-code',
+        sourceName: 'claude-desktop-code', state: 'idle', title: 'Secret title' }] }) });
+  const references = (await request('/api/dashboard')).json().threads.map((row) => row.reference);
+  assert.equal(references.length, 2);
+  const before = await readFile(pendingStatePath, 'utf8').catch((error) => error.code);
+  const bind = async (reference) => {
+    const reply = await request(BOUND, { method: 'POST', body: boundBody({ reference, caller: { runtimeSessionId: CALLER, configDir: path.join(homeDir, '.claude') } }) });
+    assert.equal(reply.status, 200);
+    assert.equal(/Secret|private/.test(reply.text), false);
+    return reply.json();
+  };
+  const root = await realpath(sessions);
+  const [codexReply, cliReply] = [await bind(references[0]), await bind(references[1])];
+  assert.equal(codexReply.pid, process.pid);
+  assert.equal(codexReply.binding.expiresAtMs - Date.now() <= 10_000, true);
+  assert.deepEqual({ ...codexReply.binding, expiresAtMs: 0 }, { registryHome: root, runtimeSessionId: SESSION, pid: codexChild.pid, procStart: starts[1],
+    messagingSocketPath: `/synthetic/s/${codexChild.pid}.sock`, msgId: MSG, expiresAtMs: 0 });
+  assert.deepEqual({ ...cliReply.binding, expiresAtMs: 0 }, { registryHome: root, runtimeSessionId: CLI, pid: cliChild.pid, procStart: starts[2],
+    messagingSocketPath: `/synthetic/s/${cliChild.pid}.sock`, msgId: MSG, expiresAtMs: 0 });
+  await chmod(sessions, 0o755);
+  assert.equal((await bind(references[1])).code, 'caller-unregistered');
+  await chmod(sessions, 0o700);
+  await write(cliChild.pid, { sessionId: CLI, procStart: starts[2], entrypoint: 'cli', peerProtocol: undefined });
+  assert.equal((await bind(references[1])).code, 'not-live');
   assert.equal(await readFile(pendingStatePath, 'utf8').catch((error) => error.code), before);
 });

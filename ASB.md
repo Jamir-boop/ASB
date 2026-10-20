@@ -184,7 +184,7 @@ Claude Code sessions and Codex tasks on one machine can message the sessions on 
 
 - In Claude Code, `/list-agents` shows each session of another machine as `<machine>-<session>`, for example `laptop-codex-fix-tests-3f`. Ask Claude to message it as usual.
 - For each Claude profile, **Remote Claude sessions** in Preferences > Profiles sets how Claude reaches Claude sessions on other machines. Claude Remote Control works per session: with **Automatic** or **Claude Remote Control only**, a local session that is not on Remote Control does not see a remote Claude session that ASB leaves out.
-- In Codex, `list_sessions` shows the other machines' sessions after the local ones, with `remote: true` and `machine`. Send to one with `send_message` by its `sessionId`.
+- In Codex, `list_sessions` shows the other machines' sessions after the local ones, with `remote: true` and `machine`. Send to one with `send_message` by its `sessionId`. A full session reference (`asb:1/...`) to a session on another machine is refused for now.
 - A reply comes back the same way: the receiving session sees the sender under the name of the sending machine.
 - A message to a machine that is offline, or to a session that has ended, is refused at once with a short reason, for example `laptop is not reachable.`. ASB keeps no queue: send the message again when the machine is back.
 - Idle subscriptions (`notify_when_idle`) do not work across machines yet.

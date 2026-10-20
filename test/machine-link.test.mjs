@@ -170,7 +170,7 @@ test('two engines join one group and show each other\'s sessions as remote cards
   const credentials = await a.gateway.credentials();
   const member = { machineId: b.machineId, certFingerprint: (await b.gateway.credentials()).fingerprint,
     addresses: [{ kind: 'lan', address: '127.0.0.3' }], port: b.gatewayPort };
-  for (const route of ['/api/group', '/api/group/invite', '/api/group/join', '/api/engine/stop', '/api/agent/status', '/api/agent/resolve-session']) {
+  for (const route of ['/api/group', '/api/group/invite', '/api/group/join', '/api/engine/stop', '/api/agent/status', '/api/agent/resolve-session', '/api/agent/resolve-bound']) {
     for (const method of ['GET', 'POST']) {
       const reply = await peerRequest({ member, path: route, method, ...(method === 'POST' ? { body: {} } : {}), tls: credentials });
       assert.equal(reply.status, 404, `${method} ${route}`);

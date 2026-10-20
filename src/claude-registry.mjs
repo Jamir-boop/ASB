@@ -58,7 +58,9 @@ export async function readLiveClaudeRegistry(roots) {
         cwd: text(record.cwd), kind: text(record.kind), entrypoint: text(record.entrypoint),
         startedAt: Number.isFinite(record.startedAt) ? record.startedAt : 0,
         bridgeSessionId: typeof record.bridgeSessionId === 'string' && BRIDGE_SESSION.test(record.bridgeSessionId)
-          ? record.bridgeSessionId : undefined });
+          ? record.bridgeSessionId : undefined,
+        // Only a record of the peer protocol has an inbox that the ASB Bridge can write to.
+        messagingSocketPath: record.peerProtocol === 1 && typeof record.messagingSocketPath === 'string' ? record.messagingSocketPath : undefined });
     }
   }
   return [...records.values()];

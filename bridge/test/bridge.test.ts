@@ -11,8 +11,10 @@ import { z } from 'zod';
 import { Bridge } from '../src/bridge';
 import { peers } from '../src/claude';
 import { Database } from 'bun:sqlite';
+import { fakeEngine } from './engine-fixture';
 // POSIX only on Windows CI: Unix socket files and file modes.
 const posix = test.skipIf(process.platform === 'win32');
+const linux = test.skipIf(process.platform !== 'linux');
 
 posix('MCP accepts supported caller metadata and rejects unused aliases and a different task', async () => {
   const root = mkdtempSync(join(tmpdir(), 'uds-mcp-'));
@@ -179,6 +181,30 @@ posix('a new Bridge waits for a lock that another process holds on its state dat
     expect({ code: await child.exited, output }).toEqual({ code: 0, output: 'ready\nopened\n' });
   } finally {
     holder.close();
+    rmSync(root, { recursive: true });
+  }
+});
+
+linux('B1: send_message takes exactly one of sessionId or a well-formed reference and asks the engine nothing otherwise', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'uds-mcp-'));
+  const engine = fakeEngine(z.string().parse(process.env.XDG_RUNTIME_DIR), () => ({ apiVersion: 1, ok: false, code: 'not-found', message: 'No session.' }));
+  const client = new Client({ name: 'test', version: '1.0.0' });
+  const reference = `asb:1/${'a'.repeat(16)}/codex/${'ab'.repeat(16)}/codex:${randomUUID()}`;
+  try {
+    await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, '../src/server.ts')],
+      env: { ...process.env, CODEX_HOME: root, CLAUDE_CONFIG_DIR: root } }));
+    for (const [fields, error] of [[{}, 'Give exactly one of sessionId or reference.'], [{ sessionId: randomUUID(), reference }, 'Give exactly one of sessionId or reference.'],
+      [{ reference: `codex/${randomUUID()}` }, 'Input validation error'], [{ reference: 'asb:1/ x' }, 'Input validation error'],
+      [{ reference: `asb:${'x'.repeat(381)}` }, 'Input validation error']] as const) {
+      const answer = await client.callTool({ name: 'send_message', arguments: { ...fields, text: 'hello' }, _meta: { threadId: randomUUID() } });
+      expect(answer.isError).toBe(true);
+      expect(JSON.stringify(answer.content)).toContain(error);
+    }
+    expect(`asb:${'x'.repeat(381)}`).toHaveLength(385);
+    expect(engine.calls).toEqual([]);
+  } finally {
+    await client.close();
+    engine.close();
     rmSync(root, { recursive: true });
   }
 });

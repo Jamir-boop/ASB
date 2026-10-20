@@ -13,3 +13,4 @@ description: Message local Claude Code sessions and other Codex tasks with the A
 6. If a peer is not in the list, it is not running or not open. Ask the user. Do not say that it ended.
 7. Before two agents edit one repository, agree which agent owns which files. The bridge has no locks.
 8. Never send a secret, a credential, or an `.env` value to another agent.
+9. If the user gives a full session reference (`asb:1/...`), call `send_message` with `reference` set to that text as it is. Never take the UUID out of it.

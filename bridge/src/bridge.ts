@@ -1,12 +1,12 @@
 import { Database } from 'bun:sqlite';
 import { mkdirSync, chmodSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { accountReceipt, findPeer, findPeerProcess, hopChain, inbox, peerAddress, peers, privateDirectory, processStart, register, SendRefused, sendFrames, senderMode, serializeFrame, socketPath, userFrame, uuid, type Frame, type Peer } from './claude';
 import type { Runtime } from './desktop';
 import { deliverToCodex, readCodexInputs, readCodexRuntime, targetSchema, type Target } from './codex';
 import { z } from 'zod';
-import { outboundServer, refreshReceiver, sendViaReceiver } from './outbound';
+import { bindingSchema, boundPeer, outboundServer, refreshReceiver, refuse, sendBound, sendBoundViaReceiver, sendViaReceiver, type Binding } from './outbound';
 import { isWindows, outboxPath } from './platform';
 import { PeerGuard } from './guard';
 import { DeliveryRefused } from './delivery';
@@ -24,6 +24,11 @@ const subscriptionLifetime = 12 * 60 * 60 * 1000;
 // gone out, so it is unknown too.
 const relayReply = z.union([z.strictObject({ ok: z.literal(true), outcome: z.literal('socket-written') }),
   z.strictObject({ ok: z.literal(false), reason: z.enum(['machine-offline', 'target-unavailable', 'too-large', 'rate-limited', 'refused', 'unknown']) })]);
+// The reply of /api/agent/resolve-bound; any other shape means that the engine is not available.
+const boundReply = z.union([
+  z.strictObject({ apiVersion: z.literal(1), ok: z.literal(true), pid: z.number().int().positive(), binding: bindingSchema }),
+  z.strictObject({ apiVersion: z.literal(1), ok: z.literal(false), code: z.string().regex(/^[a-z][a-z-]{0,63}$/), message: z.string().min(1).max(512) })]);
+const engineUnavailable = () => new SendRefused('The local ASB engine did not answer. Nothing sent (engine-unavailable).');
 const remoteRefusals: Record<'machine-offline' | 'too-large' | 'rate-limited' | 'refused', (machine: string) => string> = {
   'machine-offline': machine => `${machine} is not reachable. Nothing sent.`,
   'too-large': () => 'Message too large for the other machine. Nothing sent.',
@@ -288,42 +293,73 @@ export class Bridge {
         if (matches[0]) return this.sendRemote(runtime, matches[0], text, notifyWhenIdle);
       }
       const peer = findPeer(this.configDir, sessionId);
-      if (!text && !notifyWhenIdle) throw new Error('A message or notify_when_idle is required');
-      if (notifyWhenIdle && (!peer.peerFeatures.includes('notify_idle') || this.policy() === 'refuse')) {
-        throw new Error('Idle subscription unavailable: target must support notify_idle and this inbox must not refuse incoming notices');
-      }
-      const receiver = this.receiver();
-      const address = peerAddress(receiver.messagingSocketPath);
-      const id = text ? randomUUID() : null;
-      const subscriptionId = notifyWhenIdle ? randomUUID() : null;
-      const frames: unknown[] = [];
-      const messageFrame = id && text ? userFrame(peer, address, receiver.name, this.threadId, id, text, this.runtime().mode, this.ownHop(), await this.outgoingHops()) : null;
-      if (messageFrame) serializeFrame(messageFrame);
-      if (subscriptionId) this.subscribe(subscriptionId, peer, 'out');
-      if (id && text) {
-        this.db.run("INSERT INTO messages (id,peer_id,direction,text,status,peer_address,peer_start) VALUES (?,?,'out',?,'submitting',?,?)",
-          [id, sessionId, text, peerAddress(peer.messagingSocketPath), peer.procStart ?? null]);
-        frames.push(messageFrame);
-      }
-      if (subscriptionId) {
-        frames.push({ msgV: 1, type: 'control', action: 'notify_when_idle', msg_id: subscriptionId, from: address, from_mode: this.runtime().mode });
-      }
-      try {
-        if (!await this.writePeer(peer, frames)) throw new Error('Receiver stopped before writing');
-        if (id) this.db.run("UPDATE messages SET status='socket-written' WHERE id=? AND status='submitting'", [id]);
-      } catch (error) {
-        if (error instanceof SendRefused) {
-          if (id) this.db.run("UPDATE messages SET status='not-sent' WHERE id=? AND status='submitting'", [id]);
-          if (subscriptionId) this.db.run("UPDATE idle_requests SET status='expired' WHERE id=?", [subscriptionId]);
-          throw error;
-        }
-        if (id) this.db.run("UPDATE messages SET status='unknown' WHERE id=? AND status='submitting'", [id]);
-        if (subscriptionId) this.db.run("UPDATE idle_requests SET status='unknown' WHERE id=? AND status='waiting'", [subscriptionId]);
-        throw new Error(`Send outcome unknown for ${id ?? subscriptionId}; inspect status before sending again`);
-      }
-      return { messageId: id, subscriptionId, status: id
-        ? this.db.query<{ status: string }, [string]>('SELECT status FROM messages WHERE id=?').get(id)?.status : 'socket-written' };
+      return this.sendLocal(peer, sessionId, text, notifyWhenIdle);
     });
+  }
+
+  // One exact local session by its full reference: the engine binds it, and the write checks the binding again.
+  // It never asks for remote peers or the relay.
+  sendReference(reference: string, text?: string, notifyWhenIdle = false) {
+    return this.exclusive(async () => {
+      await this.expireSubscriptions();
+      if (!text && !notifyWhenIdle) throw new Error('A message or notify_when_idle is required');
+      this.receiver();
+      const ids = { id: text ? randomUUID() : null, subscriptionId: notifyWhenIdle ? randomUUID() : null };
+      const msgId = ids.id ?? ids.subscriptionId;
+      const runtime = engineRuntime();
+      if (!runtime) throw engineUnavailable();
+      let reply: z.infer<typeof boundReply>;
+      try {
+        reply = boundReply.parse(await engineRequest(runtime, '/api/agent/resolve-bound', { method: 'POST', timeoutMs: 5_000, body: { reference,
+          caller: { runtimeSessionId: this.threadId, configDir: resolve(this.configDir) }, msgId, remainingMs: 10_000 } }));
+      } catch { throw engineUnavailable(); }
+      if (!reply.ok) throw new SendRefused(`${reply.message} Nothing sent (${reply.code}).`);
+      if (reply.pid !== runtime.pid || reply.binding.msgId !== msgId) throw engineUnavailable();
+      const { binding } = reply;
+      if (binding.runtimeSessionId === this.threadId) throw new Error('Cannot send to this task itself');
+      const peer = boundPeer(this.configDir, binding);
+      if (!peer) throw refuse('target-changed');
+      return this.sendLocal(peer, binding.runtimeSessionId, text, notifyWhenIdle, frames => this.writeBound(binding, frames), ids);
+    });
+  }
+
+  // Runs inside the exclusive section of sendMessage or sendReference.
+  private async sendLocal(peer: Peer, sessionId: string, text: string | undefined, notifyWhenIdle: boolean,
+    write = (frames: unknown[]) => this.writePeer(peer, frames),
+    { id, subscriptionId } = { id: text ? randomUUID() : null, subscriptionId: notifyWhenIdle ? randomUUID() : null }) {
+    if (!text && !notifyWhenIdle) throw new Error('A message or notify_when_idle is required');
+    if (notifyWhenIdle && (!peer.peerFeatures.includes('notify_idle') || this.policy() === 'refuse')) {
+      throw new Error('Idle subscription unavailable: target must support notify_idle and this inbox must not refuse incoming notices');
+    }
+    const receiver = this.receiver();
+    const address = peerAddress(receiver.messagingSocketPath);
+    const frames: unknown[] = [];
+    const messageFrame = id && text ? userFrame(peer, address, receiver.name, this.threadId, id, text, this.runtime().mode, this.ownHop(), await this.outgoingHops()) : null;
+    if (messageFrame) serializeFrame(messageFrame);
+    if (subscriptionId) this.subscribe(subscriptionId, peer, 'out');
+    if (id && text) {
+      this.db.run("INSERT INTO messages (id,peer_id,direction,text,status,peer_address,peer_start) VALUES (?,?,'out',?,'submitting',?,?)",
+        [id, sessionId, text, peerAddress(peer.messagingSocketPath), peer.procStart ?? null]);
+      frames.push(messageFrame);
+    }
+    if (subscriptionId) {
+      frames.push({ msgV: 1, type: 'control', action: 'notify_when_idle', msg_id: subscriptionId, from: address, from_mode: this.runtime().mode });
+    }
+    try {
+      if (!await write(frames)) throw new Error('Receiver stopped before writing');
+      if (id) this.db.run("UPDATE messages SET status='socket-written' WHERE id=? AND status='submitting'", [id]);
+    } catch (error) {
+      if (error instanceof SendRefused) {
+        if (id) this.db.run("UPDATE messages SET status='not-sent' WHERE id=? AND status='submitting'", [id]);
+        if (subscriptionId) this.db.run("UPDATE idle_requests SET status='expired' WHERE id=?", [subscriptionId]);
+        throw error;
+      }
+      if (id) this.db.run("UPDATE messages SET status='unknown' WHERE id=? AND status='submitting'", [id]);
+      if (subscriptionId) this.db.run("UPDATE idle_requests SET status='unknown' WHERE id=? AND status='waiting'", [subscriptionId]);
+      throw new Error(`Send outcome unknown for ${id ?? subscriptionId}; inspect status before sending again`);
+    }
+    return { messageId: id, subscriptionId, status: id
+      ? this.db.query<{ status: string }, [string]>('SELECT status FROM messages WHERE id=?').get(id)?.status : 'socket-written' };
   }
 
   // Runs inside sendMessage's exclusive section.
@@ -481,6 +517,11 @@ export class Bridge {
     if (this.ownsReceiver) return sendFrames(this.configDir, peer, frames, { canWrite });
     const receiver = this.receiver();
     return sendViaReceiver(this.configDir, receiver, peer, frames);
+  }
+
+  private async writeBound(binding: Binding, frames: unknown[]) {
+    if (this.ownsReceiver) return sendBound(this.configDir, binding, frames, () => !this.closing);
+    return sendBoundViaReceiver(this.configDir, this.receiver(), binding, frames);
   }
 
   private scheduleExpiry() {

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { formatReference, rowReference, shortReference } from '../src/session-references.mjs';
-import { resolveSessionReference } from '../src/session-targets.mjs';
+import { bindLocalTarget, resolveSessionReference } from '../src/session-targets.mjs';
 
 // Synthetic data only. Platform-neutral (test/windows-tests.json).
 const SELF = '0123456789abcdef';
@@ -152,4 +152,90 @@ test('hostile input is refused, and full text is never read as short', () => {
     failed(resolve(reference), 'invalid-reference');
   }
   assert.equal(resolveSessionReference().code, 'invalid-reference');
+});
+
+// Exact local binding (resolve-bound): a fake io and clock, no files and no processes.
+const UUID_3 = '33333333-3333-4333-8333-333333333333';
+const UUID_4 = '44444444-4444-4444-8444-444444444444';
+const CALLER = '55555555-5555-4555-8555-555555555555';
+const MSG = '66666666-6666-4666-8666-666666666666';
+const ROOT = '/synthetic/claude/sessions';
+const soloRow = local({ provider: 'codex', sourceId: 'codex', externalId: UUID_3 });
+const cliRow = local({ provider: 'claude-desktop-code', surface: 'cli', sourceId: 'claude-desktop-code', externalId: UUID_4, providerLabel: 'Claude Code CLI' });
+const boundSources = [...sources.map((source) => source.id === 'claude-desktop-code' ? { ...source, projectsDir: '/synthetic/claude/projects' } : source),
+  { id: 'claude-2', provider: 'claude-desktop-code', label: 'Claude 2', enabled: false, projectsDir: '/synthetic/other/projects' }];
+const boundContext = { ...context, sources: boundSources, tags: new Map([...tags, ['claude-2', SCOPE_M]]),
+  threads: [codexRow, workRow, soloRow, cliRow, memberFound, oldRow] };
+const record = (pid, sessionId, entrypoint, extra = {}) => ({ pid, procStart: String(pid * 10), sessionId, entrypoint,
+  messagingSocketPath: `/synthetic/s/${pid}.sock`, name: SECRET.title, cwd: SECRET.cwd, ...extra });
+const callerRecord = record(10, CALLER, 'codex-asb-bridge');
+const cliTarget = record(20, UUID_4, 'cli');
+const codexTarget = record(30, UUID_3, 'codex-asb-bridge');
+const fakeIo = (overrides = {}) => {
+  const calls = [];
+  const io = { platform: 'linux', pid: 999, now: () => 1_000,
+    registry: async (configDir) => { calls.push(['registry', configDir]); return { root: ROOT, records: [callerRecord, cliTarget, codexTarget] }; },
+    claudeRoot: async (source) => { calls.push(['claudeRoot', source.id]); return source.id === 'claude-desktop-code' ? ROOT : '/synthetic/other/sessions'; },
+    receiverClaim: async (source, appId) => { calls.push(['receiverClaim', source.id, appId]); return { pid: 30, proc_start: '300' }; },
+    ...overrides };
+  return { io, calls };
+};
+const bind = async (reference, { io = fakeIo().io, remainingMs = 10_000, ...overrides } = {}) => {
+  const result = await bindLocalTarget({ reference, caller: { runtimeSessionId: CALLER, configDir: '/synthetic/claude' }, msgId: MSG, remainingMs },
+    { ...boundContext, ...overrides }, io);
+  const text = JSON.stringify(result);
+  for (const value of [SECRET.title, SECRET.cwd, SECRET.message, SECRET.path]) assert.equal(text.includes(value), false, `${value} must not be in the result`);
+  if (!result.ok) for (const value of ['/synthetic/', '"pid"', 'procStart']) assert.equal(text.includes(value), false);
+  return result;
+};
+const records = (list) => fakeIo({ registry: async () => ({ root: ROOT, records: list }) }).io;
+
+test('an exact codex or claude-cli target binds to its live registry record with a capped expiry', async () => {
+  const { io, calls } = fakeIo();
+  assert.deepEqual(await bind(cliRow.reference, { io }), { apiVersion: 1, ok: true, pid: 999, binding: { registryHome: ROOT, runtimeSessionId: UUID_4,
+    pid: 20, procStart: '200', messagingSocketPath: '/synthetic/s/20.sock', msgId: MSG, expiresAtMs: 11_000 } });
+  assert.deepEqual(calls, [['registry', '/synthetic/claude'], ['claudeRoot', 'claude-desktop-code'], ['claudeRoot', 'claude-2']]);
+  assert.deepEqual((await bind(soloRow.reference)).binding, { registryHome: ROOT, runtimeSessionId: UUID_3, pid: 30, procStart: '300',
+    messagingSocketPath: '/synthetic/s/30.sock', msgId: MSG, expiresAtMs: 11_000 });
+  assert.equal((await bind(soloRow.reference, { remainingMs: 2_500 })).binding.expiresAtMs, 3_500);
+  assert.equal((await bind(soloRow.reference, { remainingMs: 0 })).binding.expiresAtMs, 1_000);
+  assert.equal((await bind(soloRow.reference, { remainingMs: 20_000 })).binding.expiresAtMs, 11_000);
+});
+
+test('exact binding failures come in check order, and steps 1 to 6 use no io', async () => {
+  const { io, calls } = fakeIo();
+  const early = async (reference, code, overrides = {}) => failed(await bind(reference, { io, ...overrides }), code);
+  await early(`codex/${UUID_3}`, 'invalid-reference');
+  await early('asb:1/x', 'invalid-reference');
+  await early(`asb:2/${SELF}/codex/${SCOPE}/codex:${UUID_3}`, 'unsupported-reference-version');
+  await early(soloRow.reference, 'no-machine-identity', { machine: {} });
+  await early(full(OTHER, 'codex', SCOPE, 'codex', UUID_3), 'unknown-machine');
+  await early(full(SELF, 'gone', SCOPE, 'codex', UUID_3), 'stale-source');
+  await early(full(SELF, 'codex', SCOPE_B, 'codex', UUID_3), 'stale-source-scope');
+  await early(soloRow.reference, 'ambiguous-identity', { threads: [soloRow, { ...soloRow, id: 'copy' }] });
+  await early(full(OLD, 'codex', SCOPE_M, 'codex', UUID_2), 'remote-exact-unsupported');
+  await early(memberFound.reference, 'remote-exact-unsupported');
+  await early(soloRow.reference, 'unsupported-platform', { io: { ...io, platform: 'win32' } });
+  await early(full(SELF, 'claude-desktop-code', SCOPE_B, 'claude-local', `local_${UUID_4}`), 'unsupported-type');
+  await early(cacheRow.reference, 'unsupported-type');
+  await early(full(SELF, 'off', SCOPE, 'codex', UUID_3), 'source-disabled');
+  await early(full(SELF, 'codex', SCOPE, 'codex', UUID_4), 'not-found');
+  assert.deepEqual(calls, []);
+
+  for (const list of [[], [cliTarget], [record(10, CALLER, 'cli')], [callerRecord, record(11, CALLER, 'codex-asb-bridge')]]) {
+    failed(await bind(cliRow.reference, { io: records(list) }), 'caller-unregistered');
+  }
+  failed(await bind(cliRow.reference, { io: fakeIo({ registry: async () => null }).io }), 'caller-unregistered');
+  failed(await bind(codexRow.reference), 'ambiguous-source');
+  failed(await bind(cliRow.reference, { io: fakeIo({ claudeRoot: async () => '/synthetic/other/sessions' }).io }), 'native-scope-unavailable');
+  failed(await bind(cliRow.reference, { io: fakeIo({ claudeRoot: async () => ROOT }).io }), 'ambiguous-source');
+  for (const list of [[callerRecord], [callerRecord, { ...cliTarget, messagingSocketPath: undefined }], [callerRecord, { ...cliTarget, entrypoint: 'asb-relay' }]]) {
+    failed(await bind(cliRow.reference, { io: records(list) }), 'not-live');
+  }
+  failed(await bind(cliRow.reference, { io: records([callerRecord, cliTarget, record(21, UUID_4, 'cli')]) }), 'ambiguous-identity');
+  failed(await bind(cliRow.reference, { io: records([callerRecord, { ...cliTarget, entrypoint: 'codex-asb-bridge' }]) }), 'not-mapped');
+  failed(await bind(soloRow.reference, { io: records([callerRecord, { ...codexTarget, entrypoint: 'cli' }]) }), 'not-mapped');
+  for (const claim of [null, { pid: 31, proc_start: '300' }, { pid: 30, proc_start: '301' }]) {
+    failed(await bind(soloRow.reference, { io: fakeIo({ receiverClaim: async () => claim }).io }), 'not-mapped');
+  }
 });

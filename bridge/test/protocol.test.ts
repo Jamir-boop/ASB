@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { mkdirSync, chmodSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, chmodSync, writeFileSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { basename, join } from 'node:path';
 import net from 'node:net';
@@ -1116,4 +1116,148 @@ linux('a remote send records the proxy row address, so a receipt through the pro
     await f.transmit({ type: 'control', from: proxy.address, action: 'peer_message_status', orig_msg_id: id, status: 'delivered' });
     await until(() => f.bridge.status().messages.some(message => message.id === id && message.status === 'delivered'));
   } finally { engine.close(); await proxy.close(); placeholder.kill(); await f.close(); }
+});
+
+// Exact local sends by full reference: a fake engine binds the fixture peer, and the bridge checks the binding again at the write.
+const REFERENCE = (appId: string) => `asb:1/${'a'.repeat(16)}/claude-desktop-code/${'ab'.repeat(16)}/claude-cli:${appId}`;
+type BindingReply = { apiVersion: 1; ok: true; pid: number; binding: Record<string, unknown> };
+
+async function exact(f: Awaited<ReturnType<typeof fixture>>) {
+  const procStart = z.string().parse(await processStart(process.ppid));
+  const record = (fields: Record<string, unknown> = {}) => writeFileSync(join(f.configDir, 'sessions', `${process.ppid}.json`), JSON.stringify({
+    pid: process.ppid, sessionId: f.peerId, messagingSocketPath: f.peerPath, cwd: f.root, peerProtocol: 1, peerFeatures: ['notify_idle'],
+    startedAt: 1700000000000, entrypoint: 'cli', procStart, ...fields }), { mode: 0o600 });
+  record();
+  const binding = (msgId: string, fields: Record<string, unknown> = {}) => ({ registryHome: realpathSync(join(f.configDir, 'sessions')),
+    runtimeSessionId: f.peerId, pid: process.ppid, procStart, messagingSocketPath: f.peerPath, msgId, expiresAtMs: Date.now() + 10_000, ...fields });
+  let reply: (body: { msgId: string }) => unknown = body => ({ apiVersion: 1, ok: true, pid: process.pid, binding: binding(body.msgId) } satisfies BindingReply);
+  const engine = fakeEngine(runtimeDir(), (route, body) => route === '/api/agent/resolve-bound' ? reply(body as { msgId: string }) : new Response('{}', { status: 404 }));
+  const row = (id: string) => f.db.query<{ peer_id: string; peer_address: string | null; peer_start: string | null; status: string }, [string]>(
+    'SELECT peer_id,peer_address,peer_start,status FROM messages WHERE id=?').get(id);
+  const rows = () => f.db.query<{ total: number }, []>('SELECT (SELECT count(*) FROM messages)+(SELECT count(*) FROM idle_requests) AS total').get()!.total;
+  return { procStart, record, binding, engine, row, rows, setReply(value: typeof reply) { reply = value; } };
+}
+
+linux('B2: an exact send through the real outbox socket binds once, writes one frame, and keeps receipts', async () => {
+  const f = await fixture();
+  const x = await exact(f);
+  const client = new Client({ name: 'exact-test', version: '1.0.0' });
+  try {
+    await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, '../src/server.ts')],
+      env: { ...process.env, CODEX_HOME: f.root, CLAUDE_CONFIG_DIR: f.configDir } }));
+    const sent = await client.callTool({ name: 'send_message', arguments: { reference: REFERENCE(f.peerId), text: 'exact hello' },
+      _meta: { threadId: f.desktop.threadId } });
+    expect(sent.isError).not.toBe(true);
+    const value = JSON.parse(z.array(z.object({ text: z.string() })).parse(sent.content)[0]!.text);
+    expect(value).toEqual({ messageId: expect.any(String), subscriptionId: null, status: 'socket-written' });
+    expect(x.engine.calls.map(call => [call.method, call.route])).toEqual([['POST', '/api/agent/resolve-bound']]);
+    expect(x.engine.calls[0]!.body).toEqual({ reference: REFERENCE(f.peerId), caller: { runtimeSessionId: f.desktop.threadId, configDir: f.configDir },
+      msgId: value.messageId, remainingMs: 10_000 });
+    const users = f.frames.filter(frame => frame.type === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({ msg_id: value.messageId, session_id: f.peerId });
+    expect(x.row(value.messageId)).toEqual({ peer_id: f.peerId, peer_address: peerAddress(f.peerPath), peer_start: x.procStart, status: 'socket-written' });
+    await f.transmit({ type: 'control', action: 'peer_message_status', orig_msg_id: value.messageId, status: 'denied' });
+    await until(() => x.row(value.messageId)?.status === 'denied');
+  } finally { await client.close(); x.engine.close(); await f.close(); }
+});
+
+linux('B3: a /clear before the write gives target-changed; a receipt after an exact send and a /clear still updates the row', async () => {
+  const f = await fixture();
+  const x = await exact(f);
+  try {
+    x.record({ sessionId: randomUUID() });
+    await expect(f.bridge.sendReference(REFERENCE(f.peerId), 'before the write')).rejects.toThrow('Nothing sent (target-changed).');
+    expect([f.frames.length, x.rows()]).toEqual([0, 0]);
+    x.record();
+    const sent = await f.bridge.sendReference(REFERENCE(f.peerId), 'exact before clear');
+    x.record({ sessionId: randomUUID() });
+    await f.transmit({ type: 'control', action: 'peer_message_status', orig_msg_id: sent.messageId, status: 'denied' });
+    await until(() => x.row(z.string().parse(sent.messageId))?.status === 'denied');
+  } finally { x.engine.close(); await f.close(); }
+});
+
+linux('B4: the outbox refuses a bound request with any changed field, msgId, or expiry before the write', async () => {
+  const f = await fixture();
+  const x = await exact(f);
+  const address = z.string().parse(f.bridge.status().replyAddress);
+  const ask = async (request: Record<string, unknown>) => {
+    const socket = net.createConnection(address.slice(4).replace(/\.sock$/, '.out'));
+    await once(socket, 'connect');
+    socket.write(JSON.stringify(request) + '\n');
+    const [data] = await once(socket, 'data');
+    socket.destroy();
+    return z.strictObject({ written: z.boolean().optional(), refused: z.string().optional(), error: z.string().optional() })
+      .parse(JSON.parse(String(data).split('\n')[0]!));
+  };
+  const msgId = randomUUID();
+  const frames = [{ msgV: 1, type: 'user', msg_id: msgId, from: address, session_id: f.peerId, message: { role: 'user', content: 'bound probe' } }];
+  try {
+    for (const [fields, code] of [[{ registryHome: f.root }, 'target-changed'], [{ runtimeSessionId: randomUUID() }, 'target-changed'],
+      [{ pid: process.pid }, 'target-changed'], [{ procStart: 'another start' }, 'target-changed'], [{ messagingSocketPath: join(f.root, 'x.sock') }, 'target-changed'],
+      [{ msgId: randomUUID() }, 'target-changed'], [{ expiresAtMs: Date.now() - 1 }, 'binding-expired']] as const) {
+      expect(await ask({ binding: x.binding(msgId, fields), frames })).toEqual({ refused: expect.stringContaining(`Nothing sent (${code}).`) });
+    }
+    expect(await ask({ binding: x.binding(msgId), frames, sessionKey: 1 })).toHaveProperty('error');
+    expect(await ask({ binding: { ...x.binding(msgId), extra: 1 }, frames })).toHaveProperty('error');
+    expect(f.frames).toHaveLength(0);
+    expect(await ask({ binding: x.binding(msgId), frames })).toEqual({ written: true });
+    expect(f.frames).toHaveLength(1);
+    // An expired binding at the write leaves a not-sent row.
+    x.setReply(body => ({ apiVersion: 1, ok: true, pid: process.pid, binding: x.binding(body.msgId, { expiresAtMs: Date.now() - 1 }) }));
+    await expect(f.bridge.sendReference(REFERENCE(f.peerId), 'too late')).rejects.toThrow('Nothing sent (binding-expired).');
+    const id = z.object({ msgId: z.string() }).parse(x.engine.calls.at(-1)!.body).msgId;
+    expect(x.row(id)?.status).toBe('not-sent');
+    expect(f.frames).toHaveLength(1);
+  } finally { x.engine.close(); await f.close(); }
+});
+
+linux('B5: a reference never falls back to the session ID, the remote peers, or the relay', async () => {
+  const f = await fixture();
+  const x = await exact(f);
+  const ok = (body: { msgId: string }) => ({ apiVersion: 1, ok: true, pid: process.pid, binding: x.binding(body.msgId) });
+  try {
+    for (const [reply, text] of [
+      [() => ({ apiVersion: 1, ok: false, code: 'remote-exact-unsupported', message: 'This reference is for a session on another machine.' }),
+        'This reference is for a session on another machine. Nothing sent (remote-exact-unsupported).'],
+      [() => new Response('{}', { status: 500 }), 'Nothing sent (engine-unavailable).'],
+      [(body: { msgId: string }) => ({ ...ok(body), extra: 1 }), 'Nothing sent (engine-unavailable).'],
+      [(body: { msgId: string }) => ({ ...ok(body), pid: process.pid + 1 }), 'Nothing sent (engine-unavailable).'],
+      [() => ok({ msgId: randomUUID() }), 'Nothing sent (engine-unavailable).'],
+    ] as const) {
+      x.setReply(reply);
+      await expect(f.bridge.sendReference(REFERENCE(f.peerId), 'no fallback')).rejects.toThrow(text);
+    }
+    x.engine.close();
+    await expect(f.bridge.sendReference(REFERENCE(f.peerId), 'no engine')).rejects.toThrow('Nothing sent (engine-unavailable).');
+    expect([f.frames.length, x.rows()]).toEqual([0, 0]);
+    expect(x.engine.calls.every(call => call.route === '/api/agent/resolve-bound')).toBe(true);
+  } finally { x.engine.close(); await f.close(); }
+});
+
+linux('B6: an exact idle request needs notify_idle; with it the idle row is bound to the target process', async () => {
+  const f = await fixture();
+  const x = await exact(f);
+  try {
+    x.record({ peerFeatures: [] });
+    await expect(f.bridge.sendReference(REFERENCE(f.peerId), undefined, true)).rejects.toThrow('Idle subscription unavailable');
+    expect([f.frames.length, x.rows()]).toEqual([0, 0]);
+    x.record();
+    const sent = await f.bridge.sendReference(REFERENCE(f.peerId), undefined, true);
+    expect(sent).toEqual({ messageId: null, subscriptionId: expect.any(String), status: 'socket-written' });
+    expect(z.object({ msgId: z.string() }).parse(x.engine.calls.at(-1)!.body).msgId).toBe(z.string().parse(sent.subscriptionId));
+    expect(f.db.query('SELECT peer_id,peer_address,peer_start,direction,status FROM idle_requests WHERE id=?').get(z.string().parse(sent.subscriptionId)))
+      .toEqual({ peer_id: f.peerId, peer_address: peerAddress(f.peerPath), peer_start: x.procStart, direction: 'out', status: 'waiting' });
+    await until(() => f.frames.some(frame => frame.type === 'control' && frame.action === 'notify_when_idle' && frame.msg_id === sent.subscriptionId));
+  } finally { x.engine.close(); await f.close(); }
+});
+
+linux('B7: a binding for this task itself is refused', async () => {
+  const f = await fixture();
+  const x = await exact(f);
+  try {
+    x.setReply(body => ({ apiVersion: 1, ok: true, pid: process.pid, binding: x.binding(body.msgId, { runtimeSessionId: f.desktop.threadId }) }));
+    await expect(f.bridge.sendReference(REFERENCE(f.desktop.threadId), 'to myself')).rejects.toThrow('Cannot send to this task itself');
+    expect([f.frames.length, x.rows()]).toEqual([0, 0]);
+  } finally { x.engine.close(); await f.close(); }
 });

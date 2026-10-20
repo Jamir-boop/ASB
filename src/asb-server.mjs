@@ -35,7 +35,7 @@ function readPalette(palettePath) {
 export function createAsbServer({
   markUnreadThread = null, markReadThread = null, setUnreadSettings = null, pinThread = null, discardThread = null, drawerThread = null, muteThread = null,
   listSources = null, updateSource = null, removeSource = null, sourceToken = '', phoneGateway = null, machineGroup = null, serviceMode = false, onStop = null,
-  machineRelay = null, readSources = async () => [], resolveSession = null,
+  machineRelay = null, readSources = async () => [], resolveSession = null, resolveBound = null,
   appVersion = '', rootDir = '', sourcesPath = '', readSourcesRevision = async () => null,
   palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, now = Date.now, ...snapshotOptions
 } = {}) {
@@ -97,8 +97,9 @@ export function createAsbServer({
     const paletteRoute = url.pathname === '/api/palette';
     const engineStopRoute = Boolean(onStop) && url.pathname === '/api/engine/stop';
     const resolveRoute = Boolean(resolveSession) && url.pathname === '/api/agent/resolve-session';
+    const resolveBoundRoute = Boolean(resolveBound) && url.pathname === '/api/agent/resolve-bound';
     const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute
-      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute || resolveRoute
+      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute || resolveRoute || resolveBoundRoute
       || Boolean(groupRoute?.[1]) || relayRoute === 'send';
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
     const readApiRoute = url.pathname === '/api/dashboard' || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute
@@ -143,7 +144,7 @@ export function createAsbServer({
       sendJson(response, 200, { stopping: true });
       return;
     }
-    if (resolveRoute) {
+    if (resolveRoute || resolveBoundRoute) {
       response.setHeader('Cache-Control', 'no-store');
       if (!expectedSourceToken.length || !sourceTokenAllowed(request)) {
         sendJson(response, 403, { error: 'Use the current ASB source token for agent access.' });
@@ -152,6 +153,23 @@ export function createAsbServer({
       let body;
       try { body = await readBody(request, 8 * 1024); } catch (error) { sendJson(response, error.statusCode === 413 ? 413 : 400, { error: 'Invalid resolve request.' }); return; }
       const fields = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join(',') : 'invalid';
+      if (resolveBoundRoute) {
+        const caller = body?.caller;
+        if (fields !== 'caller,msgId,reference,remainingMs' || typeof body.reference !== 'string'
+          || !caller || typeof caller !== 'object' || Array.isArray(caller) || Object.keys(caller).sort().join(',') !== 'configDir,runtimeSessionId'
+          || typeof caller.runtimeSessionId !== 'string' || !UUID.test(caller.runtimeSessionId)
+          || typeof caller.configDir !== 'string' || caller.configDir.length > 4096 || !path.isAbsolute(caller.configDir)
+          || typeof body.msgId !== 'string' || !UUID.test(body.msgId)
+          || !Number.isInteger(body.remainingMs) || body.remainingMs < 0 || body.remainingMs > 20_000) {
+          sendJson(response, 400, { error: 'Invalid resolve request.' });
+          return;
+        }
+        // Reads the cached rows and the registries; no key file, no socket, no state write.
+        try { sendJson(response, 200, await resolveBound({ reference: body.reference, caller: { runtimeSessionId: caller.runtimeSessionId,
+          configDir: caller.configDir }, msgId: body.msgId, remainingMs: body.remainingMs }, await dashboardForRequest())); }
+        catch { sendJson(response, 500, { error: 'Cannot resolve the session reference.' }); }
+        return;
+      }
       if (!['reference', 'reference,sourceId'].includes(fields) || typeof body.reference !== 'string'
         || (fields === 'reference,sourceId' && (typeof body.sourceId !== 'string' || !SOURCE_ID.test(body.sourceId)))) {
         sendJson(response, 400, { error: 'Invalid resolve request.' });
