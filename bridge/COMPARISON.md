@@ -49,14 +49,15 @@ The top row is Claude's own path. The bridge keeps that path and adds a receiver
 - **Teams, broadcast, and roles.** cross-agent-teams-mcp and team-mcp address groups. The bridge addresses one agent at a time.
 - **Discovery scopes and shared state.** The peers projects filter by repo or directory and publish a summary of current work. The bridge lists every local agent.
 - **Reading a peer's transcript.** agent-bus, chat-across, and oxtail read another session's history. The bridge sends text only, as Claude's own messaging does.
-- **Other agents and machines.** Gemini, Cursor, opencode, and cross-machine brokers appear in several projects. The bridge covers Claude and Codex on one machine.
+- **Other agents.** Gemini, Cursor, and opencode appear in several projects. The bridge covers Claude and Codex.
 - **Cockpit.** oxtail ships a tmux dashboard.
 
 ## What the bridge has and others lack
 
-- No Claude-side setup, flags, or aliases, and no broker or daemon of its own.
+- No Claude-side setup, flags, or aliases. On one machine, no broker or daemon of its own.
 - Codex receives through the shared app-server daemon that it already runs, so Codex starts as usual. An idle task starts a turn, and an active turn takes the text between tool calls.
 - Claude's own inbound rules, receipts, loop guards, and rate limits apply, so a Claude-to-Codex message follows the same rules as a Claude-to-Claude message.
+- Messages between your machines with no broker: in an ASB machine group, the ASB engines carry them over mutual TLS with pinned certificates (Linux and Windows). The sessions of the other machines show in Claude's `ListAgents` and in `list_sessions` with the machine name first.
 
 ## Shared Codex limit
 

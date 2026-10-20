@@ -55,9 +55,11 @@ Claude Code on Windows (checked with 2.1.303 and 2.1.304) uses a named pipe `\\.
 
 ### ASB relay proxy rows
 
-The ASB message relay (`src/relay.ts`, Linux) writes proxy rows for sessions on other machines of an ASB machine group. A proxy row is a normal registry row with `entrypoint: "asb-relay"`, `cwd: ""`, `peerFeatures: []`, and the PID of a `/usr/bin/cat` placeholder that exits with the relay. Claude Code 2.1.303 does not check a dead PID or a stale `procStart`, so the relay removes its rows itself (at stop, and stale ones at start). The registry schema also reads the optional `bridgeSessionId` (Claude Remote Control). `findPeer` and `list_sessions` skip proxy rows; `peers()` and `findPeerProcess` keep them, so a Codex task can receive from a reverse row and send receipts to it.
+The ASB message relay (`src/relay.ts`, Linux and Windows) writes proxy rows for sessions on other machines of an ASB machine group. A proxy row is a normal registry row with `entrypoint: "asb-relay"`, `cwd: ""`, `peerFeatures: []`, and the PID of a `/usr/bin/cat` placeholder (`findstr.exe x` on Windows) that exits with the relay. Claude Code 2.1.303 does not check a dead PID or a stale `procStart`, so the relay removes its rows itself (at stop, and stale ones at start). The registry schema also reads the optional `bridgeSessionId` (Claude Remote Control). `findPeer` and `list_sessions` skip proxy rows; `peers()` and `findPeerProcess` keep them, so a Codex task can receive from a reverse row and send receipts to it.
 
 Relay paths: a frame that a verified local session writes to a proxy socket goes through the engine to the member that runs the target. A `user` frame keeps `msg_id`, the text without its envelope, the sender mode, and the hop chain. A `peer_message_status` receipt keeps `orig_msg_id`. Other control frames are dropped. When the member is not reachable or refuses, the sender gets `expired` with `status_detail: "refused"` and a reason from the proxy row. On the target machine the relay writes the frame to the one live local session with the target ID (never to a proxy row) from the reverse row of the sender, with `from-name` the reverse row name and `from-session` the sender ID. The target replies to the reverse row. The reverse row stays for 30 minutes after the last delivery while the sender is listed, and for 120 s while it is not listed yet. Test: `relay`.
+
+Remote entries: with a running ASB engine, `list_sessions` adds the sessions of the other machines after the local ones, with `remote: true`, `machine`, and the name `<machine>-<name>`, and `send_message` to one of them goes through the engine (`POST /api/relay/send`), not through a proxy socket. Idle subscriptions to them are refused. Test: `protocol`.
 
 ## Parity
 
@@ -167,7 +169,7 @@ Relay paths: a frame that a verified local session writes to a proxy socket goes
 - `--peer-first` and `--interactive` open an untouched chat and check that no model request happens and no receiver exists. They then start the first turn with an explicit backend request. This shows the startup boundary, not discovery by Claude.
 - `<claude-session-uuid>` (from `list_sessions`) sends test prompts to that real Claude, asks for two replies, and checks the idle notice. It uses Claude's model service and removes its own receiver and temporary home afterward.
 
-Verified: native runs on Codex 0.159.0, 0.159.2, and 0.159.3, the live Claude run on 2.1.285, CI on macOS and Linux.
+Verified: native runs on Codex 0.159.0, 0.159.2, and 0.159.3, the live Claude run on 2.1.285, CI on macOS, Linux, and Windows.
 
 Not verified:
 

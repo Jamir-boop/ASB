@@ -1,6 +1,6 @@
 # ASB Bridge
 
-A Codex plugin that lets Codex tasks and Claude Code sessions message each other on one machine.
+A Codex plugin that lets Codex tasks and Claude Code sessions message each other on one machine and, in an ASB machine group, with the sessions on your other machines (Linux and Windows).
 
 Claude Code lists and messages its other sessions through its own local registry. This plugin registers each Codex task in that registry, so Claude finds the task with `ListAgents` and writes to it with `SendMessage`. Claude needs no flags, plugins, or launchers. A bundled MCP server gives the Codex side `list_sessions` and `send_message`. Messages travel over Unix domain sockets in private per-user directories. On Windows they travel over named pipes, and each receiver has a key file and checks an `auth` line (see [Windows](#windows)).
 
