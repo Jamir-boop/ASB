@@ -18,7 +18,9 @@ can request permission again or open Android notification settings.
 Background checks use WorkManager with a 15-minute period and a connected network.
 Android and HyperOS can delay these checks. Foreground updates save the attention
 baseline without notifications. Background updates can show Done, Failed, and
-Needs input notifications with Open on PC and Read actions. Unpair removes the
+Needs input notifications with Open on PC and Read actions.
+**Check now** also shows these notifications while the app is open. An automatic
+check while the app is open does not save the baseline. Unpair removes the
 saved pairing and the app's notifications. Phone acceptance for Phase 7 is pending.
 
 Pairing uses TLS 1.3 and the SHA-256 of the full certificate. The app stores

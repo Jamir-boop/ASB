@@ -6,6 +6,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 - Fixed the Codex reader for Codex database changes: a missing column no longer empties the Codex list.
 - Fixed `asb service install` and `asb setup` after `asb`: the user service restarted every 5 seconds while the engine that `asb` started was running.
+- Fixed **Check now** in the Android app: it now shows the notifications that it finds, and an automatic check while the app is open no longer marks new events as seen.
 
 ## ASB 1.9.0 - 2026-10-20
 
