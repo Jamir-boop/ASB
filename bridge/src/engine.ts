@@ -66,3 +66,36 @@ export async function remotePeers(runtime: EngineRuntime) {
     return parsed.success ? [parsed.data] : [];
   }).slice(0, 256);
 }
+
+// A full session reference as the engine and send_message take it.
+export const referenceText = z.string().max(384).regex(/^asb:[\x21-\x7e]+$/);
+const reason = z.string().max(64).regex(/^[a-z][a-z-]*$/);
+// Exactly one of reference or referenceUnavailable, and no other key.
+const listItem = <T extends z.ZodRawShape>(keys: T) =>
+  z.union([z.strictObject({ ...keys, reference: referenceText }), z.strictObject({ ...keys, referenceUnavailable: reason })]);
+const localItem = listItem({ sessionId: uuid });
+const remoteItem = listItem({ machineId: z.string().regex(/^[a-f0-9]{16}$/), sessionId: uuid });
+const listReply = z.strictObject({ apiVersion: z.literal(1), ok: z.literal(true), pid: z.number().int().positive(),
+  local: z.array(z.unknown()), remote: z.array(z.unknown()) });
+export type ListedReference = { reference: string } | { referenceUnavailable: string };
+
+// The reference of each listed session, or its reason code: keyed by sessionId (local) and <machineId>:<sessionId> (remote).
+// Invalid items are dropped. Any error or other reply gives an empty map, so list_sessions stays as it is without the engine.
+export async function listReferences(runtime: EngineRuntime, caller: { runtimeSessionId: string; configDir: string }) {
+  const found = new Map<string, ListedReference>();
+  let reply: z.infer<typeof listReply>;
+  try { reply = listReply.parse(await engineRequest(runtime, '/api/agent/list-references', { method: 'POST', body: { caller } })); }
+  catch { return found; }
+  if (reply.pid !== runtime.pid) return found;
+  const value = (item: { reference?: string; referenceUnavailable?: string }): ListedReference =>
+    item.reference !== undefined ? { reference: item.reference } : { referenceUnavailable: item.referenceUnavailable! };
+  for (const entry of reply.local.slice(0, 256)) {
+    const item = localItem.safeParse(entry);
+    if (item.success) found.set(item.data.sessionId, value(item.data));
+  }
+  for (const entry of reply.remote.slice(0, 256)) {
+    const item = remoteItem.safeParse(entry);
+    if (item.success) found.set(`${item.data.machineId}:${item.data.sessionId}`, value(item.data));
+  }
+  return found;
+}

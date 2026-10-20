@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { engineRequest, engineRuntime, remotePeers } from '../src/engine';
+import { engineRequest, engineRuntime, listReferences, remotePeers } from '../src/engine';
 import { ENGINE_TOKEN, fakeEngine } from './engine-fixture';
 // POSIX only on Windows CI: /tmp and file modes.
 const posix = test.skipIf(process.platform === 'win32');
@@ -110,5 +110,44 @@ posix('engine requests send the source token, the local Host, Origin and JSON on
     const listed = await remotePeers(runtime);
     expect(listed).toHaveLength(256);
     expect(listed[0]).toEqual({ machineId: peer.machineId, machineName: 'beta', online: true, sessionId: peer.sessionId, name: 'task', agent: 'codex', status: 'idle' });
+  } finally { engine.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+posix('listReferences posts the caller and keeps only valid items, keyed by sessionId or machineId:sessionId', async () => {
+  const root = mkdtempSync('/tmp/asb-engine-references-');
+  let answer: unknown;
+  const engine = fakeEngine(root, () => answer);
+  const local = crypto.randomUUID();
+  const remote = crypto.randomUUID();
+  const machineId = 'b'.repeat(16);
+  const reference = `asb:1/${'a'.repeat(16)}/codex/${'ab'.repeat(16)}/codex:${local}`;
+  const caller = { runtimeSessionId: crypto.randomUUID(), configDir: '/synthetic/claude' };
+  const reply = (fields: Record<string, unknown> = {}) => ({ apiVersion: 1, ok: true, pid: process.pid,
+    local: [{ sessionId: local, reference }], remote: [{ machineId, sessionId: remote, referenceUnavailable: 'old-peer' }], ...fields });
+  try {
+    const runtime = engineRuntime({ XDG_RUNTIME_DIR: root }, 'linux')!;
+    answer = reply();
+    expect([...await listReferences(runtime, caller)]).toEqual([[local, { reference }], [`${machineId}:${remote}`, { referenceUnavailable: 'old-peer' }]]);
+    expect(engine.calls[0]).toMatchObject({ method: 'POST', route: '/api/agent/list-references', body: { caller } });
+    // A wrong pid, a refusal, another shape, or an engine error: an empty map.
+    for (const value of [reply({ pid: process.pid + 1 }), { apiVersion: 1, ok: false, code: 'caller-unregistered', message: 'x.' }, reply({ extra: 1 }),
+      reply({ apiVersion: 2 }), { ...reply(), local: undefined }, new Response('{}', { status: 500 }), new Response('{')]) {
+      answer = value;
+      expect((await listReferences(runtime, caller)).size).toBe(0);
+    }
+    // Invalid items are dropped: an extra key, both or none of the two fields, a bad reference or reason, a bad ID.
+    answer = reply({ local: [{ sessionId: local, reference, extra: 1 }, { sessionId: local, reference, referenceUnavailable: 'x' }, { sessionId: local },
+      { sessionId: local, reference: 'asb:1/a b' }, { sessionId: local, reference: `asb:${'x'.repeat(381)}` }, { sessionId: local, reference: 'codex/x' },
+      { sessionId: local, referenceUnavailable: 'Not-Found' }, { sessionId: local, referenceUnavailable: 'x'.repeat(65) }, { sessionId: 'x', reference },
+      { sessionId: local, machineId, reference }, 7, null],
+    remote: [{ sessionId: remote, reference }, { machineId: 'B'.repeat(16), sessionId: remote, reference }, { machineId, sessionId: remote, reference, extra: 1 }] });
+    expect((await listReferences(runtime, caller)).size).toBe(0);
+    answer = reply({ local: [{ sessionId: local, reference: `asb:${'x'.repeat(380)}` }, { sessionId: remote, referenceUnavailable: 'x'.repeat(64) }], remote: [] });
+    expect((await listReferences(runtime, caller)).size).toBe(2);
+    // At most 256 items of each list are read.
+    const ids = Array.from({ length: 300 }, () => crypto.randomUUID());
+    answer = reply({ local: ids.map(sessionId => ({ sessionId, referenceUnavailable: 'not-live' })),
+      remote: ids.map(sessionId => ({ machineId, sessionId, referenceUnavailable: 'not-found' })) });
+    expect((await listReferences(runtime, caller)).size).toBe(512);
   } finally { engine.close(); rmSync(root, { recursive: true, force: true }); }
 });

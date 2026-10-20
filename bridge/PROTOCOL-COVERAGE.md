@@ -61,6 +61,8 @@ Relay paths: a frame that a verified local session writes to a proxy socket goes
 
 Remote entries: with a running ASB engine, `list_sessions` adds the sessions of the other machines after the local ones, with `remote: true`, `machine`, and the name `<machine>-<name>`, and `send_message` to one of them goes through the engine (`POST /api/relay/send`), not through a proxy socket. Idle subscriptions to them are refused. A session ID with one local non-proxy match always goes to that local session, with no engine call. With no local match, exactly one other machine must list the ID: two or more refuse, and a list that fails gives an explicit error. Both send nothing. Test: `protocol`.
 
+References in `list_sessions` (Linux): the bridge also calls `POST /api/agent/list-references` and adds to each entry exactly one of `reference` (a reference that a send accepts now) or `referenceUnavailable` (a reason code). A remote entry whose session ID is the task or a local entry is shown only with a reference. Without the engine, with an older engine, or with any engine error, the output is the same as before. Test: `protocol`, `engine`.
+
 Send outcomes between machines (one attempt, one message ID through all hops):
 
 - Not sent: proof that the attempt failed before any handoff. Only this gives "Nothing sent": the engine reasons `machine-offline`, `too-large`, `rate-limited`, and `refused`.

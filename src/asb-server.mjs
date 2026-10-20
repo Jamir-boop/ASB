@@ -40,7 +40,7 @@ function readPalette(palettePath) {
 export function createAsbServer({
   markUnreadThread = null, markReadThread = null, setUnreadSettings = null, pinThread = null, discardThread = null, drawerThread = null, muteThread = null,
   listSources = null, updateSource = null, removeSource = null, sourceToken = '', phoneGateway = null, machineGroup = null, serviceMode = false, onStop = null,
-  machineRelay = null, readSources = async () => [], resolveSession = null, resolveBound = null, sendMember = null,
+  machineRelay = null, readSources = async () => [], resolveSession = null, resolveBound = null, listReferences = null, sendMember = null,
   appVersion = '', rootDir = '', sourcesPath = '', readSourcesRevision = async () => null,
   palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, now = Date.now, ...snapshotOptions
 } = {}) {
@@ -106,8 +106,9 @@ export function createAsbServer({
     const resolveRoute = Boolean(resolveSession) && url.pathname === '/api/agent/resolve-session';
     const resolveBoundRoute = Boolean(resolveBound) && url.pathname === '/api/agent/resolve-bound';
     const sendMemberRoute = Boolean(sendMember) && url.pathname === '/api/agent/send-member';
+    const listReferencesRoute = Boolean(listReferences) && url.pathname === '/api/agent/list-references';
     const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute
-      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute || resolveRoute || resolveBoundRoute || sendMemberRoute
+      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute || resolveRoute || resolveBoundRoute || listReferencesRoute || sendMemberRoute
       || Boolean(groupRoute?.[1]) || ['send', 'receipt'].includes(relayRoute);
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
     const readApiRoute = url.pathname === '/api/dashboard' || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute
@@ -178,7 +179,7 @@ export function createAsbServer({
       catch { sendJson(response, 500, { error: 'Cannot send the message.' }); }
       return;
     }
-    if (resolveRoute || resolveBoundRoute) {
+    if (resolveRoute || resolveBoundRoute || listReferencesRoute) {
       response.setHeader('Cache-Control', 'no-store');
       if (!expectedSourceToken.length || !sourceTokenAllowed(request)) {
         sendJson(response, 403, { error: 'Use the current ASB source token for agent access.' });
@@ -187,6 +188,17 @@ export function createAsbServer({
       let body;
       try { body = await readBody(request, 8 * 1024); } catch (error) { sendJson(response, error.statusCode === 413 ? 413 : 400, { error: 'Invalid resolve request.' }); return; }
       const fields = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join(',') : 'invalid';
+      if (listReferencesRoute) {
+        if (fields !== 'caller' || !validCaller(body.caller)) {
+          sendJson(response, 400, { error: 'Invalid resolve request.' });
+          return;
+        }
+        // Reads the cached rows, the registries, and the relay lists; no key file, no socket, no state write.
+        try { sendJson(response, 200, await listReferences({ caller: { runtimeSessionId: body.caller.runtimeSessionId, configDir: body.caller.configDir } },
+          await dashboardForRequest())); }
+        catch { sendJson(response, 500, { error: 'Cannot resolve the session reference.' }); }
+        return;
+      }
       if (resolveBoundRoute) {
         const caller = body?.caller;
         if (fields !== 'caller,msgId,reference,remainingMs' || typeof body.reference !== 'string' || !validCaller(caller)

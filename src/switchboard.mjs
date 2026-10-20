@@ -14,7 +14,7 @@ import { openThreadInCodex, scopedCommand } from './session-opener.mjs';
 import { AppSourceRegistry, appSourcesRevision, numberAppSources, sourceName, validateSourceLauncher } from './app-sources.mjs';
 import { stateDir } from './platform-paths.mjs';
 import { rowReference, shortReference } from './session-references.mjs';
-import { bindLocalTarget, bindMemberTarget, memberTarget, notSentMessage, resolveSessionReference } from './session-targets.mjs';
+import { bindLocalTarget, bindMemberTarget, memberTarget, notSentMessage, referencesForList, resolveSessionReference } from './session-targets.mjs';
 import { readLiveClaudeRegistry } from './claude-registry.mjs';
 import { spawn } from 'node:child_process';
 
@@ -799,6 +799,8 @@ export function createSwitchboardServer(options = {}) {
     },
     resolveSession: async (request, dashboard) => resolveSessionReference(request, await referenceContext(dashboard)),
     resolveBound: async (request, dashboard) => bindLocalTarget(request, await referenceContext(dashboard), boundIo),
+    listReferences: async (request, dashboard) => referencesForList(request, await referenceContext(dashboard), boundIo,
+      options.machineRelay?.remotePeers?.().peers ?? []),
     sendMember: async ({ reference, caller, mode, message, remainingMs }, dashboard) => {
       const startedAt = Date.now();
       const reply = (outcome, code) => ({ apiVersion: 1, pid: process.pid, msgId: message?.msgId ?? null, outcome,

@@ -1027,9 +1027,52 @@ linux('list_sessions adds the sessions on other machines after the local ones, a
     expect(rows.map((row: { sessionId: string }) => row.sessionId)).toEqual([f.desktop.threadId, f.peerId, remote.sessionId]);
     expect(rows[2]).toEqual({ sessionId: remote.sessionId, name: 'beta-codex-task', agent: 'codex', cwd: null, status: 'idle', startedAt: null,
       remote: true, machine: 'beta' });
-    expect(engine.calls.map(call => call.route)).toEqual(['/api/relay/remote-peers']);
+    expect(engine.calls.map(call => call.route).sort()).toEqual(['/api/agent/list-references', '/api/relay/remote-peers']);
     engine.close();
     expect((await list()).map((row: { sessionId: string }) => row.sessionId)).toEqual([f.desktop.threadId, f.peerId]);
+  } finally { engine.close(); await client.close(); await f.close(); }
+});
+
+linux('list_sessions adds the reference or its reason to each entry, and keeps a remote entry with a local ID only with a reference', async () => {
+  const f = await fixture();
+  const client = new Client({ name: 'list-test', version: '1.0.0' });
+  const caller = randomUUID();
+  const remote = remoteSession();
+  const gamma = { ...remote, machineId: 'c'.repeat(16), machineName: 'gamma' };
+  const peers = [remote, { ...remote, sessionId: f.peerId }, { ...gamma, sessionId: f.peerId }, remoteSession(caller), { ...gamma, sessionId: caller }];
+  const ref = (machineId: string, appId: string) => `asb:1/${machineId}/codex/${'ab'.repeat(16)}/codex:${appId}`;
+  let references: unknown = null;
+  const engine = fakeEngine(runtimeDir(), route => route === '/api/relay/remote-peers' ? { peers } : references ?? new Response('{}', { status: 404 }));
+  try {
+    await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, '../src/server.ts')],
+      env: { ...process.env, CODEX_HOME: f.root, CLAUDE_CONFIG_DIR: f.configDir } }));
+    const text = async () => z.array(z.object({ text: z.string() }))
+      .parse((await client.callTool({ name: 'list_sessions', arguments: {}, _meta: { threadId: caller } })).content)[0]!.text;
+    const localRows = JSON.parse(await text()).slice(0, 2) as Record<string, unknown>[];
+    const remoteRow = (peer: typeof remote) => ({ sessionId: peer.sessionId, name: `${peer.machineName}-${peer.name}`, agent: peer.agent, cwd: null,
+      status: peer.status, startedAt: null, remote: true, machine: peer.machineName });
+    // An older engine (404), another reply, or no engine: the same bytes as before.
+    const before = JSON.stringify([...localRows, remoteRow(remote)]);
+    expect(await text()).toBe(before);
+    references = { apiVersion: 1, ok: false, code: 'caller-unregistered', message: 'x.' };
+    expect(await text()).toBe(before);
+    references = { apiVersion: 1, ok: true, pid: process.pid + 1, local: [{ sessionId: f.peerId, reference: ref('a'.repeat(16), f.peerId) }], remote: [] };
+    expect(await text()).toBe(before);
+    references = { apiVersion: 1, ok: true, pid: process.pid,
+      local: [{ sessionId: f.peerId, reference: ref('a'.repeat(16), f.peerId) }, { sessionId: f.desktop.threadId, referenceUnavailable: 'not-mapped' }],
+      remote: [{ machineId: remote.machineId, sessionId: remote.sessionId, reference: ref(remote.machineId, remote.sessionId) },
+        { machineId: remote.machineId, sessionId: f.peerId, reference: ref(remote.machineId, f.peerId) },
+        { machineId: gamma.machineId, sessionId: f.peerId, referenceUnavailable: 'not-found' },
+        { machineId: gamma.machineId, sessionId: caller, reference: ref(gamma.machineId, caller) }] };
+    expect(JSON.parse(await text())).toEqual([
+      { ...localRows[0], referenceUnavailable: 'not-mapped' }, { ...localRows[1], reference: ref('a'.repeat(16), f.peerId) },
+      { ...remoteRow(remote), reference: ref(remote.machineId, remote.sessionId) },
+      { ...remoteRow({ ...remote, sessionId: f.peerId }), reference: ref(remote.machineId, f.peerId) },
+      { ...remoteRow({ ...gamma, sessionId: caller }), reference: ref(gamma.machineId, caller) }]);
+    expect(engine.calls.find(call => call.route === '/api/agent/list-references')).toMatchObject({ method: 'POST',
+      body: { caller: { runtimeSessionId: caller, configDir: f.configDir } } });
+    engine.close();
+    expect(await text()).toBe(JSON.stringify(localRows));
   } finally { engine.close(); await client.close(); await f.close(); }
 });
 

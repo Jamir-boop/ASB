@@ -2,9 +2,9 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { homedir } from 'node:os';
-import { extname, isAbsolute, join } from 'node:path';
+import { extname, isAbsolute, join, resolve } from 'node:path';
 import { maxLineLength, peers, uuid } from './claude';
-import { engineRuntime, remotePeers } from './engine';
+import { engineRuntime, listReferences, referenceText, remotePeers, type ListedReference } from './engine';
 import { Bridge, expirySchema, policySchema } from './bridge';
 import { codexIpcPath } from './codex';
 import { HeldDialogs } from './held-dialogs';
@@ -44,7 +44,7 @@ function brief(status: ReturnType<Bridge['status']>) {
 // Codex copies these instructions into every bridge tool description, so they stay one line.
 // The safety notice travels with each incoming message instead.
 const server = new McpServer({ name: 'asb-bridge', version }, { instructions:
-  'Message local Claude Code and Codex agents: list_sessions, then send_message by sessionId.' });
+  'Message local Claude Code and Codex agents: list_sessions, then send_message by reference or sessionId.' });
 
 async function startReceiver(threadId: string, cwd: string) {
   const child = Bun.spawn([process.execPath, hookPath],
@@ -62,7 +62,7 @@ server.registerTool('session_start', { description: 'Bind the native SessionStar
   return { content: [] };
 });
 
-server.registerTool('list_sessions', { description: 'List the live agents on this machine and, in a machine group, on the other machines (remote: true), most recently started first. Pick one by sessionId: names and working directories repeat across agents, and status tells you idle or busy right now, not how long an agent has sat idle. Start time separates them.',
+server.registerTool('list_sessions', { description: 'List the live agents on this machine and, in a machine group, on the other machines (remote: true), most recently started first. Send to an entry by its reference when it has one, else by its sessionId. Names, working directories, and session IDs can repeat: a sessionId goes to the local agent first, and the start time separates agents. Status tells you idle or busy right now, not how long an agent has sat idle. A local entry with agent claude is a Claude Code session, a local entry with agent codex is a Codex task with ASB Bridge, and an entry with remote: true runs on another machine of the group.',
   inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false } }, async (_args, extra) => {
   const caller = callerThread(extra._meta);
   // ASB relay proxy rows stand for remote sessions; the engine lists those below with their machine.
@@ -74,13 +74,19 @@ server.registerTool('list_sessions', { description: 'List the live agents on thi
       startedAt: peer.startedAt === undefined ? null : new Date(peer.startedAt).toISOString() }))
     .sort((first, second) => (second.startedAt ?? '').localeCompare(first.startedAt ?? ''));
   const runtime = engineRuntime();
-  const remote = runtime ? await remotePeers(runtime).catch(() => []) : [];
+  const [remote, references] = runtime ? await Promise.all([remotePeers(runtime).catch(() => []),
+    listReferences(runtime, { runtimeSessionId: caller, configDir: resolve(configDir) })]) : [[], new Map<string, ListedReference>()];
+  // A sessionId send goes to the local session, so a remote entry with a seen ID is reachable only by its reference.
   const seen = new Set([caller, ...local.map(peer => peer.sessionId)]);
-  return result([...rows, ...remote.filter(peer => !seen.has(peer.sessionId)).map(peer => ({ sessionId: peer.sessionId,
-    name: `${peer.machineName}-${peer.name}`, agent: peer.agent, cwd: null, status: peer.status, startedAt: null, remote: true, machine: peer.machineName }))]);
+  return result([...rows.map(row => ({ ...row, ...references.get(row.sessionId) })), ...remote.flatMap(peer => {
+    const reference = references.get(`${peer.machineId}:${peer.sessionId}`);
+    if (seen.has(peer.sessionId) && !(reference && 'reference' in reference)) return [];
+    return [{ sessionId: peer.sessionId, name: `${peer.machineName}-${peer.name}`, agent: peer.agent, cwd: null, status: peer.status, startedAt: null,
+      remote: true, machine: peer.machineName, ...reference }];
+  })]);
 });
 server.registerTool('send_message', { description: 'Send text to one listed agent, or set notify_when_idle alone to subscribe without sending. Its answer enters the current Codex turn, or starts one when this task is idle. Batch what you have to say into one message: a rapid burst to the same agent is refused. Instead of sessionId, reference takes a full ASB session reference (asb:1/...) as it is and sends to exactly that session, on this machine or on another machine of the machine group. notify_when_idle with a reference works only for a session on this machine.',
-  inputSchema: { sessionId: uuid.optional(), reference: z.string().max(384).regex(/^asb:[\x21-\x7e]+$/).optional(),
+  inputSchema: { sessionId: uuid.optional(), reference: referenceText.optional(),
     text: z.string().min(1).max(maxLineLength).optional(), notify_when_idle: z.boolean().default(false) }, annotations: { openWorldHint: true } },
   async ({ sessionId, reference, text, notify_when_idle }, extra) => {
     if ((sessionId === undefined) === (reference === undefined)) throw new Error('Give exactly one of sessionId or reference.');

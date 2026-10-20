@@ -171,6 +171,51 @@ export async function memberTarget({ reference, caller }, context, io) {
   return { ok: true, identity, name: name || 'Codex', returnTo: { runtimeSessionId, pid, procStart, messagingSocketPath } };
 }
 
+const LIST_MAX = 256;
+const LOCAL_TYPES = ['cli', 'codex-asb-bridge'];
+
+// The references that a send of this caller accepts now, for list_sessions (SYSTEM_OVERVIEW.md, "Session references").
+// The caller registry is read one time; each item is checked like a send, and only the reference or the reason code goes out.
+export async function referencesForList({ caller }, context, io, listed = []) {
+  if (io.platform !== 'linux') return refuse('unsupported-platform');
+  const own = await callerRecord(caller, io);
+  if (!own) return refuse('caller-unregistered');
+  const once = { ...io, registry: async () => own.registry };
+  // One board row gives the reference to check, else the reason that it has none.
+  const check = async (rows, target) => {
+    if (!rows.length) return { referenceUnavailable: 'not-found' };
+    if (rows.length > 1) return { referenceUnavailable: 'ambiguous-source' };
+    const [row] = rows;
+    if (typeof row.reference !== 'string') return { referenceUnavailable: text(row.referenceUnavailable) ?? 'unknown-source' };
+    const result = await target(row.reference);
+    return result.ok ? { reference: row.reference } : { referenceUnavailable: result.code };
+  };
+  const records = new Map();
+  for (const record of own.registry.records) {
+    if (record.entrypoint === 'asb-relay' || typeof record.messagingSocketPath !== 'string' || record.sessionId === caller.runtimeSessionId) continue;
+    records.set(record.sessionId, [...records.get(record.sessionId) ?? [], record]);
+  }
+  const local = [];
+  for (const [sessionId, same] of [...records].slice(0, LIST_MAX)) {
+    const item = same.length > 1 ? { referenceUnavailable: 'ambiguous-identity' }
+      : !LOCAL_TYPES.includes(same[0].entrypoint) ? { referenceUnavailable: 'unsupported-type' }
+        : await check(context.threads.filter((row) => !row.remote && row.externalId === sessionId),
+          (reference) => bindLocalTarget({ reference, caller, msgId: null, remainingMs: 0 }, context, once));
+    local.push({ sessionId, ...item });
+  }
+  const remote = [];
+  const keys = new Set();
+  for (const { machineId, sessionId } of listed) {
+    if (remote.length >= LIST_MAX) break;
+    if (typeof machineId !== 'string' || typeof sessionId !== 'string' || keys.has(`${machineId}:${sessionId}`)) continue;
+    keys.add(`${machineId}:${sessionId}`);
+    const item = await check(context.threads.filter((row) => row.remote === true && row.machineId === machineId && row.externalId === sessionId),
+      (reference) => memberTarget({ reference, caller }, context, once));
+    remote.push({ machineId, sessionId, ...item });
+  }
+  return { apiVersion: 1, ok: true, pid: io.pid, local, remote };
+}
+
 // The receiving engine's own binding for an exact send from a member: no caller registry, only the homes of the target source.
 export async function bindMemberTarget({ reference, msgId, remainingMs }, context, io) {
   const resolved = resolveSessionReference({ reference }, context);

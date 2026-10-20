@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { formatReference, rowReference, shortReference } from '../src/session-references.mjs';
-import { bindLocalTarget, bindMemberTarget, memberTarget, notSentMessage, resolveSessionReference } from '../src/session-targets.mjs';
+import { bindLocalTarget, bindMemberTarget, memberTarget, notSentMessage, referencesForList, resolveSessionReference } from '../src/session-targets.mjs';
 
 // Synthetic data only. Platform-neutral (test/windows-tests.json).
 const SELF = '0123456789abcdef';
@@ -276,6 +276,76 @@ test('memberTarget checks in order with no io before the caller check, and does 
   assert.equal(await named('a\nb\x7fc'), 'a b c');
   assert.equal(await named('x'.repeat(200)), 'x'.repeat(128));
   for (const name of ['', undefined, 7]) assert.equal(await named(name), 'Codex');
+});
+
+// list_sessions references: each item is checked like a send, with one caller registry read for the whole list.
+const UUID_5 = '77777777-7777-4777-8777-777777777777';
+const UUID_6 = '88888888-8888-4888-8888-888888888888';
+const UUID_7 = '99999999-9999-4999-8999-999999999999';
+const UUID_8 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const UUID_9 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const UUID_10 = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const listFor = async (list, { io, listed = [], ...overrides } = {}) => {
+  const fake = io ?? fakeIo({ registry: async (configDir) => { fake.calls.push(['registry', configDir]); return { root: ROOT, records: list }; } });
+  const result = await referencesForList({ caller }, { ...boundContext, ...overrides }, fake.io ?? fake, listed);
+  const text = JSON.stringify(result);
+  for (const value of ['/synthetic/', 'procStart', 'returnTo', 'binding', 'messagingSocketPath', SECRET.title, SECRET.cwd, '"name"']) {
+    assert.equal(text.includes(value), false, `${value} must not be in the reply`);
+  }
+  assert.equal(text.split('"pid"').length, result.ok ? 2 : 1);
+  return { result, calls: fake.calls };
+};
+
+test('referencesForList gives each listed session its reference or the reason that a send refuses it', async () => {
+  const unnamed = { ...local({ provider: 'codex', sourceId: 'codex', externalId: UUID_8 }), referenceUnavailable: 'no-machine-identity' };
+  delete unnamed.reference;
+  const unknown = { ...local({ provider: 'codex', sourceId: 'codex', externalId: UUID_9 }) };
+  delete unknown.reference;
+  delete unknown.referenceUnavailable;
+  const disabled = local({ provider: 'codex', sourceId: 'off', externalId: UUID_10 });
+  const threads = [...boundContext.threads, unnamed, unknown, disabled];
+  const list = [callerRecord, cliTarget, codexTarget, record(40, UUID, 'codex-asb-bridge'), record(50, UUID_5, 'cli'), record(60, UUID_6, 'claude-desktop'),
+    record(70, UUID_7, 'cli'), record(71, UUID_7, 'cli'), record(80, UUID_8, 'cli'), record(81, UUID_9, 'cli'), record(90, UUID_10, 'cli'),
+    record(91, UUID_2, 'asb-relay'), record(92, crypto.randomUUID(), 'cli', { messagingSocketPath: undefined })];
+  const listed = [{ machineId: MEMBER, machineName: 'laptop', sessionId: UUID_2, name: SECRET.title }, { machineId: OLD, sessionId: UUID_2 },
+    { machineId: MEMBER, sessionId: UUID_3 }, { machineId: MEMBER, sessionId: UUID_2 }];
+  const { result, calls } = await listFor(list, { threads, listed });
+  assert.deepEqual(result, { apiVersion: 1, ok: true, pid: 999, local: [
+    { sessionId: UUID_4, reference: cliRow.reference },
+    { sessionId: UUID_3, reference: soloRow.reference },
+    { sessionId: UUID, referenceUnavailable: 'ambiguous-source' },
+    { sessionId: UUID_5, referenceUnavailable: 'not-found' },
+    { sessionId: UUID_6, referenceUnavailable: 'unsupported-type' },
+    { sessionId: UUID_7, referenceUnavailable: 'ambiguous-identity' },
+    { sessionId: UUID_8, referenceUnavailable: 'no-machine-identity' },
+    { sessionId: UUID_9, referenceUnavailable: 'unknown-source' },
+    { sessionId: UUID_10, referenceUnavailable: 'source-disabled' },
+  ], remote: [
+    { machineId: MEMBER, sessionId: UUID_2, reference: memberFound.reference },
+    { machineId: OLD, sessionId: UUID_2, referenceUnavailable: 'old-peer' },
+    { machineId: MEMBER, sessionId: UUID_3, referenceUnavailable: 'not-found' },
+  ] });
+  assert.deepEqual(calls.filter(([name]) => name === 'registry'), [['registry', '/synthetic/claude']]);
+  // A bind refusal is the reason; two member rows with one ID are ambiguous.
+  const scoped = await listFor([callerRecord, cliTarget], { io: fakeIo({ registry: async () => ({ root: ROOT, records: [callerRecord, cliTarget] }),
+    claudeRoot: async () => '/synthetic/other/sessions' }) });
+  assert.deepEqual(scoped.result.local, [{ sessionId: UUID_4, referenceUnavailable: 'native-scope-unavailable' }]);
+  const twice = await listFor([callerRecord], { threads: [memberFound, { ...memberFound, id: 'copy' }], listed: [{ machineId: MEMBER, sessionId: UUID_2 }] });
+  assert.deepEqual(twice.result.remote, [{ machineId: MEMBER, sessionId: UUID_2, referenceUnavailable: 'ambiguous-source' }]);
+});
+
+test('referencesForList refuses off Linux or without one caller registration, and caps each list at 256', async () => {
+  failed((await listFor([callerRecord], { io: { ...fakeIo().io, platform: 'win32' } })).result, 'unsupported-platform');
+  for (const list of [[], [record(10, CALLER, 'cli')], [callerRecord, record(11, CALLER, 'codex-asb-bridge')]]) {
+    failed((await listFor(list)).result, 'caller-unregistered');
+  }
+  failed((await listFor([], { io: fakeIo({ registry: async () => null }) })).result, 'caller-unregistered');
+  const many = Array.from({ length: 300 }, (_, index) => record(100 + index, crypto.randomUUID(), 'cli'));
+  const listed = Array.from({ length: 300 }, () => ({ machineId: MEMBER, sessionId: crypto.randomUUID() }));
+  const { result, calls } = await listFor([callerRecord, ...many], { listed });
+  assert.equal(result.local.length, 256);
+  assert.equal(result.remote.length, 256);
+  assert.equal(calls.filter(([name]) => name === 'registry').length, 1);
 });
 
 const HOME_1 = '/synthetic/h1';
