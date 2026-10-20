@@ -2,7 +2,7 @@
 
 Status: approved by the user on 2026-10-20, in progress. Phase 0 is done
 (2026-10-20: CI run 39408877913 passed all 16 jobs). Phase 1 passed the
-review on 2026-10-20. Written 2026-10-19
+review on 2026-10-20 and is in `main` (`a604525`). Written 2026-10-19
 for an implementing agent (a worker model). Section 2 has the user's
 decisions from the interview. Section 3 has the planner decisions, which the
 user approved. Do not change any of them without asking the user.
@@ -695,7 +695,10 @@ them (section 8). Phase 9 does the full pass.
 
 ## 11. Phase 2: engine only (L4)
 
-1. `scripts/asb-desktop.mjs` `start()` (`:18-45`): after `startEngine()`,
+The line numbers in this section come from `main` at `a604525` (the phase 1
+merge).
+
+1. `scripts/asb-desktop.mjs` `start()` (`:19-53`): after `startEngine()`,
    run `boardCheck`. When it fails, do not call `registerAppIcon` and do not
    spawn the window. Print `ASB runs without its window on this system:
    <reason> The engine runs for the phone and your other machines. Run asb
@@ -703,30 +706,34 @@ them (section 8). Phase 9 does the full pass.
    Phase 1 runs `boardCheck` there only without `ASB_PYTHON` (to find the
    Python). Phase 2 runs it always: an absolute `ASB_PYTHON` is then the
    only candidate.
-2. `scripts/asb-engine.mjs` `runEngine` (tray start at `:126-140`): run
+2. `scripts/asb-engine.mjs` `runEngine` (tray start at `:129-150`): run
    `boardCheck` once before the tray starts. When it fails, start the tray
    with `ASB_BOARD=0` in its environment. Phase 1 runs it only without
    `ASB_PYTHON`, and starts no tray (one error line) when no Python has
    `gi`. Keep that rule, and run the check always.
 3. `scripts/asb-tray.py`: with `ASB_BOARD=0`, the menu has only **Quit ASB**,
-   and a left click (`Activate`) does nothing. Keep the menu layout in the
-   pure functions; add cases to `test/asb_tray_test.py`.
-4. `scripts/asb-package.mjs` `install()` (`:161`): when the board check
-   fails, skip both `registerAppIcon` calls (`:185` and `:234`), and leave
-   the `icon` and `desktop` paths (`:134-135`) out of the install record.
-   `uninstall()` (`:269`) already skips missing files; add a test.
+   and a left click (`Activate`, `:211`) does nothing. Keep the menu layout
+   in the pure functions (`menu_layout` `:80`, `menu_action` `:107`); Quit
+   keeps its item ID 3. Add cases to `test/asb_tray_test.py`.
+4. `scripts/asb-package.mjs` `install()` (`:153`): when the board check
+   fails, skip both `registerAppIcon` calls (`:177` and `:226`), and leave
+   the `icon` and `desktop` paths (`:126-127`) out of the install record.
+   `uninstall()` (`:261`) already skips missing files; add a test.
+   `checkRuntime` gives `boardOk` (the `ok` of `boardCheck`) in its result.
+   A board with `gi` but old GTK keeps `pythonExecutable` (for the tray).
 5. `asb setup`: no change. Step 0 (10.2) already prints the reason.
 6. Tests: `test/asb-desktop.test.mjs` (board check fails: no registration,
    no window, exit code 3, engine started); the tray menu cases; the install
    record without the desktop keys; `runEngine` with a fake `execFile` (in
-   `test/asb-service.test.mjs`, next to the tray test at `:499`): a board
+   `test/asb-service.test.mjs`, next to the tray test at `:495`): a board
    failure starts the tray with `ASB_BOARD=0`, and no Python with `gi`
    starts no tray and prints one line.
 
 ### Phase 2 acceptance
 
 - `(umask 022; npm test)` and
-  `python3 -m unittest discover -s test -p 'asb_tray_test.py'` pass. `npm run test:native` passes on the hidden display.
+  `python3 -m unittest discover -s test -p 'asb_tray_test.py'` pass.
+  `npm run test:native` passes on the hidden display.
 - On the Debian PC, with the user's engine running,
   `ASB_PYTHON=/bin/false scripts/asb` prints the engine-only message and
   exits with code 3. It only reads the user's engine: `scripts/asb engine

@@ -126,8 +126,12 @@ test('release payloads are reproducible and the user installer preserves other f
   await new Promise((resolve) => holder.close(resolve));
   const launchHome = path.join(temporary, 'launch-home');
   const engine = await isolatedEngine(t, temporary);
+  // A fake Python with a full board answers the probe, so the chain opens the (fake) window.
+  const fakePython = path.join(temporary, 'fake-python');
+  await writeFile(fakePython, `#!/bin/sh\nif [ "\${1:-}" = -c ]; then printf '%s\\n' '${JSON.stringify({ python: '3.13.5', gi: '3.50.0', gtk: [4, 18, 6],
+    adw: [1, 7, 6], glib: [2, 84, 4], cairo: true, qrcode: true, trayHost: null })}'; fi\n`, { mode: 0o755 });
   const launched = execFileSync(path.join(extracted, 'usr/lib/asb/scripts/asb'), [], { cwd: temporary, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...engine.env,
-    ASB_SYSTEM_INSTALL: '1', ASB_NODE: process.execPath, ASB_PYTHON: '/bin/true', PATH: `${engine.fakeBin}:/usr/bin:/bin`, PORT: String(port), HOME: launchHome,
+    ASB_SYSTEM_INSTALL: '1', ASB_NODE: process.execPath, ASB_PYTHON: fakePython, PATH: `${engine.fakeBin}:/usr/bin:/bin`, PORT: String(port), HOME: launchHome,
     XDG_DATA_HOME: path.join(launchHome, 'data'), XDG_CONFIG_HOME: path.join(launchHome, 'config'), XDG_STATE_HOME: path.join(launchHome, 'state'),
     XDG_CACHE_HOME: path.join(launchHome, 'cache'), CODEX_HOME: path.join(launchHome, 'codex'), CLAUDE_APP_DIR: path.join(launchHome, 'claude'),
     CLAUDE_CODE_CONFIG_DIR: path.join(launchHome, 'claude-code'),
@@ -260,12 +264,13 @@ test('the install check refuses without the engine tier and continues without th
     return { result, warnings };
   };
   const board = await check({ gi: '3.42.2', gtk: [4, 18, 0], adw: [1, 7, 0] });
-  assert.deepEqual([board.result.pythonExecutable, board.result.sqliteDirectory, board.warnings], ['/opt/python3', bin, []]);
+  assert.deepEqual([board.result.pythonExecutable, board.result.sqliteDirectory, board.result.boardOk, board.warnings], ['/opt/python3', bin, true, []]);
   const old = await check({ gi: '3.42.2', gtk: [4, 8, 3], adw: [1, 2, 2] });
-  assert.equal(old.result.pythonExecutable, '/opt/python3');
+  // Old GTK with PyGObject keeps the Python for the tray.
+  assert.deepEqual([old.result.pythonExecutable, old.result.boardOk], ['/opt/python3', false]);
   assert.deepEqual(old.warnings, ['ASB will run without its window: GTK 4.8 is older than 4.12. Libadwaita 1.2 is older than 1.4. Run asb doctor for details.']);
   const noGi = await check({});
-  assert.equal(noGi.result.pythonExecutable, null);
+  assert.deepEqual([noGi.result.pythonExecutable, noGi.result.boardOk], [null, false]);
   assert.deepEqual(noGi.warnings, ['ASB will run without its window: PyGObject is not installed. Run asb doctor for details.']);
   await rm(path.join(bin, 'openssl'));
   await assert.rejects(checkRuntime({ env, platform: 'linux', node, execFile: probe({}), warn: () => {} }), /^Error: openssl is not installed\.$/);
@@ -279,6 +284,52 @@ test('the install check refuses without the engine tier and continues without th
     const wrapper = await readFile(result.launcher, 'utf8');
     assert.equal(wrapper.includes('ASB_PYTHON'), Boolean(pythonExecutable), wrapper);
     if (pythonExecutable) assert.ok(wrapper.includes("export ASB_PYTHON='/opt/python3'\n"));
+  }
+});
+
+test('an install without the board writes no icon or desktop entry, and uninstall removes the rest', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'asb-package-engine-only-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const dataDir = path.join(temporary, 'data');
+  const options = { sourceRoot, dataDir, binDir: path.join(temporary, 'bin'),
+    check: async () => ({ nodeExecutable: process.execPath, pythonExecutable: '/opt/python3', boardOk: false }) };
+  const result = await install(options);
+  const icon = path.join(dataDir, 'icons/hicolor/scalable/apps', `${ASB_APP_ID}.svg`);
+  const desktop = path.join(dataDir, 'applications', `${ASB_APP_ID}.desktop`);
+  for (const file of [icon, desktop]) await assert.rejects(lstat(file), { code: 'ENOENT' });
+  const record = JSON.parse(await readFile(path.join(dataDir, 'asb/install.json'), 'utf8'));
+  assert.deepEqual(Object.keys(record.files), ['launcher']);
+  const removed = await uninstall(options);
+  assert.deepEqual(removed.kept, []);
+  assert.deepEqual(removed.removed, [result.directory, result.launcher]);
+  await assert.rejects(lstat(path.join(dataDir, 'asb')), { code: 'ENOENT' });
+  await assert.rejects(lstat(result.launcher), { code: 'ENOENT' });
+});
+
+test('an install without the board removes the icon and desktop entry of a board install, but keeps an edited entry', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'asb-package-board-to-engine-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  for (const edited of [false, true]) {
+    const dataDir = path.join(temporary, `data-${edited}`);
+    const options = { sourceRoot, dataDir, binDir: path.join(temporary, `bin-${edited}`) };
+    const runtime = { nodeExecutable: process.execPath, pythonExecutable: '/opt/python3' };
+    const icon = path.join(dataDir, 'icons/hicolor/scalable/apps', `${ASB_APP_ID}.svg`);
+    const desktop = path.join(dataDir, 'applications', `${ASB_APP_ID}.desktop`);
+    await install({ ...options, check: async () => ({ ...runtime, boardOk: true }) });
+    for (const file of [icon, desktop]) assert.ok((await lstat(file)).isFile());
+    if (edited) await writeFile(desktop, 'User edit.\n');
+    const result = await install({ ...options, check: async () => ({ ...runtime, boardOk: false }) });
+    await assert.rejects(lstat(icon), { code: 'ENOENT' });
+    if (edited) assert.equal(await readFile(desktop, 'utf8'), 'User edit.\n');
+    else await assert.rejects(lstat(desktop), { code: 'ENOENT' });
+    const record = JSON.parse(await readFile(path.join(dataDir, 'asb/install.json'), 'utf8'));
+    assert.deepEqual(Object.keys(record.files), ['launcher']);
+    const removed = await uninstall(options);
+    // An edited entry is not ASB's own: uninstall keeps it and the install record.
+    assert.deepEqual(removed.kept, edited ? [desktop] : []);
+    assert.deepEqual(removed.removed, [result.directory, result.launcher]);
+    if (edited) assert.equal(await readFile(desktop, 'utf8'), 'User edit.\n');
+    else await assert.rejects(lstat(path.join(dataDir, 'asb')), { code: 'ENOENT' });
   }
 });
 

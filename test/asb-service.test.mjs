@@ -27,6 +27,12 @@ async function freePort() {
   return port;
 }
 
+const probeLine = (values = {}) => JSON.stringify({ python: '3.13.5', gi: '3.50.0', gtk: [4, 18, 6], adw: [1, 7, 6], glib: [2, 84, 4],
+  cairo: true, qrcode: true, trayHost: null, ...values });
+// A shell script that answers the board probe with ASB_FAKE_PROBE (else a full board), then runs the rest.
+const fakePython = (rest = '') => `#!/bin/sh\nif [ "\${1:-}" = -c ]; then\n  if [ -n "\${ASB_FAKE_PROBE:-}" ]; then printf '%s\\n' "$ASB_FAKE_PROBE"; `
+  + `else printf '%s\\n' '${probeLine()}'; fi\n  exit 0\nfi\n${rest}`;
+
 async function fixture(t) {
   const home = await mkdtemp(path.join(os.tmpdir(), 'asb-service-test-'));
   const children = [];
@@ -44,11 +50,13 @@ async function fixture(t) {
   const env = { HOME: home, XDG_CONFIG_HOME: path.join(home, 'config'), XDG_STATE_HOME: path.join(home, 'state'),
     XDG_RUNTIME_DIR: path.join(home, 'runtime'), XDG_DATA_HOME: path.join(home, 'data'), XDG_CACHE_HOME: path.join(home, 'cache'),
     CODEX_HOME: path.join(home, 'codex'), CLAUDE_APP_DIR: path.join(home, 'claude'), CLAUDE_CONFIG_DIR: path.join(home, 'claude-code'),
-    CLAUDE_CODE_CONFIG_DIR: path.join(home, 'claude-code'), ASB_SYSTEM_INSTALL: '1', ASB_PYTHON: '/bin/true',
+    CLAUDE_CODE_CONFIG_DIR: path.join(home, 'claude-code'), ASB_SYSTEM_INSTALL: '1', ASB_PYTHON: path.join(home, 'bin/fake-python'),
     ASB_NODE: process.execPath, PATH: `${path.join(home, 'bin')}:/usr/bin:/bin`, ASB_SYSTEMCTL_LOG: path.join(home, 'systemctl.jsonl'),
     PORT: String(await freePort()), ASB_TRAY: '0' };
   await mkdir(env.XDG_RUNTIME_DIR, { mode: 0o700 });
   await mkdir(path.join(home, 'bin'));
+  // The fake Python answers the board probe (ASB_FAKE_PROBE, else a full board); as the window it exits at once.
+  await writeFile(env.ASB_PYTHON, fakePython(), { mode: 0o755 });
   await writeFile(path.join(home, 'bin/systemctl'), `#!${process.execPath}\nconst fs = require('node:fs');\nconst args=process.argv.slice(2);\nfs.appendFileSync(process.env.ASB_SYSTEMCTL_LOG, JSON.stringify(args)+'\\n');\nif (process.env.ASB_SYSTEMCTL_FAIL && args.includes(process.env.ASB_SYSTEMCTL_FAIL)) process.exit(1);\nif (args.includes('is-active')) console.log('active');\nif (args.includes('show')) console.log('1');\n`, { mode: 0o755 });
   const launch = (args, extra = {}, program = process.execPath) => {
     // As scripts/asb.mjs does: Node.js 22 prints the SQLite ExperimentalWarning on stderr.
@@ -496,7 +504,7 @@ test('the engine starts the tray with its environment, stops it, and survives a 
   const f = await fixture(t);
   const record = path.join(f.home, 'tray.env');
   const tray = path.join(f.home, 'fake-tray');
-  await writeFile(tray, `#!/bin/sh\nprintf '%s\\n' "$ASB_ENGINE_PID" "$ASB_ENGINE_URL" "$ASB_LAUNCHER" "\${#ASB_SOURCE_TOKEN}" "$1" > "${record}.tmp"\nmv "${record}.tmp" "${record}"\n[ -n "$ASB_TRAY_FAIL" ] && exit 3\nexec sleep 60\n`, { mode: 0o755 });
+  await writeFile(tray, fakePython(`printf '%s\\n' "$ASB_ENGINE_PID" "$ASB_ENGINE_URL" "$ASB_LAUNCHER" "\${#ASB_SOURCE_TOKEN}" "$1" "\${ASB_BOARD-unset}" > "${record}.tmp"\nmv "${record}.tmp" "${record}"\n[ -n "$ASB_TRAY_FAIL" ] && exit 3\nexec sleep 60\n`), { mode: 0o755 });
   const extra = { ASB_TRAY: '', ASB_PYTHON: tray, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/nonexistent', ASB_INSTALLED_LAUNCHER: '/opt/asb/bin/asb' };
   const recorded = async () => {
     for (let tries = 0; tries < 100; tries += 1) {
@@ -511,6 +519,8 @@ test('the engine starts the tray with its environment, stops it, and survives a 
   const values = await recorded();
   assert.deepEqual(values.slice(0, 4), [String(child.pid), `http://127.0.0.1:${f.env.PORT}`, '/opt/asb/bin/asb', '64']);
   assert.ok(values[4].endsWith('/scripts/asb-tray.py'));
+  // A full board: the tray gets no ASB_BOARD.
+  assert.equal(values[5], 'unset');
   const trayPid = Number((await readFile(`/proc/${child.pid}/task/${child.pid}/children`, 'utf8')).trim().split(/\s+/)[0]);
   assert.ok(trayPid > 0);
   const runtime = await readServiceRuntime(f.env);
@@ -527,4 +537,40 @@ test('the engine starts the tray with its environment, stops it, and survives a 
   for (let tries = 0; tries < 100 && !failing.errors.includes('exit code 3'); tries += 1) await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(failing.errors, 'ASB tray icon stopped with exit code 3.\n');
   assert.ok(await findRunningService(f.env));
+});
+
+test('without the board the tray gets ASB_BOARD=0, and without PyGObject no tray starts', { timeout: 20_000 }, async (t) => {
+  const f = await fixture(t);
+  const record = path.join(f.home, 'tray.env');
+  const tray = path.join(f.home, 'fake-tray');
+  await writeFile(tray, fakePython(`printf '%s\\n' "\${ASB_BOARD-unset}" > "${record}.tmp"\nmv "${record}.tmp" "${record}"\nexec sleep 60\n`), { mode: 0o755 });
+  const extra = { ASB_TRAY: '', ASB_PYTHON: tray, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/nonexistent', ASB_INSTALLED_LAUNCHER: '/opt/asb/bin/asb' };
+  const stopEngine = async (child) => {
+    const runtime = await readServiceRuntime(f.env);
+    const base = `http://127.0.0.1:${runtime.port}`;
+    const reply = await fetch(`${base}/api/engine/stop`, { method: 'POST', body: '{}',
+      headers: { origin: base, 'content-type': 'application/json', 'X-ASB-Source-Token': runtime.sourceToken } });
+    assert.equal(reply.status, 200);
+    assert.equal((await child.closed)[0], 0, child.errors);
+  };
+  // Old GTK with PyGObject: the tray starts without Open ASB.
+  const old = f.launch([engineScript, 'run'], { ...extra, ASB_FAKE_PROBE: probeLine({ gtk: [4, 8, 3], adw: [1, 2, 2] }) });
+  await ready(old);
+  let text = null;
+  for (let tries = 0; tries < 100 && !text; tries += 1) {
+    text = await readFile(record, 'utf8').catch(() => null);
+    if (!text) await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(text, '0\n');
+  assert.equal(old.errors, '');
+  await stopEngine(old);
+  await rm(record);
+  // No PyGObject: no tray, one error line, and the engine keeps running.
+  const none = f.launch([engineScript, 'run'], { ...extra, ASB_FAKE_PROBE: probeLine({ gi: null, gtk: null, adw: null, glib: null }) });
+  await ready(none);
+  assert.equal(none.errors, 'ASB cannot start its tray icon: no Python 3 with PyGObject was found.\n');
+  assert.equal(none.exitCode, null);
+  assert.ok(await findRunningService(f.env));
+  await assert.rejects(readFile(record), { code: 'ENOENT' });
+  await stopEngine(none);
 });

@@ -126,15 +126,17 @@ export async function runEngine({ env = process.env, platform = process.platform
     if (stopping) return;
     relay.start().catch(() => console.error('ASB cannot start the message relay.'));
     runtimeRecord = await publishInstanceRuntime(prepared, { schema: 1, pid: process.pid, port, sourceToken });
-    // The tray needs only GLib, so the first Python with PyGObject is enough.
+    // The tray needs only GLib, so a Python with PyGObject is enough. Without the board, the tray has no Open ASB (ASB_BOARD=0).
     const wantTray = !stopping && shouldStartTray(env, platform);
-    const board = wantTray && !env.ASB_PYTHON ? await boardCheck({ env, execFile }) : null;
-    const trayPython = env.ASB_PYTHON || (board?.versions?.gi ? board.python : '');
+    const board = wantTray ? await boardCheck({ env, execFile }) : null;
+    const trayPython = board?.versions?.gi ? board.python : '';
     if (wantTray && !trayPython) console.error('ASB cannot start its tray icon: no Python 3 with PyGObject was found.');
     if (wantTray && trayPython && !stopping) {
+      const { ASB_BOARD: _board, ...trayEnv } = env;
       tray = spawnProcess(trayPython, [fileURLToPath(new URL('./asb-tray.py', import.meta.url))], {
         stdio: ['ignore', 'ignore', 'inherit'],
-        env: { ...env, ASB_ENGINE_PID: String(process.pid), ASB_ENGINE_URL: `http://127.0.0.1:${port}`, ASB_SOURCE_TOKEN: sourceToken, ASB_LAUNCHER: trayLauncher(env) },
+        env: { ...trayEnv, ...(board.ok ? {} : { ASB_BOARD: '0' }), ASB_ENGINE_PID: String(process.pid), ASB_ENGINE_URL: `http://127.0.0.1:${port}`,
+          ASB_SOURCE_TOKEN: sourceToken, ASB_LAUNCHER: trayLauncher(env) },
       });
       tray.unref();
       tray.once('error', (error) => {
