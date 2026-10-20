@@ -18,6 +18,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Fixed an engine stop when the browser view asks for a file that ASB cannot read.
 - Fixed a board that stopped showing cards because of one bad card: a card with no provider, a usage limit reset time that is not a date, or a title cut inside an emoji. Titles are now cut on whole characters, and ASB repairs broken text in rows from other machines.
 - The session menu now has **Copy relative reference** (the app host and session ID, in the same app) and **Copy absolute reference** (`asb:1/...`, with ASB, on any machine of the group). When ASB cannot make a reference, the row shows why.
+- Made the board faster under the pointer and with the Ctrl numbers: these changes now restyle only the cards that change. Very long titles are cut on the card; the tooltip shows the full title.
 
 ## ASB 1.9.0 - 2026-10-20
 

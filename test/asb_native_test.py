@@ -206,6 +206,11 @@ class WidgetCheck(unittest.TestCase):
                     window.check_geometry()
                 self.drain(.15)
 
+    @staticmethod
+    def hover_card(window, card, inside):
+        # The same method that the motion controller of the card calls on notify::contains-pointer.
+        window.row_hover(SimpleNamespace(contains_pointer=lambda: inside, get_widget=lambda: card))
+
     def widget_rows(self, window):
         column = window.list_body.get_first_child()
         while column:
@@ -2051,14 +2056,16 @@ class WidgetCheck(unittest.TestCase):
         for selected, row_height, size in ((0, asb.ROW_HEIGHT, 16), (1, asb.COMFORTABLE_ROW_HEIGHT, 18)):
             with self.subTest(selected=selected):
                 window.view_filter.set_selected(selected); self.drain(.5)
-                window.update_number_keys()
-                window.list_body.add_css_class("asb-numbers-shown"); self.drain(.3)
+                window.show_numbers(); self.drain(.3)
+                self.assertTrue(window.numbers_shown)
+                self.assertFalse(window.list_body.has_css_class("asb-numbers-shown"))
                 # Whole cards only: two complete columns of the 680px window.
                 self.assertEqual(window.number_keys, window.row_order[:min(9, window.columns * window.capacity)])
                 for number, identity in enumerate(window.number_keys, 1):
                     card = window.focus_widgets[identity]
                     badge = card.asb_number_label
                     self.assertEqual((badge.get_label(), badge.get_visible(), badge.get_can_target()), (str(number), True, False))
+                    self.assertTrue(badge.has_css_class("asb-number-shown"))
                     self.assertFalse(badge.get_parent().get_measure_overlay(badge))
                     found, box = badge.compute_bounds(badge.get_parent())  # The border box.
                     self.assertEqual((box.size.width, box.size.height), (size, size))
@@ -2069,8 +2076,10 @@ class WidgetCheck(unittest.TestCase):
                     self.assertAlmostEqual(box.origin.y * 2 + size, mark.origin.y * 2 + mark.size.height, delta=1)
                 hidden = window.focus_widgets[window.row_order[len(window.number_keys)]].asb_number_label
                 self.assertEqual((hidden.get_label(), hidden.get_visible()), ("", False))
+                self.assertFalse(hidden.has_css_class("asb-number-shown"))
                 self.assertTrue(all(row.get_height() == row_height for row in self.widget_rows(window)))
-                window.list_body.remove_css_class("asb-numbers-shown")
+                window.hide_numbers(); self.drain(.3)
+                self.assertFalse(badge.has_css_class("asb-number-shown"))
         window.set_palette({"background": "#000000", "text": "#7c7c7c", "accent": "#ff0000", "muted": "#999999", "divider": "#333333"})
         self.drain()
         badge = window.focus_widgets[window.number_keys[0]].asb_number_label
@@ -2795,12 +2804,12 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual((one.get_height(), one.asb_title_label.get_height()), (68, 32))
         self.assertEqual((self.ink(one.asb_dot), self.ink(cue), self.ink(drawer), self.ink(one.asb_state_label)), (255, 0, 0, 255))
         self.assertEqual(self.ink(copy_button), 0)
-        one.set_state_flags(hover, False); question.set_state_flags(hover, False); settle()
+        self.hover_card(window, one, True); self.hover_card(window, question, True); settle()
         self.assertEqual((self.ink(one.asb_dot), self.ink(drawer), self.ink(copy_button), self.ink(question.asb_copy_button)), (0, 255, 255, 255))
         self.assertGreater(self.ink(cue), 0)
         self.assertLess(self.ink(one.asb_state_label), 255)  # The read tone.
         self.assertGreater(self.ink(question.asb_dot), 0)  # A ? does not change.
-        one.unset_state_flags(hover); question.unset_state_flags(hover); settle()
+        self.hover_card(window, one, False); self.hover_card(window, question, False); settle()
         self.assertEqual((self.ink(one.asb_dot), self.ink(cue), self.ink(drawer), self.ink(copy_button)), (255, 0, 0, 0))
         # Focus from a mouse click (not visible) does not change the row. Visible keyboard focus shows the controls.
         shown = lambda: (self.ink(one.asb_dot), self.ink(drawer), self.ink(cue) > 0, self.ink(one.asb_state_label), self.ink(copy_button))
@@ -2848,10 +2857,10 @@ class WidgetCheck(unittest.TestCase):
         self.assert_accessible_label(one, one.asb_accessible_label)
         self.assertIn("Finished. Not read yet.\nIn the drawer", one.asb_tooltip)
         self.assertEqual(asb.row_menu_actions(one.asb_thread)[:2], [("Read", "mark-read"), ("Take out of drawer", "drawer-out")])
-        one.set_state_flags(hover, False); settle()
+        self.hover_card(window, one, True); settle()
         self.assertEqual((self.ink(one.asb_dot), self.ink(read), self.ink(drawer)), (0, 255, 255))
         self.assertGreater(self.ink(cue), 0)
-        one.unset_state_flags(hover); settle()
+        self.hover_card(window, one, False); settle()
 
         # Peek changes only the drawer cards; CSS shows their unread look without a render.
         controllers = pill.observe_controllers()
@@ -2867,13 +2876,13 @@ class WidgetCheck(unittest.TestCase):
                     rest = cards["s3"].asb_copy_button
                     self.assertTrue(rest.has_css_class("asb-copy-confirmed"))
                     self.assertEqual((self.ink(rest), self.ink(rest.get_parent()), self.ink(two.asb_copy_button)), (0, 0, 0))
-                    cards["s3"].set_state_flags(hover, False); two.set_state_flags(hover, False)
+                    self.hover_card(window, cards["s3"], True); self.hover_card(window, two, True)
                     two.asb_copy_button.set_state_flags(hover, False); settle()
                     self.assertEqual(self.ink(rest), 255)
                     if palette:  # Only the check uses the accent; the copy icon keeps the text color.
                         self.assertEqual((window.hex_color(rest.get_color()), window.hex_color(two.asb_copy_button.get_color())),
                                          (palette["accent"], palette["text"]))
-                    cards["s3"].unset_state_flags(hover); two.unset_state_flags(hover); two.asb_copy_button.unset_state_flags(hover); settle()
+                    self.hover_card(window, cards["s3"], False); self.hover_card(window, two, False); two.asb_copy_button.unset_state_flags(hover); settle()
                 colors = lambda card: [getattr(card, name).get_color().to_string() for name in
                                        ("asb_title_label", "asb_folder", "asb_state_label", "asb_age_label") if hasattr(card, name)]
                 with patch.object(window, "render") as render:
@@ -2900,11 +2909,11 @@ class WidgetCheck(unittest.TestCase):
                     self.assertEqual(self.ink(one.asb_dot), 0)
                     if not palette:
                         self.assertLess(self.ink(one.asb_state_label), 255 if not view else 256)
-                    two.set_state_flags(hover, False); settle()  # The hover rule holds in both views.
+                    self.hover_card(window, two, True); settle()  # The hover rule holds in both views.
                     self.assertEqual(self.ink(two.asb_dot), 0)
                     if view:
                         self.assertEqual(self.ink(two.asb_drawer_button), 255)
-                    two.unset_state_flags(hover); settle()
+                    self.hover_card(window, two, False); settle()
                     self.assertEqual(self.ink(two.asb_dot), 255)
                     render.assert_not_called()
         window.set_palette(None)
@@ -3027,7 +3036,7 @@ class WidgetCheck(unittest.TestCase):
         window.view_filter.set_selected(1); self.drain(.3); window.check_geometry(); self.drain()
         settle = lambda: self.settle(window)
         settle()
-        cards, hover = window.focus_widgets, asb.Gtk.StateFlags.PRELIGHT
+        cards = window.focus_widgets
         def bounds(widget, card):
             found, rectangle = widget.compute_bounds(card)
             self.assertTrue(found)
@@ -3057,13 +3066,13 @@ class WidgetCheck(unittest.TestCase):
             beside(cards[identity], cards[identity].asb_folder)
         # A muted Working card has no Discard ring, also on hover; an unmuted one keeps it.
         busy, plain = cards["busy"], cards["plain"]
-        busy.set_state_flags(hover, False); plain.set_state_flags(hover, False); settle()
+        self.hover_card(window, busy, True); self.hover_card(window, plain, True); settle()
         self.assertFalse(busy.asb_read_button.get_visible())
         self.assertFalse(busy.asb_read_button.has_css_class("asb-discard-offer"))
         self.assertEqual(self.ink(busy.asb_dot), 0)
         self.assertTrue(plain.asb_read_button.get_visible() and plain.asb_read_button.has_css_class("asb-discard-offer"))
         self.assertGreater(self.ink(plain.asb_dot), 0)
-        busy.unset_state_flags(hover); plain.unset_state_flags(hover); settle()
+        self.hover_card(window, busy, False); self.hover_card(window, plain, False); settle()
         # A narrow column ellipsizes a long folder name first; the icon stays visible inside the card.
         dashboard["threads"][0]["projectName"] = "a-very-long-project-folder-name-for-the-mute-check"
         window.apply_dashboard(copy.deepcopy(dashboard), None); settle()
@@ -3367,6 +3376,52 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual(two.asb_copy_button.get_child().get_icon_name(), "object-select-symbolic")
         window.close(); self.drain(.03)
 
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real pointer movement needs xdotool and a nested test display (DISPLAY=:9 or :10).")
+    def test_real_pointer_sets_one_hover_class_on_each_card(self):
+        asb.gi.require_version("GdkX11", "4.0")
+        from gi.repository import GdkX11
+        dashboard = {"generatedAtMs": NOW, "providers": [], "threads": [
+            {"id": f"s{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Summarize the open issues {n}",
+             "cwd": "/example/field-notes", "projectName": "field-notes", "state": "idle", "canOpen": True,
+             "updatedAtMs": NOW - n * 60_000} for n in range(1, 5)]}
+        patcher = patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        def xdo(*args):
+            return subprocess.run(["xdotool", *map(str, args)], check=True, capture_output=True, text=True).stdout
+        x, y = (line.split("=")[1] for line in xdo("getmouselocation", "--shell").splitlines()[:2])
+        self.addCleanup(xdo, "mousemove", x, y)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(700, 420)
+        window.present(); window.set_focus(None); self.drain(.4)
+        window.view_filter.set_selected(1); self.drain(.4); window.check_geometry(); self.drain(.3)
+        cards = window.focus_widgets
+        def move(widget=None):
+            left, top = window.get_surface_transform()
+            x, y = 10, 10  # The top left corner of the header, off the board.
+            if widget:
+                found, bounds = widget.compute_bounds(window)
+                self.assertTrue(found)
+                x, y = bounds.origin.x + bounds.size.width / 2, bounds.origin.y + bounds.size.height / 2
+            xdo("mousemove", "--window", GdkX11.X11Surface.get_xid(window.get_surface()), int(x + left), int(y + top))
+            self.settle(window)
+            return [identity for identity, card in cards.items() if card.has_css_class("asb-hovered")]
+        # Each card has exactly one of the two classes at all times.
+        one_class = lambda: all(card.has_css_class("asb-hovered") != card.has_css_class("asb-unhovered") for card in cards.values())
+        self.assertEqual([identity for identity, card in cards.items() if card.has_css_class("asb-hovered")], [])
+        self.assertTrue(one_class())
+        self.assertEqual(move(cards["s1"].asb_title_label), ["s1"])
+        self.assertTrue(one_class())
+        self.assertEqual(self.ink(cards["s1"].asb_copy_button), 255)
+        self.assertEqual(self.ink(cards["s2"].asb_copy_button), 0)
+        self.assertEqual(move(cards["s2"].asb_title_label), ["s2"])
+        self.assertTrue(cards["s1"].has_css_class("asb-unhovered") and one_class())
+        self.assertEqual(self.ink(cards["s1"].asb_copy_button), 0)
+        self.assertEqual(move(), [])
+        self.assertTrue(one_class())
+        window.close(); self.drain(.03)
 
     def test_card_limit_more_card_show_all_chip_and_preference(self):
         from gi.repository import GdkX11

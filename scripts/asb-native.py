@@ -24,6 +24,7 @@ DEFAULT_COLUMN_WIDTH = 240
 # Cards on the board (Preferences > Sessions); 0 shows all cards.
 CARD_LIMITS = ((50, "50"), (100, "100"), (200, "200"), (500, "500"), (0, "All"))
 DEFAULT_CARD_LIMIT = 100
+# shortcut: a row ID "asb:more" (a source ID "asb" that a person typed into the source settings, with a thread "more") would show as the More card; app-made source IDs are "codex-<uuid>" or "claude-<uuid>", so change this ID only if a source can make it.
 MORE_ID = "asb:more"
 NUMBER_HOLD_MS = 400
 APP_ID = "local.asb.AgentSwitchBoard"
@@ -707,6 +708,16 @@ def view_only_tone(row):
     return "quiet" if row.get("state") in ("working", "waiting") else "rest"
 
 
+# shortcut: a Comfortable column wider than about 370 px shows the … before its two lines are full; raise the limit if wide columns are common.
+CARD_TITLE_CHARS = 85
+
+
+def card_title(title):
+    # Pango lays out the whole label text, also when the card shows only two lines; some titles are long prompts.
+    text = " ".join(title.split()) or "Untitled session"
+    return text if len(text) <= CARD_TITLE_CHARS else text[:CARD_TITLE_CHARS - 1].rstrip() + "…"
+
+
 def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
     full_path = row.get("cwd") or row.get("projectName") or "No project folder"
     path = full_path
@@ -1124,7 +1135,7 @@ def save_snapshot(window, output):
 class SessionStrip(Gtk.Box):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.hover_rect = self.hover_target = self.hover_from = self.hover_to = None
+        self.hover_rect = self.hover_target = self.hover_from = self.hover_to = self.hover_card = None
         self.hover_alpha = 0
         self.motion, self.motion_progress = {}, 0
         target = Adw.CallbackAnimationTarget.new(self.advance_hover)
@@ -1134,9 +1145,16 @@ class SessionStrip(Gtk.Box):
         self.flights = []
         self.connect("unmap", self.clear_flights)
 
-    def show_hover(self, rectangle):
-        if rectangle == self.hover_target:
+    def show_hover(self, rectangle, card=None):
+        if rectangle == self.hover_target and card is self.hover_card:
             return
+        if card is not self.hover_card:
+            # Only the card under the glide gets the class, so a class change restyles one card, not all cards.
+            if self.hover_card:
+                self.hover_card.remove_css_class("asb-hover-paint")
+            if card:
+                card.add_css_class("asb-hover-paint")
+            self.hover_card = card
         self.hover_animation.pause()
         self.hover_target = rectangle
         start = self.hover_rect if self.hover_alpha > 0 else rectangle
@@ -1146,7 +1164,6 @@ class SessionStrip(Gtk.Box):
             return
         self.hover_from = (*start, self.hover_alpha)
         self.hover_to = (*end, 1 if rectangle else 0)
-        self.add_css_class("asb-hover-paint")
         self.hover_animation.set_duration(200 if start != end else 100)
         self.hover_animation.reset()
         if self.get_settings().get_property("gtk-enable-animations"):
@@ -1162,16 +1179,17 @@ class SessionStrip(Gtk.Box):
         self.hover_rect = frame[:4] if self.hover_alpha > 0 else None
         if self.hover_target is None and self.hover_alpha <= 0:
             self.hover_from = self.hover_to = None
-            self.remove_css_class("asb-hover-paint")
         self.queue_draw()
 
     def clear_hover(self, *_args):
+        if self.hover_card:
+            self.hover_card.remove_css_class("asb-hover-paint")
+            self.hover_card = None
         if self.hover_rect is None and self.hover_target is None and self.hover_from is None:
             return
         self.hover_rect = self.hover_target = self.hover_from = self.hover_to = None
         self.hover_alpha = 0
         self.hover_animation.reset()
-        self.remove_css_class("asb-hover-paint")
         self.queue_draw()
 
     def do_snapshot(self, snapshot):
@@ -3169,7 +3187,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         css = f"""
 {base} .asb-session {{ min-height: {ROW_HEIGHT}px; padding: 0; border-radius: 3px; font-size: 13px; }}
 {base}.asb-comfortable .asb-session {{ min-height: {COMFORTABLE_ROW_HEIGHT}px; }}
-{base}.asb-comfortable .asb-hover-paint .asb-session:hover:not(:focus-within) {{ background: transparent; }}
+{base}.asb-comfortable .asb-session.asb-hover-paint:not(:focus-within) {{ background: transparent; }}
 {base} .asb-filter-pill {{ min-height: 24px; border-radius: 99px; padding: 2px 8px; font-size: 11px; }}
 {base} .asb-filter-pill:checked {{ background: @accent_bg_color; color: @accent_fg_color; }}
 {base}.asb-preferences stackswitcher > button.text-button {{ min-width: 0; }}
@@ -3188,7 +3206,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     color: @window_fg_color; font-size: 11px; font-weight: bold; line-height: 15px; opacity: 0;
     transition: opacity 100ms ease-out; }}
 {base}:not(.asb-comfortable) .asb-number {{ min-width: 14px; min-height: 13px; line-height: 13px; }}
-{base} .asb-numbers-shown .asb-number {{ opacity: 1; transition: opacity 140ms ease-out; }}
+{base} .asb-number.asb-number-shown {{ opacity: 1; transition: opacity 140ms ease-out; }}
 {base} .asb-number.asb-number-pressed {{ background: @accent_bg_color; color: @accent_fg_color; }}
 {base} .asb-column + .asb-column {{ border-left: 1px solid @borders; }}
 {base} .asb-dot, .asb-tooltip .asb-dot {{ min-width: 7px; min-height: 7px; border-radius: 50%; background: @accent_color; }}
@@ -3201,7 +3219,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-card-action {{ min-width: 24px; min-height: 24px; padding: 0; border: 0; border-radius: 50%; box-shadow: none; }}
 {base} .asb-card-action.asb-action-pending > * {{ opacity: .5; }}
 {base} .asb-pin-button {{ opacity: 0; }}
-{base} .asb-session:hover .asb-pin-button, {base} .asb-session:focus-within .asb-pin-button,
+{base} .asb-session.asb-hovered .asb-pin-button, {base} .asb-session:focus-within .asb-pin-button,
 {base} .asb-pin-button.asb-pinned {{ opacity: 1; }}
 {base} .asb-pin-button.asb-pinned {{ background: alpha(@window_fg_color, .12); }}
 {base} .asb-read-button {{ color: @accent_color; background: alpha(@window_fg_color, .08); }}
@@ -3217,7 +3235,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-read-button.asb-passive-indicator {{ background: transparent; }}
 {base} .asb-read-button.asb-discard-button {{ background: transparent; }}
 {base} .asb-discard-button.asb-discard-offer {{ opacity: 0; }}
-{base} .asb-session:hover .asb-discard-offer, {base} .asb-session:focus-within .asb-discard-offer {{ opacity: 1; }}
+{base} .asb-session.asb-hovered .asb-discard-offer, {base} .asb-session:focus-within .asb-discard-offer {{ opacity: 1; }}
 {base} .asb-drawer-glyph {{ min-width: 9px; min-height: 5px; border: 1px solid; border-radius: 2px; }}
 {base} .asb-drawer-handle {{ min-width: 3px; min-height: 1px; background: currentColor; }}
 {base} .asb-drawer-filled .asb-drawer-glyph {{ background: currentColor; }}
@@ -3226,24 +3244,24 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-drawer-dot {{ min-width: 5px; min-height: 5px; border-radius: 50%; background: @accent_color; }}
 {base} .asb-filter-pill:checked .asb-drawer-dot {{ background: @accent_fg_color; }}
 {base} .asb-drawer-button {{ opacity: 0; background: alpha(@window_fg_color, .08); }}
-{base} .asb-session:hover .asb-drawer-button, {base} .asb-key-focus .asb-drawer-button {{ opacity: 1; }}
+{base} .asb-session.asb-hovered .asb-drawer-button, {base} .asb-key-focus .asb-drawer-button {{ opacity: 1; }}
 {base} .asb-drawer-button.asb-drawer-filled {{ color: @accent_color; }}
 {base} .asb-drawer-button:hover, {base} .asb-drawer-button:focus-visible {{ background: alpha(@accent_color, .15); }}
 {base} .asb-copy-button {{ opacity: 0; background: alpha(@window_fg_color, .08); }}
-{base} .asb-session:hover .asb-copy-button, {base} .asb-key-focus .asb-copy-button {{ opacity: 1; }}
+{base} .asb-session.asb-hovered .asb-copy-button, {base} .asb-key-focus .asb-copy-button {{ opacity: 1; }}
 {base} .asb-copy-button:hover, {base} .asb-copy-button:focus-visible {{ background: alpha(@accent_color, .15); }}
 {base} .asb-copy-button.asb-copy-confirmed {{ color: @success_color; background: alpha(@success_color, .12); }}
-{base} .asb-session:hover .asb-copy-button.asb-copy-off, {base} .asb-key-focus .asb-copy-button.asb-copy-off {{ opacity: .45; }}
+{base} .asb-session.asb-hovered .asb-copy-button.asb-copy-off, {base} .asb-key-focus .asb-copy-button.asb-copy-off {{ opacity: .45; }}
 {base} .asb-copy-button.asb-copy-off, {base} .asb-copy-button.asb-copy-off:hover, {base} .asb-copy-button.asb-copy-off:focus-visible {{ background: none; }}
 {base} .asb-corner-wide {{ padding: 0 0 2px 16px; border-radius: 0 0 0 12px; }}
-{base} .asb-session:hover .asb-corner-wide, {base} .asb-key-focus .asb-corner-wide {{
+{base} .asb-session.asb-hovered .asb-corner-wide, {base} .asb-key-focus .asb-corner-wide {{
     background: linear-gradient(to right, alpha(@window_bg_color, 0), @window_bg_color 16px); }}
-{base} .asb-unread:hover .asb-dot, {base} .asb-unread.asb-key-focus .asb-read-button .asb-dot,
+{base} .asb-unread.asb-hovered .asb-dot, {base} .asb-unread.asb-key-focus .asb-read-button .asb-dot,
 {base} .asb-drawer:not(.asb-drawer-lit) .asb-dot {{ opacity: 0; }}
-{base} .asb-unread:hover .asb-read-cue, {base} .asb-unread.asb-key-focus .asb-read-cue {{ opacity: 1; }}
-{base} .asb-drawer:not(.asb-drawer-lit):not(:hover):not(.asb-key-focus) .asb-read-button {{ opacity: 0; }}
-{base}:not(.asb-custom) .asb-unread:hover .asb-state:not(.success):not(.warning) {{ opacity: .55; }}
-{base} .asb-drawer.asb-drawer-lit:not(:hover) .asb-state {{ opacity: 1; }}
+{base} .asb-unread.asb-hovered .asb-read-cue, {base} .asb-unread.asb-key-focus .asb-read-cue {{ opacity: 1; }}
+{base} .asb-drawer.asb-unhovered:not(.asb-drawer-lit):not(.asb-key-focus) .asb-read-button {{ opacity: 0; }}
+{base}:not(.asb-custom) .asb-unread.asb-hovered .asb-state:not(.success):not(.warning) {{ opacity: .55; }}
+{base} .asb-drawer.asb-drawer-lit.asb-unhovered .asb-state {{ opacity: 1; }}
 .asb-tooltip {{ font-size: 12px; }}
 .asb-tooltip .asb-tooltip-title {{ font-size: 13px; }}
 .asb-tooltip .asb-tooltip-path, .asb-tooltip .asb-tooltip-footer, .asb-tooltip .asb-tooltip-flags {{ font-size: 11px; }}
@@ -3287,7 +3305,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} .asb-column + .asb-column {{ border-color: {colors['divider']}; }}
 {scope} .asb-number {{ background: {number_fill}; border-color: {number_edge}; color: {colors['text']}; }}
 {scope} .asb-number.asb-number-pressed {{ background: {colors['accent']}; color: {number_pressed}; }}
-{scope} .asb-session:hover, {scope} .asb-session:focus-within {{ background: {highlight_color(colors)}; }}
+{scope} .asb-session.asb-hovered, {scope} .asb-session:focus-within {{ background: {highlight_color(colors)}; }}
 {scope} entry, {scope} button, {scope} dropdown {{ color: {colors['text']}; }}
 {scope} button.destructive-action, {scope} button.destructive {{ color: @destructive_color; }}
 {scope}.asb-preferences .asb-preferences-nav {{ background: alpha({colors['text']}, .04); }}
@@ -3316,7 +3334,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} .asb-copy-button:hover, {scope} .asb-copy-button:focus-visible {{ background: alpha({colors['accent']}, .15); }}
 {scope} .asb-copy-button.asb-copy-confirmed {{ color: {colors['accent']}; background: alpha({colors['accent']}, .15); }}
 {scope} .asb-copy-button.asb-copy-off, {scope} .asb-copy-button.asb-copy-off:hover, {scope} .asb-copy-button.asb-copy-off:focus-visible {{ background: none; }}
-{scope} .asb-session:hover .asb-corner-wide, {scope} .asb-key-focus .asb-corner-wide {{
+{scope} .asb-session.asb-hovered .asb-corner-wide, {scope} .asb-key-focus .asb-corner-wide {{
     background: linear-gradient(to right, alpha({colors['background']}, 0), {colors['background']} 16px); }}
 .asb-tooltip.asb-custom {{ color: {colors['text']}; }}
 .asb-tooltip.asb-custom .asb-tooltip-muted, .asb-tooltip.asb-custom .asb-state {{ color: {colors['muted']}; }}
@@ -3341,17 +3359,17 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             limited = f"mix(@window_bg_color, @window_fg_color, {limited_fraction})"
             limited_hover = f"mix(@window_bg_color, @window_fg_color, {hover_fraction})"
         # A drawer row is quiet as a read row, but not while the Drawer pill shows it as unread.
-        quiet = [base + ".asb-comfortable .asb-idle-read:not(.asb-limited):not(.asb-drawer-lit):not(:hover):not(:focus-within)"]
+        quiet = [base + ".asb-comfortable .asb-idle-read.asb-unhovered:not(.asb-limited):not(.asb-drawer-lit):not(:focus-within)"]
         parts = (" .asb-title", " .asb-folder", " .asb-state", " .asb-age", " .asb-limit-clock", " .asb-mute-glyph", " .asb-where",
                  " .asb-where-icon")
         # The Grey tone of a view-only row with no attention, in both views; hover and focus bring the normal colors back.
-        calm = ":not(.asb-limited):not(.asb-drawer-lit):not(:hover):not(:focus-within)"
+        calm = ".asb-unhovered:not(.asb-limited):not(.asb-drawer-lit):not(:focus-within)"
         view_only, view_only_rest = f"{base} .asb-view-only-quiet{calm}", f"{base} .asb-view-only-rest{calm}"
         css += f"""
 {", ".join(row + " .asb-title" for row in quiet)} {{ color: {quiet_title}; opacity: 1; }}
 {", ".join(row + part for row in quiet for part in (" .asb-folder", " .asb-state", " .asb-age"))} {{ color: {quiet_caption}; opacity: 1; }}
 {", ".join(base + " .asb-limited" + part for part in parts)} {{ color: {limited}; opacity: 1; }}
-{", ".join(base + " .asb-limited" + state + part for state in (":hover", ":focus-within") for part in parts)} {{ color: {limited_hover}; }}
+{", ".join(base + " .asb-limited" + state + part for state in (".asb-hovered", ":focus-within") for part in parts)} {{ color: {limited_hover}; }}
 {base} .asb-limited:not(.asb-message-lit) .asb-provider {{ opacity: .4; }}
 {view_only} .asb-title {{ color: {quiet_title}; opacity: 1; }}
 {", ".join(view_only + part for part in (" .asb-folder", " .asb-age", " .asb-where", " .asb-where-icon"))} {{ color: {quiet_caption}; opacity: 1; }}
@@ -3376,7 +3394,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             background, highlight = self.profile_surfaces
             self.badge_css.load_from_string("".join(
                 f""".asb-source-badge.{key} {{ background: {color}; border-color: {background}; }}
-.asb-session:hover .asb-source-badge.{key}, .asb-session:focus-within .asb-source-badge.{key} {{ border-color: {highlight}; }}
+.asb-session.asb-hovered .asb-source-badge.{key}, .asb-session:focus-within .asb-source-badge.{key} {{ border-color: {highlight}; }}
 """ for key, color in self.badge_colors.items()))
         return name
 
@@ -3940,7 +3958,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 found, bounds = row.compute_bounds(self.list_body)
                 if found:
                     rectangle = (bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height)
-        self.list_body.show_hover(rectangle)
+        self.list_body.show_hover(rectangle, row if rectangle else None)
 
     def column_drag_begin(self, gesture, x, _y):
         if not self.divider_at(x):
@@ -4057,7 +4075,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if not self.closed and not self.numbers_blocked():
             self.update_number_keys()
             self.numbers_shown = True
-            self.list_body.add_css_class("asb-numbers-shown")
+            # The class goes on the numbered keycaps only, so showing them restyles nine labels, not all cards.
+            for identity in self.number_keys:
+                self.focus_widgets[identity].asb_number_label.add_css_class("asb-number-shown")
         return False
 
     def hide_numbers(self, *_args):
@@ -4066,7 +4086,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.number_hold = None
         if self.numbers_shown:
             self.numbers_shown = False
-            self.list_body.remove_css_class("asb-numbers-shown")
+            for identity in self.number_keys:
+                widget = self.row_cache.get(identity)
+                if widget:
+                    widget.asb_number_label.remove_css_class("asb-number-shown")
         if self.number_pressed:
             self.number_pressed.remove_css_class("asb-number-pressed")
             self.number_pressed = None
@@ -4122,6 +4145,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget.asb_number = number
         widget.asb_number_label.set_label(str(number) if number else "")
         widget.asb_number_label.set_visible(bool(number))
+        if number and self.numbers_shown:
+            widget.asb_number_label.add_css_class("asb-number-shown")
+        else:
+            widget.asb_number_label.remove_css_class("asb-number-shown")
         if number:
             widget.update_property([Gtk.AccessibleProperty.KEY_SHORTCUTS], [f"Control+{number}"])
         else:
@@ -4507,6 +4534,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def session_row(self, row):
         widget = Gtk.ListBoxRow(selectable=False)
         widget.add_css_class("asb-session")
+        widget.add_css_class("asb-unhovered")
         widget.asb_focus_key = row["id"]
         widget.asb_view = None
         widget.asb_handlers = []
@@ -4520,6 +4548,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         for controller, signals in (
                 (Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE), (("key-pressed", self.row_key),)),
                 (Gtk.EventControllerFocus(), (("enter", self.row_focus),)),
+                (Gtk.EventControllerMotion(), (("notify::contains-pointer", self.row_hover),)),
                 (Gtk.GestureClick(button=3), (("pressed", self.row_context),)),
                 (Gtk.DragSource(actions=Gdk.DragAction.MOVE), (("prepare", self.pin_drag_prepare),
                                                           ("drag-end", self.pin_drag_end))),
@@ -4529,6 +4558,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.add_controller(controller)
         self.update_session_row(widget, row)
         return widget
+
+    def row_hover(self, controller, *_args):
+        # A class on the card in place of the hover pseudo-class, so a hover change on the strip or a column does not restyle every card.
+        hovered = controller.contains_pointer()
+        widget = controller.get_widget()
+        widget.add_css_class("asb-hovered" if hovered else "asb-unhovered")
+        widget.remove_css_class("asb-unhovered" if hovered else "asb-hovered")
 
     def release_row(self, widget):
         self.clear_read_feedback(widget)
@@ -4685,6 +4721,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             number_label.set_valign(Gtk.Align.CENTER)
             number_label.set_can_target(False)
             number_label.set_visible(bool(number))
+            if number and self.numbers_shown:
+                number_label.add_css_class("asb-number-shown")
             mark_overlay.add_overlay(number_label)
             mark_overlay.set_measure_overlay(number_label, False)
             widget.asb_number_label = number_label
@@ -5432,7 +5470,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         error = self.open_errors.get(row["id"], "")
         widget.asb_open_signature = (opening, error)
         # One paragraph: the line limit of the label is for each paragraph, so a title with line breaks made a card many lines high.
-        widget.asb_title_label.set_label("Opening…" if opening else " ".join(row.get("title", "").split()) or "Untitled session")
+        widget.asb_title_label.set_label("Opening…" if opening else card_title(row.get("title", "")))
         widget.set_sensitive(not opening)
         duration = widget.asb_duration
         name = "Opening " + widget.asb_accessible_label.removeprefix("Open ") if opening else widget.asb_accessible_label

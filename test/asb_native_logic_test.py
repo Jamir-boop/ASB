@@ -2385,7 +2385,7 @@ class NativeLogicChecks(unittest.TestCase):
         marker.add_css_class.assert_called_once_with("asb-badge-b28f80")
         css = window.badge_css.load_from_string.call_args.args[0]
         self.assertIn(".asb-source-badge.asb-badge-b28f80 { background: #b28f80; border-color: #0f0f0f; }", css)
-        self.assertIn(".asb-session:hover .asb-source-badge.asb-badge-b28f80, "
+        self.assertIn(".asb-session.asb-hovered .asb-source-badge.asb-badge-b28f80, "
                       ".asb-session:focus-within .asb-source-badge.asb-badge-b28f80 { border-color: #242424; }", css)
         window.badge_css.load_from_string.reset_mock()
         marker.add_css_class.reset_mock()
@@ -2732,6 +2732,19 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(SCOPE["ROW_HEIGHT"], 22)
         self.assertEqual(SCOPE["COMFORTABLE_ROW_HEIGHT"], 68)
 
+    def test_card_title_folds_space_and_cuts_long_titles(self):
+        self.assertEqual(asb.CARD_TITLE_CHARS, 85)
+        self.assertEqual(asb.card_title("Fix the board"), "Fix the board")
+        self.assertEqual(asb.card_title("  Fix\n the\t board  "), "Fix the board")
+        self.assertEqual(asb.card_title(""), "Untitled session")
+        self.assertEqual(asb.card_title(" \n "), "Untitled session")
+        self.assertEqual(asb.card_title("a" * 85), "a" * 85)
+        for size in (86, 5000):
+            self.assertEqual(asb.card_title("a" * size), "a" * 84 + "…")
+        self.assertEqual(asb.card_title("a" * 83 + " " + "b" * 10), "a" * 83 + "…")  # No space before the ….
+        cut = asb.card_title("a" * 83 + "😀" + "b" * 10)
+        self.assertEqual((cut, len(cut)), ("a" * 83 + "😀…", 85))  # The emoji stays whole.
+
     def test_tooltip_model_notes_follow_the_visible_indicator_and_source(self):
         model = SCOPE["tooltip_model"]
         base = {"id": "a", "state": "idle", "title": "Chat", "providerLabel": "Codex", "canOpen": True}
@@ -2885,7 +2898,8 @@ class NativeLogicChecks(unittest.TestCase):
             controllers.append(value)
             return value
         gtk = SimpleNamespace(ListBoxRow=lambda **_kwargs: widget, EventControllerKey=controller,
-                              EventControllerFocus=controller, GestureClick=controller, DragSource=controller,
+                              EventControllerFocus=controller, EventControllerMotion=controller, GestureClick=controller,
+                              DragSource=controller,
                               DropTarget=SimpleNamespace(new=lambda *_args: controller()),
                               PropagationPhase=SimpleNamespace(CAPTURE=0))
         with patch.dict(SCOPE, {"Gtk": gtk, "Gdk": SimpleNamespace(DragAction=SimpleNamespace(MOVE=0)),
@@ -2893,7 +2907,9 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertIs(window.session_row({"id": "a"}), widget)
             widget.set_has_tooltip.assert_called_once_with(True)
             widget.connect.assert_called_once_with("query-tooltip", window.query_row_tooltip)
-            self.assertEqual(len(widget.asb_handlers), 5)
+            self.assertEqual(len(widget.asb_handlers), 6)
+            widget.add_css_class.assert_any_call("asb-unhovered")
+            controllers[2].connect.assert_called_once_with("notify::contains-pointer", window.row_hover, "a")
             self.assertIsNone(widget.asb_tooltip_content)
             self.assertIsNone(widget.asb_tooltip_key)
             widget.asb_tooltip_content, widget.asb_tooltip_key = object(), ("cached",)
@@ -2901,7 +2917,7 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertIsNone(widget.asb_tooltip_content)
             self.assertIsNone(widget.asb_tooltip_key)
             widget.disconnect.assert_called_once_with(77)
-            self.assertEqual(widget.remove_controller.call_count, 5)
+            self.assertEqual(widget.remove_controller.call_count, 6)
             self.assertTrue(all(call.args[0] is not widget for call in widget.remove_controller.call_args_list))
             self.assertIsNone(widget.asb_tooltip_handler)
             widget.set_tooltip_text.assert_not_called()
@@ -3064,63 +3080,81 @@ class NativeLogicChecks(unittest.TestCase):
                          expected | {"archived-unread"})
 
     def test_hover_retargets_clears_and_settles_with_animations_disabled(self):
+        def card():
+            classes = set()
+            return SimpleNamespace(classes=classes, add_css_class=classes.add, remove_css_class=classes.discard)
         strip = object.__new__(Strip)
         classes = set()
         strip.add_css_class, strip.remove_css_class = classes.add, classes.discard
         strip.queue_draw = Mock()
         strip.get_settings = Mock(return_value=Mock(get_property=Mock(return_value=True)))
         strip.hover_animation = Mock(reset=Mock(side_effect=lambda: strip.advance_hover(0)))
-        strip.hover_rect = strip.hover_target = strip.hover_from = strip.hover_to = None
+        strip.hover_rect = strip.hover_target = strip.hover_from = strip.hover_to = strip.hover_card = None
         strip.hover_alpha = 0
         strip.clear_hover()
         first, second, across = (0, 0, 240, 68), (0, 68, 240, 68), (252, 0, 240, 68)
-        strip.show_hover(first)
+        one, two, three = card(), card(), card()
+        strip.show_hover(first, one)
         self.assertEqual(strip.hover_alpha, 0)
-        self.assertEqual(classes, {"asb-hover-paint"})
+        self.assertEqual((one.classes, classes), ({"asb-hover-paint"}, set()))
         strip.hover_animation.set_duration.assert_called_with(100)
         strip.advance_hover(.5)
         self.assertEqual((strip.hover_rect, strip.hover_alpha), (first, .5))
         strip.advance_hover(1)
-        strip.show_hover(second)
+        strip.show_hover(second, two)
+        self.assertEqual((one.classes, two.classes), (set(), {"asb-hover-paint"}))
         strip.hover_animation.set_duration.assert_called_with(200)
         strip.advance_hover(.5)
         self.assertEqual(strip.hover_rect, (0, 34, 240, 68))
-        strip.show_hover(across)
+        strip.show_hover(across, three)
+        self.assertEqual((two.classes, three.classes), (set(), {"asb-hover-paint"}))
         self.assertEqual(strip.hover_from, (0, 34, 240, 68, 1))
         strip.advance_hover(.5)
         self.assertEqual(strip.hover_rect, (126, 17, 240, 68))
         strip.advance_hover(1)
         strip.show_hover(None)
+        self.assertEqual(three.classes, set())  # The pointer left the card, so the fade-out needs no class.
         strip.hover_animation.set_duration.assert_called_with(100)
         strip.advance_hover(.5)
         self.assertEqual((strip.hover_rect, strip.hover_alpha), (across, .5))
-        self.assertEqual(classes, {"asb-hover-paint"})
         strip.advance_hover(1)
         self.assertIsNone(strip.hover_rect)
-        self.assertEqual(classes, set())
-        strip.show_hover(first)
+        strip.show_hover(first, one)
         strip.advance_hover(.5)
         self.assertEqual(strip.hover_rect, first)
         strip.queue_draw.reset_mock()
         strip.hover_animation.reset.reset_mock()
         strip.clear_hover()
+        self.assertEqual((one.classes, strip.hover_card), (set(), None))
         for _frame in range(20):
             strip.clear_hover()
         strip.queue_draw.assert_called_once_with()
         strip.hover_animation.reset.assert_called_once_with()
-        self.assertEqual(classes, set())
         strip.queue_draw.reset_mock()
         strip.advance_hover(.5)
         strip.queue_draw.assert_not_called()
         self.assertIsNone(strip.hover_target)
         strip.get_settings.return_value.get_property.return_value = False
         strip.hover_animation.play.reset_mock()
-        for rectangle in (second, across, None):
-            strip.show_hover(rectangle)
+        for rectangle, hovered in ((second, two), (across, three), (None, None)):
+            strip.show_hover(rectangle, hovered)
             self.assertEqual(strip.hover_rect, rectangle)
             self.assertEqual(strip.hover_alpha, 1 if rectangle else 0)
-            self.assertEqual(classes, {"asb-hover-paint"} if rectangle else set())
+            self.assertEqual([item for item in (one, two, three) if item.classes], [hovered] if hovered else [])
         strip.hover_animation.play.assert_not_called()
+        self.assertEqual(classes, set())  # The strip never gets a class, so no change restyles all cards.
+
+    def test_row_hover_sets_exactly_one_hover_class(self):
+        window = object.__new__(Window)
+        classes = {"asb-session", "asb-unhovered"}
+        card = SimpleNamespace(add_css_class=classes.add, remove_css_class=classes.discard)
+        for inside, expected in ((True, "asb-hovered"), (True, "asb-hovered"), (False, "asb-unhovered"), (True, "asb-hovered")):
+            window.row_hover(SimpleNamespace(contains_pointer=lambda: inside, get_widget=lambda: card), None, "s1")
+            self.assertEqual(classes, {"asb-session", expected})
+        # The ASB CSS names no hover pseudo-class on a card; only buttons keep it.
+        css = SOURCE.read_text()
+        for rule in (".asb-session:hover", ".asb-unread:hover", ":not(:hover)", '":hover"'):
+            self.assertNotIn(rule, css)
 
     def test_scroll_does_not_restart_hover_paint_for_a_stationary_pointer(self):
         window = object.__new__(Window)
@@ -3148,7 +3182,7 @@ class NativeLogicChecks(unittest.TestCase):
             position[1] += 1  # A real pointer move restores the normal hover path.
             window.hover_motion(controller, 151, 200)
             window.list_body.pick.assert_called_once()
-            window.list_body.show_hover.assert_called_once_with(None)
+            window.list_body.show_hover.assert_called_once_with(None, None)
             window.scroll_target = 300
             position[1] += 1
             window.hover_motion(controller, 152, 200)
@@ -4694,8 +4728,8 @@ class NativeLogicChecks(unittest.TestCase):
                 # Copy is in every wide corner, so the fade follows the width, not the drawer button.
                 (corner.add_css_class if width >= 190 else corner.remove_css_class).assert_called_with("asb-corner-wide")
         css = SOURCE.read_text()
-        for rule in ("{base} .asb-unread:hover .asb-dot,", "{base} .asb-drawer:not(.asb-drawer-lit) .asb-dot {{ opacity: 0; }}",
-                     "{base} .asb-unread:hover .asb-read-cue,", "{base} .asb-drawer.asb-drawer-lit:not(:hover) .asb-state {{ opacity: 1; }}"):
+        for rule in ("{base} .asb-unread.asb-hovered .asb-dot,", "{base} .asb-drawer:not(.asb-drawer-lit) .asb-dot {{ opacity: 0; }}",
+                     "{base} .asb-unread.asb-hovered .asb-read-cue,", "{base} .asb-drawer.asb-drawer-lit.asb-unhovered .asb-state {{ opacity: 1; }}"):
             self.assertIn(rule, css)
         self.assertIn('"drawer-in", "drawer-out", "mute", "unmute"):', css)
 
@@ -5071,8 +5105,14 @@ class NativeLogicChecks(unittest.TestCase):
         viewport = SimpleNamespace(get_width=lambda: 500, get_height=lambda: 66)
         window.scroll = SimpleNamespace(get_child=lambda: viewport)
         places = {f"r{index}": (4 + 252 * (index // 3), 22 * (index % 3)) for index in range(6)}
+        def keycap():
+            classes = set()
+            return Mock(classes=classes, add_css_class=Mock(side_effect=classes.add),
+                        remove_css_class=Mock(side_effect=classes.discard))
+        def shown():
+            return {identity for identity, widget in cards.items() if "asb-number-shown" in widget.asb_number_label.classes}
         def card(identity):
-            return SimpleNamespace(asb_thread={"id": identity, "canOpen": identity != "r1"}, asb_number_label=Mock(),
+            return SimpleNamespace(asb_thread={"id": identity, "canOpen": identity != "r1"}, asb_number_label=keycap(),
                                    update_property=Mock(), reset_property=Mock(),
                                    compute_bounds=lambda _viewport: (True, SimpleNamespace(
                                        origin=SimpleNamespace(x=places[identity][0], y=places[identity][1]),
@@ -5088,9 +5128,14 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertEqual(timers[1][0], 400)
             self.assertFalse(window.window_key(None, gdk.KEY_Control_L, 0, control))  # Key repeat.
             self.assertEqual(len(timers), 1)
+            self.assertTrue(window.window_key(None, 0x33, 0, control))  # Ctrl+3 before the hold timer shows no keycap.
+            window.open_row.assert_called_once_with(None, cards["r3"])
+            self.assertEqual(shown(), set())
             timers[1][1]()
             self.assertTrue(window.numbers_shown)
-            window.list_body.add_css_class.assert_called_once_with("asb-numbers-shown")
+            # The class goes on the numbered keycaps, not on the list.
+            self.assertEqual(shown(), {"r0", "r2", "r3", "r4", "r5"})
+            window.list_body.add_css_class.assert_not_called()
             self.assertEqual(window.number_keys, ["r0", "r2", "r3", "r4", "r5"])
             cards["r3"].asb_number_label.set_label.assert_called_with("3")
             cards["r3"].update_property.assert_called_with([7], ["Control+3"])
@@ -5109,6 +5154,7 @@ class NativeLogicChecks(unittest.TestCase):
                 self.assertFalse(window.window_key(None, 0x33, 0, control | extra))
             window.open_row.assert_not_called()
             self.assertFalse(window.numbers_shown)  # Another key while Ctrl is down hides the numbers.
+            self.assertEqual(shown(), set())
             cards["r3"].asb_number_label.remove_css_class.assert_called_with("asb-number-pressed")
             self.assertFalse(window.window_key(None, gdk.KEY_Control_R, 0, control))
             self.assertEqual(len(timers), 1)  # No new hold until Ctrl is released.
@@ -5178,6 +5224,8 @@ class NativeLogicChecks(unittest.TestCase):
             cards["r5"].reset_property.assert_called_with(7)
             cards["r5"].asb_number_label.set_visible.assert_called_with(False)
             self.assertTrue(window.numbers_shown)
+            self.assertEqual(shown(), {"r0", "r2", "r3", "r4"})  # The keycap that lost its number loses the class.
+            window.list_body.add_css_class.assert_not_called()
             window.list_body.remove_css_class.assert_not_called()
             window.queue_number_keys(scrolled=True)
             window.queue_number_keys(scrolled=True)
