@@ -11,7 +11,7 @@ import { once } from 'node:events';
 import { homedir } from 'node:os';
 import { z } from 'zod';
 import { BurstBudget } from './guard';
-import { checkPeerSocket, inboxPath, isWindows, keyName, listenPrivate, ownedJson, pidDomain, privateDirectory, processStart } from './platform';
+import { checkPeerSocket, inboxPath, isWindows, keyName, listenPrivate, ownedJson, pidDomain, pipeProof, privateDirectory, processStart } from './platform';
 
 export { checkSocket, ownedJson, privateDirectory, processStart } from './platform';
 
@@ -272,7 +272,7 @@ export function accountReceipt(peer: Peer, status: string, previous: string) {
   else if (status === 'delivered' && previous === 'held') sendBudget.debit(key);
 }
 
-export async function sendFrames(configDir: string, peer: Peer, frames: unknown[], options: { canWrite?: () => boolean; timeoutMs?: number } = {}) {
+export async function sendFrames(configDir: string, peer: Peer, frames: unknown[], options: { canWrite?: () => boolean; timeoutMs?: number; prove?: boolean } = {}) {
   const lines = frames.map(serializeFrame);
   const users = frames.filter(frame => frameSchema.safeParse(frame).data?.type === 'user').length;
   const budgetKey = `${peer.messagingSocketPath}:${peer.procStart ?? ''}`;
@@ -288,11 +288,23 @@ export async function sendFrames(configDir: string, peer: Peer, frames: unknown[
     if (peer.procStart && await processStart(peer.pid) !== peer.procStart) throw new Error('Peer process identity changed; list sessions again');
     checkPeerSocket(peer.messagingSocketPath);
     const token = peerKey(configDir, peer);
+    // One deadline for the connect (or the proof) and the write, so a receiver that stops reading cannot hold the sender.
+    const signal = AbortSignal.timeout(options.timeoutMs ?? 5000);
+    if (options.prove && isWindows()) {
+      // Any process can serve a free pipe name, so the bytes go only through a handle whose server is the registry process.
+      const pipe = pipeProof(peer.messagingSocketPath, peer.pid, peer.procStart ?? '');
+      try {
+        if (options.canWrite && !options.canWrite()) return false;
+        signal.throwIfAborted();
+        written = true;
+        await pipe.write(Buffer.from((token ? JSON.stringify({ type: 'auth', token }) + '\n' : '') + lines.map(line => line + '\n').join('')), signal);
+        await Bun.sleep(150);
+        return true;
+      } finally { pipe.close(); }
+    }
     const socket = net.createConnection(peer.messagingSocketPath);
     let socketError: Error | undefined;
     socket.on('error', error => { socketError = error; });
-    // One deadline for the connect and the write, so a receiver that stops reading cannot hold the sender.
-    const signal = AbortSignal.timeout(options.timeoutMs ?? 5000);
     try {
       await once(socket, 'connect', { signal });
       if (options.canWrite && !options.canWrite()) return false;

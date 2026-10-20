@@ -6,11 +6,13 @@ import { createHash, randomBytes } from 'node:crypto';
 import { constants, openSync, closeSync, fstatSync, readFileSync, readdirSync, lstatSync, chmodSync } from 'node:fs';
 import { basename, dirname, join, isAbsolute } from 'node:path';
 import { hostname } from 'node:os';
-import { dlopen, FFIType, ptr } from 'bun:ffi';
+import { dlopen, FFIType, ptr, read, type Pointer } from 'bun:ffi';
 
 const PIPE = '\\\\.\\pipe\\';
 // Claude's rule for a Windows messaging address (S3b).
 const PEER_PIPE = /^\\\\\.\\pipe\\(?:LOCAL\\)?cc-msg-[0-9a-f]{32}$/i;
+// The pipe of a receiver's outbound server (outboxPath).
+const OUT_PIPE = /^\\\\\.\\pipe\\LOCAL\\asb-out-[0-9a-f]{32}$/;
 export const CODEX_PIPE = '\\\\.\\pipe\\codex-ipc';
 
 export const isWindows = (platform: string = process.platform) => platform === 'win32';
@@ -58,26 +60,43 @@ export function checkSocketFile(path: string, platform: string = process.platfor
   if (entry.isDirectory()) throw new Error('Invalid socket path');
 }
 
-let kernel32: ReturnType<typeof openKernel32> | undefined;
-function openKernel32() {
-  return dlopen('kernel32.dll', {
-    OpenProcess: { args: [FFIType.u32, FFIType.bool, FFIType.u32], returns: FFIType.ptr },
-    GetProcessTimes: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.bool },
-    CloseHandle: { args: [FFIType.ptr], returns: FFIType.bool },
-  }).symbols;
+// The Win32 signatures, in one place so the bridge-windows CI job proves them all. The three old symbols keep their
+// types; a new BOOL is an i32, and CreateFileW returns an i64 so INVALID_HANDLE_VALUE stays exact (-1n).
+// Handle arguments are ptr, which takes a Pointer or a bigint.
+const kernel32Symbols = {
+  OpenProcess: { args: [FFIType.u32, FFIType.bool, FFIType.u32], returns: FFIType.ptr },
+  GetProcessTimes: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.bool },
+  CloseHandle: { args: [FFIType.ptr], returns: FFIType.bool },
+  CreateFileW: { args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.ptr], returns: FFIType.i64 },
+  GetNamedPipeServerProcessId: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+  SetNamedPipeHandleState: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+  WriteFile: { args: [FFIType.ptr, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+  ReadFile: { args: [FFIType.ptr, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+  PeekNamedPipe: { args: [FFIType.ptr, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+} as const;
+const advapi32Symbols = {
+  OpenProcessToken: { args: [FFIType.ptr, FFIType.u32, FFIType.ptr], returns: FFIType.i32 },
+  GetTokenInformation: { args: [FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.ptr], returns: FFIType.i32 },
+  EqualSid: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+} as const;
+const openWindowsApi = () => ({ ...dlopen('kernel32.dll', kernel32Symbols).symbols, ...dlopen('advapi32.dll', advapi32Symbols).symbols });
+export type WindowsApi = ReturnType<typeof openWindowsApi>;
+let windowsSymbols: WindowsApi | undefined;
+const windowsApi = () => windowsSymbols ??= openWindowsApi();
+
+// Claude on Windows records the creation FILETIME from GetProcessTimes as a decimal string (S3b).
+function creationTime(api: WindowsApi, handle: Pointer | bigint) {
+  const times = new BigUint64Array(4);
+  if (!api.GetProcessTimes(handle, times.subarray(0, 1), times.subarray(1, 2), times.subarray(2, 3), times.subarray(3))) throw new Error('Cannot verify receiver process');
+  return String(times[0]);
 }
 
 export async function processStart(pid: number) {
   if (isWindows()) {
-    // Claude on Windows records the creation FILETIME from GetProcessTimes as a decimal string (S3b).
-    const api = kernel32 ??= openKernel32();
+    const api = windowsApi();
     const handle = api.OpenProcess(0x1000, false, pid);
     if (!handle) throw new Error('Cannot verify receiver process');
-    try {
-      const times = new BigUint64Array(4);
-      if (!api.GetProcessTimes(handle, ptr(times), ptr(times, 8), ptr(times, 16), ptr(times, 24))) throw new Error('Cannot verify receiver process');
-      return String(times[0]);
-    } finally { api.CloseHandle(handle); }
+    try { return creationTime(api, handle); } finally { api.CloseHandle(handle); }
   }
   if (process.platform === 'linux') {
     // Claude Code on Linux records the kernel start time (field 22 of /proc/<pid>/stat), not `ps lstart`.
@@ -90,6 +109,96 @@ export async function processStart(pid: number) {
   const [code, output] = await Promise.all([child.exited, new Response(child.stdout).text()]);
   if (code !== 0 || !output.trim()) throw new Error('Cannot verify receiver process');
   return output.trim();
+}
+
+export type ProvedPipe = {
+  write(bytes: Uint8Array, signal: AbortSignal): Promise<void>;
+  readLine(maxBytes: number, signal: AbortSignal): Promise<string>;
+  close(): void;
+};
+const unproved = () => new Error('The pipe server is not the registered process');
+
+// Opens the client end of a local pipe and proves its server before any byte: the registry PID, its creation
+// FILETIME, and this Windows user. A failed check closes the handle and throws. Only the proved handle carries bytes.
+export function pipeProof(path: string, pid: number, procStart: string, api: WindowsApi = windowsApi()): ProvedPipe {
+  if (!PEER_PIPE.test(path) && !OUT_PIPE.test(path)) throw new Error('Invalid peer socket');
+  // Read and write, no sharing, OPEN_EXISTING, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION: the server can
+  // identify this process but cannot act as it.
+  const pipe = api.CreateFileW(Buffer.from(`${path}\0`, 'utf16le'), 0xC0000000, 0, null, 3, 0x00110000, null);
+  if (pipe === -1n || pipe === 0n) throw unproved();
+  try {
+    const server = new Uint32Array(1);
+    if (!api.GetNamedPipeServerProcessId(pipe, server) || server[0] !== pid) throw unproved();
+    // One handle gives the creation time and the user, so a reused PID cannot pass.
+    const owner = api.OpenProcess(0x1000, false, pid);
+    if (!owner) throw unproved();
+    try { if (creationTime(api, owner) !== procStart || !sameUser(api, owner)) throw unproved(); }
+    finally { api.CloseHandle(owner); }
+    if (!api.SetNamedPipeHandleState(pipe, new Uint32Array([1]), null, null)) throw unproved();
+  } catch (error) { api.CloseHandle(pipe); throw error; }
+  return provedPipe(api, pipe);
+}
+
+// Module buffers: the SID pointers of TOKEN_USER point into them, so they must live until EqualSid returns.
+const tokenUsers = [new Uint8Array(256), new Uint8Array(256)] as const;
+
+function tokenUser(api: WindowsApi, process: Pointer | bigint, buffer: Uint8Array) {
+  const token = new BigUint64Array(1);
+  if (!api.OpenProcessToken(process, 0x8, token)) return false;
+  try { return !!api.GetTokenInformation(token[0]!, 1, buffer, buffer.length, new Uint32Array(1)); }
+  finally { api.CloseHandle(token[0]!); }
+}
+
+function sameUser(api: WindowsApi, owner: Pointer | bigint) {
+  const self = api.OpenProcess(0x1000, false, process.pid);
+  if (!self) return false;
+  try {
+    const [mine, theirs] = tokenUsers;
+    // TOKEN_USER starts with the PSID.
+    return tokenUser(api, self, mine) && tokenUser(api, owner, theirs)
+      && !!api.EqualSid(read.ptr(ptr(mine)) as Pointer, read.ptr(ptr(theirs)) as Pointer);
+  } finally { api.CloseHandle(self); }
+}
+
+// shortcut: polls a PIPE_NOWAIT handle every 5 ms; use overlapped I/O if a live check shows lost or slow writes.
+function provedPipe(api: WindowsApi, pipe: bigint): ProvedPipe {
+  let pending = Buffer.alloc(0);
+  let closed = false;
+  return {
+    async write(bytes, signal) {
+      const done = new Uint32Array(1);
+      for (let offset = 0; offset < bytes.length; offset += done[0]!) {
+        signal.throwIfAborted();
+        if (!api.WriteFile(pipe, bytes.subarray(offset), bytes.length - offset, done, null)) throw new Error('Pipe write failed');
+        if (!done[0]) await Bun.sleep(5);
+      }
+    },
+    // The first line, without its newline; more than maxBytes without a newline throws.
+    async readLine(maxBytes, signal) {
+      const available = new Uint32Array(1);
+      const done = new Uint32Array(1);
+      for (;;) {
+        const end = pending.indexOf(10);
+        if (end >= 0) {
+          const line = pending.subarray(0, end).toString();
+          pending = pending.subarray(end + 1);
+          return line;
+        }
+        if (pending.length >= maxBytes) throw new Error('Pipe line too long');
+        signal.throwIfAborted();
+        // FALSE means the server closed the pipe and no data is left.
+        if (!api.PeekNamedPipe(pipe, null, 0, null, available, null)) throw new Error('Pipe closed before a full line');
+        if (!available[0]) { await Bun.sleep(5); continue; }
+        const chunk = new Uint8Array(Math.min(available[0], maxBytes - pending.length));
+        if (!api.ReadFile(pipe, chunk, chunk.length, done, null)) throw new Error('Pipe read failed');
+        pending = Buffer.concat([pending, chunk.subarray(0, done[0])]);
+      }
+    },
+    close() {
+      if (!closed) api.CloseHandle(pipe);
+      closed = true;
+    },
+  };
 }
 
 export function pidDomain(platform: string = process.platform) {

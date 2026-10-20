@@ -4,7 +4,7 @@ import { realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { authorized, findPeer, frameSchema, peerKey, peers, SendRefused, sendFrames, uuid, type Frame, type Peer } from './claude';
-import { checkSocket, isWindows, listenPrivate, outboxPath } from './platform';
+import { checkSocket, isWindows, listenPrivate, outboxPath, pipeProof } from './platform';
 
 // The live target of one exact send, from the engine route /api/agent/resolve-bound.
 export const bindingSchema = z.strictObject({ registryHome: z.string().min(1), runtimeSessionId: uuid, pid: z.number().int().positive(),
@@ -55,7 +55,7 @@ export async function sendBound(configDir: string, binding: Binding, list: unkno
   let handoff = false;
   try {
     // sendFrames calls canWrite after connect and before the first byte.
-    const written = await sendFrames(configDir, peer, list, { canWrite: () => {
+    const written = await sendFrames(configDir, peer, list, { prove: true, canWrite: () => {
       if (Date.now() >= binding.expiresAtMs) code = 'binding-expired';
       else if (!boundPeer(configDir, binding)) code = 'target-changed';
       else if (!canWrite()) code = 'receiver-stopped';
@@ -155,7 +155,7 @@ export async function sendViaReceiver(configDir: string, receiver: Peer, peer: P
 // The bound request has no sessionId key, so the receiver checks it only with boundPeer.
 export async function sendBoundViaReceiver(configDir: string, receiver: Peer, binding: Binding, list: unknown[]) {
   const result = z.union([z.object({ written: z.boolean() }), z.object({ refused: z.string() })]).parse(
-    await requestReceiver(configDir, receiver, { binding, frames: list }, () => refuse('receiver-stopped')));
+    await requestReceiver(configDir, receiver, { binding, frames: list }, () => refuse('receiver-stopped'), true));
   if ('refused' in result) throw new SendRefused(result.refused);
   return result.written;
 }
@@ -166,19 +166,31 @@ export async function refreshReceiver(configDir: string, receiver: Peer) {
 
 // The receiver of this task listens next to its inbox; on Windows its key file gives the auth line.
 // With unsent, a failure before the request goes out throws its error: nothing went out.
-async function requestReceiver(configDir: string, receiver: Peer, request: unknown, unsent?: () => Error) {
-  const path = outboxPath(receiver.messagingSocketPath);
+// With prove on Windows, the request and the reply go only through a handle whose server is the receiver process.
+async function requestReceiver(configDir: string, receiver: Peer, request: unknown, unsent?: () => Error, prove = false) {
+  let path: string;
   let token: string | undefined;
   try {
+    path = outboxPath(receiver.messagingSocketPath);
     if (!isWindows()) checkSocket(path);
     token = isWindows() ? peerKey(configDir, receiver) : undefined;
   } catch (error) { throw unsent?.() ?? error; }
+  const text = (token ? JSON.stringify({ type: 'auth', token }) + '\n' : '') + JSON.stringify(request) + '\n';
+  if (prove && isWindows()) {
+    let pipe;
+    try { pipe = pipeProof(path, receiver.pid, receiver.procStart ?? ''); } catch (error) { throw unsent?.() ?? error; }
+    try {
+      const signal = AbortSignal.timeout(15000);
+      await pipe.write(Buffer.from(text), signal);
+      return JSON.parse(await pipe.readLine(64 * 1024, signal));
+    } finally { pipe.close(); }
+  }
   const socket = net.createConnection(path);
   socket.setTimeout(15000, () => socket.destroy());
   const next = lineReader(socket);
   try {
     try { await once(socket, 'connect', { signal: AbortSignal.timeout(5000) }); } catch (error) { throw unsent?.() ?? error; }
-    socket.write((token ? JSON.stringify({ type: 'auth', token }) + '\n' : '') + JSON.stringify(request) + '\n');
+    socket.write(text);
     return await next();
   } finally { socket.destroy(); }
 }
