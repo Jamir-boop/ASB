@@ -50,6 +50,7 @@ each phase starts, the reviewer checks the anchors of that phase.
 | Old releases | Engine only. The board shows only on releases with new enough libraries. |
 | System changes | ASB prints the exact command (package install, firewall rule) and never runs it. ASB never calls `sudo`, `doas`, `pkexec`, `rpm-ostree`, `transactional-update`, a package manager, or a firewall tool to change the system. |
 | Tests | GitHub Actions containers, one or more jobs per distro family. |
+| EL10 window test (2026-10-20, after the first CI run) | RHEL 10 and its rebuilds have no Xvfb. The alma-10 job stays a board row: CI proves that GTK and Libadwaita load there, but it does not open the ASB window (`window: skip`, 9.2 and 17). |
 
 Out of scope: publishing to distro repositories; ASB as a Flatpak, AppImage,
 or Snap; a board for GTK older than 4.12 or Libadwaita older than 1.4 (the
@@ -251,6 +252,16 @@ with sources: repology, the repository of each distribution, and
 endoflife.date). Phase 0 records the real values in CI and corrects this
 table. "NodeSource" and "module stream" mean the routes in Appendix B.
 
+The first CI run (2026-10-20, run 39405121939) confirmed the GTK,
+Libadwaita, and Node.js values of these rows: Debian 12 (4.8.3, 1.2.2),
+Debian 13 (4.18.6, 1.7.6, Node 20.19), Ubuntu 22.04 (4.6.9, 1.1.7), Ubuntu
+24.04 (4.14.5, 1.5.0), Ubuntu 26.04 (4.22.4, 1.9.1, Node 22.22), AlmaLinux
+9.8 (4.12.3, 1.4.2, Python 3.9.25), Tumbleweed (4.22.5, 1.9.4, Node 24.21),
+Arch (4.24.1, 1.10.0, Node 26.12), Alpine 3.24 (4.22.4, 1.9.2, Node 24.18),
+and Void (4.22.4, 1.9.1, Node 24.18). The arm64 rows gave the same values.
+Fedora 43 and 44, AlmaLinux 10, and Leap 16.0 failed on package names (the
+notes below), so their GTK values are not measured yet.
+
 | Release (and its derivatives) | GTK | Libadwaita | Node.js in the repository | Init | Tier |
 | --- | --- | --- | --- | --- | --- |
 | Debian 12, LTS only (MX 23) | 4.8 | 1.2 | 18 | systemd (MX: sysvinit) | Engine, Node from NodeSource |
@@ -286,6 +297,19 @@ Notes:
 - SteamOS: an update removes the packages that `pacman` installed. ASB uses
   only what the image has. The board runs only when the image has its
   libraries.
+- Fedora 43 and later: `python3-gobject` no longer pulls in
+  `gobject-introspection`, the only package with the `cairo-1.0` and
+  `freetype2-2.0` typelibs. Without it, GTK does not import (first CI run),
+  so Appendix A adds it to the `gtk` key.
+- RHEL 10 and its rebuilds have no Xvfb: the X.Org server was removed, and
+  `xwfb-run` (package `xwayland-run`) replaces `xvfb-run`. CI does not open
+  the window on alma-10 (section 2).
+- openSUSE: `dbus-run-session` is in `dbus-1-daemon`, because dbus-broker is
+  the default bus since 2024. Leap 16.0: `/usr/bin/python3` comes from the
+  `python3` wrapper package, not from `python313-base`.
+- Arch and Alpine: the cairo support of PyGObject needs pycairo
+  (`python-cairo`, `py3-cairo`), and the PyGObject package does not pull it
+  in.
 - Fedora and openSUSE turn firewalld on by default. Ubuntu ships ufw turned
   off.
 - Distributions without systemd (Alpine, Void, Artix, Devuan, Gentoo with
@@ -406,7 +430,9 @@ every branch, and `workflow_dispatch` (Goal 6). Use the action versions of
 `test.yml` (`actions/checkout@v4`, `actions/setup-node@v4`,
 `actions/upload-artifact@v4`). Each matrix entry has `job`, `image`,
 `runner`, `family`, `tier` (`board` or `engine`), and `node` (`repository`,
-`nodesource`, or `module`).
+`nodesource`, or `module`). The alma-10 entry also has `window: skip`
+(section 2): it leaves `xvfb` out of the keys and gives the container
+`-e ASB_PROBE_WINDOW=skip`.
 
 1. Check out the repository on the runner of the row (`ubuntu-latest`, or
    `ubuntu-24.04-arm` for the arm64 rows) and set up Node 24 there.
@@ -437,7 +463,9 @@ every branch, and `workflow_dispatch` (Goal 6). Use the action versions of
      whether `node:sqlite` loads;
    - from one `python3 -c` probe: the Python, PyGObject, GTK, Libadwaita,
      and GLib versions, whether `gi.require_foreign('cairo')` works, and
-     whether `qrcode` imports (import GTK and Libadwaita in `try` blocks);
+     whether `qrcode` imports (import GTK and Libadwaita in `try` blocks),
+     and `board_error`: the first line of the first error of the PyGObject,
+     GTK, and Libadwaita imports, or `null` when all three load;
    - the paths of `pw-play`, `paplay`, `aplay`, `xvfb-run`, and
      `dbus-run-session`, or `null`.
    It exits with code 1 when `node`, `openssl`, or `xdg-open` does not
@@ -446,7 +474,8 @@ every branch, and `workflow_dispatch` (Goal 6). Use the action versions of
    is not the `<family>` argument, or, for the `board` tier, when Python is
    older than 3.9 (L1), PyGObject is missing, GTK is older than 4.12,
    Libadwaita is older than 1.4, or `xvfb-run` or `dbus-run-session` is
-   missing (phase 8 needs them). Make the JSON with `printf` and a small
+   missing (phase 8 needs them; with `ASB_PROBE_WINDOW=skip`, `xvfb-run` is
+   not checked). Make the JSON with `printf` and a small
    escape function, not with Python or Node, which can be missing; the
    Python probe prints its own part with `json.dumps`, or the probe writes
    `null` for that part. It prints the JSON object first in each case, and
@@ -963,7 +992,9 @@ Extend `.github/workflows/distros.yml` from phase 0:
       ASB_SNAPSHOT=/tmp/asb-board.png ~/.local/bin/asb` in the background.
       Wait at most 90 s for the PNG (at least 1 KB). Then `asb engine stop`;
       the window closes with its engine. Engine tier: `asb` exits with code 3
-      and prints the engine-only message.
+      and prints the engine-only message. A row with `window: skip`
+      (alma-10, section 2) skips this step; step 5 still proves the board
+      check there.
    8. With `PYTHONDONTWRITEBYTECODE=1` (the repository is mounted read-only):
       `python3 /asb/test/asb_native_logic_test.py`, and on the board tier
       `python3 -m unittest /asb/test/asb_tray_test.py`.
@@ -1040,14 +1071,14 @@ Derivatives match through `ID_LIKE`: AlmaLinux has
 | `sqlite` | `sqlite3` | `sqlite` | `sqlite3` | `sqlite` | `sqlite` | `sqlite` | `dev-db/sqlite` | `sqlite3` |
 | `openssl` | `openssl` | `openssl` | `openssl` | `openssl` | `openssl` | `openssl` | `dev-libs/openssl` | `openssl` |
 | `xdg` | `xdg-utils` | `xdg-utils` | `xdg-utils` | `xdg-utils` | `xdg-utils` | `xdg-utils` | `x11-misc/xdg-utils` | `xdg-utils` |
-| `gi` | `python3-gi` | `python3-gobject` | `python313-gobject` | `python-gobject` | `py3-gobject3` | `python3-gobject` | `dev-python/pygobject` | `python-gobject` |
-| `gtk` | `gir1.2-gtk-4.0` | `gtk4` | `typelib-1_0-Gtk-4_0` | `gtk4` | `gtk4.0` | `gtk4` | `gui-libs/gtk` | `libgtk-4` |
+| `gi` | `python3-gi` | `python3-gobject` | `python3 python313-gobject` | `python-gobject` | `py3-gobject3` | `python3-gobject` | `dev-python/pygobject` | `python-gobject` |
+| `gtk` | `gir1.2-gtk-4.0` | `gtk4 gobject-introspection` | `typelib-1_0-Gtk-4_0` | `gtk4` | `gtk4.0` | `gtk4` | `gui-libs/gtk` | `libgtk-4` |
 | `adw` | `gir1.2-adw-1` | `libadwaita` | `typelib-1_0-Adw-1` | `libadwaita` | `libadwaita` | `libadwaita` | `gui-libs/libadwaita` | `libadwaita` |
-| `gicairo` | `python3-gi-cairo` | - | `python313-gobject-cairo` | - | - | - | - | - |
+| `gicairo` | `python3-gi-cairo` | - | `python313-gobject-cairo` | `python-cairo` | `py3-cairo` | - | - | - |
 | `qrcode` | `python3-qrcode` | `python3-qrcode-core` | `python313-qrcode` | `python-qrcode` | `py3-qrcode` | `python3-qrcode` | `dev-python/qrcode` | `python-qrcode` |
 | `sound` | `pipewire-bin` | `pipewire-utils` | `pipewire-tools` | `pipewire-audio` | `pipewire-tools` | `pipewire` | `media-video/pipewire` | `pipewire` |
 | `xvfb` (CI) | `xvfb xauth` | `xorg-x11-server-Xvfb` | `xvfb-run` | `xorg-server-xvfb` | `xvfb-run` | `xorg-server-xvfb xvfb-run` | none (no CI) | none (no CI) |
-| `dbus` (CI) | `dbus` | `dbus-daemon` | `dbus-1` | `dbus` | `dbus` | `dbus` | none (no CI) | none (no CI) |
+| `dbus` (CI) | `dbus` | `dbus-daemon` | `dbus-1-daemon` | `dbus` | `dbus` | `dbus` | none (no CI) | none (no CI) |
 | `font` (CI) | `fonts-dejavu-core` | `dejavu-sans-fonts` | `dejavu-fonts` | `ttf-dejavu` | `font-dejavu` | `dejavu-fonts-ttf` | none (no CI) | none (no CI) |
 
 Notes:
@@ -1055,9 +1086,20 @@ Notes:
 - **openSUSE:** the Python package names include the main Python flavor:
   `python313` on Tumbleweed and Leap 16.0 today. When Tumbleweed changes its
   main Python, the tumbleweed CI job fails. Then change the names.
+- **openSUSE, first CI run:** Leap 16.0 needs the `python3` wrapper package
+  for `/usr/bin/python3` (`python313-gobject` brings only `python3.13`).
+  `dbus-run-session` is in `dbus-1-daemon`, not in `dbus-1`.
 - **RHEL 9:** it has only `python3-qrcode-core`, so the `fedora` family uses
-  this name. It needs no EPEL. Phase 0 proves that Fedora and AlmaLinux 10
-  also have this name.
+  this name. It needs no EPEL. The first CI run installed it on Fedora 43
+  and 44 and AlmaLinux 9, and AlmaLinux 10 resolved it too (that install
+  failed only on Xvfb).
+- **Fedora 43 and later:** `gobject-introspection` has the `cairo-1.0`
+  typelib that GTK needs, and `python3-gobject` no longer pulls it in. It is
+  in the `gtk` key, so that doctor prints it when GTK does not load.
+- **Arch and Alpine:** the PyGObject package has the cairo module but not
+  pycairo, so `gicairo` is `python-cairo` or `py3-cairo` there.
+- **RHEL 10:** it has no Xvfb, so the alma-10 job leaves the `xvfb` key out
+  (`window: skip`, section 2).
 - **Gentoo:** doctor also prints `Build gui-libs/gtk and gui-libs/libadwaita
   with USE=introspection, dev-python/pygobject with USE=cairo, and
   media-video/pipewire with USE=extra (for pw-play).`
@@ -1096,7 +1138,7 @@ The alma-9 row also leaves `node` out and runs
 | ubuntu-26.04 | `ubuntu:26.04` | `ubuntu-latest` | Board | Repository | `.deb` |
 | fedora-43 | `fedora:43` | `ubuntu-latest` | Board | Repository | `.rpm` |
 | fedora-44 | `fedora:44` | `ubuntu-latest` | Board | Repository | `.rpm` |
-| alma-10 | `almalinux:10` | `ubuntu-latest` | Board | Repository | `.rpm` |
+| alma-10 | `almalinux:10` | `ubuntu-latest` | Board, `window: skip` (no Xvfb on EL10) | Repository | `.rpm` |
 | alma-9 | `almalinux:9` | `ubuntu-latest` | Board (GTK 4.12, Libadwaita 1.4) | Module stream | `.rpm` |
 | tumbleweed | `opensuse/tumbleweed` | `ubuntu-latest` | Board | Repository | `.rpm` |
 | leap-16 | `opensuse/leap:16.0` | `ubuntu-latest` | Board | Repository | `.rpm` |
@@ -1213,6 +1255,8 @@ Requires:       (sqlite or sqlite3)
 Requires:       openssl
 Requires:       xdg-utils
 Recommends:     (python3-gobject or python313-gobject)
+Recommends:     python3
+Recommends:     (gobject-introspection if python3-gobject)
 Recommends:     python313-gobject-cairo
 Recommends:     (gtk4 >= 4.12 or typelib-1_0-Gtk-4_0 >= 4.12)
 Recommends:     (libadwaita >= 1.4 or typelib-1_0-Adw-1 >= 1.4)
@@ -1241,6 +1285,9 @@ have the same bytes. Phase 8 proves that `dnf` and `zypper` resolve every
 rich dependency. `dnf` and `zypper` skip a weak dependency (Recommends)
 that names no package of the system, so the openSUSE names do no harm on
 Fedora and RHEL. On Fedora, `python3-gobject` already has cairo support.
+The first CI run (section 7) added two lines: Fedora 43 and later need
+`gobject-introspection` for the `cairo-1.0` typelib of GTK, and Leap 16.0
+needs the `python3` wrapper for `/usr/bin/python3`.
 
 ## Appendix H: PKGBUILD template
 
@@ -1254,6 +1301,7 @@ url='https://github.com/Jamir-boop/ASB'
 license=('MIT')
 depends=('nodejs' 'openssl' 'xdg-utils' 'python-gobject' 'gtk4' 'libadwaita')
 optdepends=('python-qrcode: phone pairing QR code'
+            'python-cairo: phone pairing QR code'
             'pipewire-audio: sounds'
             'bun: ASB Bridge')
 source=("https://github.com/Jamir-boop/ASB/releases/download/v${pkgver}/asb-${pkgver}-linux.tar.gz")
@@ -1282,4 +1330,5 @@ EOF
 ```
 
 Arch always has current libraries, so the board libraries are hard
-dependencies here. `python-gobject` brings `python-cairo`.
+dependencies here. `python-gobject` lists `python-cairo` only as optional
+(first CI run), so the QR code needs it in `optdepends`.

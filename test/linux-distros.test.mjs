@@ -54,7 +54,7 @@ test('the table has the nine families with every key', () => {
   assert.equal(FAMILIES.gentoo.ci, null);
   assert.equal(FAMILIES.solus.ci, null);
   assert.equal(FAMILIES.gentoo.packages.xvfb, null);
-  assert.equal(FAMILIES.arch.packages.gicairo, null);
+  assert.equal(FAMILIES.void.packages.gicairo, null);
 });
 
 test('the package names match the package table', () => {
@@ -64,14 +64,14 @@ node nodejs nodejs nodejs-default nodejs nodejs nodejs net-libs/nodejs nodejs
 sqlite sqlite3 sqlite sqlite3 sqlite sqlite sqlite dev-db/sqlite sqlite3
 openssl openssl openssl openssl openssl openssl openssl dev-libs/openssl openssl
 xdg xdg-utils xdg-utils xdg-utils xdg-utils xdg-utils xdg-utils x11-misc/xdg-utils xdg-utils
-gi python3-gi python3-gobject python313-gobject python-gobject py3-gobject3 python3-gobject dev-python/pygobject python-gobject
-gtk gir1.2-gtk-4.0 gtk4 typelib-1_0-Gtk-4_0 gtk4 gtk4.0 gtk4 gui-libs/gtk libgtk-4
+gi python3-gi python3-gobject python3+python313-gobject python-gobject py3-gobject3 python3-gobject dev-python/pygobject python-gobject
+gtk gir1.2-gtk-4.0 gtk4+gobject-introspection typelib-1_0-Gtk-4_0 gtk4 gtk4.0 gtk4 gui-libs/gtk libgtk-4
 adw gir1.2-adw-1 libadwaita typelib-1_0-Adw-1 libadwaita libadwaita libadwaita gui-libs/libadwaita libadwaita
-gicairo python3-gi-cairo - python313-gobject-cairo - - - - -
+gicairo python3-gi-cairo - python313-gobject-cairo python-cairo py3-cairo - - -
 qrcode python3-qrcode python3-qrcode-core python313-qrcode python-qrcode py3-qrcode python3-qrcode dev-python/qrcode python-qrcode
 sound pipewire-bin pipewire-utils pipewire-tools pipewire-audio pipewire-tools pipewire media-video/pipewire pipewire
 xvfb xvfb+xauth xorg-x11-server-Xvfb xvfb-run xorg-server-xvfb xvfb-run xorg-server-xvfb+xvfb-run - -
-dbus dbus dbus-daemon dbus-1 dbus dbus dbus - -
+dbus dbus dbus-daemon dbus-1-daemon dbus dbus dbus - -
 font fonts-dejavu-core dejavu-sans-fonts dejavu-fonts ttf-dejavu font-dejavu dejavu-fonts-ttf - -`;
   const columns = ['debian', 'fedora', 'opensuse', 'arch', 'alpine', 'void', 'gentoo', 'solus'];
   const lines = table.trim().split('\n').map((line) => line.split(' '));
@@ -127,14 +127,15 @@ test('installCommand gives the names in key order without duplicates, after the 
   assert.deepEqual(installCommand('debian', ALL_KEYS), ['sudo', 'apt', 'install', 'nodejs', 'sqlite3', 'openssl', 'xdg-utils', 'python3-gi',
     'gir1.2-gtk-4.0', 'gir1.2-adw-1', 'python3-gi-cairo', 'python3-qrcode', 'pipewire-bin', 'xvfb', 'xauth', 'dbus', 'fonts-dejavu-core']);
   assert.deepEqual(installCommand('fedora', ['gi', 'gtk', 'adw', 'gicairo', 'qrcode']),
-    ['sudo', 'dnf', 'install', 'python3-gobject', 'gtk4', 'libadwaita', 'python3-qrcode-core']);
-  assert.deepEqual(installCommand('opensuse', ['node', 'gi']), ['sudo', 'zypper', 'install', 'nodejs-default', 'python313-gobject']);
+    ['sudo', 'dnf', 'install', 'python3-gobject', 'gtk4', 'gobject-introspection', 'libadwaita', 'python3-qrcode-core']);
+  assert.deepEqual(installCommand('opensuse', ['node', 'gi']), ['sudo', 'zypper', 'install', 'nodejs-default', 'python3', 'python313-gobject']);
   assert.deepEqual(installCommand('arch', ['sound', 'node'], { root: 'doas' }), ['doas', 'pacman', '-S', '--needed', 'pipewire-audio', 'nodejs']);
   assert.deepEqual(installCommand('alpine', ['gtk', 'gtk', 'xvfb']), ['sudo', 'apk', 'add', 'gtk4.0', 'xvfb-run']);
   assert.deepEqual(installCommand('void', ['xvfb', 'sound', 'xvfb']), ['sudo', 'xbps-install', '-S', 'xorg-server-xvfb', 'xvfb-run', 'pipewire']);
   assert.deepEqual(installCommand('gentoo', ['gtk', 'xvfb']), ['sudo', 'emerge', '--ask', '--noreplace', 'gui-libs/gtk']);
   assert.deepEqual(installCommand('solus', ['gtk', 'font'], { root: 'doas' }), ['doas', 'eopkg', 'install', 'libgtk-4']);
-  assert.deepEqual(installCommand('fedora', ['gi', 'gtk'], { mode: 'transactional' }), ['sudo', 'rpm-ostree', 'install', 'python3-gobject', 'gtk4']);
+  assert.deepEqual(installCommand('fedora', ['gi', 'gtk'], { mode: 'transactional' }), ['sudo', 'rpm-ostree', 'install', 'python3-gobject', 'gtk4',
+    'gobject-introspection']);
   assert.deepEqual(installCommand('opensuse', ['adw'], { mode: 'transactional', root: 'doas' }),
     ['doas', 'transactional-update', 'pkg', 'install', 'typelib-1_0-Adw-1']);
   for (const [name, options] of [['arch', { mode: 'readonly' }], ['debian', { mode: 'transactional' }], ['nixos', {}], ['nixos', { mode: 'transactional' }],
@@ -169,7 +170,11 @@ test('the CLI prints the CI command, refuses families without one, and prints us
   const ci = { fedora: 'dnf install -y', opensuse: 'zypper --non-interactive install', arch: 'pacman -S --needed --noconfirm',
     alpine: 'apk add', void: 'xbps-install -S -y' };
   for (const [name, words] of Object.entries(ci)) assert.equal(cli(name, 'openssl').stdout, `${words} openssl\n`, name);
-  assert.equal(cli('fedora', 'gi', 'gtk', 'adw', 'qrcode').stdout, 'dnf install -y python3-gobject gtk4 libadwaita python3-qrcode-core\n');
+  assert.equal(cli('fedora', 'gi', 'gtk', 'adw', 'qrcode').stdout, 'dnf install -y python3-gobject gtk4 gobject-introspection libadwaita python3-qrcode-core\n');
+  assert.equal(cli('opensuse', ...ALL_KEYS).stdout, 'zypper --non-interactive install nodejs-default sqlite3 openssl xdg-utils python3 python313-gobject '
+    + 'typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1 python313-gobject-cairo python313-qrcode pipewire-tools xvfb-run dbus-1-daemon dejavu-fonts\n');
+  assert.equal(cli('arch', 'gicairo').stdout, 'pacman -S --needed --noconfirm python-cairo\n');
+  assert.equal(cli('alpine', 'gicairo').stdout, 'apk add py3-cairo\n');
   for (const name of ['gentoo', 'solus', 'nixos']) {
     const result = cli(name, 'node');
     assert.deepEqual([result.status, result.stdout], [1, ''], name);
@@ -214,7 +219,7 @@ test('the probe prints valid JSON and fails when Node.js and Python are missing'
       { encoding: 'utf8', env: { PATH: bin, ASB_PROBE_OUT: out } });
     assert.equal(result.status, 1, result.stderr);
     const data = JSON.parse(result.stdout);
-    for (const key of ['node', 'node_sqlite', 'detect', 'python', 'gi', 'gtk', 'adw', 'glib', 'cairo', 'qrcode']) assert.equal(data[key], null, key);
+    for (const key of ['node', 'node_sqlite', 'detect', 'python', 'gi', 'gtk', 'adw', 'glib', 'cairo', 'qrcode', 'board_error']) assert.equal(data[key], null, key);
     assert.equal(data.ok, false);
     for (const error of ['node does not run.', 'openssl does not run.', 'xdg-open does not run.', 'Neither node:sqlite loads nor sqlite3 runs.',
       'The detected family is not debian.']) assert.ok(data.errors.includes(error), error);
@@ -225,7 +230,7 @@ test('the probe prints valid JSON and fails when Node.js and Python are missing'
 });
 
 // Runs the board probe with stub node and python3 scripts (null for none) and only the text tools; gives the errors.
-async function boardErrors(stubs) {
+async function boardErrors(stubs, env = {}) {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'asb-distro-probe-'));
   try {
     const bin = path.join(temporary, 'bin');
@@ -236,11 +241,11 @@ async function boardErrors(stubs) {
       await writeFile(path.join(bin, 'node'), `#!/bin/sh\ncase "$1" in --version) echo v${node} ;; -e) exit 1 ;; *) echo 'debian normal' ;; esac\n`, { mode: 0o755 });
       const [major, minor] = python.split('.');
       await writeFile(path.join(bin, 'python3'), `#!/bin/sh\necho '"python":"${python}","gi":"3.50.0","gtk":[${gtk.join(',')}],"adw":[${adw.join(',')}],`
-        + `"glib":[2,80,0],"cairo":true,"qrcode":true'\necho '1 ${gtk[0]} ${gtk[1]} ${adw[0]} ${adw[1]} ${major} ${minor}'\n`, { mode: 0o755 });
+        + `"glib":[2,80,0],"cairo":true,"qrcode":true,"board_error":null'\necho '1 ${gtk[0]} ${gtk[1]} ${adw[0]} ${adw[1]} ${major} ${minor}'\n`, { mode: 0o755 });
     }
     const out = path.join(temporary, 'probe.json');
     const result = spawnSync('/bin/sh', [fileURLToPath(new URL('./distro-probe.sh', import.meta.url)), 'board', 'debian'],
-      { encoding: 'utf8', env: { PATH: bin, ASB_PROBE_OUT: out } });
+      { encoding: 'utf8', env: { ...env, PATH: bin, ASB_PROBE_OUT: out } });
     assert.equal(result.status, 1, result.stderr);
     assert.equal(await readFile(out, 'utf8'), result.stdout);
     return JSON.parse(result.stdout).errors;
@@ -259,4 +264,51 @@ test('the board probe checks the Node.js, Python, GTK, and Libadwaita floors', {
   const none = await boardErrors(null);
   assert.ok(none.includes('PyGObject is missing.'));
   for (const error of ['Python is older than 3.9.', 'Node.js is older than 20.']) assert.ok(!none.includes(error), error);
+});
+
+test('the board probe skips only the xvfb-run check with ASB_PROBE_WINDOW=skip', { skip: process.platform === 'win32' || !existsSync('/bin/sh') }, async () => {
+  const stubs = { node: '20.0.0', python: '3.9.0', gtk: [4, 12, 0], adw: [1, 4, 0] };
+  for (const env of [{}, { ASB_PROBE_WINDOW: '' }, { ASB_PROBE_WINDOW: 'Skip' }, { ASB_PROBE_WINDOW: 'no' }]) {
+    const errors = await boardErrors(stubs, env);
+    assert.ok(errors.includes('xvfb-run is missing.'), JSON.stringify(env));
+    assert.ok(errors.includes('dbus-run-session is missing.'), JSON.stringify(env));
+  }
+  const skipped = await boardErrors(stubs, { ASB_PROBE_WINDOW: 'skip' });
+  assert.ok(!skipped.includes('xvfb-run is missing.'));
+  assert.ok(skipped.includes('dbus-run-session is missing.'));
+});
+
+const python3 = process.platform === 'win32' ? '' : await findExecutable('python3');
+
+test('the probe reports the first PyGObject error', { skip: !python3 || !existsSync('/bin/sh') }, async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'asb-distro-probe-'));
+  try {
+    const bin = path.join(temporary, 'bin');
+    await mkdir(bin);
+    for (const tool of ['dirname', 'sed', 'tr', 'head']) await symlink(await findExecutable(tool), path.join(bin, tool));
+    await symlink(python3, path.join(bin, 'python3'));
+    // Runs the board probe with the real python3 and a fake gi package.
+    const probe = async (name, source) => {
+      const modules = path.join(temporary, name);
+      await mkdir(path.join(modules, 'gi'), { recursive: true });
+      await writeFile(path.join(modules, 'gi', '__init__.py'), source);
+      const result = spawnSync('/bin/sh', [fileURLToPath(new URL('./distro-probe.sh', import.meta.url)), 'board', 'debian'],
+        { encoding: 'utf8', env: { PATH: bin, PYTHONPATH: modules, PYTHONDONTWRITEBYTECODE: '1' } });
+      assert.equal(result.status, 1, result.stderr);
+      return JSON.parse(result.stdout);
+    };
+    // The namespaces never load: the Gtk error comes first, and the Adw error must not replace it.
+    const data = await probe('namespaces', "__version__ = '3.50.0'\n\n\ndef require_version(namespace, version):\n"
+      + "    raise ValueError('Namespace %s not available' % namespace)\n");
+    assert.equal(data.gi, '3.50.0');
+    assert.equal(data.gtk, null);
+    assert.equal(data.adw, null);
+    assert.equal(data.board_error, 'ValueError: Namespace Gtk not available');
+    assert.ok(data.errors.includes('GTK is missing or older than 4.12.'));
+    assert.equal((await probe('empty', 'raise ImportError()\n')).board_error, 'ImportError: ');
+    const long = (await probe('long', "raise RuntimeError('x' * 300 + '\\nsecond line')\n")).board_error;
+    assert.equal(long, `RuntimeError: ${'x'.repeat(186)}`);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
 });

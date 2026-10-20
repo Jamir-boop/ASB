@@ -5,7 +5,8 @@
 # It prints one JSON object on stdout, also when a tool is missing, and writes the same object to
 # $ASB_PROBE_OUT when that is set. Then it exits with code 1 when a check fails (code 2 for bad arguments).
 # Both tiers need node 20 or later, openssl, xdg-open, and node:sqlite or sqlite3. The board tier also needs
-# Python 3.9, PyGObject, GTK 4.12, Libadwaita 1.4, xvfb-run, and dbus-run-session.
+# Python 3.9, PyGObject, GTK 4.12, Libadwaita 1.4, xvfb-run, and dbus-run-session. With ASB_PROBE_WINDOW=skip
+# (a release without Xvfb), the board tier does not check xvfb-run.
 #
 # Keys (a value is null when the command is missing or fails):
 #   tier, family        the arguments
@@ -16,6 +17,8 @@
 #   python, gi          the Python and PyGObject versions, from one python3 probe (all its keys are null without python3)
 #   gtk, adw, glib      [major, minor, micro] of GTK 4, Libadwaita 1, and GLib, or null
 #   cairo, qrcode       true when gi.require_foreign('cairo') works and when qrcode imports
+#   board_error         "<type>: <first message line>" (at most 200 characters) of the first failure of the
+#                       PyGObject, GTK, and Libadwaita imports, or null
 #   pw_play, paplay, aplay, xvfb_run, dbus_run_session   the path of each program
 #   errors              the failed checks, as sentences
 #   ok                  true when errors is empty
@@ -66,29 +69,33 @@ openssl=$(first openssl version)
 xdg_open=$(first xdg-open --version)
 
 # The keys of the Python part; the probe prints them with json.dumps, without the outer braces.
-python='"python":null,"gi":null,"gtk":null,"adw":null,"glib":null,"cairo":null,"qrcode":null'
+python='"python":null,"gi":null,"gtk":null,"adw":null,"glib":null,"cairo":null,"qrcode":null,"board_error":null'
 board=''
 probe='
 import json, sys
-r = {"python": "%d.%d.%d" % sys.version_info[:3], "gi": None, "gtk": None, "adw": None, "glib": None, "cairo": False, "qrcode": False}
+r = {"python": "%d.%d.%d" % sys.version_info[:3], "gi": None, "gtk": None, "adw": None, "glib": None, "cairo": False, "qrcode": False,
+     "board_error": None}
+def board_error(error):
+    if r["board_error"] is None:
+        r["board_error"] = (type(error).__name__ + ": " + str(error)).splitlines()[0][:200]
 try:
     import gi
     r["gi"] = gi.__version__
-except Exception:
-    pass
+except Exception as error:
+    board_error(error)
 if r["gi"]:
     try:
         gi.require_version("Gtk", "4.0")
         from gi.repository import Gtk
         r["gtk"] = [Gtk.get_major_version(), Gtk.get_minor_version(), Gtk.get_micro_version()]
-    except Exception:
-        pass
+    except Exception as error:
+        board_error(error)
     try:
         gi.require_version("Adw", "1")
         from gi.repository import Adw
         r["adw"] = [Adw.get_major_version(), Adw.get_minor_version(), Adw.get_micro_version()]
-    except Exception:
-        pass
+    except Exception as error:
+        board_error(error)
     try:
         from gi.repository import GLib
         r["glib"] = [GLib.MAJOR_VERSION, GLib.MINOR_VERSION, GLib.MICRO_VERSION]
@@ -129,7 +136,7 @@ if [ "$tier" = board ]; then
     { [ "$2" -gt 4 ] || { [ "$2" -eq 4 ] && [ "$3" -ge 12 ]; }; } || fail "GTK is missing or older than 4.12."
     { [ "$4" -gt 1 ] || { [ "$4" -eq 1 ] && [ "$5" -ge 4 ]; }; } || fail "Libadwaita is missing or older than 1.4."
   fi
-  command -v xvfb-run >/dev/null 2>&1 || fail "xvfb-run is missing."
+  [ "${ASB_PROBE_WINDOW:-}" = skip ] || command -v xvfb-run >/dev/null 2>&1 || fail "xvfb-run is missing."
   command -v dbus-run-session >/dev/null 2>&1 || fail "dbus-run-session is missing."
 fi
 
