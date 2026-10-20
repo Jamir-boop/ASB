@@ -385,9 +385,10 @@ windowsOnly('a proved bound send through the receiver outbox answers written, an
   try {
     const [self] = peers(sender.configDir);
     const [peer] = peers(target.configDir);
+    // The engine's realpath is native (Node), and the runner's temporary folder has 8.3 short names.
     const send = (content: string) => {
       const msgId = randomUUID();
-      const binding = { registryHome: realpathSync(join(target.configDir, 'sessions')), runtimeSessionId: peer!.sessionId, pid: peer!.pid,
+      const binding = { registryHome: realpathSync.native(join(target.configDir, 'sessions')), runtimeSessionId: peer!.sessionId, pid: peer!.pid,
         procStart: peer!.procStart!, messagingSocketPath: peer!.messagingSocketPath, msgId, expiresAtMs: Date.now() + 10_000 };
       return sendBoundViaReceiver(sender.configDir, self!, binding, [userFrame(sender.listener.address, peer!.sessionId, content, msgId)]);
     };
@@ -424,7 +425,7 @@ windowsOnly('a pipe served by another process or with another start time gets 0 
       for (const name of readdirSync(sessions)) rmSync(join(sessions, name));
       writeFileSync(join(sessions, `${pid}.json`), JSON.stringify({ pid, sessionId, messagingSocketPath: server.path, cwd: root, peerProtocol: 1, procStart }));
       writeFileSync(join(sessions, keyName(pid, server.path)), JSON.stringify({ peerToken: hex, procStart }));
-      return { registryHome: realpathSync(sessions), runtimeSessionId: sessionId, pid, procStart, messagingSocketPath: server.path,
+      return { registryHome: realpathSync.native(sessions), runtimeSessionId: sessionId, pid, procStart, messagingSocketPath: server.path,
         msgId: randomUUID(), expiresAtMs: Date.now() + 10_000 };
     };
     const send = (binding: Awaited<ReturnType<typeof row>>) => sendBound(configDir, binding, [userFrame('uds:/dev/null', sessionId, 'probe', binding.msgId)], () => true);
