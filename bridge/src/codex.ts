@@ -3,21 +3,29 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { AppServer, AppServerDisconnected, ThreadUnavailable, withAppServer } from './app-server';
 import { privateDirectory } from './claude';
+import { checkSocketFile, CODEX_PIPE, isWindows } from './platform';
 import { deliverToDesktop, readDesktopCwd, readDesktopInputs, readDesktopRuntime, watchDesktop, type Runtime } from './desktop';
 
 export const targetSchema = z.object({ kind: z.enum(['app-server', 'desktop']), path: z.string() });
 export type Target = z.infer<typeof targetSchema>;
 
+// The Codex desktop IPC: a fixed named pipe on Windows (S4).
+export function codexIpcPath(codexHome: string, platform: string = process.platform) {
+  return isWindows(platform) ? CODEX_PIPE : join(codexHome, 'ipc', 'ipc.sock');
+}
+
 export function appServerSocket(codexHome: string) {
   const path = join(codexHome, 'app-server-control', 'app-server-control.sock');
+  // Windows: no symbolic-link resolution; the socket file is a reparse point.
+  if (isWindows()) { checkSocketFile(path); return path; }
   privateDirectory(dirname(path));
   const destination = lstatSync(path).isSymbolicLink() ? resolve(dirname(path), readlinkSync(path)) : path;
   return join(realpathSync(dirname(destination)), basename(destination));
 }
 
-export async function discoverTarget(ipcPath: string, threadId: string): Promise<Target> {
+export async function discoverTarget(codexHome: string, ipcPath: string, threadId: string): Promise<Target> {
   try {
-    const target = { kind: 'app-server' as const, path: appServerSocket(dirname(dirname(ipcPath))) };
+    const target = { kind: 'app-server' as const, path: appServerSocket(codexHome) };
     await withAppServer(target.path, threadId, server => server.runtime());
     return target;
   } catch (error) {

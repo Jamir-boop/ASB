@@ -21,7 +21,7 @@ The socket carries newline-delimited UTF-8 JSON, at most 1,048,576 characters pe
 
 | Frame | Fields | Bridge |
 | --- | --- | --- |
-| `auth` line | `token` | The bridge sends it first when a peer key file matches the target process, and ignores it on receive. |
+| `auth` line | `token` | The bridge sends it first when a peer key file matches the target process. On Linux and macOS it ignores the line on receive; on Windows its inbox requires it. |
 | `user` | `msgV: 1`, UUID `msg_id`, `from`, `message: {role, content}`; optional `session_id`, `priority`, `uuid`, `file_attachments` | Sends `session_id` and `priority: "next"`. Accepts `now`, `next`, and `later` and treats all three as `next`, because the bridge has no separate ordering lane. Drops a frame for another `session_id`. Ignores `uuid`. Refuses nonempty `file_attachments`. |
 | `control` `notify_when_idle` | UUID `msg_id`, optional `from_mode`, optional `session_id` | Requests one idle notice. |
 | `control` `peer_idle_notice` | `orig_msg_id`, `state`; optional `msg_id`, `finished_at`, `detail`, `from_mode`, `session_id` | The bridge delivers it once, if it matches a request. |
@@ -48,6 +48,10 @@ Receipt statuses:
 - `delivered`: a held message was released. Ordinary acceptance sends no receipt.
 
 A socket write and a receipt are both separate from a model reply.
+
+### Windows
+
+Claude Code on Windows (checked with 2.1.303 and 2.1.304) uses a named pipe `\\.\pipe\LOCAL\cc-msg-<32 hex>` as `messagingSocketPath`, a `procStart` that is the `GetProcessTimes` creation FILETIME in decimal, and `pidDomain` `win32:<host name in lower case>`. Its key file is `<pid>.<sha256 of \\.\pipe\ plus the lower-case pipe name>.key` with `{ peerToken, procStart, pidDomain }`, and its inbox requires the `auth` line. The bridge does the same: its receivers and the relay proxy rows write a key file before the row, the inbox needs the `auth` line first, and a send without a key file is refused. The outbound socket of a receiver is `\\.\pipe\LOCAL\asb-out-<the same 32 hex>` and needs the same `auth` line. Codex desktop IPC is `\\.\pipe\codex-ipc`. `test/platform.test.ts` covers the pipe rule, the key name, the `auth` line, and a round trip on every system.
 
 ### ASB relay proxy rows
 
@@ -143,14 +147,15 @@ Relay paths: a frame that a verified local session writes to a proxy socket goes
 | Private socket directory | yes | Fallback `/tmp/cc-socks-<uid>`. No receiver starts if both fail. The path limit is 103 bytes and has no test. | hook |
 | Wrong owner, symlink, other-user access | yes | The bridge refuses. A start-time check guards against PID reuse. | trust |
 | Silent connection | yes | The bridge closes it after 30 seconds. | none |
-| Auth line | partial | Sent to Claude when a matching key file exists. Ignored on receive, so the sender class comes from the registry and `from-mode`. | protocol |
+| Auth line | partial | Sent to Claude when a matching key file exists. Ignored on receive on Linux and macOS, so the sender class comes from the registry and `from-mode`. Required on receive on Windows. | protocol, platform |
 | Own-child messages, `CLAUDE_CODE_MESSAGING_SOCKET` and `_TOKEN` exports | no | Commands of a Codex task cannot post to their own session as verified children. | none |
 | Socket before all hooks | no | The plugin hook starts the receiver, so earlier hooks get no socket. | none |
 | Receiving refused | yes | The socket stays registered. | protocol |
 | Codex CLI and `-p` | partial | CLI on the shared daemon works. `--no-daemon` has no receiver. | app-server |
 | Native UI: preview, `/status`, `/peers`, `@` picker, transcript rows | no | Codex uses MCP tools. | none |
 | Other users, containers, WSL boundaries | n/a | No shared discovery. | |
-| Windows, cloud, Remote Control, `isolatePeerMachines` | n/a | | |
+| Windows | yes | Named pipes, key files, and the `auth` line. No `link-claude`. | platform |
+| Cloud, Remote Control, `isolatePeerMachines` | n/a | | |
 | File locks | n/a | None. Agree on ownership or use separate worktrees. | |
 
 ## Testing

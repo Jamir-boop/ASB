@@ -9,5 +9,6 @@
   "test/codex-rollout-scan.test.mjs",
   "test/codex-asb-reader.test.mjs",
   "test/opencode-data.test.mjs",
-  "test/insights.test.mjs"
+  "test/insights.test.mjs",
+  "test/bridge-windows.test.mjs"
 ]

@@ -4,13 +4,16 @@
 // https://code.claude.com/docs/en/cross-session-messaging#the-sessions-inbox-socket
 // https://github.com/PeterSR/claude-code-socket-transport/tree/480bd83c0bf1c63161c5afdb0976bbff849c926b
 import net from 'node:net';
-import { createHash, randomUUID } from 'node:crypto';
-import { constants, openSync, closeSync, fstatSync, readFileSync, readdirSync, lstatSync, realpathSync, chmodSync, mkdirSync, writeFileSync, unlinkSync, renameSync } from 'node:fs';
-import { dirname, join, basename, isAbsolute } from 'node:path';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { readFileSync, readdirSync, realpathSync, mkdirSync, writeFileSync, unlinkSync, renameSync } from 'node:fs';
+import { join, basename } from 'node:path';
 import { once } from 'node:events';
 import { homedir } from 'node:os';
 import { z } from 'zod';
 import { BurstBudget } from './guard';
+import { checkPeerSocket, inboxPath, isWindows, keyName, listenPrivate, ownedJson, pidDomain, privateDirectory, processStart } from './platform';
+
+export { checkSocket, ownedJson, privateDirectory, processStart } from './platform';
 
 export const uuid = z.uuid();
 export const maxLineLength = 1048576;
@@ -52,29 +55,6 @@ export function socketPath(address: string) {
   return decodeURIComponent(address.slice(4));
 }
 
-export function ownedJson(path: string, maxBytes: number): unknown {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.uid !== process.getuid?.() || stat.size > maxBytes) throw new Error('Invalid local metadata file');
-    return JSON.parse(readFileSync(fd, 'utf8'));
-  } finally { closeSync(fd); }
-}
-
-export function privateDirectory(path: string) {
-  const stat = lstatSync(path);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077)) {
-    throw new Error('Socket/state directory must be private and owned by the current user');
-  }
-}
-
-export function checkSocket(path: string) {
-  if (!isAbsolute(path) || path.split('/').includes('..')) throw new Error('Invalid socket path');
-  privateDirectory(dirname(path));
-  const stat = lstatSync(path);
-  if (!stat.isSocket() || stat.uid !== process.getuid?.() || (stat.mode & 0o077)) throw new Error('Invalid peer socket');
-}
-
 export function peers(configDir: string): Peer[] {
   const directory = join(configDir, 'sessions');
   let files: string[];
@@ -86,7 +66,7 @@ export function peers(configDir: string): Peer[] {
       const peer = registry.parse(ownedJson(join(directory, file), 256 * 1024));
       if (file !== `${peer.pid}.json`) continue;
       process.kill(peer.pid, 0);
-      checkSocket(peer.messagingSocketPath);
+      checkPeerSocket(peer.messagingSocketPath);
       result.push(peer);
     } catch { /* Ignore stale or incompatible session records. */ }
   }
@@ -107,20 +87,6 @@ export function findPeerProcess(configDir: string, address: string, procStart: s
   const matches = peers(configDir).filter(peer => peerAddress(peer.messagingSocketPath) === address && (peer.procStart ?? null) === procStart);
   if (matches.length !== 1) throw new Error('Claude process is unavailable or has restarted');
   return matches[0]!;
-}
-
-export async function processStart(pid: number) {
-  if (process.platform === 'linux') {
-    // Claude Code on Linux records the kernel start time (field 22 of /proc/<pid>/stat), not `ps lstart`.
-    const start = readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').pop()?.split(' ')[19];
-    if (!start) throw new Error('Cannot verify receiver process');
-    return start;
-  }
-  const child = Bun.spawn(['ps', '-o', 'lstart=', '-p', String(pid)],
-    { env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' }, stdout: 'pipe', stderr: 'ignore' });
-  const [code, output] = await Promise.all([child.exited, new Response(child.stdout).text()]);
-  if (code !== 0 || !output.trim()) throw new Error('Cannot verify receiver process');
-  return output.trim();
 }
 
 // Claude's ListAgents gives the model only the name, so name the task after its Codex title (its
@@ -166,25 +132,50 @@ function uniqueName(configDir: string, base: string, sessionId: string) {
   return candidates.find(name => !taken.has(name)) ?? `${base}-${sessionId}`;
 }
 
-export async function register(configDir: string, sessionId: string, address: string, cwd: string, status: string) {
+// The key file of a row (S3b): Claude on Windows reads the peer token from it and sends it as the auth line.
+export function writePeerKey(sessions: string, pid: number, socketPath: string, peerToken: string, procStart: string) {
+  const path = join(sessions, keyName(pid, socketPath));
+  const temporary = `${path}.tmp.${randomBytes(8).toString('hex')}`;
+  const domain = pidDomain();
+  writeFileSync(temporary, JSON.stringify({ peerToken, procStart, ...(domain ? { pidDomain: domain } : {}) }), { flag: 'wx', mode: 0o600 });
+  renameSync(temporary, path);
+  return path;
+}
+
+// Only while the key still belongs to this process: a reused PID writes its own key under the same name.
+export function removePeerKey(path: string, procStart: string) {
+  try { if (z.object({ procStart: z.string() }).parse(ownedJson(path, 4096)).procStart === procStart) unlinkSync(path); }
+  catch { /* Already gone. */ }
+}
+
+// The receiver's inbox checks the auth line with peerToken; Windows always needs one (plan 17.2).
+export async function register(configDir: string, sessionId: string, address: string, cwd: string, status: string,
+  peerToken = isWindows() ? randomBytes(16).toString('hex') : undefined) {
   const sessions = join(configDir, 'sessions');
   mkdirSync(sessions, { recursive: true, mode: 0o700 });
   const directory = realpathSync(sessions);
   privateDirectory(directory);
   const path = join(directory, `${process.pid}.json`);
   let base = nameBase(cwd, sessionId);
+  const domain = pidDomain();
   const record = { pid: process.pid, sessionId, cwd, name: uniqueName(configDir, base, sessionId),
     startedAt: Date.now(), procStart: await processStart(process.pid), peerProtocol: 1,
-    ...(process.platform === 'darwin' ? { pidDomain: 'darwin' } : {}),
+    ...(domain ? { pidDomain: domain } : {}),
     kind: 'interactive', entrypoint: 'codex-asb-bridge', messagingSocketPath: socketPath(address),
     status, statusUpdatedAt: Date.now(), peerFeatures: ['notify_idle'] };
-  writeFileSync(path, JSON.stringify(record), { flag: 'wx', mode: 0o600 });
+  const keyPath = peerToken ? writePeerKey(directory, process.pid, record.messagingSocketPath, peerToken, record.procStart) : undefined;
+  try { writeFileSync(path, JSON.stringify(record), { flag: 'wx', mode: 0o600 }); }
+  catch (error) { if (keyPath) removePeerKey(keyPath, record.procStart); throw error; }
   const check = () => {
     const current = z.object({ sessionId: uuid, procStart: z.string() }).parse(ownedJson(path, 256 * 1024));
     if (current.sessionId !== sessionId || current.procStart !== record.procStart) throw new Error('Receiver registration changed');
   };
   return {
-    close() { check(); unlinkSync(path); },
+    peerToken,
+    close() {
+      try { check(); unlinkSync(path); }
+      finally { if (keyPath) removePeerKey(keyPath, record.procStart); }
+    },
     update(status: string) {
       check();
       if (record.status === status) return;
@@ -200,9 +191,21 @@ export async function register(configDir: string, sessionId: string, address: st
   };
 }
 
-export async function inbox(directory: string, receive: (frame: Frame) => void, fileName = `${process.pid}.sock`) {
-  privateDirectory(directory);
-  const path = join(directory, fileName);
+// The first line of a connection when the receiver has a key file (S3b).
+export function authorized(value: unknown, token: string) {
+  const given = z.object({ type: z.literal('auth'), token: z.string() }).safeParse(value).data?.token;
+  if (given === undefined) return false;
+  const [left, right] = [Buffer.from(given), Buffer.from(token)];
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+// With options.token every connection must start with the auth line; Windows always needs it. Elsewhere Claude
+// sends the line only when the receiver has a key file, and the inbox ignores it as an invalid frame.
+export async function inbox(directory: string, receive: (frame: Frame) => void, fileName = `${process.pid}.sock`, options: { token?: string } = {}) {
+  const token = options.token;
+  if (isWindows() && !token) throw new Error('A Windows inbox needs a peer token');
+  if (!isWindows()) privateDirectory(directory);
+  const path = inboxPath(directory, fileName);
   const sockets = new Set<net.Socket>();
   const server = net.createServer(socket => {
     sockets.add(socket);
@@ -212,14 +215,20 @@ export async function inbox(directory: string, receive: (frame: Frame) => void, 
     const deadline = setTimeout(() => socket.destroy(), 30000);
     socket.once('close', () => clearTimeout(deadline));
     let buffer = '';
+    let open = !token;
     socket.on('data', chunk => {
       buffer += chunk;
       let end: number;
       while ((end = buffer.indexOf('\n')) !== -1) {
-        clearTimeout(deadline);
         if (end > maxLineLength) return void socket.destroy();
         const line = buffer.slice(0, end);
         buffer = buffer.slice(end + 1);
+        if (!open) {
+          try { open = authorized(JSON.parse(line), token!); } catch { /* Not JSON: refused below. */ }
+          if (!open) return void socket.destroy();
+          continue;
+        }
+        clearTimeout(deadline);
         try {
           const parsed = frameSchema.safeParse(JSON.parse(line));
           if (parsed.success) receive(parsed.data);
@@ -228,10 +237,7 @@ export async function inbox(directory: string, receive: (frame: Frame) => void, 
       if (buffer.length > maxLineLength) socket.destroy();
     });
   });
-  const mask = process.umask(0o077);
-  try { server.listen(path); await once(server, 'listening'); }
-  finally { process.umask(mask); }
-  chmodSync(path, 0o600);
+  await listenPrivate(server, path);
   return {
     address: peerAddress(path),
     close: () => new Promise<void>((resolve, reject) => {
@@ -280,18 +286,8 @@ export async function sendFrames(configDir: string, peer: Peer, frames: unknown[
   let written = false;
   try {
     if (peer.procStart && await processStart(peer.pid) !== peer.procStart) throw new Error('Peer process identity changed; list sessions again');
-    checkSocket(peer.messagingSocketPath);
-    const hash = createHash('sha256').update(peer.messagingSocketPath).digest('hex');
-    const keyPath = join(configDir, 'sessions', `${peer.pid}.${hash}.key`);
-    let token: string | undefined;
-    try {
-      const key = z.object({ peerToken: z.string().regex(/^[a-f0-9]{32}$/), procStart: z.string().optional() })
-        .parse(ownedJson(keyPath, 4096));
-      if (peer.procStart && key.procStart !== peer.procStart) throw new Error('Claude peer key belongs to a different process');
-      token = key.peerToken;
-    } catch (error) {
-      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
-    }
+    checkPeerSocket(peer.messagingSocketPath);
+    const token = peerKey(configDir, peer);
     const socket = net.createConnection(peer.messagingSocketPath);
     let socketError: Error | undefined;
     socket.on('error', error => { socketError = error; });
@@ -309,6 +305,20 @@ export async function sendFrames(configDir: string, peer: Peer, frames: unknown[
     } finally { socket.destroy(); }
   } finally {
     if (!written) for (let count = 0; count < reserved; count++) sendBudget.credit(budgetKey);
+  }
+}
+
+// The token of a peer's key file. Claude on Windows always writes one; elsewhere a missing key sends without auth.
+export function peerKey(configDir: string, peer: Pick<Peer, 'pid' | 'messagingSocketPath' | 'procStart'>) {
+  try {
+    const key = z.object({ peerToken: z.string().regex(/^[a-f0-9]{32}$/), procStart: z.string().optional() })
+      .parse(ownedJson(join(configDir, 'sessions', keyName(peer.pid, peer.messagingSocketPath)), 4096));
+    if (peer.procStart && key.procStart !== peer.procStart) throw new Error('Claude peer key belongs to a different process');
+    return key.peerToken;
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+    if (isWindows()) throw new Error('Claude peer key is missing; list sessions again');
+    return undefined;
   }
 }
 

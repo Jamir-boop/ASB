@@ -5,6 +5,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import net from 'node:net';
 import { once } from 'node:events';
 import { checkSocket, findPeer, findPeerProcess, peerAddress, peers, privateDirectory, processStart, register, sendFrames, sessionName } from '../src/claude';
+// POSIX only on Windows CI: Unix socket files, file modes, owners, and symbolic links.
+const posix = test.skipIf(process.platform === 'win32');
 
 // The local user is the trust boundary: a sender address is not an identity. These tests bend one
 // property of an otherwise valid peer and expect discovery or sending to reject it.
@@ -48,7 +50,7 @@ async function fixture(socketName = `${process.pid}.sock`) {
     } };
 }
 
-test('discovery drops a session record with a mismatched registry filename or missing socket', async () => {
+posix('discovery drops a session record with a mismatched registry filename or missing socket', async () => {
   const f = await fixture();
   try {
     expect(f.peer()?.sessionId).toBe(f.sessionId);
@@ -64,7 +66,7 @@ test('discovery drops a session record with a mismatched registry filename or mi
   } finally { await f.close(); }
 });
 
-test('profiles share one registry through a sessions directory link for registration, names, updates, and close', async () => {
+posix('profiles share one registry through a sessions directory link for registration, names, updates, and close', async () => {
   const f = await fixture();
   const previous = process.env.CODEX_HOME;
   const codexHome = join(f.root, '.codex');
@@ -107,7 +109,7 @@ test('profiles share one registry through a sessions directory link for registra
   }
 });
 
-test('sending through a shared registry uses its native authentication key and refuses a linked key file', async () => {
+posix('sending through a shared registry uses its native authentication key and refuses a linked key file', async () => {
   const f = await fixture();
   try {
     const linked = join(f.root, 'proxy');
@@ -127,7 +129,7 @@ test('sending through a shared registry uses its native authentication key and r
   } finally { await f.close(); }
 });
 
-test.each(['public', 'wrong owner', 'file'])('registration refuses an unsafe shared registry target: %s', async kind => {
+posix.each(['public', 'wrong owner', 'file'])('registration refuses an unsafe shared registry target: %s', async kind => {
   const f = await fixture();
   let owner: ReturnType<typeof spyOn> | undefined;
   try {
@@ -145,7 +147,7 @@ test.each(['public', 'wrong owner', 'file'])('registration refuses an unsafe sha
   } finally { owner?.mockRestore(); await f.close(); }
 });
 
-test('shared registry discovery refuses linked records and ambiguous identities without allowing linked socket or state directories', async () => {
+posix('shared registry discovery refuses linked records and ambiguous identities without allowing linked socket or state directories', async () => {
   const f = await fixture();
   try {
     const linked = join(f.root, 'proxy');
@@ -167,7 +169,7 @@ test('shared registry discovery refuses linked records and ambiguous identities 
   } finally { await f.close(); }
 });
 
-test('sending refuses a peer socket that other users can reach', async () => {
+posix('sending refuses a peer socket that other users can reach', async () => {
   const f = await fixture();
   try {
     const peer = f.peer();
@@ -179,7 +181,7 @@ test('sending refuses a peer socket that other users can reach', async () => {
   } finally { await f.close(); }
 });
 
-test.each([`${process.pid}-f00d1234.sock`, 'abcdef0123456789.sock', 'custom socket%é.sock'])
+posix.each([`${process.pid}-f00d1234.sock`, 'abcdef0123456789.sock', 'custom socket%é.sock'])
   ('discovery and sending honor a registered native alternate socket path: %s', async socketName => {
     const f = await fixture(socketName);
     try {
@@ -190,7 +192,7 @@ test.each([`${process.pid}-f00d1234.sock`, 'abcdef0123456789.sock', 'custom sock
     } finally { await f.close(); }
   });
 
-test('sending refuses a peer whose process identity no longer matches', async () => {
+posix('sending refuses a peer whose process identity no longer matches', async () => {
   const f = await fixture();
   try {
     // A PID is reused after a session dies, so the recorded start time is what separates

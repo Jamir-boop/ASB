@@ -15,6 +15,8 @@ import { receiver } from './desktop-fixture';
 import { appServer } from './app-server-fixture';
 import { fakeEngine } from './engine-fixture';
 import { processStart } from '../src/claude';
+// POSIX only on Windows CI: Unix socket files, /tmp, and file modes.
+const posix = test.skipIf(process.platform === 'win32');
 
 async function fixture(prefix = '/tmp/uds-protocol-') {
   const root = mkdtempSync(prefix);
@@ -80,7 +82,7 @@ async function until(condition: () => boolean, timeoutMs = 2000) {
   expect(condition()).toBe(true);
 }
 
-test('socket addresses with spaces, percent signs, and Unicode preserve messages and receipts', async () => {
+posix('socket addresses with spaces, percent signs, and Unicode preserve messages and receipts', async () => {
   const f = await fixture('/tmp/uds proto%é-');
   const encode = (path: string) => `uds:${path.replaceAll('%', '%25').replaceAll(' ', '%20').replaceAll('é', '%C3%A9')}`;
   try {
@@ -100,7 +102,7 @@ test('socket addresses with spaces, percent signs, and Unicode preserve messages
   } finally { await f.close(); }
 });
 
-test('the outgoing envelope carries the native sender thread ID for session attribution', async () => {
+posix('the outgoing envelope carries the native sender thread ID for session attribution', async () => {
   const f = await fixture();
   try {
     await f.bridge.sendMessage(f.peerId, 'sender identity check');
@@ -109,7 +111,7 @@ test('the outgoing envelope carries the native sender thread ID for session attr
   } finally { await f.close(); }
 });
 
-test('native receipt reasons remain visible in status while late receipts stay ignored', async () => {
+posix('native receipt reasons remain visible in status while late receipts stay ignored', async () => {
   const f = await fixture();
   try {
     const sent = await f.bridge.sendMessage(f.peerId, 'receipt detail check');
@@ -129,7 +131,7 @@ test('native receipt reasons remain visible in status while late receipts stay i
   } finally { await f.close(); }
 });
 
-test('an outgoing message that the peer holds stays out of the inbox, idle checks, expiry, sessions and close', async () => {
+posix('an outgoing message that the peer holds stays out of the inbox, idle checks, expiry, sessions and close', async () => {
   const f = await fixture();
   try {
     const first = await f.bridge.sendMessage(f.peerId, 'own text the peer holds');
@@ -166,7 +168,7 @@ test('an outgoing message that the peer holds stays out of the inbox, idle check
   } finally { await f.close(); }
 });
 
-test('delivered receipts mean a held message was released, ordinary acceptance sends none', async () => {
+posix('delivered receipts mean a held message was released, ordinary acceptance sends none', async () => {
   const f = await fixture();
   try {
     const direct = await f.message('prompting', 'ordinary acceptance');
@@ -184,7 +186,7 @@ test('delivered receipts mean a held message was released, ordinary acceptance s
   } finally { await f.close(); }
 });
 
-test('attachment messages are explicitly refused instead of delivering text with missing files', async () => {
+posix('attachment messages are explicitly refused instead of delivering text with missing files', async () => {
   const f = await fixture();
   try {
     const id = randomUUID();
@@ -205,7 +207,7 @@ test('attachment messages are explicitly refused instead of delivering text with
   } finally { await f.close(); }
 });
 
-test('MCP sends and receives a peer reply with a large task history', async () => {
+posix('MCP sends and receives a peer reply with a large task history', async () => {
   const f = await fixture();
   const client = new Client({ name: 'large-history-test', version: '1.0.0' });
   try {
@@ -228,7 +230,7 @@ test('MCP sends and receives a peer reply with a large task history', async () =
   } finally { await client.close(); await f.close(); }
 }, 60000);
 
-test('outbound hops follow the last committed peer input and reset at a real user input', async () => {
+posix('outbound hops follow the last committed peer input and reset at a real user input', async () => {
   const f = await fixture();
   const token = 'a'.repeat(24);
   const id = randomUUID();
@@ -259,7 +261,7 @@ test('outbound hops follow the last committed peer input and reset at a real use
   } finally { await f.close(); }
 });
 
-test('50 unread accepted messages are separate from held capacity and free a slot only on consumption', async () => {
+posix('50 unread accepted messages are separate from held capacity and free a slot only on consumption', async () => {
   const f = await fixture();
   const ids = Array.from({ length: 50 }, () => randomUUID());
   try {
@@ -283,7 +285,7 @@ test('50 unread accepted messages are separate from held capacity and free a slo
   } finally { await f.close(); }
 });
 
-test('idle stays pending while an accepted peer input has not been consumed', async () => {
+posix('idle stays pending while an accepted peer input has not been consumed', async () => {
   const f = await fixture();
   try {
     await f.message('prompting');
@@ -301,7 +303,7 @@ test('idle stays pending while an accepted peer input has not been consumed', as
   } finally { await f.close(); }
 });
 
-test('an app-server refusal clears unread input, sends a dropped receipt and permits a later idle notice', async () => {
+posix('an app-server refusal clears unread input, sends a dropped receipt and permits a later idle notice', async () => {
   const f = await fixture();
   const server = await appServer(undefined, f.desktop.threadId);
   f.bridge.setTarget({ kind: 'app-server', path: server.path });
@@ -330,7 +332,7 @@ test('an app-server refusal clears unread input, sends a dropped receipt and per
   } finally { await f.close(); await server.close(); }
 });
 
-test.each(['timeout', 'disconnect'] as const)('an app-server delivery %s preserves unknown input and blocks idle notices', async outcome => {
+posix.each(['timeout', 'disconnect'] as const)('an app-server delivery %s preserves unknown input and blocks idle notices', async outcome => {
   const f = await fixture();
   const server = await appServer(undefined, f.desktop.threadId);
   f.bridge.setTarget({ kind: 'app-server', path: server.path });
@@ -358,7 +360,7 @@ test.each(['timeout', 'disconnect'] as const)('an app-server delivery %s preserv
   } finally { await f.close(); await server.close(); }
 }, 15000);
 
-test.each(['refused', 'malformed'] as const)('Desktop %s delivery keeps definite refusals separate from unknown outcomes', async outcome => {
+posix.each(['refused', 'malformed'] as const)('Desktop %s delivery keeps definite refusals separate from unknown outcomes', async outcome => {
   const f = await fixture();
   f.desktop.setSubmissionReply(outcome === 'refused' ? { resultType: 'error', error: 'Peer input rejected' } : { error: 'Malformed response' });
   try {
@@ -376,7 +378,7 @@ test.each(['refused', 'malformed'] as const)('Desktop %s delivery keeps definite
   } finally { await f.close(); }
 });
 
-test('a peer cannot claim an existing user input by choosing its client ID as msg_id', async () => {
+posix('a peer cannot claim an existing user input by choosing its client ID as msg_id', async () => {
   const f = await fixture();
   const id = randomUUID();
   try {
@@ -391,7 +393,7 @@ test('a peer cannot claim an existing user input by choosing its client ID as ms
   } finally { await f.close(); }
 });
 
-test('mode changes recheck held input without extending deadlines; explicit hold requires a policy change', async () => {
+posix('mode changes recheck held input without extending deadlines; explicit hold requires a policy change', async () => {
   const f = await fixture();
   try {
     const id = await f.message('bypass');
@@ -414,7 +416,7 @@ test('mode changes recheck held input without extending deadlines; explicit hold
   } finally { await f.close(); }
 });
 
-test('dialog expiry accepts the documented values; never and explicit hold keep no deadline', async () => {
+posix('dialog expiry accepts the documented values; never and explicit hold keep no deadline', async () => {
   const f = await fixture();
   try {
     const id = await f.message('bypass');
@@ -437,7 +439,7 @@ test('dialog expiry accepts the documented values; never and explicit hold keep 
   } finally { await f.close(); }
 });
 
-test('held capacity drops the oldest item separately from the delivery guard', async () => {
+posix('held capacity drops the oldest item separately from the delivery guard', async () => {
   const f = await fixture();
   try {
     await f.bridge.setPolicy('hold');
@@ -456,7 +458,7 @@ test('held capacity drops the oldest item separately from the delivery guard', a
   } finally { await f.close(); }
 });
 
-test('the task name carries its directory, stays unique among live peers, and matches the envelope', () => withCodexHome(async () => {
+posix('the task name carries its directory, stays unique among live peers, and matches the envelope', () => withCodexHome(async () => {
   const f = await fixture();
   try {
     const name = f.bridge.status().name;
@@ -491,7 +493,7 @@ function title(home: string, id: string, name: string) {
   writeFileSync(join(home, 'session_index.jsonl'), JSON.stringify({ id, thread_name: name, updated_at: new Date().toISOString() }) + '\n', { flag: 'a' });
 }
 
-test('the task name follows the latest Codex title and falls back to the folder', () => withCodexHome(async home => {
+posix('the task name follows the latest Codex title and falls back to the folder', () => withCodexHome(async home => {
   const configDir = mkdtempSync('/tmp/uds-names-');
   try {
     const id = randomUUID();
@@ -512,7 +514,7 @@ test('the task name follows the latest Codex title and falls back to the folder'
   } finally { rmSync(configDir, { recursive: true }); }
 }));
 
-test('the task name prefix names its Codex home', async () => {
+posix('the task name prefix names its Codex home', async () => {
   const id = randomUUID();
   const configDir = mkdtempSync('/tmp/uds-names-');
   try {
@@ -525,7 +527,7 @@ test('the task name prefix names its Codex home', async () => {
   } finally { rmSync(configDir, { recursive: true }); }
 });
 
-test('the registered name refreshes on a status change once a title appears, and stays unique', () => withCodexHome(async home => {
+posix('the registered name refreshes on a status change once a title appears, and stays unique', () => withCodexHome(async home => {
   const f = await fixture();
   try {
     const id = f.desktop.threadId;
@@ -542,7 +544,7 @@ test('the registered name refreshes on a status change once a title appears, and
   } finally { await f.close(); }
 }));
 
-test('list_sessions names the agent kind and start time and leaves out the calling task', async () => {
+posix('list_sessions names the agent kind and start time and leaves out the calling task', async () => {
   const f = await fixture();
   const client = new Client({ name: 'list-test', version: '1.0.0' });
   const rows = z.array(z.object({ sessionId: z.string(), name: z.string(), agent: z.string(),
@@ -576,7 +578,7 @@ test('list_sessions names the agent kind and start time and leaves out the calli
   } finally { await client.close(); await f.close(); }
 });
 
-test('the outbound socket sends only this receiver own frames to the peer they name', async () => {
+posix('the outbound socket sends only this receiver own frames to the peer they name', async () => {
   const f = await fixture();
   const address = f.bridge.status().replyAddress;
   if (!address) throw new Error('Missing receiver');
@@ -604,7 +606,7 @@ test('the outbound socket sends only this receiver own frames to the peer they n
   } finally { await f.close(); }
 });
 
-test('a task cannot send to itself', async () => {
+posix('a task cannot send to itself', async () => {
   const f = await fixture();
   try {
     await expect(f.bridge.sendMessage(f.desktop.threadId, 'to myself')).rejects.toThrow('Cannot send to this task itself');
@@ -612,7 +614,7 @@ test('a task cannot send to itself', async () => {
   } finally { await f.close(); }
 });
 
-test('batch drop receipts settle every correlated send and ignore late held receipts', async () => {
+posix('batch drop receipts settle every correlated send and ignore late held receipts', async () => {
   const f = await fixture();
   try {
     const first = await f.bridge.sendMessage(f.peerId, 'first');
@@ -627,7 +629,7 @@ test('batch drop receipts settle every correlated send and ignore late held rece
   } finally { await f.close(); }
 });
 
-test('native guards run on delivery and held release; duplicate and hop drops report their reason', async () => {
+posix('native guards run on delivery and held release; duplicate and hop drops report their reason', async () => {
   const f = await fixture();
   try {
     await f.message('prompting', 'repeat');
@@ -659,7 +661,7 @@ test('native guards run on delivery and held release; duplicate and hop drops re
   } finally { await f.close(); }
 });
 
-test('size validation uses serialized characters before sending either text or its subscription; UTF-8 survives framing', async () => {
+posix('size validation uses serialized characters before sending either text or its subscription; UTF-8 survives framing', async () => {
   const f = await fixture();
   try {
     await expect(f.bridge.sendMessage(f.peerId, 'x'.repeat(maxLineLength), true)).rejects.toThrow('serialized length');
@@ -675,7 +677,7 @@ test('size validation uses serialized characters before sending either text or i
   } finally { await f.close(); }
 });
 
-test('the receiver refuses an exhausted outgoing burst before writing text or an attached subscription', async () => {
+posix('the receiver refuses an exhausted outgoing burst before writing text or an attached subscription', async () => {
   const f = await fixture();
   const client = new Client({ name: 'burst-test', version: '1.0.0' });
   try {
@@ -697,7 +699,7 @@ test('the receiver refuses an exhausted outgoing burst before writing text or an
   } finally { await client.close(); await f.close(); }
 });
 
-test('native mode defaults hold mismatches; user decisions release once, refuse and expire without model input', async () => {
+posix('native mode defaults hold mismatches; user decisions release once, refuse and expire without model input', async () => {
   const f = await fixture();
   try {
     const held = await f.message('bypass');
@@ -736,7 +738,7 @@ test('native mode defaults hold mismatches; user decisions release once, refuse 
   } finally { await f.close(); }
 }, 10000);
 
-test('idle subscriptions are one-shot, do not start the watched task and ignore unsolicited or expired notices', async () => {
+posix('idle subscriptions are one-shot, do not start the watched task and ignore unsolicited or expired notices', async () => {
   const f = await fixture();
   try {
     const request = randomUUID();
@@ -771,7 +773,7 @@ test('idle subscriptions are one-shot, do not start the watched task and ignore 
   } finally { await f.close(); }
 });
 
-test('regular receiver shutdown expires held input and sends one exited notice to a waiting subscriber', async () => {
+posix('regular receiver shutdown expires held input and sends one exited notice to a waiting subscriber', async () => {
   const f = await fixture();
   try {
     const message = await f.message('bypass');
@@ -788,7 +790,7 @@ test('regular receiver shutdown expires held input and sends one exited notice t
   } finally { await f.close(); }
 });
 
-test('a held idle notice stays outside model input, even after accept; an expired subscription reports once', async () => {
+posix('a held idle notice stays outside model input, even after accept; an expired subscription reports once', async () => {
   const f = await fixture();
   try {
     await f.bridge.setPolicy('hold');
@@ -811,7 +813,7 @@ test('a held idle notice stays outside model input, even after accept; an expire
   } finally { await f.close(); }
 });
 
-test('the lifecycle hook opens held dialogs without model calls and shares manual review', async () => {
+posix('the lifecycle hook opens held dialogs without model calls and shares manual review', async () => {
   const f = await fixture();
   const dialogs: { text: string; answer: ReturnType<typeof Promise.withResolvers<{ action: 'accept' | 'cancel'; content?: { decision: string } }>> }[] = [];
   const client = new Client({ name: 'automatic-dialog-test', version: '1.0.0' }, { capabilities: { elicitation: { form: {} } } });
@@ -855,7 +857,7 @@ test('the lifecycle hook opens held dialogs without model calls and shares manua
   } finally { await client.close(); await f.close(); }
 }, 15000);
 
-test('automatic dialogs cancel on expiry and transport failures leave messages held', async () => {
+posix('automatic dialogs cancel on expiry and transport failures leave messages held', async () => {
   const f = await fixture();
   const requests: string[] = [];
   let cancellations = 0;
@@ -894,7 +896,7 @@ test('automatic dialogs cancel on expiry and transport failures leave messages h
   } finally { await client.close(); await f.close(); }
 }, 15000);
 
-test('MCP cancellation leaves policy alone but denies a default-held message', async () => {
+posix('MCP cancellation leaves policy alone but denies a default-held message', async () => {
   const f = await fixture();
   let action: 'accept' | 'cancel' = 'cancel';
   let content: Record<string, string> = { policy: 'hold' };
@@ -934,7 +936,7 @@ test('MCP cancellation leaves policy alone but denies a default-held message', a
   } finally { await client.close(); await f.close(); }
 });
 
-test('text frames with priority now or later are delivered like next', async () => {
+posix('text frames with priority now or later are delivered like next', async () => {
   const f = await fixture();
   try {
     for (const priority of ['now', 'later', 'next']) {
@@ -946,7 +948,7 @@ test('text frames with priority now or later are delivered like next', async () 
   } finally { await f.close(); }
 });
 
-test('control frames addressed to another session are ignored, matching ones are applied', async () => {
+posix('control frames addressed to another session are ignored, matching ones are applied', async () => {
   const f = await fixture();
   try {
     const sent = await f.bridge.sendMessage(f.peerId, 'receipt target');
@@ -961,7 +963,7 @@ test('control frames addressed to another session are ignored, matching ones are
   } finally { await f.close(); }
 });
 
-test('a peer that changes its sessionId keeps its receipts, idle notices and outgoing receipts', async () => {
+posix('a peer that changes its sessionId keeps its receipts, idle notices and outgoing receipts', async () => {
   const f = await fixture();
   const cleared = randomUUID();
   const clear = () => writeFileSync(join(f.configDir, 'sessions', `${process.ppid}.json`), JSON.stringify({
@@ -986,7 +988,7 @@ test('a peer that changes its sessionId keeps its receipts, idle notices and out
   } finally { await f.close(); }
 });
 
-test('a leading auth line from a peer is ignored and the frame after it is delivered', async () => {
+posix('a leading auth line from a peer is ignored and the frame after it is delivered', async () => {
   const f = await fixture();
   try {
     const path = peers(f.configDir).find(peer => peer.sessionId === f.desktop.threadId)?.messagingSocketPath;
@@ -1007,7 +1009,7 @@ const remoteSession = (sessionId = randomUUID()) => ({ machineId: 'b'.repeat(16)
   name: 'codex-task', agent: 'codex', status: 'idle', remoteControl: false });
 const runtimeDir = () => z.string().parse(process.env.XDG_RUNTIME_DIR);
 
-test('list_sessions adds the sessions on other machines after the local ones, and only the local ones without an engine', async () => {
+posix('list_sessions adds the sessions on other machines after the local ones, and only the local ones without an engine', async () => {
   const f = await fixture();
   const client = new Client({ name: 'list-test', version: '1.0.0' });
   const caller = randomUUID();
@@ -1028,7 +1030,7 @@ test('list_sessions adds the sessions on other machines after the local ones, an
   } finally { engine.close(); await client.close(); await f.close(); }
 });
 
-test('a send to a remote session goes to the engine with the relay body, and each refusal reason has its text', async () => {
+posix('a send to a remote session goes to the engine with the relay body, and each refusal reason has its text', async () => {
   const f = await fixture();
   const remote = remoteSession();
   let reply: unknown = { ok: true, outcome: 'socket-written' };
@@ -1070,7 +1072,7 @@ test('a send to a remote session goes to the engine with the relay body, and eac
   } finally { engine.close(); await f.close(); }
 });
 
-test('a remote send records the proxy row address, so a receipt through the proxy row updates it', async () => {
+posix('a remote send records the proxy row address, so a receipt through the proxy row updates it', async () => {
   const f = await fixture();
   const remote = remoteSession();
   const engine = fakeEngine(runtimeDir(), route => route === '/api/relay/remote-peers' ? { peers: [remote] }

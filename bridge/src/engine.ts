@@ -1,9 +1,10 @@
 // Finds the local ASB engine through its service.json and calls its message relay routes (plan 16.4).
-// Only on Linux; elsewhere there is no engine for the bridge yet.
+// On Linux and Windows; macOS has no engine for the bridge yet.
 import { lstatSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, join, win32 } from 'node:path';
 import { z } from 'zod';
 import { ownedJson, privateDirectory, uuid } from './claude';
+import { isWindows } from './platform';
 
 export type EngineRuntime = { pid: number; port: number; schema: 1; sourceToken: string };
 const runtimeSchema = z.strictObject({ pid: z.number().int().positive().max(2147483647), port: z.number().int().min(1).max(65535),
@@ -13,15 +14,20 @@ const remotePeerSchema = z.object({ machineId: z.string().regex(/^[a-f0-9]{16}$/
 export type RemotePeer = z.infer<typeof remotePeerSchema>;
 
 // The same rules as readServiceRuntime in scripts/asb-instance.mjs: a private folder, an owned 0600 file, exact keys, a live PID.
-export function engineRuntime(env: Record<string, string | undefined> = process.env): EngineRuntime | null {
-  if (process.platform !== 'linux') return null;
-  const base = env.XDG_RUNTIME_DIR && isAbsolute(env.XDG_RUNTIME_DIR) ? env.XDG_RUNTIME_DIR : `/run/user/${process.getuid?.()}`;
-  const folder = join(base, 'asb');
+// Windows has no modes: <LOCALAPPDATA>\asb\run\service.json, with no links (src/platform-paths.mjs runtimeDir).
+export function engineRuntime(env: Record<string, string | undefined> = process.env, platform: string = process.platform): EngineRuntime | null {
+  let folder: string;
+  if (isWindows(platform)) {
+    if (!env.LOCALAPPDATA || !win32.isAbsolute(env.LOCALAPPDATA)) return null;
+    folder = join(env.LOCALAPPDATA, 'asb', 'run');
+  } else if (platform === 'linux') {
+    folder = join(env.XDG_RUNTIME_DIR && isAbsolute(env.XDG_RUNTIME_DIR) ? env.XDG_RUNTIME_DIR : `/run/user/${process.getuid?.()}`, 'asb');
+  } else return null;
   const file = join(folder, 'service.json');
   try {
-    privateDirectory(folder);
-    if ((lstatSync(file).mode & 0o777) !== 0o600) return null;
-    const runtime = runtimeSchema.parse(ownedJson(file, 4096));
+    privateDirectory(folder, platform);
+    if (!isWindows(platform) && (lstatSync(file).mode & 0o777) !== 0o600) return null;
+    const runtime = runtimeSchema.parse(ownedJson(file, 4096, platform));
     process.kill(runtime.pid, 0);
     return runtime;
   } catch { return null; }

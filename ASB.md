@@ -176,9 +176,9 @@ The machine group shows the sessions of your other computers that run ASB. Each 
 
 A card from another machine shows that machine's name in the bottom line. It does not open from ASB. Read, Unread, pins, the drawer, and Mute work and change only the marks of this machine. Discard does not work on it. A Done card of another machine plays the Done sound. When a machine does not answer for 3 polls, its cards show Unknown with `<name> is not reachable.` After 10 minutes, its cards go away. Each machine of the group also accepts the token of a phone that is paired with another machine of the group.
 
-### Messages between machines (Linux)
+### Messages between machines (Linux and Windows)
 
-Claude Code sessions and Codex tasks on one machine can message the sessions on the other machines of the group. Each Linux machine needs Bun on the `PATH` of its ASB engine; a Codex task also needs ASB Bridge. The engine starts its message relay by itself while the group has at least one other machine, and stops it when this machine is alone or leaves the group.
+Claude Code sessions and Codex tasks on one machine can message the sessions on the other machines of the group. Each machine needs Bun on the `PATH` of its ASB engine; a Codex task also needs ASB Bridge. The engine starts its message relay by itself while the group has at least one other machine, and stops it when this machine is alone or leaves the group.
 
 - In Claude Code, `/list-agents` shows each session of another machine as `<machine>-<session>`, for example `laptop-codex-fix-tests-3f`. Ask Claude to message it as usual.
 - In Codex, `list_sessions` shows the other machines' sessions after the local ones, with `remote: true` and `machine`. Send to one with `send_message` by its `sessionId`.
@@ -341,7 +341,7 @@ Default Codex opens use `codex://threads/<id>`. Default Claude opens use `claude
 
 ## Windows
 
-On Windows, ASB has statuses only. The engine reads Codex and Claude on that PC and gives their sessions to paired phones and to the other machines of the group. It has no window, no sounds, and no bridge yet. A paired phone shows the sessions and can open them on the Windows PC. A Linux board in the group shows them as remote cards. Claude web sessions are not read on Windows. Windows needs Node.js `22.13` or later.
+On Windows, ASB has statuses only. The engine reads Codex and Claude on that PC and gives their sessions to paired phones and to the other machines of the group. It has no window and no sounds. ASB Bridge and messages between machines work on Windows too (see below). A paired phone shows the sessions and can open them on the Windows PC. A Linux board in the group shows them as remote cards. Claude web sessions are not read on Windows. Windows needs Node.js `22.13` or later.
 
 ```bash
 npm install -g github:Jamir-boop/ASB
@@ -373,6 +373,14 @@ On Linux, `asb setup` installs `asb.service` in step 1 and also prints the bridg
 | Settings, phone settings, the certificate, and the group | `%APPDATA%\asb` |
 | Marks, pins, and `engine.log` | `%LOCALAPPDATA%\asb\state` |
 | The engine runtime file (`service.json`) | `%LOCALAPPDATA%\asb\run` |
+
+To let Codex tasks and Claude Code sessions message each other on Windows, install Bun, make it visible to the Codex app, and install ASB Bridge as on Linux:
+
+```bash
+asb bridge install --all
+```
+
+The bridge uses named pipes and key files on Windows. `asb bridge link-claude` does not work on Windows. See [ASB Bridge on Windows](bridge/README.md#windows). With Bun on the engine's `PATH`, the engine also runs the message relay of the machine group.
 
 ASB limits these folders to your Windows user with `icacls`. Windows has no POSIX file modes, so ASB does not check them there; it still refuses linked files. The phone certificate is `cert.pfx` with its passphrase in `pfx-pass` and the public part in `cert.cer`, which Windows PowerShell creates. A session link opens with `start` only when it has plain URL characters; ASB refuses the others with "This session link cannot open on Windows."
 

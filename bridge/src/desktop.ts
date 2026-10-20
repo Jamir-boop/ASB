@@ -6,6 +6,7 @@ import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { checkSocket, uuid } from './claude';
+import { CODEX_PIPE, isWindows } from './platform';
 import { desktopInputs } from './desktop-input';
 import { DeliveryRefused } from './delivery';
 
@@ -52,7 +53,8 @@ class DesktopConnection {
   private dirty = false;
 
   constructor(path: string, readonly threadId: string, onDisconnect?: () => void, private timeoutMs = 15000) {
-    checkSocket(path);
+    if (!isWindows()) checkSocket(path);
+    else if (path !== CODEX_PIPE) throw new Error('Invalid socket path');
     this.socket = net.createConnection(path);
     this.socket.on('data', chunk => this.read(typeof chunk === 'string' ? Buffer.from(chunk) : chunk));
     this.socket.on('error', error => this.fail(error));

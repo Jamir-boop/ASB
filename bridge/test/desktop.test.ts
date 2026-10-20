@@ -4,8 +4,10 @@ import { z } from "zod";
 import { deliverToDesktop, readDesktopInputs, readDesktopRuntime, watchDesktop, type Runtime } from "../src/desktop";
 import { receiver } from "./desktop-fixture";
 import { DeliveryRefused } from '../src/delivery';
+// POSIX only on Windows CI: the Unix socket file of the desktop IPC fixture.
+const posix = test.skipIf(process.platform === 'win32');
 
-test('only committed input continues peer context; pending steering cannot replace a newer user input', async () => {
+posix('only committed input continues peer context; pending steering cannot replace a newer user input', async () => {
   const desktop = await receiver('active');
   const peer = randomUUID();
   const serverId = randomUUID();
@@ -23,7 +25,7 @@ test('only committed input continues peer context; pending steering cannot repla
   } finally { await desktop.close(); }
 });
 
-test('canonical history follows island order and refuses an incomplete latest history', async () => {
+posix('canonical history follows island order and refuses an incomplete latest history', async () => {
   const desktop = await receiver('idle');
   const first = { type: 'userMessage', id: randomUUID(), clientId: randomUUID() };
   const last = { type: 'userMessage', id: randomUUID(), clientId: randomUUID() };
@@ -40,7 +42,7 @@ test('canonical history follows island order and refuses an incomplete latest hi
   } finally { await desktop.close(); }
 });
 
-test('never with a sandbox is prompting; only unrestricted never is bypass', async () => {
+posix('never with a sandbox is prompting; only unrestricted never is bypass', async () => {
   const desktop = await receiver('idle');
   try {
     for (const type of ['workspaceWrite', 'readOnly', 'externalSandbox']) {
@@ -54,7 +56,7 @@ test('never with a sandbox is prompting; only unrestricted never is bypass', asy
   } finally { await desktop.close(); }
 });
 
-test.each(['idle', 'active'] as const)('Desktop %s delivery keeps the message and target identity', async state => {
+posix.each(['idle', 'active'] as const)('Desktop %s delivery keeps the message and target identity', async state => {
   const desktop = await receiver(state);
   const messageId = randomUUID();
   try {
@@ -72,7 +74,7 @@ test.each(['idle', 'active'] as const)('Desktop %s delivery keeps the message an
   } finally { await desktop.close(); }
 });
 
-test('the Desktop observer follows real status changes without submitting turns', async () => {
+posix('the Desktop observer follows real status changes without submitting turns', async () => {
   const desktop = await receiver('idle');
   const states: Runtime[] = [];
   const close = await watchDesktop(desktop.path, desktop.threadId, state => states.push(state), () => {});
@@ -89,7 +91,7 @@ test('the Desktop observer follows real status changes without submitting turns'
   } finally { close(); await desktop.close(); }
 });
 
-test('large task histories preserve observation, input attribution and delivery', async () => {
+posix('large task histories preserve observation, input attribution and delivery', async () => {
   const desktop = await receiver('idle');
   const states: Runtime[] = [];
   let disconnected = false;
@@ -113,7 +115,7 @@ test('large task histories preserve observation, input attribution and delivery'
   } finally { close(); await desktop.close(); }
 });
 
-test('lost Desktop acknowledgement does not resend an accepted message', async () => {
+posix('lost Desktop acknowledgement does not resend an accepted message', async () => {
   const desktop = await receiver('active', true);
   try {
     await expect(deliverToDesktop(desktop.path, desktop.threadId, randomUUID(), 'peer update')).rejects.toThrow();
@@ -121,7 +123,7 @@ test('lost Desktop acknowledgement does not resend an accepted message', async (
   } finally { await desktop.close(); }
 });
 
-test('only an explicit Desktop rejection is a definite delivery refusal', async () => {
+posix('only an explicit Desktop rejection is a definite delivery refusal', async () => {
   const desktop = await receiver('idle');
   try {
     desktop.setSubmissionReply({ resultType: 'error', error: 'Peer input rejected' });
@@ -135,7 +137,7 @@ test('only an explicit Desktop rejection is a definite delivery refusal', async 
   } finally { await desktop.close(); }
 });
 
-test('a turn ending before steering starts one new turn after explicit rejection', async () => {
+posix('a turn ending before steering starts one new turn after explicit rejection', async () => {
   const desktop = await receiver('active', false, true);
   try {
     expect(await deliverToDesktop(desktop.path, desktop.threadId, randomUUID(), 'peer update'))

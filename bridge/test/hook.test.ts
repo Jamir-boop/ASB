@@ -5,8 +5,10 @@ import { randomUUID } from 'node:crypto';
 import net from 'node:net';
 import { once } from 'node:events';
 import { peers } from '../src/claude';
+// POSIX only on Windows CI: Unix socket files, /tmp, and signals.
+const posix = test.skipIf(process.platform === 'win32');
 
-test('session hooks own one receiver per task, restore it after resume and clean up on Desktop disconnect', async () => {
+posix('session hooks own one receiver per task, restore it after resume and clean up on Desktop disconnect', async () => {
   const root = mkdtempSync('/tmp/uds-life-');
   const codexHome = join(root, 'codex');
   const configDir = join(root, 'claude');

@@ -7,6 +7,7 @@ import type { Runtime } from './desktop';
 import { deliverToCodex, readCodexInputs, readCodexRuntime, targetSchema, type Target } from './codex';
 import { z } from 'zod';
 import { outboundServer, refreshReceiver, sendViaReceiver } from './outbound';
+import { isWindows, outboxPath } from './platform';
 import { PeerGuard } from './guard';
 import { DeliveryRefused } from './delivery';
 import { engineRequest, engineRuntime, remotePeers, type EngineRuntime, type RemotePeer } from './engine';
@@ -181,6 +182,8 @@ export class Bridge {
       })();
       this.ownsReceiver = true;
       this.db.run("UPDATE messages SET status='unknown' WHERE status='submitting'");
+      // Windows needs the token in the inbox before the row exists (plan 17.2).
+      const token = isWindows() ? randomBytes(16).toString('hex') : undefined;
       this.listener = await inbox(directory, frame => {
         if (this.closing) return;
         if (frame.type === 'user') this.incomingMessages++;
@@ -189,14 +192,14 @@ export class Bridge {
           finally { if (frame.type === 'user') this.incomingMessages--; }
           await this.flushIdle();
         }).catch(() => console.error('Peer message handling failed; inspect bridge status.'));
-      });
+      }, undefined, { token });
       this.db.run('UPDATE runtime SET hop_token=? WHERE singleton=1',
         [createHmac('sha256', randomBytes(32)).update(this.listener.address).digest('hex').slice(0, 24)]);
       if (this.closing) throw new Error('Receiver is closing');
-      this.closeOutbound = await outboundServer(socketPath(this.listener.address).replace(/\.sock$/, '.out'), this.configDir, this.listener.address,
+      this.closeOutbound = await outboundServer(outboxPath(socketPath(this.listener.address)), this.configDir, this.listener.address,
         frames => !this.closing && (!frames.some(frame => frame.type === 'control' && frame.action === 'peer_idle_notice' && frame.state === 'idle') || this.canNotifyIdle()),
-        () => this.scheduleExpiry());
-      this.registration = await register(this.configDir, this.threadId, this.listener.address, cwd, this.runtime().status);
+        () => this.scheduleExpiry(), token);
+      this.registration = await register(this.configDir, this.threadId, this.listener.address, cwd, this.runtime().status, token);
       if (this.closing) throw new Error('Receiver is closing');
       for (const message of this.db.query<Message, []>("SELECT * FROM messages WHERE direction='in' AND status='pending' ORDER BY created_at,rowid").all()) {
         if (this.closing) break;
@@ -467,7 +470,7 @@ export class Bridge {
   private async writePeer(peer: Peer, frames: unknown[], canWrite?: () => boolean) {
     if (this.ownsReceiver) return sendFrames(this.configDir, peer, frames, { canWrite });
     const receiver = this.receiver();
-    return sendViaReceiver(receiver.messagingSocketPath.replace(/\.sock$/, '.out'), peer, frames);
+    return sendViaReceiver(this.configDir, receiver, peer, frames);
   }
 
   private scheduleExpiry() {
@@ -529,7 +532,7 @@ export class Bridge {
   private async refreshTimers() {
     if (this.ownsReceiver) { this.scheduleExpiry(); return; }
     const receiver = this.receiver();
-    await refreshReceiver(receiver.messagingSocketPath.replace(/\.sock$/, '.out'));
+    await refreshReceiver(this.configDir, receiver);
   }
 
   private async recheckHeld() {

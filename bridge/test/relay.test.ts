@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { hopChain, inbox, peers, processStart, sendFrames, socketPath, userFrame, type Frame } from '../src/claude';
 import { proxyName, proxyPlan, type Home, type RemotePeer } from '../src/relay';
+// POSIX only on Windows CI: Unix socket files and the /usr/bin/cat placeholder.
+const posix = test.skipIf(process.platform === 'win32');
 
 const remotePeer = (agent: 'claude' | 'codex', remoteControl: boolean, sessionId = randomUUID()): RemotePeer =>
   ({ machineId: 'b'.repeat(16), machineName: 'beta', online: true, sessionId, name: `${agent}-task`, agent, status: 'idle', remoteControl });
@@ -127,7 +129,7 @@ async function startRelay(enginePort: number, relayDir: string): Promise<Relay> 
 const proxyRows = (configDir: string) => peers(configDir).filter(peer => peer.entrypoint === 'asb-relay');
 const gone = (pid: number) => { try { process.kill(pid, 0); return false; } catch { return true; } };
 
-test('two relays carry a message, the reply, a receipt, and an offline refusal between two homes', async () => {
+posix('two relays carry a message, the reply, a receipt, and an offline refusal between two homes', async () => {
   const root = mkdtempSync('/tmp/asb-relay-');
   const dirs = Object.fromEntries(['a/claude/sessions', 'b/claude/sessions', 'a/s', 'b/s'].map(item => {
     mkdirSync(join(root, item), { recursive: true, mode: 0o700 });

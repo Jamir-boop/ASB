@@ -43,7 +43,7 @@ asb setup
 
 `asb setup` makes the engine start when you sign in, waits for it, and asks which network addresses to turn on. On Windows it also prints the firewall rule to run. ASB never runs that rule itself.
 
-On Windows, ASB has statuses only: the engine reads Codex and Claude on that PC for the phone and the machine group. It has no window and no bridge yet. See [Windows](ASB.md#windows).
+On Windows, ASB has statuses only: the engine reads Codex and Claude on that PC for the phone and the machine group. It has no window. ASB Bridge and messages between machines also work on Windows. See [Windows](ASB.md#windows).
 
 ## Android companion (optional)
 
@@ -63,7 +63,7 @@ The current source includes the Android companion and the user service; publishe
 
 The current source can also join ASB on several of your computers in one machine group: each machine then shows the sessions of the others as cards. See [Machines](ASB.md#machines).
 
-In a machine group, Claude and Codex sessions on one machine can message sessions on the other machines (Linux; Windows later). The other sessions appear in `/list-agents` (Claude) and `list_sessions` (Codex) with the machine name first. A message to a machine that is offline is refused at once; ASB keeps no queue.
+In a machine group, Claude and Codex sessions on one machine can message sessions on the other machines (Linux and Windows). The other sessions appear in `/list-agents` (Claude) and `list_sessions` (Codex) with the machine name first. A message to a machine that is offline is refused at once; ASB keeps no queue.
 
 ## OpenCode sessions (list only)
 

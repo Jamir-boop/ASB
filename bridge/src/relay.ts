@@ -5,8 +5,9 @@ import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { z } from 'zod';
-import { hopChain, inbox, maxLineLength, ownedJson, peerAddress, peers, privateDirectory, processStart, senderMode, sendFrames,
-  SendRefused, serializeFrame, userFrame, uuid, type Frame, type Peer } from './claude';
+import { hopChain, inbox, maxLineLength, ownedJson, peerAddress, peers, privateDirectory, processStart, removePeerKey, senderMode, sendFrames,
+  SendRefused, serializeFrame, socketPath, userFrame, uuid, writePeerKey, type Frame, type Peer } from './claude';
+import { isWindows, keyName, pidDomain } from './platform';
 
 const homeSchema = z.object({ path: z.string().refine(isAbsolute), remoteClaude: z.enum(['auto', 'bridge', 'native']), hasRemoteControl: z.boolean() });
 const homesSchema = z.object({ machineId: z.string(), machineName: z.string(), homes: z.array(homeSchema) });
@@ -42,6 +43,8 @@ const REASONS: Record<Exclude<Reply, { ok: true }>['reason'], (machine: string) 
   refused: machine => `${machine} refused the message.`,
 };
 const rowKey = (home: string, machineId: string, sessionId: string) => `${home}\0${machineId}\0${sessionId}`;
+// A process that waits on stdin stands in for the remote session: its PID and start time make the row live.
+const PLACEHOLDER = isWindows() ? [join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'findstr.exe'), 'x'] : ['/usr/bin/cat'];
 const agentOf = (peer: Peer) => peer.entrypoint === 'codex-asb-bridge' ? 'codex' as const : 'claude' as const;
 
 // Plan 9.6: which remote sessions get a proxy row in each local Claude config home.
@@ -91,15 +94,16 @@ async function removeStaleRows(home: string) {
   try { files = readdirSync(directory); } catch { return; }
   for (const file of files.filter(name => /^[1-9][0-9]*\.json$/.test(name))) {
     try {
-      const row = z.object({ pid: z.number().int().positive(), entrypoint: z.literal('asb-relay'), procStart: z.string() })
+      const row = z.object({ pid: z.number().int().positive(), entrypoint: z.literal('asb-relay'), procStart: z.string(), messagingSocketPath: z.string() })
         .parse(ownedJson(join(directory, file), 256 * 1024));
       if (file !== `${row.pid}.json` || (alive(row.pid) && await processStart(row.pid).catch(() => null) === row.procStart)) continue;
       unlinkSync(join(directory, file));
+      removePeerKey(join(directory, keyName(row.pid, row.messagingSocketPath)), row.procStart);
     } catch { /* Not a proxy row, or already gone. */ }
   }
 }
 
-type Row = { key: string; home: string; peer: RemotePeer; path: string; address: string; socket: { close(): Promise<void> };
+type Row = { key: string; home: string; peer: RemotePeer; path: string; keyPath?: string; address: string; socket: { close(): Promise<void> };
   child: Bun.Subprocess<'pipe', 'ignore', 'ignore'>; record: { pid: number; procStart: string; name: string; status: string;
     messagingSocketPath: string; statusUpdatedAt: number } & Record<string, unknown> };
 
@@ -148,27 +152,34 @@ async function main() {
     mkdirSync(sessions, { recursive: true, mode: 0o700 });
     const real = realpathSync(sessions);
     privateDirectory(real);
-    const child = Bun.spawn(['/usr/bin/cat'], { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' });
+    const child = Bun.spawn(PLACEHOLDER, { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' });
     let socket: { address: string; close(): Promise<void> } | undefined;
+    let keyPath: string | undefined;
+    let procStart = '';
     try {
-      const procStart = await processStart(child.pid);
-      const messagingSocketPath = join(directory, `${child.pid}.sock`);
+      procStart = await processStart(child.pid);
       // The sun_path limit of a Unix socket.
-      if (Buffer.byteLength(messagingSocketPath) > 103) throw new Error('The relay socket path is too long.');
+      if (!isWindows() && Buffer.byteLength(join(directory, `${child.pid}.sock`)) > 103) throw new Error('The relay socket path is too long.');
+      // A Windows proxy row has a cc-msg pipe and a key file, as Claude's rows do (plan 17.6).
+      const token = isWindows() ? randomBytes(16).toString('hex') : undefined;
       let row: Row | undefined;
       socket = await inbox(directory, frame => {
         if (row) void forward(row, frame).catch(() => log('ASB relay: cannot forward a frame.'));
-      }, `${child.pid}.sock`);
+      }, `${child.pid}.sock`, { token });
+      const messagingSocketPath = socketPath(socket.address);
+      if (token) keyPath = writePeerKey(real, child.pid, messagingSocketPath, token, procStart);
       const now = Date.now();
+      const domain = pidDomain();
       const record = { pid: child.pid, sessionId: peer.sessionId, cwd: '', name: proxyName(peer.machineName, peer.name, livePeers(home).map(item => item.name)),
-        startedAt: now, procStart, peerProtocol: 1, kind: 'interactive', entrypoint: 'asb-relay', messagingSocketPath,
+        startedAt: now, procStart, peerProtocol: 1, ...(domain ? { pidDomain: domain } : {}), kind: 'interactive', entrypoint: 'asb-relay', messagingSocketPath,
         status: peer.status, statusUpdatedAt: now, peerFeatures: [] };
       const path = join(real, `${child.pid}.json`);
       writeFileSync(path, JSON.stringify(record), { flag: 'wx', mode: 0o600 });
-      row = { key: rowKey(home, peer.machineId, peer.sessionId), home, peer, path, address: socket.address, socket, child, record };
+      row = { key: rowKey(home, peer.machineId, peer.sessionId), home, peer, path, keyPath, address: socket.address, socket, child, record };
       rows.set(row.key, row);
       return row;
     } catch (error) {
+      if (keyPath) removePeerKey(keyPath, procStart);
       await socket?.close().catch(() => {});
       child.stdin.end();
       child.kill();
@@ -182,6 +193,7 @@ async function main() {
       const current = z.object({ pid: z.number(), procStart: z.string() }).parse(ownedJson(row.path, 256 * 1024));
       if (current.pid === row.record.pid && current.procStart === row.record.procStart) unlinkSync(row.path);
     } catch { /* Already gone. */ }
+    if (row.keyPath) removePeerKey(row.keyPath, row.record.procStart);
     await row.socket.close().catch(() => {});
     try { unlinkSync(row.record.messagingSocketPath); } catch { /* Already gone. */ }
     row.child.stdin.end();

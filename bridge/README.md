@@ -2,14 +2,14 @@
 
 A Codex plugin that lets Codex tasks and Claude Code sessions message each other on one machine.
 
-Claude Code lists and messages its other sessions through its own local registry. This plugin registers each Codex task in that registry, so Claude finds the task with `ListAgents` and writes to it with `SendMessage`. Claude needs no flags, plugins, or launchers. A bundled MCP server gives the Codex side `list_sessions` and `send_message`. Messages travel over Unix domain sockets in private per-user directories.
+Claude Code lists and messages its other sessions through its own local registry. This plugin registers each Codex task in that registry, so Claude finds the task with `ListAgents` and writes to it with `SendMessage`. Claude needs no flags, plugins, or launchers. A bundled MCP server gives the Codex side `list_sessions` and `send_message`. Messages travel over Unix domain sockets in private per-user directories. On Windows they travel over named pipes, and each receiver has a key file and checks an `auth` line (see [Windows](#windows)).
 
 Separate Claude profiles have separate registries by default. To share discovery and messaging, use the explicit setup below.
 
 ## Requirements
 
 - Stock Codex with its shared local app-server daemon. CLI tasks on the daemon and desktop tasks it owns work. Older desktop tasks use the desktop IPC fallback. CLI sessions started with `--no-daemon` have no inbox. Real-runtime checks cover Codex 0.159.0, 0.159.2, and 0.159.3.
-- macOS or Linux.
+- Linux, macOS, or Windows.
 - Claude Code 2.1.224 or later, the first release with [cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging).
 - Bun on the PATH of both your terminal and the Codex app.
 
@@ -65,6 +65,18 @@ The command keeps the original directory at the private backup path that it prin
 Setup checks for concurrent changes and refuses when it detects one. On failure, it restores the source when the path is free and removes only unchanged files that it copied. If another process creates the source path or changes a copied file, the error reports what it kept. Keep the backup until you have checked both profiles. It is a snapshot, not a live copy. To undo the link later, stop the affected peers, preserve any new shared entries, remove only the link, and restore the saved directory. Uninstall does not undo this opt-in setup.
 
 The directory link follows the unpublished native registry behavior checked in Claude Code `2.1.303`. Claude has no dedicated registry override in that version. Future versions can change this behavior. See [PROTOCOL-COVERAGE.md](PROTOCOL-COVERAGE.md).
+
+## Windows
+
+The bridge runs on Windows with the same install command and the same tools. Bun must be on the `PATH` of the Codex app.
+
+- `asb bridge install` finds `bun` and `codex` with `PATH` and `PATHEXT`. It runs a `codex.cmd` through `cmd.exe` and refuses a path or argument that has `"`, `%`, `^`, `&`, `|`, `<`, `>`, `!`, or a line break, with `This path cannot go to codex.cmd safely.`
+- Each receiver listens on a named pipe `\\.\pipe\LOCAL\cc-msg-<32 hex>`, as Claude Code does. Its registry row has `pidDomain` `win32:<host name>` and a `procStart` from `GetProcessTimes`.
+- Before the row, the receiver writes its key file `<pid>.<sha256 of the lower-case pipe path>.key` with a random `peerToken`. Each connection must start with `{"type":"auth","token":"<peerToken>"}`. The receiver closes a connection with a wrong or missing line before it reads a frame. The bridge sends this line to Claude sessions from their key files, and refuses to send when a key file is missing.
+- Windows has no file modes, so the bridge does not check owners or modes there. It still refuses linked registry files and folders.
+- Windows has no `SIGTERM`. When a task ends, the `SessionEnd` hook stops the receiver and then removes its row and key file.
+- Codex desktop tasks use the desktop IPC pipe `\\.\pipe\codex-ipc`. A CLI task on the app-server daemon uses the daemon's socket file.
+- Not on Windows: `asb bridge link-claude` (it refuses with `Linking Claude session folders is not supported on Windows.`) and the `bunOnAppServerPath` check (always `null`).
 
 ## Check that it works
 
@@ -154,6 +166,8 @@ bun test
 bun run build
 bun run test:native
 ```
+
+The tests that need Unix socket files, `/tmp`, file modes, links, or signals skip on Windows; the `bridge-windows` CI job runs the others there.
 
 The plugin runs the bundled `dist/server.js` and `dist/hook.js`, and CI fails when they lag `src/`. Run `bun run build` after changing `src/`, and commit `dist/`. When you change a shipped bridge file, change the version in `package.json` and `.codex-plugin/plugin.json` together, because Codex caches an installed plugin by version. `bun run test:native` starts the installed Codex binary in a temporary home with a local model stub. See [Testing](PROTOCOL-COVERAGE.md#testing) for its modes and environment variables.
 

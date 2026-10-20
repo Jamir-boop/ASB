@@ -27,7 +27,7 @@ test('the hooks run servers and bundles that exist', () => {
   for (const bundle of hooks.match(/dist\/[a-z-]+\.js/g) ?? []) expect(existsSync(join(plugin, bundle))).toBe(true);
 });
 
-test('the MCP server gets XDG_RUNTIME_DIR, so it finds the ASB engine', () => {
+test('the MCP server gets XDG_RUNTIME_DIR and LOCALAPPDATA, so it finds the ASB engine on Linux and Windows', () => {
   const mcp = z.object({ mcpServers: z.record(z.string(), z.object({ env_vars: z.array(z.string()) })) }).parse(read(join(plugin, '.mcp.json')));
-  for (const server of Object.values(mcp.mcpServers)) expect(server.env_vars).toContain('XDG_RUNTIME_DIR');
+  for (const server of Object.values(mcp.mcpServers)) expect(server.env_vars).toEqual(expect.arrayContaining(['XDG_RUNTIME_DIR', 'LOCALAPPDATA']));
 });

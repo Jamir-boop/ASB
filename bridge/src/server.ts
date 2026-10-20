@@ -6,6 +6,7 @@ import { extname, isAbsolute, join } from 'node:path';
 import { maxLineLength, peers, uuid } from './claude';
 import { engineRuntime, remotePeers } from './engine';
 import { Bridge, expirySchema, policySchema } from './bridge';
+import { codexIpcPath } from './codex';
 import { HeldDialogs } from './held-dialogs';
 import { version } from './version';
 
@@ -29,7 +30,7 @@ function current(meta: Record<string, unknown> | undefined) {
   const id = callerThread(meta);
   if (bridge && bridge.threadId !== id) throw new Error('This MCP process is already bound to another Codex task');
   if (!bridge) {
-    bridge = new Bridge(id, configDir, stateDir, join(codexHome, 'ipc', 'ipc.sock'));
+    bridge = new Bridge(id, configDir, stateDir, codexIpcPath(codexHome));
     dialogs = new HeldDialogs(bridge, server);
   }
   return bridge;

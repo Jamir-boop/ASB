@@ -11,6 +11,8 @@ import { Bridge } from '../src/bridge';
 import { appServer } from './app-server-fixture';
 import { receiver as desktopReceiver } from './desktop-fixture';
 import type { Target } from '../src/codex';
+// POSIX only on Windows CI: Unix socket files, /tmp, and signals.
+const posix = test.skipIf(process.platform === 'win32');
 
 function previousReceiver(root: string, threadId: string, target: Target, endedAt?: number) {
   const stateDir = join(root, 'plugin-state', 'asb-bridge');
@@ -83,7 +85,7 @@ async function desktopThreads(codexHome: string, cwd = codexHome) {
   return { ipcPath, owned, requests, clients, desktop };
 }
 
-test('a restart revives receivers of registered threads only, and concurrent starters leave one receiver', async () => {
+posix('a restart revives receivers of registered threads only, and concurrent starters leave one receiver', async () => {
   const root = mkdtempSync('/tmp/uds-revive-');
   const codexHome = join(root, 'codex');
   const configDir = join(root, 'claude');
@@ -162,7 +164,7 @@ test('a restart revives receivers of registered threads only, and concurrent sta
   }
 }, 30000);
 
-test('one loaded-thread query revives one old-schema receiver without probing earlier unloaded threads', async () => {
+posix('one loaded-thread query revives one old-schema receiver without probing earlier unloaded threads', async () => {
   const server = await appServer(mkdtempSync(join(tmpdir(), 'rv-app-')));
   const earlier = Array.from({ length: 50 }, () => randomUUID());
   try {
@@ -175,7 +177,7 @@ test('one loaded-thread query revives one old-schema receiver without probing ea
   } finally { await stopReceivers(server.root); await server.close(); }
 });
 
-test('a loaded daemon list also permits a recent desktop receiver without probing other old receivers', async () => {
+posix('a loaded daemon list also permits a recent desktop receiver without probing other old receivers', async () => {
   const server = await appServer(mkdtempSync(join(tmpdir(), 'rv-mixed-')));
   const desktop = await desktopReceiver('idle', false, false, server.root);
   try {
@@ -192,7 +194,7 @@ test('a loaded daemon list also permits a recent desktop receiver without probin
   } finally { await stopReceivers(server.root); await desktop.close(false); await server.close(); }
 });
 
-test('a new sweep revives three threads from an old shutdown burst with no app-server socket', async () => {
+posix('a new sweep revives three threads from an old shutdown burst with no app-server socket', async () => {
   const root = mkdtempSync(join(tmpdir(), 'rv-burst-'));
   const fake = await desktopThreads(root);
   const burst = Date.UTC(2021, 0, 1);
@@ -218,7 +220,7 @@ test('a new sweep revives three threads from an old shutdown burst with no app-s
   }
 });
 
-test('a generic loaded-list error still permits bounded desktop recovery', async () => {
+posix('a generic loaded-list error still permits bounded desktop recovery', async () => {
   const server = await appServer(mkdtempSync(join(tmpdir(), 'rv-list-error-')));
   const desktop = await desktopReceiver('idle', false, false, server.root);
   try {
@@ -235,7 +237,7 @@ test('a generic loaded-list error still permits bounded desktop recovery', async
   } finally { await stopReceivers(server.root); await desktop.close(false); await server.close(); }
 });
 
-test('the desktop end burst includes its 30-second boundary and ignores invalid timestamps', async () => {
+posix('the desktop end burst includes its 30-second boundary and ignores invalid timestamps', async () => {
   const root = mkdtempSync(join(tmpdir(), 'rv-boundary-'));
   const desktop = await desktopReceiver('idle', false, false, root);
   const burst = Date.UTC(2021, 0, 1);
@@ -260,7 +262,7 @@ test('the desktop end burst includes its 30-second boundary and ignores invalid 
   } finally { await stopReceivers(root); await desktop.close(); }
 });
 
-test('desktop revival skips old state and keeps the last end marker for retries', async () => {
+posix('desktop revival skips old state and keeps the last end marker for retries', async () => {
   const root = mkdtempSync(join(tmpdir(), 'rv-desktop-'));
   const desktop = await desktopReceiver('idle', false, false, root);
   const stateDir = join(root, 'plugin-state', 'asb-bridge');
@@ -285,7 +287,7 @@ test('desktop revival skips old state and keeps the last end marker for retries'
 });
 
 for (const method of ['initialize', 'thread-owner-discovery', 'thread-stream-following-changed']) {
-  test(`desktop revival closes a probe stalled at ${method} within the total deadline`, async () => {
+  posix(`desktop revival closes a probe stalled at ${method} within the total deadline`, async () => {
     const root = mkdtempSync(join(tmpdir(), 'rv-timeout-'));
     const desktop = await desktopReceiver('idle', false, false, root);
     try {

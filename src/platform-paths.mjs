@@ -1,3 +1,5 @@
+import { constants } from 'node:fs';
+import { access, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -20,4 +22,21 @@ export function stateDir(env = process.env, platform = process.platform, home = 
 export function runtimeDir(env = process.env, platform = process.platform, home = os.homedir()) {
   if (platform === 'win32') return path.win32.join(windowsBase(env, 'LOCALAPPDATA', home, 'Local'), 'asb', 'run');
   return typeof env.XDG_RUNTIME_DIR === 'string' && path.posix.isAbsolute(env.XDG_RUNTIME_DIR) ? path.posix.join(env.XDG_RUNTIME_DIR, 'asb') : null;
+}
+
+// The PATH search of a shell, with the file it found ('' when none). Windows splits PATH with ';' and tries
+// each PATHEXT extension; other systems need the execute bit. scripts/asb-bridge.mjs has the same search.
+export async function findExecutable(name, { platform = process.platform, env = process.env, searchPath = env.PATH || '', cwd = process.cwd() } = {}) {
+  const windows = platform === 'win32';
+  const names = windows ? (env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map((extension) => name + extension.toLowerCase()) : [name];
+  for (const directory of searchPath.split(windows ? ';' : path.delimiter)) {
+    for (const candidate of names) {
+      const file = path.resolve(cwd, directory, candidate);
+      try {
+        await access(file, windows ? constants.F_OK : constants.X_OK);
+        if ((await stat(file)).isFile()) return file;
+      } catch (error) { if (!['ENOENT', 'EACCES', 'ENOTDIR'].includes(error.code)) throw error; }
+    }
+  }
+  return '';
 }

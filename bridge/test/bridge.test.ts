@@ -11,8 +11,10 @@ import { z } from 'zod';
 import { Bridge } from '../src/bridge';
 import { peers } from '../src/claude';
 import { Database } from 'bun:sqlite';
+// POSIX only on Windows CI: Unix socket files and file modes.
+const posix = test.skipIf(process.platform === 'win32');
 
-test('MCP accepts supported caller metadata and rejects unused aliases and a different task', async () => {
+posix('MCP accepts supported caller metadata and rejects unused aliases and a different task', async () => {
   const root = mkdtempSync(join(tmpdir(), 'uds-mcp-'));
   const client = new Client({ name: 'test', version: '1.0.0' });
   try {
@@ -44,7 +46,7 @@ test('MCP accepts supported caller metadata and rejects unused aliases and a dif
   }
 });
 
-test('the status tool returns the five latest message rows without null fields', async () => {
+posix('the status tool returns the five latest message rows without null fields', async () => {
   const root = mkdtempSync(join(tmpdir(), 'uds-mcp-'));
   const id = randomUUID();
   const bridge = new Bridge(id, root, join(root, 'plugin-state', 'asb-bridge'), join(root, 'unavailable.sock'));
@@ -70,7 +72,7 @@ test('the status tool returns the five latest message rows without null fields',
   }
 });
 
-test('upgrading the inbox preserves existing queue records without relabelling their IDs as turns', async () => {
+posix('upgrading the inbox preserves existing queue records without relabelling their IDs as turns', async () => {
   const root = mkdtempSync('/tmp/uds-upgrade-');
   const threadId = randomUUID();
   const messageId = randomUUID();
@@ -87,7 +89,7 @@ test('upgrading the inbox preserves existing queue records without relabelling t
   }
 });
 
-test('registered peers can initiate contact; unknown senders and wrong targets are rejected and duplicates survive restart', async () => {
+posix('registered peers can initiate contact; unknown senders and wrong targets are rejected and duplicates survive restart', async () => {
   const root = mkdtempSync('/tmp/uds-test-');
   const configDir = join(root, 'config');
   const stateDir = join(root, 'state');

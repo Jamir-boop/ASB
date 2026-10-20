@@ -1,14 +1,14 @@
 // The engine side of the message relay between machines (plan 9.6, 9.7, 16): the relay body checks, the supervisor of
 // bridge/dist/relay.js, the peer lists of the members, and the handlers of the member and loopback relay routes.
 import { spawn as spawnProcess } from 'node:child_process';
-import { constants, promises as fs } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readLiveClaudeRegistry } from './claude-registry.mjs';
 import { peerRequest } from './machine-peers.mjs';
-import { runtimeDir } from './platform-paths.mjs';
+import { findExecutable, runtimeDir } from './platform-paths.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -87,18 +87,6 @@ export async function relayHomes(sources, { env = process.env, homeDir = os.home
   return [...homes.values()];
 }
 
-// The same PATH search as scripts/asb-bridge.mjs, with the file it found.
-async function findExecutable(name, searchPath = '', cwd = process.cwd()) {
-  for (const directory of searchPath.split(path.delimiter)) {
-    const file = path.resolve(cwd, directory, name);
-    try {
-      await fs.access(file, constants.X_OK);
-      if ((await fs.stat(file)).isFile()) return file;
-    } catch (error) { if (!['ENOENT', 'EACCES', 'ENOTDIR'].includes(error.code)) throw error; }
-  }
-  return '';
-}
-
 const isFile = async (file) => (await fs.stat(file).catch(() => null))?.isFile() === true;
 
 // The first stdout line of the relay, or '' after the time limit or the end of the output.
@@ -140,9 +128,11 @@ const relayError = (message) => Object.assign(new Error(message), { code: 'relay
 const TARGET_UNAVAILABLE = { ok: false, reason: 'target-unavailable' };
 const INVALID = { status: 400, body: { error: 'Invalid relay request.' } };
 
-// Plan 16.1: runs bridge/dist/relay.js while this Linux machine shares a group with another active member.
+// Plan 16.1, 17.6: runs bridge/dist/relay.js while this Linux or Windows machine shares a group with another active member.
+// catPath is the placeholder that each proxy row of the relay runs (bridge/src/relay.ts).
 export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, env = process.env, platform = process.platform,
-  spawn = spawnProcess, request = peerRequest, log = (line) => console.error(line), now = Date.now, catPath = '/usr/bin/cat',
+  spawn = spawnProcess, request = peerRequest, log = (line) => console.error(line), now = Date.now,
+  catPath = platform === 'win32' ? path.win32.join(env.SystemRoot || 'C:\\Windows', 'System32', 'findstr.exe') : '/usr/bin/cat',
   firstLineMs = 10_000, stopMs = 2_000 }) {
   const relayJs = path.join(root, 'bridge', 'dist', 'relay.js');
   let child = null;
@@ -196,7 +186,7 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
   }
 
   async function launch() {
-    const bun = await findExecutable('bun', env.PATH || '');
+    const bun = await findExecutable('bun', { platform, env });
     const relayDir = path.join(runtimeDir(env, platform), 'relay');
     const spawned = spawn(bun, [relayJs], { stdio: ['pipe', 'pipe', 'inherit'],
       env: { ...env, ASB_ENGINE_URL: `http://127.0.0.1:${port}`, ASB_SOURCE_TOKEN: sourceToken, ASB_RELAY_DIR: relayDir } });
@@ -216,15 +206,17 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
     if (child === current) { child = null; relay = null; clearTimeout(listTimer); lists.clear(); }
     if (current.exitCode !== null || current.signalCode !== null) return;
     const exit = new Promise((resolve) => current.once('exit', resolve));
-    current.kill('SIGTERM');
+    // Windows has no SIGTERM: the end of stdin stops the relay, which removes its rows (plan 17.6).
+    if (platform === 'win32') current.stdin.end();
+    else current.kill('SIGTERM');
     const timer = setTimeout(() => current.kill('SIGKILL'), stopMs);
     await exit;
     clearTimeout(timer);
   }
 
   async function wanted() {
-    if (platform !== 'linux' || !runtimeDir(env, platform) || !others().length) return false;
-    return Boolean(await findExecutable('bun', env.PATH || '')) && await isFile(relayJs) && await isFile(catPath);
+    if (!['linux', 'win32'].includes(platform) || !runtimeDir(env, platform) || !others().length) return false;
+    return Boolean(await findExecutable('bun', { platform, env })) && await isFile(relayJs) && await isFile(catPath);
   }
 
   // At engine start, on each group change, and every 30 s.

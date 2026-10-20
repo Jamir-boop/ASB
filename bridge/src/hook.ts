@@ -1,12 +1,13 @@
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
-import { mkdirSync, readdirSync } from 'node:fs';
+import { mkdirSync, readdirSync, unlinkSync } from 'node:fs';
 import { Database } from 'bun:sqlite';
 import { z } from 'zod';
 import { Bridge } from './bridge';
-import { peers, privateDirectory, processStart, uuid } from './claude';
-import { appServerSocket, discoverTarget, readCodexCwd, watchCodex } from './codex';
+import { ownedJson, peers, privateDirectory, processStart, removePeerKey, uuid } from './claude';
+import { appServerSocket, codexIpcPath, discoverTarget, readCodexCwd, watchCodex } from './codex';
+import { isWindows, keyName } from './platform';
 import { loadedAppServerThreads } from './app-server';
 
 const eventSchema = z.object({ session_id: uuid, cwd: z.string().refine(isAbsolute),
@@ -15,7 +16,7 @@ type Event = z.infer<typeof eventSchema>;
 const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
 const codexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex');
 const stateDir = join(codexHome, 'plugin-state', 'asb-bridge');
-const ipcPath = join(codexHome, 'ipc', 'ipc.sock');
+const ipcPath = codexIpcPath(codexHome);
 
 function receiver(threadId: string) {
   const matches = peers(configDir).filter(peer => peer.sessionId === threadId
@@ -46,21 +47,10 @@ async function runReceiver(event: Event) {
   process.once('SIGINT', () => { void close(); });
   process.once('disconnect', () => { if (!ready) void close(); });
   try {
-    bridge.setTarget(await discoverTarget(ipcPath, event.session_id));
+    bridge.setTarget(await discoverTarget(codexHome, ipcPath, event.session_id));
     unwatch = await watchCodex(bridge.target(), event.session_id, state => bridge.updateRuntime(state), () => { void close(); });
-    const livePeer = peers(configDir)[0];
-    let directory = livePeer ? dirname(livePeer.messagingSocketPath)
-      : join(process.env.XDG_RUNTIME_DIR ?? process.env.CLAUDE_CODE_TMPDIR ?? '/tmp', 'cc-socks');
-    try {
-      if (Buffer.byteLength(join(directory, `${process.pid}.sock`)) > 103) throw new Error('Socket path too long');
-      mkdirSync(directory, { recursive: true, mode: 0o700 });
-      privateDirectory(directory);
-    } catch {
-      directory = `/tmp/cc-socks-${process.getuid?.()}`;
-      mkdirSync(directory, { recursive: true, mode: 0o700 });
-      privateDirectory(directory);
-    }
-    await bridge.start(directory, event.cwd, uuid.parse(event.generation));
+    // Windows inboxes are named pipes, so there is no socket folder.
+    await bridge.start(isWindows() ? '' : socketDirectory(), event.cwd, uuid.parse(event.generation));
     if (closing) throw new Error('Codex disconnected during receiver startup');
     if (!process.connected) throw new Error('Session starter disconnected before readiness');
     ready = true;
@@ -70,6 +60,32 @@ async function runReceiver(event: Event) {
     if (process.connected) process.send?.({ error: error instanceof Error ? error.message : 'Receiver startup failed' }, () => {});
     await close();
   }
+}
+
+function socketDirectory() {
+  const livePeer = peers(configDir)[0];
+  let directory = livePeer ? dirname(livePeer.messagingSocketPath)
+    : join(process.env.XDG_RUNTIME_DIR ?? process.env.CLAUDE_CODE_TMPDIR ?? '/tmp', 'cc-socks');
+  try {
+    if (Buffer.byteLength(join(directory, `${process.pid}.sock`)) > 103) throw new Error('Socket path too long');
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    privateDirectory(directory);
+  } catch {
+    directory = `/tmp/cc-socks-${process.getuid?.()}`;
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    privateDirectory(directory);
+  }
+  return directory;
+}
+
+// SIGTERM is a hard stop on Windows, so the receiver cannot remove its own row and key file.
+function removeReceiverFiles(pid: number, procStart: string) {
+  const path = join(configDir, 'sessions', `${pid}.json`);
+  try {
+    const row = z.object({ pid: z.literal(pid), procStart: z.literal(procStart), messagingSocketPath: z.string() }).parse(ownedJson(path, 256 * 1024));
+    unlinkSync(path);
+    removePeerKey(join(configDir, 'sessions', keyName(pid, row.messagingSocketPath)), procStart);
+  } catch { /* Gone, or another process has the row now. */ }
 }
 
 async function runHook(event: Event) {
@@ -87,6 +103,7 @@ async function runHook(event: Event) {
       process.kill(owner.pid, 'SIGTERM');
       const deadline = Date.now() + 2000;
       while (receiver(event.session_id) && Date.now() < deadline) await Bun.sleep(25);
+      if (isWindows()) removeReceiverFiles(owner.pid, owner.proc_start);
       if (receiver(event.session_id)) throw new Error('Receiver did not stop');
       return;
     }

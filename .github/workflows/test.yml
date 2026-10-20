@@ -45,3 +45,17 @@ jobs:
       # Only the platform-neutral tests (test/windows-tests.json): no POSIX modes, /bin/sh, systemctl, or Unix sockets.
       - run: node --test --no-experimental-strip-types $(node -p "require('./test/windows-tests.json').join(' ')")
         shell: bash
+  bridge-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      # The tests that need Unix socket files, /tmp, modes, links, or signals skip on Windows (test.skipIf).
+      - run: bun test

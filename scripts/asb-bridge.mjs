@@ -79,7 +79,8 @@ function sameRegistry(left, right) {
     return other && sameFile(value.entry, other.entry) && value.entry.mtimeMs === other.entry.mtimeMs && value.entry.ctimeMs === other.entry.ctimeMs && value.bytes.equals(other.bytes);
   });
 }
-export async function linkClaudeRegistry(home, sharedHome) {
+export async function linkClaudeRegistry(home, sharedHome, { platform = process.platform } = {}) {
+  if (platform === 'win32') throw new Error('Linking Claude session folders is not supported on Windows.');
   home = absolute(home); sharedHome = absolute(sharedHome);
   const source = path.join(home, 'sessions'), target = path.join(sharedHome, 'sessions');
   if (source === target || source.startsWith(`${target}${path.sep}`) || target.startsWith(`${source}${path.sep}`)) throw new Error('Registry paths must be separate and must not contain each other.');
@@ -206,18 +207,38 @@ async function checkRoot(sourceRoot) {
   }
   return root;
 }
-async function executable(name, searchPath = process.env.PATH || '', cwd = process.cwd()) {
-  for (const directory of searchPath.split(path.delimiter)) {
-    try {
-      const file = path.resolve(cwd, directory, name);
-      await access(file, constants.X_OK);
-      if ((await stat(file)).isFile()) return true;
-    } catch (error) { if (!['ENOENT', 'EACCES', 'ENOTDIR'].includes(error.code)) throw error; }
+// The same PATH search as findExecutable in src/platform-paths.mjs; this script also runs without src/.
+// Windows splits PATH with ';' and tries each PATHEXT extension; other systems need the execute bit.
+export async function executable(name, { platform = process.platform, env = process.env, searchPath = env.PATH || '', cwd = process.cwd() } = {}) {
+  const windows = platform === 'win32';
+  const names = windows ? (env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map((extension) => name + extension.toLowerCase()) : [name];
+  for (const directory of searchPath.split(windows ? ';' : path.delimiter)) {
+    for (const candidate of names) {
+      const file = path.resolve(cwd, directory, candidate);
+      try {
+        await access(file, windows ? constants.F_OK : constants.X_OK);
+        if ((await stat(file)).isFile()) return file;
+      } catch (error) { if (!['ENOENT', 'EACCES', 'ENOTDIR'].includes(error.code)) throw error; }
+    }
   }
-  return false;
+  return '';
 }
+// Windows runs a .cmd or .bat file only through cmd.exe, which expands % and ! and splits at & | < > even in quotes.
+export function commandLine(file, args, platform = process.platform) {
+  if (platform !== 'win32' || !/\.(?:cmd|bat)$/i.test(file)) return { command: file, args, options: {} };
+  const parts = [file, ...args];
+  if (parts.some((part) => /["%^&|<>!\r\n]/.test(part))) throw new Error('This path cannot go to codex.cmd safely.');
+  // /s removes only the outer pair of quotes, so each part keeps its own quotes.
+  return { command: 'cmd.exe', args: ['/d', '/s', '/c', `"${parts.map((part) => `"${part}"`).join(' ')}"`], options: { windowsVerbatimArguments: true } };
+}
+// The files it found, by name.
 export async function checkDependencies(names = ['bun', 'codex']) {
-  for (const name of names) if (!(await executable(name))) throw new Error(`ASB Bridge needs ${name} on PATH.`);
+  const found = {};
+  for (const name of names) {
+    found[name] = await executable(name);
+    if (!found[name]) throw new Error(`ASB Bridge needs ${name} on PATH.`);
+  }
+  return found;
 }
 export async function codexBunOnPath(home, options = {}) {
   if ((options.platform || process.platform) !== 'linux') return null;
@@ -251,7 +272,7 @@ export async function codexBunOnPath(home, options = {}) {
         cwd = await readlink(path.join(directory, 'cwd'));
         if (!path.isAbsolute(cwd)) { unknown = true; continue; }
       }
-      if (!(await executable('bun', env.PATH, cwd))) return false;
+      if (!(await executable('bun', { platform: 'linux', searchPath: env.PATH, cwd }))) return false;
     } catch { unknown = true; }
   }
   return found && !unknown ? true : null;
@@ -259,8 +280,10 @@ export async function codexBunOnPath(home, options = {}) {
 function warnBun(home) {
   console.warn(`Warning: ${home}: bun is missing from a running Codex app-server PATH. Codex cannot start or resume tasks. Run asb bridge uninstall --codex-home '${home.replaceAll("'", "'\\''")}', then make bun visible to desktop apps and restart Codex.`);
 }
-export function runCodex(home, args) {
-  try { return execFileSync('codex', args, { env: { ...process.env, CODEX_HOME: absolute(home) }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
+// file: the codex that checkDependencies found; Windows needs it to see a codex.cmd.
+export function runCodex(home, args, file = 'codex') {
+  const run = commandLine(file, args);
+  try { return execFileSync(run.command, run.args, { ...run.options, env: { ...process.env, CODEX_HOME: absolute(home) }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
   catch (error) {
     const reason = String(error.stderr || '').trim().split(/\r?\n/).at(-1).trim().slice(0, 200);
     throw new Error(`codex ${args.slice(0, 3).join(' ')} failed.${reason ? ` ${reason}` : ''}`);
@@ -294,16 +317,16 @@ async function codexTarget(home, force) {
   return { home, config };
 }
 export async function installCodex(home, options = {}) {
-  await checkDependencies();
+  const { codex } = await checkDependencies();
   const root = await checkRoot(options.sourceRoot || ROOT);
   const target = await codexTarget(home, options.force);
   if (target.skipped) return target;
   const bytes = await skillFiles(path.join(root, 'bridge/agent-skills/codex/bridge'));
   const marketplace = sections(target.config).get('marketplaces.asb');
   // Codex 0.162.1 refuses a changed source; remove the named marketplace before add.
-  if (marketplace !== undefined && sourceValue(marketplace) !== root) runCodex(target.home, ['plugin', 'marketplace', 'remove', 'asb']);
-  runCodex(target.home, ['plugin', 'marketplace', 'add', root]);
-  runCodex(target.home, ['plugin', 'add', 'asb-bridge@asb']);
+  if (marketplace !== undefined && sourceValue(marketplace) !== root) runCodex(target.home, ['plugin', 'marketplace', 'remove', 'asb'], codex);
+  runCodex(target.home, ['plugin', 'marketplace', 'add', root], codex);
+  runCodex(target.home, ['plugin', 'add', 'asb-bridge@asb'], codex);
   await copySkill(bytes, path.join(target.home, 'skills/bridge'), options.force);
   return { home: target.home, installed: true };
 }
@@ -334,14 +357,14 @@ export async function install(options = {}) {
   return { codex, claude };
 }
 export async function uninstall(options = {}) {
-  if (options.codexHomes?.length) await checkDependencies(['codex']);
+  const tools = options.codexHomes?.length ? await checkDependencies(['codex']) : {};
   await checkRoot(options.sourceRoot || ROOT);
   const codex = [];
   for (const home of [...new Set(options.codexHomes || [])]) {
     const target = await codexTarget(home, options.force);
     if (target.skipped) { codex.push(target); continue; }
-    runCodex(target.home, ['plugin', 'remove', 'asb-bridge@asb']);
-    runCodex(target.home, ['plugin', 'marketplace', 'remove', 'asb']);
+    runCodex(target.home, ['plugin', 'remove', 'asb-bridge@asb'], tools.codex);
+    runCodex(target.home, ['plugin', 'marketplace', 'remove', 'asb'], tools.codex);
     await checkSkill(path.join(target.home, 'skills/bridge'), options.force);
     await rm(path.join(target.home, 'skills/bridge'), { recursive: true, force: true });
     codex.push({ home: target.home, removed: true, historyKept: path.join(target.home, 'plugin-state/asb-bridge') });
@@ -358,10 +381,13 @@ async function entries(directory) {
   catch (error) { if (error.code === 'ENOENT') return []; throw error; }
 }
 async function toolVersion(name) {
-  if (!(await executable(name))) return null;
+  const file = await executable(name);
+  if (!file) return null;
   const codexHome = name === 'codex' ? await mkdtemp(path.join(os.tmpdir(), 'asb-bridge-version-')) : null;
-  try { return execFileSync(name, ['--version'], { env: codexHome ? { ...process.env, CODEX_HOME: codexHome } : process.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim(); }
-  catch { return null; }
+  try {
+    const run = commandLine(file, ['--version']);
+    return execFileSync(run.command, run.args, { ...run.options, env: codexHome ? { ...process.env, CODEX_HOME: codexHome } : process.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  } catch { return null; }
   finally { if (codexHome) await rm(codexHome, { recursive: true, force: true }); }
 }
 export async function status(options = {}) {
@@ -399,7 +425,7 @@ export async function main(args = process.argv.slice(2), context = {}) {
   const command = args.shift() || 'status';
   if (command === 'link-claude') {
     if (args.length !== 2 || args.some((arg) => arg.startsWith('--'))) throw new Error(USAGE);
-    const result = await linkClaudeRegistry(...args);
+    const result = await linkClaudeRegistry(args[0], args[1], context);
     console.log(`Claude ${result.home}: registry ${result.registry}; ${result.linked ? `linked; original registry backup ${result.backup}` : 'already linked'}`);
     return 0;
   }

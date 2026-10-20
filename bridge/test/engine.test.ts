@@ -1,12 +1,15 @@
 import { test, expect } from 'bun:test';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { engineRequest, engineRuntime, remotePeers } from '../src/engine';
 import { ENGINE_TOKEN, fakeEngine } from './engine-fixture';
+// POSIX only on Windows CI: /tmp and file modes.
+const posix = test.skipIf(process.platform === 'win32');
 
 const good = { pid: process.pid, port: 4659, schema: 1 as const, sourceToken: ENGINE_TOKEN };
 
-test('the engine runtime needs a private folder, a 0600 file with exactly its keys, and a live PID', () => {
+posix('the engine runtime needs a private folder, a 0600 file with exactly its keys, and a live PID', () => {
   const root = mkdtempSync('/tmp/asb-engine-runtime-');
   const env = { XDG_RUNTIME_DIR: root };
   const file = join(root, 'asb', 'service.json');
@@ -33,7 +36,25 @@ test('the engine runtime needs a private folder, a 0600 file with exactly its ke
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test('engine requests send the source token, the local Host, Origin and JSON on POST, and refuse other replies', async () => {
+test('on Windows the engine runtime is LOCALAPPDATA\\asb\\run\\service.json with exactly its keys and a live PID; macOS has none', () => {
+  const root = mkdtempSync(join(tmpdir(), 'asb-engine-windows-'));
+  const env = { LOCALAPPDATA: root };
+  const file = join(root, 'asb', 'run', 'service.json');
+  try {
+    expect(engineRuntime(env, 'win32')).toBeNull();
+    mkdirSync(join(root, 'asb', 'run'), { recursive: true });
+    writeFileSync(file, JSON.stringify(good));
+    expect(engineRuntime(env, 'win32')).toEqual(good);
+    for (const other of [{}, { LOCALAPPDATA: 'relative' }, { LOCALAPPDATA: '' }]) expect(engineRuntime(other, 'win32')).toBeNull();
+    expect(engineRuntime({ ...env, XDG_RUNTIME_DIR: root }, 'darwin')).toBeNull();
+    for (const value of [{ ...good, extra: 1 }, { ...good, pid: 2147483646 }]) {
+      writeFileSync(file, JSON.stringify(value));
+      expect(engineRuntime(env, 'win32')).toBeNull();
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+posix('engine requests send the source token, the local Host, Origin and JSON on POST, and refuse other replies', async () => {
   const root = mkdtempSync('/tmp/asb-engine-request-');
   let answer: unknown = { peers: [] };
   const engine = fakeEngine(root, () => answer);

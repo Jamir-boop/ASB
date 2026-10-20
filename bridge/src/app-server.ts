@@ -1,8 +1,10 @@
 import WebSocket from 'ws';
+import net from 'node:net';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { checkSocket, uuid } from './claude';
+import { uuid } from './claude';
+import { checkSocketFile, isWindows } from './platform';
 import type { Runtime } from './desktop';
 import type { Inputs } from './desktop-input';
 import { version } from './version';
@@ -36,8 +38,11 @@ export class AppServer {
 
   constructor(path: string, readonly threadId?: string, onDisconnect?: (error: Error) => void) {
     if (threadId !== undefined) uuid.parse(threadId);
-    checkSocket(path);
-    this.socket = new WebSocket(`ws+unix://${path}:/`, { maxPayload: 256 * 1024 * 1024, perMessageDeflate: false });
+    checkSocketFile(path);
+    const options = { maxPayload: 256 * 1024 * 1024, perMessageDeflate: false };
+    // ws+unix:// takes a POSIX path; on Windows the AF_UNIX file is reached through net.connect (S4).
+    this.socket = isWindows() ? new WebSocket('ws://localhost/', { createConnection: () => net.connect(path), ...options })
+      : new WebSocket(`ws+unix://${path}:/`, options);
     this.socket.on('error', error => { this.disconnectError = error; this.fail(error); });
     this.socket.on('close', () => {
       const error = this.disconnectError ?? new AppServerDisconnected('App-server disconnected; delivery may be unknown');

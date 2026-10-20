@@ -6,8 +6,10 @@ import { peers } from '../src/claude';
 import { appServer } from './app-server-fixture';
 import { watchCodex } from '../src/codex';
 import { DeliveryRefused } from '../src/delivery';
+// POSIX only on Windows CI: the Unix socket file of the app-server fixture.
+const posix = test.skipIf(process.platform === 'win32');
 
-test('loaded-thread discovery initializes the host without a per-thread read', async () => {
+posix('loaded-thread discovery initializes the host without a per-thread read', async () => {
   const server = await appServer();
   try {
     expect(await loadedAppServerThreads(server.path)).toEqual(new Set([server.threadId]));
@@ -18,7 +20,7 @@ test('loaded-thread discovery initializes the host without a per-thread read', a
   } finally { await server.close(); }
 });
 
-test('a CLI session registers without desktop IPC, withdraws at SessionEnd and is revived after a restart', async () => {
+posix('a CLI session registers without desktop IPC, withdraws at SessionEnd and is revived after a restart', async () => {
   const server = await appServer();
   const configDir = join(server.root, 'claude');
   const hook = async (hook_event_name: 'SessionStart' | 'SessionEnd' | '--revive') => {
@@ -42,7 +44,7 @@ test('a CLI session registers without desktop IPC, withdraws at SessionEnd and i
   }
 });
 
-test('peer input has tool authority and an independent delivery ID in idle and active threads', async () => {
+posix('peer input has tool authority and an independent delivery ID in idle and active threads', async () => {
   const server = await appServer();
   try {
     for (const state of ['idle', 'active'] as const) {
@@ -59,7 +61,7 @@ test('peer input has tool authority and an independent delivery ID in idle and a
   } finally { await server.close(); }
 });
 
-test('delivery refuses a thread unloaded after preflight without loading it again', async () => {
+posix('delivery refuses a thread unloaded after preflight without loading it again', async () => {
   const server = await appServer();
   try {
     server.unloadOnNextRead();
@@ -70,7 +72,7 @@ test('delivery refuses a thread unloaded after preflight without loading it agai
   } finally { await server.close(); }
 });
 
-test('consumed peer inputs correlate across history pages and new user input resets the origin', async () => {
+posix('consumed peer inputs correlate across history pages and new user input resets the origin', async () => {
   const server = await appServer();
   const inputId = randomUUID();
   const nativeId = randomUUID();
@@ -92,7 +94,7 @@ test('consumed peer inputs correlate across history pages and new user input res
   } finally { await server.close(); }
 });
 
-test('queued work prevents idle and the bridge leaves approval requests to the existing UI', async () => {
+posix('queued work prevents idle and the bridge leaves approval requests to the existing UI', async () => {
   const server = await appServer();
   const states: { status: string; mode: string }[] = [];
   const client = new AppServer(server.path, server.threadId);
@@ -121,7 +123,7 @@ test('queued work prevents idle and the bridge leaves approval requests to the e
   } finally { client.close(); await server.close(); }
 });
 
-test('an observer disconnect suspends reception until fresh permissions are read', async () => {
+posix('an observer disconnect suspends reception until fresh permissions are read', async () => {
   const server = await appServer();
   const states: { status: string; mode: string }[] = [];
   let disconnected = false;
