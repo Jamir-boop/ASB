@@ -159,6 +159,11 @@ class WidgetCheck(unittest.TestCase):
         self.addCleanup(settings.set_property, "gtk-font-name", settings.get_property("gtk-font-name"))
         # Exact pixel checks use one font; the font-height test checks other metrics.
         settings.set_property("gtk-font-name", "Cantarell 11")
+        # mock_dashboard() has more rows than the card limit; the limit test sets the real limit again.
+        for target, name in ((asb, "DEFAULT_CARD_LIMIT"), (asb.SwitchboardWindow, "card_limit")):
+            patcher = patch.object(target, name, 0)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def assert_accessible_label(self, widget, expected, prop=None):
         # GTK's exact property check is variadic and is not exposed by PyGObject.
@@ -1143,7 +1148,7 @@ class WidgetCheck(unittest.TestCase):
             self.drain()
             self.assertEqual(window.columns, 4)
             self.assertEqual(window.column_width, 240)
-            self.assertEqual(asb.read_layout(window.layout_path), {"columnWidth": 240, "view": "compact", "showAppPills": False})
+            self.assertEqual(asb.read_layout(window.layout_path), {"columnWidth": 240, "view": "compact", "showAppPills": False, "cardLimit": 0})
 
             row = window.focus_widgets["sample-15"]
             window.refresh_button.grab_focus()
@@ -1569,7 +1574,7 @@ class WidgetCheck(unittest.TestCase):
                         window.search.grab_focus(); self.drain(.2); adjustment.set_value(0); self.drain(.2)
                         self.capture(window, Path(output) / "view-comfortable-360-width160.png")
                     window.reset_width(); self.drain()
-                    self.assertEqual(asb.read_layout(layout_path), {"columnWidth": 240, "view": "comfortable", "showAppPills": False})
+                    self.assertEqual(asb.read_layout(layout_path), {"columnWidth": 240, "view": "comfortable", "showAppPills": False, "cardLimit": 0})
                 window.app_pills["codex"].set_active(True)
                 self.assertEqual(window.apps, {"codex"})
                 self.assertEqual(window.app_filter.get_selected(), 1)
@@ -3093,6 +3098,184 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual(two.asb_copy_button.get_child().get_icon_name(), "object-select-symbolic")
         window.close(); self.drain(.03)
 
+
+    def test_card_limit_more_card_show_all_chip_and_preference(self):
+        from gi.repository import GdkX11
+        for target, name in ((asb, "DEFAULT_CARD_LIMIT"), (asb.SwitchboardWindow, "card_limit")):
+            patcher = patch.object(target, name, 100)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        requests = []
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "request_async", lambda *args: requests.append(args))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        def xdo(*args):
+            return subprocess.run(["xdotool", *map(str, args)], check=True, capture_output=True, text=True).stdout
+        x, y = (line.split("=")[1] for line in xdo("getmouselocation", "--shell").splitlines()[:2])
+        self.addCleanup(xdo, "mousemove", x, y)
+        dashboard = mock_dashboard()
+        dashboard["threads"] += [dict(dashboard["threads"][40], id=f"extra-{index}", title=f"Synthetic older session {index}",
+                                      updatedAtMs=NOW - (200 + index) * 86_400_000) for index in range(24)]
+        temporary = Path(tempfile.mkdtemp(prefix="asb-card-limit-"))
+        self.addCleanup(shutil.rmtree, temporary, True)
+        layout_path = temporary / "layout.json"
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=layout_path)
+        self.addCleanup(window.close)
+        window.set_default_size(1080, 420)
+        window.present(); window.set_focus(None); self.drain(.4); window.check_geometry(); self.drain(.3)
+        xid = GdkX11.X11Surface.get_xid(window.get_surface())
+        full = [row["id"] for row in asb.filtered_rows(dashboard)]
+        self.assertEqual(len(full), 130)
+        more = window.focus_widgets[asb.MORE_ID]
+        def check_limited():
+            self.assertEqual(window.row_order, full[:100] + [asb.MORE_ID])
+            self.assertIs(window.focus_widgets[asb.MORE_ID], more)
+            self.assertFalse(window.filter_chip_widgets["all"][0].get_visible())
+            columns = [listing for listing in window.list_columns if listing.get_parent()]
+            for number, listing in enumerate(columns):
+                cards, card = [], listing.get_row_at_index(0)
+                while card is not None:
+                    cards.append(card.asb_focus_key)
+                    card = listing.get_row_at_index(len(cards))
+                self.assertEqual(cards, window.row_order[number * window.capacity:(number + 1) * window.capacity])
+        def check_all(first_focus=None):
+            self.assertTrue(window.show_all_cards)
+            self.assertEqual(window.row_order, full)
+            self.assertNotIn(asb.MORE_ID, window.focus_widgets)
+            self.assertIs(window.row_cache[asb.MORE_ID], more)
+            chip = window.filter_chip_widgets["all"]
+            self.assertTrue(chip[0].get_visible() and window.filter_chip_group.get_visible())
+            self.assertEqual((chip[1].get_label(), chip[0].get_tooltip_text()), ("All cards", "Show only the first 100 cards"))
+            if first_focus:
+                self.assertEqual(window.focus_key(), first_focus)
+                self.assert_focus_visible(window, first_focus)
+        def reset():
+            window.clear_filter_chip(window.filter_chip_widgets["all"][0], "all"); self.drain(.3)
+            self.assertFalse(window.show_all_cards)
+            check_limited()
+        check_limited()
+        # Compact: the parts of the More card, with no number key, no row panel, and the count only in the tooltip and label.
+        newest = max(row["updatedAtMs"] for row in dashboard["threads"] if row["id"] in full[100:])
+        self.assertEqual(more.asb_thread["updatedAtMs"], newest)
+        age = asb.row_meta({"state": "idle", "updatedAtMs": newest}).split(" · ")[1]
+        self.assertEqual(more.asb_thread["asbFirst"], full[100])
+        self.assertEqual((more.asb_mark.get_icon_name(), more.asb_title_label.get_label(), more.asb_state_label.get_label(),
+                          more.asb_where_label.get_label(), more.asb_where_label.get_visible()),
+                         ("view-more-horizontal-symbolic", "More sessions", "Show all", "· " + age, True))
+        self.assertTrue(more.asb_state_label.has_css_class("dim-label"))
+        self.assertTrue(more.get_activatable())
+        self.assertFalse(more.asb_source_badge.get_visible())
+        self.assert_accessible_label(more, "More sessions. 30 sessions after the first 100. Activate to show all cards.")
+        shown = []
+        self.assertTrue(window.query_row_tooltip(more, 0, 0, False, SimpleNamespace(set_text=shown.append)))
+        self.assertEqual(shown, ["30 more sessions after the first 100. Click to show all cards."])
+        adjustment = window.scroll.get_hadjustment()
+        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size()); self.drain(.3)
+        window.update_number_keys()
+        self.assertNotIn(asb.MORE_ID, window.number_keys)
+        self.assertEqual(getattr(more, "asb_number", 0), 0)
+        found, box = more.compute_bounds(window.scroll.get_child())
+        self.assertTrue(found)
+        self.assertEqual(asb.number_key_rows([more.asb_thread], {asb.MORE_ID: (box.origin.x, box.origin.y, box.size.width, box.size.height)},
+                                             (window.scroll.get_child().get_width(), window.scroll.get_child().get_height())), [])
+        window.row_context(None, 1, 5, 5, asb.MORE_ID)
+        for key, modifier in ((asb.Gdk.KEY_Menu, 0), (asb.Gdk.KEY_F10, asb.Gdk.ModifierType.SHIFT_MASK)):
+            window.row_key(None, key, 0, modifier, asb.MORE_ID)
+        self.drain(.2)
+        self.assertIsNone(window.context_menu)
+        self.assertFalse(window.pin_drop(None, "asb-pin:" + asb.MORE_ID, 0, 0, full[0]))
+        # Comfortable: the folder line, the arrow after Show all, the age, and no action corner.
+        window.view_filter.set_selected(1); self.drain(.6); window.check_geometry(); self.drain(.3)
+        self.assertIs(window.focus_widgets[asb.MORE_ID], more)
+        check_limited()
+        self.assertEqual((more.asb_folder.get_label(), more.asb_age_label.get_label(), more.asb_state_label.get_label(),
+                          more.asb_title_label.get_label(), more.asb_where_label.get_visible()),
+                         ("After the first 100", "from " + age, "Show all", "More sessions", False))
+        glyph = more.asb_more_glyph
+        self.assertEqual((glyph.get_icon_name(), glyph.get_pixel_size(), glyph.has_css_class("dim-label")), ("go-next-symbolic", 11, True))
+        self.assertIs(more.asb_state_label.get_next_sibling(), glyph)
+        self.assertFalse(more.asb_copy_button.get_parent().get_visible())
+        self.assert_accessible_label(more, "More sessions. 30 sessions after the first 100. Activate to show all cards.")
+        self.assertEqual(asb.read_layout(layout_path)["cardLimit"], 100)
+        self.assertNotIn("cardLimit", json.loads(layout_path.read_text()))
+        # A pointer click shows all cards and keeps the horizontal position.
+        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size()); self.drain(.3)
+        position = adjustment.get_value()
+        found, bounds = more.compute_bounds(window)
+        self.assertTrue(found)
+        left, top = window.get_surface_transform()
+        xdo("mousemove", "--window", xid, int(bounds.origin.x + bounds.size.width / 2 + left), int(bounds.origin.y + bounds.size.height / 2 + top))
+        self.drain(.3)
+        xdo("click", 1); self.drain(.6)
+        check_all()
+        self.assertAlmostEqual(adjustment.get_value(), position, delta=1)
+        self.assertEqual([request[1] for request in requests if request[1] != "/api/palette"], [])
+        xdo("mousemove", "--window", xid, 3, window.get_height() - 3); self.drain(.2)
+        reset()
+        # Enter and Space on the More card with the keyboard focus: the focus goes to the first card that it stood for.
+        for key in ("Return", "space"):
+            with self.subTest(key=key):
+                window.focus_widgets[full[99]].grab_focus(); self.drain(.2)
+                xdo("windowfocus", xid); xdo("key", "Down"); self.drain(.3)
+                self.assertIs(window.get_focus(), more)
+                self.assertTrue(window.get_focus_visible())
+                xdo("key", key); self.drain(.6)
+                check_all(full[100])
+                reset()
+        window.set_focus(None)
+        more.grab_focus(); self.drain(.2)
+        more.get_parent().emit("row-activated", more); self.drain(.5)
+        check_all()
+        self.assertEqual(window.focus_key(), full[100])
+        self.assertEqual([request[1] for request in requests if request[1] != "/api/palette"], [])
+        reset()
+        # A reorder and a filter change with the More card on the board keep the right columns and the same More widget.
+        window.dashboard["threads"] = [dict(row, pinned=True, pinIndex=0) if row["id"] == full[50] else row for row in window.dashboard["threads"]]
+        full = [row["id"] for row in asb.filtered_rows(window.dashboard)]
+        window.render(); self.drain(.3)
+        self.assertEqual(window.row_order[0], full[0])
+        check_limited()
+        window.search.set_text("Build"); self.drain(.6)
+        self.assertNotIn(asb.MORE_ID, window.row_order)
+        self.assertIs(window.row_cache[asb.MORE_ID], more)
+        self.assertTrue(more.asb_handlers)
+        window.search.set_text(""); self.drain(.6)
+        check_limited()
+        # Preferences > Sessions: the choice saves, the board changes at once, and a failed save keeps the old choice.
+        setting = window.card_limit_setting
+        self.assertEqual([setting.get_model().get_string(index) for index in range(5)], ["50", "100", "200", "500", "All"])
+        self.assertEqual(setting.get_selected(), 1)
+        self.assert_accessible_label(setting, "Cards on the board")
+        window.clear_filter_chip(window.filter_chip_widgets["all"][0], "all")
+        window.open_row(None, more); self.drain(.3)
+        self.assertTrue(window.show_all_cards)
+        setting.set_selected(0); self.drain(.3)
+        self.assertEqual((window.card_limit, window.show_all_cards, asb.read_layout(layout_path)["cardLimit"]), (50, False, 50))
+        self.assertEqual(window.row_order, full[:50] + [asb.MORE_ID])
+        self.assertEqual(more.asb_folder.get_label(), "After the first 50")
+        setting.set_selected(2); self.drain(.3)
+        self.assertEqual((window.card_limit, json.loads(layout_path.read_text())["cardLimit"]), (200, 200))
+        self.assertEqual(window.row_order, full)
+        setting.set_selected(4); self.drain(.3)
+        self.assertEqual((window.card_limit, json.loads(layout_path.read_text())["cardLimit"]), (0, 0))
+        self.assertEqual(window.row_order, full)
+        self.assertEqual(window.card_limit_error.get_label(), "")
+        blocker = temporary / "not-a-folder"
+        blocker.write_text("")
+        window.layout_path = blocker / "layout.json"
+        setting.set_selected(1); self.drain(.3)
+        self.assertEqual((setting.get_selected(), window.card_limit), (4, 0))
+        self.assertTrue(window.card_limit_error.get_label())
+        self.assertEqual(window.row_order, full)
+        window.layout_path = layout_path
+        setting.set_selected(1); self.drain(.3)
+        self.assertEqual((window.card_limit, window.card_limit_error.get_label()), (100, ""))
+        self.assertFalse(layout_path.exists() and "cardLimit" in json.loads(layout_path.read_text()))
+        check_limited()
+        window.close(); self.drain(.03)
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,6 +21,10 @@ LOCAL_HTTP = build_opener(ProxyHandler({}))
 ROW_HEIGHT = 22
 COMFORTABLE_ROW_HEIGHT = 68
 DEFAULT_COLUMN_WIDTH = 240
+# Cards on the board (Preferences > Sessions); 0 shows all cards.
+CARD_LIMITS = ((50, "50"), (100, "100"), (200, "200"), (500, "500"), (0, "All"))
+DEFAULT_CARD_LIMIT = 100
+MORE_ID = "asb:more"
 NUMBER_HOLD_MS = 400
 APP_ID = "local.asb.AgentSwitchBoard"
 STATES = ("working", "waiting", "idle", "unknown")
@@ -247,6 +251,16 @@ def filtered_rows(dashboard, query="", app="all", state="all", archived=False, p
     rows.sort(key=lambda row: (0, row.get("pinIndex", 0), row["id"]) if row.get("pinned") else
               (1, bucket(row), row.get("state") != "working", -moment(row), row["id"]))
     return rows
+
+
+def limit_rows(rows, limit, show_all=False):
+    """The first `limit` rows and one More row for the rest. A limit of 0 or show_all keeps every row."""
+    if not limit or show_all or len(rows) <= limit:
+        return rows
+    rest = rows[limit:]
+    return rows[:limit] + [{"id": MORE_ID, "provider": "", "providerLabel": "", "title": "More sessions", "state": "idle",
+                            "canOpen": False, "updatedAtMs": max(row.get("updatedAtMs", 0) for row in rest),
+                            "asbMore": len(rest), "asbLimit": limit, "asbFirst": rest[0]["id"]}]
 
 
 def pack_columns(rows, width, height, column_width=DEFAULT_COLUMN_WIDTH, row_height=ROW_HEIGHT):
@@ -511,12 +525,18 @@ def validate_column_width(width):
     return width
 
 
+def validate_card_limit(value):
+    if type(value) is not int or value not in {limit for limit, _title in CARD_LIMITS}:
+        raise ValueError("Cards on the board must be 50, 100, 200, 500, or All.")
+    return value
+
+
 def read_layout(path):
     if not path or not Path(path).exists():
-        return {"columnWidth": DEFAULT_COLUMN_WIDTH, "view": "compact", "showAppPills": False}
+        return {"columnWidth": DEFAULT_COLUMN_WIDTH, "view": "compact", "showAppPills": False, "cardLimit": DEFAULT_CARD_LIMIT}
     value = json.loads(Path(path).read_text())
     if not isinstance(value, dict) or not {"version", "columnWidth"}.issubset(value) \
-            or set(value) - {"version", "columnWidth", "view", "showAppPills"} or value["version"] != 1:
+            or set(value) - {"version", "columnWidth", "view", "showAppPills", "cardLimit"} or value["version"] != 1:
         raise ValueError("The saved layout is not valid. Reset the width.")
     view = value.get("view", "compact")
     if view not in ("compact", "comfortable"):
@@ -524,20 +544,23 @@ def read_layout(path):
     show_apps = value.get("showAppPills", False)
     if type(show_apps) is not bool:
         raise ValueError("Show app pills must be on or off.")
-    return {"columnWidth": validate_column_width(value["columnWidth"]), "view": view, "showAppPills": show_apps}
+    return {"columnWidth": validate_column_width(value["columnWidth"]), "view": view, "showAppPills": show_apps,
+            "cardLimit": validate_card_limit(value.get("cardLimit", DEFAULT_CARD_LIMIT))}
 
 
-def write_layout(path, width=None, view=None, show_app_pills=None):
+def write_layout(path, width=None, view=None, show_app_pills=None, card_limit=None):
     explicit_apps = show_app_pills is not None
-    if view is None or show_app_pills is None:
+    if view is None or show_app_pills is None or card_limit is None:
         saved = read_layout(path)
         view = saved["view"] if view is None else view
         show_app_pills = saved["showAppPills"] if show_app_pills is None else show_app_pills
+        card_limit = saved["cardLimit"] if card_limit is None else card_limit
     if view not in ("compact", "comfortable"):
         raise ValueError("Choose Compact or Comfortable view.")
     if type(show_app_pills) is not bool:
         raise ValueError("Show app pills must be on or off.")
-    if width is None and view == "compact" and not show_app_pills and not explicit_apps:
+    validate_card_limit(card_limit)
+    if width is None and view == "compact" and not show_app_pills and not explicit_apps and card_limit == DEFAULT_CARD_LIMIT:
         write_config(path, None)
         return
     value = {"version": 1, "columnWidth": validate_column_width(DEFAULT_COLUMN_WIDTH if width is None else width)}
@@ -545,10 +568,12 @@ def write_layout(path, width=None, view=None, show_app_pills=None):
         value["view"] = view
     if show_app_pills or explicit_apps:
         value["showAppPills"] = show_app_pills
+    if card_limit != DEFAULT_CARD_LIMIT:
+        value["cardLimit"] = card_limit
     write_config(path, value)
 
 
-def filter_chips(apps, states, archived, show_app_pills=False):
+def filter_chips(apps, states, archived, show_app_pills=False, show_all=False, limit=DEFAULT_CARD_LIMIT):
     chips = []
     if app_filter(apps) != "all" and not show_app_pills:
         title = ", ".join(name for provider, name in APP_PILLS if provider in apps)
@@ -559,6 +584,8 @@ def filter_chips(apps, states, archived, show_app_pills=False):
         chips.append(("states", title, "Clear state filter: " + (names or "No states")))
     if archived:
         chips.append(("archive", "Include archived", "Hide archived sessions"))
+    if show_all and limit:
+        chips.append(("all", "All cards", f"Show only the first {limit} cards"))
     return tuple(chips)
 
 
@@ -2632,6 +2659,7 @@ class PreferencesWindow(Adw.Window):
 class SwitchboardWindow(Adw.ApplicationWindow):
     drawer_view, drawer_peek, drawer_count, column_pixel_width = False, False, 0, DEFAULT_COLUMN_WIDTH
     wide_controls, tiny_controls, search_expanded, show_app_pills = False, False, False, False
+    card_limit, show_all_cards = DEFAULT_CARD_LIMIT, False
     message_seen = None
     number_hold = number_idle = number_scroll = number_pressed = None
     numbers_shown = False
@@ -2650,6 +2678,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             layout = read_layout(layout_path)
             self.column_width, self.view = layout["columnWidth"], layout["view"]
             self.show_app_pills = layout["showAppPills"]
+            self.card_limit = layout["cardLimit"]
         except (OSError, ValueError) as error:
             self.column_width, self.view, layout_error = DEFAULT_COLUMN_WIDTH, "compact", str(error)
         self.row_height = COMFORTABLE_ROW_HEIGHT if self.view == "comfortable" else ROW_HEIGHT
@@ -2793,6 +2822,24 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.app_pills_error = label("", "warning")
         self.app_pills_error.set_wrap(True)
         sessions.append(self.app_pills_error)
+        row = Gtk.Box(spacing=12)
+        name = label("Cards on the board")
+        name.set_hexpand(True)
+        row.append(name)
+        self.card_limit_setting = Gtk.DropDown.new_from_strings([title for _value, title in CARD_LIMITS])
+        self.card_limit_setting.update_property([Gtk.AccessibleProperty.LABEL], ["Cards on the board"])
+        self.card_limit_setting.set_selected([value for value, _title in CARD_LIMITS].index(self.card_limit))
+        self.card_limit_setting.connect("notify::selected", self.change_card_limit)
+        row.append(self.card_limit_setting)
+        sessions.append(row)
+        help_text = label("The board shows the first cards in its order. A More card at the end shows the rest. "
+                          "Search and filters look at all sessions.", "caption")
+        help_text.set_wrap(True)
+        help_text.set_xalign(0)
+        sessions.append(help_text)
+        self.card_limit_error = label("", "warning")
+        self.card_limit_error.set_wrap(True)
+        sessions.append(self.card_limit_error)
         self.preferences_refresh_row = Gtk.Box(spacing=8)
         preferences_search = Gtk.Button(label="Find a session or folder")
         preferences_search.connect("clicked", self.open_search_from_preferences)
@@ -2961,7 +3008,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.filter_chip_group = Gtk.Box(spacing=4, visible=False)
         self.filter_chip_signature = None
         self.filter_chip_widgets = {}
-        for key in ("app", "states", "archive"):
+        for key in ("app", "states", "archive", "all"):
             chip = Gtk.Button()
             chip.add_css_class("asb-filter-pill")
             content = Gtk.Box(spacing=6)
@@ -3620,7 +3667,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if selected == self.show_app_pills:
             return
         try:
-            write_layout(self.layout_path, self.column_width, self.view, selected)
+            write_layout(self.layout_path, self.column_width, self.view, selected, card_limit=self.card_limit)
         except (OSError, ValueError) as error:
             self.app_pills_setting.set_active(self.show_app_pills)
             self.app_pills_error.set_label(str(error))
@@ -3629,6 +3676,22 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.app_pills_error.set_label("")
         self.update_toolbar_presentation()
         self.sync_filter_chips()
+
+    def change_card_limit(self, *_args):
+        limits = [value for value, _title in CARD_LIMITS]
+        selected = limits[self.card_limit_setting.get_selected()]
+        if selected == self.card_limit:
+            return
+        try:
+            write_layout(self.layout_path, self.column_width, self.view, self.show_app_pills, card_limit=selected)
+        except (OSError, ValueError) as error:
+            self.card_limit_setting.set_selected(limits.index(self.card_limit))
+            self.card_limit_error.set_label(str(error))
+            return
+        self.card_limit = selected
+        self.card_limit_error.set_label("")
+        self.show_all_cards = False
+        self.filter_changed()
 
     def set_column_width(self, *_args):
         width = validate_column_width(self.width_control.get_value_as_int())
@@ -3643,7 +3706,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def save_width(self):
         try:
-            write_layout(self.layout_path, self.column_width, self.view, self.show_app_pills)
+            write_layout(self.layout_path, self.column_width, self.view, self.show_app_pills, card_limit=self.card_limit)
             self.layout_error.set_label("")
         except (OSError, ValueError) as error:
             self.layout_error.set_label(str(error))
@@ -3653,7 +3716,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.width_control.set_value(DEFAULT_COLUMN_WIDTH)
         self.dragging = False
         try:
-            write_layout(self.layout_path, view=self.view, show_app_pills=self.show_app_pills)
+            write_layout(self.layout_path, view=self.view, show_app_pills=self.show_app_pills, card_limit=self.card_limit)
             self.layout_error.set_label("")
         except (OSError, ValueError):
             self.layout_error.set_label("Cannot reset the width. Check the ASB config folder.")
@@ -4052,8 +4115,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return False
 
     def visible_rows(self):
-        return filtered_rows(self.dashboard, self.search.get_text(), app_filter(self.apps), self.states, self.archive.get_active(),
-                             self.pending_only.get_active(), self.drawer_view)
+        return limit_rows(filtered_rows(self.dashboard, self.search.get_text(), app_filter(self.apps), self.states,
+                                        self.archive.get_active(), self.pending_only.get_active(), self.drawer_view),
+                          self.card_limit, self.show_all_cards)
 
     def filter_changed(self, *_args):
         self.sync_filter_chips()
@@ -4064,7 +4128,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def sync_filter_chips(self):
         if not getattr(self, "filter_chip_group", None):
             return
-        chips = filter_chips(self.apps, self.states, self.archive.get_active(), self.show_app_pills)
+        chips = filter_chips(self.apps, self.states, self.archive.get_active(), self.show_app_pills,
+                             show_all=self.show_all_cards, limit=self.card_limit)
         if chips == self.filter_chip_signature:
             return
         self.filter_chip_signature = chips
@@ -4088,6 +4153,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.select_states(set(STATES))
         elif key == "archive":
             self.archive.set_active(False)
+        elif key == "all":
+            self.show_all_cards = False
+            self.filter_changed()
         if restore_focus:
             next((button for button, _label in self.filter_chip_widgets.values() if button.get_visible()), self.menu_button).grab_focus()
 
@@ -4214,7 +4282,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.cancel_scroll()
             self.list_body.clear_hover()
         dashboard_ids = {row["id"] for row in self.dashboard.get("threads", [])}
-        for identity in self.row_cache.keys() - dashboard_ids:
+        # The More card stays in the cache when it is not on the board.
+        for identity in self.row_cache.keys() - dashboard_ids - {MORE_ID}:
             self.release_row(self.row_cache.pop(identity))
             self.focus_widgets.pop(identity, None)
             self.open_errors.pop(identity, None)
@@ -4443,6 +4512,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def query_row_tooltip(self, widget, _x, _y, _keyboard, tooltip):
         if self.closed:
             return False
+        row = widget.asb_thread
+        if row.get("id") == MORE_ID:
+            tooltip.set_text(f"{row['asbMore']} more sessions after the first {row['asbLimit']}. Click to show all cards.")
+            return True
         model = tooltip_model(widget.asb_thread, time.time() * 1000, Path.home(), self.open_errors.get(widget.asb_thread["id"], ""),
                               self.drawer_view)
         key = (model, bool(self.hover_colors), widget.asb_thread.get("provider"), bool(widget.asb_thread.get("pending")))
@@ -4553,7 +4626,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.asb_action_signature = None
             self.cancel_card_copy(widget)
             for name in ("asb_folder", "asb_pin_button", "asb_read_button", "asb_drawer_button", "asb_copy_button", "asb_age_label", "asb_limited",
-                         "asb_mute_glyph", "asb_where_icon", "asb_where_label"):
+                         "asb_mute_glyph", "asb_where_icon", "asb_where_label", "asb_more_glyph"):
                 if hasattr(widget, name):
                     delattr(widget, name)
             content = Gtk.Box(spacing=6, margin_start=5, margin_end=5, valign=Gtk.Align.CENTER)
@@ -4725,6 +4798,16 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if self.view == "comfortable":
             widget.asb_folder.set_label(row.get("projectName") or "No project")
             self.update_card_actions(widget)
+        if row.get("id") == MORE_ID:
+            widget.asb_mark.set_from_icon_name("view-more-horizontal-symbolic")
+            widget.set_activatable(True)
+            if self.view == "comfortable":
+                widget.asb_folder.set_label(f"After the first {row['asbLimit']}")
+                if not getattr(widget, "asb_more_glyph", None):
+                    glyph = Gtk.Image(icon_name="go-next-symbolic", pixel_size=11, valign=Gtk.Align.CENTER)
+                    glyph.add_css_class("dim-label")
+                    widget.asb_state_label.get_parent().insert_child_after(glyph, widget.asb_state_label)
+                    widget.asb_more_glyph = glyph
         widget.asb_time_signature = None
         self.update_row_text(widget)
 
@@ -4736,6 +4819,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def update_card_actions(self, widget):
         if widget.asb_view != "comfortable":
+            return
+        if widget.asb_thread.get("id") == MORE_ID:
+            # No card actions: the whole corner goes, so its title fade does not paint on hover.
+            widget.asb_copy_button.get_parent().set_visible(False)
             return
         row, read, pin = widget.asb_thread, widget.asb_read_button, widget.asb_pin_button
         drawer = getattr(widget, "asb_drawer_button", None)
@@ -4876,6 +4963,20 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return
         widget.asb_time_signature = signature
         widget.asb_duration = duration
+        if row.get("id") == MORE_ID:
+            age = meta.split(" · ")[1]
+            widget.asb_state_label.set_label("Show all")
+            widget.asb_state_label.add_css_class("dim-label")
+            if self.view == "comfortable":
+                widget.asb_age_label.set_label("from " + age)
+            else:
+                widget.asb_where_label.set_label("· " + age)
+                widget.asb_where_label.set_visible(True)
+            widget.asb_title_label.set_label("More sessions")
+            widget.asb_open_signature = (False, "")
+            widget.update_property([Gtk.AccessibleProperty.LABEL], [
+                f"More sessions. {row['asbMore']} sessions after the first {row['asbLimit']}. Activate to show all cards."])
+            return
         state_text = row.get("state", "unknown").capitalize()
         # The row class keeps the grey look across a view change; at the reset the next tick lifts it.
         if bool(countdown) != getattr(widget, "asb_limited", False):
@@ -4928,6 +5029,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return True
 
     def show_context(self, widget, x=None, y=None, gesture=None):
+        if widget.asb_thread.get("id") == MORE_ID:
+            return
         self.hide_numbers()
         if self.context_menu:
             self.context_menu.popdown()
@@ -5316,6 +5419,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def open_row(self, _listing, widget):
         row = widget.asb_thread
+        if row.get("id") == MORE_ID:
+            # The focus goes to the first card that the More card stood for; a pointer click keeps the scroll position.
+            first = row["asbFirst"] if self.get_focus() is widget else None
+            self.show_all_cards = True
+            self.sync_filter_chips()
+            self.render(preserve_focus=first, reveal_focus=bool(first) and self.get_focus_visible())
+            return
         # A click on a card action reaches the row too: the busy state takes the action from the button, and GTK drops its claim.
         if not row.get("canOpen") or row["id"] in self.opening or row["id"] in self.session_actions:
             return

@@ -34,6 +34,8 @@ Use the **Pending**, **Working**, and **Drawer** toolbar pills. **Show app pills
 
 Filters have a toolbar chip with a × button when no visible pill already controls them. Working alone uses the Working pill; it has no duplicate chip. An App selection of one or two apps has a chip only when app pills are hidden. The chip names the selected apps, for example **Codex, OpenCode**. Other restricted state sets have a chip with the selected states, or **No states**. Clear a chip to reset only that group: App to all apps, states to all states, or **Include archived** to off. Search prefixes still take priority over the app filter. Persistent unread and Show app pills have no filter chips. The main view has no numeric counters.
 
+The board shows only the first cards in its order. Set the number in Preferences > Sessions > **Cards on the board**: 50, 100, 200, 500, or All (default 100). Search and filters look at all sessions, and the limit applies to the result. When more cards match, a **More sessions** card comes at the end. Click it, or press Enter or Space on it, to show all cards. Then the toolbar shows the **All cards** chip; select its × to show only the first cards again. A new window always starts with the first cards. The tooltip of the More card tells how many sessions it holds.
+
 ASB pins come first in their saved order. Unpinned chats follow: Pending, Working, Idle, then Unknown. A Working chat sorts by the start of its current task, so it does not move while it works. A Working chat with no known start comes after the Working chats that have one. In the Pending group, Working chats with a question come first, by task start; the other Pending chats follow by newest activity. A card moves when its state or group changes or a new task starts. Right-click a row, or use Menu or Shift+F10, to **Pin** or **Unpin** it. Drag a pinned row onto another pin to change the order. **Move pin earlier** and **Move pin later** provide the same control from the keyboard. They move the pin before or after the adjacent visible pinned row, with search and filters applied. They do nothing at the first or last visible pin. Hidden pins keep their place in the saved order.
 
 In Comfortable, the top-right pin appears on row hover or keyboard focus. A pinned control stays visible. Select it to **Pin** or **Unpin** without opening the chat. Pinned chats use the saved pin order; unpinned chats return to the normal state order.
@@ -191,14 +193,14 @@ Claude Code sessions and Codex tasks on one machine can message the sessions on 
 
 Select the toolbar settings button to open **Preferences**. It is one separate native window. You can still use the main window. Selecting the button again raises the same Preferences window. Closing Preferences keeps ASB running and keeps form edits for the next open.
 
-Use **Sessions** for app and state filters, archived sessions, Show app pills, Persistent unread, search, and narrow-window Refresh. Use **Appearance** for Compact or Comfortable, column width, and colors. Use **Profiles** to add or edit app sources. Use **Phone** for the optional Android companion. A wide window has navigation on the left; a narrow window has tabs above the page.
+Use **Sessions** for app and state filters, archived sessions, Show app pills, Cards on the board, Persistent unread, search, and narrow-window Refresh. Use **Appearance** for Compact or Comfortable, column width, and colors. Use **Profiles** to add or edit app sources. Use **Phone** for the optional Android companion. A wide window has navigation on the left; a narrow window has tabs above the page.
 
 ASB uses dark mode in its main and Preferences windows. In **Appearance**, **GNOME colors** uses your current background, text, and accent colors. **Custom colors** lets you set background, text, accent, muted text, and divider colors. Divider color has no contrast limit. Changing a color selects **Custom colors**. Select **Apply theme** to check the dark background and text contrast, apply the colors to both windows, and save them for the next start. A validation or save error keeps the previous theme. **Reset to GNOME** removes the custom theme and resets the pickers. ASB does not change global GNOME settings.
 
 | File | Contents |
 | --- | --- |
 | `$XDG_STATE_HOME/asb/pending.json` | Attention history, Read/Unread marks, pins, Persistent unread, current-task Discard, and the drawer. |
-| `$XDG_CONFIG_HOME/asb/layout.json` | Column width, selected view, and Show app pills. |
+| `$XDG_CONFIG_HOME/asb/layout.json` | Column width, selected view, Show app pills, and Cards on the board. |
 | `$XDG_CONFIG_HOME/asb/theme.json` | Custom colors. |
 | `$XDG_CONFIG_HOME/asb/sources.json` | App-source names, colors, dot visibility, folders, launchers, and enabled flags. |
 | `$XDG_CONFIG_HOME/asb/phone.json` | Phone access on or off, selected addresses, port, and paired phones. Each phone has an ID, a name, times, and the SHA-256 of its token. |

@@ -1368,7 +1368,7 @@ class DataChecks(unittest.TestCase):
     def test_layout_width_validation_persistence_and_reset(self):
         with TemporaryDirectory(prefix="asb-layout-test-") as directory:
             path = Path(directory) / "layout.json"
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "showAppPills": False})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "showAppPills": False, "cardLimit": 100})
             asb.write_layout(path, 160)
             self.assertEqual(asb.read_layout(path)["columnWidth"], 160)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
@@ -1379,20 +1379,20 @@ class DataChecks(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), previous)
             asb.write_layout(path)
             self.assertFalse(path.exists())
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "showAppPills": False})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "showAppPills": False, "cardLimit": 100})
 
     def test_view_setting_legacy_width_save_and_reset(self):
         with TemporaryDirectory(prefix="asb-view-test-") as directory:
             path = Path(directory) / "layout.json"
             path.write_text(json.dumps({"version": 1, "columnWidth": 180}))
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "showAppPills": False})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "showAppPills": False, "cardLimit": 100})
             asb.write_layout(path, 180, "comfortable")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "comfortable", "showAppPills": False})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "comfortable", "showAppPills": False, "cardLimit": 100})
             asb.write_layout(path, 320)
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": False})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": False, "cardLimit": 100})
             asb.write_layout(path)
             self.assertTrue(path.exists())
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": False})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": False, "cardLimit": 100})
             before = path.read_bytes()
             with self.assertRaises(ValueError):
                 asb.write_layout(path, 240, "unknown")
@@ -1413,9 +1413,9 @@ class DataChecks(unittest.TestCase):
             asb.write_layout(path, 180, "compact", True)
             self.assertTrue(asb.read_layout(path)["showAppPills"])
             asb.write_layout(path, 320, "comfortable")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": True})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": True, "cardLimit": 100})
             asb.write_layout(path)
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": True})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": True, "cardLimit": 100})
             asb.write_layout(path, 240, "compact", False)
             self.assertFalse(json.loads(path.read_text())["showAppPills"])
             before = path.read_bytes()
@@ -1443,9 +1443,87 @@ class DataChecks(unittest.TestCase):
             window.dragging = False
             window.width_control = Mock(set_value=Mock(side_effect=lambda width: setattr(window, "column_width", width)))
             window.reset_width()
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": True})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": True, "cardLimit": 100})
             window.save_width()
             self.assertTrue(asb.read_layout(path)["showAppPills"])
+
+    def test_card_limit_layout_validation_and_setting_preservation(self):
+        with TemporaryDirectory(prefix="asb-card-limit-layout-") as directory:
+            path = Path(directory) / "layout.json"
+            path.write_text(json.dumps({"version": 1, "columnWidth": 240}))
+            self.assertEqual(asb.read_layout(path)["cardLimit"], 100)
+            for value in (50, 100, 200, 500, 0):
+                asb.write_layout(path, 240, card_limit=value)
+                self.assertEqual(asb.read_layout(path)["cardLimit"], value)
+                self.assertEqual("cardLimit" in json.loads(path.read_text()), value != 100)
+            previous = path.read_bytes()
+            for invalid in (1, "100", True, False, 101, -1, None, [], 100.0):
+                path.write_bytes(previous)
+                if invalid is not None:
+                    with self.assertRaises(ValueError):
+                        asb.write_layout(path, 240, card_limit=invalid)
+                    self.assertEqual(path.read_bytes(), previous)
+                path.write_text(json.dumps({"version": 1, "columnWidth": 240, "cardLimit": invalid}))
+                with self.assertRaisesRegex(ValueError, "Cards on the board must be 50, 100, 200, 500, or All."):
+                    asb.read_layout(path)
+            path.write_text(json.dumps({"version": 1, "columnWidth": 240, "cardLimit": 200}))
+            asb.write_layout(path, 320)
+            asb.write_layout(path, 320, "comfortable")
+            asb.write_layout(path, 320, "comfortable", True)
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": True, "cardLimit": 200})
+            window = object.__new__(Window)
+            window.show_app_pills, window.column_width, window.view, window.layout_path = True, 320, "comfortable", path
+            window.card_limit, window.layout_error, window.dragging = 200, Mock(), False
+            window.width_control = Mock(set_value=Mock(side_effect=lambda width: setattr(window, "column_width", width)))
+            window.reset_width()
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": True, "cardLimit": 200})
+            window.save_width()
+            self.assertEqual(asb.read_layout(path)["cardLimit"], 200)
+            window.app_pills_setting, window.app_pills_error = Mock(get_active=Mock(return_value=False)), Mock()
+            window.update_toolbar_presentation, window.sync_filter_chips = Mock(), Mock()
+            window.change_app_pills_setting()
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": False, "cardLimit": 200})
+            # The delete branch keeps a file that holds a limit other than the default.
+            path.write_text(json.dumps({"version": 1, "columnWidth": 240, "cardLimit": 0}))
+            asb.write_layout(path)
+            self.assertEqual(asb.read_layout(path)["cardLimit"], 0)
+            asb.write_layout(path, card_limit=100)
+            self.assertFalse(path.exists())
+            # The Preferences control: the same value does nothing, a failed save selects the old value again.
+            window.card_limit, window.show_all_cards = 100, True
+            window.card_limit_setting, window.card_limit_error, window.filter_changed = Mock(get_selected=Mock(return_value=1)), Mock(), Mock()
+            window.change_card_limit()
+            window.filter_changed.assert_not_called()
+            self.assertFalse(path.exists())
+            window.card_limit_setting.get_selected.return_value = 2
+            window.change_card_limit()
+            self.assertEqual((window.card_limit, window.show_all_cards, asb.read_layout(path)["cardLimit"]), (200, False, 200))
+            window.card_limit_error.set_label.assert_called_with("")
+            window.filter_changed.assert_called_once_with()
+            window.card_limit_setting.get_selected.return_value = 4
+            with patch.dict(SCOPE, {"write_layout": Mock(side_effect=OSError("Save failed"))}):
+                window.change_card_limit()
+            self.assertEqual(window.card_limit, 200)
+            window.card_limit_setting.set_selected.assert_called_once_with(2)
+            window.card_limit_error.set_label.assert_called_with("Save failed")
+            window.filter_changed.assert_called_once_with()
+
+    def test_limit_rows_keeps_the_first_rows_and_one_more_row(self):
+        rows = [{"id": f"r{index}", "updatedAtMs": 1000 - index if index != 7 else 5000, "canOpen": True} for index in range(10)]
+        before = copy.deepcopy(rows)
+        for limit, show_all in ((10, False), (12, False), (0, False), (3, True)):
+            self.assertIs(asb.limit_rows(rows, limit, show_all), rows)
+        limited = asb.limit_rows(rows, 4)
+        self.assertEqual([row["id"] for row in limited], ["r0", "r1", "r2", "r3", asb.MORE_ID])
+        self.assertEqual(limited[-1], {"id": "asb:more", "provider": "", "providerLabel": "", "title": "More sessions",
+                                       "state": "idle", "canOpen": False, "updatedAtMs": 5000, "asbMore": 6, "asbLimit": 4,
+                                       "asbFirst": "r4"})
+        self.assertEqual(asb.limit_rows(rows, 9)[-1]["asbMore"], 1)
+        self.assertEqual(rows, before)
+        self.assertEqual((asb.DEFAULT_CARD_LIMIT, [value for value, _title in asb.CARD_LIMITS]), (100, [50, 100, 200, 500, 0]))
+        bounds = {row["id"]: (0, 22 * index, 240, 22) for index, row in enumerate(limited)}
+        self.assertNotIn(asb.MORE_ID, asb.number_key_rows(limited, bounds, (600, 600)))
+        self.assertEqual(asb.number_key_rows(limited, bounds, (600, 600)), ["r0", "r1", "r2", "r3"])
 
     def test_filter_chip_groups_clear_only_their_constraint(self):
         chips = asb.filter_chips
@@ -1462,12 +1540,18 @@ class DataChecks(unittest.TestCase):
         self.assertEqual(chips({"codex"}, set(asb.STATES), False, True), ())
         self.assertEqual(chips({"codex"}, set(asb.STATES), False), (("app", "Codex", "Clear app filter: Codex"),))
         self.assertEqual(chips(set(), {"waiting"}, False), (("states", "Waiting", "Clear state filter: Waiting"),))
+        self.assertEqual(chips(set(), set(asb.STATES), True, show_all=True, limit=200), (
+            ("archive", "Include archived", "Hide archived sessions"), ("all", "All cards", "Show only the first 200 cards")))
+        self.assertEqual(chips(set(), set(asb.STATES), False, show_all=True), (("all", "All cards", "Show only the first 100 cards"),))
+        self.assertEqual(chips(set(), set(asb.STATES), False, show_all=True, limit=0), ())
+        self.assertEqual(chips(set(), set(asb.STATES), False, limit=50), ())
         window = object.__new__(Window)
         window.apps, window.states = {"claude-desktop-code"}, {"working"}
         window.archive = SimpleNamespace(active=True, get_active=lambda: window.archive.active,
                                          set_active=lambda value: setattr(window.archive, "active", value))
         window.get_focus = lambda: None
-        window.filter_chip_widgets = {key: (Mock(), Mock()) for key in ("app", "states", "archive")}
+        window.filter_chip_widgets = {key: (Mock(), Mock()) for key in ("app", "states", "archive", "all")}
+        window.filter_changed = Mock()
         window.select_apps = lambda values: setattr(window, "apps", values)
         window.select_states = lambda values: setattr(window, "states", values)
         board = {"threads": [dict(row, provider="codex") for row in (
@@ -1479,6 +1563,10 @@ class DataChecks(unittest.TestCase):
         self.assertEqual((window.apps, window.states, window.archive.active), (set(), set(asb.STATES), True))
         window.clear_filter_chip(None, "archive")
         self.assertEqual((window.apps, window.states, window.archive.active), (set(), set(asb.STATES), False))
+        window.show_all_cards = True
+        window.clear_filter_chip(None, "all")
+        self.assertEqual((window.show_all_cards, window.apps, window.states, window.archive.active), (False, set(), set(asb.STATES), False))
+        window.filter_changed.assert_called_once_with()
 
     def test_filter_chips_reuse_controls_and_keep_full_state_names(self):
         window = object.__new__(Window)
