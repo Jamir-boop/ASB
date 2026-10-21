@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Fixed ASB Bridge: a Codex task no longer puts its inbox socket in the folder of a relay proxy or of another receiver. The relay deletes the sockets in its folder when it restarts, and then nobody could reach the task and the task could not send. The task now takes the folder of a native Claude session, or its own `cc-socks` folder.
 - `asb doctor` shows one more check: **Links**. It names the desktop file that handles `codex:` links and the one that handles `claude:` links (`xdg-mime query default`). When an app has no handler, or `xdg-mime` is missing, the line has the status `info` and says that ASB cannot open sessions of that app until the app handles its links.
 - Changed ASB Bridge to give a peer message to the model once, after a one-line header, with fewer tokens. The header has the sender name, the sender session ID, and, on the app-server path, the input ID. The text follows as it is. Before, JSON escaped the text (two times on the app-server path), and the envelope repeated the socket path and the sender ID. The bridge still reads thread history that `0.6.0` wrote.
 - Fixed PC sounds on Linux systems without MP3 support: the three sounds are now 16-bit PCM WAV files with the same samples and gain, and ASB plays them with `pw-play`, then `paplay`, then `aplay -q` (ALSA). When no player exists, the log line names the three players and `asb doctor`.

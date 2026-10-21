@@ -1,10 +1,11 @@
 import { test, expect } from 'bun:test';
-import { mkdtempSync, mkdirSync, chmodSync, rmSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdtempSync, mkdirSync, chmodSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import net from 'node:net';
 import { once } from 'node:events';
-import { peers } from '../src/claude';
+import { inbox, peers, processStart, socketPath } from '../src/claude';
+import { receiver as desktopReceiver } from './desktop-fixture';
 // POSIX only on Windows CI: Unix socket files, /tmp, and signals.
 const posix = test.skipIf(process.platform === 'win32');
 
@@ -119,4 +120,55 @@ posix('session hooks own one receiver per task, restore it after resume and clea
     await new Promise<void>(resolve => desktop.close(() => resolve()));
     rmSync(root, { recursive: true });
   }
+}, 15000);
+
+// A fake session: a live placeholder process, a private socket in its own folder, and its registry row.
+async function fakeSession(configDir: string, folder: string, entrypoint?: string) {
+  mkdirSync(folder, { mode: 0o700 });
+  const child = Bun.spawn(['/usr/bin/cat'], { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' });
+  const box = await inbox(folder, () => {}, `${child.pid}.sock`);
+  writeFileSync(join(configDir, 'sessions', `${child.pid}.json`), JSON.stringify({ pid: child.pid, sessionId: randomUUID(),
+    messagingSocketPath: socketPath(box.address), cwd: '/tmp', peerProtocol: 1, procStart: await processStart(child.pid),
+    ...(entrypoint ? { entrypoint } : {}) }), { mode: 0o600 });
+  return async () => { await box.close(); child.kill(); };
+}
+
+// The folder of the new receiver socket, relative to a root whose cc-socks folder is the fallback, when the registry already holds the given live rows.
+async function receiverFolder(rows: [folder: string, entrypoint?: string][]) {
+  const root = mkdtempSync('/tmp/uds-folder-');
+  const configDir = join(root, 'claude');
+  mkdirSync(join(configDir, 'sessions'), { recursive: true, mode: 0o700 });
+  const desktop = await desktopReceiver('idle', false, false, root);
+  const closers: (() => Promise<void>)[] = [];
+  const receivers = () => peers(configDir).filter(peer => peer.sessionId === desktop.threadId);
+  try {
+    for (const [folder, entrypoint] of rows) closers.push(await fakeSession(configDir, join(root, folder), entrypoint));
+    const child = Bun.spawn([process.execPath, process.env.UDS_HOOK_TEST_ENTRYPOINT ?? join(import.meta.dir, '../src/hook.ts')], {
+      env: { ...process.env, CODEX_HOME: root, CLAUDE_CONFIG_DIR: configDir, XDG_RUNTIME_DIR: root, CLAUDE_CODE_TMPDIR: root },
+      stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
+    });
+    child.stdin.write(JSON.stringify({ session_id: desktop.threadId, cwd: root, hook_event_name: 'SessionStart' }));
+    child.stdin.end();
+    const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    expect({ code, out, err }).toEqual({ code: 0, out: '', err: '' });
+    expect(receivers()).toHaveLength(1);
+    return relative(root, dirname(receivers()[0]!.messagingSocketPath));
+  } finally {
+    const pids = receivers().map(peer => peer.pid);
+    for (const pid of pids) process.kill(pid, 'SIGTERM');
+    const alive = (pid: number) => { try { return process.kill(pid, 0); } catch { return false; } };
+    // A receiver removes its row before it closes its SQLite file, so wait for the processes before the root goes.
+    for (const deadline = Date.now() + 3000; pids.some(alive) && Date.now() < deadline;) await Bun.sleep(10);
+    for (const close of closers) await close();
+    await desktop.close();
+  }
+}
+
+// readdirSync orders the rows as the file system likes, so the old first-row choice failed here whatever the order was.
+posix('a receiver socket never goes into the folder of a relay proxy or of another receiver', async () => {
+  expect(await receiverFolder([['relay', 'asb-relay'], ['other', 'codex-asb-bridge']])).toBe('cc-socks');
+}, 15000);
+
+posix('a receiver socket goes into the folder of a native Claude row, not of a relay row', async () => {
+  expect(await receiverFolder([['relay', 'asb-relay'], ['claude-socks']])).toBe('claude-socks');
 }, 15000);

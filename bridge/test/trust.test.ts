@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import net from 'node:net';
 import { once } from 'node:events';
-import { checkSocket, findPeer, findPeerProcess, peerAddress, peers, privateDirectory, processStart, register, sendFrames, sessionName } from '../src/claude';
+import { checkSocket, findPeer, findPeerProcess, nativePeer, peerAddress, peers, privateDirectory, processStart, register, sendFrames, sessionName } from '../src/claude';
 // POSIX only on Windows CI: Unix socket files, file modes, owners, and symbolic links.
 const posix = test.skipIf(process.platform === 'win32');
 
@@ -64,6 +64,18 @@ posix('discovery drops a session record with a mismatched registry filename or m
     f.write({ messagingSocketPath: join(f.sessions, '..', 's', 'somebody-else.sock') });
     expect(peers(f.configDir)).toEqual([]);
   } finally { await f.close(); }
+});
+
+test('only a native Claude row names the folder of a new receiver socket', () => {
+  const row = (name: string, entrypoint?: string) => ({ pid: 1, sessionId: randomUUID(), messagingSocketPath: `/tmp/${name}/1.sock`, name, cwd: '/',
+    status: 'idle', peerProtocol: 1 as const, peerFeatures: [], ...(entrypoint ? { entrypoint } : {}) });
+  const [relay, receiver, claude, cli] = [row('relay', 'asb-relay'), row('receiver', 'codex-asb-bridge'), row('claude'), row('cli', 'cli')];
+  expect(nativePeer([relay, claude])).toBe(claude);
+  expect(nativePeer([claude, relay])).toBe(claude);
+  expect(nativePeer([relay, receiver])).toBeUndefined();
+  expect(nativePeer([])).toBeUndefined();
+  expect(nativePeer([cli])).toBe(cli);
+  expect(nativePeer([relay, receiver, cli, claude])).toBe(cli);
 });
 
 posix('profiles share one registry through a sessions directory link for registration, names, updates, and close', async () => {

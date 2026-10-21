@@ -196,7 +196,7 @@ Exact member sends (Linux or Windows at both ends, Codex senders, `codex` and `c
 
 | Case | State | Note | Test |
 | --- | --- | --- | --- |
-| Private socket directory | yes | Fallback `/tmp/cc-socks-<uid>`. No receiver starts if both fail. The path limit is 103 bytes and has no test. | hook |
+| Private socket directory | yes | The folder is that of a native Claude row, never that of a relay or receiver row. Fallback `/tmp/cc-socks-<uid>`. No receiver starts if both fail. The path limit is 103 bytes and has no test. | hook, trust |
 | Wrong owner, symlink, other-user access | yes | The bridge refuses. A start-time check guards against PID reuse. | trust |
 | Silent connection | yes | The bridge closes it after 30 seconds. | none |
 | Auth line | partial | Sent to Claude when a matching key file exists. Ignored on receive on Linux and macOS, so the sender class comes from the registry and `from-mode`. Required on receive on Windows. | protocol, platform |

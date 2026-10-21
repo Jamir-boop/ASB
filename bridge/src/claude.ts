@@ -73,6 +73,11 @@ export function peers(configDir: string): Peer[] {
   return result;
 }
 
+// A relay deletes every .sock file in its own folder, and a receiver row can carry any folder: only a native Claude row names a folder for a new receiver socket.
+export function nativePeer(rows: Peer[]) {
+  return rows.find(peer => peer.entrypoint !== 'asb-relay' && peer.entrypoint !== 'codex-asb-bridge');
+}
+
 export function findPeer(configDir: string, sessionId: string): Peer {
   // ASB relay proxy rows stand for sessions on other machines; the Codex tools do not send to them.
   const matches = peers(configDir).filter(peer => peer.sessionId === sessionId && peer.entrypoint !== 'asb-relay');

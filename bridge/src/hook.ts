@@ -5,7 +5,7 @@ import { mkdirSync, readdirSync, unlinkSync } from 'node:fs';
 import { Database } from 'bun:sqlite';
 import { z } from 'zod';
 import { Bridge } from './bridge';
-import { ownedJson, peers, privateDirectory, processStart, removePeerKey, uuid } from './claude';
+import { nativePeer, ownedJson, peers, privateDirectory, processStart, removePeerKey, uuid } from './claude';
 import { appServerSocket, codexIpcPath, discoverTarget, readCodexCwd, watchCodex } from './codex';
 import { isWindows, keyName } from './platform';
 import { loadedAppServerThreads } from './app-server';
@@ -64,7 +64,7 @@ async function runReceiver(event: Event) {
 }
 
 function socketDirectory() {
-  const livePeer = peers(configDir)[0];
+  const livePeer = nativePeer(peers(configDir));
   let directory = livePeer ? dirname(livePeer.messagingSocketPath)
     : join(process.env.XDG_RUNTIME_DIR ?? process.env.CLAUDE_CODE_TMPDIR ?? '/tmp', 'cc-socks');
   try {
