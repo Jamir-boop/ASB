@@ -5,7 +5,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { codexNativeReadStatus, invalidateCodexData, loadCodexDashboard, parseRolloutSignals, parseSessionIndex, readThreads } from '../src/codex-data.mjs';
+import { codexNativeReadStatus, invalidateCodexData, loadCodexDashboard, parseRolloutSignals, parseSessionIndex, querySqliteJson, readThreads } from '../src/codex-data.mjs';
 import { normalizeThread } from '../src/insights.mjs';
 import { buildSwitchboardDashboard } from '../src/switchboard.mjs';
 
@@ -68,6 +68,37 @@ test('ASB keeps raw Codex titles and desktop name priority without first_user_me
     assert.equal(thread.latestUserMessage, 'Later synthetic image request. <image name="example" path="/tmp/synthetic-image.png"></image>');
     assert.equal(board.threads.find((thread) => thread.id === item.id).title, expected || 'Untitled session');
   }
+});
+
+test('the thread query reads at most 301 characters of a title, and the row cut stays the same', async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'asb-codex-long-title-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const databasePath = path.join(directory, 'state_5.sqlite');
+  const database = new DatabaseSync(databasePath);
+  database.exec('create table threads (id text primary key, title text, updated_at_ms integer, archived integer)');
+  // A character outside the BMP is one character for SQLite and for the row cut, not two.
+  const titles = ['a'.repeat(299), '😀'.repeat(300), 'a'.repeat(301), '😀'.repeat(5000), 'b'.repeat(2_000_000)];
+  const insert = database.prepare('insert into threads values (?, ?, ?, 0)');
+  titles.forEach((title, index) => insert.run(`00000000-0000-4000-8000-00000000000${index + 1}`, title, 1_000 + index));
+  database.close();
+  const rows = await readThreads({ databasePath });
+  assert.deepEqual(rows.map((row) => [...row.title].length).sort((a, b) => a - b), [299, 300, 301, 301, 301]);
+  // A row from the cut text is the same as a row from the whole text.
+  const board = buildSwitchboardDashboard(rows.map((row) => normalizeThread(row, 0)), [], 0);
+  const expected = (title) => [...title].length > 300 ? `${[...title].slice(0, 299).join('')}…` : title;
+  assert.deepEqual(titles.map((title, index) => board.threads.find((row) => row.id.endsWith(`${index + 1}`)).title), titles.map(expected));
+});
+
+test('without node:sqlite the sqlite3 command skips the init file, so .sqliterc cannot break the JSON', async () => {
+  const calls = [];
+  const run = async (command, args, options) => {
+    calls.push({ command, args, options });
+    return { stdout: ' [{"id":"one"}]\n' };
+  };
+  assert.deepEqual(await querySqliteJson('state.sqlite', 'select 1;', { native: null, run }), [{ id: 'one' }]);
+  assert.deepEqual(calls.map(({ command, args }) => [command, args]),
+    [['sqlite3', ['-init', os.devNull, '-readonly', '-json', 'state.sqlite', 'select 1;']]]);
+  assert.equal(calls[0].options.maxBuffer, 20 * 1024 * 1024);
 });
 
 test('Codex titles keep the raw session-index name and an empty fallback', () => {

@@ -15,6 +15,8 @@ const DEFAULT_GLOBAL_STATE = path.join(DEFAULT_CODEX_DIR, '.codex-global-state.j
 const CODEX_PINNED_THREAD_IDS_KEY = 'pinned-thread-ids';
 const CODEX_LOCAL_READ_HOST = `local:${createHash('sha256').update(JSON.stringify(['local', 'local', null])).digest('hex')}`;
 const DEFAULT_THREAD_LIMIT = 5000;
+// A stored title can hold a whole prompt. A row shows 300 characters (TITLE_LIMIT in switchboard.mjs); one more shows that the title was cut.
+const TITLE_READ_CHARS = 301;
 const DEFAULT_INITIAL_ROLLOUT_BYTES = 512 * 1024;
 const DEFAULT_MAX_ROLLOUT_BYTES = 16 * 1024 * 1024;
 const ROLLOUT_SIGNAL_CONCURRENCY = 6;
@@ -77,8 +79,9 @@ function safeLimit(limit) {
   return Math.min(Math.max(number, 1), DEFAULT_THREAD_LIMIT);
 }
 
-export async function querySqliteJson(databasePath, sql) {
-  const sqlite = await nativeSqlite;
+// `native` and `run` are for tests: they cannot unload node:sqlite or run a real sqlite3.
+export async function querySqliteJson(databasePath, sql, { native = nativeSqlite, run = execFileAsync } = {}) {
+  const sqlite = await native;
   if (sqlite?.DatabaseSync) {
     const database = new sqlite.DatabaseSync(databasePath, { readOnly: true });
     try {
@@ -87,7 +90,8 @@ export async function querySqliteJson(databasePath, sql) {
       database.close();
     }
   }
-  const { stdout } = await execFileAsync('sqlite3', ['-readonly', '-json', databasePath, sql], {
+  // `-init` with the null device skips ~/.sqliterc, which can print text that is not JSON.
+  const { stdout } = await run('sqlite3', ['-init', os.devNull, '-readonly', '-json', databasePath, sql], {
     maxBuffer: 20 * 1024 * 1024,
   });
   const trimmed = stdout.trim();
@@ -267,7 +271,8 @@ function readThreadsSql(cappedLimit, { includeGoals = true, columns = new Set() 
     'model_provider', 'cwd', 'title', 'tokens_used', 'archived', 'git_sha', 'git_branch', 'git_origin_url',
     'agent_nickname', 'agent_role', 'model', 'reasoning_effort',
     'name', 'is_pinned', 'thread_source', 'originator', 'agent_path', 'creator_account_id', 'creator_user_id']
-    .map((name) => columns.has(name) ? `threads.${name} as ${name}` : `null as ${name}`)
+    .map((name) => !columns.has(name) ? `null as ${name}`
+      : name === 'title' ? `substr(threads.title, 1, ${TITLE_READ_CHARS}) as title` : `threads.${name} as ${name}`)
     .join(',\n      ');
   const goalColumns = includeGoals ? `
       tg.goal_id as goal_id,

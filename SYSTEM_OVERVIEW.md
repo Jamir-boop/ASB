@@ -88,7 +88,7 @@ ASB Bridge and the message relay also run on Windows (plan 17). `bridge/src/plat
 
 The `windows-test` CI job (`windows-latest`, Node.js `22.13.0` and `24`) runs the test files that `test/windows-tests.json` lists. The `bridge-windows` job (Bun `1.4.2`) runs `bun run check` and `bun test` in `bridge/`; the bridge tests that need Unix socket files, `/tmp`, modes, links, or signals skip on Windows. Tests that start the full switchboard server or use real home paths are not in the list. `test/asb-package.test.mjs` checks on Linux that each listed file exists.
 
-Python 3 needs PyGObject, GTK `>=4.12`, and Libadwaita `>=1.4`. Node.js `>=22.13` uses built-in SQLite with read-only connections. Older supported Node.js (`>=20`) uses `sqlite3 -readonly`; the Debian package keeps that dependency. ASB's runtime has no external npm dependencies. Development tests use Node.js `>=22.13` and built-in SQLite fixtures, without the SQLite CLI.
+Python 3 needs PyGObject, GTK `>=4.12`, and Libadwaita `>=1.4`. Node.js `>=22.13` uses built-in SQLite with read-only connections. Older supported Node.js (`>=20`) uses `sqlite3 -init <null device> -readonly -json` (the init file is off, so a `~/.sqliterc` that prints text cannot break the JSON, and the output limit is 20 MiB); the Debian package keeps that dependency. ASB's runtime has no external npm dependencies. Development tests use Node.js `>=22.13` and built-in SQLite fixtures, without the SQLite CLI.
 
 Rust GTK/Libadwaita and Qt/C++ frontends were evaluated as unreleased `0.1.0`
 prototypes, then removed with their harnesses. The [Rust comparison](docs/benchmarks/python-rust-2026-10-12.md)
@@ -215,7 +215,7 @@ The row time (`updatedAtMs`) is the time of the last turn. It is the "N ago" of 
 - Claude Code CLI: the last such turn record. The transcript file time and the start time of the live process are used only when the transcript has no turn record.
 - OpenCode: `max(time_updated, time_idle, newest message time)`, unchanged (`time_viewed` is not part of it).
 
-Codex names prefer the desktop/session-index name, then the raw stored title, with the existing empty fallback. ASB does not select `first_user_message` for title derivation. A row title is limited to 300 characters; a longer title ends with `…`. Whole Unicode code points are kept. Codex stores can hold a full prompt as a title. Search and the tooltip use the limited title. Claude Desktop Code titles keep their own shorter limit. Claude metadata must have a valid `local_<uuid>` ID to provide an open action. App links are constructed from valid IDs:
+Codex names prefer the desktop/session-index name, then the raw stored title, with the existing empty fallback. ASB does not select `first_user_message` for title derivation. A row title is limited to 300 characters; a longer title ends with `…`. Whole Unicode code points are kept. Codex stores can hold a full prompt as a title, so the thread query selects only `substr(threads.title, 1, 301)` on both SQLite paths: 301 is one more than the limit, so the cut still shows, and a large store does not pass the 20 MiB output limit of `sqlite3`. Search and the tooltip use the limited title. Claude Desktop Code titles keep their own shorter limit. Claude metadata must have a valid `local_<uuid>` ID to provide an open action. App links are constructed from valid IDs:
 
 - `codex://threads/<uuid>`
 - `claude://code/continue?session=local_<uuid>`
