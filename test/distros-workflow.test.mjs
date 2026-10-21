@@ -26,14 +26,16 @@ const rows = (lines) => lines.filter((line) => line.startsWith('          - { jo
 
 const PACKAGES = { debian: 'deb', fedora: 'rpm', opensuse: 'rpm', arch: 'pkgbuild', alpine: 'none', void: 'none' };
 
-test('the check job has the rows of the probe job, each with the package of its family', () => {
+test('the check job has the rows of the probe job, each with the package of its family, and only alma-9 skips the board image', () => {
   assert.ok(jobs.check, 'The check job is missing.');
   const probe = rows(jobs.probe);
   const check = rows(jobs.check);
   assert.equal(probe.length, 16);
   // The same job, image, runner, family, tier, node, and window, in the same order.
-  assert.deepEqual(check.map(({ package: _package, ...row }) => row), probe);
+  assert.deepEqual(check.map(({ package: _package, snapshot: _snapshot, ...row }) => row), probe);
   for (const row of check) assert.equal(row.package, PACKAGES[row.family], row.job);
+  // PyGObject 3.40 cannot save the board image, so only the AlmaLinux 9 row waits for UI: verified.
+  assert.deepEqual(check.filter((row) => row.snapshot !== undefined).map((row) => [row.job, row.snapshot]), [['alma-9', 'skip']]);
 });
 
 test('the check job needs the build job, and the nix job exists', () => {
@@ -42,6 +44,8 @@ test('the check job needs the build job, and the nix job exists', () => {
   assert.ok(jobs.check?.includes('    needs: build'));
   assert.ok(jobs.check.some((line) => line.includes('sh -eu /asb/test/distro-check.sh "$FAMILY" "$TIER" "$PACKAGE"')));
   assert.ok(jobs.check.some((line) => line.includes('-e ASB_DISTRO_CHECK=1')));
+  assert.ok(jobs.check.some((line) => line.includes('SNAPSHOT: ${{ matrix.snapshot }}')));
+  assert.ok(jobs.check.some((line) => line.includes('-e ASB_CHECK_SNAPSHOT="$SNAPSHOT"')));
 });
 
 // The script installs packages, so these runs must stop at its guard and change nothing.

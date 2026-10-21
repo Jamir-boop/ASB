@@ -112,7 +112,8 @@ jobs:
           - { job: fedora-44, image: 'fedora:44', runner: ubuntu-latest, family: fedora, tier: board, node: repository, package: rpm }
           # EL10 has no Xvfb: the check still proves that GTK and Libadwaita load, but it does not open the window.
           - { job: alma-10, image: 'almalinux:10', runner: ubuntu-latest, family: fedora, tier: board, node: repository, window: skip, package: rpm }
-          - { job: alma-9, image: 'almalinux:9', runner: ubuntu-latest, family: fedora, tier: board, node: module, package: rpm }
+          # PyGObject 3.40 cannot give a render node back to GTK, so the board cannot save its image here: step 7 waits for UI: verified instead.
+          - { job: alma-9, image: 'almalinux:9', runner: ubuntu-latest, family: fedora, tier: board, node: module, snapshot: skip, package: rpm }
           - { job: tumbleweed, image: 'opensuse/tumbleweed', runner: ubuntu-latest, family: opensuse, tier: board, node: repository, package: rpm }
           - { job: leap-16, image: 'opensuse/leap:16.0', runner: ubuntu-latest, family: opensuse, tier: board, node: repository, package: rpm }
           - { job: arch, image: 'archlinux:latest', runner: ubuntu-latest, family: arch, tier: board, node: repository, package: pkgbuild }
@@ -137,6 +138,7 @@ jobs:
           NODE_ROUTE: ${{ matrix.node }}
           PACKAGE: ${{ matrix.package }}
           WINDOW: ${{ matrix.window }}
+          SNAPSHOT: ${{ matrix.snapshot }}
         run: |
           required='node sqlite openssl xdg'
           ci='xvfb dbus font'
@@ -165,7 +167,7 @@ jobs:
           esac
           export ASB_CHECK_REFRESH ASB_CHECK_ROUTE ASB_CHECK_REQUIRED ASB_CHECK_BOARD ASB_CHECK_OPTIONAL ASB_CHECK_CI
           env | grep '^ASB_CHECK_'
-          docker run --rm -v "$PWD:/asb:ro" -e ASB_DISTRO_CHECK=1 -e ASB_CHECK_WINDOW="$WINDOW" \
+          docker run --rm -v "$PWD:/asb:ro" -e ASB_DISTRO_CHECK=1 -e ASB_CHECK_WINDOW="$WINDOW" -e ASB_CHECK_SNAPSHOT="$SNAPSHOT" \
             -e ASB_CHECK_REFRESH -e ASB_CHECK_ROUTE -e ASB_CHECK_REQUIRED -e ASB_CHECK_BOARD -e ASB_CHECK_OPTIONAL -e ASB_CHECK_CI \
             "$IMAGE" sh -eu /asb/test/distro-check.sh "$FAMILY" "$TIER" "$PACKAGE"
 
@@ -181,7 +183,7 @@ jobs:
       - uses: cachix/install-nix-action@v31
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
-      # The first run writes flake.lock. The artifact below carries it out of the run.
+      # flake.lock pins nixpkgs. When an input changes, nix writes a new lock, and the artifact below carries it out of the run.
       - run: nix flake check
       - run: nix build
       - name: Check the board libraries and the engine

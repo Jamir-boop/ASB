@@ -13,6 +13,7 @@
 #   ASB_CHECK_ROUTE         the Node.js route of the row (":" when the repository has Node.js 20 or later)
 #   ASB_CHECK_REQUIRED, ASB_CHECK_BOARD, ASB_CHECK_OPTIONAL, ASB_CHECK_CI   the install commands of the four key groups
 #   ASB_CHECK_WINDOW=skip   the row has no Xvfb, so the board window is not opened
+#   ASB_CHECK_SNAPSHOT=skip   the board cannot save its image on the row, so step 7 waits for "UI: verified" from asb agent status
 # The repository is mounted read only at /asb, and the build output is at /asb/dist.
 # Each step prints one "==> step N" line before it starts, and the script stops at the first error.
 # POSIX sh only: Alpine (busybox ash), Void, Arch, Fedora, openSUSE, Debian, and Ubuntu all run it with their own sh.
@@ -35,8 +36,10 @@ user=asbtest
 home=/home/$user
 launcher=$home/.local/bin/asb
 entry=$home/.config/autostart/asb-engine.desktop
-# The start of every command of asbtest: no runtime folder, no session bus, no desktop, a clean HOME, and ~/.local/bin on PATH.
-session="unset XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_CURRENT_DESKTOP DESKTOP_SESSION; HOME=$home; PATH=$home/.local/bin:$PATH; export HOME PATH; cd $home &&"
+# The start of every command of asbtest: no runtime folder, no session bus, no desktop, a clean HOME, USER, and LOGNAME (su sets them, python3 does not), and ~/.local/bin on PATH.
+session="unset XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_CURRENT_DESKTOP DESKTOP_SESSION; HOME=$home; USER=$user; LOGNAME=$user; PATH=$home/.local/bin:$PATH; export HOME USER LOGNAME PATH; cd $home &&"
+# The user switch of an image without su (AlmaLinux 10 has only util-linux-core): python3 drops root like su does, then runs the command with sh.
+switch='import os, pwd, sys; pw = pwd.getpwnam(sys.argv[1]); os.initgroups(pw.pw_name, pw.pw_gid); os.setgid(pw.pw_gid); os.setuid(pw.pw_uid); os.execv("/bin/sh", ["/bin/sh", "-c", sys.argv[2]])'
 
 fail() {
   echo "FAILED: $*" >&2
@@ -48,7 +51,11 @@ step() {
 }
 
 as_user() {
-  su -s /bin/sh "$user" -c "$session $1"
+  if command -v su >/dev/null 2>&1; then
+    su -s /bin/sh "$user" -c "$session $1"
+  else
+    python3 -I -c "$switch" "$user" "$session $1"
+  fi
 }
 
 # The one file that a glob matched, else a failure.
@@ -80,8 +87,8 @@ create_user() {
   else
     fail "Neither useradd nor adduser exists."
   fi
-  command -v su >/dev/null 2>&1 || fail "su is missing."
-  as_user 'test "$(id -un)" = asbtest && test -w "$HOME"' || fail "su cannot run a command as $user."
+  command -v su >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1 || fail "Neither su nor python3 exists."
+  as_user 'test "$(id -un)" = asbtest && test -w "$HOME"' || fail "The image cannot run a command as $user."
 }
 
 install_asb() {
@@ -151,7 +158,13 @@ check_engine() {
   [ "$code" -eq 1 ] || fail "The engine runs after service uninstall (asb engine status exited with code $code)."
 }
 
-# Step 7: the board tier opens the window in Xvfb and saves its image. The engine tier prints the engine-only message.
+# The logs of a board that failed its proof, then the end of the board.
+board_failed() {
+  tail -n 30 "$log" "$home/.local/state/asb/engine.log" >&2 || true
+  kill "$board" 2>/dev/null || true
+}
+
+# Step 7: the board tier opens the window in Xvfb and saves its image, or (ASB_CHECK_SNAPSHOT=skip) waits for UI: verified. The engine tier prints the engine-only message.
 check_window() {
   if [ "$tier" = engine ]; then
     step 7 "the engine tier opens no window: asb exits with code 3"
@@ -167,32 +180,57 @@ check_window() {
     step 7 "skip: this row has no Xvfb, so the window is not opened (step 5 checked the board libraries)"
     return 0
   fi
-  step 7 "open the board in Xvfb and save its image"
   png=/tmp/asb-board.png
   log=/tmp/asb-board.log
   rm -f "$png" "$log"
-  su -s /bin/sh "$user" -c "$session dbus-run-session -- xvfb-run -a -s '-screen 0 1280x1024x24' env ASB_SNAPSHOT=$png $launcher >$log 2>&1" &
-  board=$!
-  # The image is ready when it has at least 1 KB and the same size on two checks in a row.
-  last=-1
-  seconds=0
-  while :; do
-    size=0
-    [ ! -f "$png" ] || size=$(wc -c <"$png")
-    size=$((size + 0))
-    if [ "$size" -ge 1024 ] && [ "$size" -eq "$last" ]; then break; fi
-    last=$size
-    kill -0 "$board" 2>/dev/null || break
-    [ "$seconds" -lt 90 ] || break
-    sleep 1
-    seconds=$((seconds + 1))
-  done
-  if [ "$size" -lt 1024 ] || [ "$size" -ne "$last" ]; then
-    tail -n 30 "$log" "$home/.local/state/asb/engine.log" >&2 || true
-    kill "$board" 2>/dev/null || true
-    fail "The board saved no image (size $size bytes after $seconds s)."
+  if [ "${ASB_CHECK_SNAPSHOT:-}" = skip ]; then
+    step 7 "open the board in Xvfb and wait for UI: verified (this row cannot save the board image)"
+    snapshot=
+  else
+    step 7 "open the board in Xvfb and save its image"
+    snapshot=ASB_SNAPSHOT=$png
   fi
-  echo "The board saved $png ($size bytes after $seconds s)."
+  as_user "dbus-run-session -- xvfb-run -a -s '-screen 0 1280x1024x24' env $snapshot $launcher >$log 2>&1" &
+  board=$!
+  seconds=0
+  if [ -n "$snapshot" ]; then
+    # The image is ready when it has at least 1 KB and the same size on two checks in a row.
+    last=-1
+    while :; do
+      size=0
+      [ ! -f "$png" ] || size=$(wc -c <"$png")
+      size=$((size + 0))
+      if [ "$size" -ge 1024 ] && [ "$size" -eq "$last" ]; then break; fi
+      last=$size
+      kill -0 "$board" 2>/dev/null || break
+      [ "$seconds" -lt 90 ] || break
+      sleep 1
+      seconds=$((seconds + 1))
+    done
+    if [ "$size" -lt 1024 ] || [ "$size" -ne "$last" ]; then
+      board_failed
+      fail "The board saved no image (size $size bytes after $seconds s)."
+    fi
+    echo "The board saved $png ($size bytes after $seconds s)."
+  else
+    # The open window reports to the engine, and asb agent status then prints "UI: verified". The first calls fail while the engine starts.
+    verified=
+    status=
+    while kill -0 "$board" 2>/dev/null; do
+      status=$(as_user "$launcher agent status" 2>/dev/null) || status=
+      case $status in *"UI: verified"*) verified=1; break ;; esac
+      [ "$seconds" -lt 90 ] || break
+      sleep 1
+      seconds=$((seconds + 1))
+    done
+    if [ -z "$verified" ] || ! kill -0 "$board" 2>/dev/null; then
+      printf '%s\n' "$status" >&2
+      board_failed
+      fail "The board did not report UI: verified while it ran (after $seconds s)."
+    fi
+    printf '%s\n' "$status" | grep -F 'UI: verified'
+    echo "The board reported UI: verified after $seconds s."
+  fi
   as_user "$launcher engine stop"
   # The window closes with its engine.
   seconds=0
