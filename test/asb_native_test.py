@@ -2134,6 +2134,87 @@ class WidgetCheck(unittest.TestCase):
         card.emit("clicked"); self.drain(.1)
         self.assertEqual(len(clipboard.texts), 2)
 
+    def test_remote_card_copy_button_copies_the_absolute_reference(self):
+        patcher = patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        app_id = "123e4567-e89b-12d3-a456-426614174000"
+        reference = "asb:1/0123456789abcdef/codex/" + "f" * 32 + "/codex:" + app_id
+        def row(identity, order, **extra):
+            return {"id": identity, "provider": "codex", "providerLabel": "Codex", "title": "Summarize the open issues " + identity,
+                    "cwd": "/example/field-notes", "projectName": "field-notes", "state": "idle", "canOpen": True,
+                    "externalId": app_id, "sessionReference": "codex/" + app_id, "reference": reference, "updatedAtMs": NOW - order * 1000, **extra}
+        dashboard = {"generatedAtMs": NOW, "providers": [], "threads": [
+            row("local", 1), row("cli", 2, surface="cli", canOpen=False),
+            row("m:0123456789abcdef:remote", 3, remote=True, machineName="homeLP", canOpen=False),
+            row("m:0123456789abcdef:nofull", 4, remote=True, machineName="homeLP", canOpen=False)]}
+        dashboard["threads"][3].pop("reference")
+        dashboard["threads"][3]["referenceUnavailable"] = "old-peer"
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        clipboard = SimpleNamespace(texts=[])
+        clipboard.set = clipboard.texts.append
+        window.get_clipboard = lambda: clipboard  # No write to a real clipboard.
+        window.set_default_size(680, 600)
+        window.present(); window.set_focus(None); self.drain(.4)
+        window.view_filter.set_selected(1); self.drain(.5); window.check_geometry(); self.drain()
+        card = lambda identity: window.focus_widgets[identity].asb_copy_button
+        remote, nofull = "m:0123456789abcdef:remote", "m:0123456789abcdef:nofull"
+        # A local row, also a view-only CLI row, keeps the relative reference.
+        for identity in ("local", "cli"):
+            self.assertEqual((card(identity).get_visible(), card(identity).get_tooltip_text(), card(identity).asb_action),
+                             (True, "Copy relative reference", "win.copy-reference"))
+            self.assert_accessible_label(card(identity), "Copy relative reference: " + window.focus_widgets[identity].asb_thread["title"])
+            card(identity).emit("clicked"); self.drain(.1)
+        self.assertEqual(clipboard.texts, ["codex/" + app_id] * 2)
+        # A remote row copies the absolute reference and shows the same check.
+        self.assertEqual((card(remote).get_visible(), card(remote).get_tooltip_text(), card(remote).asb_action),
+                         (True, "Copy absolute reference", "win.copy-reference"))
+        self.assert_accessible_label(card(remote), "Copy absolute reference: " + window.focus_widgets[remote].asb_thread["title"])
+        card(remote).emit("clicked"); self.drain(.1)
+        self.assertEqual(clipboard.texts[-1], reference)
+        self.assertEqual((card(remote).get_child().get_icon_name(), card(remote).get_tooltip_text()), ("object-select-symbolic", "Copied"))
+        self.assertTrue(card(remote).has_css_class("asb-copy-confirmed"))
+        # With no absolute reference the remote button keeps its place, with no action, and gives the absolute reason.
+        reason = "homeLP has an older ASB. Update ASB on that machine."
+        self.assertEqual((card(nofull).get_visible(), card(nofull).asb_action, card(nofull).get_tooltip_text()), (True, None, reason))
+        self.assertTrue(card(nofull).has_css_class("asb-copy-off"))
+        self.assert_accessible_disabled(card(nofull), True)
+        self.assert_accessible_label(card(nofull), "Copy absolute reference: " + window.focus_widgets[nofull].asb_thread["title"])
+        count = len(clipboard.texts)
+        card(nofull).emit("clicked"); self.drain(.1)
+        self.assertEqual(len(clipboard.texts), count)
+        # The button follows the reference: it comes on when the row gets one and goes off when the row loses it.
+        gets = copy.deepcopy(dashboard)
+        gets["threads"][3].pop("referenceUnavailable"); gets["threads"][3]["reference"] = reference
+        window.apply_dashboard(gets, None); self.settle(window)
+        self.assertEqual((card(nofull).asb_action, card(nofull).get_tooltip_text(), card(nofull).has_css_class("asb-copy-off")),
+                         ("win.copy-reference", "Copy absolute reference", False))
+        self.assert_accessible_disabled(card(nofull), False)
+        window.apply_dashboard(copy.deepcopy(dashboard), None); self.settle(window)
+        self.assertEqual((card(nofull).asb_action, card(nofull).get_tooltip_text()), (None, reason))
+        # A clipboard error names the kind, and a later good copy clears it.
+        good = clipboard.set
+        clipboard.set = lambda _text: (_ for _ in ()).throw(TypeError("no clipboard"))
+        card(remote).emit("clicked"); self.drain(.1)
+        self.assertEqual(window.open_errors[remote], "Cannot copy the absolute reference: no clipboard")
+        card("local").emit("clicked"); self.drain(.1)
+        self.assertEqual(window.open_errors["local"], "Cannot copy the relative reference: no clipboard")
+        clipboard.set = good
+        for identity in (remote, "local"):
+            card(identity).emit("clicked"); self.drain(.1)
+        self.assertNotIn(remote, window.open_errors)
+        self.assertNotIn("local", window.open_errors)
+        # The row panel keeps both entries for a remote row.
+        window.show_context(window.focus_widgets[remote]); self.drain(.3)
+        panel = window.context_menu
+        self.assertEqual((panel.asb_copy.asb_label.get_label(), panel.asb_copy_full.asb_label.get_label()),
+                         ("Copy relative reference", "Copy absolute reference"))
+        count = len(clipboard.texts)
+        panel.asb_copy.emit("clicked"); self.drain(.1)
+        panel.asb_copy_full.emit("clicked"); self.drain(.1)
+        self.assertEqual(clipboard.texts[count:], ["codex/" + app_id, reference])
+
     def test_ctrl_number_keycaps_cover_the_mark_in_both_views_and_keep_the_row_height(self):
         patcher = patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)
         patcher.start()

@@ -200,6 +200,12 @@ def copy_values(row):
     return (None if short_reason else short), short_reason, (None if full_reason else full), full_reason
 
 
+def card_copy(row):
+    """(value, its reason, "relative" or "absolute") for the card copy button: a remote row copies the absolute reference."""
+    short, short_reason, full, full_reason = copy_values(row)
+    return (full, full_reason, "absolute") if row.get("remote") is True else (short, short_reason, "relative")
+
+
 def panel_place(x, y, width, height, window_width, window_height, margin=6):
     """Where a panel of this size, centered on x, points and opens ("bottom" or "top") to stay inside the window."""
     half = width / 2
@@ -5025,7 +5031,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         indicator = attention_indicator(row, True)
         signature = (indicator, row.get("state"), row.get("actionRequired"), row.get("discardResult"),
                      row.get("pinned"), row.get("drawer"), row.get("muted"), row.get("title"), pending, bool(widget.asb_read_timer),
-                     self.column_pixel_width >= 190, bool(getattr(widget, "asb_copy_timer", None)), copy_values(row)[:2])
+                     self.column_pixel_width >= 190, bool(getattr(widget, "asb_copy_timer", None)), card_copy(row))
         if signature == getattr(widget, "asb_action_signature", None):
             return
         widget.asb_action_signature = signature
@@ -5080,19 +5086,19 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         copy = getattr(widget, "asb_copy_button", None)
         if copy:
             # Copy sends no request, so it has no pending state. The corner fades the title for it at every width that shows it.
-            short, reason = copy_values(row)[:2]
-            wide, copied = self.column_pixel_width >= 190, bool(widget.asb_copy_timer and short)
+            value, reason, kind = card_copy(row)
+            wide, copied = self.column_pixel_width >= 190, bool(widget.asb_copy_timer and value)
             copy.set_visible(wide)
             (copy.get_parent().add_css_class if wide else copy.get_parent().remove_css_class)("asb-corner-wide")
-            # With no relative reference the button keeps its place, but has no action and says why.
-            copy.asb_action = "win.copy-reference" if short else None
-            (copy.add_css_class if not short else copy.remove_css_class)("asb-copy-off")
-            copy.update_state([Gtk.AccessibleState.DISABLED], [not short])
+            # With no reference to copy the button keeps its place, but has no action and says why.
+            copy.asb_action = "win.copy-reference" if value else None
+            (copy.add_css_class if not value else copy.remove_css_class)("asb-copy-off")
+            copy.update_state([Gtk.AccessibleState.DISABLED], [not value])
             copy.get_child().set_from_icon_name("object-select-symbolic" if copied else "edit-copy-symbolic")
             (copy.add_css_class if copied else copy.remove_css_class)("asb-copy-confirmed")
-            if copy.get_tooltip_text() != (tip := reason or ("Copied" if copied else "Copy relative reference")):
+            if copy.get_tooltip_text() != (tip := reason or ("Copied" if copied else f"Copy {kind} reference")):
                 copy.set_tooltip_text(tip)
-            copy.update_property([Gtk.AccessibleProperty.LABEL], ["Copy relative reference: " + row.get("title", "Untitled session")])
+            copy.update_property([Gtk.AccessibleProperty.LABEL], [f"Copy {kind} reference: " + row.get("title", "Untitled session")])
             if copied:
                 copy.update_property([Gtk.AccessibleProperty.DESCRIPTION], ["Copied"])
             else:
@@ -5101,19 +5107,19 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def copy_reference(self, _action, target):
         identity = target.get_string()
         widget = self.focus_widgets.get(identity)
-        short = copy_values(widget.asb_thread)[0] if widget else None
-        if not short or self.closed:
+        value, _reason, kind = card_copy(widget.asb_thread) if widget else (None, None, "")
+        if not value or self.closed:
             return
         # The check of an earlier copy must not stay on after this one fails.
         self.cancel_card_copy(widget)
         try:
-            self.get_clipboard().set(short)
+            self.get_clipboard().set(value)
         except (GLib.Error, TypeError) as error:
-            self.open_errors[identity] = f"Cannot copy the relative reference: {error}"
+            self.open_errors[identity] = f"Cannot copy the {kind} reference: {error}"
             self.update_card_actions(widget)
             self.update_open_state(widget)
             return
-        if self.open_errors.get(identity, "").startswith("Cannot copy the relative reference: "):
+        if self.open_errors.get(identity, "").startswith(("Cannot copy the relative reference: ", "Cannot copy the absolute reference: ")):
             self.open_errors.pop(identity)
             self.update_open_state(widget)
         def clear():

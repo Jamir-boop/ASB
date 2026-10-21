@@ -5468,6 +5468,120 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertNotIn(("asb-copy-off",), [call.args for call in copy.add_css_class.call_args_list])
             copy.set_sensitive.assert_not_called()
 
+    def test_card_copy_takes_the_absolute_reference_for_a_remote_row_only(self):
+        full = "asb:1/0123456789abcdef/codex/" + "f" * 32 + "/codex:123e4567-e89b-12d3-a456-426614174000"
+        short = "codex/123e4567-e89b-12d3-a456-426614174000"
+        local = {"id": "x", "externalId": "123e4567-e89b-12d3-a456-426614174000", "provider": "codex", "sessionReference": short, "reference": full}
+        remote = {**local, "id": "m:0123456789abcdef:x", "remote": True, "machineName": "homeLP"}
+        self.assertEqual(asb.card_copy(local), (short, None, "relative"))
+        self.assertEqual(asb.card_copy({**local, "surface": "cli"}), (short, None, "relative"))
+        self.assertEqual(asb.card_copy(remote), (full, None, "absolute"))
+        # Only the value True counts as remote.
+        for flag in ("yes", 1, None, False):
+            self.assertEqual(asb.card_copy({**remote, "remote": flag}), (short, None, "relative"), repr(flag))
+        # A remote row with no safe absolute reference gives the absolute reason, though the relative one is fine.
+        gone = {key: value for key, value in remote.items() if key != "reference"}
+        self.assertEqual(asb.card_copy({**gone, "referenceUnavailable": "old-peer"}),
+                         (None, "homeLP has an older ASB. Update ASB on that machine.", "absolute"))
+        self.assertEqual(asb.card_copy({**gone, "referenceUnavailable": "old-peer", "remote": False}), (short, None, "relative"))
+        self.assertEqual(asb.card_copy({**remote, "reference": full + " x"}),
+                         (None, "ASB cannot make a full reference for this session.", "absolute"))
+
+    def test_remote_card_copy_button_has_the_absolute_texts_and_follows_the_reference(self):
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        full = "asb:1/0123456789abcdef/codex/" + "f" * 32 + "/codex:123e4567-e89b-12d3-a456-426614174000"
+        old_peer = "homeLP has an older ASB. Update ASB on that machine."
+        row = {"id": "m:0123456789abcdef:x", "title": "Chat", "state": "idle", "externalId": "123e4567-e89b-12d3-a456-426614174000",
+               "provider": "codex", "sessionReference": "codex/123e4567-e89b-12d3-a456-426614174000", "remote": True,
+               "machineName": "homeLP", "reference": full}
+        widget = SimpleNamespace(asb_view="comfortable", asb_thread=dict(row), asb_focus_key=row["id"], asb_read_timer=None, asb_copy_timer=None,
+                                 asb_read_button=Mock(), asb_pin_button=Mock(), asb_copy_button=Mock())
+        copy = widget.asb_copy_button
+        window = object.__new__(Window)
+        window.session_actions, window.column_pixel_width, window.closed, window.open_errors = set(), 240, False, {}
+        window.focus_widgets = {row["id"]: widget}
+        window.update_open_state = Mock()
+        window.get_clipboard = lambda: clipboard
+        clipboard = Mock()
+        timers = []
+        glib = SimpleNamespace(timeout_add=lambda delay, callback: timers.append((delay, callback)) or len(timers),
+                               source_remove=Mock(), Error=type("GError", (Exception,), {}))
+        with patch.dict(SCOPE, {"Gtk": gtk, "GLib": glib}):
+            window.update_card_actions(widget)
+            self.assertEqual(copy.asb_action, "win.copy-reference")
+            copy.set_tooltip_text.assert_called_with("Copy absolute reference")
+            copy.update_property.assert_any_call([0], ["Copy absolute reference: Chat"])
+            copy.update_state.assert_called_with([1], [False])
+            copy.remove_css_class.assert_any_call("asb-copy-off")
+            # The button and the copy-reference action copy the same value, and the check shows "Copied".
+            window.copy_reference(None, SimpleNamespace(get_string=lambda: row["id"]))
+            clipboard.set.assert_called_once_with(full)
+            copy.set_tooltip_text.assert_called_with("Copied")
+            copy.get_child().set_from_icon_name.assert_called_with("object-select-symbolic")
+            # The reference goes away: the signature changes, so the button loses its action and gives the absolute reason.
+            widget.asb_copy_timer = None
+            widget.asb_thread = {key: value for key, value in row.items() if key != "reference"} | {"referenceUnavailable": "old-peer"}
+            window.update_card_actions(widget)
+            self.assertEqual(copy.asb_action, None)
+            copy.add_css_class.assert_any_call("asb-copy-off")
+            copy.update_state.assert_called_with([1], [True])
+            copy.set_tooltip_text.assert_called_with(old_peer)
+            copy.update_property.assert_any_call([0], ["Copy absolute reference: Chat"])
+            clipboard.reset_mock()
+            window.copy_reference(None, SimpleNamespace(get_string=lambda: row["id"]))
+            clipboard.set.assert_not_called()
+            # The reference comes back: the button updates again.
+            widget.asb_thread = dict(row)
+            window.update_card_actions(widget)
+            self.assertEqual(copy.asb_action, "win.copy-reference")
+            copy.update_state.assert_called_with([1], [False])
+            copy.set_tooltip_text.assert_called_with("Copy absolute reference")
+            # A local row, also a view-only CLI row, keeps the relative texts and value.
+            for extra in ({}, {"surface": "cli"}):
+                local = {**row, "id": "local" + str(len(extra)), "remote": False, **extra}
+                local_widget = SimpleNamespace(asb_view="comfortable", asb_thread=local, asb_focus_key=local["id"], asb_read_timer=None,
+                                               asb_copy_timer=None, asb_read_button=Mock(), asb_pin_button=Mock(), asb_copy_button=Mock())
+                window.focus_widgets[local["id"]] = local_widget
+                window.update_card_actions(local_widget)
+                local_widget.asb_copy_button.set_tooltip_text.assert_called_with("Copy relative reference")
+                local_widget.asb_copy_button.update_property.assert_any_call([0], ["Copy relative reference: Chat"])
+                clipboard.reset_mock()
+                window.copy_reference(None, SimpleNamespace(get_string=lambda: local["id"]))
+                clipboard.set.assert_called_once_with(local["sessionReference"])
+
+    def test_card_copy_errors_name_the_reference_kind_and_a_later_copy_clears_either(self):
+        glib = SimpleNamespace(timeout_add=lambda *_args: 1, source_remove=Mock(), Error=type("GError", (Exception,), {}))
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        full = "asb:1/0123456789abcdef/codex/" + "f" * 32 + "/codex:123e4567-e89b-12d3-a456-426614174000"
+        base = {"title": "Chat", "state": "idle", "externalId": "123e4567-e89b-12d3-a456-426614174000", "provider": "codex",
+                "sessionReference": "codex/123e4567-e89b-12d3-a456-426614174000", "reference": full}
+        rows = [{**base, "id": "m:0123456789abcdef:x", "remote": True, "machineName": "homeLP"}, {**base, "id": "local"}]
+        widgets = {row["id"]: SimpleNamespace(asb_view="comfortable", asb_thread=row, asb_focus_key=row["id"], asb_read_timer=None,
+                                              asb_copy_timer=None, asb_read_button=Mock(), asb_pin_button=Mock(), asb_copy_button=Mock())
+                   for row in rows}
+        window = object.__new__(Window)
+        window.session_actions, window.column_pixel_width, window.closed, window.open_errors = set(), 240, False, {}
+        window.focus_widgets = dict(widgets)
+        window.update_open_state = Mock()
+        clipboard = Mock()
+        window.get_clipboard = lambda: clipboard
+        with patch.dict(SCOPE, {"Gtk": gtk, "GLib": glib}):
+            for row, kind in zip(rows, ("absolute", "relative")):
+                target = SimpleNamespace(get_string=lambda identity=row["id"]: identity)
+                clipboard.set.side_effect = TypeError("no clipboard")
+                window.copy_reference(None, target)
+                self.assertEqual(window.open_errors, {row["id"]: f"Cannot copy the {kind} reference: no clipboard"})
+                clipboard.set.side_effect = None
+                window.copy_reference(None, target)
+                self.assertEqual(window.open_errors, {})
+            # An error of the other kind (the row changed) is also cleared, and an open error stays.
+            window.open_errors[rows[0]["id"]] = "Cannot copy the relative reference: old"
+            window.copy_reference(None, SimpleNamespace(get_string=lambda: rows[0]["id"]))
+            self.assertEqual(window.open_errors, {})
+            window.open_errors[rows[0]["id"]] = "The server did not answer."
+            window.copy_reference(None, SimpleNamespace(get_string=lambda: rows[0]["id"]))
+            self.assertEqual(window.open_errors, {rows[0]["id"]: "The server did not answer."})
+
     def test_number_keys_take_whole_openable_cards_down_then_across(self):
         rows = [{"id": f"r{index}", "canOpen": index != 1} for index in range(14)]
         # Two columns of five 22px rows, 252px apart; the third column is cut at the right edge.
