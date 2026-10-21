@@ -10,7 +10,7 @@ https://github.com/user-attachments/assets/c85742f4-d1b0-4ffc-9497-144069fec36b
 
 [Download v1.9.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.9.0) · [Release notes](docs/releases/v1.9.0.md) · [Checksums](https://github.com/Jamir-boop/ASB/releases/download/v1.9.0/SHA256SUMS)
 
-Needs Node.js `>=20` (`sqlite3` below `22.13`), Python 3 with PyGObject, GTK `>=4.12`, Libadwaita `>=1.4`, and `xdg-utils`. ASB `1.9.0` also needs `openssl` for the phone certificate. The optional `python3-qrcode` shows the phone pairing QR code.
+Needs Node.js `>=20` (`sqlite3` below `22.13`), Python 3 with PyGObject, GTK `>=4.12`, Libadwaita `>=1.4`, and `xdg-utils`. ASB `1.9.0` also needs `openssl` for the phone certificate. The optional Python `qrcode` module and PyGObject cairo support (Debian: `python3-qrcode` and `python3-gi-cairo`) show the phone pairing QR code.
 
 Install Codex and Claude Desktop first, with working `codex:` and `claude:` URL handlers.
 

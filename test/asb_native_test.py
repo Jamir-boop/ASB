@@ -676,6 +676,8 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual((editor.qr.get_visible(), editor.qr_help.get_visible()),
                          (asb.qr_matrix(link) is not None, asb.qr_matrix(link) is None))
         self.assert_accessible_label(editor.qr, "Machine join QR code")
+        self.assertEqual(editor.qr_help.get_label(),
+                         "Install the Python qrcode module and PyGObject cairo support. Run asb doctor for the command.")
         self.assert_accessible_label(editor.own_fingerprint, "Certificate fingerprint")
         editor.poll()
         reply({**grouped, "members": grouped["members"][:1]})
@@ -794,6 +796,56 @@ class WidgetCheck(unittest.TestCase):
         self.assertIsNone(editor.poll_timer)
         window.close(); self.drain(.1)
         self.assertTrue(editor.closed)
+
+    def test_machines_dialogs_use_adw_message_dialog_when_libadwaita_has_no_alert_dialog(self):
+        # Libadwaita 1.4 (AlmaLinux 9): Adw.AlertDialog (1.5) does not exist, so the dialog is a real Adw.MessageDialog.
+        real = asb.Adw
+        class Libadwaita14:
+            def __getattr__(self, name):
+                if name == "AlertDialog":
+                    raise AttributeError(name)
+                return getattr(real, name)
+        def find_button(widget, label):
+            child = widget.get_first_child()
+            while child:
+                found = child if isinstance(child, asb.Gtk.Button) and child.get_label() == label else find_button(child, label)
+                if found:
+                    return found
+                child = child.get_next_sibling()
+        parent = real.Window(title="Preferences", default_width=360, default_height=240)
+        self.addCleanup(parent.destroy)
+        parent.present(); self.drain(.2)
+        editor = SimpleNamespace(preferences=parent, owner=SimpleNamespace(closed=False), dialog=None, active=True, loaded=True,
+                                 loading=False, closed=False, generation=0, poll_loading=False, poll_timer=None, close_invite=lambda: None)
+        parent.closed = False
+        clicked = []
+        def ask():
+            asb.MachinesEditor.alert(editor, "Remove studio?", "The group keeps the others.", "remove", lambda: clicked.append(True))
+            self.drain(.2)
+            return editor.dialog
+        with patch.object(asb, "Adw", Libadwaita14()):
+            dialog = ask()
+            self.assertIsInstance(dialog, real.MessageDialog)
+            self.assertEqual((dialog.get_heading(), dialog.get_body(), dialog.get_modal()), ("Remove studio?", "The group keeps the others.", True))
+            self.assertIs(dialog.get_transient_for(), parent)
+            self.assertTrue(dialog.get_visible())
+            self.assertEqual((dialog.get_default_response(), dialog.get_close_response()), ("cancel", "cancel"))
+            self.assertEqual(dialog.get_response_appearance("remove"), real.ResponseAppearance.DESTRUCTIVE)
+            # Cancel sends nothing, and the dialog closes itself and leaves editor.dialog.
+            find_button(dialog, "Cancel").emit("clicked"); self.drain(.1)
+            self.assertEqual((clicked, editor.dialog, dialog.get_visible()), ([], None, False))
+            # Escape and the window close request count as Cancel.
+            dialog = ask()
+            dialog.close(); self.drain(.1)
+            self.assertEqual((clicked, editor.dialog, dialog.get_visible()), ([], None, False))
+            dialog = ask()
+            find_button(dialog, "Remove").emit("clicked"); self.drain(.1)
+            self.assertEqual((clicked, editor.dialog, dialog.get_visible()), ([True], None, False))
+            # Hiding the page destroys the dialog and sends nothing.
+            dialog = ask()
+            asb.MachinesEditor.set_active(editor, False); self.drain(.1)
+            self.assertEqual((clicked, editor.dialog, editor.active, dialog.get_visible()), ([True], None, False, False))
+            self.assertNotIn(dialog, asb.Gtk.Window.list_toplevels())
 
     def test_native_columns_rows_focus_scroll_and_snapshots(self):
         application = self.application
@@ -3386,6 +3438,20 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(strip.flights, [])
         wait(lambda: not rows["m1"].has_css_class("asb-message-lit") and not rows["m2"].has_css_class("asb-message-lit"), 4)
         settings.set_property("gtk-enable-animations", True)
+
+        # GTK 4.12 has no Gsk.PathBuilder (GTK 4.14): with animations on, no flight starts and both icons light.
+        real_gsk = asb.Gsk
+        class Gtk412:
+            def __getattr__(self, name):
+                if name == "PathBuilder":
+                    raise AttributeError(name)
+                return getattr(real_gsk, name)
+        with patch.object(asb, "Gsk", Gtk412()):
+            window.apply_dashboard(board(("m3", "m2")), None)
+            wait(lambda: rows["m3"].has_css_class("asb-message-lit"))
+            self.assertTrue(rows["m2"].has_css_class("asb-message-lit"))
+            self.assertEqual(strip.flights, [])
+            wait(lambda: not rows["m3"].has_css_class("asb-message-lit") and not rows["m2"].has_css_class("asb-message-lit"), 4)
 
         # A message to a row that search hides plays nothing.
         window.search.set_text("parser")

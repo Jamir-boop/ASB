@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 
 SOURCE = Path(__file__).parents[1] / "scripts" / "asb-native.py"
@@ -22,6 +22,8 @@ PREFERENCES = copy.deepcopy(next(node for node in TREE.body if isinstance(node, 
 PREFERENCES.bases = []
 PHONE = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "PhoneEditor"))
 PHONE.bases = []
+MACHINES = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "MachinesEditor"))
+MACHINES.bases = []
 MARKER = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "SourceMarker"))
 MARKER.bases = []
 APPLICATION = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "SwitchboardApplication"))
@@ -30,8 +32,11 @@ STRIP = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.Cl
 STRIP.bases = []
 COLUMN = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "SessionColumn"))
 COLUMN.bases = []
+# The signal helper follows the GI import block, so it is not in NODES.
+SIGNAL = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "unix_signal_add")
 SCOPE = {"__file__": str(SOURCE)}
-exec(compile(ast.Module(body=NODES + [STRIP, COLUMN, MARKER, SOURCES, PHONE, PREFERENCES, WINDOW, APPLICATION], type_ignores=[]), str(SOURCE), "exec"), SCOPE)
+exec(compile(ast.Module(body=NODES + [SIGNAL, STRIP, COLUMN, MARKER, SOURCES, PHONE, MACHINES, PREFERENCES, WINDOW, APPLICATION],
+                        type_ignores=[]), str(SOURCE), "exec"), SCOPE)
 Column = SCOPE["SessionColumn"]
 SCOPE["SessionColumn"] = lambda **kwargs: SCOPE["Gtk"].ListBox(**kwargs)
 Window = SCOPE["SwitchboardWindow"]
@@ -628,13 +633,24 @@ class PhoneChecks(unittest.TestCase):
             return original_import(name, *args, **kwargs)
         with patch("builtins.__import__", side_effect=no_qrcode):
             self.assertIsNone(asb.qr_matrix("asb://pair?v=1"))
+        # A runner without PyGObject has no gi: fake it with working cairo support.
+        pygobject = SimpleNamespace(require_foreign=Mock())
         code = Mock(get_matrix=Mock(return_value=[[True, False], [False, True]]))
         module = SimpleNamespace(QRCode=Mock(return_value=code), constants=SimpleNamespace(ERROR_CORRECT_M=17))
-        with patch.dict("sys.modules", {"qrcode": module}):
+        with patch.dict("sys.modules", {"qrcode": module, "gi": pygobject}):
             self.assertEqual(asb.qr_matrix("asb://pair?v=1"), [[True, False], [False, True]])
+        pygobject.require_foreign.assert_called_once_with("cairo")
         module.QRCode.assert_called_once_with(error_correction=17, border=4)
         code.add_data.assert_called_once_with("asb://pair?v=1")
         code.make.assert_called_once_with(fit=True)
+
+    def test_qr_helper_returns_none_without_pygobject_cairo_support(self):
+        pygobject = SimpleNamespace(require_foreign=Mock(side_effect=ImportError("Could not import foreign library 'cairo'")))
+        module = SimpleNamespace(QRCode=Mock(), constants=SimpleNamespace(ERROR_CORRECT_M=17))
+        with patch.dict("sys.modules", {"qrcode": module, "gi": pygobject}):
+            self.assertIsNone(asb.qr_matrix("asb://pair?v=1"))
+        pygobject.require_foreign.assert_called_once_with("cairo")
+        module.QRCode.assert_not_called()
 
     def test_phone_and_service_http_headers_success_and_errors(self):
         import io
@@ -2013,6 +2029,183 @@ class MessageChecks(unittest.TestCase):
         self.assertEqual(window.list_body.add_tick_callback.call_count, 1)
         window.play_messages([])
         self.assertEqual(window.message_seen, set())
+
+    def test_messages_light_the_rows_and_start_no_flight_without_gsk_path_builder(self):
+        def play(animations, gsk):
+            window = object.__new__(Window)
+            window.closed = False
+            window.get_settings = lambda: SimpleNamespace(get_property=lambda name: animations if name == "gtk-enable-animations" else None)
+            window.focus_widgets = {"a": Mock(), "b": Mock()}
+            ends = [(1, 2, False), (3, 4, False)]
+            window.list_body = SimpleNamespace(flights=[], message_ends=Mock(return_value=ends), start_flight=Mock())
+            window.light_row, window.message_color = Mock(), Mock(return_value="accent")
+            with patch.dict(SCOPE, {"Gsk": gsk}):
+                self.assertFalse(window.start_messages([("a", "b", 1)]))
+            return window, ends
+        # GTK 4.12 has no Gsk.PathBuilder (GTK 4.14): the rows light, as with animations off.
+        for animations in (True, False):
+            window, _ends = play(animations, SimpleNamespace())
+            self.assertEqual(window.light_row.call_args_list, [call(window.focus_widgets["a"], 2000), call(window.focus_widgets["b"], 2000)])
+            window.list_body.start_flight.assert_not_called()
+        window, _ends = play(False, SimpleNamespace(PathBuilder=object))
+        self.assertEqual(window.light_row.call_args_list, [call(window.focus_widgets["a"], 2000), call(window.focus_widgets["b"], 2000)])
+        window.list_body.start_flight.assert_not_called()
+        # With animations on and Gsk.PathBuilder, the light flies and only the sender icon shows the accent color at the start.
+        window, ends = play(True, SimpleNamespace(PathBuilder=object))
+        window.list_body.start_flight.assert_called_once_with(window.focus_widgets["a"], window.focus_widgets["b"], "accent", ends)
+        window.light_row.assert_called_once_with(window.focus_widgets["a"], 160)
+
+
+class SignalHelperChecks(unittest.TestCase):
+    def run_helper(self, glib_unix=None, version_error=None):
+        """Run the helper with a fake gi, GLib, and GLibUnix. A runner can have no PyGObject, so nothing real loads."""
+        import builtins
+        original_import = builtins.__import__
+        imported = []
+        def fake_import(name, *args, **kwargs):
+            if name != "gi.repository":
+                return original_import(name, *args, **kwargs)
+            imported.append(name)
+            if isinstance(glib_unix, Exception):
+                raise glib_unix
+            return SimpleNamespace(GLibUnix=glib_unix)
+        gi = SimpleNamespace(require_version=Mock(side_effect=version_error))
+        glib, callback = SimpleNamespace(unix_signal_add=Mock(return_value=1)), Mock()
+        with patch.dict(SCOPE, {"gi": gi, "GLib": glib}), patch("builtins.__import__", side_effect=fake_import):
+            result = SCOPE["unix_signal_add"](0, 15, callback)
+        return result, gi, glib, callback, imported
+
+    def test_uses_glibunix_signal_add_when_it_exists(self):
+        unix = SimpleNamespace(signal_add=Mock(return_value=7), signal_add_full=Mock())
+        result, gi, glib, callback, imported = self.run_helper(unix)
+        self.assertEqual(result, 7)
+        unix.signal_add.assert_called_once_with(0, 15, callback)
+        unix.signal_add_full.assert_not_called()
+        glib.unix_signal_add.assert_not_called()
+        gi.require_version.assert_called_once_with("GLibUnix", "2.0")
+
+    def test_uses_glib_unix_signal_add_when_glibunix_has_only_signal_add_full(self):
+        # GLib 2.84 with PyGObject 3.50 (Debian 13): GLibUnix imports, but it has no signal_add.
+        unix = SimpleNamespace(signal_add_full=Mock())
+        result, _gi, glib, callback, imported = self.run_helper(unix)
+        self.assertEqual(result, 1)
+        glib.unix_signal_add.assert_called_once_with(0, 15, callback)
+        unix.signal_add_full.assert_not_called()
+        self.assertEqual(imported, ["gi.repository"])
+
+    def test_uses_glib_unix_signal_add_when_the_glibunix_import_fails(self):
+        result, _gi, glib, callback, imported = self.run_helper(ImportError("cannot import name 'GLibUnix'"))
+        self.assertEqual(result, 1)
+        glib.unix_signal_add.assert_called_once_with(0, 15, callback)
+        self.assertEqual(imported, ["gi.repository"])
+
+    def test_uses_glib_unix_signal_add_when_glibunix_is_not_available(self):
+        # GLib before 2.80 (AlmaLinux 9): require_version raises ValueError, and the import is not tried.
+        result, gi, glib, callback, imported = self.run_helper(version_error=ValueError("Namespace GLibUnix not available"))
+        self.assertEqual(result, 1)
+        glib.unix_signal_add.assert_called_once_with(0, 15, callback)
+        gi.require_version.assert_called_once_with("GLibUnix", "2.0")
+        self.assertEqual(imported, [])
+
+
+class MachinesDialogChecks(unittest.TestCase):
+    def editor(self):
+        editor = object.__new__(SCOPE["MachinesEditor"])
+        editor.preferences, editor.owner, editor.dialog = SimpleNamespace(closed=False), SimpleNamespace(closed=False), None
+        editor.active, editor.loaded, editor.loading, editor.closed = True, True, False, False
+        editor.generation, editor.poll_loading, editor.poll_timer = 0, False, None
+        editor.close_invite = Mock()
+        return editor
+
+    @staticmethod
+    def emit(dialog, name, *args):
+        for connected in dialog.connect.call_args_list:
+            if connected.args[0] == name:
+                connected.args[1](dialog, *args)
+
+    def alert(self, editor, adw):
+        clicked = Mock()
+        with patch.dict(SCOPE, {"Adw": adw}):
+            editor.alert("Remove studio?", "The group keeps the others.", "remove", clicked)
+        return clicked
+
+    def adw(self, kind, dialog):
+        return SimpleNamespace(**{kind: Mock(return_value=dialog)}, ResponseAppearance=SimpleNamespace(DESTRUCTIVE="destructive"))
+
+    def check_responses(self, dialog):
+        self.assertEqual(dialog.add_response.call_args_list, [call("cancel", "Cancel"), call("remove", "Remove")])
+        dialog.set_response_appearance.assert_called_once_with("remove", "destructive")
+        dialog.set_default_response.assert_called_once_with("cancel")
+        dialog.set_close_response.assert_called_once_with("cancel")
+
+    def test_alert_uses_adw_alert_dialog_when_libadwaita_has_it(self):
+        editor, dialog = self.editor(), Mock()
+        adw = self.adw("AlertDialog", dialog)
+        adw.MessageDialog = Mock()
+        clicked = self.alert(editor, adw)
+        adw.AlertDialog.assert_called_once_with(heading="Remove studio?", body="The group keeps the others.")
+        adw.MessageDialog.assert_not_called()
+        self.check_responses(dialog)
+        dialog.present.assert_called_once_with(editor.preferences)
+        self.assertIs(editor.dialog, dialog)
+        self.assertEqual([item.args[0] for item in dialog.connect.call_args_list], ["response", "closed"])
+        self.emit(dialog, "response", "cancel")
+        clicked.assert_not_called()
+        self.emit(dialog, "response", "remove")
+        clicked.assert_called_once_with()
+        self.assertIs(editor.dialog, dialog)
+        # A dialog that closes late does not clear a newer dialog.
+        newer = Mock()
+        editor.dialog = newer
+        self.emit(dialog, "closed")
+        self.assertIs(editor.dialog, newer)
+        editor.dialog = dialog
+        self.emit(dialog, "closed")
+        self.assertIsNone(editor.dialog)
+
+    def test_alert_uses_adw_message_dialog_without_adw_alert_dialog(self):
+        # Libadwaita 1.4: Adw.AlertDialog (1.5) does not exist.
+        editor, dialog = self.editor(), Mock()
+        adw = self.adw("MessageDialog", dialog)
+        clicked = self.alert(editor, adw)
+        adw.MessageDialog.assert_called_once_with(transient_for=editor.preferences, modal=True, heading="Remove studio?",
+                                                  body="The group keeps the others.")
+        self.check_responses(dialog)
+        dialog.present.assert_called_once_with()
+        self.assertIs(editor.dialog, dialog)
+        # The dialog has no closed signal: its two response handlers act on a response, and the dialog closes itself.
+        self.assertEqual([item.args[0] for item in dialog.connect.call_args_list], ["response", "response"])
+        self.emit(dialog, "response", "remove")
+        clicked.assert_called_once_with()
+        self.assertIsNone(editor.dialog)
+        # A cancel clicks nothing, and a response of an old dialog does not clear a newer dialog.
+        clicked.reset_mock()
+        editor.dialog = dialog
+        self.emit(dialog, "response", "cancel")
+        clicked.assert_not_called()
+        self.assertIsNone(editor.dialog)
+        newer = Mock()
+        editor.dialog = newer
+        self.emit(dialog, "response", "cancel")
+        self.assertIs(editor.dialog, newer)
+
+    def test_hiding_the_page_closes_the_dialog_of_each_kind(self):
+        editor, dialog = self.editor(), Mock()
+        editor.dialog = dialog
+        with patch.dict(SCOPE, {"Adw": SimpleNamespace(AlertDialog=object)}):
+            editor.set_active(False)
+        dialog.force_close.assert_called_once_with()
+        dialog.destroy.assert_not_called()
+        # The closed signal of an Adw.AlertDialog clears the dialog later.
+        self.assertIs(editor.dialog, dialog)
+        editor, dialog = self.editor(), Mock()
+        editor.dialog = dialog
+        with patch.dict(SCOPE, {"Adw": SimpleNamespace(MessageDialog=object)}):
+            editor.set_active(False)
+        dialog.destroy.assert_called_once_with()
+        dialog.force_close.assert_not_called()
+        self.assertIsNone(editor.dialog)
+        self.assertEqual((editor.generation, editor.active), (1, False))
 
 
 class NativeLogicChecks(unittest.TestCase):

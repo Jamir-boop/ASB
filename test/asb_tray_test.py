@@ -1,6 +1,9 @@
+import builtins
 import importlib.util
 import os
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPEC = importlib.util.spec_from_file_location("asb_tray", os.path.join(ROOT, "scripts", "asb-tray.py"))
@@ -80,6 +83,55 @@ class TrayLogicTest(unittest.TestCase):
 
     def test_icon_theme_path_is_the_checkout_icons_folder(self):
         self.assertEqual(tray.ICON_THEME_PATH, os.path.join(ROOT, "assets", "icons"))
+
+    def run_signal_helper(self, glib_unix=None, version_error=None):
+        """Run the helper with a fake gi, GLib, and GLibUnix, so that the real GLib of this system does not matter."""
+        original_import = builtins.__import__
+        imported = []
+        def fake_import(name, *args, **kwargs):
+            if name != "gi.repository":
+                return original_import(name, *args, **kwargs)
+            imported.append(name)
+            if isinstance(glib_unix, Exception):
+                raise glib_unix
+            return SimpleNamespace(GLibUnix=glib_unix)
+        gi = SimpleNamespace(require_version=Mock(side_effect=version_error))
+        glib, callback = SimpleNamespace(unix_signal_add=Mock(return_value=1)), Mock()
+        with patch.object(tray, "gi", gi), patch.object(tray, "GLib", glib), patch("builtins.__import__", side_effect=fake_import):
+            result = tray.unix_signal_add(0, 15, callback)
+        return result, gi, glib, callback, imported
+
+    def test_signal_helper_uses_glibunix_signal_add_when_it_exists(self):
+        unix = SimpleNamespace(signal_add=Mock(return_value=7), signal_add_full=Mock())
+        result, gi, glib, callback, _imported = self.run_signal_helper(unix)
+        self.assertEqual(result, 7)
+        unix.signal_add.assert_called_once_with(0, 15, callback)
+        unix.signal_add_full.assert_not_called()
+        glib.unix_signal_add.assert_not_called()
+        gi.require_version.assert_called_once_with("GLibUnix", "2.0")
+
+    def test_signal_helper_uses_glib_unix_signal_add_when_glibunix_has_only_signal_add_full(self):
+        # GLib 2.84 with PyGObject 3.50 (Debian 13): GLibUnix imports, but it has no signal_add.
+        unix = SimpleNamespace(signal_add_full=Mock())
+        result, _gi, glib, callback, imported = self.run_signal_helper(unix)
+        self.assertEqual(result, 1)
+        glib.unix_signal_add.assert_called_once_with(0, 15, callback)
+        unix.signal_add_full.assert_not_called()
+        self.assertEqual(imported, ["gi.repository"])
+
+    def test_signal_helper_uses_glib_unix_signal_add_when_the_glibunix_import_fails(self):
+        result, _gi, glib, callback, imported = self.run_signal_helper(ImportError("cannot import name 'GLibUnix'"))
+        self.assertEqual(result, 1)
+        glib.unix_signal_add.assert_called_once_with(0, 15, callback)
+        self.assertEqual(imported, ["gi.repository"])
+
+    def test_signal_helper_uses_glib_unix_signal_add_when_glibunix_is_not_available(self):
+        # GLib before 2.80 (AlmaLinux 9): require_version raises ValueError, and the import is not tried.
+        result, gi, glib, callback, imported = self.run_signal_helper(version_error=ValueError("Namespace GLibUnix not available"))
+        self.assertEqual(result, 1)
+        glib.unix_signal_add.assert_called_once_with(0, 15, callback)
+        gi.require_version.assert_called_once_with("GLibUnix", "2.0")
+        self.assertEqual(imported, [])
 
 
 if __name__ == "__main__":

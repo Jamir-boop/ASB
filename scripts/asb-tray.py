@@ -14,6 +14,18 @@ gi.require_version("Gio", "2.0")
 gi.require_version("GLib", "2.0")
 from gi.repository import Gio, GLib
 
+
+def unix_signal_add(priority, signum, callback):
+    """GLib 2.88 has no GLib.unix_signal_add: it has GLibUnix.signal_add. GLib 2.84 has GLibUnix with only signal_add_full."""
+    try:
+        gi.require_version("GLibUnix", "2.0")
+        from gi.repository import GLibUnix
+        add = GLibUnix.signal_add
+    except (ImportError, ValueError, AttributeError):
+        add = GLib.unix_signal_add
+    return add(priority, signum, callback)
+
+
 LOCAL_HTTP = build_opener(ProxyHandler({}))
 WATCHER = "org.kde.StatusNotifierWatcher"
 ENGINE_KEYS = ("ASB_SOURCE_TOKEN", "ASB_ENGINE_PID", "ASB_ENGINE_URL", "ASB_LAUNCHER")
@@ -277,7 +289,7 @@ class Tray:
         GLib.timeout_add_seconds(60, self.give_up)
         GLib.timeout_add_seconds(30, self.refresh_tooltip)
         GLib.timeout_add_seconds(5, self.check_engine)
-        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.stop)
+        unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.stop)
         self.refresh_tooltip()
         self.loop.run()
         return 0

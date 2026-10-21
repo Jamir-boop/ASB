@@ -885,6 +885,9 @@ def phone_address_note(addresses):
 def qr_matrix(uri):
     try:
         import qrcode
+        import gi
+        # The draw callback of the QR code needs PyGObject cairo support.
+        gi.require_foreign("cairo")
     except ImportError:
         return None
     code = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=4)
@@ -1114,6 +1117,18 @@ try:
 except (ImportError, ValueError):
     print("ASB needs system Python 3 with PyGObject, GTK4, and Libadwaita. Use npm start for the web view.", file=sys.stderr)
     raise SystemExit(1)
+
+
+def unix_signal_add(priority, signum, callback):
+    """GLib 2.88 has no GLib.unix_signal_add: it has GLibUnix.signal_add. GLib 2.84 has GLibUnix with only signal_add_full."""
+    try:
+        gi.require_version("GLibUnix", "2.0")
+        from gi.repository import GLibUnix
+        add = GLibUnix.signal_add
+    except (ImportError, ValueError, AttributeError):
+        add = GLib.unix_signal_add
+    return add(priority, signum, callback)
+
 
 SHORTCUT_MASK = Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK | Gdk.ModifierType.SUPER_MASK | Gdk.ModifierType.META_MASK
 
@@ -1997,7 +2012,7 @@ class PhoneEditor(Gtk.Box):
         self.copy = Gtk.Button(label="Copy link", halign=Gtk.Align.START)
         self.copy.connect("clicked", self.copy_pairing)
         self.pairing.append(self.copy)
-        self.qr_help = label("Install python3-qrcode to show a QR code.", "caption")
+        self.qr_help = label("Install the Python qrcode module and PyGObject cairo support. Run asb doctor for the command.", "caption")
         self.qr_help.set_wrap(True)
         self.pairing.append(self.qr_help)
         self.append(self.pairing)
@@ -2311,7 +2326,7 @@ class MachinesEditor(Gtk.Box):
         self.link.set_wrap_mode(Pango.WrapMode.CHAR)
         side.append(self.link)
         side.append(self.button("Copy link", self.copy_link))
-        self.qr_help = self.text("Install python3-qrcode to show a QR code.")
+        self.qr_help = self.text("Install the Python qrcode module and PyGObject cairo support. Run asb doctor for the command.")
         side.append(self.qr_help)
         share.append(side)
         self.invite_box.append(share)
@@ -2367,7 +2382,12 @@ class MachinesEditor(Gtk.Box):
         self.active = active
         if not active:
             if self.dialog:
-                self.dialog.force_close()
+                if hasattr(Adw, "AlertDialog"):
+                    self.dialog.force_close()
+                else:
+                    # An Adw.MessageDialog is a window: destroy() closes it with no response.
+                    self.dialog.destroy()
+                    self.dialog = None
             self.generation += 1
             self.loading = self.poll_loading = False
             if self.poll_timer:
@@ -2568,7 +2588,10 @@ class MachinesEditor(Gtk.Box):
                                                        "name": self.join_name.get_text().strip()}, done=joined)
 
     def alert(self, heading, body, response, clicked):
-        dialog = Adw.AlertDialog(heading=heading, body=body)
+        # Libadwaita 1.4 has no Adw.AlertDialog: Adw.MessageDialog has the same responses.
+        modern = hasattr(Adw, "AlertDialog")
+        dialog = (Adw.AlertDialog(heading=heading, body=body) if modern
+                  else Adw.MessageDialog(transient_for=self.preferences, modal=True, heading=heading, body=body))
         dialog.add_response("cancel", "Cancel")
         dialog.add_response(response, response.capitalize())
         dialog.set_response_appearance(response, Adw.ResponseAppearance.DESTRUCTIVE)
@@ -2578,9 +2601,14 @@ class MachinesEditor(Gtk.Box):
             if choice == response and self.active and self.loaded and not self.loading:
                 clicked()
         dialog.connect("response", chosen)
-        dialog.connect("closed", lambda closed: setattr(self, "dialog", None) if self.dialog is closed else None)
+        # An Adw.MessageDialog closes itself after a response and has no closed signal.
+        dialog.connect("closed" if modern else "response",
+                       lambda closed, *_args: setattr(self, "dialog", None) if self.dialog is closed else None)
         self.dialog = dialog
-        dialog.present(self.preferences)
+        if modern:
+            dialog.present(self.preferences)
+        else:
+            dialog.present()
 
     def confirm_remove(self, member):
         if not self.loaded or self.loading or not self.active:
@@ -3618,7 +3646,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def start_messages(self, play):
         if self.closed:
             return False
-        animations = self.get_settings().get_property("gtk-enable-animations")
+        # A flight draws with Gsk.PathBuilder (GTK 4.14). GTK 4.12 lights the rows, as with animations off.
+        animations = self.get_settings().get_property("gtk-enable-animations") and hasattr(Gsk, "PathBuilder")
         for source, target, _at in play:
             rows = self.focus_widgets.get(source), self.focus_widgets.get(target)
             if None in rows:
@@ -5660,7 +5689,7 @@ def main():
     GLib.set_application_name("ASB · Agent Switch Board")
     application = SwitchboardApplication(base)
     for sig in (signal.SIGTERM, signal.SIGINT):
-        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, application.close_windows)
+        unix_signal_add(GLib.PRIORITY_DEFAULT, sig, application.close_windows)
     return application.run([sys.argv[0]])
 
 
