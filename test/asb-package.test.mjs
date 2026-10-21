@@ -422,7 +422,7 @@ test('the npm package has the runtime files, the asb command, and no tests, docu
     encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }))[0];
   const files = pkg.files.map((item) => item.path);
   for (const file of RUNTIME_FILES) assert.ok(files.includes(file), file);
-  for (const file of ['scripts/asb.mjs', 'scripts/asb-tray.ps1', 'assets/icons/asb-tray-32.png']) assert.ok(files.includes(file), file);
+  for (const file of ['scripts/asb.mjs', 'scripts/asb-tray.ps1', 'assets/icons/asb-tray-32.png', 'assets/icons/asb.ico']) assert.ok(files.includes(file), file);
   assert.deepEqual(files.filter((file) => /^(android|demo|docs|test|\.impeccable|bridge\/src|bridge\/test)\//.test(file)), []);
   // npm links bin files; the POSIX launcher needs the execute bit too.
   assert.ok(pkg.files.find((item) => item.path === 'scripts/asb.mjs').mode & 0o111);

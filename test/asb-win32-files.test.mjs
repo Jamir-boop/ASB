@@ -67,3 +67,25 @@ test('the Windows tray icon is a 32 x 32 RGBA PNG', async () => {
   assert.equal(bytes.toString('ascii', 12, 16), 'IHDR');
   assert.deepEqual([bytes.readUInt32BE(16), bytes.readUInt32BE(20), bytes[24], bytes[25]], [32, 32, 8, 6]);
 });
+
+test('the Start menu link icon is one ICO file with PNG images at 16, 32, 48, and 256 px', async () => {
+  const bytes = await readFile(new URL('../assets/icons/asb.ico', import.meta.url));
+  // The header: reserved 0, type 1 (icon), and four images.
+  assert.deepEqual([bytes.readUInt16LE(0), bytes.readUInt16LE(2), bytes.readUInt16LE(4)], [0, 1, 4]);
+  const sizes = [];
+  for (let index = 0; index < 4; index += 1) {
+    const entry = 6 + 16 * index;
+    const [width, height, planes, bits, length, offset] = [bytes[entry], bytes[entry + 1], bytes.readUInt16LE(entry + 4), bytes.readUInt16LE(entry + 6),
+      bytes.readUInt32LE(entry + 8), bytes.readUInt32LE(entry + 12)];
+    const png = bytes.subarray(offset, offset + length);
+    assert.equal(png.length, length);
+    assert.deepEqual([...png.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    assert.equal(png.toString('ascii', 12, 16), 'IHDR');
+    // The directory writes 256 as 0, and the PNG header has the real size.
+    const size = png.readUInt32BE(16);
+    assert.deepEqual([png.readUInt32BE(20), png[24], png[25]], [size, 8, 6]);
+    assert.deepEqual([width, height, planes, bits], [size % 256, size % 256, 1, 32]);
+    sizes.push(size);
+  }
+  assert.deepEqual(sizes, [16, 32, 48, 256]);
+});

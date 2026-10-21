@@ -377,14 +377,14 @@ On Linux, `asb setup` installs `asb.service` in step 2.
 
 | Command | Effect |
 | --- | --- |
-| `asb engine install` | Make the engine start when you sign in, then start it. |
-| `asb engine uninstall` | Remove the autostart value, then stop the engine. |
+| `asb engine install` | Make the engine start when you sign in, add ASB to the Start menu, then start the engine. |
+| `asb engine uninstall` | Remove the autostart value and the Start menu link, then stop the engine. |
 | `asb engine start` | Start the engine and its tray icon when none runs. |
 | `asb engine stop` | Stop the engine and phone access. |
 | `asb engine status` | Show whether the engine runs, its PID and port. |
 | `asb engine run` | Run the engine in this terminal. |
 
-`asb` with no command starts the engine when it is not running and opens the ASB window, as on Linux. The launcher uses an absolute `ASB_PYTHON`; else `C:\msys64\ucrt64\bin\python.exe`, then `python` on `PATH`. When no Python passes the board check, it prints `ASB runs without its window on this system: <reason> The engine runs for the phone and your other machines. Run asb doctor for details.` and exits with code 3; the engine keeps running. Autostart is the `ASB` value in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. It starts a hidden PowerShell tray script (`scripts\asb-tray.ps1`) with the `node.exe` that installed ASB. The tray icon menu has **Open ASB**, a separator, **Copy phone pairing link**, and **Quit ASB**. **Open ASB** and a left click on the icon start `asb` with no console; they do nothing while an earlier launcher runs. When that launcher exits with code 3, the tray shows "ASB has no window on this PC. Run asb doctor." The tray starts the engine again after a failure, at most 5 times in 10 minutes. After that, it shows "ASB stopped after repeated failures." and stops.
+`asb` with no command starts the engine when it is not running and opens the ASB window, as on Linux. The launcher uses an absolute `ASB_PYTHON`; else `C:\msys64\ucrt64\bin\python.exe`, then `python` on `PATH`. When no Python passes the board check, it prints `ASB runs without its window on this system: <reason> The engine runs for the phone and your other machines. Run asb doctor for details.` and exits with code 3; the engine keeps running. Autostart is the `ASB` value in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. It starts a hidden PowerShell tray script (`scripts\asb-tray.ps1`) with the `node.exe` that installed ASB. The tray icon menu has **Open ASB**, a separator, **Copy phone pairing link**, and **Quit ASB**. **Open ASB** and a left click on the icon start `asb` with no console; they do nothing while an earlier launcher runs. When that launcher exits with code 3, the tray shows "ASB has no window on this PC. Run asb doctor." The tray starts the engine again after a failure, at most 5 times in 10 minutes. After that, it shows "ASB stopped after repeated failures." and stops. The Start menu link `ASB.lnk` (in your Programs folder, with the ASB icon) starts the same tray script with the `-Open` switch. With this switch, the script only starts `asb` with no console and exits. `asb engine uninstall` removes the link only when ASB made it. When another `ASB.lnk` exists, ASB keeps it and prints `ASB kept <path>: it was not made by ASB.`
 
 | File | Path |
 | --- | --- |

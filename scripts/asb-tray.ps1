@@ -2,15 +2,29 @@
 # powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "<root>\scripts\asb-tray.ps1" "<node.exe>"
 # It starts the engine with no window, starts it again after a crash (at most 5 times in 10 minutes),
 # shows the ASB icon, opens the board on Open ASB (or a left click), and stops the engine on Quit ASB.
-param([string]$Node = '')
+# With -Open (the Start menu link), it only starts the launcher, which starts the engine when none runs, and exits.
+param([string]$Node = '', [switch]$Open)
 
 $ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent $PSScriptRoot
+if (-not $Node -or -not (Test-Path -LiteralPath $Node -PathType Leaf)) { $Node = (Get-Command node.exe).Source }
+
+# Starts the launcher with no console; it opens the board.
+function Start-Launcher {
+  $info = New-Object System.Diagnostics.ProcessStartInfo
+  $info.FileName = $Node
+  $info.Arguments = '--disable-warning=ExperimentalWarning "' + (Join-Path $root 'scripts\asb.mjs') + '"'
+  $info.UseShellExecute = $false
+  $info.CreateNoWindow = $true
+  return [System.Diagnostics.Process]::Start($info)
+}
+
+if ($Open) { [void](Start-Launcher); exit 0 }
+
 $mutex = New-Object System.Threading.Mutex($false, 'Local\ASB-tray')
 if (-not $mutex.WaitOne(0)) { exit 0 }
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-$root = Split-Path -Parent $PSScriptRoot
-if (-not $Node -or -not (Test-Path -LiteralPath $Node -PathType Leaf)) { $Node = (Get-Command node.exe).Source }
 $script:engine = $null
 $script:failures = @()
 $script:board = $null
@@ -26,15 +40,10 @@ function Start-Engine {
   $script:engine = [System.Diagnostics.Process]::Start($info)
 }
 
-# Starts the launcher with no console; it opens the board. Nothing happens while an earlier launcher runs.
+# Nothing happens while an earlier launcher runs.
 function Open-Board {
   if ($script:board -and -not $script:board.HasExited) { return }
-  $info = New-Object System.Diagnostics.ProcessStartInfo
-  $info.FileName = $Node
-  $info.Arguments = '--disable-warning=ExperimentalWarning "' + (Join-Path $root 'scripts\asb.mjs') + '"'
-  $info.UseShellExecute = $false
-  $info.CreateNoWindow = $true
-  try { $script:board = [System.Diagnostics.Process]::Start($info) }
+  try { $script:board = Start-Launcher }
   catch { $icon.ShowBalloonTip(5000, 'ASB', 'ASB cannot open its window.', [System.Windows.Forms.ToolTipIcon]::Warning) }
 }
 
