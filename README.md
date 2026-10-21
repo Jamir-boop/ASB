@@ -244,7 +244,7 @@ The ASB `1.10.0` packages include the user service. The Android companion is a s
 
 ASB `1.10.0` can also join ASB on several of your computers in one machine group: each machine then shows the sessions of the others as cards. See [Machines](ASB.md#machines).
 
-In a machine group, Claude and Codex sessions on one machine can message sessions on the other machines (Linux and Windows). The other sessions appear in `/list-agents` (Claude) and `list_sessions` (Codex) with the machine name first. A message to a machine that is offline is refused at once; ASB keeps no queue.
+In a machine group, Claude and Codex sessions on one machine can message sessions on the other machines (Linux and Windows). The other sessions appear in `/list-agents` (Claude) and `list_sessions` (Codex) with the machine name first. A message to a machine that is offline is refused at once; ASB keeps no queue. Each machine needs Bun for its engine: on its `PATH`, or in the folder of the Bun installer (`$BUN_INSTALL/bin` or `~/.bun/bin`; on Windows, `%BUN_INSTALL%\bin` or `%USERPROFILE%\.bun\bin`). `asb group status` shows if the message relay runs, and the engine log has one line when Bun is missing. See [Messages between machines](ASB.md#messages-between-machines-linux-and-windows).
 
 ## OpenCode sessions (list only)
 

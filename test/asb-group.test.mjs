@@ -93,6 +93,25 @@ test('group status, invite, remove, and leave use the loopback group routes with
     ['POST /api/group/remove', { machineId: 'b'.repeat(16) }], ['POST /api/group/leave', {}]]);
 });
 
+test('group status prints one message relay line when the engine sends the relay state, and --json keeps the field', async (t) => {
+  const { run, replies } = await fixture(t);
+  const plain = (await run(['group', 'status'])).out;
+  assert.equal(plain.includes('relay'), false);
+  for (const [relay, line] of [
+    [{ state: 'running' }, 'Message relay: running.'],
+    [{ state: 'no-bun', bunFolders: ['/home/a/.bun/bin'] }, 'Message relay: not running. Bun was not found on PATH or in /home/a/.bun/bin.'],
+    [{ state: 'no-bun', bunFolders: ['C:\\bun\\bin', 'C:\\Users\\a\\.bun\\bin'] }, 'Message relay: not running. Bun was not found on PATH or in C:\\bun\\bin or C:\\Users\\a\\.bun\\bin.'],
+    [{ state: 'no-bun', bunFolders: [] }, 'Message relay: not running. Bun was not found on PATH.'],
+    [{ state: 'stopped' }, 'Message relay: stopped after 5 restarts in 10 minutes.'],
+    [{ state: 'not-running' }, 'Message relay: not running.'],
+  ]) {
+    replies.set('GET /api/group', [200, { ...groupStatus, relay }]);
+    // The other lines stay as they are; the relay line is added at the end.
+    assert.equal((await run(['group', 'status'])).out, `${plain}\n${line}`);
+    assert.deepEqual(JSON.parse((await run(['group', 'status', '--json'])).out), { ...groupStatus, relay });
+  }
+});
+
 test('join shows the inviter fingerprint and asks unless --yes, and prints a name suggestion', async (t) => {
   const { run, posts, replies } = await fixture(t);
   const refused = await run(['group', 'join', link], 'n\n');

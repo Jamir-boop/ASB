@@ -116,6 +116,25 @@ test('Debian 13 with all checks ok prints the checks of Appendix D and no comman
   assert.deepEqual(system.reads, ['/etc/os-release', '/run/ostree-booted', UNIT, ENTRY]);
 });
 
+test('a Bun only in the standard folder is ok, is named, and is said to be off PATH; a Bun on PATH keeps its line', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'asb-doctor-home-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  await mkdir(path.join(home, '.bun', 'bin'), { recursive: true });
+  const standard = path.join(home, '.bun', 'bin', 'bun');
+  await writeFile(standard, '#!/bin/sh\nexit 99\n', { mode: 0o755 });
+  const off = await fakeSystem(t, { release: 'debian13', bins: ALL_BINS.filter((name) => name !== 'bun'), env: { HOME: home } });
+  const line = `  ok       Bun (${standard}), not on PATH. The message relay finds it. A Codex task needs it on PATH.`;
+  assert.ok((await off.lines()).includes(line));
+  assert.deepEqual((await collect(off.deps)).checks.find((check) => check.id === 'bun'), { id: 'bun', group: 'Options', status: 'ok',
+    detail: `Bun (${standard}), not on PATH. The message relay finds it. A Codex task needs it on PATH.` });
+  // The same HOME with a Bun on PATH: the old line.
+  const on = await fakeSystem(t, { release: 'debian13', env: { HOME: home } });
+  assert.ok((await on.lines()).includes(`  ok       Bun (${on.bin}/bun), for ASB Bridge`));
+  // No Bun anywhere: the old info line.
+  const none = await fakeSystem(t, { release: 'debian13', bins: ALL_BINS.filter((name) => name !== 'bun'), env: { HOME: path.join(home, 'empty') } });
+  assert.ok((await none.lines()).includes('  info     Bun: not found. ASB Bridge needs it.'));
+});
+
 test('Fedora without the board packages prints one sudo dnf install line', async (t) => {
   const system = await fakeSystem(t, { release: 'fedora44', bins: ['openssl', 'xdg-open', 'pw-play', 'sudo'],
     values: { python: '3.14.8', gi: null, gtk: null, adw: null, glib: null, cairo: false, qrcode: false, trayHost: null } });

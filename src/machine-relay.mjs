@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readLiveClaudeRegistry } from './claude-registry.mjs';
 import { peerRequest } from './machine-peers.mjs';
-import { findExecutable, runtimeDir } from './platform-paths.mjs';
+import { bunFolders, bunNotFound, findBun, findExecutable, runtimeDir } from './platform-paths.mjs';
 import { formatReference } from './session-references.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -234,6 +234,9 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
   let relay = null;
   let stopped = false;
   let blocked = false;
+  // bunMissing: only Bun is missing now. bunLogged: the line about it was logged and Bun has not come back since.
+  let bunMissing = false;
+  let bunLogged = false;
   let restarts = [];
   let checking = Promise.resolve();
   let checkTimer = null;
@@ -286,7 +289,7 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
   }
 
   async function launch() {
-    const bun = await findExecutable('bun', { platform, env });
+    const bun = await findBun({ platform, env });
     const relayDir = path.join(runtimeDir(env, platform), 'relay');
     const spawned = spawn(bun, [relayJs], { stdio: ['pipe', 'pipe', 'inherit'],
       env: { ...env, ASB_ENGINE_URL: `http://127.0.0.1:${port}`, ASB_SOURCE_TOKEN: sourceToken, ASB_RELAY_DIR: relayDir } });
@@ -315,8 +318,17 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
   }
 
   async function wanted() {
-    if (!['linux', 'win32'].includes(platform) || !runtimeDir(env, platform) || !others().length) return false;
-    return Boolean(await findExecutable('bun', { platform, env })) && await isFile(relayJs) && await isFile(catPath || await findExecutable('cat', { platform, env }));
+    const ready = ['linux', 'win32'].includes(platform) && Boolean(runtimeDir(env, platform)) && others().length > 0
+      && await isFile(relayJs) && await isFile(catPath || await findExecutable('cat', { platform, env }));
+    const bun = ready && await findBun({ platform, env });
+    bunMissing = ready && !bun;
+    if (bun) bunLogged = false;
+    else if (bunMissing && !bunLogged) {
+      // One line, not one every 30 s: the next line comes after Bun was found and lost again.
+      bunLogged = true;
+      log(`ASB cannot start the message relay: ${bunNotFound(bunFolders({ platform, env }))} Messages to and from other machines do not work.`);
+    }
+    return Boolean(bun);
   }
 
   // At engine start, on each group change, and every 30 s.
@@ -409,6 +421,9 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
       await checking;
     },
     running: () => Boolean(relay),
+    // For GET /api/group: why the relay runs or not. `no-bun` means that only Bun is missing.
+    status: () => relay ? { state: 'running' } : blocked ? { state: 'stopped' }
+      : bunMissing ? { state: 'no-bun', bunFolders: bunFolders({ platform, env }) } : { state: 'not-running' },
     relayRequest,
 
     // GET /peer/v1/peers.

@@ -304,8 +304,11 @@ export function createAsbServer({
       try {
         const action = groupRoute[1];
         let result;
-        if (!action) result = await machineGroup.status();
-        else {
+        if (!action) {
+          result = await machineGroup.status();
+          // Only a group with another machine runs the relay.
+          if (machineRelay?.status && result.members.some((member) => !member.isSelf)) result = { ...result, relay: machineRelay.status() };
+        } else {
           const body = await readBody(request);
           const fields = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join(',') : 'invalid';
           const valid = action === 'join' ? fields === 'link,name' && typeof body.link === 'string' && typeof body.name === 'string'

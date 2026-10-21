@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import { PLAYERS } from '../src/asb-sounds.mjs';
 import { detectFamily, FAMILIES, installCommand, nodeRoute, parseOsRelease } from '../src/linux-distros.mjs';
 import { atLeast, BOARD_FLOORS, boardCheck, engineCheck, nodeFacts, pythonCandidates, shortVersion } from '../src/linux-system.mjs';
-import { findExecutable, runtimeDir } from '../src/platform-paths.mjs';
+import { findBun, findExecutable, runtimeDir } from '../src/platform-paths.mjs';
 import { RUN_KEY } from './asb-engine.mjs';
 import { api as groupApi } from './asb-group.mjs';
 import { findRunningService } from './asb-instance.mjs';
@@ -111,8 +111,11 @@ function windowChecks(add, board, candidates) {
 }
 
 async function bunCheck(add, env, platform) {
-  const bun = await findExecutable('bun', { env, platform });
-  add('bun', 'Options', bun ? 'ok' : 'info', bun ? `Bun (${bun}), for ASB Bridge` : 'Bun: not found. ASB Bridge needs it.');
+  // The engine's lookup. A Codex task runs bun from the PATH of Codex, so a Bun in the standard folder only is still ok but is named.
+  const bun = await findBun({ env, platform });
+  const onPath = bun !== '' && bun === await findExecutable('bun', { env, platform });
+  add('bun', 'Options', bun ? 'ok' : 'info', !bun ? 'Bun: not found. ASB Bridge needs it.' : onPath ? `Bun (${bun}), for ASB Bridge`
+    : `Bun (${bun}), not on PATH. The message relay finds it. A Codex task needs it on PATH.`);
 }
 
 // Windows needs Node.js with built-in SQLite for the engine, and MSYS2 Python with PyGObject, GTK, and Libadwaita for the window.

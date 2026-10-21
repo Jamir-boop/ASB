@@ -212,6 +212,89 @@ test('the supervisor starts the relay only when every start condition holds', as
   assert.deepEqual(stubborn.spawns[0].child.signals, ['SIGTERM', 'SIGKILL']);
 });
 
+// The fixture with a HOME folder for a Bun in the standard folder (~/.bun/bin). The fixture's `bun` stays on PATH, unless `onPath` is false.
+async function bunFixture(t, { onPath = false, standard = false } = {}) {
+  const f = await supervisorFixture(t, { supervisor: (dir) => ({ env: { PATH: path.join(dir, 'bin'), HOME: path.join(dir, 'home'),
+    XDG_RUNTIME_DIR: path.join(dir, 'run') } }) });
+  if (!onPath) await rm(path.join(f.dir, 'bin', 'bun'));
+  f.folder = path.join(f.dir, 'home', '.bun', 'bin');
+  f.bun = path.join(f.folder, 'bun');
+  if (standard) await installBun(f);
+  return f;
+}
+async function installBun(f) {
+  await mkdir(f.folder, { recursive: true });
+  await writeFile(f.bun, '#!/bin/sh\n', { mode: 0o755 });
+}
+
+test('the supervisor starts the relay with a Bun that is only in the standard folder, and PATH comes first', async (t) => {
+  const f = await bunFixture(t, { standard: true });
+  await f.supervisor.start();
+  assert.equal(f.spawns.length, 1);
+  assert.equal(f.spawns[0].command, f.bun);
+  assert.equal(f.supervisor.running(), true);
+  assert.deepEqual(f.supervisor.status(), { state: 'running' });
+  assert.deepEqual(f.logs, []);
+  const first = await bunFixture(t, { onPath: true, standard: true });
+  await first.supervisor.start();
+  assert.equal(first.spawns[0].command, path.join(first.dir, 'bin', 'bun'));
+});
+
+test('without Bun the engine logs one line, shows no-bun, and logs again only after Bun was found and lost again', async (t) => {
+  const f = await bunFixture(t);
+  const line = `ASB cannot start the message relay: Bun was not found on PATH or in ${f.folder}. Messages to and from other machines do not work.`;
+  await f.supervisor.start();
+  await f.supervisor.check();
+  await f.supervisor.check();
+  assert.deepEqual(f.logs, [line]);
+  assert.equal(f.spawns.length, 0);
+  assert.deepEqual(f.supervisor.status(), { state: 'no-bun', bunFolders: [f.folder] });
+  await installBun(f);
+  await f.supervisor.check();
+  assert.equal(f.spawns.length, 1);
+  assert.deepEqual(f.supervisor.status(), { state: 'running' });
+  assert.deepEqual(f.logs, [line]);
+  // Bun is lost while the relay runs: the relay stops, and the line comes once more.
+  await rm(f.bun);
+  await f.supervisor.check();
+  await f.supervisor.check();
+  assert.equal(f.supervisor.running(), false);
+  assert.deepEqual(f.supervisor.status(), { state: 'no-bun', bunFolders: [f.folder] });
+  assert.deepEqual(f.logs, [line, line]);
+  // Windows: the same line, with the Windows folder.
+  const win = await supervisorFixture(t, { supervisor: (dir) => ({ platform: 'win32', env: { PATH: path.join(dir, 'empty'), USERPROFILE: 'C:\\Users\\a', LOCALAPPDATA: dir },
+    catPath: path.join(dir, 'findstr.exe') }) });
+  await writeFile(path.join(win.dir, 'findstr.exe'), '');
+  await win.supervisor.start();
+  assert.deepEqual(win.logs, ['ASB cannot start the message relay: Bun was not found on PATH or in C:\\Users\\a\\.bun\\bin. Messages to and from other machines do not work.']);
+  assert.equal(win.spawns.length, 0);
+});
+
+test('a missing Bun is not logged when the relay is not wanted for another reason', async (t) => {
+  for (const [name, change] of [
+    ['no other member', async (f) => { f.group.states.length = 0; }],
+    ['no relay.js', async (f) => { await rm(path.join(f.dir, 'bridge', 'dist', 'relay.js')); }],
+    ['no cat in PATH', async (f) => { await rm(path.join(f.dir, 'bin', 'cat')); }],
+  ]) {
+    const f = await bunFixture(t);
+    await change(f);
+    await f.supervisor.start();
+    await f.supervisor.check();
+    assert.deepEqual(f.logs, [], name);
+    assert.deepEqual(f.supervisor.status(), { state: 'not-running' }, name);
+  }
+  // The same fixture with another member: the missing Bun is logged.
+  const f = await bunFixture(t);
+  const states = [...f.group.states];
+  f.group.states.length = 0;
+  await f.supervisor.start();
+  assert.deepEqual(f.logs, []);
+  f.group.states.push(...states);
+  await f.supervisor.check();
+  assert.equal(f.logs.length, 1);
+  assert.equal(f.supervisor.status().state, 'no-bun');
+});
+
 test('a wrong first line or a crash restarts the relay at most 5 times in 10 minutes', async (t) => {
   for (const line of ['{"port":0,"token":"' + 'e'.repeat(64) + '"}', '{"port":1,"token":"short"}', 'not json', undefined]) {
     const f = await supervisorFixture(t, { child: (index) => index ? fakeChild({ line: JSON.stringify({ port: 1, token: 'e'.repeat(64) }) }) : fakeChild({ line }) });
@@ -226,6 +309,7 @@ test('a wrong first line or a crash restarts the relay at most 5 times in 10 min
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(f.spawns.length, 6);
   assert.deepEqual(f.logs, [RELAY_STOPPED]);
+  assert.deepEqual(f.supervisor.status(), { state: 'stopped' });
   await f.supervisor.check();
   assert.equal(f.spawns.length, 6);
   // The condition goes false and true again: the relay may start again.
@@ -420,6 +504,35 @@ test('the loopback relay routes need the source token, local Host, and local Ori
   await new Promise((resolve) => plain.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => { plain.closeAllConnections(); plain.close(resolve); }));
   assert.equal((await fetch(`http://127.0.0.1:${plain.address().port}/api/relay/homes`, { headers: { 'x-asb-source-token': TOKEN } })).status, 404);
+});
+
+test('GET /api/group adds the relay state only for a group with another machine, and only on the loopback route', async (t) => {
+  const members = [{ machineId: A, name: 'alpha', online: true, lastOkAtMs: 1, addresses: [], isSelf: true }];
+  const machineGroup = { status: async () => ({ groupId: 'g', self: { machineId: A, name: 'alpha' }, networkEnabled: true, members, phones: [] }) };
+  let state = { state: 'no-bun', bunFolders: ['/home/a/.bun/bin'] };
+  const listen = async (options) => {
+    const server = createAsbServer({ dashboardWatchPaths: [], loadDashboard: async () => ({ providers: [], threads: [] }), sourceToken: TOKEN, machineGroup, ...options });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
+    return async (token = TOKEN) => {
+      const reply = await fetch(`http://127.0.0.1:${server.address().port}/api/group`, { headers: token ? { 'x-asb-source-token': token } : {} });
+      return [reply.status, await reply.json()];
+    };
+  };
+  const get = await listen({ machineRelay: { status: () => state } });
+  // A group of one machine runs no relay.
+  assert.equal('relay' in (await get())[1], false);
+  members.push({ machineId: B, name: 'beta', online: false, lastOkAtMs: 0, addresses: [], isSelf: false });
+  const [status, body] = await get();
+  assert.equal(status, 200);
+  assert.deepEqual(body.relay, { state: 'no-bun', bunFolders: ['/home/a/.bun/bin'] });
+  assert.deepEqual(Object.keys(body).sort(), ['groupId', 'members', 'networkEnabled', 'phones', 'relay', 'self']);
+  state = { state: 'running' };
+  assert.deepEqual((await get())[1].relay, { state: 'running' });
+  assert.equal((await get(''))[0], 403);
+  // A relay object without the state method, and a server without the relay, leave the reply as it was.
+  assert.equal('relay' in (await (await listen({ machineRelay: {} }))())[1], false);
+  assert.equal('relay' in (await (await listen({}))())[1], false);
 });
 
 // Exact member sends (v2): the sending side (sendExact) and the member side (peerResolveExact, peerDeliverExact).

@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { groupPath, parseJoinLink } from '../src/machine-group.mjs';
 import { phoneTlsDir, tlsFiles } from '../src/phone-gateway.mjs';
+import { bunNotFound } from '../src/platform-paths.mjs';
 import { findRunningService, readServiceRuntime, requestInstance } from './asb-instance.mjs';
 
 const usage = `Usage: asb group status [--json] | invite | join [<link>] [--name <name>] [--yes] | remove <name> | leave | reset-identity
@@ -57,6 +58,13 @@ export async function api(runtime, route, options = {}) {
   return reply.body;
 }
 
+// The engine sends `relay` only for a group with another machine (src/machine-relay.mjs, status).
+function relayText({ state, bunFolders = [] }) {
+  if (state === 'running') return 'Message relay: running.';
+  if (state === 'stopped') return 'Message relay: stopped after 5 restarts in 10 minutes.';
+  return `Message relay: not running.${state === 'no-bun' ? ` ${bunNotFound(bunFolders)}` : ''}`;
+}
+
 function groupText(value) {
   if (!value.groupId) {
     return [`This machine is not in a group. Its suggested name is ${value.self.name}.`,
@@ -67,7 +75,8 @@ function groupText(value) {
     + ` ${member.addresses.map((item) => `${item.kind}:${item.address}`).join(', ')}`);
   return [`Group ${value.groupId}. This machine: ${value.self.name} (${value.self.machineId.slice(0, 8)}).`,
     `Network access: ${value.networkEnabled ? 'on' : 'off'}.`, 'Machines:', ...members,
-    `Phones: ${value.phones.length ? value.phones.map((phone) => phone.name).join(', ') : 'none'}.`].join('\n');
+    `Phones: ${value.phones.length ? value.phones.map((phone) => phone.name).join(', ') : 'none'}.`,
+    ...(value.relay ? [relayText(value.relay)] : [])].join('\n');
 }
 
 export const networkText = (value) => !value.enabled ? 'Network access is off.'

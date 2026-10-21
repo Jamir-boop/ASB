@@ -33,6 +33,17 @@ export function cacheDir(env = process.env, platform = process.platform, home = 
   return path.posix.join(absolute(env.XDG_CACHE_HOME) ? env.XDG_CACHE_HOME : path.posix.join(home, '.cache'), 'asb');
 }
 
+// A regular file; other systems than Windows also need the execute bit.
+async function executableFile(file, platform) {
+  try {
+    await access(file, platform === 'win32' ? constants.F_OK : constants.X_OK);
+    return (await stat(file)).isFile();
+  } catch (error) {
+    if (['ENOENT', 'EACCES', 'ENOTDIR'].includes(error.code)) return false;
+    throw error;
+  }
+}
+
 // The PATH search of a shell, with the file it found ('' when none). Windows splits PATH with ';' and tries
 // each PATHEXT extension; other systems need the execute bit. scripts/asb-bridge.mjs has the same search.
 export async function findExecutable(name, { platform = process.platform, env = process.env, searchPath = env.PATH || '', cwd = process.cwd() } = {}) {
@@ -41,11 +52,33 @@ export async function findExecutable(name, { platform = process.platform, env = 
   for (const directory of searchPath.split(windows ? ';' : path.delimiter)) {
     for (const candidate of names) {
       const file = path.resolve(cwd, directory, candidate);
-      try {
-        await access(file, windows ? constants.F_OK : constants.X_OK);
-        if ((await stat(file)).isFile()) return file;
-      } catch (error) { if (!['ENOENT', 'EACCES', 'ENOTDIR'].includes(error.code)) throw error; }
+      if (await executableFile(file, platform)) return file;
     }
   }
   return '';
 }
+
+// The folders where the Bun installer puts bun: <BUN_INSTALL>/bin, then <home>/.bun/bin (Windows: USERPROFILE, else HOME).
+// Only an absolute path counts. The engine can start with a shorter PATH than the user shell (HKCU Run at sign-in, a systemd
+// user service), and the installer adds this folder to the user PATH only.
+export function bunFolders({ platform = process.platform, env = process.env } = {}) {
+  const windows = platform === 'win32';
+  const flavor = windows ? path.win32 : path.posix;
+  const home = env[windows ? 'USERPROFILE' : 'HOME'];
+  return [...new Set([env.BUN_INSTALL, home && flavor.join(home, '.bun')]
+    .filter((root) => typeof root === 'string' && flavor.isAbsolute(root)).map((root) => flavor.join(root, 'bin')))];
+}
+
+// The Bun file for the engine ('' when none): PATH first, then the folders of bunFolders. `check` tells if a file can run.
+export async function findBun({ platform = process.platform, env = process.env, check = executableFile } = {}) {
+  const onPath = await findExecutable('bun', { platform, env });
+  if (onPath) return onPath;
+  for (const folder of bunFolders({ platform, env })) {
+    const file = (platform === 'win32' ? path.win32 : path.posix).join(folder, platform === 'win32' ? 'bun.exe' : 'bun');
+    if (await check(file, platform)) return file;
+  }
+  return '';
+}
+
+// The text for "no Bun": it names the folders that findBun tried after PATH.
+export const bunNotFound = (folders) => `Bun was not found on PATH${folders.length ? ` or in ${folders.join(' or ')}` : ''}.`;

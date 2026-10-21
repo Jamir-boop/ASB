@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { cacheDir, configDir, runtimeDir, stateDir } from '../src/platform-paths.mjs';
+import { bunFolders, bunNotFound, cacheDir, configDir, findBun, runtimeDir, stateDir } from '../src/platform-paths.mjs';
 import { addressKind, listPhoneAddresses, tlsFiles, WINDOWS_CERTIFICATE_SCRIPT } from '../src/phone-gateway.mjs';
 import { defaultClaudeAppDir } from '../src/claude-data.mjs';
 import { openCommandForUrl } from '../src/session-opener.mjs';
@@ -52,6 +52,70 @@ test('the cache folder follows the board launcher on Linux and is in LOCALAPPDAT
   assert.equal(cacheDir({ XDG_CACHE_HOME: 'relative-cache' }, 'linux', home), '/home/test/.cache/asb');
   assert.equal(cacheDir({ LOCALAPPDATA: 'D:\\Local', XDG_CACHE_HOME: '/ignored' }, 'win32', 'C:\\Users\\test'), 'D:\\Local\\asb\\cache');
   assert.equal(cacheDir({ LOCALAPPDATA: 'relative' }, 'win32', 'C:\\Users\\test'), 'C:\\Users\\test\\AppData\\Local\\asb\\cache');
+});
+
+test('the Bun folders are BUN_INSTALL/bin, then the user .bun/bin, and only an absolute path counts', () => {
+  const folders = (platform, env) => bunFolders({ platform, env });
+  assert.deepEqual(folders('linux', { HOME: '/home/a' }), ['/home/a/.bun/bin']);
+  assert.deepEqual(folders('linux', { HOME: '/home/a', BUN_INSTALL: '/opt/bun' }), ['/opt/bun/bin', '/home/a/.bun/bin']);
+  // The Bun installer sets BUN_INSTALL to the default folder: one entry.
+  assert.deepEqual(folders('linux', { HOME: '/home/a', BUN_INSTALL: '/home/a/.bun' }), ['/home/a/.bun/bin']);
+  assert.deepEqual(folders('linux', { HOME: 'relative', BUN_INSTALL: 'bun' }), []);
+  assert.deepEqual(folders('linux', { HOME: '', BUN_INSTALL: '' }), []);
+  assert.deepEqual(folders('linux', { USERPROFILE: 'C:\\Users\\a' }), []);
+  assert.deepEqual(folders('win32', { USERPROFILE: 'C:\\Users\\a' }), ['C:\\Users\\a\\.bun\\bin']);
+  assert.deepEqual(folders('win32', { USERPROFILE: 'C:\\Users\\a', BUN_INSTALL: 'D:\\tools\\bun' }), ['D:\\tools\\bun\\bin', 'C:\\Users\\a\\.bun\\bin']);
+  assert.deepEqual(folders('win32', { HOME: '/home/a', BUN_INSTALL: 'bun' }), []);
+  assert.equal(bunNotFound([]), 'Bun was not found on PATH.');
+  assert.equal(bunNotFound(['/a/bin', '/b/bin']), 'Bun was not found on PATH or in /a/bin or /b/bin.');
+});
+
+// A PATH folder that does not exist, so that only the standard folders can give a Bun.
+const NO_PATH = path.join(os.tmpdir(), 'asb-no-bun-folder');
+
+test('on Windows the Bun lookup tries bun.exe in BUN_INSTALL\\bin, then in USERPROFILE\\.bun\\bin, with the file check of the caller', async () => {
+  const files = new Set(['D:\\tools\\bun\\bin\\bun.exe', 'C:\\Users\\a\\.bun\\bin\\bun.exe']);
+  const seen = [];
+  const check = async (file, platform) => { seen.push([file, platform]); return files.has(file); };
+  const env = { PATH: NO_PATH, USERPROFILE: 'C:\\Users\\a', BUN_INSTALL: 'D:\\tools\\bun' };
+  assert.equal(await findBun({ platform: 'win32', env, check }), 'D:\\tools\\bun\\bin\\bun.exe');
+  assert.deepEqual(seen, [['D:\\tools\\bun\\bin\\bun.exe', 'win32']]);
+  files.delete('D:\\tools\\bun\\bin\\bun.exe');
+  assert.equal(await findBun({ platform: 'win32', env, check }), 'C:\\Users\\a\\.bun\\bin\\bun.exe');
+  files.clear();
+  assert.equal(await findBun({ platform: 'win32', env, check }), '');
+  // A relative BUN_INSTALL and a missing USERPROFILE give no candidate at all.
+  seen.length = 0;
+  assert.equal(await findBun({ platform: 'win32', env: { PATH: NO_PATH, BUN_INSTALL: 'bun' }, check }), '');
+  assert.deepEqual(seen, []);
+  files.add('/home/a/.bun/bin/bun');
+  assert.equal(await findBun({ platform: 'linux', env: { PATH: NO_PATH, HOME: '/home/a' }, check }), '/home/a/.bun/bin/bun');
+  assert.deepEqual(seen, [['/home/a/.bun/bin/bun', 'linux']]);
+});
+
+test('the Bun lookup takes PATH first, then BUN_INSTALL/bin, then ~/.bun/bin, and only a regular file that can run counts', { skip: process.platform === 'win32' }, async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'asb-bun-lookup-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const bun = async (folder, mode = 0o755) => {
+    await mkdir(folder, { recursive: true });
+    await writeFile(path.join(folder, 'bun'), '#!/bin/sh\n', { mode });
+    return path.join(folder, 'bun');
+  };
+  const [pathFolder, installFolder, homeFolder] = [path.join(dir, 'bin'), path.join(dir, 'install'), path.join(dir, 'home')];
+  const find = () => findBun({ platform: 'linux', env: { PATH: pathFolder, BUN_INSTALL: installFolder, HOME: homeFolder } });
+  assert.equal(await find(), '');
+  const standard = await bun(path.join(homeFolder, '.bun', 'bin'), 0o644);
+  // A file without the execute bit does not count, and neither does a folder named bun.
+  assert.equal(await find(), '');
+  await chmod(standard, 0o755);
+  assert.equal(await find(), standard);
+  const install = await bun(path.join(installFolder, 'bin'));
+  assert.equal(await find(), install);
+  await rm(install);
+  await mkdir(install);
+  assert.equal(await find(), standard);
+  const onPath = await bun(pathFolder);
+  assert.equal(await find(), onPath);
 });
 
 test('the network kinds know the Linux and Windows adapter names', () => {
