@@ -260,6 +260,52 @@ test('a new engine with saved reader positions shows the same rows as a full rea
   t.diagnostic(`bytes read: run B Codex ${b.dashboardBytes} Claude ${b.claudeBytes}, run C Codex ${c.dashboardBytes} Claude ${c.claudeBytes}`);
 });
 
+test('a new engine with saved reader positions keeps the row time of the last turn after an open writes settings entries', async (t) => {
+  const home = await temporaryDirectory(t);
+  const sessions = path.join(home, 'MARKERDIR', 'sessions');
+  await fs.mkdir(sessions, { recursive: true });
+  const at = (minutes) => NOW_MS - minutes * 60_000;
+  const turn = (start, end) => [event(at(start), { type: 'task_started' }),
+    event(at(end + 0.1), { type: 'agent_message', message: 'MARKERREPLY', phase: 'final_answer' }), event(at(end), { type: 'task_complete' })];
+  // A settings entry has about 2 KB, so 160 of them are larger than the 256 KiB tail of the engine: its tail has no turn entry.
+  const settings = (count, minutes) => Array.from({ length: count }, () => event(at(minutes), { type: 'thread_settings_applied',
+    thread_id: 'synthetic', thread_settings: { text: `MARKERSETTINGS ${'x'.repeat(2000)}` } }));
+  const scenarios = {
+    many: [...turn(95, 80), ...settings(160, 30)],
+    few: [...turn(100, 85), ...settings(10, 30)],
+    later: [...turn(90, 75), ...settings(160, 30)],
+  };
+  const appends = { many: settings(5, 2), few: settings(3, 2), later: turn(1, 0.2) };
+  const expected = { before: { many: at(80), few: at(85), later: at(75) }, after: { many: at(80), few: at(85), later: at(0.2) } };
+  const databasePath = path.join(home, 'state_5.sqlite');
+  const database = new DatabaseSync(databasePath);
+  database.exec(`create table threads(id text primary key, rollout_path text, cwd text, title text, source text,
+    created_at_ms integer, updated_at_ms integer, archived integer);`);
+  const insert = database.prepare('insert into threads values (?, ?, ?, ?, ?, ?, ?, 0)');
+  for (const [index, [name, lines]] of Object.entries(scenarios).entries()) {
+    const rolloutPath = path.join(sessions, `rollout-${name}.jsonl`);
+    await fs.writeFile(rolloutPath, jsonl(lines));
+    // The open moved the database time to one minute ago.
+    insert.run(`0000000${index}-0000-4000-8000-000000000000`, rolloutPath, path.join(home, 'MARKERCWD', name), name, 'vscode', at(120), at(1));
+  }
+  database.close();
+  const dashboard = { databasePath, sessionIndexPath: path.join(home, 'session_index.jsonl'), globalStatePath: path.join(home, 'global.json') };
+  const file = path.join(home, 'cache', 'asb', 'readers', 'positions.json');
+  const timeOf = (run) => Object.fromEntries(run.threads.filter((row) => row.title in scenarios).map((row) => [row.title, row.updatedAtMs]));
+
+  const a = await engine({ file, key: KEY, dashboard, nowMs: NOW_MS });
+  assert.deepEqual(timeOf(a), expected.before);
+  for (const [name, lines] of Object.entries(appends)) await fs.appendFile(path.join(sessions, `rollout-${name}.jsonl`), jsonl(lines));
+  const b = await engine({ file, key: KEY, dashboard, nowMs: NOW_MS });
+  const c = await engine({ dashboard, nowMs: NOW_MS });
+  assert.deepEqual(timeOf(c), expected.after, 'a full read');
+  assert.deepEqual(timeOf(b), expected.after, 'a new engine with saved positions');
+  assert.deepEqual(byId(b.threads), byId(c.threads));
+  assert.ok(b.codexStats.taken >= 2, `Codex taken: ${b.codexStats.taken}`);
+  const text = (await fs.readFile(file)).toString('latin1');
+  for (const marker of [...MARKERS, 'MARKERSETTINGS', home, '/', '\\']) assert.equal(text.includes(marker), false, marker);
+});
+
 test('Codex lifecycle positions from disk give the result of a full pass after appends', async (t) => {
   const directory = await temporaryDirectory(t);
   const files = await randomRollouts(directory, 120, 0);
@@ -652,9 +698,10 @@ test('Claude lifecycle positions from disk give the result of a full read after 
   assert.ok(b.claudeBytes * 3 < c.claudeBytes, `B ${b.claudeBytes}, C ${c.claudeBytes}`);
 });
 
-// Measured on d9700f1 with the same synthetic set: the reader with no positions reads the same bytes and gives the same rows.
-// To measure again: ASB_HEAD_ROOT=file:///<copy of d9700f1>/ node --test --test-name-pattern="Claude reader reads the same" test/reader-positions.test.mjs
-const CLAUDE_HEAD_OFF = { bytes: 939657, digest: '11a6267cc002d680a533afb9402ae5c1f4ddc8be09715715482078e9f5347d72' };
+// Measured with the same synthetic set: the reader with no positions reads the same bytes and gives the same rows as d9700f1,
+// except `updatedAtMs` and `status` (the row time now ignores records with no turn, and the file time of the session file).
+// To measure again: ASB_HEAD_ROOT=file:///<copy of the same commit>/ node --test --test-name-pattern="Claude reader reads the same" test/reader-positions.test.mjs
+const CLAUDE_HEAD_OFF = { bytes: 939657, digest: '013b416409ac8239806215a6f1ee38c1dfc90d662851fedddc489dff1337cab8' };
 
 test('with no positions the Claude reader reads the same bytes and gives the same rows as before positions', async (t) => {
   const home = await temporaryDirectory(t);

@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Fixed the card time ("N ago") and the card order after you open a session: an open no longer sets the time to now or moves the card to the front. The time is now the time of the last turn. Before, Codex moved the thread time when the app wrote a `thread_settings_applied` entry at the open. ASB also used file times that change at an open: the session file of the Claude app, the subagent logs, and the transcript of a Claude Code CLI session.
 - Fixed the npm install command in the README and in `ASB.md`: it is now `npm install -g --install-links github:Jamir-boop/ASB`. With npm 11, the old command linked the global package to a temporary clone that npm then deleted, so `asb` stopped working.
 - Made the board faster when it shows many cards and in long sessions: card moves no longer get slower over time, and hidden cards no longer stay in memory.
 - Changed the Android app: the Text size setting is now named **Card text size**, and it changes only the text on the session cards. The other text in the app (top bar, filters, Settings, dialogs, and the session inspector) now follows only the phone font size. The setting keeps its saved value.

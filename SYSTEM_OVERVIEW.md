@@ -206,6 +206,14 @@ Additional profiles need a supported installed launcher path. ASB sends that lau
 
 Root chats are the list unit. Explicit workers and subagents stay grouped under the root. ASB omits `subagent` and `guardian_review` source rows. Each source has a 5000-record limit. ASB does not discover orphan Codex rollouts outside the database. Archived rows are available but hidden by default.
 
+The row time (`updatedAtMs`) is the time of the last turn. It is the "N ago" of the card, the sort time of read rows, and the time in the browser view, the phone API, and the machine group export. Opening a chat must not change it, so each reader leaves out the entries that an open or a resume writes with no turn:
+
+- Codex: the time of the last rollout entry that is not `thread_settings_applied` (the app writes it when a chat opens, and Codex moves `threads.updated_at` with it), `session_meta`, or `turn_context`. `attachRolloutSignals` takes it from the tail that the reader already reads (`latestEventAtMs`), else from the last lifecycle time of the full scan, so it is the same after an engine restart with saved reader positions and after a full read. A rollout with no such entry, or no readable rollout, keeps `threads.updated_at`.
+- Claude Desktop Code: the newer of `lastActivityAt` and the last `user`, `assistant`, or `result` record of the transcript (`latestEventAtMs`). The modification time of the `local_<id>.json` session file is only the last fallback, because the app rewrites that file when a chat opens (it also has `lastFocusedAt` and `indexedAt`, which ASB does not read). Records with no turn (`attachment`, `queue-operation`, `pr-link`, `frame-link`, `last-prompt`, and the title and mode notes) do not count.
+- The group time of a Claude row (`embeddedSubagentUpdatedAtMs`) is the last turn record of a linked child that still works. The file time of a child log does not count: a copy or an open changes it with no turn.
+- Claude Code CLI: the last such turn record. The transcript file time and the start time of the live process are used only when the transcript has no turn record.
+- OpenCode: `max(time_updated, time_idle, newest message time)`, unchanged (`time_viewed` is not part of it).
+
 Codex names prefer the desktop/session-index name, then the raw stored title, with the existing empty fallback. ASB does not select `first_user_message` for title derivation. A row title is limited to 300 characters; a longer title ends with `…`. Whole Unicode code points are kept. Codex stores can hold a full prompt as a title. Search and the tooltip use the limited title. Claude Desktop Code titles keep their own shorter limit. Claude metadata must have a valid `local_<uuid>` ID to provide an open action. App links are constructed from valid IDs:
 
 - `codex://threads/<uuid>`

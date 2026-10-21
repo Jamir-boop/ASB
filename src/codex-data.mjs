@@ -23,6 +23,9 @@ const LOW_SIGNAL_USER_MESSAGE = /^(继续|继续吧|你继续|你继续吧|好�
 const ROLLOUT_LIFECYCLE_EVENT_RE = /"type"\s*:\s*"(?:task_started|task_complete|turn_aborted|turn_cancelled|task_cancelled|cancelled)"/;
 // A token_count line with a usage window. Lines without one cannot change the window record of a scan, so they are not parsed.
 const ROLLOUT_LIMIT_WINDOW_RE = /"used_percent"\s*:\s*-?\d/;
+// Entries that are not activity. The app writes `thread_settings_applied` when a chat opens, with no turn, and Codex moves
+// threads.updated_at with it. The meta and context records are also not a turn: a turn has its own start and end entries.
+const ROLLOUT_NO_TURN_ENTRIES = new Set(['thread_settings_applied', 'session_meta', 'turn_context']);
 // Codex refused at 94-98 percent in the observed logs. A window below this level cannot explain a stop.
 const LIMIT_STOP_USED_PERCENT = 90;
 const QUESTION_HISTORY_COMPLETE = Symbol('question history complete');
@@ -664,7 +667,9 @@ export function parseRolloutSignals(jsonlText) {
 
     const payload = event.payload || event;
     const timestampMs = eventTimestampMs(event);
-    if (timestampMs) signals.latestEventAtMs = Math.max(signals.latestEventAtMs || 0, timestampMs);
+    if (timestampMs && !ROLLOUT_NO_TURN_ENTRIES.has(event.type) && !ROLLOUT_NO_TURN_ENTRIES.has(payload?.type)) {
+      signals.latestEventAtMs = Math.max(signals.latestEventAtMs || 0, timestampMs);
+    }
 
     applyRolloutLifecycleEvent(signals, payload, timestampMs);
     if (applyUserQuestionEvent(questions, payload, timestampMs)) signals[QUESTION_HISTORY_COMPLETE] = true;
@@ -989,6 +994,8 @@ async function attachRolloutSignals(threads, {
     if (result.status !== 'fulfilled') return;
 
     const thread = candidates[index];
+    // The row time is the last turn entry of the rollout. The database time stays when the rollout has no turn entry.
+    thread.updatedAtMs = Number(result.value.latestEventAtMs || result.value.latestLifecycleAtMs || 0) || thread.updatedAtMs;
     thread.completionHint = result.value.completionHint;
     thread.latestAgentFinalAtMs = result.value.latestAgentFinalAtMs;
     thread.latestUserMessageAtMs = result.value.latestUserMessageAtMs;

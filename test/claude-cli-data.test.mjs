@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { promises as fsPromises } from 'node:fs';
-import { mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { loadClaudeCliThreads } from '../src/claude-cli-data.mjs';
@@ -159,4 +159,28 @@ test('a Claude CLI session with a transcript copy in more than one project folde
   });
   const { threads } = await loadClaudeCliThreads({ projectsDir, nowMs });
   assert.deepEqual(threads.map((thread) => [thread.externalId, thread.title]), [['moved', 'Current copy']]);
+});
+
+test('Claude CLI rows keep the time of the last turn when a resume writes records with no turn', async (t) => {
+  const nowMs = Date.now();
+  const { home, projectsDir } = await configHome(t);
+  const file = await transcript(projectsDir, 'resumed', { nowMs, ageMs: DAY_MS });
+  const turnAtMs = nowMs - DAY_MS - 50_000;
+  const rowTime = async () => (await loadClaudeCliThreads({ projectsDir, nowMs })).threads.find((thread) => thread.externalId === 'resumed').updatedAtMs;
+  assert.equal(await rowTime(), turnAtMs);
+  // A resume appends records with no turn: some have a new timestamp, and the file time is new.
+  await appendFile(file, jsonl([
+    { type: 'attachment', timestamp: new Date(nowMs - 1000).toISOString(), attachment: { type: 'hook_success' } },
+    { type: 'queue-operation', timestamp: new Date(nowMs - 1000).toISOString(), operation: 'enqueue' },
+    { type: 'last-prompt', sessionId: 'resumed' }]));
+  await utimes(file, nowMs / 1000, nowMs / 1000);
+  await record(home, process.pid, { sessionId: 'resumed', startedAt: nowMs - 500 });
+  assert.equal(await rowTime(), turnAtMs, 'the file time, the new records, and the process start do not count');
+  // A new turn is activity.
+  await appendFile(file, jsonl([{ type: 'user', timestamp: new Date(nowMs - 100).toISOString(), sessionId: 'resumed', message: { role: 'user', content: 'Again' } }]));
+  assert.equal(await rowTime(), nowMs - 100);
+  // A live session with no transcript has only its start.
+  await record(home, await liveProcess(t), { sessionId: 'fresh', startedAt: nowMs - 5000 });
+  const fresh = (await loadClaudeCliThreads({ projectsDir, nowMs })).threads.find((thread) => thread.externalId === 'fresh');
+  assert.deepEqual([fresh.cliNoTranscript, fresh.updatedAtMs], [true, nowMs - 5000]);
 });

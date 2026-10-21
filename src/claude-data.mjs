@@ -338,12 +338,16 @@ function applyClaudeLifecycle(lifecycle, event, timestampMs) {
   }
 }
 
-function rememberTimestamp(signals, timestampMs) {
+// Only a turn record is activity. When a chat opens or resumes, the app and Claude Code also write attachments, queue records,
+// and links with a timestamp and no turn, so these must not move the time of a row.
+const CLAUDE_ACTIVITY_TYPES = new Set(['user', 'assistant', 'result']);
+
+function rememberTimestamp(signals, timestampMs, activity) {
   if (!timestampMs) return;
   signals.oldestEventAtMs = signals.oldestEventAtMs
     ? Math.min(signals.oldestEventAtMs, timestampMs)
     : timestampMs;
-  signals.latestEventAtMs = Math.max(signals.latestEventAtMs || 0, timestampMs);
+  if (activity) signals.latestEventAtMs = Math.max(signals.latestEventAtMs || 0, timestampMs);
 }
 
 function handleUserEvent(signals, event, timestampMs) {
@@ -448,7 +452,7 @@ function applyClaudeSignalLine(signals, line, lifecycleOnly = false) {
     return;
   }
   const timestampMs = timestampToMs(event.timestamp || event._audit_timestamp);
-  rememberTimestamp(signals, timestampMs);
+  rememberTimestamp(signals, timestampMs, CLAUDE_ACTIVITY_TYPES.has(event.type));
   applyClaudeLifecycle(signals.lifecycle, event, timestampMs);
   if (signals.lifecycle.eventAtMs === timestampMs && ['cancelled', 'failed'].includes(signals.lifecycle.kind)) {
     signals.pendingToolsById.clear();
@@ -822,11 +826,11 @@ export function normalizeClaudeDesktopCodeSession(session, {
   const externalId = String(session.sessionId || session.id || '');
   const cliSessionId = String(session.cliSessionId || '');
   const cwd = String(session.originCwd || session.cwd || signals.cwd || '');
+  // The app rewrites the metadata file when a chat opens, so its time is only the last fallback.
   const updatedAtMs = Math.max(
     timestampToMs(session.lastActivityAt),
     coerceNumber(signals.latestEventAtMs),
-    coerceNumber(stat.mtimeMs),
-  ) || nowMs;
+  ) || coerceNumber(stat.mtimeMs) || nowMs;
   const createdAtMs = timestampToMs(session.createdAt)
     || coerceNumber(signals.oldestEventAtMs)
     || updatedAtMs;
@@ -1082,7 +1086,8 @@ export async function readClaudeRootSignals(entry, subagents, options, agentLogs
   const work = [root];
   const nowMs = options.nowMs || Date.now();
   let unknown = false, childEndGraceAtMs = 0;
-  let updatedAtMs = Math.max(0, ...(subagents || []).map((child) => coerceNumber(child.stat?.mtimeMs)));
+  // Only the turn records of a linked child give a time: the file time of a child log also moves with no turn (a copy, an open).
+  let updatedAtMs = 0;
   for (const [agentId, link] of root.agents) {
     if (link.endedAtMs) {
       work.push({ running: false, eventAtMs: link.endedAtMs, kind: link.kind,
