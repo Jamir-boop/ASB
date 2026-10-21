@@ -1,9 +1,14 @@
 # ASB board on Windows: implementation plan
 
-Status: draft, written 2026-10-20 from `main` at `f9b46c7`. Section 2 has the
-user's decisions from the interview. Do not change them without asking the
-user. Do the phases in order. Do not start a phase until the reviewer accepts
-the phase before it. Find code by the names given, not by line numbers.
+Status: phases 0 to 6 are done (phase 0 result in `387e8e1`, phase 1 in
+`3acacd2`, phase 2 in `04d9d7e`, phase 3 in `c6e8f34`, phase 4 in `6fa8acd`,
+phase 5 in `ab5febb`, phase 6 in `8fc22d8`), and the phase 7 documents are
+done. The `board-windows` CI job has not run on GitHub yet, so the phase 3
+acceptance on GitHub Actions is open. The release is not done: ask the user
+before the version change and the release. Written 2026-10-20 from `main` at
+`f9b46c7`. Section 2 has the user's decisions from the interview. Do not
+change them without asking the user. Find code by the names given, not by line
+numbers.
 
 ---
 
