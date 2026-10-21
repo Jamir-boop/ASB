@@ -147,7 +147,7 @@ The ASB `1.9.0` package whitelist names 73 runtime files, including 12 ASB Bridg
 | `scripts/asb-package.mjs` | Linux package build, runtime check, and per-user install/uninstall. |
 | `scripts/asb-bridge.mjs` | Optional bridge status, per-provider install/uninstall, and explicit Claude registry linking. |
 | `.agents/plugins/marketplace.json` | Local `asb` marketplace for the `asb-bridge` Codex plugin. |
-| `bridge/` | Optional ASB Bridge plugin, Bun/TypeScript source and tests, committed bundles, and on-demand usage skills. |
+| `bridge/` | Optional ASB Bridge plugin, Bun/TypeScript source and tests, committed bundles, and usage skills that the model loads by itself (a short entry in the skill list; the text loads when the task needs it). |
 | `android/` | Optional Android companion: Kotlin and Compose app, Gradle build, and JVM tests. See `android/README.md`. |
 | `public/switchboard.html` | Optional ASB browser view. |
 | `test/switchboard.test.mjs` | ASB data, attention, API, and source-event checks. |

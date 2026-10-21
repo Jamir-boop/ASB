@@ -44,7 +44,7 @@ A task registers when its `SessionStart` hook runs, which Codex does on the firs
 
 ## Usage skills
 
-Type `/bridge` in Claude Code or `$bridge` in Codex to load the usage guide. Both skills load on demand only. The manual plugin commands above do not install them; use the ASB install command for the skill folders.
+Claude Code and Codex load the `bridge` skill by themselves when the task needs it: a session reference (`asb:1/...`) or a message to another agent. Each skill adds a short entry to the skill list, which costs a few tens of tokens in each turn. The text of the skill loads only when the model uses it. `/bridge` in Claude Code and `$bridge` in Codex still load it by hand. The manual plugin commands above do not install the skills; use the ASB install command for the skill folders.
 
 ## Link Claude profiles
 

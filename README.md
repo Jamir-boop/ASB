@@ -100,7 +100,7 @@ The current source adds `asb agent status` and `asb agent sources` commands to l
 
 ASB Bridge lets local Claude Code sessions and Codex tasks message each other. When ASB Bridge is installed, a message that one agent sends starts a turn in the receiving app.
 
-The ASB `1.9.0` packages include ASB Bridge `0.5.0`; ASB `1.8.1` or older packages do not. It needs Bun. From a source checkout, run `scripts/asb bridge install --all`. With an ASB `1.9.0` package, run `asb bridge install --all`. Then open Plugins > ASB Bridge in Codex, trust both hooks, and restart Codex. Without a target flag, `asb bridge install` shows usage and changes nothing. See the [bridge guide](bridge/README.md) for explicit targets and the on-demand skills.
+The ASB `1.9.0` packages include ASB Bridge `0.5.0`; ASB `1.8.1` or older packages do not. It needs Bun. From a source checkout, run `scripts/asb bridge install --all`. With an ASB `1.9.0` package, run `asb bridge install --all`. Then open Plugins > ASB Bridge in Codex, trust both hooks, and restart Codex. Without a target flag, `asb bridge install` shows usage and changes nothing. See the [bridge guide](bridge/README.md) for explicit targets and the usage skills.
 
 Separate Claude profiles can opt in to shared peer discovery with `asb bridge link-claude <profile-home> <shared-home>`. This shares only peer metadata and IPC authentication keys. App data and provider credentials stay separate. Read the [setup and backup limits](bridge/README.md#link-claude-profiles) first.
 
