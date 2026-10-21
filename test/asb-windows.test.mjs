@@ -12,7 +12,7 @@ import { createPhoneGateway, readerPositionsKeyFrom, referenceScopeTagger, WINDO
 import { loadClaudeRemoteThreads } from '../src/claude-remote-data.mjs';
 import { engineFolders, main as engineMain, readerPositionsPath, RUN_KEY, trayCommand, trayStartArguments, writesEngineLog } from '../scripts/asb-engine.mjs';
 import { protectWindowsFolder } from '../scripts/asb-instance.mjs';
-import { main as dispatch, NODE_HINT, WINDOWS_HINT, WINDOWS_USAGE } from '../scripts/asb.mjs';
+import { LINUX_USAGE, main as dispatch, NODE_HINT, WINDOWS_HINT, WINDOWS_USAGE } from '../scripts/asb.mjs';
 
 // Windows branches with injected platform, execFile, spawn, and engine lookups. Platform-neutral (test/windows-tests.json).
 
@@ -234,6 +234,33 @@ test('the asb dispatcher reaches each command main and shows the Windows hint an
   assert.equal(logs.at(-1), `error: ${NODE_HINT}`);
   assert.equal(await run(['service', 'status'], 'linux', '20.0.0'), 0);
   assert.equal(calls.length, 2);
+});
+
+test('on Linux only no command opens the board; an unknown command prints the usage and starts nothing', async () => {
+  const loaded = [];
+  const load = async (href) => {
+    loaded.push(path.basename(fileURLToPath(href)));
+    return { main: async () => 0 };
+  };
+  const logs = [];
+  const run = (argv) => dispatch(argv, { platform: 'linux', version: '22.13.0', load, log: (line) => logs.push(`log: ${line}`),
+    error: (line) => logs.push(`error: ${line}`) });
+  assert.equal(await run([]), undefined);
+  assert.deepEqual(loaded, ['asb-desktop.mjs']);
+  // The usage names only commands that the dispatcher handles.
+  for (const command of LINUX_USAGE.match(/\[([^\]]+)\]/)[1].split('|')) {
+    loaded.length = 0;
+    assert.equal(await run([command]), 0, command);
+    assert.equal(loaded.length, 1, command);
+    assert.notEqual(loaded[0], 'asb-desktop.mjs', command);
+  }
+  for (const argv of [['--help'], ['-h'], ['help'], ['servce', 'install']]) {
+    loaded.length = 0;
+    logs.length = 0;
+    assert.equal(await run(argv), 2, argv.join(' '));
+    assert.deepEqual(loaded, [], argv.join(' '));
+    assert.deepEqual(logs, [`error: ${LINUX_USAGE}`], argv.join(' '));
+  }
 });
 
 test('the POSIX launcher prints the same Node.js message as the dispatcher', async () => {

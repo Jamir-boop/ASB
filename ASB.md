@@ -309,7 +309,7 @@ The same actions work from a terminal while the engine runs. Network access must
 
 ## Start and stop
 
-Installed packages launch with `asb` or the ASB Applications entry. The per-user command `~/.local/bin/asb` starts the shipped `scripts/asb`. If the recorded Node.js is not usable, `scripts/asb` tries `~/.local/bin/node`, `/usr/local/bin/node`, then `/usr/bin/node`, and prints a message if none is usable. ASB appends `/usr/local/bin:/usr/bin:/bin` to the caller's `PATH`, so apps started from ASB keep the caller's `PATH` order. From source:
+Installed packages launch with `asb` or the ASB Applications entry. On Linux, `asb` with a command that ASB does not know (for example `asb --help` or a typo) prints the usage and exits with code 2; it starts no engine and no window. The per-user command `~/.local/bin/asb` starts the shipped `scripts/asb`. If the recorded Node.js is not usable, `scripts/asb` tries `~/.local/bin/node`, `/usr/local/bin/node`, then `/usr/bin/node`, and prints a message if none is usable. ASB appends `/usr/local/bin:/usr/bin:/bin` to the caller's `PATH`, so apps started from ASB keep the caller's `PATH` order. From source:
 
 ```bash
 npm run desktop
