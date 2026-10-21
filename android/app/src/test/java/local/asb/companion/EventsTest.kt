@@ -4,8 +4,10 @@ import local.asb.companion.data.Thread
 import local.asb.companion.notify.BIT_DONE
 import local.asb.companion.notify.BIT_FAILED
 import local.asb.companion.notify.BIT_INPUT
+import local.asb.companion.notify.Cleared
 import local.asb.companion.notify.Event
 import local.asb.companion.notify.bits
+import local.asb.companion.notify.cleared
 import local.asb.companion.notify.diff
 import local.asb.companion.notify.update
 import org.junit.Assert.assertEquals
@@ -223,5 +225,79 @@ class EventsTest {
         assertEquals(seen, update(seen, listOf(remote), now))
         // An older PC sends no globalId: the key is the row ID.
         assertEquals(mapOf("old" to BIT_DONE), update(null, listOf(Thread(id = "old", completionAttention = true)), now))
+    }
+
+    private val all = listOf(BIT_INPUT, BIT_FAILED, BIT_DONE)
+
+    // The kinds that the cancel list names for the row "one". [engine] is the engine of the read ("" is the paired PC).
+    private fun cancelled(baseline: Map<String, Int>?, vararg rows: Thread, engine: String = "", nowMs: Long = now) =
+        cleared(baseline, rows.toList(), engine, nowMs).filter { it.key == row.id }.map { it.kind }
+
+    @Test fun aReadRowCancelsItsNotificationAndAnUnreadMarkDoesNot() {
+        val done = row.copy(completionAttention = true)
+        assertEquals(listOf(BIT_INPUT, BIT_FAILED), cancelled(update(null, listOf(done), now), done))
+        assertEquals(all, cancelled(mapOf(row.id to BIT_DONE), row))
+    }
+
+    @Test fun theCancelListDoesNotNeedABitChange() {
+        // The open screen saves the cleared bit before the service reads: the old bit is already clear, and the cancel still comes.
+        for (old in listOf(0, BIT_DONE, BIT_DONE or BIT_FAILED or BIT_INPUT)) {
+            assertEquals(all, cancelled(mapOf(row.id to old), row))
+        }
+        assertEquals(listOf(BIT_INPUT, BIT_FAILED), cancelled(emptyMap(), row.copy(completionAttention = true)))
+    }
+
+    @Test fun onlyTheClearedKindIsInTheCancelList() {
+        val marked = row.copy(completionAttention = true, failedAttention = true)
+        val baseline = update(null, listOf(marked.copy(actionRequired = true)), now)
+        assertEquals(listOf(BIT_INPUT), cancelled(baseline, marked))
+        assertEquals(listOf(BIT_FAILED), cancelled(baseline, marked.copy(failedAttention = false, actionRequired = true)))
+    }
+
+    @Test fun theCancelListUsesTheRowKey() {
+        val local = Thread(id = "codex:1", globalId = "aaaaaaaaaaaaaaaa:codex:1")
+        assertEquals(all.map { Cleared("aaaaaaaaaaaaaaaa:codex:1", it) }, cleared(mapOf(local.key to BIT_DONE), listOf(local), "", now))
+    }
+
+    @Test fun aLimitedRowKeepsItsDoneAndFailedNotifications() {
+        val limited = row.copy(state = "idle", limitResetsAtMs = reset)
+        assertEquals(listOf(BIT_INPUT), cancelled(mapOf(row.id to (BIT_DONE or BIT_FAILED)), limited))
+        // A mark that was clear before the limit is still clear.
+        assertEquals(listOf(BIT_INPUT, BIT_FAILED), cancelled(mapOf(row.id to BIT_DONE), limited))
+        // After the reset the row is not limited, and its own bits decide.
+        val saved = update(mapOf(row.id to (BIT_DONE or BIT_FAILED)), listOf(limited), now)
+        assertEquals(all, cancelled(saved, limited.copy(limitResetsAtMs = 0), nowMs = reset))
+    }
+
+    @Test fun aRowMissingFromTheUpdateKeepsItsNotifications() {
+        val other = Thread(id = "other", actionRequired = true)
+        val baseline = mapOf(row.id to BIT_DONE, other.id to BIT_INPUT)
+        val list = cleared(baseline, listOf(other), "", now)
+        assertEquals(listOf(Cleared(other.id, BIT_FAILED), Cleared(other.id, BIT_DONE)), list)
+        assertEquals(emptyList<Cleared>(), cleared(baseline, emptyList(), "", now))
+    }
+
+    @Test fun anArchivedRowCancelsAllKinds() {
+        val archived = row.copy(archived = true, completionAttention = true,
+            failedAttention = true, questionAttention = true, actionRequired = true)
+        assertEquals(all, cancelled(mapOf(row.id to 7), archived))
+        // The usage-limit marker (8) does not keep an archived row's marks.
+        assertEquals(all, cancelled(mapOf(row.id to 15), archived.copy(limitResetsAtMs = reset)))
+    }
+
+    @Test fun aRemoteRowCancelsOnlyOnAReadOfThePairedPc() {
+        val remote = row.copy(remote = true)
+        val baseline = mapOf(row.id to BIT_DONE)
+        // The paired PC marks its remote rows with its own tracker, so its clear bits are true.
+        assertEquals(all, cancelled(baseline, remote))
+        // Another engine starts a remote row that it sees for the first time with no mark, so its clear bits prove nothing.
+        assertEquals(emptyList<Int>(), cancelled(baseline, remote, engine = "aaaaaaaaaaaaaaaa"))
+        // A local row of that engine has the marks of that engine.
+        assertEquals(all, cancelled(baseline, row, engine = "aaaaaaaaaaaaaaaa"))
+    }
+
+    @Test fun aFirstRunCancelsNothing() {
+        assertEquals(emptyList<Cleared>(), cleared(null, listOf(row), "", now))
+        assertEquals(emptyList<Cleared>(), cleared(null, listOf(row.copy(remote = true)), "aaaaaaaaaaaaaaaa", now))
     }
 }

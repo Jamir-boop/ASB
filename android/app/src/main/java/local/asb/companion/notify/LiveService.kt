@@ -184,6 +184,7 @@ class LiveService : Service() {
                                 if (!app.resumed && app.store.token == token && !app.store.revoked) {
                                     val baseline = app.store.loadBaselineIfPaired(token, reply.engine)
                                     app.notifier.post(diff(baseline, threads, nowMs), reply.engine)
+                                    app.notifier.cancelCleared(cleared(baseline, threads, reply.engine, nowMs))
                                     app.store.saveBaselineIfPaired(token, AsbJson.encodeToString(update(baseline, threads, nowMs)), reply.engine)
                                 }
                             }

@@ -44,6 +44,7 @@ class CheckWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
                             val nowMs = System.currentTimeMillis()
                             if (shouldPost(inputData.getBoolean("manual", false), app.resumed)) {
                                 app.notifier.post(diff(baseline, reply.dashboard.threads, nowMs), reply.engine)
+                                app.notifier.cancelCleared(cleared(baseline, reply.dashboard.threads, reply.engine, nowMs))
                                 // An automatic check while the app is open must not mark new attention as seen.
                                 app.store.saveBaselineIfPaired(token,
                                     AsbJson.encodeToString(update(baseline, reply.dashboard.threads, nowMs)), reply.engine)

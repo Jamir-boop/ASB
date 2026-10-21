@@ -23,6 +23,19 @@ Needs input notifications with Open on PC and Read actions.
 check while the app is open does not save the baseline. Unpair removes the
 saved pairing and the app's notifications. Phone acceptance for Phase 7 is pending.
 
+A background read (the live service or the check) also cancels the notification
+of each kind whose mark is clear on the row now, for example Done after the user
+read the session on the PC. Android keeps about 50 notifications for one app and
+then drops new ones, so old notifications must go. The mark on the row decides,
+not a change since the last read: when the user reads a session while the app is
+open, its notification goes at the first read after the app goes to the
+background. A session that is missing from the read, a first read with no saved
+baseline, and the Done and Failed marks of a session with a usage limit keep
+their notifications. A read from an engine other than the paired PC also keeps
+the notifications of sessions of other machines, because that engine starts the
+row of such a session with no mark. A read from the paired PC cancels them like
+the notifications of local sessions. The session screen cancels nothing.
+
 Pairing uses TLS 1.3 and the SHA-256 of the full certificate. The app stores
 the paired token in one private SharedPreferences file. Backup and device
 transfer are disabled. Network and response errors keep the saved pairing;

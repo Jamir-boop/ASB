@@ -129,6 +129,18 @@ class Notifier(private val app: AsbApp) {
         summary(children() - tag)
     }
 
+    /** Cancels the active notifications of [cleared] and updates the group summary once. */
+    fun cancelCleared(cleared: List<Cleared>) {
+        // No notificationsAllowed check, unlike post(): a cancel needs no permission, and an old notification must go
+        // also when its kind is off now. An empty list (no baseline, no rows) makes no binder call.
+        if (cleared.isEmpty()) return
+        val active = manager.activeNotifications.mapNotNull { item -> item.tag?.let { it to item.id } }.toSet()
+        val gone = cleared.map { notificationTag(it.key, it.kind) to notificationId(it.key, it.kind) }.filter { it in active }.toSet()
+        if (gone.isEmpty()) return
+        for ((tag, id) in gone) manager.cancel(tag, id)
+        summary(children() - gone.map { it.first }.toSet())
+    }
+
     internal fun failed(tag: String, id: Int) {
         if (!notificationsAllowed(app)) return
         val old = manager.activeNotifications.firstOrNull { it.tag == tag && it.id == id } ?: return
