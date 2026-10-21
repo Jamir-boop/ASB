@@ -170,6 +170,29 @@ test('a tombstone for this machine makes the engine leave at once, from a member
   await assert.rejects(again.remove(id('b')), { statusCode: 409, message: 'This machine is not in a group.' });
 });
 
+test('memberIds gives the active members to the tracker, and null before the start and with no group', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'asb-group-members-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const file = path.join(home, 'group.json');
+  const gateway = { credentials: async () => ({ key: '', cert: '', fingerprint: 'a'.repeat(64) }), identity: async () => id('a'),
+    status: async () => ({ running: true, listening: [{ kind: 'lan', address: '192.168.1.10' }], port: 4630 }), devices: async () => [] };
+  const request = async () => ({ status: 503, body: null });
+  const timers = { setTimeout: () => ({ unref() {} }), clearTimeout: () => {} };
+  await saveGroup(file, group({ members: [member('a', 'debian'), member('b', 'homeLP'), member('c', 'workLP')],
+    removed: [{ machineId: id('c'), certFingerprint: 'c'.repeat(64), removedBy: id('a'), removedAtMs: 20 }] }));
+  const machine = createMachineGroup({ file, gateway: () => gateway, request, timers, hostName: 'pc', log: () => {} });
+  assert.equal(machine.memberIds(), null);
+  await machine.start();
+  assert.deepEqual(machine.memberIds(), [id('a'), id('b')]);
+  await machine.remove(id('b'));
+  assert.deepEqual(machine.memberIds(), [id('a')]);
+  await machine.leave();
+  assert.equal(machine.memberIds(), null);
+  const again = createMachineGroup({ file, gateway: () => gateway, request, timers, hostName: 'pc', log: () => {} });
+  await again.start();
+  assert.equal(again.memberIds(), null);
+});
+
 test('an invite after a port or address change saves them in the entry of this machine, so a new member polls the new ones', async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'asb-group-invite-'));
   t.after(() => rm(home, { recursive: true, force: true }));

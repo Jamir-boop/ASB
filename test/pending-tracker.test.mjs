@@ -314,3 +314,107 @@ test('mute and unmute are local session actions with an empty body', async (t) =
   assert.deepEqual([unmuted.changed, unmuted.threadId, unmuted.thread.muted], [true, id, false]);
   assert.equal(tracker.records[id].muted, 0);
 });
+
+const DAY = 24 * HOUR;
+const live = (atMs, ids = ['live']) => ({ generatedAtMs: atMs, providers: [],
+  threads: ids.map((rowId) => ({ id: rowId, state: 'idle', nativeUnread: null, completionAtMs: 0 })) });
+const savedRecords = async (statePath) => Object.keys(JSON.parse(await readFile(statePath, 'utf8')).records).sort();
+
+test('a record that ASB did not see for 30 days goes, and a pin, a mark, the drawer, Mute, or a Discard keeps it', async (t) => {
+  const statePath = path.join(await temp(t), 'pending.json');
+  const old = { seen: 0, working: 0, pending: 0, ack: 0, lastSeen: now - 31 * DAY };
+  const records = { plain: old, working: { ...old, working: 1 }, read: { ...old, seen: 9, pending: 9, ack: 9 },
+    pinned: old, manual: { ...old, manual: 1 }, drawer: { ...old, drawer: 1 }, muted: { ...old, muted: 1 }, discard: { ...old, discard: 1 },
+    retained: { ...old, retained: 'observed-completion' }, unread: { ...old, seen: 5, pending: 5 }, question: { ...old, questionSeen: 3 },
+    native: { ...old, nativeAt: 3 }, recent: { ...old, lastSeen: now - 29 * DAY } };
+  await writeFile(statePath, JSON.stringify({ version: 1, persistentUnread: true, pinnedOrder: ['pinned'], records }));
+  const tracker = new PendingTracker(statePath);
+  const dashboard = await tracker.observe(live(now));
+  assert.deepEqual(await savedRecords(statePath), ['discard', 'drawer', 'live', 'manual', 'muted', 'native', 'pinned', 'question', 'recent', 'retained', 'unread']);
+  assert.deepEqual(Object.keys(tracker.records).sort(), await savedRecords(statePath));
+  assert.deepEqual([dashboard.pinnedOrder, stateWarning(dashboard)], [['pinned'], undefined]);
+  // A kept record keeps its marks and its old time of sight. A record that is 29 days old goes 2 days later.
+  const unread = JSON.parse(await readFile(statePath, 'utf8')).records.unread;
+  assert.deepEqual([unread.seen, unread.pending, unread.ack, unread.lastSeen], [5, 5, 0, now - 31 * DAY]);
+  await tracker.observe(live(now + 2 * DAY));
+  assert.deepEqual(await savedRecords(statePath), ['discard', 'drawer', 'live', 'manual', 'muted', 'native', 'pinned', 'question', 'retained', 'unread']);
+});
+
+test('a record from an older ASB with no time of sight stays for 30 days from the first load', async (t) => {
+  const statePath = path.join(await temp(t), 'pending.json');
+  const start = Date.now();
+  await writeFile(statePath, JSON.stringify({ version: 1, persistentUnread: true, pinnedOrder: [], records: { legacy: { seen: 1, working: 0, pending: 0, ack: 0 } } }));
+  const tracker = new PendingTracker(statePath);
+  await tracker.observe(live(start));
+  assert.equal(tracker.records.legacy.lastSeen >= start, true);
+  await tracker.observe(live(start + 29 * DAY));
+  assert.deepEqual(Object.keys(tracker.records).sort(), ['legacy', 'live']);
+  await tracker.observe(live(start + 31 * DAY));
+  assert.deepEqual(await savedRecords(statePath), ['live']);
+});
+
+test('a scan moves the time of sight at most once a day, so it does not rewrite pending.json, and a row seen each day is never dropped', async (t) => {
+  const statePath = path.join(await temp(t), 'pending.json');
+  const tracker = new PendingTracker(statePath);
+  await tracker.observe(live(now));
+  const first = await readFile(statePath, 'utf8');
+  for (const offset of [2_000, HOUR, 23 * HOUR]) {
+    await tracker.observe(live(now + offset));
+    assert.equal(await readFile(statePath, 'utf8'), first, String(offset));
+  }
+  await tracker.observe(live(now + DAY));
+  assert.equal(JSON.parse(await readFile(statePath, 'utf8')).records.live.lastSeen, now + DAY);
+  // 'daily' is seen each day, 'gap' only on the first day.
+  await tracker.observe(live(now, ['daily', 'gap']));
+  for (let day = 1; day <= 40; day += 1) await tracker.observe(live(now + day * DAY, ['daily']));
+  assert.deepEqual(await savedRecords(statePath), ['daily']);
+});
+
+test('the records of a machine that left the group go with their pins, and nothing goes while the members are not known', async (t) => {
+  const statePath = path.join(await temp(t), 'pending.json');
+  const a = 'a'.repeat(16);
+  const b = 'b'.repeat(16);
+  const rows = [`m:${a}:one`, `m:${a}:two`, `m:${b}:one`, 'codex:local', `m:${b}`];
+  const tracker = new PendingTracker(statePath);
+  await tracker.observe(live(now, rows));
+  await tracker.setPinned(`m:${b}:one`, true);
+  await tracker.setPinned(`m:${a}:one`, true);
+  await tracker.markUnread(`m:${b}:two`);
+  // The rows are not in the next dashboards, so only the member rule can drop their records.
+  for (const members of [null, undefined]) {
+    await tracker.observe(live(now + 1000, ['live']), members);
+    assert.deepEqual(Object.keys(tracker.records).sort(), [...rows, 'live'].sort());
+  }
+  const present = await tracker.observe(live(now + 2000, ['live']), [a, 'c'.repeat(16)]);
+  assert.deepEqual(Object.keys(tracker.records).sort(), [`m:${a}:one`, `m:${a}:two`, `m:${b}`, 'codex:local', 'live'].sort());
+  assert.deepEqual(present.pinnedOrder, [`m:${a}:one`]);
+  assert.deepEqual(JSON.parse(await readFile(statePath, 'utf8')).pinnedOrder, [`m:${a}:one`]);
+  // A row that is still in the scan keeps its record, also when its machine is not in the list.
+  await tracker.observe(live(now + 3000, [`m:${a}:one`]), [b]);
+  assert.deepEqual(await savedRecords(statePath), [`m:${a}:one`, `m:${b}`, 'codex:local', 'live'].sort());
+  assert.deepEqual(JSON.parse(await readFile(statePath, 'utf8')).pinnedOrder, [`m:${a}:one`]);
+  await tracker.observe(live(now + 4000, ['live']), [b]);
+  assert.deepEqual(await savedRecords(statePath), [`m:${b}`, 'codex:local', 'live'].sort());
+  assert.deepEqual(JSON.parse(await readFile(statePath, 'utf8')).pinnedOrder, []);
+});
+
+test('the server gives the tracker the group members, so the records of a member that left go at the next scan', async (t) => {
+  const statePath = path.join(await temp(t), 'pending.json');
+  const a = 'a'.repeat(16);
+  const b = 'b'.repeat(16);
+  let members = [a, b];
+  // The merge lists the rows of the members that are in the group only.
+  const server = createSwitchboardServer({ pendingStatePath: statePath, dashboardWatchPaths: [], machineGroup: { merge: (dashboard) => dashboard, memberIds: () => members },
+    loadDashboard: async () => live(Date.now(), [`m:${a}:one`, ...members.includes(b) ? [`m:${b}:one`] : [], 'codex:local']) });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const scan = async () => {
+    server.invalidateDashboard('test', { hard: true });
+    await (await fetch(`http://127.0.0.1:${server.address().port}/api/dashboard`)).json();
+  };
+  await scan();
+  assert.deepEqual(await savedRecords(statePath), [`m:${a}:one`, `m:${b}:one`, 'codex:local'].sort());
+  members = [a];
+  await scan();
+  assert.deepEqual(await savedRecords(statePath), [`m:${a}:one`, 'codex:local'].sort());
+});

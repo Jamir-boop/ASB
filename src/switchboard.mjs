@@ -30,6 +30,9 @@ export const OFFLINE_MEMBER = Symbol('ASB offline member row');
 const READ_FIELDS = ['questionSeen', 'questionAck', 'nativeAt', 'nativeAck', 'nativeSeen',
   'discard', 'discardedAt', 'discardStart', 'discardEnd', 'discardNative', 'drawerSeen'];
 const RETAINED_SOURCES = ['native-unread', 'observed-completion', 'observed-failure'];
+// A record that ASB did not see for 30 days goes. The time of the last sight moves at most once a day, so a scan does not rewrite pending.json.
+const RECORD_KEEP_MS = 30 * 86_400_000;
+const RECORD_TOUCH_MS = 86_400_000;
 const STOPPED_KINDS = ['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled'];
 const MESSAGE_KEYS = Symbol('ASB session message keys');
 const TITLE_LIMIT = 300;
@@ -485,6 +488,8 @@ export class PendingTracker {
             this.records[id].discardNative = record.discardNative === 1 ? 1 : 0;
             this.records[id].drawer = record.drawer === 1 ? 1 : 0;
             this.records[id].muted = record.muted === 1 ? 1 : 0;
+            // A file from an older ASB has no time of sight: its records get the whole time from now.
+            this.records[id].lastSeen = Number.isFinite(record.lastSeen) && record.lastSeen >= 0 ? record.lastSeen : Date.now();
           } else this.bad = true;
         }
         if (Array.isArray(value.pinnedOrder)) {
@@ -515,15 +520,18 @@ export class PendingTracker {
     catch { this.saved = ''; this.saveWarning = 'ASB cannot save Pending state. Check its local state folder.'; }
   }
 
-  async observe(dashboard) {
+  // `members` is the list of the machine IDs of the active group members, or null while the group is not known.
+  async observe(dashboard, members = null) {
     await this.load();
+    const nowMs = Number(dashboard.generatedAtMs || Date.now());
     for (const row of dashboard.threads) {
       const completion = Math.max(Number(row.completionAtMs || 0), Number(row.failedAtMs || 0));
       let record = this.records[row.id];
       if (!record) record = this.records[row.id] = { seen: completion, working: 0, pending: 0, ack: 0, manual: 0, retained: '',
         questionSeen: 0, questionAck: 0, nativeAt: 0, nativeAck: 0, nativeSeen: 0,
         discard: 0, discardedAt: 0, discardStart: 0, discardEnd: 0, discardNative: 0,
-        drawer: 0, drawerSeen: 0, muted: 0 };
+        drawer: 0, drawerSeen: 0, muted: 0, lastSeen: nowMs };
+      if (nowMs - record.lastSeen >= RECORD_TOUCH_MS) record.lastSeen = nowMs;
       const task = row[DISCARD_TASK] || { atMs: completion, kind: row.lastOutcome === 'failed' ? 'failed' : completion ? 'task_complete' : '' };
       const newRoot = row.state === 'working' && task.rootStart > record.discardStart
         && task.rootEnd > record.discardStart && task.rootStart > task.rootEnd;
@@ -573,11 +581,29 @@ export class PendingTracker {
       if (discardedSuccess) record.drawerSeen = record.seen;
       this.apply(row);
     }
+    this.prune(nowMs, members, dashboard.threads);
     await this.save();
     dashboard.pinnedOrder = [...this.pinnedOrder];
     dashboard.persistentUnread = this.persistentUnread;
     if (this.warning) dashboard.providers.push({ id: 'asb-state', label: 'ASB', status: 'warning', message: this.warning });
     return dashboard;
+  }
+
+  // Drops the record of a row that ASB did not see for 30 days, unless it has a pin, a mark (unread, an unacknowledged result, question or native
+  // unread, or an armed Discard), the drawer, or Mute. Also drops the records of the rows of a machine that is not in `members` (it left the group),
+  // with their pins, but not the record of a row that is in this scan.
+  prune(nowMs, members, rows) {
+    const pinned = new Set(this.pinnedOrder);
+    const active = members && new Set(members);
+    const present = active && new Set(rows.map((row) => row.id));
+    for (const id in this.records) {
+      const record = this.records[id];
+      const machine = active && /^m:([a-f0-9]{16}):/.exec(id)?.[1];
+      const kept = pinned.has(id) || record.manual === 1 || record.drawer === 1 || record.muted === 1 || record.discard === 1 || record.retained
+        || record.pending > record.ack || record.questionSeen > record.questionAck || record.nativeAt > record.nativeAck;
+      if (machine && !active.has(machine) && !present.has(id) || nowMs - record.lastSeen > RECORD_KEEP_MS && !kept) delete this.records[id];
+    }
+    this.pinnedOrder = this.pinnedOrder.filter((id) => this.records[id]);
   }
 
   apply(row) {
@@ -812,7 +838,7 @@ export function createSwitchboardServer(options = {}) {
       // Before the merge, the rows are local only: they set the scan interval of this engine.
       const localRefreshIntervalMs = switchboardRefreshInterval(loaded);
       options.machineGroup?.merge(loaded);
-      const dashboard = await tracker.observe(loaded);
+      const dashboard = await tracker.observe(loaded, options.machineGroup?.memberIds?.());
       dashboard.sourcesRevision = sources ? appSourcesRevision(sources) : null;
       // The sound baseline keeps the bits of an offline member's rows, so its return plays only what is new.
       sound?.({ ...dashboard, threads: dashboard.threads.filter((row) => !row[OFFLINE_MEMBER]) });
