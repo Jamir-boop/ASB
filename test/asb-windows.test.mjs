@@ -208,6 +208,14 @@ test('the Windows engine writes its log with no console, or when the tray sets A
   assert.equal(writesEngineLog({ ASB_ENGINE_LOG: '0' }, true), false);
 });
 
+// PowerShell names ignore case, and a parameter keeps its type: `$open = <menu item>` wrote to [switch]$Open, so the tray stopped before it started the engine.
+test('the tray script assigns no value to its switch parameter', async () => {
+  const script = await readFile(new URL('../scripts/asb-tray.ps1', import.meta.url), 'utf8');
+  const switches = [...script.match(/^param\((.*)\)$/m)[1].matchAll(/\[switch\]\$(\w+)/gi)].map(([, name]) => name);
+  assert.deepEqual(switches, ['Open']);
+  for (const name of switches) assert.doesNotMatch(script, new RegExp(`\\$${name}\\s*=`, 'i'), name);
+});
+
 test('asb engine start on Windows starts no second tray when an engine answers, and status names the tray mode', async () => {
   const running = engineFakes({ running: [{ pid: 7, port: 4629 }] });
   assert.equal(await engineMain(['start'], running.context), 0);

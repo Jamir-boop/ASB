@@ -71,13 +71,14 @@ $icon = New-Object System.Windows.Forms.NotifyIcon
 $icon.Icon = [System.Drawing.Icon]::FromHandle($bitmap.GetHicon())
 $icon.Text = 'ASB'
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
-$open = $menu.Items.Add('Open ASB')
+# Not $open: PowerShell names ignore case, and $Open is the switch parameter.
+$openItem = $menu.Items.Add('Open ASB')
 [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $pair = $menu.Items.Add('Copy phone pairing link')
 $quit = $menu.Items.Add('Quit ASB')
 $icon.ContextMenuStrip = $menu
 
-$open.add_Click({ Open-Board })
+$openItem.add_Click({ Open-Board })
 $icon.add_MouseClick({
   if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Open-Board }
 })
