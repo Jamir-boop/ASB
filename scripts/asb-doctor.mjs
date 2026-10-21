@@ -156,6 +156,13 @@ export async function collect({ env = process.env, execFile = execFileAsync, rea
   add('autostart', 'Options', autostart ? 'ok' : 'info', `Autostart: ${autostart || 'not installed'}`);
   const fallback = !(typeof env.XDG_RUNTIME_DIR === 'string' && path.posix.isAbsolute(env.XDG_RUNTIME_DIR));
   add('runtime', 'Options', fallback ? 'info' : 'ok', `Runtime folder: ${runtimeDir(env)}${fallback ? ' (XDG_RUNTIME_DIR is not set)' : ''}`);
+  // Plan 15: the desktop file for the codex: and claude: links. A failed query or a missing xdg-mime means "no handler".
+  const apps = ['codex', 'claude'];
+  const handlers = await Promise.all(apps.map(async (app) => {
+    try { return String((await execFile('xdg-mime', ['query', 'default', `x-scheme-handler/${app}`], { env, timeout: 5000 })).stdout).split('\n')[0].trim(); } catch { return ''; }
+  }));
+  add('links', 'Options', handlers.every(Boolean) ? 'ok' : 'info',
+    `Links: ${apps.map((app, index) => `${app}: ${handlers[index] || `none: ASB cannot open ${app} sessions until the app handles ${app}: links`}`).join(', ')}`);
 
   // Commands (plan 10.2). ASB only prints them.
   const route = !facts || nodeOld ? nodeRoute(release, family, { mode }) : null;
