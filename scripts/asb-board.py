@@ -8,8 +8,13 @@ from pathlib import Path
 source = Path(__file__).with_name("asb-native.py")
 spec = importlib.util.spec_from_file_location("asb_native", source)
 board = importlib.util.module_from_spec(spec)
-base = os.environ.get("XDG_CACHE_HOME", "")
-cache = Path(base if os.path.isabs(base) else Path.home() / ".cache") / "asb" / "pycache"
+# The same folders as cacheDir in src/platform-paths.mjs, plus pycache.
+if os.name == "nt":
+    base = os.environ.get("LOCALAPPDATA", "")
+    cache = Path(base if os.path.isabs(base) else Path.home() / "AppData" / "Local") / "asb" / "cache" / "pycache"
+else:
+    base = os.environ.get("XDG_CACHE_HOME", "")
+    cache = Path(base if os.path.isabs(base) else Path.home() / ".cache") / "asb" / "pycache"
 # Only the board code uses the cache folder: a __pycache__ next to it stops the next install (verifyRelease), and a
 # prefix for the whole process would compile every imported module again.
 previous = sys.pycache_prefix, sys.dont_write_bytecode
