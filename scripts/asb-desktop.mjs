@@ -17,10 +17,8 @@ function stop(code = 0) {
 }
 
 async function start() {
-  const service = await startEngine();
-  if (stopping) return;
-  // The check comes before the icon registration, so that a run without the window writes nothing.
-  const board = await boardCheck({ env: process.env });
+  // The board check runs while the engine starts. Its result comes before the icon registration, so that a run without the window writes nothing.
+  const [service, board] = await Promise.all([startEngine(), boardCheck({ env: process.env })]);
   if (stopping) return;
   if (!board.ok) {
     console.error(`ASB runs without its window on this system: ${board.reason} The engine runs for the phone and your other machines. Run asb doctor for details.`);

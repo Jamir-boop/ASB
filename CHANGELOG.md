@@ -9,6 +9,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - ASB Bridge is now `0.6.0`: its shipped files changed for the Windows sends by reference, and Codex loads a changed plugin only with a new version.
 - ASB Bridge can now send by reference to a session on the same Windows PC. Before the first byte, it checks that the pipe belongs to the target process of the same Windows user. An older bridge on Windows gets `bridge-upgrade-required`. Sends by reference to another machine of the group now also work from and to Windows; on Windows the receipts need the message relay (Bun).
 - Changed the board start: the board window opens a little sooner, because Python keeps the compiled board code in `~/.cache/asb/pycache`.
+- Changed the board launcher: it now runs the board check (about 0.1 s) while the engine starts, not after it. The launcher still decides on the window before it registers the icon.
 - Changed the engine to use less CPU: with full file watch coverage, it scans when a session file changes, when another machine of the group sends a change, or when a status time limit comes, with a safety scan every 30 seconds. The Codex reader no longer queries the Codex database again when the database did not change.
 - Changed the machine group: archived sessions of another machine no longer show in the Archive filter.
 - Fixed the Codex reader for Codex database changes: a missing column no longer empties the Codex list.
