@@ -27,10 +27,15 @@ const probe = (values) => JSON.stringify({ python: '3.13.5', gi: '3.50.0', gtk: 
 const UNIT = '/home/test/.config/systemd/user/asb.service';
 const ENTRY = '/home/test/.config/autostart/asb-engine.desktop';
 
+// The link fakes: `links` is the desktop file of each scheme (null: xdg-mime is missing, an Error: xdg-mime fails).
+// XDG_MIME is the two queries that doctor runs.
+const LINKS = { codex: 'chatgpt.desktop', claude: 'com.anthropic.Claude.desktop' };
+const XDG_MIME = ['codex', 'claude'].map((scheme) => ['xdg-mime', 'query', 'default', `x-scheme-handler/${scheme}`]);
+
 // The firewall fakes: `phone` is the /api/phone reply of the running engine (null: no engine), `firewalld` the --state output
 // (null: firewall-cmd is missing), and `zones` the zone of each interface.
 async function fakeSystem(t, { release, bins = ALL_BINS, values = {}, node = NODE24, ostree = false, files = {}, env = {}, phone = null,
-  firewalld = null, zones = {} }) {
+  firewalld = null, zones = {}, links = LINKS }) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'asb-doctor-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const bin = path.join(directory, 'bin');
@@ -55,6 +60,11 @@ async function fakeSystem(t, { release, bins = ALL_BINS, values = {}, node = NOD
       calls.push([file, ...args]);
       if (file === PYTHON) return { stdout: `${probe(values)}\n` };
       if (file === path.join(bin, 'openssl')) return { stdout: 'OpenSSL 3.5.1 1 Jul 2025\n' };
+      if (file === 'xdg-mime' && links !== null) {
+        if (links instanceof Error) throw links;
+        const handler = links[args[2].replace('x-scheme-handler/', '')];
+        return { stdout: handler ? `${handler}\n` : '' };
+      }
       if (file === 'firewall-cmd' && firewalld !== null) {
         if (args[0] === '--state') {
           if (firewalld === 'running') return { stdout: 'running\n' };
@@ -98,9 +108,11 @@ test('Debian 13 with all checks ok prints the checks of Appendix D and no comman
     `  ok       Bun (${system.bin}/bun), for ASB Bridge`,
     '  info     Autostart: not installed',
     '  ok       Runtime folder: /run/user/1000/asb',
+    '  ok       Links: codex: chatgpt.desktop, claude: com.anthropic.Claude.desktop',
   ]);
-  // collect runs only the Python probe and openssl version, and reads only os-release, the ostree marker, and the two autostart files.
-  assert.deepEqual(system.calls, [[path.join(system.bin, 'openssl'), 'version'], [PYTHON, '-c', PYTHON_PROBE]]);
+  // collect runs only the Python probe, openssl version, and the two xdg-mime queries, and reads only os-release, the ostree marker,
+  // and the two autostart files.
+  assert.deepEqual(system.calls, [[path.join(system.bin, 'openssl'), 'version'], [PYTHON, '-c', PYTHON_PROBE], ...XDG_MIME]);
   assert.deepEqual(system.reads, ['/etc/os-release', '/run/ostree-booted', UNIT, ENTRY]);
 });
 
@@ -127,6 +139,7 @@ test('Fedora without the board packages prints one sudo dnf install line', async
     '  info     Bun: not found. ASB Bridge needs it.',
     '  info     Autostart: not installed',
     '  ok       Runtime folder: /run/user/1000/asb',
+    '  ok       Links: codex: chatgpt.desktop, claude: com.anthropic.Claude.desktop',
     '',
     'Install the missing packages:',
     '  sudo dnf install python3-gobject gtk4 gobject-introspection libadwaita',
@@ -140,7 +153,7 @@ test('Ubuntu 22.04 runs without the window and gets no board packages', async (t
   const system = await fakeSystem(t, { release: 'ubuntu2204', values: { python: '3.10.12', gi: '3.42.1', gtk: [4, 6, 9], adw: [1, 1, 7], trayHost: false } });
   const { code, out } = await system.run();
   assert.equal(code, 0);
-  assert.deepEqual(out.slice(6, 17), [
+  assert.deepEqual(out.slice(6, 18), [
     'Window',
     `  ok       PyGObject 3.42.1 (Python 3.10.12, ${PYTHON})`,
     '  old      GTK 4.6.9, needs 4.12 or later',
@@ -152,8 +165,9 @@ test('Ubuntu 22.04 runs without the window and gets no board packages', async (t
     `  ok       Bun (${system.bin}/bun), for ASB Bridge`,
     '  info     Autostart: not installed',
     '  ok       Runtime folder: /run/user/1000/asb',
+    '  ok       Links: codex: chatgpt.desktop, claude: com.anthropic.Claude.desktop',
   ]);
-  assert.deepEqual(out.slice(17), ['', 'This system has GTK 4.6 and Libadwaita 1.1. The ASB window needs GTK 4.12 and Libadwaita 1.4, '
+  assert.deepEqual(out.slice(18), ['', 'This system has GTK 4.6 and Libadwaita 1.1. The ASB window needs GTK 4.12 and Libadwaita 1.4, '
     + 'so ASB runs without its window. The phone and your other machines still show this machine\'s sessions.']);
   const data = await collect(system.deps);
   assert.deepEqual(data.board, { ok: false, reason: 'GTK 4.6 is older than 4.12. Libadwaita 1.1 is older than 1.4.' });
@@ -180,8 +194,8 @@ test('AlmaLinux 9 without Node.js prints the module command first and no nodejs 
     `  ok       xdg-open (${system.bin}/xdg-open)`]);
   assert.deepEqual(out.slice(out.indexOf('Install the missing packages:')), ['Install the missing packages:',
     '  sudo dnf module install nodejs:24', '  sudo dnf install openssl']);
-  // Only the Python probe ran: openssl is missing.
-  assert.deepEqual(system.calls, [[PYTHON, '-c', PYTHON_PROBE]]);
+  // Only the Python probe and the two xdg-mime queries ran: openssl is missing.
+  assert.deepEqual(system.calls, [[PYTHON, '-c', PYTHON_PROBE], ...XDG_MIME]);
   const json = await system.run(['--json']);
   assert.equal(json.code, 1);
   const data = JSON.parse(json.out.join('\n'));
@@ -236,7 +250,8 @@ test('image-based systems and Gentoo print their notes after the commands', asyn
 });
 
 test('Autostart counts only a file with the ASB marker, and the runtime folder shows the fallback', async (t) => {
-  const autostart = async (files, env) => (await (await fakeSystem(t, { release: 'debian13', files, env })).lines()).slice(-2);
+  // The last two lines before Links.
+  const autostart = async (files, env) => (await (await fakeSystem(t, { release: 'debian13', files, env })).lines()).slice(-3, -1);
   assert.deepEqual(await autostart({ [UNIT]: '# Generated by ASB: asb.service\n[Unit]\n' }),
     ['  ok       Autostart: systemd user service', '  ok       Runtime folder: /run/user/1000/asb']);
   assert.deepEqual((await autostart({ [ENTRY]: '[Desktop Entry]\n# Generated by ASB: engine autostart\n' }))[0], '  ok       Autostart: XDG autostart');
@@ -252,6 +267,55 @@ test('Autostart counts only a file with the ASB marker, and the runtime folder s
   assert.deepEqual(system.reads.slice(-2), ['/config/systemd/user/asb.service', '/config/autostart/asb-engine.desktop']);
 });
 
+test('Links shows the desktop file of the codex and claude handlers, in the text and in the JSON', async (t) => {
+  const system = await fakeSystem(t, { release: 'debian13' });
+  const { code, out } = await system.run();
+  const detail = 'Links: codex: chatgpt.desktop, claude: com.anthropic.Claude.desktop';
+  assert.equal(code, 0);
+  assert.equal(out.at(-1), `  ok       ${detail}`);
+  const { checks } = JSON.parse((await system.run(['--json'])).out.join('\n'));
+  assert.deepEqual(checks.slice(-2).map((check) => check.id), ['runtime', 'links']);
+  assert.deepEqual(checks.at(-1), { id: 'links', group: 'Options', status: 'ok', detail });
+  // Only the first line of the answer counts, trimmed.
+  const lines = await (await fakeSystem(t, { release: 'debian13', links: { ...LINKS, codex: ' chatgpt.desktop \nother.desktop' } })).lines();
+  assert.equal(lines.at(-1), `  ok       ${detail}`);
+});
+
+test('Links gives the info line for an app with empty output and keeps the handler of the other app', async (t) => {
+  for (const [app, line] of [
+    ['codex', '  info     Links: codex: none: ASB cannot open codex sessions until the app handles codex: links, claude: com.anthropic.Claude.desktop'],
+    ['claude', '  info     Links: codex: chatgpt.desktop, claude: none: ASB cannot open claude sessions until the app handles claude: links'],
+  ]) {
+    const system = await fakeSystem(t, { release: 'debian13', links: { ...LINKS, [app]: '' } });
+    const { code, out } = await system.run();
+    assert.equal(code, 0);
+    assert.equal(out.at(-1), line);
+    assert.equal(JSON.parse((await system.run(['--json'])).out.join('\n')).checks.at(-1).status, 'info');
+  }
+});
+
+test('Links gives the info line for both apps when xdg-mime is missing or fails', async (t) => {
+  const both = '  info     Links: codex: none: ASB cannot open codex sessions until the app handles codex: links, '
+    + 'claude: none: ASB cannot open claude sessions until the app handles claude: links';
+  const missing = await fakeSystem(t, { release: 'debian13', links: null });
+  const failed = await fakeSystem(t, { release: 'debian13', links: Object.assign(new Error('Command failed'), { code: 1, stdout: '' }) });
+  for (const system of [missing, failed]) {
+    const { code, out } = await system.run();
+    assert.equal(code, 0);
+    assert.equal(out.at(-1), both);
+    assert.equal(JSON.parse((await system.run(['--json'])).out.join('\n')).checks.at(-1).status, 'info');
+  }
+});
+
+test('Links runs only xdg-mime, with the two read-only queries', async (t) => {
+  for (const links of [LINKS, null, new Error('Command failed')]) {
+    const system = await fakeSystem(t, { release: 'debian13', links });
+    await collect(system.deps);
+    // The two probes before it are openssl and Python.
+    assert.deepEqual(system.calls.slice(2), XDG_MIME);
+  }
+});
+
 test('doctor exit codes, usage, and the read-only programs', async (t) => {
   const forbidden = /^(sudo|doas|pkexec|rpm-ostree|transactional-update|apt|apt-get|dnf|zypper|pacman|apk|xbps-install|emerge|eopkg|firewall-cmd|ufw)$/;
   const runs = [];
@@ -261,9 +325,10 @@ test('doctor exit codes, usage, and the read-only programs', async (t) => {
     const { code } = await system.run();
     runs.push(code);
     for (const [file] of system.calls) {
-      assert.ok([PYTHON, path.join(system.bin, 'openssl')].includes(file), file);
+      assert.ok([PYTHON, path.join(system.bin, 'openssl'), 'xdg-mime'].includes(file), file);
       assert.doesNotMatch(path.basename(file), forbidden);
     }
+    assert.deepEqual(system.calls.filter(([file]) => file === 'xdg-mime'), XDG_MIME);
   }
   assert.deepEqual(runs, [0, 0, 1, 0]);
   const system = await fakeSystem(t, { release: 'debian13' });
@@ -296,8 +361,8 @@ test('firewalld with a zone prints the rule of Appendix D after the Optional blo
     '  sudo firewall-cmd --reload',
   ]);
   // Every program that doctor ran: only the read-only queries.
-  assert.deepEqual(system.calls, [[path.join(system.bin, 'openssl'), 'version'], [PYTHON, '-c', PYTHON_PROBE], ['firewall-cmd', '--state'],
-    ['firewall-cmd', '--get-zone-of-interface=wlp2s0']]);
+  assert.deepEqual(system.calls, [[path.join(system.bin, 'openssl'), 'version'], [PYTHON, '-c', PYTHON_PROBE], ...XDG_MIME,
+    ['firewall-cmd', '--state'], ['firewall-cmd', '--get-zone-of-interface=wlp2s0']]);
   assert.deepEqual(system.requests, [[system.runtime, '/api/phone']]);
   const json = JSON.parse((await system.run(['--json'])).out.join('\n'));
   assert.deepEqual(json.commands.firewall, [['sudo', 'firewall-cmd', '--permanent', '--zone=public',
@@ -308,7 +373,7 @@ test('firewalld without a zone, ufw, ufw turned off, and no firewall', async (t)
   const tail = async (options) => {
     const system = await fakeSystem(t, { release: 'debian13', phone: { ...PHONE, bindAddresses: ['192.168.1.20', '10.147.0.1'] }, ...options });
     const data = await collect(system.deps);
-    return { lines: format(data).slice(17), firewall: data.commands.firewall, reads: system.reads };
+    return { lines: format(data).slice(18), firewall: data.commands.firewall, reads: system.reads };
   };
   const rule = (address) => `--add-rich-rule='rule family="ipv4" destination address="${address}" port port="4630" protocol="tcp" accept'`;
   assert.deepEqual((await tail({ firewalld: 'running' })).lines, ['', 'Phone access and machine links through firewalld:',
@@ -335,7 +400,7 @@ test('the firewall lines use doas, and an unusual name or port gives the note an
   assert.deepEqual(format(data).slice(-3), ['Phone access and machine links through firewalld:', NOTE('192.168.1.20'), NOTE('10.147.0.1')]);
   assert.deepEqual(data.commands.firewall, []);
   // The unusual interface name goes to no program.
-  assert.deepEqual(system.calls.slice(2), [['firewall-cmd', '--state'], ['firewall-cmd', '--get-zone-of-interface=ztabc']]);
+  assert.deepEqual(system.calls.slice(2 + XDG_MIME.length), [['firewall-cmd', '--state'], ['firewall-cmd', '--get-zone-of-interface=ztabc']]);
   const port = await fakeSystem(t, { release: 'debian13', phone: { ...PHONE, port: 70000 }, files: { [UFW]: 'ENABLED=yes\n' } });
   assert.deepEqual((await port.lines()).slice(-2), ['Phone access and machine links through ufw:', NOTE('192.168.1.20')]);
 });
@@ -347,7 +412,7 @@ test('doctor prints no firewall lines when the engine is off, access is off, or 
     const { code, out } = await system.run();
     assert.equal(code, 0);
     assert.ok(!out.some((line) => line.includes('firewall') || line.startsWith('error')), String(phone));
-    assert.deepEqual(system.calls.slice(2), []);
+    assert.deepEqual(system.calls.slice(2 + XDG_MIME.length), []);
     assert.equal(system.requests.length, phone ? 1 : 0);
   }
   // Setup step 0 leaves out the firewall part.
