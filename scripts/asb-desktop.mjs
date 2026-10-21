@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boardCheck } from '../src/linux-system.mjs';
-import { startEngine } from './asb-engine.mjs';
+import { startEngine, startWindowsEngine } from './asb-engine.mjs';
 import { registerAppIcon } from './asb-icon.mjs';
 
 let window;
@@ -17,8 +17,9 @@ function stop(code = 0) {
 }
 
 async function start() {
+  const windows = process.platform === 'win32';
   // The board check runs while the engine starts. Its result comes before the icon registration, so that a run without the window writes nothing.
-  const [service, board] = await Promise.all([startEngine(), boardCheck({ env: process.env })]);
+  const [service, board] = await Promise.all([windows ? startWindowsEngine() : startEngine(), boardCheck({ env: process.env })]);
   if (stopping) return;
   if (!board.ok) {
     console.error(`ASB runs without its window on this system: ${board.reason} The engine runs for the phone and your other machines. Run asb doctor for details.`);
@@ -26,7 +27,7 @@ async function start() {
     return;
   }
   try {
-    if (process.env.ASB_SYSTEM_INSTALL !== '1') {
+    if (!windows && process.env.ASB_SYSTEM_INSTALL !== '1') {
       const registration = await registerAppIcon({ launcherExecutable: process.env.ASB_INSTALLED_LAUNCHER });
       if (registration.message) console.warn(registration.message);
     }
@@ -37,6 +38,7 @@ async function start() {
   const url = `http://127.0.0.1:${service.port}`;
   window = spawn(board.python, [fileURLToPath(new URL('./asb-board.py', import.meta.url)), url], {
     stdio: ['ignore', 'inherit', 'inherit'], env: { ...process.env, ASB_SOURCE_TOKEN: service.sourceToken },
+    ...(windows ? { windowsHide: true } : {}),
   });
   window.once('error', (error) => {
     console.error(`Cannot open the native ASB window: ${error.message}. Use system Python 3 or npm start for the web view.`);
@@ -52,8 +54,8 @@ async function start() {
 }
 // Opens the board: starts the engine when it is not running, then the native window as its client.
 export function main() {
-  if (process.platform !== 'linux') {
-    console.error('The ASB desktop launcher requires Linux. Use npm start and open the local address.');
+  if (process.platform !== 'linux' && process.platform !== 'win32') {
+    console.error('The ASB desktop launcher requires Linux or Windows. Use npm start and open the local address.');
     process.exit(1);
   }
   process.once('SIGINT', () => stop());

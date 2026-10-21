@@ -61,7 +61,7 @@ async function chooseAddresses(current, parsed, { input, output, print }) {
 async function run(parsed, context) {
   const { env, platform, print, installService, installEngine, find, waitMs, node, doctor, execFile, read } = context;
   // 0. Check the system, as asb doctor does.
-  if (platform === 'linux') {
+  if (platform === 'linux' || platform === 'win32') {
     const data = await doctor();
     for (const line of format(data)) print(line);
     if (!engineReady(data)) throw failure('The ASB engine cannot run on this system. Install the missing packages, then run asb setup again.');
@@ -90,7 +90,7 @@ async function run(parsed, context) {
     for (const line of lines) print(line);
   }
   // 4. The bridge, and 5. the group.
-  print(platform === 'win32' ? 'The bridge is not available on Windows yet.' : 'To let agents send messages, run: asb bridge install --all');
+  print('To let agents send messages, run: asb bridge install --all');
   print(platform === 'win32' ? 'On a machine in the group: asb group invite. Here: asb group join --name <name>, then paste the link.'
     : "On a machine in the group: asb group invite. Here: asb group join '<link>' --name <name>.");
 }
@@ -98,7 +98,7 @@ async function run(parsed, context) {
 export async function main(args = process.argv.slice(2), { env = process.env, platform = process.platform, input = process.stdin,
   output = process.stdout, print = (line) => output.write(`${line}\n`), printError = (line) => process.stderr.write(`${line}\n`),
   installService = serviceMain, installEngine = (argv) => engineMain(argv, { platform, env }), find = findRunningService,
-  node = process.execPath, waitMs = 20_000, doctor = () => collect({ env, firewall: false }), execFile = execFileAsync, read = readText } = {}) {
+  node = process.execPath, waitMs = 20_000, doctor = () => collect({ env, platform, firewall: false }), execFile = execFileAsync, read = readText } = {}) {
   const parsed = parseArgs(args);
   if (!parsed) { printError(usage); return 2; }
   try {

@@ -202,7 +202,14 @@ The main ASB server listens only on `127.0.0.1` and needs no rule. Phone access 
 
 Windows needs Node.js `22.13` or later. Use the npm commands of [Install with npm](#install-with-npm). On Windows, `asb setup` also prints the firewall rule to run.
 
-On Windows, ASB has statuses only: the engine reads Codex and Claude on that PC for the phone and the machine group. It has no window. ASB Bridge and messages between machines also work on Windows. See [Windows](ASB.md#windows).
+On Windows, the engine reads Codex and Claude on that PC for the phone and the machine group. ASB `1.10.0` runs only the engine on Windows. The ASB window, the Start menu entry, `asb doctor`, and the PC sounds on Windows are in the current source, which comes after `1.10.0`. The ASB window needs MSYS2 Python with PyGObject, GTK `>=4.12`, and Libadwaita `>=1.4`; without it, only the engine runs. To get the window, install MSYS2 and these packages. `asb doctor` prints these commands (the first only when MSYS2 is missing) and never runs them:
+
+```powershell
+winget install --id MSYS2.MSYS2 -e
+C:\msys64\usr\bin\pacman.exe -S --needed mingw-w64-ucrt-x86_64-python-gobject mingw-w64-ucrt-x86_64-gtk4 mingw-w64-ucrt-x86_64-libadwaita
+```
+
+Then run `asb`, select **Open ASB** in the tray icon, or select ASB in the Start menu (`asb setup` adds it). The window needs a signed-in desktop session. MSYS2 has no Python `qrcode` package, so Preferences shows the pairing link and no QR code on Windows. ASB Bridge and messages between machines also work on Windows. See [Windows](ASB.md#windows).
 
 ## Node.js
 

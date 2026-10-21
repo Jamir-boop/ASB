@@ -63,3 +63,24 @@ jobs:
       - run: bun run check
       # The tests that need Unix socket files, /tmp, modes, links, or signals skip on Windows (test.skipIf).
       - run: bun test
+  board-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            mingw-w64-ucrt-x86_64-python-gobject
+            mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-libadwaita
+      # The real launcher opens the real GTK board against a fake engine and checks its window image (not in test/windows-tests.json: that job has no GTK).
+      - run: node --test --no-experimental-strip-types test/windows-board.test.mjs
+        env:
+          ASB_BOARD_SMOKE: '1'
+          ASB_PYTHON: ${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\python.exe

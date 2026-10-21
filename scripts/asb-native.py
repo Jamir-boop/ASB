@@ -2,6 +2,7 @@
 """Native GNOME view for the local ASB session API."""
 import json
 import math
+import ntpath
 from http.client import HTTPConnection, HTTPException
 import os
 import re
@@ -335,8 +336,21 @@ def column_moves(current, target):
     return [card for card in current if card not in stay], [(index, card) for index, card in enumerate(target) if card not in stay]
 
 
+# MSYS2 has no Python qrcode package, so the board on Windows shows no QR code.
+QR_HELP = ("Windows shows no QR code. Use Copy link." if os.name == "nt"
+           else "Install the Python qrcode module and PyGObject cairo support. Run asb doctor for the command.")
 THEME_KEYS = ("background", "text", "accent", "muted", "divider")
-THEME_PATH = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "asb" / "theme.json"
+
+
+def config_dir(env=os.environ, os_name=os.name):
+    """The ASB config folder (configDir in src/platform-paths.mjs); on Linux a relative XDG_CONFIG_HOME stays as it is."""
+    if os_name == "nt":
+        appdata = env.get("APPDATA", "")
+        return (Path(appdata) if ntpath.isabs(appdata) else Path.home() / "AppData" / "Roaming") / "asb"
+    return Path(env.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "asb"
+
+
+THEME_PATH = config_dir() / "theme.json"
 LAYOUT_PATH = THEME_PATH.with_name("layout.json")
 
 
@@ -742,10 +756,12 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
     full_path = row.get("cwd") or row.get("projectName") or "No project folder"
     path = full_path
     home = str(Path(home_dir))
+    # A Windows home (a drive or UNC root) uses a backslash; in a Linux path a backslash is part of a file name.
+    separator = "\\" if ntpath.splitdrive(home)[0] else "/"
     if path == home:
         path = "~"
-    elif path.startswith(home.rstrip("/") + "/"):
-        path = "~" + path[len(home.rstrip("/")):]
+    elif path.startswith(home.rstrip(separator) + separator):
+        path = "~" + path[len(home.rstrip(separator)):]
     state = row.get("state", "unknown")
     state = state if state in STATES else "unknown"
     state_text = state.capitalize() + " · " + (working_duration(row, now_ms) or row_meta(row, now_ms).split(" · ")[1])
@@ -2012,7 +2028,7 @@ class PhoneEditor(Gtk.Box):
         self.copy = Gtk.Button(label="Copy link", halign=Gtk.Align.START)
         self.copy.connect("clicked", self.copy_pairing)
         self.pairing.append(self.copy)
-        self.qr_help = label("Install the Python qrcode module and PyGObject cairo support. Run asb doctor for the command.", "caption")
+        self.qr_help = label(QR_HELP, "caption")
         self.qr_help.set_wrap(True)
         self.pairing.append(self.qr_help)
         self.append(self.pairing)
@@ -2326,7 +2342,7 @@ class MachinesEditor(Gtk.Box):
         self.link.set_wrap_mode(Pango.WrapMode.CHAR)
         side.append(self.link)
         side.append(self.button("Copy link", self.copy_link))
-        self.qr_help = self.text("Install the Python qrcode module and PyGObject cairo support. Run asb doctor for the command.")
+        self.qr_help = self.text(QR_HELP)
         side.append(self.qr_help)
         share.append(side)
         self.invite_box.append(share)
@@ -5688,8 +5704,10 @@ def main():
         return 1
     GLib.set_application_name("ASB · Agent Switch Board")
     application = SwitchboardApplication(base)
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        unix_signal_add(GLib.PRIORITY_DEFAULT, sig, application.close_windows)
+    # On Windows the launcher ends the window process, and GLib has no unix_signal_add.
+    if os.name != "nt":
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            unix_signal_add(GLib.PRIORITY_DEFAULT, sig, application.close_windows)
     return application.run([sys.argv[0]])
 
 

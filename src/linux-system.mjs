@@ -8,6 +8,8 @@ import { findExecutable } from './platform-paths.mjs';
 // The tools that ASB needs on Linux (plan L1, L3). Every PATH search uses findExecutable.
 const execFileAsync = promisify(execFileCallback);
 export const SYSTEM_PYTHON = '/usr/bin/python3';
+// The default MSYS2 UCRT64 install; it has GTK 4 and Libadwaita for the board.
+export const MSYS2_PYTHON = 'C:\\msys64\\ucrt64\\bin\\python.exe';
 export const BOARD_FLOORS = { python: [3, 9], gtk: [4, 12], adw: [1, 4] };
 
 // One JSON object on stdout. It must run on old Python releases too, so that doctor can report their version.
@@ -76,11 +78,14 @@ async function isExecutableFile(file) {
 }
 
 // An absolute ASB_PYTHON is the only candidate; the user or a package chose it.
-export async function pythonCandidates(env = process.env, { system = SYSTEM_PYTHON } = {}) {
-  if (typeof env.ASB_PYTHON === 'string' && path.isAbsolute(env.ASB_PYTHON)) return [env.ASB_PYTHON];
+// Else /usr/bin/python3 then python3 on PATH; on win32, MSYS2 Python then python on PATH (PATHEXT).
+export async function pythonCandidates(env = process.env, { platform = process.platform,
+  system = platform === 'win32' ? MSYS2_PYTHON : SYSTEM_PYTHON } = {}) {
+  const windows = platform === 'win32';
+  if (typeof env.ASB_PYTHON === 'string' && (windows ? path.win32 : path).isAbsolute(env.ASB_PYTHON)) return [env.ASB_PYTHON];
   const candidates = [];
   if (await isExecutableFile(system)) candidates.push(system);
-  const found = await findExecutable('python3', { env });
+  const found = await findExecutable(windows ? 'python' : 'python3', { platform, env });
   if (found && !candidates.includes(found)) candidates.push(found);
   return candidates;
 }
@@ -95,8 +100,8 @@ export async function probePython(python, { execFile = execFileAsync, env = proc
 }
 
 // Probe the candidates in order and use the first with PyGObject. Without one, `python` is the first Python that runs.
-export async function boardCheck({ env = process.env, execFile = execFileAsync, candidates } = {}) {
-  const list = candidates ?? await pythonCandidates(env);
+export async function boardCheck({ env = process.env, execFile = execFileAsync, candidates, platform = process.platform } = {}) {
+  const list = candidates ?? await pythonCandidates(env, { platform });
   let python = null;
   let versions = null;
   for (const candidate of list) {

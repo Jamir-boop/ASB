@@ -4,7 +4,7 @@
 
 ## Platform
 
-Native desktop: Linux GNOME, GTK4 and Libadwaita. On Windows, ASB runs only the engine (statuses only, no window) for the phone and the machine group. The native window uses no browser or webview. The Impeccable platform enum has no GNOME value; do not substitute `web`, `ios`, `android`, or `adaptive`.
+Native desktop: GTK 4 and Libadwaita on Linux (GNOME) and on Windows (MSYS2). On Windows without MSYS2, ASB runs only the engine for the phone and the machine group. The native window uses no browser or webview. The Impeccable platform enum has no GNOME value; do not substitute `web`, `ios`, `android`, or `adaptive`.
 
 This file records ASB. The Agent Mission Control documentation is removed from this repository. `CHANGELOG.md` keeps the upstream release history.
 

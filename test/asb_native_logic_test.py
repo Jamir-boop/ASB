@@ -3,7 +3,7 @@ import ast
 import copy
 import itertools
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from tempfile import TemporaryDirectory
 import threading
 from types import SimpleNamespace
@@ -5560,7 +5560,8 @@ class NativeIOAuditChecks(unittest.TestCase):
         self.assertEqual(SCOPE["tooltip_model"](widget.asb_thread, now, "/fixture/home")["state_text"], "Working · 1m1s")
 
     def test_config_paths_use_home_when_xdg_config_home_is_empty(self):
-        assignments = [node for node in TREE.body if isinstance(node, ast.Assign)
+        assignments = [node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "config_dir"
+                       or isinstance(node, ast.Assign)
                        and any(isinstance(target, ast.Name) and target.id in ("THEME_PATH", "LAYOUT_PATH")
                                for target in node.targets)]
         code = compile(ast.Module(body=assignments, type_ignores=[]), str(SOURCE), "exec")
@@ -5571,12 +5572,76 @@ class NativeIOAuditChecks(unittest.TestCase):
                 if config is not None:
                     environment["XDG_CONFIG_HOME"] = config
                 with self.subTest(config=config), patch.dict(SCOPE["os"].environ, environment, clear=True):
-                    scope = {"Path": Path, "os": SCOPE["os"]}
+                    scope = {"Path": Path, "os": SCOPE["os"], "ntpath": SCOPE["ntpath"]}
                     exec(code, scope)
                     base = Path(config) if config else home / ".config"
                     self.assertEqual(scope["THEME_PATH"], base / "asb" / "theme.json")
                     self.assertEqual(scope["LAYOUT_PATH"], base / "asb" / "layout.json")
 
+    def test_config_dir_uses_appdata_on_windows_and_keeps_the_linux_folder(self):
+        roaming = "C:\\Users\\me\\AppData\\Roaming"
+        with TemporaryDirectory() as directory, patch.dict(SCOPE["os"].environ, {"HOME": str(Path(directory) / "synthetic-home")}):
+            home = Path.home()
+            for environment, os_name, expected in (
+                    ({"APPDATA": roaming}, "nt", PureWindowsPath(roaming, "asb")),
+                    ({"APPDATA": roaming, "XDG_CONFIG_HOME": "/xdg"}, "nt", PureWindowsPath(roaming, "asb")),
+                    ({"APPDATA": "Roaming"}, "nt", PureWindowsPath(home, "AppData", "Roaming", "asb")),
+                    ({}, "nt", PureWindowsPath(home, "AppData", "Roaming", "asb")),
+                    ({"APPDATA": roaming}, "posix", PureWindowsPath(home, ".config", "asb")),
+                    ({"XDG_CONFIG_HOME": "/xdg"}, "posix", PureWindowsPath("/xdg", "asb")),
+                    ({"XDG_CONFIG_HOME": "relative"}, "posix", PureWindowsPath("relative", "asb")),
+                    ({"XDG_CONFIG_HOME": ""}, "posix", PureWindowsPath(home, ".config", "asb"))):
+                with self.subTest(environment=environment, os_name=os_name):
+                    self.assertEqual(str(PureWindowsPath(SCOPE["config_dir"](environment, os_name))), str(expected))
+        self.assertEqual(SCOPE["config_dir"]({"XDG_CONFIG_HOME": "/xdg"}, "posix"), Path("/xdg/asb"))
+
+    def test_tooltip_path_shortens_a_windows_or_a_linux_home(self):
+        for home, path, expected in (
+                ("/home/me", "/home/me", "~"),
+                ("/home/me", "/home/me/src/ASB", "~/src/ASB"),
+                ("/home/me", "/home/meow/src", "/home/meow/src"),
+                ("/home/me", "/home/me\\src", "/home/me\\src"),
+                ("C:\\Users\\me", "C:\\Users\\me", "~"),
+                ("C:\\Users\\me", "C:\\Users\\me\\src\\ASB", "~\\src\\ASB"),
+                ("C:\\Users\\me", "C:\\Users\\meow", "C:\\Users\\meow"),
+                ("C:\\Users\\me", "C:\\Users\\meow\\src", "C:\\Users\\meow\\src"),
+                ("C:\\Users\\me", "D:\\Users\\me\\src", "D:\\Users\\me\\src")):
+            with self.subTest(home=home, path=path):
+                model = SCOPE["tooltip_model"]({"cwd": path}, 0, home)
+                self.assertEqual((model["path"], model["full_path"]), (expected, path))
+
+    def test_main_registers_the_unix_signals_only_off_windows(self):
+        main = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "main")
+        code = compile(ast.Module(body=[main], type_ignores=[]), str(SOURCE), "exec")
+        for os_name, calls in (("posix", 2), ("nt", 0)):
+            scope = {"os": SimpleNamespace(name=os_name), "signal": SCOPE["signal"], "sys": SimpleNamespace(argv=["asb"]),
+                     "GLib": Mock(), "unix_signal_add": Mock(), "local_base_url": lambda value: "http://127.0.0.1:1",
+                     "SwitchboardApplication": Mock()}
+            exec(code, scope)
+            with self.subTest(os_name=os_name):
+                scope["main"]()
+                self.assertEqual(scope["unix_signal_add"].call_count, calls)
+                scope["SwitchboardApplication"].return_value.run.assert_called_once_with(["asb"])
+
+    def test_board_launcher_picks_the_cache_folder_for_the_system(self):
+        launcher = ast.parse((SOURCE.parent / "asb-board.py").read_text())
+        choice = next(node for node in launcher.body if isinstance(node, ast.If))
+        code = compile(ast.Module(body=[choice], type_ignores=[]), "asb-board.py", "exec")
+        local = "C:\\Users\\me\\AppData\\Local"
+        with TemporaryDirectory() as directory, patch.dict(SCOPE["os"].environ, {"HOME": str(Path(directory) / "synthetic-home")}):
+            home = Path.home()
+            for os_name, environment, expected in (
+                    ("nt", {"LOCALAPPDATA": local}, PureWindowsPath(local, "asb", "cache", "pycache")),
+                    ("nt", {"LOCALAPPDATA": "Local"}, PureWindowsPath(home, "AppData", "Local", "asb", "cache", "pycache")),
+                    ("nt", {}, PureWindowsPath(home, "AppData", "Local", "asb", "cache", "pycache")),
+                    ("posix", {"XDG_CACHE_HOME": "/xdg", "LOCALAPPDATA": local}, PureWindowsPath("/xdg", "asb", "pycache")),
+                    ("posix", {"XDG_CACHE_HOME": "relative"}, PureWindowsPath(home, ".cache", "asb", "pycache")),
+                    ("posix", {}, PureWindowsPath(home, ".cache", "asb", "pycache"))):
+                with self.subTest(os_name=os_name, environment=environment):
+                    path_rules = SCOPE["ntpath"] if os_name == "nt" else SCOPE["os"].path
+                    scope = {"Path": Path, "os": SimpleNamespace(name=os_name, environ=environment, path=path_rules)}
+                    exec(code, scope)
+                    self.assertEqual(str(PureWindowsPath(scope["cache"])), str(expected))
 
     def test_dashboard_tag_is_sent_only_for_dashboard_reads_and_304_is_not_an_error(self):
         import io

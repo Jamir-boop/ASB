@@ -358,7 +358,7 @@ Default Codex opens use `codex://threads/<id>`. Default Claude opens use `claude
 
 ## System check
 
-`asb doctor` checks a Linux system and prints the commands that fix it. From a source checkout, use `scripts/asb doctor` in place of `asb doctor`. It reads the system and, when it runs, the engine. It never runs an install command and never changes the firewall. `asb setup` prints the same checks first. See [Privacy](docs/PRIVACY.md) for what it reads.
+`asb doctor` checks a Linux system and prints the commands that fix it. On Windows, it checks Node.js, the window, and the options (see [Windows](#windows)). From a source checkout, use `scripts/asb doctor` in place of `asb doctor`. It reads the system and, when it runs, the engine. It never runs an install command and never changes the firewall. `asb setup` prints the same checks first. See [Privacy](docs/PRIVACY.md) for what it reads.
 
 The first line names your distribution and its family (`family unknown` when no family matches). Image-based systems (Fedora Atomic, openSUSE Aeon) add `transactional`, and SteamOS adds `readonly`. Each check then has one line with a status: `ok`, `missing`, `old`, or `info`. The checks come in three groups.
 
@@ -403,7 +403,7 @@ Optional:
 
 ## Windows
 
-On Windows, ASB has statuses only. The engine reads Codex and Claude on that PC and gives their sessions to paired phones and to the other machines of the group. It has no window and no sounds. ASB Bridge and messages between machines work on Windows too (see below). A paired phone shows the sessions and can open them on the Windows PC. A Linux board in the group shows them as remote cards. Claude web sessions are not read on Windows. Windows needs Node.js `22.13` or later.
+On Windows, the ASB engine reads Codex and Claude on that PC and gives their sessions to paired phones and to the other machines of the group. ASB `1.10.0` runs only the engine on Windows. The ASB window, the Start menu entry, `asb doctor`, and the PC sounds on Windows are in the current source, which comes after `1.10.0`. The ASB window needs MSYS2 Python with PyGObject, GTK `>=4.12`, and Libadwaita `>=1.4`; without it, only the engine runs. It plays the Done, Needs input, and Failed sounds with Windows PowerShell, but only while an ASB window is open. ASB Bridge and messages between machines work on Windows too (see below). A paired phone shows the sessions and can open them on the Windows PC. A Linux board in the group shows them as remote cards. Claude web sessions are not read on Windows. Windows needs Node.js `22.13` or later.
 
 ```bash
 npm install -g --install-links github:Jamir-boop/ASB
@@ -414,29 +414,33 @@ Keep `--install-links`: without it, npm 11 links the package to a temporary fold
 
 `asb setup` does these steps:
 
-1. It writes the autostart value and starts the engine, then waits up to 20 s for the engine to answer.
-2. It lists the network addresses of the PC and asks which to turn on. `--yes` keeps the saved addresses (else the first home network address). `--address <address>` selects an address with no question; you can give it more than once.
-3. It prints the firewall rule for the selected addresses and the phone port. ASB never runs this rule and never changes the firewall. To let phones and other machines reach ASB, run the rule in an administrator PowerShell. When Windows already allows `node.exe` on private networks, the rule is not needed.
-4. It prints the command to join a machine group. On Windows, run `asb group join --name <name>` and paste the link when it asks.
+1. It prints the checks of `asb doctor`. It stops when the engine cannot run (Node.js without built-in SQLite). A missing window does not stop it; the checks then show how to install it.
+2. It writes the autostart value and starts the engine, then waits up to 20 s for the engine to answer.
+3. It lists the network addresses of the PC and asks which to turn on. `--yes` keeps the saved addresses (else the first home network address). `--address <address>` selects an address with no question; you can give it more than once.
+4. It prints the firewall rule for the selected addresses and the phone port. ASB never runs this rule and never changes the firewall. To let phones and other machines reach ASB, run the rule in an administrator PowerShell. When Windows already allows `node.exe` on private networks, the rule is not needed.
+5. It prints the command that lets agents send messages (`asb bridge install --all`) and the command to join a machine group. On Windows, run `asb group join --name <name>` and paste the link when it asks.
 
-On Linux, `asb setup` first prints the checks of [`asb doctor`](#system-check) and stops when the engine cannot run. In step 1 it runs `asb service install` (the `asb.service` unit or the XDG autostart entry). In step 3 it prints the firewall rule when firewalld or ufw is active. It also prints the bridge install command.
+On Linux, `asb setup` prints the checks of [`asb doctor`](#system-check) in step 1 and stops when the engine cannot run. In step 2 it runs `asb service install` (the `asb.service` unit or the XDG autostart entry). In step 4 it prints the firewall rule when firewalld or ufw is active.
+
+`asb doctor` also runs on Windows. It checks Node.js (`22.13` or later with built-in SQLite), the window (MSYS2 Python with PyGObject, GTK, and Libadwaita), and the options (the QR code, Bun, and autostart). When a window check fails, it prints the commands that install MSYS2 and the board packages: `winget install --id MSYS2.MSYS2 -e` (only when `C:\msys64\usr\bin\pacman.exe` does not exist), then `C:\msys64\usr\bin\pacman.exe -S --needed mingw-w64-ucrt-x86_64-python-gobject mingw-w64-ucrt-x86_64-gtk4 mingw-w64-ucrt-x86_64-libadwaita`. When GTK or Libadwaita is too old, the `pacman` command uses `-Syu --needed`. ASB never runs these commands. MSYS2 has no Python `qrcode` package, so the QR code check shows `info`, and Preferences shows no QR code on Windows. It shows the pairing link with **Copy link**; the tray menu **Copy phone pairing link** gives the same link.
 
 | Command | Effect |
 | --- | --- |
-| `asb engine install` | Make the engine start when you sign in, then start it. |
-| `asb engine uninstall` | Remove the autostart value, then stop the engine. |
+| `asb engine install` | Make the engine start when you sign in, add ASB to the Start menu, then start the engine. |
+| `asb engine uninstall` | Remove the autostart value and the Start menu link, then stop the engine. |
 | `asb engine start` | Start the engine and its tray icon when none runs. |
 | `asb engine stop` | Stop the engine and phone access. |
 | `asb engine status` | Show whether the engine runs, its PID and port. |
 | `asb engine run` | Run the engine in this terminal. |
 
-`asb` with no command shows the engine status. Autostart is the `ASB` value in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. It starts a hidden PowerShell tray script (`scripts\asb-tray.ps1`) with the `node.exe` that installed ASB. The tray icon menu has **Copy phone pairing link** and **Quit ASB**. The tray starts the engine again after a failure, at most 5 times in 10 minutes. After that, it shows "ASB stopped after repeated failures." and stops.
+`asb` with no command starts the engine when it is not running and opens the ASB window, as on Linux. The launcher uses an absolute `ASB_PYTHON`; else `C:\msys64\ucrt64\bin\python.exe`, then `python` on `PATH`. When no Python passes the board check, it prints `ASB runs without its window on this system: <reason> The engine runs for the phone and your other machines. Run asb doctor for details.` and exits with code 3; the engine keeps running. GTK works only in a signed-in desktop session: in an SSH session, it crashes at the first window. Autostart is the `ASB` value in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. It starts a hidden PowerShell tray script (`scripts\asb-tray.ps1`) with the `node.exe` that installed ASB. The tray icon menu has **Open ASB**, a separator, **Copy phone pairing link**, and **Quit ASB**. **Open ASB** and a left click on the icon start `asb` with no console; they do nothing while an earlier launcher runs. When that launcher exits with code 3, the tray shows "ASB has no window on this PC. Run asb doctor." The tray starts the engine again after a failure, at most 5 times in 10 minutes. After that, it shows "ASB stopped after repeated failures." and stops. The Start menu link `ASB.lnk` (in your Programs folder, with the ASB icon) starts the same tray script with the `-Open` switch. With this switch, the script only starts `asb` with no console and exits. `asb engine uninstall` removes the link only when ASB made it. When another `ASB.lnk` exists, ASB keeps it and prints `ASB kept <path>: it was not made by ASB.`
 
 | File | Path |
 | --- | --- |
-| Settings, phone settings, the certificate, and the group | `%APPDATA%\asb` |
+| Settings, the colors and layout of the window (`theme.json`, `layout.json`), phone settings, the certificate, and the group | `%APPDATA%\asb` |
 | Marks, pins, and `engine.log` | `%LOCALAPPDATA%\asb\state` |
 | The engine runtime file (`service.json`) | `%LOCALAPPDATA%\asb\run` |
+| The reader positions and the compiled window code (`pycache`) | `%LOCALAPPDATA%\asb\cache` |
 
 To let Codex tasks and Claude Code sessions message each other on Windows, install Bun, make it visible to the Codex app, and install ASB Bridge as on Linux:
 

@@ -1,13 +1,15 @@
 import { execFile as execFileCallback } from 'node:child_process';
 import { access, readFile } from 'node:fs/promises';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { PLAYERS } from '../src/asb-sounds.mjs';
 import { detectFamily, FAMILIES, installCommand, nodeRoute, parseOsRelease } from '../src/linux-distros.mjs';
-import { atLeast, BOARD_FLOORS, boardCheck, engineCheck, pythonCandidates, shortVersion } from '../src/linux-system.mjs';
+import { atLeast, BOARD_FLOORS, boardCheck, engineCheck, nodeFacts, pythonCandidates, shortVersion } from '../src/linux-system.mjs';
 import { findExecutable, runtimeDir } from '../src/platform-paths.mjs';
+import { RUN_KEY } from './asb-engine.mjs';
 import { api as groupApi } from './asb-group.mjs';
 import { findRunningService } from './asb-instance.mjs';
 import { autostartMarker, autostartPath, unitMarker, unitPath } from './asb-service.mjs';
@@ -26,6 +28,10 @@ const FLAKE_LINE = 'Use the flake: nix profile install github:Jamir-boop/ASB';
 // The firewall lines go into a root shell, so only these names get a command (plan 13 step 6).
 const INTERFACE_NAME = /^[A-Za-z0-9._@-]{1,15}$/;
 const ZONE_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+// The Windows board runs on MSYS2 UCRT64 (the Python path is MSYS2_PYTHON in src/linux-system.mjs).
+const PACMAN = 'C:\\msys64\\usr\\bin\\pacman.exe';
+const WINGET_MSYS2 = ['winget', 'install', '--id', 'MSYS2.MSYS2', '-e'];
+const MSYS2_PACKAGES = ['mingw-w64-ucrt-x86_64-python-gobject', 'mingw-w64-ucrt-x86_64-gtk4', 'mingw-w64-ucrt-x86_64-libadwaita'];
 
 export async function readText(file) {
   try { return await readFile(file, 'utf8'); } catch (error) { if (error.code === 'ENOENT') return ''; throw error; }
@@ -82,9 +88,73 @@ export async function linuxFirewallLines(state, addresses, port, { execFile = ex
 // The engine can run when every Engine check is ok.
 export const engineReady = (data) => data.checks.filter((check) => check.group === 'Engine').every((check) => check.status === 'ok');
 
+// The Window group rows, the same on Linux and Windows. It returns the keys of the missing packages and whether GTK or Libadwaita is too old.
+function windowChecks(add, board, candidates) {
+  const versions = board.versions;
+  const required = [];
+  const where = versions ? `Python ${versions.python}, ${board.python}` : '';
+  if (!versions) add('python', 'Window', 'missing', candidates.length ? `Python 3 (${candidates.join(', ')} does not run)` : 'Python 3');
+  else if (!atLeast(versions.python, BOARD_FLOORS.python)) add('python', 'Window', 'old', `Python ${versions.python} (${board.python}), needs 3.9 or later`);
+  add('gi', 'Window', versions?.gi ? 'ok' : 'missing', versions?.gi ? `PyGObject ${versions.gi} (${where})` : versions ? `PyGObject (${where})` : 'PyGObject');
+  if (!versions?.gi) required.push('gi');
+  const library = (id, label, value, floor, missingLabel) => {
+    if (!value) { add(id, 'Window', 'missing', missingLabel); return 'missing'; }
+    const old = !atLeast(value, floor);
+    add(id, 'Window', old ? 'old' : 'ok', `${label} ${value.join('.')}${old ? `, needs ${floor.join('.')} or later` : ''}`);
+    return old ? 'old' : 'ok';
+  };
+  const gtk = library('gtk', 'GTK', versions?.gtk, BOARD_FLOORS.gtk, 'GTK 4');
+  const adw = library('adw', 'Libadwaita', versions?.adw, BOARD_FLOORS.adw, 'Libadwaita');
+  const librariesOld = gtk === 'old' || adw === 'old';
+  if (!librariesOld) required.push(...[gtk === 'missing' && 'gtk', adw === 'missing' && 'adw'].filter(Boolean));
+  return { required, librariesOld };
+}
+
+async function bunCheck(add, env, platform) {
+  const bun = await findExecutable('bun', { env, platform });
+  add('bun', 'Options', bun ? 'ok' : 'info', bun ? `Bun (${bun}), for ASB Bridge` : 'Bun: not found. ASB Bridge needs it.');
+}
+
+// Windows needs Node.js with built-in SQLite for the engine, and MSYS2 Python with PyGObject, GTK, and Libadwaita for the window.
+async function collectWindows({ env, execFile, exists: present, node, platform }) {
+  const system = { name: os.version() || 'Windows', id: null, versionId: os.release(), family: 'windows', mode: 'normal' };
+  const checks = [];
+  const add = (id, group, status, detail) => checks.push({ id, group, status, detail });
+
+  // Engine
+  const facts = node === undefined ? await nodeFacts() : node;
+  if (!facts) add('node', 'Engine', 'missing', 'Node.js');
+  else add('node', 'Engine', facts.sqlite ? 'ok' : 'old',
+    `Node.js ${facts.version} (${facts.path}), ${facts.sqlite ? 'built-in SQLite' : 'needs 22.13 or later with built-in SQLite'}`);
+
+  // Window
+  const candidates = await pythonCandidates(env, { platform });
+  const board = await boardCheck({ env, execFile, candidates });
+  const { librariesOld } = windowChecks(add, board, candidates);
+
+  // Options
+  const qrcode = board.versions?.qrcode;
+  add('qrcode', 'Options', qrcode ? 'ok' : 'info', qrcode ? 'QR code' : 'QR code: not available (MSYS2 has no Python qrcode package)');
+  await bunCheck(add, env, platform);
+  let autostart = true;
+  try { await execFile('reg', ['query', RUN_KEY, '/v', 'ASB'], { env, timeout: 5000 }); } catch { autostart = false; }
+  add('autostart', 'Options', autostart ? 'ok' : 'info', `Autostart: ${autostart ? 'Windows Run value' : 'not installed'}`);
+
+  // Commands. ASB only prints them. Old libraries need -Syu, because pacman does not support a partial update.
+  const commands = { required: null, optional: null, node: null, firewall: [], msys2: null };
+  const advice = [];
+  if (!board.ok) {
+    commands.required = [PACMAN, librariesOld ? '-Syu' : '-S', '--needed', ...MSYS2_PACKAGES];
+    if (!await present(PACMAN)) commands.msys2 = WINGET_MSYS2;
+    advice.push(commands.msys2 ? 'Install MSYS2 and the board packages:' : 'Install the board packages:', ...[commands.msys2, commands.required].filter(Boolean).map((words) => `  ${words.join(' ')}`));
+  }
+  return { schema: 1, system, checks, board: { ok: board.ok, reason: board.reason }, commands, advice };
+}
+
 // `firewall: false` leaves out the firewall part (asb setup step 0).
 export async function collect({ env = process.env, execFile = execFileAsync, read = readText, exists: present = exists, node,
-  find = findRunningService, api = (runtime, route) => groupApi(runtime, route, { timeoutMs: 2000 }), firewall = true } = {}) {
+  find = findRunningService, api = (runtime, route) => groupApi(runtime, route, { timeoutMs: 2000 }), firewall = true, platform = process.platform } = {}) {
+  if (platform === 'win32') return collectWindows({ env, execFile, exists: present, node, platform });
   const release = parseOsRelease(await read('/etc/os-release'));
   const { family, mode } = detectFamily(release, { ostreeBooted: await present('/run/ostree-booted') });
   const system = { name: release.PRETTY_NAME || release.NAME || 'Linux', id: release.ID || null, versionId: release.VERSION_ID || null, family, mode };
@@ -115,24 +185,11 @@ export async function collect({ env = process.env, execFile = execFileAsync, rea
   if (!engine.xdgOpen) required.push('xdg');
 
   // Window
-  const candidates = await pythonCandidates(env);
+  const candidates = await pythonCandidates(env, { platform });
   const board = await boardCheck({ env, execFile, candidates });
   const versions = board.versions;
-  const where = versions ? `Python ${versions.python}, ${board.python}` : '';
-  if (!versions) add('python', 'Window', 'missing', candidates.length ? `Python 3 (${candidates.join(', ')} does not run)` : 'Python 3');
-  else if (!atLeast(versions.python, BOARD_FLOORS.python)) add('python', 'Window', 'old', `Python ${versions.python} (${board.python}), needs 3.9 or later`);
-  add('gi', 'Window', versions?.gi ? 'ok' : 'missing', versions?.gi ? `PyGObject ${versions.gi} (${where})` : versions ? `PyGObject (${where})` : 'PyGObject');
-  if (!versions?.gi) required.push('gi');
-  const library = (id, label, value, floor, missingLabel) => {
-    if (!value) { add(id, 'Window', 'missing', missingLabel); return 'missing'; }
-    const old = !atLeast(value, floor);
-    add(id, 'Window', old ? 'old' : 'ok', `${label} ${value.join('.')}${old ? `, needs ${floor.join('.')} or later` : ''}`);
-    return old ? 'old' : 'ok';
-  };
-  const gtk = library('gtk', 'GTK', versions?.gtk, BOARD_FLOORS.gtk, 'GTK 4');
-  const adw = library('adw', 'Libadwaita', versions?.adw, BOARD_FLOORS.adw, 'Libadwaita');
-  const librariesOld = gtk === 'old' || adw === 'old';
-  if (!librariesOld) required.push(...[gtk === 'missing' && 'gtk', adw === 'missing' && 'adw'].filter(Boolean));
+  const { required: windowRequired, librariesOld } = windowChecks(add, board, candidates);
+  required.push(...windowRequired);
 
   // Options
   const qrMissing = [!versions?.qrcode && 'Python qrcode', versions?.gi && !versions.cairo && 'PyGObject cairo support'].filter(Boolean);
@@ -146,8 +203,7 @@ export async function collect({ env = process.env, execFile = execFileAsync, rea
   const trayHost = versions?.trayHost;
   add('tray', 'Options', trayHost ? 'ok' : 'info', trayHost ? 'Tray host'
     : trayHost === false ? 'Tray host: none found. On GNOME, add the AppIndicator extension.' : 'Tray host: not checked (needs PyGObject and a session bus)');
-  const bun = await findExecutable('bun', { env });
-  add('bun', 'Options', bun ? 'ok' : 'info', bun ? `Bun (${bun}), for ASB Bridge` : 'Bun: not found. ASB Bridge needs it.');
+  await bunCheck(add, env, platform);
   // Doctor only reads the two autostart files (plan 12.1). A file counts when it has the ASB marker.
   const marked = async (file, marker) => (await read(file).catch(() => '')).split('\n').includes(marker);
   const unit = await marked(unitPath(env), unitMarker);

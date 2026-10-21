@@ -202,16 +202,22 @@ test('asb phone status, pair, and remove use the phone routes and refuse an uncl
   }
 });
 
-// Step 0 on Linux: a fake doctor, so that no test runs the Python probe or openssl.
+// Step 0 on Linux and Windows: a fake doctor, so that no test runs the Python probe, openssl, or reg.
 const doctorData = (status = 'ok') => ({ system: { name: 'Test Linux', family: 'debian', mode: 'normal' },
   checks: [{ id: 'node', group: 'Engine', status, detail: 'Node.js 24.0.0 (/usr/bin/node), built-in SQLite' }], advice: [] });
 const DOCTOR_LINES = ['ASB doctor: Test Linux, family debian', '', 'Engine', '  ok       Node.js 24.0.0 (/usr/bin/node), built-in SQLite'];
+const WINDOWS_NODE = 'Node.js 24.0.0 (C:\\Program Files\\nodejs\\node.exe), built-in SQLite';
+const WINDOWS_PYGOBJECT = 'PyGObject 3.50.0 (Python 3.12.7, C:\\msys64\\ucrt64\\bin\\python.exe)';
+const windowsDoctorData = ({ engine = 'ok', window = 'ok', advice = [] } = {}) => ({ system: { name: 'Windows 10 Pro', family: 'windows', mode: 'normal' },
+  checks: [{ id: 'node', group: 'Engine', status: engine, detail: WINDOWS_NODE },
+    { id: 'gi', group: 'Window', status: window, detail: window === 'ok' ? WINDOWS_PYGOBJECT : 'PyGObject' }], advice });
+const WINDOWS_DOCTOR_LINES = ['ASB doctor: Windows 10 Pro, family windows', '', 'Engine', `  ok       ${WINDOWS_NODE}`, 'Window', `  ok       ${WINDOWS_PYGOBJECT}`];
 
 // The firewall fakes: by default no firewall-cmd and no ufw.conf (the state none). `calls` records every program.
 const noProgram = async (file) => { throw Object.assign(new Error(`spawn ${file} ENOENT`), { code: 'ENOENT' }); };
 
-async function runSetup(state, args, { platform = 'linux', answer = '', doctor = async () => doctorData(), execFile = noProgram,
-  read = async () => '' } = {}) {
+async function runSetup(state, args, { platform = 'linux', answer = '', doctor = async () => (platform === 'win32' ? windowsDoctorData() : doctorData()),
+  execFile = noProgram, read = async () => '' } = {}) {
   const out = [];
   const err = [];
   const installs = [];
@@ -222,11 +228,11 @@ async function runSetup(state, args, { platform = 'linux', answer = '', doctor =
     installEngine: async (argv) => { installs.push(['engine', argv]); return 0; },
     find: (env) => readServiceRuntime(env), doctor, execFile: (file, argv, options) => { calls.push([file, ...argv]); return execFile(file, argv, options); },
     read });
-  // `out` leaves out the four doctor lines of Linux; `all` has them.
-  return { code, out: platform === 'linux' ? out.slice(DOCTOR_LINES.length) : out, all: out, err, installs, calls };
+  // `out` leaves out the lines of the default doctor (four on Linux, six on Windows); `all` has them.
+  return { code, out: out.slice((platform === 'win32' ? WINDOWS_DOCTOR_LINES : DOCTOR_LINES).length), all: out, err, installs, calls };
 }
 
-test('asb setup step 0 prints the doctor output on Linux and stops when the engine cannot run', async (t) => {
+test('asb setup step 0 prints the doctor output on Linux and Windows and stops when the engine cannot run', async (t) => {
   const state = await fixture(t);
   const failed = await runSetup(state, ['--yes'], { doctor: async () => doctorData('missing') });
   assert.equal(failed.code, 1);
@@ -234,10 +240,23 @@ test('asb setup step 0 prints the doctor output on Linux and stops when the engi
   assert.deepEqual(failed.all, ['ASB doctor: Test Linux, family debian', '', 'Engine', '  missing  Node.js 24.0.0 (/usr/bin/node), built-in SQLite']);
   assert.deepEqual(failed.err, ['asb setup: The ASB engine cannot run on this system. Install the missing packages, then run asb setup again.']);
   assert.equal(state.posts().length, 0);
-  let called = false;
-  const windows = await runSetup(state, ['--address', '192.168.1.99'], { platform: 'win32', doctor: async () => { called = true; return doctorData(); } });
+  const windows = await runSetup(state, ['--yes'], { platform: 'win32', doctor: async () => windowsDoctorData({ engine: 'old' }) });
   assert.equal(windows.code, 1);
-  assert.equal(called, false);
+  assert.deepEqual(windows.installs, []);
+  assert.deepEqual(windows.all, [...WINDOWS_DOCTOR_LINES.slice(0, 3), `  old      ${WINDOWS_NODE}`, ...WINDOWS_DOCTOR_LINES.slice(4)]);
+  assert.deepEqual(windows.err, failed.err);
+  assert.equal(state.posts().length, 0);
+});
+
+test('asb setup on Windows prints the doctor lines for a missing board and goes on', async (t) => {
+  const state = await fixture(t);
+  const advice = ['Install MSYS2 and the board packages:', '  winget install --id MSYS2.MSYS2 -e'];
+  const result = await runSetup(state, ['--yes'], { platform: 'win32', doctor: async () => windowsDoctorData({ window: 'missing', advice }) });
+  assert.equal(result.code, 0, result.err.join('\n'));
+  assert.deepEqual(result.installs, [['engine', ['install']]]);
+  assert.deepEqual(result.all.slice(0, 10), [...WINDOWS_DOCTOR_LINES.slice(0, 5), '  missing  PyGObject', '', ...advice,
+    'Network access is on, port 4630: 192.168.1.10 (lan).']);
+  assert.equal(state.posts().length, 1);
 });
 
 test('asb setup installs the autostart, turns on the chosen addresses, and prints the next steps', async (t) => {
@@ -261,10 +280,11 @@ test('asb setup installs the autostart, turns on the chosen addresses, and print
   const windows = await runSetup(state, ['--yes'], { platform: 'win32' });
   assert.equal(windows.code, 0);
   assert.deepEqual(windows.installs, [['engine', ['install']]]);
+  assert.deepEqual(windows.all.slice(0, WINDOWS_DOCTOR_LINES.length), WINDOWS_DOCTOR_LINES);
   assert.deepEqual(windows.out.slice(1), ['Run this command in an administrator PowerShell to let other machines and phones reach ASB:',
     '  New-NetFirewallRule -DisplayName "ASB engine" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 4630 -LocalAddress 192.168.1.10 '
       + '-Program "C:\\Program Files\\nodejs\\node.exe"',
-    'Windows can already allow node.exe on private networks; then this rule is not needed.', 'The bridge is not available on Windows yet.',
+    'Windows can already allow node.exe on private networks; then this rule is not needed.', 'To let agents send messages, run: asb bridge install --all',
     'On a machine in the group: asb group invite. Here: asb group join --name <name>, then paste the link.']);
   assert.deepEqual(state.posts().map((item) => item.body), [
     { enabled: true, bindAddresses: ['192.168.1.10'], port: 4630 }, { enabled: true, bindAddresses: ['10.147.0.1', '192.168.1.10'], port: 4630 },
