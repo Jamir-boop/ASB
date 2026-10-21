@@ -8,15 +8,15 @@ https://github.com/user-attachments/assets/c85742f4-d1b0-4ffc-9497-144069fec36b
 
 ## Install on Linux
 
-[Download v1.9.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.9.0) · [Release notes](docs/releases/v1.9.0.md) · [Checksums](https://github.com/Jamir-boop/ASB/releases/download/v1.9.0/SHA256SUMS)
+[Download v1.10.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.10.0) · [Release notes](docs/releases/v1.10.0.md) · [Checksums](https://github.com/Jamir-boop/ASB/releases/download/v1.10.0/SHA256SUMS)
 
-Needs Node.js `>=20` (`sqlite3` below `22.13`), Python 3 with PyGObject, GTK `>=4.12`, Libadwaita `>=1.4`, and `xdg-utils`. ASB `1.9.0` also needs `openssl` for the phone certificate. The optional Python `qrcode` module and PyGObject cairo support (Debian: `python3-qrcode` and `python3-gi-cairo`) show the phone pairing QR code. A system with no Python, no PyGObject, or an older GTK or Libadwaita runs ASB with [only the engine](#engine-only).
+Needs Node.js `>=20` (`sqlite3` below `22.13`), Python 3 with PyGObject, GTK `>=4.12`, Libadwaita `>=1.4`, and `xdg-utils`. ASB `1.10.0` also needs `openssl` for the phone certificate. The optional Python `qrcode` module and PyGObject cairo support (Debian: `python3-qrcode` and `python3-gi-cairo`) show the phone pairing QR code. A system with no Python, no PyGObject, or an older GTK or Libadwaita runs ASB with [only the engine](#engine-only).
 
 Install Codex and Claude Desktop first, with working `codex:` and `claude:` URL handlers.
 
 ### Install with npm
 
-The current source installs as an npm package. It needs the same packages as the other routes. [Windows](#install-on-windows) uses the same commands.
+ASB `1.10.0` installs as an npm package. It needs the same packages as the other routes. [Windows](#install-on-windows) uses the same commands.
 
 ```bash
 npm install -g --install-links github:Jamir-boop/ASB
@@ -29,7 +29,7 @@ Keep `--install-links`: without it, npm 11 links the package to a temporary fold
 
 ### Check the system
 
-ASB `1.9.0` has `asb doctor`. Run it to check the system. It prints one line for each check: Node.js, `openssl`, `xdg-open`, PyGObject, GTK, Libadwaita, the QR code, the sound player, the tray host, Bun, the autostart, and the runtime folder. The Node.js line shows the built-in SQLite. A `sqlite3` line comes only when Node.js has no built-in SQLite, and a Python line only when Python is missing or older than 3.9. The current source also checks the handlers of `codex:` and `claude:` links. Then `asb doctor` prints one command for the missing packages and one command for the optional packages. The commands use the package manager of your distribution. ASB never runs them.
+ASB `1.10.0` has `asb doctor`. Run it to check the system. It prints one line for each check: Node.js, `openssl`, `xdg-open`, PyGObject, GTK, Libadwaita, the QR code, the sound player, the tray host, Bun, the autostart, and the runtime folder. The Node.js line shows the built-in SQLite. A `sqlite3` line comes only when Node.js has no built-in SQLite, and a Python line only when Python is missing or older than 3.9. It also checks the handlers of `codex:` and `claude:` links. Then `asb doctor` prints one command for the missing packages and one command for the optional packages. The commands use the package manager of your distribution. ASB never runs them.
 
 `asb doctor` exits with code 0 when the engine can run, else with code 1. `asb doctor --json` prints the same data for a script.
 
@@ -61,7 +61,7 @@ sudo dnf install nodejs sqlite openssl xdg-utils python3-gobject gtk4 gobject-in
 sudo dnf install python3-qrcode-core pipewire-utils
 ```
 
-The default `nodejs` package of RHEL 9 and its rebuilds is the retired Node.js 16. Run `sudo dnf module install nodejs:24` first (see [Node.js](#nodejs)), and leave `nodejs` out of the first command. The current source runs the window on their GTK 4.12 and Libadwaita 1.4. The `gtk4` package does not require `libglvnd-gles`, but GTK 4.20 stops without it.
+The default `nodejs` package of RHEL 9 and its rebuilds is the retired Node.js 16. Run `sudo dnf module install nodejs:24` first (see [Node.js](#nodejs)), and leave `nodejs` out of the first command. ASB `1.10.0` runs the window on their GTK 4.12 and Libadwaita 1.4. The `gtk4` package does not require `libglvnd-gles`, but GTK 4.20 stops without it.
 
 **openSUSE Tumbleweed and Leap** (family `opensuse`)
 
@@ -133,41 +133,41 @@ Image-based systems use the names of the Fedora or openSUSE block. Fedora Atomic
 
 ### Release packages
 
-**Debian:** [asb_1.9.0_all.deb](https://github.com/Jamir-boop/ASB/releases/download/v1.9.0/asb_1.9.0_all.deb)
+**Debian:** [asb_1.10.0_all.deb](https://github.com/Jamir-boop/ASB/releases/download/v1.10.0/asb_1.10.0_all.deb)
 
 ```bash
-sudo apt install ./asb_1.9.0_all.deb
+sudo apt install ./asb_1.10.0_all.deb
 asb
 ```
 
-**Portable (per-user):** [asb-1.9.0-linux.tar.gz](https://github.com/Jamir-boop/ASB/releases/download/v1.9.0/asb-1.9.0-linux.tar.gz)
+**Fedora, RHEL, and their derivatives:** [asb-1.10.0-1.noarch.rpm](https://github.com/Jamir-boop/ASB/releases/download/v1.10.0/asb-1.10.0-1.noarch.rpm)
 
 ```bash
-tar -xzf asb-1.9.0-linux.tar.gz
-cd asb-1.9.0
+sudo dnf install ./asb-1.10.0-1.noarch.rpm
+```
+
+**openSUSE:** the same RPM. It has no signature.
+
+```bash
+sudo zypper install --allow-unsigned-rpm ./asb-1.10.0-1.noarch.rpm
+```
+
+**Arch Linux:** [PKGBUILD](https://github.com/Jamir-boop/ASB/releases/download/v1.10.0/PKGBUILD). Put it in an empty folder, and run this there. `makepkg` needs the `base-devel` package. The `PKGBUILD` downloads the archive of this release and checks its SHA-256.
+
+```bash
+makepkg -si
+```
+
+**Portable (per-user):** [asb-1.10.0-linux.tar.gz](https://github.com/Jamir-boop/ASB/releases/download/v1.10.0/asb-1.10.0-linux.tar.gz)
+
+```bash
+tar -xzf asb-1.10.0-linux.tar.gz
+cd asb-1.10.0
 ./install.sh
 ~/.local/bin/asb
 ```
 
-The current source makes more formats. `npm run build` writes them to `dist/`: the `.deb`, the portable archive, an Arch `PKGBUILD`, `SHA256SUMS`, and an RPM (only when `rpmbuild` is installed). The v1.9.0 release has no RPM and no `PKGBUILD`. The next release has both. The `.deb` and the RPM of the next release also list the board libraries as weak dependencies (Recommends), so a release with an old GTK still installs the engine.
-
-**Fedora, RHEL, and openSUSE (RPM):**
-
-```bash
-# Fedora, RHEL, and their derivatives
-sudo dnf install ./dist/asb-*.noarch.rpm
-# openSUSE
-sudo zypper install --allow-unsigned-rpm ./dist/asb-*.noarch.rpm
-```
-
-**Arch Linux (PKGBUILD):** `makepkg` needs the `base-devel` package. It finds the archive next to the `PKGBUILD`, so it downloads nothing. The `PKGBUILD` of the next release downloads the archive of its release by itself.
-
-```bash
-mkdir asb-pkg
-cp dist/PKGBUILD dist/asb-*-linux.tar.gz asb-pkg/
-cd asb-pkg
-makepkg -si
-```
+`npm run build` makes the same files from source in `dist/`: the `.deb`, the portable archive, the `PKGBUILD`, `SHA256SUMS`, and the RPM (only when `rpmbuild` is installed). The `.deb` and the RPM list the board libraries as weak dependencies (Recommends), so a system with an old GTK still installs ASB and runs only the engine.
 
 **Nix:** the repository has a flake (`flake.nix`) for `x86_64-linux` and `aarch64-linux`. It works from the default branch now. It brings Node.js 24 and Python with PyGObject, GTK, and Libadwaita. Turn on the `nix-command` and `flakes` features of Nix first.
 
@@ -233,15 +233,15 @@ On Linux, the engine shows a tray icon with **Open ASB** and **Quit ASB** (only 
 
 `asb service install` installs and starts the `asb.service` systemd user service, so the engine also starts with your session. Without a systemd graphical session, it uses an XDG autostart entry instead, or it changes nothing when there is no desktop session. See [Start at login without systemd](#start-at-login-without-systemd). `asb service status` shows the service or entry state. `asb service uninstall` stops and removes it. When the service is installed, `asb` starts the engine through it. An ASB `1.8.1` or older window cannot attach and reports a port conflict.
 
-The ASB `1.9.0` packages include the user service. The Android companion is a separate app: the Linux packages do not include it.
+The ASB `1.10.0` packages include the user service. The Android companion is a separate app: the Linux packages do not include it.
 
-The current source can also join ASB on several of your computers in one machine group: each machine then shows the sessions of the others as cards. See [Machines](ASB.md#machines).
+ASB `1.10.0` can also join ASB on several of your computers in one machine group: each machine then shows the sessions of the others as cards. See [Machines](ASB.md#machines).
 
 In a machine group, Claude and Codex sessions on one machine can message sessions on the other machines (Linux and Windows). The other sessions appear in `/list-agents` (Claude) and `list_sessions` (Codex) with the machine name first. A message to a machine that is offline is refused at once; ASB keeps no queue.
 
 ## OpenCode sessions (list only)
 
-The current source also lists OpenCode 2 sessions from the local OpenCode database. OpenCode cards show state, the last result, and unread, but ASB cannot open them: OpenCode 2 has no link that opens one session. See [OpenCode](ASB.md#opencode).
+ASB `1.10.0` also lists OpenCode 2 sessions from the local OpenCode database. OpenCode cards show state, the last result, and unread, but ASB cannot open them: OpenCode 2 has no link that opens one session. See [OpenCode](ASB.md#opencode).
 
 ## CLI sessions (view only)
 
@@ -249,13 +249,13 @@ ASB also shows Claude Code CLI and Codex CLI sessions as view-only cards: a term
 
 ## Local agent commands
 
-The current source adds `asb agent status` and `asb agent sources` commands to list, get, add, update, or remove a source, with `--json` output and JSON files for edits. Commands use the running desktop or service and report saved, backend, and recent UI state separately. Profiles refreshes after external changes and keeps unsaved edits. See [commands and conflict handling](ASB.md#local-agent-commands). The ASB `1.9.0` packages include these commands. ASB `1.8.1` or older packages and the unmanaged `npm start` server do not support them.
+ASB has `asb agent status` and `asb agent sources` commands to list, get, add, update, or remove a source, with `--json` output and JSON files for edits. Commands use the running desktop or service and report saved, backend, and recent UI state separately. Profiles refreshes after external changes and keeps unsaved edits. See [commands and conflict handling](ASB.md#local-agent-commands). The ASB `1.10.0` packages include these commands. ASB `1.8.1` or older packages and the unmanaged `npm start` server do not support them.
 
 ## ASB Bridge (optional)
 
 ASB Bridge lets local Claude Code sessions and Codex tasks message each other. When ASB Bridge is installed, a message that one agent sends starts a turn in the receiving app.
 
-The ASB `1.9.0` packages include ASB Bridge `0.5.0`; ASB `1.8.1` or older packages do not. It needs Bun. From a source checkout, run `scripts/asb bridge install --all`. With an ASB `1.9.0` package, run `asb bridge install --all`. Then open Plugins > ASB Bridge in Codex, trust both hooks, and restart Codex. Without a target flag, `asb bridge install` shows usage and changes nothing. See the [bridge guide](bridge/README.md) for explicit targets and the usage skills.
+The ASB `1.10.0` packages include ASB Bridge `0.7.0`; ASB `1.8.1` or older packages do not. It needs Bun. From a source checkout, run `scripts/asb bridge install --all`. With an ASB `1.10.0` package, run `asb bridge install --all`. Then open Plugins > ASB Bridge in Codex, trust both hooks, and restart Codex. Without a target flag, `asb bridge install` shows usage and changes nothing. See the [bridge guide](bridge/README.md) for explicit targets and the usage skills.
 
 Separate Claude profiles can opt in to shared peer discovery with `asb bridge link-claude <profile-home> <shared-home>`. This shares only peer metadata and IPC authentication keys. App data and provider credentials stay separate. Read the [setup and backup limits](bridge/README.md#link-claude-profiles) first.
 

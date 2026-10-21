@@ -4,6 +4,9 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+## ASB 1.10.0 - 2026-10-21
+
+- ASB Bridge is `0.7.0` in this release.
 - Fixed the `.deb` compression: a `.deb` that CI built on Ubuntu had zstd members (`control.tar.zst` and `data.tar.zst`), because the default of the Ubuntu `dpkg-deb` is zstd. It had the same files as a Debian build but different bytes, and it needed dpkg 1.21.18 or later. The build now always uses xz, so a `.deb` from any host also installs with an older dpkg.
 - Rewrote the Linux install text. The README now has the npm route, `asb doctor`, one install block for each distribution family (the same commands that `asb doctor` prints on a system with nothing installed; a docs test checks each block against the package table), the release packages, engine only, start at login without systemd, and the firewall rule. `ASB.md` has a new System check section for `asb doctor`, and its Node.js search text is current. `SYSTEM_OVERVIEW.md` describes the tool discovery, the board check, `asb doctor`, the package formats, and the CI matrix. `docs/PRIVACY.md` lists what `asb doctor` and `asb setup` read.
 - Added `flake.lock`, which pins nixpkgs `nixos-26.05` for the Nix flake. The CI `nix` job made it.
@@ -64,6 +67,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Fixed empty card slots in a board column that grew with time, and the GTK warning "Tried to remove non-child" at each reorder: GTK 4 lists a card twice, with no warning, when the same card is twice in one column (for example when two rows have one ID). The board now shows one card for each ID (the first row), never inserts a card that still has a parent, and replaces all columns when the internal list of one differs from its cards.
 - The session menu now has **Copy relative reference** (the app host and session ID, in the same app) and **Copy absolute reference** (`asb:1/...`, with ASB, on any machine of the group). When ASB cannot make a reference, the row shows why.
 - Made the board faster under the pointer and with the Ctrl numbers: these changes now restyle only the cards that change. Very long titles are cut on the card; the tooltip shows the full title.
+
+See [ASB 1.10.0 release notes](docs/releases/v1.10.0.md) for downloads, upgrades, and check limits.
 
 ## ASB 1.9.0 - 2026-10-20
 

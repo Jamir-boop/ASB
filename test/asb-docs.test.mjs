@@ -99,12 +99,12 @@ test('the README blocks are the commands that asb doctor prints on a system with
 test('the README names the release packages and links only the files that the release has', async () => {
   const readme = await text('../README.md');
   const version = readme.match(/\[Download v(\d+\.\d+\.\d+)\]/)[1];
-  // The release has the archive, the .deb, and SHA256SUMS. The RPM and the PKGBUILD come with the next release: add their links then.
-  const published = [`asb_${version}_all.deb`, `asb-${version}-linux.tar.gz`, 'SHA256SUMS'];
+  // The release has five files: the .deb, the RPM, the archive, the PKGBUILD, and SHA256SUMS.
+  const published = [`asb_${version}_all.deb`, `asb-${version}-1.noarch.rpm`, `asb-${version}-linux.tar.gz`, 'PKGBUILD', 'SHA256SUMS'];
   const files = [...readme.matchAll(new RegExp(`releases/download/v${version}/([^)\\s]+)`, 'g'))].map(([, file]) => file);
-  assert.ok(files.length >= published.length);
+  for (const file of published) assert.ok(files.includes(file), file);
   for (const file of files) assert.ok(published.includes(file), file);
-  for (const command of ['npm run build', 'rpmbuild', 'sudo dnf install ./dist/asb-*.noarch.rpm', 'sudo zypper install --allow-unsigned-rpm ./dist/asb-*.noarch.rpm',
+  for (const command of ['npm run build', 'rpmbuild', `sudo dnf install ./asb-${version}-1.noarch.rpm`, `sudo zypper install --allow-unsigned-rpm ./asb-${version}-1.noarch.rpm`,
     'makepkg -si', FLAKE]) assert.ok(readme.includes(command), command);
 });
 
