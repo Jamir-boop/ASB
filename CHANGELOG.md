@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Fixed PC sounds on Linux systems without MP3 support: the three sounds are now 16-bit PCM WAV files with the same samples and gain, and ASB plays them with `pw-play`, then `paplay`, then `aplay -q` (ALSA). When no player exists, the log line names the three players and `asb doctor`.
 - The engine starts faster after a restart: it saves its Codex and Claude reader positions in `~/.cache/asb/readers/positions.json` (no message text, no paths) and reads only the new bytes of each Codex session log and of each Claude transcript larger than 8 MiB.
 - ASB Bridge is now `0.6.0`: its shipped files changed for the Windows sends by reference, and Codex loads a changed plugin only with a new version.
 - ASB Bridge can now send by reference to a session on the same Windows PC. Before the first byte, it checks that the pipe belongs to the target process of the same Windows user. An older bridge on Windows gets `bridge-upgrade-required`. Sends by reference to another machine of the group now also work from and to Windows; on Windows the receipts need the message relay (Bun).

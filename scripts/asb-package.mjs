@@ -20,7 +20,7 @@ export const RUNTIME_FILES = [
   'assets/icons/asb-machine-symbolic.svg', 'assets/icons/asb-terminal-symbolic.svg', 'assets/icons/asb-drawer-symbolic.svg',
   'assets/icons/asb-muted-symbolic.svg',
   'assets/icons/README.md', 'assets/icons/ASB-disc-provenance.md',
-  'assets/sounds/opencode_staplebops_01.mp3', 'assets/sounds/opencode_staplebops_02.mp3', 'assets/sounds/opencode_nope_03.mp3',
+  'assets/sounds/opencode_staplebops_01.wav', 'assets/sounds/opencode_staplebops_02.wav', 'assets/sounds/opencode_nope_03.wav',
   'assets/sounds/opencode-LICENSE.txt',
   'src/switchboard.mjs', 'src/app-sources.mjs', 'src/asb-server.mjs', 'src/dashboard-snapshot.mjs', 'src/local-http.mjs', 'src/session-opener.mjs',
   'src/codex-data.mjs', 'src/claude-data.mjs', 'src/claude-registry.mjs', 'src/claude-cli-data.mjs', 'src/claude-remote-data.mjs', 'src/insights.mjs', 'src/data-cache.mjs',
