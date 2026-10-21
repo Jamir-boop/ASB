@@ -75,3 +75,131 @@ jobs:
         with:
           name: distro-probe-${{ matrix.job }}
           path: ${{ runner.temp }}/out/probe.json
+
+  # Build the release packages once. The check jobs install them in each image.
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # rpmbuild: the build makes the RPM only when it exists.
+      - run: sudo apt-get update
+      - run: sudo apt-get install -y rpm
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # Install ASB in each image from the archive and from the release package, then start the engine (and the board on the board tier).
+  check:
+    name: check ${{ matrix.job }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { job: debian-13, image: 'debian:13', runner: ubuntu-latest, family: debian, tier: board, node: repository, package: deb }
+          - { job: debian-12, image: 'debian:12', runner: ubuntu-latest, family: debian, tier: engine, node: nodesource, package: deb }
+          - { job: ubuntu-24.04, image: 'ubuntu:24.04', runner: ubuntu-latest, family: debian, tier: board, node: nodesource, package: deb }
+          - { job: ubuntu-22.04, image: 'ubuntu:22.04', runner: ubuntu-latest, family: debian, tier: engine, node: nodesource, package: deb }
+          - { job: ubuntu-26.04, image: 'ubuntu:26.04', runner: ubuntu-latest, family: debian, tier: board, node: repository, package: deb }
+          - { job: fedora-43, image: 'fedora:43', runner: ubuntu-latest, family: fedora, tier: board, node: repository, package: rpm }
+          - { job: fedora-44, image: 'fedora:44', runner: ubuntu-latest, family: fedora, tier: board, node: repository, package: rpm }
+          # EL10 has no Xvfb: the check still proves that GTK and Libadwaita load, but it does not open the window.
+          - { job: alma-10, image: 'almalinux:10', runner: ubuntu-latest, family: fedora, tier: board, node: repository, window: skip, package: rpm }
+          - { job: alma-9, image: 'almalinux:9', runner: ubuntu-latest, family: fedora, tier: board, node: module, package: rpm }
+          - { job: tumbleweed, image: 'opensuse/tumbleweed', runner: ubuntu-latest, family: opensuse, tier: board, node: repository, package: rpm }
+          - { job: leap-16, image: 'opensuse/leap:16.0', runner: ubuntu-latest, family: opensuse, tier: board, node: repository, package: rpm }
+          - { job: arch, image: 'archlinux:latest', runner: ubuntu-latest, family: arch, tier: board, node: repository, package: pkgbuild }
+          - { job: alpine-3.24, image: 'alpine:3.24', runner: ubuntu-latest, family: alpine, tier: board, node: repository, package: none }
+          - { job: void, image: 'ghcr.io/void-linux/void-glibc-full:latest', runner: ubuntu-latest, family: void, tier: board, node: repository, package: none }
+          - { job: debian-13-arm, image: 'debian:13', runner: ubuntu-24.04-arm, family: debian, tier: board, node: repository, package: deb }
+          - { job: fedora-44-arm, image: 'fedora:44', runner: ubuntu-24.04-arm, family: fedora, tier: board, node: repository, package: rpm }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Install the packages and check ASB in the image
+        env:
+          IMAGE: ${{ matrix.image }}
+          FAMILY: ${{ matrix.family }}
+          TIER: ${{ matrix.tier }}
+          NODE_ROUTE: ${{ matrix.node }}
+          PACKAGE: ${{ matrix.package }}
+          WINDOW: ${{ matrix.window }}
+        run: |
+          required='node sqlite openssl xdg'
+          ci='xvfb dbus font'
+          # The route installs Node.js on these rows.
+          if [ "$NODE_ROUTE" != repository ]; then required=${required#node }; fi
+          # A row without Xvfb leaves out the xvfb key.
+          if [ "$WINDOW" = skip ]; then ci=${ci#xvfb }; fi
+          # The board keys go on both tiers. Without them, an engine-tier row would list them in commands.required.
+          ASB_CHECK_REQUIRED=$(node src/linux-distros.mjs "$FAMILY" $required)
+          ASB_CHECK_BOARD=$(node src/linux-distros.mjs "$FAMILY" gi gtk adw)
+          ASB_CHECK_OPTIONAL=$(node src/linux-distros.mjs "$FAMILY" gicairo qrcode sound)
+          ASB_CHECK_CI=$(node src/linux-distros.mjs "$FAMILY" $ci)
+          case "$FAMILY" in
+            debian) ASB_CHECK_REFRESH='export DEBIAN_FRONTEND=noninteractive; apt-get update' ;;
+            arch) ASB_CHECK_REFRESH='pacman -Syu --noconfirm' ;;
+            alpine) ASB_CHECK_REFRESH='apk update' ;;
+            void) ASB_CHECK_REFRESH='xbps-install -Syu xbps' ;;
+            fedora|opensuse) ASB_CHECK_REFRESH=':' ;;
+            *) echo "No index update for $FAMILY." >&2; exit 1 ;;
+          esac
+          case "$NODE_ROUTE" in
+            repository) ASB_CHECK_ROUTE=':' ;;
+            nodesource) ASB_CHECK_ROUTE='apt-get install -y curl ca-certificates; curl -fsSL https://deb.nodesource.com/setup_24.x -o /tmp/nodesource.sh; bash /tmp/nodesource.sh; apt-get install -y nodejs' ;;
+            module) ASB_CHECK_ROUTE='dnf module install -y nodejs:24' ;;
+            *) echo "No Node.js route $NODE_ROUTE." >&2; exit 1 ;;
+          esac
+          export ASB_CHECK_REFRESH ASB_CHECK_ROUTE ASB_CHECK_REQUIRED ASB_CHECK_BOARD ASB_CHECK_OPTIONAL ASB_CHECK_CI
+          env | grep '^ASB_CHECK_'
+          docker run --rm -v "$PWD:/asb:ro" -e ASB_DISTRO_CHECK=1 -e ASB_CHECK_WINDOW="$WINDOW" \
+            -e ASB_CHECK_REFRESH -e ASB_CHECK_ROUTE -e ASB_CHECK_REQUIRED -e ASB_CHECK_BOARD -e ASB_CHECK_OPTIONAL -e ASB_CHECK_CI \
+            "$IMAGE" sh -eu /asb/test/distro-check.sh "$FAMILY" "$TIER" "$PACKAGE"
+
+  # Build the flake, then run its asb: the board libraries load and the engine starts.
+  nix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      # The first run writes flake.lock. The artifact below carries it out of the run.
+      - run: nix flake check
+      - run: nix build
+      - name: Check the board libraries and the engine
+        run: |
+          # The runner is a throwaway VM, but ASB still gets its own home and no runtime folder.
+          home=$(mktemp -d)
+          export HOME="$home" XDG_CONFIG_HOME="$home/.config" XDG_DATA_HOME="$home/.local/share" XDG_STATE_HOME="$home/.local/state" XDG_CACHE_HOME="$home/.cache"
+          unset XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
+          ./result/bin/asb doctor --json > "$home/doctor.json"
+          node -e 'const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); if (d.board.ok !== true) { console.error(`board.ok is ${d.board.ok}: ${d.board.reason}`); process.exit(1); }' "$home/doctor.json"
+          ./result/bin/asb engine start
+          test -f "$XDG_STATE_HOME/asb/run/service.json"
+          ./result/bin/asb engine status
+          ./result/bin/asb agent status
+          ./result/bin/asb engine stop
+          if ./result/bin/asb engine status; then echo "The engine still runs after the stop." >&2; exit 1; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: flake-lock
+          path: flake.lock
