@@ -12,7 +12,6 @@ const nativeSqlite = import('node:sqlite').catch(() => null);
 const DEFAULT_CODEX_DIR = path.join(os.homedir(), '.codex');
 const DEFAULT_SESSION_INDEX = path.join(DEFAULT_CODEX_DIR, 'session_index.jsonl');
 const DEFAULT_GLOBAL_STATE = path.join(DEFAULT_CODEX_DIR, '.codex-global-state.json');
-const CODEX_PINNED_THREAD_IDS_KEY = 'pinned-thread-ids';
 const CODEX_LOCAL_READ_HOST = `local:${createHash('sha256').update(JSON.stringify(['local', 'local', null])).digest('hex')}`;
 const DEFAULT_THREAD_LIMIT = 5000;
 // A stored title can hold a whole prompt. A row shows 300 characters (TITLE_LIMIT in switchboard.mjs); one more shows that the title was cut.
@@ -21,7 +20,6 @@ const DEFAULT_INITIAL_ROLLOUT_BYTES = 512 * 1024;
 const DEFAULT_MAX_ROLLOUT_BYTES = 16 * 1024 * 1024;
 const ROLLOUT_SIGNAL_CONCURRENCY = 6;
 const COMPLETION_HINT = /(\bdone\b|\bcompleted?\b|ready for review|handoff|完成|已完成|验收|交付|交接|可以看|可以试)/i;
-const LOW_SIGNAL_USER_MESSAGE = /^(继续|继续吧|你继续|你继续吧|好的|好的好的|可以|可以的|行|ok|okay|收到|嗯|嗯嗯|先这样)$/iu;
 const ROLLOUT_LIFECYCLE_EVENT_RE = /"type"\s*:\s*"(?:task_started|task_complete|turn_aborted|turn_cancelled|task_cancelled|cancelled)"/;
 // A token_count line with a usage window. Lines without one cannot change the window record of a scan, so they are not parsed.
 const ROLLOUT_LIMIT_WINDOW_RE = /"used_percent"\s*:\s*-?\d/;
@@ -136,24 +134,6 @@ export function applySessionIndexTitles(rows, titleByThreadId) {
   }));
 }
 
-export function parseCodexPinnedThreadIds(globalState = {}) {
-  const rawIds = Array.isArray(globalState?.[CODEX_PINNED_THREAD_IDS_KEY])
-    ? globalState[CODEX_PINNED_THREAD_IDS_KEY]
-    : [];
-  const seen = new Set();
-  const threadIds = [];
-
-  for (const rawId of rawIds) {
-    if (typeof rawId !== 'string') continue;
-    const threadId = rawId.trim();
-    if (!threadId || seen.has(threadId)) continue;
-    seen.add(threadId);
-    threadIds.push(threadId);
-  }
-
-  return threadIds;
-}
-
 async function readCodexGlobalState(globalStatePath = DEFAULT_GLOBAL_STATE, cacheScope = '') {
   try {
     return await readCodexMetadata(globalStatePath, JSON.parse, cacheScope);
@@ -259,20 +239,12 @@ export function codexNativeReadStatus(thread, globalState) {
   return { nativeUnread, readStatus: nativeUnread ? 'unread' : 'read' };
 }
 
-export function applyCodexPinnedThreadIds(rows, pinnedThreadIds = []) {
-  const pinned = new Set(pinnedThreadIds.map(String));
-  return rows.map((row) => ({
-    ...row,
-    pinned: row.is_pinned == null ? pinned.has(String(row.id || '')) : Boolean(Number(row.is_pinned)),
-  }));
-}
-
 function readThreadsSql(cappedLimit, { includeGoals = true, columns = new Set() } = {}) {
   // A column that a Codex migration dropped reads as null, so the scan survives the change.
   const threadColumns = ['rollout_path', 'created_at', 'updated_at', 'created_at_ms', 'updated_at_ms', 'source',
     'model_provider', 'cwd', 'title', 'tokens_used', 'archived', 'git_sha', 'git_branch', 'git_origin_url',
     'agent_nickname', 'agent_role', 'model', 'reasoning_effort',
-    'name', 'is_pinned', 'thread_source', 'originator', 'agent_path', 'creator_account_id', 'creator_user_id']
+    'name', 'thread_source', 'originator', 'agent_path', 'creator_account_id', 'creator_user_id']
     .map((name) => !columns.has(name) ? `null as ${name}`
       : name === 'title' ? `substr(threads.title, 1, ${TITLE_READ_CHARS}) as title` : `threads.${name} as ${name}`)
     .join(',\n      ');
@@ -432,10 +404,6 @@ function extractLocalArtifactTargets(text = '') {
   return items;
 }
 
-function compactInlineText(value = '') {
-  return String(value).replace(/\s+/g, ' ').trim();
-}
-
 function stripCodexRichMessageScaffold(value = '') {
   return String(value || '')
     .replace(/<image\b[\s\S]*?<\/image>/gi, ' ')
@@ -444,18 +412,6 @@ function stripCodexRichMessageScaffold(value = '') {
     .replace(/^#\s+Files mentioned by the user:\s*$/gim, ' ')
     .replace(/^##\s+[^:\n#]+?\.[A-Za-z0-9]{1,12}\s*:\s*(?:file:\/\/|~\/|\/|[A-Za-z]:[\\/]).*$/gim, ' ')
     .replace(/^##\s+My request for Codex:\s*$/gim, ' ');
-}
-
-function truncateText(value = '', maxLength = 500) {
-  const text = compactInlineText(value);
-  if (text.length <= maxLength) return text;
-  return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
-}
-
-function isMeaningfulUserMessage(value = '') {
-  const text = compactInlineText(value);
-  if (text.length < 8) return false;
-  return !LOW_SIGNAL_USER_MESSAGE.test(text);
 }
 
 function eventTimestampMs(event) {
@@ -653,10 +609,6 @@ export function parseRolloutSignals(jsonlText) {
     latestAgentFinalAtMs: null,
     latestUserMessageAtMs: null,
     latestMessageKind: '',
-    firstUserMessage: '',
-    latestUserMessage: '',
-    latestMeaningfulUserMessage: '',
-    lastAgentMessage: '',
     ...emptyRolloutLifecycle(),
     latestEventAtMs: null,
   };
@@ -683,7 +635,6 @@ export function parseRolloutSignals(jsonlText) {
 
     if (payload?.type === 'agent_message') {
       const text = payloadText(payload);
-      if (text) signals.lastAgentMessage = text.slice(0, 500);
       if (payload.phase === 'final_answer' || COMPLETION_HINT.test(text)) {
         signals.completionHint = true;
       }
@@ -697,15 +648,6 @@ export function parseRolloutSignals(jsonlText) {
     }
 
     if (payload?.type === 'user_message') {
-      const text = payloadText(payload);
-      if (text) {
-        const compactText = truncateText(text);
-        signals.firstUserMessage ||= compactText;
-        signals.latestUserMessage = compactText;
-        if (isMeaningfulUserMessage(text)) {
-          signals.latestMeaningfulUserMessage = compactText;
-        }
-      }
       signals.latestUserMessageAtMs = timestampMs || signals.latestUserMessageAtMs;
       signals.latestMessageKind = 'user';
     }
@@ -1013,10 +955,6 @@ async function attachRolloutSignals(threads, {
     thread.latestAgentFinalAtMs = result.value.latestAgentFinalAtMs;
     thread.latestUserMessageAtMs = result.value.latestUserMessageAtMs;
     thread.latestMessageKind = result.value.latestMessageKind;
-    thread.firstUserMessage = result.value.firstUserMessage;
-    thread.latestUserMessage = result.value.latestUserMessage;
-    thread.latestMeaningfulUserMessage = result.value.latestMeaningfulUserMessage;
-    thread.lastAgentMessage = result.value.lastAgentMessage;
     thread.latestLifecycleAtMs = result.value.latestLifecycleAtMs;
     thread.latestLifecycleKind = result.value.latestLifecycleKind;
     thread.latestTaskStartedAtMs = result.value.latestTaskStartedAtMs;
@@ -1053,11 +991,9 @@ export async function loadCodexDashboard(options = {}) {
   const rows = await readThreads({ ...options, databasePath });
   const sessionIndex = await readSessionIndex(options.sessionIndexPath || DEFAULT_SESSION_INDEX, options.cacheScope);
   const globalState = await readCodexGlobalState(options.globalStatePath || DEFAULT_GLOBAL_STATE, options.cacheScope).catch(() => ({}));
-  const pinnedThreadIds = parseCodexPinnedThreadIds(globalState);
   const indexedRows = applySessionIndexTitles(rows
     .sort((a, b) => threadRowUpdatedAtMs(b) - threadRowUpdatedAtMs(a)), sessionIndex);
-  const pinnedRows = applyCodexPinnedThreadIds(indexedRows, pinnedThreadIds);
-  const threads = enrichThreads(pinnedRows, nowMs);
+  const threads = enrichThreads(indexedRows, nowMs);
   if (options.codexNativeReadEnabled) {
     for (const thread of threads) Object.assign(thread, codexNativeReadStatus(thread, globalState));
   }

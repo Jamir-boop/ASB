@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { isAutomationThread, subagentInfo } from './thread-classification.mjs';
+import { subagentInfo } from './thread-classification.mjs';
 
 const FRESH_WINDOW_MS = 15 * 60 * 1000;
 const WARM_WINDOW_MS = 6 * 60 * 60 * 1000;
@@ -126,7 +126,6 @@ export function normalizeThread(row, nowMs = Date.now()) {
     reasoningEffort: row.reasoning_effort || '',
     tokensUsed: coerceNumber(row.tokens_used),
     hasUnreadTurn: Boolean(coerceNumber(row.has_unread_turn ?? row.hasUnreadTurn ?? row.awaiting_review ?? row.awaitingReview)),
-    pinned: coerceBoolean(row.pinned ?? row.is_pinned ?? row.isPinned, false),
     threadSource: row.thread_source || '',
     originator: row.originator || '',
     agentPath: row.agent_path || '',
@@ -144,7 +143,6 @@ export function normalizeThread(row, nowMs = Date.now()) {
     openLabel: '打开',
     defaultOpenMode,
     inCodexSidebar,
-    isAutomation: isAutomationThread(row),
     isSubagent: subagent.isSubagent,
     parentThreadId: subagent.parentThreadId,
     subagentDepth: subagent.depth,

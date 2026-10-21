@@ -6,9 +6,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
   applySessionIndexTitles,
-  applyCodexPinnedThreadIds,
   loadCodexDashboard,
-  parseCodexPinnedThreadIds,
   parseSessionIndex,
   parseRolloutSignals,
   readThreads,
@@ -172,65 +170,6 @@ test('tracks a later user message after an agent final answer', () => {
   assert.equal(signals.latestMessageKind, 'user');
 });
 
-test('tracks first and latest meaningful Codex user text', () => {
-  const jsonl = [
-    JSON.stringify({
-      timestamp: '2026-04-29T06:30:00.000Z',
-      type: 'event_msg',
-      payload: {
-        type: 'user_message',
-        message: 'Please review the sample project and prepare a detailed report for the example team.',
-      },
-    }),
-    JSON.stringify({
-      timestamp: '2026-04-29T06:35:08.583Z',
-      type: 'event_msg',
-      payload: { type: 'agent_message', message: 'Done.', phase: 'final_answer' },
-    }),
-    JSON.stringify({
-      timestamp: '2026-04-29T06:36:00.000Z',
-      type: 'event_msg',
-      payload: { type: 'user_message', message: '继续' },
-    }),
-    JSON.stringify({
-      timestamp: '2026-04-29T06:40:00.000Z',
-      type: 'event_msg',
-      payload: { type: 'user_message', message: 'Please include the updated sample data in the report.' },
-    }),
-  ].join('\n');
-
-  const signals = parseRolloutSignals(jsonl);
-
-  assert.equal(signals.firstUserMessage, 'Please review the sample project and prepare a detailed report for the example team.');
-  assert.equal(signals.latestUserMessage, 'Please include the updated sample data in the report.');
-  assert.equal(signals.latestMeaningfulUserMessage, 'Please include the updated sample data in the report.');
-});
-
-test('keeps bounded raw Codex user text with file, image, and link content', () => {
-  const message = [
-    '# Files mentioned by the user:',
-    '## synthetic-image.png: /tmp/synthetic-image.png',
-    '## My request for Codex:',
-    'https://example.test/report',
-    'Review the synthetic report.',
-    '<image name="example" path="/tmp/synthetic-image.png"></image>',
-  ].join('\n');
-  const jsonl = [
-    JSON.stringify({
-      timestamp: '2026-06-18T07:56:48.000Z',
-      type: 'event_msg',
-      payload: { type: 'user_message', message },
-    }),
-  ].join('\n');
-  const signals = parseRolloutSignals(jsonl);
-  assert.equal(signals.firstUserMessage, message.replace(/\s+/g, ' ').trim());
-  assert.equal(signals.latestUserMessage, signals.firstUserMessage);
-  assert.equal(signals.latestMeaningfulUserMessage, signals.firstUserMessage);
-  assert.doesNotMatch(signals.firstUserMessage, /\[图片\]|\[外部链接\]|\[文件\]/);
-  const long = parseRolloutSignals(JSON.stringify({ payload: { type: 'user_message', message: 'x'.repeat(600) } }));
-  assert.equal(long.firstUserMessage, `${'x'.repeat(497)}...`);
-});
-
 test('parses Codex session index titles used by the sidebar', () => {
   const index = parseSessionIndex([
     JSON.stringify({
@@ -258,23 +197,6 @@ test('marks threads missing from the Codex sidebar index', () => {
   assert.equal(rows[0].in_codex_sidebar, true);
   assert.equal(rows[1].thread_name, undefined);
   assert.equal(rows[1].in_codex_sidebar, false);
-});
-
-test('reads Codex native pinned thread ids from global state', () => {
-  assert.deepEqual(parseCodexPinnedThreadIds({
-    'pinned-thread-ids': ['thread-a', '', 12, 'thread-b', 'thread-a'],
-  }), ['thread-a', 'thread-b']);
-  assert.deepEqual(parseCodexPinnedThreadIds({}), []);
-});
-
-test('marks rows with Codex native pinned state', () => {
-  const rows = applyCodexPinnedThreadIds([
-    { id: 'thread-a', title: 'A' },
-    { id: 'thread-b', title: 'B' },
-  ], ['thread-b']);
-
-  assert.equal(rows[0].pinned, false);
-  assert.equal(rows[1].pinned, true);
 });
 
 test('keeps a thread in progress when commentary follows the latest user message', () => {

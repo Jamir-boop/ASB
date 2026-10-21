@@ -359,9 +359,11 @@ test('Codex lifecycle positions from disk give the result of a full pass after a
   assert.ok(total(b) < total(c), `B ${total(b)}, C ${total(c)}`);
 });
 
-// Measured on main (ba1ecdc) with the same synthetic set: the reader with no positions reads the same bytes and gives the same signals.
+// Measured on main (ba1ecdc) with the same synthetic set: the reader with no positions reads the same bytes and gives the same signals,
+// except the four text fields (`firstUserMessage`, `latestUserMessage`, `latestMeaningfulUserMessage`, `lastAgentMessage`) that the reader no longer keeps:
+// the digest is the digest of the signals of 52a1849 with these four fields removed.
 // To measure again: ASB_HEAD_ROOT=file:///<copy of main>/ node --test --test-name-pattern="same bytes" test/reader-positions.test.mjs
-const HEAD_OFF = { lifecycleBytes: 3371140, tailBytes: 240640, digest: 'a3b5109d052b681c8c87b7a68b86c63ff2d7d5bc65c082f8fd3e5bb5cb4281de' };
+const HEAD_OFF = { lifecycleBytes: 3371140, tailBytes: 240640, digest: 'a1535b3488ff596dea3172c09fb0d6b1c928bc31c24223439724005fa0289476' };
 
 test('with no positions the Codex reader reads the same bytes and gives the same signals as before positions', async (t) => {
   const directory = await temporaryDirectory(t);
@@ -738,9 +740,10 @@ test('Claude lifecycle positions from disk give the result of a full read after 
 });
 
 // Measured with the same synthetic set: the reader with no positions reads the same bytes and gives the same rows as d9700f1,
-// except `updatedAtMs` and `status` (the row time now ignores records with no turn, and the file time of the session file).
+// except `updatedAtMs` and `status` (the row time now ignores records with no turn, and the file time of the session file),
+// and the four text fields that the reader no longer keeps (the digest is the digest of the rows of 52a1849 with these four fields removed).
 // To measure again: ASB_HEAD_ROOT=file:///<copy of the same commit>/ node --test --test-name-pattern="Claude reader reads the same" test/reader-positions.test.mjs
-const CLAUDE_HEAD_OFF = { bytes: 939657, digest: '013b416409ac8239806215a6f1ee38c1dfc90d662851fedddc489dff1337cab8' };
+const CLAUDE_HEAD_OFF = { bytes: 939657, digest: 'c5eb3445555838336ccdd132c60f902d3d1835b52d8056487d84b3ddfa102365' };
 
 test('with no positions the Claude reader reads the same bytes and gives the same rows as before positions', async (t) => {
   const home = await temporaryDirectory(t);

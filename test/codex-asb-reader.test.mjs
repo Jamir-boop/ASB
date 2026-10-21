@@ -64,8 +64,6 @@ test('ASB keeps raw Codex titles and desktop name priority without first_user_me
     const thread = dashboard.threads.find((thread) => thread.id === item.id);
     const expected = item.name || item.sidebar || item.title;
     assert.equal(thread.title, expected);
-    assert.equal(thread.firstUserMessage, 'First synthetic user request.');
-    assert.equal(thread.latestUserMessage, 'Later synthetic image request. <image name="example" path="/tmp/synthetic-image.png"></image>');
     assert.equal(board.threads.find((thread) => thread.id === item.id).title, expected || 'Untitled session');
   }
 });

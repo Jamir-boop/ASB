@@ -9,20 +9,6 @@ function sourceText(thread) {
     .join('\n');
 }
 
-function searchableThreadText(thread) {
-  return [
-    thread?.title,
-    thread?.thread_name,
-    thread?.firstUserMessage,
-    thread?.latestUserMessage,
-    thread?.latestMeaningfulUserMessage,
-    sourceText(thread),
-  ]
-    .filter((value) => value !== undefined && value !== null)
-    .map((value) => String(value).toLowerCase())
-    .join('\n');
-}
-
 function asObject(value) {
   return value && typeof value === 'object' ? value : null;
 }
@@ -121,17 +107,4 @@ export function subagentInfo(thread) {
     ),
     agentRole: firstString(thread.agentRole, thread.agent_role, sourceInfo.agentRole),
   };
-}
-
-export function isAutomationThread(thread) {
-  if (!thread || typeof thread !== 'object') return false;
-  if (thread.isAutomation || thread.is_automation || thread.automation) return true;
-
-  const text = searchableThreadText(thread);
-  return (
-    text.startsWith('automation:')
-    || text.includes('\nautomation:')
-    || text.includes('automation id:')
-    || text.includes('automation memory:')
-  );
 }

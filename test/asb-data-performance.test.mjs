@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -21,7 +22,14 @@ const codexThreadsSchema = `create table threads(id text primary key, rollout_pa
   source text default 'vscode', model_provider text, cwd text, title text, sandbox_policy text, approval_mode text,
   tokens_used integer, archived integer, git_sha text, git_branch text, git_origin_url text, cli_version text,
   first_user_message text, agent_nickname text, agent_role text, memory_mode text, model text, reasoning_effort text,
-  created_at_ms integer, updated_at_ms integer);`;
+  created_at_ms integer, updated_at_ms integer, creator_account_id text, creator_user_id text);`;
+const FIRST = '00000000-0000-4000-8000-000000000001';
+const OTHER = '00000000-0000-4000-8000-000000000002';
+const SECOND = '00000000-0000-4000-8000-000000000003';
+const digest = (values) => createHash('sha256').update(JSON.stringify(values)).digest('hex');
+// A Codex global state with an unread mark for each thread of `unread`, for the creator of the test threads.
+const readState = (unread) => JSON.stringify({ 'electron-thread-read-state-v1': { version: 1, unreadByIdentity: {
+  [digest(['chatgpt', 'account', 'user'])]: { [`local:${digest(['local', 'local', null])}`]: unread } } } });
 const question = { type: 'function_call', name: 'functions.request_user_input_async', call_id: 'ask', arguments: JSON.stringify({ questions: [{ id: 'one' }] }) };
 
 async function temporaryDirectory(t) {
@@ -137,17 +145,17 @@ test('Codex metadata fingerprints detect replacement and database WAL writes', a
   t.after(() => database.close());
   database.exec(`pragma journal_mode=WAL;
     ${codexThreadsSchema}
-    insert into threads(id,title,created_at_ms,updated_at_ms) values('first','Old title',${nowMs},${nowMs});`);
+    insert into threads(id,title,created_at_ms,updated_at_ms,creator_account_id,creator_user_id) values('${FIRST}','Old title',${nowMs},${nowMs},'account','user');`);
   const sessionIndexPath = path.join(directory, 'session_index.jsonl');
   const globalStatePath = path.join(directory, 'global.json');
-  await fs.writeFile(sessionIndexPath, jsonl([{ id: 'first', thread_name: 'Sidebar title' }]));
-  await fs.writeFile(globalStatePath, JSON.stringify({ 'pinned-thread-ids': ['first'] }));
+  await fs.writeFile(sessionIndexPath, jsonl([{ id: FIRST, thread_name: 'Sidebar title' }]));
+  await fs.writeFile(globalStatePath, readState([FIRST]));
   // The old dashboard options of the caller stay accepted and have no effect.
-  const options = { databasePath, sessionsDir: directory, sessionIndexPath, globalStatePath, nowMs, asbMode: true,
+  const options = { databasePath, sessionsDir: directory, sessionIndexPath, globalStatePath, nowMs, codexNativeReadEnabled: true, asbMode: true,
     codexResetCreditsEnabled: false, workMetricCachePath: false, maxGovernanceRollouts: 0, maxOrphanRollouts: 0 };
   const first = await loadCodexDashboard(options);
   assert.equal(first.threads[0].title, 'Sidebar title');
-  assert.equal(first.threads[0].pinned, true);
+  assert.equal(first.threads[0].nativeUnread, true);
   assert.deepEqual(Object.keys(first), ['generatedAtMs', 'threads']);
   const before = getCodexCacheStats().metadata;
   await loadCodexDashboard(options);
@@ -156,21 +164,21 @@ test('Codex metadata fingerprints detect replacement and database WAL writes', a
   assert.equal(warm.hits - before.hits, 2);
   const oldStat = await fs.stat(globalStatePath);
   const replacement = path.join(directory, 'replacement.json');
-  await fs.writeFile(replacement, JSON.stringify({ 'pinned-thread-ids': ['other'] }));
+  await fs.writeFile(replacement, readState([OTHER]));
   await fs.utimes(replacement, oldStat.atime, oldStat.mtime);
   await fs.rename(replacement, globalStatePath);
   const oldIndexStat = await fs.stat(sessionIndexPath);
-  await fs.writeFile(sessionIndexPath, jsonl([{ id: 'first', thread_name: 'Renamed title' }]));
+  await fs.writeFile(sessionIndexPath, jsonl([{ id: FIRST, thread_name: 'Renamed title' }]));
   // File systems can return the same timestamp for consecutive writes. Change it explicitly.
   await fs.utimes(sessionIndexPath, oldIndexStat.atime, (oldIndexStat.mtimeMs + 1000) / 1000);
   const changedIndexStat = await fs.stat(sessionIndexPath);
   assert.equal(changedIndexStat.size, oldIndexStat.size);
   assert.notEqual(changedIndexStat.mtimeMs, oldIndexStat.mtimeMs);
-  database.exec(`insert into threads(id,title,created_at_ms,updated_at_ms) values('second','New from WAL',${nowMs},${nowMs + 1});`);
+  database.exec(`insert into threads(id,title,created_at_ms,updated_at_ms) values('${SECOND}','New from WAL',${nowMs},${nowMs + 1});`);
   const changed = await loadCodexDashboard(options);
   assert.equal(changed.threads.length, 2);
-  assert.equal(changed.threads.find((thread) => thread.id === 'first').title, 'Renamed title');
-  assert.equal(changed.threads.find((thread) => thread.id === 'first').pinned, false);
+  assert.equal(changed.threads.find((thread) => thread.id === FIRST).title, 'Renamed title');
+  assert.equal(changed.threads.find((thread) => thread.id === FIRST).nativeUnread, false);
 });
 
 async function claudeFixture(directory, index) {
@@ -189,21 +197,57 @@ async function claudeFixture(directory, index) {
   return { appDir, projectsDir, metadataPath, transcriptPath };
 }
 
+test('the Codex and Claude readers keep no prompt or answer text in their rows or cached signals', async (t) => {
+  const directory = await temporaryDirectory(t);
+  // Each long text has a marker: a copy of it in a row or in a cache entry is a leak.
+  const text = (name) => `PRIVATE-${name} ${'text '.repeat(1000)}`;
+  const rolloutPath = path.join(directory, 'rollout.jsonl');
+  await fs.writeFile(rolloutPath, jsonl([
+    codexEvent({ type: 'user_message', message: text('codex-first') }, nowMs - 5000),
+    codexEvent({ type: 'task_started' }, nowMs - 4900),
+    codexEvent({ type: 'agent_message', message: text('codex-answer'), phase: 'final_answer' }, nowMs - 4000),
+    codexEvent({ type: 'task_complete' }, nowMs - 3900),
+    codexEvent({ type: 'user_message', message: text('codex-latest') }, nowMs - 1000),
+  ]));
+  const databasePath = path.join(directory, 'state.sqlite');
+  const database = new DatabaseSync(databasePath);
+  database.exec(`${codexThreadsSchema}
+    insert into threads(id,rollout_path,title,created_at_ms,updated_at_ms) values('${FIRST}','${rolloutPath}','Title',${nowMs},${nowMs});`);
+  database.close();
+  const codex = await loadCodexDashboard({ databasePath, sessionIndexPath: path.join(directory, 'absent-index'),
+    globalStatePath: path.join(directory, 'absent-state'), nowMs });
+  const fixture = await claudeFixture(directory, 1);
+  const transcript = jsonl([
+    { type: 'user', timestamp: new Date(nowMs - 5000).toISOString(), message: { content: text('claude-first') } },
+    { type: 'assistant', timestamp: new Date(nowMs - 4000).toISOString(), message: { stop_reason: 'end_turn', content: [{ type: 'text', text: text('claude-answer') }] } },
+    { type: 'result', timestamp: new Date(nowMs - 3900).toISOString(), result: text('claude-result') },
+    { type: 'user', timestamp: new Date(nowMs - 1000).toISOString(), message: { content: text('claude-latest') } },
+  ]);
+  await fs.writeFile(fixture.transcriptPath, transcript);
+  const claude = await loadClaudeDesktopCodeThreads({ appDir: fixture.appDir, projectsDir: fixture.projectsDir, nowMs });
+  // The state, the row time, and the sounds still come from the times of the messages.
+  assert.deepEqual([codex.threads[0].latestUserMessageAtMs, codex.threads[0].latestAgentFinalAtMs], [nowMs - 1000, nowMs - 4000]);
+  assert.deepEqual([claude.threads[0].latestUserMessageAtMs, claude.threads[0].lifecycleRunning], [nowMs - 1000, true]);
+  // The signals are what the caches keep.
+  const kept = { codex: codex.threads, codexSignals: await readRolloutSignals(rolloutPath), claude: claude.threads, claudeSignals: parseClaudeJsonlSignals(transcript) };
+  for (const [name, value] of Object.entries(kept)) assert.equal(JSON.stringify(value).includes('PRIVATE-'), false, name);
+});
+
 test('backend source events invalidate Codex and Claude metadata with identical file stats', async (t) => {
   const directory = await temporaryDirectory(t);
   const fixture = await claudeFixture(directory, 1);
   const globalStatePath = path.join(directory, '.codex-global-state.json');
-  await fs.writeFile(globalStatePath, JSON.stringify({ 'pinned-thread-ids': ['first'] }));
+  await fs.writeFile(globalStatePath, readState([FIRST]));
   const databasePath = path.join(directory, 'state.sqlite');
   const database = new DatabaseSync(databasePath);
   try {
     database.exec(`${codexThreadsSchema}
-      insert into threads(id,title,created_at_ms,updated_at_ms) values('first','First',${nowMs},${nowMs}),('other','Other',${nowMs},${nowMs});`);
+      insert into threads(id,title,created_at_ms,updated_at_ms,creator_account_id,creator_user_id) values('${FIRST}','First',${nowMs},${nowMs},'account','user'),('${OTHER}','Other',${nowMs},${nowMs},'account','user');`);
   } finally {
     database.close();
   }
-  const codexPinned = async () => (await loadCodexDashboard({ databasePath, sessionIndexPath: path.join(directory, 'session_index.jsonl'), globalStatePath, nowMs })).threads
-    .filter((thread) => thread.pinned).map((thread) => thread.id);
+  const codexUnread = async () => (await loadCodexDashboard({ databasePath, sessionIndexPath: path.join(directory, 'session_index.jsonl'), globalStatePath, nowMs,
+    codexNativeReadEnabled: true })).threads.filter((thread) => thread.nativeUnread).map((thread) => thread.id);
   const originalStat = fs.stat;
   const frozenStats = new Map(await Promise.all([globalStatePath, fixture.metadataPath].map(async (filePath) => [filePath, await fs.stat(filePath)])));
   t.mock.method(fs, 'stat', async (filePath, ...args) => frozenStats.get(filePath) || originalStat(filePath, ...args));
@@ -225,7 +269,7 @@ test('backend source events invalidate Codex and Claude metadata with identical 
       return watcher;
     },
     loadDashboard: async () => ({ generatedAtMs: nowMs, threads: [
-      { id: 'codex', provider: 'codex', state: 'idle', title: (await codexPinned()).join(',') },
+      { id: 'codex', provider: 'codex', state: 'idle', title: (await codexUnread()).join(',') },
       ...(await loadClaudeDesktopCodeThreads(options)).threads,
     ] }),
   });
@@ -236,22 +280,22 @@ test('backend source events invalidate Codex and Claude metadata with identical 
   });
   const scan = () => fetch(`http://127.0.0.1:${server.address().port}/api/dashboard`).then((response) => response.json());
   const first = await scan();
-  assert.equal(first.threads[0].title, 'first');
+  assert.equal(first.threads[0].title, FIRST);
   assert.equal(first.threads[1].title, 'Task 1');
   const before = { codex: getCodexCacheStats().metadata, claude: getClaudeCacheStats().metadata };
-  await codexPinned();
+  await codexUnread();
   await loadClaudeDesktopCodeThreads(options);
   assert.equal(getCodexCacheStats().metadata.bytesRead, before.codex.bytesRead);
   assert.equal(getClaudeCacheStats().metadata.bytesRead, before.claude.bytesRead);
-  await fs.writeFile(globalStatePath, JSON.stringify({ 'pinned-thread-ids': ['other'] }));
+  await fs.writeFile(globalStatePath, readState([OTHER]));
   const metadata = await fs.readFile(fixture.metadataPath, 'utf8');
   await fs.writeFile(fixture.metadataPath, metadata.replace('Task 1', 'Task 2'));
-  assert.deepEqual(await codexPinned(), ['first']);
+  assert.deepEqual(await codexUnread(), [FIRST]);
   assert.equal((await loadClaudeDesktopCodeThreads(options)).threads[0].title, 'Task 1');
   callbacks.get(directory)('change', path.basename(globalStatePath));
   callbacks.get(path.dirname(fixture.metadataPath))('change', path.basename(fixture.metadataPath));
   const changed = await scan();
-  assert.equal(changed.threads[0].title, 'other');
+  assert.equal(changed.threads[0].title, OTHER);
   assert.equal(changed.threads[1].title, 'Task 2');
   assert.equal(getCodexCacheStats().metadata.misses - before.codex.misses, 1);
   assert.equal(getClaudeCacheStats().metadata.misses - before.claude.misses, 1);

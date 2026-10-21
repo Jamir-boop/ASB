@@ -76,21 +76,6 @@ test('prefers Codex sidebar thread names over stale sqlite titles', () => {
   assert.equal(thread.title, '调研 /goal 新命令');
 });
 
-test('marks Codex automation threads even when sidebar title hides the automation prefix', () => {
-  const thread = normalizeThread({
-    id: '123e4567-e89b-12d3-a456-426614174000',
-    title: 'Automation: Codex Project Folder Check\nAutomation ID: codex-project-folder-check',
-    thread_name: 'Codex Project Folder Check',
-    cwd: '/Users/example/Documents/work',
-    archived: 0,
-    created_at: 1777420000,
-    updated_at: 1777423600,
-  }, 1777427200000);
-
-  assert.equal(thread.title, 'Codex Project Folder Check');
-  assert.equal(thread.isAutomation, true);
-});
-
 test('normalizes Codex sub-agent spawn metadata', () => {
   const thread = normalizeThread({
     id: '223e4567-e89b-12d3-a456-426614174000',

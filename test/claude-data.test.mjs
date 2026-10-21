@@ -53,7 +53,6 @@ test('parses Claude JSONL session fields and pending user prompts', () => {
   assert.equal(signals.sessionId, 'ses_cli');
   assert.equal(signals.cwd, '/Users/example/work');
   assert.equal(signals.model, 'claude-sonnet-4-6');
-  assert.equal(signals.latestUserMessage, '帮我检查这个项目');
   assert.equal(signals.latestAgentFinalAtMs, null);
   assert.equal(signals.pendingToolCount, 1);
   assert.equal(signals.pendingTools[0].title, '向用户提问');
@@ -91,7 +90,6 @@ test('ignores ordinary unresolved Claude tool uses as user pending work', () => 
     },
   ]));
 
-  assert.equal(signals.latestUserMessage, '跑一下测试');
   assert.equal(signals.latestAgentFinalAtMs, null);
   assert.equal(signals.pendingToolCount, 0);
   assert.equal(signals.pendingToolAtMs, 0);
@@ -219,7 +217,6 @@ test('does not treat intermediate Claude text before tool work as a completed tu
     signals,
   }, Date.parse('2026-05-09T02:04:00.000Z'));
 
-  assert.equal(signals.lastAgentMessage, '我会先拆分任务，然后继续改代码。');
   assert.equal(signals.latestAgentFinalAtMs, null);
   assert.equal(thread.status, 'running');
   assert.equal(thread.currentTurnStartedAtMs, Date.parse('2026-05-09T02:00:00.000Z'));
@@ -254,7 +251,6 @@ test('uses Claude assistant end_turn events as completed-turn markers', () => {
     signals,
   }, Date.parse('2026-05-09T03:00:00.000Z'));
 
-  assert.equal(signals.lastAgentMessage, '回测已经跑完，可以查看结果。');
   assert.equal(signals.latestAgentFinalAtMs, Date.parse('2026-05-09T02:03:00.000Z'));
   assert.equal(thread.status, 'warm');
   assert.equal(thread.currentTurnStartedAtMs, null);
@@ -285,7 +281,6 @@ test('uses Claude stop hook summaries as completed-turn markers', () => {
     },
   ]));
 
-  assert.equal(signals.lastAgentMessage, '报告已生成。');
   assert.equal(signals.latestAgentFinalAtMs, Date.parse('2026-05-09T02:03:00.000Z'));
   assert.equal(signals.latestMessageKind, 'agent');
 });

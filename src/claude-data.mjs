@@ -182,13 +182,9 @@ function initialSignals() {
     gitBranch: '',
     customTitle: '',
     agentName: '',
-    firstUserMessage: '',
-    latestUserMessage: '',
-    latestMeaningfulUserMessage: '',
     latestUserMessageAtMs: null,
     latestAgentFinalAtMs: null,
     latestMessageKind: '',
-    lastAgentMessage: '',
     oldestEventAtMs: null,
     latestEventAtMs: null,
     pendingToolsById: new Map(),
@@ -363,12 +359,7 @@ function handleUserEvent(signals, event, timestampMs) {
     }
   }
 
-  const text = contentText(content);
-  if (isUserPromptText(text)) {
-    const compactText = truncateText(text, 500);
-    signals.firstUserMessage ||= compactText;
-    signals.latestUserMessage = compactText;
-    signals.latestMeaningfulUserMessage = compactText;
+  if (isUserPromptText(contentText(content))) {
     signals.latestUserMessageAtMs = timestampMs || signals.latestUserMessageAtMs;
     signals.latestMessageKind = 'user';
   }
@@ -394,10 +385,7 @@ function handleAssistantEvent(signals, event, timestampMs) {
     }
   }
 
-  if (hasText) {
-    signals.lastAgentMessage = truncateText(text, 500);
-    signals.latestMessageKind = 'agent';
-  }
+  if (hasText) signals.latestMessageKind = 'agent';
 
   if (['end_turn', 'stop_sequence', 'max_tokens', 'refusal'].includes(stopReason)) {
     rememberAgentCompletion(signals, timestampMs);
@@ -429,10 +417,6 @@ function rememberAgentCompletion(signals, timestampMs) {
 function handleResultEvent(signals, event, timestampMs) {
   signals.pendingToolsById.clear();
   signals.pendingToolAtMs = 0;
-
-  if (event.result) {
-    signals.lastAgentMessage = truncateText(event.result, 500);
-  }
 
   if (!event.is_error && event.terminal_reason !== 'interrupted') {
     rememberAgentCompletion(signals, timestampMs);
@@ -771,10 +755,6 @@ export function baseClaudeThread({
     groupTaskEndKind: signals?.groupTaskEndKind || '',
     childWorkUnknown: Boolean(signals?.childWorkUnknown),
     childEndGraceAtMs: signals?.childEndGraceAtMs || 0,
-    firstUserMessage: signals?.firstUserMessage || '',
-    latestUserMessage: signals?.latestUserMessage || '',
-    latestMeaningfulUserMessage: signals?.latestMeaningfulUserMessage || '',
-    lastAgentMessage: signals?.lastAgentMessage || '',
     rolloutPath: '',
     gitBranch: signals?.gitBranch || '',
     gitSha: '',

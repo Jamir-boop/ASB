@@ -475,13 +475,13 @@ test('ASB reports unavailable or corrupt Claude metadata without a ready status'
   assert.equal(partial.threads[0].state, 'unknown');
 });
 
-test('native SQLite works without the CLI, preserves desktop name/pin, and reads only', async (t) => {
+test('native SQLite works without the CLI, preserves the desktop name, and reads only', async (t) => {
   const dir = await temp(t);
   const dbPath = path.join(dir, 'state_7.sqlite');
   const rollout = path.join(dir, 'rollout.jsonl');
   await writeFile(rollout, jsonl([{ timestamp: new Date(now).toISOString(), payload: { type: 'task_complete' } }]));
   const database = codexDatabase(dbPath);
-  database.prepare('insert into threads (id, source, cwd, title, name, is_pinned, thread_source, archived, updated_at_ms, rollout_path) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, 'vscode', '/work/ASB', 'Old prompt', 'Desktop name', 1, 'user', 0, now, rollout);
+  database.prepare('insert into threads (id, source, cwd, title, name, thread_source, archived, updated_at_ms, rollout_path) values (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, 'vscode', '/work/ASB', 'Old prompt', 'Desktop name', 'user', 0, now, rollout);
   database.prepare('update threads set creator_account_id = ?, creator_user_id = ?').run('test-account', 'test-user');
   database.close();
   await writeFile(path.join(dir, 'state_2.sqlite'), 'not a database');
@@ -490,7 +490,6 @@ test('native SQLite works without the CLI, preserves desktop name/pin, and reads
   const beforeStat = await stat(dbPath);
   const rows = await readThreads({ databasePath: dbPath });
   assert.equal(rows[0].name, 'Desktop name');
-  assert.equal(rows[0].is_pinned, 1);
   assert.equal(rows[0].creator_account_id, 'test-account');
   const oldPath = process.env.PATH;
   process.env.PATH = '/no-asb-tools';
@@ -501,7 +500,6 @@ test('native SQLite works without the CLI, preserves desktop name/pin, and reads
   });
   process.env.PATH = oldPath;
   assert.equal(dashboard.threads[0].title, 'Desktop name');
-  assert.equal(dashboard.threads[0].pinned, true);
   assert.equal(dashboard.threads[0].lifecycleRunning, false);
   assert.equal(buildSwitchboardDashboard(dashboard.threads, [], now).threads[0].completionAtMs, now);
   assert.deepEqual(await readFile(dbPath), before);
