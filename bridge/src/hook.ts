@@ -27,6 +27,7 @@ function receiver(threadId: string) {
 
 async function live(threadId: string) {
   try {
+    await removeStaleReceivers(threadId);
     const active = receiver(threadId);
     return !!active?.procStart && await processStart(active.pid) === active.procStart;
   } catch { return false; }
@@ -79,7 +80,7 @@ function socketDirectory() {
   return directory;
 }
 
-// SIGTERM is a hard stop on Windows, so the receiver cannot remove its own row and key file.
+// A receiver cannot remove its own row and key file when it is killed (SIGTERM is a hard stop on Windows, and a crash on any system).
 function removeReceiverFiles(pid: number, procStart: string) {
   const path = join(configDir, 'sessions', `${pid}.json`);
   try {
@@ -87,6 +88,17 @@ function removeReceiverFiles(pid: number, procStart: string) {
     unlinkSync(path);
     removePeerKey(join(configDir, 'sessions', keyName(pid, row.messagingSocketPath)), procStart);
   } catch { /* Gone, or another process has the row now. */ }
+}
+
+// The row of a dead receiver stays visible while another process has its PID. Its files go; that process is never signaled.
+// A row stays when its start time is missing or when the start time of the process cannot be read: neither proves that the
+// receiver is gone (on Windows the read can fail for a live process). Only a start time that is read and differs removes it.
+async function removeStaleReceivers(threadId: string) {
+  for (const row of peers(configDir)) {
+    if (row.sessionId !== threadId || row.entrypoint !== 'codex-asb-bridge' || !row.procStart) continue;
+    const started = await processStart(row.pid).catch(() => undefined);
+    if (started !== undefined && started !== row.procStart) removeReceiverFiles(row.pid, row.procStart);
+  }
 }
 
 async function runHook(event: Event) {
@@ -108,6 +120,7 @@ async function runHook(event: Event) {
       if (receiver(event.session_id)) throw new Error('Receiver did not stop');
       return;
     }
+    await removeStaleReceivers(event.session_id);
     const active = receiver(event.session_id);
     if (active) {
       if (!active.procStart || await processStart(active.pid) !== active.procStart) throw new Error('Receiver process identity changed');

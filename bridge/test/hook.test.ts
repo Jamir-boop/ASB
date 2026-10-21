@@ -4,8 +4,11 @@ import { dirname, join, relative } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import net from 'node:net';
 import { once } from 'node:events';
+import { Database } from 'bun:sqlite';
+import { Bridge } from '../src/bridge';
 import { inbox, peers, processStart, socketPath } from '../src/claude';
 import { receiver as desktopReceiver } from './desktop-fixture';
+import { staleReceiver } from './stale-receiver-fixture';
 // POSIX only on Windows CI: Unix socket files, /tmp, and signals.
 const posix = test.skipIf(process.platform === 'win32');
 
@@ -172,4 +175,61 @@ posix('a receiver socket never goes into the folder of a relay proxy or of anoth
 
 posix('a receiver socket goes into the folder of a native Claude row, not of a relay row', async () => {
   expect(await receiverFolder([['relay', 'asb-relay'], ['claude-socks']])).toBe('claude-socks');
+}, 15000);
+
+// SessionStart for a task whose registry row and database row name a dead receiver, while an unrelated process has the PID.
+async function startOverStaleRow(procStart?: string) {
+  const root = mkdtempSync('/tmp/uds-stale-');
+  const configDir = join(root, 'claude');
+  const stateDir = join(root, 'plugin-state', 'asb-bridge');
+  const databasePath = (id: string) => join(stateDir, `${id}.sqlite`);
+  const desktop = await desktopReceiver('idle', false, false, root);
+  const stale = await staleReceiver(configDir, join(root, 'old'), desktop.threadId, procStart);
+  const rows = () => peers(configDir).filter(peer => peer.sessionId === desktop.threadId && peer.entrypoint === 'codex-asb-bridge').map(peer => peer.pid);
+  try {
+    // The receiver table of the dead receiver, as a crash leaves it.
+    await new Bridge(desktop.threadId, configDir, stateDir, desktop.path).close();
+    const seed = new Database(databasePath(desktop.threadId));
+    try { seed.run('INSERT INTO receiver VALUES (1,?,?)', [stale.pid, 'a previous process with this PID']); }
+    finally { seed.close(); }
+    const child = Bun.spawn([process.execPath, process.env.UDS_HOOK_TEST_ENTRYPOINT ?? join(import.meta.dir, '../src/hook.ts')], {
+      env: { ...process.env, CODEX_HOME: root, CLAUDE_CONFIG_DIR: configDir, XDG_RUNTIME_DIR: root, CLAUDE_CODE_TMPDIR: root },
+      stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
+    });
+    child.stdin.write(JSON.stringify({ session_id: desktop.threadId, cwd: root, hook_event_name: 'SessionStart' }));
+    child.stdin.end();
+    const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    const after = new Database(databasePath(desktop.threadId), { readonly: true });
+    try {
+      return { code, out, err, stalePid: stale.pid, rows: rows(), oldRow: existsSync(stale.row), oldKey: existsSync(stale.key), alive: stale.alive(),
+        databasePid: after.query<{ pid: number }, []>('SELECT pid FROM receiver WHERE singleton=1').get()?.pid };
+    } finally { after.close(); }
+  } finally {
+    const pids = rows().filter(pid => pid !== stale.pid);
+    for (const pid of pids) process.kill(pid, 'SIGTERM');
+    const running = (pid: number) => { try { return process.kill(pid, 0); } catch { return false; } };
+    // A receiver removes its row before it closes its SQLite file, so wait for the processes before the root goes.
+    for (const deadline = Date.now() + 3000; pids.some(running) && Date.now() < deadline;) await Bun.sleep(10);
+    await stale.close();
+    await desktop.close();
+  }
+}
+
+posix('SessionStart removes the row and key file of a dead receiver whose PID another process has, and starts a new receiver', async () => {
+  const result = await startOverStaleRow('a previous process with this PID');
+  expect({ code: result.code, out: result.out, err: result.err }).toEqual({ code: 0, out: '', err: '' });
+  expect(result.rows).toHaveLength(1);
+  expect(result.rows[0]).not.toBe(result.stalePid);
+  expect(result.databasePid).toBe(result.rows[0]);
+  expect([result.oldRow, result.oldKey]).toEqual([false, false]);
+  // The other process is never signaled.
+  expect(result.alive).toBe(true);
+}, 15000);
+
+posix('SessionStart still fails for a receiver row with no start time, and keeps its row, key file and process', async () => {
+  const result = await startOverStaleRow(undefined);
+  expect(result.code).not.toBe(0);
+  expect(result.err).toContain('Receiver process identity changed');
+  expect(result.rows).toEqual([result.stalePid]);
+  expect([result.oldRow, result.oldKey, result.alive]).toEqual([true, true, true]);
 }, 15000);

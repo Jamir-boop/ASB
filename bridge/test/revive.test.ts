@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { mkdtempSync, mkdirSync, chmodSync, rmSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, chmodSync, rmSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -10,6 +10,7 @@ import { peers } from '../src/claude';
 import { Bridge } from '../src/bridge';
 import { appServer } from './app-server-fixture';
 import { receiver as desktopReceiver } from './desktop-fixture';
+import { staleReceiver } from './stale-receiver-fixture';
 import type { Target } from '../src/codex';
 // POSIX only on Windows CI: Unix socket files, /tmp, and signals.
 const posix = test.skipIf(process.platform === 'win32');
@@ -198,6 +199,24 @@ posix('a loaded daemon list also permits a recent desktop receiver without probi
     expect(desktop.requests.filter(request => request.method === 'thread-owner-discovery').every(request =>
       (request.params as { conversationId: string }).conversationId === desktop.threadId)).toBe(true);
   } finally { await stopReceivers(server.root); await desktop.close(false); await server.close(); }
+});
+
+posix('revival removes the row and key file of a dead receiver whose PID another process has, and starts the receiver', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'rv-stale-'));
+  const desktop = await desktopReceiver('idle', false, false, root);
+  const configDir = join(root, 'claude');
+  const stale = await staleReceiver(configDir, join(root, 'old'), desktop.threadId, 'a previous process with this PID');
+  try {
+    previousReceiver(root, desktop.threadId, { kind: 'desktop', path: desktop.path }, Date.now());
+    await revive(root);
+    const rows = peers(configDir).filter(peer => peer.sessionId === desktop.threadId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ entrypoint: 'codex-asb-bridge' });
+    expect(rows[0]!.pid).not.toBe(stale.pid);
+    expect([existsSync(stale.row), existsSync(stale.key)]).toEqual([false, false]);
+    // The other process is never signaled.
+    expect(stale.alive()).toBe(true);
+  } finally { await stopReceivers(root); await stale.close(); await desktop.close(); }
 });
 
 posix('a new sweep revives three threads from an old shutdown burst with no app-server socket', async () => {

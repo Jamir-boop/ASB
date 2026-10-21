@@ -182,8 +182,10 @@ export class Bridge {
         let alive = true;
         try { process.kill(old.pid, 0); }
         catch (error) {
-          if (!(error instanceof Error && 'code' in error && error.code === 'ESRCH')) throw error;
-          alive = false;
+          const code = error instanceof Error && 'code' in error ? error.code : undefined;
+          // EPERM: another user's process has the PID of the dead receiver, so its start time decides below.
+          if (code === 'ESRCH') alive = false;
+          else if (code !== 'EPERM') throw error;
         }
         if (alive && await processStart(old.pid) === old.proc_start) throw new Error('Receiver is already starting or running');
       }

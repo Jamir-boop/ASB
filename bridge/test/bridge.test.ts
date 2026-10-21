@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
@@ -152,6 +152,32 @@ posix('registered peers can initiate contact; unknown senders and wrong targets 
     await bridge.close();
     expect(peers(configDir).some(peer => peer.sessionId === threadId)).toBe(false);
     await new Promise<void>(resolve => peer.close(() => resolve()));
+    rmSync(root, { recursive: true });
+  }
+});
+
+// PID 1 belongs to another user on a normal system: kill(1, 0) gives EPERM. In a container that runs as root it does not, and the test is moot.
+const foreignPid = (() => {
+  try { process.kill(1, 0); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM' && existsSync('/proc/1/stat'); }
+})();
+
+test.skipIf(!foreignPid)('a receiver start ignores the receiver row of a dead receiver whose PID another user has now', async () => {
+  const root = mkdtempSync('/tmp/uds-eperm-');
+  const configDir = join(root, 'config');
+  const directory = join(root, 's');
+  mkdirSync(join(configDir, 'sessions'), { recursive: true, mode: 0o700 });
+  mkdirSync(directory, { mode: 0o700 });
+  const threadId = randomUUID();
+  const bridge = new Bridge(threadId, configDir, join(root, 'state'), join(root, 'unavailable.sock'));
+  const database = new Database(join(root, 'state', `${threadId}.sqlite`));
+  try {
+    database.run('INSERT INTO receiver VALUES (1,1,?)', ['a previous process with this PID']);
+    await bridge.start(directory, root, bridge.beginSession());
+    expect(database.query('SELECT pid FROM receiver WHERE singleton=1').get()).toEqual({ pid: process.pid });
+  } finally {
+    database.close();
+    await bridge.close();
     rmSync(root, { recursive: true });
   }
 });
