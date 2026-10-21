@@ -788,13 +788,18 @@ export function baseClaudeThread({
   return enrichThreadRuntime(thread, nowMs);
 }
 
-// A permission prompt leaves no transcript signal, so a live registry record in the waiting status adds one.
-// Other statuses change nothing: the transcript stays the source for Working, Done, and questions.
-export function applyLiveClaudeStatus(thread, records, nowMs) {
+// The newest live registry record of a thread: a record that the thread hosts, else a record of one of its CLI session IDs.
+export function liveClaudeRecord(thread, records) {
   const newest = (list) => list.sort((a, b) => b.statusUpdatedAt - a.statusUpdatedAt)[0];
   const sessionIds = new Set([thread.cliSessionId, ...(thread.priorCliSessionIds || [])].filter(Boolean));
   const host = records.filter((record) => record.hostSessionId === thread.externalId);
-  const record = newest(host.length ? host : records.filter((item) => sessionIds.has(item.sessionId)));
+  return newest(host.length ? host : records.filter((item) => sessionIds.has(item.sessionId)));
+}
+
+// A permission prompt leaves no transcript signal, so a live registry record in the waiting status adds one.
+// Other statuses change nothing: the transcript stays the source for Working, Done, and questions.
+export function applyLiveClaudeStatus(thread, records, nowMs) {
+  const record = liveClaudeRecord(thread, records);
   if (record?.status !== 'waiting') return thread;
   const atMs = record.statusUpdatedAt || nowMs;
   const input = record.waitingFor === 'input needed';

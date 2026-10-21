@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { promises as fsPromises } from 'node:fs';
-import { appendFile, mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { loadClaudeCliThreads } from '../src/claude-cli-data.mjs';
@@ -23,13 +23,13 @@ async function configHome(t) {
   return { home, projectsDir };
 }
 
-// A finished CLI turn; `extra` records come before it.
-async function transcript(projectsDir, sessionId, { nowMs, entrypoint = 'cli', extra = [], ageMs = 0 } = {}) {
+// A finished CLI turn; `extra` records come before it. `openMs` writes only the prompt, that long before now: a task that is still open.
+async function transcript(projectsDir, sessionId, { nowMs, entrypoint = 'cli', extra = [], ageMs = 0, openMs = 0 } = {}) {
   const at = (offset) => new Date(nowMs - ageMs + offset).toISOString();
   const file = path.join(projectsDir, 'project', `${sessionId}.jsonl`);
   await writeFile(file, jsonl([...extra,
-    { type: 'user', timestamp: at(-60_000), sessionId, cwd: '/work/cli', entrypoint, message: { role: 'user', content: 'Secret prompt text' } },
-    { type: 'assistant', timestamp: at(-50_000), sessionId, message: { role: 'assistant', stop_reason: 'end_turn', content: 'Done.' } },
+    { type: 'user', timestamp: at(openMs ? -openMs : -60_000), sessionId, cwd: '/work/cli', entrypoint, message: { role: 'user', content: 'Secret prompt text' } },
+    ...(openMs ? [] : [{ type: 'assistant', timestamp: at(-50_000), sessionId, message: { role: 'assistant', stop_reason: 'end_turn', content: 'Done.' } }]),
   ]));
   if (ageMs) await utimes(file, (nowMs - ageMs) / 1000, (nowMs - ageMs) / 1000);
   return file;
@@ -183,4 +183,53 @@ test('Claude CLI rows keep the time of the last turn when a resume writes record
   await record(home, await liveProcess(t), { sessionId: 'fresh', startedAt: nowMs - 5000 });
   const fresh = (await loadClaudeCliThreads({ projectsDir, nowMs })).threads.find((thread) => thread.externalId === 'fresh');
   assert.deepEqual([fresh.cliNoTranscript, fresh.updatedAtMs], [true, nowMs - 5000]);
+});
+
+test('a Claude CLI card with an open task shows Unknown when no live process has its session, and the fast scan stops', async (t) => {
+  const nowMs = Date.now();
+  const { home, projectsDir } = await configHome(t);
+  // The state, the reason, and the refresh interval of a board that has only this card.
+  const check = async (dir, sessionId) => {
+    const row = (await loadClaudeCliThreads({ projectsDir: dir, nowMs })).threads.find((thread) => thread.externalId === sessionId);
+    const board = buildSwitchboardDashboard([row], [], nowMs);
+    return [board.threads[0].state, board.threads[0].reason, board.refreshIntervalMs];
+  };
+  const working = ['working', 'The local log has an open task.', 2_000];
+  await transcript(projectsDir, 'dead', { nowMs, openMs: 60_000 });
+  await transcript(projectsDir, 'alive', { nowMs, openMs: 60_000 });
+  await transcript(projectsDir, 'desktop-process', { nowMs, openMs: 60_000 });
+  await transcript(projectsDir, 'fresh', { nowMs, openMs: 2_000 });
+  await transcript(projectsDir, 'closed', { nowMs });
+  await record(home, process.pid, { sessionId: 'alive' });
+  // A live process of another entrypoint still runs the session, so it is not an ended process.
+  await record(home, await liveProcess(t), { sessionId: 'desktop-process', entrypoint: 'claude-desktop' });
+  // A record of a process that is gone is not a live record.
+  await record(home, 2 ** 22 + 1, { sessionId: 'dead', procStart: '1' });
+  assert.deepEqual(await check(projectsDir, 'dead'), ['unknown', 'The CLI process ended during a task.', 5_000]);
+  assert.deepEqual(await check(projectsDir, 'alive'), working);
+  assert.deepEqual(await check(projectsDir, 'desktop-process'), working);
+  // A turn of the last seconds can come before the registry record that names its session.
+  assert.deepEqual(await check(projectsDir, 'fresh'), working);
+  // No open task: the card stays Idle, with or without a process.
+  assert.deepEqual(await check(projectsDir, 'closed'), ['idle', 'The last task ended.', 5_000]);
+  // The same transcript with no registry folder (an old CLI) keeps its state.
+  const old = await configHome(t);
+  await rm(path.join(old.home, 'sessions'), { recursive: true });
+  await transcript(old.projectsDir, 'dead', { nowMs, openMs: 60_000 });
+  assert.deepEqual(await check(old.projectsDir, 'dead'), working);
+  // Only Linux has a registry reader, so another system keeps the state of the transcript.
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'darwin' });
+  try { assert.deepEqual(await check(projectsDir, 'dead'), working); } finally { Object.defineProperty(process, 'platform', platform); }
+});
+
+test('a Claude CLI registry that cannot be read does not end the open tasks', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async (t) => {
+  const nowMs = Date.now();
+  const { home, projectsDir } = await configHome(t);
+  await transcript(projectsDir, 'open', { nowMs, openMs: 60_000 });
+  await chmod(path.join(home, 'sessions'), 0o000);
+  try {
+    const [row] = (await loadClaudeCliThreads({ projectsDir, nowMs })).threads;
+    assert.deepEqual([row.externalId, buildSwitchboardDashboard([row], [], nowMs).threads[0].state], ['open', 'working']);
+  } finally { await chmod(path.join(home, 'sessions'), 0o700); }
 });

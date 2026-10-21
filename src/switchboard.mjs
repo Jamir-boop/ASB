@@ -110,6 +110,7 @@ export function switchboardStatus(thread, nowMs = Date.now()) {
   if (thread.cliNoTranscript) return { state: 'idle', reason: 'The CLI session has no task yet.' };
   if (thread.lifecycleRunning === false) return { state: 'idle', reason: 'The last task ended.' };
   if (thread.lifecycleRunning === true) {
+    if (thread.cliProcessEnded) return { state: 'unknown', reason: 'The CLI process ended during a task.' };
     const activityAtMs = Number(thread.agentActivityAtMs ?? thread.latestLifecycleAtMs);
     return activityAtMs > 0 && nowMs - activityAtMs <= ACTIVITY_WINDOW_MS
       ? { state: 'working', reason: 'The local log has an open task.' }

@@ -3,15 +3,20 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { applyLiveClaudeStatus, baseClaudeThread, claudeTitle, currentClaudeRoot, DEFAULT_CLAUDE_PROJECTS_DIR, DEFAULT_MAX_JSONL_BYTES,
-  indexClaudeProjectFiles, mapWithConcurrency, projectNameFromCwd, readClaudeRootSignals, SIGNAL_CONCURRENCY } from './claude-data.mjs';
+  indexClaudeProjectFiles, liveClaudeRecord, mapWithConcurrency, projectNameFromCwd, readClaudeRootSignals, SIGNAL_CONCURRENCY } from './claude-data.mjs';
 import { readLiveClaudeRegistry } from './claude-registry.mjs';
 
 const RECENT_MS = 7 * 24 * 60 * 60 * 1000;
+// A new or switched session writes its transcript a moment before its registry record names it, so a turn this recent does not show that the process ended.
+const PROCESS_START_GRACE_MS = 10_000;
 
 export async function loadClaudeCliThreads({ projectsDir = DEFAULT_CLAUDE_PROJECTS_DIR, desktopSessionIds = new Set(), nowMs = Date.now(),
   maxCount = 500, maxBytes = DEFAULT_MAX_JSONL_BYTES, cacheScope = '' } = {}) {
-  const live = (await readLiveClaudeRegistry([path.join(path.dirname(projectsDir), 'sessions')]).catch(() => []))
-    .filter((record) => record.entrypoint === 'cli');
+  const registryDir = path.join(path.dirname(projectsDir), 'sessions');
+  // `registry` is null when no registry shows which processes live: an old CLI has no folder, only Linux has a reader, and a read can fail.
+  const registry = process.platform === 'linux' && await fs.stat(registryDir).then((info) => info.isDirectory(), () => false)
+    ? await readLiveClaudeRegistry([registryDir]).catch(() => null) : null;
+  const live = (registry || []).filter((record) => record.entrypoint === 'cli');
   const liveById = new Map(live.map((record) => [record.sessionId, record]));
   const projectIndex = await indexClaudeProjectFiles(projectsDir)
     .catch(() => ({ files: new Map(), subagentsBySession: new Map(), agentLogs: new Map() }));
@@ -71,7 +76,10 @@ export async function loadClaudeCliThreads({ projectsDir = DEFAULT_CLAUDE_PROJEC
         cliNoTranscript: !signals,
       },
     }, nowMs);
-    return applyLiveClaudeStatus(thread, live, nowMs);
+    const row = applyLiveClaudeStatus(thread, live, nowMs);
+    // An open task with no live process of the session (of any entrypoint) means that the process ended during the task.
+    return registry && row.lifecycleRunning === true && !liveClaudeRecord(row, registry)
+      && nowMs - Number(row.transcriptActivityAtMs || 0) > PROCESS_START_GRACE_MS ? { ...row, cliProcessEnded: true } : row;
   });
   return { threads };
 }
