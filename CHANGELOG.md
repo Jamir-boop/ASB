@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Fixed the npm install command in the README and in `ASB.md`: it is now `npm install -g --install-links github:Jamir-boop/ASB`. With npm 11, the old command linked the global package to a temporary clone that npm then deleted, so `asb` stopped working.
 - Made the board faster when it shows many cards and in long sessions: card moves no longer get slower over time, and hidden cards no longer stay in memory.
 - Changed the Android app: the Text size setting is now named **Card text size**, and it changes only the text on the session cards. The other text in the app (top bar, filters, Settings, dialogs, and the session inspector) now follows only the phone font size. The setting keeps its saved value.
 - Fixed ASB Bridge: a Codex task no longer puts its inbox socket in the folder of a relay proxy or of another receiver. The relay deletes the sockets in its folder when it restarts, and then nobody could reach the task and the task could not send. The task now takes the folder of a native Claude session, or its own `cc-socks` folder.

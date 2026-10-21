@@ -39,9 +39,11 @@ cd asb-1.9.0
 The current source also installs as an npm package. Linux needs the same packages as above. Windows needs Node.js `22.13` or later.
 
 ```bash
-npm install -g github:Jamir-boop/ASB
+npm install -g --install-links github:Jamir-boop/ASB
 asb setup
 ```
+
+Keep `--install-links`: without it, npm 11 links the package to a temporary folder that it then deletes, and `asb` stops working.
 
 `asb setup` makes the engine start when you sign in, waits for it, and asks which network addresses to turn on. On Windows it also prints the firewall rule to run. On Linux it prints the firewall rule when firewalld or ufw is active. ASB never runs that rule itself.
 
