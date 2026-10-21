@@ -8,7 +8,7 @@ import { checkSocketFile, isWindows } from './platform';
 import type { Runtime } from './desktop';
 import type { Inputs } from './desktop-input';
 import { version } from './version';
-import { DeliveryRefused } from './delivery';
+import { DeliveryRefused, headerInputId } from './delivery';
 
 const statusSchema = z.object({ type: z.string() });
 const threadSchema = z.object({ id: uuid, status: statusSchema, canAcceptDirectInput: z.boolean().nullable().optional() });
@@ -19,8 +19,15 @@ const packetSchema = z.object({ id: z.union([z.string(), z.number()]).optional()
 const pageSchema = z.object({ data: z.array(z.object({ item: z.object({ id: z.string(), type: z.string(),
   clientId: z.string().nullable().optional(), name: z.string().optional(), namespace: z.string().nullable().optional(), output: z.unknown().optional() }) })),
   nextCursor: z.string().nullable() });
+// Thread history from 0.6.0 holds a JSON marker, not the header line.
 const markerSchema = z.object({ inputId: uuid, content: z.string() });
 type Input = NonNullable<Inputs['latest']>;
+
+function peerInputId(output: string) {
+  const header = uuid.safeParse(headerInputId(output));
+  if (header.success) return header.data;
+  try { return markerSchema.parse(JSON.parse(output)).inputId; } catch { return undefined; }
+}
 
 export class ThreadUnavailable extends Error {}
 export class AppServerDisconnected extends Error {}
@@ -173,9 +180,9 @@ export class AppServer {
         if (item.type === 'userMessage') input = { id: item.id, clientId: item.clientId ?? null };
         if (item.type === 'functionCallOutput') input = { id: item.id, clientId: null };
         if (item.type === 'functionCallOutput' && item.name === 'peer_message' && item.namespace === 'asb_bridge') {
-          if (typeof item.output !== 'string') throw new Error('Invalid peer input correlation');
-          const marker = markerSchema.parse(JSON.parse(item.output));
-          input = { id: item.id, clientId: marker.inputId };
+          const clientId = typeof item.output === 'string' ? peerInputId(item.output) : undefined;
+          if (!clientId) throw new Error('Invalid peer input correlation');
+          input = { id: item.id, clientId };
         }
         if (input) {
           latest ??= input;
@@ -196,7 +203,7 @@ export class AppServer {
     uuid.parse(inputId);
     const result = z.object({ turn: z.object({ id: uuid }) }).parse(await this.request('turn/start', {
       threadId: this.threadId, input: [], toolOutput: { name: 'peer_message', namespace: 'asb_bridge',
-        output: JSON.stringify({ inputId, content: text }) },
+        output: text },
     }));
     return { status: 'accepted', turnId: result.turn.id };
   }

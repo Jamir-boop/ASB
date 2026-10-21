@@ -10,6 +10,9 @@ import { z } from 'zod';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { peers, uuid } from '../src/claude';
+import { withAppServer } from '../src/app-server';
+import { appServerSocket } from '../src/codex';
+import { peerHeader } from '../src/delivery';
 
 const root = mkdtempSync('/tmp/codex-native-');
 const interactive = process.argv.includes('--interactive');
@@ -140,6 +143,7 @@ try {
     .parse(await rpc('thread/loaded/list', {}));
   assert(loaded.data.includes(threadId), 'The loaded-thread list must include the current thread');
   assert(loaded.nextCursor == null, 'An unbounded loaded-thread list must be complete');
+  const firstInput = randomUUID();
   if (peerFirst) {
     assert.equal(requests.length, 0, 'Opening a chat must not call the model');
     assert(!peers(configDir).some(peer => peer.sessionId === threadId), 'Stock SessionStart waits for the first turn');
@@ -148,7 +152,7 @@ try {
     const text = 'first external instruction without user input';
     await rpc('turn/start', { threadId, input: [], toolOutput: {
       name: 'peer_message', namespace: 'asb_bridge',
-      output: JSON.stringify({ inputId: randomUUID(), content: text }),
+      output: `${peerHeader(randomUUID(), 'native-peer', firstInput)}\n${text}`,
     } });
     await until(() => requests.length === 1);
     const input = z.object({ input: z.array(z.object({ type: z.string(), output: z.unknown().optional(), role: z.string().optional() })) })
@@ -166,6 +170,8 @@ try {
     const page = z.object({ data: z.array(z.object({ item: z.object({ type: z.string() }) })) })
       .parse(await rpc('thread/items/list', { threadId }));
     assert(!page.data.some(entry => entry.item.type === 'userMessage'), 'First peer turn must have no user message');
+    const read = await withAppServer(appServerSocket(root), threadId, server => server.inputs([firstInput]));
+    assert(read.consumed.some(input => input.clientId === firstInput), 'The header line must give back the input ID from Codex history');
   }
   await until(() => peers(configDir).some(peer => peer.sessionId === threadId));
   const receiver = peers(configDir).find(peer => peer.sessionId === threadId);
@@ -236,6 +242,17 @@ try {
   await until(async () => (await status()).unreadCount === 0);
   const state = await status();
   assert(state.messages.filter(message => message.status === 'accepted').length === 2);
+  if (peerFirst) {
+    // Thread history written by ASB Bridge 0.6.0 holds a JSON marker. The bridge must still read it.
+    const marked = randomUUID();
+    const before = requests.length;
+    await rpc('turn/start', { threadId, input: [], toolOutput: { name: 'peer_message', namespace: 'asb_bridge',
+      output: JSON.stringify({ inputId: marked, content: 'old marker' }) } });
+    await until(() => requests.length === before + 1);
+    await until(idle);
+    const read = await withAppServer(appServerSocket(root), threadId, server => server.inputs([marked]));
+    assert.equal(read.latest?.clientId, marked, 'The 0.6.0 JSON marker must still give back the input ID');
+  }
   const outbound = await mcp.callTool({ name: 'send_message', arguments: { sessionId: peerId,
     text: livePeerId ? 'Both live protocol checks passed. No reply needed.' : 'native peer reply' }, _meta: { threadId } });
   assert.notEqual(outbound.isError, true, JSON.stringify(outbound));

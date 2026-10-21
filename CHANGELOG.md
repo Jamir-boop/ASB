@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Changed ASB Bridge to give a peer message to the model once, after a one-line header, with fewer tokens. The header has the sender name, the sender session ID, and, on the app-server path, the input ID. The text follows as it is. Before, JSON escaped the text (two times on the app-server path), and the envelope repeated the socket path and the sender ID. The bridge still reads thread history that `0.6.0` wrote.
 - Fixed PC sounds on Linux systems without MP3 support: the three sounds are now 16-bit PCM WAV files with the same samples and gain, and ASB plays them with `pw-play`, then `paplay`, then `aplay -q` (ALSA). When no player exists, the log line names the three players and `asb doctor`.
 - The engine starts faster after a restart: it saves its Codex and Claude reader positions in `~/.cache/asb/readers/positions.json` (no message text, no paths) and reads only the new bytes of each Codex session log and of each Claude transcript larger than 8 MiB.
 - ASB Bridge is now `0.6.0`: its shipped files changed for the Windows sends by reference, and Codex loads a changed plugin only with a new version.

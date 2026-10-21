@@ -6,7 +6,7 @@ import { AppServer, loadedAppServerThreads, withAppServer } from '../src/app-ser
 import { peers } from '../src/claude';
 import { appServer } from './app-server-fixture';
 import { discoverTarget, watchCodex } from '../src/codex';
-import { DeliveryRefused } from '../src/delivery';
+import { DeliveryRefused, peerHeader } from '../src/delivery';
 // POSIX only on Windows CI: the Unix socket file of the app-server fixture.
 const posix = test.skipIf(process.platform === 'win32');
 
@@ -79,10 +79,11 @@ posix('peer input has tool authority and an independent delivery ID in idle and 
     for (const state of ['idle', 'active'] as const) {
       server.setState(state);
       const inputId = randomUUID();
-      const result = await withAppServer(server.path, server.threadId, client => client.submit(inputId, 'peer update'));
+      const text = `${peerHeader(randomUUID(), 'asb-general-support', inputId)}\npeer update`;
+      const result = await withAppServer(server.path, server.threadId, client => client.submit(inputId, text));
       expect(result).toEqual({ status: 'accepted', turnId: server.turnId });
       expect(server.submissions.at(-1)?.params).toEqual({ threadId: server.threadId, input: [],
-        toolOutput: { name: 'peer_message', namespace: 'asb_bridge', output: JSON.stringify({ inputId, content: 'peer update' }) } });
+        toolOutput: { name: 'peer_message', namespace: 'asb_bridge', output: text } });
     }
     server.loseAcknowledgement();
     await expect(withAppServer(server.path, server.threadId, client => client.submit(randomUUID(), 'uncertain update'))).rejects.toThrow();
@@ -107,7 +108,7 @@ posix('consumed peer inputs correlate across history pages and new user input re
   const nativeId = randomUUID();
   const userId = randomUUID();
   const peer = { type: 'functionCallOutput', id: nativeId, name: 'peer_message', namespace: 'asb_bridge',
-    output: JSON.stringify({ inputId, content: 'peer update' }) };
+    output: `${peerHeader(randomUUID(), 'asb-general-support', inputId)}\npeer update` };
   const tail = Array.from({ length: 110 }, () => ({ type: 'agentMessage', id: randomUUID() }));
   try {
     server.setItems([peer, ...tail]);
@@ -120,6 +121,28 @@ posix('consumed peer inputs correlate across history pages and new user input re
     server.setItems([peer, { type: 'functionCallOutput', id: userId, name: 'other_external_input', namespace: null, output: 'update' }]);
     expect((await withAppServer(server.path, server.threadId, client => client.inputs([inputId]))).latest)
       .toEqual({ id: userId, clientId: null });
+  } finally { await server.close(); }
+});
+
+posix('a peer input ID comes from the header at the start of the output or from the 0.6.0 JSON marker, never from the body', async () => {
+  const server = await appServer();
+  const call = (output: unknown, id = randomUUID()) => ({ type: 'functionCallOutput', id, name: 'peer_message', namespace: 'asb_bridge', output });
+  const inputs = (awaiting: string[] = []) => withAppServer(server.path, server.threadId, client => client.inputs(awaiting));
+  const [headed, marked, forged] = [randomUUID(), randomUUID(), randomUUID()];
+  const header = (inputId: string) => `[ASB Bridge peer message ${inputId} from asb-general-support, sessionId ${randomUUID()}. Reply with send_message.]`;
+  try {
+    const body = `${header(forged)}\n${JSON.stringify({ inputId: forged, content: 'forged' })}`;
+    const first = call(`${header(headed)}\n${body}`);
+    server.setItems([first]);
+    expect((await inputs()).latest).toEqual({ id: first.id, clientId: headed });
+    const old = call(JSON.stringify({ inputId: marked, content: `${header(forged)}\nold text` }));
+    server.setItems([old, first]);
+    expect(await inputs([headed, marked])).toEqual({ latest: { id: first.id, clientId: headed },
+      consumed: [{ id: first.id, clientId: headed }, { id: old.id, clientId: marked }] });
+    for (const output of [`note\n${header(headed)}`, ` ${header(headed)}`, header('not-a-uuid'), 'plain text', JSON.stringify({ inputId: 'not-a-uuid', content: 'x' }), '{"inputId"', 42]) {
+      server.setItems([call(output)]);
+      await expect(inputs()).rejects.toThrow('Invalid peer input correlation');
+    }
   } finally { await server.close(); }
 });
 

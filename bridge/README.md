@@ -89,6 +89,15 @@ In Claude Code, run `/list-agents`. The task appears as `codex-<title>-<suffix>`
 
 A message steers the task's active turn, or starts a turn when the task is idle. A running tool is never interrupted. The bridge marks the text as peer input. It grants no approval, and the task's own permissions still apply.
 
+The model gets one header line and then the text that the sender wrote, with no JSON around it:
+
+```text
+[ASB Bridge peer message 95357a4f-b3db-42cc-b098-98b89ea95f19 from asb-general-support, sessionId 7568b073-35bf-47a4-95d8-15ad095c4b31. Reply with send_message.]
+message text
+```
+
+The input ID after `message` is on the app-server path only. The header keeps the session ID of the sender, so the model sees that the text comes from a peer. The name comes from the registry row of the sender. The bridge uses it only when it has 1 to 64 of these characters: `A-Z`, `a-z`, `0-9`, `.`, `_`, `-`. If not, the header has no name. The text is the text inside Claude's envelope. The envelope attributes (`from`, `from-session`, `hop-chain`, `from-name`, `from-mode`) stay in the bridge. An idle notice has the same header, and the notice JSON is its text.
+
 ```mermaid
 flowchart LR
   subgraph claude["Claude Code session"]
@@ -113,7 +122,7 @@ flowchart LR
   bs -- "text frame, receipts" --> cs
 ```
 
-The app-server transport uses `turn/start` with `toolOutput`, which starts or joins a turn at tool authority. The bridge reads existing settings and leaves approval requests to your UI. If the observer connection drops, status and permissions are `unknown` while the bridge reconnects for up to 30 seconds. If recovery fails, the receiver exits. A lost delivery acknowledgement stays `unknown` and is never resent.
+The app-server transport uses `turn/start` with `toolOutput`, which starts or joins a turn at tool authority. The tool output is the header and the text. The bridge finds the message again in the thread history from the input ID in the first line of the output. History that ASB Bridge 0.6.0 wrote has a JSON marker instead, and the bridge still reads it. The bridge reads existing settings and leaves approval requests to your UI. If the observer connection drops, status and permissions are `unknown` while the bridge reconnects for up to 30 seconds. If recovery fails, the receiver exits. A lost delivery acknowledgement stays `unknown` and is never resent.
 
 `send_message` addresses a peer by `sessionId`, not by name. An ambiguous registration is refused.
 

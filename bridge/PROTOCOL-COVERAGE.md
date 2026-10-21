@@ -37,7 +37,7 @@ message text
 </cross-session-message>
 ```
 
-`hop-chain` and `from-mode` are optional. A closing tag inside the body is escaped. `from-session` names the sending conversation. The outer `session_id` names the recipient. Neither grants approval.
+`hop-chain` and `from-mode` are optional. A closing tag inside the body is escaped. `from-session` names the sending conversation. The outer `session_id` names the recipient. Neither grants approval. The model gets only the text inside the envelope, after a one-line header (see [How a message arrives](README.md#how-a-message-arrives)). It keeps an escaped closing tag as it is.
 
 Receipt statuses:
 

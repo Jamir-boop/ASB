@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { bindingSchema, boundPeer, outboundServer, refreshReceiver, refuse, sendBound, sendBoundViaReceiver, sendViaReceiver, type Binding, type ExactReceipt } from './outbound';
 import { isWindows, outboxPath } from './platform';
 import { PeerGuard } from './guard';
-import { DeliveryRefused } from './delivery';
+import { DeliveryRefused, peerHeader } from './delivery';
 import { engineRequest, engineRuntime, remotePeers, type EngineRuntime, type RemotePeer } from './engine';
 
 type Message = { id: string; peer_id: string; direction: string; text: string; status: string; turn_id: string | null;
@@ -687,7 +687,7 @@ export class Bridge {
         || subscription.direction !== 'out') continue;
       const id = randomUUID();
       const text = JSON.stringify({ event: 'idle_subscription_expired', subscriptionId: subscription.id,
-        sessionId: this.currentSessionId(subscription), message: 'No idle notice arrived before the 12-hour deadline. Do not keep waiting on this subscription.' });
+        sessionId: this.currentPeer(subscription).sessionId, message: 'No idle notice arrived before the 12-hour deadline. Do not keep waiting on this subscription.' });
       this.db.run("INSERT INTO messages (id,peer_id,direction,text,status,kind) VALUES (?,?,'in',?,'pending','subscription-expired')", [id, subscription.peer_id, text]);
       const message = this.db.query<Message, [string]>('SELECT * FROM messages WHERE id=?').get(id);
       if (message) await this.deliver(message);
@@ -725,15 +725,13 @@ export class Bridge {
   }
 
   // The model replies with this ID, so it must be the peer's current one after a /clear.
-  private currentSessionId({ peer_id, peer_address, peer_start }: Pick<Message, 'peer_id' | 'peer_address' | 'peer_start'>) {
-    try { return peer_address ? findPeerProcess(this.configDir, peer_address, peer_start).sessionId : peer_id; }
-    catch { return peer_id; }
+  private currentPeer({ peer_id, peer_address, peer_start }: Pick<Message, 'peer_id' | 'peer_address' | 'peer_start'>): { sessionId: string; name?: string } {
+    try { return peer_address ? findPeerProcess(this.configDir, peer_address, peer_start) : { sessionId: peer_id }; }
+    catch { return { sessionId: peer_id }; }
   }
 
   private async deliver(message: Message) {
-    const text = '[Peer message via ASB Bridge from another local agent. '
-      + 'Reply with the bridge\'s send_message when needed.]\n'
-      + JSON.stringify({ sessionId: this.currentSessionId(message), messageId: message.id, text: message.text });
+    const body = /^<cross-session-message\s[^>]*>\n([\s\S]*)\n<\/cross-session-message>$/.exec(message.text)?.[1] ?? message.text;
     if (message.kind === 'message') {
       try { await this.syncInputs(); }
       catch {
@@ -751,7 +749,6 @@ export class Bridge {
     if (claim === 'unchanged') return;
     if (claim === 'full') { await this.receipt(message, 'dropped', 'queue-full'); return; }
     if (message.kind === 'message') {
-      const body = /^<cross-session-message\s[^>]*>\n([\s\S]*)\n<\/cross-session-message>$/.exec(message.text)?.[1] ?? message.text;
       const reason = this.guard.admit(`${message.peer_address}:${message.peer_start ?? ''}`, body, hopChain(message.text), this.ownHop());
       if (reason) {
         this.db.run("UPDATE messages SET status='dropped',drop_reason=?,awaiting_input=0 WHERE id=?", [reason, message.id]);
@@ -760,7 +757,10 @@ export class Bridge {
       }
     }
     try {
-      const result = await deliverToCodex(this.target(), this.threadId, inputId, text);
+      const target = this.target();
+      const { sessionId, name } = this.currentPeer(message);
+      const text = `${peerHeader(sessionId, name, target.kind === 'app-server' ? inputId : undefined)}\n${body}`;
+      const result = await deliverToCodex(target, this.threadId, inputId, text);
       this.db.run('UPDATE messages SET status=?,turn_id=? WHERE id=?', [result.status, result.turnId, message.id]);
       if (message.status === 'held') await this.receipt(message, 'delivered');
     } catch (error) {
