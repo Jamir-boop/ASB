@@ -15,6 +15,7 @@ import { receiver } from './desktop-fixture';
 import { outboxPath } from '../src/platform';
 import { appServer } from './app-server-fixture';
 import { fakeEngine } from './engine-fixture';
+import { requestReceiver } from '../src/outbound';
 import { processStart } from '../src/claude';
 // POSIX only on Windows CI: Unix socket files, /tmp, and file modes.
 const posix = test.skipIf(process.platform === 'win32');
@@ -739,6 +740,7 @@ posix('the outbound socket sends only this receiver own frames to the peer they 
     expect(await ask({ ...target, frames: [frame('uds:/tmp/not-this-receiver.sock')] })).toHaveProperty('error');
     expect(await ask({ ...target, socketPath: '/tmp/not-the-peer.sock', frames: [frame(address)] })).toHaveProperty('error');
     expect(await ask({ ...target, procStart: 'Thu Jan  1 00:00:00 2026', frames: [frame(address)] })).toHaveProperty('error');
+    expect(await ask({ ...target, sessionId: randomUUID(), frames: [frame(address)] })).toHaveProperty('error');
     expect(f.frames.filter(item => item.type === 'user' && item.message.content === 'outbound probe')).toHaveLength(1);
   } finally { await f.close(); }
 });
@@ -1339,23 +1341,91 @@ linux('a session ID goes to the local match, or to exactly one other machine; el
   } finally { engine.close(); await f.close(); }
 });
 
-linux('a remote send records the proxy row address, so a receipt through the proxy row updates it', async () => {
+// A relay proxy row: a live placeholder process, a private socket that collects its frames, and a registry row with the asb-relay entrypoint.
+async function proxyRow(f: Fixture, sessionId: string) {
+  const placeholder = Bun.spawn(['cat'], { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' });
+  const frames: z.infer<typeof frameSchema>[] = [];
+  const box = await inbox(join(f.root, 's'), frame => frames.push(frame), `${placeholder.pid}.sock`);
+  const procStart = z.string().parse(await processStart(placeholder.pid));
+  writeFileSync(join(f.configDir, 'sessions', `${placeholder.pid}.json`), JSON.stringify({ pid: placeholder.pid, sessionId,
+    messagingSocketPath: socketPath(box.address), cwd: '', name: 'beta-codex-task', peerProtocol: 1, entrypoint: 'asb-relay', procStart }), { mode: 0o600 });
+  return { address: box.address, procStart, frames, async close() { await box.close(); placeholder.kill(); } };
+}
+
+// A second Bridge object has no receiver of its own, so it writes through the outbox of the receiver, as the MCP server and the hooks do.
+const nonOwner = (f: Fixture) => new Bridge(f.desktop.threadId, f.configDir, join(f.root, 'plugin-state', 'asb-bridge'), f.desktop.path);
+
+linux('a remote send records the proxy row address, so a receipt through the proxy row updates it; the send itself never writes to the proxy row', async () => {
   const f = await fixture();
   const remote = remoteSession();
   const engine = fakeEngine(runtimeDir(), route => route === '/api/relay/remote-peers' ? { peers: [remote] }
     : route === '/api/relay/homes' ? { machineId: 'a'.repeat(16), machineName: 'alpha', homes: [] } : { ok: true, outcome: 'socket-written' });
-  const placeholder = Bun.spawn(['cat'], { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' });
-  const proxy = await inbox(join(f.root, 's'), () => {}, `${placeholder.pid}.sock`);
+  const proxy = await proxyRow(f, remote.sessionId);
+  const second = nonOwner(f);
   try {
-    writeFileSync(join(f.configDir, 'sessions', `${placeholder.pid}.json`), JSON.stringify({ pid: placeholder.pid, sessionId: remote.sessionId,
-      messagingSocketPath: socketPath(proxy.address), cwd: '', name: 'beta-codex-task', peerProtocol: 1, entrypoint: 'asb-relay',
-      procStart: await processStart(placeholder.pid) }), { mode: 0o600 });
     const sent = await f.bridge.sendMessage(remote.sessionId, 'through the proxy row');
     const id = z.string().parse(sent.messageId);
     expect(f.db.query<{ peer_address: string }, [string]>('SELECT peer_address FROM messages WHERE id=?').get(id)?.peer_address).toBe(proxy.address);
     await f.transmit({ type: 'control', from: proxy.address, action: 'peer_message_status', orig_msg_id: id, status: 'delivered' });
     await until(() => f.bridge.status().messages.some(message => message.id === id && message.status === 'delivered'));
-  } finally { engine.close(); await proxy.close(); placeholder.kill(); await f.close(); }
+    // The model send of a Bridge without a receiver goes to the engine too, not through the outbox to the proxy row.
+    await second.sendMessage(remote.sessionId, 'from the Bridge without a receiver');
+    expect(engine.calls.filter(call => call.route === '/api/relay/send')).toHaveLength(2);
+    await Bun.sleep(100);
+    expect(proxy.frames).toEqual([]);
+  } finally { engine.close(); await second.close(); await proxy.close(); await f.close(); }
+});
+
+linux('a decision on a held message from another machine sends its receipt to the proxy row through the outbox', async () => {
+  const f = await fixture();
+  const proxy = await proxyRow(f, randomUUID());
+  const second = nonOwner(f);
+  const heldFromProxy = async () => {
+    const id = randomUUID();
+    await f.transmit({ type: 'user', from: proxy.address, msg_id: id, session_id: f.desktop.threadId,
+      message: { role: 'user', content: `<cross-session-message from-mode="bypass">${id}</cross-session-message>` } });
+    await until(() => statuses(id).includes('held'));
+    return id;
+  };
+  const statuses = (id: string) => proxy.frames.flatMap(frame => frame.type === 'control' && frame.action === 'peer_message_status' && frame.orig_msg_id === id ? [frame.status] : []);
+  try {
+    const accepted = await heldFromProxy();
+    await second.resolveHeld(accepted, 'approve');
+    await until(() => statuses(accepted).includes('delivered'));
+    const denied = await heldFromProxy();
+    await second.resolveHeld(denied, 'deny');
+    await until(() => statuses(denied).includes('denied'));
+    expect([statuses(accepted), statuses(denied)]).toEqual([['held', 'delivered'], ['held', 'denied']]);
+    expect(proxy.frames.every(frame => frame.type === 'control' && frame.from === f.bridge.status().replyAddress)).toBe(true);
+  } finally { await second.close(); await proxy.close(); await f.close(); }
+});
+
+linux('the outbox sends only receipts and idle notices to a proxy row, and only to the process that the request names', async () => {
+  const f = await fixture();
+  const remote = remoteSession();
+  const proxy = await proxyRow(f, remote.sessionId);
+  const address = z.string().parse(f.bridge.status().replyAddress);
+  const receiver = peers(f.configDir).find(peer => peer.sessionId === f.desktop.threadId)!;
+  const target = { sessionId: remote.sessionId, socketPath: socketPath(proxy.address), procStart: proxy.procStart };
+  const receipt = () => ({ msgV: 1, type: 'control', msg_id: randomUUID(), from: address, action: 'peer_message_status', orig_msg_id: randomUUID(), status: 'delivered' });
+  const idle = () => ({ msgV: 1, type: 'control', msg_id: randomUUID(), from: address, action: 'peer_idle_notice', orig_msg_id: randomUUID(), state: 'idle' });
+  const message = () => ({ msgV: 1, type: 'user', msg_id: randomUUID(), from: address, session_id: remote.sessionId,
+    message: { role: 'user', content: 'straight to the proxy row' } });
+  const ask = (request: Record<string, unknown>) => requestReceiver(f.configDir, receiver, request);
+  try {
+    expect(await ask({ ...target, frames: [receipt(), idle()] })).toEqual({ written: true });
+    await until(() => proxy.frames.length === 2);
+    // A message goes through the engine, also next to a receipt.
+    expect(await ask({ ...target, frames: [message()] })).toEqual({ refused: expect.stringContaining('Nothing sent') });
+    expect(await ask({ ...target, frames: [receipt(), message()] })).toHaveProperty('refused');
+    // Another session ID, a stale or missing start time, or another socket: nothing is written.
+    expect(await ask({ ...target, sessionId: randomUUID(), frames: [receipt()] })).toHaveProperty('error');
+    expect(await ask({ ...target, procStart: 'Thu Jan  1 00:00:00 2026', frames: [receipt()] })).toHaveProperty('error');
+    expect(await ask({ ...target, procStart: null, frames: [receipt()] })).toHaveProperty('error');
+    expect(await ask({ ...target, socketPath: '/tmp/not-the-proxy-row.sock', frames: [receipt()] })).toHaveProperty('error');
+    await Bun.sleep(100);
+    expect(proxy.frames).toHaveLength(2);
+  } finally { await proxy.close(); await f.close(); }
 });
 
 // Exact local sends by full reference: a fake engine binds the fixture peer, and the bridge checks the binding again at the write.

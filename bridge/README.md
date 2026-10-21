@@ -145,7 +145,7 @@ The receive setting belongs to one task. When the permission modes of sender and
 
 A message held by the mode comparison expires after 5 minutes. You set the expiry to `60s`, `5m`, `10m`, or `never` in the `inbox` dialog.
 
-The sender sees Claude's status notices, among them `held`, `delivered`, `denied`, and `expired`. `delivered` means a held message was released. Ordinary acceptance sends no receipt. The `status` tool keeps Claude's explanation as `status_reason`.
+The sender sees Claude's status notices, among them `held`, `delivered`, `denied`, and `expired`, also a sender on another machine of the machine group. `delivered` means a held message was released. Ordinary acceptance sends no receipt. The `status` tool keeps Claude's explanation as `status_reason`.
 
 ## MCP tools
 

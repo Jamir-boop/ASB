@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import { realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { authorized, findPeer, frameSchema, peerKey, peers, SendRefused, sendFrames, uuid, type Frame, type Peer } from './claude';
+import { authorized, findPeerProcess, frameSchema, peerAddress, peerKey, peers, SendRefused, sendFrames, uuid, type Frame, type Peer } from './claude';
 import { checkSocket, isWindows, listenPrivate, outboxPath, pipeProof } from './platform';
 
 // The live target of one exact send, from the engine route /api/agent/resolve-bound.
@@ -128,8 +128,11 @@ export async function outboundServer(path: string, configDir: string, address: s
           socket.end(JSON.stringify({ written }) + '\n');
           return;
         }
-        const peer = findPeer(configDir, request.sessionId);
-        if (peer.messagingSocketPath !== request.socketPath || (peer.procStart ?? null) !== request.procStart) throw new Error('Target process changed');
+        // Found by socket and start time, as the owner does for its own writes: findPeer skips the relay proxy rows that a receipt must reach.
+        const peer = findPeerProcess(configDir, peerAddress(request.socketPath), request.procStart);
+        if (peer.sessionId !== request.sessionId) throw new Error('Target process changed');
+        // A message to another machine goes through the engine, never to a proxy row.
+        if (peer.entrypoint === 'asb-relay' && request.frames.some(frame => frame.type !== 'control')) throw new SendRefused('A relay proxy row takes only receipts and idle notices. Nothing sent.');
         onRequest();
         const written = await sendFrames(configDir, peer, request.frames, { canWrite: () => canWrite(request.frames) });
         socket.end(JSON.stringify({ written }) + '\n');
