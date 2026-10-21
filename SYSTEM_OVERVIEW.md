@@ -15,7 +15,7 @@ scripts/asb.mjs (the asb command and npm bin; scripts/asb runs it on Linux after
 
 scripts/asb-desktop.mjs (board launcher, never hosts the server)
   -> scripts/asb-engine.mjs startEngine, finds or starts the engine
-  -> src/linux-system.mjs boardCheck; when it fails: no icon registration, no window, the reason, exit 3 (the engine keeps running)
+  -> src/linux-system.mjs boardCheck, at the same time as startEngine; when it fails: no icon registration, no window, the reason, exit 3 (the engine keeps running)
   -> scripts/asb-board.py loads scripts/asb-native.py as a module: GTK/Libadwaita window, with the engine URL and source token
        -> local dashboard, event, open, and ASB state APIs
 

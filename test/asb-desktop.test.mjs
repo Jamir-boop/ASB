@@ -82,6 +82,58 @@ test('an engine that cannot start prints its log path, exits 1, and opens no win
   assert.equal(owner.exitCode, 1);
 });
 
+test('the engine and the board check start before either ends', async () => {
+  const owner = new EventEmitter();
+  owner.platform = 'linux';
+  owner.env = { ASB_SYSTEM_INSTALL: '1' };
+  const engineStart = Promise.withResolvers();
+  const boardStart = Promise.withResolvers();
+  const started = [];
+  const spawned = [];
+  const native = new EventEmitter();
+  native.exitCode = 0;
+  const launch = vm.runInNewContext(launcher, { ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath,
+    startEngine: () => { started.push('engine'); return engineStart.promise; },
+    boardCheck: () => { started.push('board'); return boardStart.promise; },
+    registerAppIcon: async () => {},
+    console: { log() {}, error() {}, warn() {} },
+    spawn: (program) => { spawned.push(program); return native; },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(started, ['engine', 'board']);
+  assert.deepEqual(spawned, []);
+  boardStart.resolve({ ok: true, python: '/opt/python3' });
+  engineStart.resolve(engine);
+  await launch;
+  assert.deepEqual(spawned, ['/opt/python3']);
+  native.emit('exit', 3, null);
+  assert.equal(owner.exitCode, 3);
+});
+
+test('an engine that cannot start while the board check runs prints one message, and the late board failure is not unhandled', async (t) => {
+  const owner = new EventEmitter();
+  owner.platform = 'linux';
+  owner.env = {};
+  const board = Promise.withResolvers();
+  const errors = [];
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => process.off('unhandledRejection', onUnhandled));
+  await vm.runInNewContext(launcher, { ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath,
+    startEngine: async () => { throw new Error('ASB cannot start its engine. See /x/engine.log.'); },
+    boardCheck: () => board.promise,
+    registerAppIcon: async () => assert.fail('The engine did not start.'),
+    console: { log() {}, warn() {}, error: (message) => errors.push(message) },
+    spawn: () => assert.fail('The engine did not start.'),
+  });
+  board.reject(new Error('Synthetic board failure'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(errors, ['ASB cannot start its engine. See /x/engine.log.']);
+  assert.deepEqual(unhandled, []);
+  assert.equal(owner.exitCode, 1);
+});
+
 for (const exitCode of [0, 1]) test(`launcher exit ${exitCode} stops its synthetic native process`, { timeout: 5_000 }, async (t) => {
   const owner = new EventEmitter();
   owner.platform = 'linux';
