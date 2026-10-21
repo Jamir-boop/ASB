@@ -164,6 +164,24 @@ fs.writeFileSync(define('_topdir') + '/RPMS/noarch/${rpmName}', 'fake rpm\\n');
   assert.ok(seen.files.some(([name]) => name === 'usr/share/licenses/asb/LICENSE'));
 });
 
+// A fake dpkg-deb puts -Zzstd before the arguments of the build, as the default of Ubuntu does. A later -Z wins, so the build must ask for xz.
+test('the build makes the .deb members with xz when the default compression of dpkg-deb is zstd', async (t) => {
+  if (process.platform !== 'linux') return t.skip('Linux packaging check.');
+  if (!has('dpkg-deb')) return t.skip('dpkg-deb is not installed.');
+  if (!has('ar')) return t.skip('ar is not installed.');
+  const temporary = await temporaryFolder(t, 'fake-dpkg-deb');
+  const fakeBin = path.join(temporary, 'bin');
+  const realDpkgDeb = execFileSync('sh', ['-c', 'command -v dpkg-deb'], { encoding: 'utf8' }).trim();
+  await mkdir(fakeBin);
+  await writeFile(path.join(fakeBin, 'dpkg-deb'), `#!/bin/sh\nexec ${JSON.stringify(realDpkgDeb)} -Zzstd "$@"\n`, { mode: 0o755 });
+  const previousPath = process.env.PATH;
+  t.after(() => { process.env.PATH = previousPath; });
+  process.env.PATH = `${fakeBin}:${previousPath}`;
+  const outputDir = path.join(temporary, 'dist');
+  const [debFile] = await build({ sourceRoot, outputDir, warn: () => {} });
+  assert.deepEqual(execFileSync('ar', ['t', debFile], { encoding: 'utf8' }).trim().split('\n'), ['debian-binary', 'control.tar.xz', 'data.tar.xz']);
+});
+
 test('the build makes the PKGBUILD from the archive hash, and the RPM when rpmbuild exists', async (t) => {
   if (process.platform !== 'linux') return t.skip('Linux packaging check.');
   if (!has('dpkg-deb')) return t.skip('dpkg-deb is not installed.');

@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Fixed the `.deb` compression: a `.deb` that CI built on Ubuntu had zstd members (`control.tar.zst` and `data.tar.zst`), because the default of the Ubuntu `dpkg-deb` is zstd. It had the same files as a Debian build but different bytes, and it needed dpkg 1.21.18 or later. The build now always uses xz, so a `.deb` from any host also installs with an older dpkg.
 - Rewrote the Linux install text. The README now has the npm route, `asb doctor`, one install block for each distribution family (the same commands that `asb doctor` prints on a system with nothing installed; a docs test checks each block against the package table), the release packages, engine only, start at login without systemd, and the firewall rule. `ASB.md` has a new System check section for `asb doctor`, and its Node.js search text is current. `SYSTEM_OVERVIEW.md` describes the tool discovery, the board check, `asb doctor`, the package formats, and the CI matrix. `docs/PRIVACY.md` lists what `asb doctor` and `asb setup` read.
 - Added `flake.lock`, which pins nixpkgs `nixos-26.05` for the Nix flake. The CI `nix` job made it.
 - Fixed the window on a minimal Fedora 43: GTK 4.20 aborts in libepoxy when `libGLESv2.so.2` is missing, and the `gtk4` package does not require it. The `gtk` key of the Fedora family is now `gtk4 gobject-introspection libglvnd-gles`, so `asb doctor` prints `libglvnd-gles` with the other window packages, and the RPM recommends `libglvnd-gles` when `gtk4` is installed.

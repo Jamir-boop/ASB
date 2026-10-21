@@ -436,7 +436,8 @@ export async function build({ sourceRoot = ROOT, outputDir = path.join(ROOT, 'di
     await writeFile(path.join(debRoot, 'DEBIAN/control'), `Package: asb\nVersion: ${release}\nSection: utils\nPriority: optional\nArchitecture: all\nMaintainer: ASB contributors <noreply@github.com>\nInstalled-Size: ${installedSize}\nDepends: ${DEBIAN_DEPENDS}\nRecommends: ${DEBIAN_RECOMMENDS}\nHomepage: https://github.com/Jamir-boop/ASB\nDescription: Local session switch board for Codex and Claude Desktop Code\n Native GTK4 session list with local read-only provider access.\n`);
     await normalizeTree(debRoot, epoch);
     const deb = path.join(outputDir, `asb_${release}_all.deb`);
-    execFileSync('dpkg-deb', ['--root-owner-group', '--threads-max=1', '--build', debRoot, deb], { env: { ...process.env, SOURCE_DATE_EPOCH: String(epoch) }, stdio: 'pipe' });
+    // Ubuntu's dpkg-deb makes zstd members by default. Debian makes xz, and a zstd .deb needs dpkg 1.21.18 or later.
+    execFileSync('dpkg-deb', ['--root-owner-group', '--threads-max=1', '-Zxz', '--build', debRoot, deb], { env: { ...process.env, SOURCE_DATE_EPOCH: String(epoch) }, stdio: 'pipe' });
     const artifacts = [deb, archive];
     if (rpmbuildExists()) artifacts.push(await buildRpm({ temporary, outputDir, sourceRoot, release, epoch }));
     else warn('ASB build: rpmbuild is not installed, so the build makes no RPM.');
