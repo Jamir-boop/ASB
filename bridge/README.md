@@ -96,7 +96,7 @@ The model gets one header line and then the text that the sender wrote, with no 
 message text
 ```
 
-The input ID after `message` is on the app-server path only. The header keeps the session ID of the sender, so the model sees that the text comes from a peer. The name comes from the registry row of the sender. The bridge uses it only when it has 1 to 64 of these characters: `A-Z`, `a-z`, `0-9`, `.`, `_`, `-`. If not, the header has no name. The text is the text inside Claude's envelope. The envelope attributes (`from`, `from-session`, `hop-chain`, `from-name`, `from-mode`) stay in the bridge. An idle notice has the same header, and the notice JSON is its text.
+The input ID after `message` is on the app-server path only. The header keeps the session ID of the sender, so the model sees that the text comes from a peer. The name comes from the registry row of the sender. The bridge puts it in the header when it has 1 to 64 characters (Unicode code points) and is not only white space. A name with a comma, a `[` or `]`, a control, invisible, private-use, or unassigned character, or a line or paragraph separator stays out, because the model trusts the header and such a name could add a fake session ID or a second header. If the name stays out, the header has only the session ID. The text is the text inside Claude's envelope. The envelope attributes (`from`, `from-session`, `hop-chain`, `from-name`, `from-mode`) stay in the bridge. An idle notice has the same header, and the notice JSON is its text.
 
 ```mermaid
 flowchart LR
