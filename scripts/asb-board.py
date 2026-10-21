@@ -5,6 +5,15 @@ import os
 import sys
 from pathlib import Path
 
+def prefer_cairo(environ, system=os.name):
+    """On Windows, GTK tries GL first and falls back to Cairo after an error; Cairo shows the first rows sooner and uses less memory.
+    A renderer that the user chose stays, and so does a request for DirectComposition."""
+    if system == "nt" and not environ.get("GSK_RENDERER") and "dcomp" not in environ.get("GDK_DEBUG", "").lower():
+        environ["GSK_RENDERER"] = "cairo"
+
+
+# GTK reads GSK_RENDERER when it opens its first window, so this call stays before the board code runs.
+prefer_cairo(os.environ)
 source = Path(__file__).with_name("asb-native.py")
 spec = importlib.util.spec_from_file_location("asb_native", source)
 board = importlib.util.module_from_spec(spec)

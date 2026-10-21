@@ -6100,5 +6100,58 @@ class NativeIOAuditChecks(unittest.TestCase):
             requests.pop()[2]({"threads": []}, None)
             button.assert_called_once_with(False)
 
+
+class BoardLauncherChecks(unittest.TestCase):
+    """The renderer rule of scripts/asb-board.py. The script runs the board at import, so the checks read its code."""
+    SOURCE = Path(__file__).parents[1] / "scripts" / "asb-board.py"
+
+    def rule(self, system):
+        function = next(node for node in ast.parse(self.SOURCE.read_text()).body
+                        if isinstance(node, ast.FunctionDef) and node.name == "prefer_cairo")
+        scope = {"os": SimpleNamespace(name=system)}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), str(self.SOURCE), "exec"), scope)
+        return scope["prefer_cairo"]
+
+    def test_windows_uses_cairo_unless_the_user_chose_a_renderer_or_dcomp(self):
+        for environ, expected in (
+            ({}, "cairo"),
+            ({"GSK_RENDERER": ""}, "cairo"),
+            ({"GDK_DEBUG": "events"}, "cairo"),
+            ({"GDK_DEBUG": ""}, "cairo"),
+            ({"GSK_RENDERER": "gl"}, "gl"),
+            ({"GSK_RENDERER": "ngl"}, "ngl"),
+            ({"GSK_RENDERER": "vulkan", "GDK_DEBUG": "events"}, "vulkan"),
+            ({"GSK_RENDERER": "cairo"}, "cairo"),
+            ({"GDK_DEBUG": "dcomp"}, None),
+            ({"GDK_DEBUG": "events,dcomp"}, None),
+            ({"GDK_DEBUG": "DComp"}, None),
+        ):
+            with self.subTest(environ=environ):
+                # The system comes from os.name by default.
+                changed = dict(environ)
+                self.rule("nt")(changed)
+                self.assertEqual(changed.get("GSK_RENDERER"), expected)
+                # No other variable changes.
+                self.assertEqual({key: value for key, value in changed.items() if key != "GSK_RENDERER"},
+                                 {key: value for key, value in environ.items() if key != "GSK_RENDERER"})
+
+    def test_other_systems_keep_their_environment(self):
+        for environ in ({}, {"GSK_RENDERER": ""}, {"GDK_DEBUG": "events"}, {"GSK_RENDERER": "gl"}):
+            with self.subTest(environ=environ):
+                changed = dict(environ)
+                self.rule("posix")(changed)
+                self.assertEqual(changed, environ)
+                self.rule("nt")(changed, "posix")
+                self.assertEqual(changed, environ)
+
+    def test_the_rule_runs_before_the_board_code(self):
+        calls = [node for node in ast.parse(self.SOURCE.read_text()).body
+                 if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)]
+        names = [getattr(node.value.func, "id", None) for node in calls]
+        self.assertEqual(names.count("prefer_cairo"), 1)
+        self.assertLess(names.index("prefer_cairo"), names.index("exec"))
+        self.assertEqual(ast.unparse(calls[names.index("prefer_cairo")].value), "prefer_cairo(os.environ)")
+
+
 if __name__ == "__main__":
     unittest.main()

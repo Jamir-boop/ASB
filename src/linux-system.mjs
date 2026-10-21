@@ -1,9 +1,10 @@
 import { execFile as execFileCallback } from 'node:child_process';
-import { constants } from 'node:fs';
-import { access, stat } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { constants, rmSync } from 'node:fs';
+import { access, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { findExecutable } from './platform-paths.mjs';
+import { cacheDir, findExecutable } from './platform-paths.mjs';
 
 // The tools that ASB needs on Linux (plan L1, L3). Every PATH search uses findExecutable.
 const execFileAsync = promisify(execFileCallback);
@@ -124,6 +125,48 @@ export async function boardCheck({ env = process.env, execFile = execFileAsync, 
   }
   return { ok: !reasons.length, python, versions, reason: reasons.join(' ') };
 }
+
+// Only the window launcher (scripts/asb-desktop.mjs) keeps a good board check, in the cache folder. doctor and setup always probe.
+export const boardCheckFile = (env = process.env, platform = process.platform) =>
+  (platform === 'win32' ? path.win32 : path.posix).join(cacheDir(env, platform), 'board-check.json');
+
+// The kept check is good while this key is the same: the ASB version, the system, the Python candidates, and the size and time of the kept Python file.
+async function boardKey({ version, platform, candidates, python }) {
+  const { size, mtimeMs } = await stat(python);
+  return { version, platform, candidates, size, mtimeMs };
+}
+
+// A good result, or a new `boardCheck` when the file is missing, not valid, or for other values. A failed check is never kept.
+// A write error never stops the caller.
+export async function cachedBoardCheck({ env = process.env, execFile = execFileAsync, platform = process.platform,
+  candidates, file = boardCheckFile(env, platform), version } = {}) {
+  const list = candidates ?? await pythonCandidates(env, { platform });
+  let key;
+  try {
+    key = { version: version ?? JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version, platform, candidates: list };
+    const kept = JSON.parse(await readFile(file, 'utf8'));
+    // The Python must be a current candidate, so that the file cannot name a program of its own.
+    if (list.includes(kept.python) && typeof kept.versions?.python === 'string'
+      && JSON.stringify(kept.key) === JSON.stringify(await boardKey({ ...key, python: kept.python }))) {
+      return { ok: true, python: kept.python, versions: kept.versions, reason: '' };
+    }
+  } catch { /* No usable file: probe. */ }
+  const board = await boardCheck({ env, execFile, candidates: list, platform });
+  if (board.ok && key) {
+    const temporary = `${file}.${randomBytes(6).toString('hex')}.tmp`;
+    try {
+      const text = JSON.stringify({ python: board.python, versions: board.versions, key: await boardKey({ ...key, python: board.python }) });
+      await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+      await writeFile(temporary, `${text}\n`, { flag: 'wx', mode: 0o600 });
+      await rename(temporary, file);
+    } catch { /* Without the file, the next start probes again. */ } finally { await rm(temporary, { force: true }).catch(() => {}); }
+  }
+  return board;
+}
+
+// The launcher calls this when the board ends with an error, so that the next start probes again. A missing file is not an error.
+export const forgetBoardCheck = ({ env = process.env, platform = process.platform, file = boardCheckFile(env, platform) } = {}) =>
+  rmSync(file, { force: true });
 
 // The running Node.js: its path, version, and whether node:sqlite loads.
 export async function nodeFacts() {

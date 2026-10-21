@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { boardCheck } from '../src/linux-system.mjs';
+import { cachedBoardCheck, forgetBoardCheck } from '../src/linux-system.mjs';
 import { startEngine, startWindowsEngine } from './asb-engine.mjs';
 import { registerAppIcon } from './asb-icon.mjs';
 
@@ -16,10 +16,17 @@ function stop(code = 0) {
   if (window && window.exitCode === null) window.kill('SIGTERM');
 }
 
+// A board that fails may have lost its libraries after the check: the next start must probe again.
+function forgetBoard() {
+  try { forgetBoardCheck({ env: process.env }); }
+  catch (error) { console.warn(`Cannot clear the saved board check: ${error.message}`); }
+}
+
 async function start() {
   const windows = process.platform === 'win32';
   // The board check runs while the engine starts. Its result comes before the icon registration, so that a run without the window writes nothing.
-  const [service, board] = await Promise.all([windows ? startWindowsEngine() : startEngine(), boardCheck({ env: process.env })]);
+  // A good result is kept in the cache folder until the board fails (forgetBoard), so that most starts skip the Python probe.
+  const [service, board] = await Promise.all([windows ? startWindowsEngine() : startEngine(), cachedBoardCheck({ env: process.env })]);
   if (stopping) return;
   if (!board.ok) {
     console.error(`ASB runs without its window on this system: ${board.reason} The engine runs for the phone and your other machines. Run asb doctor for details.`);
@@ -42,9 +49,14 @@ async function start() {
   });
   window.once('error', (error) => {
     console.error(`Cannot open the native ASB window: ${error.message}. Use system Python 3 or npm start for the web view.`);
+    forgetBoard();
     stop(1);
   });
-  window.once('exit', (code, signal) => stop(signal ? 1 : code || 0));
+  window.once('exit', (code, signal) => {
+    // A stop that the launcher asked for is no failure.
+    if ((signal || code) && !stopping) forgetBoard();
+    stop(signal ? 1 : code || 0);
+  });
   // The window closes when its engine stops, for example after Quit ASB in the tray; a restarted engine has a new token.
   engineWatch = setInterval(() => {
     try { process.kill(service.pid, 0); }

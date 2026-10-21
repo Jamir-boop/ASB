@@ -35,6 +35,8 @@ ASB `1.10.0` has `asb doctor`. Run it to check the system. It prints one line fo
 
 When `ASB_PYTHON` is an absolute path, ASB uses only that Python. Else it uses the first of `/usr/bin/python3` and `python3` on `PATH` that has PyGObject. It finds `xdg-open`, `openssl`, `sqlite3`, and the sound players on `PATH`. For Node.js, see [Node.js](#nodejs).
 
+The window start keeps the last good result of the Python check in `board-check.json` in the ASB cache folder (`~/.cache/asb`; `%LOCALAPPDATA%\asb\cache` on Windows), so that most starts skip the check. ASB checks again after an update or when the window ends with an error. Delete the file to check again. `asb doctor` always runs the full check.
+
 ### Packages for each distribution
 
 Each block has the commands that `asb doctor` prints on a system with nothing installed. The first command installs what ASB needs. The second command installs the optional packages: the QR code of the phone pairing, and a sound player. Use `doas` in place of `sudo` when your system has `doas` and no `sudo`.
@@ -209,7 +211,7 @@ winget install --id MSYS2.MSYS2 -e
 C:\msys64\usr\bin\pacman.exe -S --needed mingw-w64-ucrt-x86_64-python-gobject mingw-w64-ucrt-x86_64-gtk4 mingw-w64-ucrt-x86_64-libadwaita
 ```
 
-Then run `asb`, select **Open ASB** in the tray icon, or select ASB in the Start menu (`asb setup` adds it). The window needs a signed-in desktop session. MSYS2 has no Python `qrcode` package, so Preferences shows the pairing link and no QR code on Windows. ASB Bridge and messages between machines also work on Windows. See [Windows](ASB.md#windows).
+Then run `asb`, select **Open ASB** in the tray icon, or select ASB in the Start menu (`asb setup` adds it). The window needs a signed-in desktop session. MSYS2 has no Python `qrcode` package, so Preferences shows the pairing link and no QR code on Windows. The window uses the Cairo renderer, unless you set `GSK_RENDERER` or put `dcomp` in `GDK_DEBUG`. ASB Bridge and messages between machines also work on Windows. See [Windows](ASB.md#windows).
 
 ## Node.js
 
