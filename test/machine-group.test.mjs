@@ -169,3 +169,46 @@ test('a tombstone for this machine makes the engine leave at once, from a member
   assert.deepEqual((await again.status()).groupId, '');
   await assert.rejects(again.remove(id('b')), { statusCode: 409, message: 'This machine is not in a group.' });
 });
+
+test('an invite after a port or address change saves them in the entry of this machine, so a new member polls the new ones', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'asb-group-invite-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const file = path.join(home, 'group.json');
+  const network = { listening: [{ kind: 'lan', address: '192.168.1.10' }], port: 4630 };
+  const gateway = { credentials: async () => ({ key: '', cert: '', fingerprint: 'a'.repeat(64) }), identity: async () => id('a'),
+    status: async () => ({ running: true, ...network }), devices: async () => [] };
+  let changes = 0;
+  const machine = createMachineGroup({ file, gateway: () => gateway, hostName: 'debian', log: () => {}, onChange: () => { changes += 1; } });
+  const selfEntry = async () => (await loadGroup(file)).group.members.find((item) => item.machineId === id('a'));
+  const linkValues = async () => parseJoinLink((await machine.invite()).link);
+  const code = async () => new URL((await machine.invite()).link.replace('asb://', 'https://')).searchParams.get('c');
+  const join = async (name, letter, address, port) => machine.peer.join({ code: await code(), name, addresses: [{ kind: 'lan', address }], port }, letter.repeat(64));
+  // The first invite makes the group with the current values.
+  assert.deepEqual((await linkValues()).addresses, network.listening);
+  const first = await selfEntry();
+  assert.deepEqual([first.addresses, first.port], [network.listening, 4630]);
+  // The same values save nothing.
+  changes = 0;
+  await machine.invite();
+  assert.deepEqual([changes, await selfEntry()], [0, first]);
+  // A member joins, then this machine changes its port and its addresses.
+  assert.equal((await join('homeLP', 'b', '192.168.1.30', 4631)).status, 200);
+  Object.assign(network, { listening: [{ kind: 'lan', address: '192.168.1.20' }, { kind: 'zerotier', address: '10.147.17.5' }], port: 4700 });
+  changes = 0;
+  const values = await linkValues();
+  assert.deepEqual([values.addresses, values.port], [network.listening, 4700]);
+  assert.equal(changes, 1);
+  // The saved entry has the new values and keeps its time and author. The entry of the other member does not change.
+  const saved = (await loadGroup(file)).group;
+  assert.deepEqual(saved.members.map((item) => [item.name, item.addresses, item.port, item.addedBy]),
+    [['debian', network.listening, 4700, id('a')], ['homeLP', [{ kind: 'lan', address: '192.168.1.30' }], 4631, id('a')]]);
+  assert.equal(saved.members[0].addedAtMs, first.addedAtMs);
+  // A machine that joins now gets the new values in the group that this machine sends.
+  const joined = await join('workLP', 'c', '192.168.1.40', 4632);
+  const inviter = joined.body.group.members.find((item) => item.machineId === id('a'));
+  assert.deepEqual([inviter.addresses, inviter.port], [network.listening, 4700]);
+  // A list that the group cannot hold is refused, and the saved entry stays.
+  network.listening = Array.from({ length: 9 }, (_, index) => ({ kind: 'lan', address: `192.168.1.${50 + index}` }));
+  await assert.rejects(machine.invite(), { statusCode: 409, message: 'ASB cannot save these network addresses in the group.' });
+  assert.equal((await selfEntry()).port, 4700);
+});

@@ -316,6 +316,14 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
           removed: [], phones: (await phoneEntries([], self.machineId)).slice(0, MAX_PHONES), removedPhones: [] };
         if (!validateGroup(next, { addressOk })) throw refuse(409, 'ASB cannot create a group with these network addresses.');
         await save(next);
+      } else {
+        // A machine that joins later polls this saved entry, so it must have the address and port of the join link.
+        const self = group.members.find((member) => member.machineId === group.self.machineId);
+        if (JSON.stringify([self.addresses, self.port]) !== JSON.stringify([addresses, port])) {
+          const next = { ...group, members: group.members.map((member) => member === self ? { ...member, addresses, port } : member) };
+          if (!validateGroup(next, { addressOk })) throw refuse(409, 'ASB cannot save these network addresses in the group.');
+          await save(next);
+        }
       }
       invite = createInvite(now());
       return { link: buildJoinLink({ groupId: group.groupId, addresses, port, fingerprint, code: invite.code, name: group.self.name }),
