@@ -3,7 +3,6 @@
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-export const WINDOWS_HINT = 'ASB has no window on Windows. Use the phone or a Linux board.';
 export const NODE_HINT = 'ASB needs Node.js 20 or later and built-in SQLite or the sqlite3 command. Node.js 22.13 or later is recommended. '
   + 'Set ASB_NODE to its absolute executable path. Install help: https://github.com/Jamir-boop/ASB#nodejs';
 export const WINDOWS_USAGE = 'Usage: asb [engine|agent|bridge|group|network|phone|setup] ...';
@@ -18,7 +17,7 @@ export const windowsNodeOk = (version) => {
 const caught = (prefix, run) => run().catch((error) => { console.error(`${prefix}${error.message}`); return 1; });
 
 export async function main(argv = process.argv.slice(2), { platform = process.platform, version = process.versions.node,
-  load = (file) => import(file), log = console.log, error = console.error } = {}) {
+  load = (file) => import(file), error = console.error } = {}) {
   if (platform === 'win32' && !windowsNodeOk(version)) { error('ASB needs Node.js 22.13 or later on Windows.'); return 1; }
   // npm runs this file without scripts/asb, so the Linux floor is checked here too.
   if (platform === 'linux' && Number(version.split('.')[0]) < 20) { error(NODE_HINT); return 1; }
@@ -29,16 +28,11 @@ export async function main(argv = process.argv.slice(2), { platform = process.pl
   if (command === 'bridge') return caught('ASB Bridge failed: ', async () => (await script('asb-bridge.mjs')).main(rest));
   if (['group', 'network', 'phone'].includes(command)) return (await script('asb-group.mjs')).main(argv);
   if (command === 'setup') return (await script('asb-setup.mjs')).main(rest);
-  if (platform === 'win32') {
-    if (command !== undefined) { error(WINDOWS_USAGE); return 2; }
-    const code = await (await script('asb-engine.mjs')).main(['status'], { platform });
-    log(WINDOWS_HINT);
-    return code;
-  }
+  if (platform === 'win32' && command !== undefined) { error(WINDOWS_USAGE); return 2; }
   if (command === 'service') return caught('ASB service: ', async () => (await script('asb-service.mjs')).main(rest));
   if (command === 'doctor') return caught('ASB doctor: ', async () => (await script('asb-doctor.mjs')).main(rest));
   if (command === '--package') return (await script('asb-package.mjs')).main(rest);
-  // No command opens the board, as before.
+  // No command opens the board, on Linux and on Windows.
   (await script('asb-desktop.mjs')).main();
   return undefined;
 }

@@ -45,7 +45,7 @@ asb setup
 
 `asb setup` makes the engine start when you sign in, waits for it, and asks which network addresses to turn on. On Windows it also prints the firewall rule to run. On Linux it prints the firewall rule when firewalld or ufw is active. ASB never runs that rule itself.
 
-On Windows, ASB has statuses only: the engine reads Codex and Claude on that PC for the phone and the machine group. It has no window. ASB Bridge and messages between machines also work on Windows. See [Windows](ASB.md#windows).
+On Windows, the engine reads Codex and Claude on that PC for the phone and the machine group. The ASB window needs MSYS2 Python with PyGObject, GTK `>=4.12`, and Libadwaita `>=1.4`; without it, only the engine runs. ASB Bridge and messages between machines also work on Windows. See [Windows](ASB.md#windows).
 
 ## Node.js
 

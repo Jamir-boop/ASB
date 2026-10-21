@@ -67,6 +67,66 @@ test('a failed board check keeps the engine, registers nothing, opens no window,
   assert.equal(owner.exitCode, 3);
 });
 
+for (const platform of ['linux', 'win32']) test(`on ${platform} the launcher picks its engine start, the icon rule, and the window spawn options`, async () => {
+  const windows = platform === 'win32';
+  const owner = new EventEmitter();
+  owner.platform = platform;
+  owner.env = {};
+  const calls = [];
+  const watch = timers();
+  const native = new EventEmitter();
+  native.exitCode = 0;
+  let spawned;
+  await vm.runInNewContext(launcher, { ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, boardCheck,
+    startEngine: async () => { calls.push('startEngine'); return engine; },
+    startWindowsEngine: async () => { calls.push('startWindowsEngine'); return engine; },
+    registerAppIcon: async () => { calls.push('registerAppIcon'); return {}; },
+    console: { log() {}, error() {}, warn() {} },
+    spawn: (program, args, options) => { spawned = [program, args, options]; return native; },
+  });
+  // Windows starts the engine through its tray and registers no icon; Linux spawn options have no windowsHide.
+  assert.deepEqual(calls, windows ? ['startWindowsEngine'] : ['startEngine', 'registerAppIcon']);
+  assert.deepEqual(Object.keys(spawned[2]).sort(), windows ? ['env', 'stdio', 'windowsHide'] : ['env', 'stdio']);
+  assert.equal(spawned[1][1], 'http://127.0.0.1:23456');
+  assert.equal(spawned[2].env.ASB_SOURCE_TOKEN, 'service-token');
+  if (windows) assert.equal(spawned[2].windowsHide, true);
+  assert.equal(watch.callbacks.length, 1);
+  native.emit('exit', 0, null);
+  assert.deepEqual(watch.cleared, ['timer-1']);
+  assert.equal(owner.exitCode, 0);
+});
+
+test('a failed board check on Windows keeps the engine, opens no window, and exits 3', async () => {
+  const owner = new EventEmitter();
+  owner.platform = 'win32';
+  owner.env = {};
+  const errors = [];
+  await vm.runInNewContext(launcher, { ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath,
+    startEngine: async () => assert.fail('Windows starts the engine through its tray.'),
+    startWindowsEngine: async () => engine,
+    boardCheck: async () => ({ ok: false, python: null, versions: null, reason: 'Python 3 is not installed.' }),
+    registerAppIcon: async () => assert.fail('Windows registers no icon.'),
+    console: { log() {}, error(message) { errors.push(message); }, warn() {} },
+    spawn: () => assert.fail('No window may start.'),
+  });
+  assert.deepEqual(errors, ['ASB runs without its window on this system: Python 3 is not installed. The engine runs for the phone and your other machines. '
+    + 'Run asb doctor for details.']);
+  assert.equal(owner.exitCode, 3);
+});
+
+test('another system gets the launcher error and exit 1', () => {
+  const owner = new EventEmitter();
+  owner.platform = 'darwin';
+  owner.exit = (code) => { throw new Error(`exit ${code}`); };
+  const errors = [];
+  assert.throws(() => vm.runInNewContext(launcher, { ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, boardCheck,
+    startEngine: async () => assert.fail('No engine starts.'), startWindowsEngine: async () => assert.fail('No engine starts.'),
+    registerAppIcon: async () => assert.fail('No icon.'), console: { log() {}, warn() {}, error: (message) => errors.push(message) },
+    spawn: () => assert.fail('No window may start.'),
+  }), /^Error: exit 1$/);
+  assert.deepEqual(errors, ['The ASB desktop launcher requires Linux or Windows. Use npm start and open the local address.']);
+});
+
 test('an engine that cannot start prints its log path, exits 1, and opens no window', async () => {
   const owner = new EventEmitter();
   owner.platform = 'linux';

@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Added the ASB window on Windows: `asb` with no command, and **Open ASB** in the tray menu (or a left click on the tray icon), start the engine and open the same board as on Linux. The board needs MSYS2 Python with PyGObject, GTK 4.12 or later, and Libadwaita 1.4 or later (an absolute `ASB_PYTHON`, else `C:\msys64\ucrt64\bin\python.exe`, then `python` on `PATH`). Without them, the launcher exits with code 3 and the tray shows `ASB has no window on this PC. Run asb doctor.`
 - Added PC sounds on Windows: the engine plays the Done, Needs input, and Failed sounds with Windows PowerShell (`Media.SoundPlayer`). It plays them only while an ASB window is open, as on Linux.
 - Fixed ASB Bridge: a Codex task no longer puts its inbox socket in the folder of a relay proxy or of another receiver. The relay deletes the sockets in its folder when it restarts, and then nobody could reach the task and the task could not send. The task now takes the folder of a native Claude session, or its own `cc-socks` folder.
 - `asb doctor` shows one more check: **Links**. It names the desktop file that handles `codex:` links and the one that handles `claude:` links (`xdg-mime query default`). When an app has no handler, or `xdg-mime` is missing, the line has the status `info` and says that ASB cannot open sessions of that app until the app handles its links.

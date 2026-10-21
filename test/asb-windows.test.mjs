@@ -12,7 +12,8 @@ import { createPhoneGateway, readerPositionsKeyFrom, referenceScopeTagger, WINDO
 import { loadClaudeRemoteThreads } from '../src/claude-remote-data.mjs';
 import { engineFolders, main as engineMain, readerPositionsPath, RUN_KEY, trayCommand, trayStartArguments, writesEngineLog } from '../scripts/asb-engine.mjs';
 import { protectWindowsFolder } from '../scripts/asb-instance.mjs';
-import { main as dispatch, NODE_HINT, WINDOWS_HINT, WINDOWS_USAGE } from '../scripts/asb.mjs';
+import { main as dispatch, NODE_HINT, WINDOWS_USAGE } from '../scripts/asb.mjs';
+import { boardCheck, MSYS2_PYTHON, pythonCandidates } from '../src/linux-system.mjs';
 
 // Windows branches with injected platform, execFile, spawn, and engine lookups. Platform-neutral (test/windows-tests.json).
 
@@ -200,15 +201,14 @@ test('asb engine uninstall on Windows removes the Run value only when it exists,
   assert.deepEqual(missing.calls.exec.map(([, args]) => args[0]), ['query']);
 });
 
-test('the asb dispatcher reaches each command main and shows the Windows hint and Node refusal', async () => {
+test('the asb dispatcher reaches each command main, opens the board with no command, and shows the Windows usage and Node refusal', async () => {
   const calls = [];
   const load = async (href) => {
     const name = path.basename(fileURLToPath(href));
     return { main: async (args, options) => { calls.push([name, args, options]); return name === 'asb-engine.mjs' && args[0] === 'status' ? 1 : 0; } };
   };
   const logs = [];
-  const run = (argv, platform = 'linux', version = '22.13.0') => dispatch(argv, { platform, version, load,
-    log: (line) => logs.push(line), error: (line) => logs.push(`error: ${line}`) });
+  const run = (argv, platform = 'linux', version = '22.13.0') => dispatch(argv, { platform, version, load, error: (line) => logs.push(`error: ${line}`) });
   for (const [argv, name, args] of [[['engine', 'run'], 'asb-engine.mjs', ['run']], [['service', 'install'], 'asb-service.mjs', ['install']],
     [['agent', 'status', '--json'], 'asb-agent.mjs', ['status', '--json']], [['bridge', 'status'], 'asb-bridge.mjs', ['status']],
     [['group', 'status'], 'asb-group.mjs', ['group', 'status']], [['network', 'status'], 'asb-group.mjs', ['network', 'status']],
@@ -218,22 +218,65 @@ test('the asb dispatcher reaches each command main and shows the Windows hint an
     assert.equal(await run(argv), 0, argv.join(' '));
     assert.deepEqual(calls.map(([file, values]) => [file, values]), [[name, args]]);
   }
+  // No command opens the board through scripts/asb-desktop.mjs, on both systems.
   calls.length = 0;
-  assert.equal(await run([], 'win32', '24.0.0'), 1);
-  assert.deepEqual(calls.map(([file, values, options]) => [file, values, options]), [['asb-engine.mjs', ['status'], { platform: 'win32' }]]);
-  assert.equal(logs.at(-1), WINDOWS_HINT);
+  for (const platform of ['linux', 'win32']) assert.equal(await run([], platform, '24.0.0'), undefined);
+  assert.deepEqual(calls.map(([file, values]) => [file, values]), [['asb-desktop.mjs', undefined], ['asb-desktop.mjs', undefined]]);
   assert.equal(await run(['service', 'install'], 'win32', '24.0.0'), 2);
   assert.equal(await run(['engine', 'status'], 'win32', '22.12.0'), 1);
   assert.equal(logs.at(-1), 'error: ASB needs Node.js 22.13 or later on Windows.');
-  assert.equal(calls.length, 1);
-  // doctor is Linux only: Windows keeps its usage error.
-  assert.equal(await run(['doctor'], 'win32', '24.0.0'), 2);
-  assert.equal(logs.at(-1), `error: ${WINDOWS_USAGE}`);
+  assert.equal(await run([], 'win32', '22.12.0'), 1);
+  assert.equal(calls.length, 2);
+  // service, doctor, and --package are Linux only: Windows keeps its usage error.
+  for (const command of ['service', 'doctor', '--package']) {
+    assert.equal(await run([command], 'win32', '24.0.0'), 2);
+    assert.equal(logs.at(-1), `error: ${WINDOWS_USAGE}`);
+  }
   // npm skips scripts/asb, so the dispatcher refuses Node.js older than 20 on Linux with the launcher message.
   assert.equal(await run(['doctor'], 'linux', '18.19.0'), 1);
   assert.equal(logs.at(-1), `error: ${NODE_HINT}`);
   assert.equal(await run(['service', 'status'], 'linux', '20.0.0'), 0);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
+});
+
+test('Python candidates on Windows: an absolute ASB_PYTHON alone, else MSYS2 Python, then python on PATH, without duplicates', async (t) => {
+  const directory = await folder(t, 'asb-win-python-');
+  const bin = path.join(directory, 'bin');
+  await mkdir(bin);
+  for (const name of ['python.exe', 'python3.exe']) await writeFile(path.join(bin, name), 'synthetic');
+  const msys2 = path.join(directory, 'msys2-python.exe');
+  await writeFile(msys2, 'synthetic', { mode: 0o755 });
+  const found = path.join(bin, 'python.exe');
+  const env = { PATH: bin, PATHEXT: '.COM;.EXE' };
+  const candidates = (values, system) => pythonCandidates({ ...env, ...values }, { platform: 'win32', system });
+  assert.equal(MSYS2_PYTHON, 'C:\\msys64\\ucrt64\\bin\\python.exe');
+  assert.deepEqual(await candidates({ ASB_PYTHON: 'D:\\Python\\python.exe' }, msys2), ['D:\\Python\\python.exe']);
+  // python3.exe is not searched, and a relative ASB_PYTHON is ignored.
+  assert.deepEqual(await candidates({}, msys2), [msys2, found]);
+  assert.deepEqual(await candidates({ ASB_PYTHON: 'python.exe' }, msys2), [msys2, found]);
+  assert.deepEqual(await candidates({}, found), [found]);
+  assert.deepEqual(await candidates({}, path.join(directory, 'missing.exe')), [found]);
+  assert.deepEqual(await candidates({ PATH: '' }, path.join(directory, 'missing.exe')), []);
+});
+
+test('boardCheck passes its platform to the Python search', async (t) => {
+  const directory = await folder(t, 'asb-win-python-');
+  await writeFile(path.join(directory, 'python.exe'), 'synthetic');
+  const found = path.join(directory, 'python.exe');
+  const probed = [];
+  const execFile = async (file) => {
+    probed.push(file);
+    if (file !== found) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    return { stdout: JSON.stringify({ python: '3.14.8', gi: '3.58.1', gtk: [4, 24, 1], adw: [1, 10, 0] }) };
+  };
+  const env = { PATH: directory, PATHEXT: '.EXE' };
+  const board = await boardCheck({ env, execFile, platform: 'win32' });
+  assert.deepEqual([board.ok, board.python], [true, found]);
+  assert.ok(probed.includes(found));
+  // Linux looks for python3 only, so it never probes python.exe.
+  probed.length = 0;
+  await boardCheck({ env, execFile, platform: 'linux' });
+  assert.ok(!probed.includes(found));
 });
 
 test('the POSIX launcher prints the same Node.js message as the dispatcher', async () => {

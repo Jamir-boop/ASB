@@ -356,7 +356,7 @@ Default Codex opens use `codex://threads/<id>`. Default Claude opens use `claude
 
 ## Windows
 
-On Windows, ASB has statuses only. The engine reads Codex and Claude on that PC and gives their sessions to paired phones and to the other machines of the group. It has no window. It plays the Done, Needs input, and Failed sounds with Windows PowerShell, but only while an ASB window is open. ASB Bridge and messages between machines work on Windows too (see below). A paired phone shows the sessions and can open them on the Windows PC. A Linux board in the group shows them as remote cards. Claude web sessions are not read on Windows. Windows needs Node.js `22.13` or later.
+On Windows, the ASB engine reads Codex and Claude on that PC and gives their sessions to paired phones and to the other machines of the group. The ASB window needs MSYS2 Python with PyGObject, GTK `>=4.12`, and Libadwaita `>=1.4`; without it, only the engine runs. It plays the Done, Needs input, and Failed sounds with Windows PowerShell, but only while an ASB window is open. ASB Bridge and messages between machines work on Windows too (see below). A paired phone shows the sessions and can open them on the Windows PC. A Linux board in the group shows them as remote cards. Claude web sessions are not read on Windows. Windows needs Node.js `22.13` or later.
 
 ```bash
 npm install -g github:Jamir-boop/ASB
@@ -381,7 +381,7 @@ On Linux, `asb setup` installs `asb.service` in step 1 and also prints the bridg
 | `asb engine status` | Show whether the engine runs, its PID and port. |
 | `asb engine run` | Run the engine in this terminal. |
 
-`asb` with no command shows the engine status. Autostart is the `ASB` value in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. It starts a hidden PowerShell tray script (`scripts\asb-tray.ps1`) with the `node.exe` that installed ASB. The tray icon menu has **Copy phone pairing link** and **Quit ASB**. The tray starts the engine again after a failure, at most 5 times in 10 minutes. After that, it shows "ASB stopped after repeated failures." and stops.
+`asb` with no command starts the engine when it is not running and opens the ASB window, as on Linux. The launcher uses an absolute `ASB_PYTHON`; else `C:\msys64\ucrt64\bin\python.exe`, then `python` on `PATH`. When no Python passes the board check, it prints `ASB runs without its window on this system: <reason> The engine runs for the phone and your other machines. Run asb doctor for details.` and exits with code 3; the engine keeps running. Autostart is the `ASB` value in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. It starts a hidden PowerShell tray script (`scripts\asb-tray.ps1`) with the `node.exe` that installed ASB. The tray icon menu has **Open ASB**, a separator, **Copy phone pairing link**, and **Quit ASB**. **Open ASB** and a left click on the icon start `asb` with no console; they do nothing while an earlier launcher runs. When that launcher exits with code 3, the tray shows "ASB has no window on this PC. Run asb doctor." The tray starts the engine again after a failure, at most 5 times in 10 minutes. After that, it shows "ASB stopped after repeated failures." and stops.
 
 | File | Path |
 | --- | --- |
