@@ -227,8 +227,8 @@ test('the asb dispatcher reaches each command main, opens the board with no comm
   assert.equal(logs.at(-1), 'error: ASB needs Node.js 22.13 or later on Windows.');
   assert.equal(await run([], 'win32', '22.12.0'), 1);
   assert.equal(calls.length, 2);
-  // service, doctor, and --package are Linux only: Windows keeps its usage error.
-  for (const command of ['service', 'doctor', '--package']) {
+  // service and --package are Linux only: Windows keeps its usage error, which names doctor because doctor runs on both systems.
+  for (const command of ['service', '--package']) {
     assert.equal(await run([command], 'win32', '24.0.0'), 2);
     assert.equal(logs.at(-1), `error: ${WINDOWS_USAGE}`);
   }
@@ -237,6 +237,13 @@ test('the asb dispatcher reaches each command main, opens the board with no comm
   assert.equal(logs.at(-1), `error: ${NODE_HINT}`);
   assert.equal(await run(['service', 'status'], 'linux', '20.0.0'), 0);
   assert.equal(calls.length, 3);
+  // doctor reaches the same script on Windows, after the Node.js check.
+  calls.length = 0;
+  assert.equal(await run(['doctor', '--json'], 'win32', '22.13.0'), 0);
+  assert.deepEqual(calls.map(([file, values]) => [file, values]), [['asb-doctor.mjs', ['--json']]]);
+  assert.equal(await run(['doctor'], 'win32', '22.12.0'), 1);
+  assert.equal(calls.length, 1);
+  assert.match(WINDOWS_USAGE, /\|setup\|doctor\]/);
 });
 
 test('Python candidates on Windows: an absolute ASB_PYTHON alone, else MSYS2 Python, then python on PATH, without duplicates', async (t) => {

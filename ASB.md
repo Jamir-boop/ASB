@@ -365,12 +365,15 @@ asb setup
 
 `asb setup` does these steps:
 
-1. It writes the autostart value and starts the engine, then waits up to 20 s for the engine to answer.
-2. It lists the network addresses of the PC and asks which to turn on. `--yes` keeps the saved addresses (else the first home network address). `--address <address>` selects an address with no question; you can give it more than once.
-3. It prints the firewall rule for the selected addresses and the phone port. ASB never runs this rule and never changes the firewall. To let phones and other machines reach ASB, run the rule in an administrator PowerShell. When Windows already allows `node.exe` on private networks, the rule is not needed.
-4. It prints the command to join a machine group. On Windows, run `asb group join --name <name>` and paste the link when it asks.
+1. It prints the checks of `asb doctor`. It stops when the engine cannot run (Node.js without built-in SQLite). A missing window does not stop it; the checks then show how to install it.
+2. It writes the autostart value and starts the engine, then waits up to 20 s for the engine to answer.
+3. It lists the network addresses of the PC and asks which to turn on. `--yes` keeps the saved addresses (else the first home network address). `--address <address>` selects an address with no question; you can give it more than once.
+4. It prints the firewall rule for the selected addresses and the phone port. ASB never runs this rule and never changes the firewall. To let phones and other machines reach ASB, run the rule in an administrator PowerShell. When Windows already allows `node.exe` on private networks, the rule is not needed.
+5. It prints the command that lets agents send messages (`asb bridge install --all`) and the command to join a machine group. On Windows, run `asb group join --name <name>` and paste the link when it asks.
 
-On Linux, `asb setup` installs `asb.service` in step 1 and also prints the bridge install command.
+On Linux, `asb setup` installs `asb.service` in step 2.
+
+`asb doctor` also runs on Windows. It checks Node.js (`22.13` or later with built-in SQLite), the window (MSYS2 Python with PyGObject, GTK, and Libadwaita), and the options (the QR code, Bun, and autostart). When a window check fails, it prints the commands that install MSYS2 and the board packages: `winget install --id MSYS2.MSYS2 -e` (only when `C:\msys64\usr\bin\pacman.exe` does not exist), then `C:\msys64\usr\bin\pacman.exe -S --needed mingw-w64-ucrt-x86_64-python-gobject mingw-w64-ucrt-x86_64-gtk4 mingw-w64-ucrt-x86_64-libadwaita`. When GTK or Libadwaita is too old, the `pacman` command uses `-Syu --needed`. ASB never runs these commands. MSYS2 has no Python `qrcode` package, so the QR code check shows `info`.
 
 | Command | Effect |
 | --- | --- |
