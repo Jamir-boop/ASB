@@ -1,19 +1,35 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createAsbServer } from '../src/asb-server.mjs';
 import { DashboardSnapshot } from '../src/dashboard-snapshot.mjs';
+import { createSwitchboardServer, PendingTracker } from '../src/switchboard.mjs';
 
-async function serve(t, options) {
-  const server = createAsbServer({ dashboardWatchPaths: [], loadDashboard: async () => ({ providers: [], threads: [] }), ...options });
+async function serve(t, options, create = createAsbServer) {
+  const server = create({ dashboardWatchPaths: [], loadDashboard: async () => ({ providers: [], threads: [] }), ...options });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
   const base = `http://127.0.0.1:${server.address().port}`;
-  return { base, post: (route, body = '{}', headers = {}) => fetch(base + route, { method: 'POST', headers: { Origin: base, ...headers }, body }) };
+  return { server, base, post: (route, body = '{}', headers = {}) => fetch(base + route, { method: 'POST', headers: { Origin: base, ...headers }, body }) };
 }
+
+// The row counts each time that a JSON list holds it, so the count is the number of list serializations (and of action replies that hold it).
+const counted = (counter, row) => Object.defineProperty(row, 'toJSON', { value() { counter.count += 1; return { ...this }; } });
+// The tag of a parsed reply: the hash of all fields except `generatedAtMs` and `performance`, in the order of the reply.
+const tagOf = ({ generatedAtMs: _, performance: __, ...list }) => `"${createHash('sha256').update(JSON.stringify(list)).digest('base64url')}"`;
+// A dashboard read that checks the rule for every reply: the tag is the one of the body.
+const dashboardReader = (base) => async (headers = {}, query = '') => {
+  const response = await fetch(`${base}/api/dashboard${query}`, { headers });
+  const etag = response.headers.get('etag');
+  if (response.status === 304) return { status: 304, etag };
+  const body = await response.json();
+  assert.equal(etag, tagOf(body));
+  return { status: response.status, etag, body };
+};
 
 test('app source changes need the window token when the launcher sets one', async (t) => {
   for (const sourceToken of ['window-token', '']) {
@@ -160,6 +176,150 @@ test('the dashboard reply has a content tag and an equal tag gets 304 with no bo
   assert.equal((await get({ 'If-None-Match': tag, 'Sec-Fetch-Site': 'cross-site' })).status, 403);
   board.threads[0].title = 'B';
   assert.equal((await get({ 'If-None-Match': tag })).status, 200);
+});
+
+const PALETTE = { mode: 'custom', colors: { background: '#101010', text: '#eeeeee', accent: '#3584e4', muted: '#888888',
+  divider: '#333333', success: '#3584e4', warning: '#3584e4' } };
+
+test('a repeated dashboard request serializes the list and hashes it one time, and each change to the list gives a new tag and body', async (t) => {
+  const paletteDir = await mkdtemp(path.join(os.tmpdir(), 'asb-list-'));
+  t.after(() => rm(paletteDir, { recursive: true, force: true }));
+  const serialized = { count: 0 };
+  let loads = 0;
+  let title = 'A';
+  const marks = {};
+  // A session action keeps its mark for the next scan, and sets it on the cached row in place, as the tracker does.
+  const mark = (values) => async (thread) => { Object.assign(marks, values); Object.assign(thread, marks); };
+  // A fixed clock keeps the snapshot valid, so only the actions and the forced reads start a scan.
+  const { server, base, post } = await serve(t, { sourceToken: 'window-token', palettePath: path.join(paletteDir, 'palette.json'), now: () => 1_760_000_000_000,
+    loadDashboard: async () => { loads += 1; return { generatedAtMs: loads, providers: [], threads: [counted(serialized, { id: 'one', title, ...marks })] }; },
+    markUnreadThread: mark({ unread: true }), markReadThread: mark({ unread: false }),
+    drawerThread: async (thread, enabled) => mark({ drawer: enabled })(thread), muteThread: async (thread, enabled) => mark({ muted: enabled })(thread),
+    discardThread: async (thread, enabled) => mark({ discardResult: enabled })(thread),
+    pinThread: async (thread, action) => { await mark({ pinned: action === 'pin' })(thread); return []; } });
+  const get = dashboardReader(base);
+
+  const first = await get();
+  assert.equal(serialized.count, 1);
+  for (const headers of [{}, {}, { 'If-None-Match': '"other"' }]) {
+    const again = await get(headers);
+    assert.equal(again.etag, first.etag);
+    assert.deepEqual(again.body.threads, first.body.threads);
+    assert.equal(again.body.generatedAtMs, first.body.generatedAtMs);
+  }
+  assert.equal((await get({ 'If-None-Match': first.etag })).status, 304);
+  assert.equal((await get({ 'If-None-Match': first.etag })).status, 304);
+  assert.deepEqual([serialized.count, loads], [1, 1]);
+
+  // Each action changes the cached row in place or makes a new scan; the reply that follows is made again one time.
+  let previous = first;
+  const actions = [['mark-unread', 'unread', true], ['mark-read', 'unread', false], ['drawer-in', 'drawer', true], ['drawer-out', 'drawer', false],
+    ['mute', 'muted', true], ['unmute', 'muted', false], ['pin', 'pinned', true], ['unpin', 'pinned', false],
+    ['discard-result', 'discardResult', true], ['keep-result', 'discardResult', false]];
+  for (const [action, field, value] of actions) {
+    assert.equal((await post(`/api/threads/one/${action}`)).status, 200, action);
+    const count = serialized.count;
+    const changed = await get();
+    assert.equal(changed.body.threads[0][field], value, action);
+    assert.notEqual(changed.etag, previous.etag, action);
+    assert.equal(serialized.count, count + 1, action);
+    const again = await get({ 'If-None-Match': changed.etag });
+    assert.equal(again.status, 304, action);
+    assert.equal((await get()).etag, changed.etag, action);
+    assert.equal(serialized.count, count + 1, action);
+    previous = changed;
+  }
+
+  // A new palette.
+  assert.equal((await post('/api/palette', JSON.stringify(PALETTE), { 'X-ASB-Source-Token': 'window-token' })).status, 200);
+  let count = serialized.count;
+  const themed = await get({ 'If-None-Match': previous.etag });
+  assert.equal(themed.status, 200);
+  assert.deepEqual(themed.body.palette, PALETTE);
+  assert.notEqual(themed.etag, previous.etag);
+  assert.equal((await get()).etag, themed.etag);
+  assert.equal(serialized.count, count + 1);
+
+  // A change that the code makes to the cached row, with the invalidation that every such change needs.
+  const [row] = (await server.dashboardForRequest()).threads;
+  row.title = 'Direct';
+  server.invalidateDashboard('test-in-place', { hard: false, dirty: false });
+  count = serialized.count;
+  const direct = await get();
+  assert.equal(direct.body.threads[0].title, 'Direct');
+  assert.notEqual(direct.etag, themed.etag);
+  assert.equal((await get()).etag, direct.etag);
+  assert.equal(serialized.count, count + 1);
+
+  // A forced scan makes the list again, also when the content is the same as before the in-place change: the tag is then the same.
+  count = serialized.count;
+  const forced = await get({}, '?force=1');
+  assert.equal(serialized.count, count + 1);
+  assert.equal(forced.body.generatedAtMs, loads);
+  assert.equal(forced.etag, themed.etag);
+  assert.notEqual(forced.etag, direct.etag);
+  title = 'B';
+  const retitled = await get({ 'If-None-Match': forced.etag }, '?force=1');
+  assert.equal(retitled.status, 200);
+  assert.equal(retitled.body.threads[0].title, 'B');
+  assert.equal((await get({ 'If-None-Match': retitled.etag })).status, 304);
+
+  // A change of a source that the machine group or a peer reports: the next read scans and replies with the new list.
+  title = 'C';
+  server.invalidateDashboard('peer-sessions', { hard: false });
+  count = serialized.count;
+  const peer = await get();
+  assert.equal(peer.body.threads[0].title, 'C');
+  assert.notEqual(peer.etag, retitled.etag);
+  assert.equal((await get()).etag, peer.etag);
+  assert.equal(serialized.count, count + 1);
+});
+
+test('a scan that returns the same object makes the list again', async (t) => {
+  const board = { generatedAtMs: 1, providers: [], threads: [{ id: 'one', title: 'A' }] };
+  const { base } = await serve(t, { loadDashboard: async () => board });
+  const get = dashboardReader(base);
+  const first = await get();
+  board.threads[0].title = 'B';
+  const second = await get({}, '?force=1');
+  assert.equal(second.body.threads[0].title, 'B');
+  assert.notEqual(second.etag, first.etag);
+  assert.equal((await get({ 'If-None-Match': second.etag })).status, 304);
+});
+
+test('the session actions of the tracker change a cached row, and the next reply has the new row and tag', async (t) => {
+  const serialized = { count: 0 };
+  let loads = 0;
+  const { base, post } = await serve(t, { pendingTracker: new PendingTracker(false), palettePath: '', now: () => 1_760_000_000_000,
+    openThread: async () => ({ opened: true }),
+    loadDashboard: async () => {
+      loads += 1;
+      return { generatedAtMs: loads, providers: [], threads: [counted(serialized, { id: 'one', provider: 'codex', state: 'idle', nativeUnread: null, completionAtMs: 0 })] };
+    } }, createSwitchboardServer);
+  const get = dashboardReader(base);
+  let previous = await get();
+  assert.equal(previous.body.threads[0].unread, false);
+  // `scans`: the scans from the action to the next read. Most actions change the cached row in place and need none; Pin and Unpin
+  // drop the snapshot, and Discard makes a scan before it arms.
+  const actions = [['mark-unread', '{}', 0, (row) => row.unread && row.manualUnread], ['drawer-in', '{}', 0, (row) => row.drawer && !row.unread],
+    ['drawer-out', '{}', 0, (row) => !row.drawer && row.unread], ['mark-read', '{}', 0, (row) => !row.unread && !row.manualUnread],
+    ['mute', '{}', 0, (row) => row.muted], ['unmute', '{}', 0, (row) => !row.muted],
+    ['pin', '{}', 1, (row) => row.pinned], ['unpin', '{}', 1, (row) => !row.pinned],
+    ['discard-result', '{"next":true}', 1, (row) => row.discardResult], ['keep-result', '{}', 0, (row) => !row.discardResult]];
+  for (const [action, body, scans, check] of actions) {
+    const before = loads;
+    assert.equal((await post(`/api/threads/one/${action}`, body)).status, 200, action);
+    const count = serialized.count;
+    const changed = await get();
+    assert.ok(check(changed.body.threads[0]), action);
+    assert.equal(loads - before, scans, action);
+    assert.notEqual(changed.etag, previous.etag, action);
+    assert.equal(serialized.count, count + 1, action);
+    assert.equal((await get()).etag, changed.etag, action);
+    assert.equal((await get({ 'If-None-Match': changed.etag })).status, 304, action);
+    assert.equal(serialized.count, count + 1, action);
+    previous = changed;
+  }
 });
 
 test('malformed JSON bodies get 400 on every action route', async (t) => {

@@ -51,6 +51,7 @@ export function createAsbServer({
     return !expectedSourceToken.length || (given.length === expectedSourceToken.length && timingSafeEqual(given, expectedSourceToken));
   };
   let dashboardNotModified = 0;
+  let savedList = null;
   const uiClients = new Map();
   const expireUiClients = () => {
     for (const [id, client] of uiClients) if (now() - client.reportedAtMs >= 45_000) uiClients.delete(id);
@@ -477,12 +478,20 @@ export function createAsbServer({
 
     if (url.pathname === '/api/dashboard') {
       try {
-        const dashboard = await dashboardForRequest({ force: parseBooleanSearchParam(url.searchParams.get('force')) });
-        // The rows can change in place between scans, so the tag comes from the content of each reply.
-        const { generatedAtMs, performance: _, ...rows } = dashboard;
-        const content = { ...rows, palette };
-        const list = JSON.stringify(content);
-        const etag = `"${createHash('sha256').update(list).digest('base64url')}"`;
+        const dashboard = await loadSharedDashboard({ force: parseBooleanSearchParam(url.searchParams.get('force')) });
+        // The rows can change in place between scans, and each such change moves the snapshot revision. The saved list and its tag are for
+        // one dashboard object, one revision, and one palette. The key is read in the same step as the list is made, so a later change
+        // always moves it. The weak reference keeps an old dashboard object from living on in the saved list.
+        const { generatedAtMs } = dashboard;
+        const revision = snapshot.revision();
+        if (savedList?.revision !== revision || savedList.palette !== palette || savedList.dashboard.deref() !== dashboard) {
+          const { generatedAtMs: _, performance: __, ...rows } = dashboard;
+          // `summary` keeps the list from being empty.
+          const list = JSON.stringify({ ...rows, summary: { ...(rows.summary || {}) }, palette });
+          savedList = { revision, palette, dashboard: new WeakRef(dashboard), list,
+            etag: `"${createHash('sha256').update(list).digest('base64url')}"` };
+        }
+        const { list, etag } = savedList;
         const headers = { etag, 'cache-control': 'no-store' };
         if (request.headers['if-none-match'] === etag) {
           dashboardNotModified += 1;
@@ -494,7 +503,6 @@ export function createAsbServer({
         performance.dashboard.notModified = dashboardNotModified;
         const rest = JSON.stringify({ generatedAtMs, performance });
         response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', ...headers });
-        // The list is serialized one time for the tag and the body; `summary` keeps it from being empty.
         response.end(`${rest.slice(0, -1)},${list.slice(1)}`);
       } catch (error) {
         sendJson(response, 500, {

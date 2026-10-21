@@ -38,6 +38,8 @@ export class DashboardSnapshot {
     let dashboardInvalidationReason = 'file-change';
     let dashboardDirty = false;
     let dashboardGeneration = 0;
+    // Moves with each new dashboard and with each invalidation. Each in-place change of a cached row ends in an invalidation, so the revision shows it.
+    let dashboardRevision = 0;
     let dashboardLastScanStartedAtMs = -Infinity;
     let dashboardRetryAfterMs = 0;
     let dashboardClosed = false;
@@ -163,6 +165,7 @@ export class DashboardSnapshot {
               dashboard,
               cachedAtMs: now(),
             };
+            dashboardRevision += 1;
             dashboardRetryAfterMs = 0;
             if (generation === dashboardGeneration) dashboardDirty = false;
             return dashboard;
@@ -196,6 +199,8 @@ export class DashboardSnapshot {
     };
 
     const invalidateDashboard = (reason = 'dashboard-change', { hard = true, dirty = true } = {}) => {
+      // First, so a client that gets the event below reads the new revision.
+      dashboardRevision += 1;
       if (dirty) dashboardDirty = true;
       // A scan in flight predates this change and must not clear the dirty mark.
       if (hard || dirty) dashboardGeneration += 1;
@@ -425,6 +430,7 @@ export class DashboardSnapshot {
     Object.assign(this, {
       dashboardForRequest, loadSharedDashboard, invalidateDashboard, performanceSnapshot, openThreadOnce,
       cachedDashboard: () => dashboardCache?.dashboard,
+      revision: () => dashboardRevision,
       serveEvents: (request, response) => {
         response.writeHead(200, {
           'content-type': 'text/event-stream; charset=utf-8',
