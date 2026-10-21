@@ -72,8 +72,9 @@ sealed interface DashboardResult {
 
 /**
  * A GET tries the current engine, then the paired engine, then the other engines of the group, each at its endpoints
- * in order, and the first that answers becomes current. A POST goes only to the first endpoint of one engine and is
- * never sent again to another one, so an action cannot run twice.
+ * in order, and the first that answers becomes current. An authenticated POST goes only to the first endpoint of one
+ * engine and is never sent again to another one, so an action cannot run twice. The pairing POST (no token) tries every
+ * endpoint of its link in order, like a GET.
  */
 class AsbApi(
     private val paths: Paths,
@@ -228,7 +229,8 @@ class AsbApi(
             if (target.id.isEmpty() && !probe) pairedTriedAtMs = clock()
             // The away-from-home hint names every overlay of a tried engine, also when a POST tried only one endpoint.
             hints = hints + target.endpoints
-            for (endpoint in if (body == null) target.endpoints else target.endpoints.take(1)) {
+            // Pairing sends no token, and the PC accepts a code one time only (a second use gets 403), so it can try the next endpoint.
+            for (endpoint in if (body != null && authenticated) target.endpoints.take(1) else target.endpoints) {
                 ensureActive()
                 tried++
                 val url = HttpUrl.Builder().scheme("https").host(endpoint.host).port(target.port).addPathSegments("phone/v1").apply {

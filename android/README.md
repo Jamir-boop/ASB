@@ -79,8 +79,12 @@ A read (dashboard or hello) first uses the last address that answered. When
 that address does not answer, the app tries the other addresses in this order:
 home network, ZeroTier, Tailscale. Each address gets 3 seconds to connect. An
 action or a setting goes to one address only. The app never sends it again to
-another address, so an action cannot run two times. When Android changes the
-default network, the next request starts again at the top of the order.
+another address, so an action cannot run two times. The pairing request has no
+token and tries the addresses of the pairing link in the same order, like a read.
+The PC accepts a pairing code one time only, so a second address cannot add a
+second phone: a used code gets the message `This pairing code is not valid. Make
+a new one in ASB.` When Android changes the default network, the next request
+starts again at the top of the order.
 
 A network change (for example when you turn on ZeroTier on the phone) also
 drops the idle connections of the old network, and the session screen and the
@@ -382,8 +386,9 @@ long timestamps, path encoding, error handling, and cancellation while a
 response body is still arriving. Pairing parser tests reject duplicate,
 unknown, incomplete, malformed, and ambiguous fields.
 Endpoint tests use two MockWebServers with one certificate. They cover version
-1 and 2 links, the kind order, the read fallback, no second send of an action,
-the network change reset, the hello address update, and the saved-host migration.
+1 and 2 links, the kind order, the read fallback, the pairing fallback, no second
+send of an action, the network change reset, the hello address update, and the
+saved-host migration.
 Session tests check that a network change wakes the offline poll at once,
 retries after 3 seconds, and reads hello after the next good dashboard.
 Retained-flow tests cover ViewModelStore recreation, Back cancellation,

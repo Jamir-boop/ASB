@@ -286,6 +286,44 @@ class AsbApiTest {
         } finally { other.shutdown() }
     }
 
+    private val pairReply = """{"api":1,"deviceId":"$deviceId","token":"$token","serverName":"Test PC","asbVersion":"1.8.1"}"""
+
+    @Test fun pairTriesTheNextEndpointButAnActionTriesOnlyTheFirst() = runBlocking {
+        val other = second()
+        try {
+            // Away from home the LAN address does not answer; ZeroTier does.
+            val addresses = listOf(Endpoint("lan", "127.0.0.3"), Endpoint("zerotier", "127.0.0.2"))
+            other.enqueue(MockResponse().setBody(pairReply))
+            assertEquals(token, AsbApi.pair(PairingInfo(addresses, server.port, fingerprint, "c".repeat(27), "PC"), "Phone").token)
+            val request = other.takeRequest()
+            assertEquals("/phone/v1/pair", request.path)
+            assertNull(request.getHeader("Authorization"))
+            // An action with the same addresses still goes to the first one only: the second gets no new request.
+            assertTrue(failure { api(MemoryPaths(addresses)).action("one", "open") } is AsbError.Offline)
+            assertEquals(1, other.requestCount)
+        } finally { other.shutdown() }
+    }
+
+    @Test fun pairStopsAtTheFirstReplyAndKeepsTheOfflineAndPinMismatchErrors() = runBlocking {
+        val other = second()
+        try {
+            fun info(pin: String, vararg hosts: String) = PairingInfo(
+                hosts.map { Endpoint(if (it == "127.0.0.1") "lan" else "tailscale", it) }, server.port, pin, "c".repeat(27), "PC")
+            // A used code gets 403 from the first address; the phone does not ask the next one.
+            server.enqueue(MockResponse().setResponseCode(403).setBody("""{"error":"This pairing code is not valid."}"""))
+            assertEquals("This pairing code is not valid.", failure { AsbApi.pair(info(fingerprint, "127.0.0.1", "127.0.0.2"), "Phone") }.message)
+            assertEquals(0, other.requestCount)
+            val offline = failure { AsbApi.pair(info(fingerprint, "127.0.0.3", "127.0.0.4"), "Phone") }
+            assertTrue(offline is AsbError.Offline)
+            assertEquals(offlineMessage(listOf("Tailscale")), offline.message)
+            // Every address with another certificate is a pin mismatch.
+            val another = sha256Hex(HeldCertificate.Builder().build().certificate.encoded)
+            assertSame(AsbError.PinMismatch, failure { AsbApi.pair(info(another, "127.0.0.1", "127.0.0.2"), "Phone") })
+            // One address that does not answer makes it Offline again.
+            assertTrue(failure { AsbApi.pair(info(another, "127.0.0.1", "127.0.0.3"), "Phone") } is AsbError.Offline)
+        } finally { other.shutdown() }
+    }
+
     @Test fun offlineNamesTheOverlayEndpoints() = runBlocking {
         val lanOnly = failure { api(paths("lan" to "127.0.0.2")).hello() }
         assertEquals("Could not reach ASB. Check the PC and Wi-Fi, then try again.", lanOnly.message)
