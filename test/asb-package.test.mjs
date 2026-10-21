@@ -116,7 +116,13 @@ test('release payloads are reproducible and the user installer preserves other f
     assert.equal((await lstat(path.join(payload, 'scripts/asb'))).mode & 0o777, 0o755);
   }
   // The Debian chain: desktop entry, /usr/bin/asb, /usr/lib/asb/scripts/asb, asb-desktop.mjs.
-  assert.equal(await readFile(path.join(extracted, 'usr/bin/asb'), 'utf8'), '#!/bin/sh\nexport ASB_SYSTEM_INSTALL=1\nexec /usr/lib/asb/scripts/asb "$@"\n');
+  const wrapper = await readFile(path.join(extracted, 'usr/bin/asb'), 'utf8');
+  assert.equal(wrapper, '#!/bin/sh\nexport ASB_SYSTEM_INSTALL=1\nexport ASB_INSTALLED_LAUNCHER=/usr/bin/asb\nexec /usr/lib/asb/scripts/asb "$@"\n');
+  // Both values reach the program that the wrapper runs, so the tray, the service, and the autostart entry use /usr/bin/asb
+  // and write no per-user app entry. The test runs env in place of /usr/lib/asb/scripts/asb.
+  const exported = execFileSync('/bin/sh', ['-c', wrapper.replace('/usr/lib/asb/scripts/asb', '/usr/bin/env')], { env: {}, encoding: 'utf8' }).split('\n');
+  assert.ok(exported.includes('ASB_SYSTEM_INSTALL=1'), exported.join('\n'));
+  assert.ok(exported.includes('ASB_INSTALLED_LAUNCHER=/usr/bin/asb'), exported.join('\n'));
   const exec = (await readFile(path.join(extracted, 'usr/share/applications', `${ASB_APP_ID}.desktop`), 'utf8')).split('\n').find((line) => line.startsWith('Exec=')).slice(5);
   assert.equal(exec, '/usr/bin/asb');
   assert.ok((await lstat(path.join(extracted, exec))).isFile());

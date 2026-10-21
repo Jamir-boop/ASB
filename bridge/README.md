@@ -44,7 +44,7 @@ A task registers when its `SessionStart` hook runs, which Codex does on the firs
 
 ## Usage skills
 
-Type `/bridge` in Claude Code or `$bridge` in Codex to load the usage guide. Both skills load on demand only. The manual plugin commands above do not install them; use the ASB install command for the skill folders.
+Claude Code and Codex load the `bridge` skill by themselves when the task needs it: a session reference (`asb:1/...`) or a message to another agent. Each skill adds a short entry to the skill list, which costs a few tens of tokens in each turn. The text of the skill loads only when the model uses it. `/bridge` in Claude Code and `$bridge` in Codex still load it by hand. The manual plugin commands above do not install the skills; use the ASB install command for the skill folders.
 
 ## Link Claude profiles
 
@@ -151,8 +151,8 @@ The sender sees Claude's status notices, among them `held`, `delivered`, `denied
 
 | Tool | Use |
 | --- | --- |
-| `list_sessions` | List local agents with ID, name, agent type, working directory, status, and start time. In an ASB machine group, the sessions on the other machines follow, with `remote: true`, `machine`, the name `<machine>-<session>`, and no working directory or start time. On Linux and Windows with a running ASB engine, an entry also has its full session `reference`, or `referenceUnavailable` with the reason code when a send cannot use one. |
-| `send_message` | Send text to one agent by `sessionId`, or on Linux and Windows by a full session `reference` (this machine, or another machine of the group: Linux or Windows at both ends). Set `notify_when_idle` for one notice when that agent next goes idle (this machine only). |
+| `list_sessions` | List local agents with ID, name, agent type, working directory, status, and start time (newest first). `startedAt` has whole seconds (`2026-10-20T10:00:00Z`), and the order uses the milliseconds. A field with no value is left out: a local agent with no start time has no `startedAt`. In an ASB machine group, the sessions on the other machines follow, with `remote: true`, `machine`, the name `<machine>-<session>`, and no `cwd` and no `startedAt`. On Linux and Windows with a running ASB engine, an entry also has its full session `reference`, or `referenceUnavailable` with the reason code when a send cannot use one. The optional `nameContains` (1 to 128 characters) keeps only the entries whose name, as the list shows it (`<machine>-<session>` for another machine), has that text in any letter case. |
+| `send_message` | Send text to one agent by `sessionId`, or on Linux and Windows by a full session `reference` (this machine, or another machine of the group: Linux or Windows at both ends). Set `notify_when_idle` for one notice when that agent next goes idle (this machine only). The advertised schema has a plain string for `sessionId` and `reference`. The handler checks the format (a UUID, or `asb:` and printable ASCII, at most 384 characters) before it reads the caller or sends anything, and a bad value gives the tool error `Input validation error: sessionId must be a UUID from list_sessions. Nothing sent.` (for `reference`: `... reference must be a full session reference (asb:1/...). Nothing sent.`). |
 | `status` | Show the receiver and recent transport outcomes. |
 | `inbox` | Open a dialog where you set the receive policy and hold expiry, or review the oldest held message. |
 

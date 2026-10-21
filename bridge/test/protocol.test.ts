@@ -645,7 +645,7 @@ posix('list_sessions names the agent kind and start time and leaves out the call
   const f = await fixture();
   const client = new Client({ name: 'list-test', version: '1.0.0' });
   const rows = z.array(z.object({ sessionId: z.string(), name: z.string(), agent: z.string(),
-    cwd: z.string(), status: z.string(), startedAt: z.string().nullable() }));
+    cwd: z.string(), status: z.string(), startedAt: z.string().optional() }));
   const list = async (threadId: string) => rows.parse(JSON.parse(z.array(z.object({ text: z.string() }))
     .parse((await client.callTool({ name: 'list_sessions', arguments: {}, _meta: { threadId } })).content)[0]!.text));
   try {
@@ -654,7 +654,7 @@ posix('list_sessions names the agent kind and start time and leaves out the call
     // A Codex task must not offer itself as a target, and a Claude peer has to read as one.
     const seen = await list(f.desktop.threadId);
     expect(seen.map(row => row.sessionId)).toEqual([f.peerId]);
-    expect(seen[0]).toMatchObject({ agent: 'claude', cwd: f.root, startedAt: new Date(1700000000000).toISOString() });
+    expect(seen[0]).toMatchObject({ agent: 'claude', cwd: f.root, startedAt: '2023-11-14T22:13:20Z' });
     // Seen from another task, this receiver is a Codex peer and carries the start time that orders the list.
     const own = (await list(randomUUID())).find(row => row.sessionId === f.desktop.threadId);
     expect(own).toMatchObject({ agent: 'codex', name: f.bridge.status().name });
@@ -673,6 +673,46 @@ posix('list_sessions names the agent kind and start time and leaves out the call
       expect((await list(randomUUID())).map(row => row.sessionId)).not.toContain(proxyId);
     } finally { await proxy.close(); placeholder.kill(); }
   } finally { await client.close(); await f.close(); }
+});
+
+posix('list_sessions leaves out null fields, writes startedAt in whole seconds, and orders by the milliseconds', async () => {
+  const f = await fixture();
+  const client = new Client({ name: 'list-test', version: '1.0.0' });
+  const children = [0, 1, 2].map(() => Bun.spawn(['/bin/cat'], { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' }));
+  const [late, early, none] = children as [Bun.Subprocess, Bun.Subprocess, Bun.Subprocess];
+  const row = (child: Bun.Subprocess, name: string, startedAt?: number) => writeFileSync(join(f.configDir, 'sessions', `${child.pid}.json`),
+    JSON.stringify({ pid: child.pid, sessionId: randomUUID(), messagingSocketPath: f.peerPath, cwd: f.root, name, peerProtocol: 1, startedAt }));
+  const list = async (args: Record<string, unknown> = {}) => z.array(z.record(z.string(), z.unknown())).parse(JSON.parse(z.array(z.object({ text: z.string() }))
+    .parse((await client.callTool({ name: 'list_sessions', arguments: args, _meta: { threadId: f.desktop.threadId } })).content)[0]!.text));
+  try {
+    await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, '../src/server.ts')],
+      env: { ...process.env, CODEX_HOME: f.root, CLAUDE_CONFIG_DIR: f.configDir } }));
+    row(none, 'none');
+    // The fixture peer starts at ...000 ms. All three start in the same second, so a sort on the shortened text could not tell them apart.
+    // Writing the rows in both orders keeps the directory order from deciding the result.
+    for (const order of [[[late, 'late', 1700000000999], [early, 'early', 1700000000001]], [[early, 'early', 1700000000001], [late, 'late', 1700000000999]]] as const) {
+      for (const [child, name, startedAt] of order) row(child, name, startedAt);
+      const rows = await list();
+      expect(rows.map(entry => entry.name)).toEqual(['late', 'early', 'Claude Code', 'none']);
+      // A row without a start time has no startedAt key and stays last. No field is null.
+      expect(rows.slice(0, 3).map(entry => entry.startedAt)).toEqual(Array(3).fill('2023-11-14T22:13:20Z'));
+      expect(rows[3]).not.toHaveProperty('startedAt');
+      expect(rows.flatMap(entry => Object.values(entry))).not.toContain(null);
+      expect(Object.keys(rows[0]!)).toEqual(['sessionId', 'name', 'agent', 'cwd', 'status', 'startedAt']);
+    }
+    // nameContains is a case-insensitive part of the name that the list shows.
+    expect((await list({ nameContains: 'AT' })).map(entry => entry.name)).toEqual(['late']);
+    expect((await list({ nameContains: 'rl' })).map(entry => entry.name)).toEqual(['early']);
+    expect((await list({ nameContains: 'cOdE' })).map(entry => entry.name)).toEqual(['Claude Code']);
+    expect((await list({ nameContains: 'e' })).map(entry => entry.name)).toEqual(['late', 'early', 'Claude Code', 'none']);
+    expect(await list({ nameContains: 'zzz' })).toEqual([]);
+    expect(await list({ nameContains: 'x'.repeat(128) })).toEqual([]);
+    for (const nameContains of ['', 'x'.repeat(129)]) {
+      const refused = await client.callTool({ name: 'list_sessions', arguments: { nameContains }, _meta: { threadId: f.desktop.threadId } });
+      expect(refused.isError).toBe(true);
+      expect(JSON.stringify(refused.content)).toContain('Input validation error');
+    }
+  } finally { await client.close(); for (const child of children) child.kill(); await f.close(); }
 });
 
 posix('the outbound socket sends only this receiver own frames to the peer they name', async () => {
@@ -793,6 +833,40 @@ posix('the receiver refuses an exhausted outgoing burst before writing text or a
     expect(f.bridge.status().messages[0]?.status).toBe('not-sent');
     expect(f.bridge.status().idleRequests.every(row => row.status === 'expired')).toBe(true);
     expect(f.frames).toHaveLength(30);
+  } finally { await client.close(); await f.close(); }
+});
+
+posix('send_message refuses a bad sessionId or reference with a tool error before it reads the caller or sends anything', async () => {
+  const f = await fixture();
+  const client = new Client({ name: 'bad-id-test', version: '1.0.0' });
+  const reference = `asb:1/${'a'.repeat(16)}/codex/${'ab'.repeat(16)}/codex:${randomUUID()}`;
+  const total = () => f.db.query<{ total: number }, []>('SELECT (SELECT count(*) FROM messages)+(SELECT count(*) FROM idle_requests) AS total').get()!.total;
+  const sessionError = 'Input validation error: sessionId must be a UUID from list_sessions. Nothing sent.';
+  const referenceError = 'Input validation error: reference must be a full session reference (asb:1/...). Nothing sent.';
+  try {
+    await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, '../src/server.ts')],
+      env: { ...process.env, CODEX_HOME: f.root, CLAUDE_CONFIG_DIR: f.configDir } }));
+    const refusals: [Record<string, unknown>, string][] = [
+      [{ sessionId: 'not-a-uuid' }, sessionError], [{ sessionId: `${f.peerId} ` }, sessionError], [{ sessionId: '12345678-1234-0234-8234-123456789012' }, sessionError],
+      [{ sessionId: 'x'.repeat(100_000) }, sessionError], [{ sessionId: 'not-a-uuid', notify_when_idle: true }, sessionError],
+      [{ sessionId: 'not-a-uuid', reference }, sessionError], [{ sessionId: f.peerId, reference: 'asb:1/ x' }, referenceError],
+      [{ reference: `codex/${randomUUID()}` }, referenceError], [{ reference: 'asb:1/ x' }, referenceError], [{ reference: `asb:${'x'.repeat(381)}` }, referenceError],
+    ];
+    for (const [fields, text] of refusals) {
+      for (const meta of [{ threadId: f.desktop.threadId }, undefined]) {
+        // Without a thread ID in _meta the caller check would fail: the format check comes first.
+        const answer = await client.callTool({ name: 'send_message', arguments: { ...fields, text: 'hello' }, ...(meta ? { _meta: meta } : {}) });
+        expect(answer.isError).toBe(true);
+        expect(answer.content).toEqual([{ type: 'text', text }]);
+      }
+    }
+    // Nothing went to the peer socket or to the task, and no message or idle row exists.
+    expect([f.frames.length, f.desktop.submissions.length, total()]).toEqual([0, 0, 0]);
+    // The same run does send when the values are good, so the checks above would have seen a frame.
+    const sent = await client.callTool({ name: 'send_message', arguments: { sessionId: f.peerId, text: 'hello' }, _meta: { threadId: f.desktop.threadId } });
+    expect(sent.isError).not.toBe(true);
+    await until(() => f.frames.some(frame => frame.type === 'user'));
+    expect(total()).toBe(1);
   } finally { await client.close(); await f.close(); }
 });
 
@@ -1119,8 +1193,7 @@ linux('list_sessions adds the sessions on other machines after the local ones, a
       .parse((await client.callTool({ name: 'list_sessions', arguments: {}, _meta: { threadId: caller } })).content)[0]!.text);
     const rows = await list();
     expect(rows.map((row: { sessionId: string }) => row.sessionId)).toEqual([f.desktop.threadId, f.peerId, remote.sessionId]);
-    expect(rows[2]).toEqual({ sessionId: remote.sessionId, name: 'beta-codex-task', agent: 'codex', cwd: null, status: 'idle', startedAt: null,
-      remote: true, machine: 'beta' });
+    expect(rows[2]).toEqual({ sessionId: remote.sessionId, name: 'beta-codex-task', agent: 'codex', status: 'idle', remote: true, machine: 'beta' });
     expect(engine.calls.map(call => call.route).sort()).toEqual(['/api/agent/list-references', '/api/relay/remote-peers']);
     engine.close();
     expect((await list()).map((row: { sessionId: string }) => row.sessionId)).toEqual([f.desktop.threadId, f.peerId]);
@@ -1143,8 +1216,8 @@ linux('list_sessions adds the reference or its reason to each entry, and keeps a
     const text = async () => z.array(z.object({ text: z.string() }))
       .parse((await client.callTool({ name: 'list_sessions', arguments: {}, _meta: { threadId: caller } })).content)[0]!.text;
     const localRows = JSON.parse(await text()).slice(0, 2) as Record<string, unknown>[];
-    const remoteRow = (peer: typeof remote) => ({ sessionId: peer.sessionId, name: `${peer.machineName}-${peer.name}`, agent: peer.agent, cwd: null,
-      status: peer.status, startedAt: null, remote: true, machine: peer.machineName });
+    const remoteRow = (peer: typeof remote) => ({ sessionId: peer.sessionId, name: `${peer.machineName}-${peer.name}`, agent: peer.agent,
+      status: peer.status, remote: true, machine: peer.machineName });
     // An older engine (404), another reply, or no engine: the same bytes as before.
     const before = JSON.stringify([...localRows, remoteRow(remote)]);
     expect(await text()).toBe(before);
@@ -1167,6 +1240,35 @@ linux('list_sessions adds the reference or its reason to each entry, and keeps a
       body: { caller: { runtimeSessionId: caller, configDir: f.configDir } } });
     engine.close();
     expect(await text()).toBe(JSON.stringify(localRows));
+  } finally { engine.close(); await client.close(); await f.close(); }
+});
+
+linux('list_sessions nameContains matches the name that the list shows for local and remote rows, and keeps the reference', async () => {
+  const f = await fixture();
+  const client = new Client({ name: 'list-test', version: '1.0.0' });
+  const caller = randomUUID();
+  const beta = remoteSession();
+  const gamma = { ...remoteSession(), machineId: 'c'.repeat(16), machineName: 'Gamma', name: 'Review' };
+  const reference = `asb:1/${gamma.machineId}/codex/${'ab'.repeat(16)}/codex:${gamma.sessionId}`;
+  const engine = fakeEngine(runtimeDir(), route => route === '/api/relay/remote-peers' ? { peers: [beta, gamma] }
+    : { apiVersion: 1, ok: true, pid: process.pid, local: [], remote: [{ machineId: gamma.machineId, sessionId: gamma.sessionId, reference }] });
+  try {
+    await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, '../src/server.ts')],
+      env: { ...process.env, CODEX_HOME: f.root, CLAUDE_CONFIG_DIR: f.configDir } }));
+    const list = async (args: Record<string, unknown> = {}) => z.array(z.record(z.string(), z.unknown())).parse(JSON.parse(z.array(z.object({ text: z.string() }))
+      .parse((await client.callTool({ name: 'list_sessions', arguments: args, _meta: { threadId: caller } })).content)[0]!.text));
+    const all = await list();
+    expect(all.map(entry => entry.sessionId)).toEqual([f.desktop.threadId, f.peerId, beta.sessionId, gamma.sessionId]);
+    // Remote rows have no cwd and no startedAt key, and no field is null.
+    expect(all[2]).toEqual({ sessionId: beta.sessionId, name: 'beta-codex-task', agent: 'codex', status: 'idle', remote: true, machine: 'beta' });
+    expect(all.flatMap(entry => Object.values(entry))).not.toContain(null);
+    // The remote name that the list shows is <machine>-<name>: the filter reads the machine part too, and keeps the reference.
+    expect(await list({ nameContains: 'GAMMA-rev' })).toEqual([{ sessionId: gamma.sessionId, name: 'Gamma-Review', agent: 'codex', status: 'idle',
+      remote: true, machine: 'Gamma', reference }]);
+    expect((await list({ nameContains: 'gamma' })).map(entry => entry.sessionId)).toEqual([gamma.sessionId]);
+    expect((await list({ nameContains: 'BETA-codex-TASK' })).map(entry => entry.sessionId)).toEqual([beta.sessionId]);
+    expect((await list({ nameContains: 'claude code' })).map(entry => entry.sessionId)).toEqual([f.peerId]);
+    expect(await list({ nameContains: 'machine' })).toEqual([]);
   } finally { engine.close(); await client.close(); await f.close(); }
 });
 

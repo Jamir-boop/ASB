@@ -329,7 +329,7 @@ export async function build({ sourceRoot = ROOT, outputDir = path.join(ROOT, 'di
     const payload = path.join(debRoot, 'usr', 'lib', 'asb');
     await copyRuntime(sourceRoot, payload);
     for (const directory of ['DEBIAN', 'usr/bin', 'usr/share/applications', 'usr/share/icons/hicolor/scalable/apps', 'usr/share/doc/asb']) await mkdir(path.join(debRoot, directory), { recursive: true });
-    await writeFile(path.join(debRoot, 'usr/bin/asb'), '#!/bin/sh\nexport ASB_SYSTEM_INSTALL=1\nexec /usr/lib/asb/scripts/asb "$@"\n', { mode: 0o755 });
+    await writeFile(path.join(debRoot, 'usr/bin/asb'), '#!/bin/sh\nexport ASB_SYSTEM_INSTALL=1\nexport ASB_INSTALLED_LAUNCHER=/usr/bin/asb\nexec /usr/lib/asb/scripts/asb "$@"\n', { mode: 0o755 });
     await copyFile(path.join(sourceRoot, 'assets/icons', `${ASB_APP_ID}.svg`), path.join(debRoot, 'usr/share/icons/hicolor/scalable/apps', `${ASB_APP_ID}.svg`));
     await copyFile(path.join(sourceRoot, 'LICENSE'), path.join(debRoot, 'usr/share/doc/asb/copyright'));
     await writeFile(path.join(debRoot, 'usr/share/applications', `${ASB_APP_ID}.desktop`), `[Desktop Entry]\nType=Application\nName=ASB\nGenericName=Agent Switch Board\nExec=/usr/bin/asb\nIcon=/usr/share/icons/hicolor/scalable/apps/${ASB_APP_ID}.svg\nTerminal=false\nStartupWMClass=${ASB_APP_ID}\nCategories=Development;\n`);

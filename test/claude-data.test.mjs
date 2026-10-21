@@ -332,7 +332,8 @@ test('folds Claude subagent transcripts into their Desktop Code host', async (t)
   assert.equal(result.threads.length, 1);
   assert.equal(result.threads[0].id, 'claude-desktop-code:local_host');
   assert.equal(result.threads[0].embeddedSubagentCount, 1);
-  assert.equal(result.threads[0].embeddedSubagentUpdatedAtMs > 0, true);
+  // The file time of a child log is not a time: the log has no link from the root, and the group has no child turn time.
+  assert.equal(result.threads[0].embeddedSubagentUpdatedAtMs, null);
 });
 
 test('deduplicates Claude Desktop Code metadata that points at the same CLI session', async (t) => {
@@ -1275,4 +1276,94 @@ test('a Claude title cut keeps whole emoji', () => {
   const title = claudeTitle(`${'x'.repeat(136)}😀${'y'.repeat(9)}`);
   assert.equal(title.isWellFormed(), true);
   assert.equal(title, `${'x'.repeat(136)}😀...`);
+});
+
+test('the time of a Claude Desktop Code row is its last turn record, and the session file time is only the last fallback', () => {
+  const turnAtMs = Date.parse('2026-05-09T02:00:00.000Z');
+  const laterAtMs = Date.parse('2026-05-09T05:00:00.000Z');
+  const session = { sessionId: 'local_clock', cliSessionId: '123e4567-e89b-12d3-a456-426614174000' };
+  const signals = parseClaudeJsonlSignals(jsonl([
+    { type: 'user', timestamp: new Date(turnAtMs - 60_000).toISOString(), message: { role: 'user', content: 'Synthetic prompt' } },
+    { type: 'assistant', timestamp: new Date(turnAtMs).toISOString(), message: { role: 'assistant', stop_reason: 'end_turn', content: 'Done.' } },
+    // Records that an open or a resume writes with a timestamp and no turn.
+    { type: 'attachment', timestamp: new Date(laterAtMs).toISOString(), attachment: { type: 'hook_success' } },
+    { type: 'queue-operation', timestamp: new Date(laterAtMs).toISOString(), operation: 'enqueue' },
+    { type: 'pr-link', timestamp: new Date(laterAtMs).toISOString() },
+    { type: 'last-prompt', sessionId: 'local_clock' },
+  ]));
+  assert.equal(signals.latestEventAtMs, turnAtMs);
+  assert.equal(signals.oldestEventAtMs, turnAtMs - 60_000);
+  const time = (fields, parts) => normalizeClaudeDesktopCodeSession({ ...session, ...fields }, parts, laterAtMs + 1000).updatedAtMs;
+  assert.equal(time({}, { signals, stat: { mtimeMs: laterAtMs } }), turnAtMs, 'the file time does not count while the transcript has a turn');
+  assert.equal(time({ lastActivityAt: turnAtMs - 5000, lastFocusedAt: laterAtMs, indexedAt: laterAtMs }, { signals, stat: { mtimeMs: laterAtMs } }),
+    turnAtMs, 'the focus and index times do not count');
+  assert.equal(time({ lastActivityAt: turnAtMs + 5000 }, { signals, stat: { mtimeMs: laterAtMs } }), turnAtMs + 5000, 'the app time can be newer than the transcript');
+  assert.equal(time({}, { signals: parseClaudeJsonlSignals(''), stat: { mtimeMs: laterAtMs } }), laterAtMs, 'the file time is the last fallback');
+  assert.equal(time({}, {}), laterAtMs + 1000, 'the clock is the fallback of the fallback');
+});
+
+test('opening a Claude Desktop Code session keeps the time and the place of its row until a new turn', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'claude-open-clock-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const nowMs = Date.parse('2026-05-09T12:00:00.000Z');
+  const at = (minutes) => nowMs - minutes * 60_000;
+  const appDir = path.join(dir, 'Claude'), projectsDir = path.join(dir, 'projects', 'project');
+  const sessions = path.join(appDir, 'claude-code-sessions');
+  await mkdir(sessions, { recursive: true });
+  await mkdir(projectsDir, { recursive: true });
+  const names = { old: '123e4567-e89b-12d3-a456-426614174001', recent: '123e4567-e89b-12d3-a456-426614174002' };
+  const turn = (name, minutes) => [
+    { type: 'user', timestamp: new Date(at(minutes + 1)).toISOString(), sessionId: names[name], message: { role: 'user', content: 'Synthetic prompt' } },
+    { type: 'assistant', timestamp: new Date(at(minutes)).toISOString(), sessionId: names[name],
+      message: { role: 'assistant', stop_reason: 'end_turn', content: 'Done.' } }];
+  const metadata = (name, minutes, extra = {}) => writeFile(path.join(sessions, `local_${name}.json`), JSON.stringify({
+    sessionId: `local_${name}`, cliSessionId: names[name], cwd: '/tmp/synthetic-work', createdAt: at(600), lastActivityAt: at(minutes), ...extra }));
+  for (const [name, minutes] of [['old', 300], ['recent', 60]]) {
+    await writeFile(path.join(projectsDir, `${names[name]}.jsonl`), jsonl(turn(name, minutes)));
+    await metadata(name, minutes);
+    await utimes(path.join(sessions, `local_${name}.json`), at(minutes) / 1000, at(minutes) / 1000);
+  }
+  const load = async () => {
+    const { threads } = await loadClaudeDesktopCodeThreads({ appDir, projectsDir: path.dirname(projectsDir), nowMs });
+    return buildSwitchboardDashboard(threads, [], nowMs).threads.map((row) => [row.externalId, row.updatedAtMs]);
+  };
+  assert.deepEqual(await load(), [['local_recent', at(60)], ['local_old', at(300)]]);
+
+  // The app opens the old session: it rewrites the session file and the transcript gets records with no turn.
+  await metadata('old', 300, { lastFocusedAt: nowMs, indexedAt: nowMs });
+  await utimes(path.join(sessions, 'local_old.json'), nowMs / 1000, nowMs / 1000);
+  await appendFile(path.join(projectsDir, `${names.old}.jsonl`), jsonl([
+    { type: 'attachment', timestamp: new Date(at(1)).toISOString(), attachment: { type: 'hook_success' } },
+    { type: 'queue-operation', timestamp: new Date(at(1)).toISOString(), operation: 'enqueue' },
+    { type: 'last-prompt', sessionId: names.old }]));
+  assert.deepEqual(await load(), [['local_recent', at(60)], ['local_old', at(300)]], 'the read row keeps its time and place');
+
+  // A new turn is activity: the time and the place move.
+  await appendFile(path.join(projectsDir, `${names.old}.jsonl`), jsonl(turn('old', 0.5)));
+  await metadata('old', 300, { lastFocusedAt: nowMs, indexedAt: nowMs });
+  assert.deepEqual(await load(), [['local_old', at(0.5)], ['local_recent', at(60)]], 'a new turn moves the time and the card');
+});
+
+test('the group time of a Claude row follows the turn records of a linked child, not the file time of a child log', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'claude-child-clock-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const appDir = path.join(dir, 'Claude'), projectsDir = path.join(dir, 'projects');
+  const childDir = path.join(projectsDir, 'project', 'cli_root', 'subagents');
+  await mkdir(path.join(appDir, 'claude-code-sessions'), { recursive: true });
+  await mkdir(childDir, { recursive: true });
+  await writeFile(path.join(appDir, 'claude-code-sessions', 'local_root.json'), JSON.stringify({ sessionId: 'local_root', cliSessionId: 'cli_root' }));
+  await writeFile(path.join(projectsDir, 'project', 'cli_root.jsonl'), jsonl(resumeLaunch('kid')));
+  // The linked child works until 30 seconds before the load. An unlinked child log has an older turn.
+  await writeFile(path.join(childDir, 'agent-kid.jsonl'), jsonl([resumeMessage(-40_000), resumeWork(-30_000)]));
+  await writeFile(path.join(childDir, 'agent-other.jsonl'), jsonl([resumeMessage(-45_000), resumeEnd(-44_000)]));
+  const load = async () => {
+    const { threads } = await loadClaudeDesktopCodeThreads({ appDir, projectsDir, nowMs: resumeNowMs });
+    return [threads[0].updatedAtMs, threads[0].embeddedSubagentUpdatedAtMs, buildSwitchboardDashboard(threads, [], resumeNowMs).threads[0].updatedAtMs];
+  };
+  // The app copies or opens the logs: all file times are now.
+  for (const name of ['agent-kid.jsonl', 'agent-other.jsonl']) await utimes(path.join(childDir, name), resumeNowMs / 1000, resumeNowMs / 1000);
+  assert.deepEqual(await load(), [resumeNowMs - 48_000, resumeNowMs - 30_000, resumeNowMs - 30_000]);
+  // A turn record of the child moves the time.
+  await appendFile(path.join(childDir, 'agent-kid.jsonl'), jsonl([resumeEnd(-10_000)]));
+  assert.deepEqual(await load(), [resumeNowMs - 48_000, resumeNowMs - 10_000, resumeNowMs - 10_000]);
 });

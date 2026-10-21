@@ -41,7 +41,8 @@ export async function loadClaudeCliThreads({ projectsDir = DEFAULT_CLAUDE_PROJEC
     const record = liveById.get(sessionId);
     const cwd = record?.cwd || signals?.cwd || '';
     const title = claudeTitle(record?.name || signals?.customTitle || signals?.agentName || `Claude Code session ${sessionId.slice(0, 8)}`);
-    const updatedAtMs = Math.max(Number(signals?.latestEventAtMs || 0), mtimeMs, Number(record?.startedAt || 0)) || nowMs;
+    // A resume writes records with no turn, so the file time and the process start are only fallbacks.
+    const updatedAtMs = Number(signals?.latestEventAtMs || 0) || Math.max(mtimeMs, Number(record?.startedAt || 0)) || nowMs;
     const thread = baseClaudeThread({
       id: `cli:${sessionId}`,
       externalId: sessionId,

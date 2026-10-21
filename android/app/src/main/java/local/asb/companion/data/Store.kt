@@ -62,7 +62,7 @@ class Store(private val preferences: SharedPreferences) {
     var view: String
         get() = if (preferences.getString("view", null) == "compact") "compact" else "comfortable"
         set(value) { preferences.edit().putString("view", value).apply() }
-    /** The app text size, a factor on the system font scale. */
+    /** The Card text size, a factor on the phone font scale. It scales the session cards only. */
     var textScale: Float
         get() = preferences.getFloat("textScale", 1f)
         set(value) { preferences.edit().putFloat("textScale", value).apply() }

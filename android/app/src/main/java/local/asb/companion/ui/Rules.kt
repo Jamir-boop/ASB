@@ -270,7 +270,7 @@ const val COMPACT_ROW_HEIGHT = 48
 // It is the portrait gap and the largest Column Flow gap; Column Flow can go down to the minimum gap.
 const val COMFORTABLE_CARD_GAP = 24
 const val COMFORTABLE_MIN_CARD_GAP = 8
-// The Comfortable card parts: dp sizes, and sp line heights that grow with the text size.
+// The Comfortable card parts: dp sizes, and sp line heights that grow with the card font scale.
 const val COMFORTABLE_PADDING = 2
 const val COMFORTABLE_SPACING = 2
 const val CAPTION_LINE_HEIGHT = 14
@@ -278,6 +278,9 @@ const val TITLE_LINE_HEIGHT = 16
 const val COMFORTABLE_TITLE_LINES = 2
 const val PROVIDER_MARK_SIZE = 14
 const val LIMIT_CLOCK_SIZE = 12
+
+/** The font scale of the session cards: the phone font scale, times the Card text size setting. */
+fun cardFontScale(phoneFontScale: Float, cardTextScale: Float): Float = phoneFontScale * cardTextScale
 
 /** The Comfortable card height in dp: workspace line, two title lines, and footer, at this font scale. */
 fun comfortableCardHeight(fontScale: Float): Float =

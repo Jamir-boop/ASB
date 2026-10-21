@@ -51,11 +51,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewModelScope
@@ -78,7 +76,6 @@ import local.asb.companion.ui.PairingViewModel
 import local.asb.companion.ui.SessionsScreen
 import local.asb.companion.ui.SessionsViewModel
 import local.asb.companion.ui.SettingsScreen
-import local.asb.companion.ui.withDensity
 
 /** The asb://pair link that a VIEW intent carries, or null. */
 internal fun pairingLink(action: String?, data: String?): String? =
@@ -106,12 +103,7 @@ class MainActivity : ComponentActivity() {
         }
         notificationsAllowed = Notifier.notificationsAllowed(this)
         setContent {
-            // The Settings text size scales every sp in the app, on top of the system font size.
-            val system = LocalDensity.current
-            CompositionLocalProvider(
-                LocalDensity provides Density(system.density, system.fontScale * app.textScale),
-                LocalUseCameraArea provides app.useCameraArea,
-            ) {
+            CompositionLocalProvider(LocalUseCameraArea provides app.useCameraArea) {
                 AsbTheme(app.palette) {
                     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
                         notificationsAllowed = Notifier.notificationsAllowed(this)
@@ -247,7 +239,7 @@ private fun PairedApp(
                 onLiveNotificationChanged = app::useLiveNotification,
             )
         } else {
-            SessionsScreen(sessionsModel, serverName,
+            SessionsScreen(sessionsModel, serverName, cardTextScale = app.textScale,
                 onSettings = { screen = Screen.CONNECTION }, onPairAgain = unpair)
         }
     }
@@ -321,14 +313,11 @@ private fun ConnectionScreen(
             }
         }
     }
-    if (confirmUnpair) {
-        val density = LocalDensity.current
-        AlertDialog(
-            onDismissRequest = { confirmUnpair = false },
-            title = withDensity(density) { Text("Unpair this phone?") },
-            text = withDensity(density) { Text("Also remove this phone in ASB Preferences > Phone on the PC.") },
-            confirmButton = withDensity(density) { TextButton(onClick = onUnpair) { Text("Unpair") } },
-            dismissButton = withDensity(density) { TextButton(onClick = { confirmUnpair = false }) { Text("Cancel") } },
-        )
-    }
+    if (confirmUnpair) AlertDialog(
+        onDismissRequest = { confirmUnpair = false },
+        title = { Text("Unpair this phone?") },
+        text = { Text("Also remove this phone in ASB Preferences > Phone on the PC.") },
+        confirmButton = { TextButton(onClick = onUnpair) { Text("Unpair") } },
+        dismissButton = { TextButton(onClick = { confirmUnpair = false }) { Text("Cancel") } },
+    )
 }

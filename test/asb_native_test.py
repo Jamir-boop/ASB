@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import queue
+import random
 import shutil
 import subprocess
 import tempfile
@@ -48,6 +49,42 @@ FIXTURE = {
 
 
 CUSTOM = {"background": "#171c22", "text": "#f0f2f5", "accent": "#f3c66b", "muted": "#b8c0cc", "divider": "#586372"}
+
+
+GTK_WARNINGS = []
+
+
+def keep_gtk_warnings(level, fields, n_fields, user_data):
+    # GLib allows one writer for the process; the default writer still prints each message.
+    if int(level) & 28:
+        GTK_WARNINGS.extend(ctypes.string_at(field.value).decode(errors="replace") for field in fields[:n_fields] if field.key == "MESSAGE")
+    return asb.GLib.log_writer_default(level, fields, user_data)
+
+
+asb.GLib.log_set_writer_func(keep_gtk_warnings, None)
+
+
+def board_children(column):
+    cards, card = [], column.get_first_child()
+    while card:
+        cards.append(card)
+        card = card.get_next_sibling()
+    return cards
+
+
+def board_listed(column):
+    cards, card = [], column.get_row_at_index(0)
+    while card is not None:
+        cards.append(card)
+        card = column.get_row_at_index(len(cards))
+    return cards
+
+
+def board_rows(count):
+    return [{"id": f"s{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Sample session {n}",
+             "cwd": f"/example/project-{n % 9}", "projectName": f"project-{n % 9}", "state": "working" if n < 6 else "idle",
+             "canOpen": True, "updatedAtMs": NOW - n * 600_000, "readStatus": "unknown",
+             "workingSinceMs": NOW - n * 900_000 if n < 6 else 0, "pending": 6 <= n < 20, "unread": 6 <= n < 20} for n in range(count)]
 
 
 def mock_dashboard():
@@ -2038,7 +2075,7 @@ class WidgetCheck(unittest.TestCase):
         # The Comfortable card button stays, with no action and the reason as its tooltip.
         window.view_filter.set_selected(1); self.drain(1)
         card = window.focus_widgets[invalid_row["id"]].asb_copy_button
-        self.assertEqual((card.get_visible(), card.get_action_name(), card.get_tooltip_text()), (True, None, reason))
+        self.assertEqual((card.get_visible(), card.asb_action, card.get_tooltip_text()), (True, None, reason))
         self.assertTrue(card.has_css_class("asb-copy-off"))
         self.assert_accessible_disabled(card, True)
         self.assert_accessible_label(card, "Copy relative reference: " + invalid_row["title"])
@@ -2384,6 +2421,148 @@ class WidgetCheck(unittest.TestCase):
         self.drain()
         self.assertEqual(window.focus_key(), last)
         self.assert_focus_visible(window, last)
+
+    def board_window(self, count, limit=0):
+        # No server: a failed refresh shows a notice, and the notice changes the list height.
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", {"generatedAtMs": NOW, "providers": [], "threads": board_rows(count)},
+                                      theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        # A column that lost a card from its internal list loops forever when GTK frees it; a failed test must not leave one.
+        self.addCleanup(lambda: [card.unparent() for column in window.list_columns for card in board_children(column)])
+        window.card_limit = limit
+        window.set_default_size(1000, 500)
+        window.present(); self.drain(.3)
+        window.render(); self.drain(.2)
+        GTK_WARNINGS.clear()
+        return window
+
+    def assert_board_columns(self, window, laid_out=False):
+        """Each column holds its target cards in the target order, as widget children and in the internal list of GTK."""
+        shown = [column for column in window.list_columns if column.get_parent()]
+        self.assertEqual(len(shown), window.actual_columns)
+        for number, column in enumerate(shown):
+            target = [window.focus_widgets[identity] for identity in window.row_order[number * window.capacity:(number + 1) * window.capacity]]
+            self.assertEqual(board_children(column), target)
+            self.assertEqual(board_listed(column), target)
+            if laid_out:
+                # Each card sits right under the one before it: no empty slot.
+                bottom = 0
+                for card in target:
+                    self.assertEqual(round(card.compute_bounds(column)[1].origin.y), bottom)
+                    bottom += card.get_height()
+        self.assertTrue(all(not board_children(column) and not board_listed(column) for column in window.list_columns if not column.get_parent()))
+        self.assertEqual(GTK_WARNINGS, [])
+        return shown
+
+    def test_board_shows_one_card_for_a_row_id_that_comes_twice(self):
+        window = self.board_window(70)
+        columns, order, initial = list(window.list_columns), list(window.row_order), copy.deepcopy(window.dashboard)
+        # Two rows with one ID go to the top: the same card is twice in the target of the first column and moves into it.
+        row = next(row for row in initial["threads"] if row["id"] == order[window.capacity + 3])
+        board = copy.deepcopy(initial)
+        board["threads"] = [{**row, "pending": True, "unread": True, "updatedAtMs": NOW + 60_000}] * 2 + board["threads"]
+        window.apply_dashboard(board, None); self.drain(.3)
+        self.assertEqual((window.row_order[0], window.row_order.count(row["id"]), len(window.row_order)), (row["id"], 1, 70))
+        self.assertEqual(self.assert_board_columns(window, laid_out=True), columns[:window.actual_columns])
+        # The board without the second row: the card goes back to its column.
+        window.apply_dashboard(copy.deepcopy(initial), None); self.drain(.3)
+        self.assertEqual(window.row_order, order)
+        self.assertEqual(self.assert_board_columns(window, laid_out=True), columns[:window.actual_columns])
+
+    def test_board_never_inserts_a_card_twice_or_with_a_parent(self):
+        window = self.board_window(70)
+        columns = list(window.list_columns)
+        original = asb.column_moves
+        def twice(current, target):
+            # The same card twice in the moves of one column, as one card twice in a column target gives.
+            removals, inserts = original(current, target)
+            return removals, inserts + inserts[:1]
+        with patch.object(asb, "column_moves", twice):
+            board = copy.deepcopy(window.dashboard)
+            board["threads"][window.capacity * 2]["updatedAtMs"] = NOW + 60_000
+            board["threads"][window.capacity * 2]["pending"] = True
+            window.apply_dashboard(board, None); self.drain(.3)
+        self.assertEqual(window.row_order[0], board["threads"][window.capacity * 2]["id"])
+        self.assertEqual(self.assert_board_columns(window, laid_out=True), columns[:window.actual_columns])
+
+    def test_board_replaces_the_columns_when_the_internal_list_of_one_has_a_stale_entry(self):
+        window = self.board_window(70)
+        self.assertGreaterEqual(window.actual_columns, 3)
+        columns = list(window.list_columns)
+        first, second, third = columns[:3]
+        # GTK 4 gives no warning when a card of a column is inserted into the same column again: the internal list holds it twice.
+        # The first column then keeps a stale entry for a card that left the widget tree, the second column lists a card twice.
+        # GTK lays out the internal list, so each stale entry takes a slot that no card fills.
+        card = first.get_row_at_index(1)
+        first.insert(card, 0)
+        first.remove(card)
+        # The last card of a column is the one that a card at the top pushes into the next column.
+        second.insert(second.get_row_at_index(window.capacity - 1), 2)
+        self.assertNotEqual(board_listed(first), board_children(first))
+        self.assertNotEqual(board_listed(second), board_children(second))
+        GTK_WARNINGS.clear()
+        window.focus_widgets[window.row_order[window.capacity + 3]].grab_focus(); self.drain(.1)
+        focused = window.focus_key()
+        # A pending card goes to the top: it moves from the third column to the first.
+        board = copy.deepcopy(window.dashboard)
+        moved = window.row_order[2 * window.capacity + 2]
+        next(row for row in board["threads"] if row["id"] == moved).update(pending=True, unread=True, updatedAtMs=NOW + 60_000)
+        window.apply_dashboard(board, None); self.drain(.3)
+        self.assertEqual(window.row_order[0], moved)
+        shown = self.assert_board_columns(window, laid_out=True)
+        # All columns are new. The old ones stay alive, with no card, because a card can still point into their internal list.
+        self.assertTrue(set(columns).isdisjoint(shown))
+        self.assertEqual(window.retired_columns[:len(columns)], columns)
+        self.assertEqual([board_children(column) for column in window.retired_columns], [[]] * len(window.retired_columns))
+        self.assertEqual(window.focus_key(), focused)
+        # Closing the window works with the old columns kept.
+        window.close(); self.drain(.2)
+        self.assertEqual((window.list_columns, GTK_WARNINGS), ([], []))
+
+    def test_board_columns_hold_their_cards_after_many_refreshes(self):
+        # The live pattern: pending cards change their time at each scan and change places, some cards go to another column,
+        # cards leave and come in, the More card shows and goes away, and sometimes two rows have one ID.
+        window = self.board_window(96, limit=90)
+        generator = random.Random(20261020)
+        serial, more, doubled = 0, set(), 0
+        for tick in range(500):
+            board = copy.deepcopy(window.dashboard)
+            rows = board["threads"]
+            for row in rows:
+                if row["pending"]:
+                    row["updatedAtMs"] = NOW + tick * 1000 + generator.randrange(900)
+            for row in generator.sample(rows, generator.randrange(4)):
+                row.update(pending=not row["pending"], unread=not row["pending"], updatedAtMs=NOW + tick * 1000 + generator.randrange(900))
+            if len(rows) > 88 and generator.random() < .4:
+                del rows[generator.randrange(len(rows))]
+            if len(rows) < 98 and generator.random() < .4:
+                serial += 1
+                rows.append({**board_rows(1)[0], "id": f"new{serial}", "title": f"New session {serial}", "updatedAtMs": NOW + tick * 1000,
+                             "pending": generator.random() < .5})
+            if generator.random() < .15:
+                rows.insert(0, {**generator.choice(rows), "pending": True, "unread": True, "updatedAtMs": NOW + tick * 1000})
+            elif generator.random() < .5:
+                seen = set()
+                rows[:] = [row for row in rows if not (row["id"] in seen or seen.add(row["id"]))]
+            doubled += len({row["id"] for row in rows}) < len(rows)
+            if tick % 25 == 0:
+                window.focus_widgets[window.row_order[generator.randrange(20)]].grab_focus()
+            if tick % 125 == 100:
+                window.width_control.set_value(160 if window.column_width == 240 else 240)
+            window.apply_dashboard(board, None)
+            if tick % 10 == 0:
+                self.drain(.02)
+            self.assert_board_columns(window)
+            more.add(asb.MORE_ID in window.row_order)
+        self.assertEqual(more, {True, False})
+        self.assertGreater(doubled, 20)
+        self.drain(.3)
+        self.assert_board_columns(window, laid_out=True)
 
     def test_card_motion_wheel_spring_and_column_width(self):
         threads = [{"id": f"s{n}", "provider": "codex", "providerLabel": "Codex",
@@ -2786,7 +2965,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertIs(copy_button.get_next_sibling(), drawer)
         self.assertIs(drawer.get_next_sibling().get_first_child(), read)
         self.assertIs(drawer.get_next_sibling().get_next_sibling(), one.asb_pin_button)
-        self.assertEqual((copy_button.get_width(), copy_button.get_height(), copy_button.get_action_name(), copy_button.get_child().get_icon_name()),
+        self.assertEqual((copy_button.get_width(), copy_button.get_height(), copy_button.asb_action, copy_button.get_child().get_icon_name()),
                          (24, 24, "win.copy-reference", "edit-copy-symbolic"))
         self.assertEqual(copy_button.get_child().get_pixel_size(), 12)
         self.assertEqual(copy_button.get_tooltip_text(), "Copy relative reference")
@@ -2794,7 +2973,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(all(card.asb_copy_button.get_visible() and card.asb_copy_button.get_parent().has_css_class("asb-corner-wide")
                             for card in cards.values()))
         self.assertEqual(self.ink(cards["s3"].asb_copy_button.get_parent()), 0)  # A corner at rest has no ink.
-        self.assertEqual((drawer.get_width(), drawer.get_height(), drawer.get_action_name()), (24, 24, "win.drawer-in"))
+        self.assertEqual((drawer.get_width(), drawer.get_height(), drawer.asb_action), (24, 24, "win.drawer-in"))
         self.assertEqual(drawer.get_tooltip_text(), put)
         self.assert_accessible_label(drawer, put + ": " + one.asb_thread["title"])
         # The title has the same allocation with three buttons and with two.
@@ -2836,7 +3015,7 @@ class WidgetCheck(unittest.TestCase):
         # A click sends drawer-in. After the reply the row looks read, sorts with the read rows, and lights the dot.
         drawer.emit("clicked")
         self.assertEqual((requests[-1][1], requests[-1][4], requests[-1][5]), ("/api/threads/s1/drawer-in", "POST", None))
-        self.assertIsNone(drawer.get_action_name())
+        self.assertIsNone(drawer.asb_action)
         self.assertTrue(drawer.has_css_class("asb-action-pending"))
         window.dashboard_etag = "etag"
         reply("s1", unread=False, pending=False, drawer=True)
@@ -2848,7 +3027,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual((self.ink(one.asb_dot), self.ink(read), self.ink(drawer)), (0, 0, 0))
         self.assertEqual((bubble.get_visible(), pill.has_css_class("asb-drawer-filled")), (True, True))
         self.assert_accessible_label(pill, "Drawer only. The drawer has sessions.")
-        self.assertEqual((drawer.get_visible(), drawer.get_action_name(), drawer.has_css_class("asb-drawer-filled")),
+        self.assertEqual((drawer.get_visible(), drawer.asb_action, drawer.has_css_class("asb-drawer-filled")),
                          (True, "win.drawer-out", True))
         self.assertFalse(drawer.has_css_class("asb-action-pending"))
         self.assertEqual(drawer.get_tooltip_text(), out)
@@ -2963,7 +3142,7 @@ class WidgetCheck(unittest.TestCase):
         pill.set_active(False); settle()
         self.assertEqual(window.row_order, ["s1", "s2", "s5", "s4", "s3"])
         self.assertFalse(one.has_css_class("asb-drawer"))
-        self.assertEqual((self.ink(one.asb_dot), drawer.get_action_name()), (255, "win.drawer-in"))
+        self.assertEqual((self.ink(one.asb_dot), drawer.asb_action), (255, "win.drawer-in"))
 
         # A column narrower than 190 px has no drawer button; the corner is the Read and Pin pair.
         window.width_control.set_value(160); settle()
@@ -3378,6 +3557,90 @@ class WidgetCheck(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
                          "Real pointer movement needs xdotool and a nested test display (DISPLAY=:9 or :10).")
+    def test_card_buttons_have_no_action_names(self):
+        requests = []
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "request_async", lambda *args: requests.append(args))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        rows = [{"id": f"s{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Sort the release notes {n}",
+                 "cwd": "/example/field-notes", "projectName": "field-notes", "state": "idle", "canOpen": True,
+                 "updatedAtMs": NOW - n * 60_000} for n in (1, 2)]
+        rows[0].update(pending=True, unread=True, completionAttention=True, pendingSource="observed-completion")
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", {"generatedAtMs": NOW, "providers": [], "threads": rows},
+                                      theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(700, 420)
+        window.present(); window.set_focus(None); self.drain(.3)
+        window.view_filter.set_selected(1); self.drain(.4)
+        for card in window.focus_widgets.values():
+            buttons = (card.asb_copy_button, card.asb_drawer_button, card.asb_read_button, card.asb_pin_button)
+            self.assertEqual([button.get_action_name() for button in buttons], [None] * 4)
+        # Keyboard and screen-reader activation emit clicked, which sends the window action.
+        window.focus_widgets["s1"].asb_read_button.activate(); self.drain(.4)
+        self.assertEqual([request[1] for request in requests if request[1] != "/api/palette"], ["/api/threads/s1/mark-read"])
+        self.assertEqual(window.opening, set())
+
+    def test_row_cache_releases_hidden_cards_above_twice_the_limit(self):
+        asb.gi.require_version("GdkX11", "4.0")
+        from gi.repository import GdkX11
+        requests = []
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "request_async", lambda *args: requests.append(args))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        def xdo(*args):
+            return subprocess.run(["xdotool", *map(str, args)], check=True, capture_output=True, text=True).stdout
+        x, y = (line.split("=")[1] for line in xdo("getmouselocation", "--shell").splitlines()[:2])
+        self.addCleanup(xdo, "mousemove", x, y)
+        words = ["amber", "amber", "birch", "birch", "cedar", "cedar", "cedar", "cedar"]
+        dashboard = {"generatedAtMs": NOW, "providers": [], "threads": [
+            {"id": f"r{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Review the {word} notes {n}",
+             "cwd": "/example/field-notes", "projectName": "field-notes", "state": "idle", "canOpen": True,
+             "updatedAtMs": NOW - n * 60_000} for n, word in enumerate(words)]}
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(900, 420)
+        window.present(); window.set_focus(None); self.drain(.4)
+        window.view_filter.set_selected(1); self.drain(.4); window.check_geometry(); self.drain(.3)
+        window.card_limit = 2  # Not a Preferences choice, so not through the setting.
+        window.render(); self.drain(.3)
+        self.assertEqual(window.row_order, ["r0", "r1", asb.MORE_ID])
+        more = window.focus_widgets[asb.MORE_ID]
+        # Show all, then clear the All cards chip: after the idle, the cache has the shown cards and the More card only.
+        window.open_row(None, more); self.drain(.3)
+        self.assertEqual(len(window.row_cache), 9)
+        window.clear_filter_chip(window.filter_chip_widgets["all"][0], "all"); self.drain(.3)
+        self.assertEqual(window.row_order, ["r0", "r1", asb.MORE_ID])
+        self.assertEqual(set(window.row_cache), {"r0", "r1", asb.MORE_ID})
+        self.assertIs(window.row_cache[asb.MORE_ID], more)
+        self.assertIsNone(window.row_cache_trim)
+        # Two searches hide r0 and r1 and pass the bound of 5 cards; a clear builds them again with their current data.
+        first = window.focus_widgets["r0"]
+        window.search.set_text("cedar"); self.drain(.6)
+        self.assertEqual(set(window.row_cache), {"r0", "r1", "r4", "r5", asb.MORE_ID})
+        window.search.set_text("birch"); self.drain(.6)
+        self.assertEqual(set(window.row_cache), {"r2", "r3", asb.MORE_ID})
+        window.dashboard["threads"][0] = dict(window.dashboard["threads"][0], title="Review the renamed notes 0")
+        window.search.set_text(""); self.drain(.6)
+        self.assertEqual(window.row_order, ["r0", "r1", asb.MORE_ID])
+        card = window.focus_widgets["r0"]
+        self.assertIsNot(card, first)
+        self.assertEqual(card.asb_title_label.get_label(), "Review the renamed notes 0")
+        found, bounds = card.asb_title_label.compute_bounds(window)
+        self.assertTrue(found)
+        left, top = window.get_surface_transform()
+        xdo("mousemove", "--window", GdkX11.X11Surface.get_xid(window.get_surface()),
+            int(bounds.origin.x + bounds.size.width / 2 + left), int(bounds.origin.y + bounds.size.height / 2 + top))
+        self.drain(.3)
+        del requests[:]
+        xdo("click", 1); self.drain(.4)
+        self.assertEqual([request[1] for request in requests if request[1] != "/api/palette"], ["/api/threads/r0/open"])
+
     def test_real_pointer_sets_one_hover_class_on_each_card(self):
         asb.gi.require_version("GdkX11", "4.0")
         from gi.repository import GdkX11

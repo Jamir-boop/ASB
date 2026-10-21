@@ -261,6 +261,8 @@ def filtered_rows(dashboard, query="", app="all", state="all", archived=False, p
                  if working_or_unread else row.get("state") in states and (not pending_only or row.get("pending")))
             and (not query or query in "\n".join(str(row.get(key, "")) for key in
                  ("title", "projectName", "cwd", "providerLabel", "sourceLabel")).casefold())]
+    # One card for each ID: the first row wins. A card in a column twice makes GTK list it twice, with no warning.
+    rows = list({row["id"]: row for row in reversed(rows)}.values())
     def bucket(row):
         if row.get("pending") or row.get("state") == "waiting":
             return 0
@@ -291,6 +293,24 @@ def pack_columns(rows, width, height, column_width=DEFAULT_COLUMN_WIDTH, row_hei
     capacity = max(1, (height - 4) // row_height)
     parts = [rows[start:start + capacity] for start in range(0, len(rows), capacity)]
     return columns, capacity, parts
+
+
+def column_cards(listing):
+    """The cards of a column that are widget children, in the order GTK draws them."""
+    cards, card = [], listing.get_first_child()
+    while card:
+        cards.append(card)
+        card = card.get_next_sibling()
+    return cards
+
+
+def listed_cards(listing):
+    """The cards in the internal list of a column. GTK lays out this list: an entry that is no widget child leaves an empty slot."""
+    cards, card = [], listing.get_row_at_index(0)
+    while card is not None:
+        cards.append(card)
+        card = listing.get_row_at_index(len(cards))
+    return cards
 
 
 def column_moves(current, target):
@@ -2730,6 +2750,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     card_limit, show_all_cards = DEFAULT_CARD_LIMIT, False
     message_seen = None
     number_hold = number_idle = number_scroll = number_pressed = None
+    row_cache_trim = None
     numbers_shown = False
     number_keys = open_popovers = ()
 
@@ -2766,7 +2787,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.opening, self.focus_widgets, self.row_cache = set(), {}, {}
         self.palette_sent = self.palette_wanted = None
         self.palette_sending = False
-        self.list_columns = []
+        # A replaced column stays alive: a card can keep a pointer into its internal list until the card is inserted again.
+        self.list_columns, self.retired_columns = [], []
         self.focus_generation = 0
         self.connect("notify::focus-widget", self.focus_changed)
         self.key_focus_row = None
@@ -4321,6 +4343,35 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.popover_hooks = [(name, GObject.add_emission_hook(Gtk.Popover, name, self.popover_visibility, name))
                                       for name in ("map", "unmap")]
 
+    def new_column(self):
+        listing = SessionColumn(selection_mode=Gtk.SelectionMode.NONE, activate_on_single_click=True,
+                                valign=Gtk.Align.START, hexpand=False, width_request=self.column_pixel_width)
+        listing.add_css_class("asb-column")
+        listing.asb_activation = listing.connect("row-activated", self.open_row)
+        listing.asb_width = self.column_pixel_width
+        return listing
+
+    def mend_columns(self, listings, targets, exact=False):
+        """Replace all columns when one of them lists a card that is no child, a card twice, or (with exact) not its target.
+        Returns the cards that it took out of their columns. GTK has no call that removes a stale entry from the internal list."""
+        if all((cards := column_cards(listing)) == listed_cards(listing) and (not exact or cards == target)
+               for listing, target in zip(listings, targets)):
+            return []
+        detached = [card for listing in listings for card in column_cards(listing)]
+        for card in detached:
+            card.unparent()
+        for number, old in enumerate(listings):
+            listings[number] = self.new_column()
+            if old.get_parent():
+                self.list_body.insert_child_after(listings[number], old)
+                self.list_body.remove(old)
+            old.disconnect(old.asb_activation)
+            self.retired_columns.append(old)
+            for card in targets[number]:
+                if card.get_parent() is None:
+                    listings[number].append(card)
+        return detached
+
     def render_board(self, preserve_focus=None, reveal_focus=False, preserve_action=None):
         if self.dashboard is None or self.closed:
             return
@@ -4395,12 +4446,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if repack or reorder:
             listings = self.list_columns = getattr(self, "list_columns", [])
             while len(listings) < len(parts):
-                listing = SessionColumn(selection_mode=Gtk.SelectionMode.NONE, activate_on_single_click=True,
-                                        valign=Gtk.Align.START, hexpand=False, width_request=self.column_pixel_width)
-                listing.add_css_class("asb-column")
-                listing.asb_activation = listing.connect("row-activated", self.open_row)
-                listing.asb_width = self.column_pixel_width
-                listings.append(listing)
+                listings.append(self.new_column())
             for index, listing in enumerate(listings):
                 if index < len(parts):
                     if listing.asb_width != self.column_pixel_width:
@@ -4417,22 +4463,26 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     self.list_body.remove(child)
                 child = following
             # Each column moves only the cards outside its longest run in target order; all removals come before the inserts.
-            moves = []
-            for number, listing in enumerate(listings):
-                current, card = [], listing.get_row_at_index(0)
-                while card is not None:
-                    current.append(card)
-                    card = listing.get_row_at_index(len(current))
-                target = [self.focus_widgets[row["id"]] for row in parts[number]] if number < len(parts) else []
-                moves.append((listing, *column_moves(current, target)))
+            # The cards of a column come from the widget tree, which is what GTK draws.
+            targets = [[self.focus_widgets[row["id"]] for row in parts[number]] if number < len(parts) else [] for number in range(len(listings))]
             focus_row = self.focus_widgets.get(self.focus_key())
-            refocus = focus_widget is not None and any(focus_row in removals for _listing, removals, _inserts in moves)
+            detached = self.mend_columns(listings, targets)
+            moves = [(listing, *column_moves(column_cards(listing), target)) for listing, target in zip(listings, targets)]
+            refocus = focus_widget is not None and (focus_row in detached or any(focus_row in removals for _listing, removals, _inserts in moves))
             for listing, removals, _inserts in moves:
                 for widget in removals:
                     listing.remove(widget)
             for listing, _removals, inserts in moves:
                 for index, widget in inserts:
+                    # A card that still has a parent (the same card twice in a column target) leaves it first, or GTK lists it twice.
+                    if widget.get_parent():
+                        widget.get_parent().remove(widget)
+                        if widget.get_parent():
+                            widget.unparent()
                     listing.insert(widget, index)
+            # GTK lays out the internal list of a column, so a column that differs from its cards or its target shows a gap.
+            detached = self.mend_columns(listings, targets, exact=True)
+            refocus = refocus or focus_widget is not None and focus_row in detached
             # GTK 4 keeps the window focus on a removed row until the next frame, then moves it to the first row of a column;
             # that frame can come before the queued restore, so a repack also sets the focus again now.
             if refocus and focus_widget.get_visible() and focus_widget.get_sensitive():
@@ -4463,6 +4513,18 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.queue_number_keys()
         # After the queued restore, so that a panel control that gets its focus back does not cancel the scroll restore.
         self.sync_row_panel()
+        # Hidden cards stay cached for a quick return, up to twice the card limit (+1 is the More card); an idle step releases the rest after the frame.
+        if self.card_limit and not self.show_all_cards and len(self.row_cache) > 2 * self.card_limit + 1 and self.row_cache_trim is None:
+            self.row_cache_trim = GLib.idle_add(self.trim_row_cache)
+
+    def trim_row_cache(self):
+        self.row_cache_trim = None
+        if self.closed or not self.card_limit or self.show_all_cards or len(self.row_cache) <= 2 * self.card_limit + 1:
+            return False
+        # The row keeps its other state (open errors): a new card for it shows that state.
+        for identity in self.row_cache.keys() - self.focus_widgets.keys() - {MORE_ID}:
+            self.release_row(self.row_cache.pop(identity))
+        return False
 
     def restore_position(self, focused, position, reveal_focus=False, focused_action=None, focus_generation=None, panel_focus=None):
         if not self.closed and (focus_generation is None or focus_generation == self.focus_generation):
@@ -4830,7 +4892,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     button.add_css_class("asb-card-action")
                     button.add_css_class("asb-" + name + "-button")
                     button.asb_card_action = name
-                    button.set_action_target_value(GLib.Variant("s", row["id"]))
+                    button.asb_identity, button.asb_action = row["id"], None
+                    button.connect("clicked", self.card_action_clicked)
                 widget.asb_drawer_button, widget.asb_read_button, widget.asb_pin_button = drawer, read, pin
                 widget.asb_copy_button = copy
                 actions.append(copy)
@@ -4910,6 +4973,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget.asb_read_timer = None
         widget.asb_read_generation = getattr(widget, "asb_read_generation", 0) + 1
 
+    def card_action_clicked(self, button):
+        # A clicked handler, not an action name: GTK made each card move slower over time with action names on card buttons.
+        if button.asb_action:
+            self.activate_action(button.asb_action, GLib.Variant("s", button.asb_identity))
+
     def update_card_actions(self, widget):
         if widget.asb_view != "comfortable":
             return
@@ -4939,13 +5007,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         (read.add_css_class if discard else read.remove_css_class)("asb-discard-button")
         (read.add_css_class if discard and not row.get("discardResult") else read.remove_css_class)("asb-discard-offer")
         action = "win.keep-result" if row.get("discardResult") else "win.discard-result"
-        read.set_action_name((action if discard else "win.mark-read") if (unread or discard) and not pending else None)
+        read.asb_action = (action if discard else "win.mark-read") if (unread or discard) and not pending else None
         if confirmed:
             read.add_css_class("asb-read-confirmed")
         else:
             read.remove_css_class("asb-read-confirmed")
         pinned = bool(row.get("pinned"))
-        pin.set_action_name(("win.unpin" if pinned else "win.pin") if not pending else None)
+        pin.asb_action = ("win.unpin" if pinned else "win.pin") if not pending else None
         (pin.add_css_class if pinned else pin.remove_css_class)("asb-pinned")
         # Keep native gestures active so busy controls and the Read cue cannot open the row.
         read_text = "A user action is required in the original app" if row.get("actionRequired") else "Task stopped" \
@@ -4959,7 +5027,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             shown = self.column_pixel_width >= 190 and (tucked or indicator == "dot")
             drawer.set_visible(shown)
             (drawer.add_css_class if tucked else drawer.remove_css_class)("asb-drawer-filled")
-            drawer.set_action_name(("win.drawer-out" if tucked else "win.drawer-in") if not pending else None)
+            drawer.asb_action = ("win.drawer-out" if tucked else "win.drawer-in") if not pending else None
             controls.append((drawer, "Take out of drawer: show as unread again" if tucked
                              else "Put in drawer: look read here, keep it under Drawer", not pending))
         for button, text, enabled in controls:
@@ -4978,7 +5046,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             copy.set_visible(wide)
             (copy.get_parent().add_css_class if wide else copy.get_parent().remove_css_class)("asb-corner-wide")
             # With no relative reference the button keeps its place, but has no action and says why.
-            copy.set_action_name("win.copy-reference" if short else None)
+            copy.asb_action = "win.copy-reference" if short else None
             (copy.add_css_class if not short else copy.remove_css_class)("asb-copy-off")
             copy.update_state([Gtk.AccessibleState.DISABLED], [not short])
             copy.get_child().set_from_icon_name("object-select-symbolic" if copied else "edit-copy-symbolic")
@@ -5111,7 +5179,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return False
         focus = self.get_focus()
         if key in (Gdk.KEY_space, Gdk.KEY_Return, Gdk.KEY_KP_Enter) and getattr(focus, "asb_card_action", None):
-            if focus.get_sensitive() and focus.get_action_name():
+            if focus.get_sensitive() and getattr(focus, "asb_action", None):
                 focus.activate()
             return True
         if key == Gdk.KEY_Menu or (key == Gdk.KEY_F10 and _state & Gdk.ModifierType.SHIFT_MASK):
@@ -5506,7 +5574,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.sync_filter_chips()
             self.render(preserve_focus=first, reveal_focus=bool(first) and self.get_focus_visible())
             return
-        # A click on a card action reaches the row too: the busy state takes the action from the button, and GTK drops its claim.
+        # A real click on a card button does not reach the row (the button has no action name to lose, so GTK keeps its claim).
+        # A click on the card body while a card action is in flight does, so the busy guard stays.
         if not row.get("canOpen") or row["id"] in self.opening or row["id"] in self.session_actions:
             return
         self.opening.add(row["id"])
@@ -5548,7 +5617,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.list_body.clear_hover()
         self.list_body.clear_flights()
         self.events.close()
-        for name in ("timer", "clock_timer", "geometry_idle", "notice_timer"):
+        for name in ("timer", "clock_timer", "geometry_idle", "notice_timer", "row_cache_trim"):
             source = getattr(self, name)
             if source:
                 GLib.source_remove(source)

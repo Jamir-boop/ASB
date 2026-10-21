@@ -76,7 +76,7 @@ class AsbApp : Application() {
         store.useCameraArea = value
     }
 
-    /** Shows and saves the app text size. */
+    /** Shows and saves the Card text size. */
     fun useTextScale(value: Float) {
         textScale = value
         store.textScale = value

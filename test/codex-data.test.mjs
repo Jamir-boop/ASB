@@ -14,6 +14,7 @@ import {
   readThreads,
   readRolloutSignals,
 } from '../src/codex-data.mjs';
+import { buildSwitchboardDashboard } from '../src/switchboard.mjs';
 
 async function createCodexStateDb(rowCount) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-codex-state-'));
@@ -473,4 +474,73 @@ test('reads Codex threads without goals when thread_goals lacks a goal column', 
     assert.equal(row.goal_id, null);
     assert.equal(row.goal_status, null);
   }
+});
+
+test('rollout entries that an open writes with no turn are not activity', () => {
+  const entry = (offset, type, payload) => JSON.stringify({ timestamp: new Date(Date.parse('2026-10-08T12:00:00.000Z') + offset).toISOString(), type, payload });
+  const lines = [
+    entry(0, 'session_meta', { id: 'thread-1' }),
+    entry(1000, 'event_msg', { type: 'task_started' }),
+    entry(2000, 'turn_context', { turn_id: 'turn-1' }),
+    entry(3000, 'event_msg', { type: 'agent_message', message: 'Done.', phase: 'final_answer' }),
+    entry(4000, 'event_msg', { type: 'task_complete' }),
+  ];
+  const turnEndAtMs = Date.parse('2026-10-08T12:00:04.000Z');
+  assert.equal(parseRolloutSignals(lines.join('\n')).latestEventAtMs, turnEndAtMs);
+  const opened = [...lines,
+    entry(60_000, 'event_msg', { type: 'thread_settings_applied', thread_id: 'thread-1', thread_settings: {} }),
+    entry(120_000, 'session_meta', { id: 'thread-1' }),
+    entry(180_000, 'turn_context', { turn_id: 'turn-2' }),
+    // The flat form has the type at the top.
+    JSON.stringify({ timestamp: '2026-10-08T13:00:00.000Z', type: 'thread_settings_applied' })];
+  const signals = parseRolloutSignals(opened.join('\n'));
+  assert.equal(signals.latestEventAtMs, turnEndAtMs);
+  assert.equal(signals.latestLifecycleAtMs, turnEndAtMs);
+  assert.equal(signals.agentRunning, false);
+  // A rollout with no turn entry has no activity time.
+  assert.equal(parseRolloutSignals(opened.slice(5).join('\n')).latestEventAtMs, null);
+});
+
+test('opening a Codex thread keeps the time and the place of its row until a new turn', async (t) => {
+  const nowMs = Date.parse('2026-10-08T12:00:00.000Z');
+  const at = (minutes) => nowMs - minutes * 60_000;
+  const entry = (minutes, payload, type = 'event_msg') => JSON.stringify({ timestamp: new Date(at(minutes)).toISOString(), type, payload });
+  const turn = (start, end) => [entry(start, { type: 'task_started' }),
+    entry(end + 0.1, { type: 'agent_message', message: 'Done.', phase: 'final_answer' }), entry(end, { type: 'task_complete' })];
+  const settings = (minutes) => entry(minutes, { type: 'thread_settings_applied', thread_id: 'synthetic', thread_settings: {} });
+  const { dir, databasePath } = await createSyntheticDb(t, `
+    create table threads (id text primary key, rollout_path text, title text, source text, created_at_ms integer, updated_at_ms integer, archived integer);`);
+  const rollouts = Object.fromEntries(['opened', 'other', 'bare'].map((name) => [name, path.join(dir, `rollout-${name}.jsonl`)]));
+  const lines = (list) => `${list.join('\n')}\n`;
+  await fs.writeFile(rollouts.opened, lines(turn(110, 100)));
+  await fs.writeFile(rollouts.other, lines(turn(60, 50)));
+  await fs.writeFile(rollouts.bare, lines([entry(120, { id: 'bare' }, 'session_meta'), settings(1)]));
+  const database = new DatabaseSync(databasePath);
+  t.after(() => database.close());
+  const insert = database.prepare('insert into threads values (?, ?, ?, ?, ?, ?, 0)');
+  insert.run('opened', rollouts.opened, 'Opened', 'vscode', at(120), at(100));
+  insert.run('other', rollouts.other, 'Other', 'vscode', at(120), at(50));
+  insert.run('bare', rollouts.bare, 'Bare', 'vscode', at(120), at(1));
+  insert.run('missing', path.join(dir, 'missing.jsonl'), 'Missing', 'vscode', at(120), at(7));
+  const load = async () => {
+    const { threads } = await loadCodexDashboard({ databasePath, sessionIndexPath: path.join(dir, 'index.jsonl'),
+      globalStatePath: path.join(dir, 'global.json'), nowMs });
+    return threads;
+  };
+  const order = async () => buildSwitchboardDashboard(await load(), [], nowMs).threads
+    .filter((row) => ['opened', 'other'].includes(row.id)).map((row) => [row.id, row.updatedAtMs]);
+  const times = async () => Object.fromEntries((await load()).map((thread) => [thread.id, thread.updatedAtMs]));
+  assert.deepEqual(await times(), { opened: at(100), other: at(50), bare: at(1), missing: at(7) },
+    'a rollout with no turn entry and a missing rollout keep the database time');
+  assert.deepEqual(await order(), [['other', at(50)], ['opened', at(100)]]);
+
+  // The app opens the old thread: it writes a settings entry, and Codex moves the database time.
+  await fs.appendFile(rollouts.opened, lines([settings(1)]));
+  database.prepare('update threads set updated_at_ms = ? where id = ?').run(at(1), 'opened');
+  assert.deepEqual(await order(), [['other', at(50)], ['opened', at(100)]], 'the read row keeps its time and place');
+
+  // A new turn is activity: the time and the place move.
+  await fs.appendFile(rollouts.opened, lines(turn(0.5, 0.2)));
+  database.prepare('update threads set updated_at_ms = ? where id = ?').run(at(0.2), 'opened');
+  assert.deepEqual(await order(), [['opened', at(0.2)], ['other', at(50)]], 'a new turn moves the time and the card');
 });
