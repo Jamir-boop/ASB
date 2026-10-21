@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { BIT_DONE, BIT_FAILED, BIT_INPUT, SOUND_DIR, createSoundPlayer, createSoundWatcher, soundBaseline, soundBits, soundEvents } from '../src/asb-sounds.mjs';
+import { mergePeerRows } from '../src/machine-peers.mjs';
 import { createSwitchboardServer, PendingTracker } from '../src/switchboard.mjs';
 
 const now = Date.parse('2026-10-07T14:00:00Z');
@@ -230,4 +231,51 @@ test('the first rows of a member machine are its baseline; its later rows play',
   assert.deepEqual(played, []);
   watch({ threads: [own, member, { id: 'm:b:2', remote: true, machineId: 'b', questionAttention: true }] }, now);
   assert.deepEqual(played, [BIT_INPUT]);
+});
+
+// One member row through the real merge, the tracker, and the sounds of the server. `at` sets the state of the member and its poller.
+async function memberServer(t) {
+  let clock = now;
+  const played = [];
+  const peer = { member: { machineId: 'b'.repeat(16), name: 'engine-b', certFingerprint: 'b'.repeat(64) }, online: true, lastOkAtMs: clock,
+    sessions: { rows: [], keys: {}, incoming: [] } };
+  const server = createSwitchboardServer({ now: () => clock, pendingStatePath: false, dashboardWatchPaths: [], playSound: (kind) => played.push(kind),
+    machineGroup: { merge: (dashboard) => mergePeerRows(dashboard, [peer], { machineId: 'a'.repeat(16) }, clock) },
+    loadDashboard: async () => ({ generatedAtMs: clock, providers: [], threads: [] }) });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const at = async ({ state, completionAtMs = 0, online = true }) => {
+    clock += 10_000;
+    peer.online = online;
+    if (online) peer.lastOkAtMs = clock;
+    peer.sessions.rows = [{ id: 'task', externalId: 'task', provider: 'codex', providerLabel: 'Codex', title: 'Task', state, nativeUnread: null,
+      completionAtMs, updatedAtMs: clock }];
+    server.invalidateDashboard('test', { hard: true });
+    const dashboard = await (await fetch(`http://127.0.0.1:${server.address().port}/api/dashboard`)).json();
+    return dashboard.threads.find((thread) => thread.id === `m:${peer.member.machineId}:task`);
+  };
+  return { at, played };
+}
+
+test('a task of a member that ends during a short outage gets its mark and one Done sound when the member is back', async (t) => {
+  const { at, played } = await memberServer(t);
+  assert.equal((await at({ state: 'working' })).state, 'working');
+  // Three polls fail: the rows of the member are Unknown.
+  for (let scan = 0; scan < 3; scan += 1) assert.deepEqual([(await at({ state: 'working', online: false })).state, played], ['unknown', []]);
+  // The task ended while the member was away.
+  const back = await at({ state: 'idle', completionAtMs: now + 35_000 });
+  assert.deepEqual([back.state, back.completionAttention, back.pending], ['idle', true, true]);
+  assert.deepEqual(played, [BIT_DONE]);
+  await at({ state: 'idle', completionAtMs: now + 35_000 });
+  assert.deepEqual(played, [BIT_DONE]);
+});
+
+test('a task of a member that ended before a short outage plays no Done sound again when the member is back', async (t) => {
+  const { at, played } = await memberServer(t);
+  await at({ state: 'working' });
+  const done = await at({ state: 'idle', completionAtMs: now + 5_000 });
+  assert.deepEqual([done.completionAttention, played], [true, [BIT_DONE]]);
+  for (let scan = 0; scan < 3; scan += 1) assert.equal((await at({ state: 'idle', completionAtMs: now + 5_000, online: false })).state, 'unknown');
+  const back = await at({ state: 'idle', completionAtMs: now + 5_000 });
+  assert.deepEqual([back.state, back.completionAttention, played], ['idle', true, [BIT_DONE]]);
 });

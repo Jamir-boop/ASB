@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import https from 'node:https';
 import { promisify } from 'node:util';
 import { gunzip } from 'node:zlib';
-import { sessionMessageKeys, sortSessionMessages, switchboardRefreshInterval } from './switchboard.mjs';
+import { OFFLINE_MEMBER, sessionMessageKeys, sortSessionMessages, switchboardRefreshInterval } from './switchboard.mjs';
 import { SESSION_MESSAGE_WINDOW_MS } from './codex-data.mjs';
 import { rowReference, shortReference, validScopeTag } from './session-references.mjs';
 
@@ -106,7 +106,7 @@ export function mergePeerRows(dashboard, peerStates, self, nowMs = Date.now()) {
       peerRows.push({ ...row, ...reference, ...(sessionReference ? { sessionReference } : {}), id: rowId(row.id),
         machineId: member.machineId, machineName: member.name, remote: true, globalId: `${member.machineId}:${row.id}`,
         remoteCache: false, canOpen: false, appDeepLink: '',
-        ...(offline ? { state: 'unknown', reason: `${member.name} is not reachable.`, workingSinceMs: 0 } : {}) });
+        ...(offline ? { state: 'unknown', reason: `${member.name} is not reachable.`, workingSinceMs: 0, [OFFLINE_MEMBER]: true } : {}) });
     }
     for (const [id, keys] of Object.entries(sessions.keys)) peerKeys.push([rowId(id), keys]);
     for (const message of sessions.incoming) peerIncoming.push({ ...message, to: rowId(message.to) });

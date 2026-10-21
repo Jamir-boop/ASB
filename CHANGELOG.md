@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Fixed the marks and sounds of a member machine that is offline for a short time: its rows became Unknown, and that reset the Working mark and the sound bits. A task that ended during the outage got no unread dot and no Done sound, and a task that ended before the outage played its Done sound again when the member came back. The tracker now keeps the Working mark of an offline member's rows, and the sounds keep their last bits.
 - Fixed a group member that showed as offline on all machines when it had a long session list: a member dropped a reply of more than 5000 rows or 4 MiB whole, and about 3800 rows with long titles are enough for 4 MiB. A machine now sends only its newest rows (at most 5000 rows, and about 3.5 MiB of rows).
 - Fixed a new group member that polled an old address of the machine that invited it: that machine saved its own address and port only when it made the group, so after a port or LAN change a later member polled the old values and never got a reply. Each invite now saves the current addresses and port of the inviting machine when they changed.
 - Fixed old notifications that the phone showed again after an engine start: the engine read its machine ID only after the phone gateway started, so the first scan gave every row an empty `globalId`, and the phone saw each row as new. The engine now reads the machine ID before its server listens.

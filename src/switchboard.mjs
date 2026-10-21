@@ -25,6 +25,8 @@ const SOURCE_DIR = Symbol('ASB session store');
 // A CLI row that more than one source lists, with no single source of origin.
 const SHARED_CLI = Symbol('ASB shared CLI session');
 const DISCARD_TASK = Symbol('ASB discard task signals');
+// A member row that shows as Unknown only because the member is offline: its state is not new, so the tracker and the sounds keep their last values.
+export const OFFLINE_MEMBER = Symbol('ASB offline member row');
 const READ_FIELDS = ['questionSeen', 'questionAck', 'nativeAt', 'nativeAck', 'nativeSeen',
   'discard', 'discardedAt', 'discardStart', 'discardEnd', 'discardNative', 'drawerSeen'];
 const RETAINED_SOURCES = ['native-unread', 'observed-completion', 'observed-failure'];
@@ -565,7 +567,7 @@ export class PendingTracker {
         }
         record.working = 0;
         if (row.nativeUnread === false && !this.persistentUnread) record.ack = Math.max(record.ack, record.pending);
-      } else if (row.state !== 'waiting') record.working = 0;
+      } else if (row.state !== 'waiting' && !row[OFFLINE_MEMBER]) record.working = 0;
       record.seen = Math.max(record.seen, completion, discardedSuccess ? task.atMs : 0);
       // A result that the user discarded is not new attention for a drawer card.
       if (discardedSuccess) record.drawerSeen = record.seen;
@@ -812,7 +814,8 @@ export function createSwitchboardServer(options = {}) {
       options.machineGroup?.merge(loaded);
       const dashboard = await tracker.observe(loaded);
       dashboard.sourcesRevision = sources ? appSourcesRevision(sources) : null;
-      sound?.(dashboard);
+      // The sound baseline keeps the bits of an offline member's rows, so its return plays only what is new.
+      sound?.({ ...dashboard, threads: dashboard.threads.filter((row) => !row[OFFLINE_MEMBER]) });
       if (registeredLoad && registry.warning) dashboard.providers.push({ id: 'asb-sources', label: 'ASB', status: 'warning', message: registry.warning });
       dashboard.refreshIntervalMs = switchboardRefreshInterval(dashboard);
       Object.defineProperty(dashboard, 'localRefreshIntervalMs', { value: localRefreshIntervalMs });

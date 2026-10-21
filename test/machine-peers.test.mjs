@@ -10,7 +10,7 @@ import path from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { addressOrder, createPeerPoller, EXPORT_FIELDS, exportBody, exportLocalSessions, MAX_REPLY_BYTES, mergePeerRows, peerRequest,
   validExport } from '../src/machine-peers.mjs';
-import { buildSwitchboardDashboard } from '../src/switchboard.mjs';
+import { buildSwitchboardDashboard, OFFLINE_MEMBER } from '../src/switchboard.mjs';
 
 let hasOpenSsl = true;
 try { execFileSync('openssl', ['version'], { stdio: 'ignore' }); } catch { hasOpenSsl = false; }
@@ -194,6 +194,9 @@ test('an offline member gives Unknown rows with the note, and its rows leave aft
   const offline = mergePeerRows(boardA(), [peerState(exported, { online: false, lastOkAtMs: nowMs - 599_000 })], A, nowMs);
   const remote = offline.threads.at(-1);
   assert.deepEqual([remote.state, remote.reason, remote.workingSinceMs], ['unknown', 'engine-b is not reachable.', 0]);
+  // The tracker and the sounds keep their last values for this row; an online member's row has no such mark.
+  assert.equal(remote[OFFLINE_MEMBER], true);
+  assert.equal(mergePeerRows(boardA(), [peerState(exported)], A, nowMs).threads.at(-1)[OFFLINE_MEMBER], undefined);
   assert.equal(offline.refreshIntervalMs, 5000);
   const gone = mergePeerRows(boardA(), [peerState(exported, { online: false, lastOkAtMs: nowMs - 600_000 })], A, nowMs);
   assert.deepEqual(gone.threads.map((row) => row.remote), [false, false, false]);
