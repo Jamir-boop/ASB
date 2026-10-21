@@ -67,6 +67,26 @@ real defects.
 4. Gate: when the board renders rows, go to phase 1 with the defect list. When
    GTK on MSYS2 cannot run the board, stop and ask the user.
 
+**Result (2026-10-20, passed).** MSYS2 UCRT64 on homeLP: Python 3.14.8,
+PyGObject 3.58.1, GTK 4.24.1, Libadwaita 1.10.0. Install notes: the base
+`msys2-x86_64-latest.sfx.exe` needs `pacman-key --init` and
+`pacman-key --populate msys2` before `pacman -Syuu` when the first login shell
+does not finish; Windows PowerShell 5.1 must not run pacman with
+`$ErrorActionPreference = 'Stop'` (gpg writes to stderr).
+- In an SSH session (session 0), even a plain `Gtk.Window()` ends with an
+  access violation. GTK checks must run in a signed-in desktop session.
+- In the desktop session, the board stops only at `GLib.unix_signal_add`
+  (`AttributeError`). With that call skipped, it renders the rows, icons,
+  CSS, and theme as on Linux and saves its image 1.4 to 1.6 s after start.
+  The font is Segoe UI; the accent follows the system.
+- Started from Node, `python.exe` with `windowsHide: true`, `pythonw.exe`
+  without it, and `pythonw.exe` with it all show the GTK window
+  (`gdkSurfaceToplevel`, visible) and no console window. The launcher keeps
+  `python.exe` with `windowsHide: true`, and `probePython` reads its JSON as on
+  Linux.
+- Not checked in the spike: an open from the board, copy reference, and the
+  tooltip text (they need input). Phase 1 tests the tooltip paths.
+
 ### Phase 1: board code runs on Windows
 
 Files: `scripts/asb-native.py`, `scripts/asb-board.py`,
@@ -90,8 +110,8 @@ Files: `scripts/asb-desktop.mjs`, `scripts/asb.mjs`, `src/linux-system.mjs`,
 `scripts/asb-tray.ps1`, `test/asb-windows.test.mjs`.
 
 - `pythonCandidates` on win32: an absolute `ASB_PYTHON`, then the MSYS2
-  default (`C:\msys64\ucrt64\bin\`, the executable that phase 0 chose), then
-  `python` on `PATH` through `findExecutable`.
+  default `C:\msys64\ucrt64\bin\python.exe` (phase 0 result), then `python`
+  on `PATH` through `findExecutable`.
 - `asb-desktop.mjs`: allow win32. Use `startWindowsEngine` there, skip
   `registerAppIcon`. The spawn, the token, and the engine watch stay the same.
 - `asb.mjs`: no command on Windows opens the board, as on Linux. Remove
