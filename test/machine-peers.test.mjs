@@ -8,7 +8,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { addressOrder, createPeerPoller, EXPORT_FIELDS, exportBody, exportLocalSessions, mergePeerRows, peerRequest,
+import { addressOrder, createPeerPoller, EXPORT_FIELDS, exportBody, exportLocalSessions, MAX_REPLY_BYTES, mergePeerRows, peerRequest,
   validExport } from '../src/machine-peers.mjs';
 import { buildSwitchboardDashboard } from '../src/switchboard.mjs';
 
@@ -83,6 +83,41 @@ test('a received export keeps only valid rows and whitelisted fields', () => {
   assert.deepEqual(value.rows.map((row) => row.id), [exported.rows[0].id, 'extra']);
   assert.equal('secret' in value.rows[1], false);
   assert.deepEqual([value.refreshIntervalMs, value.keys.extra, value.keys.missing, value.incoming.length], [5000, ['k'], undefined, 1]);
+});
+
+test('a long list sends only its newest rows, so a member does not drop the whole reply', () => {
+  // Row 1 is the newest and the row `count` is the oldest. The oldest row has an incoming message from another machine.
+  const long = (count, size) => {
+    const threads = Array.from({ length: count }, (_, index) => claude(index + 1, { title: `Task ${index + 1} ${'t'.repeat(size)}`,
+      cwd: `/work/${'d'.repeat(size)}/${index + 1}`, updatedAtMs: nowMs - 1000 * (index + 1), cliSessionId: uuid(10_000 + index) })).reverse();
+    threads[0].incomingMessages = [{ from: 'unknown-key', atMs: nowMs - 1000 }];
+    return exportLocalSessions(board(threads, B), B, nowMs);
+  };
+  // What a member reads from the reply: it must fit in MAX_REPLY_BYTES, and it holds the newest rows 1 to N with their keys.
+  const received = (exported) => {
+    const { body } = exportBody(exported);
+    assert.ok(Buffer.byteLength(body) < MAX_REPLY_BYTES);
+    const value = validExport(JSON.parse(body), B);
+    assert.deepEqual(value.rows.map((row) => row.id).sort(), Array.from({ length: value.rows.length }, (_, index) => `claude-desktop-code:${local(index + 1)}`).sort());
+    assert.equal(Object.keys(value.keys).length, value.rows.length);
+    return value;
+  };
+  // 4400 rows of about 1.2 KB are more than 4 MiB. The message for the oldest row is cut with its row.
+  const heavy = long(4400, 300);
+  assert.ok(Buffer.byteLength(JSON.stringify(heavy)) > MAX_REPLY_BYTES);
+  const kept = received(heavy);
+  assert.ok(kept.rows.length > 2500 && kept.rows.length < 4400, String(kept.rows.length));
+  assert.deepEqual(kept.incoming, []);
+  // More than 5000 rows are cut to 5000, also when they are small.
+  const many = { ...long(1, 1), rows: Array.from({ length: 5300 }, (_, index) => ({ id: `claude-desktop-code:${local(index + 1)}`, title: 'Short', state: 'idle',
+    updatedAtMs: nowMs - 1000 * (index + 1) })).reverse(), keys: {}, incoming: [] };
+  assert.equal(many.rows.length, 5300);
+  const cut = validExport(JSON.parse(exportBody(many).body), B);
+  assert.deepEqual([cut.rows.length, cut.rows[0].id, cut.rows.at(-1).id], [5000, `claude-desktop-code:${local(5000)}`, `claude-desktop-code:${local(1)}`]);
+  // A list that fits is sent as it is, with its incoming messages.
+  const small = long(30, 20);
+  assert.equal(exportBody(small).body, JSON.stringify(small));
+  assert.equal(received(small).incoming.length, 1);
 });
 
 test('the merge adds the remote rows, replaces the remote-cache row, and joins messages across machines', () => {

@@ -9,6 +9,11 @@ import { rowReference, shortReference, validScopeTag } from './session-reference
 
 const gunzipAsync = promisify(gunzip);
 export const MAX_REPLY_BYTES = 4 * 1024 * 1024;
+// The most that a member reads from an export: validExport reads 5000 rows and 500 incoming messages. The byte limit leaves room for
+// the incoming messages and the envelope.
+const MAX_EXPORT_ROWS = 5000;
+const MAX_EXPORT_INCOMING = 500;
+const MAX_EXPORT_BYTES = MAX_REPLY_BYTES - 512 * 1024;
 export const OFFLINE_KEEP_MS = 600_000;
 const KIND_ORDER = ['lan', 'zerotier', 'tailscale'];
 const BACKOFF_MS = [5_000, 10_000, 30_000];
@@ -44,22 +49,37 @@ export function exportLocalSessions(dashboard, self, nowMs = Date.now()) {
 }
 
 // The JSON body and its tag. The tag leaves out the time, so an unchanged list gives 304.
+// A member drops a reply of more than MAX_EXPORT_ROWS rows or MAX_REPLY_BYTES bytes whole and shows this machine offline,
+// so a longer list sends only its newest rows.
 export function exportBody(exported) {
+  let body = JSON.stringify(exported);
+  if (exported.rows.length > MAX_EXPORT_ROWS || Buffer.byteLength(body) > MAX_EXPORT_BYTES) {
+    let bytes = 0;
+    const newest = [...exported.rows].sort((left, right) => right.updatedAtMs - left.updatedAtMs).slice(0, MAX_EXPORT_ROWS)
+      .filter((row) => (bytes += Buffer.byteLength(JSON.stringify([row, row.id, exported.keys[row.id]]))) <= MAX_EXPORT_BYTES);
+    const kept = new Set(newest);
+    const ids = new Set(newest.map((row) => row.id));
+    const rows = exported.rows.filter((row) => kept.has(row));
+    exported = { ...exported, refreshIntervalMs: switchboardRefreshInterval({ threads: rows }), rows,
+      keys: Object.fromEntries(Object.entries(exported.keys).filter(([id]) => ids.has(id))),
+      incoming: exported.incoming.filter((message) => ids.has(message.to)).slice(0, MAX_EXPORT_INCOMING) };
+    body = JSON.stringify(exported);
+  }
   const { generatedAtMs: _, ...content } = exported;
-  return { body: JSON.stringify(exported), etag: `"${sha256(JSON.stringify(content))}"` };
+  return { body, etag: `"${sha256(JSON.stringify(content))}"` };
 }
 
 // A reply from a member: only valid rows and the whitelisted fields.
 export function validExport(value, member) {
   if (!value || typeof value !== 'object' || value.api !== 1 || value.machineId !== member.machineId || !Array.isArray(value.rows)
-    || value.rows.length > 5000 || !value.keys || typeof value.keys !== 'object' || Array.isArray(value.keys) || !Array.isArray(value.incoming)) return null;
+    || value.rows.length > MAX_EXPORT_ROWS || !value.keys || typeof value.keys !== 'object' || Array.isArray(value.keys) || !Array.isArray(value.incoming)) return null;
   const rows = value.rows.filter((row) => row && typeof row === 'object' && typeof row.id === 'string' && row.id && row.id.length <= 512
     && Object.keys(EXPORT_FIELDS).every((key) => row[key] === undefined || EXPORT_FIELDS[key](row[key]))).map(pick);
   const ids = new Set(rows.map((row) => row.id));
   const keys = Object.fromEntries(Object.entries(value.keys).filter(([id, list]) => ids.has(id) && Array.isArray(list))
     .map(([id, list]) => [id, list.filter((key) => typeof key === 'string' && key && key.length <= 300).slice(0, 64)]));
   const incoming = value.incoming.filter((message) => message && ids.has(message.to) && typeof message.from === 'string'
-    && message.from && message.from.length <= 300 && NUMBER(message.atMs)).slice(0, 500)
+    && message.from && message.from.length <= 300 && NUMBER(message.atMs)).slice(0, MAX_EXPORT_INCOMING)
     .map(({ to, from, atMs }) => ({ to, from, atMs }));
   return { refreshIntervalMs: value.refreshIntervalMs === 2_000 ? 2_000 : 5_000, rows, keys, incoming };
 }
