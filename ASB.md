@@ -298,6 +298,8 @@ To pair a phone, select **Pair a phone**. In the ASB app, select **Scan QR code*
 
 **Paired phones** lists each phone with its pairing date and last-seen time. **Remove** removes that phone at once. The phone then shows that it was removed. To stop all phone access, clear **Allow phone access** and select **Apply**.
 
+On Linux, firewalld or ufw can block the phone port. `asb setup` and `asb doctor` print the rule that lets phones and other machines reach it. ASB never runs it. See [System check](#system-check).
+
 The same actions work from a terminal while the engine runs. Network access must be on (`asb network enable <address>`).
 
 | Command | Effect |
@@ -309,13 +311,13 @@ The same actions work from a terminal while the engine runs. Network access must
 
 ## Start and stop
 
-Installed packages launch with `asb` or the ASB Applications entry. On Linux, `asb` with a command that ASB does not know (for example `asb --help` or a typo) prints the usage and exits with code 2; it starts no engine and no window. The per-user command `~/.local/bin/asb` starts the shipped `scripts/asb`. If the recorded Node.js is not usable, `scripts/asb` tries `~/.local/bin/node`, `/usr/local/bin/node`, then `/usr/bin/node`, and prints a message if none is usable. ASB appends `/usr/local/bin:/usr/bin:/bin` to the caller's `PATH`, so apps started from ASB keep the caller's `PATH` order. From source:
+Installed packages launch with `asb` or the ASB Applications entry. On Linux, `asb` with a command that ASB does not know (for example `asb --help` or a typo) prints the usage and exits with code 2; it starts no engine and no window. The per-user command `~/.local/bin/asb` starts the shipped `scripts/asb`. If the recorded Node.js is not usable, `scripts/asb` tries `node` on `PATH`, `~/.local/bin/node`, `/home/linuxbrew/.linuxbrew/bin/node`, `/usr/local/bin/node`, then `/usr/bin/node`. It uses the first that is Node.js 20 or later with SQLite. If none is usable, it prints a message with a link to the [install help](README.md#nodejs). When `ASB_PYTHON` is an absolute path, the window uses only that Python. Else it uses the first of `/usr/bin/python3` and `python3` on `PATH` that has PyGObject. ASB finds `xdg-open`, `openssl`, `sqlite3`, and the sound players on `PATH`. ASB appends `/usr/local/bin:/usr/bin:/bin` to the caller's `PATH`, so apps started from ASB keep the caller's `PATH` order. From source:
 
 ```bash
 npm run desktop
 ```
 
-The initial window is about 420×900 pixels. The window is a view of the ASB engine, which runs the server and phone access. When no engine runs, `asb` starts one: through `asb.service` when that user service is enabled, else as a detached `asb engine run` process that writes its output to `~/.local/state/asb/engine.log`. The window opens when the engine answers. When the window cannot run on the system (the board check of `asb doctor` fails, for example GTK older than 4.12), `asb` writes no desktop entry, prints `ASB runs without its window on this system: <reason> The engine runs for the phone and your other machines. Run asb doctor for details.`, and exits with code 3; the engine keeps running. The per-user install then also writes no desktop entry or icon. If the engine does not answer in 10 s, `asb` prints `ASB cannot start its engine. See <log>.` and exits; a busy port is the usual cause. Closing the window keeps the engine and phone access running. When the engine stops (Quit ASB in the tray, `asb engine stop`, or a restart of `asb.service`), open windows close. To stop them, select **Quit ASB** in Preferences > Sessions or in the tray icon menu. An icon registration error stays visible, but the window still opens. A source run keeps an installed GNOME entry and reports the conflict. It replaces a source-run entry, including one from another checkout. ASB attaches only to its own engine, not to another server. Use `PORT=4729 npm run desktop` to select a different port.
+The initial window is about 420×900 pixels. The window is a view of the ASB engine, which runs the server and phone access. When no engine runs, `asb` starts one: through `asb.service` when that user service is enabled, else as a detached `asb engine run` process that writes its output to `~/.local/state/asb/engine.log`. The window opens when the engine answers. When the window cannot run on the system (engine only: the Window checks of `asb doctor` fail, for example GTK older than 4.12 on Debian 12 or Ubuntu 22.04), `asb` writes no desktop entry, prints `ASB runs without its window on this system: <reason> The engine runs for the phone and your other machines. Run asb doctor for details.`, and exits with code 3; the engine keeps running. The per-user install then also writes no desktop entry or icon. If the engine does not answer in 10 s, `asb` prints `ASB cannot start its engine. See <log>.` and exits; a busy port is the usual cause. Closing the window keeps the engine and phone access running. When the engine stops (Quit ASB in the tray, `asb engine stop`, or a restart of `asb.service`), open windows close. To stop them, select **Quit ASB** in Preferences > Sessions or in the tray icon menu. An icon registration error stays visible, but the window still opens. A source run keeps an installed GNOME entry and reports the conflict. It replaces a source-run entry, including one from another checkout. ASB attaches only to its own engine, not to another server. Use `PORT=4729 npm run desktop` to select a different port.
 
 | Command | Effect |
 | --- | --- |
@@ -340,7 +342,7 @@ The optional `asb.service` systemd user service runs the ASB engine, so the engi
 | `asb service uninstall` | Stop and disable the service, then remove the unit file. Remove the autostart entry, then stop the engine. |
 | `asb service status` | Show the service state and whether its runtime file is valid. Without a systemd graphical session: the autostart entry and `Engine: running` or `Engine: not running` (exit code 3). |
 
-The service starts with the graphical session and restarts after a failure. After 5 failed starts in 60 s, systemd stops the restarts. The unit starts only while its launcher is an executable file, so a unit that stays after you uninstall ASB is skipped at login and does not fail. Apps that ASB opened stay open when the service stops. Under systemd, each app that ASB opens runs in its own scope, outside `asb.service`. The service exits at most 5 s after a stop signal. While the service runs, `asb` attaches to it: it opens only the window and uses the service's port. When the service is enabled but stopped, `asb` and `asb engine start` start it with `systemctl --user start asb.service`. Closing the window does not stop the service. **Quit ASB** and `asb engine stop` stop it with exit code 0, so systemd does not restart it; it starts again with the next login or `asb`. An ASB `1.8.1` or older window cannot attach and reports a port conflict. After you install a new ASB package or move the checkout, run `asb service install` again to point the service to it. The user service needs Linux with systemd. The browser view has no Drawer pill and no drawer actions.
+The service starts with the graphical session and restarts after a failure. After 5 failed starts in 60 s, systemd stops the restarts. The unit starts only while its launcher is an executable file, so a unit that stays after you uninstall ASB is skipped at login and does not fail. Apps that ASB opened stay open when the service stops. Under systemd, each app that ASB opens runs in its own scope, outside `asb.service`. The service exits at most 5 s after a stop signal. While the service runs, `asb` attaches to it: it opens only the window and uses the service's port. When the service is enabled but stopped, `asb` and `asb engine start` start it with `systemctl --user start asb.service`. Closing the window does not stop the service. **Quit ASB** and `asb engine stop` stop it with exit code 0, so systemd does not restart it; it starts again with the next login or `asb`. An ASB `1.8.1` or older window cannot attach and reports a port conflict. After you install a new ASB package or move the checkout, run `asb service install` again to point the service to it. The `asb.service` unit needs Linux with systemd. The autostart entry needs a desktop that supports XDG autostart. The browser view has no Drawer pill and no drawer actions.
 
 The autostart entry runs `<launcher> engine start` at login, with `ASB_NODE` set to the Node.js that installed it. It has the line `# Generated by ASB: engine autostart`; ASB changes or removes only an entry with this line. Window managers without XDG autostart must run `asb engine start` after login. Without a desktop session, `asb service install` changes nothing and exits with code 1. When you change from one mode to the other, `asb service install` writes the new file, then removes the ASB file of the other mode. When it writes the unit, it always stops the running engine before it starts the service. When `systemctl --user disable` fails, it keeps the unit and says so; only one engine can run.
 
@@ -352,7 +354,52 @@ speed gain; resize and memory results have limits. Neither comparison proves
 physical display FPS or complete UI parity. Their harnesses are no longer in
 this tree.
 
-Default Codex opens use `codex://threads/<id>`. Default Claude opens use `claude://code/continue?session=local_<uuid>` for local chats and `claude://code/<id>` for validated `cse_` or `session_` remote IDs. The apps must handle these links. An additional source's installed launcher receives the validated link for that profile. Invalid Claude local IDs remain visible with the open action disabled. Opens run in the background. **Opening…** appears in the row; a failure adds details to its tooltip.
+Default Codex opens use `codex://threads/<id>`. Default Claude opens use `claude://code/continue?session=local_<uuid>` for local chats and `claude://code/<id>` for validated `cse_` or `session_` remote IDs. The apps must handle these links. The Links line of [`asb doctor`](#system-check) shows which desktop file handles each scheme. An additional source's installed launcher receives the validated link for that profile. Invalid Claude local IDs remain visible with the open action disabled. Opens run in the background. **Opening…** appears in the row; a failure adds details to its tooltip.
+
+## System check
+
+`asb doctor` checks a Linux system and prints the commands that fix it. From a source checkout, use `scripts/asb doctor` in place of `asb doctor`. It reads the system and, when it runs, the engine. It never runs an install command and never changes the firewall. `asb setup` prints the same checks first. See [Privacy](docs/PRIVACY.md) for what it reads.
+
+The first line names your distribution and its family (`family unknown` when no family matches). Image-based systems (Fedora Atomic, openSUSE Aeon) add `transactional`, and SteamOS adds `readonly`. Each check then has one line with a status: `ok`, `missing`, `old`, or `info`. The checks come in three groups.
+
+| Group | Checks |
+| --- | --- |
+| Engine | Node.js 20 or later (with built-in SQLite, else the `sqlite3` command), `openssl`, and `xdg-open`. |
+| Window | Python 3.9 or later, PyGObject, GTK 4.12 or later, and Libadwaita 1.4 or later. |
+| Options | The QR code (the Python `qrcode` module and PyGObject cairo support), the sound player (`pw-play`, `paplay`, or `aplay`), the tray host, Bun (for ASB Bridge), the autostart, the runtime folder, and the links. |
+
+```text
+ASB doctor: Fedora Linux 44 (Workstation Edition), family fedora
+
+Engine
+  ok       Node.js 22.23.1 (/usr/bin/node), built-in SQLite
+  ok       openssl 3.5.1
+  ok       xdg-open (/usr/bin/xdg-open)
+Window
+  missing  PyGObject (Python 3.14.8, /usr/bin/python3)
+  missing  GTK 4
+  missing  Libadwaita
+Options
+  missing  QR code (Python qrcode)
+  ok       Sounds (pw-play)
+  info     Tray host: not checked (needs PyGObject and a session bus)
+  info     Bun: not found. ASB Bridge needs it.
+  info     Autostart: not installed
+  ok       Runtime folder: /run/user/1000/asb
+  ok       Links: codex: chatgpt.desktop, claude: com.anthropic.Claude.desktop
+
+Install the missing packages:
+  sudo dnf install python3-gobject gtk4 gobject-introspection libglvnd-gles libadwaita
+Optional:
+  sudo dnf install python3-qrcode-core
+```
+
+- **Exit code.** `asb doctor` exits with code 0 when every Engine check is `ok`, else with code 1. A Window check that is not `ok` does not change the code: `asb` then runs the engine without the window (see [Start and stop](#start-and-stop)).
+- **Commands.** The required command lists the missing Engine and Window packages for your package manager. The optional command lists the QR code and sound packages. `doas` replaces `sudo` when `doas` is found and `sudo` is not. A Node.js that is missing or older than 20 gets its route: for RHEL, AlmaLinux, Rocky, CentOS Stream, and Oracle Linux 9 the module command, for the Debian family the NodeSource page, and for SteamOS the archive from nodejs.org. When GTK or Libadwaita is too old, doctor prints no package. It says that ASB runs without its window, and that the phone and your other machines still show the sessions of this PC. A system without an install command (NixOS, SteamOS, an unknown family) gets the needs in words. NixOS also gets the flake line `nix profile install github:Jamir-boop/ASB`. Image-based systems get `rpm-ostree install` or `transactional-update pkg install`, then a restart note. Gentoo gets the `USE` flags that the packages need.
+- **Autostart and runtime folder.** The Autostart line reads the two files that `asb service install` writes. It shows `systemd user service`, `XDG autostart`, or `not installed`. The Runtime folder line shows the folder in use. Without `XDG_RUNTIME_DIR` it is `info`, and the folder is `~/.local/state/asb/run`.
+- **Links.** For `codex` and `claude`, doctor runs `xdg-mime query default x-scheme-handler/<scheme>` and prints the desktop file that answers (`ok`). An app with no handler, or a system without `xdg-mime`, gets `info` and the text `none: ASB cannot open <app> sessions until the app handles <scheme>: links`. ASB opens a session with `xdg-open <link>`, so without a handler **Open** does nothing.
+- **Firewall.** While the engine runs with phone access on, and firewalld (`firewall-cmd --state` prints `running`) or ufw (`/etc/ufw/ufw.conf` has `ENABLED=yes`) is active, doctor also prints the rule for each selected address and the phone port, as `asb setup` does. It prints the lines under `Phone access and machine links through firewalld:` or `... through ufw:`. For firewalld, each address gets `sudo firewall-cmd --permanent [--zone=<zone>] --add-rich-rule='rule family="ipv4" destination address="<address>" port port="<port>" protocol="tcp" accept'`, with the zone of its interface when firewalld names one, and the lines end with one `sudo firewall-cmd --reload`. For ufw, each address gets `sudo ufw allow in on <interface> to <address> port <port> proto tcp`. Doctor prints a rule only for an IPv4 address, a port from 1 to 65535, and usual interface and zone names. For another name, it prints a note and no rule. The main server on `127.0.0.1` needs no rule.
+- **JSON.** `asb doctor --json` prints `schema`, `system`, `checks` (`id`, `group`, `status`, and `detail`), `board` (`ok` and `reason`), and `commands` (`required`, `optional`, `node`, and `firewall`). `required`, `optional`, and `node` are each an array of words or `null`, and `firewall` is an array of such arrays.
 
 ## Windows
 
@@ -372,7 +419,7 @@ Keep `--install-links`: without it, npm 11 links the package to a temporary fold
 3. It prints the firewall rule for the selected addresses and the phone port. ASB never runs this rule and never changes the firewall. To let phones and other machines reach ASB, run the rule in an administrator PowerShell. When Windows already allows `node.exe` on private networks, the rule is not needed.
 4. It prints the command to join a machine group. On Windows, run `asb group join --name <name>` and paste the link when it asks.
 
-On Linux, `asb setup` installs `asb.service` in step 1 and also prints the bridge install command.
+On Linux, `asb setup` first prints the checks of [`asb doctor`](#system-check) and stops when the engine cannot run. In step 1 it runs `asb service install` (the `asb.service` unit or the XDG autostart entry). In step 3 it prints the firewall rule when firewalld or ufw is active. It also prints the bridge install command.
 
 | Command | Effect |
 | --- | --- |

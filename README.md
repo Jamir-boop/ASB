@@ -10,11 +10,128 @@ https://github.com/user-attachments/assets/c85742f4-d1b0-4ffc-9497-144069fec36b
 
 [Download v1.9.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.9.0) · [Release notes](docs/releases/v1.9.0.md) · [Checksums](https://github.com/Jamir-boop/ASB/releases/download/v1.9.0/SHA256SUMS)
 
-Needs Node.js `>=20` (`sqlite3` below `22.13`), Python 3 with PyGObject, GTK `>=4.12`, Libadwaita `>=1.4`, and `xdg-utils`. ASB `1.9.0` also needs `openssl` for the phone certificate. The optional Python `qrcode` module and PyGObject cairo support (Debian: `python3-qrcode` and `python3-gi-cairo`) show the phone pairing QR code.
+Needs Node.js `>=20` (`sqlite3` below `22.13`), Python 3 with PyGObject, GTK `>=4.12`, Libadwaita `>=1.4`, and `xdg-utils`. ASB `1.9.0` also needs `openssl` for the phone certificate. The optional Python `qrcode` module and PyGObject cairo support (Debian: `python3-qrcode` and `python3-gi-cairo`) show the phone pairing QR code. A system with no Python, no PyGObject, or an older GTK or Libadwaita runs ASB with [only the engine](#engine-only).
 
 Install Codex and Claude Desktop first, with working `codex:` and `claude:` URL handlers.
 
-ASB `1.9.0` has `asb doctor`. Run it to check the system: it prints the install commands for your distribution and never runs them.
+### Install with npm
+
+The current source installs as an npm package. It needs the same packages as the other routes. [Windows](#install-on-windows) uses the same commands.
+
+```bash
+npm install -g --install-links github:Jamir-boop/ASB
+asb setup
+```
+
+Keep `--install-links`: without it, npm 11 links the package to a temporary folder that it then deletes, and `asb` stops working.
+
+`asb setup` checks the system as `asb doctor` does, and stops when the engine cannot run. Then it makes the engine start when you sign in, waits for it, and asks which network addresses to turn on. It prints the firewall rule when firewalld or ufw is active. ASB never runs that rule itself.
+
+### Check the system
+
+ASB `1.9.0` has `asb doctor`. Run it to check the system. It prints one line for each check: Node.js, `openssl`, `xdg-open`, PyGObject, GTK, Libadwaita, the QR code, the sound player, the tray host, Bun, the autostart, and the runtime folder. The Node.js line shows the built-in SQLite. A `sqlite3` line comes only when Node.js has no built-in SQLite, and a Python line only when Python is missing or older than 3.9. The current source also checks the handlers of `codex:` and `claude:` links. Then `asb doctor` prints one command for the missing packages and one command for the optional packages. The commands use the package manager of your distribution. ASB never runs them.
+
+`asb doctor` exits with code 0 when the engine can run, else with code 1. `asb doctor --json` prints the same data for a script.
+
+When `ASB_PYTHON` is an absolute path, ASB uses only that Python. Else it uses the first of `/usr/bin/python3` and `python3` on `PATH` that has PyGObject. It finds `xdg-open`, `openssl`, `sqlite3`, and the sound players on `PATH`. For Node.js, see [Node.js](#nodejs).
+
+### Packages for each distribution
+
+Each block has the commands that `asb doctor` prints on a system with nothing installed. The first command installs what ASB needs. The second command installs the optional packages: the QR code of the phone pairing, and a sound player. Use `doas` in place of `sudo` when your system has `doas` and no `sudo`.
+
+On every push, CI installs ASB and starts its engine on Debian 13 and 12, Ubuntu 26.04, 24.04, and 22.04, Fedora 43 and 44, AlmaLinux 10 and 9, openSUSE Tumbleweed and Leap 16.0, Arch Linux, Alpine 3.24, and Void. It also builds the Nix flake. Gentoo, Solus, and the image-based systems get the same checks and commands, but CI does not run them.
+
+**Debian, Ubuntu, and their derivatives** (family `debian`)
+
+```bash
+# Required
+sudo apt install nodejs sqlite3 openssl xdg-utils python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
+# Optional
+sudo apt install python3-gi-cairo python3-qrcode pipewire-bin
+```
+
+Debian 12 and Ubuntu 22.04 and 24.04 have a `nodejs` package older than 20. Use the [Node.js route](#nodejs) first. Debian 12 and Ubuntu 22.04 also have a GTK older than 4.12, so ASB runs [only the engine](#engine-only) there.
+
+**Fedora, RHEL, AlmaLinux, Rocky Linux, CentOS Stream, and Oracle Linux** (family `fedora`)
+
+```bash
+# Required
+sudo dnf install nodejs sqlite openssl xdg-utils python3-gobject gtk4 gobject-introspection libglvnd-gles libadwaita
+# Optional
+sudo dnf install python3-qrcode-core pipewire-utils
+```
+
+The default `nodejs` package of RHEL 9 and its rebuilds is the retired Node.js 16. Run `sudo dnf module install nodejs:24` first (see [Node.js](#nodejs)), and leave `nodejs` out of the first command. The current source runs the window on their GTK 4.12 and Libadwaita 1.4. The `gtk4` package does not require `libglvnd-gles`, but GTK 4.20 stops without it.
+
+**openSUSE Tumbleweed and Leap** (family `opensuse`)
+
+```bash
+# Required
+sudo zypper install nodejs-default sqlite3 openssl xdg-utils python3 python313-gobject typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1
+# Optional
+sudo zypper install python313-gobject-cairo python313-qrcode pipewire-tools
+```
+
+The `python313` names follow the main Python of Tumbleweed and Leap 16.0 (Python 3.13). When openSUSE changes its main Python, the names change.
+
+**Arch Linux, Manjaro, EndeavourOS, and Artix** (family `arch`)
+
+```bash
+# Required
+sudo pacman -S --needed nodejs sqlite openssl xdg-utils python-gobject gtk4 libadwaita
+# Optional
+sudo pacman -S --needed python-cairo python-qrcode pipewire-audio
+```
+
+**Alpine Linux** (family `alpine`)
+
+```bash
+# Required
+sudo apk add nodejs sqlite openssl xdg-utils py3-gobject3 gtk4.0 libadwaita
+# Optional
+sudo apk add py3-cairo py3-qrcode pipewire-tools
+```
+
+**Void Linux** (family `void`)
+
+```bash
+# Required
+sudo xbps-install -S nodejs sqlite openssl xdg-utils python3-gobject gtk4 libadwaita
+# Optional
+sudo xbps-install -S python3-qrcode pipewire
+```
+
+**Gentoo** (family `gentoo`)
+
+```bash
+# Required
+sudo emerge --ask --noreplace net-libs/nodejs dev-db/sqlite dev-libs/openssl x11-misc/xdg-utils dev-python/pygobject gui-libs/gtk gui-libs/libadwaita
+# Optional
+sudo emerge --ask --noreplace dev-python/qrcode media-video/pipewire
+```
+
+Build `gui-libs/gtk` and `gui-libs/libadwaita` with `USE=introspection`, `dev-python/pygobject` with `USE=cairo`, and `media-video/pipewire` with `USE=extra` (for `pw-play`).
+
+**Solus** (family `solus`)
+
+```bash
+# Required
+sudo eopkg install nodejs sqlite3 openssl xdg-utils python-gobject libgtk-4 libadwaita
+# Optional
+sudo eopkg install python-qrcode pipewire
+```
+
+**NixOS** (family `nixos`)
+
+```bash
+nix profile install github:Jamir-boop/ASB
+```
+
+The flake brings every package. See [Release packages](#release-packages).
+
+Image-based systems use the names of the Fedora or openSUSE block. Fedora Atomic (Silverblue, Kinoite, Bazzite, Bluefin, and Aurora) uses `rpm-ostree install`. openSUSE Aeon, MicroOS, and Kalpa use `transactional-update pkg install`. Restart the computer to use the new packages. `asb doctor` prints the right command. SteamOS has a read-only system, so `asb doctor` prints no install command there. It lists the needs in words and prints the Node.js route. The window runs only when the image has the libraries.
+
+### Release packages
 
 **Debian:** [asb_1.9.0_all.deb](https://github.com/Jamir-boop/ASB/releases/download/v1.9.0/asb_1.9.0_all.deb)
 
@@ -32,28 +149,64 @@ cd asb-1.9.0
 ~/.local/bin/asb
 ```
 
-**Nix:** the repository has a flake (`flake.nix`). `asb service install` writes store paths into the unit or the autostart entry, so run it again after each update of the flake.
+The current source makes more formats. `npm run build` writes them to `dist/`: the `.deb`, the portable archive, an Arch `PKGBUILD`, `SHA256SUMS`, and an RPM (only when `rpmbuild` is installed). The v1.9.0 release has no RPM and no `PKGBUILD`. The next release has both. The `.deb` and the RPM of the next release also list the board libraries as weak dependencies (Recommends), so a release with an old GTK still installs the engine.
+
+**Fedora, RHEL, and openSUSE (RPM):**
+
+```bash
+# Fedora, RHEL, and their derivatives
+sudo dnf install ./dist/asb-*.noarch.rpm
+# openSUSE
+sudo zypper install --allow-unsigned-rpm ./dist/asb-*.noarch.rpm
+```
+
+**Arch Linux (PKGBUILD):** `makepkg` needs the `base-devel` package. It finds the archive next to the `PKGBUILD`, so it downloads nothing. The `PKGBUILD` of the next release downloads the archive of its release by itself.
+
+```bash
+mkdir asb-pkg
+cp dist/PKGBUILD dist/asb-*-linux.tar.gz asb-pkg/
+cd asb-pkg
+makepkg -si
+```
+
+**Nix:** the repository has a flake (`flake.nix`) for `x86_64-linux` and `aarch64-linux`. It works from the default branch now. It brings Node.js 24 and Python with PyGObject, GTK, and Libadwaita. Turn on the `nix-command` and `flakes` features of Nix first.
+
+```bash
+nix profile install github:Jamir-boop/ASB
+asb
+```
+
+`nix run github:Jamir-boop/ASB` runs ASB without an install. `asb service install` writes store paths into the unit or the autostart entry, so run it again after each update of the flake.
+
+### Engine only
+
+The window needs Python 3.9, PyGObject, GTK 4.12, and Libadwaita 1.4. When the system has less, `asb` starts the engine, prints the reason, and exits with code 3. The engine keeps running, and the phone and your other machines still show the sessions of this machine. The tray menu has only **Quit ASB**. The per-user install and `asb setup` succeed with a warning. `asb doctor` names the missing or old part. It prints no package for an old GTK or Libadwaita: update the distribution or use the engine only.
+
+### Start at login without systemd
+
+`asb service install` picks the way to start the engine at login:
+
+- With a systemd user manager and an active graphical session, it installs the `asb.service` user service.
+- Without them, in a desktop session (for example Xfce, MATE, LXQt, Cinnamon, or a system with OpenRC, runit, or no systemd), it writes the XDG autostart entry `~/.config/autostart/asb-engine.desktop` and starts the engine. A window manager without XDG autostart must run `asb engine start` after each login.
+- With no desktop session (for example a server without a desktop), it changes nothing, prints the command `<launcher> engine start`, and exits with code 1.
+
+`asb service status` shows the mode. Without `XDG_RUNTIME_DIR`, the engine keeps its runtime file in `~/.local/state/asb/run`.
+
+### Firewall
+
+The main ASB server listens only on `127.0.0.1` and needs no rule. Phone access and machine links use TCP port `4630` (the default) on the addresses that you select. Fedora and openSUSE turn firewalld on by default. Ubuntu has `ufw`, turned off by default. When firewalld or ufw is active, `asb setup` and `asb doctor` print the exact rule for each selected address. ASB never runs it. `asb doctor` prints the rule only while the engine runs with phone access on.
 
 [User guide](ASB.md) · [Privacy](docs/PRIVACY.md) · [Source setup](ASB.md#start-and-stop) · [Contributing](CONTRIBUTING.md)
 
-## Install with npm (Linux and Windows)
+## Install on Windows
 
-The current source also installs as an npm package. Linux needs the same packages as above. Windows needs Node.js `22.13` or later.
-
-```bash
-npm install -g --install-links github:Jamir-boop/ASB
-asb setup
-```
-
-Keep `--install-links`: without it, npm 11 links the package to a temporary folder that it then deletes, and `asb` stops working.
-
-`asb setup` makes the engine start when you sign in, waits for it, and asks which network addresses to turn on. On Windows it also prints the firewall rule to run. On Linux it prints the firewall rule when firewalld or ufw is active. ASB never runs that rule itself.
+Windows needs Node.js `22.13` or later. Use the npm commands of [Install with npm](#install-with-npm). On Windows, `asb setup` also prints the firewall rule to run.
 
 On Windows, ASB has statuses only: the engine reads Codex and Claude on that PC for the phone and the machine group. It has no window. ASB Bridge and messages between machines also work on Windows. See [Windows](ASB.md#windows).
 
 ## Node.js
 
-ASB needs Node.js 20 or later. Node.js 22.13 or later is recommended: older releases have no built-in SQLite, so ASB then uses the `sqlite3` command. ASB never downloads Node.js. On Linux, the launcher uses the first of: `ASB_NODE` (an absolute path), `node` on `PATH`, `~/.local/bin/node`, `/home/linuxbrew/.linuxbrew/bin/node`, `/usr/local/bin/node`, and `/usr/bin/node`.
+ASB needs Node.js 20 or later. Node.js 22.13 or later is recommended: older releases have no built-in SQLite, so ASB then uses the `sqlite3` command. ASB never downloads Node.js. On Linux, the launcher uses the first of these that is Node.js 20 or later with SQLite: `ASB_NODE` (an absolute path), `node` on `PATH`, `~/.local/bin/node`, `/home/linuxbrew/.linuxbrew/bin/node`, `/usr/local/bin/node`, and `/usr/bin/node`.
 
 When the Node.js package of your distribution is older than 20, use the official route:
 
@@ -62,7 +215,7 @@ When the Node.js package of your distribution is older than 20, use the official
 | Debian 12, Ubuntu 22.04 and 24.04, and their derivatives | Install Node.js 24 from [NodeSource](https://github.com/nodesource/distributions). |
 | RHEL, AlmaLinux, Rocky, CentOS Stream, and Oracle Linux 9 | `sudo dnf module install nodejs:24` |
 | SteamOS | Unpack the Linux archive from [nodejs.org](https://nodejs.org/en/download) into `~/.local`, so that `~/.local/bin/node` exists. |
-| Other releases | The `nodejs` package of the distribution. |
+| Other releases | The `nodejs` package of the distribution. Image-based systems install it with the command of the [package blocks](#packages-for-each-distribution). |
 
 `asb doctor` prints the route for your system.
 
@@ -78,7 +231,7 @@ The ASB engine (the server and phone access) runs without the window. `asb` star
 
 On Linux, the engine shows a tray icon with **Open ASB** and **Quit ASB** (only **Quit ASB** when the window cannot run). The icon shows only when the desktop has a tray host, for example the GNOME AppIndicator extension. Without a tray host, the engine runs with no icon.
 
-`asb service install` installs and starts the `asb.service` systemd user service, so the engine also starts with your session. On a desktop without a systemd graphical session (for example Xfce, MATE, LXQt, or a system without systemd), it writes the XDG autostart entry `~/.config/autostart/asb-engine.desktop` instead and starts the engine. Window managers without XDG autostart must run `asb engine start` after login. `asb service status` shows the service or entry state. `asb service uninstall` stops and removes it. When the service is installed, `asb` starts the engine through it. An ASB `1.8.1` or older window cannot attach and reports a port conflict.
+`asb service install` installs and starts the `asb.service` systemd user service, so the engine also starts with your session. Without a systemd graphical session, it uses an XDG autostart entry instead, or it changes nothing when there is no desktop session. See [Start at login without systemd](#start-at-login-without-systemd). `asb service status` shows the service or entry state. `asb service uninstall` stops and removes it. When the service is installed, `asb` starts the engine through it. An ASB `1.8.1` or older window cannot attach and reports a port conflict.
 
 The ASB `1.9.0` packages include the user service. The Android companion is a separate app: the Linux packages do not include it.
 
