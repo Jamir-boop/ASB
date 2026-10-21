@@ -1543,6 +1543,23 @@ class DataChecks(unittest.TestCase):
         self.assertNotIn(asb.MORE_ID, asb.number_key_rows(limited, bounds, (600, 600)))
         self.assertEqual(asb.number_key_rows(limited, bounds, (600, 600)), ["r0", "r1", "r2", "r3"])
 
+    def test_filtered_rows_keeps_the_first_row_of_each_id(self):
+        # One card for each ID: a card twice in one column makes GTK list it twice, with no warning.
+        board = {"threads": [
+            {"id": "a", "title": "first copy", "state": "idle", "updatedAtMs": 10},
+            {"id": "b", "title": "other", "state": "idle", "updatedAtMs": 20},
+            {"id": "a", "title": "second copy", "state": "idle", "pending": True, "updatedAtMs": 30},
+            {"id": "c", "title": "archived copy", "state": "idle", "archived": True, "updatedAtMs": 40},
+            {"id": "c", "title": "shown copy", "state": "idle", "updatedAtMs": 5}]}
+        self.assertEqual([(row["id"], row["title"]) for row in asb.filtered_rows(board)],
+                         [("b", "other"), ("a", "first copy"), ("c", "shown copy")])
+        # The first row that the filters keep wins, also with the archive filter and a search.
+        self.assertEqual([(row["id"], row["title"]) for row in asb.filtered_rows(board, archived=True)],
+                         [("c", "archived copy"), ("b", "other"), ("a", "first copy")])
+        self.assertEqual([(row["id"], row["title"]) for row in asb.filtered_rows(board, query="copy")],
+                         [("a", "first copy"), ("c", "shown copy")])
+        self.assertEqual([row["title"] for row in asb.limit_rows(asb.filtered_rows(board), 2)], ["other", "first copy", "More sessions"])
+
     def test_filter_chip_groups_clear_only_their_constraint(self):
         chips = asb.filter_chips
         self.assertEqual(chips(set(), set(asb.STATES), False), ())

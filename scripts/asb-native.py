@@ -260,6 +260,8 @@ def filtered_rows(dashboard, query="", app="all", state="all", archived=False, p
                  if working_or_unread else row.get("state") in states and (not pending_only or row.get("pending")))
             and (not query or query in "\n".join(str(row.get(key, "")) for key in
                  ("title", "projectName", "cwd", "providerLabel", "sourceLabel")).casefold())]
+    # One card for each ID: the first row wins. A card in a column twice makes GTK list it twice, with no warning.
+    rows = list({row["id"]: row for row in reversed(rows)}.values())
     def bucket(row):
         if row.get("pending") or row.get("state") == "waiting":
             return 0
@@ -290,6 +292,24 @@ def pack_columns(rows, width, height, column_width=DEFAULT_COLUMN_WIDTH, row_hei
     capacity = max(1, (height - 4) // row_height)
     parts = [rows[start:start + capacity] for start in range(0, len(rows), capacity)]
     return columns, capacity, parts
+
+
+def column_cards(listing):
+    """The cards of a column that are widget children, in the order GTK draws them."""
+    cards, card = [], listing.get_first_child()
+    while card:
+        cards.append(card)
+        card = card.get_next_sibling()
+    return cards
+
+
+def listed_cards(listing):
+    """The cards in the internal list of a column. GTK lays out this list: an entry that is no widget child leaves an empty slot."""
+    cards, card = [], listing.get_row_at_index(0)
+    while card is not None:
+        cards.append(card)
+        card = listing.get_row_at_index(len(cards))
+    return cards
 
 
 def column_moves(current, target):
@@ -2751,7 +2771,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.opening, self.focus_widgets, self.row_cache = set(), {}, {}
         self.palette_sent = self.palette_wanted = None
         self.palette_sending = False
-        self.list_columns = []
+        # A replaced column stays alive: a card can keep a pointer into its internal list until the card is inserted again.
+        self.list_columns, self.retired_columns = [], []
         self.focus_generation = 0
         self.connect("notify::focus-widget", self.focus_changed)
         self.key_focus_row = None
@@ -4306,6 +4327,35 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.popover_hooks = [(name, GObject.add_emission_hook(Gtk.Popover, name, self.popover_visibility, name))
                                       for name in ("map", "unmap")]
 
+    def new_column(self):
+        listing = SessionColumn(selection_mode=Gtk.SelectionMode.NONE, activate_on_single_click=True,
+                                valign=Gtk.Align.START, hexpand=False, width_request=self.column_pixel_width)
+        listing.add_css_class("asb-column")
+        listing.asb_activation = listing.connect("row-activated", self.open_row)
+        listing.asb_width = self.column_pixel_width
+        return listing
+
+    def mend_columns(self, listings, targets, exact=False):
+        """Replace all columns when one of them lists a card that is no child, a card twice, or (with exact) not its target.
+        Returns the cards that it took out of their columns. GTK has no call that removes a stale entry from the internal list."""
+        if all((cards := column_cards(listing)) == listed_cards(listing) and (not exact or cards == target)
+               for listing, target in zip(listings, targets)):
+            return []
+        detached = [card for listing in listings for card in column_cards(listing)]
+        for card in detached:
+            card.unparent()
+        for number, old in enumerate(listings):
+            listings[number] = self.new_column()
+            if old.get_parent():
+                self.list_body.insert_child_after(listings[number], old)
+                self.list_body.remove(old)
+            old.disconnect(old.asb_activation)
+            self.retired_columns.append(old)
+            for card in targets[number]:
+                if card.get_parent() is None:
+                    listings[number].append(card)
+        return detached
+
     def render_board(self, preserve_focus=None, reveal_focus=False, preserve_action=None):
         if self.dashboard is None or self.closed:
             return
@@ -4380,12 +4430,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if repack or reorder:
             listings = self.list_columns = getattr(self, "list_columns", [])
             while len(listings) < len(parts):
-                listing = SessionColumn(selection_mode=Gtk.SelectionMode.NONE, activate_on_single_click=True,
-                                        valign=Gtk.Align.START, hexpand=False, width_request=self.column_pixel_width)
-                listing.add_css_class("asb-column")
-                listing.asb_activation = listing.connect("row-activated", self.open_row)
-                listing.asb_width = self.column_pixel_width
-                listings.append(listing)
+                listings.append(self.new_column())
             for index, listing in enumerate(listings):
                 if index < len(parts):
                     if listing.asb_width != self.column_pixel_width:
@@ -4402,22 +4447,26 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     self.list_body.remove(child)
                 child = following
             # Each column moves only the cards outside its longest run in target order; all removals come before the inserts.
-            moves = []
-            for number, listing in enumerate(listings):
-                current, card = [], listing.get_row_at_index(0)
-                while card is not None:
-                    current.append(card)
-                    card = listing.get_row_at_index(len(current))
-                target = [self.focus_widgets[row["id"]] for row in parts[number]] if number < len(parts) else []
-                moves.append((listing, *column_moves(current, target)))
+            # The cards of a column come from the widget tree, which is what GTK draws.
+            targets = [[self.focus_widgets[row["id"]] for row in parts[number]] if number < len(parts) else [] for number in range(len(listings))]
             focus_row = self.focus_widgets.get(self.focus_key())
-            refocus = focus_widget is not None and any(focus_row in removals for _listing, removals, _inserts in moves)
+            detached = self.mend_columns(listings, targets)
+            moves = [(listing, *column_moves(column_cards(listing), target)) for listing, target in zip(listings, targets)]
+            refocus = focus_widget is not None and (focus_row in detached or any(focus_row in removals for _listing, removals, _inserts in moves))
             for listing, removals, _inserts in moves:
                 for widget in removals:
                     listing.remove(widget)
             for listing, _removals, inserts in moves:
                 for index, widget in inserts:
+                    # A card that still has a parent (the same card twice in a column target) leaves it first, or GTK lists it twice.
+                    if widget.get_parent():
+                        widget.get_parent().remove(widget)
+                        if widget.get_parent():
+                            widget.unparent()
                     listing.insert(widget, index)
+            # GTK lays out the internal list of a column, so a column that differs from its cards or its target shows a gap.
+            detached = self.mend_columns(listings, targets, exact=True)
+            refocus = refocus or focus_widget is not None and focus_row in detached
             # GTK 4 keeps the window focus on a removed row until the next frame, then moves it to the first row of a column;
             # that frame can come before the queued restore, so a repack also sets the focus again now.
             if refocus and focus_widget.get_visible() and focus_widget.get_sensitive():

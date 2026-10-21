@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import queue
+import random
 import shutil
 import subprocess
 import tempfile
@@ -48,6 +49,42 @@ FIXTURE = {
 
 
 CUSTOM = {"background": "#171c22", "text": "#f0f2f5", "accent": "#f3c66b", "muted": "#b8c0cc", "divider": "#586372"}
+
+
+GTK_WARNINGS = []
+
+
+def keep_gtk_warnings(level, fields, n_fields, user_data):
+    # GLib allows one writer for the process; the default writer still prints each message.
+    if int(level) & 28:
+        GTK_WARNINGS.extend(ctypes.string_at(field.value).decode(errors="replace") for field in fields[:n_fields] if field.key == "MESSAGE")
+    return asb.GLib.log_writer_default(level, fields, user_data)
+
+
+asb.GLib.log_set_writer_func(keep_gtk_warnings, None)
+
+
+def board_children(column):
+    cards, card = [], column.get_first_child()
+    while card:
+        cards.append(card)
+        card = card.get_next_sibling()
+    return cards
+
+
+def board_listed(column):
+    cards, card = [], column.get_row_at_index(0)
+    while card is not None:
+        cards.append(card)
+        card = column.get_row_at_index(len(cards))
+    return cards
+
+
+def board_rows(count):
+    return [{"id": f"s{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Sample session {n}",
+             "cwd": f"/example/project-{n % 9}", "projectName": f"project-{n % 9}", "state": "working" if n < 6 else "idle",
+             "canOpen": True, "updatedAtMs": NOW - n * 600_000, "readStatus": "unknown",
+             "workingSinceMs": NOW - n * 900_000 if n < 6 else 0, "pending": 6 <= n < 20, "unread": 6 <= n < 20} for n in range(count)]
 
 
 def mock_dashboard():
@@ -2384,6 +2421,148 @@ class WidgetCheck(unittest.TestCase):
         self.drain()
         self.assertEqual(window.focus_key(), last)
         self.assert_focus_visible(window, last)
+
+    def board_window(self, count, limit=0):
+        # No server: a failed refresh shows a notice, and the notice changes the list height.
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", {"generatedAtMs": NOW, "providers": [], "threads": board_rows(count)},
+                                      theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        # A column that lost a card from its internal list loops forever when GTK frees it; a failed test must not leave one.
+        self.addCleanup(lambda: [card.unparent() for column in window.list_columns for card in board_children(column)])
+        window.card_limit = limit
+        window.set_default_size(1000, 500)
+        window.present(); self.drain(.3)
+        window.render(); self.drain(.2)
+        GTK_WARNINGS.clear()
+        return window
+
+    def assert_board_columns(self, window, laid_out=False):
+        """Each column holds its target cards in the target order, as widget children and in the internal list of GTK."""
+        shown = [column for column in window.list_columns if column.get_parent()]
+        self.assertEqual(len(shown), window.actual_columns)
+        for number, column in enumerate(shown):
+            target = [window.focus_widgets[identity] for identity in window.row_order[number * window.capacity:(number + 1) * window.capacity]]
+            self.assertEqual(board_children(column), target)
+            self.assertEqual(board_listed(column), target)
+            if laid_out:
+                # Each card sits right under the one before it: no empty slot.
+                bottom = 0
+                for card in target:
+                    self.assertEqual(round(card.compute_bounds(column)[1].origin.y), bottom)
+                    bottom += card.get_height()
+        self.assertTrue(all(not board_children(column) and not board_listed(column) for column in window.list_columns if not column.get_parent()))
+        self.assertEqual(GTK_WARNINGS, [])
+        return shown
+
+    def test_board_shows_one_card_for_a_row_id_that_comes_twice(self):
+        window = self.board_window(70)
+        columns, order, initial = list(window.list_columns), list(window.row_order), copy.deepcopy(window.dashboard)
+        # Two rows with one ID go to the top: the same card is twice in the target of the first column and moves into it.
+        row = next(row for row in initial["threads"] if row["id"] == order[window.capacity + 3])
+        board = copy.deepcopy(initial)
+        board["threads"] = [{**row, "pending": True, "unread": True, "updatedAtMs": NOW + 60_000}] * 2 + board["threads"]
+        window.apply_dashboard(board, None); self.drain(.3)
+        self.assertEqual((window.row_order[0], window.row_order.count(row["id"]), len(window.row_order)), (row["id"], 1, 70))
+        self.assertEqual(self.assert_board_columns(window, laid_out=True), columns[:window.actual_columns])
+        # The board without the second row: the card goes back to its column.
+        window.apply_dashboard(copy.deepcopy(initial), None); self.drain(.3)
+        self.assertEqual(window.row_order, order)
+        self.assertEqual(self.assert_board_columns(window, laid_out=True), columns[:window.actual_columns])
+
+    def test_board_never_inserts_a_card_twice_or_with_a_parent(self):
+        window = self.board_window(70)
+        columns = list(window.list_columns)
+        original = asb.column_moves
+        def twice(current, target):
+            # The same card twice in the moves of one column, as one card twice in a column target gives.
+            removals, inserts = original(current, target)
+            return removals, inserts + inserts[:1]
+        with patch.object(asb, "column_moves", twice):
+            board = copy.deepcopy(window.dashboard)
+            board["threads"][window.capacity * 2]["updatedAtMs"] = NOW + 60_000
+            board["threads"][window.capacity * 2]["pending"] = True
+            window.apply_dashboard(board, None); self.drain(.3)
+        self.assertEqual(window.row_order[0], board["threads"][window.capacity * 2]["id"])
+        self.assertEqual(self.assert_board_columns(window, laid_out=True), columns[:window.actual_columns])
+
+    def test_board_replaces_the_columns_when_the_internal_list_of_one_has_a_stale_entry(self):
+        window = self.board_window(70)
+        self.assertGreaterEqual(window.actual_columns, 3)
+        columns = list(window.list_columns)
+        first, second, third = columns[:3]
+        # GTK 4 gives no warning when a card of a column is inserted into the same column again: the internal list holds it twice.
+        # The first column then keeps a stale entry for a card that left the widget tree, the second column lists a card twice.
+        # GTK lays out the internal list, so each stale entry takes a slot that no card fills.
+        card = first.get_row_at_index(1)
+        first.insert(card, 0)
+        first.remove(card)
+        # The last card of a column is the one that a card at the top pushes into the next column.
+        second.insert(second.get_row_at_index(window.capacity - 1), 2)
+        self.assertNotEqual(board_listed(first), board_children(first))
+        self.assertNotEqual(board_listed(second), board_children(second))
+        GTK_WARNINGS.clear()
+        window.focus_widgets[window.row_order[window.capacity + 3]].grab_focus(); self.drain(.1)
+        focused = window.focus_key()
+        # A pending card goes to the top: it moves from the third column to the first.
+        board = copy.deepcopy(window.dashboard)
+        moved = window.row_order[2 * window.capacity + 2]
+        next(row for row in board["threads"] if row["id"] == moved).update(pending=True, unread=True, updatedAtMs=NOW + 60_000)
+        window.apply_dashboard(board, None); self.drain(.3)
+        self.assertEqual(window.row_order[0], moved)
+        shown = self.assert_board_columns(window, laid_out=True)
+        # All columns are new. The old ones stay alive, with no card, because a card can still point into their internal list.
+        self.assertTrue(set(columns).isdisjoint(shown))
+        self.assertEqual(window.retired_columns[:len(columns)], columns)
+        self.assertEqual([board_children(column) for column in window.retired_columns], [[]] * len(window.retired_columns))
+        self.assertEqual(window.focus_key(), focused)
+        # Closing the window works with the old columns kept.
+        window.close(); self.drain(.2)
+        self.assertEqual((window.list_columns, GTK_WARNINGS), ([], []))
+
+    def test_board_columns_hold_their_cards_after_many_refreshes(self):
+        # The live pattern: pending cards change their time at each scan and change places, some cards go to another column,
+        # cards leave and come in, the More card shows and goes away, and sometimes two rows have one ID.
+        window = self.board_window(96, limit=90)
+        generator = random.Random(20261020)
+        serial, more, doubled = 0, set(), 0
+        for tick in range(500):
+            board = copy.deepcopy(window.dashboard)
+            rows = board["threads"]
+            for row in rows:
+                if row["pending"]:
+                    row["updatedAtMs"] = NOW + tick * 1000 + generator.randrange(900)
+            for row in generator.sample(rows, generator.randrange(4)):
+                row.update(pending=not row["pending"], unread=not row["pending"], updatedAtMs=NOW + tick * 1000 + generator.randrange(900))
+            if len(rows) > 88 and generator.random() < .4:
+                del rows[generator.randrange(len(rows))]
+            if len(rows) < 98 and generator.random() < .4:
+                serial += 1
+                rows.append({**board_rows(1)[0], "id": f"new{serial}", "title": f"New session {serial}", "updatedAtMs": NOW + tick * 1000,
+                             "pending": generator.random() < .5})
+            if generator.random() < .15:
+                rows.insert(0, {**generator.choice(rows), "pending": True, "unread": True, "updatedAtMs": NOW + tick * 1000})
+            elif generator.random() < .5:
+                seen = set()
+                rows[:] = [row for row in rows if not (row["id"] in seen or seen.add(row["id"]))]
+            doubled += len({row["id"] for row in rows}) < len(rows)
+            if tick % 25 == 0:
+                window.focus_widgets[window.row_order[generator.randrange(20)]].grab_focus()
+            if tick % 125 == 100:
+                window.width_control.set_value(160 if window.column_width == 240 else 240)
+            window.apply_dashboard(board, None)
+            if tick % 10 == 0:
+                self.drain(.02)
+            self.assert_board_columns(window)
+            more.add(asb.MORE_ID in window.row_order)
+        self.assertEqual(more, {True, False})
+        self.assertGreater(doubled, 20)
+        self.drain(.3)
+        self.assert_board_columns(window, laid_out=True)
 
     def test_card_motion_wheel_spring_and_column_width(self):
         threads = [{"id": f"s{n}", "provider": "codex", "providerLabel": "Codex",

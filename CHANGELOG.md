@@ -27,6 +27,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Fixed an engine stop when a member machine sends a bad port: ASB now accepts only ports from 1024 to 65535, and a request with a bad port fails without a later error.
 - Fixed an engine stop when the browser view asks for a file that ASB cannot read.
 - Fixed a board that stopped showing cards because of one bad card: a card with no provider, a usage limit reset time that is not a date, or a title cut inside an emoji. Titles are now cut on whole characters, and ASB repairs broken text in rows from other machines.
+- Fixed empty card slots in a board column that grew with time, and the GTK warning "Tried to remove non-child" at each reorder: GTK 4 lists a card twice, with no warning, when the same card is twice in one column (for example when two rows have one ID). The board now shows one card for each ID (the first row), never inserts a card that still has a parent, and replaces all columns when the internal list of one differs from its cards.
 - The session menu now has **Copy relative reference** (the app host and session ID, in the same app) and **Copy absolute reference** (`asb:1/...`, with ASB, on any machine of the group). When ASB cannot make a reference, the row shows why.
 - Made the board faster under the pointer and with the Ctrl numbers: these changes now restyle only the cards that change. Very long titles are cut on the card; the tooltip shows the full title.
 
