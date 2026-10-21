@@ -9,9 +9,9 @@ const BIT_LIMITED = 8;
 
 export const SOUND_DIR = fileURLToPath(new URL('../assets/sounds/', import.meta.url));
 export const SOUND_FILES = {
-  [BIT_DONE]: 'opencode_staplebops_01.mp3',
-  [BIT_INPUT]: 'opencode_staplebops_02.mp3',
-  [BIT_FAILED]: 'opencode_nope_03.mp3',
+  [BIT_DONE]: 'opencode_staplebops_01.wav',
+  [BIT_INPUT]: 'opencode_staplebops_02.wav',
+  [BIT_FAILED]: 'opencode_nope_03.wav',
 };
 
 const limited = (row, nowMs) => Number(row.limitResetsAtMs || 0) > nowMs;
@@ -66,9 +66,10 @@ export function createSoundWatcher(play, canPlay = () => true) {
 export const PLAYERS = [
   ['pw-play', (file) => ['--media-role', 'Notification', '-P', '{ application.name = "ASB" }', file]],
   ['paplay', (file) => ['--client-name=ASB', '--property=media.role=event', file]],
+  ['aplay', (file) => ['-q', file]],
 ];
 
-// The player never blocks or throws. It falls back to paplay when pw-play is missing.
+// The player never blocks or throws. It falls back to paplay when pw-play is missing, then to aplay.
 export function createSoundPlayer({ spawn = spawnProcess, log = console.error, dir = SOUND_DIR } = {}) {
   let index = 0;
   let reported = false;
@@ -83,7 +84,7 @@ export function createSoundPlayer({ spawn = spawnProcess, log = console.error, d
         if (error.code !== 'ENOENT') return report(`ASB cannot play a sound with ${program}: ${error.message}`);
         if (PLAYERS[index] === player) index += 1;
         if (PLAYERS[index]) play(kind, file);
-        else report('ASB cannot play sounds: install pw-play (pipewire-bin) or paplay.');
+        else report('ASB cannot play sounds: install pw-play (PipeWire), paplay (PulseAudio), or aplay (ALSA). Run asb doctor for the command.');
       });
       child.on('exit', (code) => { if (code) report(`ASB cannot play a sound: ${program} exited with code ${code}.`); });
       child.unref();

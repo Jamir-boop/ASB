@@ -90,7 +90,7 @@ test('the player runs pw-play detached with the ASB name and the phone file for 
   play(BIT_INPUT);
   play(BIT_FAILED);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(calls.map(([program, args]) => [program, ...args]), ['opencode_staplebops_01.mp3', 'opencode_staplebops_02.mp3', 'opencode_nope_03.mp3']
+  assert.deepEqual(calls.map(([program, args]) => [program, ...args]), ['opencode_staplebops_01.wav', 'opencode_staplebops_02.wav', 'opencode_nope_03.wav']
     .map((file) => ['pw-play', '--media-role', 'Notification', '-P', '{ application.name = "ASB" }', `${SOUND_DIR}${file}`]));
   assert.deepEqual(calls[0][2], { detached: true, stdio: 'ignore' });
   assert.deepEqual(logs, []);
@@ -104,22 +104,38 @@ test('the player falls back to paplay and reports one line when no player exists
   play(BIT_FAILED);
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(fallback.calls.map(([program, args]) => [program, ...args]), [
-    ['pw-play', '--media-role', 'Notification', '-P', '{ application.name = "ASB" }', `${SOUND_DIR}opencode_staplebops_01.mp3`],
-    ['paplay', '--client-name=ASB', '--property=media.role=event', `${SOUND_DIR}opencode_staplebops_01.mp3`],
-    ['paplay', '--client-name=ASB', '--property=media.role=event', `${SOUND_DIR}opencode_nope_03.mp3`],
+    ['pw-play', '--media-role', 'Notification', '-P', '{ application.name = "ASB" }', `${SOUND_DIR}opencode_staplebops_01.wav`],
+    ['paplay', '--client-name=ASB', '--property=media.role=event', `${SOUND_DIR}opencode_staplebops_01.wav`],
+    ['paplay', '--client-name=ASB', '--property=media.role=event', `${SOUND_DIR}opencode_nope_03.wav`],
   ]);
-  const none = fakeSpawn(['pw-play', 'paplay']);
+  const none = fakeSpawn(['pw-play', 'paplay', 'aplay']);
   const logs = [];
   const silent = createSoundPlayer({ spawn: none.spawn, log: (line) => logs.push(line) });
   silent(BIT_DONE);
   await new Promise((resolve) => setImmediate(resolve));
   silent(BIT_INPUT);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(none.calls.length, 2);
-  assert.deepEqual(logs, ['ASB cannot play sounds: install pw-play (pipewire-bin) or paplay.']);
+  assert.equal(none.calls.length, 3);
+  assert.deepEqual(logs, ['ASB cannot play sounds: install pw-play (PipeWire), paplay (PulseAudio), or aplay (ALSA). Run asb doctor for the command.']);
   const throwing = createSoundPlayer({ spawn: () => { throw new Error('Synthetic spawn failure'); }, log: (line) => logs.push(line) });
   assert.doesNotThrow(() => { throwing(BIT_DONE); throwing(BIT_DONE); });
   assert.deepEqual(logs.slice(1), ['ASB cannot play a sound with pw-play: Synthetic spawn failure']);
+});
+
+test('the player tries pw-play, then paplay, then aplay, and keeps aplay for later sounds', async () => {
+  const { calls, spawn } = fakeSpawn(['pw-play', 'paplay']);
+  const play = createSoundPlayer({ spawn, log: () => assert.fail('aplay works') });
+  play(BIT_DONE);
+  await new Promise((resolve) => setImmediate(resolve));
+  play(BIT_FAILED);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.map(([program, args]) => [program, ...args]), [
+    ['pw-play', '--media-role', 'Notification', '-P', '{ application.name = "ASB" }', `${SOUND_DIR}opencode_staplebops_01.wav`],
+    ['paplay', '--client-name=ASB', '--property=media.role=event', `${SOUND_DIR}opencode_staplebops_01.wav`],
+    ['aplay', '-q', `${SOUND_DIR}opencode_staplebops_01.wav`],
+    ['aplay', '-q', `${SOUND_DIR}opencode_nope_03.wav`],
+  ]);
+  assert.deepEqual(calls[2][2], { detached: true, stdio: 'ignore' });
 });
 
 test('the switchboard server plays the injected player once after a Working to Idle completion', async (t) => {

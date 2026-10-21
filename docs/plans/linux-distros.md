@@ -79,7 +79,7 @@ user).
 | L11 | Packages. `.deb`: engine needs in Depends, board needs in Recommends. One `noarch` `.rpm` with rich dependencies for the Fedora, RHEL, and openSUSE families. A `PKGBUILD` generated with the SHA-256 of the release archive. A flake (`flake.nix`, `nix/package.nix`) that stages the same runtime files and wraps them with Node, Python, GTK, and Libadwaita. `npm run build` makes all of them except the flake. | One build path and one runtime file list. |
 | L12 | CI: a new workflow `.github/workflows/distros.yml`. A host job makes each install command with `src/linux-distros.mjs`. Each matrix job runs one distro image with `docker run`, runs that exact command, and then runs `test/distro-check.sh`. Unit tests stay in `test.yml`. Two jobs run on `ubuntu-24.04-arm`. | CI then proves the commands that `asb doctor` prints. Docker on the host runner works with every image, also Alpine. |
 | L13 | ASB never downloads or bundles Node.js. When Node is missing or older than 20, `asb doctor` and the README name the official route for the family (Appendix B). The launcher's error message links to the README. | The user chose printed commands and no bundles. |
-| L14 | Library fixes: the board and the tray use `GLibUnix.signal_add` when it exists (GLib 2.80 and later). The QR code shows only when `qrcode` imports and `gi.require_foreign('cairo')` works. | GLib 2.88 removed `GLib.unix_signal_add`. Without PyGObject cairo support, the QR draw callback raises an error. |
+| L14 | Library fixes: the board and the tray use `GLibUnix.signal_add` when it exists (GLib 2.88; GLib 2.80 to 2.84 has `GLibUnix` without it). The QR code shows only when `qrcode` imports and `gi.require_foreign('cairo')` works. | GLib 2.88 removed `GLib.unix_signal_add`. Without PyGObject cairo support, the QR draw callback raises an error. |
 | L15 | Order: phase 0 now; phases 1 to 9 after multi-machine phase 4. | They change the same launcher, setup, and package files. |
 
 ## 4. Size and risk
@@ -221,8 +221,12 @@ the same names.
   when animations are on, else it calls `light_row`. The `accent-color` use
   (Libadwaita 1.6) is checked (`:3040-3041`).
 - **`GLib.unix_signal_add`** at `asb-native.py:5417` and
-  `scripts/asb-tray.py:273`. GLib 2.88 removed it from `GLib`.
-  `GLibUnix.signal_add` exists from GLib 2.80.
+  `scripts/asb-tray.py:273`. GLib 2.88 removed it from `GLib` (with
+  PyGObject 3.50; PyGObject 3.56 keeps it with a deprecation warning).
+  GLib 2.88 has `GLibUnix.signal_add`. The `GLibUnix` namespace exists from
+  GLib 2.80, but on GLib 2.84 with PyGObject 3.50 (the Debian 13 PC) it has
+  only `signal_add_full`, and `GLib.unix_signal_add` still works (checked
+  in phase 5).
 - **QR code:** `qrcode` is optional (`qr_matrix`, `asb-native.py:806-815`).
   The draw callbacks also need PyGObject cairo support (`python3-gi-cairo`
   on Debian), which no package lists. Without it, the draw callback raises
@@ -938,50 +942,70 @@ Phases 1 and 2 did not change `scripts/asb-service.mjs`,
 
 ## 14. Phase 5: sounds and library fixes (L2, L9, L14)
 
+Phase 5 has three commits, so it runs as three rounds, each reviewed and
+committed before the next: **5a** steps 1 to 3 with the sounds test of
+step 8 (`fix(sounds)`), **5b** steps 4 to 8 for the board and the tray
+(`fix(board)`), and **5c** step 9 (`perf(desktop)`). Each round updates
+the documents that it makes wrong. The line numbers come from `main` at
+`ccbcf4b` (the phase 4 merge).
+
 1. Decode the three sounds with
    `ffmpeg -i <name>.mp3 -fflags +bitexact -flags:a +bitexact -map_metadata -1 -c:a pcm_s16le <name>.wav`.
    Keep the names (`opencode_staplebops_01.wav` and so on). Delete the MP3
    files from `assets/sounds/`. The Android app keeps its own files.
 2. Change the file names in `SOUND_FILES` (`src/asb-sounds.mjs:12-14`),
-   `RUNTIME_FILES` (`scripts/asb-package.mjs:21`), `test/asb-sounds.test.mjs`
-   (`:93`, `:107-109`), and `SYSTEM_OVERVIEW.md:303` (also add `aplay -q`
-   to its player sentence). `README.md:92` names no file format: keep it.
-   Add one `CHANGELOG.md` Unreleased line.
+   `RUNTIME_FILES` (`scripts/asb-package.mjs:23`), `test/asb-sounds.test.mjs`
+   (`:93`, `:107-109`), and `SYSTEM_OVERVIEW.md:307` (also add `aplay -q`
+   to its player sentence; the module row at `:126` names only the
+   `pw-play` player). The README names no file format: keep it. Add one
+   `CHANGELOG.md` Unreleased line.
 3. Add `['aplay', (file) => ['-q', file]]` after `paplay` in `PLAYERS`
    (`:66-69`). Change the message (`:86`) to `ASB cannot play sounds: install
    pw-play (PipeWire), paplay (PulseAudio), or aplay (ALSA). Run asb doctor
-   for the command.`
+   for the command.` Name `aplay` also in the comment above
+   `createSoundPlayer` (`:71`).
 4. Board and tray: add a helper that uses `GLibUnix.signal_add` when
-   `gi.require_version('GLibUnix', '2.0')` and the import work, else
-   `GLib.unix_signal_add`. Use it at `asb-native.py:5417` and
-   `asb-tray.py:273`.
-5. Board QR code: `qr_matrix` (`asb-native.py:806-815`) returns `None`
+   `gi.require_version('GLibUnix', '2.0')` and the import work and
+   `GLibUnix` has `signal_add`, else `GLib.unix_signal_add`. (On GLib 2.84,
+   `GLibUnix` imports but has only `signal_add_full`: a helper that checks
+   only the import stops the board on Debian 13.) Use it at
+   `asb-native.py:5461` and `asb-tray.py:280`. The two scripts share no
+   Python module, so each has its own copy of the helper.
+5. Board QR code: `qr_matrix` (`asb-native.py:822-831`) returns `None`
    also when `gi.require_foreign('cairo')` raises `ImportError`. Change the
-   hint texts (`:1900`, `:2214`) from naming `python3-qrcode` to `Install
+   hint texts (`:1930`, `:2244`) from naming `python3-qrcode` to `Install
    the Python qrcode module and PyGObject cairo support. Run asb doctor for
    the command.`
-6. Libadwaita 1.4 (L2): in `MachinesEditor.alert` (`asb-native.py:2470-2483`), when `Adw`
+6. Libadwaita 1.4 (L2): in `MachinesEditor.alert` (`asb-native.py:2500-2513`), when `Adw`
    has no `AlertDialog`, make
    `Adw.MessageDialog(transient_for=self.preferences, modal=True,
    heading=heading, body=body)` with the same responses, response
    appearance, default response, and close response. Connect its `response`
    signal to `chosen` and to a handler that clears `self.dialog` (the
    `closed` handler does this for `Adw.AlertDialog`). Call `present()` with
-   no argument. In `MachinesEditor.set_active` (`:2269-2270`), call
+   no argument. In `MachinesEditor.set_active` (`:2293-2300`), call
    `force_close()` on an `Adw.AlertDialog` and `destroy()` on an
    `Adw.MessageDialog`.
-7. GTK 4.12 (L2): in `start_messages` (`:3505`, `if not animations:`), take
-   the `light_row` path also when `Gsk` has no `PathBuilder`.
+7. GTK 4.12 (L2): in `start_messages` (`:3536`, `if not animations:` at
+   `:3548`), take the `light_row` path also when `Gsk` has no
+   `PathBuilder`. (`Gsk.PathBuilder` is used only in `snapshot_flights`,
+   `:1236-1290`, which only flights reach. At `ccbcf4b` the only class
+   newer than Libadwaita 1.4 is `Adw.AlertDialog`, step 6.)
 8. Tests: the player order with three players in `test/asb-sounds.test.mjs`;
    the QR fallback in `test/asb_native_logic_test.py` (fake a failing
-   `require_foreign`); the signal helper in `test/asb_tray_test.py`. In
+   `require_foreign`); the signal helper in `test/asb_tray_test.py` with
+   three fakes: `GLibUnix` with `signal_add`, `GLibUnix` without it, and a
+   failing `GLibUnix` import, and the same three cases for the board copy
+   in `test/asb_native_logic_test.py`. The CI `Test` job runs
+   `python3 test/asb_native_logic_test.py` on a runner that can have no
+   PyGObject, so the QR and signal tests there fake `gi`. In
    `test/asb_native_logic_test.py`, load `MachinesEditor` as the file loads
    `PhoneEditor`, and check `alert` with a fake `Adw` with and without
    `AlertDialog`. Check that `start_messages` lights the rows and starts no
    flight when the fake `Gsk` has no `PathBuilder`.
 9. Window start time (found after phase 2): `scripts/asb-desktop.mjs`
-   `start()` runs `boardCheck` (about 105 ms on the Debian PC) after
-   `startEngine()`. Start both at the same time
+   `start()` (`:19-24`) runs `boardCheck` (about 105 ms on the Debian PC)
+   after `startEngine()`. Start both at the same time
    (`Promise.all([startEngine(), boardCheck({ env: process.env })])`). Keep
    the order of the rest: the board result decides before
    `registerAppIcon`. Add a desktop test that both start before either ends.
