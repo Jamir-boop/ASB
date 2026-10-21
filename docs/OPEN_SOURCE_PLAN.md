@@ -2,6 +2,22 @@
 
 ## Latest publication
 
+ASB [1.10.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.10.0) was published on `2026-10-21` (Lima). Its source and tag use commit [f1282e5](https://github.com/Jamir-boop/ASB/commit/f1282e52f740b6dc24edb8134bd5ac9f06e3117c). ASB Bridge is `0.7.0` in this release.
+
+- Uploaded `asb_1.10.0_all.deb`, `asb-1.10.0-1.noarch.rpm`, `asb-1.10.0-linux.tar.gz`, `PKGBUILD`, and `SHA256SUMS`. They are the `dist` artifact of the [Distros run](https://github.com/Jamir-boop/ASB/actions/runs/39554034078) of the release commit, because the RPM needs `rpmbuild` and the local PC has none. All five downloads matched those CI files byte-for-byte, and `SHA256SUMS` passed. The `asb-linux` artifact of the [Test run](https://github.com/Jamir-boop/ASB/actions/runs/39554034188) is a second CI build, and its five files were byte-equal to the first. A local build on Debian made the same `.deb`, archive, and `PKGBUILD` bytes as CI. The `.deb` members use xz.
+- CI on the release commit: the Test workflow passed on Node.js `22.13.0` and `24` on Linux and on Windows (5 jobs), and the Distros workflow passed (34 jobs). The Bridge workflow did not run, because the release changed no bridge file.
+- Local checks on the release source had no failures: 767 Node tests (766 pass, 1 skipped), 166 native logic tests, 14 tray tests, 38 GTK widget tests on a hidden X display with synthetic data, and 214 ASB Bridge tests with Bun (207 pass, 7 skipped). The bridge bundles matched a fresh build, the bridge check with a stock Codex passed, and `npm pack --dry-run` listed 80 files. The Node tests also passed on the fix commit `404c5e1` alone.
+- Each package payload had 75 runtime files, all matching source bytes. The RPM had the same files as the `.deb`, except the license file (`/usr/share/licenses/asb/LICENSE` in place of `/usr/share/doc/asb/copyright`). The Debian `Installed-Size` was 1889 KiB.
+- A disposable home installed the verified `1.9.0` archive, then the `1.10.0` CI archive. The upgrade kept the config and state files byte-for-byte with their modes. The 75 installed runtime files matched source bytes. The engine answered HTTP `200` on `127.0.0.1` only, and `asb doctor` exited with code 0. The uninstall removed the installed files and kept the settings.
+- The current-user install used the published archive. All 75 installed runtime files matched source bytes. After `asb service install`, the user service, the window, the tray, and the message relay ran from the `1.10.0` release folder, and `asb agent status` reported Backend and UI verified. The sources revision did not change.
+- `asb bridge install --all` installed ASB Bridge `0.7.0` for two Codex homes, with the marketplace in the `1.10.0` release folder, and for Claude Code. A running Codex task loads it after a restart of the Codex app.
+- The Windows member of the test group was updated from an `npm pack` tarball of the tagged commit. Its engine, tray, and message relay ran from `1.10.0`, `asb agent status` reported Backend verified, and `asb bridge install --all` installed ASB Bridge `0.7.0` for two Codex homes and for Claude Code. The group showed both machines online.
+- The release text is the notes file with its six relative links made absolute at the `v1.10.0` tag. GitHub resolved the relative links of the `1.9.0` release page to pages that do not exist. All 13 links of the `1.10.0` page returned HTTP `200`, and the source of the `PKGBUILD` downloaded and matched its SHA-256.
+- A privacy scan of the lines added since `v1.9.0` found no private addresses, keys, or tokens. Its hits were synthetic test addresses, test paths, and a sample host name that the `v1.9.0` tree already had. The MIT license and the upstream credit did not change.
+- No `apt`, `dnf`, `zypper`, or `makepkg` install on a real machine (CI installed the packages in its images), real-app opens, machine group features on real machines (only the online state), real phone, macOS, or FPS check on the real display was run. See [release notes](releases/v1.10.0.md) for check limits.
+
+## Earlier publications
+
 ASB [1.9.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.9.0) was published on `2026-10-20` (Lima). Its source and tag use commit [5561ee4](https://github.com/Jamir-boop/ASB/commit/5561ee40c7d7ae13cdbce2da4fa1b4201c7fcd8f). ASB Bridge is `0.5.0` in this release.
 
 - Uploaded `asb_1.9.0_all.deb`, `asb-1.9.0-linux.tar.gz`, and `SHA256SUMS`. All three downloads matched the local build byte-for-byte. A second build from a clean export gave the same SHA-256 sums. [Exact-source CI](https://github.com/Jamir-boop/ASB/actions/runs/39468169730) passed on Node.js `22.13.0` and `24` on Linux and Windows, and the [Bridge](https://github.com/Jamir-boop/ASB/actions/runs/39468169779) and [Distros](https://github.com/Jamir-boop/ASB/actions/runs/39468169762) workflows passed.
@@ -11,8 +27,6 @@ ASB [1.9.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.9.0) was published
 - `asb bridge install --all` installed ASB Bridge `0.5.0` for two Codex homes and for Claude Code. A running Codex task loads it after a restart of the Codex app.
 - A privacy scan of the lines added since `v1.8.1` found no private addresses, keys, or tokens. Two of its three hits were synthetic test certificates, and the third was a sample host name in a plan.
 - No Debian `apt install`, real-app opens, machine group on real machines, real phone, Windows, macOS, or FPS check on the real display was run. The Windows member of the test group was offline, so its update waits. See [release notes](releases/v1.9.0.md) for check limits.
-
-## Earlier publications
 
 ASB [1.8.1](https://github.com/Jamir-boop/ASB/releases/tag/v1.8.1) was published on `2026-10-13` (Lima). Its source and tag use commit [a73a935](https://github.com/Jamir-boop/ASB/commit/a73a9353df0bf7138516509229a1b3a6d261c4e0).
 
