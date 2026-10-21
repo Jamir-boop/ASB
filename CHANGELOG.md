@@ -18,6 +18,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Changed the machine group: archived sessions of another machine no longer show in the Archive filter.
 - Fixed the Codex reader for Codex database changes: a missing column no longer empties the Codex list.
 - Fixed `asb service install` and `asb setup` after `asb`: the user service restarted every 5 seconds while the engine that `asb` started was running.
+- Fixed the user service after an uninstall: `asb.service` now has `ConditionFileIsExecutable=<launcher>` in `[Unit]`, so a unit that stays after you remove ASB is skipped at login and does not fail. An installed unit gets this line when you run `asb service install` again.
 - Fixed **Check now** in the Android app: it now shows the notifications that it finds, and an automatic check while the app is open no longer marks new events as seen.
 - Fixed Claude Desktop sessions that moved into a worktree: they now show their current state, because ASB reads the newest copy of the transcript, not an old copy in the previous project folder.
 - Fixed a Claude Code CLI session with Remote Control that showed as two cards and lost its messages.

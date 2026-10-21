@@ -43,7 +43,7 @@ async function enginePaths({ nodeExecutable = process.execPath, launcherExecutab
   return { node, launcher };
 }
 
-const unitText = ({ node, launcher }) => `${unitMarker}\n[Unit]\nDescription=ASB (Agent Switch Board) server\nPartOf=graphical-session.target\nAfter=graphical-session.target\nStartLimitIntervalSec=60\nStartLimitBurst=5\n\n[Service]\nType=simple\nEnvironment=ASB_NODE=${node}\nExecStart=${launcher} service run\nRestart=on-failure\nRestartSec=5\n# Apps that ASB opens must survive a service stop or restart.\nKillMode=process\n\n[Install]\nWantedBy=graphical-session.target\n`;
+const unitText = ({ node, launcher }) => `${unitMarker}\n[Unit]\nDescription=ASB (Agent Switch Board) server\nPartOf=graphical-session.target\nAfter=graphical-session.target\nConditionFileIsExecutable=${launcher}\nStartLimitIntervalSec=60\nStartLimitBurst=5\n\n[Service]\nType=simple\nEnvironment=ASB_NODE=${node}\nExecStart=${launcher} service run\nRestart=on-failure\nRestartSec=5\n# Apps that ASB opens must survive a service stop or restart.\nKillMode=process\n\n[Install]\nWantedBy=graphical-session.target\n`;
 export const serviceUnit = async (options) => unitText(await enginePaths(options));
 
 // The XDG autostart entry (plan Appendix E). Without ASB_NODE, the launcher sees only the desktop PATH at login.

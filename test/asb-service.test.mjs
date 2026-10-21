@@ -124,6 +124,24 @@ test('service units use validated absolute executables and preserve apps on serv
   await assert.rejects(serviceUnit({ nodeExecutable: f.home }), /executable file/);
 });
 
+test('the service unit names its launcher in a start condition, so a unit left after an uninstall is skipped', async (t) => {
+  const f = await fixture(t);
+  const custom = path.join(f.home, 'custom-asb');
+  await writeFile(custom, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const unitSection = (text) => text.slice(text.indexOf('[Unit]\n'), text.indexOf('[Service]\n'));
+  for (const [launcherExecutable, launcher] of [['', launcherScript], [custom, custom]]) {
+    const text = await serviceUnit({ launcherExecutable });
+    assert.ok(unitSection(text).includes(`After=graphical-session.target\nConditionFileIsExecutable=${launcher}\nStartLimitIntervalSec=60\n`));
+    assert.ok(text.includes(`ExecStart=${launcher} service run\n`));
+  }
+  // The written unit has the same lines, with the launcher of ASB_INSTALLED_LAUNCHER.
+  const installed = await f.command(['install'], { ASB_INSTALLED_LAUNCHER: custom });
+  assert.equal(installed.code, 0, installed.stderr);
+  const written = await readFile(f.unit, 'utf8');
+  assert.ok(unitSection(written).includes(`ConditionFileIsExecutable=${custom}\n`));
+  assert.ok(written.includes(`ExecStart=${custom} service run\n`));
+});
+
 test('service install and uninstall use only fake systemctl in the required order', async (t) => {
   const f = await fixture(t);
   const installed = await f.command(['install']);
