@@ -24,7 +24,6 @@ if ($Open) { [void](Start-Launcher); exit 0 }
 $mutex = New-Object System.Threading.Mutex($false, 'Local\ASB-tray')
 if (-not $mutex.WaitOne(0)) { exit 0 }
 
-Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 $script:engine = $null
 $script:failures = @()
 $script:board = $null
@@ -39,6 +38,10 @@ function Start-Engine {
   $info.EnvironmentVariables['ASB_ENGINE_LOG'] = '1'
   $script:engine = [System.Diagnostics.Process]::Start($info)
 }
+
+# The engine starts first. Windows Forms and Drawing load slowly, and Start-Engine needs only System.Diagnostics.
+Start-Engine
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 
 # Nothing happens while an earlier launcher runs.
 function Open-Board {
@@ -127,7 +130,6 @@ $timer.add_Tick({
   Start-Engine
 })
 
-Start-Engine
 $icon.Visible = $true
 $timer.Start()
 [System.Windows.Forms.Application]::Run()

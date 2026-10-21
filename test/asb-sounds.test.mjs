@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile, spawn as spawnProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { BIT_DONE, BIT_FAILED, BIT_INPUT, SOUND_DIR, createSoundPlayer, createSoundWatcher, soundBaseline, soundBits, soundEvents } from '../src/asb-sounds.mjs';
+import { promisify } from 'node:util';
+import { BIT_DONE, BIT_FAILED, BIT_INPUT, SOUND_DIR, WINDOWS_PLAYER_ARGS, createSoundPlayer, createSoundWatcher, soundBaseline, soundBits, soundEvents } from '../src/asb-sounds.mjs';
 import { mergePeerRows } from '../src/machine-peers.mjs';
 import { createSwitchboardServer, PendingTracker } from '../src/switchboard.mjs';
 
@@ -139,52 +141,139 @@ test('the player tries pw-play, then paplay, then aplay, and keeps aplay for lat
   assert.deepEqual(calls[2][2], { detached: true, stdio: 'ignore' });
 });
 
-test('the win32 player runs powershell.exe with the file only in ASB_SOUND, hidden, not detached, and with no shell', async () => {
-  const { calls, spawn } = fakeSpawn();
+// A fake powershell.exe: a child whose stdin records the writes.
+function fakePowerShell() {
+  const calls = [];
+  const children = [];
+  const spawn = (program, args, options) => {
+    calls.push([program, args, options]);
+    const child = Object.assign(new EventEmitter(), { unref() { this.unrefed = true; } });
+    child.stdin = Object.assign(new EventEmitter(), { written: [], ended: false, unref() { this.unrefed = true; },
+      write(text) { this.written.push(text); return true; }, end() { this.ended = true; } });
+    children.push(child);
+    return child;
+  };
+  return { calls, children, spawn };
+}
+
+const winDir = 'C:\\asb\\assets\\sounds\\';
+const winLine = (file) => `${winDir}${file}\n`;
+const DONE_LINE = winLine('opencode_staplebops_01.wav');
+
+test('the win32 player keeps one hidden powershell.exe and sends it each path on stdin, never in the arguments', () => {
+  const { calls, children, spawn } = fakePowerShell();
   const logs = [];
-  const dir = 'C:\\asb\\assets\\sounds\\';
-  const play = createSoundPlayer({ platform: 'win32', spawn, log: (line) => logs.push(line), dir });
+  const play = createSoundPlayer({ platform: 'win32', spawn, log: (line) => logs.push(line), dir: winDir });
   play(BIT_DONE);
   play(BIT_INPUT);
   play(BIT_FAILED);
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(calls.length, 3);
-  for (const [index, file] of ['opencode_staplebops_01.wav', 'opencode_staplebops_02.wav', 'opencode_nope_03.wav'].entries()) {
-    const [program, args, options] = calls[index];
-    assert.equal(program, 'powershell.exe');
-    assert.deepEqual(args, ['-NoProfile', '-NonInteractive', '-Command', '(New-Object Media.SoundPlayer $env:ASB_SOUND).PlaySync()']);
-    assert.equal(options.env.ASB_SOUND, `${dir}${file}`);
-    assert.deepEqual({ ...options.env, ASB_SOUND: '' }, { ...process.env, ASB_SOUND: '' });
-    assert.equal(options.windowsHide, true);
-    assert.equal(options.stdio, 'ignore');
-    assert.ok(!('detached' in options));
-    assert.ok(!('shell' in options));
-    assert.ok(!args.some((arg) => arg.includes(file)));
-  }
-  assert.equal(calls[0][2].env.ASB_SOUND.startsWith(dir), true);
+  play(BIT_DONE);
+  assert.equal(calls.length, 1);
+  const [program, args, options] = calls[0];
+  assert.equal(program, 'powershell.exe');
+  assert.deepEqual(args, WINDOWS_PLAYER_ARGS);
+  assert.deepEqual([args.length, ...args.slice(0, 3)], [4, '-NoProfile', '-NonInteractive', '-Command']);
+  assert.doesNotMatch(args.join(' '), /\.wav|asb|sounds/i);
+  // Hidden, not detached (a detached child on Windows gets its own console), no shell, no path in the environment, stdin is a pipe.
+  assert.deepEqual(options, { windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'] });
+  assert.deepEqual(children[0].stdin.written,
+    [DONE_LINE, winLine('opencode_staplebops_02.wav'), winLine('opencode_nope_03.wav'), DONE_LINE]);
+  // The engine can exit at once: the child and its stdin pipe do not keep it alive.
+  assert.equal(children[0].unrefed && children[0].stdin.unrefed, true);
   assert.deepEqual(logs, []);
 });
 
-test('the win32 player reports one line when powershell.exe is missing, and uses the existing texts for other failures', async () => {
-  const dir = 'C:\\sounds\\';
-  const tick = () => new Promise((resolve) => setImmediate(resolve));
-  const missing = fakeSpawn(['powershell.exe']);
-  const logs = [];
-  const play = createSoundPlayer({ platform: 'win32', spawn: missing.spawn, log: (line) => logs.push(line), dir });
+test('the win32 player closes its process after 5 minutes with no sound, and the next sound starts a new one', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { calls, children, spawn } = fakePowerShell();
+  const play = createSoundPlayer({ platform: 'win32', spawn, log: () => assert.fail('no failure'), dir: winDir });
   play(BIT_DONE);
-  await tick();
+  t.mock.timers.tick(299_000);
+  play(BIT_DONE);
+  // The second sound restarts the idle time.
+  t.mock.timers.tick(299_000);
+  assert.equal(children[0].stdin.ended, false);
+  t.mock.timers.tick(1_000);
+  assert.equal(children[0].stdin.ended, true);
+  assert.equal(calls.length, 1);
   play(BIT_FAILED);
-  await tick();
-  assert.equal(missing.calls.length, 1);
-  assert.deepEqual(logs, ['ASB cannot play sounds: Windows PowerShell was not found.']);
-  const exited = fakeSpawn([], 1);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(children[1].stdin.written, [winLine('opencode_nope_03.wav')]);
+  // The first process exits late. That must not touch the second one.
+  children[0].emit('exit', 0);
+  play(BIT_DONE);
+  assert.deepEqual([calls.length, children[1].stdin.written.length], [2, 2]);
+});
+
+test('the win32 player starts a new process after an exit or a stdin error, and reports a failure once', () => {
+  const { calls, children, spawn } = fakePowerShell();
+  const logs = [];
+  const play = createSoundPlayer({ platform: 'win32', spawn, log: (line) => logs.push(line), dir: winDir });
+  play(BIT_DONE);
+  children[0].emit('exit', 0);
+  play(BIT_DONE);
+  assert.deepEqual([calls.length, logs], [2, []]);
+  children[1].stdin.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+  play(BIT_DONE);
+  assert.equal(calls.length, 3);
+  assert.deepEqual(children[2].stdin.written, [DONE_LINE]);
+  children[2].emit('exit', 1);
+  children[2].stdin.emit('error', new Error('write EPIPE'));
+  play(BIT_DONE);
+  children[3].emit('exit', 2);
+  assert.deepEqual([calls.length, logs], [4, ['ASB cannot play a sound with powershell.exe: write EPIPE']]);
+  const failed = fakePowerShell();
   const codes = [];
-  createSoundPlayer({ platform: 'win32', spawn: exited.spawn, log: (line) => codes.push(line), dir })(BIT_DONE);
-  await tick();
+  const again = createSoundPlayer({ platform: 'win32', spawn: failed.spawn, log: (line) => codes.push(line), dir: winDir });
+  again(BIT_DONE);
+  failed.children[0].emit('exit', 1);
+  again(BIT_DONE);
+  failed.children[1].emit('exit', 1);
   assert.deepEqual(codes, ['ASB cannot play a sound: powershell.exe exited with code 1.']);
-  const throwing = createSoundPlayer({ platform: 'win32', spawn: () => { throw new Error('Synthetic spawn failure'); }, log: (line) => codes.push(line), dir });
+});
+
+test('the win32 player reports Windows PowerShell once when it is missing, and a failed spawn never throws', () => {
+  const { calls, children, spawn } = fakePowerShell();
+  const logs = [];
+  const play = createSoundPlayer({ platform: 'win32', spawn, log: (line) => logs.push(line), dir: winDir });
+  play(BIT_DONE);
+  children[0].emit('error', Object.assign(new Error('spawn powershell.exe ENOENT'), { code: 'ENOENT' }));
+  children[0].stdin.emit('error', new Error('Socket is closed'));
+  play(BIT_FAILED);
+  assert.deepEqual([calls.length, logs], [1, ['ASB cannot play sounds: Windows PowerShell was not found.']]);
+  const other = fakePowerShell();
+  const texts = [];
+  const second = createSoundPlayer({ platform: 'win32', spawn: other.spawn, log: (line) => texts.push(line), dir: winDir });
+  second(BIT_DONE);
+  other.children[0].emit('error', Object.assign(new Error('spawn powershell.exe EACCES'), { code: 'EACCES' }));
+  second(BIT_DONE);
+  assert.deepEqual([other.calls.length, texts], [2, ['ASB cannot play a sound with powershell.exe: spawn powershell.exe EACCES']]);
+  const throwing = createSoundPlayer({ platform: 'win32', spawn: () => { throw new Error('Synthetic spawn failure'); }, log: (line) => texts.push(line), dir: winDir });
   assert.doesNotThrow(() => { throwing(BIT_DONE); throwing(BIT_DONE); });
-  assert.deepEqual(codes.slice(1), ['ASB cannot play a sound with powershell.exe: Synthetic spawn failure']);
+  assert.deepEqual(texts.slice(1), ['ASB cannot play a sound with powershell.exe: Synthetic spawn failure']);
+});
+
+// These two tests use real child processes, so they check what a fake cannot: the real ENOENT order, and the unref calls.
+test('the win32 player reports the missing program of a real failed spawn, not its closed stdin', async () => {
+  const logs = [];
+  const play = createSoundPlayer({ platform: 'win32', dir: winDir, log: (line) => logs.push(line),
+    spawn: (program, args, options) => spawnProcess('asb-missing-program', args, options) });
+  play(BIT_DONE);
+  play(BIT_DONE);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  play(BIT_DONE);
+  assert.deepEqual(logs, ['ASB cannot play sounds: Windows PowerShell was not found.']);
+});
+
+test('a process that played a Windows sound exits at once while its player waits for more paths', async () => {
+  const module = new URL('../src/asb-sounds.mjs', import.meta.url).href;
+  const reader = "process.stdin.on('data', () => {}).on('end', () => process.exit(0))";
+  const script = `import { spawn } from 'node:child_process';
+    import { createSoundPlayer } from ${JSON.stringify(module)};
+    const play = createSoundPlayer({ platform: 'win32', dir: '', log: console.error,
+      spawn: (program, args, options) => spawn(process.execPath, ['-e', ${JSON.stringify(reader)}], options) });
+    play(1);`;
+  await promisify(execFile)(process.execPath, ['--input-type=module', '-e', script], { timeout: 10_000 });
 });
 
 test('the switchboard server plays the injected player once after a Working to Idle completion', async (t) => {

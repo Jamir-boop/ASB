@@ -73,34 +73,67 @@ export const PLAYERS = [
   ['aplay', (file) => ['-q', file]],
 ];
 
-// Windows Media.SoundPlayer plays the PCM WAV files. The path goes in ASB_SOUND, never in the command text.
-const WINDOWS_PLAYERS = [
-  ['powershell.exe', () => ['-NoProfile', '-NonInteractive', '-Command', '(New-Object Media.SoundPlayer $env:ASB_SOUND).PlaySync()']],
-];
+// Windows Media.SoundPlayer plays the PCM WAV files. A new powershell.exe costs about 280 ms for each sound, so one hidden process
+// reads one WAV path per line from stdin and plays each with PlaySync, in order. The path is data on stdin, never in the command text.
+// The script reads UTF-8 bytes from the stdin handle, because the console code page would change a path with non-ASCII letters.
+// A bad line or a missing file only skips that sound, and `exit 0` keeps the failed last sound from giving the exit code 1.
+export const WINDOWS_PLAYER_ARGS = ['-NoProfile', '-NonInteractive', '-Command',
+  '$r=New-Object IO.StreamReader([Console]::OpenStandardInput(),[Text.Encoding]::UTF8);'
+  + 'while($null -ne ($p=$r.ReadLine())){try{if($p){(New-Object Media.SoundPlayer $p).PlaySync()}}catch{}};exit 0'];
+const WINDOWS_IDLE_MS = 5 * 60_000;
 
-// The player never blocks or throws. It falls back to paplay when pw-play is missing, then to aplay.
+// The process ends when its stdin closes. After 5 minutes with no sound, ASB closes it and the next sound starts a new one.
+// The child, its stdin, and the timer are unref'd, so the engine can exit at once; the closed pipe ends the process.
+function createWindowsPlayer(spawn, report, dir) {
+  let current = null;
+  let idle = null;
+  let missing = false;
+  const start = () => {
+    const child = spawn('powershell.exe', WINDOWS_PLAYER_ARGS, { windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'] });
+    const drop = () => { if (current === child) { current = null; clearTimeout(idle); } };
+    child.on('error', (error) => {
+      drop();
+      if (error.code !== 'ENOENT') return report(`ASB cannot play a sound with powershell.exe: ${error.message}`);
+      missing = true;
+      report('ASB cannot play sounds: Windows PowerShell was not found.');
+    });
+    child.on('exit', (code) => { drop(); if (code) report(`ASB cannot play a sound: powershell.exe exited with code ${code}.`); });
+    child.stdin.on('error', (error) => { drop(); report(`ASB cannot play a sound with powershell.exe: ${error.message}`); });
+    child.unref();
+    child.stdin.unref();
+    return child;
+  };
+  return (kind) => {
+    const file = SOUND_FILES[kind];
+    if (missing || !file) return;
+    try {
+      current ??= start();
+      current.stdin.write(`${dir}${file}\n`);
+      clearTimeout(idle);
+      idle = setTimeout(() => { const child = current; current = null; child.stdin.end(); }, WINDOWS_IDLE_MS).unref();
+    } catch (error) {
+      report(`ASB cannot play a sound with powershell.exe: ${error.message}`);
+    }
+  };
+}
+
+// The player never blocks or throws. On Linux it falls back to paplay when pw-play is missing, then to aplay.
 export function createSoundPlayer({ spawn = spawnProcess, log = console.error, dir = SOUND_DIR, platform = process.platform } = {}) {
-  const win32 = platform === 'win32';
-  const players = win32 ? WINDOWS_PLAYERS : PLAYERS;
-  let index = 0;
   let reported = false;
   const report = (message) => { if (!reported) { reported = true; log(message); } };
+  if (platform === 'win32') return createWindowsPlayer(spawn, report, dir);
+  let index = 0;
   const play = (kind, file = SOUND_FILES[kind]) => {
-    const player = players[index];
+    const player = PLAYERS[index];
     if (!player || !file) return;
     const [program, args] = player;
-    const target = `${dir}${file}`;
     try {
-      // A detached child on Windows gets its own console, so win32 hides the window and does not detach.
-      const child = spawn(program, args(target), win32
-        ? { env: { ...process.env, ASB_SOUND: target }, windowsHide: true, stdio: 'ignore' }
-        : { detached: true, stdio: 'ignore' });
+      const child = spawn(program, args(`${dir}${file}`), { detached: true, stdio: 'ignore' });
       child.on('error', (error) => {
         if (error.code !== 'ENOENT') return report(`ASB cannot play a sound with ${program}: ${error.message}`);
-        if (players[index] === player) index += 1;
-        if (players[index]) play(kind, file);
-        else report(win32 ? 'ASB cannot play sounds: Windows PowerShell was not found.'
-          : 'ASB cannot play sounds: install pw-play (PipeWire), paplay (PulseAudio), or aplay (ALSA). Run asb doctor for the command.');
+        if (PLAYERS[index] === player) index += 1;
+        if (PLAYERS[index]) play(kind, file);
+        else report('ASB cannot play sounds: install pw-play (PipeWire), paplay (PulseAudio), or aplay (ALSA). Run asb doctor for the command.');
       });
       child.on('exit', (code) => { if (code) report(`ASB cannot play a sound: ${program} exited with code ${code}.`); });
       child.unref();

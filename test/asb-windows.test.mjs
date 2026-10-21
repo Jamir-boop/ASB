@@ -216,6 +216,19 @@ test('the tray script assigns no value to its switch parameter', async () => {
   for (const name of switches) assert.doesNotMatch(script, new RegExp(`\\$${name}\\s*=`, 'i'), name);
 });
 
+// The tray loads Windows Forms and Drawing slowly, and Start-Engine needs only System.Diagnostics, so the engine starts first.
+test('the tray script starts the engine once after the mutex and before Windows Forms, and the timer starts it again after a crash', async () => {
+  const script = await readFile(new URL('../scripts/asb-tray.ps1', import.meta.url), 'utf8');
+  const calls = [...script.matchAll(/^( *)Start-Engine *$/gm)];
+  assert.deepEqual(calls.map(([, indent]) => indent), ['', '  ']);
+  const [first, restart] = calls.map((call) => call.index);
+  const definition = script.indexOf('function Start-Engine');
+  assert.doesNotMatch(script.slice(definition, script.indexOf('\n}', definition)), /Forms|Drawing/);
+  assert.equal(script.match(/Add-Type/g).length, 1);
+  assert.ok(script.indexOf('.WaitOne(0)') < definition && definition < first && first < script.indexOf('Add-Type'));
+  assert.ok(restart > script.indexOf('.add_Tick('));
+});
+
 test('asb engine start on Windows starts no second tray when an engine answers, and status names the tray mode', async () => {
   const running = engineFakes({ running: [{ pid: 7, port: 4629 }] });
   assert.equal(await engineMain(['start'], running.context), 0);
