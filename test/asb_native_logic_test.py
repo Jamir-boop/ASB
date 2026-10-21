@@ -2845,7 +2845,8 @@ class NativeLogicChecks(unittest.TestCase):
         working = {"id": "a", "title": "Chat", "state": "working", "discardResult": True}
         for extra, expected in (({}, "discard"), ({"unread": True}, "dot"),
                                 ({"questionAttention": True}, "question"), ({"actionRequired": True}, "question"),
-                                ({"state": "idle", "lastOutcome": "stopped"}, "stop"), ({"state": "idle"}, "")):
+                                ({"state": "idle", "lastOutcome": "stopped", "discardResult": False}, "stop"),
+                                ({"state": "idle", "discardResult": False}, "")):
             self.assertEqual(indicator({**working, **extra}), expected)
         self.assertEqual(actions(working)[-1], ("Keep result", "keep-result"))
         self.assertEqual(actions({**working, "discardResult": False})[-1], ("Discard result", "discard-result"))
@@ -2926,6 +2927,169 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertIn(".asb-discard-button.asb-discard-offer {{ opacity: 0;", source)
         self.assertIn(".asb-session:focus-within .asb-discard-offer {{ opacity: 1;", source)
 
+    def test_idle_discard_ring_priority_menu_panel_and_texts(self):
+        indicator, actions, controls = SCOPE["attention_indicator"], SCOPE["row_menu_actions"], SCOPE["row_panel_controls"]
+        idle = {"id": "a", "title": "Chat", "providerLabel": "Codex", "state": "idle", "canOpen": True}
+        armed = {**idle, "discardResult": True}
+        # An armed Idle row shows the ring below `?` and the dot and above the stop square; Waiting and Unknown rows never show it.
+        for row, expected in ((idle, ""), (armed, "discard"), ({**armed, "unread": True}, "dot"), ({**armed, "questionAttention": True}, "question"),
+                              ({**armed, "lastOutcome": "stopped"}, "discard"), ({**idle, "lastOutcome": "stopped"}, "stop"),
+                              ({**armed, "state": "waiting"}, ""), ({**armed, "state": "unknown"}, "")):
+            self.assertEqual(indicator(row), expected, row)
+        # The menu and the row panel offer Discard for the next task on an Idle row with no mark, and Keep on an armed one.
+        self.assertEqual(actions(idle)[-1], ("Discard next result", "discard-result"))
+        self.assertEqual(actions(armed)[-1], ("Keep next result", "keep-result"))
+        self.assertEqual(controls(idle)["discard"], ("discard-result", "Discard next result", "edit-delete-symbolic"))
+        self.assertEqual(controls(armed)["discard"], ("keep-result", "Keep next result", "edit-undo-symbolic"))
+        # A mark, a drawer entry, Mute, another machine, or another state takes the offer away; Keep stays for an armed row with a mark.
+        for extra in ({"unread": True}, {"questionAttention": True}, {"lastOutcome": "stopped"}, {"drawer": True}, {"muted": True},
+                      {"remote": True}, {"state": "waiting"}, {"state": "unknown"}):
+            self.assertNotIn("discard", controls({**idle, **extra}), extra)
+        for extra in ({"unread": True}, {"questionAttention": True}, {"drawer": True}):
+            self.assertEqual(controls({**armed, **extra})["discard"][0], "keep-result", extra)
+        for extra in ({"muted": True}, {"remote": True}, {"state": "waiting"}):
+            self.assertNotIn("discard", controls({**armed, **extra}), extra)
+        self.assertEqual(controls({**idle, "surface": "cli"})["discard"][0], "discard-result")
+        # Working rows keep their texts.
+        self.assertEqual(actions({**idle, "state": "working"})[-1], ("Discard result", "discard-result"))
+        self.assertEqual(actions({**armed, "state": "working"})[-1], ("Keep result", "keep-result"))
+        # The tooltip note and the accessible label name the next task on an Idle row only.
+        model = SCOPE["tooltip_model"]
+        self.assertEqual(model(armed, 100_000, "/home/test")["note"], "Discard is on for the next task.")
+        self.assertEqual(model({**armed, "state": "working"}, 100_000, "/home/test")["note"], "Discard is on for this task.")
+        self.assertEqual(model(idle, 100_000, "/home/test")["note"], "")
+        window = object.__new__(Window)
+        window.view, window.opening, window.open_errors, window.session_actions = "compact", set(), {}, set()
+        text = SimpleNamespace(asb_thread=dict(armed), asb_time_signature=None, asb_state_label=Mock(), asb_title_label=Mock(),
+                               set_sensitive=Mock(), update_property=Mock(), update_state=Mock())
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        with patch.dict(SCOPE, {"Gtk": gtk}):
+            window.update_row_text(text, 100_000)
+            self.assertIn(" Discard is on for the next task.", text.asb_accessible_label)
+            self.assertNotIn("Discard is on.", text.asb_accessible_label)
+            text.asb_thread, text.asb_time_signature = {**armed, "state": "working"}, None
+            window.update_row_text(text, 100_000)
+            self.assertIn(" Discard is on.", text.asb_accessible_label)
+            self.assertNotIn("next task", text.asb_accessible_label)
+            text.asb_thread, text.asb_time_signature = dict(idle), None
+            window.update_row_text(text, 100_000)
+            self.assertNotIn("Discard", text.asb_accessible_label)
+
+    def test_idle_card_offers_discard_for_the_next_task_in_the_read_slot(self):
+        window = object.__new__(Window)
+        window.session_actions = set()
+        window.clear_read_feedback = Mock(side_effect=lambda item: setattr(item, "asb_read_timer", None))
+        idle = {"id": "a", "title": "Chat", "state": "idle"}
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        def card(row, timer=None):
+            widget = SimpleNamespace(asb_view="comfortable", asb_thread=row, asb_read_timer=timer, asb_read_button=Mock(), asb_pin_button=Mock())
+            window.update_card_actions(widget)
+            return widget, widget.asb_read_button
+        with patch.dict(SCOPE, {"Gtk": gtk}):
+            for armed, action, text in ((False, "win.discard-result", "Discard next result: go to read Idle when the next task ends"),
+                                       (True, "win.keep-result", "Keep result: show the dot when the next task ends")):
+                _widget, read = card({**idle, "discardResult": armed})
+                read.set_visible.assert_called_with(True)
+                read.set_focusable.assert_called_with(True)
+                self.assertEqual(read.asb_action, action)
+                read.set_tooltip_text.assert_called_with(text)
+                read.update_state.assert_called_with([0, 1], [False, False])
+                read.add_css_class.assert_any_call("asb-discard-button")
+                # The dashed offer shows only before the arm; the armed ring is solid.
+                (read.remove_css_class if armed else read.add_css_class).assert_any_call("asb-discard-offer")
+                self.assertNotIn(call("asb-discard-offer"), read.add_css_class.call_args_list if armed else [])
+            # A mark keeps the Read action, and a stopped task keeps its passive square.
+            _widget, read = card({**idle, "unread": True, "pending": True})
+            self.assertEqual(read.asb_action, "win.mark-read")
+            read.remove_css_class.assert_any_call("asb-discard-button")
+            _widget, read = card({**idle, "lastOutcome": "stopped"})
+            self.assertEqual(read.asb_action, None)
+            read.set_focusable.assert_called_with(False)
+            read.add_css_class.assert_any_call("asb-passive-indicator")
+            read.remove_css_class.assert_any_call("asb-discard-button")
+            # Mute and another machine take the card offer away.
+            for extra in ({"muted": True}, {"remote": True}):
+                _widget, read = card({**idle, **extra})
+                read.set_visible.assert_called_with(False)
+                self.assertEqual(read.asb_action, None)
+                read.remove_css_class.assert_any_call("asb-discard-button")
+            # The check after a Read keeps the slot until it ends; an arm made meanwhile takes it.
+            widget, read = card(dict(idle), timer=42)
+            window.clear_read_feedback.assert_not_called()
+            self.assertEqual((widget.asb_read_timer, read.asb_action), (42, None))
+            read.add_css_class.assert_any_call("asb-read-confirmed")
+            read.set_tooltip_text.assert_called_with("Read in ASB")
+            widget, read = card({**idle, "discardResult": True}, timer=42)
+            window.clear_read_feedback.assert_called_once()
+            self.assertEqual((widget.asb_read_timer, read.asb_action), (None, "win.keep-result"))
+            # A pending request keeps the labels and drops the action.
+            window.session_actions.add("a")
+            _widget, read = card(dict(idle))
+            self.assertEqual(read.asb_action, None)
+            read.update_state.assert_called_with([0, 1], [True, True])
+
+    def test_discard_action_sends_next_only_for_an_idle_card(self):
+        window = object.__new__(Window)
+        window.focus_widgets = {"idle": SimpleNamespace(asb_thread={"id": "idle", "state": "idle"}),
+                                "work": SimpleNamespace(asb_thread={"id": "work", "state": "working"})}
+        window.session_action = Mock()
+        target = lambda identity: SimpleNamespace(get_string=lambda: identity)
+        for identity, body in (("idle", {"next": True}), ("work", None), ("gone", None)):
+            window.session_action.reset_mock()
+            window.row_action(None, target(identity), "discard-result")
+            window.session_action.assert_called_once_with(identity, "discard-result", body)
+        for identity in ("idle", "work"):
+            window.session_action.reset_mock()
+            window.row_action(None, target(identity), "keep-result")
+            window.session_action.assert_called_once_with(identity, "keep-result")
+
+    def test_idle_discard_and_keep_wait_half_a_second_after_a_read_and_send_next(self):
+        window = object.__new__(Window)
+        widget = SimpleNamespace(asb_thread={"id": "a", "state": "idle", "unread": True}, asb_read_generation=1, asb_view="comfortable",
+                                 asb_last_read_at=None)
+        window.base, window.closed = "http://127.0.0.1:1", False
+        window.session_actions, window.open_errors = set(), {}
+        window.focus_widgets = window.row_cache = {"a": widget}
+        window.dashboard = {"threads": [dict(widget.asb_thread)]}
+        window.get_focus = window.focus_key = lambda: None
+        window.update_card_actions = window.update_open_state = Mock()
+        window.confirm_read = Mock()
+        window.refresh = Mock()
+        window.render = Mock(side_effect=lambda **_kwargs: setattr(widget, "asb_thread", window.dashboard["threads"][0]))
+        request, clock = Mock(), Mock(return_value=10)
+        with patch.dict(SCOPE, {"request_async": request, "time": SimpleNamespace(monotonic=clock), "GLib": SimpleNamespace(idle_add=Mock())}):
+            window.session_action("a", "mark-read")
+            request.call_args.args[2]({"thread": dict(widget.asb_thread, unread=False)}, None)
+            # The Read of an Idle card shows the check, then the card has no mark.
+            window.confirm_read.assert_called_once_with(widget)
+            self.assertEqual(widget.asb_last_read_at, 10)
+            request.reset_mock()
+            clock.return_value = 10.1
+            target = SimpleNamespace(get_string=lambda: "a")
+            window.row_action(None, target, "discard-result")
+            window.row_action(None, target, "keep-result")
+            request.assert_not_called()
+            self.assertFalse(window.session_actions)
+            clock.return_value = 10.5
+            window.row_action(None, target, "discard-result")
+            self.assertEqual((request.call_args.args[1], request.call_args.args[4], request.call_args.args[5]),
+                             ("/api/threads/a/discard-result", "POST", {"next": True}))
+            window.session_actions.clear()
+            window.row_action(None, target, "keep-result")
+            self.assertEqual((request.call_args.args[1], request.call_args.args[5]), ("/api/threads/a/keep-result", None))
+
+    def test_compact_idle_discard_ring_is_passive_and_only_an_armed_row_shows_it(self):
+        window = object.__new__(Window)
+        window.view, window.update_row_text, window.open_errors = "compact", Mock(), {}
+        for armed in (True, False):
+            widget = SimpleNamespace(asb_view="compact", asb_thread={}, set_activatable=Mock(), set_child=Mock(), asb_mark=Mock(),
+                                     asb_source_badge=Mock(), asb_where_icon=None, asb_where_label=Mock(), asb_dot=Mock(), asb_state_label=Mock(),
+                                     add_css_class=Mock(), remove_css_class=Mock())
+            window.update_session_row(widget, {"id": "a", "provider": "codex", "state": "idle", "discardResult": armed})
+            widget.asb_dot.set_visible.assert_called_with(armed)
+            (widget.asb_dot.add_css_class if armed else widget.asb_dot.remove_css_class).assert_any_call("asb-discard")
+            self.assertFalse(hasattr(widget, "asb_read_button"))
+
     def test_compact_discard_ring_is_passive_and_keeps_row_geometry(self):
         window = object.__new__(Window)
         window.view, window.update_row_text, window.open_errors = "compact", Mock(), {}
@@ -2967,6 +3131,7 @@ class NativeLogicChecks(unittest.TestCase):
                  ({"unread": True, "retainedUnread": True}, "dot", "Unread kept in ASB. Use Read to clear it."),
                  ({"lastOutcome": "stopped"}, "stop", "You stopped this task."),
                  ({"state": "working", "discardResult": True}, "discard", "Discard is on for this task."),
+                 ({"discardResult": True}, "discard", "Discard is on for the next task."),
                  ({"questionPending": True}, "", "A question is still open in the chat."),
                  ({"lastOutcome": "failed", "unread": False}, "", ""), ({}, "", "")]
         for extra, indicator, note in cases:
@@ -4603,7 +4768,9 @@ class NativeLogicChecks(unittest.TestCase):
             widget.asb_read_button.set_visible.assert_not_called()
             self.assertFalse(timers[1][1]())
             self.assertIsNone(widget.asb_read_timer)
-            widget.asb_read_button.set_visible.assert_called_with(False)
+            # The Idle card has no mark now: its Read slot offers Discard for the next task.
+            widget.asb_read_button.set_visible.assert_called_with(True)
+            self.assertEqual(widget.asb_read_button.asb_action, "win.discard-result")
 
             window.dashboard["threads"] = [dict(row, updatedAtMs=200)]
             window.render()

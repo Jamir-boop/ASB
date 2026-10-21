@@ -583,6 +583,27 @@ test('remote Discard uses explicit successful ends, clears generic Idle, and exp
   assert.equal(stillRunning.discardResult, true);
 });
 
+test('remote next-task Discard keeps on a generic Idle, follows Working, and discards an explicit successful end', async (t) => {
+  const appDir = await temp(t);
+  const key = '1/0/https://claude.ai/v1/code/sessions/watch';
+  const tracker = new PendingTracker(false);
+  const scan = async (extra, time) => {
+    await cacheFile(appDir, key, watch([row(undefined, { unread: false, ...extra })], time), { mtimeMs: time });
+    return (await tracker.observe(buildSwitchboardDashboard((await loadClaudeRemoteThreads({ appDir, nowMs: time })).threads, [], time))).threads[0];
+  };
+  const idle = { worker_status: 'idle', status: 'active', status_bucket: 'generic', last_event_at: new Date(now).toISOString() };
+  const first = await scan(idle, now);
+  assert.equal(first.state, 'idle');
+  await tracker.setDiscard(first, true, true);
+  assert.equal(first.discardResult, true);
+  assert.equal((await scan(idle, now + 5)).discardResult, true);
+  const working = await scan({ last_event_at: new Date(now + 10).toISOString() }, now + 10);
+  assert.deepEqual([working.state, working.discardResult], ['working', true]);
+  const ended = await scan({ ...idle, status_bucket: 'completed', unread: true, last_event_at: new Date(now + 20).toISOString() }, now + 20);
+  assert.deepEqual([ended.state, ended.discardResult, ended.pending, ended.unread], ['idle', false, false, false]);
+  assert.equal(tracker.records[ended.id].discard, 0);
+});
+
 test('cloud receipts a little ahead of the PC clock still count', async (t) => {
   const appDir = await temp(t);
   await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions?limit=100', JSON.stringify({

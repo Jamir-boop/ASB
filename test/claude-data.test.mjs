@@ -865,6 +865,23 @@ test('a delivered task notification at an idle chat starts a turn, and its text-
   }
 });
 
+test('a next-task Discard armed at an idle chat covers the turn that a delivered task notification starts', async (t) => {
+  for (const maxBytes of [0, 256]) {
+    const { step, projectsDir } = await resumeFixture(t, 'kid', resumeLaunch('kid'),
+      [resumePrompt(-48_800), resumeWork(-48_500), resumeEnd(-45_000)], maxBytes);
+    const tracker = new PendingTracker(false);
+    assert.deepEqual(await step(), [false, 'idle'], `before ${maxBytes}`);
+    const idle = await observeFixture(projectsDir, resumeNowMs, tracker);
+    await tracker.setDiscard(idle.row, true, true);
+    assert.equal(idle.row.discardResult, true, `armed ${maxBytes}`);
+    assert.deepEqual(await step([resumeNotice(-44_000, 'kid')]), [true, 'working'], `notice ${maxBytes}`);
+    assert.equal((await observeFixture(projectsDir, resumeNowMs, tracker)).row.discardResult, true, `working ${maxBytes}`);
+    assert.deepEqual(await step([resumeEnd(-43_000)]), [false, 'idle'], `reply ${maxBytes}`);
+    const ended = await observeFixture(projectsDir, resumeNowMs, tracker);
+    assert.deepEqual([ended.row.discardResult, ended.row.completionAttention, ended.row.unread, ended.row.pending], [false, false, false, false], `discarded ${maxBytes}`);
+  }
+});
+
 test('a Discard armed while a background Agent runs survives the reply to its task notification', async (t) => {
   for (const maxBytes of [0, 256]) {
     for (const reply of [[resumeEnd(-43_000)], [resumeWork(-43_500), resumeEnd(-43_000)]]) {

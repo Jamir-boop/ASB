@@ -2842,8 +2842,13 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(limited.asb_limit_clock.get_visible())
             self.assertEqual(limited.asb_limit_clock.get_icon_name(), "preferences-system-time-symbolic")
             self.assertFalse(normal.asb_limit_clock.get_visible())
-            self.assertFalse(limited.asb_dot.get_visible())
-            self.assertEqual(self.ink(limited.asb_dot), 0)
+            if view:
+                # Comfortable keeps the Discard offer of an Idle card in the Read slot, with no ink before hover or focus.
+                self.assertTrue(limited.asb_dot.get_visible() and limited.asb_read_button.has_css_class("asb-discard-offer"))
+                self.assertEqual(self.ink(limited.asb_read_button), 0)
+            else:
+                self.assertFalse(limited.asb_dot.get_visible())
+                self.assertEqual(self.ink(limited.asb_dot), 0)
             self.assertEqual(limited.get_height(), normal.get_height())
             if view:
                 self.assertEqual(limited.asb_state_label.get_text(), "Resets in")
@@ -3359,6 +3364,119 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(window.context_menu.asb_actions["discard"].get_visible())
         self.assertEqual(window.context_menu.asb_actions["mute"].asb_label.get_label(), "Unmute")
         window.context_menu.popdown(); self.drain()
+
+    def test_idle_card_offers_discard_for_the_next_task_and_sends_next(self):
+        def row(identity, order, **extra):
+            return {"id": identity, "provider": "codex", "providerLabel": "Codex", "title": "Summarize the open issues " + identity,
+                    "cwd": "/example/field-notes", "projectName": "field-notes", "state": "idle", "canOpen": True,
+                    "updatedAtMs": NOW - order * 1000, **extra}
+        unread = dict(pending=True, unread=True, completionAttention=True, pendingSource="observed-completion")
+        dashboard = {"generatedAtMs": NOW, "providers": [], "threads": [
+            row("idle", 1), row("armed", 2, discardResult=True), row("unread", 3, **unread), row("stopped", 4, lastOutcome="stopped"),
+            row("muted", 5, muted=True), row("work", 6, state="working", workingSinceMs=NOW - 5000)]}
+        requests = []
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "request_async", lambda *args: requests.append(args))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(640, 560)
+        window.present(); window.set_focus(None); self.drain(.3)
+        window.view_filter.set_selected(1); self.drain(.3); window.check_geometry(); self.drain()
+        settle = lambda: self.settle(window)
+        settle()
+        card = lambda identity: window.focus_widgets[identity]
+        sent = lambda: [(request[1], request[5]) for request in requests]
+        def answer(identity, **changes):
+            requests[-1][2]({"changed": True, "threadId": identity, "thread": {**card(identity).asb_thread, **changes}}, None)
+            settle()
+
+        # At rest only the armed card shows a ring; on hover an Idle card with no mark shows the dashed offer in the Read slot.
+        self.assertEqual(self.ink(card("idle").asb_read_button), 0)
+        self.hover_card(window, card("idle"), True); settle()
+        read = card("idle").asb_read_button
+        self.assertTrue(read.get_visible() and read.has_css_class("asb-discard-offer") and read.has_css_class("asb-discard-button"))
+        self.assertGreater(self.ink(read), 0)
+        self.assertEqual(read.get_tooltip_text(), "Discard next result: go to read Idle when the next task ends")
+        self.hover_card(window, card("idle"), False); settle()
+        self.assertEqual(self.ink(card("idle").asb_read_button), 0)
+        armed = card("armed")
+        self.assertTrue(armed.asb_dot.get_visible() and armed.asb_dot.has_css_class("asb-discard"))
+        self.assertFalse(armed.asb_read_button.has_css_class("asb-discard-offer"))
+        self.assertGreater(self.ink(armed.asb_read_button), 0)
+        self.assertEqual(armed.asb_read_button.get_tooltip_text(), "Keep result: show the dot when the next task ends")
+        self.assertIn("Discard is on for the next task.", armed.asb_tooltip)
+        self.assertIn(" Discard is on for the next task.", armed.asb_accessible_label)
+        self.assertNotIn("Discard", card("idle").asb_accessible_label)
+        # A mark, Mute, and a Working card without an arm keep their own look: no offer on a card with a mark or Mute.
+        for identity in ("unread", "stopped", "muted"):
+            self.hover_card(window, card(identity), True); settle()
+            for name in ("asb-discard-offer", "asb-discard-button"):
+                self.assertFalse(card(identity).asb_read_button.has_css_class(name), identity)
+            self.hover_card(window, card(identity), False); settle()
+        self.assertFalse(card("muted").asb_read_button.get_visible())
+        self.assertTrue(card("work").asb_read_button.has_css_class("asb-discard-offer"))
+
+        # The row panel names the action for the next task on an Idle card, and keeps the Working texts.
+        for identity, label in (("idle", "Discard next result"), ("armed", "Keep next result"), ("work", "Discard result")):
+            window.show_context(card(identity)); self.drain()
+            action = window.context_menu.asb_actions["discard"]
+            self.assertEqual((action.get_visible(), action.asb_label.get_label()), (True, label), identity)
+            window.context_menu.popdown(); self.drain()
+        for identity in ("unread", "stopped", "muted"):
+            window.show_context(card(identity)); self.drain()
+            self.assertFalse(window.context_menu.asb_actions["discard"].get_visible(), identity)
+            window.context_menu.popdown(); self.drain()
+
+        # An Idle card sends {"next": true}, and Keep sends none. A Working card sends none for Discard.
+        del requests[:]
+        card("idle").asb_read_button.emit("clicked")
+        self.assertEqual(sent(), [("/api/threads/idle/discard-result", {"next": True})])
+        answer("idle", discardResult=True)
+        read = card("idle").asb_read_button
+        self.assertTrue(card("idle").asb_dot.has_css_class("asb-discard") and not read.has_css_class("asb-discard-offer"))
+        self.assertGreater(self.ink(read), 0)
+        del requests[:]
+        read.emit("clicked")
+        self.assertEqual(sent(), [("/api/threads/idle/keep-result", None)])
+        answer("idle", discardResult=False)
+        self.assertTrue(card("idle").asb_read_button.has_css_class("asb-discard-offer"))
+        del requests[:]
+        window.show_context(card("idle")); self.drain()
+        window.context_menu.asb_actions["discard"].emit("clicked")
+        self.assertEqual(sent(), [("/api/threads/idle/discard-result", {"next": True})])
+        answer("idle", discardResult=True)
+        self.assertEqual(window.context_menu.asb_actions["discard"].asb_label.get_label(), "Keep next result")
+        window.context_menu.popdown(); self.drain()
+        del requests[:]
+        card("work").asb_read_button.emit("clicked")
+        self.assertEqual(sent(), [("/api/threads/work/discard-result", None)])
+        requests[-1][2](None, "Cannot change this session."); settle()
+
+        # Compact shows only the passive ring of an armed Idle card.
+        window.view_filter.set_selected(0); self.drain(.3); settle()
+        self.assertEqual({identity: card(identity).asb_dot.get_visible() and card(identity).asb_dot.has_css_class("asb-discard")
+                          for identity in ("idle", "armed", "unread", "stopped", "muted", "work")},
+                         {"idle": True, "armed": True, "unread": False, "stopped": False, "muted": False, "work": False})
+        window.view_filter.set_selected(1); self.drain(.3); settle()
+
+        # The check after a Read keeps the slot, and the offer comes back when the check ends.
+        del requests[:]
+        card("unread").asb_read_button.emit("clicked")
+        self.assertEqual(sent(), [("/api/threads/unread/mark-read", None)])
+        answer("unread", unread=False, pending=False, completionAttention=False, pendingSource="")
+        read = card("unread").asb_read_button
+        self.assertTrue(read.has_css_class("asb-read-confirmed"))
+        self.assertIsNone(read.asb_action)
+        self.assertFalse(read.has_css_class("asb-discard-button"))
+        self.drain(1.9); settle()
+        read = card("unread").asb_read_button
+        self.assertFalse(read.has_css_class("asb-read-confirmed"))
+        self.assertEqual(read.asb_action, "win.discard-result")
+        self.assertTrue(read.has_css_class("asb-discard-offer"))
 
     def test_message_courier_flight_paint_lit_icons_and_hidden_rows(self):
         def row(n, title):

@@ -225,6 +225,22 @@ test('a muted session plays no Done sound but still plays Failed and Needs input
   assert.deepEqual(await events(thread('waiting', { questionPending: true })), [['a', BIT_INPUT]]);
 });
 
+test('a next-task Discard on an Idle session plays no Done sound but still plays Failed', async () => {
+  const thread = (state, extra = {}) => ({ providers: [], threads: [{ id: 'a', state, nativeUnread: null, completionAtMs: 0, ...extra }] });
+  const events = async (end, seenWorking) => {
+    const tracker = new PendingTracker(false);
+    const [first] = (await tracker.observe(thread('idle'))).threads;
+    await tracker.setDiscard(first, true, true);
+    const baseline = soundBaseline(null, (await tracker.observe(thread(seenWorking ? 'working' : 'idle'))).threads, now);
+    return kinds(soundEvents(baseline, (await tracker.observe(end)).threads, now));
+  };
+  for (const seenWorking of [true, false]) {
+    assert.deepEqual(await events(thread('idle', { completionAtMs: 10 }), seenWorking), []);
+    assert.deepEqual(await events(thread('idle', { completionAtMs: 10, nativeUnread: true }), seenWorking), []);
+    assert.deepEqual(await events(thread('idle', { failedAtMs: 10, lastOutcome: 'failed' }), seenWorking), [['a', BIT_FAILED]]);
+  }
+});
+
 test('a watcher that cannot play moves its baseline and plays only new events later', () => {
   const played = [];
   let open = false;

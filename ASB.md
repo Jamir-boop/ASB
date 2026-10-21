@@ -109,11 +109,13 @@ The browser view shows a drawer chat as read. It has no Drawer pill and no drawe
 
 Use **Discard result** while a task is Working to skip its next successful result dot. In Comfortable, point at the row or use keyboard focus to show the dashed hollow dot beside Pin. Select it to turn Discard on. The solid hollow dot stays visible. Select it again for **Keep result**. Compact keeps the Working timer and shows only the passive armed ring; use **Discard result** or **Keep result** in the row panel to change it. The row panel of a Working row has this action in either view.
 
+On an Idle chat with no `?`, dot, or stop square, use **Discard next result** to skip the result dot of its next task, for example a task that you know will go well. In Comfortable, the same dashed ring shows in the Read slot on hover or keyboard focus. The row menu and the row panel have **Discard next result**, and **Keep next result** while it is on. The arm stays until a task ends after it, also when a whole task runs between two scans. When ASB sees the chat Working, it works as **Discard result** for that task. The Android app offers Discard only for Working chats.
+
 Discard applies to this task once. A verified successful group end goes to read Idle without new result attention, even with Persistent unread on. The next task uses normal rules. It does not clear manual Unread, questions, or earlier failed-task attention. A failed end still gets its normal dot; cancellation still gets the stop square. A question has priority over the ring and keeps its normal Read or permission-wait behavior. Discard changes no state, Pending filter, pin order, or source-app read flag.
 
 Reading a Working question returns directly to the Discard ring. It shows no Read confirmation check. Idle and Waiting Read confirmation stay unchanged. A new Working row without a question clears old Read feedback.
 
-Discard stays stored during Waiting and Unknown. Any observed Idle clears it. A root ending while its linked child works keeps it armed; a proven new root task clears the old arm. A follow-up message in an armed Claude task does not cancel Discard. Only a task that starts after an end later than the arm cancels it. ASB uses recorded starts and ends, not the changing Working timer.
+Discard stays stored during Waiting and Unknown. Any observed Idle clears the Discard of a Working task. A Discard of the next task stays until a task ends after it. A root ending while its linked child works keeps it armed; a proven new root task clears the old arm. A follow-up message in an armed Claude task does not cancel Discard. Only a task that starts after an end later than the arm cancels it. ASB uses recorded starts and ends, not the changing Working timer.
 
 Discard checks the current source before arming. Keep uses the normal cache and adds no forced scan. If task A ends and task B starts and ends before a late click, cached A can still look Working; the Discard scan rejects the current Idle row. A task already armed before both ends can still affect B because the local reader retains only the latest end. ASB does not add history or infer a missing result.
 
@@ -199,7 +201,7 @@ ASB uses dark mode in its main and Preferences windows. In **Appearance**, **GNO
 
 | File | Contents |
 | --- | --- |
-| `$XDG_STATE_HOME/asb/pending.json` | Attention history, Read/Unread marks, pins, Persistent unread, current-task Discard, and the drawer. |
+| `$XDG_STATE_HOME/asb/pending.json` | Attention history, Read/Unread marks, pins, Persistent unread, Discard (current task and next task), and the drawer. |
 | `$XDG_CONFIG_HOME/asb/layout.json` | Column width, selected view, Show app pills, and Cards on the board. |
 | `$XDG_CONFIG_HOME/asb/theme.json` | Custom colors. |
 | `$XDG_CONFIG_HOME/asb/sources.json` | App-source names, colors, dot visibility, folders, launchers, and enabled flags. |

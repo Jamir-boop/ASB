@@ -486,6 +486,7 @@ export class PendingTracker {
               pendingKind: record.pendingKind === 'failed' ? 'failed' : '' };
             for (const key of READ_FIELDS) this.records[id][key] = Number.isFinite(record[key]) && record[key] >= 0 ? record[key] : 0;
             this.records[id].discard = record.discard === 1 ? 1 : 0;
+            this.records[id].discardNext = record.discard === 1 && record.discardNext === 1 ? 1 : 0;
             this.records[id].discardNative = record.discardNative === 1 ? 1 : 0;
             this.records[id].drawer = record.drawer === 1 ? 1 : 0;
             this.records[id].muted = record.muted === 1 ? 1 : 0;
@@ -530,19 +531,24 @@ export class PendingTracker {
       let record = this.records[row.id];
       if (!record) record = this.records[row.id] = { seen: completion, working: 0, pending: 0, ack: 0, manual: 0, retained: '',
         questionSeen: 0, questionAck: 0, nativeAt: 0, nativeAck: 0, nativeSeen: 0,
-        discard: 0, discardedAt: 0, discardStart: 0, discardEnd: 0, discardNative: 0,
+        discard: 0, discardNext: 0, discardedAt: 0, discardStart: 0, discardEnd: 0, discardNative: 0,
         drawer: 0, drawerSeen: 0, muted: 0, lastSeen: nowMs };
       if (nowMs - record.lastSeen >= RECORD_TOUCH_MS) record.lastSeen = nowMs;
       const task = row[DISCARD_TASK] || { atMs: completion, kind: row.lastOutcome === 'failed' ? 'failed' : completion ? 'task_complete' : '' };
+      // A next-task arm is set on an Idle row. Only a task end after the arm ends it, also when a whole task ran between two scans.
+      // When the row is Working, it becomes a current-task arm.
+      const next = record.discard === 1 && record.discardNext === 1;
+      const taskEnded = task.atMs > record.discardEnd;
       const newRoot = row.state === 'working' && task.rootStart > record.discardStart
         && task.rootEnd > record.discardStart && task.rootStart > task.rootEnd;
-      const discardEnded = record.discard === 1 && (row.state === 'idle'
-        || row.state === 'working' && (task.atMs > record.discardEnd || newRoot));
+      const discardEnded = record.discard === 1 && (next ? (row.state === 'idle' || row.state === 'working') && taskEnded
+        : row.state === 'idle' || row.state === 'working' && (taskEnded || newRoot));
       // A muted success takes the discarded-success path, so it leaves no new attention.
       const mutedSuccess = record.muted === 1 && row.state === 'idle' && !row.archived && completion > record.seen
         && task.kind !== 'failed' && !(Number(row.failedAtMs || 0) > Number(row.completionAtMs || 0));
-      const discardedSuccess = discardEnded && task.atMs > record.discardEnd && task.kind === 'task_complete' || mutedSuccess;
-      if (discardEnded) record.discard = 0;
+      const discardedSuccess = discardEnded && taskEnded && task.kind === 'task_complete' || mutedSuccess;
+      if (discardEnded) { record.discard = 0; record.discardNext = 0; }
+      else if (next && row.state === 'working') { record.discardNext = 0; record.discardStart = task.rootStart || 0; }
       if (discardedSuccess) {
         record.discardedAt = task.atMs || completion;
         record.discardNative = 0;
@@ -610,7 +616,7 @@ export class PendingTracker {
   apply(row) {
     const record = this.records[row.id];
     row.actionRequired ??= row.state === 'waiting' && !row.questionPending;
-    row.discardResult = row.state === 'working' && record?.discard === 1;
+    row.discardResult = record?.discard === 1 && (row.state === 'working' || row.state === 'idle' && record.discardNext === 1);
     row.pinIndex = this.pinnedOrder.indexOf(row.id);
     row.pinned = row.pinIndex >= 0;
     row.manualUnread = record?.manual === 1;
@@ -682,12 +688,17 @@ export class PendingTracker {
     this.apply(row);
   }
 
-  async setDiscard(row, enabled) {
+  // `next` also accepts an Idle row: the arm is then for the next task, and it keeps until a task ends after it.
+  async setDiscard(row, enabled, next = false) {
     await this.load();
-    if (enabled && row.state !== 'working') throw Object.assign(new Error('Discard requires a Working task.'), { statusCode: 400 });
+    if (enabled && row.state !== 'working' && !(next && row.state === 'idle')) {
+      throw Object.assign(new Error(next ? 'Discard requires a Working or Idle task.' : 'Discard requires a Working task.'),
+        { statusCode: 400, expose: next });
+    }
     const record = this.records[row.id];
     if (!record) throw Object.assign(new Error('This session is not known to ASB.'), { statusCode: 400 });
     record.discard = enabled ? 1 : 0;
+    record.discardNext = enabled && row.state === 'idle' ? 1 : 0;
     if (enabled) {
       record.discardStart = row[DISCARD_TASK]?.rootStart || 0;
       record.discardEnd = row[DISCARD_TASK]?.atMs || 0;
@@ -875,9 +886,9 @@ export function createSwitchboardServer(options = {}) {
       await tracker.acknowledge(thread.id);
       tracker.apply(thread);
     },
-    discardThread: (thread, enabled) => {
+    discardThread: (thread, enabled, next) => {
       if (thread.remote) throw Object.assign(new Error('Discard does not work on a session on another machine.'), { statusCode: 400, expose: true });
-      return tracker.setDiscard(thread, enabled);
+      return tracker.setDiscard(thread, enabled, next);
     },
     drawerThread: (thread, enabled) => tracker.setDrawer(thread, enabled),
     muteThread: (thread, enabled) => tracker.setMuted(thread, enabled),

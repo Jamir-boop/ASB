@@ -104,6 +104,25 @@ test('a follow-up message in the armed Claude task keeps Discard, and a new task
   assert.equal((await tracker.observe(running(400, 300))).threads[0].discardResult, false);
 });
 
+test('a next-task arm on an idle Claude chat keeps a follow-up message in its task, and a new task after an end clears it', async (t) => {
+  const tracker = new PendingTracker(path.join(await temp(t), 'pending.json'));
+  const running = (start, end) => buildSwitchboardDashboard([claude({ lifecycleRunning: true, agentActivityAtMs: now + start,
+    agentStartedAtMs: now + start, latestTaskStartedAtMs: now + start, latestTaskEndedAtMs: now + end,
+    latestTaskEndKind: 'task_complete' })], [], now + 1000);
+  const idle = await tracker.observe(buildSwitchboardDashboard([claude({ lifecycleRunning: false, latestLifecycleKind: 'task_complete',
+    latestLifecycleAtMs: now - 900, latestTaskStartedAtMs: now - 1000, latestTaskEndedAtMs: now - 900, latestTaskEndKind: 'task_complete' })],
+  [], now + 1000));
+  assert.equal(idle.threads[0].state, 'idle');
+  await tracker.setDiscard(idle.threads[0], true, true);
+  assert.equal(idle.threads[0].discardResult, true);
+  const started = (await tracker.observe(running(0, -900))).threads[0];
+  assert.deepEqual([started.state, started.discardResult], ['working', true]);
+  const followUp = (await tracker.observe(running(50, -900))).threads[0];
+  assert.deepEqual([followUp.state, followUp.discardResult], ['working', true]);
+  const next = (await tracker.observe(running(400, 300))).threads[0];
+  assert.deepEqual([next.state, next.discardResult, next.pending], ['working', false, false]);
+});
+
 test('a Claude permission or question wait expires after six hours', async () => {
   const wait = (age, tool) => claude({ lifecycleRunning: true, agentActivityAtMs: now - age, awaitingPermission: true,
     pendingToolCount: 1, pendingTools: [{ tool }], pendingToolAtMs: now - age, awaitingUserInput: tool === 'AskUserQuestion',

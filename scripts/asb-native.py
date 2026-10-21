@@ -138,8 +138,12 @@ def row_menu_actions(row):
     actions.append(("Unpin", "unpin") if row.get("pinned") else ("Pin", "pin"))
     if row.get("pinned"):
         actions.extend((("Move pin earlier", "pin-up"), ("Move pin later", "pin-down")))
-    if row.get("state") == "working" and not row.get("muted") and not row.get("remote"):
-        actions.append(("Keep result", "keep-result") if row.get("discardResult") else ("Discard result", "discard-result"))
+    if not row.get("muted") and not row.get("remote"):
+        if row.get("state") == "working":
+            actions.append(("Keep result", "keep-result") if row.get("discardResult") else ("Discard result", "discard-result"))
+        # An Idle row arms its next task: when it has no mark, or when the arm is on (Keep clears it).
+        elif row.get("state") == "idle" and (row.get("discardResult") or not attention_indicator(row, True)):
+            actions.append(("Keep next result", "keep-result") if row.get("discardResult") else ("Discard next result", "discard-result"))
     return actions
 
 
@@ -231,7 +235,7 @@ def attention_indicator(row, drawer=False):
     """Return the row mark in question, unread, discard, then stopped order. With drawer, a drawer row shows its stored unread mark."""
     return "question" if row.get("actionRequired") or row.get("questionAttention") else "dot" \
         if row.get("unread") or (drawer and row.get("drawer") and row.get("state") != "working" and not limit_left(row)) \
-        else "discard" if row.get("state") == "working" and row.get("discardResult") \
+        else "discard" if row.get("state") in ("working", "idle") and row.get("discardResult") \
         else "stop" if row.get("state") == "idle" and row.get("lastOutcome") == "stopped" else ""
 
 
@@ -798,7 +802,7 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
     elif indicator == "stop":
         note = "You stopped this task."
     elif indicator == "discard":
-        note = "Discard is on for this task."
+        note = "Discard is on for the next task." if row.get("state") == "idle" else "Discard is on for this task."
     elif row.get("questionPending"):
         note = "A question is still open in the chat."
     flags = " · ".join(text for key, text in (("pinned", "Pinned"), ("archived", "Archived"), ("drawer", "In the drawer"), ("muted", "Muted")) if row.get(key))
@@ -4962,7 +4966,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         indicator = attention_indicator(row, True)
         (widget.add_css_class if indicator == "dot" else widget.remove_css_class)("asb-unread")
         (widget.add_css_class if indicator == "dot" and not row.get("unread") else widget.remove_css_class)("asb-drawer")
-        discard_offer = self.view == "comfortable" and row.get("state") == "working" and not indicator and not row.get("muted") \
+        discard_offer = self.view == "comfortable" and row.get("state") in ("working", "idle") and not indicator and not row.get("muted") \
             and not row.get("remote")
         if getattr(widget, "asb_mute_glyph", None):
             widget.asb_mute_glyph.set_visible(bool(row.get("muted")))
@@ -5026,7 +5030,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return
         widget.asb_action_signature = signature
         unread = indicator in ("question", "dot") and not row.get("actionRequired")
-        discard = row.get("state") == "working" and indicator not in ("question", "dot") and not row.get("muted") and not row.get("remote")
+        idle = row.get("state") == "idle"
+        # An Idle row offers Discard for its next task when it has no mark. The check after a Read keeps the slot until it ends.
+        discard = not row.get("muted") and not row.get("remote") and (
+            row.get("state") == "working" and indicator not in ("question", "dot")
+            or idle and (indicator == "discard" or not indicator and not widget.asb_read_timer))
         if discard and widget.asb_read_timer:
             self.clear_read_feedback(widget)
         confirmed = bool(widget.asb_read_timer)
@@ -5049,8 +5057,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         read_text = "A user action is required in the original app" if row.get("actionRequired") else "Task stopped" \
             if indicator == "stop" else "Read in ASB" if confirmed else "Mark read in ASB"
         if discard:
-            read_text = "Keep result: show the dot when this task ends" if row.get("discardResult") \
-                else "Discard result: go to read Idle when this task ends"
+            read_text = ("Keep result: show the dot when the next task ends" if idle else "Keep result: show the dot when this task ends") \
+                if row.get("discardResult") else ("Discard next result: go to read Idle when the next task ends" if idle
+                                                  else "Discard result: go to read Idle when this task ends")
         controls = [(read, read_text, (unread or discard) and not pending), (pin, "Unpin in ASB" if pinned else "Pin in ASB", not pending)]
         if drawer:
             tucked = bool(row.get("drawer"))
@@ -5195,7 +5204,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         retained = " Unread retained in ASB. Use Read to clear it." if shown and row.get("retainedUnread") else ""
         outcome = " Task stopped." if row.get("lastOutcome") == "stopped" else " Task failed." \
             if row.get("lastOutcome") == "failed" or row.get("failedAttention") else " Task completed." if row.get("completionAttention") else ""
-        discard = " Discard is on." if row.get("discardResult") else ""
+        discard = (" Discard is on for the next task." if row.get("state") == "idle" else " Discard is on.") if row.get("discardResult") else ""
         drawer = " In the drawer. Still unread." if row.get("drawer") else ""
         muted = " Muted." if row.get("muted") else ""
         limit = f" Usage limit. Resets in {spoken_limit(left)}." if left else ""
@@ -5499,6 +5508,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             body = pin_move_body(self.visible_rows(), identity, "up" if name == "pin-up" else "down")
             if body:
                 self.session_action(identity, "move-pin", body)
+        elif name == "discard-result":
+            # An Idle card arms the next task. A Working card sends no body, so a late click on it still fails when its task is over.
+            card = self.focus_widgets.get(identity)
+            self.session_action(identity, name, {"next": True} if card and card.asb_thread.get("state") == "idle" else None)
         else:
             self.session_action(identity, name)
 

@@ -429,9 +429,11 @@ export function createAsbServer({
         const fields = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join(',') : 'invalid';
         const validMove = fields === 'direction' && ['up', 'down'].includes(body.direction)
           || fields === 'placement,targetId' && typeof body.targetId === 'string' && ['before', 'after'].includes(body.placement);
+        // Discard also takes exactly {"next":true}: it arms the next task of an Idle row.
+        const nextDiscard = action === 'discard-result' && fields === 'next' && body.next === true;
         let threadId = null;
         try { threadId = decodeURIComponent(localAction[1]); } catch {}
-        if (threadId === null || (action === 'move-pin' && !validMove) || (action !== 'move-pin' && fields !== '')) {
+        if (threadId === null || (action === 'move-pin' && !validMove) || (action !== 'move-pin' && fields !== '' && !nextDiscard)) {
           sendJson(response, 400, { error: 'Invalid ASB session action.' });
           return;
         }
@@ -447,7 +449,7 @@ export function createAsbServer({
           invalidateDashboard('asb-read', { hard: false, dirty: false });
           sendJson(response, 200, { changed: true, threadId: thread.id, thread });
         } else if (discardAction) {
-          await discardThread(thread, action === 'discard-result');
+          await discardThread(thread, action === 'discard-result', nextDiscard);
           invalidateDashboard('asb-discard', { hard: false, dirty: false });
           sendJson(response, 200, { changed: true, threadId: thread.id, thread });
         } else if (action === 'drawer-in' || action === 'drawer-out') {

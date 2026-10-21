@@ -744,7 +744,7 @@ test('Pending observes complete scans, preserves native truth, and persists comp
   await restarted.acknowledge('hidden');
   assert.equal((await new PendingTracker(statePath).observe(board([{ id: 'hidden', state: 'idle', completionAtMs: 200 }]))).threads[0].pending, false);
   const saved = JSON.parse(await readFile(statePath, 'utf8'));
-  assert.deepEqual(Object.keys(saved.records.hidden).sort(), ['ack', 'discard', 'discardEnd', 'discardNative', 'discardStart', 'discardedAt',
+  assert.deepEqual(Object.keys(saved.records.hidden).sort(), ['ack', 'discard', 'discardEnd', 'discardNative', 'discardNext', 'discardStart', 'discardedAt',
     'drawer', 'drawerSeen', 'lastSeen', 'manual', 'muted', 'nativeAck', 'nativeAt', 'nativeSeen', 'pending', 'pendingKind', 'questionAck', 'questionSeen', 'retained', 'seen', 'working']);
   assert.equal((await stat(statePath)).mode & 0o777, 0o600);
   await tracker.observe(board([{ id: 'aborted', state: 'working' }]));
@@ -1694,6 +1694,277 @@ test('Keep reuses warm snapshots while Discard rejects the reproduced two-ended-
   assert.deepEqual([ended.threads[0].state, ended.threads[0].completionAtMs, ended.threads[0].unread], ['idle', now + 30, true]);
   assert.equal((await post('keep-result')).status, 200);
   assert.equal(scans, 3);
+});
+
+// Next-task Discard: an Idle row arms its next task. The arm keeps until a task ends after it.
+const idleEvents = () => [discardEvent('task_started', -100), discardEvent('task_complete', -90)];
+const armNext = async (tracker, events, extra = {}) => {
+  const idle = await tracker.observe(discardBoard(events, extra));
+  assert.equal(idle.threads[0].state, 'idle');
+  await tracker.setDiscard(idle.threads[0], true, true);
+  return idle.threads[0];
+};
+
+test('a next-task Discard arm becomes a current-task arm at Working and discards the successful end', async () => {
+  for (const persistent of [false, true]) for (const nativeUnread of [null, false]) {
+    const tracker = new PendingTracker(false);
+    const events = idleEvents();
+    const idle = await tracker.observe(discardBoard(events, { nativeUnread }));
+    await tracker.setPersistentUnread(persistent, idle);
+    await tracker.setDiscard(idle.threads[0], true, true);
+    const armed = idle.threads[0];
+    assert.deepEqual([armed.state, armed.discardResult, armed.unread, armed.pending], ['idle', true, false, false]);
+    assert.deepEqual([tracker.records[id].discard, tracker.records[id].discardNext], [1, 1]);
+    // Another Idle scan with no new end keeps the arm.
+    assert.equal((await tracker.observe(discardBoard(events, { nativeUnread }))).threads[0].discardResult, true);
+    events.push(discardEvent('task_started', 0));
+    const working = (await tracker.observe(discardBoard(events, { nativeUnread }))).threads[0];
+    assert.deepEqual([working.state, working.discardResult], ['working', true]);
+    assert.deepEqual([tracker.records[id].discard, tracker.records[id].discardNext], [1, 0]);
+    events.push(discardEvent('task_complete', 10));
+    const ended = (await tracker.observe(discardBoard(events, { nativeUnread }))).threads[0];
+    assert.deepEqual([ended.state, ended.discardResult, ended.unread, ended.pending, ended.retainedUnread, ended.completionAttention],
+      ['idle', false, false, false, false, false]);
+    assert.equal(ended.nativeUnread, nativeUnread);
+    assert.deepEqual([tracker.records[id].discard, tracker.records[id].discardNext], [0, 0]);
+    // The arm was for one task: the next task gives its normal completion attention.
+    events.push(discardEvent('task_started', 20));
+    assert.equal((await tracker.observe(discardBoard(events, { nativeUnread }))).threads[0].discardResult, false);
+    events.push(discardEvent('task_complete', 30));
+    assert.equal((await tracker.observe(discardBoard(events, { nativeUnread }))).threads[0].pending, nativeUnread !== false || persistent);
+  }
+});
+
+test('a next-task arm that became a current-task arm follows the current Working rules', async () => {
+  const tracker = new PendingTracker(false);
+  const events = idleEvents();
+  await armNext(tracker, events);
+  events.push(discardEvent('task_started', 0));
+  assert.equal((await tracker.observe(discardBoard(events))).threads[0].discardResult, true);
+  // A question keeps the arm and shows its own attention, as for any armed Working task.
+  const asked = [...events, questionCall('request_user_input_async', 'next-question')];
+  const question = (await tracker.observe(discardBoard(asked))).threads[0];
+  assert.deepEqual([question.discardResult, question.questionAttention], [true, true]);
+  // A proven new root task after an end clears the arm and discards that end, also when Idle was missed.
+  events.push(discardEvent('task_complete', 10), discardEvent('task_started', 20));
+  const next = (await tracker.observe(discardBoard(events))).threads[0];
+  assert.deepEqual([next.state, next.discardResult, next.pending], ['working', false, false]);
+  assert.deepEqual([tracker.records[id].discard, tracker.records[id].discardNext], [0, 0]);
+});
+
+test('Claude cached evidence: a next-task arm survives Idle scans, follows the new task, and discards its result', async (t) => {
+  const dir = await temp(t);
+  const appDir = path.join(dir, 'app');
+  const projectsDir = path.join(dir, 'projects');
+  const project = path.join(projectsDir, 'project');
+  await mkdir(path.join(appDir, 'claude-code-sessions'), { recursive: true });
+  await mkdir(project, { recursive: true });
+  await writeFile(path.join(appDir, 'claude-code-sessions', `${localId}.json`), JSON.stringify({ sessionId: localId, cliSessionId: id }));
+  const transcript = path.join(project, `${id}.jsonl`);
+  const event = (type, offset, content) => ({ type, timestamp: new Date(now + offset).toISOString(), message: { content } });
+  const append = (events) => writeFile(transcript, jsonl(events) + '\n', { flag: 'a' });
+  await append([event('user', 0, 'Start the synthetic task.'), { type: 'result', timestamp: new Date(now + 10).toISOString() }]);
+  const tracker = new PendingTracker(false);
+  const scan = async () => {
+    const source = await loadClaudeDesktopCodeThreads({ appDir, projectsDir, nowMs: now + 100 });
+    return tracker.observe(buildSwitchboardDashboard(source.threads, [], now + 100));
+  };
+  const first = (await scan()).threads[0];
+  assert.equal(first.state, 'idle');
+  await tracker.setDiscard(first, true, true);
+  assert.equal((await scan()).threads[0].discardResult, true);
+  await append([event('user', 20, 'Start the next synthetic task.')]);
+  const working = (await scan()).threads[0];
+  assert.deepEqual([working.state, working.discardResult], ['working', true]);
+  await append([{ type: 'result', timestamp: new Date(now + 30).toISOString() }]);
+  const ended = (await scan()).threads[0];
+  assert.deepEqual([ended.state, ended.discardResult, ended.completionAttention, ended.pending], ['idle', false, false, false]);
+  // The next task after the discarded one is normal.
+  await append([event('user', 40, 'Another synthetic task.')]);
+  assert.equal((await scan()).threads[0].discardResult, false);
+  await append([{ type: 'result', timestamp: new Date(now + 50).toISOString() }]);
+  assert.equal((await scan()).threads[0].completionAttention, true);
+});
+
+test('a task that starts and ends between two scans is the armed task of a next-task arm', async () => {
+  const tracker = new PendingTracker(false);
+  const events = idleEvents();
+  await armNext(tracker, events);
+  events.push(discardEvent('task_started', 0), discardEvent('task_complete', 10));
+  const ended = (await tracker.observe(discardBoard(events))).threads[0];
+  assert.deepEqual([ended.state, ended.discardResult, ended.unread, ended.pending], ['idle', false, false, false]);
+  assert.deepEqual([tracker.records[id].discard, tracker.records[id].discardNext, tracker.records[id].discardedAt], [0, 0, now + 10]);
+
+  // A second task that runs when ASB scans again is not armed.
+  const second = new PendingTracker(false);
+  const secondEvents = idleEvents();
+  await armNext(second, secondEvents);
+  secondEvents.push(discardEvent('task_started', 0), discardEvent('task_complete', 10), discardEvent('task_started', 20));
+  const working = (await second.observe(discardBoard(secondEvents))).threads[0];
+  assert.deepEqual([working.state, working.discardResult, working.pending], ['working', false, false]);
+  secondEvents.push(discardEvent('task_complete', 30));
+  assert.equal((await second.observe(discardBoard(secondEvents))).threads[0].completionAttention, true);
+});
+
+test('a next-task arm keeps its failed dot and its stop square, and the arm clears in each case', async () => {
+  for (const seenWorking of [true, false]) {
+    for (const [kind, end] of [['failed', discardEvent('task_complete', 10, { error: { message: 'Synthetic failure' } })],
+      ['stopped', discardEvent('turn_aborted', 10)]]) {
+      const tracker = new PendingTracker(false);
+      const events = idleEvents();
+      await armNext(tracker, events);
+      events.push(discardEvent('task_started', 0));
+      if (seenWorking) assert.equal((await tracker.observe(discardBoard(events))).threads[0].discardResult, true);
+      events.push(end);
+      const ended = (await tracker.observe(discardBoard(events))).threads[0];
+      assert.equal(ended.lastOutcome, kind, `${kind} ${seenWorking}`);
+      assert.deepEqual([ended.discardResult, ended.failedAttention, ended.pending],
+        kind === 'failed' ? [false, true, true] : [false, false, false], `${kind} ${seenWorking}`);
+      assert.deepEqual([tracker.records[id].discard, tracker.records[id].discardNext], [0, 0]);
+    }
+  }
+  // A muted row still shows a failed end that a next-task arm covers.
+  const muted = new PendingTracker(false);
+  const events = idleEvents();
+  const idle = await armNext(muted, events);
+  await muted.setMuted(idle, true);
+  events.push(discardEvent('task_started', 0), discardEvent('task_complete', 10, { error: { message: 'Synthetic failure' } }));
+  assert.deepEqual([(await muted.observe(discardBoard(events))).threads[0].failedAttention, muted.records[id].discard], [true, 0]);
+});
+
+test('a late native unread mark after a discarded next-task end is acknowledged, and a later Read-to-Unread cycle is kept', async () => {
+  const tracker = new PendingTracker(false);
+  const events = idleEvents();
+  const first = await tracker.observe(discardBoard(events, { nativeUnread: false }));
+  await tracker.setPersistentUnread(true, first);
+  await tracker.setDiscard(first.threads[0], true, true);
+  events.push(discardEvent('task_started', 0), discardEvent('task_complete', 10));
+  assert.equal((await tracker.observe(discardBoard(events, { nativeUnread: false }))).threads[0].pending, false);
+  const late = (await tracker.observe(discardBoard(events, { nativeUnread: true }))).threads[0];
+  assert.deepEqual([late.nativeUnread, late.nativeAttention, late.unread, late.pending, late.retainedUnread], [true, false, false, false, false]);
+  await tracker.observe(discardBoard(events, { nativeUnread: false }));
+  const again = (await tracker.observe(discardBoard(events, { nativeUnread: true }))).threads[0];
+  assert.deepEqual([again.nativeAttention, again.pending], [true, true]);
+});
+
+test('a next-task arm stays through Idle, Waiting, and Unknown, shows only on Idle, and Keep clears both kinds', async (t) => {
+  const state = (value, extra = {}) => ({ providers: [], threads: [{ id, state: value, nativeUnread: null, completionAtMs: 0, ...extra }] });
+  const statePath = path.join(await temp(t), 'pending.json');
+  const tracker = new PendingTracker(statePath);
+  const idle = await tracker.observe(state('idle'));
+  await tracker.setDiscard(idle.threads[0], true, true);
+  assert.deepEqual([idle.threads[0].discardResult, idle.threads[0].pending], [true, false]);
+  const restart = new PendingTracker(statePath);
+  for (const [value, shown] of [['idle', true], ['waiting', false], ['unknown', false], ['idle', true]]) {
+    const row = (await restart.observe(state(value))).threads[0];
+    assert.deepEqual([row.state, row.discardResult], [value, shown]);
+    assert.deepEqual([restart.records[id].discard, restart.records[id].discardNext], [1, 1]);
+  }
+  // Keep clears a next-task arm, and Keep clears a current-task arm.
+  await restart.setDiscard((await restart.observe(state('idle'))).threads[0], false);
+  assert.deepEqual([restart.records[id].discard, restart.records[id].discardNext], [0, 0]);
+  const working = (await restart.observe(state('working'))).threads[0];
+  await restart.setDiscard(working, true, true);
+  assert.deepEqual([working.discardResult, restart.records[id].discard, restart.records[id].discardNext], [true, 1, 0]);
+  // A current-task arm does not show on an Idle row.
+  const stale = { ...working, state: 'idle' };
+  restart.apply(stale);
+  assert.equal(stale.discardResult, false);
+  await restart.setDiscard(working, false);
+  assert.deepEqual([working.discardResult, restart.records[id].discard, restart.records[id].discardNext], [false, 0, 0]);
+  // A Waiting or Unknown row cannot take a new arm, with `next` or without.
+  for (const value of ['waiting', 'unknown']) for (const next of [false, true]) {
+    await assert.rejects(restart.setDiscard((await restart.observe(state(value))).threads[0], true, next), { statusCode: 400,
+      message: next ? 'Discard requires a Working or Idle task.' : 'Discard requires a Working task.' });
+  }
+  // An Idle row takes an arm only with `next`.
+  const row = (await restart.observe(state('idle'))).threads[0];
+  await assert.rejects(restart.setDiscard(row, true), { statusCode: 400, message: 'Discard requires a Working task.' });
+  assert.deepEqual([restart.records[id].discard, restart.records[id].discardNext], [0, 0]);
+});
+
+test('discardNext defaults to 0, loads only with an armed Discard, and keeps a stale record for 30 days like discard', async (t) => {
+  const statePath = path.join(await temp(t), 'pending.json');
+  const old = { seen: 0, working: 0, pending: 0, ack: 0, lastSeen: now - 31 * 86_400_000 };
+  const records = { legacy: { ...old, discard: 1 }, next: { ...old, discard: 1, discardNext: 1 }, stray: { ...old, discardNext: 1 },
+    text: { ...old, discard: 1, discardNext: '1' }, plain: old };
+  await writeFile(statePath, JSON.stringify({ version: 1, persistentUnread: true, pinnedOrder: [], records }));
+  const tracker = new PendingTracker(statePath);
+  await tracker.load();
+  assert.deepEqual(Object.fromEntries(Object.entries(tracker.records).map(([key, value]) => [key, [value.discard, value.discardNext]])),
+    { legacy: [1, 0], next: [1, 1], stray: [0, 0], text: [1, 0], plain: [0, 0] });
+  assert.equal(tracker.warning, '');
+  // The armed records stay; the others go, as for an old Discard.
+  await tracker.observe({ providers: [], threads: [], generatedAtMs: now });
+  assert.deepEqual(Object.keys(tracker.records).sort(), ['legacy', 'next', 'text']);
+  const saved = JSON.parse(await readFile(statePath, 'utf8'));
+  assert.deepEqual([saved.records.next.discardNext, saved.records.legacy.discardNext], [1, 0]);
+});
+
+test('the Discard route takes {} for a Working task and exactly {"next":true} for an Idle task, and rejects other bodies', async (t) => {
+  const tracker = new PendingTracker(false);
+  let state = 'working';
+  let scans = 0;
+  const server = createSwitchboardServer({ pendingTracker: tracker, now: () => now, dashboardWatchPaths: [], loadDashboard: async () => {
+    scans += 1;
+    return { providers: [], threads: [{ id, state, nativeUnread: null, completionAtMs: 0 },
+      { id: 'remote', state: 'idle', remote: true, nativeUnread: null, completionAtMs: 0 }] };
+  } });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = (action, body = '{}', target = id) => fetch(`${base}/api/threads/${target}/${action}`,
+    { method: 'POST', headers: { Origin: base }, body: typeof body === 'string' ? body : JSON.stringify(body) });
+  const flags = () => [tracker.records[id].discard, tracker.records[id].discardNext];
+  // {} works for a Working task as before and keeps the late-click protection for an Idle one.
+  assert.equal((await post('discard-result')).status, 200);
+  assert.deepEqual(flags(), [1, 0]);
+  assert.equal((await post('keep-result')).status, 200);
+  state = 'idle';
+  const before = scans;
+  assert.equal((await post('discard-result')).status, 400);
+  assert.equal(scans, before + 1);
+  assert.deepEqual(flags(), [0, 0]);
+  // Only {"next":true} is a next-task body, and only for discard-result.
+  const untouched = JSON.stringify(tracker.records);
+  for (const body of ['{"next":false}', '{"next":1}', '{"next":"true"}', '{"next":null}', '{"next":true,"extra":1}', '{"extra":true}', 'null', '[]']) {
+    const response = await post('discard-result', body);
+    assert.deepEqual([response.status, (await response.json()).error], [400, 'Invalid ASB session action.'], body);
+    assert.equal(JSON.stringify(tracker.records), untouched);
+  }
+  assert.equal((await post('discard-result', '{broken')).status, 400);
+  assert.equal(JSON.stringify(tracker.records), untouched);
+  for (const action of ['keep-result', 'mark-read', 'mark-unread', 'pin', 'drawer-in', 'mute']) {
+    assert.equal((await post(action, { next: true })).status, 400, action);
+  }
+  assert.equal(JSON.stringify(tracker.records), untouched);
+  // An Idle row arms its next task after a forced scan.
+  const scanned = scans;
+  const armed = await post('discard-result', { next: true });
+  assert.equal(armed.status, 200);
+  assert.equal(scans, scanned + 1);
+  const body = await armed.json();
+  assert.deepEqual([body.changed, body.threadId, body.thread.discardResult, body.thread.state], [true, id, true, 'idle']);
+  assert.deepEqual(flags(), [1, 1]);
+  const kept = await (await post('keep-result')).json();
+  assert.deepEqual([kept.thread.discardResult, ...flags()], [false, 0, 0]);
+  // A Working row arms its current task, with {"next":true} too.
+  state = 'working';
+  assert.equal((await post('discard-result', { next: true })).status, 200);
+  assert.deepEqual(flags(), [1, 0]);
+  assert.equal((await post('keep-result')).status, 200);
+  // Any other state is refused with its own text, and nothing changes.
+  for (const value of ['waiting', 'unknown']) {
+    state = value;
+    const refused = await post('discard-result', { next: true });
+    assert.deepEqual([refused.status, (await refused.json()).error], [400, 'Discard requires a Working or Idle task.']);
+    assert.deepEqual(flags(), [0, 0]);
+    assert.equal((await post('discard-result')).status, 400);
+  }
+  // A session on another machine keeps its refusal.
+  state = 'idle';
+  const remote = await post('discard-result', { next: true }, 'remote');
+  assert.deepEqual([remote.status, (await remote.json()).error], [400, 'Discard does not work on a session on another machine.']);
 });
 
 test('malformed raw request targets return 400 and leave the ASB server available', async (t) => {
