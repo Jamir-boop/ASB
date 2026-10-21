@@ -565,6 +565,30 @@ test('engine status and stop work through the shell launcher with a detached eng
   assert.deepEqual(await f.systemctlCalls(), [['--user', 'show', '-p', 'MainPID', '--value', 'asb.service']]);
 });
 
+test('a read right after the engine listens gets rows with a machine ID, so the phone does not see them as new', { timeout: 20_000 }, async (t) => {
+  const f = await fixture(t);
+  // The Claude app folder and a CLI transcript give the first scan one synthetic row.
+  await mkdir(path.join(f.env.XDG_CONFIG_HOME, 'Claude'), { recursive: true });
+  const projects = path.join(f.home, '.claude/projects/project');
+  await mkdir(projects, { recursive: true });
+  const at = (offsetMs) => new Date(Date.now() + offsetMs).toISOString();
+  await writeFile(path.join(projects, 'first-read.jsonl'), [
+    { type: 'user', timestamp: at(-60_000), sessionId: 'first-read', cwd: '/work/cli', entrypoint: 'cli', message: { role: 'user', content: 'Synthetic prompt' } },
+    { type: 'assistant', timestamp: at(-50_000), sessionId: 'first-read', message: { role: 'assistant', stop_reason: 'end_turn', content: 'Done.' } },
+  ].map((record) => JSON.stringify(record)).join('\n'));
+  const child = f.launch([engineScript, 'run']);
+  let dashboard;
+  // The first read that the port answers.
+  while (!dashboard) {
+    try { dashboard = await (await fetch(`http://127.0.0.1:${f.env.PORT}/api/dashboard`)).json(); } catch { await turn(); }
+  }
+  assert.deepEqual(dashboard.threads.map((row) => row.id), ['cli:first-read']);
+  const [row] = dashboard.threads;
+  assert.match(row.machineId, /^[a-f0-9]{16}$/);
+  assert.equal(row.globalId, `${row.machineId}:cli:first-read`);
+  await ready(child);
+});
+
 test('the engine starts the tray with its environment, stops it, and survives a tray failure', { timeout: 20_000 }, async (t) => {
   const f = await fixture(t);
   const record = path.join(f.home, 'tray.env');

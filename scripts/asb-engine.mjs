@@ -123,6 +123,10 @@ export async function runEngine({ env = process.env, platform = process.platform
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);
   startup = (async () => {
+    // The identity comes before the listen: a phone read right after it gets rows with a machine ID (the phone keys rows by it).
+    machineId = await gateway.identity().catch(() => '');
+    if (machineId) referenceScopes = await gateway.referenceScopes().catch(() => null);
+    if (stopping) return;
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
     if (stopping) return;
     try {
@@ -130,8 +134,6 @@ export async function runEngine({ env = process.env, platform = process.platform
       const status = await gateway.status();
       if (status.error) console.error(`Cannot start ASB phone access: ${status.error}`);
     } catch (error) { console.error(`Cannot start ASB phone access: ${error.message}`); }
-    machineId = await gateway.identity().catch(() => '');
-    if (machineId) referenceScopes = await gateway.referenceScopes().catch(() => null);
     if (stopping) return;
     try { await group.start(); } catch (error) { console.error(`Cannot start the ASB machine group: ${error.message}`); }
     if (stopping) return;
