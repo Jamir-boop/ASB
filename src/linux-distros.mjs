@@ -11,9 +11,10 @@ export const FAMILIES = {
   debian: family(['debian', 'ubuntu'], ['apt', 'install'], ['apt-get', 'install', '-y'],
     row('nodejs', 'sqlite3', 'openssl', 'xdg-utils', 'python3-gi', 'gir1.2-gtk-4.0', 'gir1.2-adw-1', 'python3-gi-cairo', 'python3-qrcode',
       'pipewire-bin', ['xvfb', 'xauth'], 'dbus', 'fonts-dejavu-core')),
+  // libglvnd-gles: GTK 4.20 aborts in libepoxy without libGLESv2.so.2, and the gtk4 package does not require it.
   fedora: family(['fedora', 'rhel', 'centos'], ['dnf', 'install'], ['dnf', 'install', '-y'],
-    row('nodejs', 'sqlite', 'openssl', 'xdg-utils', 'python3-gobject', ['gtk4', 'gobject-introspection'], 'libadwaita', null, 'python3-qrcode-core',
-      'pipewire-utils', 'xorg-x11-server-Xvfb', 'dbus-daemon', 'dejavu-sans-fonts')),
+    row('nodejs', 'sqlite', 'openssl', 'xdg-utils', 'python3-gobject', ['gtk4', 'gobject-introspection', 'libglvnd-gles'], 'libadwaita', null,
+      'python3-qrcode-core', 'pipewire-utils', 'xorg-x11-server-Xvfb', 'dbus-daemon', 'dejavu-sans-fonts')),
   opensuse: family(['opensuse', 'suse'], ['zypper', 'install'], ['zypper', '--non-interactive', 'install'],
     row('nodejs-default', 'sqlite3', 'openssl', 'xdg-utils', ['python3', 'python313-gobject'], 'typelib-1_0-Gtk-4_0', 'typelib-1_0-Adw-1',
       'python313-gobject-cairo', 'python313-qrcode', 'pipewire-tools', 'xvfb-run', 'dbus-1-daemon', 'dejavu-fonts')),

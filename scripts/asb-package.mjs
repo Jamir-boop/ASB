@@ -350,6 +350,7 @@ Recommends:     python3
 Recommends:     (gobject-introspection if python3-gobject)
 Recommends:     python313-gobject-cairo
 Recommends:     (gtk4 >= 4.12 or typelib-1_0-Gtk-4_0 >= 4.12)
+Recommends:     (libglvnd-gles if gtk4)
 Recommends:     (libadwaita >= 1.4 or typelib-1_0-Adw-1 >= 1.4)
 Recommends:     (python3-qrcode-core or python313-qrcode)
 Recommends:     (pipewire-utils or pipewire-tools or pulseaudio-utils or alsa-utils)

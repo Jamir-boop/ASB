@@ -29,7 +29,7 @@ const regularFiles = async (root) => {
 const LAUNCHER = '#!/bin/sh\nexport ASB_SYSTEM_INSTALL=1\nexport ASB_INSTALLED_LAUNCHER=/usr/bin/asb\nexec /usr/lib/asb/scripts/asb "$@"\n';
 const SPEC_REQUIRES = ['(nodejs >= 20 or nodejs-default or nodejs22 or nodejs24)', '(sqlite or sqlite3)', 'openssl', 'xdg-utils'];
 const SPEC_RECOMMENDS = ['(python3-gobject or python313-gobject)', 'python3', '(gobject-introspection if python3-gobject)', 'python313-gobject-cairo',
-  '(gtk4 >= 4.12 or typelib-1_0-Gtk-4_0 >= 4.12)', '(libadwaita >= 1.4 or typelib-1_0-Adw-1 >= 1.4)', '(python3-qrcode-core or python313-qrcode)',
+  '(gtk4 >= 4.12 or typelib-1_0-Gtk-4_0 >= 4.12)', '(libglvnd-gles if gtk4)', '(libadwaita >= 1.4 or typelib-1_0-Adw-1 >= 1.4)', '(python3-qrcode-core or python313-qrcode)',
   '(pipewire-utils or pipewire-tools or pulseaudio-utils or alsa-utils)'];
 
 test('the RPM spec has the fields, the dependencies, and the file list of the plan', () => {

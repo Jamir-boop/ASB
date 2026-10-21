@@ -65,7 +65,7 @@ sqlite sqlite3 sqlite sqlite3 sqlite sqlite sqlite dev-db/sqlite sqlite3
 openssl openssl openssl openssl openssl openssl openssl dev-libs/openssl openssl
 xdg xdg-utils xdg-utils xdg-utils xdg-utils xdg-utils xdg-utils x11-misc/xdg-utils xdg-utils
 gi python3-gi python3-gobject python3+python313-gobject python-gobject py3-gobject3 python3-gobject dev-python/pygobject python-gobject
-gtk gir1.2-gtk-4.0 gtk4+gobject-introspection typelib-1_0-Gtk-4_0 gtk4 gtk4.0 gtk4 gui-libs/gtk libgtk-4
+gtk gir1.2-gtk-4.0 gtk4+gobject-introspection+libglvnd-gles typelib-1_0-Gtk-4_0 gtk4 gtk4.0 gtk4 gui-libs/gtk libgtk-4
 adw gir1.2-adw-1 libadwaita typelib-1_0-Adw-1 libadwaita libadwaita libadwaita gui-libs/libadwaita libadwaita
 gicairo python3-gi-cairo - python313-gobject-cairo python-cairo py3-cairo - - -
 qrcode python3-qrcode python3-qrcode-core python313-qrcode python-qrcode py3-qrcode python3-qrcode dev-python/qrcode python-qrcode
@@ -127,7 +127,7 @@ test('installCommand gives the names in key order without duplicates, after the 
   assert.deepEqual(installCommand('debian', ALL_KEYS), ['sudo', 'apt', 'install', 'nodejs', 'sqlite3', 'openssl', 'xdg-utils', 'python3-gi',
     'gir1.2-gtk-4.0', 'gir1.2-adw-1', 'python3-gi-cairo', 'python3-qrcode', 'pipewire-bin', 'xvfb', 'xauth', 'dbus', 'fonts-dejavu-core']);
   assert.deepEqual(installCommand('fedora', ['gi', 'gtk', 'adw', 'gicairo', 'qrcode']),
-    ['sudo', 'dnf', 'install', 'python3-gobject', 'gtk4', 'gobject-introspection', 'libadwaita', 'python3-qrcode-core']);
+    ['sudo', 'dnf', 'install', 'python3-gobject', 'gtk4', 'gobject-introspection', 'libglvnd-gles', 'libadwaita', 'python3-qrcode-core']);
   assert.deepEqual(installCommand('opensuse', ['node', 'gi']), ['sudo', 'zypper', 'install', 'nodejs-default', 'python3', 'python313-gobject']);
   assert.deepEqual(installCommand('arch', ['sound', 'node'], { root: 'doas' }), ['doas', 'pacman', '-S', '--needed', 'pipewire-audio', 'nodejs']);
   assert.deepEqual(installCommand('alpine', ['gtk', 'gtk', 'xvfb']), ['sudo', 'apk', 'add', 'gtk4.0', 'xvfb-run']);
@@ -135,7 +135,7 @@ test('installCommand gives the names in key order without duplicates, after the 
   assert.deepEqual(installCommand('gentoo', ['gtk', 'xvfb']), ['sudo', 'emerge', '--ask', '--noreplace', 'gui-libs/gtk']);
   assert.deepEqual(installCommand('solus', ['gtk', 'font'], { root: 'doas' }), ['doas', 'eopkg', 'install', 'libgtk-4']);
   assert.deepEqual(installCommand('fedora', ['gi', 'gtk'], { mode: 'transactional' }), ['sudo', 'rpm-ostree', 'install', 'python3-gobject', 'gtk4',
-    'gobject-introspection']);
+    'gobject-introspection', 'libglvnd-gles']);
   assert.deepEqual(installCommand('opensuse', ['adw'], { mode: 'transactional', root: 'doas' }),
     ['doas', 'transactional-update', 'pkg', 'install', 'typelib-1_0-Adw-1']);
   for (const [name, options] of [['arch', { mode: 'readonly' }], ['debian', { mode: 'transactional' }], ['nixos', {}], ['nixos', { mode: 'transactional' }],
@@ -170,7 +170,7 @@ test('the CLI prints the CI command, refuses families without one, and prints us
   const ci = { fedora: 'dnf install -y', opensuse: 'zypper --non-interactive install', arch: 'pacman -S --needed --noconfirm',
     alpine: 'apk add', void: 'xbps-install -S -y' };
   for (const [name, words] of Object.entries(ci)) assert.equal(cli(name, 'openssl').stdout, `${words} openssl\n`, name);
-  assert.equal(cli('fedora', 'gi', 'gtk', 'adw', 'qrcode').stdout, 'dnf install -y python3-gobject gtk4 gobject-introspection libadwaita python3-qrcode-core\n');
+  assert.equal(cli('fedora', 'gi', 'gtk', 'adw', 'qrcode').stdout, 'dnf install -y python3-gobject gtk4 gobject-introspection libglvnd-gles libadwaita python3-qrcode-core\n');
   assert.equal(cli('opensuse', ...ALL_KEYS).stdout, 'zypper --non-interactive install nodejs-default sqlite3 openssl xdg-utils python3 python313-gobject '
     + 'typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1 python313-gobject-cairo python313-qrcode pipewire-tools xvfb-run dbus-1-daemon dejavu-fonts\n');
   assert.equal(cli('arch', 'gicairo').stdout, 'pacman -S --needed --noconfirm python-cairo\n');

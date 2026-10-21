@@ -142,7 +142,7 @@ test('Fedora without the board packages prints one sudo dnf install line', async
     '  ok       Links: codex: chatgpt.desktop, claude: com.anthropic.Claude.desktop',
     '',
     'Install the missing packages:',
-    '  sudo dnf install python3-gobject gtk4 gobject-introspection libadwaita',
+    '  sudo dnf install python3-gobject gtk4 gobject-introspection libglvnd-gles libadwaita',
     'Optional:',
     '  sudo dnf install python3-qrcode-core',
   ]);
@@ -353,7 +353,7 @@ test('firewalld with a zone prints the rule of Appendix D after the Optional blo
   assert.equal(code, 0);
   assert.deepEqual(out.slice(out.indexOf('Install the missing packages:')), [
     'Install the missing packages:',
-    '  sudo dnf install python3-gobject gtk4 gobject-introspection libadwaita',
+    '  sudo dnf install python3-gobject gtk4 gobject-introspection libglvnd-gles libadwaita',
     'Optional:',
     '  sudo dnf install python3-qrcode-core',
     'Phone access and machine links through firewalld:',
