@@ -50,6 +50,7 @@ if (config.dashboard) {
     claudeOptions: config.claude, loadClaude: config.claude ? claude.loadClaudeDesktopCodeThreads
       : async () => ({ provider: { installed: false, status: 'missing' }, threads: [] }) });
   out.threads = dashboard.threads;
+  out.providers = dashboard.providers;
   out.dashboardBytes = bytes() - before;
   out.claudeBytes = claudeBytes() - beforeClaude;
 }
@@ -258,6 +259,44 @@ test('a new engine with saved reader positions shows the same rows as a full rea
   assert.ok(total(b) * 10 < total(c), `bytes B ${total(b)}, C ${total(c)}`);
   assert.ok(b.claudeBytes * 10 < c.claudeBytes, `Claude bytes B ${b.claudeBytes}, C ${c.claudeBytes}`);
   t.diagnostic(`bytes read: run B Codex ${b.dashboardBytes} Claude ${b.claudeBytes}, run C Codex ${c.dashboardBytes} Claude ${c.claudeBytes}`);
+});
+
+test('a new engine with saved reader positions gives the same Codex source status as a full read', async (t) => {
+  const home = await temporaryDirectory(t);
+  const sessions = path.join(home, 'MARKERDIR', 'sessions');
+  await fs.mkdir(sessions, { recursive: true });
+  const at = (minutes) => NOW_MS - minutes * 60_000;
+  // The 256 KiB tail of the dashboard has no lifecycle event, so each log is scanned in full and gets a saved record.
+  const logs = ['one', 'two'].map((name) => path.join(sessions, `rollout-${name}.jsonl`));
+  for (const log of logs) {
+    await fs.writeFile(log, jsonl([event(at(30), { type: 'task_started' }), ...filler(at(1), 2 * 1024 * 1024)]));
+  }
+  const databasePath = path.join(home, 'state_5.sqlite');
+  const database = new DatabaseSync(databasePath);
+  database.exec('create table threads(id text primary key, rollout_path text, source text, updated_at_ms integer, archived integer);');
+  logs.forEach((log, index) => database.prepare('insert into threads values (?, ?, ?, ?, 0)')
+    .run(`0000000${index}-0000-4000-8000-000000000000`, log, 'vscode', at(index)));
+  database.close();
+  const dashboard = { databasePath, sessionIndexPath: path.join(home, 'session_index.jsonl'), globalStatePath: path.join(home, 'global.json') };
+  const file = path.join(home, 'cache', 'asb', 'readers', 'positions.json');
+  const warning = { id: 'codex', label: 'Codex', status: 'warning', message: 'ASB cannot read the Codex session logs, so Codex cards show Unknown.' };
+  const ready = { id: 'codex', label: 'Codex', status: 'ready', message: '' };
+  const providers = (run) => run.providers.filter((provider) => provider.id === 'codex');
+
+  const a = await engine({ file, key: KEY, dashboard, nowMs: NOW_MS });
+  assert.deepEqual(providers(a), [ready]);
+  for (const log of logs) await fs.appendFile(log, jsonl(filler(at(0.5), 4096)));
+  // The new engine takes both saved positions, and a restored read is a read: the status is the status of a full read.
+  const b = await engine({ file, key: KEY, dashboard, nowMs: NOW_MS });
+  assert.ok(b.codexStats.taken >= 2, `Codex taken: ${b.codexStats.taken}`);
+  assert.deepEqual(providers(b), [ready]);
+  assert.deepEqual(providers(await engine({ dashboard, nowMs: NOW_MS })), [ready]);
+  // A saved position does not hide a log that is gone.
+  await fs.rm(logs[0]);
+  assert.deepEqual(providers(await engine({ file, key: KEY, dashboard, nowMs: NOW_MS })), [ready]);
+  await fs.rm(logs[1]);
+  assert.deepEqual(providers(await engine({ file, key: KEY, dashboard, nowMs: NOW_MS })), [warning]);
+  assert.deepEqual(providers(await engine({ dashboard, nowMs: NOW_MS })), [warning]);
 });
 
 test('a new engine with saved reader positions keeps the row time of the last turn after an open writes settings entries', async (t) => {

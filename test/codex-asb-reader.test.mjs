@@ -7,7 +7,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { codexNativeReadStatus, invalidateCodexData, loadCodexDashboard, parseRolloutSignals, parseSessionIndex, querySqliteJson, readThreads } from '../src/codex-data.mjs';
 import { normalizeThread } from '../src/insights.mjs';
-import { buildSwitchboardDashboard } from '../src/switchboard.mjs';
+import { buildSwitchboardDashboard, isSwitchboardRoot, loadSwitchboardDashboard } from '../src/switchboard.mjs';
 
 test('ASB keeps raw Codex titles and desktop name priority without first_user_message', async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'asb-codex-titles-'));
@@ -99,6 +99,57 @@ test('without node:sqlite the sqlite3 command skips the init file, so .sqliterc 
   assert.deepEqual(calls.map(({ command, args }) => [command, args]),
     [['sqlite3', ['-init', os.devNull, '-readonly', '-json', 'state.sqlite', 'select 1;']]]);
   assert.equal(calls[0].options.maxBuffer, 20 * 1024 * 1024);
+});
+
+test('the Codex source warns only when no unarchived root can read its session log', async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'asb-codex-logs-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const nowMs = Date.parse('2026-08-01T12:00:00.000Z');
+  const log = (name) => path.join(directory, `rollout-${name}.jsonl`);
+  // A log with a turn, a log with no event that ASB reads, and an empty log. `gone` has no file.
+  await fs.writeFile(log('turn'), `${JSON.stringify({ timestamp: new Date(nowMs).toISOString(), payload: { type: 'task_complete' } })}\n`);
+  await fs.writeFile(log('quiet'), `${JSON.stringify({ payload: { type: 'token_count' } })}\n`);
+  await fs.writeFile(log('empty'), '');
+  const child = JSON.stringify({ subagent: { thread_spawn: { parent_thread_id: '00000000-0000-4000-8000-000000000001' } } });
+  let store = 0;
+  // Each case has its own database, so no kept query result is reused. A row is [log, archived, source].
+  const load = async (rows) => {
+    const databasePath = path.join(directory, `state_${store += 1}.sqlite`);
+    const database = new DatabaseSync(databasePath);
+    database.exec('create table threads (id text primary key, rollout_path text, source text, thread_source text, updated_at_ms integer, archived integer)');
+    rows.forEach(([name, archived, source = 'vscode'], index) => database.prepare('insert into threads values (?, ?, ?, ?, ?, ?)')
+      .run(`00000000-0000-4000-8000-00000000000${index + 1}`, log(name), source, source === child ? 'subagent' : 'user', nowMs, archived ? 1 : 0));
+    database.close();
+    const options = { databasePath, sessionIndexPath: path.join(directory, 'absent-index'),
+      globalStatePath: path.join(directory, 'absent-state'), nowMs };
+    const dashboard = await loadCodexDashboard({ ...options, rolloutThreadFilter: isSwitchboardRoot });
+    const board = await loadSwitchboardDashboard({ nowMs, codexOptions: options,
+      loadClaude: async () => ({ provider: { installed: false, status: 'missing' }, threads: [] }) });
+    // The dashboard of the reader names a provider only for a warning.
+    assert.equal(dashboard.provider?.status ?? 'ready', board.providers[0].status);
+    return board.providers[0];
+  };
+  const message = 'ASB cannot read the Codex session logs, so Codex cards show Unknown.';
+  const ready = { id: 'codex', label: 'Codex', status: 'ready', message: '' };
+  const warning = { id: 'codex', label: 'Codex', status: 'warning', message };
+  assert.deepEqual(await load([['gone'], ['gone']]), warning);
+  assert.deepEqual(await load([['gone']]), warning);
+  // A readable log, with or without an event, shows that the reader works. A broken log then shows only its own card.
+  assert.deepEqual(await load([['gone'], ['turn']]), ready);
+  assert.deepEqual(await load([['gone'], ['quiet']]), ready);
+  assert.deepEqual(await load([['gone'], ['empty']]), ready);
+  assert.deepEqual(await load([['turn'], ['quiet']]), ready);
+  // No unarchived root: no rows, an archived row, or a child with no log.
+  assert.deepEqual(await load([]), ready);
+  assert.deepEqual(await load([['gone', true]]), ready);
+  assert.deepEqual(await load([['turn'], ['gone', false, child]]), ready);
+  assert.deepEqual(await load([['gone'], ['turn', false, child]]), warning);
+  // The cards of an unreadable log stay, and show Unknown.
+  const databasePath = path.join(directory, `state_${store}.sqlite`);
+  const { threads } = await loadCodexDashboard({ databasePath, nowMs, rolloutThreadFilter: isSwitchboardRoot,
+    sessionIndexPath: path.join(directory, 'absent-index'), globalStatePath: path.join(directory, 'absent-state') });
+  const rows = buildSwitchboardDashboard(threads, [], nowMs).threads;
+  assert.deepEqual(rows.map((row) => row.state), ['unknown']);
 });
 
 test('Codex titles keep the raw session-index name and an empty fallback', () => {

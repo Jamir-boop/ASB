@@ -31,6 +31,8 @@ const ROLLOUT_NO_TURN_ENTRIES = new Set(['thread_settings_applied', 'session_met
 // Codex refused at 94-98 percent in the observed logs. A window below this level cannot explain a stop.
 const LIMIT_STOP_USED_PERCENT = 90;
 const QUESTION_HISTORY_COMPLETE = Symbol('question history complete');
+const ROLLOUT_UNREADABLE = Symbol('rollout log cannot be read');
+const ROLLOUT_UNREADABLE_MESSAGE = 'ASB cannot read the Codex session logs, so Codex cards show Unknown.';
 const ROLLOUT_SCAN_CHUNK_BYTES = 1024 * 1024;
 const ROLLOUT_SCAN_OVERLAP_BYTES = 256;
 // The line breaks of node:readline, without the line feed that the scan splits on first.
@@ -965,7 +967,8 @@ export async function readRolloutSignals(
       codexCacheMetrics, 'rolloutSignalWrites', 'rolloutSignalEvictions');
     return signals;
   } catch {
-    return parseRolloutSignals('');
+    // The empty signals show the card as Unknown. The mark lets the source status say why.
+    return Object.assign(parseRolloutSignals(''), { [ROLLOUT_UNREADABLE]: true });
   }
 }
 
@@ -994,6 +997,11 @@ async function attachRolloutSignals(threads, {
       cacheScope,
     }),
   );
+
+  // The logs of unarchived roots tell whether the reader works. An archived row can have a log that Codex moved.
+  const rootResults = results.filter((result, index) => !candidates[index].archived && rolloutThreadFilter(candidates[index]));
+  const logsUnreadable = rootResults.length > 0
+    && rootResults.every((result) => result.status !== 'fulfilled' || result.value[ROLLOUT_UNREADABLE]);
 
   results.forEach((result, index) => {
     if (result.status !== 'fulfilled') return;
@@ -1035,7 +1043,7 @@ async function attachRolloutSignals(threads, {
     }
   });
 
-  return enriched;
+  return { threads: enriched, logsUnreadable };
 }
 
 // Callers can pass old dashboard options (asbMode, maxOrphanRollouts, and so on). They have no effect.
@@ -1053,7 +1061,7 @@ export async function loadCodexDashboard(options = {}) {
   if (options.codexNativeReadEnabled) {
     for (const thread of threads) Object.assign(thread, codexNativeReadStatus(thread, globalState));
   }
-  const enriched = await attachRolloutSignals(threads, options);
+  const { threads: enriched, logsUnreadable } = await attachRolloutSignals(threads, options);
   // A stop uses the newest window record at or before it, of any session of the same Codex home: a retry can fail with no record of its own.
   const windowRecords = enriched.filter((thread) => thread.limitWindowAtMs > 0);
   for (const thread of enriched) {
@@ -1068,5 +1076,6 @@ export async function loadCodexDashboard(options = {}) {
     incoming.set(to, [...(incoming.get(to) || []), { from, atMs }]);
   }
   for (const thread of enriched) if (incoming.has(thread.id)) thread.incomingMessages = incoming.get(thread.id);
-  return { generatedAtMs: nowMs, threads: enriched };
+  return { generatedAtMs: nowMs, threads: enriched,
+    ...(logsUnreadable ? { provider: { installed: true, status: 'warning', message: ROLLOUT_UNREADABLE_MESSAGE } } : {}) };
 }
