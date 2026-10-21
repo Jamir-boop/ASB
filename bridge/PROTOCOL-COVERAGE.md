@@ -44,7 +44,7 @@ Receipt statuses:
 - `held`: deferred.
 - `denied`: rejected by the receiving user.
 - `expired`: the deadline ended. With `status_detail: "refused"` it means refused.
-- `dropped`: a guard or a definite delivery refusal dropped it, with a reason. A Codex error reply gives `delivery-refused`.
+- `dropped`: a guard or a definite delivery refusal dropped it, with a reason. A Codex error reply gives `delivery-refused`. A Desktop task that is neither active nor idle also gives `delivery-refused`, before any request.
 - `delivered`: a held message was released. Ordinary acceptance sends no receipt.
 
 A socket write and a receipt are both separate from a model reply.
@@ -136,12 +136,13 @@ Exact member sends (Linux or Windows at both ends, Codex senders, `codex` and `c
 | --- | --- | --- | --- |
 | Active turn | yes | Sends a steering request and never interrupts. | app-server, desktop |
 | Idle task | yes | Starts a turn with inherited settings. | app-server |
+| Task neither active nor idle (Desktop) | yes | Nothing is sent. The message is dropped with `delivery-refused`, and the sender gets a `dropped` receipt. | protocol |
 | Turn ends during steering | yes | App-server decides atomically. Desktop IPC starts a turn only after an explicit rejection. | desktop |
 | Plain text, no commands, no automatic attachments | yes | | protocol |
 | Attachments and `SendFile` | no | The bridge refuses nonempty `file_attachments` with a reason. Claude gates `SendFile` on `tengu_send_file`, default off. | protocol |
 | Origin and permissions | yes | Peer marking, `from-session`, reply address. Peer text grants no approval. | protocol |
 | Input ID | yes | Random per delivery. A sender cannot claim an existing user input through `msg_id`. | protocol |
-| Lost confirmation | yes | `unknown`, no retry. `accepted` does not prove a reply. | protocol, app-server, desktop |
+| Lost confirmation | yes | `unknown`, no retry. `accepted` does not prove a reply. An `unknown` message keeps the idle notices of its session waiting; a new session and a receiver start (which also turns the `submitting` message of a dead receiver into `unknown`) clear that wait and keep the status `unknown`. | protocol, app-server, desktop |
 | `priority` `now` and `later` | yes | Accepted and handled as `next`. Claude's own sender uses `next`. | protocol |
 | `session_id` on any frame | yes | A frame for another session is dropped, text or control. Claude's own control frames carry no `session_id`. | protocol |
 | Session ID change after `/clear` | yes | Per PeterSR and Claude's `regenerateSessionId`, a Claude process keeps its PID and start time and gets a new `sessionId`. Stored sends, idle requests, and receipts resolve by socket address and start time. Not reproduced against a live Claude. | protocol |
@@ -175,7 +176,7 @@ Exact member sends (Linux or Windows at both ends, Codex senders, `codex` and `c
 | Receiver repeats | yes | The same last text from one sender within 30 seconds is dropped. IDs are deduplicated permanently. | protocol |
 | Receiver rate | yes | Same budget, checked at delivery and at hold release. | protocol |
 | Hop chains | yes | Discard at ten own tokens or more than 28 entries. Outgoing frames append the own token, up to 32. The chain continues from the last confirmed peer input and resets on user input. | protocol, app-server, desktop |
-| 50 unread accepted | yes | A native input ID or a definite delivery refusal frees a slot. Overflow drops with `queue-full`. | protocol |
+| 50 unread accepted | yes | A native input ID, a definite delivery refusal, or a new session or receiver start (for `unknown` messages) frees a slot. Overflow drops with `queue-full`. | protocol |
 | Receipt handling | partial | The bridge correlates reason, drop reason, and IDs, and ignores late receipts. Repeated receipts are not summarized. | protocol |
 
 ### Idle subscriptions

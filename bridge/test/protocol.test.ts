@@ -476,6 +476,62 @@ posix.each(['refused', 'malformed'] as const)('Desktop %s delivery keeps definit
   } finally { await f.close(); }
 });
 
+posix('a Desktop task that is neither active nor idle refuses a message before any request, and a later idle notice still arrives', async () => {
+  const f = await fixture();
+  f.desktop.setState('notLoaded');
+  const subscription = randomUUID();
+  try {
+    await f.transmit({ type: 'control', action: 'notify_when_idle', msg_id: subscription });
+    await until(() => f.bridge.status().idleRequests.some(row => row.id === subscription && row.status === 'waiting'));
+    const id = await f.message('prompting');
+    const receipt = () => f.frames.find(frame => frame.type === 'control' && frame.action === 'peer_message_status' && frame.orig_msg_id === id);
+    await until(() => receipt() !== undefined);
+    expect(receipt()).toMatchObject({ status: 'dropped', drop_reason: 'delivery-refused', dropped_msg_ids: [id] });
+    expect(f.db.query('SELECT status,awaiting_input,drop_reason FROM messages WHERE id=?').get(id))
+      .toEqual({ status: 'dropped', awaiting_input: 0, drop_reason: 'delivery-refused' });
+    expect(f.bridge.status().unreadCount).toBe(0);
+    expect(f.desktop.requests.filter(request => ['thread-follower-start-turn', 'thread-follower-steer-turn'].includes(request.method))).toEqual([]);
+    expect(f.desktop.submissions).toHaveLength(0);
+    const notices = () => f.frames.filter(frame => frame.type === 'control' && frame.action === 'peer_idle_notice' && frame.orig_msg_id === subscription);
+    expect(notices()).toHaveLength(0);
+    f.desktop.setState('idle');
+    f.bridge.updateRuntime({ status: 'idle', mode: 'prompting' });
+    await until(() => notices().length === 1);
+    expect(notices()[0]).toMatchObject({ state: 'idle' });
+  } finally { await f.close(); }
+});
+
+posix('a new session clears the wait for input of unknown messages, and their status stays unknown', async () => {
+  const f = await fixture();
+  const row = (id: string, status: string, awaiting: number, direction = 'in') => f.db.run(
+    'INSERT INTO messages (id,peer_id,direction,text,status,awaiting_input,desktop_input_id) VALUES (?,?,?,?,?,?,?)', [id, f.peerId, direction, id, status, awaiting, id]);
+  const [unknown, steered, outgoing] = [randomUUID(), randomUUID(), randomUUID()];
+  try {
+    row(unknown, 'unknown', 1);
+    row(steered, 'steered', 1);
+    row(outgoing, 'unknown', 1, 'out');
+    expect(f.bridge.status().unreadCount).toBe(2);
+    f.bridge.beginSession();
+    expect(f.db.query('SELECT id,status,awaiting_input FROM messages WHERE id IN (?,?,?) ORDER BY rowid').all(unknown, steered, outgoing)).toEqual([
+      { id: unknown, status: 'unknown', awaiting_input: 0 }, { id: steered, status: 'steered', awaiting_input: 1 }, { id: outgoing, status: 'unknown', awaiting_input: 1 }]);
+    expect(f.bridge.status().unreadCount).toBe(1);
+  } finally { await f.close(); }
+});
+
+posix('a receiver start turns the submitting input of a dead receiver into unknown and clears its wait for input', async () => {
+  const f = await fixture();
+  const id = randomUUID();
+  await f.bridge.close();
+  const next = new Bridge(f.desktop.threadId, f.configDir, join(f.root, 'plugin-state', 'asb-bridge'), f.desktop.path);
+  try {
+    f.db.run("INSERT INTO messages (id,peer_id,direction,text,status,awaiting_input,desktop_input_id) VALUES (?,?,'in',?,'submitting',1,?)", [id, f.peerId, 'x', id]);
+    expect(next.status().unreadCount).toBe(1);
+    await next.start(join(f.root, 's'), f.root, next.beginSession());
+    expect(f.db.query('SELECT status,awaiting_input FROM messages WHERE id=?').get(id)).toEqual({ status: 'unknown', awaiting_input: 0 });
+    expect(next.status().unreadCount).toBe(0);
+  } finally { await next.close(); await f.close(); }
+});
+
 posix('a peer cannot claim an existing user input by choosing its client ID as msg_id', async () => {
   const f = await fixture();
   const id = randomUUID();

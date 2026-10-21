@@ -7,7 +7,8 @@ import { z } from "zod";
 
 const requestSchema = z.object({ type: z.string(), requestId: z.string().optional(), method: z.string(), params: z.unknown(), timeoutMs: z.number().optional() });
 
-export async function receiver(state: 'active' | 'idle', dropAcknowledgement = false, endBeforeSteer = false, root = mkdtempSync('/tmp/desktop-test-')) {
+// Codex also reports other runtime states (notLoaded, systemError); a task in one of them is neither idle nor active.
+export async function receiver(state: 'active' | 'idle' | 'notLoaded', dropAcknowledgement = false, endBeforeSteer = false, root = mkdtempSync('/tmp/desktop-test-')) {
   mkdirSync(join(root, 'ipc'), { mode: 0o700 });
   const path = join(root, 'ipc', 'ipc.sock');
   const threadId = randomUUID();
@@ -78,7 +79,7 @@ export async function receiver(state: 'active' | 'idle', dropAcknowledgement = f
     setHistory(value: Record<string, unknown>) { history = { turns: [], turnHistory: { kind: 'legacy' }, ...value }; },
     setSubmissionReply(value: Record<string, unknown>) { submissionReply = value; },
     setPermissions(value: unknown) { permissions = value; for (const send of announce) send(); },
-    setState(value: 'idle' | 'active') { state = value; for (const send of announce) send(); }, close: async (removeRoot = true) => {
+    setState(value: 'idle' | 'active' | 'notLoaded') { state = value; for (const send of announce) send(); }, close: async (removeRoot = true) => {
     for (const socket of clients) socket.destroy();
     await new Promise<void>(resolve => server.close(() => resolve()));
     if (removeRoot) rmSync(root, { recursive: true });

@@ -141,6 +141,8 @@ export class Bridge {
       this.db.run('INSERT INTO lifecycle (singleton,generation,active) VALUES (1,?,1) ON CONFLICT(singleton) DO UPDATE SET generation=excluded.generation, active=1', [generation]);
       this.db.run("UPDATE messages SET status='expired' WHERE direction='in' AND status='held'");
       this.db.run("UPDATE idle_requests SET status='expired' WHERE status IN ('waiting','submitting','unknown')");
+      // An unknown input of an earlier session must not block the idle notices of this one; its status stays unknown.
+      this.db.run("UPDATE messages SET awaiting_input=0 WHERE direction='in' AND status='unknown' AND awaiting_input=1");
       this.db.run("UPDATE runtime SET status='unknown',mode='unknown' WHERE singleton=1");
       this.db.run('DELETE FROM peer_guard');
       return generation;
@@ -196,7 +198,8 @@ export class Bridge {
       })();
       this.ownsReceiver = true;
       this.procStart = procStart;
-      this.db.run("UPDATE messages SET status='unknown' WHERE status='submitting'");
+      // A dead receiver left these: the outcome is unknown, but the wait for their input must not block idle notices (beginSession runs first).
+      this.db.run("UPDATE messages SET status='unknown',awaiting_input=0 WHERE status='submitting'");
       // Windows needs the token in the inbox before the row exists (plan 17.2).
       const token = isWindows() ? randomBytes(16).toString('hex') : undefined;
       this.listener = await inbox(directory, frame => {

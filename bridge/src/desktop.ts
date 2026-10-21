@@ -185,7 +185,7 @@ class DesktopConnection {
             imageAttachments: [], workspaceRoots: [state.cwd], commentAttachments: [] },
           responsesapiClientMetadata: {} },
       }, 1);
-    } else throw new Error('Codex task is neither active nor idle');
+    } else throw new DeliveryRefused('Codex task is neither active nor idle'); // Before any request: a refusal, not an unknown outcome.
     const accepted = acceptedSchema.parse(response.result).result;
     return { status, turnId: 'turnId' in accepted ? accepted.turnId : accepted.turn.id };
   }
