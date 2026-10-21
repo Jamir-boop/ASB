@@ -3,9 +3,11 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const skills = join(import.meta.dir, '../agent-skills');
-const claude = readFileSync(join(skills, 'claude/bridge/SKILL.md'), 'utf8');
-const codex = readFileSync(join(skills, 'codex/bridge/SKILL.md'), 'utf8');
-const policy = readFileSync(join(skills, 'codex/bridge/agents/openai.yaml'), 'utf8');
+// A Windows checkout has CRLF line ends.
+const text = (path: string) => readFileSync(join(skills, path), 'utf8').replace(/\r\n/g, '\n');
+const claude = text('claude/bridge/SKILL.md');
+const codex = text('codex/bridge/SKILL.md');
+const policy = text('codex/bridge/agents/openai.yaml');
 
 // Every frontmatter key of the skill, so an extra key such as disable-model-invocation fails the test.
 const frontmatter = (text: string) => Object.fromEntries(text.match(/^---\n([\s\S]*?)\n---\n/)![1]!.split('\n')
