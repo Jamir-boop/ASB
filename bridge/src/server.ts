@@ -41,10 +41,9 @@ function result(value: unknown) { return { content: [{ type: 'text' as const, te
 function brief(status: ReturnType<Bridge['status']>) {
   return { ...status, messages: status.messages.slice(0, 5).map(row => Object.fromEntries(Object.entries(row).filter(([, value]) => value !== null))) };
 }
-// Codex copies these instructions into every bridge tool description, so they stay one line.
+// Codex copies these instructions into every bridge tool description, so they stay one short line.
 // The safety notice travels with each incoming message instead.
-const server = new McpServer({ name: 'asb-bridge', version }, { instructions:
-  'Message local Claude Code and Codex agents: list_sessions, then send_message by reference or sessionId.' });
+const server = new McpServer({ name: 'asb-bridge', version }, { instructions: 'Message other agents.' });
 
 async function startReceiver(threadId: string, cwd: string) {
   const child = Bun.spawn([process.execPath, hookPath],
@@ -62,41 +61,50 @@ server.registerTool('session_start', { description: 'Bind the native SessionStar
   return { content: [] };
 });
 
-server.registerTool('list_sessions', { description: 'List the live agents on this machine and, in a machine group, on the other machines (remote: true), most recently started first. Send to an entry by its reference when it has one, else by its sessionId. Names, working directories, and session IDs can repeat: a sessionId goes to the local agent first, and the start time separates agents. Status tells you idle or busy right now, not how long an agent has sat idle. A local entry with agent claude is a Claude Code session, a local entry with agent codex is a Codex task with ASB Bridge, and an entry with remote: true runs on another machine of the group.',
-  inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false } }, async (_args, extra) => {
+// startedAt in whole seconds: the sort below uses the milliseconds of the peer row, so the order does not change.
+const seconds = (milliseconds: number) => new Date(milliseconds).toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+server.registerTool('list_sessions', { description: 'List agents here and on other machines of the group (remote: true). Send by reference if an entry has one, else by sessionId. Names, folders, and IDs can repeat: a sessionId goes to the local agent first. Status is idle or busy now only. agent is claude or codex. nameContains: part of name.',
+  inputSchema: { nameContains: z.string().min(1).max(128).optional() }, annotations: { readOnlyHint: true, openWorldHint: false } }, async ({ nameContains }, extra) => {
   const caller = callerThread(extra._meta);
   // ASB relay proxy rows stand for remote sessions; the engine lists those below with their machine.
   const local = peers(configDir).filter(peer => peer.entrypoint !== 'asb-relay');
+  // Rows without a start time stay last. Fields that are null are left out: each call returns this into the model context.
   const rows = local.filter(peer => peer.sessionId !== caller)
+    .sort((first, second) => (second.startedAt ?? -1) - (first.startedAt ?? -1))
     .map(peer => ({ sessionId: peer.sessionId, name: peer.name,
       agent: peer.entrypoint === 'codex-asb-bridge' ? 'codex' : 'claude',
       cwd: peer.cwd, status: peer.status,
-      startedAt: peer.startedAt === undefined ? null : new Date(peer.startedAt).toISOString() }))
-    .sort((first, second) => (second.startedAt ?? '').localeCompare(first.startedAt ?? ''));
+      ...(peer.startedAt === undefined ? {} : { startedAt: seconds(peer.startedAt) }) }));
   const runtime = engineRuntime();
   const [remote, references] = runtime ? await Promise.all([remotePeers(runtime).catch(() => []),
     listReferences(runtime, { runtimeSessionId: caller, configDir: resolve(configDir) })]) : [[], new Map<string, ListedReference>()];
   // A sessionId send goes to the local session, so a remote entry with a seen ID is reachable only by its reference.
   const seen = new Set([caller, ...local.map(peer => peer.sessionId)]);
-  return result([...rows.map(row => ({ ...row, ...references.get(row.sessionId) })), ...remote.flatMap(peer => {
+  const listed = [...rows.map(row => ({ ...row, ...references.get(row.sessionId) })), ...remote.flatMap(peer => {
     const reference = references.get(`${peer.machineId}:${peer.sessionId}`);
     if (seen.has(peer.sessionId) && !(reference && 'reference' in reference)) return [];
-    return [{ sessionId: peer.sessionId, name: `${peer.machineName}-${peer.name}`, agent: peer.agent, cwd: null, status: peer.status, startedAt: null,
+    return [{ sessionId: peer.sessionId, name: `${peer.machineName}-${peer.name}`, agent: peer.agent, status: peer.status,
       remote: true, machine: peer.machineName, ...reference }];
-  })]);
+  })];
+  const part = nameContains?.toLowerCase();
+  return result(part === undefined ? listed : listed.filter(row => row.name.toLowerCase().includes(part)));
 });
-server.registerTool('send_message', { description: 'Send text to one listed agent, or set notify_when_idle alone to subscribe without sending. Its answer enters the current Codex turn, or starts one when this task is idle. Batch what you have to say into one message: a rapid burst to the same agent is refused. Instead of sessionId, reference takes a full ASB session reference (asb:1/...) as it is and sends to exactly that session, on this machine or on another machine of the machine group. notify_when_idle with a reference works only for a session on this machine.',
-  inputSchema: { sessionId: uuid.optional(), reference: referenceText.optional(),
+// The advertised schema is a plain string, which is shorter for the model. The checks run in the handler, before the caller is read and before anything is sent.
+server.registerTool('send_message', { description: 'Send text to one agent. Its answer enters the current Codex turn, or starts one if the task is idle. Batch what you say into one message: a rapid burst to one agent is refused. Give sessionId (UUID from list_sessions) or reference (asb:1/... as given: exactly that session, on any machine of the group). notify_when_idle alone sends nothing and asks for one idle notice (only for a session on this machine).',
+  inputSchema: { sessionId: z.string().optional(), reference: z.string().optional(),
     text: z.string().min(1).max(maxLineLength).optional(), notify_when_idle: z.boolean().default(false) }, annotations: { openWorldHint: true } },
   async ({ sessionId, reference, text, notify_when_idle }, extra) => {
+    if (sessionId !== undefined && !uuid.safeParse(sessionId).success) throw new Error('Input validation error: sessionId must be a UUID from list_sessions. Nothing sent.');
+    if (reference !== undefined && !referenceText.safeParse(reference).success) throw new Error('Input validation error: reference must be a full session reference (asb:1/...). Nothing sent.');
     if ((sessionId === undefined) === (reference === undefined)) throw new Error('Give exactly one of sessionId or reference.');
     const bridge = current(extra._meta);
     return result(await (reference === undefined ? bridge.sendMessage(sessionId!, text, notify_when_idle) : bridge.sendReference(reference, text, notify_when_idle)));
   });
-server.registerTool('status', { description: 'Show this task\'s receiver, transport and recent outcomes. The receiver starts at the first turn and when Codex reloads a registered task. A null replyAddress in a turn means untrusted hooks or a failed SessionStart: ask the user to check hook trust. No tool restarts it. Check unknown outcomes before resending.',
+server.registerTool('status', { description: 'Show receiver and recent outcomes. It starts at the first turn; no tool restarts it. A null replyAddress in a turn means untrusted hooks or a failed SessionStart: ask the user to check hook trust. Check unknown outcomes before resending.',
   inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false } },
   async (_args, extra) => result(brief(current(extra._meta).status())));
-server.registerTool('inbox', { description: 'Open a dialog the user answers. Use view policy to set accept, hold, refuse or default, view expiry to set how long a held message waits, and view held to put the oldest held message in front of the user. Only that answer releases held input, and the held text stays out of your context either way.',
+server.registerTool('inbox', { description: 'Ask the user in a dialog. view: policy (accept, hold, refuse, default), expiry (how long held messages wait), held (review the oldest). Only the answer releases held input. Held text stays out of your context.',
   inputSchema: { view: z.enum(['policy', 'held', 'expiry']) }, annotations: { openWorldHint: false } }, async ({ view }, extra) => {
   const bridge = current(extra._meta);
   if (view === 'expiry') {
