@@ -40,7 +40,7 @@ The plugin is not in the public Plugin Directory. As of 2026-10-03, OpenAI's [su
 
 Codex ignores plugin hooks until you trust them. Open Plugins > ASB Bridge in Codex, review the two hooks, and trust both. Then restart Codex. After an ASB upgrade, run the install command again with the same targets.
 
-A task registers when its `SessionStart` hook runs, which Codex does on the first turn. A fresh chat with nothing typed stays invisible to Claude. When Codex restarts, it ends every loaded task. An app-server task that registered before registers again without a turn when Codex loads it again. Desktop recovery probes registered tasks whose end times are within 30 seconds of the newest valid end in that home; other state waits for `SessionStart`. See [STARTUP.md](STARTUP.md).
+A task registers when its `SessionStart` hook runs, which Codex does on the first turn. A fresh chat with nothing typed stays invisible to Claude. When Codex restarts, it ends every loaded task. An app-server task that registered before registers again without a turn when Codex loads it again. Desktop recovery probes registered tasks whose end times are within 30 seconds of the newest valid end in that home; other state waits for `SessionStart`. The bridge deletes the state file of a task (`<thread>.sqlite`, with its `-wal` and `-shm` files) when the task ended more than 30 days ago, Codex has not loaded it, and it has no live receiver. It deletes nothing when the loaded-thread list fails. See [STARTUP.md](STARTUP.md).
 
 ## Usage skills
 

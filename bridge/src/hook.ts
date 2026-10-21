@@ -17,6 +17,8 @@ const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
 const codexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex');
 const stateDir = join(codexHome, 'plugin-state', 'asb-bridge');
 const ipcPath = codexIpcPath(codexHome);
+// An ended task that Codex has not loaded and that has no receiver loses its state file after this time.
+const STATE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 function receiver(threadId: string) {
   const matches = peers(configDir).filter(peer => peer.sessionId === threadId
@@ -144,21 +146,33 @@ async function revive() {
   const states: { threadId: string; generation: string; endedAt?: number }[] = [];
   const now = Date.now();
   let newestEnd = 0;
+  // Deleting needs both proofs: the loaded list and the registry were read.
+  let withReceiver: Set<string> | undefined;
+  try { withReceiver = new Set(peers(configDir).filter(peer => peer.entrypoint === 'codex-asb-bridge').map(peer => peer.sessionId)); }
+  catch { /* No proof of a receiver: no file goes. */ }
   for (const file of files) {
     const threadId = uuid.safeParse(file.slice(0, -'.sqlite'.length)).data;
     if (!threadId || file !== `${threadId}.sqlite`) continue;
     try {
       const db = new Database(join(stateDir, file), { readonly: true });
+      let expired = false;
       try {
         db.exec('PRAGMA busy_timeout=5000;');
-        const lifecycle = db.query<{ generation: string; ended_at?: unknown }, []>('SELECT * FROM lifecycle WHERE singleton=1').get();
+        const lifecycle = db.query<{ generation: string; active: number; ended_at?: unknown }, []>('SELECT * FROM lifecycle WHERE singleton=1').get();
         const end = lifecycle?.ended_at;
         const endedAt = typeof end === 'number' && Number.isSafeInteger(end) && end > 0 && end <= now ? end : undefined;
         if (endedAt !== undefined) newestEnd = Math.max(newestEnd, endedAt);
-        if (lifecycle?.generation && db.query('SELECT 1 FROM transport WHERE singleton=1').get()) {
+        // active: a new session keeps the old ended_at, so a task with a crashed receiver can still be active.
+        expired = lifecycle?.active === 0 && endedAt !== undefined && endedAt < now - STATE_RETENTION_MS && appServerPath !== undefined
+          && !loaded.has(threadId) && withReceiver !== undefined && !withReceiver.has(threadId);
+        if (!expired && lifecycle?.generation && db.query('SELECT 1 FROM transport WHERE singleton=1').get()) {
           states.push({ threadId, generation: lifecycle.generation, endedAt });
         }
       } finally { db.close(); }
+      // The database is closed first: Windows keeps a file that is in use.
+      if (expired) for (const suffix of ['', '-wal', '-shm']) {
+        try { unlinkSync(join(stateDir, file + suffix)); } catch { /* Gone, or in use: the next sweep tries again. */ }
+      }
     } catch { continue; }
   }
   for (const { threadId, generation, endedAt } of states) {

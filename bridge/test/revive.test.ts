@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { mkdtempSync, mkdirSync, chmodSync, rmSync, readdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, chmodSync, rmSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -199,6 +199,68 @@ posix('a loaded daemon list also permits a recent desktop receiver without probi
     expect(desktop.requests.filter(request => request.method === 'thread-owner-discovery').every(request =>
       (request.params as { conversationId: string }).conversationId === desktop.threadId)).toBe(true);
   } finally { await stopReceivers(server.root); await desktop.close(false); await server.close(); }
+});
+
+// A state file with its -wal and -shm side files, as a task that ended some days ago leaves them.
+function endedState(root: string, threadId: string, target: Target, daysAgo?: number) {
+  previousReceiver(root, threadId, target, daysAgo === undefined ? undefined : Date.now() - daysAgo * 24 * 60 * 60 * 1000);
+  const file = join(root, 'plugin-state', 'asb-bridge', `${threadId}.sqlite`);
+  for (const suffix of ['-wal', '-shm']) writeFileSync(file + suffix, '');
+  return () => ['', '-wal', '-shm'].map(suffix => existsSync(file + suffix));
+}
+
+posix('revival deletes the state files of a task that ended over 30 days ago, is not loaded, and has no receiver; all others stay', async () => {
+  const server = await appServer(mkdtempSync(join(tmpdir(), 'rv-prune-')));
+  const target: Target = { kind: 'app-server', path: server.path };
+  try {
+    const [oldId, recentId, noEndId] = [randomUUID(), randomUUID(), randomUUID()];
+    const old = endedState(server.root, oldId, target, 35);
+    const recent = endedState(server.root, recentId, target, 5);
+    const loaded = endedState(server.root, server.threadId, target, 35);
+    const noEnd = endedState(server.root, noEndId, target);
+    await revive(server.root);
+    expect([old(), recent(), loaded(), noEnd()]).toEqual([[false, false, false], [true, true, true], [true, true, true], [true, true, true]]);
+  } finally { await stopReceivers(server.root); await server.close(); }
+});
+
+posix('revival deletes no state file when the loaded-thread list fails', async () => {
+  const server = await appServer(mkdtempSync(join(tmpdir(), 'rv-prune-error-')));
+  try {
+    server.failLoadedList();
+    const old = endedState(server.root, randomUUID(), { kind: 'app-server', path: server.path }, 35);
+    await revive(server.root);
+    expect(old()).toEqual([true, true, true]);
+  } finally { await stopReceivers(server.root); await server.close(); }
+});
+
+posix('revival keeps the state file of an old ended task that has a receiver row', async () => {
+  const server = await appServer(mkdtempSync(join(tmpdir(), 'rv-prune-live-')));
+  const target: Target = { kind: 'app-server', path: server.path };
+  const threadId = randomUUID();
+  const row = await staleReceiver(join(server.root, 'claude'), join(server.root, 'old'), threadId, 'a previous process with this PID');
+  try {
+    const old = endedState(server.root, threadId, target, 35);
+    // A newer ended task, so that the old one is not the newest and revival does not probe it.
+    const recent = endedState(server.root, randomUUID(), target, 5);
+    await revive(server.root);
+    expect([old(), recent(), existsSync(row.row)]).toEqual([[true, true, true], [true, true, true], true]);
+  } finally { await stopReceivers(server.root); await row.close(); await server.close(); }
+});
+
+posix('revival keeps the state file of an old end when the task began a new session after it (active)', async () => {
+  const server = await appServer(mkdtempSync(join(tmpdir(), 'rv-prune-active-')));
+  const target: Target = { kind: 'app-server', path: server.path };
+  try {
+    const threadId = randomUUID();
+    const old = endedState(server.root, threadId, target, 35);
+    // beginSession keeps the old ended_at: a task whose receiver crashed after a new session is still active.
+    const database = new Database(join(server.root, 'plugin-state', 'asb-bridge', `${threadId}.sqlite`));
+    try { database.run('UPDATE lifecycle SET active=1 WHERE singleton=1'); } finally { database.close(); }
+    // A newer ended task, so that the old one is not the newest and revival does not probe it.
+    const recent = endedState(server.root, randomUUID(), target, 5);
+    await revive(server.root);
+    expect([old(), recent()]).toEqual([[true, true, true], [true, true, true]]);
+  } finally { await stopReceivers(server.root); await server.close(); }
 });
 
 posix('revival removes the row and key file of a dead receiver whose PID another process has, and starts the receiver', async () => {
