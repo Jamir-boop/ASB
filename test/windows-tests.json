@@ -1,6 +1,7 @@
 [
   "test/platform-paths.test.mjs",
   "test/asb-windows.test.mjs",
+  "test/asb-sounds.test.mjs",
   "test/machine-group.test.mjs",
   "test/machine-peers.test.mjs",
   "test/asb-docs.test.mjs",

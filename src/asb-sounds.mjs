@@ -73,22 +73,34 @@ export const PLAYERS = [
   ['aplay', (file) => ['-q', file]],
 ];
 
+// Windows Media.SoundPlayer plays the PCM WAV files. The path goes in ASB_SOUND, never in the command text.
+const WINDOWS_PLAYERS = [
+  ['powershell.exe', () => ['-NoProfile', '-NonInteractive', '-Command', '(New-Object Media.SoundPlayer $env:ASB_SOUND).PlaySync()']],
+];
+
 // The player never blocks or throws. It falls back to paplay when pw-play is missing, then to aplay.
-export function createSoundPlayer({ spawn = spawnProcess, log = console.error, dir = SOUND_DIR } = {}) {
+export function createSoundPlayer({ spawn = spawnProcess, log = console.error, dir = SOUND_DIR, platform = process.platform } = {}) {
+  const win32 = platform === 'win32';
+  const players = win32 ? WINDOWS_PLAYERS : PLAYERS;
   let index = 0;
   let reported = false;
   const report = (message) => { if (!reported) { reported = true; log(message); } };
   const play = (kind, file = SOUND_FILES[kind]) => {
-    const player = PLAYERS[index];
+    const player = players[index];
     if (!player || !file) return;
     const [program, args] = player;
+    const target = `${dir}${file}`;
     try {
-      const child = spawn(program, args(`${dir}${file}`), { detached: true, stdio: 'ignore' });
+      // A detached child on Windows gets its own console, so win32 hides the window and does not detach.
+      const child = spawn(program, args(target), win32
+        ? { env: { ...process.env, ASB_SOUND: target }, windowsHide: true, stdio: 'ignore' }
+        : { detached: true, stdio: 'ignore' });
       child.on('error', (error) => {
         if (error.code !== 'ENOENT') return report(`ASB cannot play a sound with ${program}: ${error.message}`);
-        if (PLAYERS[index] === player) index += 1;
-        if (PLAYERS[index]) play(kind, file);
-        else report('ASB cannot play sounds: install pw-play (PipeWire), paplay (PulseAudio), or aplay (ALSA). Run asb doctor for the command.');
+        if (players[index] === player) index += 1;
+        if (players[index]) play(kind, file);
+        else report(win32 ? 'ASB cannot play sounds: Windows PowerShell was not found.'
+          : 'ASB cannot play sounds: install pw-play (PipeWire), paplay (PulseAudio), or aplay (ALSA). Run asb doctor for the command.');
       });
       child.on('exit', (code) => { if (code) report(`ASB cannot play a sound: ${program} exited with code ${code}.`); });
       child.unref();

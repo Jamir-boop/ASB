@@ -69,14 +69,14 @@ test('the watcher plays one sound per update with Needs input first and the firs
   assert.equal(played.length, 3);
 });
 
-function fakeSpawn(missing = []) {
+function fakeSpawn(missing = [], exitCode = 0) {
   const calls = [];
   const spawn = (program, args, options) => {
     calls.push([program, args, options]);
     const child = new EventEmitter();
     child.unref = () => { child.unrefed = true; };
     if (missing.includes(program)) process.nextTick(() => child.emit('error', Object.assign(new Error(`spawn ${program} ENOENT`), { code: 'ENOENT' })));
-    else process.nextTick(() => child.emit('exit', 0));
+    else process.nextTick(() => child.emit('exit', exitCode));
     return child;
   };
   return { calls, spawn };
@@ -85,7 +85,7 @@ function fakeSpawn(missing = []) {
 test('the player runs pw-play detached with the ASB name and the phone file for each kind', async () => {
   const { calls, spawn } = fakeSpawn();
   const logs = [];
-  const play = createSoundPlayer({ spawn, log: (line) => logs.push(line) });
+  const play = createSoundPlayer({ platform: 'linux', spawn, log: (line) => logs.push(line) });
   play(BIT_DONE);
   play(BIT_INPUT);
   play(BIT_FAILED);
@@ -98,7 +98,7 @@ test('the player runs pw-play detached with the ASB name and the phone file for 
 
 test('the player falls back to paplay and reports one line when no player exists', async () => {
   const fallback = fakeSpawn(['pw-play']);
-  const play = createSoundPlayer({ spawn: fallback.spawn, log: () => assert.fail('paplay works') });
+  const play = createSoundPlayer({ platform: 'linux', spawn: fallback.spawn, log: () => assert.fail('paplay works') });
   play(BIT_DONE);
   await new Promise((resolve) => setImmediate(resolve));
   play(BIT_FAILED);
@@ -110,21 +110,21 @@ test('the player falls back to paplay and reports one line when no player exists
   ]);
   const none = fakeSpawn(['pw-play', 'paplay', 'aplay']);
   const logs = [];
-  const silent = createSoundPlayer({ spawn: none.spawn, log: (line) => logs.push(line) });
+  const silent = createSoundPlayer({ platform: 'linux', spawn: none.spawn, log: (line) => logs.push(line) });
   silent(BIT_DONE);
   await new Promise((resolve) => setImmediate(resolve));
   silent(BIT_INPUT);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(none.calls.length, 3);
   assert.deepEqual(logs, ['ASB cannot play sounds: install pw-play (PipeWire), paplay (PulseAudio), or aplay (ALSA). Run asb doctor for the command.']);
-  const throwing = createSoundPlayer({ spawn: () => { throw new Error('Synthetic spawn failure'); }, log: (line) => logs.push(line) });
+  const throwing = createSoundPlayer({ platform: 'linux', spawn: () => { throw new Error('Synthetic spawn failure'); }, log: (line) => logs.push(line) });
   assert.doesNotThrow(() => { throwing(BIT_DONE); throwing(BIT_DONE); });
   assert.deepEqual(logs.slice(1), ['ASB cannot play a sound with pw-play: Synthetic spawn failure']);
 });
 
 test('the player tries pw-play, then paplay, then aplay, and keeps aplay for later sounds', async () => {
   const { calls, spawn } = fakeSpawn(['pw-play', 'paplay']);
-  const play = createSoundPlayer({ spawn, log: () => assert.fail('aplay works') });
+  const play = createSoundPlayer({ platform: 'linux', spawn, log: () => assert.fail('aplay works') });
   play(BIT_DONE);
   await new Promise((resolve) => setImmediate(resolve));
   play(BIT_FAILED);
@@ -136,6 +136,54 @@ test('the player tries pw-play, then paplay, then aplay, and keeps aplay for lat
     ['aplay', '-q', `${SOUND_DIR}opencode_nope_03.wav`],
   ]);
   assert.deepEqual(calls[2][2], { detached: true, stdio: 'ignore' });
+});
+
+test('the win32 player runs powershell.exe with the file only in ASB_SOUND, hidden, not detached, and with no shell', async () => {
+  const { calls, spawn } = fakeSpawn();
+  const logs = [];
+  const dir = 'C:\\asb\\assets\\sounds\\';
+  const play = createSoundPlayer({ platform: 'win32', spawn, log: (line) => logs.push(line), dir });
+  play(BIT_DONE);
+  play(BIT_INPUT);
+  play(BIT_FAILED);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.length, 3);
+  for (const [index, file] of ['opencode_staplebops_01.wav', 'opencode_staplebops_02.wav', 'opencode_nope_03.wav'].entries()) {
+    const [program, args, options] = calls[index];
+    assert.equal(program, 'powershell.exe');
+    assert.deepEqual(args, ['-NoProfile', '-NonInteractive', '-Command', '(New-Object Media.SoundPlayer $env:ASB_SOUND).PlaySync()']);
+    assert.equal(options.env.ASB_SOUND, `${dir}${file}`);
+    assert.deepEqual({ ...options.env, ASB_SOUND: '' }, { ...process.env, ASB_SOUND: '' });
+    assert.equal(options.windowsHide, true);
+    assert.equal(options.stdio, 'ignore');
+    assert.ok(!('detached' in options));
+    assert.ok(!('shell' in options));
+    assert.ok(!args.some((arg) => arg.includes(file)));
+  }
+  assert.equal(calls[0][2].env.ASB_SOUND.startsWith(dir), true);
+  assert.deepEqual(logs, []);
+});
+
+test('the win32 player reports one line when powershell.exe is missing, and uses the existing texts for other failures', async () => {
+  const dir = 'C:\\sounds\\';
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+  const missing = fakeSpawn(['powershell.exe']);
+  const logs = [];
+  const play = createSoundPlayer({ platform: 'win32', spawn: missing.spawn, log: (line) => logs.push(line), dir });
+  play(BIT_DONE);
+  await tick();
+  play(BIT_FAILED);
+  await tick();
+  assert.equal(missing.calls.length, 1);
+  assert.deepEqual(logs, ['ASB cannot play sounds: Windows PowerShell was not found.']);
+  const exited = fakeSpawn([], 1);
+  const codes = [];
+  createSoundPlayer({ platform: 'win32', spawn: exited.spawn, log: (line) => codes.push(line), dir })(BIT_DONE);
+  await tick();
+  assert.deepEqual(codes, ['ASB cannot play a sound: powershell.exe exited with code 1.']);
+  const throwing = createSoundPlayer({ platform: 'win32', spawn: () => { throw new Error('Synthetic spawn failure'); }, log: (line) => codes.push(line), dir });
+  assert.doesNotThrow(() => { throwing(BIT_DONE); throwing(BIT_DONE); });
+  assert.deepEqual(codes.slice(1), ['ASB cannot play a sound with powershell.exe: Synthetic spawn failure']);
 });
 
 test('the switchboard server plays the injected player once after a Working to Idle completion', async (t) => {

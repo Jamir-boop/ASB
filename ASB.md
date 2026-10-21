@@ -356,7 +356,7 @@ Default Codex opens use `codex://threads/<id>`. Default Claude opens use `claude
 
 ## Windows
 
-On Windows, ASB has statuses only. The engine reads Codex and Claude on that PC and gives their sessions to paired phones and to the other machines of the group. It has no window and no sounds. ASB Bridge and messages between machines work on Windows too (see below). A paired phone shows the sessions and can open them on the Windows PC. A Linux board in the group shows them as remote cards. Claude web sessions are not read on Windows. Windows needs Node.js `22.13` or later.
+On Windows, ASB has statuses only. The engine reads Codex and Claude on that PC and gives their sessions to paired phones and to the other machines of the group. It has no window. It plays the Done, Needs input, and Failed sounds with Windows PowerShell, but only while an ASB window is open. ASB Bridge and messages between machines work on Windows too (see below). A paired phone shows the sessions and can open them on the Windows PC. A Linux board in the group shows them as remote cards. Claude web sessions are not read on Windows. Windows needs Node.js `22.13` or later.
 
 ```bash
 npm install -g github:Jamir-boop/ASB
