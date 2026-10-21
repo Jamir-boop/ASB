@@ -2614,13 +2614,13 @@ class NativeLogicChecks(unittest.TestCase):
                 window.update_card_actions(widget)
                 widget.asb_read_button.set_visible.assert_called_with(True)
                 widget.asb_read_button.set_focusable.assert_called_with(False)
-                widget.asb_read_button.set_action_name.assert_called_with(None)
+                self.assertEqual(widget.asb_read_button.asb_action, None)
                 widget.asb_read_button.add_css_class.assert_any_call("asb-passive-indicator")
                 widget.asb_read_button.update_state.assert_called_with([0, 1], [False, True])
-                widget.asb_pin_button.set_action_name.assert_called_with("win.pin")
+                self.assertEqual(widget.asb_pin_button.asb_action, "win.pin")
             widget.asb_thread = {**stop, "unread": True}
             window.update_card_actions(widget)
-            widget.asb_read_button.set_action_name.assert_called_with("win.mark-read")
+            self.assertEqual(widget.asb_read_button.asb_action, "win.mark-read")
             widget.asb_read_button.set_focusable.assert_called_with(True)
             widget.asb_read_button.remove_css_class.assert_any_call("asb-passive-indicator")
         css = SOURCE.read_text()
@@ -2671,24 +2671,24 @@ class NativeLogicChecks(unittest.TestCase):
                 window.update_card_actions(widget)
                 widget.asb_read_button.set_visible.assert_called_with(True)
                 widget.asb_read_button.set_focusable.assert_called_with(True)
-                widget.asb_read_button.set_action_name.assert_called_with(action)
+                self.assertEqual(widget.asb_read_button.asb_action, action)
                 widget.asb_read_button.set_tooltip_text.assert_called_with(text)
                 widget.asb_read_button.update_state.assert_called_with([0, 1], [False, False])
                 widget.asb_read_button.add_css_class.assert_any_call("asb-discard-button")
                 (widget.asb_read_button.remove_css_class if armed else widget.asb_read_button.add_css_class).assert_any_call("asb-discard-offer")
             window.session_actions.add("a")
             window.update_card_actions(widget)
-            widget.asb_read_button.set_action_name.assert_called_with(None)
+            self.assertEqual(widget.asb_read_button.asb_action, None)
             widget.asb_read_button.set_sensitive.assert_called_with(True)
             widget.asb_read_button.update_state.assert_called_with([0, 1], [True, True])
             window.session_actions.clear()
             widget.asb_thread = {**working, "questionAttention": True}
             window.update_card_actions(widget)
-            widget.asb_read_button.set_action_name.assert_called_with("win.mark-read")
+            self.assertEqual(widget.asb_read_button.asb_action, "win.mark-read")
             widget.asb_read_button.remove_css_class.assert_any_call("asb-discard-button")
             widget.asb_thread = {**working, "actionRequired": True}
             window.update_card_actions(widget)
-            widget.asb_read_button.set_action_name.assert_called_with(None)
+            self.assertEqual(widget.asb_read_button.asb_action, None)
             widget.asb_read_button.set_focusable.assert_called_with(False)
             for armed in (False, True):
                 widget.asb_thread = {**working, "discardResult": armed}
@@ -2696,7 +2696,7 @@ class NativeLogicChecks(unittest.TestCase):
                 window.update_card_actions(widget)
                 self.assertIsNone(widget.asb_read_timer)
                 widget.asb_read_button.remove_css_class.assert_any_call("asb-read-confirmed")
-                widget.asb_read_button.set_action_name.assert_called_with("win.keep-result" if armed else "win.discard-result")
+                self.assertEqual(widget.asb_read_button.asb_action, "win.keep-result" if armed else "win.discard-result")
             self.assertEqual(window.clear_read_feedback.call_count, 2)
 
     def test_a_muted_row_has_the_muted_flag_and_label_and_no_discard_ring(self):
@@ -2720,14 +2720,14 @@ class NativeLogicChecks(unittest.TestCase):
                                      asb_read_button=Mock(), asb_pin_button=Mock())
             window.update_card_actions(widget)
             widget.asb_read_button.set_visible.assert_called_with(False)
-            widget.asb_read_button.set_action_name.assert_called_with(None)
+            self.assertEqual(widget.asb_read_button.asb_action, None)
             widget.asb_read_button.remove_css_class.assert_any_call("asb-discard-button")
             widget.asb_read_button.remove_css_class.assert_any_call("asb-discard-offer")
             # Unmute changes the signature, so the ring comes back.
             widget.asb_thread = {**widget.asb_thread, "muted": False}
             window.update_card_actions(widget)
             widget.asb_read_button.set_visible.assert_called_with(True)
-            widget.asb_read_button.set_action_name.assert_called_with("win.discard-result")
+            self.assertEqual(widget.asb_read_button.asb_action, "win.discard-result")
         source = SOURCE.read_text()
         self.assertIn("min-width: 6px; min-height: 6px; border: 1.5px solid @window_fg_color", source)
         self.assertIn(".asb-discard-button.asb-discard-offer {{ opacity: 0;", source)
@@ -3665,7 +3665,7 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertIn("Cannot open this session.", widget.update_property.call_args.args[1][1])
             widget.set_tooltip_text.assert_not_called()
             self.assertTrue(widget.asb_thread["unread"])
-            widget.asb_read_button.set_action_name.assert_called_with("win.mark-read")
+            self.assertEqual(widget.asb_read_button.asb_action, "win.mark-read")
 
     def test_clear_search_uses_one_native_change_signal(self):
         window = object.__new__(Window)
@@ -4377,7 +4377,7 @@ class NativeLogicChecks(unittest.TestCase):
             window.session_action("a", "mark-read")
             request.assert_called_once()
             widget.asb_read_button.set_sensitive.assert_called_with(True)
-            widget.asb_read_button.set_action_name.assert_called_with(None)
+            self.assertEqual(widget.asb_read_button.asb_action, None)
             widget.asb_read_button.set_focusable.assert_called_with(True)
             request.call_args.args[2](None, "Cannot change this session.")
             self.assertTrue(widget.asb_thread["unread"])
@@ -4397,7 +4397,7 @@ class NativeLogicChecks(unittest.TestCase):
             window.dashboard["threads"][0]["pinned"] = True
             window.render()
             self.assertEqual(widget.asb_read_timer, 1)
-            widget.asb_pin_button.set_action_name.assert_called_with("win.unpin")
+            self.assertEqual(widget.asb_pin_button.asb_action, "win.unpin")
             window.dashboard["threads"][0]["updatedAtMs"] = 150
             window.render()
             self.assertEqual(widget.asb_read_timer, 1)
@@ -4441,7 +4441,7 @@ class NativeLogicChecks(unittest.TestCase):
                 request.call_args.args[2]({"thread": {**read_row, "updatedAtMs": 500, **passive}}, None)
                 self.assertIsNone(widget.asb_read_timer)
                 self.assertEqual(len(timers), 3)
-                widget.asb_read_button.set_action_name.assert_called_with(None)
+                self.assertEqual(widget.asb_read_button.asb_action, None)
 
             window.dashboard["threads"] = [dict(row, state="working", unread=False, questionAttention=True,
                                                 discardResult=True, updatedAtMs=600)]
@@ -4449,7 +4449,7 @@ class NativeLogicChecks(unittest.TestCase):
             window.session_action("a", "mark-read")
             request.call_args.args[2]({"thread": dict(window.dashboard["threads"][0], questionAttention=False)}, None)
             self.assertIsNone(widget.asb_read_timer)
-            widget.asb_read_button.set_action_name.assert_called_with("win.keep-result")
+            self.assertEqual(widget.asb_read_button.asb_action, "win.keep-result")
             self.assertEqual(len(timers), 3)
 
             window.confirm_read(widget)
@@ -4465,14 +4465,14 @@ class NativeLogicChecks(unittest.TestCase):
         window = object.__new__(Window)
         window.context_menu = None
         button = SimpleNamespace(asb_card_action="pin", get_sensitive=lambda: True, activate=Mock(),
-                                 get_visible=lambda: True, get_action_name=lambda: "win.pin")
+                                 get_visible=lambda: True, asb_action="win.pin")
         window.get_focus = lambda: button
         gdk = SimpleNamespace(KEY_space=32, KEY_Return=13, KEY_KP_Enter=44)
         with patch.dict(SCOPE, {"Gdk": gdk, "SHORTCUT_MASK": 8}):
             for key in (32, 13, 44):
                 self.assertTrue(window.row_key(None, key, 0, 0, "a"))
             self.assertEqual(button.activate.call_count, 3)
-            button.get_action_name = lambda: None
+            button.asb_action = None
             self.assertTrue(window.row_key(None, 13, 0, 0, "a"))
             self.assertEqual(button.activate.call_count, 3)
             button.get_sensitive = lambda: False
@@ -4506,12 +4506,49 @@ class NativeLogicChecks(unittest.TestCase):
         window.restore_position("a", 12, reveal_focus=True, focus_generation=1)
         window.set_focus.assert_not_called()
 
+    def test_card_action_clicked_activates_the_window_action_of_the_button(self):
+        window = object.__new__(Window)
+        window.activate_action = Mock()
+        button = SimpleNamespace(asb_action="win.pin", asb_identity="a")
+        with patch.dict(SCOPE, {"GLib": SimpleNamespace(Variant=lambda kind, value: (kind, value))}):
+            window.card_action_clicked(button)
+            window.activate_action.assert_called_once_with("win.pin", ("s", "a"))
+            button.asb_action = None
+            window.card_action_clicked(button)
+        window.activate_action.assert_called_once()
+
+    def test_trim_row_cache_releases_hidden_cards_above_twice_the_limit(self):
+        more = SCOPE["MORE_ID"]
+        def window_with(cards, shown):
+            window = object.__new__(Window)
+            window.closed, window.card_limit, window.row_cache_trim = False, 2, "queued"
+            window.row_cache = {identity: SimpleNamespace(name=identity) for identity in cards}
+            window.focus_widgets = {identity: window.row_cache[identity] for identity in shown}
+            window.open_errors = {"r6": "Cannot open."}
+            window.release_row = Mock()
+            return window
+        # 8 cached cards: 2 shown, the More card, and 5 hidden.
+        window = window_with([f"r{n}" for n in range(7)] + [more], ["r0", "r1", more])
+        self.assertFalse(window.trim_row_cache())
+        self.assertIsNone(window.row_cache_trim)
+        self.assertEqual(set(window.row_cache), {"r0", "r1", more})
+        self.assertEqual(sorted(call.args[0].name for call in window.release_row.call_args_list), ["r2", "r3", "r4", "r5", "r6"])
+        self.assertEqual(window.open_errors, {"r6": "Cannot open."})
+        # At 2 x limit + 1 cards or less nothing goes.
+        for change, cards in ((dict(show_all_cards=True), 8), (dict(card_limit=0), 8), (dict(closed=True), 8), ({}, 5)):
+            with self.subTest(change=change, cards=cards):
+                window = window_with([f"r{n}" for n in range(cards - 1)] + [more], ["r0", "r1", more])
+                window.__dict__.update(change)
+                self.assertFalse(window.trim_row_cache())
+                self.assertIsNone(window.row_cache_trim)
+                window.release_row.assert_not_called()
+                self.assertEqual(len(window.row_cache), cards)
+
     def test_pending_and_confirmed_controls_keep_native_pointer_targets_and_exclude_pin_drag(self):
         read, pin = Mock(), Mock()
         for control, name in ((read, "read"), (pin, "pin")):
             control.asb_card_action = name
             control.set_sensitive.side_effect = lambda enabled, target=control: setattr(target.get_sensitive, "return_value", enabled)
-            control.set_action_name.side_effect = lambda name, target=control: setattr(target.get_action_name, "return_value", name)
         body = SimpleNamespace(get_ancestor=lambda _kind: None)
         dot = SimpleNamespace(get_ancestor=lambda _kind: read)
         widget = SimpleNamespace(asb_view="comfortable", asb_thread={"id": "a", "title": "Pointer sample", "pinned": True, "unread": True, "canOpen": True},
@@ -4540,8 +4577,8 @@ class NativeLogicChecks(unittest.TestCase):
                     window.update_card_actions(widget)
                     self.assertTrue(read.get_sensitive())
                     self.assertTrue(pin.get_sensitive())
-                    self.assertEqual(read.get_action_name(), None if pending or confirmed else "win.mark-read")
-                    self.assertEqual(pin.get_action_name(), None if pending else "win.unpin")
+                    self.assertEqual(read.asb_action, None if pending or confirmed else "win.mark-read")
+                    self.assertEqual(pin.asb_action, None if pending else "win.unpin")
                     read.update_state.assert_called_with([0, 1], [pending, pending or confirmed])
                     read.update_property.assert_called_with([0], [("Read in ASB" if confirmed else "Mark read in ASB") + ": Pointer sample"])
                     pin.update_property.assert_called_with([0], ["Unpin in ASB: Pointer sample"])
@@ -4693,7 +4730,7 @@ class NativeLogicChecks(unittest.TestCase):
                                "GLib": SimpleNamespace(idle_add=Mock(), timeout_add=timeout, source_remove=Mock())}):
             window.update_card_actions(widget)
             drawer.set_visible.assert_called_with(True)
-            drawer.set_action_name.assert_called_with("win.drawer-in")
+            self.assertEqual(drawer.asb_action, "win.drawer-in")
             drawer.remove_css_class.assert_any_call("asb-drawer-filled")
             drawer.set_tooltip_text.assert_called_with(put)
             drawer.update_property.assert_called_with([0], [put + ": Chat"])
@@ -4705,14 +4742,14 @@ class NativeLogicChecks(unittest.TestCase):
             request.assert_called_once()
             self.assertEqual((request.call_args.args[1], request.call_args.args[4], request.call_args.args[5]),
                              ("/api/threads/a/drawer-in", "POST", None))
-            drawer.set_action_name.assert_called_with(None)
+            self.assertEqual(drawer.asb_action, None)
             drawer.add_css_class.assert_any_call("asb-action-pending")
             drawer.update_state.assert_called_with([0, 1], [True, True])
             request.call_args.args[2](None, "Cannot change this session.")
             self.assertEqual((window.open_errors, window.session_actions, window.dashboard_etag),
                              ({"a": "Cannot change this session."}, set(), "etag"))
             self.assertTrue(widget.asb_thread["unread"])
-            drawer.set_action_name.assert_called_with("win.drawer-in")
+            self.assertEqual(drawer.asb_action, "win.drawer-in")
             window.refresh.assert_not_called()
 
             window.session_action("a", "drawer-in")
@@ -4723,18 +4760,18 @@ class NativeLogicChecks(unittest.TestCase):
             timeout.assert_not_called()  # No Read confirmation.
             self.assertIsNone(widget.asb_read_timer)
             drawer.set_visible.assert_called_with(True)
-            drawer.set_action_name.assert_called_with("win.drawer-out")
+            self.assertEqual(drawer.asb_action, "win.drawer-out")
             drawer.add_css_class.assert_any_call("asb-drawer-filled")
             drawer.set_tooltip_text.assert_called_with(out)
             drawer.update_property.assert_called_with([0], [out + ": Chat"])
             widget.asb_read_button.set_visible.assert_called_with(True)
-            widget.asb_read_button.set_action_name.assert_called_with("win.mark-read")
+            self.assertEqual(widget.asb_read_button.asb_action, "win.mark-read")
 
             window.session_action("a", "drawer-out")
             self.assertEqual(request.call_args.args[1], "/api/threads/a/drawer-out")
             request.call_args.args[2]({"changed": True, "threadId": "a", "thread": dict(row)}, None)
             self.assertEqual(window.dashboard["threads"], [row])
-            drawer.set_action_name.assert_called_with("win.drawer-in")
+            self.assertEqual(drawer.asb_action, "win.drawer-in")
             timeout.assert_not_called()
 
             for thread, width, shown in ((base, 240, False), (row, 189, False), (reply, 189, False), (row, 190, True),
@@ -4961,7 +4998,7 @@ class NativeLogicChecks(unittest.TestCase):
         with patch.dict(SCOPE, {"Gtk": gtk}):
             window.update_card_actions(widget)
             copy.set_visible.assert_called_with(True)
-            copy.set_action_name.assert_called_with(None)
+            self.assertEqual(copy.asb_action, None)
             copy.add_css_class.assert_any_call("asb-copy-off")
             copy.update_state.assert_called_with([1], [True])
             copy.set_tooltip_text.assert_called_with("This session has an ID in a form that ASB does not know.")
@@ -5057,7 +5094,7 @@ class NativeLogicChecks(unittest.TestCase):
                 window.update_card_actions(widget)
                 copy.set_visible.assert_called_with(width >= 190)
                 (corner.add_css_class if width >= 190 else corner.remove_css_class).assert_called_with("asb-corner-wide")
-                copy.set_action_name.assert_called_with("win.copy-reference")
+                self.assertEqual(copy.asb_action, "win.copy-reference")
                 copy.get_child().set_from_icon_name.assert_called_with("object-select-symbolic" if copied else "edit-copy-symbolic")
                 (copy.add_css_class if copied else copy.remove_css_class).assert_called_with("asb-copy-confirmed")
                 copy.set_tooltip_text.assert_called_with("Copied" if copied else "Copy relative reference")

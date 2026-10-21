@@ -2735,6 +2735,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     card_limit, show_all_cards = DEFAULT_CARD_LIMIT, False
     message_seen = None
     number_hold = number_idle = number_scroll = number_pressed = None
+    row_cache_trim = None
     numbers_shown = False
     number_keys = open_popovers = ()
 
@@ -4497,6 +4498,18 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.queue_number_keys()
         # After the queued restore, so that a panel control that gets its focus back does not cancel the scroll restore.
         self.sync_row_panel()
+        # Hidden cards stay cached for a quick return, up to twice the card limit (+1 is the More card); an idle step releases the rest after the frame.
+        if self.card_limit and not self.show_all_cards and len(self.row_cache) > 2 * self.card_limit + 1 and self.row_cache_trim is None:
+            self.row_cache_trim = GLib.idle_add(self.trim_row_cache)
+
+    def trim_row_cache(self):
+        self.row_cache_trim = None
+        if self.closed or not self.card_limit or self.show_all_cards or len(self.row_cache) <= 2 * self.card_limit + 1:
+            return False
+        # The row keeps its other state (open errors): a new card for it shows that state.
+        for identity in self.row_cache.keys() - self.focus_widgets.keys() - {MORE_ID}:
+            self.release_row(self.row_cache.pop(identity))
+        return False
 
     def restore_position(self, focused, position, reveal_focus=False, focused_action=None, focus_generation=None, panel_focus=None):
         if not self.closed and (focus_generation is None or focus_generation == self.focus_generation):
@@ -4864,7 +4877,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     button.add_css_class("asb-card-action")
                     button.add_css_class("asb-" + name + "-button")
                     button.asb_card_action = name
-                    button.set_action_target_value(GLib.Variant("s", row["id"]))
+                    button.asb_identity, button.asb_action = row["id"], None
+                    button.connect("clicked", self.card_action_clicked)
                 widget.asb_drawer_button, widget.asb_read_button, widget.asb_pin_button = drawer, read, pin
                 widget.asb_copy_button = copy
                 actions.append(copy)
@@ -4944,6 +4958,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget.asb_read_timer = None
         widget.asb_read_generation = getattr(widget, "asb_read_generation", 0) + 1
 
+    def card_action_clicked(self, button):
+        # A clicked handler, not an action name: GTK made each card move slower over time with action names on card buttons.
+        if button.asb_action:
+            self.activate_action(button.asb_action, GLib.Variant("s", button.asb_identity))
+
     def update_card_actions(self, widget):
         if widget.asb_view != "comfortable":
             return
@@ -4973,13 +4992,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         (read.add_css_class if discard else read.remove_css_class)("asb-discard-button")
         (read.add_css_class if discard and not row.get("discardResult") else read.remove_css_class)("asb-discard-offer")
         action = "win.keep-result" if row.get("discardResult") else "win.discard-result"
-        read.set_action_name((action if discard else "win.mark-read") if (unread or discard) and not pending else None)
+        read.asb_action = (action if discard else "win.mark-read") if (unread or discard) and not pending else None
         if confirmed:
             read.add_css_class("asb-read-confirmed")
         else:
             read.remove_css_class("asb-read-confirmed")
         pinned = bool(row.get("pinned"))
-        pin.set_action_name(("win.unpin" if pinned else "win.pin") if not pending else None)
+        pin.asb_action = ("win.unpin" if pinned else "win.pin") if not pending else None
         (pin.add_css_class if pinned else pin.remove_css_class)("asb-pinned")
         # Keep native gestures active so busy controls and the Read cue cannot open the row.
         read_text = "A user action is required in the original app" if row.get("actionRequired") else "Task stopped" \
@@ -4993,7 +5012,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             shown = self.column_pixel_width >= 190 and (tucked or indicator == "dot")
             drawer.set_visible(shown)
             (drawer.add_css_class if tucked else drawer.remove_css_class)("asb-drawer-filled")
-            drawer.set_action_name(("win.drawer-out" if tucked else "win.drawer-in") if not pending else None)
+            drawer.asb_action = ("win.drawer-out" if tucked else "win.drawer-in") if not pending else None
             controls.append((drawer, "Take out of drawer: show as unread again" if tucked
                              else "Put in drawer: look read here, keep it under Drawer", not pending))
         for button, text, enabled in controls:
@@ -5012,7 +5031,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             copy.set_visible(wide)
             (copy.get_parent().add_css_class if wide else copy.get_parent().remove_css_class)("asb-corner-wide")
             # With no relative reference the button keeps its place, but has no action and says why.
-            copy.set_action_name("win.copy-reference" if short else None)
+            copy.asb_action = "win.copy-reference" if short else None
             (copy.add_css_class if not short else copy.remove_css_class)("asb-copy-off")
             copy.update_state([Gtk.AccessibleState.DISABLED], [not short])
             copy.get_child().set_from_icon_name("object-select-symbolic" if copied else "edit-copy-symbolic")
@@ -5145,7 +5164,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return False
         focus = self.get_focus()
         if key in (Gdk.KEY_space, Gdk.KEY_Return, Gdk.KEY_KP_Enter) and getattr(focus, "asb_card_action", None):
-            if focus.get_sensitive() and focus.get_action_name():
+            if focus.get_sensitive() and getattr(focus, "asb_action", None):
                 focus.activate()
             return True
         if key == Gdk.KEY_Menu or (key == Gdk.KEY_F10 and _state & Gdk.ModifierType.SHIFT_MASK):
@@ -5540,7 +5559,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.sync_filter_chips()
             self.render(preserve_focus=first, reveal_focus=bool(first) and self.get_focus_visible())
             return
-        # A click on a card action reaches the row too: the busy state takes the action from the button, and GTK drops its claim.
+        # A real click on a card button does not reach the row (the button has no action name to lose, so GTK keeps its claim).
+        # A click on the card body while a card action is in flight does, so the busy guard stays.
         if not row.get("canOpen") or row["id"] in self.opening or row["id"] in self.session_actions:
             return
         self.opening.add(row["id"])
@@ -5582,7 +5602,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.list_body.clear_hover()
         self.list_body.clear_flights()
         self.events.close()
-        for name in ("timer", "clock_timer", "geometry_idle", "notice_timer"):
+        for name in ("timer", "clock_timer", "geometry_idle", "notice_timer", "row_cache_trim"):
             source = getattr(self, name)
             if source:
                 GLib.source_remove(source)

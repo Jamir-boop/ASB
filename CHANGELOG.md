@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Made the board faster when it shows many cards and in long sessions: card moves no longer get slower over time, and hidden cards no longer stay in memory.
 - Changed the Android app: the Text size setting is now named **Card text size**, and it changes only the text on the session cards. The other text in the app (top bar, filters, Settings, dialogs, and the session inspector) now follows only the phone font size. The setting keeps its saved value.
 - Fixed ASB Bridge: a Codex task no longer puts its inbox socket in the folder of a relay proxy or of another receiver. The relay deletes the sockets in its folder when it restarts, and then nobody could reach the task and the task could not send. The task now takes the folder of a native Claude session, or its own `cc-socks` folder.
 - `asb doctor` shows one more check: **Links**. It names the desktop file that handles `codex:` links and the one that handles `claude:` links (`xdg-mime query default`). When an app has no handler, or `xdg-mime` is missing, the line has the status `info` and says that ASB cannot open sessions of that app until the app handles its links.

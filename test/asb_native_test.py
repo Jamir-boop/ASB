@@ -2075,7 +2075,7 @@ class WidgetCheck(unittest.TestCase):
         # The Comfortable card button stays, with no action and the reason as its tooltip.
         window.view_filter.set_selected(1); self.drain(1)
         card = window.focus_widgets[invalid_row["id"]].asb_copy_button
-        self.assertEqual((card.get_visible(), card.get_action_name(), card.get_tooltip_text()), (True, None, reason))
+        self.assertEqual((card.get_visible(), card.asb_action, card.get_tooltip_text()), (True, None, reason))
         self.assertTrue(card.has_css_class("asb-copy-off"))
         self.assert_accessible_disabled(card, True)
         self.assert_accessible_label(card, "Copy relative reference: " + invalid_row["title"])
@@ -2965,7 +2965,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertIs(copy_button.get_next_sibling(), drawer)
         self.assertIs(drawer.get_next_sibling().get_first_child(), read)
         self.assertIs(drawer.get_next_sibling().get_next_sibling(), one.asb_pin_button)
-        self.assertEqual((copy_button.get_width(), copy_button.get_height(), copy_button.get_action_name(), copy_button.get_child().get_icon_name()),
+        self.assertEqual((copy_button.get_width(), copy_button.get_height(), copy_button.asb_action, copy_button.get_child().get_icon_name()),
                          (24, 24, "win.copy-reference", "edit-copy-symbolic"))
         self.assertEqual(copy_button.get_child().get_pixel_size(), 12)
         self.assertEqual(copy_button.get_tooltip_text(), "Copy relative reference")
@@ -2973,7 +2973,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(all(card.asb_copy_button.get_visible() and card.asb_copy_button.get_parent().has_css_class("asb-corner-wide")
                             for card in cards.values()))
         self.assertEqual(self.ink(cards["s3"].asb_copy_button.get_parent()), 0)  # A corner at rest has no ink.
-        self.assertEqual((drawer.get_width(), drawer.get_height(), drawer.get_action_name()), (24, 24, "win.drawer-in"))
+        self.assertEqual((drawer.get_width(), drawer.get_height(), drawer.asb_action), (24, 24, "win.drawer-in"))
         self.assertEqual(drawer.get_tooltip_text(), put)
         self.assert_accessible_label(drawer, put + ": " + one.asb_thread["title"])
         # The title has the same allocation with three buttons and with two.
@@ -3015,7 +3015,7 @@ class WidgetCheck(unittest.TestCase):
         # A click sends drawer-in. After the reply the row looks read, sorts with the read rows, and lights the dot.
         drawer.emit("clicked")
         self.assertEqual((requests[-1][1], requests[-1][4], requests[-1][5]), ("/api/threads/s1/drawer-in", "POST", None))
-        self.assertIsNone(drawer.get_action_name())
+        self.assertIsNone(drawer.asb_action)
         self.assertTrue(drawer.has_css_class("asb-action-pending"))
         window.dashboard_etag = "etag"
         reply("s1", unread=False, pending=False, drawer=True)
@@ -3027,7 +3027,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual((self.ink(one.asb_dot), self.ink(read), self.ink(drawer)), (0, 0, 0))
         self.assertEqual((bubble.get_visible(), pill.has_css_class("asb-drawer-filled")), (True, True))
         self.assert_accessible_label(pill, "Drawer only. The drawer has sessions.")
-        self.assertEqual((drawer.get_visible(), drawer.get_action_name(), drawer.has_css_class("asb-drawer-filled")),
+        self.assertEqual((drawer.get_visible(), drawer.asb_action, drawer.has_css_class("asb-drawer-filled")),
                          (True, "win.drawer-out", True))
         self.assertFalse(drawer.has_css_class("asb-action-pending"))
         self.assertEqual(drawer.get_tooltip_text(), out)
@@ -3142,7 +3142,7 @@ class WidgetCheck(unittest.TestCase):
         pill.set_active(False); settle()
         self.assertEqual(window.row_order, ["s1", "s2", "s5", "s4", "s3"])
         self.assertFalse(one.has_css_class("asb-drawer"))
-        self.assertEqual((self.ink(one.asb_dot), drawer.get_action_name()), (255, "win.drawer-in"))
+        self.assertEqual((self.ink(one.asb_dot), drawer.asb_action), (255, "win.drawer-in"))
 
         # A column narrower than 190 px has no drawer button; the corner is the Read and Pin pair.
         window.width_control.set_value(160); settle()
@@ -3557,6 +3557,90 @@ class WidgetCheck(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
                          "Real pointer movement needs xdotool and a nested test display (DISPLAY=:9 or :10).")
+    def test_card_buttons_have_no_action_names(self):
+        requests = []
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "request_async", lambda *args: requests.append(args))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        rows = [{"id": f"s{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Sort the release notes {n}",
+                 "cwd": "/example/field-notes", "projectName": "field-notes", "state": "idle", "canOpen": True,
+                 "updatedAtMs": NOW - n * 60_000} for n in (1, 2)]
+        rows[0].update(pending=True, unread=True, completionAttention=True, pendingSource="observed-completion")
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", {"generatedAtMs": NOW, "providers": [], "threads": rows},
+                                      theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(700, 420)
+        window.present(); window.set_focus(None); self.drain(.3)
+        window.view_filter.set_selected(1); self.drain(.4)
+        for card in window.focus_widgets.values():
+            buttons = (card.asb_copy_button, card.asb_drawer_button, card.asb_read_button, card.asb_pin_button)
+            self.assertEqual([button.get_action_name() for button in buttons], [None] * 4)
+        # Keyboard and screen-reader activation emit clicked, which sends the window action.
+        window.focus_widgets["s1"].asb_read_button.activate(); self.drain(.4)
+        self.assertEqual([request[1] for request in requests if request[1] != "/api/palette"], ["/api/threads/s1/mark-read"])
+        self.assertEqual(window.opening, set())
+
+    def test_row_cache_releases_hidden_cards_above_twice_the_limit(self):
+        asb.gi.require_version("GdkX11", "4.0")
+        from gi.repository import GdkX11
+        requests = []
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "request_async", lambda *args: requests.append(args))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        def xdo(*args):
+            return subprocess.run(["xdotool", *map(str, args)], check=True, capture_output=True, text=True).stdout
+        x, y = (line.split("=")[1] for line in xdo("getmouselocation", "--shell").splitlines()[:2])
+        self.addCleanup(xdo, "mousemove", x, y)
+        words = ["amber", "amber", "birch", "birch", "cedar", "cedar", "cedar", "cedar"]
+        dashboard = {"generatedAtMs": NOW, "providers": [], "threads": [
+            {"id": f"r{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Review the {word} notes {n}",
+             "cwd": "/example/field-notes", "projectName": "field-notes", "state": "idle", "canOpen": True,
+             "updatedAtMs": NOW - n * 60_000} for n, word in enumerate(words)]}
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(900, 420)
+        window.present(); window.set_focus(None); self.drain(.4)
+        window.view_filter.set_selected(1); self.drain(.4); window.check_geometry(); self.drain(.3)
+        window.card_limit = 2  # Not a Preferences choice, so not through the setting.
+        window.render(); self.drain(.3)
+        self.assertEqual(window.row_order, ["r0", "r1", asb.MORE_ID])
+        more = window.focus_widgets[asb.MORE_ID]
+        # Show all, then clear the All cards chip: after the idle, the cache has the shown cards and the More card only.
+        window.open_row(None, more); self.drain(.3)
+        self.assertEqual(len(window.row_cache), 9)
+        window.clear_filter_chip(window.filter_chip_widgets["all"][0], "all"); self.drain(.3)
+        self.assertEqual(window.row_order, ["r0", "r1", asb.MORE_ID])
+        self.assertEqual(set(window.row_cache), {"r0", "r1", asb.MORE_ID})
+        self.assertIs(window.row_cache[asb.MORE_ID], more)
+        self.assertIsNone(window.row_cache_trim)
+        # Two searches hide r0 and r1 and pass the bound of 5 cards; a clear builds them again with their current data.
+        first = window.focus_widgets["r0"]
+        window.search.set_text("cedar"); self.drain(.6)
+        self.assertEqual(set(window.row_cache), {"r0", "r1", "r4", "r5", asb.MORE_ID})
+        window.search.set_text("birch"); self.drain(.6)
+        self.assertEqual(set(window.row_cache), {"r2", "r3", asb.MORE_ID})
+        window.dashboard["threads"][0] = dict(window.dashboard["threads"][0], title="Review the renamed notes 0")
+        window.search.set_text(""); self.drain(.6)
+        self.assertEqual(window.row_order, ["r0", "r1", asb.MORE_ID])
+        card = window.focus_widgets["r0"]
+        self.assertIsNot(card, first)
+        self.assertEqual(card.asb_title_label.get_label(), "Review the renamed notes 0")
+        found, bounds = card.asb_title_label.compute_bounds(window)
+        self.assertTrue(found)
+        left, top = window.get_surface_transform()
+        xdo("mousemove", "--window", GdkX11.X11Surface.get_xid(window.get_surface()),
+            int(bounds.origin.x + bounds.size.width / 2 + left), int(bounds.origin.y + bounds.size.height / 2 + top))
+        self.drain(.3)
+        del requests[:]
+        xdo("click", 1); self.drain(.4)
+        self.assertEqual([request[1] for request in requests if request[1] != "/api/palette"], ["/api/threads/r0/open"])
+
     def test_real_pointer_sets_one_hover_class_on_each_card(self):
         asb.gi.require_version("GdkX11", "4.0")
         from gi.repository import GdkX11
