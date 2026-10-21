@@ -56,7 +56,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
@@ -311,7 +310,7 @@ fun SettingsScreen(
                             ) { Text(label) }
                         }
                     }
-                    Text("Text size", style = MaterialTheme.typography.labelLarge)
+                    Text("Card text size", style = MaterialTheme.typography.labelLarge)
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                         TEXT_SCALES.forEachIndexed { index, (value, label) ->
                             SegmentedButton(
@@ -322,6 +321,8 @@ fun SettingsScreen(
                             ) { Text(label) }
                         }
                     }
+                    Text("Changes the text on the session cards. Other text follows the phone font size.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     SettingsSwitch("Use the camera area", useCameraArea, onChecked = onUseCameraAreaChanged)
                     Text("Draw the app under the camera hole. Turn off to keep that band clear.",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -384,13 +385,12 @@ fun SettingsScreen(
             }
         }
     }
-    val density = LocalDensity.current
     if (confirmUnpair) AlertDialog(
         onDismissRequest = { confirmUnpair = false },
-        title = withDensity(density) { Text("Unpair this phone?") },
-        text = withDensity(density) { Text("This removes the saved pairing from this phone. Also remove this phone in ASB Preferences > Phone on the PC.") },
-        confirmButton = withDensity(density) { TextButton(onClick = { confirmUnpair = false; onUnpair() }) { Text("Unpair") } },
-        dismissButton = withDensity(density) { TextButton(onClick = { confirmUnpair = false }) { Text("Cancel") } },
+        title = { Text("Unpair this phone?") },
+        text = { Text("This removes the saved pairing from this phone. Also remove this phone in ASB Preferences > Phone on the PC.") },
+        confirmButton = { TextButton(onClick = { confirmUnpair = false; onUnpair() }) { Text("Unpair") } },
+        dismissButton = { TextButton(onClick = { confirmUnpair = false }) { Text("Cancel") } },
     )
     license?.let { title -> LicenseDialog(title, SettingsLicenses.getValue(title)) { license = null } }
 }
@@ -459,17 +459,16 @@ private fun LicenseDialog(title: String, paths: List<String>, onDismiss: () -> U
             withContext(Dispatchers.IO) { paths.joinToString("\n\n") { path -> assets.open(path).bufferedReader().use { it.readText() } } }
         } catch (_: IOException) { "Could not load this license. Close this dialog and try again." }
     }
-    val density = LocalDensity.current
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = withDensity(density) { Text(title) },
-        text = withDensity(density) {
+        title = { Text(title) },
+        text = {
             SelectionContainer {
                 Text(text ?: "Loading license…", style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()))
             }
         },
-        confirmButton = withDensity(density) { TextButton(onClick = onDismiss) { Text("Close") } },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
     )
 }
 

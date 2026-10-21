@@ -5,6 +5,7 @@ import local.asb.companion.data.Palette
 import local.asb.companion.data.Thread
 import local.asb.companion.ui.CardTones
 import local.asb.companion.ui.CornerControl
+import local.asb.companion.ui.cardFontScale
 import local.asb.companion.ui.cardTones
 import local.asb.companion.ui.cornerControls
 import local.asb.companion.ui.isViewOnly
@@ -118,6 +119,26 @@ class CardRulesTest {
         assertEquals(8f + 60f * 1.3f, comfortableCardHeight(1.3f), .001f)
         assertEquals(48f, compactRowHeight(1.3f), .001f)
         assertEquals(64f, compactRowHeight(4f), .001f)
+    }
+
+    @Test fun cardTextSizeScalesTheCardsOnTopOfThePhoneFontScale() {
+        // The setting multiplies the phone font scale, so the phone size still counts.
+        assertEquals(1.5f * 1.3f, cardFontScale(1.5f, 1.3f), .001f)
+        assertEquals(.85f, cardFontScale(1f, .85f), .001f)
+        // The Default setting gives the card height of the phone font scale alone.
+        for (phone in listOf(.85f, 1f, 1.3f, 2f)) {
+            assertEquals(comfortableCardHeight(phone), comfortableCardHeight(cardFontScale(phone, 1f)), .001f)
+            assertEquals(compactRowHeight(phone), compactRowHeight(cardFontScale(phone, 1f)), .001f)
+        }
+        assertEquals(68f, comfortableCardHeight(cardFontScale(1f, 1f)), .001f)
+        // A larger setting makes the Comfortable card higher at every phone font scale.
+        for (phone in listOf(1f, 1.3f)) {
+            val heights = listOf(.85f, 1f, 1.15f, 1.3f).map { comfortableCardHeight(cardFontScale(phone, it)) }
+            assertEquals(heights.sorted().distinct(), heights)
+        }
+        // The Compact row keeps its touch minimum until the card text is large enough to need more.
+        assertEquals(48f, compactRowHeight(cardFontScale(1f, 1.3f)), .001f)
+        assertEquals(52f, compactRowHeight(cardFontScale(2.5f, 1.3f)), .001f)
     }
 
     @Test fun columnFlowFitsWholeComfortableCardsWithTheirGaps() {

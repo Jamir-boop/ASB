@@ -14,8 +14,6 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.Density
 import local.asb.companion.data.Palette
 import local.asb.companion.data.contrast
 
@@ -33,10 +31,6 @@ val SafeContentInsets: WindowInsets
     @Composable get() = if (LocalUseCameraArea.current) WindowInsets.systemBars.union(WindowInsets.ime) else WindowInsets.safeDrawing
 val SafeTopBarInsets: WindowInsets
     @Composable get() = SafeContentInsets.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
-
-// A dialog, menu, or sheet window sets its own density, so its content gets the app text size again from this.
-fun withDensity(density: Density, content: @Composable () -> Unit): @Composable () -> Unit =
-    { CompositionLocalProvider(LocalDensity provides density, content = content) }
 
 fun hexColor(value: String): Color = Color(0xff000000L or value.substring(1).toLong(16))
 

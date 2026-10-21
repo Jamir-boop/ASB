@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.VisibilityThreshold
@@ -189,14 +190,18 @@ import kotlin.math.roundToInt
 fun SessionsScreen(
     viewModel: SessionsViewModel,
     serverName: String,
+    cardTextScale: Float,
     onSettings: () -> Unit,
     onPairAgain: () -> Unit,
 ) = BoxWithConstraints {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
     val context = LocalContext.current
-    val density = LocalDensity.current.density
-    val fontScale = LocalDensity.current.fontScale
+    val phoneDensity = LocalDensity.current
+    val density = phoneDensity.density
+    val cardScale = cardFontScale(phoneDensity.fontScale, cardTextScale)
+    // Only the session cards get this density; the rest of the screen keeps the phone font size.
+    val cardDensity = remember(density, cardScale) { Density(density, cardScale) }
     val snackbar = remember { SnackbarHostState() }
     val keyboard = LocalSoftwareKeyboardController.current
     // Landscape and other wide windows use the desktop Column Flow.
@@ -208,7 +213,7 @@ fun SessionsScreen(
     var discMenu by remember { mutableStateOf(false) }
     val comfortable = state.view != "compact"
     val rowGap = if (comfortable) COMFORTABLE_CARD_GAP else 0
-    val rowHeight = if (comfortable) comfortableCardHeight(fontScale) else compactRowHeight(fontScale)
+    val rowHeight = if (comfortable) comfortableCardHeight(cardScale) else compactRowHeight(cardScale)
     var showFilters by rememberSaveable { mutableStateOf(false) }
     // The inspector row ID and the long-press point in window pixels. A rotation closes it.
     var inspector by remember { mutableStateOf<Pair<String, Offset>?>(null) }
@@ -398,22 +403,25 @@ fun SessionsScreen(
         }
     }
 
+    // The card reads its font scale from LocalDensity for its text and minimum height, so it matches rowHeight.
     @Composable
-    fun card(row: Thread, modifier: Modifier) = SessionCard(
-        row = row,
-        comfortable = comfortable,
-        drawerView = state.filter.drawerOnly,
-        busy = row.id in state.busyIds,
-        opening = row.id in state.openingIds,
-        confirmed = row.id in state.readConfirmedIds,
-        nowMs = nowMs,
-        messageLit = row.id in highlights,
-        onProviderCenter = { center -> providerCenters[row.id] = center },
-        onOpen = { viewModel.action(row.id, "open") },
-        onActions = { point -> keyboard?.hide(); inspector = row.id to point },
-        onCorner = { action -> viewModel.action(row.id, action) },
-        modifier = modifier,
-    )
+    fun card(row: Thread, modifier: Modifier) = CompositionLocalProvider(LocalDensity provides cardDensity) {
+        SessionCard(
+            row = row,
+            comfortable = comfortable,
+            drawerView = state.filter.drawerOnly,
+            busy = row.id in state.busyIds,
+            opening = row.id in state.openingIds,
+            confirmed = row.id in state.readConfirmedIds,
+            nowMs = nowMs,
+            messageLit = row.id in highlights,
+            onProviderCenter = { center -> providerCenters[row.id] = center },
+            onOpen = { viewModel.action(row.id, "open") },
+            onActions = { point -> keyboard?.hide(); inspector = row.id to point },
+            onCorner = { action -> viewModel.action(row.id, action) },
+            modifier = modifier,
+        )
+    }
 
     @Composable
     fun emptyState(modifier: Modifier) = Box(modifier.padding(24.dp), contentAlignment = Alignment.Center) {
@@ -555,18 +563,15 @@ fun SessionsScreen(
                 )
             }
         }
-        val density = LocalDensity.current
         DropdownMenu(expanded = discMenu, onDismissRequest = { discMenu = false }) {
-            CompositionLocalProvider(LocalDensity provides density) {
-                Text(connection, style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp).widthIn(max = 280.dp))
-                DropdownMenuItem(
-                    text = { Text("Refresh") },
-                    leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
-                    enabled = !state.refreshing,
-                    onClick = { discMenu = false; viewModel.refresh() },
-                )
-            }
+            Text(connection, style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp).widthIn(max = 280.dp))
+            DropdownMenuItem(
+                text = { Text("Refresh") },
+                leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
+                enabled = !state.refreshing,
+                onClick = { discMenu = false; viewModel.refresh() },
+            )
         }
     }
 
@@ -1064,40 +1069,37 @@ private class HighlightNode(private val source: InteractionSource, private val c
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun FilterSheet(filter: Filter, onChange: (Filter) -> Unit, onDismiss: () -> Unit) {
-    val density = LocalDensity.current
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        CompositionLocalProvider(LocalDensity provides density) {
-            Column(
-                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp)
-                    .padding(bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text("Filters", style = MaterialTheme.typography.headlineSmall)
-                Spacer(Modifier.height(8.dp))
-                Text("App", style = MaterialTheme.typography.titleMedium)
-                APP_FILTERS.forEach { (app, label) ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
-                            .selectable(selected = filter.app == app, role = Role.RadioButton,
-                                onClick = { onChange(filter.copy(app = app)) }),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        RadioButton(selected = filter.app == app, onClick = null)
-                        Text(label, style = MaterialTheme.typography.bodyLarge)
-                    }
+        Column(
+            modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("Filters", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(8.dp))
+            Text("App", style = MaterialTheme.typography.titleMedium)
+            APP_FILTERS.forEach { (app, label) ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        .selectable(selected = filter.app == app, role = Role.RadioButton,
+                            onClick = { onChange(filter.copy(app = app)) }),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    RadioButton(selected = filter.app == app, onClick = null)
+                    Text(label, style = MaterialTheme.typography.bodyLarge)
                 }
-                Spacer(Modifier.height(8.dp))
-                Text("States", style = MaterialTheme.typography.titleMedium)
-                STATES.forEach { state ->
-                    FilterCheckbox(stateLabel(state), state in filter.states) { checked ->
-                        onChange(filter.copy(states = if (checked) filter.states + state else filter.states - state))
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-                FilterCheckbox("Include archived", filter.archived) { onChange(filter.copy(archived = it)) }
-                Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Done") }
             }
+            Spacer(Modifier.height(8.dp))
+            Text("States", style = MaterialTheme.typography.titleMedium)
+            STATES.forEach { state ->
+                FilterCheckbox(stateLabel(state), state in filter.states) { checked ->
+                    onChange(filter.copy(states = if (checked) filter.states + state else filter.states - state))
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            FilterCheckbox("Include archived", filter.archived) { onChange(filter.copy(archived = it)) }
+            Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Done") }
         }
     }
 }
@@ -1191,7 +1193,7 @@ private fun SessionInspector(
         popupPositionProvider = remember(point, safe) { InspectorPosition(point, safe) },
         onDismissRequest = onDismiss,
         properties = PopupProperties(focusable = true),
-        content = withDensity(density) {
+        content = {
             Column(
                 Modifier.padding(INSPECTOR_SHADOW_ROOM).width(width).heightIn(max = maxHeight)
                     .shadow(12.dp, shape, ambientColor = Color.Black, spotColor = Color.Black)
