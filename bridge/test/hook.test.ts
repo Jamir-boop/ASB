@@ -125,7 +125,8 @@ posix('session hooks own one receiver per task, restore it after resume and clea
 // A fake session: a live placeholder process, a private socket in its own folder, and its registry row.
 async function fakeSession(configDir: string, folder: string, entrypoint?: string) {
   mkdirSync(folder, { mode: 0o700 });
-  const child = Bun.spawn(['/usr/bin/cat'], { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' });
+  // macOS has cat only in /bin, so the placeholder comes from PATH.
+  const child = Bun.spawn(['cat'], { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' });
   const box = await inbox(folder, () => {}, `${child.pid}.sock`);
   writeFileSync(join(configDir, 'sessions', `${child.pid}.json`), JSON.stringify({ pid: child.pid, sessionId: randomUUID(),
     messagingSocketPath: socketPath(box.address), cwd: '/tmp', peerProtocol: 1, procStart: await processStart(child.pid),
