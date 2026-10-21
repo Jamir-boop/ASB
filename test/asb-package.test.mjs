@@ -80,20 +80,28 @@ test('release payloads are reproducible and the user installer preserves other f
   const previousMask = process.umask(0o022);
   let artifacts, second;
   try {
-    artifacts = await build({ sourceRoot, outputDir: path.join(temporary, 'first') });
+    // The warning about a missing rpmbuild has its own test (asb-package-formats.test.mjs).
+    artifacts = await build({ sourceRoot, outputDir: path.join(temporary, 'first'), warn: () => {} });
     process.umask(0o077);
-    second = await build({ sourceRoot, outputDir: path.join(temporary, 'second') });
+    second = await build({ sourceRoot, outputDir: path.join(temporary, 'second'), warn: () => {} });
   } finally { process.umask(previousMask); }
+  // The RPM is built only when rpmbuild exists. The PKGBUILD always follows. The loop below then compares the RPM bytes of the two builds too.
+  let rpmbuild = true;
+  try { execFileSync('rpmbuild', ['--version'], { stdio: 'ignore' }); } catch { rpmbuild = false; }
+  const names = [`asb_${version}_all.deb`, `asb-${version}-linux.tar.gz`, ...rpmbuild ? [`asb-${version}-1.noarch.rpm`] : [], 'PKGBUILD'];
+  for (const built of [artifacts, second]) assert.deepEqual(built.map((file) => path.basename(file)), names);
   for (let i = 0; i < artifacts.length; i++) assert.equal(sha256(await readFile(artifacts[i])), sha256(await readFile(second[i])));
   const sums = await readFile(path.join(temporary, 'first', 'SHA256SUMS'), 'utf8');
+  assert.deepEqual(sums.trim().split('\n').map((line) => line.slice(66)), names);
   for (const file of artifacts) assert.ok(sums.includes(`${sha256(await readFile(file))}  ${path.basename(file)}\n`));
   const archiveFiles = execFileSync('tar', ['-tzf', artifacts[1]], { encoding: 'utf8' }).trim().split('\n').filter((name) => !name.endsWith('/'));
   assert.deepEqual(archiveFiles.sort(), RUNTIME_FILES.map((file) => `asb-${version}/${file}`).sort());
   const [debVersion, architecture, depends, recommends] = execFileSync('dpkg-deb', ['-f', artifacts[0], 'Version', 'Architecture', 'Depends', 'Recommends'], { encoding: 'utf8' }).trim().split('\n');
   assert.equal(debVersion, `Version: ${version}`);
   assert.equal(architecture, 'Architecture: all');
-  assert.equal(depends, 'Depends: nodejs (>= 20), sqlite3, python3, python3-gi, gir1.2-gtk-4.0 (>= 4.12), gir1.2-adw-1 (>= 1.4), xdg-utils, openssl');
-  assert.equal(recommends, 'Recommends: python3-qrcode, pipewire-bin');
+  assert.equal(depends, 'Depends: nodejs (>= 20), sqlite3, xdg-utils, openssl');
+  // The board libraries are weak dependencies: a release with an old GTK still installs the engine.
+  assert.equal(recommends, 'Recommends: python3-gi, python3-gi-cairo, gir1.2-gtk-4.0 (>= 4.12), gir1.2-adw-1 (>= 1.4), python3-qrcode, pipewire-bin | pulseaudio-utils | alsa-utils');
   const extracted = path.join(temporary, 'deb');
   execFileSync('dpkg-deb', ['-x', artifacts[0], extracted]);
   const control = path.join(temporary, 'control');
@@ -223,6 +231,7 @@ test('package commands reject extra arguments before checks or writes and instal
     'import { appendFileSync } from "node:fs"; appendFileSync(process.env.ASB_PACKAGE_TEST_LOG, "bridge\\n");\n');
   const home = path.join(temporary, 'home');
   const log = path.join(temporary, 'actions.log');
+  const staged = path.join(temporary, 'staged');
   const codexHome = path.join(home, ".codex home's $(not-a-command)");
   const claudeHome = path.join(home, '.claude');
   const env = { ...process.env, ASB_NODE: process.execPath, HOME: home, PATH: '/usr/bin:/bin',
@@ -235,10 +244,12 @@ test('package commands reject extra arguments before checks or writes and instal
     ['install', '--bridge-codex-home', codexHome], ['install', '--bridge-codex-home', '--bridge-claude'],
     ['install', '--bridge-codex-home', ''], ['install', '--bridge-claude'],
     ['install', '--bridge-codex-home', codexHome, '--bridge-claude'], ['install', '--all'],
-    ['build', '--bridge-claude'], ['uninstall', '--bridge-claude'], ['check', '--bridge-claude']]) {
-    assert.throws(() => run(args), (error) => error.status === 1 && /Use: asb-package.mjs build\|install\|uninstall\|check/.test(String(error.stderr)));
+    ['build', '--bridge-claude'], ['uninstall', '--bridge-claude'], ['check', '--bridge-claude'],
+    ['stage'], ['stage', ''], ['stage', staged, 'extra'], ['stage', staged, ''], ['build', staged], ['check', staged]]) {
+    assert.throws(() => run(args), (error) => error.status === 1 && /Use: asb-package\.mjs build\|install\|uninstall\|check\|stage <folder>/.test(String(error.stderr)));
     await assert.rejects(lstat(log), { code: 'ENOENT' });
     await assert.rejects(lstat(home), { code: 'ENOENT' });
+    await assert.rejects(lstat(staged), { code: 'ENOENT' });
     await assert.rejects(lstat(path.join(source, 'dist')), { code: 'ENOENT' });
   }
   const optional = 'Optional: run "asb bridge install --all" to let your Claude Code and Codex chats message each other.';
@@ -429,7 +440,7 @@ test('the npm package has the runtime files, the asb command, and no tests, docu
   const files = pkg.files.map((item) => item.path);
   for (const file of RUNTIME_FILES) assert.ok(files.includes(file), file);
   for (const file of ['scripts/asb.mjs', 'scripts/asb-tray.ps1', 'assets/icons/asb-tray-32.png']) assert.ok(files.includes(file), file);
-  assert.deepEqual(files.filter((file) => /^(android|demo|docs|test|\.impeccable|bridge\/src|bridge\/test)\//.test(file)), []);
+  assert.deepEqual(files.filter((file) => /^(android|demo|docs|test|nix|dist|\.impeccable|bridge\/src|bridge\/test)\/|^flake\./.test(file)), []);
   // npm links bin files; the POSIX launcher needs the execute bit too.
   assert.ok(pkg.files.find((item) => item.path === 'scripts/asb.mjs').mode & 0o111);
 });

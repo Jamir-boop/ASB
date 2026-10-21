@@ -19,6 +19,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
+      # rpmbuild: the build and its tests make and check the RPM only when it exists.
+      - run: sudo apt-get update && sudo apt-get install -y rpm
       - run: npm test
       - run: python3 test/asb_native_logic_test.py
       - run: npm run build
@@ -28,7 +30,9 @@ jobs:
           name: asb-linux
           path: |
             dist/asb_*_all.deb
+            dist/asb-*.noarch.rpm
             dist/asb-*-linux.tar.gz
+            dist/PKGBUILD
             dist/SHA256SUMS
   windows-test:
     runs-on: windows-latest

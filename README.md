@@ -32,6 +32,8 @@ cd asb-1.9.0
 ~/.local/bin/asb
 ```
 
+**Nix:** the repository has a flake (`flake.nix`). `asb service install` writes store paths into the unit or the autostart entry, so run it again after each update of the flake.
+
 [User guide](ASB.md) · [Privacy](docs/PRIVACY.md) · [Source setup](ASB.md#start-and-stop) · [Contributing](CONTRIBUTING.md)
 
 ## Install with npm (Linux and Windows)
