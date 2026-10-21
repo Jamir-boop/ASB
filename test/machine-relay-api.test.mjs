@@ -153,19 +153,20 @@ function fakeGroup(members = [B]) {
   return { states, self: () => ({ machineId: A, name: 'alpha' }), selfName: () => 'alpha', peerStates: () => states, tls: async () => ({ fingerprint: 'own' }) };
 }
 
-// A root with bridge/dist/relay.js, a PATH with an executable `bun`, and a runtime folder.
+// A root with bridge/dist/relay.js, a PATH with an executable `bun` and `cat`, and a runtime folder.
 async function supervisorFixture(t, options = {}) {
   const dir = await temporary(t);
   await mkdir(path.join(dir, 'bridge', 'dist'), { recursive: true });
   await mkdir(path.join(dir, 'bin'));
   await writeFile(path.join(dir, 'bridge', 'dist', 'relay.js'), '');
   await writeFile(path.join(dir, 'bin', 'bun'), '#!/bin/sh\n', { mode: 0o755 });
+  await writeFile(path.join(dir, 'bin', 'cat'), '#!/bin/sh\n', { mode: 0o755 });
   const spawns = [];
   const logs = [];
   const group = options.group || fakeGroup();
   const supervisor = createRelaySupervisor({ group, port: 4659, sourceToken: TOKEN, root: dir, platform: 'linux',
     env: { PATH: path.join(dir, 'bin'), XDG_RUNTIME_DIR: path.join(dir, 'run') }, log: (line) => logs.push(line), firstLineMs: 200, stopMs: 50,
-    catPath: '/usr/bin/cat', ...(typeof options.supervisor === 'function' ? options.supervisor(dir) : options.supervisor),
+    ...(typeof options.supervisor === 'function' ? options.supervisor(dir) : options.supervisor),
     spawn: (command, args, spawnOptions) => {
       const child = (options.child || (() => fakeChild({ line: JSON.stringify({ port: 1, token: 'e'.repeat(64) }) })))(spawns.length);
       spawns.push({ command, args, options: spawnOptions, child });
@@ -180,17 +181,16 @@ test('the supervisor starts the relay only when every start condition holds', as
     ['no other member', async (f) => { f.group.states.length = 0; }],
     ['no bun', async (f) => { await rm(path.join(f.dir, 'bin', 'bun')); }],
     ['no relay.js', async (f) => { await rm(path.join(f.dir, 'bridge', 'dist', 'relay.js')); }],
+    ['no cat in PATH', async (f) => { await rm(path.join(f.dir, 'bin', 'cat')); }],
   ]) {
     const f = await supervisorFixture(t);
     await change(f);
     await f.supervisor.start();
     assert.equal(f.spawns.length, 0, name);
   }
-  for (const supervisor of [{ platform: 'win32' }, { catPath: '/nonexistent/cat' }]) {
-    const f = await supervisorFixture(t, { supervisor });
-    await f.supervisor.start();
-    assert.equal(f.spawns.length, 0, JSON.stringify(supervisor));
-  }
+  const other = await supervisorFixture(t, { supervisor: { platform: 'win32' } });
+  await other.supervisor.start();
+  assert.equal(other.spawns.length, 0, 'another platform');
   const f = await supervisorFixture(t);
   await f.supervisor.start();
   assert.equal(f.spawns.length, 1);

@@ -1344,7 +1344,7 @@ linux('a remote send records the proxy row address, so a receipt through the pro
   const remote = remoteSession();
   const engine = fakeEngine(runtimeDir(), route => route === '/api/relay/remote-peers' ? { peers: [remote] }
     : route === '/api/relay/homes' ? { machineId: 'a'.repeat(16), machineName: 'alpha', homes: [] } : { ok: true, outcome: 'socket-written' });
-  const placeholder = Bun.spawn(['/usr/bin/cat'], { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' });
+  const placeholder = Bun.spawn(['cat'], { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' });
   const proxy = await inbox(join(f.root, 's'), () => {}, `${placeholder.pid}.sock`);
   try {
     writeFileSync(join(f.configDir, 'sessions', `${placeholder.pid}.json`), JSON.stringify({ pid: placeholder.pid, sessionId: remote.sessionId,

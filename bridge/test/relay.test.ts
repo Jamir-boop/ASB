@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { hopChain, inbox, peers, processStart, sendFrames, socketPath, userFrame, type Frame } from '../src/claude';
 import { outboundServer, type ExactReceipt } from '../src/outbound';
 import { engineCaller, forwardOutcome, proxyName, proxyPlan, receiptParts, type ExactEntry, type Home, type RemotePeer } from '../src/relay';
-// Linux only: the engine starts the relay only on Linux and Windows, and this test uses Unix sockets and the /usr/bin/cat placeholder.
+// Linux only: the engine starts the relay only on Linux and Windows, and this test uses Unix sockets and the `cat` placeholder from PATH.
 const linux = test.skipIf(process.platform !== 'linux');
 
 const remotePeer = (agent: 'claude' | 'codex', remoteControl: boolean, sessionId = randomUUID()): RemotePeer =>
@@ -148,7 +148,7 @@ async function until<T>(read: () => T | undefined | false | Promise<T | undefine
 
 // A local session: a live placeholder process, a private socket, and its registry row.
 async function agent(configDir: string, socketDir: string, name: string, entrypoint?: string) {
-  const child = Bun.spawn(['/usr/bin/cat'], { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' });
+  const child = Bun.spawn(['cat'], { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' });
   const frames: Frame[] = [];
   const box = await inbox(socketDir, frame => frames.push(frame), `${child.pid}.sock`);
   const sessionId = randomUUID();

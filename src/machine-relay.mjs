@@ -224,10 +224,10 @@ function memberOutcome({ status, body }) {
 }
 
 // Plan 16.1, 17.6: runs bridge/dist/relay.js while this Linux or Windows machine shares a group with another active member.
-// catPath is the placeholder that each proxy row of the relay runs (bridge/src/relay.ts).
+// catPath is the placeholder that each proxy row of the relay runs (bridge/src/relay.ts): findstr.exe on Windows, else `cat` from PATH.
 export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, env = process.env, platform = process.platform,
   spawn = spawnProcess, request = peerRequest, log = (line) => console.error(line), now = Date.now,
-  catPath = platform === 'win32' ? path.win32.join(env.SystemRoot || 'C:\\Windows', 'System32', 'findstr.exe') : '/usr/bin/cat',
+  catPath = platform === 'win32' ? path.win32.join(env.SystemRoot || 'C:\\Windows', 'System32', 'findstr.exe') : '',
   firstLineMs = 10_000, stopMs = 2_000, bindTarget = async () => { throw new Error('No exact binder.'); }, outbox = null }) {
   const relayJs = path.join(root, 'bridge', 'dist', 'relay.js');
   let child = null;
@@ -316,7 +316,7 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
 
   async function wanted() {
     if (!['linux', 'win32'].includes(platform) || !runtimeDir(env, platform) || !others().length) return false;
-    return Boolean(await findExecutable('bun', { platform, env })) && await isFile(relayJs) && await isFile(catPath);
+    return Boolean(await findExecutable('bun', { platform, env })) && await isFile(relayJs) && await isFile(catPath || await findExecutable('cat', { platform, env }));
   }
 
   // At engine start, on each group change, and every 30 s.

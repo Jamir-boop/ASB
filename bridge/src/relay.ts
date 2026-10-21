@@ -121,7 +121,8 @@ export function engineCaller(engine: string, sourceToken: string, timeoutMs = 30
 
 const rowKey = (home: string, machineId: string, sessionId: string) => `${home}\0${machineId}\0${sessionId}`;
 // A process that waits on stdin stands in for the remote session: its PID and start time make the row live.
-const PLACEHOLDER = isWindows() ? [join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'findstr.exe'), 'x'] : ['/usr/bin/cat'];
+// `cat` comes from PATH: NixOS has no /usr/bin/cat, and macOS has cat only in /bin.
+const PLACEHOLDER = isWindows() ? [join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'findstr.exe'), 'x'] : ['cat'];
 const agentOf = (peer: Peer) => peer.entrypoint === 'codex-asb-bridge' ? 'codex' as const : 'claude' as const;
 
 // Plan 9.6: which remote sessions get a proxy row in each local Claude config home.
