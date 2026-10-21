@@ -316,6 +316,8 @@ def column_moves(current, target):
     return [card for card in current if card not in stay], [(index, card) for index, card in enumerate(target) if card not in stay]
 
 
+# MSYS2 has no Python qrcode package, so the board on Windows shows no QR code.
+QR_HELP = "Windows shows no QR code. Use Copy link." if os.name == "nt" else "Install python3-qrcode to show a QR code."
 THEME_KEYS = ("background", "text", "accent", "muted", "divider")
 
 
@@ -1990,7 +1992,7 @@ class PhoneEditor(Gtk.Box):
         self.copy = Gtk.Button(label="Copy link", halign=Gtk.Align.START)
         self.copy.connect("clicked", self.copy_pairing)
         self.pairing.append(self.copy)
-        self.qr_help = label("Install python3-qrcode to show a QR code.", "caption")
+        self.qr_help = label(QR_HELP, "caption")
         self.qr_help.set_wrap(True)
         self.pairing.append(self.qr_help)
         self.append(self.pairing)
@@ -2304,7 +2306,7 @@ class MachinesEditor(Gtk.Box):
         self.link.set_wrap_mode(Pango.WrapMode.CHAR)
         side.append(self.link)
         side.append(self.button("Copy link", self.copy_link))
-        self.qr_help = self.text("Install python3-qrcode to show a QR code.")
+        self.qr_help = self.text(QR_HELP)
         side.append(self.qr_help)
         share.append(side)
         self.invite_box.append(share)
