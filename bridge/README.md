@@ -81,7 +81,7 @@ The bridge runs on Windows with the same install command and the same tools. Bun
 - Codex desktop tasks use the desktop IPC pipe `\\.\pipe\codex-ipc`. A CLI task on the app-server daemon uses the daemon's socket file.
 - Any process can serve a free pipe name. So for a send by `reference`, the bridge proves the pipe server before the first byte: it must be the registry PID, with the recorded start time, of the same Windows user. Only the proved handle carries the bytes. A failed proof sends nothing (`target-changed`).
 - OpenCode on Windows uses the same named pipes, key files, and `auth` line. The placeholder process is `findstr.exe x`. The installer runs `opencode debug paths` for the config and state folders and falls back to `%XDG_CONFIG_HOME%\opencode` or `%USERPROFILE%\.config\opencode`.
-- Gaps on Windows for OpenCode: no exact-send proof for an OpenCode target, and a lost exact receipt for an OpenCode sender. The OpenCode config folder and `bun:ffi` are not verified on Windows yet.
+- Gaps on Windows for OpenCode: no exact-send proof for an OpenCode target, and a lost exact receipt for an OpenCode sender. On Windows, the real OpenCode check (`bridge/test/native-opencode.ts`, mock model only) passes with OpenCode 2.1.3: the config folder, `bun:ffi`, the `findstr.exe` placeholder, the key file, and the `cc-msg` pipe work.
 - Not on Windows: `asb bridge link-claude` (it refuses with `Linking Claude session folders is not supported on Windows.`) and the `bunOnAppServerPath` check (always `null`).
 
 ## Check that it works
