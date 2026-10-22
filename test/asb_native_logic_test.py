@@ -1763,6 +1763,7 @@ class DataChecks(unittest.TestCase):
         window.filter_model = ()
         window.show_all_cards, window.card_limit = False, 0
         window.chip_box = Mock()
+        window.filter_popover = None
         window.filter_chip_signature = None
         window.filter_chip_widgets = {}
         window.get_settings = lambda: SimpleNamespace(get_property=lambda _name: False)

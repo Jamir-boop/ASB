@@ -3139,6 +3139,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         tools.append(self.toolbar_center)
         self.search = Gtk.SearchEntry(placeholder_text="Find a session or folder", hexpand=True)
         self.search.set_search_delay(0)
+        # The natural width (about 240 px) keeps the search wide before the chips scroll; a low minimum lets one resize make the board narrow.
+        self.search.set_max_width_chars(22)
         self.search.set_size_request(0, -1)
         self.search.set_tooltip_text("Search title or folder. cl: or claude: selects Claude; cx: or codex: selects Codex; "
                                      "oc: or opencode: selects OpenCode.")
@@ -3475,7 +3477,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base}.asb-comfortable .asb-session {{ min-height: {COMFORTABLE_ROW_HEIGHT}px; }}
 {base}.asb-comfortable .asb-session.asb-hover-paint:not(:focus-within) {{ background: transparent; }}
 {base} .asb-filter-pill {{ min-height: 24px; border-radius: 99px; padding: 2px 8px; font-size: 11px; }}
-{base} .asb-filter-pill:checked, {base} .asb-filter-pill.asb-filters-on {{ background: @accent_bg_color; color: @accent_fg_color; }}
+{base} .asb-filter-pill:checked {{ background: @accent_bg_color; color: @accent_fg_color; }}
 {base} .asb-chip-dot {{ min-width: 8px; min-height: 8px; border-radius: 99px; }}
 {base} .asb-chip-scroll {{ background: transparent; }}
 {base} .asb-chip-scroll undershoot.left {{ background: linear-gradient(to right, @window_bg_color, alpha(@window_bg_color, 0)); min-width: 16px; }}
@@ -3623,7 +3625,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} entry:focus-within {{ box-shadow: inset 0 0 0 1px {colors['accent']}; }}
 {scope} entry selection {{ background: {colors['accent']}; color: {colors['background']}; }}
 {scope} switch:checked, {scope} checkbutton check:checked {{ background: {colors['accent']}; border-color: {colors['accent']}; }}
-{scope} .asb-filter-pill:checked, {scope} .asb-filter-pill.asb-filters-on {{ background: {colors['accent']}; color: {colors['background']}; }}
+{scope} .asb-filter-pill:checked {{ background: {colors['accent']}; color: {colors['background']}; }}
 {scope} .asb-filter-head {{ color: {colors['muted']}; }}
 {scope} .asb-chip-scroll undershoot.left {{ background: linear-gradient(to right, {colors['background']}, alpha({colors['background']}, 0)); }}
 {scope} .asb-chip-scroll undershoot.right {{ background: linear-gradient(to left, {colors['background']}, alpha({colors['background']}, 0)); }}
@@ -4004,7 +4006,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             if wide:
                 self.search_popover.popdown()
                 self.search_popover.set_child(None)
-                self.search.set_size_request(240, -1)
+                self.search.set_size_request(0, -1)
                 self.toolbar_center.prepend(self.search)
             else:
                 self.toolbar_center.remove(self.search)
@@ -4589,6 +4591,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def sync_filter_chips(self):
         if not getattr(self, "chip_box", None):
             return
+        if self.filter_popover is not None and self.filter_popover.get_visible():
+            # The chips wait for the Filters popover to close, so the pill and the popover do not move under the pointer.
+            self.update_filters_pill()
+            return
         chips = self.active_filter_chips()
         if chips == self.filter_chip_signature:
             self.update_filters_pill()
@@ -4704,10 +4710,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def update_filters_pill(self):
         if not getattr(self, "filters_pill", None):
             return
-        if self.filters_active():
-            self.filters_pill.add_css_class("asb-filters-on")
-        else:
-            self.filters_pill.remove_css_class("asb-filters-on")
         self.filters_pill.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION],
                                           ["Filters", self.filter_description()])
 
@@ -4750,6 +4752,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.filter_popover.popup()
 
     def filters_popover_closed(self, *_args):
+        self.sync_filter_chips()
         self.filters_pill.grab_focus()
 
     def rebuild_filters_popover(self):
@@ -4781,6 +4784,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 control.set_focusable(True)
                 control.update_property([Gtk.AccessibleProperty.LABEL], [name])
                 control.connect("notify::active", self.filter_switch_toggled, action)
+                switch_keys = Gtk.EventControllerKey()
+                switch_keys.connect("key-pressed", self.filter_switch_key, control)
+                control.add_controller(switch_keys)
                 row.append(control)
                 row.asb_filter_switch = control
                 gesture = Gtk.GestureClick()
@@ -4912,6 +4918,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     self.profiles.difference_update(keys)
                 self.filter_changed()
         self.sync_filters_popover_checks()
+
+    def filter_switch_key(self, _controller, key, _code, modifiers, switch):
+        if key in (Gdk.KEY_space, Gdk.KEY_KP_Space) and not modifiers & SHORTCUT_MASK:
+            switch.set_active(not switch.get_active())
+            return True
+        return False
 
     def filter_switch_toggled(self, switch, _param, action):
         if getattr(switch, "asb_syncing", False):

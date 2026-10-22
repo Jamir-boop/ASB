@@ -451,7 +451,7 @@ class WidgetCheck(unittest.TestCase):
             self.assertIsNotNone(window.filter_popover.get_child())
             self.assertTrue(window.filters_label.get_visible() or not window.wide_controls)
             # Popover closes and focuses Filters.
-            window.filters_popover_closed(); self.drain(.1)
+            window.filter_popover.popdown(); self.drain(.3)
             self.assertEqual(window.get_focus(), window.filters_pill)
             for width in (520, 680, 1182):
                 with self.subTest(width=width):
@@ -746,6 +746,127 @@ class WidgetCheck(unittest.TestCase):
         click[0].emit("pressed", 1, 0.0, 0.0); self.drain(.1)
         self.assertTrue(window.archived, "label click toggles the switch")
         self.assertTrue(switch.get_active())
+
+    def test_filter_switch_space_direct(self):
+        window = self.snapshot_window()
+        window.present(); self.drain(.3)
+        window.open_filters_popover(); self.drain(.3)
+        switch = window.filter_popover_rows["archive"].asb_filter_switch
+        switch.set_active(True)
+        for key in (asb.Gdk.KEY_space, asb.Gdk.KEY_KP_Space):
+            self.assertTrue(window.filter_switch_key(None, key, 0, 0, switch))
+            self.assertFalse(switch.get_active())
+            self.assertFalse(window.archived)
+            self.assertTrue(window.filter_switch_key(None, key, 0, 0, switch))
+            self.assertTrue(switch.get_active())
+            self.assertTrue(window.archived)
+        self.assertFalse(window.filter_switch_key(None, asb.Gdk.KEY_a, 0, 0, switch))
+        self.assertFalse(window.filter_switch_key(None, asb.Gdk.KEY_space, 0, asb.SHORTCUT_MASK, switch))
+        self.assertTrue(switch.get_active())
+        self.assertTrue(window.archived)
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real keys need xdotool and DISPLAY=:9 or :10")
+    def test_filter_switch_space_real_key(self):
+        import gi
+        gi.require_version("GdkX11", "4.0")
+        from gi.repository import GdkX11  # noqa: F401  The X11 surface gives the window ID.
+        window = self.snapshot_window()
+        window.present(); self.drain(.3)
+        subprocess.run(["xdotool", "windowfocus", str(window.get_surface().get_xid())], check=True)
+        window.open_filters_popover(); self.drain(.3)
+        switch = window.filter_popover_rows["archive"].asb_filter_switch
+        switch.set_active(True)
+        switch.grab_focus(); self.drain(.1)
+        for expected in (False, True):
+            subprocess.run(["xdotool", "key", "space"], check=True)
+            self.drain(.2)
+            self.assertEqual(switch.get_active(), expected)
+            self.assertEqual(window.archived, expected)
+
+    def test_filter_chips_wait_for_popover_close(self):
+        window = self.snapshot_window()
+        dashboard = mock_dashboard()
+        dashboard["providers"] = [{"id": "codex", "label": "Codex Account One", "provider": "codex", "color": "#8296b4"}]
+        window.dashboard = dashboard
+        window.filter_model = asb.filter_profiles(dashboard)
+        window.render()
+        window.set_default_size(1040, 400)
+        window.present(); self.drain(.3)
+        window.open_filters_popover(); self.drain(.3)
+        found, before = window.filters_pill.compute_point(window, asb.Graphene.Point())
+        self.assertTrue(found)
+        window.filter_popover_rows["state:working"].set_active(True)
+        window.filter_popover_rows["profile:|codex"].set_active(True)
+        self.drain(.3)
+        found, after = window.filters_pill.compute_point(window, asb.Graphene.Point())
+        self.assertTrue(found)
+        self.assertEqual((before.x, before.y), (after.x, after.y))
+        self.assertEqual(window.filter_chip_widgets, {})
+        self.assertIsNone(window.chip_box.get_first_child())
+        self.assertNotIn("asb-" + "filters-on", window.filters_pill.get_css_classes())
+        self.assert_accessible_label(window.filters_pill, window.filter_description(), asb.Gtk.AccessibleProperty.DESCRIPTION)
+        self.assertEqual(window.filter_description(), "Working, Codex Account One")
+        self.assertTrue(window.filter_popover_rows["state:working"].get_active())
+        self.assertTrue(window.filter_popover_rows["profile:|codex"].get_active())
+        self.assertTrue(window.visible_rows())
+        self.assertTrue(all(row["state"] == "working" and row["provider"] == "codex" for row in window.visible_rows()))
+        self.assertEqual(window.row_order, [row["id"] for row in window.visible_rows()])
+        window.filter_popover.popdown(); self.drain(.3)
+        self.assertEqual(list(window.filter_chip_widgets), ["state:working", "profile:|codex"])
+        self.assertEqual(list(window.filter_chip_widgets), [key for key, *_rest in window.active_filter_chips()])
+        self.assertIs(window.get_focus(), window.filters_pill)
+        window.open_filters_popover(); self.drain(.2)
+        window.filter_popover_rows["pending"].set_active(True)
+        window.filter_popover_rows["archive"].asb_filter_switch.set_active(True)
+        window.filter_popover_rows["clear"].emit("clicked"); self.drain(.4)
+        self.assertFalse(window.filters_active())
+        self.assertEqual(window.filter_chip_widgets, {})
+        self.assertIsNone(window.chip_box.get_first_child())
+
+    def test_wide_search_allows_one_resize_to_narrow(self):
+        window = self.snapshot_window()
+        window.set_default_size(1040, 400)
+        window.present(); self.drain(.4)
+        self.assertTrue(window.wide_controls)
+        self.assertLessEqual(window.measure(asb.Gtk.Orientation.HORIZONTAL, -1)[0], 360)
+        border_width = window.get_default_size().width - window.get_width()
+        window.set_default_size(400 + border_width, 400); self.drain(.4)
+        self.assertEqual(window.get_width(), 400)
+        self.assertFalse(window.wide_controls)
+
+    def test_wide_search_keeps_natural_width_with_six_chips(self):
+        window = self.snapshot_window()
+        dashboard = mock_dashboard()
+        dashboard["providers"] = [
+            {"id": "codex", "label": "Codex Account One", "provider": "codex", "color": "#8296b4"},
+            {"id": "claude-desktop-code", "label": "Claude Account Two", "provider": "claude-desktop-code", "color": "#a28caa"},
+        ]
+        window.dashboard = dashboard
+        window.filter_model = asb.filter_profiles(dashboard)
+        window.render()
+        window.set_default_size(1040, 400)
+        window.present(); self.drain(.3)
+        window.set_pending(True)
+        window.select_states({"working", "waiting"})
+        window.toggle_profile("|codex")
+        window.toggle_profile("|claude-desktop-code")
+        window.set_archived(True); self.drain(.4)
+        self.assertEqual(len(window.filter_chip_widgets), 6)
+        self.assertEqual(window.search.get_max_width_chars(), 22)
+        self.assertGreaterEqual(window.search.get_width(), 210)
+        for pill in (window.drawer_only, window.filters_pill):
+            self.assertGreaterEqual(pill.get_allocated_width(), pill.measure(asb.Gtk.Orientation.HORIZONTAL, -1)[1])
+
+    def test_active_filters_keep_normal_pill_css(self):
+        window = self.snapshot_window()
+        window.select_states({"working"})
+        for palette in (None, asb.validate_theme(CUSTOM)):
+            with self.subTest(palette=palette):
+                window.set_palette(palette)
+                self.assertNotIn("asb-" + "filters-on", window.filters_pill.get_css_classes())
+                self.assertNotIn("asb-" + "filters-on", window.css.to_string())
+                self.assert_accessible_label(window.filters_pill, "Working", asb.Gtk.AccessibleProperty.DESCRIPTION)
 
     def test_profiles_show_remote_claude_sessions_only_for_claude_and_save_the_choice(self):
         requests = []
