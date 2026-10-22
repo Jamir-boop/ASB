@@ -5,13 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
-  applySessionIndexTitles,
   loadCodexDashboard,
   parseSessionIndex,
   parseRolloutSignals,
   readThreads,
   readRolloutSignals,
 } from '../src/codex-data.mjs';
+import { enrichThreads } from '../src/insights.mjs';
 import { buildSwitchboardDashboard } from '../src/switchboard.mjs';
 
 async function createCodexStateDb(rowCount) {
@@ -186,17 +186,26 @@ test('parses Codex session index titles used by the sidebar', () => {
 });
 
 test('marks threads missing from the Codex sidebar index', () => {
-  const rows = applySessionIndexTitles([
+  const rows = [
     { id: 'visible-thread', title: 'Stored title' },
     { id: 'hidden-thread', title: 'Old title' },
-  ], new Map([
+    { id: 'named-thread', name: 'Own name', title: 'Stored title' },
+  ];
+  const before = JSON.stringify(rows);
+  const threads = enrichThreads(rows, 0, new Map([
     ['visible-thread', 'Sidebar title'],
+    ['named-thread', 'Sidebar title'],
   ]));
 
-  assert.equal(rows[0].thread_name, 'Sidebar title');
-  assert.equal(rows[0].in_codex_sidebar, true);
-  assert.equal(rows[1].thread_name, undefined);
-  assert.equal(rows[1].in_codex_sidebar, false);
+  assert.equal(threads[0].title, 'Sidebar title');
+  assert.equal(threads[0].inCodexSidebar, true);
+  assert.equal(threads[1].title, 'Old title');
+  assert.equal(threads[1].inCodexSidebar, false);
+  // The own name of a thread wins over the index.
+  assert.equal(threads[2].title, 'Own name');
+  assert.equal(threads[2].inCodexSidebar, true);
+  // The rows are read only: the kept result of the database query is made of such rows.
+  assert.equal(JSON.stringify(rows), before);
 });
 
 test('keeps a thread in progress when commentary follows the latest user message', () => {

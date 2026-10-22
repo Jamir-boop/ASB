@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { rememberBounded, sameFileSignature, SourceCache, statSignature } from './data-cache.mjs';
-import { enrichThreads, normalizeDashboardThreads } from './insights.mjs';
+import { enrichThreads, threadTree } from './insights.mjs';
 
 const execFileAsync = promisify(execFile);
 const nativeSqlite = import('node:sqlite').catch(() => null);
@@ -124,14 +124,6 @@ async function readSessionIndex(sessionIndexPath = DEFAULT_SESSION_INDEX, cacheS
     if (error?.code === 'ENOENT') return new Map();
     throw error;
   }
-}
-
-export function applySessionIndexTitles(rows, titleByThreadId) {
-  return rows.map((row) => ({
-    ...row,
-    thread_name: row.name || titleByThreadId.get(String(row.id || '')) || row.thread_name,
-    in_codex_sidebar: titleByThreadId.has(String(row.id || '')),
-  }));
 }
 
 // The keys of the Codex global state that ASB reads (`codexNativeReadStatus`). The file has about 1 MB and 46 keys: the cache keeps only these.
@@ -304,13 +296,14 @@ async function threadDatabaseSignature(databasePath) {
   return JSON.stringify(files.map((info) => info && [info.dev, info.ino, info.size, info.mtimeMs]));
 }
 
-export async function readThreads({ databasePath, limit = DEFAULT_THREAD_LIMIT } = {}) {
+// The rows of the kept result. The list and the rows belong to the cache and are frozen: a write to them fails at once.
+export async function readThreadRows({ databasePath, limit = DEFAULT_THREAD_LIMIT } = {}) {
   databasePath ||= await discoverCodexStateDatabase();
   const cappedLimit = safeLimit(limit);
   // The stat comes before the queries, so a write during the queries changes the next signature.
   const signature = await threadDatabaseSignature(databasePath);
   const kept = threadQueryCache.get(databasePath);
-  if (signature && kept?.signature === signature && kept.limit === cappedLimit) return kept.rows.map((row) => ({ ...row }));
+  if (signature && kept?.signature === signature && kept.limit === cappedLimit) return kept.rows;
   const columns = new Set((await querySqliteJson(databasePath, 'pragma table_info(threads);')).map((row) => row.name));
   const sql = readThreadsSql(cappedLimit, { includeGoals: true, columns });
 
@@ -321,8 +314,15 @@ export async function readThreads({ databasePath, limit = DEFAULT_THREAD_LIMIT }
     // Codex can drop or change thread_goals; read the threads without goals, and report only that error.
     rows = await querySqliteJson(databasePath, readThreadsSql(cappedLimit, { includeGoals: false, columns }));
   }
+  for (const row of rows) Object.freeze(row);
+  Object.freeze(rows);
   threadQueryCache.set(databasePath, { signature, limit: cappedLimit, rows });
-  return rows.map((row) => ({ ...row }));
+  return rows;
+}
+
+// Each caller gets its own row objects.
+export async function readThreads(options) {
+  return (await readThreadRows(options)).map((row) => ({ ...row }));
 }
 
 function threadRowUpdatedAtMs(row = {}) {
@@ -1017,9 +1017,13 @@ async function attachRolloutSignals(threads, {
   initialRolloutBytes = DEFAULT_INITIAL_ROLLOUT_BYTES,
   maxRolloutBytes = DEFAULT_MAX_ROLLOUT_BYTES,
 } = {}) {
-  const enriched = threads.map((thread) => ({ ...thread }));
-  const linkedIds = new Set(normalizeDashboardThreads(enriched)
-    .filter(rolloutThreadFilter).flatMap((thread) => thread.descendantThreadIds));
+  // The threads are new objects of this scan (`enrichThreads` made them), so the signals go on them in place.
+  const enriched = threads;
+  const { descendantsFor } = threadTree(enriched);
+  const linkedIds = new Set();
+  for (const thread of enriched) {
+    if (rolloutThreadFilter(thread)) for (const child of descendantsFor(thread.id)) linkedIds.add(child.id);
+  }
   const candidates = enriched
     .filter((thread) => thread.rolloutPath && (rolloutThreadFilter(thread) || (!thread.archived && linkedIds.has(thread.id))))
     .slice(0, maxRollouts);
@@ -1083,12 +1087,11 @@ async function attachRolloutSignals(threads, {
 export async function loadCodexDashboard(options = {}) {
   const nowMs = options.nowMs || Date.now();
   const databasePath = options.databasePath || await discoverCodexStateDatabase();
-  const rows = await readThreads({ ...options, databasePath });
+  const rows = await readThreadRows({ ...options, databasePath });
   const sessionIndex = await readSessionIndex(options.sessionIndexPath || DEFAULT_SESSION_INDEX, options.cacheScope);
   const globalState = await readCodexGlobalState(options.globalStatePath || DEFAULT_GLOBAL_STATE, options.cacheScope).catch(() => ({}));
-  const indexedRows = applySessionIndexTitles(rows
-    .sort((a, b) => threadRowUpdatedAtMs(b) - threadRowUpdatedAtMs(a)), sessionIndex);
-  const threads = enrichThreads(indexedRows, nowMs);
+  // The kept rows are read only: the sort gets a copy of the list, and the threads are new objects.
+  const threads = enrichThreads([...rows].sort((a, b) => threadRowUpdatedAtMs(b) - threadRowUpdatedAtMs(a)), nowMs, sessionIndex);
   if (options.codexNativeReadEnabled) {
     for (const thread of threads) Object.assign(thread, codexNativeReadStatus(thread, globalState));
   }

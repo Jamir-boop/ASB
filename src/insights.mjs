@@ -80,23 +80,24 @@ export function inferThreadStatus(thread, nowMs = Date.now()) {
   return 'idle';
 }
 
-export function enrichThreadRuntime(thread, nowMs = Date.now()) {
+// Sets the runtime fields on a thread that the caller owns.
+function applyThreadRuntime(thread, nowMs) {
   const startedAtMs = hasActiveCurrentTurn(thread, nowMs)
     ? currentTurnStartedAtMs(thread)
     : 0;
-  const runtimeThread = {
-    ...thread,
-    currentTurnStartedAtMs: startedAtMs || null,
-    currentTurnElapsedMs: startedAtMs ? Math.max(0, nowMs - startedAtMs) : 0,
-  };
-
-  return {
-    ...runtimeThread,
-    status: inferThreadStatus(runtimeThread, nowMs),
-  };
+  thread.currentTurnStartedAtMs = startedAtMs || null;
+  thread.currentTurnElapsedMs = startedAtMs ? Math.max(0, nowMs - startedAtMs) : 0;
+  thread.status = inferThreadStatus(thread, nowMs);
+  return thread;
 }
 
-export function normalizeThread(row, nowMs = Date.now()) {
+export function enrichThreadRuntime(thread, nowMs = Date.now()) {
+  return applyThreadRuntime({ ...thread }, nowMs);
+}
+
+// `titleByThreadId` is the Codex session index (thread ID to title). With it, a thread that has no name of its own gets the title of its entry,
+// and only a thread that has an entry is in the Codex sidebar. Without it, the fields of the row decide.
+export function normalizeThread(row, nowMs = Date.now(), titleByThreadId = null) {
   const cwd = row.cwd || '';
   const id = String(row.id || '');
   const archived = Boolean(coerceNumber(row.archived));
@@ -105,7 +106,7 @@ export function normalizeThread(row, nowMs = Date.now()) {
   const projectName = cwd ? path.basename(cwd) : '未知项目';
   const source = String(row.source || '');
   const isCodexCli = ['cli', 'terminal', 'tui'].includes(source.toLowerCase());
-  const inCodexSidebar = coerceBoolean(row.in_codex_sidebar ?? row.inCodexSidebar, true);
+  const inCodexSidebar = titleByThreadId ? titleByThreadId.has(id) : coerceBoolean(row.in_codex_sidebar ?? row.inCodexSidebar, true);
   const defaultOpenMode = isCodexCli ? 'codex-cli-resume' : 'codex-deeplink';
   const subagent = subagentInfo(row);
   const goalStatus = String(row.goal_status || '').toLowerCase();
@@ -117,7 +118,7 @@ export function normalizeThread(row, nowMs = Date.now()) {
     externalId: id,
     provider: isCodexCli ? 'codex-cli' : 'codex',
     providerLabel: isCodexCli ? 'Codex CLI' : 'Codex',
-    title: row.name || row.thread_name || row.title || '',
+    title: row.name || titleByThreadId?.get(id) || row.thread_name || row.title || '',
     desktopName: row.name || '',
     cwd,
     projectName,
@@ -161,53 +162,67 @@ export function normalizeThread(row, nowMs = Date.now()) {
     agentActivityAtMs: hasActiveGoal ? (goalUpdatedAtMs || updatedAtMs) : null,
   };
 
-  return {
-    ...enrichThreadRuntime(thread, nowMs),
-  };
+  return applyThreadRuntime(thread, nowMs);
 }
 
-function attachThreadRelationships(threads) {
-  const byId = new Map(threads.map((thread) => [thread.id, thread]));
+const NO_THREADS = Object.freeze([]);
+
+// The subagent tree of a list of threads. It reads only `id`, `isSubagent`, and `parentThreadId`, and it changes no thread.
+// `descendantsFor(id)` gives the threads below a thread (each child, then the threads below it). Do not change this list.
+export function threadTree(threads) {
+  const byId = new Map();
+  for (const thread of threads) byId.set(thread.id, thread);
   const childrenByParent = new Map();
 
   for (const thread of threads) {
     const parentThreadId = thread.parentThreadId || '';
     if (!thread.isSubagent || !parentThreadId) continue;
 
-    const children = childrenByParent.get(parentThreadId) || [];
-    children.push(thread);
-    childrenByParent.set(parentThreadId, children);
+    const children = childrenByParent.get(parentThreadId);
+    if (children) children.push(thread);
+    else childrenByParent.set(parentThreadId, [thread]);
   }
 
   const descendantsById = new Map();
-  function descendantsFor(threadId, visiting = new Set()) {
+  // The threads on the path of the walk now: a thread that is its own ancestor ends the walk.
+  const visiting = new Set();
+  function descendantsFor(threadId) {
     if (descendantsById.has(threadId)) return descendantsById.get(threadId);
-    if (visiting.has(threadId)) return [];
+    const children = childrenByParent.get(threadId);
+    if (!children || visiting.has(threadId)) return NO_THREADS;
 
-    const nextVisiting = new Set(visiting);
-    nextVisiting.add(threadId);
+    visiting.add(threadId);
     const descendants = [];
     const seen = new Set();
-    for (const child of childrenByParent.get(threadId) || []) {
+    for (const child of children) {
       if (!seen.has(child.id)) {
         descendants.push(child);
         seen.add(child.id);
       }
-      for (const nested of descendantsFor(child.id, nextVisiting)) {
+      for (const nested of descendantsFor(child.id)) {
         if (seen.has(nested.id)) continue;
         descendants.push(nested);
         seen.add(nested.id);
       }
     }
+    visiting.delete(threadId);
     descendantsById.set(threadId, descendants);
     return descendants;
   }
 
+  return { byId, childrenByParent, descendantsFor };
+}
+
+// Adds the fields of the subagent tree to the threads. The caller owns the threads (`normalizeDashboardThreads` made them),
+// so each thread gets its fields in place. No added field is a field that this function reads.
+function attachThreadRelationships(threads) {
+  const { byId, childrenByParent, descendantsFor } = threadTree(threads);
+
   function hostThreadIdFor(thread) {
     let current = thread;
-    const seen = new Set();
-    while (current?.isSubagent && current.parentThreadId && !seen.has(current.id)) {
-      seen.add(current.id);
+    let seen = null;
+    while (current?.isSubagent && current.parentThreadId && !seen?.has(current.id)) {
+      (seen ||= new Set()).add(current.id);
       const parent = byId.get(current.parentThreadId);
       if (!parent) return current.parentThreadId;
       current = parent;
@@ -215,32 +230,27 @@ function attachThreadRelationships(threads) {
     return current?.id || thread.parentThreadId || thread.id;
   }
 
-  return threads.map((thread) => {
-    const children = childrenByParent.get(thread.id) || [];
+  for (const thread of threads) {
+    const children = childrenByParent.get(thread.id) || NO_THREADS;
     const descendants = descendantsFor(thread.id);
-    const groupMembers = [thread, ...descendants];
     const parent = thread.parentThreadId ? byId.get(thread.parentThreadId) : null;
-    const groupUpdatedAtMs = Math.max(...groupMembers.flatMap((member) => [
-      coerceNumber(member.updatedAtMs),
-      coerceNumber(member.embeddedSubagentUpdatedAtMs),
-    ]));
-    const embeddedSubagentCount = groupMembers.reduce(
-      (sum, member) => sum + coerceNumber(member.embeddedSubagentCount),
-      0,
-    );
+    let groupUpdatedAtMs = Math.max(coerceNumber(thread.updatedAtMs), coerceNumber(thread.embeddedSubagentUpdatedAtMs));
+    let embeddedSubagentCount = coerceNumber(thread.embeddedSubagentCount);
+    for (const member of descendants) {
+      groupUpdatedAtMs = Math.max(groupUpdatedAtMs, coerceNumber(member.updatedAtMs), coerceNumber(member.embeddedSubagentUpdatedAtMs));
+      embeddedSubagentCount += coerceNumber(member.embeddedSubagentCount);
+    }
 
-    return {
-      ...thread,
-      parentThreadTitle: parent?.title || '',
-      parentThreadProjectName: parent?.projectName || '',
-      parentThreadProviderLabel: parent?.providerLabel || '',
-      childThreadIds: children.map((child) => child.id),
-      descendantThreadIds: descendants.map((child) => child.id),
-      subagentCount: descendants.length + embeddedSubagentCount,
-      hostThreadId: hostThreadIdFor(thread),
-      groupUpdatedAtMs,
-    };
-  });
+    thread.parentThreadTitle = parent?.title || '';
+    thread.parentThreadProjectName = parent?.projectName || '';
+    thread.parentThreadProviderLabel = parent?.providerLabel || '';
+    thread.childThreadIds = children.map((child) => child.id);
+    thread.descendantThreadIds = descendants.map((child) => child.id);
+    thread.subagentCount = descendants.length + embeddedSubagentCount;
+    thread.hostThreadId = hostThreadIdFor(thread);
+    thread.groupUpdatedAtMs = groupUpdatedAtMs;
+  }
+  return threads;
 }
 
 export function normalizeDashboardThreads(threads, nowMs = Date.now()) {
@@ -249,6 +259,6 @@ export function normalizeDashboardThreads(threads, nowMs = Date.now()) {
     .sort((a, b) => coerceNumber(b.updatedAtMs) - coerceNumber(a.updatedAtMs)));
 }
 
-export function enrichThreads(rows, nowMs = Date.now()) {
-  return rows.map((row) => normalizeThread(row, nowMs));
+export function enrichThreads(rows, nowMs = Date.now(), titleByThreadId = null) {
+  return rows.map((row) => normalizeThread(row, nowMs, titleByThreadId));
 }
