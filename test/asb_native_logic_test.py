@@ -1438,50 +1438,37 @@ class DataChecks(unittest.TestCase):
             asb.write_layout(path)
             self.assertFalse(path.exists())
 
-    def test_app_pill_layout_boolean_and_setting_preservation(self):
+    def test_layout_accepts_legacy_show_app_pills_and_never_writes_it(self):
         with TemporaryDirectory(prefix="asb-toolbar-layout-") as directory:
             path = Path(directory) / "layout.json"
             for invalid in (0, 1, "true", None, [], {}):
                 path.write_text(json.dumps({"version": 1, "columnWidth": 240, "showAppPills": invalid}))
                 with self.assertRaises(ValueError):
                     asb.read_layout(path)
-            path.unlink()
-            asb.write_layout(path, 180, "compact", True)
+            path.write_text(json.dumps({"version": 1, "columnWidth": 240, "showAppPills": True}))
             self.assertTrue(asb.read_layout(path)["showAppPills"])
+            asb.write_layout(path, 180, "compact")
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "showAppPills": False, "cardLimit": 100, "copyKind": "relative"})
+            self.assertNotIn("showAppPills", json.loads(path.read_text()))
             asb.write_layout(path, 320, "comfortable")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": True, "cardLimit": 100, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": False, "cardLimit": 100, "copyKind": "relative"})
+            self.assertNotIn("showAppPills", json.loads(path.read_text()))
             asb.write_layout(path)
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": True, "cardLimit": 100, "copyKind": "relative"})
-            asb.write_layout(path, 240, "compact", False)
-            self.assertFalse(json.loads(path.read_text())["showAppPills"])
+            self.assertTrue(path.exists())
+            self.assertEqual(asb.read_layout(path)["columnWidth"], 240)
+            self.assertNotIn("showAppPills", json.loads(path.read_text()))
             before = path.read_bytes()
             with self.assertRaises(ValueError):
                 asb.write_layout(path, 240, "compact", "false")
             self.assertEqual(path.read_bytes(), before)
             window = object.__new__(Window)
-            window.show_app_pills, window.column_width, window.view, window.layout_path, window.copy_kind = False, 180, "comfortable", path, "relative"
-            window.app_pills_setting = Mock(get_active=Mock(return_value=True))
-            window.app_pills_error, window.layout_error = Mock(), Mock()
-            window.update_toolbar_presentation, window.render = Mock(), Mock()
-            window.apps, window.states = {"codex"}, {"waiting"}
-            window.change_app_pills_setting()
-            self.assertTrue(window.show_app_pills)
-            self.assertTrue(asb.read_layout(path)["showAppPills"])
-            self.assertEqual((window.apps, window.states), ({"codex"}, {"waiting"}))
-            window.render.assert_not_called()
-            window.app_pills_setting.get_active.return_value = False
-            with patch.dict(SCOPE, {"write_layout": Mock(side_effect=OSError("Save failed"))}):
-                window.change_app_pills_setting()
-            self.assertTrue(window.show_app_pills)
-            window.app_pills_setting.set_active.assert_called_once_with(True)
-            window.app_pills_error.set_label.assert_called_with("Save failed")
-            window.update_toolbar_presentation.assert_called_once_with()
-            window.dragging = False
+            window.column_width, window.view, window.layout_path, window.copy_kind = 180, "comfortable", path, "relative"
+            window.card_limit, window.layout_error, window.dragging = 100, Mock(), False
             window.width_control = Mock(set_value=Mock(side_effect=lambda width: setattr(window, "column_width", width)))
             window.reset_width()
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": True, "cardLimit": 100, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": False, "cardLimit": 100, "copyKind": "relative"})
             window.save_width()
-            self.assertTrue(asb.read_layout(path)["showAppPills"])
+            self.assertNotIn("showAppPills", json.loads(path.read_text()))
 
     def test_card_limit_layout_validation_and_setting_preservation(self):
         with TemporaryDirectory(prefix="asb-card-limit-layout-") as directory:
@@ -1505,20 +1492,16 @@ class DataChecks(unittest.TestCase):
             path.write_text(json.dumps({"version": 1, "columnWidth": 240, "cardLimit": 200}))
             asb.write_layout(path, 320)
             asb.write_layout(path, 320, "comfortable")
-            asb.write_layout(path, 320, "comfortable", True)
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": True, "cardLimit": 200, "copyKind": "relative"})
+            asb.write_layout(path, 320, "comfortable")
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": False, "cardLimit": 200, "copyKind": "relative"})
             window = object.__new__(Window)
-            window.show_app_pills, window.column_width, window.view, window.layout_path, window.copy_kind = True, 320, "comfortable", path, "relative"
-            window.card_limit, window.layout_error, window.dragging, window.copy_kind = 200, Mock(), False, "relative"
+            window.column_width, window.view, window.layout_path, window.copy_kind = 320, "comfortable", path, "relative"
+            window.card_limit, window.layout_error, window.dragging = 200, Mock(), False
             window.width_control = Mock(set_value=Mock(side_effect=lambda width: setattr(window, "column_width", width)))
             window.reset_width()
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": True, "cardLimit": 200, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": False, "cardLimit": 200, "copyKind": "relative"})
             window.save_width()
             self.assertEqual(asb.read_layout(path)["cardLimit"], 200)
-            window.app_pills_setting, window.app_pills_error = Mock(get_active=Mock(return_value=False)), Mock()
-            window.update_toolbar_presentation, window.sync_filter_chips = Mock(), Mock()
-            window.change_app_pills_setting()
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": False, "cardLimit": 200, "copyKind": "relative"})
             # The delete branch keeps a file that holds a limit other than the default.
             path.write_text(json.dumps({"version": 1, "columnWidth": 240, "cardLimit": 0}))
             asb.write_layout(path)
@@ -1570,9 +1553,9 @@ class DataChecks(unittest.TestCase):
             path.write_text(json.dumps({"version": 1, "columnWidth": 240, "copyKind": "absolute"}))
             asb.write_layout(path, 320)
             asb.write_layout(path, 320, "comfortable")
-            asb.write_layout(path, 320, "comfortable", True)
-            asb.write_layout(path, 320, "comfortable", True, card_limit=200)
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": True,
+            asb.write_layout(path, 320, "comfortable")
+            asb.write_layout(path, 320, "comfortable", card_limit=200)
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": False,
                                                      "cardLimit": 200, "copyKind": "absolute"})
             # A default layout is deleted; an Absolute kind keeps the file.
             asb.write_layout(path, copy_kind="absolute")
@@ -1585,7 +1568,7 @@ class DataChecks(unittest.TestCase):
             asb.write_layout(path, copy_kind="relative")
             self.assertFalse(path.exists())
             window = object.__new__(Window)
-            window.show_app_pills, window.column_width, window.view, window.layout_path = False, 240, "compact", path
+            window.column_width, window.view, window.layout_path = 240, "compact", path
             window.card_limit, window.layout_error, window.dragging, window.copy_kind = 100, Mock(), False, "absolute"
             window.width_control = Mock(set_value=Mock(side_effect=lambda width: setattr(window, "column_width", width)))
             window.save_width()
@@ -1729,88 +1712,74 @@ class DataChecks(unittest.TestCase):
         self.assertEqual([row["title"] for row in asb.limit_rows(asb.filtered_rows(board), 2)], ["other", "first copy", "More sessions"])
 
     def test_filter_chip_groups_clear_only_their_constraint(self):
+        model = ({"machine": "", "machineName": "This machine", "apps": (
+            {"provider": "codex", "profiles": ({"key": "|codex-1", "label": "Work", "color": "#112233"},)},
+            {"provider": "claude-desktop-code", "profiles": ({"key": "|claude-1", "label": "Main", "color": ""},)},
+        )},)
         chips = asb.filter_chips
-        self.assertEqual(chips(set(), set(asb.STATES), False), ())
-        self.assertEqual(chips({"codex", "claude-desktop-code", "opencode"}, set(asb.STATES), False), ())
-        self.assertEqual(chips({"codex"}, set(), True), (
-            ("app", "Codex", "Clear app filter: Codex"),
-            ("states", "No states", "Clear state filter: No states"),
-            ("archive", "Include archived", "Hide archived sessions")))
-        self.assertEqual(chips({"claude-desktop-code"}, {"idle", "working"}, False), (
-            ("app", "Claude", "Clear app filter: Claude"),
-            ("states", "Working, Idle", "Clear state filter: Working, Idle")))
-        self.assertEqual(chips(set(), {"working"}, False), ())
-        self.assertEqual(chips({"codex"}, set(asb.STATES), False, True), ())
-        self.assertEqual(chips({"codex"}, set(asb.STATES), False), (("app", "Codex", "Clear app filter: Codex"),))
-        self.assertEqual(chips(set(), {"waiting"}, False), (("states", "Waiting", "Clear state filter: Waiting"),))
-        self.assertEqual(chips(set(), set(asb.STATES), True, show_all=True, limit=200), (
-            ("archive", "Include archived", "Hide archived sessions"), ("all", "All cards", "Show only the first 200 cards")))
-        self.assertEqual(chips(set(), set(asb.STATES), False, show_all=True), (("all", "All cards", "Show only the first 100 cards"),))
-        self.assertEqual(chips(set(), set(asb.STATES), False, show_all=True, limit=0), ())
-        self.assertEqual(chips(set(), set(asb.STATES), False, limit=50), ())
+        self.assertEqual(chips(False, set(), set(), model, False, limit=0), ())
+        self.assertEqual(chips(True, {"working"}, {"|codex-1"}, model, True, limit=0), (
+            ("pending", "Pending", "Remove filter: Pending", ""),
+            ("state:working", "Working", "Remove filter: Working", ""),
+            ("profile:|codex-1", "Work", "Remove filter: Work", "#112233"),
+            ("archive", "Include archived", "Remove filter: Include archived", "")))
+        self.assertEqual(chips(False, {"idle", "working"}, set(), model, False, limit=0), (
+            ("state:working", "Working", "Remove filter: Working", ""),
+            ("state:idle", "Idle", "Remove filter: Idle", "")))
+        self.assertEqual(chips(False, set(), set(), model, False, limit=200), ())
+        self.assertEqual(chips(False, set(), set(), model, False, show_all=True), (("all", "All cards", "Show only the first 100 cards", ""),))
+        self.assertEqual(chips(False, set(), set(), model, False, show_all=True, limit=200),
+                         (("all", "All cards", "Show only the first 200 cards", ""),))
+        self.assertEqual(chips(False, set(), set(), model, False, show_all=True, limit=0), ())
         window = object.__new__(Window)
-        window.apps, window.states = {"claude-desktop-code"}, {"working"}
-        window.archive = SimpleNamespace(active=True, get_active=lambda: window.archive.active,
-                                         set_active=lambda value: setattr(window.archive, "active", value))
+        window.pending, window.archived = True, True
+        window.states, window.profiles = {"working"}, {"|claude-1"}
+        window.filter_model = model
+        window.show_all_cards = False
+        window.card_limit = 100
         window.get_focus = lambda: None
-        window.filter_chip_widgets = {key: (Mock(), Mock()) for key in ("app", "states", "archive", "all")}
+        window.filter_chip_widgets = {}
         window.filter_changed = Mock()
-        window.select_apps = lambda values: setattr(window, "apps", values)
-        window.select_states = lambda values: setattr(window, "states", values)
-        board = {"threads": [dict(row, provider="codex") for row in (
-            {"id": "work", "state": "working"}, {"id": "old", "state": "idle", "archived": True})]}
-        self.assertEqual([row["id"] for row in asb.filtered_rows(board, "cx:", "claude-desktop-code", window.states, True)], ["work"])
-        window.clear_filter_chip(None, "app")
-        self.assertEqual((window.apps, window.states, window.archive.active), (set(), {"working"}, True))
-        window.clear_filter_chip(None, "states")
-        self.assertEqual((window.apps, window.states, window.archive.active), (set(), set(asb.STATES), True))
+        window.set_pending = lambda on: setattr(window, "pending", bool(on))
+        window.set_archived = lambda on: setattr(window, "archived", bool(on))
+        window.toggle_state = lambda state: window.states.discard(state) if state in window.states else window.states.add(state)
+        window.toggle_profile = lambda key: window.profiles.discard(key) if key in window.profiles else window.profiles.add(key)
+        window.clear_filter_chip(None, "pending")
+        self.assertFalse(window.pending)
+        window.clear_filter_chip(None, "state:working")
+        self.assertEqual(window.states, set())
+        window.clear_filter_chip(None, "profile:|claude-1")
+        self.assertEqual(window.profiles, set())
         window.clear_filter_chip(None, "archive")
-        self.assertEqual((window.apps, window.states, window.archive.active), (set(), set(asb.STATES), False))
+        self.assertFalse(window.archived)
         window.show_all_cards = True
         window.clear_filter_chip(None, "all")
-        self.assertEqual((window.show_all_cards, window.apps, window.states, window.archive.active), (False, set(), set(asb.STATES), False))
-        window.filter_changed.assert_called_once_with()
-
+        self.assertFalse(window.show_all_cards)
+        window.filter_changed.assert_called()
     def test_filter_chips_reuse_controls_and_keep_full_state_names(self):
         window = object.__new__(Window)
-        window.apps, window.states = {"codex"}, {"working", "waiting", "unknown"}
-        window.archive = Mock(get_active=Mock(return_value=True))
-        window.filter_chip_group, window.filter_chip_signature = Mock(), None
-        window.filter_chip_widgets = {key: (Mock(), Mock()) for key in ("app", "states", "archive")}
-        with patch.dict(SCOPE, {"Gtk": SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0))}):
+        window.pending, window.archived = False, True
+        window.states, window.profiles = {"working", "waiting", "unknown"}, set()
+        window.filter_model = ()
+        window.show_all_cards, window.card_limit = False, 0
+        window.chip_box = Mock()
+        window.filter_chip_signature = None
+        window.filter_chip_widgets = {}
+        window.get_settings = lambda: SimpleNamespace(get_property=lambda _name: False)
+        window.get_mapped = lambda: False
+        window.update_filters_pill = Mock()
+        window.make_filter_chip = Mock(side_effect=lambda key, title, detail, color, animations, after=None: (Mock(asb_chip_name=Mock(), asb_chip_dot=Mock(), set_tooltip_text=Mock(), update_property=Mock()), Mock()))
+        window.scroll_chip_into_view = lambda: False
+        with patch.dict(SCOPE, {"GLib": SimpleNamespace(idle_add=lambda fn: fn()),
+                                "Gtk": SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL="label"))}):
             window.sync_filter_chips()
-            chip, name = window.filter_chip_widgets["states"]
-            name.set_label.assert_called_once_with("Working, Waiting, Unknown")
-            chip.set_tooltip_text.assert_called_once_with("Clear state filter: Working, Waiting, Unknown")
-            chip.update_property.assert_called_once_with([0], ["Clear state filter: Working, Waiting, Unknown"])
+            self.assertEqual(set(window.filter_chip_widgets), {"state:working", "state:waiting", "state:unknown", "archive"})
+            window.make_filter_chip.reset_mock()
             window.sync_filter_chips()
-            self.assertEqual(chip.set_tooltip_text.call_count, 1)
-            window.states = set(asb.STATES)
+            window.make_filter_chip.assert_not_called()
+            window.states = set()
             window.sync_filter_chips()
-            chip.set_visible.assert_called_with(False)
-
-    def test_show_app_pills_resyncs_chips_without_changing_filters(self):
-        window = object.__new__(Window)
-        window.show_app_pills, window.column_width, window.view, window.layout_path = False, 240, "compact", False
-        window.apps, window.states = {"codex"}, {"waiting"}
-        window.archive = Mock(get_active=Mock(return_value=True))
-        window.app_pills_setting = Mock(get_active=Mock(return_value=True))
-        window.app_pills_error, window.update_toolbar_presentation = Mock(), Mock()
-        window.filter_chip_group, window.filter_chip_signature = Mock(), None
-        window.filter_chip_widgets = {key: (Mock(), Mock()) for key in ("app", "states", "archive")}
-        app_chip = window.filter_chip_widgets["app"][0]
-        with patch.dict(SCOPE, {"Gtk": SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0))}):
-            window.sync_filter_chips()
-            app_chip.set_visible.assert_called_with(True)
-            window.change_app_pills_setting()
-            app_chip.set_visible.assert_called_with(False)
-            self.assertTrue(window.show_app_pills)
-            self.assertEqual((window.apps, window.states, window.archive.get_active()), ({"codex"}, {"waiting"}, True))
-            window.app_pills_setting.get_active.return_value = False
-            window.change_app_pills_setting()
-            app_chip.set_visible.assert_called_with(True)
-            self.assertFalse(window.show_app_pills)
-            self.assertEqual((window.apps, window.states, window.archive.get_active()), ({"codex"}, {"waiting"}, True))
+            self.assertEqual(set(window.filter_chip_widgets), {"archive"})
 
     def test_narrow_escape_collapses_search_and_keeps_filters(self):
         window = object.__new__(Window)
@@ -1840,18 +1809,24 @@ class DataChecks(unittest.TestCase):
 
     def test_chip_clear_restores_keyboard_focus_and_preferences_search_raises_main(self):
         window = object.__new__(Window)
-        chips = {key: (Mock(), Mock()) for key in ("app", "states", "archive")}
-        window.filter_chip_widgets, window.menu_button = chips, Mock()
-        window.get_focus = lambda: chips["states"][0]
-        for key, (button, _label) in chips.items():
-            button.get_visible.return_value = key == "archive"
-        window.select_states = Mock()
-        window.clear_filter_chip(chips["states"][0], "states")
-        window.select_states.assert_called_once_with(set(asb.STATES))
+        chips = {key: (Mock(), Mock()) for key in ("state:working", "archive")}
+        window.filter_chip_widgets, window.filters_pill = chips, Mock()
+        window.get_focus = lambda: chips["state:working"][0]
+        window.states, window.profiles = {"working"}, set()
+        window.pending, window.archived = False, True
+        window.show_all_cards, window.card_limit = False, 100
+        window.filter_changed = Mock()
+        window.set_archived = lambda on: setattr(window, "archived", on)
+        window.toggle_state = lambda s: window.states.discard(s) if s in window.states else window.states.add(s)
+        window.clear_filter_chip(chips["state:working"][0], "state:working")
+        self.assertNotIn("working", window.states)
         chips["archive"][0].grab_focus.assert_called_once_with()
-        chips["archive"][0].get_visible.return_value = False
-        window.clear_filter_chip(chips["states"][0], "states")
-        window.menu_button.grab_focus.assert_called_once_with()
+        chips["archive"][0].grab_focus.reset_mock()
+        # When only the removed chip remains in the widget map, focus falls to Filters.
+        window.filter_chip_widgets = {"state:working": chips["state:working"]}
+        window.states = {"working"}
+        window.clear_filter_chip(chips["state:working"][0], "state:working")
+        window.filters_pill.grab_focus.assert_called_once_with()
         window.preferences_window, window.present, window.open_search = Mock(), Mock(), Mock()
         window.open_search_from_preferences()
         window.preferences_window.set_visible.assert_called_once_with(False)
@@ -1879,9 +1854,7 @@ class DataChecks(unittest.TestCase):
         window.search, window.search_button, window.app_mark, window.toolbar_scroll = Control(), Control(), Control(), Control()
         window.preferences_refresh_row, window.refresh_button, window.drawer_label = Control(), Control(), Control()
         window.menu_button, window.window_controls = Control(), Control()
-        window.app_pills = {provider: Control() for provider in asb.SOURCE_PROVIDERS}
-        window.app_pill_labels = {provider: Control() for provider in asb.SOURCE_PROVIDERS}
-        window.app_pill_icons = {provider: Control() for provider in asb.SOURCE_PROVIDERS}
+        window.filters_label, window.filters_pill = Control(), Control()
         window.toolbar_center.append(window.search_button)
         window.toolbar_center.append(window.toolbar_scroll)
         window.toolbar_end.append(window.menu_button)
@@ -1889,7 +1862,6 @@ class DataChecks(unittest.TestCase):
         window.preferences_refresh_row.append(window.refresh_button)
         window.search_popover.set_child(window.search)
         window.get_focus = lambda: None
-        window.show_app_pills = True
         window.update_toolbar_presentation()
         self.assertIs(window.search.get_parent(), window.search_popover)
         self.assertFalse(window.drawer_label.visible)
@@ -1900,7 +1872,7 @@ class DataChecks(unittest.TestCase):
         self.assertIs(window.refresh_button.get_parent(), window.toolbar_end)
         self.assertFalse(window.search_button.visible)
         self.assertTrue(window.drawer_label.visible)
-        self.assertTrue(all(name.visible for name in window.app_pill_labels.values()))
+        self.assertTrue(window.filters_label.visible)
         with patch.object(window.toolbar_center, "remove", wraps=window.toolbar_center.remove) as remove:
             window.update_toolbar_presentation()
             remove.assert_not_called()
@@ -1911,8 +1883,7 @@ class DataChecks(unittest.TestCase):
         self.assertIs(window.search.get_parent(), window.search_popover)
         self.assertIs(window.menu_button.get_parent(), window.toolbar_end)
         self.assertIs(window.window_controls.get_parent(), window.toolbar_end)
-        self.assertTrue(all(icon.visible for icon in window.app_pill_icons.values()))
-        self.assertFalse(all(name.visible for name in window.app_pill_labels.values()))
+        self.assertFalse(window.filters_label.visible)
 
     def test_toolbar_wheel_scroll_clamps_without_a_timer(self):
         window = object.__new__(Window)
@@ -1941,42 +1912,63 @@ class DataChecks(unittest.TestCase):
         self.assertEqual([asb.provider_icon(provider) for provider in ("codex", "claude-desktop-code", "opencode", None)],
                          ["asb-openai-symbolic", "asb-claude-symbolic", "asb-opencode-symbolic", "asb-claude-symbolic"])
 
-    def test_three_app_selection_shows_all_for_none_or_every_app(self):
-        board = {"threads": [{"id": provider, "provider": provider, "state": "idle"}
-                             for provider in ("codex", "claude-desktop-code", "opencode")]}
-        every = {"codex", "claude-desktop-code", "opencode"}
-        for apps, expected in ((set(), ["claude-desktop-code", "codex", "opencode"]), (every, ["claude-desktop-code", "codex", "opencode"]),
-                               ({"opencode"}, ["opencode"]), ({"codex", "claude-desktop-code"}, ["claude-desktop-code", "codex"]),
-                               ({"codex", "opencode"}, ["codex", "opencode"])):
-            with self.subTest(apps=apps):
-                self.assertEqual(sorted(row["id"] for row in asb.filtered_rows(board, app=asb.app_filter(apps))), expected)
-        self.assertEqual((asb.app_filter(set()), asb.app_filter(every)), ("all", "all"))
-        self.assertEqual([asb.app_choice(apps) for apps in (set(), every, {"codex"}, {"claude-desktop-code"}, {"opencode"},
-                                                            {"codex", "claude-desktop-code"}, {"codex", "opencode"},
-                                                            {"claude-desktop-code", "opencode"})], [0, 0, 1, 2, 3, 4, 5, 6])
-        self.assertEqual([asb.app_filter(apps) for _title, apps in asb.APP_CHOICES][1:],
-                         [set(apps) for _title, apps in asb.APP_CHOICES][1:])
-        self.assertEqual(asb.filter_chips(every, set(asb.STATES), False), ())
-        self.assertEqual(asb.filter_chips({"opencode"}, set(asb.STATES), False),
-                         (("app", "OpenCode", "Clear app filter: OpenCode"),))
-        self.assertEqual(asb.filter_chips({"opencode", "codex"}, set(asb.STATES), False),
-                         (("app", "Codex, OpenCode", "Clear app filter: Codex, OpenCode"),))
-        self.assertEqual(asb.filter_chips({"opencode", "codex"}, set(asb.STATES), False, True), ())
-        window = object.__new__(Window)
-        window.syncing_apps, window.filter_changed = False, Mock()
-        window.app_pills = {provider: SimpleNamespace(active=False) for provider in every}
-        for pill in window.app_pills.values():
-            pill.set_active = lambda value, pill=pill: setattr(pill, "active", value)
-            pill.get_active = lambda pill=pill: pill.active
-        window.app_filter = SimpleNamespace(selected=0, set_selected=lambda value: setattr(window.app_filter, "selected", value),
-                                            get_selected=lambda: window.app_filter.selected)
-        window.select_apps({"codex", "opencode"})
-        self.assertEqual(window.app_filter.selected, 5)
-        window.app_filter.selected = 3
-        window.apps_from_preferences()
-        self.assertEqual((window.apps, {provider for provider, pill in window.app_pills.items() if pill.active}),
-                         ({"opencode"}, {"opencode"}))
+    def test_filter_profiles_builds_machine_app_profile_model(self):
+        dashboard = {
+            "providers": [
+                {"id": "codex-1", "label": "Work", "provider": "codex", "color": "#112233", "status": "ok"},
+                {"id": "claude-1", "label": "Main", "provider": "claude-desktop-code", "color": "#445566", "status": "ok"},
+                {"id": "asb-sources", "label": "Sources", "status": "warning"},
+            ],
+            "threads": [
+                {"id": "local", "provider": "codex", "sourceId": "codex-1", "machineId": "aaaaaaaaaaaaaaaa", "state": "idle"},
+                {"id": "r1", "provider": "codex", "sourceId": "codex-r", "remote": True, "machineId": "bbbbbbbbbbbbbbbb",
+                 "machineName": "studio", "sourceLabel": "Studio Codex", "sourceColor": "#778899", "sourceNumber": 1, "state": "idle"},
+                {"id": "r2", "provider": "claude-desktop-code", "sourceId": "claude-r", "remote": True, "machineId": "bbbbbbbbbbbbbbbb",
+                 "machineName": "studio", "sourceLabel": "Studio Claude", "sourceNumber": 2, "state": "idle"},
+            ],
+        }
+        model = asb.filter_profiles(dashboard)
+        self.assertEqual(len(model), 2)
+        local, remote = model
+        self.assertEqual(local["machine"], "")
+        self.assertEqual(local["machineName"], "This machine")
+        self.assertEqual([(app["provider"], [p["key"] for p in app["profiles"]]) for app in local["apps"]],
+                         [("codex", ["|codex-1"]), ("claude-desktop-code", ["|claude-1"])])
+        self.assertEqual(local["apps"][0]["profiles"][0]["color"], "#112233")
+        self.assertEqual(remote["machine"], "bbbbbbbbbbbbbbbb")
+        self.assertEqual(remote["machineName"], "studio")
+        self.assertEqual([app["provider"] for app in remote["apps"]], ["codex", "claude-desktop-code"])
+        self.assertEqual(remote["apps"][0]["profiles"][0]["key"], "bbbbbbbbbbbbbbbb|codex-r")
+        self.assertEqual(remote["apps"][0]["profiles"][0]["label"], "Studio Codex")
+        self.assertEqual(remote["apps"][0]["profiles"][0]["color"], "#778899")
+        self.assertEqual(asb.row_profile_key({"remote": True, "machineId": "bbbbbbbbbbbbbbbb", "sourceId": "codex-r"}),
+                         "bbbbbbbbbbbbbbbb|codex-r")
+        self.assertEqual(asb.row_profile_key({"remote": False, "machineId": "aaaaaaaaaaaaaaaa", "sourceId": "codex-1"}), "|codex-1")
+        self.assertEqual(asb.row_profile_key({"provider": "opencode"}), "|opencode")
+        # A single-profile app is one row; a multi-profile app is a header plus indented rows.
+        multi = {"providers": [
+            {"id": "a", "label": "A", "provider": "codex", "color": "#111111", "status": "ok"},
+            {"id": "b", "label": "B", "provider": "codex", "color": "#222222", "status": "ok"},
+            {"id": "c", "label": "C", "provider": "opencode", "color": "", "status": "ok"},
+        ], "threads": []}
+        apps = asb.filter_profiles(multi)[0]["apps"]
+        self.assertEqual([(app["provider"], len(app["profiles"])) for app in apps], [("codex", 2), ("opencode", 1)])
 
+    def test_filtered_rows_uses_profile_groups_and_empty_states_as_all(self):
+        board = {"threads": [
+            {"id": "w", "provider": "codex", "sourceId": "c1", "state": "working", "pending": True},
+            {"id": "i", "provider": "codex", "sourceId": "c1", "state": "idle"},
+            {"id": "u", "provider": "claude-desktop-code", "sourceId": "k1", "state": "working", "unread": True},
+            {"id": "r", "provider": "codex", "sourceId": "c2", "remote": True, "machineId": "m1", "state": "idle"},
+        ]}
+        self.assertEqual({row["id"] for row in asb.filtered_rows(board)}, {"w", "i", "u", "r"})
+        self.assertEqual({row["id"] for row in asb.filtered_rows(board, state=set())}, {"w", "i", "u", "r"})
+        self.assertEqual({row["id"] for row in asb.filtered_rows(board, profiles={"|c1"})}, {"w", "i"})
+        self.assertEqual({row["id"] for row in asb.filtered_rows(board, profiles={"|c1", "|k1"})}, {"w", "i", "u"})
+        self.assertEqual({row["id"] for row in asb.filtered_rows(board, profiles={"m1|c2"})}, {"r"})
+        self.assertEqual({row["id"] for row in asb.filtered_rows(board, profiles={"|c1"}, state="idle")}, {"i"})
+        self.assertEqual({row["id"] for row in asb.filtered_rows(board, pending_only=True)}, {"w"})
+        self.assertEqual({row["id"] for row in asb.filtered_rows(board, pending_only=True, state={"working"})}, {"w", "u"})
     def test_provider_prefixes(self):
         for prefix, provider in (("cl:", "claude-desktop-code"), ("claude:", "claude-desktop-code"),
                                  (" CL : ", "claude-desktop-code"), ("ClaUde: ", "claude-desktop-code"),
@@ -2004,7 +1996,8 @@ class DataChecks(unittest.TestCase):
         board = copy.deepcopy(FIXTURE)
         selected = asb.filtered_rows(board, state={"working", "idle"})
         self.assertEqual([row["id"] for row in selected], ["second", "first"])
-        self.assertEqual(asb.filtered_rows(board, state=set()), [])
+        self.assertEqual([row["id"] for row in asb.filtered_rows(board, state=set())],
+                         ["second", "claude:local_mock", "first", "unknown"])
         self.assertEqual([row["id"] for row in asb.filtered_rows(board, state={"working", "idle"}, pending_only=True)], ["second"])
         board["threads"][0].update(pinned=True, pinIndex=1)
         board["threads"][2].update(pinned=True, pinIndex=0)
@@ -3506,28 +3499,17 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertTrue(rows[1]["pending"])
         self.assertNotIn(("Read", "mark-read"), SCOPE["row_menu_actions"](rows[1]))
 
-    def test_working_pill_shares_states_without_recursive_updates(self):
+    def test_pending_and_drawer_are_exclusive_and_states_need_no_pill_sync(self):
         window = object.__new__(Window)
-        def toggle(active, changed=lambda: None):
-            control = SimpleNamespace(active=active, get_active=lambda: control.active)
-            def set_active(value):
-                if control.active != value:
-                    control.active = value
-                    changed()
-            control.set_active = set_active
-            return control
-
-        window.states, window.updating_states = set(SCOPE["STATES"]), False
-        window.state_checks = {state: toggle(True, window.states_changed) for state in SCOPE["STATES"]}
-        window.working_only = toggle(False, window.working_from_pill)
-        window.state_summary, window.render = Mock(), Mock()
+        window.pending, window.archived = False, False
+        window.states, window.profiles = set(), set()
+        window.filter_model = ()
+        window.drawer_view = False
+        window.drawer_only = SimpleNamespace(active=False, get_active=lambda: window.drawer_only.active,
+                                             set_active=lambda value: setattr(window.drawer_only, "active", value))
+        window.filter_changed = Mock()
         window.list_body = Mock()
-        window.select_states = Mock(wraps=window.select_states)
-        window.apps, window.syncing_apps = set(), False
-        window.app_pills = {app: toggle(False, window.apps_from_pills) for app in ("codex", "claude-desktop-code")}
-        window.app_filter = Mock()
         window.search = Mock(get_text=Mock(return_value=""))
-        window.archive, window.pending_only = toggle(False), toggle(False)
         window.dashboard = {"threads": [
             {"id": "codex-working", "provider": "codex", "state": "working", "pending": True},
             {"id": "claude-working", "provider": "claude-desktop-code", "state": "working", "pending": True},
@@ -3535,46 +3517,34 @@ class NativeLogicChecks(unittest.TestCase):
             {"id": "codex-idle", "provider": "codex", "state": "idle", "pending": True},
             {"id": "archived", "provider": "codex", "state": "working", "pending": True, "archived": True},
         ]}
-        def selection(states):
-            self.assertEqual(window.states, states)
-            self.assertEqual({state for state, check in window.state_checks.items() if check.get_active()}, states)
-            self.assertEqual(window.working_only.get_active(), states == {"working"})
-            self.assertFalse(window.updating_states)
-            window.render.assert_called_once()
-            window.render.reset_mock()
-
-        with patch.dict(SCOPE, {"Gtk": SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0))}):
-            window.states_changed()
-            selection(set(SCOPE["STATES"]))
-            window.working_only.set_active(True)
-            window.select_states.assert_called_once_with({"working"})
-            selection({"working"})
-            window.select_apps({"codex"})
-            self.assertEqual({row["id"] for row in window.visible_rows()}, {"codex-working", "codex-active"})
-            window.pending_only.set_active(True)
-            self.assertEqual({row["id"] for row in window.visible_rows()}, {"codex-working", "codex-active", "codex-idle"})
-            window.select_apps({"claude-desktop-code"})
-            self.assertEqual([row["id"] for row in window.visible_rows()], ["claude-working"])
-            window.search.get_text.return_value = "cx:"
-            self.assertEqual({row["id"] for row in window.visible_rows()}, {"codex-working", "codex-active", "codex-idle"})
-            window.archive.set_active(True)
-            self.assertEqual({row["id"] for row in window.visible_rows()}, {"codex-working", "codex-active", "codex-idle", "archived"})
-            window.render.reset_mock()
-            window.select_states.reset_mock()
-            window.working_only.set_active(False)
-            window.select_states.assert_called_once_with(set(SCOPE["STATES"]))
-            selection(set(SCOPE["STATES"]))
-            self.assertEqual({row["id"] for row in window.visible_rows()}, {"codex-working", "codex-idle", "archived"})
-            for states in ({"working"}, {"working", "idle"}, set(), set(SCOPE["STATES"])):
-                window.select_states.reset_mock()
-                window.select_states(states)
-                window.select_states.assert_called_once_with(states)
-                selection(states)
-            window.select_states.reset_mock()
-            window.state_checks["waiting"].set_active(False)
-            selection({"working", "idle", "unknown"})
-            window.select_states.assert_not_called()
-
+        window.show_all_cards, window.card_limit = False, 100
+        window.set_pending(True)
+        self.assertTrue(window.pending)
+        window.filter_changed.assert_called()
+        window.drawer_only.active = True
+        window.drawer_view = True
+        window.pending = True
+        window.drawer_toggled()
+        self.assertFalse(window.pending)
+        self.assertTrue(window.drawer_view)
+        window.set_pending(True)
+        self.assertFalse(window.drawer_only.active)
+        self.assertTrue(window.pending)
+        window.set_pending(False)
+        window.drawer_view = False
+        self.assertEqual({row["id"] for row in window.visible_rows()},
+                         {"codex-working", "claude-working", "codex-active", "codex-idle"})
+        window.set_pending(True)
+        self.assertEqual({row["id"] for row in window.visible_rows()},
+                         {"codex-working", "claude-working", "codex-idle"})
+        window.states = {"working"}
+        self.assertEqual({row["id"] for row in window.visible_rows()},
+                         {"codex-working", "claude-working", "codex-active", "codex-idle"})
+        window.set_pending(False)
+        self.assertEqual({row["id"] for row in window.visible_rows()}, {"codex-working", "claude-working", "codex-active"})
+        window.states = {"working", "idle"}
+        self.assertEqual({row["id"] for row in window.visible_rows()},
+                         {"codex-working", "claude-working", "codex-active", "codex-idle"})
     def test_working_pending_union_keeps_unread_and_other_filters(self):
         filtered = SCOPE["filtered_rows"]
         board = {"threads": [dict(provider="codex", **row) for row in (
@@ -3597,7 +3567,7 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual({row["id"] for row in filtered(board, state={"working"})}, {"working-read", "working-unread"})
         self.assertEqual([row["id"] for row in filtered(board, pending_only=True)], ["working-unread"])
         self.assertEqual([row["id"] for row in filtered(board, state={"working", "idle"}, pending_only=True)], ["working-unread"])
-        self.assertEqual(filtered(board, state=set(), pending_only=True), [])
+        self.assertEqual([row["id"] for row in filtered(board, state=set(), pending_only=True)], ["working-unread"])
         self.assertEqual({row["id"] for row in filtered(board, app="codex", state={"working"}, pending_only=True)}, expected - {"claude-unread"})
         self.assertEqual({row["id"] for row in filtered(board, "find", app="codex", state={"working"}, pending_only=True)},
                          {"working-read", "idle-unread"})

@@ -293,8 +293,8 @@ test('a new engine with saved reader positions gives the same Codex source statu
   database.close();
   const dashboard = { databasePath, sessionIndexPath: path.join(home, 'session_index.jsonl'), globalStatePath: path.join(home, 'global.json') };
   const file = path.join(home, 'cache', 'asb', 'readers', 'positions.json');
-  const warning = { id: 'codex', label: 'Codex', status: 'warning', message: 'ASB cannot read the Codex session logs, so Codex cards show Unknown.' };
-  const ready = { id: 'codex', label: 'Codex', status: 'ready', message: '' };
+  const warning = { id: 'codex', label: 'Codex', status: 'warning', provider: 'codex', message: 'ASB cannot read the Codex session logs, so Codex cards show Unknown.' };
+  const ready = { id: 'codex', label: 'Codex', status: 'ready', provider: 'codex', message: '' };
   const providers = (run) => run.providers.filter((provider) => provider.id === 'codex');
 
   const a = await engine({ file, key: KEY, dashboard, nowMs: NOW_MS });

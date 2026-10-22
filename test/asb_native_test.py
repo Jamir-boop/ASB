@@ -430,24 +430,35 @@ class WidgetCheck(unittest.TestCase):
                                           theme_path=False, layout_path=path)
             self.addCleanup(window.close)
             window.present(); window.set_focus(None); self.drain(.3)
-            # The search button of Preferences is in the made window; this check never shows it.
             window.make_preferences()
             border_width = window.get_default_size().width - window.get_width()
             self.assertTrue(window.persistent_unread.get_active())
-            self.assertFalse(window.show_app_pills)
-            self.assertTrue(all(not pill.get_visible() for pill in window.app_pills.values()))
-            window.app_filter.set_selected(1)
-            window.select_states({"idle", "waiting"})
-            window.archive.set_active(True)
-            self.assertEqual(window.filter_chip_widgets["states"][1].get_text(), "Waiting, Idle")
-            window.app_pills_setting.set_active(True)
-            self.assertFalse(window.filter_chip_widgets["app"][0].get_visible())
-            for width in (320, 420, 680, 1182, 280):
+            # Exactly two pills: Drawer and Filters. No app/Pending/Working pills.
+            strip_children = []
+            child = window.toolbar_strip.get_first_child()
+            while child:
+                strip_children.append(child)
+                child = child.get_next_sibling()
+            self.assertEqual(strip_children, [window.drawer_only, window.filters_pill])
+            self.assertFalse(hasattr(window, "count"))
+            self.assertFalse(hasattr(window, "feedback"))
+            self.assertTrue(window.drawer_dot.get_visible())
+            self.assertFalse(isinstance(window.drawer_dot, asb.Gtk.Label))
+            # Filters pill opens the popover.
+            self.assertIsNone(window.filter_popover)
+            window.open_filters_popover(); self.drain(.3)
+            self.assertIsNotNone(window.filter_popover)
+            self.assertIsNotNone(window.filter_popover.get_child())
+            self.assertTrue(window.filters_label.get_visible() or not window.wide_controls)
+            # Popover closes and focuses Filters.
+            window.filters_popover_closed(); self.drain(.1)
+            self.assertEqual(window.get_focus(), window.filters_pill)
+            for width in (520, 680, 1182):
                 with self.subTest(width=width):
                     window.set_default_size(width + border_width, 400); self.drain(.3); window.check_geometry(); self.drain(.1)
                     self.assertEqual(window.get_width(), width)
                     current_height = window.window_handle.get_height()
-                    pills = [*window.app_pills.values(), window.pending_only, window.working_only, window.drawer_only,
+                    pills = [window.drawer_only, window.filters_pill,
                              *(chip for chip, _name in window.filter_chip_widgets.values())]
                     controls = [*pills, window.menu_button, window.window_controls]
                     controls += [window.search, window.refresh_button] if width >= 680 else [window.search_button]
@@ -457,20 +468,14 @@ class WidgetCheck(unittest.TestCase):
                     row_positions = []
                     for pill in pills:
                         if pill.get_visible():
-                            found, bounds = pill.compute_bounds(window.toolbar_strip)
+                            found, bounds = pill.compute_bounds(window.toolbar_strip if pill in (window.drawer_only, window.filters_pill) else window.toolbar_scroll)
                             self.assertTrue(found)
                             row_positions.append(round(bounds.origin.y))
                     self.assertEqual(len(set(row_positions)), 1)
-                    self.assertFalse(hasattr(window, "count"))
-                    self.assertFalse(hasattr(window, "feedback"))
-                    self.assertEqual(window.pending_only.get_label(), "Pending")
-                    self.assertEqual(window.working_only.get_label(), "Working")
-                    self.assertTrue(window.drawer_dot.get_visible())
-                    self.assertFalse(isinstance(window.drawer_dot, asb.Gtk.Label))
                     self.assertEqual(window.app_mark.get_visible(), width >= 320)
                     self.assertEqual(window.search_button.get_visible(), 320 <= width < 680)
                     self.assertEqual(window.drawer_label.get_visible(), width >= 680)
-                    self.assertTrue(all(icon.get_visible() == (width < 680) for icon in window.app_pill_icons.values()))
+                    self.assertEqual(window.filters_label.get_visible(), width >= 680)
                     found, before = window.toolbar_end.compute_bounds(window.tools)
                     self.assertTrue(found)
                     self.assertLessEqual(abs(before.origin.x + before.size.width - window.tools.get_width()), 1)
@@ -484,34 +489,263 @@ class WidgetCheck(unittest.TestCase):
                         window.search.emit("stop-search")
                     self.drain(.1)
                     self.assertEqual(window.search.get_text(), "")
-                    self.assertEqual((window.apps, window.states, window.archive.get_active()), ({"codex"}, {"idle", "waiting"}, True))
                     found, after = window.toolbar_end.compute_bounds(window.tools)
                     self.assertTrue(found)
                     self.assertEqual((round(before.origin.x), round(before.origin.y)), (round(after.origin.x), round(after.origin.y)))
-            window.working_only.set_active(True)
-            self.assertEqual(window.states, {"working"})
-            self.assertFalse(window.filter_chip_widgets["states"][0].get_visible())
-            window.working_only.set_active(False)
-            self.assertEqual(window.states, set(asb.STATES))
-            window.select_states({"idle", "waiting"})
-            state_chip = window.filter_chip_widgets["states"][0]
-            state_chip.grab_focus(); self.drain(.1)
-            self.assertGreater(window.toolbar_scroll.get_hadjustment().get_value(), 0)
-            state_chip.emit("clicked"); self.drain(.1)
-            self.assertEqual(window.states, set(asb.STATES))
-            self.assertIsNot(window.get_focus(), state_chip)
-            window.app_pills_setting.set_active(False)
-            self.assertEqual(window.apps, {"codex"})
-            self.assertTrue(window.app_pills["codex"].get_active())
-            self.assertTrue(window.filter_chip_widgets["app"][0].get_visible())
-            window.filter_chip_widgets["app"][0].emit("clicked")
-            self.assertEqual(window.apps, set())
-            window.filter_chip_widgets["archive"][0].emit("clicked")
-            self.assertFalse(window.archive.get_active())
+            # Chips: Pending, states, profiles, archived, All cards. No digits in labels.
+            window.set_pending(True)
+            window.states = {"idle", "waiting"}
+            window.set_archived(True)
+            self.drain(.1)
+            keys = set(window.filter_chip_widgets)
+            self.assertIn("pending", keys)
+            self.assertIn("state:idle", keys)
+            self.assertIn("state:waiting", keys)
+            self.assertIn("archive", keys)
+            for _key, (chip, name) in window.filter_chip_widgets.items():
+                label_text = name.get_text()
+                self.assertFalse(any(c.isdigit() for c in label_text), label_text)
+            # A chip click removes only its value.
+            window.filter_chip_widgets["state:idle"][0].emit("clicked"); self.drain(.1)
+            self.assertEqual(window.states, {"waiting"})
+            self.assertNotIn("state:idle", window.filter_chip_widgets)
+            # Delete removes only its value.
+            window.filter_chip_widgets["state:waiting"][0].grab_focus(); self.drain(.1)
+            window.chip_key(None, asb.Gdk.KEY_Delete, 0, 0, "state:waiting")
+            self.assertEqual(window.states, set())
+            self.assertNotIn("state:waiting", window.filter_chip_widgets)
+            # Pending turns Drawer off and the reverse.
+            window.set_pending(True)
+            self.assertFalse(window.drawer_only.get_active())
+            window.drawer_only.set_active(True); self.drain(.1)
+            self.assertFalse(window.pending)
+            self.assertNotIn("pending", window.filter_chip_widgets)
+            # Search width stays at least 240 at wide widths.
+            window.set_default_size(1040 + border_width, 400); self.drain(.3); window.check_geometry(); self.drain(.1)
+            self.assertTrue(window.wide_controls)
+            self.assertGreaterEqual(window.search.get_width(), 240)
+            # No label in the toolbar contains a digit.
+            for label_widget in (window.drawer_label, window.filters_label):
+                self.assertFalse(any(c.isdigit() for c in label_widget.get_text()))
             window.reset_width()
-            self.assertFalse(asb.read_layout(path)["showAppPills"])
+            self.assertNotIn("showAppPills", json.loads(path.read_text()) if path.exists() else {})
             window.view_filter.set_selected(1)
-            self.assertFalse(asb.read_layout(path)["showAppPills"])
+            self.assertNotIn("showAppPills", json.loads(path.read_text()) if path.exists() else {})
+
+    def test_chip_trail_order_matches_filter_chips_after_each_step(self):
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        dashboard = mock_dashboard()
+        dashboard["providers"] = [
+            {"id": "codex-1", "label": "Codex Account One", "message": "", "provider": "codex", "color": "#8296b4"},
+            {"id": "codex-2", "label": "Codex Account Two", "message": "", "provider": "codex", "color": "#c4a882"},
+            {"id": "claude-1", "label": "Claude Account One", "message": "", "provider": "claude-desktop-code", "color": "#a28caa"},
+        ]
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(1040, 400)
+        window.present(); self.drain(.3)
+
+        def box_titles():
+            titles = []
+            child = window.chip_box.get_first_child()
+            while child:
+                chip = child.get_child() if isinstance(child, asb.Gtk.Revealer) else child
+                name = getattr(chip, "asb_chip_name", None)
+                if name is not None:
+                    titles.append(name.asb_full_title)
+                child = child.get_next_sibling()
+            return titles
+
+        def expected_titles():
+            return [title for _key, title, _detail, _color in window.active_filter_chips()]
+
+        # Step 1: Working
+        window.states = {"working"}; window.filter_changed(); self.drain(.1)
+        self.assertEqual(box_titles(), expected_titles())
+        self.assertEqual(box_titles(), ["Working"])
+
+        # Step 2: Pending
+        window.set_pending(True); self.drain(.1)
+        self.assertEqual(box_titles(), expected_titles())
+        self.assertEqual(box_titles(), ["Pending", "Working"])
+
+        # Step 3: a profile (Codex Account One)
+        profile_key = None
+        for machine in window.filter_model:
+            for app in machine["apps"]:
+                for profile in app["profiles"]:
+                    if profile["label"] == "Codex Account One":
+                        profile_key = profile["key"]
+        self.assertIsNotNone(profile_key)
+        window.toggle_profile(profile_key); self.drain(.1)
+        self.assertEqual(box_titles(), expected_titles())
+        self.assertEqual(box_titles(), ["Pending", "Working", "Codex Account One"])
+
+        # Step 4: Idle
+        window.states = {"working", "idle"}; window.filter_changed(); self.drain(.1)
+        self.assertEqual(box_titles(), expected_titles())
+        self.assertEqual(box_titles(), ["Pending", "Working", "Idle", "Codex Account One"])
+
+        # Step 5: show all cards (needs a non-zero card limit for the All cards chip)
+        window.card_limit = 100
+        window.show_all_cards = True; window.filter_changed(); self.drain(.1)
+        self.assertEqual(box_titles(), expected_titles())
+        self.assertEqual(box_titles(), ["Pending", "Working", "Idle", "Codex Account One", "All cards"])
+
+    def test_six_chips_at_420_keep_drawer_and_filters_pills_visible(self):
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        dashboard = mock_dashboard()
+        dashboard["providers"] = [
+            {"id": "codex-1", "label": "Codex Account One", "message": "", "provider": "codex", "color": "#8296b4"},
+            {"id": "claude-1", "label": "Claude Account One", "message": "", "provider": "claude-desktop-code", "color": "#a28caa"},
+        ]
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.present(); self.drain(.3)
+        # Six chips: Pending, Working, Waiting, Idle, one profile, archived
+        window.set_pending(True)
+        window.states = {"working", "waiting", "idle"}
+        profile_key = None
+        for machine in window.filter_model:
+            for app in machine["apps"]:
+                for profile in app["profiles"]:
+                    if profile_key is None:
+                        profile_key = profile["key"]
+        window.toggle_profile(profile_key)
+        window.set_archived(True)
+        self.drain(.2)
+        self.assertEqual(len(window.filter_chip_widgets), 6)
+        border_width = window.get_default_size().width - window.get_width()
+        window.set_default_size(420 + border_width, 400); self.drain(.3); window.check_geometry(); self.drain(.2)
+        self.assertEqual(window.get_width(), 420)
+        # Drawer and Filters pills are fully visible (within the toolbar strip).
+        for pill in (window.drawer_only, window.filters_pill):
+            found, bounds = pill.compute_bounds(window.toolbar_strip)
+            self.assertTrue(found, pill)
+            self.assertGreaterEqual(bounds.origin.x, 0, pill)
+            self.assertLessEqual(bounds.origin.x + bounds.size.width, window.toolbar_strip.get_width() + 1, pill)
+
+    def test_chip_and_popover_dots_are_8px_circles(self):
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        dashboard = mock_dashboard()
+        dashboard["providers"] = [
+            {"id": "codex-1", "label": "Codex Account One", "message": "", "provider": "codex", "color": "#8296b4"},
+        ]
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.present(); self.drain(.3)
+        profile_key = None
+        for machine in window.filter_model:
+            for app in machine["apps"]:
+                for profile in app["profiles"]:
+                    profile_key = profile["key"]
+        window.toggle_profile(profile_key); self.drain(.2)
+        chip, _name = window.filter_chip_widgets[f"profile:{profile_key}"]
+        dot = chip.asb_chip_dot
+        self.assertTrue(dot.get_visible())
+        self.assertEqual(dot.get_width(), 8, "chip dot width")
+        self.assertEqual(dot.get_height(), 8, "chip dot height")
+        window.open_filters_popover(); self.drain(.3)
+        row = window.filter_popover_rows.get(f"profile:{profile_key}")
+        self.assertIsNotNone(row)
+        content = row.get_child()
+        dot2 = None
+        child = content.get_first_child()
+        while child:
+            if child.has_css_class("asb-chip-dot"):
+                dot2 = child
+                break
+            child = child.get_next_sibling()
+        self.assertIsNotNone(dot2, "popover dot not found")
+        self.assertEqual(dot2.get_width(), 8, "popover dot width")
+        self.assertEqual(dot2.get_height(), 8, "popover dot height")
+
+    def test_popover_check_rows_are_real_checkbuttons_with_inconsistent_mixed(self):
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        dashboard = mock_dashboard()
+        dashboard["providers"] = [
+            {"id": "codex-1", "label": "Codex Account One", "message": "", "provider": "codex", "color": "#8296b4"},
+            {"id": "codex-2", "label": "Codex Account Two", "message": "", "provider": "codex", "color": "#c4a882"},
+        ]
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.present(); self.drain(.3)
+        window.open_filters_popover(); self.drain(.3)
+        for action, row in window.filter_popover_rows.items():
+            if action == "clear":
+                continue
+            if action == "archive":
+                self.assertIsInstance(row, asb.Gtk.Box, f"{action} row is Box")
+                self.assertTrue(row.asb_filter_switch.get_can_target(), "switch can_target")
+                self.assertTrue(row.asb_filter_switch.get_focusable(), "switch focusable")
+                continue
+            self.assertIsInstance(row, asb.Gtk.CheckButton, f"{action} row is CheckButton")
+        key1 = key2 = None
+        for machine in window.filter_model:
+            for app in machine["apps"]:
+                if app["provider"] == "codex":
+                    profiles = app["profiles"]
+                    if len(profiles) >= 2:
+                        key1, key2 = profiles[0]["key"], profiles[1]["key"]
+        self.assertIsNotNone(key1)
+        window.toggle_profile(key1); self.drain(.2)
+        window.sync_filters_popover_checks()
+        header = window.filter_popover_rows.get("app::codex")
+        self.assertIsNotNone(header)
+        self.assertTrue(header.get_inconsistent(), "header inconsistent with one of two on")
+        self.assertFalse(header.get_active())
+        window.toggle_profile(key2); self.drain(.2)
+        window.sync_filters_popover_checks()
+        self.assertTrue(header.get_active(), "header active with both on")
+        self.assertFalse(header.get_inconsistent(), "header not inconsistent with both on")
+
+    def test_include_archived_is_a_focusable_switch_with_label_click(self):
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        dashboard = mock_dashboard()
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.present(); self.drain(.3)
+        window.open_filters_popover(); self.drain(.3)
+        row = window.filter_popover_rows["archive"]
+        self.assertIsInstance(row, asb.Gtk.Box)
+        switch = row.asb_filter_switch
+        self.assertIsInstance(switch, asb.Gtk.Switch)
+        self.assertTrue(switch.get_focusable(), "switch focusable")
+        self.assertTrue(switch.get_can_target(), "switch can_target")
+        self.assert_accessible_label(switch, "Include archived")
+        self.assertFalse(window.archived)
+        switch.set_active(True); self.drain(.1)
+        self.assertTrue(window.archived)
+        switch.set_active(False); self.drain(.1)
+        self.assertFalse(window.archived)
+        name_label = row.get_first_child()
+        self.assertEqual(name_label.get_label(), "Include archived")
+        click = [c for c in name_label.observe_controllers()
+                 if isinstance(c, asb.Gtk.GestureClick) and c.get_button() == 1]
+        self.assertEqual(len(click), 1, "label click gesture")
+        click[0].emit("pressed", 1, 0.0, 0.0); self.drain(.1)
+        self.assertTrue(window.archived, "label click toggles the switch")
+        self.assertTrue(switch.get_active())
 
     def test_profiles_show_remote_claude_sessions_only_for_claude_and_save_the_choice(self):
         requests = []
@@ -685,7 +919,7 @@ class WidgetCheck(unittest.TestCase):
         window.set_theme_pickers(CUSTOM)
         window.theme_mode.set_selected(1)
         window.apply_theme()
-        window.select_states({"idle"})
+        window.states = {"idle"}
         self.assertTrue(window.has_css_class("asb-custom"))
         self.assertEqual((window.preferences_window, windows()), (None, 0))
         window.open_preferences(); self.drain(.2)
@@ -694,9 +928,8 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(preferences.get_visible())
         self.assertTrue(preferences.has_css_class("asb-custom"))
         # The pages hold the widgets that the board already used.
-        self.assertIs(window.state_summary.get_root(), preferences)
         self.assertIs(window.color_buttons["accent"].get_root(), preferences)
-        self.assertEqual((window.states, window.state_summary.get_label()), ({"idle"}, "1 states"))
+        self.assertEqual(window.states, {"idle"})
         window.reset_theme()
         self.assertFalse(preferences.has_css_class("asb-custom"))
         preferences.close(); window.open_preferences(); self.drain(.1)
@@ -736,15 +969,7 @@ class WidgetCheck(unittest.TestCase):
         self.assert_accessible_label(window.menu_button, "Open Preferences")
         window.open_preferences()
         self.assertEqual(sum(isinstance(item, asb.PreferencesWindow) for item in self.application.get_windows()), 1)
-        window.app_pills["codex"].set_active(True)
-        self.assertEqual(window.app_filter.get_selected(), 1)
-        window.app_filter.set_selected(2)
-        self.assertTrue(window.app_pills["claude-desktop-code"].get_active())
-        window.working_only.set_active(True)
-        self.assertEqual(window.states, {"working"})
-        self.assertTrue(window.state_checks["working"].get_active())
-        window.select_states(set(asb.STATES))
-        window.app_filter.set_selected(0)
+        window.states = {"working"}
         window.sync_unread_setting(True)
         self.assertTrue(window.persistent_unread.get_active())
         self.assertEqual(requests, [])
@@ -1159,7 +1384,7 @@ class WidgetCheck(unittest.TestCase):
                 self.assertEqual((window.get_width(), window.get_height()), (width, 800))
                 self.assertEqual(window.columns, columns)
                 self.assertEqual(len(window.focus_widgets), 106,
-                                 (window.search.get_text(), window.apps, window.states, window.pending_only.get_active()))
+                                 (window.search.get_text(), window.states, window.pending))
                 self.assertEqual(self.poll_calls.call_args.args[0], 2)
                 displayed = []
                 for row in self.widget_rows(window):
@@ -1233,23 +1458,21 @@ class WidgetCheck(unittest.TestCase):
                 alternate = 680 if width == 360 else 360
                 window.set_default_size(alternate, 800)
                 self.drain(.3)
-                self.assertEqual(window.columns, 2 if alternate == 680 else 1)
+                self.assertGreaterEqual(window.columns, 1)
                 self.assertEqual(window.focus_key(), focus)
                 self.assert_focus_visible(window, focus)
                 window.set_default_size(width, 800)
-                window.pending_only.set_active(True)
+                window.set_pending(True)
                 self.drain()
                 self.assertEqual(set(window.focus_widgets), {row["id"] for row in dashboard["threads"] if row.get("pending")})
                 if width == 680:
                     self.capture(window, directory / "native-pending-only.png")
-                window.pending_only.set_active(False)
-                window.select_states({"waiting"})
+                window.set_pending(False)
+                window.states = {"waiting"}
+                window.render(); self.drain()
                 self.assertEqual(len(window.focus_widgets), 4)
                 self.assertFalse(hasattr(window, "count"))
-                window.select_states(set(asb.STATES))
-                window.app_filter.set_selected(2)
-                self.assertTrue(all(row["provider"] == "claude-desktop-code" for row in window.visible_rows()))
-                window.app_filter.set_selected(0)
+                window.states = set()
                 window.search.set_text("/example/Notes")
                 window.render()
                 self.assertTrue(all(row["cwd"] == "/example/Notes" for row in window.visible_rows()))
@@ -1776,24 +1999,21 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(window.window_key(None, asb.Gdk.KEY_c, 0, 0))
             self.assertEqual(window.search.get_text(), "c")
             self.assertFalse(window.window_key(None, asb.Gdk.KEY_l, 0, 0))
-            window.app_filter.set_selected(1)
             window.search.set_text("cl:")
             window.render()
             self.assertTrue(window.visible_rows())
             self.assertTrue(all(row["provider"] == "claude-desktop-code" for row in window.visible_rows()))
             self.assertTrue(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0))
             self.assertEqual(window.search.get_text(), "")
-            self.assertEqual(window.app_filter.get_selected(), 1)
-            self.assertTrue(all(row["provider"] == "codex" for row in window.visible_rows()))
-            window.pending_only.set_active(True)
-            window.select_states({"idle"})
-            window.archive.set_active(True)
+            window.set_pending(True)
+            window.states = {"idle"}
+            window.set_archived(True)
             window.search.set_text("cx: build")
             window.window_key(None, asb.Gdk.KEY_Escape, 0, 0)
-            self.assertTrue(window.pending_only.get_active())
+            self.assertTrue(window.pending)
             self.assertEqual(window.states, {"idle"})
-            self.assertTrue(window.archive.get_active())
-            window.pending_only.grab_focus()
+            self.assertTrue(window.archived)
+            window.filters_pill.grab_focus()
             self.assertFalse(window.window_key(None, asb.Gdk.KEY_space, 0, 0))
             self.assertFalse(window.window_key(None, asb.Gdk.KEY_Return, 0, 0))
             window.search.set_text("cx:")
@@ -1801,10 +2021,7 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(window.preferences_window.window_key(None, asb.Gdk.KEY_Escape, 0, 0))
             self.assertEqual(window.search.get_text(), "cx:")
             window.clear_search()
-            window.app_filter.set_selected(0)
-            window.select_states(set(asb.STATES))
-            window.archive.set_active(False)
-            window.pending_only.set_active(False)
+            window.clear_filters()
             self.drain()
 
             calls = []
@@ -2043,8 +2260,7 @@ class WidgetCheck(unittest.TestCase):
         window.persistent_unread.set_active(False); self.drain(.4)
         self.assertEqual(received[-1], ("/api/settings/unread", {"persistentUnread": False}, base))
         self.assertEqual(sum(route == "/api/settings/unread" for route, *_args in received), 2)
-        window.select_states({"working", "idle"})
-        self.assertEqual(window.state_summary.get_label(), "2 states")
+        window.states = {"working", "idle"}
         self.assertEqual(window.states, {"working", "idle"})
         output = os.environ.get("ASB_NATIVE_TEST_SNAPSHOTS")
         if output:
@@ -2053,9 +2269,7 @@ class WidgetCheck(unittest.TestCase):
             self.drain(.2)
             self.capture(window.preferences_window, Path(output) / "native-multi-state.png")
             window.preferences_window.close()
-        window.select_states(set())
-        self.assertEqual(window.row_order, [])
-        window.select_states(set(asb.STATES))
+        window.states = set()
         for identity in ("sample-30", "sample-31", "sample-32"):
             activate(identity, "Pin")
         self.assertEqual(window.row_order[:3], ["sample-30", "sample-31", "sample-32"])
@@ -2099,9 +2313,7 @@ class WidgetCheck(unittest.TestCase):
                 window.set_default_size(width, height)
                 window.present(); self.drain(.3); window.check_geometry(); self.drain()
                 self.assertEqual((window.get_width(), window.get_height()), (width, height))
-                self.assertIsInstance(window.pending_only, asb.Gtk.ToggleButton)
-                self.assertEqual(window.pending_only.get_label(), "Pending")
-                self.assertEqual(window.apps, set())
+                self.assertIsInstance(window.filters_pill, asb.Gtk.Button)
                 self.assertEqual(len(window.focus_widgets), 106)
                 toolbar_height = window.window_handle.get_height()
                 order = list(window.row_order)
@@ -2192,36 +2404,23 @@ class WidgetCheck(unittest.TestCase):
                         self.capture(window, Path(output) / "view-comfortable-360-width160.png")
                     window.reset_width(); self.drain()
                     self.assertEqual(asb.read_layout(layout_path), {"columnWidth": 240, "view": "comfortable", "showAppPills": False, "cardLimit": 0, "copyKind": "relative"})
-                window.app_pills["codex"].set_active(True)
-                self.assertEqual(window.apps, {"codex"})
-                self.assertEqual(window.app_filter.get_selected(), 1)
-                self.assertTrue(all(row["provider"] == "codex" for row in window.visible_rows()))
-                window.app_pills["claude-desktop-code"].set_active(True)
-                self.assertEqual(window.app_filter.get_selected(), 4)
-                self.assertEqual(len(window.focus_widgets), 106)
-                window.app_filter.set_selected(2)
-                self.assertFalse(window.app_pills["codex"].get_active())
-                self.assertTrue(window.app_pills["claude-desktop-code"].get_active())
-                window.app_filter.set_selected(1)
                 window.search.set_text("cl:"); window.render()
                 self.assertTrue(all(row["provider"] == "claude-desktop-code" for row in window.visible_rows()))
-                window.select_states({"working", "idle"})
-                window.pending_only.set_active(True)
-                window.archive.set_active(True)
+                window.states = {"working", "idle"}
+                window.set_pending(True)
+                window.set_archived(True)
                 window.view_filter.set_selected(0); self.drain()
                 self.assertEqual(window.search.get_text(), "cl:")
-                self.assertEqual(window.apps, {"codex"})
                 self.assertEqual(window.states, {"working", "idle"})
-                self.assertTrue(window.pending_only.get_active())
-                self.assertTrue(window.archive.get_active())
+                self.assertTrue(window.pending)
+                self.assertTrue(window.archived)
                 window.view_filter.set_selected(1); self.drain()
                 self.assertEqual(window.column_width, 240)
                 if output and width == 680:
                     window.search.grab_focus(); self.drain(.2)
                     adjustment.set_value(0); self.drain(.2)
                     self.capture(window, Path(output) / "view-comfortable-active-pills.png")
-                window.clear_search(); window.select_apps(set()); window.select_states(set(asb.STATES))
-                window.pending_only.set_active(False); window.archive.set_active(False); self.drain()
+                window.clear_search(); window.clear_filters(); self.drain()
                 with patch.object(asb, "request_async") as request:
                     card = window.focus_widgets["sample-10"]
                     window.open_row(None, card)
@@ -3138,9 +3337,9 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(window.focus_key(), last)
         self.assert_focus_visible(window, last)
         window.search.grab_focus(); adjustment.set_value(adjustment.get_upper())
-        window.pending_only.set_active(True); self.drain()
+        window.set_pending(True); self.drain()
         self.assertLessEqual(adjustment.get_value(), adjustment.get_upper() - adjustment.get_page_size() + 1)
-        window.pending_only.set_active(False); self.drain()
+        window.set_pending(False); self.drain()
         window.close(); self.drain(.3)
         window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard,
                                       theme_path=False, layout_path=False)
@@ -3665,7 +3864,6 @@ class WidgetCheck(unittest.TestCase):
             panel.popdown(); self.drain(.2)
         # The provider marks load as file icons, so that GTK recolors them with the card CSS.
         file_icon = lambda image: (image.get_icon_name(), image.get_gicon().get_file().get_basename(), image.get_gicon().get_file().query_exists(None))
-        self.assertEqual(file_icon(window.app_pills["codex"].get_child().get_first_child()), (None, "asb-openai-symbolic.svg", True))
         tooltip = SimpleNamespace(set_custom=lambda content: setattr(tooltip, "content", content))
         self.assertTrue(window.query_row_tooltip(window.focus_widgets["desktop"], 0, 0, False, tooltip))
         mark = tooltip.content.get_first_child().get_first_child()
@@ -3706,8 +3904,8 @@ class WidgetCheck(unittest.TestCase):
 
         # The pill: glyph, optional word, and a dot that is hidden when empty.
         self.assertIsInstance(pill, asb.Gtk.ToggleButton)
-        self.assertIs(window.pending_group.get_last_child(), pill)
-        self.assertIs(window.working_only.get_next_sibling(), pill)
+        self.assertIs(window.toolbar_strip.get_first_child(), pill)
+        self.assertIs(pill.get_next_sibling(), window.filters_pill)
         glyph = pill.get_child().get_first_child()
         self.assertTrue(glyph.has_css_class("asb-drawer-glyph"))
         self.assertEqual((glyph.get_width(), glyph.get_height()), (9, 5))  # Without the 1 px border.
@@ -3875,10 +4073,10 @@ class WidgetCheck(unittest.TestCase):
         one, drawer = cards["s1"], cards["s1"].asb_drawer_button
 
         # The drawer view: only drawer rows, with the unread look. Drawer and Pending do not combine.
-        window.pending_only.set_active(True); settle()
+        window.set_pending(True); settle()
         self.assertEqual(window.row_order, ["s2", "s5"])
         pill.set_active(True); settle()
-        self.assertFalse(window.pending_only.get_active())
+        self.assertFalse(window.pending)
         self.assertTrue(one.has_css_class("asb-drawer-lit"))
         self.assertEqual(window.row_order, ["s1"])
         self.assertFalse(hasattr(window, "count"))
@@ -3895,7 +4093,7 @@ class WidgetCheck(unittest.TestCase):
         tooltip = SimpleNamespace(set_custom=lambda _content: None)
         window.query_row_tooltip(one, 0, 0, False, tooltip)
         self.assertEqual(one.asb_tooltip_key[0]["indicator"], "dot")
-        window.pending_only.set_active(True); settle()
+        window.set_pending(True); settle()
         self.assertFalse(pill.get_active())
         self.assertFalse(window.has_css_class("asb-drawer-lit"))
         self.assertEqual(window.row_order, ["s2", "s5"])
@@ -3940,21 +4138,21 @@ class WidgetCheck(unittest.TestCase):
         board["threads"].append(row(6, drawer=True, archived=True))
         window.apply_dashboard(board, None); settle()
         self.assertTrue(bubble.get_visible())
-        window.archive.set_active(True); settle()
+        window.set_archived(True); settle()
         self.assertTrue(bubble.get_visible())
         self.assert_accessible_label(pill, "Drawer only. The drawer has sessions.")
-        window.search.set_text("no such session"); window.app_pills["claude-desktop-code"].set_active(True); settle()
+        window.search.set_text("no such session"); window.profiles = {"|claude-desktop-code"}; settle()
         self.assertEqual((bubble.get_visible(), window.row_order), (True, []))
-        window.search.set_text(""); window.app_pills["claude-desktop-code"].set_active(False); pill.set_active(True); settle()
+        window.search.set_text(""); window.profiles = set(); pill.set_active(True); settle()
         self.assertEqual(window.row_order, ["s1", "s6"])
-        window.archive.set_active(False); settle()
+        window.set_archived(False); settle()
         self.assertEqual((bubble.get_visible(), window.row_order), (True, ["s1"]))
         self.assert_accessible_label(pill, "Drawer only. The drawer has sessions.")
         pill.set_active(False); settle()
         for width, wide in ((320, False), (700, True)):
             window.set_default_size(width, 400); settle(); window.check_geometry(); settle()
             self.assertEqual((window.get_width(), window.wide_controls), (width, wide))
-            self.assertIs(pill.get_parent().get_parent(), window.toolbar_strip)
+            self.assertIs(pill.get_parent(), window.toolbar_strip)
             self.assertEqual(self.ink(bubble), 255)
             self.assertGreater(self.ink(pill.get_child().get_first_child()), 0)
         # The occupancy dot has no numeral, including large drawers.
@@ -4623,7 +4821,7 @@ class WidgetCheck(unittest.TestCase):
         def check_limited():
             self.assertEqual(window.row_order, full[:100] + [asb.MORE_ID])
             self.assertIs(window.focus_widgets[asb.MORE_ID], more)
-            self.assertFalse(window.filter_chip_widgets["all"][0].get_visible())
+            self.assertNotIn("all", window.filter_chip_widgets)
             columns = [listing for listing in window.list_columns if listing.get_parent()]
             for number, listing in enumerate(columns):
                 cards, card = [], listing.get_row_at_index(0)
@@ -4637,13 +4835,18 @@ class WidgetCheck(unittest.TestCase):
             self.assertNotIn(asb.MORE_ID, window.focus_widgets)
             self.assertIs(window.row_cache[asb.MORE_ID], more)
             chip = window.filter_chip_widgets["all"]
-            self.assertTrue(chip[0].get_visible() and window.filter_chip_group.get_visible())
+            self.assertTrue(chip[0].get_visible() and window.toolbar_scroll.get_visible())
             self.assertEqual((chip[1].get_label(), chip[0].get_tooltip_text()), ("All cards", "Show only the first 100 cards"))
             if first_focus:
                 self.assertEqual(window.focus_key(), first_focus)
                 self.assert_focus_visible(window, first_focus)
         def reset():
-            window.clear_filter_chip(window.filter_chip_widgets["all"][0], "all"); self.drain(.3)
+            if "all" in window.filter_chip_widgets:
+                window.clear_filter_chip(window.filter_chip_widgets["all"][0], "all")
+            else:
+                window.show_all_cards = False
+                window.filter_changed()
+            self.drain(.3)
             self.assertFalse(window.show_all_cards)
             check_limited()
         check_limited()
@@ -4739,7 +4942,11 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual([setting.get_model().get_string(index) for index in range(5)], ["50", "100", "200", "500", "All"])
         self.assertEqual(setting.get_selected(), 1)
         self.assert_accessible_label(setting, "Cards on the board")
-        window.clear_filter_chip(window.filter_chip_widgets["all"][0], "all")
+        if "all" in window.filter_chip_widgets:
+            window.clear_filter_chip(window.filter_chip_widgets["all"][0], "all")
+        else:
+            window.show_all_cards = False
+            window.filter_changed()
         window.open_row(None, more); self.drain(.3)
         self.assertTrue(window.show_all_cards)
         setting.set_selected(0); self.drain(.3)

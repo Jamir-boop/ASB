@@ -138,6 +138,21 @@ test('the ASB scan sets its own reader limits over caller options', async () => 
   assert.equal(dashboard.providers.length, 2);
 });
 
+test('each dashboard provider entry carries its app provider and profile color', async () => {
+  const sources = [
+    { id: 'codex-one', provider: 'codex', label: 'Codex Account One', enabled: true, builtin: true, color: '#8296b4', showMarker: true, dataDir: '/tmp/codex-one' },
+    { id: 'claude-two', provider: 'claude-desktop-code', label: 'Claude Account Two', enabled: true, builtin: true, color: '#a28caa', showMarker: true, dataDir: '/tmp/claude-two' },
+    { id: 'opencode', provider: 'opencode', label: 'OpenCode', enabled: true, builtin: true, showMarker: true, dataDir: '/tmp/opencode' },
+  ];
+  const dashboard = await loadSwitchboardDashboard({ nowMs: now, sources,
+    loadCodex: async () => ({ threads: [] }), loadClaude: async () => ({ threads: [] }), loadOpenCode: async () => ({ threads: [] }) });
+  assert.deepEqual(dashboard.providers.slice(0, 2).map(({ id, provider, color }) => ({ id, provider, color })),
+    [{ id: 'codex-one', provider: 'codex', color: '#8296b4' },
+     { id: 'claude-two', provider: 'claude-desktop-code', color: '#a28caa' }]);
+  assert.equal(dashboard.providers[2].provider, 'opencode');
+  assert.match(dashboard.providers[2].color, /^#[0-9a-f]{6}$/i);
+});
+
 test('ASB refreshes Claude transcript stats and discovers newly created transcripts on each scan', async (t) => {
   const dir = await temp(t);
   const appDir = path.join(dir, 'app');

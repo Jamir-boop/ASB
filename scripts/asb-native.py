@@ -33,11 +33,6 @@ STATES = ("working", "waiting", "idle", "unknown")
 SOURCE_PROVIDERS = ("codex", "claude-desktop-code")
 APP_PILLS = (("codex", "Codex"), ("claude-desktop-code", "Claude"), ("opencode", "OpenCode"))
 APP_NAMES = {"codex": "Codex", "claude-desktop-code": "Claude Desktop Code", "opencode": "OpenCode"}
-# The Preferences app list; every app selected is "All apps".
-APP_CHOICES = (("All apps", frozenset()), ("Codex", frozenset({"codex"})), ("Claude", frozenset({"claude-desktop-code"})),
-               ("OpenCode", frozenset({"opencode"})), ("Codex and Claude", frozenset({"codex", "claude-desktop-code"})),
-               ("Codex and OpenCode", frozenset({"codex", "opencode"})),
-               ("Claude and OpenCode", frozenset({"claude-desktop-code", "opencode"})))
 # How Claude in a profile reaches Claude sessions on other machines (`remoteClaude`, plan 9.6).
 REMOTE_CLAUDE = (("auto", "Automatic", "Claude in this profile reaches Claude sessions on other machines through ASB, unless both machines use Claude Remote Control."),
                  ("bridge", "Through ASB", "Claude in this profile always reaches Claude sessions on other machines through ASB."),
@@ -57,15 +52,6 @@ def source_marker_color(row):
 
 def provider_icon(provider):
     return {"codex": "asb-openai-symbolic", "opencode": "asb-opencode-symbolic"}.get(provider, "asb-claude-symbolic")
-
-
-def app_filter(apps):
-    """The provider filter of a selected-app set: no app or every app shows all."""
-    return "all" if not apps or set(apps) >= {provider for provider, _title in APP_PILLS} else set(apps)
-
-
-def app_choice(apps):
-    return next((index for index, (_title, choice) in enumerate(APP_CHOICES) if choice == app_filter(apps)), 0)
 
 
 def source_form_body(provider, name, data_dir, launcher, enabled, identity="", projects_dir="", color=None, show_marker=None,
@@ -325,14 +311,90 @@ def provider_query(query, app="all"):
     return query.strip().casefold(), app
 
 
-def filtered_rows(dashboard, query="", app="all", state="all", archived=False, pending_only=False, drawer_only=False):
+# App order in the Filters popover and in profile chips: Codex, Claude, OpenCode.
+APP_ORDER = ("codex", "claude-desktop-code", "opencode")
+
+
+def order_of(provider):
+    return APP_ORDER.index(provider) if provider in APP_ORDER else len(APP_ORDER)
+
+
+def profile_key(machine, source_id):
+    return f"{machine}|{source_id}"
+
+
+def row_profile_key(row):
+    """A row is in the profile (machine, sourceId): remote rows use their machineId, local rows are this machine."""
+    machine = str(row.get("machineId") or "") if row.get("remote") is True else ""
+    return profile_key(machine, row.get("sourceId") or row.get("provider") or "")
+
+
+def filter_profiles(dashboard):
+    """The popover profile model: this machine first, then other machines by name.
+    Each machine is {"machine", "machineName", "apps"} and each app is {"provider", "profiles"};
+    each profile is {"key", "label", "color"}. Apps follow APP_ORDER; profiles keep source order."""
+    local_name = ""
+    for row in dashboard.get("threads", []):
+        if row.get("remote") is not True and row.get("machineName"):
+            local_name = str(row["machineName"])
+            break
+    local = []
+    seen = set()
+    for entry in dashboard.get("providers", []):
+        provider = entry.get("provider")
+        if not provider or entry.get("id") in seen:
+            continue
+        seen.add(entry.get("id"))
+        local.append({"key": profile_key("", entry.get("id") or ""), "label": str(entry.get("label") or ""),
+                      "color": str(entry.get("color") or ""), "provider": provider, "source": ""})
+    remote = {}
+    for row in dashboard.get("threads", []):
+        if row.get("remote") is not True:
+            continue
+        machine = str(row.get("machineId") or "")
+        source_id = row.get("sourceId") or row.get("provider") or ""
+        key = profile_key(machine, source_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        provider = row.get("provider") or ""
+        label = row.get("sourceLabel") or (APP_NAMES.get(provider, provider) if source_id == provider else source_id)
+        entry = {"key": key, "label": str(label), "color": str(row.get("sourceColor") or ""),
+                 "provider": provider, "source": machine, "machineName": str(row.get("machineName") or machine),
+                 "sourceNumber": row.get("sourceNumber") if type(row.get("sourceNumber")) is int else 0}
+        remote.setdefault(machine, []).append(entry)
+
+    def by_app(entries):
+        groups = {}
+        for entry in entries:
+            groups.setdefault(entry["provider"], []).append(entry)
+        apps = []
+        for provider in sorted(groups, key=order_of):
+            apps.append({"provider": provider,
+                         "profiles": tuple({"key": item["key"], "label": item["label"], "color": item["color"]}
+                                           for item in groups[provider])})
+        return tuple(apps)
+
+    machines = [{"machine": "", "machineName": local_name or "This machine", "apps": by_app(local)}]
+    for machine in sorted(remote, key=lambda name: (remote[name][0].get("machineName", name), name)):
+        entries = sorted(remote[machine], key=lambda item: (order_of(item["provider"]),
+                                                            item.get("sourceNumber", 0), item["label"]))
+        machines.append({"machine": machine, "machineName": remote[machine][0].get("machineName") or machine,
+                         "apps": by_app(entries)})
+    return tuple(machines)
+
+
+def filtered_rows(dashboard, query="", app="all", state="all", archived=False, pending_only=False, drawer_only=False, profiles=None):
     query, app = provider_query(query, app)
-    states = set(STATES) if state == "all" else {state} if isinstance(state, str) else set(state)
+    # An empty state set means every state; a missing profile set means every profile.
+    states = set(STATES) if state == "all" or not state else {state} if isinstance(state, str) else set(state)
+    wanted = frozenset(profiles or ())
     working_or_unread = pending_only and states == {"working"}
     rows = [row for row in dashboard.get("threads", [])
             if (archived or not row.get("archived"))
             and (not drawer_only or row.get("drawer"))
             and (app == "all" or row.get("provider") in ({app} if isinstance(app, str) else app))
+            and (not wanted or row_profile_key(row) in wanted)
             and ((row.get("state") == "working" or row.get("pending") or row.get("unread") or row.get("questionAttention"))
                  if working_or_unread else row.get("state") in states and (not pending_only or row.get("pending")))
             and (not query or query in "\n".join(str(row.get(key, "")) for key in
@@ -682,29 +744,22 @@ def read_layout(path):
             "copyKind": validate_copy_kind(value.get("copyKind", "relative"))}
 
 
-def write_layout(path, width=None, view=None, show_app_pills=None, card_limit=None, copy_kind=None):
-    explicit_apps = show_app_pills is not None
-    if view is None or show_app_pills is None or card_limit is None or copy_kind is None:
+def write_layout(path, width=None, view=None, card_limit=None, copy_kind=None):
+    if view is None or card_limit is None or copy_kind is None:
         saved = read_layout(path)
         view = saved["view"] if view is None else view
-        show_app_pills = saved["showAppPills"] if show_app_pills is None else show_app_pills
         card_limit = saved["cardLimit"] if card_limit is None else card_limit
         copy_kind = saved["copyKind"] if copy_kind is None else copy_kind
     if view not in ("compact", "comfortable"):
         raise ValueError("Choose Compact or Comfortable view.")
-    if type(show_app_pills) is not bool:
-        raise ValueError("Show app pills must be on or off.")
     validate_card_limit(card_limit)
     validate_copy_kind(copy_kind)
-    if width is None and view == "compact" and not show_app_pills and not explicit_apps \
-            and card_limit == DEFAULT_CARD_LIMIT and copy_kind == "relative":
+    if width is None and view == "compact" and card_limit == DEFAULT_CARD_LIMIT and copy_kind == "relative":
         write_config(path, None)
         return
     value = {"version": 1, "columnWidth": validate_column_width(DEFAULT_COLUMN_WIDTH if width is None else width)}
     if view == "comfortable":
         value["view"] = view
-    if show_app_pills or explicit_apps:
-        value["showAppPills"] = show_app_pills
     if card_limit != DEFAULT_CARD_LIMIT:
         value["cardLimit"] = card_limit
     if copy_kind != "relative":
@@ -712,19 +767,29 @@ def write_layout(path, width=None, view=None, show_app_pills=None, card_limit=No
     write_config(path, value)
 
 
-def filter_chips(apps, states, archived, show_app_pills=False, show_all=False, limit=DEFAULT_CARD_LIMIT):
+def filter_chips(pending, states, profiles, profile_model, archived, show_all=False, limit=DEFAULT_CARD_LIMIT):
+    """One chip per active filter value, in toolbar order. Each chip is (key, label, detail, color)."""
     chips = []
-    if app_filter(apps) != "all" and not show_app_pills:
-        title = ", ".join(name for provider, name in APP_PILLS if provider in apps)
-        chips.append(("app", title, f"Clear app filter: {title}"))
-    if set(states) not in (set(STATES), {"working"}):
-        names = ", ".join(state.capitalize() for state in STATES if state in states)
-        title = names or "No states"
-        chips.append(("states", title, "Clear state filter: " + (names or "No states")))
+    if pending:
+        chips.append(("pending", "Pending", "Remove filter: Pending", ""))
+    chosen = set(states or ())
+    for state in STATES:
+        if state in chosen:
+            chips.append((f"state:{state}", state.capitalize(), "Remove filter: " + state.capitalize(), ""))
+    lookup = {profile["key"]: (profile, machine) for machine in profile_model for app in machine["apps"] for profile in app["profiles"]}
+    order = [profile["key"] for machine in profile_model for app in machine["apps"] for profile in app["profiles"]]
+    for key in order:
+        if key not in set(profiles or ()):
+            continue
+        profile, machine = lookup[key]
+        name = profile["label"]
+        if machine["machine"]:
+            name = f"{name} · {machine['machineName']}"
+        chips.append((f"profile:{key}", name, "Remove filter: " + name, profile["color"]))
     if archived:
-        chips.append(("archive", "Include archived", "Hide archived sessions"))
+        chips.append(("archive", "Include archived", "Remove filter: Include archived", ""))
     if show_all and limit:
-        chips.append(("all", "All cards", f"Show only the first {limit} cards"))
+        chips.append(("all", "All cards", f"Show only the first {limit} cards", ""))
     return tuple(chips)
 
 
@@ -2974,9 +3039,13 @@ class PreferencesWindow(Adw.Window):
 
 class SwitchboardWindow(Adw.ApplicationWindow):
     drawer_view, drawer_peek, drawer_count, column_pixel_width = False, False, 0, DEFAULT_COLUMN_WIDTH
-    wide_controls, tiny_controls, search_expanded, show_app_pills = False, False, False, False
+    wide_controls, tiny_controls, search_expanded = False, False, False
     card_limit, show_all_cards = DEFAULT_CARD_LIMIT, False
     copy_kind = "relative"
+    pending, archived = False, False
+    states, profiles = set(), set()
+    filter_model = ()
+    filter_popover_signature = None
     message_seen = None
     number_hold = number_idle = number_scroll = number_pressed = None
     row_cache_trim = None
@@ -2995,11 +3064,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         try:
             layout = read_layout(layout_path)
             self.column_width, self.view = layout["columnWidth"], layout["view"]
-            self.show_app_pills = layout["showAppPills"]
             self.card_limit = layout["cardLimit"]
             self.copy_kind = layout["copyKind"]
         except (OSError, ValueError) as error:
             self.column_width, self.view, self.copy_kind, layout_error = DEFAULT_COLUMN_WIDTH, "compact", "relative", str(error)
+        self.pending, self.archived = False, False
+        self.states, self.profiles = set(), set()
+        self.filter_model = ()
         self.row_height = COMFORTABLE_ROW_HEIGHT if self.view == "comfortable" else ROW_HEIGHT
         self.focused_id = None
         if self.view == "comfortable":
@@ -3100,50 +3171,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.menu_button = menu
         sessions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         appearance = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        self.apps, self.syncing_apps = set(), False
-        self.app_filter = Gtk.DropDown.new_from_strings([title for title, _apps in APP_CHOICES])
-        self.states, self.updating_states = set(STATES), False
-        self.state_summary = label("All states", "caption")
-        state_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        checks = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, column_spacing=12, row_spacing=8,
-                             min_children_per_line=2, max_children_per_line=4, homogeneous=True)
-        state_box.append(checks)
-        self.state_checks = {}
-        for state in STATES:
-            check = Gtk.CheckButton(label=state.capitalize(), active=True)
-            check.connect("toggled", self.states_changed)
-            self.state_checks[state] = check
-            checks.insert(check, -1)
-        choices = Gtk.Box(spacing=6)
-        self.state_summary.set_hexpand(True)
-        choices.append(self.state_summary)
-        for title, values in (("All", set(STATES)), ("Clear", set())):
-            button = Gtk.Button(label=title)
-            button.connect("clicked", lambda _button, selected=values: self.select_states(selected))
-            choices.append(button)
-        state_box.append(choices)
-        help_text = label("No selected states hides all sessions.", "caption")
-        help_text.set_wrap(True)
-        state_box.append(help_text)
-        self.archive = Gtk.CheckButton(label="Show archived sessions")
-        self.app_filter.update_property([Gtk.AccessibleProperty.LABEL], ["App"])
-        self.app_filter.connect("notify::selected", self.apps_from_preferences)
-        row = Gtk.Box(spacing=12)
-        name = label("App")
-        name.set_hexpand(True)
-        row.append(name)
-        row.append(self.app_filter)
         sessions.append(label("Show sessions", "heading"))
-        sessions.append(row)
-        sessions.append(state_box)
-        self.archive.connect("toggled", self.filter_changed)
-        sessions.append(self.archive)
-        self.app_pills_setting = Gtk.CheckButton(label="Show app pills", active=self.show_app_pills)
-        self.app_pills_setting.connect("toggled", self.change_app_pills_setting)
-        sessions.append(self.app_pills_setting)
-        self.app_pills_error = label("", "warning")
-        self.app_pills_error.set_wrap(True)
-        sessions.append(self.app_pills_error)
         row = Gtk.Box(spacing=12)
         name = label("Cards on the board")
         name.set_hexpand(True)
@@ -3270,45 +3298,17 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.window_handle = Gtk.WindowHandle(child=tools)
         body.append(self.window_handle)
         self.toolbar_strip = Gtk.Box(spacing=4)
-        self.pending_group = Gtk.Box(spacing=4)
-        self.toolbar_strip.append(self.pending_group)
-        self.toolbar_scroll = Gtk.ScrolledWindow(hexpand=True, hscrollbar_policy=Gtk.PolicyType.EXTERNAL,
-                                                vscrollbar_policy=Gtk.PolicyType.NEVER, child=self.toolbar_strip)
+        self.toolbar_center.append(self.toolbar_strip)
+        self.chip_box = Gtk.Box(spacing=4)
+        self.toolbar_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.EXTERNAL,
+                                                vscrollbar_policy=Gtk.PolicyType.NEVER, child=self.chip_box)
+        self.toolbar_scroll.set_propagate_natural_width(True)
         self.toolbar_scroll.set_size_request(0, -1)
+        self.toolbar_scroll.add_css_class("asb-chip-scroll")
         self.toolbar_center.append(self.toolbar_scroll)
         toolbar_wheel = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.BOTH_AXES)
         toolbar_wheel.connect("scroll", self.scroll_toolbar)
         self.toolbar_scroll.add_controller(toolbar_wheel)
-        self.app_pills = {}
-        self.app_pill_labels = {}
-        self.app_pill_icons = {}
-        for provider, title in APP_PILLS:
-            pill = Gtk.ToggleButton(tooltip_text=f"Select {title}. No selected apps or all apps shows all sessions.")
-            pill.add_css_class("asb-filter-pill")
-            pill.update_property([Gtk.AccessibleProperty.LABEL], [f"Select {title}"])
-            content = Gtk.Box(spacing=3)
-            icon = Gtk.Image(pixel_size=14)
-            set_icon(icon, provider_icon(provider))
-            content.append(icon)
-            name = label(title)
-            content.append(name)
-            pill.set_child(content)
-            pill.connect("toggled", self.apps_from_pills)
-            self.app_pills[provider] = pill
-            self.app_pill_labels[provider], self.app_pill_icons[provider] = name, icon
-            self.pending_group.append(pill)
-            pill.set_visible(self.show_app_pills)
-            name.set_visible(False)
-        self.pending_only = Gtk.ToggleButton(label="Pending", tooltip_text="Show sessions that need attention.")
-        self.pending_only.add_css_class("asb-filter-pill")
-        self.pending_only.update_property([Gtk.AccessibleProperty.LABEL], ["Pending only"])
-        self.pending_group.append(self.pending_only)
-        self.working_only = Gtk.ToggleButton(label="Working", tooltip_text="Show Working sessions. With Pending, include unread chats. Turn off to show all states.")
-        self.working_only.add_css_class("asb-filter-pill")
-        self.working_only.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION],
-                                         ["Working filter", "Select Working only. With Pending, include unread chats."])
-        self.working_only.connect("toggled", self.working_from_pill)
-        self.pending_group.append(self.working_only)
         self.drawer_only = Gtk.ToggleButton(tooltip_text="Show only the sessions in the drawer, as unread. Point here to see them in the list.")
         self.drawer_only.add_css_class("asb-filter-pill")
         self.drawer_only.update_property([Gtk.AccessibleProperty.LABEL], ["Drawer only. The drawer is empty."])
@@ -3321,29 +3321,31 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.drawer_dot.add_css_class("asb-drawer-dot")
         drawer.append(self.drawer_dot)
         self.drawer_only.set_child(drawer)
-        self.pending_only.connect("notify::active", self.exclusive_pill, self.drawer_only)
-        self.drawer_only.connect("notify::active", self.exclusive_pill, self.pending_only)
+        self.drawer_only.connect("notify::active", self.drawer_toggled)
         peek = Gtk.EventControllerMotion()
         peek.connect("enter", lambda *_args: self.set_drawer_peek(True))
         peek.connect("leave", lambda *_args: self.set_drawer_peek(False))
         self.drawer_only.add_controller(peek)
-        self.pending_group.append(self.drawer_only)
-        self.filter_chip_group = Gtk.Box(spacing=4, visible=False)
+        self.toolbar_strip.append(self.drawer_only)
+        self.filters_pill = Gtk.Button(tooltip_text="Show the filter checklist.")
+        self.filters_pill.add_css_class("asb-filter-pill")
+        self.filters_pill.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION],
+                                          ["Filters", "No filters"])
+        filters_box = Gtk.Box(spacing=3)
+        funnel = Gtk.Image(pixel_size=14)
+        set_icon(funnel, "asb-filter-symbolic")
+        filters_box.append(funnel)
+        self.filters_label = label("Filters")
+        self.filters_label.set_visible(False)
+        filters_box.append(self.filters_label)
+        self.filters_pill.set_child(filters_box)
+        self.filters_pill.connect("clicked", self.open_filters_popover)
+        self.toolbar_strip.append(self.filters_pill)
         self.filter_chip_signature = None
         self.filter_chip_widgets = {}
-        for key in ("app", "states", "archive", "all"):
-            chip = Gtk.Button()
-            chip.add_css_class("asb-filter-pill")
-            content = Gtk.Box(spacing=6)
-            name = label("")
-            content.append(name)
-            content.append(Gtk.Image(icon_name="window-close-symbolic", pixel_size=12))
-            chip.set_child(content)
-            chip.connect("clicked", self.clear_filter_chip, key)
-            self.filter_chip_group.append(chip)
-            chip.set_visible(False)
-            self.filter_chip_widgets[key] = (chip, name)
-        self.toolbar_strip.append(self.filter_chip_group)
+        self.filter_popover = None
+        self.filter_popover_rows = {}
+        self.filter_popover_signature = None
         self.notice = label("", "caption")
         self.notice.set_wrap(True)
         self.notice.set_margin_start(10)
@@ -3473,7 +3475,16 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base}.asb-comfortable .asb-session {{ min-height: {COMFORTABLE_ROW_HEIGHT}px; }}
 {base}.asb-comfortable .asb-session.asb-hover-paint:not(:focus-within) {{ background: transparent; }}
 {base} .asb-filter-pill {{ min-height: 24px; border-radius: 99px; padding: 2px 8px; font-size: 11px; }}
-{base} .asb-filter-pill:checked {{ background: @accent_bg_color; color: @accent_fg_color; }}
+{base} .asb-filter-pill:checked, {base} .asb-filter-pill.asb-filters-on {{ background: @accent_bg_color; color: @accent_fg_color; }}
+{base} .asb-chip-dot {{ min-width: 8px; min-height: 8px; border-radius: 99px; }}
+{base} .asb-chip-scroll {{ background: transparent; }}
+{base} .asb-chip-scroll undershoot.left {{ background: linear-gradient(to right, @window_bg_color, alpha(@window_bg_color, 0)); min-width: 16px; }}
+{base} .asb-chip-scroll undershoot.right {{ background: linear-gradient(to left, @window_bg_color, alpha(@window_bg_color, 0)); min-width: 16px; }}
+{base} .asb-filter-row {{ min-height: 30px; padding: 0; border-radius: 5px; font-size: 13px; font-weight: normal; }}
+{base} .asb-filter-indent {{ margin-left: 16px; }}
+{base} .asb-filter-head {{ font-size: 11px; color: alpha(@window_fg_color, .72); }}
+{base} .asb-filter-head-top {{ margin-top: 8px; }}
+{base} .asb-filter-footer {{ min-height: 30px; border-radius: 0 0 5px 5px; font-size: 13px; }}
 {base}.asb-preferences stackswitcher > button.text-button {{ min-width: 0; }}
 {base} .asb-toolbar-button,
 {base} .asb-toolbar windowcontrols button {{ min-height: 24px; min-width: 22px; padding: 2px; }}
@@ -3612,7 +3623,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} entry:focus-within {{ box-shadow: inset 0 0 0 1px {colors['accent']}; }}
 {scope} entry selection {{ background: {colors['accent']}; color: {colors['background']}; }}
 {scope} switch:checked, {scope} checkbutton check:checked {{ background: {colors['accent']}; border-color: {colors['accent']}; }}
-{scope} .asb-filter-pill:checked {{ background: {colors['accent']}; color: {colors['background']}; }}
+{scope} .asb-filter-pill:checked, {scope} .asb-filter-pill.asb-filters-on {{ background: {colors['accent']}; color: {colors['background']}; }}
+{scope} .asb-filter-head {{ color: {colors['muted']}; }}
+{scope} .asb-chip-scroll undershoot.left {{ background: linear-gradient(to right, {colors['background']}, alpha({colors['background']}, 0)); }}
+{scope} .asb-chip-scroll undershoot.right {{ background: linear-gradient(to left, {colors['background']}, alpha({colors['background']}, 0)); }}
 {scope} .asb-drawer-filled .asb-drawer-handle {{ background: {colors['background']}; }}
 {scope} .asb-drawer-filled:checked .asb-drawer-handle {{ background: {colors['accent']}; }}
 {scope} .asb-drawer-dot {{ background: {colors['accent']}; }}
@@ -3672,6 +3686,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         for widget in self.row_cache.values():
             widget.asb_tooltip_content = widget.asb_tooltip_key = None
             widget.asb_source_badge.set_color(source_marker_color(widget.asb_thread))
+        # badge_css was rebuilt empty: repaint the chip dots so their color rules return.
+        for key, _title, _detail, color in self.active_filter_chips():
+            chip = self.filter_chip_widgets.get(key, (None, None))[0]
+            if chip is not None:
+                self.apply_chip_dot(chip, color)
         if getattr(self, "preferences_window", None):
             preferences = self.preferences_window
             (preferences.add_css_class if colors else preferences.remove_css_class)("asb-custom")
@@ -3687,6 +3706,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.badge_css.load_from_string("".join(
                 f""".asb-source-badge.{key} {{ background: {color}; border-color: {background}; }}
 .asb-session.asb-hovered .asb-source-badge.{key}, .asb-session:focus-within .asb-source-badge.{key} {{ border-color: {highlight}; }}
+.asb-chip-dot.{key} {{ background: {color}; }}
 """ for key, color in self.badge_colors.items()))
         return name
 
@@ -3853,6 +3873,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if dashboard is not None:
             self.dashboard, self.dashboard_etag = dashboard, etag and etag[0]
             self.sources_revision = source_revision(dashboard.get("sourcesRevision"))
+            model = filter_profiles(dashboard)
+            if model != self.filter_model:
+                self.filter_model = model
+                known = {profile["key"] for machine in model for app in machine["apps"] for profile in app["profiles"]}
+                self.profiles.intersection_update(known)
+                self.filter_popover_signature = None
         preferences = self.preferences_window
         if preferences and preferences.profiles_editor:
             preferences.profiles_editor.observe_revision(self.sources_revision)
@@ -3978,7 +4004,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             if wide:
                 self.search_popover.popdown()
                 self.search_popover.set_child(None)
-                self.search.set_size_request(0, -1)
+                self.search.set_size_request(240, -1)
                 self.toolbar_center.prepend(self.search)
             else:
                 self.toolbar_center.remove(self.search)
@@ -3996,10 +4022,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.preferences_refresh_row.append(self.refresh_button)
         self.preferences_refresh_row.set_visible(not wide)
         self.drawer_label.set_visible(wide)
-        for provider, pill in self.app_pills.items():
-            pill.set_visible(self.show_app_pills)
-            self.app_pill_labels[provider].set_visible(wide)
-            self.app_pill_icons[provider].set_visible(not wide)
+        self.filters_label.set_visible(wide)
         if search_focused:
             self.open_search()
 
@@ -4010,28 +4033,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         adjustment.set_value(max(0, min(before + distance * 40, adjustment.get_upper() - adjustment.get_page_size())))
         return adjustment.get_value() != before
 
-    def change_app_pills_setting(self, *_args):
-        selected = self.app_pills_setting.get_active()
-        if selected == self.show_app_pills:
-            return
-        try:
-            write_layout(self.layout_path, self.column_width, self.view, selected, card_limit=self.card_limit, copy_kind=self.copy_kind)
-        except (OSError, ValueError) as error:
-            self.app_pills_setting.set_active(self.show_app_pills)
-            self.app_pills_error.set_label(str(error))
-            return
-        self.show_app_pills = selected
-        self.app_pills_error.set_label("")
-        self.update_toolbar_presentation()
-        self.sync_filter_chips()
-
     def change_card_limit(self, *_args):
         limits = [value for value, _title in CARD_LIMITS]
         selected = limits[self.card_limit_setting.get_selected()]
         if selected == self.card_limit:
             return
         try:
-            write_layout(self.layout_path, self.column_width, self.view, self.show_app_pills, card_limit=selected, copy_kind=self.copy_kind)
+            write_layout(self.layout_path, self.column_width, self.view, card_limit=selected, copy_kind=self.copy_kind)
         except (OSError, ValueError) as error:
             self.card_limit_setting.set_selected(limits.index(self.card_limit))
             self.card_limit_error.set_label(str(error))
@@ -4047,7 +4055,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return
         previous = self.copy_kind
         try:
-            write_layout(self.layout_path, self.column_width, self.view, self.show_app_pills,
+            write_layout(self.layout_path, self.column_width, self.view,
                          self.card_limit, copy_kind=kind)
         except (OSError, ValueError) as error:
             self.copy_kind = previous
@@ -4081,7 +4089,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def save_width(self):
         try:
-            write_layout(self.layout_path, self.column_width, self.view, self.show_app_pills, card_limit=self.card_limit, copy_kind=self.copy_kind)
+            write_layout(self.layout_path, self.column_width, self.view, card_limit=self.card_limit, copy_kind=self.copy_kind)
             self.layout_error.set_label("")
         except (OSError, ValueError) as error:
             self.layout_error.set_label(str(error))
@@ -4091,7 +4099,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.width_control.set_value(DEFAULT_COLUMN_WIDTH)
         self.dragging = False
         try:
-            write_layout(self.layout_path, view=self.view, show_app_pills=self.show_app_pills, card_limit=self.card_limit, copy_kind=self.copy_kind)
+            write_layout(self.layout_path, view=self.view, card_limit=self.card_limit, copy_kind=self.copy_kind)
             self.layout_error.set_label("")
         except (OSError, ValueError):
             self.layout_error.set_label("Cannot reset the width. Check the ASB config folder.")
@@ -4515,8 +4523,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return False
 
     def visible_rows(self):
-        return limit_rows(filtered_rows(self.dashboard, self.search.get_text(), app_filter(self.apps), self.states,
-                                        self.archive.get_active(), self.pending_only.get_active(), self.drawer_view),
+        return limit_rows(filtered_rows(self.dashboard, self.search.get_text(), "all", self.states,
+                                        self.archived, self.pending, self.drawer_view, self.profiles),
                           self.card_limit, self.show_all_cards)
 
     def filter_changed(self, *_args):
@@ -4525,46 +4533,449 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.list_body.clear_hover()
         self.render()
 
-    def sync_filter_chips(self):
-        if not getattr(self, "filter_chip_group", None):
+    def filters_active(self):
+        return bool(self.pending or self.states or self.profiles or self.archived)
+
+    def filter_description(self):
+        names = [title for _key, title, _detail, _color in self.active_filter_chips()
+                 if _key != "all"]
+        return ", ".join(names) if names else "No filters"
+
+    def active_filter_chips(self):
+        return filter_chips(self.pending, self.states, self.profiles, self.filter_model,
+                            self.archived, show_all=self.show_all_cards, limit=self.card_limit)
+
+    def set_pending(self, on):
+        on = bool(on)
+        if on and self.drawer_only.get_active():
+            self.drawer_only.set_active(False)
+        if on == self.pending:
             return
-        chips = filter_chips(self.apps, self.states, self.archive.get_active(), self.show_app_pills,
-                             show_all=self.show_all_cards, limit=self.card_limit)
+        self.pending = on
+        self.filter_changed()
+
+    def set_archived(self, on):
+        on = bool(on)
+        if on == self.archived:
+            return
+        self.archived = on
+        self.filter_changed()
+
+    def toggle_state(self, state):
+        if state in self.states:
+            self.states.discard(state)
+        else:
+            self.states.add(state)
+        self.filter_changed()
+
+    def toggle_profile(self, key):
+        if key in self.profiles:
+            self.profiles.discard(key)
+        else:
+            self.profiles.add(key)
+        self.filter_changed()
+
+    def clear_filters(self):
+        self.pending, self.archived = False, False
+        self.states, self.profiles = set(), set()
+        self.filter_changed()
+
+    def drawer_toggled(self, *_args):
+        self.drawer_view = self.drawer_only.get_active()
+        if self.drawer_view and self.pending:
+            self.pending = False
+        self.filter_changed()
+
+    def sync_filter_chips(self):
+        if not getattr(self, "chip_box", None):
+            return
+        chips = self.active_filter_chips()
         if chips == self.filter_chip_signature:
+            self.update_filters_pill()
             return
         self.filter_chip_signature = chips
-        current = {key: (title, detail) for key, title, detail in chips}
-        for key, (chip, name) in self.filter_chip_widgets.items():
-            chip.set_visible(key in current)
-            if key in current:
-                title, detail = current[key]
-                name.set_label(title)
+        wanted = {key: (title, detail, color) for key, title, detail, color in chips}
+        for key, (chip, _name) in list(self.filter_chip_widgets.items()):
+            if key not in wanted:
+                self.remove_filter_chip_widget(key, chip)
+        animations = self.get_settings().get_property("gtk-enable-animations") and self.get_mapped()
+        prev_wrapper = None
+        for key, title, detail, color in chips:
+            if key not in self.filter_chip_widgets:
+                chip, name = self.make_filter_chip(key, title, detail, color, animations, after=prev_wrapper)
+                self.filter_chip_widgets[key] = (chip, name)
+            else:
+                chip, name = self.filter_chip_widgets[key]
+                name.set_label(self.ellipsize_chip(title))
                 chip.set_tooltip_text(detail)
                 chip.update_property([Gtk.AccessibleProperty.LABEL], [detail])
-        self.filter_chip_group.set_visible(bool(chips))
+                self.apply_chip_dot(chip, color)
+            prev_wrapper = getattr(self.filter_chip_widgets[key][0], "asb_chip_wrapper", self.filter_chip_widgets[key][0])
+        self.update_filters_pill()
+        if chips:
+            GLib.idle_add(self.scroll_chip_into_view)
+
+    def make_filter_chip(self, key, title, detail, color, animations, after=None):
+        chip = Gtk.Button(tooltip_text=detail)
+        chip.add_css_class("asb-filter-pill")
+        chip.update_property([Gtk.AccessibleProperty.LABEL], [detail])
+        content = Gtk.Box(spacing=6)
+        dot = Gtk.Box()
+        dot.set_size_request(8, 8)
+        dot.set_valign(Gtk.Align.CENTER)
+        dot.set_halign(Gtk.Align.CENTER)
+        dot.add_css_class("asb-chip-dot")
+        dot.set_visible(False)
+        content.append(dot)
+        name = label(self.ellipsize_chip(title))
+        name.asb_full_title = title
+        content.append(name)
+        content.append(Gtk.Image(icon_name="window-close-symbolic", pixel_size=12))
+        chip.asb_chip_name, chip.asb_chip_dot = name, dot
+        chip.set_child(content)
+        chip.connect("clicked", self.clear_filter_chip, key)
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self.chip_key, key)
+        chip.add_controller(keys)
+        self.apply_chip_dot(chip, color)
+        if not animations:
+            chip.asb_chip_wrapper = chip
+            if after is not None and after.get_parent() is self.chip_box:
+                self.chip_box.insert_child_after(chip, after)
+            else:
+                self.chip_box.prepend(chip)
+            return chip, name
+        revealer = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.SLIDE_RIGHT, transition_duration=200)
+        revealer.set_child(chip)
+        chip.asb_chip_wrapper = revealer
+        if after is not None and after.get_parent() is self.chip_box:
+            self.chip_box.insert_child_after(revealer, after)
+        else:
+            self.chip_box.prepend(revealer)
+        revealer.set_reveal_child(True)
+        return chip, name
+
+    def remove_filter_chip_widget(self, key, chip):
+        wrapper = getattr(chip, "asb_chip_wrapper", chip)
+        self.filter_chip_widgets.pop(key, None)
+        if not self.get_settings().get_property("gtk-enable-animations") or not isinstance(wrapper, Gtk.Revealer):
+            if wrapper.get_parent():
+                wrapper.get_parent().remove(wrapper)
+            return
+        def finished(revealer, *_args):
+            if not revealer.get_reveal_child() and revealer.get_parent():
+                revealer.get_parent().remove(revealer)
+        wrapper.connect("notify::child-revealed", finished)
+        wrapper.set_reveal_child(False)
+
+    def apply_chip_dot(self, chip, color):
+        dot = getattr(chip, "asb_chip_dot", None)
+        if dot is not None:
+            self.paint_dot(dot, color)
+
+    def paint_dot(self, dot, color):
+        dot.set_visible(bool(color))
+        if color:
+            dot.add_css_class(self.badge_class(color))
+
+    @staticmethod
+    def ellipsize_chip(title):
+        return title if len(title) <= 18 else title[:17] + "…"
+
+    def scroll_chip_into_view(self):
+        wrappers = [getattr(chip, "asb_chip_wrapper", chip) for chip, _name in self.filter_chip_widgets.values()]
+        wrapper = wrappers[-1] if wrappers else None
+        if wrapper is None:
+            return False
+        x = 0
+        child = self.chip_box.get_first_child()
+        while child and child is not wrapper:
+            x += child.get_allocated_width()
+            child = child.get_next_sibling()
+        width = wrapper.get_allocated_width()
+        adjustment = self.toolbar_scroll.get_hadjustment()
+        page, value = adjustment.get_page_size(), adjustment.get_value()
+        if x < value:
+            adjustment.set_value(max(0, x))
+        elif width and x + width > value + page:
+            adjustment.set_value(min(adjustment.get_upper() - page, x + width - page))
+        return False
+
+    def update_filters_pill(self):
+        if not getattr(self, "filters_pill", None):
+            return
+        if self.filters_active():
+            self.filters_pill.add_css_class("asb-filters-on")
+        else:
+            self.filters_pill.remove_css_class("asb-filters-on")
+        self.filters_pill.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION],
+                                          ["Filters", self.filter_description()])
 
     def clear_filter_chip(self, _button, key):
         focus = self.get_focus()
-        chip = self.filter_chip_widgets[key][0]
-        restore_focus = bool(focus and (focus is chip or focus.is_ancestor(chip)))
-        if key == "app":
-            self.select_apps(set())
-        elif key == "states":
-            self.select_states(set(STATES))
+        chip = self.filter_chip_widgets.get(key, (None, None))[0]
+        restore_focus = bool(focus and chip and (focus is chip or focus.is_ancestor(chip)))
+        visible_before = [other for other, _name in self.filter_chip_widgets.values() if other is not chip]
+        if key == "pending":
+            self.set_pending(False)
+        elif key.startswith("state:"):
+            self.toggle_state(key.split(":", 1)[1])
+        elif key.startswith("profile:"):
+            self.toggle_profile(key.split(":", 1)[1])
         elif key == "archive":
-            self.archive.set_active(False)
+            self.set_archived(False)
         elif key == "all":
             self.show_all_cards = False
             self.filter_changed()
         if restore_focus:
-            next((button for button, _label in self.filter_chip_widgets.values() if button.get_visible()), self.menu_button).grab_focus()
+            after = [other for other, _name in self.filter_chip_widgets.values()]
+            next_chip = next((widget for widget in after if widget in visible_before or widget is not chip), None)
+            if next_chip is None:
+                next_chip = self.filters_pill
+            next_chip.grab_focus()
 
-    def exclusive_pill(self, pill, _property, other):
-        self.drawer_view = self.drawer_only.get_active()
-        if pill.get_active() and other.get_active():
-            other.set_active(False)  # Its handler shows the new list.
-        else:
+    def chip_key(self, _controller, key, _code, _modifiers, chip_key_name):
+        if key in (Gdk.KEY_Delete, Gdk.KEY_BackSpace):
+            self.clear_filter_chip(None, chip_key_name)
+            return True
+        return False
+
+    def open_filters_popover(self, *_args):
+        if self.filter_popover is None:
+            self.filter_popover = Gtk.Popover(position=Gtk.PositionType.BOTTOM, has_arrow=True)
+            self.filter_popover.set_parent(self.filters_pill)
+            self.filter_popover.set_size_request(280, -1)
+            self.filter_popover.connect("closed", self.filters_popover_closed)
+        self.rebuild_filters_popover()
+        self.filter_popover.popup()
+
+    def filters_popover_closed(self, *_args):
+        self.filters_pill.grab_focus()
+
+    def rebuild_filters_popover(self):
+        model = self.filter_model
+        if model == self.filter_popover_signature and self.filter_popover.get_child() is not None:
+            self.sync_filters_popover_checks()
+            return
+        self.filter_popover_signature = model
+        focus_action = getattr(self.get_focus(), "asb_filter_action", None)
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                      vscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
+        scroller.set_max_content_height(440)
+        scroller.set_propagate_natural_height(True)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        scroller.set_child(body)
+        root.append(scroller)
+        self.filter_popover_rows = {}
+
+        def add_check(action, name, checked=False, mixed=False, indent=False, glyph=None, color="", switch=False):
+            if switch:
+                row = Gtk.Box(spacing=10, margin_top=3, margin_bottom=3, margin_start=8, margin_end=8)
+                row.add_css_class("asb-filter-row")
+                name_label = label(name, "body")
+                name_label.set_hexpand(True)
+                row.append(name_label)
+                control = Gtk.Switch(active=checked, valign=Gtk.Align.CENTER)
+                control.set_can_target(True)
+                control.set_focusable(True)
+                control.update_property([Gtk.AccessibleProperty.LABEL], [name])
+                control.connect("notify::active", self.filter_switch_toggled, action)
+                row.append(control)
+                row.asb_filter_switch = control
+                gesture = Gtk.GestureClick()
+                gesture.connect("pressed", lambda _g, _n, _x, _y, s=control: s.set_active(not s.get_active()))
+                name_label.add_controller(gesture)
+            else:
+                row = Gtk.CheckButton()
+                row.add_css_class("asb-filter-row")
+                if indent:
+                    row.add_css_class("asb-filter-indent")
+                content = Gtk.Box(spacing=10, margin_top=3, margin_bottom=3, margin_start=10, margin_end=8)
+                if glyph is not None:
+                    icon = Gtk.Image(pixel_size=14)
+                    set_icon(icon, glyph)
+                    content.append(icon)
+                if color:
+                    dot = Gtk.Box()
+                    dot.set_size_request(8, 8)
+                    dot.set_valign(Gtk.Align.CENTER)
+                    dot.set_halign(Gtk.Align.CENTER)
+                    dot.add_css_class("asb-chip-dot")
+                    dot.set_visible(True)
+                    content.append(dot)
+                    self.paint_dot(dot, color)
+                label_widget = label(name, "body")
+                label_widget.set_hexpand(True)
+                content.append(label_widget)
+                row.set_child(content)
+                row.set_active(checked)
+                row.set_inconsistent(mixed)
+                row.connect("toggled", self.filter_row_toggled, action)
+            row.asb_filter_action = action
+            row.update_property([Gtk.AccessibleProperty.LABEL], [name])
+            self.filter_popover_rows[action] = row
+            return row
+
+        def add_header(text, top=False):
+            head = label(text, "caption")
+            head.add_css_class("asb-filter-head")
+            if top:
+                head.add_css_class("asb-filter-head-top")
+            head.set_halign(Gtk.Align.START)
+            head.set_margin_start(8)
+            head.set_margin_end(8)
+            return head
+
+        body.append(add_check("pending", "Pending", self.pending))
+        body.append(Gtk.Separator(margin_top=4, margin_bottom=4))
+        body.append(add_header("State", top=True))
+        for state in STATES:
+            body.append(add_check(f"state:{state}", state.capitalize(), state in self.states))
+        body.append(Gtk.Separator(margin_top=4, margin_bottom=4))
+        body.append(add_header("Profiles", top=True))
+        machine_count = len(model)
+        for machine in model:
+            if machine_count > 1:
+                body.append(add_header(machine["machineName"] or "This machine"))
+            for app in machine["apps"]:
+                profiles = app["profiles"]
+                if not profiles:
+                    continue
+                glyph = provider_icon(app["provider"])
+                if len(profiles) == 1:
+                    profile = profiles[0]
+                    body.append(add_check(f"profile:{profile['key']}", profile["label"],
+                                          profile["key"] in self.profiles, glyph=glyph, color=profile["color"]))
+                    continue
+                keys = [profile["key"] for profile in profiles]
+                on = sum(key in self.profiles for key in keys)
+                body.append(add_check(f"app:{machine['machine']}:{app['provider']}",
+                                      APP_NAMES.get(app["provider"], app["provider"]),
+                                      checked=on == len(keys), mixed=0 < on < len(keys), glyph=glyph))
+                for profile in profiles:
+                    body.append(add_check(f"profile:{profile['key']}", profile["label"],
+                                          profile["key"] in self.profiles, indent=True, color=profile["color"]))
+        body.append(Gtk.Separator(margin_top=4, margin_bottom=4))
+        body.append(add_check("archive", "Include archived", self.archived, switch=True))
+        footer = Gtk.Button(label="Clear filters", hexpand=True)
+        footer.add_css_class("asb-filter-footer")
+        footer.set_sensitive(self.filters_active())
+        footer.asb_filter_action = "clear"
+        footer.connect("clicked", self.filter_row_clicked, "clear")
+        self.filter_popover_rows["clear"] = footer
+        root.append(footer)
+        self.filter_popover.set_child(root)
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self.filter_popover_key)
+        self.filter_popover.add_controller(keys)
+
+    def filter_row_clicked(self, _button, action):
+        if action == "clear":
+            self.clear_filters()
+            self.filter_popover.popdown()
+            self.filters_pill.grab_focus()
+
+    def filter_row_toggled(self, button, action):
+        if getattr(button, "asb_syncing", False):
+            return
+        on = button.get_active()
+        if action == "pending":
+            self.set_pending(on)
+        elif action.startswith("state:"):
+            state = action.split(":", 1)[1]
+            if on:
+                self.states.add(state)
+            else:
+                self.states.discard(state)
             self.filter_changed()
+        elif action.startswith("profile:"):
+            key = action.split(":", 1)[1]
+            if on:
+                self.profiles.add(key)
+            else:
+                self.profiles.discard(key)
+            self.filter_changed()
+        elif action.startswith("app:"):
+            _kind, machine, provider = action.split(":", 2)
+            keys = []
+            for entry in self.filter_model:
+                if entry["machine"] != machine:
+                    continue
+                for app in entry["apps"]:
+                    if app["provider"] == provider:
+                        keys = [profile["key"] for profile in app["profiles"]]
+            if keys:
+                if on:
+                    self.profiles.update(keys)
+                else:
+                    self.profiles.difference_update(keys)
+                self.filter_changed()
+        self.sync_filters_popover_checks()
+
+    def filter_switch_toggled(self, switch, _param, action):
+        if getattr(switch, "asb_syncing", False):
+            return
+        if action == "archive":
+            self.set_archived(switch.get_active())
+        self.sync_filters_popover_checks()
+
+    def sync_filters_popover_checks(self):
+        for action, row in self.filter_popover_rows.items():
+            if action == "clear":
+                row.set_sensitive(self.filters_active())
+                continue
+            if action == "pending":
+                self.set_row_check(row, self.pending)
+            elif action == "archive":
+                if getattr(row, "asb_filter_switch", None):
+                    row.asb_filter_switch.asb_syncing = True
+                    row.asb_filter_switch.set_active(self.archived)
+                    row.asb_filter_switch.asb_syncing = False
+            elif action.startswith("state:"):
+                self.set_row_check(row, action.split(":", 1)[1] in self.states)
+            elif action.startswith("profile:"):
+                self.set_row_check(row, action.split(":", 1)[1] in self.profiles)
+            elif action.startswith("app:"):
+                _kind, machine, provider = action.split(":", 2)
+                keys = []
+                for entry in self.filter_model:
+                    if entry["machine"] != machine:
+                        continue
+                    for app in entry["apps"]:
+                        if app["provider"] == provider:
+                            keys = [profile["key"] for profile in app["profiles"]]
+                on = sum(key in self.profiles for key in keys)
+                self.set_row_check(row, on == len(keys), mixed=0 < on < len(keys))
+        self.update_filters_pill()
+
+    @staticmethod
+    def set_row_check(row, checked, mixed=False):
+        row.asb_syncing = True
+        row.set_active(checked)
+        row.set_inconsistent(mixed)
+        row.asb_syncing = False
+
+    def filter_popover_key(self, _controller, key, _code, state):
+        if key == Gdk.KEY_Escape:
+            self.filter_popover.popdown()
+            self.filters_pill.grab_focus()
+            return True
+        if key in (Gdk.KEY_Up, Gdk.KEY_Down) and not state & SHORTCUT_MASK:
+            direction = Gtk.DirectionType.TAB_FORWARD if key == Gdk.KEY_Down else Gtk.DirectionType.TAB_BACKWARD
+            focus = self.get_focus()
+            if focus is None or focus.get_ancestor(Gtk.Popover) is not self.filter_popover:
+                self.filters_pill.grab_focus()
+                return True
+            if not self.filter_popover.child_focus(direction):
+                self.filter_popover.get_child().set_focus_child(None)
+                self.filter_popover.child_focus(direction)
+            return True
+        return False
+
+    def select_states(self, states):
+        self.states = set(states)
+        self.filter_changed()
 
     def set_drawer_peek(self, active):
         self.drawer_peek = active
@@ -4588,45 +4999,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         handle.add_css_class("asb-drawer-handle")
         glyph.append(handle)
         return glyph
-
-    def select_apps(self, apps):
-        self.syncing_apps = True
-        self.apps = set(apps)
-        for provider, pill in self.app_pills.items():
-            pill.set_active(provider in self.apps)
-        self.app_filter.set_selected(app_choice(self.apps))
-        self.syncing_apps = False
-        self.filter_changed()
-
-    def apps_from_preferences(self, *_args):
-        if not self.syncing_apps:
-            self.select_apps(APP_CHOICES[self.app_filter.get_selected()][1])
-
-    def apps_from_pills(self, *_args):
-        if not self.syncing_apps:
-            self.select_apps({provider for provider, pill in self.app_pills.items() if pill.get_active()})
-
-    def states_changed(self, *_args):
-        if self.updating_states:
-            return
-        self.states = {state for state, check in self.state_checks.items() if check.get_active()}
-        title = "All states" if len(self.states) == len(STATES) else f"{len(self.states)} states"
-        self.state_summary.set_label(title)
-        self.updating_states = True
-        self.working_only.set_active(self.states == {"working"})
-        self.updating_states = False
-        self.filter_changed()
-
-    def select_states(self, states):
-        self.updating_states = True
-        for state, check in self.state_checks.items():
-            check.set_active(state in states)
-        self.updating_states = False
-        self.states_changed()
-
-    def working_from_pill(self, *_args):
-        if not self.updating_states:
-            self.select_states({"working"} if self.working_only.get_active() else set(STATES))
 
     def render(self, *args, **kwargs):
         # Card moves map and unmap thousands of widgets, and the popover hook runs in Python for each one.
@@ -4687,7 +5059,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.column_pixel_width = max(1, (width - 8 - 12 * (self.columns - 1)) // self.columns)
         self.actual_columns = len(parts)
         self.row_order = [row["id"] for row in rows]
-        drawer = sum(bool(row.get("drawer")) and (not row.get("archived") or self.archive.get_active())
+        drawer = sum(bool(row.get("drawer")) and (not row.get("archived") or self.archived)
                      for row in self.dashboard.get("threads", []))
         empty_text = "The drawer is empty. Put an unread session in it to get it out of the way." if self.drawer_view and not drawer \
             else "No matching sessions. Change the search or filters." if self.dashboard.get("threads") \

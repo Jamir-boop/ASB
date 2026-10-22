@@ -389,7 +389,7 @@ export async function loadSwitchboardDashboard({
       : sources && result.status === 'rejected' && result.reason?.code === 'ENOENT' ? 'missing'
       : result.status !== 'fulfilled' || provider?.status === 'error' ? 'error'
         : provider?.status === 'warning' ? 'warning' : provider?.installed === false ? 'missing' : 'ready';
-    return { id: source.id, label: source.label, status,
+    return { id: source.id, label: source.label, status, provider: source.provider, color: source.color,
       message: status === 'error' && missingLauncher ? `Select an installed app launcher for ${source.label}.`
         : status === 'error' ? `Cannot read ${source.label} sessions. Check the local session store.`
         : status === 'warning' ? provider?.message || `Some ${source.label} session files cannot be read.` : '' };

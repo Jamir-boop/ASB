@@ -128,8 +128,8 @@ test('the Codex source warns only when no unarchived root can read its session l
     return board.providers[0];
   };
   const message = 'ASB cannot read the Codex session logs, so Codex cards show Unknown.';
-  const ready = { id: 'codex', label: 'Codex', status: 'ready', message: '' };
-  const warning = { id: 'codex', label: 'Codex', status: 'warning', message };
+  const ready = { id: 'codex', label: 'Codex', status: 'ready', provider: 'codex', color: undefined, message: '' };
+  const warning = { id: 'codex', label: 'Codex', status: 'warning', provider: 'codex', color: undefined, message };
   assert.deepEqual(await load([['gone'], ['gone']]), warning);
   assert.deepEqual(await load([['gone']]), warning);
   // A readable log, with or without an event, shows that the reader works. A broken log then shows only its own card.
