@@ -5470,10 +5470,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             set_icon(copy.get_child(), glyph)
             (copy.add_css_class if copied else copy.remove_css_class)("asb-copy-confirmed")
             done = COPY_DONE_TEXT[kind] if copied else None
+            # The footer shows the copied text, so a copy keeps the tooltip as it is.
             if row.get("remote") is True:
-                tip = reason or (done if copied else f"Copy absolute reference. {copy_relative_reason(row)}")
+                tip = reason or f"Copy absolute reference. {copy_relative_reason(row)}"
             else:
-                tip = reason or (done if copied else f"Copy {kind} reference")
+                tip = reason or f"Copy {kind} reference"
             if copy.get_tooltip_text() != tip:
                 copy.set_tooltip_text(tip)
             copy.update_property([Gtk.AccessibleProperty.LABEL], [f"Copy {kind} reference: " + row.get("title", "Untitled session")])
@@ -5889,10 +5890,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             (button.add_css_class if copied else button.remove_css_class)("asb-copy-done")
             button.update_state([Gtk.AccessibleState.DISABLED], [not value])
             set_icon(button.asb_icon, "object-select-symbolic" if copied else "edit-copy-symbolic")
-            button.asb_tip = done if copied else value or reason
+            # The caption shows the copied text, so the tooltip keeps the reference.
+            button.asb_tip = value or reason
             if slot == "short":
                 button.set_tooltip_text(button.asb_tip)
-            button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [button.asb_tip])
+            button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [done if copied else button.asb_tip])
 
     def query_copy_tooltip(self, button, _x, _y, _keyboard, tooltip):
         text = Gtk.Label(label=button.asb_tip, xalign=0, wrap=True, max_width_chars=36)

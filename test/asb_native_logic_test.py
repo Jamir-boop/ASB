@@ -4412,7 +4412,7 @@ class NativeLogicChecks(unittest.TestCase):
             widget.asb_copy_timer = 7
             window.update_card_actions(widget)
             pin.set_tooltip_text.assert_called_once_with("Unpin in ASB")
-            copy.set_tooltip_text.assert_called_once_with("Relative session copied")
+            copy.set_tooltip_text.assert_not_called()  # The footer shows the copied text, so the tooltip stays.
             read.set_tooltip_text.assert_not_called()
             drawer.set_tooltip_text.assert_not_called()
 
@@ -5440,7 +5440,7 @@ class NativeLogicChecks(unittest.TestCase):
             clipboard.set.assert_called_once_with("codex/1")
             icon.assert_any_call(short.asb_icon, "object-select-symbolic")
             short.add_css_class.assert_any_call("asb-copy-done")
-            short.set_tooltip_text.assert_called_with("Relative session copied")
+            short.set_tooltip_text.assert_called_with("codex/1")  # The caption shows the copied text.
             short.update_property.assert_called_with([1], ["Relative session copied"])
             short.asb_label.set_label.assert_not_called()  # The label stays.
             self.assertEqual(timers[1][0], 1600)
@@ -5453,7 +5453,7 @@ class NativeLogicChecks(unittest.TestCase):
             icon.assert_called_with(absolute.asb_icon, "object-select-symbolic")
             short.update_property.assert_called_with([1], ["codex/1"])
             absolute.update_property.assert_called_with([1], ["Absolute session copied"])
-            self.assertEqual(absolute.asb_tip, "Absolute session copied")
+            self.assertEqual(absolute.asb_tip, full)
             # After 1.6 seconds the description is the exact value again; nothing resets it to empty.
             timers[2][1]()
             self.assertEqual((panel.asb_copy_timer, panel.asb_copied, absolute.asb_tip), (None, None, full))
@@ -5582,7 +5582,7 @@ class NativeLogicChecks(unittest.TestCase):
             window.update_card_actions.assert_not_called()
             # Success, then a failure within 1.6 seconds: the check ends and the copy button comes back.
             third = widgets[rows[2]["id"]]
-            self.assertEqual(feedback(third), (3, "object-select-symbolic", "Relative session copied", ([1], ["Relative session copied"])))
+            self.assertEqual(feedback(third), (3, "object-select-symbolic", "Copy relative reference", ([1], ["Relative session copied"])))
             third.asb_copy_button.reset_mock()
             clipboard.set.side_effect = TypeError("no clipboard")
             window.copy_reference(None, target(rows[2]["id"]))
@@ -5596,7 +5596,7 @@ class NativeLogicChecks(unittest.TestCase):
             window.copy_reference(None, target(rows[2]["id"]))
             self.assertEqual(window.open_errors, {})
             self.assertEqual(window.update_open_state.call_count, 2)
-            self.assertEqual(feedback(third), (6, "object-select-symbolic", "Relative session copied", ([1], ["Relative session copied"])))
+            self.assertEqual(feedback(third), (6, "object-select-symbolic", "Copy relative reference", ([1], ["Relative session copied"])))
             window.open_errors[rows[2]["id"]] = "The server did not answer."
             window.copy_reference(None, target(rows[2]["id"]))
             self.assertEqual(window.open_errors, {rows[2]["id"]: "The server did not answer."})
@@ -5619,7 +5619,7 @@ class NativeLogicChecks(unittest.TestCase):
                 self.assertEqual(copy.asb_action, "win.copy-reference")
                 SCOPE["set_icon"].assert_called_with(copy.get_child(), "object-select-symbolic" if copied else "edit-copy-symbolic")
                 (copy.add_css_class if copied else copy.remove_css_class).assert_called_with("asb-copy-confirmed")
-                copy.set_tooltip_text.assert_called_with("Relative session copied" if copied else "Copy relative reference")
+                copy.set_tooltip_text.assert_called_with("Copy relative reference")
                 copy.update_property.assert_any_call([0], ["Copy relative reference: Chat"])
                 copy.update_state.assert_called_with([1], [False])
                 if copied:
@@ -5675,10 +5675,10 @@ class NativeLogicChecks(unittest.TestCase):
             copy.update_property.assert_any_call([0], ["Copy absolute reference: Chat"])
             copy.update_state.assert_called_with([1], [False])
             copy.remove_css_class.assert_any_call("asb-copy-off")
-            # The button and the copy-reference action copy the same value, and the check shows the done text.
+            # The button and the copy-reference action copy the same value; the check shows and the tooltip stays.
             window.copy_reference(None, SimpleNamespace(get_string=lambda: row["id"]))
             clipboard.set.assert_called_once_with(full)
-            copy.set_tooltip_text.assert_called_with("Absolute session copied")
+            copy.set_tooltip_text.assert_called_with("Copy absolute reference. Relative works only on this machine. This session runs on homeLP.")
             SCOPE["set_icon"].assert_called_with(copy.get_child(), "object-select-symbolic")
             # The reference goes away: the signature changes, so the button loses its action and gives the absolute reason.
             widget.asb_copy_timer = None

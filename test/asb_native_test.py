@@ -2337,7 +2337,8 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(clipboard.texts, [reference, reference])
         self.assertIs(window.context_menu, panel)
         self.assertTrue(panel.get_visible())
-        self.assertEqual((button.asb_icon.get_icon_name(), button.get_tooltip_text()), ("object-select-symbolic", "Relative session copied"))
+        # The caption shows the copied text, so the tooltip keeps the reference.
+        self.assertEqual((button.asb_icon.get_icon_name(), button.get_tooltip_text()), ("object-select-symbolic", reference))
         self.assertEqual(button.asb_label.get_label(), "Copy relative reference")
         self.assert_accessible_label(button, "Relative session copied", asb.Gtk.AccessibleProperty.DESCRIPTION)
         self.drain(1.7)
@@ -2544,7 +2545,8 @@ class WidgetCheck(unittest.TestCase):
         self.assert_accessible_label(card(remote), "Copy absolute reference: " + window.focus_widgets[remote].asb_thread["title"])
         card(remote).emit("clicked"); self.drain(.1)
         self.assertEqual(clipboard.texts[-1], reference)
-        self.assertEqual((card(remote).get_child().get_icon_name(), card(remote).get_tooltip_text()), ("object-select-symbolic", "Absolute session copied"))
+        self.assertEqual((card(remote).get_child().get_icon_name(), card(remote).get_tooltip_text()),
+                         ("object-select-symbolic", "Copy absolute reference. Relative works only on this machine. This session runs on homeLP."))
         self.assertTrue(card(remote).has_css_class("asb-copy-confirmed"))
         # With no absolute reference the remote button keeps its place, with no action, and gives the absolute reason.
         reason = "homeLP has an older ASB. Update ASB on that machine."
@@ -2684,7 +2686,8 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(cards["local"].asb_state_label.get_visible())
             self.assertTrue(cards["local"].asb_age_label.get_parent().get_visible())
             self.assertEqual(local_copy.get_child().get_icon_name(), "object-select-symbolic")
-            self.assertEqual(local_copy.get_tooltip_text(), "Absolute session copied")
+            # The footer shows the copied text, so the tooltip stays.
+            self.assertEqual(local_copy.get_tooltip_text(), "Copy absolute reference")
             self.assert_accessible_label(local_copy, "Absolute session copied", asb.Gtk.AccessibleProperty.DESCRIPTION)
             output = os.environ.get("ASB_NATIVE_TEST_SNAPSHOTS")
             if output:
@@ -2702,7 +2705,7 @@ class WidgetCheck(unittest.TestCase):
             local_copy.emit("clicked"); self.drain(.1)
             self.assertEqual(clipboard.texts[-1], relative)
             self.assertEqual(cards["local"].asb_feedback_label.get_label(), "Relative session copied")
-            self.assertEqual(local_copy.get_tooltip_text(), "Relative session copied")
+            self.assertEqual(local_copy.get_tooltip_text(), "Copy relative reference")
             if output:
                 window.scroll.get_hadjustment().set_value(0); self.drain(.1)
                 self.capture(window, Path(output) / "native-copy-relative-copied.png")
@@ -2714,7 +2717,7 @@ class WidgetCheck(unittest.TestCase):
             remote_copy.emit("clicked"); self.drain(.1)
             self.assertEqual(clipboard.texts[-1], absolute)
             self.assertEqual(cards["m:0123456789abcdef:remote"].asb_feedback_label.get_label(), "Absolute session copied")
-            self.assertEqual(remote_copy.get_tooltip_text(), "Absolute session copied")
+            self.assertEqual(remote_copy.get_tooltip_text(), "Copy absolute reference. Relative works only on this machine. This session runs on homeLP.")
             if output:
                 window.scroll.get_hadjustment().set_value(0); self.drain(.1)
                 self.capture(window, Path(output) / "native-copy-remote-card.png")
