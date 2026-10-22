@@ -237,6 +237,31 @@ test('the registry rejects the same real store and caps source count, including 
   await assert.rejects(registry.update(source(path.join(homeDir, 'one-too-many'))), /up to 8/);
 });
 
+test('initial Personal discovery ignores an absent launcher without a warning', async (t) => {
+  const { homeDir, launcher, registry: defaults } = await fixture(t);
+  const dataDir = path.join(homeDir, '.codex-personal');
+  await mkdir(dataDir);
+  await writeFile(path.join(dataDir, 'state_5.sqlite'), 'synthetic');
+  await rm(launcher);
+  const registry = new AppSourceRegistry({ homeDir, env: {}, platform: 'linux' });
+  assert.deepEqual(await registry.read(), await defaults.read());
+  assert.equal(registry.warning, '');
+  await assert.rejects(stat(registry.configPath), { code: 'ENOENT' });
+});
+
+test('initial Personal discovery warns for a present invalid launcher', async (t) => {
+  const { homeDir, launcher, registry: defaults } = await fixture(t);
+  const dataDir = path.join(homeDir, '.codex-personal');
+  await mkdir(dataDir);
+  await writeFile(path.join(dataDir, 'state_5.sqlite'), 'synthetic');
+  await rm(launcher);
+  await symlink(path.join(homeDir, 'missing-chatgpt-personal'), launcher);
+  const registry = new AppSourceRegistry({ homeDir, env: {}, platform: 'linux' });
+  assert.deepEqual(await registry.read(), await defaults.read());
+  assert.equal(registry.warning,
+    'ASB could not register ChatGPT Personal. Check its local launcher and ASB settings folder.');
+});
+
 test('initial Personal discovery needs its known store and launcher, and never changes an existing registry', async (t) => {
   const { homeDir, launcher } = await fixture(t);
   const dataDir = path.join(homeDir, '.codex-personal');

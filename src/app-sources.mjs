@@ -105,6 +105,7 @@ export class AppSourceRegistry {
     this.readPromise = null;
     this.write = Promise.resolve();
     this.bad = false;
+    this.warning = '';
   }
 
   async validate(source, { stored = false, checkLauncher = true } = {}) {
@@ -178,7 +179,8 @@ export class AppSourceRegistry {
         const dataDir = path.join(this.homeDir, '.codex-personal');
         const launcher = path.join(this.homeDir, '.local', 'bin', 'chatgpt-personal');
         const database = await fs.stat(await discoverCodexStateDatabase(dataDir)).catch(() => null);
-        if (database?.isFile()) {
+        const launcherInfo = await fs.lstat(launcher).catch(() => null);
+        if (database?.isFile() && launcherInfo) {
           try {
             await validateSourceLauncher(launcher);
             const sources = [...this.sources, { id: 'codex-personal', provider: 'codex', label: 'ChatGPT Personal',
