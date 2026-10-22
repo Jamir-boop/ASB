@@ -41,7 +41,7 @@ Remote cache observations can be incomplete or old. ASB uses the newest response
 
 | Default path | Stored data |
 | --- | --- |
-| `~/.local/state/asb/pending.json` | Chat IDs, completion/read/question acknowledgment values, manual/retained attention, pin order, Persistent unread, drawer marks, and the time of the last scan that listed each chat. ASB drops the record of a chat that it did not see for 30 days, unless the chat has a pin or a mark. |
+| `~/.local/state/asb/pending.json` | Chat IDs, completion/read/question acknowledgment values, manual/retained attention, pin order, Persistent unread, drawer marks, and the day (UTC) of the last scan that listed each chat. ASB drops the record of a chat that it did not see for 30 days, unless the chat has a pin or a mark. |
 | `~/.config/asb/layout.json` | Column width, selected view, and Show app pills. |
 | `~/.config/asb/theme.json` | Custom colors. |
 | `~/.config/asb/sources.json` | Registered source IDs, app names, profile labels/colors, local data/transcript folders, installed launcher paths, and enabled flags. |

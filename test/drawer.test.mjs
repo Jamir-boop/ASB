@@ -65,7 +65,7 @@ test('a drawer card is read in the list, keeps its mark fields, and survives a s
 
 test('put and take-out write the state file at once', async (t) => {
   const statePath = path.join(await temp(t), 'pending.json');
-  const stored = async () => { const record = JSON.parse(await readFile(statePath, 'utf8')).records[id]; return [record.drawer, record.drawerSeen]; };
+  const stored = async () => { const record = JSON.parse(await readFile(statePath, 'utf8')).records[id]; return [record.drawer ?? 0, record.drawerSeen ?? 0]; };
   const { tracker, row } = await drawn(new PendingTracker(statePath));
   assert.deepEqual(await stored(), [1, 10]);
   await tracker.setDrawer(row, false);
@@ -108,7 +108,7 @@ test('the user takes a card out of the drawer as a normal unread card', async ()
 
 test('new attention takes a card out of the drawer', async (t) => {
   const dir = await temp(t);
-  const flag = async (tracker) => JSON.parse(await readFile(tracker.statePath, 'utf8')).records[id].drawer;
+  const flag = async (tracker) => JSON.parse(await readFile(tracker.statePath, 'utf8')).records[id].drawer ?? 0;
   for (const [name, end, attention] of [['completion', { completionAtMs: 20 }, 'completionAttention'],
     ['failure', { completionAtMs: 10, failedAtMs: 20 }, 'failedAttention']]) {
     const { tracker } = await drawn(new PendingTracker(path.join(dir, `${name}.json`)));
@@ -195,7 +195,7 @@ test('a drawer card leaves the drawer when its mark is gone in the original app'
   await native.setDrawer(await scan(native, 'idle', { nativeUnread: true }), true);
   assert.deepEqual(view(await scan(native, 'idle', { nativeUnread: true })), [true, false, false]);
   assert.deepEqual(view(await scan(native, 'idle', { nativeUnread: false })), [false, false, false]);
-  assert.equal(JSON.parse(await readFile(statePath, 'utf8')).records[id].drawer, 0);
+  assert.equal(JSON.parse(await readFile(statePath, 'utf8')).records[id].drawer ?? 0, 0);
 
   for (const persistent of [false, true]) {
     const tracker = new PendingTracker(false);
@@ -212,7 +212,7 @@ test('Read and Unread take a card out of the drawer', async (t) => {
   const { tracker, row } = await drawn(new PendingTracker(statePath));
   await tracker.acknowledge(id); tracker.apply(row);
   assert.deepEqual(view(row), [false, false, false]);
-  assert.equal(JSON.parse(await readFile(statePath, 'utf8')).records[id].drawer, 0);
+  assert.equal(JSON.parse(await readFile(statePath, 'utf8')).records[id].drawer ?? 0, 0);
   assert.deepEqual(view(await scan(tracker, 'idle', { completionAtMs: 10 })), [false, false, false]);
 
   const manual = await drawn();

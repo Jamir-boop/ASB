@@ -30,9 +30,13 @@ export const OFFLINE_MEMBER = Symbol('ASB offline member row');
 const READ_FIELDS = ['questionSeen', 'questionAck', 'nativeAt', 'nativeAck', 'nativeSeen',
   'discard', 'discardedAt', 'discardStart', 'discardEnd', 'discardNative', 'drawerSeen'];
 const RETAINED_SOURCES = ['native-unread', 'observed-completion', 'observed-failure'];
-// A record that ASB did not see for 30 days goes. The time of the last sight moves at most once a day, so a scan does not rewrite pending.json.
+// A record that ASB did not see for 30 days goes. The time of the last sight is the start of a UTC day. It moves at most once a day, and for all rows
+// at the same scan, so a scan does not rewrite pending.json for it, and the first scan of a day rewrites the file once.
 const RECORD_KEEP_MS = 30 * 86_400_000;
 const RECORD_TOUCH_MS = 86_400_000;
+// pending.json has each record without the fields that hold their default (0 or the empty string). The loader reads a missing field as that default,
+// also the loader of ASB 1.10.0. These five are always saved: ASB 1.10.0 rejects a record that lacks one of the first four, and `lastSeen` has no default.
+const ALWAYS_SAVED = new Set(['seen', 'working', 'pending', 'ack', 'lastSeen']);
 const STOPPED_KINDS = ['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled'];
 const MESSAGE_KEYS = Symbol('ASB session message keys');
 const TITLE_LIMIT = 300;
@@ -79,10 +83,6 @@ export function switchboardWatchPaths({ homeDir = os.homedir(), appDir = default
     { path: openCodeDir, source: 'opencode', optional: true,
       acceptEvent: (filename) => !filename || /^opencode\.db(?:-wal)?$/.test(filename) },
   ];
-}
-
-function retainUnread(record, source) {
-  if (record && RETAINED_SOURCES.indexOf(source) > RETAINED_SOURCES.indexOf(record.retained)) record.retained = source;
 }
 
 export function isSwitchboardRoot(thread) {
@@ -453,6 +453,16 @@ export async function openSwitchboardThread(thread, options = {}) {
   return thread.provider === 'codex' ? openThreadInCodex(thread, options) : openClaudeThread(thread, options);
 }
 
+// The records as pending.json has them: only the fields that do not hold their default.
+function savedRecords(records) {
+  const saved = Object.create(null);
+  for (const id in records) {
+    const record = saved[id] = {};
+    for (const key in records[id]) if (ALWAYS_SAVED.has(key) || records[id][key] !== 0 && records[id][key] !== '') record[key] = records[id][key];
+  }
+  return saved;
+}
+
 export class PendingTracker {
   constructor(statePath = path.join(stateDir(), 'pending.json')) {
     this.statePath = statePath;
@@ -460,7 +470,11 @@ export class PendingTracker {
     this.pinnedOrder = [];
     this.persistentUnread = true;
     this.loaded = false;
-    this.saved = '';
+    // True while the records, the pin order, or Persistent unread differ from the saved file. Each code path that changes one of them sets it
+    // (`set()` for a record field), so save() compares nothing. A scan that changes nothing writes nothing.
+    this.dirty = false;
+    // The number of finished file writes, for tests.
+    this.writeCount = 0;
     this.write = Promise.resolve();
     this.readWarning = '';
     this.saveWarning = '';
@@ -502,38 +516,53 @@ export class PendingTracker {
       this.bad = error.code !== 'ENOENT';
     }
     if (this.bad) this.readWarning = 'ASB could not read its Pending state. New completions will still be tracked.';
-    this.saved = JSON.stringify({ records: this.records, pinnedOrder: this.pinnedOrder, persistentUnread: this.persistentUnread });
+  }
+
+  // Changes one field of a record and marks the state as not saved. Object.is: a NaN that stays NaN is not a change.
+  set(record, key, value) {
+    if (Object.is(record[key], value)) return;
+    record[key] = value;
+    this.dirty = true;
+  }
+
+  retain(record, source) {
+    if (record && RETAINED_SOURCES.indexOf(source) > RETAINED_SOURCES.indexOf(record.retained)) this.set(record, 'retained', source);
   }
 
   async save() {
-    const content = JSON.stringify({ records: this.records, pinnedOrder: this.pinnedOrder, persistentUnread: this.persistentUnread });
-    if (!this.statePath || content === this.saved) return;
-    this.saved = content;
+    if (!this.statePath || !this.dirty) return;
+    this.dirty = false;
+    const content = JSON.stringify({ version: 1, records: savedRecords(this.records), pinnedOrder: this.pinnedOrder, persistentUnread: this.persistentUnread });
     this.write = this.write.catch(() => {}).then(async () => {
       await fs.mkdir(path.dirname(this.statePath), { recursive: true, mode: 0o700 });
       const temporary = `${this.statePath}.${process.pid}.tmp`;
-      await fs.writeFile(temporary, JSON.stringify({ version: 1, ...JSON.parse(content) }), { mode: 0o600 });
+      await fs.writeFile(temporary, content, { mode: 0o600 });
       // Keep the bytes of a state file that ASB could not use in full.
       if (this.bad) await fs.rename(this.statePath, `${this.statePath}.bad`).catch((error) => { if (error.code !== 'ENOENT') throw error; });
       this.bad = false;
       await fs.rename(temporary, this.statePath);
+      this.writeCount += 1;
     });
     try { await this.write; this.saveWarning = ''; }
-    catch { this.saved = ''; this.saveWarning = 'ASB cannot save Pending state. Check its local state folder.'; }
+    catch { this.dirty = true; this.saveWarning = 'ASB cannot save Pending state. Check its local state folder.'; }
   }
 
   // `members` is the list of the machine IDs of the active group members, or null while the group is not known.
   async observe(dashboard, members = null) {
     await this.load();
     const nowMs = Number(dashboard.generatedAtMs || Date.now());
+    const today = nowMs - nowMs % RECORD_TOUCH_MS;
     for (const row of dashboard.threads) {
       const completion = Math.max(Number(row.completionAtMs || 0), Number(row.failedAtMs || 0));
       let record = this.records[row.id];
-      if (!record) record = this.records[row.id] = { seen: completion, working: 0, pending: 0, ack: 0, manual: 0, retained: '',
-        questionSeen: 0, questionAck: 0, nativeAt: 0, nativeAck: 0, nativeSeen: 0,
-        discard: 0, discardNext: 0, discardedAt: 0, discardStart: 0, discardEnd: 0, discardNative: 0,
-        drawer: 0, drawerSeen: 0, muted: 0, lastSeen: nowMs };
-      if (nowMs - record.lastSeen >= RECORD_TOUCH_MS) record.lastSeen = nowMs;
+      if (!record) {
+        record = this.records[row.id] = { seen: completion, working: 0, pending: 0, ack: 0, manual: 0, retained: '', pendingKind: '',
+          questionSeen: 0, questionAck: 0, nativeAt: 0, nativeAck: 0, nativeSeen: 0,
+          discard: 0, discardNext: 0, discardedAt: 0, discardStart: 0, discardEnd: 0, discardNative: 0,
+          drawer: 0, drawerSeen: 0, muted: 0, lastSeen: today };
+        this.dirty = true;
+      }
+      if (record.lastSeen < today) this.set(record, 'lastSeen', today);
       const task = row[DISCARD_TASK] || { atMs: completion, kind: row.lastOutcome === 'failed' ? 'failed' : completion ? 'task_complete' : '' };
       // A next-task arm is set on an Idle row. Only a task end after the arm ends it, also when a whole task ran between two scans.
       // When the row is Working, it becomes a current-task arm.
@@ -547,45 +576,45 @@ export class PendingTracker {
       const mutedSuccess = record.muted === 1 && row.state === 'idle' && !row.archived && completion > record.seen
         && task.kind !== 'failed' && !(Number(row.failedAtMs || 0) > Number(row.completionAtMs || 0));
       const discardedSuccess = discardEnded && taskEnded && task.kind === 'task_complete' || mutedSuccess;
-      if (discardEnded) { record.discard = 0; record.discardNext = 0; }
-      else if (next && row.state === 'working') { record.discardNext = 0; record.discardStart = task.rootStart || 0; }
+      if (discardEnded) { this.set(record, 'discard', 0); this.set(record, 'discardNext', 0); }
+      else if (next && row.state === 'working') { this.set(record, 'discardNext', 0); this.set(record, 'discardStart', task.rootStart || 0); }
       if (discardedSuccess) {
-        record.discardedAt = task.atMs || completion;
-        record.discardNative = 0;
-        if (record.pendingKind !== 'failed') record.ack = Math.max(record.ack, record.pending);
-        if (['native-unread', 'observed-completion'].includes(record.retained)) record.retained = '';
+        this.set(record, 'discardedAt', task.atMs || completion);
+        this.set(record, 'discardNative', 0);
+        if (record.pendingKind !== 'failed') this.set(record, 'ack', Math.max(record.ack, record.pending));
+        if (['native-unread', 'observed-completion'].includes(record.retained)) this.set(record, 'retained', '');
       }
       if (!discardedSuccess && record.discardedAt && Math.max(task.atMs || 0, completion) > record.discardedAt) {
-        record.discardedAt = 0;
-        record.discardNative = 0;
+        this.set(record, 'discardedAt', 0);
+        this.set(record, 'discardNative', 0);
       }
-      if (row.questionPending) record.questionSeen = Math.max(record.questionSeen, row[QUESTION_AT] || 1);
+      if (row.questionPending) this.set(record, 'questionSeen', Math.max(record.questionSeen, row[QUESTION_AT] || 1));
       if (row.nativeUnread === true && (!record.nativeSeen || completion > record.seen)) {
-        record.nativeAt = Math.max(record.nativeAt + 1, Number(dashboard.generatedAtMs || Date.now()), completion);
+        this.set(record, 'nativeAt', Math.max(record.nativeAt + 1, Number(dashboard.generatedAtMs || Date.now()), completion));
       }
-      if (row.nativeUnread !== null && row.nativeUnread !== undefined) record.nativeSeen = row.nativeUnread ? 1 : 0;
+      if (row.nativeUnread !== null && row.nativeUnread !== undefined) this.set(record, 'nativeSeen', row.nativeUnread ? 1 : 0);
       // shortcut: The first late source-app manual Unread cannot be distinguished from completion unread, use a per-task read signal when one exists.
       if (row.nativeUnread === true && record.discardedAt > 0 && !record.discardNative
         && row.lastOutcome !== 'failed' && !row.failedAtMs && task.kind !== 'failed'
         && (task.atMs === record.discardedAt || completion === record.discardedAt)) {
-        record.nativeAck = record.nativeAt;
-        record.discardNative = 1;
-        if (record.retained === 'native-unread') record.retained = '';
+        this.set(record, 'nativeAck', record.nativeAt);
+        this.set(record, 'discardNative', 1);
+        if (record.retained === 'native-unread') this.set(record, 'retained', '');
       }
-      if (row.archived) record.working = 0;
-      else if (row.state === 'working') record.working = 1;
+      if (row.archived) this.set(record, 'working', 0);
+      else if (row.state === 'working') this.set(record, 'working', 1);
       else if (row.state === 'idle') {
         if ((record.working || discardEnded) && !discardedSuccess && completion > record.seen) {
-          record.pending = completion;
-          record.pendingKind = row.failedAtMs > (row.completionAtMs || 0) ? 'failed' : '';
-          if (record.retained === 'observed-failure' && record.pendingKind !== 'failed') record.retained = 'observed-completion';
+          this.set(record, 'pending', completion);
+          this.set(record, 'pendingKind', row.failedAtMs > (row.completionAtMs || 0) ? 'failed' : '');
+          if (record.retained === 'observed-failure' && record.pendingKind !== 'failed') this.set(record, 'retained', 'observed-completion');
         }
-        record.working = 0;
-        if (row.nativeUnread === false && !this.persistentUnread) record.ack = Math.max(record.ack, record.pending);
-      } else if (row.state !== 'waiting' && !row[OFFLINE_MEMBER]) record.working = 0;
-      record.seen = Math.max(record.seen, completion, discardedSuccess ? task.atMs : 0);
+        this.set(record, 'working', 0);
+        if (row.nativeUnread === false && !this.persistentUnread) this.set(record, 'ack', Math.max(record.ack, record.pending));
+      } else if (row.state !== 'waiting' && !row[OFFLINE_MEMBER]) this.set(record, 'working', 0);
+      this.set(record, 'seen', Math.max(record.seen, completion, discardedSuccess ? task.atMs : 0));
       // A result that the user discarded is not new attention for a drawer card.
-      if (discardedSuccess) record.drawerSeen = record.seen;
+      if (discardedSuccess) this.set(record, 'drawerSeen', record.seen);
       this.apply(row);
     }
     this.prune(nowMs, members, dashboard.threads);
@@ -603,14 +632,19 @@ export class PendingTracker {
     const pinned = new Set(this.pinnedOrder);
     const active = members && new Set(members);
     const present = active && new Set(rows.map((row) => row.id));
+    let dropped = false;
     for (const id in this.records) {
       const record = this.records[id];
       const machine = active && /^m:([a-f0-9]{16}):/.exec(id)?.[1];
       const kept = pinned.has(id) || record.manual === 1 || record.drawer === 1 || record.muted === 1 || record.discard === 1 || record.retained
         || record.pending > record.ack || record.questionSeen > record.questionAck || record.nativeAt > record.nativeAck;
-      if (machine && !active.has(machine) && !present.has(id) || nowMs - record.lastSeen > RECORD_KEEP_MS && !kept) delete this.records[id];
+      if (machine && !active.has(machine) && !present.has(id) || nowMs - record.lastSeen > RECORD_KEEP_MS && !kept) { delete this.records[id]; dropped = true; }
     }
-    this.pinnedOrder = this.pinnedOrder.filter((id) => this.records[id]);
+    // A pin always has a record, so only a dropped record can leave a pin without one.
+    if (dropped) {
+      this.pinnedOrder = this.pinnedOrder.filter((id) => this.records[id]);
+      this.dirty = true;
+    }
   }
 
   apply(row) {
@@ -626,7 +660,7 @@ export class PendingTracker {
     row.failedAttention = observedAttention && record?.pendingKind === 'failed';
     row.completionAttention = observedAttention && !row.failedAttention;
     if (this.persistentUnread && record) {
-      retainUnread(record, !row.archived && row.state === 'idle' && record.pending > record.ack
+      this.retain(record, !row.archived && row.state === 'idle' && record.pending > record.ack
         ? record.pendingKind === 'failed' ? 'observed-failure' : 'observed-completion'
         : row.nativeAttention ? 'native-unread' : '');
     }
@@ -635,7 +669,7 @@ export class PendingTracker {
     // The drawer uses the stored marks, so a chat that is Working or has an unknown read state for a time keeps its place.
     if (record?.drawer === 1 && (record.seen > record.drawerSeen || row.questionAttention
       || !(record.manual === 1 || record.retained || record.pending > record.ack
-        || row.nativeUnread !== false && record.nativeAt > record.nativeAck))) record.drawer = 0;
+        || row.nativeUnread !== false && record.nativeAt > record.nativeAck))) this.set(record, 'drawer', 0);
     row.drawer = record?.drawer === 1;
     row.muted = record?.muted === 1;
     // A Working or usage-limited row shows only question attention. Stored marks stay and show again after Working or the limit ends.
@@ -649,10 +683,10 @@ export class PendingTracker {
 
   async setPersistentUnread(enabled, dashboard) {
     await this.load();
-    this.persistentUnread = enabled;
+    if (this.persistentUnread !== enabled) { this.persistentUnread = enabled; this.dirty = true; }
     for (const row of dashboard.threads) {
       const record = this.records[row.id];
-      if (enabled) retainUnread(record, row.failedAttention ? 'observed-failure' : row.completionAttention ? 'observed-completion' : row.nativeAttention ? 'native-unread' : '');
+      if (enabled) this.retain(record, row.failedAttention ? 'observed-failure' : row.completionAttention ? 'observed-completion' : row.nativeAttention ? 'native-unread' : '');
       this.apply(row);
     }
     dashboard.persistentUnread = enabled;
@@ -661,7 +695,7 @@ export class PendingTracker {
 
   async markUnread(id) {
     await this.load();
-    if (this.records[id]) { this.records[id].manual = 1; this.records[id].drawer = 0; }
+    if (this.records[id]) { this.set(this.records[id], 'manual', 1); this.set(this.records[id], 'drawer', 0); }
     await this.save();
   }
 
@@ -673,8 +707,8 @@ export class PendingTracker {
       throw Object.assign(new Error('The drawer takes only unread sessions.'), { statusCode: 400 });
     }
     if (!enabled && record.drawer !== 1) throw Object.assign(new Error('This session is not in the drawer.'), { statusCode: 400 });
-    record.drawer = enabled ? 1 : 0;
-    if (enabled) record.drawerSeen = record.seen;
+    this.set(record, 'drawer', enabled ? 1 : 0);
+    if (enabled) this.set(record, 'drawerSeen', record.seen);
     await this.save();
     this.apply(row);
   }
@@ -683,7 +717,7 @@ export class PendingTracker {
     await this.load();
     const record = this.records[row.id];
     if (!record) throw Object.assign(new Error('This session is not known to ASB.'), { statusCode: 400 });
-    record.muted = enabled ? 1 : 0;
+    this.set(record, 'muted', enabled ? 1 : 0);
     await this.save();
     this.apply(row);
   }
@@ -697,11 +731,11 @@ export class PendingTracker {
     }
     const record = this.records[row.id];
     if (!record) throw Object.assign(new Error('This session is not known to ASB.'), { statusCode: 400 });
-    record.discard = enabled ? 1 : 0;
-    record.discardNext = enabled && row.state === 'idle' ? 1 : 0;
+    this.set(record, 'discard', enabled ? 1 : 0);
+    this.set(record, 'discardNext', enabled && row.state === 'idle' ? 1 : 0);
     if (enabled) {
-      record.discardStart = row[DISCARD_TASK]?.rootStart || 0;
-      record.discardEnd = row[DISCARD_TASK]?.atMs || 0;
+      this.set(record, 'discardStart', row[DISCARD_TASK]?.rootStart || 0);
+      this.set(record, 'discardEnd', row[DISCARD_TASK]?.atMs || 0);
     }
     await this.save();
     this.apply(row);
@@ -710,8 +744,8 @@ export class PendingTracker {
   async setPinned(id, pinned) {
     await this.load();
     if (!this.records[id]) throw Object.assign(new Error('This session is not known to ASB.'), { statusCode: 400 });
-    if (pinned && !this.pinnedOrder.includes(id)) this.pinnedOrder.push(id);
-    if (!pinned) this.pinnedOrder = this.pinnedOrder.filter((value) => value !== id);
+    if (pinned && !this.pinnedOrder.includes(id)) { this.pinnedOrder.push(id); this.dirty = true; }
+    if (!pinned && this.pinnedOrder.includes(id)) { this.pinnedOrder = this.pinnedOrder.filter((value) => value !== id); this.dirty = true; }
     await this.save();
     return [...this.pinnedOrder];
   }
@@ -720,6 +754,7 @@ export class PendingTracker {
     await this.load();
     const index = this.pinnedOrder.indexOf(id);
     if (index < 0) throw Object.assign(new Error('Only ASB pins can be reordered.'), { statusCode: 400 });
+    const before = [...this.pinnedOrder];
     if (body.direction) {
       const target = index + (body.direction === 'up' ? -1 : 1);
       if (target >= 0 && target < this.pinnedOrder.length) {
@@ -733,6 +768,7 @@ export class PendingTracker {
       const target = this.pinnedOrder.indexOf(body.targetId) + (body.placement === 'after' ? 1 : 0);
       this.pinnedOrder.splice(target, 0, id);
     }
+    if (this.pinnedOrder.some((value, position) => value !== before[position])) this.dirty = true;
     await this.save();
     return [...this.pinnedOrder];
   }
@@ -741,12 +777,12 @@ export class PendingTracker {
     await this.load();
     const record = this.records[id];
     if (record) {
-      record.ack = Math.max(record.ack, record.pending, record.seen);
-      record.manual = 0;
-      record.retained = '';
-      record.questionAck = record.questionSeen;
-      record.nativeAck = record.nativeAt;
-      record.drawer = 0;
+      this.set(record, 'ack', Math.max(record.ack, record.pending, record.seen));
+      this.set(record, 'manual', 0);
+      this.set(record, 'retained', '');
+      this.set(record, 'questionAck', record.questionSeen);
+      this.set(record, 'nativeAck', record.nativeAt);
+      this.set(record, 'drawer', 0);
     }
     await this.save();
   }

@@ -744,8 +744,8 @@ test('Pending observes complete scans, preserves native truth, and persists comp
   await restarted.acknowledge('hidden');
   assert.equal((await new PendingTracker(statePath).observe(board([{ id: 'hidden', state: 'idle', completionAtMs: 200 }]))).threads[0].pending, false);
   const saved = JSON.parse(await readFile(statePath, 'utf8'));
-  assert.deepEqual(Object.keys(saved.records.hidden).sort(), ['ack', 'discard', 'discardEnd', 'discardNative', 'discardNext', 'discardStart', 'discardedAt',
-    'drawer', 'drawerSeen', 'lastSeen', 'manual', 'muted', 'nativeAck', 'nativeAt', 'nativeSeen', 'pending', 'pendingKind', 'questionAck', 'questionSeen', 'retained', 'seen', 'working']);
+  // A record has no field that holds its default (0 or the empty string), except the five that ASB 1.10.0 needs or that have no default.
+  assert.deepEqual(Object.keys(saved.records.hidden).sort(), ['ack', 'lastSeen', 'pending', 'seen', 'working']);
   assert.equal((await stat(statePath)).mode & 0o777, 0o600);
   await tracker.observe(board([{ id: 'aborted', state: 'working' }]));
   assert.equal((await tracker.observe(board([{ id: 'aborted', state: 'idle', completionAtMs: 0 }]))).threads[0].pending, false);
@@ -1488,7 +1488,7 @@ test('Discard survives reload, Waiting and Unknown, validates numeric state, and
   assert.deepEqual([restart.records[id].discard, idle.discardResult, idle.pending], [0, false, true]);
   const saved = JSON.parse(await readFile(statePath, 'utf8'));
   assert.equal(saved.version, 1);
-  for (const key of ['discard', 'discardedAt', 'discardStart', 'discardEnd', 'discardNative']) assert.equal(typeof saved.records[id][key], 'number');
+  for (const key of ['discard', 'discardedAt', 'discardStart', 'discardEnd', 'discardNative']) assert.ok(!(key in saved.records[id]) || typeof saved.records[id][key] === 'number', key);
   saved.records[id].discard = '1'; saved.records[id].discardedAt = -1; saved.records[id].discardStart = 'private'; saved.records[id].discardNative = 3;
   await writeFile(statePath, JSON.stringify(saved));
   const invalid = new PendingTracker(statePath); await invalid.load();
@@ -1898,7 +1898,7 @@ test('discardNext defaults to 0, loads only with an armed Discard, and keeps a s
   await tracker.observe({ providers: [], threads: [], generatedAtMs: now });
   assert.deepEqual(Object.keys(tracker.records).sort(), ['legacy', 'next', 'text']);
   const saved = JSON.parse(await readFile(statePath, 'utf8'));
-  assert.deepEqual([saved.records.next.discardNext, saved.records.legacy.discardNext], [1, 0]);
+  assert.deepEqual([saved.records.next.discardNext, saved.records.legacy.discardNext ?? 0], [1, 0]);
 });
 
 test('the Discard route takes {} for a Working task and exactly {"next":true} for an Idle task, and rejects other bodies', async (t) => {

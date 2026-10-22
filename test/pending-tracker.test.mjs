@@ -372,21 +372,42 @@ test('a record from an older ASB with no time of sight stays for 30 days from th
   assert.deepEqual(await savedRecords(statePath), ['live']);
 });
 
-test('a scan moves the time of sight at most once a day, so it does not rewrite pending.json, and a row seen each day is never dropped', async (t) => {
-  const statePath = path.join(await temp(t), 'pending.json');
+test('a scan moves the time of sight to the start of the UTC day at most once a day, so it does not rewrite pending.json, and a row seen each day is never dropped', async (t) => {
+  const dir = await temp(t);
+  const statePath = path.join(dir, 'pending.json');
   const tracker = new PendingTracker(statePath);
+  const midnight = Math.floor(now / DAY) * DAY;
   await tracker.observe(live(now));
   const first = await readFile(statePath, 'utf8');
-  for (const offset of [2_000, HOUR, 23 * HOUR]) {
+  assert.equal(JSON.parse(first).records.live.lastSeen, midnight);
+  // `now` is 14:00 UTC: the UTC day goes on for 10 hours.
+  for (const offset of [2_000, HOUR, 9 * HOUR]) {
     await tracker.observe(live(now + offset));
     assert.equal(await readFile(statePath, 'utf8'), first, String(offset));
   }
-  await tracker.observe(live(now + DAY));
-  assert.equal(JSON.parse(await readFile(statePath, 'utf8')).records.live.lastSeen, now + DAY);
+  assert.equal(tracker.writeCount, 1);
+  await tracker.observe(live(now + 10 * HOUR));
+  assert.equal(JSON.parse(await readFile(statePath, 'utf8')).records.live.lastSeen, midnight + DAY);
+  assert.equal(tracker.writeCount, 2);
   // 'daily' is seen each day, 'gap' only on the first day.
-  await tracker.observe(live(now, ['daily', 'gap']));
-  for (let day = 1; day <= 40; day += 1) await tracker.observe(live(now + day * DAY, ['daily']));
-  assert.deepEqual(await savedRecords(statePath), ['daily']);
+  const other = path.join(dir, 'other.json');
+  const days = new PendingTracker(other);
+  await days.observe(live(now, ['daily', 'gap']));
+  for (let day = 1; day <= 40; day += 1) await days.observe(live(now + day * DAY, ['daily']));
+  assert.deepEqual(await savedRecords(other), ['daily']);
+});
+
+test('rows that appeared at different times move their time of sight in one write a day', async (t) => {
+  const statePath = path.join(await temp(t), 'pending.json');
+  const tracker = new PendingTracker(statePath);
+  const midnight = Math.floor(now / DAY) * DAY;
+  await tracker.observe(live(now, ['a']));
+  await tracker.observe(live(now + 1000, ['a', 'b']));
+  await tracker.observe(live(now + 5000, ['a', 'b', 'c']));
+  assert.equal(tracker.writeCount, 3);
+  for (let scan = 0; scan < 5; scan += 1) await tracker.observe(live(now + 10 * HOUR + scan * 2000, ['a', 'b', 'c']));
+  assert.equal(tracker.writeCount, 4);
+  assert.deepEqual(Object.values(JSON.parse(await readFile(statePath, 'utf8')).records).map((record) => record.lastSeen), Array(3).fill(midnight + DAY));
 });
 
 test('the records of a machine that left the group go with their pins, and nothing goes while the members are not known', async (t) => {
@@ -436,4 +457,272 @@ test('the server gives the tracker the group members, so the records of a member
   members = [a];
   await scan();
   assert.deepEqual(await savedRecords(statePath), [`m:${a}:one`, 'codex:local'].sort());
+});
+
+test('a scan that changes nothing serializes nothing, compares nothing, and writes nothing', async (t) => {
+  const tracker = new PendingTracker(path.join(await temp(t), 'pending.json'));
+  const states = ['idle', 'working', 'waiting', 'unknown'];
+  const board = (atMs) => ({ generatedAtMs: atMs, providers: [], threads: Array.from({ length: 200 }, (_, index) => ({
+    id: index % 5 === 0 ? `m:${'a'.repeat(16)}:row-${index}` : `row-${index}`, state: states[index % 4], archived: index % 17 === 0,
+    nativeUnread: index % 3 === 0 ? index % 2 === 0 : null, completionAtMs: index * 1000, questionPending: index % 11 === 0 })) });
+  await tracker.observe(board(now));
+  await tracker.observe(board(now + 2000), ['a'.repeat(16)]);
+  const writes = tracker.writeCount;
+  const stringify = JSON.stringify;
+  let serialized = 0;
+  JSON.stringify = function (value, ...rest) {
+    if (value && typeof value === 'object' && 'records' in value) serialized += 1;
+    return stringify.call(this, value, ...rest);
+  };
+  try {
+    for (let scan = 0; scan < 20; scan += 1) await tracker.observe(board(now + 4000 + scan * 2000), ['a'.repeat(16)]);
+  } finally { JSON.stringify = stringify; }
+  assert.deepEqual([serialized, tracker.writeCount, tracker.dirty], [0, writes, false]);
+});
+
+test('a call that changes nothing writes nothing, and a call that changes the pin order or Persistent unread writes', async (t) => {
+  const statePath = path.join(await temp(t), 'pending.json');
+  const tracker = new PendingTracker(statePath);
+  await tracker.observe(live(now, ['a', 'b', 'c']));
+  await tracker.setPinned('a', true);
+  await tracker.setPinned('b', true);
+  const writes = tracker.writeCount;
+  await tracker.setPinned('a', true);
+  await tracker.setPinned('c', false);
+  await tracker.movePin('a', { direction: 'up' });
+  await tracker.movePin('b', { direction: 'down' });
+  await tracker.movePin('a', { targetId: 'b', placement: 'before' });
+  await tracker.setPersistentUnread(true, { threads: [] });
+  await tracker.markUnread('missing');
+  await tracker.acknowledge('missing');
+  assert.equal(tracker.writeCount, writes);
+  const pins = async () => JSON.parse(await readFile(statePath, 'utf8'));
+  await tracker.setPinned('c', true);
+  await tracker.movePin('c', { direction: 'up' });
+  assert.deepEqual([tracker.writeCount, (await pins()).pinnedOrder], [writes + 2, ['a', 'c', 'b']]);
+  await tracker.movePin('c', { targetId: 'b', placement: 'after' });
+  await tracker.setPersistentUnread(false, { threads: [] });
+  await tracker.setPinned('a', false);
+  assert.deepEqual([tracker.writeCount, (await pins()).pinnedOrder, (await pins()).persistentUnread], [writes + 5, ['b', 'c'], false]);
+});
+
+// A small seeded random number generator, so that a failure repeats.
+function seeded(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// What ASB 1.10.0 makes of one record in pending.json. This is its loader (`PendingTracker.load` in src/switchboard.mjs at the tag v1.10.0),
+// copied. It returns null for a record that this loader rejects, and a null `lastSeen` for a record that gets the time of the load.
+function loadAsV110(record) {
+  const number = (value) => Number.isFinite(value) && value >= 0;
+  if (!['seen', 'working', 'pending', 'ack'].every((key) => number(record?.[key]))) return null;
+  const loaded = { seen: record.seen, working: record.working, pending: record.pending, ack: record.ack, manual: record.manual === 1 ? 1 : 0,
+    retained: ['native-unread', 'observed-completion', 'observed-failure'].includes(record.retained) ? record.retained : '',
+    pendingKind: record.pendingKind === 'failed' ? 'failed' : '' };
+  for (const key of ['questionSeen', 'questionAck', 'nativeAt', 'nativeAck', 'nativeSeen', 'discard', 'discardedAt', 'discardStart', 'discardEnd',
+    'discardNative', 'drawerSeen']) loaded[key] = number(record[key]) ? record[key] : 0;
+  return Object.assign(loaded, { discard: record.discard === 1 ? 1 : 0, discardNative: record.discardNative === 1 ? 1 : 0,
+    drawer: record.drawer === 1 ? 1 : 0, muted: record.muted === 1 ? 1 : 0, lastSeen: number(record.lastSeen) ? record.lastSeen : null });
+}
+const asV110 = (records) => Object.fromEntries(Object.entries(records).map(([key, record]) => [key, loadAsV110(record)]));
+// `discardNext` is newer than ASB 1.10.0, which ignores it.
+const withoutNext = (records) => Object.fromEntries(Object.entries(records).map(([key, { discardNext, ...record }]) => [key, record]));
+
+// Watches the change marks of a tracker. `touched` has the record fields that changed through set(), and `marks` counts the times that other code set the
+// flag (a new or dropped record, the pin order, Persistent unread).
+function watchMarks(tracker) {
+  const touched = new Map();
+  const watch = { touched, marks: 0, snapshot: () => ({ records: new Map(Object.entries(tracker.records).map(([key, record]) => [key, { ...record }])),
+    pins: [...tracker.pinnedOrder], persistentUnread: tracker.persistentUnread }) };
+  let flag = tracker.dirty;
+  let inSet = false;
+  Object.defineProperty(tracker, 'dirty', { get: () => flag, set: (value) => { if (value && !inSet) watch.marks += 1; flag = value; } });
+  const set = tracker.set;
+  tracker.set = function (record, key, value) {
+    const before = record[key];
+    inSet = true;
+    try { return set.call(this, record, key, value); } finally {
+      inSet = false;
+      if (!Object.is(before, record[key])) touched.set(record, new Set([...touched.get(record) || [], key]));
+    }
+  };
+  // Throws when the state changed since `before` by a path that did not mark it.
+  watch.verify = (before, label) => {
+    let structural = false;
+    for (const [key, record] of Object.entries(tracker.records)) {
+      const old = before.records.get(key);
+      if (!old) { structural = true; continue; }
+      for (const field in record) {
+        if (!Object.is(old[field], record[field])) assert.ok(touched.get(record)?.has(field), `${label}: ${key}.${field} changed without set()`);
+      }
+    }
+    for (const key of before.records.keys()) if (!tracker.records[key]) structural = true;
+    if (before.pins.join() !== tracker.pinnedOrder.join() || before.persistentUnread !== tracker.persistentUnread) structural = true;
+    if (structural) assert.ok(watch.marks > 0, `${label}: a record, the pin order, or Persistent unread changed, and nothing set the flag`);
+  };
+  return watch;
+}
+
+// One call on a tracker that watchMarks() watches. The call must mark each change. After save(), a new tracker and ASB 1.10.0 must read the same state
+// from the file. `saves` is true for a method that must save before it returns.
+async function checkedStep(tracker, watch, label, run, saves = true) {
+  await tracker.save();
+  const before = watch.snapshot();
+  watch.touched.clear();
+  watch.marks = 0;
+  const result = await run();
+  watch.verify(before, label);
+  if (saves) assert.equal(tracker.dirty, false, `${label}: saved before it returns`);
+  await tracker.save();
+  const fresh = new PendingTracker(tracker.statePath);
+  await fresh.load();
+  assert.deepEqual([fresh.records, fresh.pinnedOrder, fresh.persistentUnread, fresh.warning], [tracker.records, tracker.pinnedOrder, tracker.persistentUnread, ''], label);
+  const file = JSON.parse(await readFile(tracker.statePath, 'utf8'));
+  assert.deepEqual([asV110(file.records), file.pinnedOrder, file.persistentUnread], [withoutNext(tracker.records), tracker.pinnedOrder, tracker.persistentUnread], `${label} in ASB 1.10.0`);
+  return result;
+}
+
+test('each path that changes a record, the pin order, or Persistent unread marks it, and the file means the same to this ASB and to ASB 1.10.0', async (t) => {
+  const statePath = path.join(await temp(t), 'pending.json');
+  const tracker = new PendingTracker(statePath);
+  const watch = watchMarks(tracker);
+  const rand = seeded(20261021);
+  const pick = (list) => list[Math.floor(rand() * list.length)];
+  const member = 'a'.repeat(16);
+  const ids = ['one', 'two', 'three', 'four', `m:${member}:five`, `m:${'b'.repeat(16)}:six`];
+  const marks = new Map(ids.map((rowId) => [rowId, { completion: 0, failed: 0 }]));
+  let clock = now;
+  let rows = [];
+  const scan = async () => {
+    const threads = [];
+    for (const [rowId, mark] of marks) {
+      if (rand() < 0.15) continue;
+      if (rand() < 0.3) mark.completion = clock;
+      if (rand() < 0.1) mark.failed = clock;
+      threads.push({ id: rowId, state: pick(['idle', 'idle', 'working', 'working', 'waiting', 'unknown']), archived: rand() < 0.05,
+        nativeUnread: pick([null, null, true, false]), completionAtMs: mark.completion, failedAtMs: mark.failed, questionPending: rand() < 0.1,
+        lastOutcome: mark.failed > mark.completion ? 'failed' : 'complete' });
+    }
+    rows = (await tracker.observe({ generatedAtMs: clock, providers: [], threads }, rand() < 0.3 ? [member] : null)).threads;
+  };
+  const row = () => pick(rows.length ? rows : [{ id: 'one' }]);
+  const refused = (error) => { if (error.statusCode !== 400) throw error; };
+  // The scan and each method that changes saved state. The first item is true for a method that saves before it returns.
+  const operations = {
+    scan: [true, scan],
+    'scan up to 3 days later': [true, async () => { clock += Math.floor(rand() * 3 * DAY); await scan(); }],
+    'scan 40 days later': [true, async () => { clock += 40 * DAY; await scan(); }],
+    markUnread: [true, () => tracker.markUnread(pick(ids))],
+    acknowledge: [true, () => tracker.acknowledge(pick(ids))],
+    drawer: [false, () => tracker.setDrawer(row(), rand() < 0.6).catch(refused)],
+    mute: [false, () => tracker.setMuted(row(), rand() < 0.6).catch(refused)],
+    discard: [false, () => tracker.setDiscard(row(), rand() < 0.7, rand() < 0.5).catch(refused)],
+    pin: [true, () => tracker.setPinned(pick(ids), rand() < 0.7).catch(refused)],
+    movePin: [true, () => tracker.movePin(pick(ids), rand() < 0.5 ? { direction: pick(['up', 'down']) }
+      : { targetId: pick(ids), placement: pick(['before', 'after']) }).catch(refused)],
+    persistentUnread: [true, () => tracker.setPersistentUnread(rand() < 0.5, { threads: rows })],
+    // apply() changes a record when the drawer or the retained mark must change. It does not save: the next save() does.
+    apply: [false, () => tracker.apply(row())],
+  };
+  const names = [...Object.keys(operations), 'scan', 'scan', 'scan', 'scan'];
+  const ran = new Set();
+  await scan();
+  for (let step = 0; step < 700; step += 1) {
+    const name = step === 0 ? 'scan' : pick(names);
+    ran.add(name);
+    clock += 2000;
+    await checkedStep(tracker, watch, `${step} ${name}`, operations[name][1], operations[name][0]);
+  }
+  assert.deepEqual([...ran].sort(), Object.keys(operations).sort());
+  assert.ok(tracker.writeCount > 150, String(tracker.writeCount));
+});
+
+test('the Discard, drawer, and native paths that the random run reaches rarely mark their changes too', async (t) => {
+  const dir = await temp(t);
+  const start = (name) => {
+    const tracker = new PendingTracker(path.join(dir, `${name}.json`));
+    const watch = watchMarks(tracker);
+    let row = null;
+    const observe = (label, dashboard) => checkedStep(tracker, watch, label, async () => { row = (await tracker.observe(dashboard)).threads[0]; });
+    return { tracker, observe, scanRow: (label, state, extra = {}) => observe(label, plain(state, extra)), row: () => row,
+      call: (label, run) => checkedStep(tracker, watch, label, run, false) };
+  };
+
+  // A Discard of a Working task, its success, a late native Unread of the app, and a second Discard that ends with success.
+  const native = start('native');
+  await native.scanRow('idle', 'idle', { nativeUnread: false });
+  await native.scanRow('working', 'working', { nativeUnread: false });
+  await native.call('discard', () => native.tracker.setDiscard(native.row(), true));
+  await native.scanRow('success', 'idle', { completionAtMs: 10, nativeUnread: false });
+  await native.scanRow('late native unread', 'idle', { completionAtMs: 10, nativeUnread: true });
+  assert.equal(native.tracker.records[id].discardNative, 1);
+  await native.scanRow('working again', 'working', { completionAtMs: 10, nativeUnread: true });
+  await native.call('discard again', () => native.tracker.setDiscard(native.row(), true));
+  await native.scanRow('second success', 'idle', { completionAtMs: 20, nativeUnread: false });
+  assert.deepEqual([native.tracker.records[id].discardNative, native.tracker.records[id].discardedAt], [0, 20]);
+
+  // The drawer, then Unread.
+  const drawer = start('drawer');
+  await drawer.scanRow('idle', 'idle');
+  await drawer.scanRow('working', 'working');
+  await drawer.scanRow('ended', 'idle', { completionAtMs: 10 });
+  await drawer.call('put in the drawer', () => drawer.tracker.setDrawer(drawer.row(), true));
+  assert.equal(drawer.tracker.records[id].drawer, 1);
+  await drawer.call('unread', () => drawer.tracker.markUnread(id));
+  assert.deepEqual([drawer.tracker.records[id].drawer, drawer.tracker.records[id].manual], [0, 1]);
+
+  // A Discard of the next task of an Idle Claude chat saves the start and the end of the task that it follows. A task that starts after it moves the start.
+  const next = start('next');
+  const board = (extra) => buildSwitchboardDashboard([claude(extra)], [], now + 1000);
+  const running = (startAt, endAt) => board({ lifecycleRunning: true, agentActivityAtMs: now + startAt, agentStartedAtMs: now + startAt,
+    latestTaskStartedAtMs: now + startAt, latestTaskEndedAtMs: now + endAt, latestTaskEndKind: 'task_complete' });
+  await next.observe('idle', board({ lifecycleRunning: false, latestLifecycleKind: 'task_complete', latestLifecycleAtMs: now - 900,
+    latestTaskStartedAtMs: now - 1000, latestTaskEndedAtMs: now - 900, latestTaskEndKind: 'task_complete' }));
+  await next.call('discard next', () => next.tracker.setDiscard(next.row(), true, true));
+  assert.deepEqual([next.tracker.records[id].discardStart, next.tracker.records[id].discardEnd, next.tracker.records[id].discardNext], [now - 1000, now - 900, 1]);
+  await next.observe('the next task starts', running(0, -900));
+  assert.deepEqual([next.tracker.records[id].discardStart, next.tracker.records[id].discardNext, next.tracker.records[id].discard], [now, 0, 1]);
+});
+
+test('pending.json has no field that holds its default, and it keeps the fields that ASB 1.10.0 needs', async (t) => {
+  const statePath = path.join(await temp(t), 'pending.json');
+  const zero = { seen: 0, working: 0, pending: 0, ack: 0, manual: 0, retained: '', pendingKind: '', questionSeen: 0, questionAck: 0, nativeAt: 0, nativeAck: 0,
+    nativeSeen: 0, discard: 0, discardNext: 0, discardedAt: 0, discardStart: 0, discardEnd: 0, discardNative: 0, drawer: 0, drawerSeen: 0, muted: 0, lastSeen: 0 };
+  const rich = { seen: 500, working: 1, pending: 400, ack: 300, manual: 1, retained: 'observed-failure', pendingKind: 'failed', questionSeen: 7, questionAck: 5,
+    nativeAt: 9, nativeAck: 8, nativeSeen: 1, discard: 1, discardNext: 1, discardedAt: 11, discardStart: 12, discardEnd: 13, discardNative: 1,
+    drawer: 1, drawerSeen: 14, muted: 1, lastSeen: now };
+  const some = { ...zero, seen: 20, retained: 'native-unread', nativeAt: 3, lastSeen: now };
+  // A file in the full form, as an older ASB wrote it.
+  const older = { version: 1, persistentUnread: false, pinnedOrder: ['some', 'rich'], records: { rich, zero, some } };
+  await writeFile(statePath, JSON.stringify(older));
+  const tracker = new PendingTracker(statePath);
+  await tracker.markUnread('zero');
+  const text = await readFile(statePath, 'utf8');
+  const file = JSON.parse(text);
+  assert.deepEqual(Object.keys(file), ['version', 'records', 'pinnedOrder', 'persistentUnread']);
+  assert.deepEqual([file.version, file.pinnedOrder, file.persistentUnread], [1, ['some', 'rich'], false]);
+  // The five fields stay also with the value 0. Every other field is there only with a value that is not its default.
+  assert.deepEqual(file.records.zero, { seen: 0, working: 0, pending: 0, ack: 0, manual: 1, lastSeen: 0 });
+  assert.deepEqual(file.records.some, { seen: 20, working: 0, pending: 0, ack: 0, retained: 'native-unread', nativeAt: 3, lastSeen: now });
+  assert.deepEqual(file.records.rich, rich);
+  assert.equal(text.includes('""'), false);
+  // This ASB and ASB 1.10.0 read the same records as from the full form (with the one change that the call made).
+  const expected = { rich, zero: { ...zero, manual: 1 }, some };
+  const loaded = new PendingTracker(statePath);
+  await loaded.load();
+  assert.deepEqual([{ ...loaded.records }, loaded.warning], [expected, '']);
+  assert.deepEqual(asV110(file.records), asV110(expected));
+  assert.deepEqual(asV110(file.records), withoutNext(expected));
+  // A file of 1300 idle records is under half of the full form.
+  const many = new PendingTracker(path.join(path.dirname(statePath), 'many.json'));
+  await many.observe(live(now, Array.from({ length: 1300 }, (_, index) => `0a1b2c3d-4e5f-4a6b-8c7d-${String(index).padStart(12, '0')}`)));
+  const full = JSON.stringify({ version: 1, records: many.records, pinnedOrder: many.pinnedOrder, persistentUnread: many.persistentUnread });
+  assert.ok((await stat(many.statePath)).size < full.length / 2, `${(await stat(many.statePath)).size} of ${full.length}`);
 });
