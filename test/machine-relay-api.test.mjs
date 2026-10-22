@@ -11,6 +11,7 @@ import { PassThrough } from 'node:stream';
 import { createAsbServer } from '../src/asb-server.mjs';
 import { processStart } from '../src/claude-registry.mjs';
 import { createRelaySupervisor, EXACT_REASONS, RELAY_STOPPED, relayHomes, validPeerList, validRelayBody, validRelayReply, writeOutbox } from '../src/machine-relay.mjs';
+import { forgetMallocEnv, MALLOC_ENV } from '../src/memory-trim.mjs';
 import { formatReference } from '../src/session-references.mjs';
 import { notSentMessage } from '../src/session-targets.mjs';
 
@@ -210,6 +211,18 @@ test('the supervisor starts the relay only when every start condition holds', as
   await stubborn.supervisor.start();
   await stubborn.supervisor.stop();
   assert.deepEqual(stubborn.spawns[0].child.signals, ['SIGTERM', 'SIGKILL']);
+});
+
+// The engine start sets the glibc settings for the engine only; runEngine removes them from its environment before it starts the relay.
+test('the relay gets the engine environment without the glibc settings of the engine start', async (t) => {
+  const f = await supervisorFixture(t, { supervisor: (dir) => {
+    const env = { PATH: path.join(dir, 'bin'), XDG_RUNTIME_DIR: path.join(dir, 'run'), ...MALLOC_ENV, MALLOC_CHECK_: '3' };
+    forgetMallocEnv(env);
+    return { env };
+  } });
+  await f.supervisor.start();
+  assert.equal(f.spawns.length, 1);
+  assert.deepEqual(Object.keys(f.spawns[0].options.env).filter((name) => name.startsWith('MALLOC_')), ['MALLOC_CHECK_']);
 });
 
 // The fixture with a HOME folder for a Bun in the standard folder (~/.bun/bin). The fixture's `bun` stays on PATH, unless `onPath` is false.

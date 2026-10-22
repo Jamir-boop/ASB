@@ -870,6 +870,7 @@ export function createSwitchboardServer(options = {}) {
       await options.readerPositions?.ready();
       const loaded = await load({ ...(sources ? { sources } : {}), machine });
       options.readerPositions?.scanDone();
+      options.onScanDone?.();
       // The npm start server has no machine identity, so its rows get no full reference.
       const tagger = machine.machineId ? options.referenceScopes?.() || null : null;
       const tags = sourceScopes(sources, tagger);

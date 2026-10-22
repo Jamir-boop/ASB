@@ -32,7 +32,8 @@ $script:quitting = $false
 function Start-Engine {
   $info = New-Object System.Diagnostics.ProcessStartInfo
   $info.FileName = $Node
-  $info.Arguments = '--disable-warning=ExperimentalWarning "' + (Join-Path $root 'scripts\asb.mjs') + '" engine run'
+  # --max-semi-space-size=16 makes the V8 young generation of the engine smaller (src/memory-trim.mjs).
+  $info.Arguments = '--max-semi-space-size=16 --disable-warning=ExperimentalWarning "' + (Join-Path $root 'scripts\asb.mjs') + '" engine run'
   $info.UseShellExecute = $false
   $info.CreateNoWindow = $true
   $info.EnvironmentVariables['ASB_ENGINE_LOG'] = '1'

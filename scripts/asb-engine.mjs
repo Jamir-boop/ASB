@@ -14,6 +14,7 @@ import { createSoundPlayer } from '../src/asb-sounds.mjs';
 import { boardCheck } from '../src/linux-system.mjs';
 import { cacheDir, configDir, runtimeDir, stateDir } from '../src/platform-paths.mjs';
 import { createReaderPositions } from '../src/reader-positions.mjs';
+import { createMemoryTrim, ENGINE_NODE_FLAGS, forgetMallocEnv, MALLOC_ENV } from '../src/memory-trim.mjs';
 import { findRunningService, prepareInstanceRuntime, protectWindowsFolder, publishInstanceRuntime,
   removeInstanceRuntime, requestInstance } from './asb-instance.mjs';
 
@@ -61,6 +62,9 @@ export const readerPositionsPath = (env, platform = process.platform) => (platfo
   .join(cacheDir(env, platform), 'readers', 'positions.json');
 
 export async function runEngine({ env = process.env, platform = process.platform, execFile = execFileAsync } = {}) {
+  // The glibc settings of the start belong to this process: the relay, the tray, and the apps that ASB opens must not get them.
+  forgetMallocEnv(process.env, env);
+  const trim = createMemoryTrim();
   if (platform === 'win32') {
     for (const folder of engineFolders(env, platform)) {
       mkdirSync(folder, { recursive: true });
@@ -84,7 +88,7 @@ export async function runEngine({ env = process.env, platform = process.platform
   let machineId = '';
   let referenceScopes = null;
   const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, machineGroup: group, machineRelay: relay, serviceMode: true, platform,
-    readerPositions: positions,
+    readerPositions: positions, onScanDone: trim.scanEnded,
     playSound: createSoundPlayer({ platform }),
     machineIdentity: () => ({ machineId, machineName: group.selfName() }), referenceScopes: () => referenceScopes,
     onStop: () => shutdown('the stop request') });
@@ -198,7 +202,8 @@ export async function startEngine({ env = process.env, execFile = execFileAsync,
     mkdirSync(path.dirname(log), { recursive: true, mode: 0o700 });
     const fd = openSync(log, 'w', 0o600);
     try {
-      const child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'run'], { detached: true, stdio: ['ignore', fd, fd], env });
+      const child = spawn(process.execPath, [...ENGINE_NODE_FLAGS, fileURLToPath(import.meta.url), 'run'],
+        { detached: true, stdio: ['ignore', fd, fd], env: { ...env, ...MALLOC_ENV } });
       child.once('error', () => {});
       child.unref();
     } finally { closeSync(fd); }

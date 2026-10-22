@@ -14,6 +14,7 @@ import { engineFolders, main as engineMain, readerPositionsPath, RUN_KEY, START_
 import { protectWindowsFolder } from '../scripts/asb-instance.mjs';
 import { LINUX_USAGE, main as dispatch, NODE_HINT, WINDOWS_USAGE } from '../scripts/asb.mjs';
 import { boardCheck, MSYS2_PYTHON, pythonCandidates } from '../src/linux-system.mjs';
+import { ENGINE_NODE_FLAGS } from '../src/memory-trim.mjs';
 
 // Windows branches with injected platform, execFile, spawn, and engine lookups. Platform-neutral (test/windows-tests.json).
 
@@ -227,6 +228,20 @@ test('the tray script starts the engine once after the mutex and before Windows 
   assert.equal(script.match(/Add-Type/g).length, 1);
   assert.ok(script.indexOf('.WaitOne(0)') < definition && definition < first && first < script.indexOf('Add-Type'));
   assert.ok(restart > script.indexOf('.add_Tick('));
+});
+
+// The V8 flag makes the young generation of the engine smaller (src/memory-trim.mjs). Windows has no glibc, so it gets no MALLOC setting.
+// The launcher start is short, so it gets no flag. This test reads the script text: the real tray runs only on Windows.
+test('the tray script starts the engine with the V8 flag, keeps its other arguments, and gives the launcher no flag', async () => {
+  const script = await readFile(new URL('../scripts/asb-tray.ps1', import.meta.url), 'utf8');
+  const argumentsOf = (name) => {
+    const start = script.indexOf(`function ${name}`);
+    return script.slice(start, script.indexOf('\n}', start)).match(/^ *\$info\.Arguments = (.*)$/m)[1];
+  };
+  assert.equal(argumentsOf('Start-Engine'),
+    `'${ENGINE_NODE_FLAGS.join(' ')} --disable-warning=ExperimentalWarning "' + (Join-Path $root 'scripts\\asb.mjs') + '" engine run'`);
+  assert.equal(argumentsOf('Start-Launcher'), `'--disable-warning=ExperimentalWarning "' + (Join-Path $root 'scripts\\asb.mjs') + '"'`);
+  assert.doesNotMatch(script, /MALLOC_/);
 });
 
 test('asb engine start on Windows starts no second tray when an engine answers, and status names the tray mode', async () => {

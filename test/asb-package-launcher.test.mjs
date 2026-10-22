@@ -7,6 +7,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { install } from '../scripts/asb-package.mjs';
+import { serviceUnit } from '../scripts/asb-service.mjs';
+import { ENGINE_NODE_FLAGS, MALLOC_ENV } from '../src/memory-trim.mjs';
 
 const sourceRoot = fileURLToPath(new URL('..', import.meta.url));
 const check = async () => ({ nodeExecutable: process.execPath, pythonExecutable: '/usr/bin/python3' });
@@ -79,6 +81,30 @@ test('the launcher exports its checked stable Node candidate and the installer k
   assert.ok(wrapper.endsWith(`\nexec ${shellQuote(path.join(result.directory, 'scripts/asb'))} "$@"\n`));
   assert.ok(!/PATH=/.test(wrapper), wrapper);
   execFileSync('/bin/sh', ['-n', result.launcher]);
+});
+
+// The engine runs as `service run` (the user unit, and an old unit too) or `engine run`. glibc reads its settings at process start, and V8
+// reads the young generation size from the Node arguments, so the launcher must pass both. Other commands must not get them.
+test('the launcher starts only the engine commands with the V8 flag and the glibc settings', async (t) => {
+  const directory = await temporaryDirectory(t);
+  const scripts = path.join(directory, 'source/scripts');
+  await mkdir(scripts, { recursive: true });
+  await copyFile(path.join(sourceRoot, 'scripts', 'asb'), path.join(scripts, 'asb'));
+  await writeFile(path.join(scripts, 'asb.mjs'), 'console.log(JSON.stringify({ flags: process.execArgv, args: process.argv.slice(2), '
+    + "malloc: Object.fromEntries(Object.entries(process.env).filter(([name]) => name.startsWith('MALLOC_'))) }));\n");
+  const base = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('MALLOC_')));
+  const launcher = path.join(scripts, 'asb');
+  const run = (args) => JSON.parse(execFileSync(launcher, args, { encoding: 'utf8', env: { ...base, ASB_NODE: process.execPath } }));
+  for (const args of [['service', 'run'], ['engine', 'run']]) assert.deepEqual(run(args), { flags: ENGINE_NODE_FLAGS, args, malloc: MALLOC_ENV });
+  for (const args of [[], ['engine', 'start'], ['engine', 'status'], ['engine', 'stop'], ['service', 'install'], ['service', 'status'], ['service', 'run', 'extra'],
+    ['engine', 'run', 'extra'], ['doctor'], ['agent', 'list'], ['bridge', 'install'], ['setup'], ['--package', 'install']]) {
+    assert.deepEqual(run(args), { flags: [], args, malloc: {} }, args.join(' '));
+  }
+  // The unit that `asb service install` writes (an older unit has the same line) runs the launcher with `service run`.
+  const unit = await serviceUnit({ launcherExecutable: launcher });
+  const [, command] = unit.match(/^ExecStart=(.*)$/m);
+  assert.equal(command, `${launcher} service run`);
+  assert.deepEqual(run(command.slice(launcher.length + 1).split(' ')), { flags: ENGINE_NODE_FLAGS, args: ['service', 'run'], malloc: MALLOC_ENV });
 });
 
 test('the installer falls back to its checked process for relative or unavailable Node candidates', async (t) => {

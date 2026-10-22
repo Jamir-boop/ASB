@@ -33,6 +33,7 @@ export const RUNTIME_FILES = [
   'src/session-references.mjs', 'src/linux-system.mjs', 'src/linux-distros.mjs', 'scripts/asb-doctor.mjs',
   'src/session-targets.mjs',
   'src/reader-positions.mjs',
+  'src/memory-trim.mjs',
   '.agents/plugins/marketplace.json',
   'bridge/.codex-plugin/plugin.json', 'bridge/.mcp.json', 'bridge/hooks/hooks.json',
   'bridge/dist/server.js', 'bridge/dist/hook.js', 'bridge/dist/relay.js', 'bridge/LICENSE',

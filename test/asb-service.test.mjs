@@ -13,6 +13,7 @@ import { autostartEntry, autostartMode, findRunningService, main as serviceMain,
 import { engineLogPath, shouldStartTray, startEngine, trayLauncher } from '../scripts/asb-engine.mjs';
 import { createSwitchboardServer } from '../src/switchboard.mjs';
 import { RUNTIME_FILES } from '../scripts/asb-package.mjs';
+import { ENGINE_NODE_FLAGS, MALLOC_ENV } from '../src/memory-trim.mjs';
 
 const serviceScript = fileURLToPath(new URL('../scripts/asb-service.mjs', import.meta.url));
 const desktopScript = fileURLToPath(new URL('../scripts/asb-desktop.mjs', import.meta.url));
@@ -432,6 +433,54 @@ test('service-only polling observes completion with no clients and close cancels
   assert.deepEqual(seen, ['working', 'idle', 'idle']);
 });
 
+// The unit runs `<launcher> service run`: the launcher replaces itself with Node (the same PID), so /proc shows what the engine got.
+test('the launcher starts the service engine with the V8 flag and the glibc settings in its start environment', { timeout: 20_000 }, async (t) => {
+  const f = await fixture(t);
+  const child = f.launch(['service', 'run'], {}, launcherScript);
+  await ready(child);
+  const words = (file) => readFile(`/proc/${child.pid}/${file}`, 'utf8').then((text) => text.split('\0'));
+  const command = await words('cmdline');
+  assert.deepEqual(command.slice(1, 3), [...ENGINE_NODE_FLAGS, path.join(path.dirname(launcherScript), 'asb.mjs')]);
+  assert.deepEqual(command.slice(3, 5), ['service', 'run']);
+  const environment = await words('environ');
+  for (const [name, value] of Object.entries(MALLOC_ENV)) assert.ok(environment.includes(`${name}=${value}`), name);
+});
+
+test('each scan that ends calls onScanDone once, and a read from the cache calls nothing', async (t) => {
+  const ends = [];
+  const server = createSwitchboardServer({ pendingStatePath: false, dashboardWatchPaths: [], onScanDone: () => ends.push(Date.now()),
+    loadDashboard: async () => ({ providers: [], threads: [] }) });
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const read = (query = '') => fetch(`http://127.0.0.1:${server.address().port}/api/dashboard${query}`).then((reply) => reply.json());
+  await read();
+  assert.equal(ends.length, 1);
+  await read();
+  assert.equal(ends.length, 1);
+  await read('?force=1');
+  assert.equal(ends.length, 2);
+});
+
+// The real engine process: a preload records each call of the gc function that src/memory-trim.mjs makes. V8 before 12 has no last-resort flavor.
+test('the engine runs the last-resort GC after its first scan', { timeout: 20_000, skip: Number.parseInt(process.versions.v8, 10) < 12 }, async (t) => {
+  const f = await fixture(t);
+  const log = path.join(f.home, 'gc.log');
+  const preload = path.join(f.home, 'gc-preload.mjs');
+  await writeFile(preload, `import vm from 'node:vm';\nimport { appendFileSync } from 'node:fs';\nconst make = vm.runInNewContext;\n`
+    + `vm.runInNewContext = (code, ...rest) => {\n  const value = make.call(vm, code, ...rest);\n`
+    + `  return code === 'gc' ? (...args) => { appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n'); return value(...args); } : value;\n};\n`);
+  const child = f.launch(['--import', preload, engineScript, 'run']);
+  await ready(child);
+  await fetch(`http://127.0.0.1:${f.env.PORT}/api/dashboard`);
+  let text = '';
+  // The first trim has no memory level to compare with, so it runs 3 s after the scan end (TRIM_SETTLE_MS).
+  for (let tries = 0; tries < 160 && !text; tries += 1) {
+    text = await readFile(log, 'utf8').catch(() => '');
+    if (!text) await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(text.split('\n')[0], JSON.stringify([{ type: 'major', execution: 'sync', flavor: 'last-resort' }]));
+});
+
 test('a Working member row keeps the 2 s board interval but not the 2 s service scans', async (t) => {
   let localState = 'idle';
   const timers = [];
@@ -483,7 +532,9 @@ test('engine start uses the enabled user service, a detached engine, or the runn
       spawn: (program, args, options) => {
         calls.push(['spawn', program, ...args]);
         assert.equal(options.detached, true);
-        assert.equal(options.env, env);
+        // The detached engine gets the glibc settings of the engine; the caller's environment object stays as it was.
+        assert.deepEqual(options.env, { ...env, ...MALLOC_ENV });
+        assert.deepEqual(Object.keys(env), ['XDG_STATE_HOME', 'XDG_RUNTIME_DIR']);
         assert.equal(options.stdio[0], 'ignore');
         assert.ok(Number.isInteger(options.stdio[1]) && options.stdio[1] === options.stdio[2]);
         const child = new EventEmitter();
@@ -498,7 +549,7 @@ test('engine start uses the enabled user service, a detached engine, or the runn
   const log = path.join(env.XDG_STATE_HOME, 'asb/engine.log');
   const detached = fake();
   assert.equal(await startEngine(detached.options), runtime);
-  assert.deepEqual(detached.calls, [['systemctl', '--user', 'is-enabled', 'asb.service'], ['spawn', process.execPath, engineScript, 'run'], ['unref']]);
+  assert.deepEqual(detached.calls, [['systemctl', '--user', 'is-enabled', 'asb.service'], ['spawn', process.execPath, ...ENGINE_NODE_FLAGS, engineScript, 'run'], ['unref']]);
   assert.equal((await stat(log)).mode & 0o777, 0o600);
   await writeFile(log, 'old output');
   await assert.rejects(startEngine({ ...fake({ answerAt: -1 }).options, timeoutMs: 50 }), { message: `ASB cannot start its engine. See ${log}.` });
@@ -593,8 +644,9 @@ test('the engine starts the tray with its environment, stops it, and survives a 
   const f = await fixture(t);
   const record = path.join(f.home, 'tray.env');
   const tray = path.join(f.home, 'fake-tray');
-  await writeFile(tray, fakePython(`printf '%s\\n' "$ASB_ENGINE_PID" "$ASB_ENGINE_URL" "$ASB_LAUNCHER" "\${#ASB_SOURCE_TOKEN}" "$1" "\${ASB_BOARD-unset}" > "${record}.tmp"\nmv "${record}.tmp" "${record}"\n[ -n "$ASB_TRAY_FAIL" ] && exit 3\nexec sleep 60\n`), { mode: 0o755 });
-  const extra = { ASB_TRAY: '', ASB_PYTHON: tray, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/nonexistent', ASB_INSTALLED_LAUNCHER: '/opt/asb/bin/asb' };
+  await writeFile(tray, fakePython(`printf '%s\\n' "$ASB_ENGINE_PID" "$ASB_ENGINE_URL" "$ASB_LAUNCHER" "\${#ASB_SOURCE_TOKEN}" "$1" "\${ASB_BOARD-unset}" "\${MALLOC_ARENA_MAX-unset}" "\${MALLOC_MMAP_THRESHOLD_-unset}" "\${MALLOC_TRIM_THRESHOLD_-unset}" > "${record}.tmp"\nmv "${record}.tmp" "${record}"\n[ -n "$ASB_TRAY_FAIL" ] && exit 3\nexec sleep 60\n`), { mode: 0o755 });
+  // The launcher gives the engine the glibc settings (scripts/asb); the engine must not pass them to the tray.
+  const extra = { ASB_TRAY: '', ASB_PYTHON: tray, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/nonexistent', ASB_INSTALLED_LAUNCHER: '/opt/asb/bin/asb', ...MALLOC_ENV };
   const recorded = async () => {
     for (let tries = 0; tries < 100; tries += 1) {
       const text = await readFile(record, 'utf8').catch(() => null);
@@ -610,6 +662,7 @@ test('the engine starts the tray with its environment, stops it, and survives a 
   assert.ok(values[4].endsWith('/scripts/asb-tray.py'));
   // A full board: the tray gets no ASB_BOARD.
   assert.equal(values[5], 'unset');
+  assert.deepEqual(values.slice(6), ['unset', 'unset', 'unset']);
   const trayPid = Number((await readFile(`/proc/${child.pid}/task/${child.pid}/children`, 'utf8')).trim().split(/\s+/)[0]);
   assert.ok(trayPid > 0);
   const runtime = await readServiceRuntime(f.env);
