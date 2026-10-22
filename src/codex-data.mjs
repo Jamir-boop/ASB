@@ -134,9 +134,20 @@ export function applySessionIndexTitles(rows, titleByThreadId) {
   }));
 }
 
-async function readCodexGlobalState(globalStatePath = DEFAULT_GLOBAL_STATE, cacheScope = '') {
+// The keys of the Codex global state that ASB reads (`codexNativeReadStatus`). The file has about 1 MB and 46 keys: the cache keeps only these.
+// A reader of a new key must add its name here: the test of this list reads the keys of the reader.
+export const CODEX_GLOBAL_STATE_KEYS = ['electron-thread-read-state-v1'];
+
+// Not an object (for example `null`): the value stays, so the reader sees the same as before.
+export function parseCodexGlobalState(text) {
+  const state = JSON.parse(text);
+  if (!state || typeof state !== 'object') return state;
+  return Object.fromEntries(CODEX_GLOBAL_STATE_KEYS.filter((key) => state[key] !== undefined).map((key) => [key, state[key]]));
+}
+
+export async function readCodexGlobalState(globalStatePath = DEFAULT_GLOBAL_STATE, cacheScope = '') {
   try {
-    return await readCodexMetadata(globalStatePath, JSON.parse, cacheScope);
+    return await readCodexMetadata(globalStatePath, parseCodexGlobalState, cacheScope);
   } catch (error) {
     if (error?.code === 'ENOENT') return {};
     throw error;

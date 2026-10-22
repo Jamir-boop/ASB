@@ -534,7 +534,8 @@ async function readTailText(filePath, maxBytes = DEFAULT_MAX_JSONL_BYTES, fileSt
   }
 }
 
-async function readJsonFile(filePath, fileStat = null, cacheScope = '') {
+// The cached value has only the fields of `CLAUDE_SESSION_FIELDS`.
+export async function readClaudeSessionFile(filePath, fileStat = null, cacheScope = '') {
   const signature = statSignature(fileStat || await fs.stat(filePath));
   const cached = claudeMetadataCache.get(filePath, cacheScope);
   if (cached && sameFileSignature(cached.signature, signature)) {
@@ -544,7 +545,7 @@ async function readJsonFile(filePath, fileStat = null, cacheScope = '') {
   claudeCacheMetrics.metadataMisses += 1;
   const text = await fs.readFile(filePath, 'utf8');
   claudeCacheMetrics.metadataBytesRead += Buffer.byteLength(text);
-  const value = JSON.parse(text);
+  const value = pickClaudeSession(JSON.parse(text));
   claudeMetadataCache.remember(filePath, { signature, value }, cacheScope);
   return value;
 }
@@ -673,6 +674,24 @@ export function claudeDesktopCodeDeepLink(cliSessionId, localSessionId = '') {
   const sessionId = String(cliSessionId || '');
   if (!UUID_PATTERN.test(sessionId)) return '';
   return `claude://resume?session=${encodeURIComponent(sessionId)}`;
+}
+
+// The fields of a Desktop session file that ASB reads: `deriveClaudeDesktopCodeTitle`, `normalizeClaudeDesktopCodeSession`, and the
+// transcript lookup of `loadClaudeDesktopCodeThreads`. The metadata cache keeps only these fields (a file has about 90 KB of others).
+// A reader of a new field must add its name here: the test of this list reads the fields of the readers.
+export const CLAUDE_SESSION_FIELDS = ['sessionId', 'id', 'cliSessionId', 'originCwd', 'cwd', 'lastActivityAt', 'createdAt', 'title',
+  'name', 'displayName', 'conversationTitle', 'model', 'isArchived', 'priorCliSessionIds', 'bridgeSessionIds', 'permissionMode',
+  'completedTurns'];
+export const CLAUDE_SESSION_METADATA_FIELDS = ['title', 'name'];
+
+const pickFields = (source, names) => Object.fromEntries(names.filter((name) => source[name] !== undefined).map((name) => [name, source[name]]));
+
+// Not an object (for example `null`): the value stays, so the readers fail or skip the file as they did before.
+export function pickClaudeSession(session) {
+  if (!session || typeof session !== 'object') return session;
+  const picked = pickFields(session, CLAUDE_SESSION_FIELDS);
+  if (session.metadata && typeof session.metadata === 'object') picked.metadata = pickFields(session.metadata, CLAUDE_SESSION_METADATA_FIELDS);
+  return picked;
 }
 
 function deriveClaudeDesktopCodeTitle(session = {}) {
@@ -1260,7 +1279,7 @@ export async function loadClaudeDesktopCodeThreads({
   const { subagentsBySession, agentLogs } = projectIndex;
   const parsed = await mapWithConcurrency(files, SIGNAL_CONCURRENCY, async (entry) => {
     try {
-      const session = await readJsonFile(entry.filePath, entry.stat, cacheScope);
+      const session = await readClaudeSessionFile(entry.filePath, entry.stat, cacheScope);
       const projectFile = await currentClaudeRoot(projectIndex, String(session.cliSessionId || ''));
       const rootSignals = projectFile
         ? await readClaudeRootSignals(projectFile, subagentsBySession.get(projectFile.filePath), { maxBytes, nowMs, cacheScope }, agentLogs)
