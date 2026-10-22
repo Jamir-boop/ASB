@@ -683,16 +683,40 @@ async function findQuestionCallLine(handle, buffer, start, size) {
 const ROLLOUT_POSITION_ID_RE = /^[A-Za-z0-9_:-]{1,160}$/;
 const ROLLOUT_POSITION_KINDS = new Set(['', 'task_started', 'task_complete', 'turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled', 'failed']);
 const ROLLOUT_POSITION_KEYS = ['atMs', 'ctimeMs', 'dev', 'full', 'guard', 'guardBytes', 'ino', 'k', 'lifecycle', 'mtimeMs', 'offset', 'questions', 'size'].join();
-const ROLLOUT_LIFECYCLE_KEYS = Object.keys(emptyRolloutLifecycle()).sort().join();
+const ROLLOUT_LIFECYCLE_NAMES = Object.keys(emptyRolloutLifecycle());
+const ROLLOUT_LIFECYCLE_KEYS = [...ROLLOUT_LIFECYCLE_NAMES].sort().join();
+// The other fields of the signals of a tail read: a hint flag, times, a fixed kind, and the open-question flags.
+const ROLLOUT_TAIL_NAMES = ['awaitingUserInput', 'completionHint', 'latestAgentFinalAtMs', 'latestBlockingQuestionAtMs', 'latestEventAtMs',
+  'latestMessageKind', 'latestUserMessageAtMs', 'latestUserQuestionAtMs', 'userQuestionBlocking'];
+const ROLLOUT_TAIL_KEYS = [...ROLLOUT_TAIL_NAMES].sort().join();
+const ROLLOUT_TAIL_POSITION_KEYS = ['atMs', 'ctimeMs', 'dev', 'guard', 'guardBytes', 'ino', 'initialBytes', 'k', 'lifecycle', 'maxBytes',
+  'mtimeMs', 'size', 'tail'].sort().join();
 let rolloutPositions = null;
+let rolloutTailPositions = null;
 
 // `source` is { take(filePath) -> saved record or null, digest(bytes) -> hex }, or null to turn the positions off.
 export function useRolloutPositions(source) {
   rolloutPositions = source;
 }
 
+// The same for the saved signals of unchanged logs.
+export function useRolloutTailPositions(source) {
+  rolloutTailPositions = source;
+}
+
 const finiteNumber = (value) => typeof value === 'number' && Number.isFinite(value);
 const count = (value) => Number.isInteger(value) && value >= 0;
+
+// The 13 lifecycle fields of a checkpoint or of a tail result: numbers, booleans, and fixed kinds.
+function validRolloutLifecycle(life) {
+  return Boolean(life) && typeof life === 'object' && Object.keys(life).sort().join() === ROLLOUT_LIFECYCLE_KEYS
+    && [true, false, null].includes(life.agentRunning)
+    && [life.agentStartedAtMs, life.agentActivityAtMs, life.latestLifecycleAtMs].every((value) => value === null || finiteNumber(value))
+    && [life.latestTaskStartedAtMs, life.latestTaskEndedAtMs, life.limitStoppedAtMs, life.limitWindowAtMs, life.limitResetsAtMs].every(finiteNumber)
+    && ROLLOUT_POSITION_KINDS.has(life.latestLifecycleKind) && ROLLOUT_POSITION_KINDS.has(life.latestTaskEndKind)
+    && typeof life.limitStopped === 'boolean' && Array.isArray(life.limitWindows) && life.limitWindows.length <= 2
+    && life.limitWindows.every((window) => Array.isArray(window) && window.length === 2 && window.every(finiteNumber));
+}
 
 // The checks of one saved record at save and at load: numbers, booleans, fixed kinds, and IDs, never text or paths.
 // reader-positions.mjs checks `k`, `guard`, and `atMs`.
@@ -702,13 +726,7 @@ export function validRolloutRecord(record) {
   if (![record.dev, record.ino, record.size, record.offset, record.guardBytes].every(count) || record.offset > record.size
     || record.guardBytes !== Math.min(64, record.size) || !finiteNumber(record.mtimeMs) || !finiteNumber(record.ctimeMs)
     || typeof record.full !== 'boolean') return false;
-  if (!life || typeof life !== 'object' || Object.keys(life).sort().join() !== ROLLOUT_LIFECYCLE_KEYS
-    || ![true, false, null].includes(life.agentRunning)
-    || ![life.agentStartedAtMs, life.agentActivityAtMs, life.latestLifecycleAtMs].every((value) => value === null || finiteNumber(value))
-    || ![life.latestTaskStartedAtMs, life.latestTaskEndedAtMs, life.limitStoppedAtMs, life.limitWindowAtMs, life.limitResetsAtMs].every(finiteNumber)
-    || !ROLLOUT_POSITION_KINDS.has(life.latestLifecycleKind) || !ROLLOUT_POSITION_KINDS.has(life.latestTaskEndKind)
-    || typeof life.limitStopped !== 'boolean' || !Array.isArray(life.limitWindows) || life.limitWindows.length > 2
-    || !life.limitWindows.every((window) => Array.isArray(window) && window.length === 2 && window.every(finiteNumber))) return false;
+  if (!validRolloutLifecycle(life)) return false;
   return Array.isArray(questions) && new Set(questions.map((question) => question?.[0])).size === questions.length
     && questions.every((question) => Array.isArray(question) && question.length === 4 && typeof question[0] === 'string'
       && ROLLOUT_POSITION_ID_RE.test(question[0]) && [0, 1].includes(question[1]) && finiteNumber(question[2])
@@ -726,6 +744,57 @@ export function rolloutPositionRecords() {
       questions: [...entry.questions].map(([id, question]) => [id, question.async ? 1 : 0, question.atMs, [...question.remaining]]) }]);
   }
   return records;
+}
+
+// The checks of one saved tail result: the lifecycle and the other fields of the signals, with no text. The record is used only for a log with
+// the same file signature, the same tail limits, and the same guard bytes.
+export function validRolloutTailRecord(record) {
+  if (!record || typeof record !== 'object' || Object.keys(record).sort().join() !== ROLLOUT_TAIL_POSITION_KEYS) return false;
+  const { lifecycle, tail } = record;
+  if (![record.dev, record.ino, record.size, record.guardBytes, record.initialBytes, record.maxBytes].every(count) || record.size < 1
+    || record.guardBytes !== Math.min(64, record.size) || !finiteNumber(record.mtimeMs) || !finiteNumber(record.ctimeMs)
+    || !validRolloutLifecycle(lifecycle)) return false;
+  return Boolean(tail) && typeof tail === 'object' && Object.keys(tail).sort().join() === ROLLOUT_TAIL_KEYS
+    && typeof tail.completionHint === 'boolean' && ['', 'agent', 'user'].includes(tail.latestMessageKind)
+    && [tail.latestAgentFinalAtMs, tail.latestUserMessageAtMs, tail.latestEventAtMs].every((value) => value === null || finiteNumber(value))
+    && typeof tail.awaitingUserInput === 'boolean' && typeof tail.userQuestionBlocking === 'boolean'
+    && finiteNumber(tail.latestUserQuestionAtMs) && finiteNumber(tail.latestBlockingQuestionAtMs);
+}
+
+// The tail results that a new engine can use again, as plain records with the raw guard bytes (memory only): one for each log, the newest.
+export function rolloutTailRecords() {
+  const newest = new Map();
+  for (const [cacheKey, entry] of rolloutSignalCache) {
+    if (!Buffer.isBuffer(entry.guard) || !finiteNumber(entry.atMs)) continue;
+    const [filePath, initialBytes, maxBytes] = cacheKey.split('\0');
+    if (newest.get(filePath)?.atMs >= entry.atMs) continue;
+    const { signals, signature } = entry;
+    newest.set(filePath, { atMs: entry.atMs, dev: signature.dev, ino: signature.ino, size: signature.size, mtimeMs: signature.mtimeMs,
+      ctimeMs: signature.ctimeMs, guard: entry.guard, guardBytes: entry.guard.length, initialBytes: Number(initialBytes), maxBytes: Number(maxBytes),
+      lifecycle: { ...Object.fromEntries(ROLLOUT_LIFECYCLE_NAMES.map((name) => [name, signals[name]])),
+        limitWindows: (signals.limitWindows || []).map((window) => [...window]) },
+      tail: Object.fromEntries(ROLLOUT_TAIL_NAMES.map((name) => [name, signals[name]])) });
+  }
+  return [...newest];
+}
+
+// The saved signals of a log with no tail result in memory, or null. The log must be the same file with the same size and times,
+// the same tail limits, and the same last bytes. The result is new objects, so the cache entry never shares state with the record.
+async function savedRolloutTail(rolloutPath, stat, initialBytes, maxBytes) {
+  const record = rolloutTailPositions.take(rolloutPath);
+  const now = statSignature(stat);
+  if (!record || !validRolloutTailRecord(record) || record.initialBytes !== initialBytes || record.maxBytes !== maxBytes
+    || ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].some((name) => record[name] !== now[name])) return null;
+  const guard = Buffer.alloc(record.guardBytes);
+  const handle = await fs.open(rolloutPath, 'r');
+  try {
+    const { bytesRead } = await handle.read(guard, 0, guard.length, record.size - guard.length);
+    codexCacheMetrics.rolloutSignalBytesRead += bytesRead;
+    if (bytesRead !== guard.length || rolloutTailPositions.digest(guard) !== record.guard) return null;
+  } finally {
+    await handle.close();
+  }
+  return { guard, signals: { ...record.tail, ...record.lifecycle, limitWindows: record.lifecycle.limitWindows.map((window) => [...window]) } };
 }
 
 // A saved checkpoint for a file with no checkpoint in memory, after the full-read checks of the design (section 3, rules 2-6).
@@ -839,7 +908,9 @@ export async function readTail(filePath, maxBytes = DEFAULT_MAX_ROLLOUT_BYTES, f
     const buffer = Buffer.alloc(length);
     const { bytesRead } = await handle.read(buffer, 0, length, start);
     const text = buffer.subarray(0, bytesRead).toString('utf8');
-    if (start === 0) return { text, start, size: stat.size, bytesRead };
+    // The last bytes of the file as read: the guard of a saved result (memory only).
+    const guard = bytesRead === length ? Buffer.from(buffer.subarray(Math.max(0, bytesRead - 64), bytesRead)) : null;
+    if (start === 0) return { text, start, size: stat.size, bytesRead, guard };
 
     const firstNewline = text.indexOf('\n');
     return {
@@ -847,6 +918,7 @@ export async function readTail(filePath, maxBytes = DEFAULT_MAX_ROLLOUT_BYTES, f
       start,
       size: stat.size,
       bytesRead,
+      guard,
     };
   } finally {
     await handle.close();
@@ -879,14 +951,25 @@ export async function readRolloutSignals(
       codexCacheMetrics.rolloutSignalHits += 1;
       return cached.signals;
     }
+    // With no result in memory, the saved result of an unchanged log is this result: no tail is read.
+    const saved = !cached && rolloutTailPositions ? await savedRolloutTail(rolloutPath, stat, initialBytes, maxBytes).catch(() => null) : null;
+    if (saved) {
+      rolloutSignalCache.remember(cacheKey, { signature, signals: saved.signals, atMs: Date.now(), guard: saved.guard }, cacheScope, cacheLimit,
+        codexCacheMetrics, 'rolloutSignalWrites', 'rolloutSignalEvictions');
+      rolloutActivityCache.get(rolloutPath, cacheScope, cacheLimit);
+      codexCacheMetrics.rolloutSignalHits += 1;
+      return saved.signals;
+    }
     codexCacheMetrics.rolloutSignalMisses += 1;
 
     let bytesToRead = Math.min(Math.max(1, initialBytes), maxBytes, stat.size);
     let signals = parseRolloutSignals('');
     let tailStart = 0;
+    let guard = null;
     while (bytesToRead > 0) {
       const tail = await readTail(rolloutPath, bytesToRead, stat);
       tailStart = tail.start;
+      guard = tail.guard;
       codexCacheMetrics.rolloutSignalBytesRead += tail.bytesRead;
       signals = parseRolloutSignals(tail.text);
       if (hasTurnBoundary(signals) || bytesToRead >= stat.size || bytesToRead >= maxBytes) break;
@@ -905,8 +988,9 @@ export async function readRolloutSignals(
         latestUserQuestionAtMs: activity.latestUserQuestionAtMs, latestBlockingQuestionAtMs: activity.latestBlockingQuestionAtMs });
     }
     delete signals[QUESTION_HISTORY_COMPLETE];
-    rolloutSignalCache.remember(cacheKey, { signature, signals }, cacheScope, cacheLimit,
-      codexCacheMetrics, 'rolloutSignalWrites', 'rolloutSignalEvictions');
+    // The entry does not change after this, so a save of the positions never sees a result that a running read changes.
+    rolloutSignalCache.remember(cacheKey, { signature, signals, ...(rolloutTailPositions && guard ? { atMs: Date.now(), guard } : {}) },
+      cacheScope, cacheLimit, codexCacheMetrics, 'rolloutSignalWrites', 'rolloutSignalEvictions');
     return signals;
   } catch {
     // The empty signals show the card as Unknown. The mark lets the source status say why.

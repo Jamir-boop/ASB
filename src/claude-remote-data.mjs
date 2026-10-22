@@ -325,6 +325,68 @@ function boundedResponses(cache, nowMs) {
   }
 }
 
+// Reader positions on disk (src/reader-positions.mjs): which cache entries are not a session list or watch. Only the engine sets them.
+// The names of the entries are digests of their URLs, so they stay in memory. A record is a bucket of the names that start with the same
+// three characters: the count, the keyed digest of the sorted names, and the sorted positions of the names that are read again at the
+// start (a list, a watch, an entry that is not complete, or an entry with a bad header). Every other name of a bucket whose names
+// are the same as at the save is known as not a source entry, so a new engine opens none of these files.
+const REMOTE_BUCKET_LENGTH = 3;
+const DAY_MS = 24 * 60 * 60 * 1000;
+let remotePositions = null;
+
+// `source` is { take(path) -> saved record or null, digest(bytes) -> hex }, or null to turn the positions off.
+export function useRemotePositions(source) {
+  remotePositions = source;
+}
+
+// The checks of one saved bucket at save and at load: numbers only. reader-positions.mjs checks `k`, `guard`, and `atMs`.
+export function validRemoteRecord(record) {
+  if (!record || typeof record !== 'object' || Object.keys(record).sort().join() !== 'atMs,count,guard,k,open') return false;
+  return Number.isInteger(record.count) && record.count > 0 && record.count <= MAX_INDEX_ENTRIES && Array.isArray(record.open)
+    && record.open.length <= record.count
+    && record.open.every((index, at) => Number.isInteger(index) && index >= 0 && index < record.count && (at === 0 || index > record.open[at - 1]));
+}
+
+// The buckets of every cache that has entries: the names (sorted) and the positions that are read again. `guard` is the joined
+// names for the keyed digest; it is never written. The time is the day of the last scan, so a day passes before the text changes.
+export function remotePositionRecords() {
+  const records = [];
+  for (const [root, cache] of caches) {
+    if (!cache.scannedAtMs) continue;
+    const buckets = new Map();
+    for (const [name, key] of cache.keys) {
+      const id = name.slice(0, REMOTE_BUCKET_LENGTH);
+      const bucket = buckets.get(id);
+      const entry = { name, open: key !== null || cache.headerless.has(name) };
+      if (bucket) bucket.push(entry); else buckets.set(id, [entry]);
+    }
+    for (const [id, bucket] of buckets) {
+      bucket.sort((a, b) => (a.name < b.name ? -1 : 1));
+      records.push([`${root}\0${id}`, { atMs: cache.scannedAtMs, count: bucket.length,
+        open: bucket.flatMap((entry, index) => (entry.open ? [index] : [])), guard: bucket.map((entry) => entry.name).join('\n') }]);
+    }
+  }
+  return records;
+}
+
+// Marks the names whose bucket agrees with a saved bucket as known: not a source entry. Only for a cache with no key in memory.
+function seedKeys(root, names, cache) {
+  const buckets = new Map();
+  for (const name of names) {
+    const id = name.slice(0, REMOTE_BUCKET_LENGTH);
+    const bucket = buckets.get(id);
+    if (bucket) bucket.push(name); else buckets.set(id, [name]);
+  }
+  for (const [id, bucket] of buckets) {
+    const record = remotePositions.take(`${root}\0${id}`);
+    if (!record || !validRemoteRecord(record) || record.count !== bucket.length) continue;
+    bucket.sort();
+    if (remotePositions.digest(bucket.join('\n')) !== record.guard) continue;
+    const open = new Set(record.open);
+    bucket.forEach((name, index) => { if (!open.has(index)) cache.keys.set(name, null); });
+  }
+}
+
 async function scanCache(root, cache, nowMs) {
   const generation = parserGeneration;
   const directory = await fs.stat(root);
@@ -333,6 +395,10 @@ async function scanCache(root, cache, nowMs) {
     const names = (await fs.readdir(root)).filter((name) => /^[a-f0-9]{16}_0$/.test(name));
     const present = new Set(names);
     for (const name of cache.keys.keys()) if (!present.has(name)) { cache.keys.delete(name); cache.responses.delete(name); }
+    if (remotePositions && !cache.seeded) {
+      cache.seeded = true;
+      if (!cache.keys.size) seedKeys(root, names, cache);
+    }
     let next = 0;
     const unknown = names.filter((name) => !cache.keys.has(name)).slice(0, Math.max(0, MAX_INDEX_ENTRIES - cache.keys.size));
     await Promise.all(Array.from({ length: 6 }, async () => {
@@ -345,12 +411,15 @@ async function scanCache(root, cache, nowMs) {
           const key = await readKey(file);
           cache.keys.set(name, key?.kind ? { ...key, signature: '' }
             : key?.retry ? { retry: true, signature: stamp } : null);
+          // A bad header is not a source key: this entry is read again at the next start.
+          if (key === null) cache.headerless.add(name);
         } catch { /* Cache entries can disappear during discovery. */ }
         finally { await file?.close(); }
       }
     }));
     if (generation !== parserGeneration) { cache.directorySignature = ''; throw parserError(); }
     cache.directorySignature = signature(directory);
+    cache.scannedAtMs = Math.floor(Date.now() / DAY_MS) * DAY_MS;
   }
   const candidates = [...cache.keys].filter(([, key]) => key?.kind || key?.retry);
   let next = 0;
@@ -366,6 +435,7 @@ async function scanCache(root, cache, nowMs) {
           const file = await fs.open(filePath, 'r');
           try { key = await readKey(file); } finally { await file.close(); }
           cache.keys.set(name, key?.kind ? key : key?.retry ? { ...key, signature: stamp } : null);
+          if (key === null) cache.headerless.add(name);
           if (!key?.kind) continue;
         }
         files.push({ name, key, filePath, stamp, mtimeMs: stat.mtimeMs });
@@ -448,7 +518,7 @@ export async function loadClaudeRemoteThreads({ appDir = defaultClaudeAppDir(), 
   }
   let cache = caches.get(root);
   if (!cache) {
-    cache = { directorySignature: '', keys: new Map(), responses: new Map(), read: null };
+    cache = { directorySignature: '', keys: new Map(), responses: new Map(), read: null, headerless: new Set(), seeded: false, scannedAtMs: 0 };
     caches.set(root, cache);
     if (caches.size > 32) caches.delete(caches.keys().next().value);
   }

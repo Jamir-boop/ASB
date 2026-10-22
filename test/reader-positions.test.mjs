@@ -1,13 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { createHmac, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import * as zlib from 'node:zlib';
 import { DatabaseSync } from 'node:sqlite';
-import { readRolloutSignals, useRolloutPositions } from '../src/codex-data.mjs';
+import { useRemotePositions } from '../src/claude-remote-data.mjs';
+import { parseRolloutSignals, readRolloutSignals, useRolloutPositions, useRolloutTailPositions } from '../src/codex-data.mjs';
 import { createReaderPositions, MAX_POSITION_FILE_BYTES, MAX_POSITION_RECORD_BYTES, MAX_POSITION_RECORDS,
   POSITION_SAVE_INTERVAL_MS } from '../src/reader-positions.mjs';
 import { rolloutWriter, seededRandom } from './rollout-writer.mjs';
@@ -59,11 +61,21 @@ if (config.claudeOnly) {
   out.claudeThreads = (await claude.loadClaudeDesktopCodeThreads({ ...config.claudeOnly, nowMs: config.nowMs })).threads;
   out.claudeBytes = claudeBytes() - before;
 }
+if (config.remote) {
+  // The platform is fixed, so the Windows test run reads the cache folder too.
+  const remote = await import(new URL('src/claude-remote-data.mjs', process.env.ASB_ROOT));
+  const before = remote.getClaudeRemoteCacheStats().keyReads;
+  out.remoteThreads = (await remote.loadClaudeRemoteThreads({ appDir: config.remote.appDir, nowMs: config.nowMs, platform: 'linux' })).threads;
+  out.keyReads = remote.getClaudeRemoteCacheStats().keyReads - before;
+  await remote.shutdownClaudeRemoteParser();
+}
 if (positions) {
   await positions.flush();
   out.stats = positions.stats();
   out.codexStats = positions.stats('codex');
   out.claudeStats = positions.stats('claude');
+  out.tailStats = positions.stats('codexTail');
+  out.remoteStats = positions.stats('remote');
 }
 process.stdout.write(JSON.stringify(out));
 `;
@@ -253,7 +265,9 @@ test('a new engine with saved reader positions shows the same rows as a full rea
   assert.equal(claudeRow(c.threads, 'climited').limitResetsAtMs, NOW_MS + 3_600_000);
   assert.equal(claudeRow(c.threads, 'cfailed').lastOutcome, 'failed');
   assert.equal(claudeRow(c.threads, 'cquestion').questionPending, false);
-  assert.ok(b.codexStats.taken >= 7, `Codex taken: ${b.codexStats.taken}`);
+  // The four logs with appends resume at their checkpoint; the three logs that did not change use their saved tail result.
+  assert.ok(b.codexStats.taken >= 4, `Codex taken: ${b.codexStats.taken}`);
+  assert.equal(b.tailStats.taken, 7);
   assert.equal(b.claudeStats.taken, 8);
   const total = (run) => run.dashboardBytes + run.claudeBytes;
   assert.ok(total(b) * 10 < total(c), `bytes B ${total(b)}, C ${total(c)}`);
@@ -462,6 +476,74 @@ test('a saved record that does not agree with its log gives a full read and the 
   assert.ok(resumed.files[0].bytes < 32 * 1024, `resumed bytes: ${resumed.files[0].bytes}`);
 });
 
+test('Codex tail results from disk give the signals of a full read for random logs, with and without appends', async (t) => {
+  const directory = await temporaryDirectory(t);
+  const files = await randomRollouts(directory, 100, 300);
+  const file = path.join(directory, 'readers', 'positions.json');
+  const a = await engine({ file, key: KEY, files: fileConfig(files) });
+  assert.equal(a.tailStats.loaded, 0);
+  // The same logs: every signal comes from the saved result, and the reader reads only the guard bytes.
+  const same = await engine({ file, key: KEY, files: fileConfig(files) });
+  assert.deepEqual(same.files.map((item) => item.signals), a.files.map((item) => item.signals));
+  assert.equal(same.tailStats.taken, 100);
+  assert.ok(same.files.every((item) => item.bytes <= 64), 'only the guard bytes');
+  // One log in three grows.
+  for (const [index, rollout] of files.entries()) if (index % 3 === 0) await rollout.append();
+  const b = await engine({ file, key: KEY, files: fileConfig(files) });
+  const c = await engine({ files: fileConfig(files) });
+  assert.deepEqual(b.files.map((item) => item.signals), c.files.map((item) => item.signals));
+  assert.equal(b.tailStats.taken, 100);
+  const total = (run) => run.files.reduce((sum, item) => sum + item.bytes, 0);
+  assert.ok(total(b) < total(c), `B ${total(b)}, C ${total(c)}`);
+  // The fields of a saved result are the fields of the reader: a new field there must not be left out of the record.
+  const fields = Object.keys(parseRolloutSignals('')).sort();
+  const saved = await readSaved(file);
+  const [record] = saved.codexTail.records;
+  assert.deepEqual([...Object.keys(record.lifecycle), ...Object.keys(record.tail)].sort(), fields);
+});
+
+test('a saved Codex tail result that does not agree with its log gives a full read and the same signals', async (t) => {
+  const directory = await temporaryDirectory(t);
+  const files = await plainRollouts(directory, 12);
+  const file = path.join(directory, 'readers', 'positions.json');
+  await engine({ file, key: KEY, files: fileConfig(files) });
+  const saved = await readSaved(file);
+  assert.equal(saved.codexTail.records.length, 12);
+  const [kept, alsoKept, touched, grown, truncated, replaced, removed, otherLimit, guarded, otherDevice, swapA, swapB] = files;
+  const recordFor = (rollout) => saved.codexTail.records.find((record) => record.k === recordKey(rollout.path, KEY, 'codexTail'));
+  // Two logs do not change.
+  // The same size with a new modification time.
+  const old = await fs.stat(touched.path);
+  await fs.utimes(touched.path, old.atime, new Date(old.mtimeMs + 5000));
+  await grown.append();
+  // Truncation with the same inode.
+  const bytes = await fs.readFile(truncated.path);
+  await fs.writeFile(truncated.path, bytes.subarray(0, 5000));
+  // A new file with the old name and the same bytes.
+  await fs.writeFile(`${replaced.path}.new`, await fs.readFile(replaced.path));
+  await fs.rename(`${replaced.path}.new`, replaced.path);
+  await fs.rm(removed.path);
+  // Records that do not agree with an unchanged log: the guard digest, the device, and the keys of two logs.
+  recordFor(guarded).guard = '0'.repeat(32);
+  recordFor(otherDevice).dev += 1;
+  const [swappedA, swappedB] = [recordFor(swapA), recordFor(swapB)];
+  [swappedA.k, swappedB.k] = [swappedB.k, swappedA.k];
+  await writeSaved(file, saved);
+  // One log is read with another tail limit than its record has.
+  const config = fileConfig(files).map((item, index) => (files[index] === otherLimit ? { ...item, tail: 8192 } : item));
+  const b = await engine({ file, key: KEY, files: config });
+  const c = await engine({ files: config });
+  assert.deepEqual(b.files.map((item) => item.signals), c.files.map((item) => item.signals));
+  assert.equal(b.tailStats.taken, 11, 'the removed log is never read');
+  for (const rollout of [kept, alsoKept]) assert.ok(b.files[files.indexOf(rollout)].bytes <= 64, 'an unchanged log reads only its guard bytes');
+  for (const rollout of files.filter((item) => ![kept, alsoKept, removed].includes(item))) {
+    const index = files.indexOf(rollout);
+    assert.ok(b.files[index].bytes >= Math.min(c.files[index].bytes, 4096), `log ${index} is read`);
+  }
+  // The result of the removed log is the result of a full read: unreadable.
+  assert.deepEqual(b.files[files.indexOf(removed)].signals, c.files[files.indexOf(removed)].signals);
+});
+
 test('a missing, damaged, old, or foreign positions file gives full reads, and a bad record is dropped alone', async (t) => {
   const directory = await temporaryDirectory(t);
   const files = await plainRollouts(directory, 3);
@@ -478,7 +560,8 @@ test('a missing, damaged, old, or foreign positions file gives full reads, and a
     'cut JSON': good.slice(0, Math.floor(good.length / 2)),
     'version 2': edit((copy) => { copy.version = 2; }),
     'other key check': edit((copy) => { copy.keyCheck = '0'.repeat(32); }),
-    'other code hash': edit((copy) => { copy.codex.code = '0'.repeat(64); }),
+    // A change of the Codex reader drops both Codex sections.
+    'other code hash': edit((copy) => { copy.codex.code = '0'.repeat(64); copy.codexTail.code = '0'.repeat(64); }),
     'too large': good + ' '.repeat(MAX_POSITION_FILE_BYTES),
   };
   for (const [name, content] of Object.entries(whole)) {
@@ -503,7 +586,7 @@ test('a missing, damaged, old, or foreign positions file gives full reads, and a
     await fs.rm(file, { force: true });
     await writeSaved(file, edit((copy) => change(copy.codex.records.find((record) => record.k === recordKey(files[1].path)))));
     const run = await engine({ file, key: KEY, files: fileConfig(files) });
-    assert.deepEqual(run.stats, { loaded: 2, taken: 2 }, name);
+    assert.deepEqual(run.codexStats, { loaded: 2, taken: 2 }, name);
     assert.deepEqual(run.files.map((item) => item.signals), full.files.map((item) => item.signals), name);
     assert.ok(run.files[1].bytes > run.files[0].bytes * 4, name);
   }
@@ -539,13 +622,38 @@ test('the positions file keeps the newest 5000 records and at most 256 KiB for o
   assert.deepEqual(value.claude.records.map((record) => record.atMs), Array.from({ length: 5000 }, (_, index) => atMs - (index + 0.5) * 1000));
 });
 
+const resetPositions = () => { useRolloutPositions(null); useRolloutTailPositions(null); useRemotePositions(null); };
+
+test('the tail results and the cache buckets keep their newest 5000 records each, and records older than 30 days go', async (t) => {
+  const directory = await temporaryDirectory(t);
+  const files = await plainRollouts(directory, 1);
+  const file = path.join(directory, 'readers', 'positions.json');
+  await engine({ file, key: KEY, files: fileConfig(files) });
+  const saved = await readSaved(file);
+  const [template] = saved.codexTail.records;
+  const atMs = Date.now();
+  const bucket = (index, extra = {}) => ({ k: randomBytes(16).toString('hex'), atMs: atMs - index * 1000, guard: randomBytes(16).toString('hex'), count: 1, open: [], ...extra });
+  saved.codexTail.records = [...Array.from({ length: 5050 }, (_, index) => ({ ...structuredClone(template), k: randomBytes(16).toString('hex'), atMs: atMs - index * 1000 })),
+    { ...structuredClone(template), k: randomBytes(16).toString('hex'), atMs: atMs - 31 * 24 * 60 * 60 * 1000 }];
+  saved.remote.records = [...Array.from({ length: 5050 }, (_, index) => bucket(index + 0.5)), bucket(-1, { atMs: atMs - 31 * 24 * 60 * 60 * 1000 })];
+  assert.ok(JSON.stringify(saved).length < MAX_POSITION_FILE_BYTES - 256 * 1024);
+  await fs.rm(file);
+  await writeSaved(file, saved);
+  const run = await engine({ file, key: KEY, files: [] });
+  // The record of 31 days ago is not loaded.
+  assert.deepEqual([run.tailStats.loaded, run.remoteStats.loaded], [5050, 5050]);
+  const value = await readSaved(file);
+  assert.deepEqual(value.codexTail.records.map((record) => record.atMs), Array.from({ length: 5000 }, (_, index) => atMs - index * 1000));
+  assert.deepEqual(value.remote.records.map((record) => record.atMs), Array.from({ length: 5000 }, (_, index) => atMs - (index + 0.5) * 1000));
+});
+
 // In this process: the positions of one engine, with an injected clock.
 async function inProcess(t, directory, options = {}) {
   const logs = [];
   let clock = Date.now();
   const positions = createReaderPositions({ file: path.join(directory, 'readers', 'positions.json'), key: async () => Buffer.from(KEY, 'hex'),
-    now: () => clock, log: (line) => logs.push(line), ...options });
-  t.after(() => useRolloutPositions(null));
+    now: () => clock, log: (line) => logs.push(line), saveDelayMs: 0, ...options });
+  t.after(resetPositions);
   await positions.ready();
   return { positions, logs, advance: (ms) => { clock += ms; } };
 }
@@ -593,6 +701,42 @@ test('positions are saved once after the first scan, then at most once in 10 min
   assert.ok(files.every((rollout) => keys.includes(recordKey(rollout.path))), 'flush writes a change at once');
 });
 
+test('the records are built at most once in 10 minutes also when the text did not change, and a save waits for its delay', async (t) => {
+  const directory = await temporaryDirectory(t);
+  const files = await plainRollouts(directory, 2);
+  const file = path.join(directory, 'readers', 'positions.json');
+  const { positions, advance } = await inProcess(t, directory);
+  const wrote = async () => {
+    const written = await fs.stat(file).then(() => true, () => false);
+    await fs.rm(file, { force: true });
+    return written;
+  };
+  await readRolloutSignals(files[0].path, { initialBytes: 4096, maxBytes: 4096 });
+  await positions.scanDone();
+  assert.equal(await wrote(), true, 'the first scan');
+  advance(POSITION_SAVE_INTERVAL_MS + 1);
+  await positions.scanDone();
+  assert.equal(await wrote(), false, 'the check of this window finds the same text');
+  await readRolloutSignals(files[1].path, { initialBytes: 4096, maxBytes: 4096 });
+  advance(1000);
+  await positions.scanDone();
+  assert.equal(await wrote(), false, 'the change waits for the next window');
+  advance(POSITION_SAVE_INTERVAL_MS);
+  await positions.scanDone();
+  assert.equal(await wrote(), true, 'the change is saved in the next window');
+  // A save after a scan starts after its delay.
+  const other = await temporaryDirectory(t);
+  resetPositions();
+  const delayed = await inProcess(t, other, { saveDelayMs: 300 });
+  await readRolloutSignals(files[0].path, { initialBytes: 4096, maxBytes: 4096 });
+  const otherFile = path.join(other, 'readers', 'positions.json');
+  const pending = delayed.positions.scanDone();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(await fs.stat(otherFile).then(() => true, () => false), false, 'no file before the delay');
+  await pending;
+  assert.equal(await fs.stat(otherFile).then(() => true, () => false), true, 'a file after the delay');
+});
+
 test('a failed write logs one line and keeps the reader working; no key means no positions and no file', async (t) => {
   const directory = await temporaryDirectory(t);
   const files = await plainRollouts(directory, 1);
@@ -604,7 +748,7 @@ test('a failed write logs one line and keeps the reader working; no key means no
   await positions.flush();
   assert.deepEqual(logs, ['ASB cannot save its reader positions. It keeps the old file.']);
   assert.deepEqual(await fs.readdir(path.dirname(file)), ['positions.json'], 'no temporary file stays');
-  useRolloutPositions(null);
+  resetPositions();
   const other = await temporaryDirectory(t);
   const noKey = createReaderPositions({ file: path.join(other, 'readers', 'positions.json'), key: () => new Promise(() => {}), keyWaitMs: 50 });
   await noKey.ready();
@@ -641,13 +785,15 @@ test('the positions file has no message text, path, folder name, or raw guard by
   }
   const value = JSON.parse(text);
   assert.deepEqual(value.codex.records.map((record) => record.k), [recordKey(files[0].path)]);
+  // The tail result has no ID: both logs get one, also the log with the question ID that is not a plain ID.
+  assert.deepEqual(value.codexTail.records.map((record) => record.k).sort(), files.map((rollout) => recordKey(rollout.path, KEY, 'codexTail')).sort());
   const strings = [];
   const walk = (item) => {
     if (typeof item === 'string') strings.push(item);
     else if (item && typeof item === 'object') Object.values(item).forEach(walk);
   };
   walk(value);
-  const kinds = new Set(['', 'task_started', 'task_complete', 'turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled', 'failed']);
+  const kinds = new Set(['', 'agent', 'user', 'task_started', 'task_complete', 'turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled', 'failed']);
   for (const item of strings) assert.ok(/^[0-9a-f]{32}$|^[0-9a-f]{64}$/.test(item) || kinds.has(item) || /^call_[A-Za-z0-9_-]+$/.test(item), item);
   assert.ok(strings.includes('call_ok'));
 });
@@ -668,7 +814,7 @@ test('the positions folder is 0700 and the file 0600; a link or a foreign owner 
   await first.positions.flush();
   assert.equal((await fs.stat(readers)).mode & 0o777, 0o700);
   assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
-  useRolloutPositions(null);
+  resetPositions();
   assert.ok((await engine({ file, key: KEY, files: [] })).stats.loaded >= 1);
   await fs.chmod(file, 0o644);
   assert.equal((await engine({ file, key: KEY, files: [] })).stats.loaded, 0, 'a file with mode 0644 is not loaded');
@@ -918,3 +1064,209 @@ test('the Claude records have no message text, title, path, folder name, branch,
   for (const item of strings) assert.ok(/^[0-9a-f]{32}$|^[0-9a-f]{64}$/.test(item) || kinds.has(item) || ids.has(item), item);
 });
 
+// The Claude Desktop cache folder (a Chromium simple cache) that the remote reader reads: an entry for each URL, named by the digest of its key.
+const remoteName = (key) => `${createHash('sha1').update(Buffer.from(key)).digest().subarray(0, 8).reverse().toString('hex')}_0`;
+const cursorOf = (time) => Buffer.from(String(BigInt(time) * 1_000_000n)).toString('base64');
+const remoteRow = (id, extra = {}) => ({ id, title: `Remote ${id}`, created_at: new Date(NOW_MS - 10_000).toISOString(), updated_at: new Date(NOW_MS).toISOString(),
+  last_event_at: new Date(NOW_MS).toISOString(), environment_kind: 'bridge', connection_status: 'connected', status: 'active', worker_status: 'running',
+  unread: true, ...extra });
+const sseFrame = (event, data, id = '') => `event: ${event}\n${id ? `id: ${id}\n` : ''}data: ${JSON.stringify(data)}\n\n`;
+const watchBody = (frames, time) => frames.map(([event, row]) => sseFrame(event, row)).join('') + sseFrame('sync', {}, cursorOf(time));
+const listBody = (rows, time) => JSON.stringify({ data: rows, resume_token: cursorOf(time) });
+const listKey = (extra = '') => `1/0/https://claude.ai/v1/code/sessions?limit=50${extra}`;
+const watchKey = (startTime) => `1/0/https://claude.ai/v1/code/sessions/watch?resume_token=${encodeURIComponent(cursorOf(startTime))}`;
+
+// `body` null: an entry that the reader never opens beyond its key. `magic` false: an entry that is not complete. `version` 4: a bad header.
+async function remoteEntry(root, key, { body = null, mtimeMs = NOW_MS, version = 5, magic = true } = {}) {
+  await fs.mkdir(root, { recursive: true });
+  const keyBytes = Buffer.from(key);
+  const header = Buffer.alloc(24);
+  if (magic) header.writeBigUInt64LE(0xfcfb6d1ba7725c30n);
+  header.writeUInt32LE(version, 8);
+  header.writeUInt32LE(keyBytes.length, 12);
+  let bytes = Buffer.concat([header, keyBytes, Buffer.from('not read')]);
+  if (body !== null) {
+    const headers = Buffer.from('HTTP/1.1 200 OK\0');
+    const footer = Buffer.alloc(24);
+    footer.writeBigUInt64LE(0xf4fa6f45970d41d8n);
+    const tail = Buffer.alloc(24);
+    tail.writeBigUInt64LE(0xf4fa6f45970d41d8n);
+    tail.writeUInt32LE(2, 8);
+    tail.writeUInt32LE(headers.length, 16);
+    bytes = Buffer.concat([header, keyBytes, zlib.gzipSync(Buffer.from(body)), footer, headers, createHash('sha256').update(keyBytes).digest(), tail]);
+  }
+  const file = path.join(root, remoteName(key));
+  await fs.writeFile(file, bytes);
+  await fs.utimes(file, mtimeMs / 1000, mtimeMs / 1000);
+  return file;
+}
+
+// Entries that are not a session list or watch: other claude.ai URLs and other sites.
+async function otherEntries(root, from, to) {
+  for (let start = from; start < to; start += 250) {
+    await Promise.all(Array.from({ length: Math.min(250, to - start) }, (_, index) => remoteEntry(root,
+      (start + index) % 2 ? `1/0/https://claude.ai/api/organizations/${start + index}` : `1/0/https://cdn.example.com/asset-${start + index}.js`)));
+  }
+}
+
+const remoteSessions = (run) => run.remoteThreads.map((row) => [row.externalId, row.title]).sort();
+
+test('a new engine with saved cache buckets shows the same remote rows as a full read after entries change, grow, are completed, and go', async (t) => {
+  const home = await temporaryDirectory(t);
+  const appDir = path.join(home, 'Claude');
+  const root = path.join(appDir, 'Cache', 'Cache_Data');
+  const at = (seconds) => NOW_MS - seconds * 1000;
+  const first = [remoteRow('cse_s1'), remoteRow('cse_s2'), remoteRow('cse_s3')];
+  const entry = (key, body, seconds, extra = {}) => remoteEntry(root, key, { body, mtimeMs: at(seconds), ...extra });
+  // A list, then three watches that follow it. The third is not complete, and the fourth has a bad header.
+  await entry(listKey(), listBody(first, at(300)), 300);
+  const w1 = await entry(watchKey(at(300)), watchBody([['changed', remoteRow('cse_s2', { title: 'Changed A' })]], at(200)), 200);
+  await entry(watchKey(at(200)), watchBody([['added', remoteRow('cse_s4')]], at(100)), 100);
+  await entry(watchKey(at(100)), null, 50, { magic: false });
+  await entry(watchKey(at(50)), null, 20, { version: 4 });
+  // A watch that no other response follows.
+  const stale = await entry(watchKey(at(5000)), watchBody([['added', remoteRow('cse_old')]], at(4000)), 4000);
+  await otherEntries(root, 0, 2500);
+  const file = path.join(home, 'cache', 'readers', 'positions.json');
+  const config = { file, key: KEY, remote: { appDir }, nowMs: NOW_MS };
+
+  const a = await engine(config);
+  assert.deepEqual(remoteSessions(a), [['cse_s1', 'Remote cse_s1'], ['cse_s2', 'Changed A'], ['cse_s3', 'Remote cse_s3'], ['cse_s4', 'Remote cse_s4']]);
+  assert.equal(a.remoteStats.loaded, 0);
+  // The same folder: the buckets agree, so the reader opens only the entries of a list or watch.
+  const same = await engine(config);
+  assert.deepEqual(same.remoteThreads, a.remoteThreads);
+  assert.ok(same.remoteStats.taken > 1500, `buckets taken: ${same.remoteStats.taken}`);
+  assert.ok(same.keyReads < 40, `key reads: ${same.keyReads}`);
+
+  // A watch that grew (its bytes and time are new), an entry that is now complete, and an entry whose header is now good.
+  await fs.writeFile(w1, await fs.readFile(await entry(watchKey(at(300)), watchBody([['changed', remoteRow('cse_s2', { title: 'Changed B' })],
+    ['added', remoteRow('cse_s7')]], at(200)), 190)));
+  await entry(watchKey(at(100)), watchBody([['added', remoteRow('cse_s5')]], at(50)), 40);
+  await entry(watchKey(at(50)), watchBody([['added', remoteRow('cse_s6')]], at(20)), 15);
+  // The off-chain watch goes. 60 other entries come, 60 go, and one is replaced by a new file.
+  await fs.rm(stale);
+  await otherEntries(root, 2500, 2560);
+  const other = (index) => path.join(root, remoteName(index % 2 ? `1/0/https://claude.ai/api/organizations/${index}` : `1/0/https://cdn.example.com/asset-${index}.js`));
+  for (let index = 0; index < 60; index += 1) await fs.rm(other(index));
+  await fs.writeFile(`${other(100)}.new`, await fs.readFile(other(100)));
+  await fs.rename(`${other(100)}.new`, other(100));
+
+  const b = await engine(config);
+  const c = await engine({ remote: { appDir }, nowMs: NOW_MS });
+  assert.deepEqual(remoteSessions(c), [['cse_s1', 'Remote cse_s1'], ['cse_s2', 'Changed B'], ['cse_s3', 'Remote cse_s3'], ['cse_s4', 'Remote cse_s4'],
+    ['cse_s5', 'Remote cse_s5'], ['cse_s6', 'Remote cse_s6'], ['cse_s7', 'Remote cse_s7']]);
+  assert.deepEqual(b.remoteThreads, c.remoteThreads);
+  assert.ok(b.remoteStats.taken > 1500, `buckets taken: ${b.remoteStats.taken}`);
+  assert.ok(b.keyReads * 10 < c.keyReads, `key reads B ${b.keyReads}, C ${c.keyReads}`);
+  t.diagnostic(`key reads: run B ${b.keyReads}, run C ${c.keyReads}`);
+});
+
+test('a new engine with saved cache buckets gives the same remote rows when list and watch entries are truncated, replaced, and removed', async (t) => {
+  const home = await temporaryDirectory(t);
+  const appDir = path.join(home, 'Claude');
+  const root = path.join(appDir, 'Cache', 'Cache_Data');
+  const at = (seconds) => NOW_MS - seconds * 1000;
+  const entry = (key, body, seconds) => remoteEntry(root, key, { body, mtimeMs: at(seconds) });
+  await entry(listKey(), listBody([remoteRow('cse_s1'), remoteRow('cse_s2')], at(300)), 300);
+  const w1 = await entry(watchKey(at(300)), watchBody([['added', remoteRow('cse_s3')]], at(200)), 200);
+  const w2 = await entry(watchKey(at(200)), watchBody([['added', remoteRow('cse_s4')]], at(100)), 100);
+  const w3 = await entry(watchKey(at(100)), watchBody([['added', remoteRow('cse_s5')]], at(50)), 50);
+  await otherEntries(root, 0, 600);
+  const config = { file: path.join(home, 'cache', 'readers', 'positions.json'), key: KEY, remote: { appDir }, nowMs: NOW_MS };
+  const a = await engine(config);
+  assert.equal(a.remoteThreads.length, 5);
+  // The last watch goes, the one before is replaced by a new file with the same bytes, and the first is cut inside its body.
+  await fs.rm(w3);
+  await fs.writeFile(`${w2}.new`, await fs.readFile(w2));
+  await fs.rename(`${w2}.new`, w2);
+  const bytes = await fs.readFile(w1);
+  await fs.writeFile(w1, bytes.subarray(0, 60));
+  const b = await engine(config);
+  const c = await engine({ remote: { appDir }, nowMs: NOW_MS });
+  assert.deepEqual(b.remoteThreads, c.remoteThreads);
+  // The first watch is cut and the last one is gone, so the chain has only the watch that was replaced.
+  assert.deepEqual(remoteSessions(c).map(([id]) => id), ['cse_s4']);
+  assert.ok(b.keyReads * 10 < c.keyReads, `key reads B ${b.keyReads}, C ${c.keyReads}`);
+});
+
+test('a bad cache bucket record, or a section with another code hash, is dropped alone and gives the rows of a full read', async (t) => {
+  const home = await temporaryDirectory(t);
+  const appDir = path.join(home, 'Claude');
+  const root = path.join(appDir, 'Cache', 'Cache_Data');
+  await remoteEntry(root, listKey(), { body: listBody([remoteRow('cse_s1')], NOW_MS - 300_000), mtimeMs: NOW_MS - 300_000 });
+  await otherEntries(root, 0, 400);
+  const file = path.join(home, 'cache', 'readers', 'positions.json');
+  const config = { file, key: KEY, remote: { appDir }, nowMs: NOW_MS };
+  await engine(config);
+  const good = await fs.readFile(file, 'utf8');
+  const total = JSON.parse(good).remote.records.length;
+  assert.ok(total > 300, `buckets: ${total}`);
+  const full = await engine({ remote: { appDir }, nowMs: NOW_MS });
+  const edit = (change) => { const copy = JSON.parse(good); change(copy); return copy; };
+  const check = async (content, loaded, name) => {
+    await fs.rm(file, { force: true });
+    await writeSaved(file, content);
+    const run = await engine(config);
+    assert.equal(run.remoteStats.loaded, loaded, name);
+    assert.deepEqual(run.remoteThreads, full.remoteThreads, name);
+    return run;
+  };
+  const withNames = (copy) => copy.remote.records.find((record) => record.count === 1);
+  await check(edit((copy) => { copy.remote.code = '0'.repeat(64); }), 0, 'other code hash');
+  // A change of the Codex reader does not drop the cache buckets.
+  assert.equal((await check(edit((copy) => { copy.codex.code = '0'.repeat(64); copy.codexTail.code = '0'.repeat(64); }), total, 'other Codex code hash')).keyReads < 20, true);
+  await check(edit((copy) => { delete copy.remote; }), 0, 'a file with no remote section');
+  await check(edit((copy) => { copy.remote.records = {}; }), 0, 'records not a list');
+  const records = {
+    'count 0': (record) => { record.count = 0; },
+    'count over the entry limit': (record) => { record.count = 50_001; },
+    'open positions not in order': (record) => { record.count = 3; record.open = [2, 1]; },
+    'open position twice': (record) => { record.count = 3; record.open = [1, 1]; },
+    'open position out of range': (record) => { record.open = [1]; },
+    'open not a list': (record) => { record.open = 'MARKERNAME'; },
+    'text field': (record) => { record.note = 'MARKERNAME'; },
+    'guard with text': (record) => { record.guard = 'MARKERNAME'; },
+  };
+  for (const [name, change] of Object.entries(records)) {
+    const run = await check(edit((copy) => change(withNames(copy))), total - 1, name);
+    assert.ok(run.keyReads < 20, `${name}: key reads ${run.keyReads}`);
+  }
+  // A bucket that does not agree with the folder: another count, and a wrong guard digest. Its names are read again, and no others.
+  const wrongCount = await check(edit((copy) => { withNames(copy).count = 2; }), total, 'another count');
+  const wrongGuard = await check(edit((copy) => { withNames(copy).guard = '0'.repeat(32); }), total, 'another guard digest');
+  for (const run of [wrongCount, wrongGuard]) assert.ok(run.keyReads >= 1 && run.keyReads < 20, `key reads ${run.keyReads}`);
+});
+
+test('the cache bucket records have no URL, entry name, path, cursor, or title', async (t) => {
+  const home = path.join(await temporaryDirectory(t), 'MARKERFOLDER');
+  const appDir = path.join(home, 'Claude');
+  const root = path.join(appDir, 'Cache', 'Cache_Data');
+  await remoteEntry(root, listKey('&MARKERPROMPT=1'), { body: listBody([remoteRow('cse_s1', { title: 'MARKERTITLE' })], NOW_MS - 300_000), mtimeMs: NOW_MS - 300_000 });
+  await remoteEntry(root, watchKey(NOW_MS - 300_000), { body: watchBody([['added', remoteRow('cse_s2', { title: 'MARKERNAME' })]], NOW_MS - 100_000), mtimeMs: NOW_MS - 100_000 });
+  await otherEntries(root, 0, 300);
+  const file = path.join(home, 'cache', 'readers', 'positions.json');
+  const run = await engine({ file, key: KEY, remote: { appDir }, nowMs: NOW_MS });
+  assert.equal(run.remoteThreads.length, 2);
+  const text = await fs.readFile(file, 'latin1');
+  const names = await fs.readdir(root);
+  for (const marker of [...CLAUDE_MARKERS, 'MARKERFOLDER', home, path.basename(home), 'claude.ai', 'cdn.example', 'resume_token', cursorOf(NOW_MS - 300_000), '/', '\\']) {
+    assert.equal(text.includes(marker), false, marker);
+  }
+  for (const name of names) assert.equal(text.includes(name.slice(0, 16)), false, 'an entry name');
+  const value = JSON.parse(text);
+  assert.ok(value.remote.records.length > 250);
+  const strings = [];
+  const walk = (item) => {
+    if (typeof item === 'string') strings.push(item);
+    else if (item && typeof item === 'object') Object.values(item).forEach(walk);
+  };
+  walk(value.remote);
+  for (const item of strings) assert.ok(/^[0-9a-f]{32}$|^[0-9a-f]{64}$/.test(item), item);
+  // Every record is a count and the positions of the entries that are read again.
+  for (const record of value.remote.records) {
+    assert.deepEqual(Object.keys(record).sort(), ['atMs', 'count', 'guard', 'k', 'open']);
+    assert.ok(Number.isInteger(record.count) && record.open.every(Number.isInteger));
+  }
+  assert.equal(value.remote.records.reduce((sum, record) => sum + record.open.length, 0), 2);
+});

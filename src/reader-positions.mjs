@@ -1,11 +1,13 @@
 // Reader positions on disk: a new engine resumes the Codex and Claude lifecycle scans where the last engine stopped.
 // The file holds numbers, booleans, fixed kinds, IDs, and keyed digests: no message text and no path.
 // A missing, damaged, old, or foreign file, or a record that does not agree with its log, gives the full read of a new engine.
-import { createHash, createHmac, randomBytes } from 'node:crypto';
+import { createHash, createHmac, createSecretKey, randomBytes } from 'node:crypto';
 import { constants, promises as fs, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { claudePositionRecords, useClaudePositions, validClaudeRecord } from './claude-data.mjs';
-import { rolloutPositionRecords, useRolloutPositions, validRolloutRecord } from './codex-data.mjs';
+import { remotePositionRecords, useRemotePositions, validRemoteRecord } from './claude-remote-data.mjs';
+import { rolloutPositionRecords, rolloutTailRecords, useRolloutPositions, useRolloutTailPositions, validRolloutRecord,
+  validRolloutTailRecord } from './codex-data.mjs';
 
 export const READER_POSITIONS_VERSION = 1;
 export const MAX_POSITION_FILE_BYTES = 8 * 1024 * 1024;
@@ -14,6 +16,7 @@ export const MAX_POSITION_RECORD_BYTES = 256 * 1024;
 export const MAX_POSITION_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 export const POSITION_SAVE_INTERVAL_MS = 10 * 60 * 1000;
 const KEY_WAIT_MS = 3_000;
+const SAVE_DELAY_MS = 100;
 const HEX32 = /^[0-9a-f]{32}$/;
 const KEY_CHECK = 'asb reader positions key check';
 
@@ -52,16 +55,22 @@ async function readPrivateFile(file, platform, maxFileBytes) {
 }
 
 export function createReaderPositions({ file, key, platform = process.platform, now = Date.now, log = console.error,
-  keyWaitMs = KEY_WAIT_MS, maxFileBytes = MAX_POSITION_FILE_BYTES, codexCode = () => readerCodeHash('./codex-data.mjs', './data-cache.mjs'),
-  claudeCode = () => readerCodeHash('./claude-data.mjs', './data-cache.mjs') } = {}) {
+  keyWaitMs = KEY_WAIT_MS, saveDelayMs = SAVE_DELAY_MS, maxFileBytes = MAX_POSITION_FILE_BYTES, codexCode = () => readerCodeHash('./codex-data.mjs', './data-cache.mjs'),
+  claudeCode = () => readerCodeHash('./claude-data.mjs', './data-cache.mjs'),
+  remoteCode = () => readerCodeHash('./claude-remote-data.mjs', './data-cache.mjs') } = {}) {
   let loading = null, hmacKey = null, off = false, written = '', writtenAtMs = null, write = Promise.resolve();
-  // One section for each reader, in file order. Each has its own code hash, record checks, and limit of records.
+  // One section for each kind of saved result, in file order. Each has its own code hash, record checks, and limit of records.
+  // `codexTail` holds the tail signals of a Codex log that has not changed, and `remote` the cache entries that are not a session list.
   // `saved` holds the records that no reader took in this run, by key; `loaded` and `taken` are counts for the tests.
   const sections = [
     { name: 'codex', codeOf: codexCode, valid: validRolloutRecord, records: rolloutPositionRecords, use: useRolloutPositions },
     { name: 'claude', codeOf: claudeCode, valid: validClaudeRecord, records: claudePositionRecords, use: useClaudePositions },
+    { name: 'codexTail', codeOf: codexCode, valid: validRolloutTailRecord, records: rolloutTailRecords, use: useRolloutTailPositions },
+    { name: 'remote', codeOf: remoteCode, valid: validRemoteRecord, records: remotePositionRecords, use: useRemotePositions },
   ].map((section) => ({ ...section, code: '', saved: new Map(), loaded: 0, taken: 0 }));
-  const digest = (value) => createHmac('sha256', hmacKey).update(value).digest().subarray(0, 16).toString('hex');
+  // A key object makes each digest about five times faster than the raw key, and a start makes thousands of them.
+  let secret = null;
+  const digest = (value) => createHmac('sha256', secret).update(value).digest().subarray(0, 16).toString('hex');
   const recordKey = (section, filePath) => digest(`${section.name}\0${filePath}`);
   const turnOff = () => {
     if (!off) log('ASB does not use its reader positions: the cache folder is a link or belongs to another user.');
@@ -103,6 +112,7 @@ export function createReaderPositions({ file, key, platform = process.platform, 
     // No key, no positions: the readers read as today, and this run saves nothing.
     if (!Buffer.isBuffer(hmacKey) || !hmacKey.length) { hmacKey = null; return; }
     try {
+      secret = createSecretKey(hmacKey);
       for (const section of sections) section.code = section.codeOf();
       await load();
     } catch { hmacKey = null; return; }
@@ -165,11 +175,17 @@ export function createReaderPositions({ file, key, platform = process.platform, 
     return write = write.then(async () => {
       await loading;
       if (!hmacKey || off) return;
-      const atMs = now();
+      let atMs = now();
       if (!force && writtenAtMs !== null && atMs - writtenAtMs < POSITION_SAVE_INTERVAL_MS) return;
+      // A save after a scan starts a moment later, so the rows of that scan go out before the work on the records.
+      if (!force && saveDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, saveDelayMs));
+        atMs = now();
+      }
+      // The step below is the cost of every record, so it runs at most once in 10 minutes, also when the text did not change.
+      writtenAtMs = atMs;
       const text = serialize(atMs);
       if (text === written) return;
-      writtenAtMs = atMs;
       await writeFile(text);
       written = text;
     }).catch((error) => {
