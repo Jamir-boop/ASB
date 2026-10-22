@@ -49,10 +49,55 @@ server.listen(0, '127.0.0.1', () => {
 });
 `;
 
-// The ids of the board processes of one fake engine. The command line of a board ends with its engine URL, which has the port of that engine.
-const boardPids = (port) => spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-  `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like ('*asb-board.py*http://127.0.0.1:' + $env:ASB_PORT) } | ForEach-Object { $_.ProcessId }`],
-{ encoding: 'utf8', windowsHide: true, env: { ...process.env, ASB_PORT: String(port) } }).stdout.split(/\s+/).filter(Boolean);
+// The ids of the board processes below one root process. The board gets its engine URL and token on stdin, so its command line is only
+// `<python> asb-board.py -`, the same for every ASB on the PC: a match on the command line alone would also find the board of the user's own
+// ASB. A board is found by ancestry instead. A process that has ended still shows as the ParentProcessId of its children, so the walk also
+// starts from the PID of a process that has ended (the PowerShell process of the Start menu command exits at once).
+const descendantBoards = (processes, rootPid) => {
+  const children = new Map();
+  for (const { ProcessId: pid, ParentProcessId: parent } of processes) children.set(parent, [...(children.get(parent) ?? []), pid]);
+  const below = new Set([rootPid]);
+  for (const pid of below) for (const child of children.get(pid) ?? []) below.add(child);
+  return processes.filter(({ ProcessId: pid, CommandLine: line }) => pid !== rootPid && below.has(pid) && String(line ?? '').includes('asb-board.py'))
+    .map(({ ProcessId: pid }) => pid);
+};
+// One read of all processes. An unreadable list throws, so that no check passes because the finder saw nothing.
+const boardPids = (rootPid) => descendantBoards(JSON.parse(spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+  'ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, CommandLine)'],
+{ encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024 }).stdout), rootPid);
+// The boards that are still below the root after up to 20 s.
+async function boardsLeft(rootPid) {
+  let left = boardPids(rootPid);
+  for (const deadline = Date.now() + 20_000; left.length && Date.now() < deadline;) { await delay(500); left = boardPids(rootPid); }
+  return left;
+}
+
+// Not skipped: the tree walk needs no Windows. The list is a synthetic process list.
+test('the board finder returns only the boards below the root, also from a root that has ended, and never another ASB', () => {
+  const board = 'C:\\msys64\\ucrt64\\bin\\python.exe C:\\asb\\scripts\\asb-board.py -';
+  const list = [
+    { ProcessId: 0, ParentProcessId: 0, CommandLine: null },
+    // The root 5 has ended: it is not in the list, but its child, the launcher, names it. A helper is between the launcher and a second board.
+    { ProcessId: 10, ParentProcessId: 5, CommandLine: 'node.exe C:\\asb\\scripts\\asb.mjs' },
+    { ProcessId: 11, ParentProcessId: 10, CommandLine: board },
+    { ProcessId: 12, ParentProcessId: 10, CommandLine: 'helper.exe' },
+    { ProcessId: 13, ParentProcessId: 12, CommandLine: board },
+    // Another ASB (the user's own) has the same board command line and other ancestors. A process with no command line is no board.
+    { ProcessId: 20, ParentProcessId: 1, CommandLine: 'node.exe C:\\asb\\scripts\\asb.mjs' },
+    { ProcessId: 21, ParentProcessId: 20, CommandLine: board },
+    { ProcessId: 22, ParentProcessId: 10, CommandLine: null },
+    // A PID that is its own parent must not loop.
+    { ProcessId: 30, ParentProcessId: 30, CommandLine: board },
+  ];
+  assert.deepEqual(descendantBoards(list, 5), [11, 13]);
+  assert.deepEqual(descendantBoards(list, 10), [11, 13]);
+  assert.deepEqual(descendantBoards(list, 12), [13]);
+  assert.deepEqual(descendantBoards(list, 11), []);
+  assert.deepEqual(descendantBoards(list, 20), [21]);
+  assert.deepEqual(descendantBoards(list, 30), []);
+  assert.deepEqual(descendantBoards(list, 99), []);
+  assert.deepEqual(descendantBoards([], 5), []);
+});
 
 test('the board opens its window against an engine and closes when the engine stops, and the Start menu command opens it too', {
   skip: process.platform === 'win32' && process.env.ASB_BOARD_SMOKE === '1' ? false
@@ -61,14 +106,15 @@ test('the board opens its window against an engine and closes when the engine st
 }, async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'asb-board-smoke-'));
   const children = [];
-  const ports = [];
+  const roots = [];
   // On Windows, child.kill() ends only that process, so taskkill /t also ends the board that a failed run leaves. The launcher that the
-  // Start menu command starts is not a child of this test, so its board is found by the port of its engine; the launcher then ends too.
+  // Start menu command starts is not a child of this test, so its board is found by ancestry from the PowerShell process that the test
+  // starts for the command (the root); the launcher then ends too. No other board is touched, also not the board of the user's own ASB.
   t.after(async () => {
     for (const child of children) {
       if (child.exitCode === null && child.signalCode === null) spawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
     }
-    for (const port of ports) for (const pid of boardPids(port)) spawnSync('taskkill', ['/pid', pid, '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
+    for (const root of roots) for (const pid of boardPids(root)) spawnSync('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
     await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   });
   const local = path.join(directory, 'local');
@@ -85,8 +131,7 @@ test('the board opens its window against an engine and closes when the engine st
     // Without a running engine, the launcher would start the real tray, so the test checks the launcher's own lookup first.
     const runtime = await findRunningService({ LOCALAPPDATA: local }, 'win32');
     assert.equal(runtime?.pid, child.pid, 'The launcher cannot find the fake engine.');
-    ports.push(runtime.port);
-    return { child, port: runtime.port };
+    return { child };
   };
   const environment = (file) => ({ ...process.env, LOCALAPPDATA: local, APPDATA: path.join(directory, 'roaming'), ASB_SNAPSHOT: file });
   const saved = async (file) => (await stat(file).catch(() => null))?.size > 0;
@@ -94,6 +139,7 @@ test('the board opens its window against an engine and closes when the engine st
   const { child: engine } = await startEngine();
   const launcher = spawn(process.execPath, [asb], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: environment(image) });
   children.push(launcher);
+  roots.push(launcher.pid);
   let output = '';
   launcher.stdout.on('data', (chunk) => { output += `[stdout] ${chunk}`; });
   launcher.stderr.on('data', (chunk) => { output += `[stderr] ${chunk}`; });
@@ -101,23 +147,28 @@ test('the board opens its window against an engine and closes when the engine st
 
   for (const deadline = Date.now() + 90_000; !(await saved(image)) && launcher.exitCode === null && Date.now() < deadline;) await delay(250);
   assert.ok(await saved(image), `The board saved no window image.\n${output}`);
+  // The board is a child of the launcher. The finder must see it now, so that the check after the stop means something.
+  assert.ok(boardPids(launcher.pid).length > 0, 'The test cannot find the board of the launcher.');
 
   // The launcher watches the engine process and closes the board when it is gone.
   engine.kill();
   const closed = await Promise.race([exited, delay(20_000, null, { ref: false })]);
   assert.deepEqual(closed, { code: 0, signal: null }, `The launcher did not exit with code 0 within 20 s after the engine stopped.\n${output}`);
+  assert.deepEqual(await boardsLeft(launcher.pid), [], 'The board of the launcher did not close within 20 s after its engine stopped.');
 
   // The Start menu link runs this command. The tray script starts the launcher with no console and exits at once, so the test waits for the image.
+  // The launcher is a child of the PowerShell process (the root), and the board is a child of the launcher.
   const startMenuImage = path.join(directory, 'board-start-menu.png');
-  const { child: second, port } = await startEngine();
-  spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', tray, process.execPath, '-Open'],
+  const { child: second } = await startEngine();
+  const menu = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', tray, process.execPath, '-Open'],
     { stdio: 'ignore', windowsHide: true, env: environment(startMenuImage) });
+  assert.ok(menu.pid, 'The Start menu command did not start.');
+  roots.push(menu.pid);
   for (const deadline = Date.now() + 90_000; !(await saved(startMenuImage)) && Date.now() < deadline;) await delay(250);
   assert.ok(await saved(startMenuImage), 'The Start menu command saved no window image.');
+  assert.ok(boardPids(menu.pid).length > 0, 'The test cannot find the board of the Start menu command.');
 
   // The launcher that the command started closes its board when its engine is gone, as the first launcher did.
   second.kill();
-  let left = boardPids(port);
-  for (const deadline = Date.now() + 20_000; left.length && Date.now() < deadline;) { await delay(500); left = boardPids(port); }
-  assert.deepEqual(left, [], 'The board of the Start menu command did not close within 20 s after its engine stopped.');
+  assert.deepEqual(await boardsLeft(menu.pid), [], 'The board of the Start menu command did not close within 20 s after its engine stopped.');
 });

@@ -10,6 +10,7 @@ import queue
 import random
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -169,6 +170,105 @@ class RequestChecks(unittest.TestCase):
             self.assertIn("Cannot", error)
 
 
+class BoardProcessCheck(unittest.TestCase):
+    """The real board process, started as the launcher starts it: the argument "-" and the engine address on stdin."""
+    TOKEN = "ab" * 32
+
+    def setUp(self):
+        received, token = [], self.TOKEN
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def reply(self, body):
+                self.send_response(200)
+                self.send_header("ETag", '"first"')
+                self.end_headers()
+                self.wfile.write(json.dumps(body).encode())
+
+            def do_GET(self):
+                received.append(("GET", self.path, self.headers.get("X-ASB-Source-Token")))
+                self.reply(FIXTURE)
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                received.append(("POST", self.path, self.headers.get("X-ASB-Source-Token")))
+                self.reply({})
+        self.received = received
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.base = f"http://127.0.0.1:{self.server.server_port}"
+        worker = threading.Thread(target=self.server.serve_forever, daemon=True)
+        worker.start()
+        self.addCleanup(worker.join, 1)
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.directory = Path(tempfile.mkdtemp(prefix="asb-board-process-"))
+        self.addCleanup(shutil.rmtree, self.directory, ignore_errors=True)
+        # Temporary folders keep the user's configuration, cache, and theme out of the check.
+        self.env = {**os.environ, "HOME": str(self.directory), "XDG_CONFIG_HOME": str(self.directory / "config"),
+                    "XDG_CACHE_HOME": str(self.directory / "cache"), "XDG_STATE_HOME": str(self.directory / "state"),
+                    "ASB_SNAPSHOT": str(self.directory / "board.png"), "PYTHONDONTWRITEBYTECODE": "1"}
+        self.env.pop("ASB_SOURCE_TOKEN", None)
+
+    def board(self, stdin):
+        board = subprocess.Popen([sys.executable, str(Path(__file__).parents[1] / "scripts" / "asb-board.py"), "-"], stdin=stdin,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env)
+        self.addCleanup(self.stop, board)
+        return board
+
+    @staticmethod
+    def stop(board):
+        board.kill()
+        board.wait(10)
+        for stream in (board.stdin, board.stdout, board.stderr):
+            if stream:
+                stream.close()
+
+    def test_the_board_gets_its_address_on_stdin_and_asks_for_the_first_dashboard_once(self):
+        board = self.board(subprocess.PIPE)
+        # The address comes after the start of the board: the board waits and shows nothing until then.
+        time.sleep(1.5)
+        self.assertIsNone(board.poll())
+        self.assertEqual(self.received, [])
+        self.assertFalse((self.directory / "board.png").exists())
+        board.stdin.write(json.dumps({"url": self.base, "token": self.TOKEN}).encode() + b"\n")
+        board.stdin.close()
+        for _attempt in range(300):
+            if (self.directory / "board.png").exists() and (self.directory / "board.png").stat().st_size > 0 or board.poll() is not None:
+                break
+            time.sleep(.1)
+        self.assertIsNone(board.poll())
+        self.assertGreater((self.directory / "board.png").stat().st_size, 0)
+        dashboards = [item for item in self.received if item[0] == "GET" and item[1].split("?")[0] == "/api/dashboard"]
+        # The early request is the only dashboard request until the next poll; it is the first one, and it needs no token.
+        self.assertEqual(dashboards, [("GET", "/api/dashboard", None)])
+        # The token of the line is the token of later requests: the board shares its palette with it.
+        for _attempt in range(50):
+            if any(item[:2] == ("POST", "/api/palette") for item in self.received):
+                break
+            time.sleep(.1)
+        self.assertEqual([item for item in self.received if item[:2] == ("POST", "/api/palette")][0][2], self.TOKEN)
+        board.terminate()
+        board.wait(10)
+        self.assertNotIn(self.TOKEN, board.stdout.read().decode() + board.stderr.read().decode())
+
+    def test_the_board_ends_with_exit_code_1_and_a_message_when_the_launcher_sends_no_address(self):
+        board = self.board(subprocess.DEVNULL)
+        output, errors = board.communicate(timeout=60)
+        self.assertEqual(board.returncode, 1)
+        self.assertEqual(errors.decode().strip(), "ASB did not get the engine address from its launcher.")
+        self.assertEqual(self.received, [])
+
+    def test_the_board_ends_with_exit_code_1_when_the_line_is_not_a_local_address(self):
+        board = self.board(subprocess.PIPE)
+        line = json.dumps({"url": "http://example.com:4629", "token": self.TOKEN}).encode() + b"\n"
+        output, errors = board.communicate(input=line, timeout=60)
+        self.assertEqual(board.returncode, 1)
+        self.assertEqual(errors.decode().strip(), "Use the local ASB address: http://127.0.0.1:<port>.")
+        self.assertNotIn(self.TOKEN, errors.decode())
+        self.assertEqual(self.received, [])
+
+
 @unittest.skipUnless(asb.Gtk.init_check(), "A GTK display is not available.")
 class WidgetCheck(unittest.TestCase):
     @classmethod
@@ -279,6 +379,8 @@ class WidgetCheck(unittest.TestCase):
                                           theme_path=False, layout_path=path)
             self.addCleanup(window.close)
             window.present(); window.set_focus(None); self.drain(.3)
+            # The search button of Preferences is in the made window; this check never shows it.
+            window.make_preferences()
             border_width = window.get_default_size().width - window.get_width()
             self.assertTrue(window.persistent_unread.get_active())
             self.assertFalse(window.show_app_pills)
@@ -414,6 +516,98 @@ class WidgetCheck(unittest.TestCase):
         self.assertNotIn("remoteClaude", requests[-1][3]["source"])
         requests[-1][1]({"sources": sources, "maxSources": 8}, None); self.drain(.1)
 
+    def early_window(self, taken=False):
+        """A window that waits for the early request of the launcher start; waiting keeps the callback that the request calls.
+        With taken, an earlier window took the result: deliver returns False."""
+        requests, waiting = [], []
+        def deliver(callback, dispatch):
+            waiting.append((callback, dispatch))
+            return not taken
+        def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None, headers=None):
+            if route != "/api/palette":
+                requests.append((route, callback, method, body, etag))
+        for target, name, value in ((asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                   (asb, "request_async", request)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        first_load = SimpleNamespace(deliver=deliver)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", theme_path=False, layout_path=False, first_load=first_load)
+        self.addCleanup(window.close)
+        window.present(); self.drain(.2)
+        return window, requests, waiting
+
+    def test_the_early_dashboard_is_the_first_dashboard_and_its_tag_goes_to_the_next_request(self):
+        window, requests, waiting = self.early_window()
+        # The window asks for nothing itself while the early request is open, and a refresh waits in the queue.
+        self.assertEqual((len(waiting), requests, window.loading, window.dashboard), (1, [], True, None))
+        window.refresh(queue=True)
+        self.assertEqual((requests, window.refresh_queued), ([], True))
+        callback, dispatch = waiting[0]
+        dispatch(callback, copy.deepcopy(FIXTURE), None, ['"early"'])
+        self.drain(.3)
+        self.assertIn("second", window.row_order)
+        self.assertEqual(window.dashboard_etag, '"early"')
+        self.assertEqual(window.notice.get_visible(), False)
+        # The queued refresh is the only request, and it asks with the tag of the early reply.
+        self.assertEqual([(route, etag) for route, _callback, _method, _body, etag in requests if route == "/api/dashboard"], [("/api/dashboard", ['"early"'])])
+
+    def test_a_window_that_finds_the_early_result_taken_asks_for_the_first_dashboard_itself(self):
+        window, requests, waiting = self.early_window(taken=True)
+        self.assertEqual([(route, method) for route, _callback, method, _body, _etag in requests], [("/api/dashboard", "GET")])
+        self.assertTrue(window.loading)
+        requests[0][1](copy.deepcopy(FIXTURE), None)
+        self.drain(.2)
+        self.assertIn("second", window.row_order)
+        self.assertFalse(window.loading)
+
+    def test_a_failed_early_dashboard_shows_no_notice_and_the_normal_first_refresh_asks_again(self):
+        window, requests, waiting = self.early_window()
+        callback, dispatch = waiting[0]
+        dispatch(callback, None, "Cannot load sessions. Check that ASB is running, then refresh.", [None])
+        self.drain(.2)
+        self.assertEqual(window.notice.get_visible(), False)
+        self.assertEqual([(route, method) for route, _callback, method, _body, _etag in requests], [("/api/dashboard", "GET")])
+        self.assertTrue(window.loading)
+        requests[0][1](copy.deepcopy(FIXTURE), None)
+        self.drain(.2)
+        self.assertIn("second", window.row_order)
+        self.assertFalse(window.loading)
+
+    def test_the_preferences_window_exists_only_after_the_first_open_and_takes_a_custom_theme_set_before(self):
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                   (asb, "request_async", lambda *_args, **_kwargs: None)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", copy.deepcopy(FIXTURE), theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.present(); self.drain(.2)
+        windows = lambda: sum(isinstance(item, asb.PreferencesWindow) for item in self.application.get_windows())
+        self.assertEqual((window.preferences_window, windows()), (None, 0))
+        # The settings widgets of the Preferences pages work before the window exists.
+        window.set_theme_pickers(CUSTOM)
+        window.theme_mode.set_selected(1)
+        window.apply_theme()
+        window.select_states({"idle"})
+        self.assertTrue(window.has_css_class("asb-custom"))
+        self.assertEqual((window.preferences_window, windows()), (None, 0))
+        window.open_preferences(); self.drain(.2)
+        preferences = window.preferences_window
+        self.assertEqual(windows(), 1)
+        self.assertTrue(preferences.get_visible())
+        self.assertTrue(preferences.has_css_class("asb-custom"))
+        # The pages hold the widgets that the board already used.
+        self.assertIs(window.state_summary.get_root(), preferences)
+        self.assertIs(window.color_buttons["accent"].get_root(), preferences)
+        self.assertEqual((window.states, window.state_summary.get_label()), ({"idle"}, "1 states"))
+        window.reset_theme()
+        self.assertFalse(preferences.has_css_class("asb-custom"))
+        preferences.close(); window.open_preferences(); self.drain(.1)
+        self.assertIs(window.preferences_window, preferences)
+        self.assertEqual(windows(), 1)
+
     def test_preferences_sections_reuse_lazy_profiles_theme_and_narrow_layout(self):
         requests = []
         def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None):
@@ -429,11 +623,15 @@ class WidgetCheck(unittest.TestCase):
                                       theme_path=False, layout_path=False)
         self.addCleanup(window.close)
         window.present(); self.drain(.2)
-        preferences = window.preferences_window
-        self.assertFalse(preferences.get_visible())
-        self.assertIsNone(preferences.profiles_editor)
+        # The window start makes no Preferences window: the first click on the button makes it.
+        self.assertIsNone(window.preferences_window)
+        self.assertEqual(sum(isinstance(item, asb.PreferencesWindow) for item in self.application.get_windows()), 0)
         self.assertEqual(requests, [])
         window.menu_button.emit("clicked"); self.drain(.2)
+        preferences = window.preferences_window
+        self.assertTrue(preferences.get_visible())
+        self.assertIsNone(preferences.profiles_editor)
+        self.assertEqual(requests, [])
         self.assertEqual((preferences.get_width(), preferences.get_height()), (780, 560))
         self.assertIs(preferences.get_transient_for(), window)
         self.assertTrue(preferences.get_destroy_with_parent())
@@ -583,8 +781,8 @@ class WidgetCheck(unittest.TestCase):
                                       theme_path=False, layout_path=False)
         self.addCleanup(window.close)
         window.present(); self.drain(.2)
-        preferences = window.preferences_window
         window.open_preferences(); self.drain(.2)
+        preferences = window.preferences_window
         preferences.stack.set_visible_child_name("phone"); self.drain(.1)
         self.assertIsNone(preferences.machines_editor)
         self.assertNotIn("/api/group", routes())

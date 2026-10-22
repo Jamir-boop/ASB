@@ -35,7 +35,7 @@ ASB `1.10.0` has `asb doctor`. Run it to check the system. It prints one line fo
 
 When `ASB_PYTHON` is an absolute path, ASB uses only that Python. Else it uses the first of `/usr/bin/python3` and `python3` on `PATH` that has PyGObject. It finds `xdg-open`, `openssl`, `sqlite3`, and the sound players on `PATH`. For Node.js, see [Node.js](#nodejs).
 
-The window start keeps the last good result of the Python check in `board-check.json` in the ASB cache folder (`~/.cache/asb`; `%LOCALAPPDATA%\asb\cache` on Windows), so that most starts skip the check. ASB checks again after an update or when the window ends with an error. Delete the file to check again. `asb doctor` always runs the full check.
+The window start keeps the last good result of the Python check in `board-check.json` in the ASB cache folder (`~/.cache/asb`; `%LOCALAPPDATA%\asb\cache` on Windows), so that most starts skip the check. ASB checks again after an update or when the window ends with an error. Delete the file to check again. `asb doctor` always runs the full check. When no engine runs, the window starts while the engine starts and gets its address when the engine is ready, so that both start together.
 
 ### Packages for each distribution
 

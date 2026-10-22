@@ -24,11 +24,16 @@ function forgetBoard() {
 
 async function start() {
   const windows = process.platform === 'win32';
+  const engine = windows ? startWindowsEngine() : startEngine();
   // The board check runs while the engine starts. Its result comes before the icon registration, so that a run without the window writes nothing.
   // A good result is kept in the cache folder until the board fails (forgetBoard), so that most starts skip the Python probe.
-  const [service, board] = await Promise.all([windows ? startWindowsEngine() : startEngine(), cachedBoardCheck({ env: process.env })]);
+  // A failed engine start ends the launcher at once, also while the check runs.
+  const checked = cachedBoardCheck({ env: process.env });
+  const board = await Promise.race([checked, engine.then(() => checked)]);
   if (stopping) return;
   if (!board.ok) {
+    await engine;
+    if (stopping) return;
     console.error(`ASB runs without its window on this system: ${board.reason} The engine runs for the phone and your other machines. Run asb doctor for details.`);
     stop(3);
     return;
@@ -42,10 +47,10 @@ async function start() {
     console.error(`Cannot register the ASB icon: ${error.message}`);
   }
   if (stopping) return;
-  const url = `http://127.0.0.1:${service.port}`;
-  window = spawn(board.python, [fileURLToPath(new URL('./asb-board.py', import.meta.url)), url], {
-    stdio: ['ignore', 'inherit', 'inherit'], env: { ...process.env, ASB_SOURCE_TOKEN: service.sourceToken },
-    ...(windows ? { windowsHide: true } : {}),
+  // The window starts while the engine starts, so that its slow GTK import overlaps the engine start. The argument "-" tells it to read the
+  // engine URL and the source token from stdin: one JSON line, written when the engine is ready. Neither goes into an argument or a file.
+  window = spawn(board.python, [fileURLToPath(new URL('./asb-board.py', import.meta.url)), '-'], {
+    stdio: ['pipe', 'inherit', 'inherit'], ...(windows ? { windowsHide: true } : {}),
   });
   window.once('error', (error) => {
     console.error(`Cannot open the native ASB window: ${error.message}. Use system Python 3 or npm start for the web view.`);
@@ -57,11 +62,20 @@ async function start() {
     if ((signal || code) && !stopping) forgetBoard();
     stop(signal ? 1 : code || 0);
   });
-  // The window closes when its engine stops, for example after Quit ASB in the tray; a restarted engine has a new token.
-  engineWatch = setInterval(() => {
-    try { process.kill(service.pid, 0); }
-    catch (error) { if (error.code === 'ESRCH') stop(0); }
-  }, 2000);
+  // A window that ended before the line is read raises EPIPE here; its exit event reports it.
+  window.stdin?.on('error', () => {});
+  // A failed engine start stops the window through main().
+  const service = await engine;
+  const url = `http://127.0.0.1:${service.port}`;
+  // A launcher that already stops (the window ended first) sends no address and starts no watch, but the line still names the engine.
+  if (!stopping) {
+    window.stdin.end(`${JSON.stringify({ url, token: service.sourceToken })}\n`);
+    // The window closes when its engine stops, for example after Quit ASB in the tray; a restarted engine has a new token.
+    engineWatch = setInterval(() => {
+      try { process.kill(service.pid, 0); }
+      catch (error) { if (error.code === 'ESRCH') stop(0); }
+    }, 2000);
+  }
   console.log(`ASB: ${url}`);
 }
 // Opens the board: starts the engine when it is not running, then the native window as its client.

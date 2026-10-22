@@ -1,8 +1,10 @@
 """Native data, scheduling, and row reuse checks, without GTK or a display."""
 import ast
 import copy
+import io
 import itertools
 import json
+import os
 from pathlib import Path, PureWindowsPath
 from tempfile import TemporaryDirectory
 import threading
@@ -3799,8 +3801,10 @@ class NativeLogicChecks(unittest.TestCase):
                 self.assertEqual(transport.open.call_args.args[0].get_header("X-asb-source-token"), expected)
                 self.assertNotIn(token, str(caught.exception))
         source = SOURCE.read_text()
+        # The environment is read once (a board started by hand). The token is used in the header rule (3 lines), in report_ui, and in the
+        # launcher start, which sets it (a global statement and the assignment) from the one line on stdin.
         self.assertEqual(source.count("ASB_SOURCE_TOKEN"), 1)
-        self.assertEqual(source.count("SOURCE_TOKEN"), 5)
+        self.assertEqual(source.count("SOURCE_TOKEN"), 7)
 
     def test_row_error_clears_when_the_row_state_changes(self):
         window = object.__new__(Window)
@@ -5897,7 +5901,7 @@ class NativeIOAuditChecks(unittest.TestCase):
         for os_name, calls in (("posix", 2), ("nt", 0)):
             scope = {"os": SimpleNamespace(name=os_name), "signal": SCOPE["signal"], "sys": SimpleNamespace(argv=["asb"]),
                      "GLib": Mock(), "unix_signal_add": Mock(), "local_base_url": lambda value: "http://127.0.0.1:1",
-                     "SwitchboardApplication": Mock()}
+                     "SwitchboardApplication": Mock(), "LAUNCHER_START": None}
             exec(code, scope)
             with self.subTest(os_name=os_name):
                 scope["main"]()
@@ -6099,6 +6103,218 @@ class NativeIOAuditChecks(unittest.TestCase):
             window.refresh(True)
             requests.pop()[2]({"threads": []}, None)
             button.assert_called_once_with(False)
+
+
+class BoardStartChecks(unittest.TestCase):
+    """The board starts before the engine is ready (the address argument "-"): the address comes on stdin, the first dashboard loads at
+    once in a thread, and the Preferences window is made on its first use."""
+    TOKEN = "ab" * 32
+    BASE = "http://127.0.0.1:4629"
+
+    def line(self, **values):
+        return json.dumps({"url": self.BASE, "token": self.TOKEN, **values}).encode() + b"\n"
+
+    def start(self, data, fetch=None):
+        """A LauncherStart that reads data from a real pipe; the end of the data is the end of the input."""
+        read, write = os.pipe()
+        self.addCleanup(os.close, read)
+        os.write(write, data)
+        os.close(write)
+        return SCOPE["LauncherStart"](read, fetch or Mock(return_value={"threads": []}))
+
+    def outcome(self, start):
+        done, got = threading.Event(), []
+        start.deliver(lambda *args: (got.append(args), done.set()), lambda callback, *args: callback(*args))
+        self.assertTrue(done.wait(5))
+        return got
+
+    def test_the_address_line_gives_the_local_url_and_the_token_and_starts_the_first_request(self):
+        def fetch(base, route, etag):
+            etag[0] = '"tag"'
+            return {"threads": [{"id": "a"}]}
+        with patch.dict(SCOPE, {"SOURCE_TOKEN": ""}):
+            start = self.start(self.line(), Mock(side_effect=fetch))
+            self.assertEqual(start.address(), self.BASE)
+            self.assertEqual(SCOPE["SOURCE_TOKEN"], self.TOKEN)
+            self.assertEqual(self.outcome(start), [({"threads": [{"id": "a"}]}, None, ['"tag"'])])
+            start.fetch.assert_called_once_with(self.BASE, "/api/dashboard", etag=['"tag"'])
+            # The result is for one window and is not kept: a later delivery gets nothing, so that its window asks for itself.
+            self.assertIsNone(start.outcome)
+            self.assertFalse(start.deliver(Mock(), Mock()))
+
+    def test_a_result_that_came_before_the_window_is_delivered_at_once_and_only_once(self):
+        with patch.dict(SCOPE, {"SOURCE_TOKEN": ""}):
+            start = self.start(self.line())
+            self.assertEqual(start.address(), self.BASE)
+            for _attempt in range(200):
+                if start.outcome is not None:
+                    break
+                threading.Event().wait(.01)
+            self.assertIsNotNone(start.outcome)
+            dispatch = Mock()
+            self.assertTrue(start.deliver("callback", dispatch))
+            dispatch.assert_called_once_with("callback", {"threads": []}, None, [None])
+            self.assertIsNone(start.outcome)
+            self.assertFalse(start.deliver("callback", dispatch))
+            dispatch.assert_called_once()
+
+    def test_the_address_is_known_while_the_first_request_runs_and_a_waiting_delivery_follows_the_end(self):
+        running, release = threading.Event(), threading.Event()
+        def fetch(base, route, etag):
+            running.set()
+            self.assertTrue(release.wait(5))
+            return {"threads": []}
+        with patch.dict(SCOPE, {"SOURCE_TOKEN": ""}):
+            start = self.start(self.line(), fetch)
+            # The window build can start now: the request is still open.
+            self.assertEqual(start.address(), self.BASE)
+            self.assertTrue(running.wait(5))
+            done, got = threading.Event(), []
+            start.deliver(lambda *args: (got.append(args), done.set()), lambda callback, *args: callback(*args))
+            self.assertFalse(done.wait(.05))
+            release.set()
+            self.assertTrue(done.wait(5))
+            self.assertEqual(got, [({"threads": []}, None, [None])])
+
+    def test_a_failed_first_request_is_delivered_as_an_error_for_the_normal_first_refresh(self):
+        with patch.dict(SCOPE, {"SOURCE_TOKEN": ""}):
+            start = self.start(self.line(), Mock(side_effect=RuntimeError("Cannot load sessions. Check that ASB is running, then refresh.")))
+            self.assertEqual(self.outcome(start), [(None, "Cannot load sessions. Check that ASB is running, then refresh.", [None])])
+            # Any other failure of the thread is still delivered, so that the window never waits for ever.
+            with patch.object(threading, "excepthook", Mock()):
+                start = self.start(self.line(), Mock(side_effect=KeyError("synthetic")))
+                self.assertEqual(self.outcome(start), [(None, "Cannot load sessions.", [None])])
+
+    def test_a_line_that_is_not_an_address_stops_the_start_and_sends_no_request(self):
+        for data in (b"", b"\n", b"not json\n", b"[]\n", b'{"url": 4, "token": "t"}\n', b'{"url": "%s"}\n' % self.BASE.encode(),
+                     b'{"token": "t"}\n', b'{"url": "%s", "token": 5}\n' % self.BASE.encode(), b"x" * 5000,
+                     self.line(url="http://example.com:4629"), self.line(url="http://127.0.0.1:4629/path"), self.line(url="")):
+            with self.subTest(data=data[:40]), patch.dict(SCOPE, {"SOURCE_TOKEN": "kept"}):
+                start = self.start(data)
+                with self.assertRaises(ValueError) as caught:
+                    start.address()
+                self.assertTrue(str(caught.exception))
+                self.assertEqual(SCOPE["SOURCE_TOKEN"], "kept")
+                self.assertNotIn(self.TOKEN, str(caught.exception))
+                start.fetch.assert_not_called()
+
+    def test_only_the_first_line_counts_and_a_line_without_a_newline_at_the_end_of_the_input_is_read(self):
+        with patch.dict(SCOPE, {"SOURCE_TOKEN": ""}):
+            self.assertEqual(self.start(self.line() + b"more\n").address(), self.BASE)
+            self.assertEqual(self.start(self.line().rstrip(b"\n")).address(), self.BASE)
+
+    def test_the_read_does_not_use_the_text_stdin_stream(self):
+        # A thread that waits in sys.stdin at the exit of the interpreter can stop Python with a fatal error.
+        read = next(node for node in ast.walk(ast.parse(SOURCE.read_text())) if isinstance(node, ast.FunctionDef) and node.name == "read_line")
+        self.assertNotIn("stdin", ast.unparse(read))
+        self.assertIn("os.read", ast.unparse(read))
+
+    def test_the_address_reading_starts_before_the_gtk_import_and_only_for_the_dash_argument(self):
+        # NODES holds the code before the GTK import, and the check runs in it with the argv of this test run.
+        self.assertIn("LAUNCHER_START", SCOPE)
+        self.assertIsNone(SCOPE["LAUNCHER_START"])
+        statement = next(node for node in TREE.body if isinstance(node, ast.Assign) and node.targets[0].id == "LAUNCHER_START")
+        self.assertEqual(ast.unparse(statement.value), "LauncherStart() if sys.argv[1:] == ['-'] else None")
+        self.assertLess(TREE.body.index(statement), next(index for index, node in enumerate(TREE.body) if isinstance(node, ast.Try)))
+
+    def test_the_early_result_is_the_first_dashboard_with_its_tag(self):
+        window = object.__new__(Window)
+        window.apply_dashboard, window.refresh = Mock(return_value=False), Mock()
+        dashboard, etag = {"threads": []}, ['"tag"']
+        self.assertFalse(window.first_dashboard(dashboard, None, etag))
+        window.apply_dashboard.assert_called_once_with(dashboard, None, etag)
+        window.refresh.assert_not_called()
+
+    def test_a_failed_early_request_shows_no_notice_and_runs_the_normal_first_refresh(self):
+        for dashboard, error in ((None, "Cannot load sessions. Check that ASB is running, then refresh."), (None, None)):
+            with self.subTest(error=error):
+                window = object.__new__(Window)
+                window.loading = True
+                window.apply_dashboard, window.refresh, window.set_notice = Mock(), Mock(), Mock()
+                self.assertFalse(window.first_dashboard(dashboard, error, [None]))
+                self.assertFalse(window.loading)
+                window.refresh.assert_called_once_with()
+                window.apply_dashboard.assert_not_called()
+                window.set_notice.assert_not_called()
+
+    def test_the_window_waits_for_the_early_request_and_does_not_make_a_second_one(self):
+        init = next(node for node in WINDOW.body if isinstance(node, ast.FunctionDef) and node.name == "__init__")
+        end = ast.unparse(next(node for node in reversed(init.body) if isinstance(node, ast.If)))
+        # The window is loading before the request can end, and it asks for itself only when an earlier window took the result.
+        self.assertLess(end.index("self.loading = True"), end.index("first_load.deliver(self.first_dashboard, GLib.idle_add)"))
+        self.assertLess(end.index("first_load.deliver"), end.index("self.loading = False"))
+        self.assertLess(end.index("self.loading = False"), end.index("self.refresh()"))
+
+    def test_the_preferences_window_is_not_made_by_the_window_start(self):
+        init = next(node for node in WINDOW.body if isinstance(node, ast.FunctionDef) and node.name == "__init__")
+        calls = {node.func.id for node in ast.walk(init) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+        self.assertNotIn("PreferencesWindow", calls)
+        owners = [function.name for function in ast.walk(WINDOW) if isinstance(function, ast.FunctionDef)
+                  and any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "PreferencesWindow"
+                          for node in ast.walk(function))]
+        self.assertEqual(owners, ["make_preferences"])
+
+    def test_the_preferences_window_is_made_once_on_first_use_and_a_closed_window_makes_none(self):
+        window = object.__new__(Window)
+        window.closed, window.preferences_window, window.hover_colors = False, None, None
+        window.preference_pages = ("sessions page", "appearance page")
+        with patch.dict(SCOPE, {"PreferencesWindow": Mock()}):
+            made = SCOPE["PreferencesWindow"]
+            window.open_preferences()
+            window.open_preferences()
+            made.assert_called_once_with(window, "sessions page", "appearance page")
+            self.assertIs(window.preferences_window, made.return_value)
+            self.assertEqual(made.return_value.present.call_count, 2)
+            made.return_value.add_css_class.assert_not_called()
+            window.preferences_window, window.closed = None, True
+            window.open_preferences()
+            made.assert_called_once()
+            self.assertIsNone(window.preferences_window)
+
+    def test_a_custom_theme_set_before_the_first_use_reaches_the_new_preferences_window(self):
+        window = object.__new__(Window)
+        window.closed, window.preferences_window, window.hover_colors = False, None, {"accent": "#f3c66b"}
+        window.preference_pages = ("sessions page", "appearance page")
+        with patch.dict(SCOPE, {"PreferencesWindow": Mock()}):
+            window.open_preferences()
+            SCOPE["PreferencesWindow"].return_value.add_css_class.assert_called_once_with("asb-custom")
+
+    def test_the_ui_report_needs_no_preferences_window(self):
+        window = object.__new__(Window)
+        window.closed, window.preferences_window, window.ui_client_id = False, None, "client"
+        window.sources_revision, window.ui_report_last, window.ui_report_at, window.ui_report_sending = 3, None, 0, False
+        window.base = self.BASE
+        with patch.dict(SCOPE, {"SOURCE_TOKEN": self.TOKEN, "request_async": Mock(), "GLib": Mock()}):
+            window.report_ui()
+            arguments = SCOPE["request_async"].call_args.args
+        self.assertEqual(arguments[:2], (self.BASE, "/api/agent/ui"))
+        self.assertEqual(arguments[-1], {"clientId": "client", "sourcesRevision": 3, "profilesRevision": None,
+                                        "profilesVisible": False, "dirty": False})
+
+    def main_scope(self, launch):
+        main = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "main")
+        errors = io.StringIO()
+        scope = {"os": SimpleNamespace(name="posix"), "signal": SCOPE["signal"], "sys": SimpleNamespace(argv=["asb", "-"], stderr=errors),
+                 "GLib": Mock(), "unix_signal_add": Mock(), "local_base_url": Mock(side_effect=AssertionError("The address comes from stdin.")),
+                 "SwitchboardApplication": Mock(), "LAUNCHER_START": launch}
+        exec(compile(ast.Module(body=[main], type_ignores=[]), str(SOURCE), "exec"), scope)
+        return scope, errors
+
+    def test_main_waits_for_the_address_of_the_launcher_and_gives_the_application_the_early_load(self):
+        launch = Mock()
+        launch.address.return_value = self.BASE
+        scope, _errors = self.main_scope(launch)
+        scope["main"]()
+        scope["SwitchboardApplication"].assert_called_once_with(self.BASE, launch)
+        scope["SwitchboardApplication"].return_value.run.assert_called_once_with(["asb"])
+
+    def test_main_prints_the_problem_and_exits_1_when_the_launcher_sends_no_address(self):
+        launch = Mock()
+        launch.address.side_effect = ValueError("ASB did not get the engine address from its launcher.")
+        scope, errors = self.main_scope(launch)
+        self.assertEqual(scope["main"](), 1)
+        self.assertEqual(errors.getvalue(), "ASB did not get the engine address from its launcher.\n")
+        scope["SwitchboardApplication"].assert_not_called()
 
 
 class BoardLauncherChecks(unittest.TestCase):

@@ -1069,6 +1069,89 @@ def request_async(base, route, callback, dispatch, method="GET", body=None, etag
     return worker
 
 
+def launcher_address(line):
+    """The local engine URL and the token from the one JSON line of the launcher. ValueError when the line is not an address."""
+    try:
+        value = json.loads(line)
+    except ValueError:
+        value = None
+    if not isinstance(value, dict) or not isinstance(value.get("url"), str) or not isinstance(value.get("token"), str):
+        raise ValueError("ASB did not get the engine address from its launcher.")
+    return local_base_url(value["url"]), value["token"]
+
+
+class LauncherStart:
+    """The engine address when the launcher starts the board before the engine is ready (the address argument is "-").
+    The launcher writes one JSON line {"url", "token"} to stdin when the engine is ready. A thread reads it and then loads the first
+    dashboard, so that the wait for the engine and the request overlap the slow GTK import and the window build."""
+
+    def __init__(self, descriptor=0, fetch=None):
+        self.descriptor, self.fetch = descriptor, fetch or request_json
+        self.known = threading.Event()
+        self.base = self.problem = self.outcome = self.waiting = None
+        self.used = False
+        self.lock = threading.Lock()
+        threading.Thread(target=self.run, daemon=True).start()
+
+    def read_line(self):
+        # os.read and not sys.stdin: a thread that waits in a text stream can stop Python at exit.
+        data = b""
+        while b"\n" not in data and len(data) < 4096:
+            try:
+                chunk = os.read(self.descriptor, 4096 - len(data))
+            except OSError:
+                break
+            if not chunk:
+                break
+            data += chunk
+        return data.split(b"\n", 1)[0]
+
+    def run(self):
+        global SOURCE_TOKEN
+        try:
+            self.base, SOURCE_TOKEN = launcher_address(self.read_line())
+        except ValueError as error:
+            self.problem = str(error)
+        finally:
+            self.known.set()
+        if not self.base:
+            return
+        etag = [None]
+        # The placeholder is delivered when the request raises more than RuntimeError: the window then tries again by itself.
+        outcome = (None, "Cannot load sessions.", etag)
+        try:
+            outcome = (self.fetch(self.base, "/api/dashboard", etag=etag), None, etag)
+        except RuntimeError as error:
+            outcome = (None, str(error), etag)
+        finally:
+            with self.lock:
+                waiting, self.waiting = self.waiting, None
+                self.outcome = None if waiting else outcome
+            if waiting:
+                waiting[1](waiting[0], *outcome)
+
+    def address(self):
+        """The engine URL, as soon as the launcher has written it. ValueError when it never does."""
+        self.known.wait()
+        if not self.base:
+            raise ValueError(self.problem or "ASB did not get the engine address from its launcher.")
+        return self.base
+
+    def deliver(self, callback, dispatch):
+        """Calls dispatch(callback, dashboard, error, etag) once, when the early request ends (at once when it has ended), and keeps
+        nothing after that. False when an earlier call took the result: the caller then asks for the first dashboard itself."""
+        with self.lock:
+            if self.used:
+                return False
+            self.used = True
+            if self.outcome is None:
+                self.waiting = (callback, dispatch)
+                return True
+            outcome, self.outcome = self.outcome, None
+        dispatch(callback, *outcome)
+        return True
+
+
 class EventStream:
     def __init__(self, base, callback, dispatch):
         self.address = urlsplit(base)
@@ -1131,6 +1214,10 @@ class EventStream:
                 except OSError:
                     pass
 
+
+# The launcher starts the board before the engine is ready and writes the engine address to stdin later. The read and the first
+# dashboard request start here, before the GTK import below, which takes most of the start time on Windows.
+LAUNCHER_START = LauncherStart() if sys.argv[1:] == ["-"] else None
 
 try:
     import gi
@@ -2793,7 +2880,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     numbers_shown = False
     number_keys = open_popovers = ()
 
-    def __init__(self, application, base, initial_dashboard=None, theme_path=THEME_PATH, layout_path=LAYOUT_PATH):
+    def __init__(self, application, base, initial_dashboard=None, theme_path=THEME_PATH, layout_path=LAYOUT_PATH, first_load=None):
         super().__init__(application=application, title="ASB · Agent Switch Board",
                          default_width=420, default_height=900)
         self.set_size_request(0, self.get_size_request().height)
@@ -3203,7 +3290,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.add_controller(keys)
         self.connect("notify::is-active", self.active_changed)
         self.connect("unmap", self.hide_numbers)
-        self.preferences_window = PreferencesWindow(self, sessions, appearance)
+        # The Preferences window is made on its first use (make_preferences), so that the first rows do not wait for it.
+        self.preference_pages = (sessions, appearance)
         try:
             saved = read_theme(theme_path)
             if saved:
@@ -3221,10 +3309,24 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.connect("realize", self.watch_layout)
         self.timer = GLib.timeout_add(self.refresh_interval_ms, self.tick)
         self.events = EventStream(self.base, self.source_changed, GLib.idle_add)
-        if initial_dashboard is None:
-            self.refresh()
-        else:
+        if initial_dashboard is not None:
             self.apply_dashboard(initial_dashboard, None)
+        elif first_load:
+            # The launcher start already asked for the first dashboard. Until it ends, a refresh waits in the queue.
+            self.loading = True
+            if not first_load.deliver(self.first_dashboard, GLib.idle_add):
+                self.loading = False
+                self.refresh()
+        else:
+            self.refresh()
+
+    def first_dashboard(self, dashboard, error, etag):
+        """The result of the early request of the launcher start. A failed request shows no notice: the normal first refresh runs."""
+        if error or dashboard is None:
+            self.loading = False
+            self.refresh()
+            return False
+        return self.apply_dashboard(dashboard, None, etag)
 
     @staticmethod
     def rgba(value):
@@ -3502,9 +3604,16 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.publish_palette()
         return False
 
+    def make_preferences(self):
+        if self.preferences_window is None:
+            self.preferences_window = PreferencesWindow(self, *self.preference_pages)
+            if self.hover_colors:
+                self.preferences_window.add_css_class("asb-custom")
+        return self.preferences_window
+
     def open_preferences(self, *_args):
         if not self.closed:
-            self.preferences_window.present()
+            self.make_preferences().present()
 
     def set_theme_pickers(self, colors):
         self.syncing_theme = True
@@ -5691,17 +5800,17 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
 
 class SwitchboardApplication(Adw.Application):
-    def __init__(self, base):
+    def __init__(self, base, first_load=None):
         GLib.set_prgname(APP_ID)
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.NON_UNIQUE)
         self.get_style_manager().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
-        self.base = base
+        self.base, self.first_load = base, first_load
         self.connect("activate", self.on_activate)
 
     def on_activate(self, *_args):
         window = self.get_active_window()
         if window is None:
-            window = SwitchboardWindow(self, self.base)
+            window = SwitchboardWindow(self, self.base, first_load=self.first_load)
             window.present()
             # GTK focuses the search field on show; its cursor blink repaints the window.
             window.set_focus(None)
@@ -5717,12 +5826,12 @@ class SwitchboardApplication(Adw.Application):
 
 def main():
     try:
-        base = local_base_url(sys.argv[1] if len(sys.argv) == 2 else "")
+        base = LAUNCHER_START.address() if LAUNCHER_START else local_base_url(sys.argv[1] if len(sys.argv) == 2 else "")
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 1
     GLib.set_application_name("ASB · Agent Switch Board")
-    application = SwitchboardApplication(base)
+    application = SwitchboardApplication(base, LAUNCHER_START)
     # On Windows the launcher ends the window process, and GLib has no unix_signal_add.
     if os.name != "nt":
         for sig in (signal.SIGTERM, signal.SIGINT):

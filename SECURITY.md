@@ -4,7 +4,7 @@ ASB reads local session metadata and serves it on `127.0.0.1`. The ASB path leav
 
 A local process under your user account can access the local API. Loopback binding does not separate ASB from other programs on the same computer. Action endpoints check Host, Origin, known session IDs, and request fields.
 
-A local program that is not a browser can send Host and Origin itself. A source change can set the launcher that ASB runs. For this reason, the launcher creates one random token for each run and gives it to the server and to the window (`ASB_SOURCE_TOKEN`). `POST /api/sources` and `POST /api/sources/<id>/remove` then need the header `X-ASB-Source-Token`. Without it, the reply is 403. `GET /api/sources` needs no token. A server started with `npm start` has no token, so these routes then have only the Host and Origin checks.
+A local program that is not a browser can send Host and Origin itself. A source change can set the launcher that ASB runs. For this reason, the engine makes one random token for each run and publishes it in `service.json`. The launcher writes the token and the URL to the stdin of the window as one JSON line, not to an argument, an environment variable, or a file. A window that you start by hand with the URL as its argument uses `ASB_SOURCE_TOKEN`. `POST /api/sources` and `POST /api/sources/<id>/remove` then need the header `X-ASB-Source-Token`. Without it, the reply is 403. `GET /api/sources` needs no token. A server started with `npm start` has no token, so these routes then have only the Host and Origin checks.
 
 The optional machine group joins ASB engines on your private network. Its trust model:
 
