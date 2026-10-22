@@ -1,11 +1,11 @@
 {
   "name": "asb-bridge",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "bun src/server.ts",
-    "build": "bun build src/server.ts src/hook.ts src/relay.ts --target=bun --minify --outdir=dist",
+    "build": "bun build src/server.ts src/hook.ts src/relay.ts src/opencode.ts --target=bun --minify --outdir=dist",
     "check": "tsc --noEmit",
     "test": "bun test",
     "test:native": "bun test/native.ts"

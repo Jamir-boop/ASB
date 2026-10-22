@@ -1,8 +1,8 @@
 # ASB Bridge
 
-A Codex plugin that lets Codex tasks and Claude Code sessions message each other on one machine and, in an ASB machine group, with the sessions on your other machines (Linux and Windows).
+A plugin that lets Codex tasks, Claude Code sessions, and OpenCode 2 sessions message each other on one machine and, in an ASB machine group, with the sessions on your other machines (Linux and Windows).
 
-Claude Code lists and messages its other sessions through its own local registry. This plugin registers each Codex task in that registry, so Claude finds the task with `ListAgents` and writes to it with `SendMessage`. Claude needs no flags, plugins, or launchers. A bundled MCP server gives the Codex side `list_sessions` and `send_message`. Messages travel over Unix domain sockets in private per-user directories. On Windows they travel over named pipes, and each receiver has a key file and checks an `auth` line (see [Windows](#windows)).
+Claude Code lists and messages its other sessions through its own local registry. This plugin registers each Codex task and each OpenCode session in that registry, so Claude finds them with `ListAgents` and writes to them with `SendMessage`. Claude needs no flags, plugins, or launchers. A bundled MCP server gives the Codex side `list_sessions` and `send_message`. Messages travel over Unix domain sockets in private per-user directories. On Windows they travel over named pipes, and each receiver has a key file and checks an `auth` line (see [Windows](#windows)).
 
 Separate Claude profiles have separate registries by default. To share discovery and messaging, use the explicit setup below.
 
@@ -11,7 +11,8 @@ Separate Claude profiles have separate registries by default. To share discovery
 - Stock Codex with its shared local app-server daemon. CLI tasks on the daemon and desktop tasks it owns work. Older desktop tasks use the desktop IPC fallback. CLI sessions started with `--no-daemon` have no inbox. Real-runtime checks cover Codex 0.159.0, 0.159.2, and 0.159.3.
 - Linux, macOS, or Windows.
 - Claude Code 2.1.224 or later, the first release with [cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging).
-- Bun on the PATH of both your terminal and the Codex app.
+- Bun on the PATH of both your terminal and the Codex app. OpenCode does not need Bun: it loads the plugin bundle by itself.
+- OpenCode 2.1.2 or later, for the OpenCode plugin. The desktop app 2.1.2 ships it.
 
 ## Install
 
@@ -23,9 +24,11 @@ To recover, run `asb bridge uninstall --codex-home <home>` for the affected home
 
 ```bash
 asb bridge install --codex-home ~/.codex --claude
+asb bridge install --opencode
+asb bridge install --opencode --opencode-config /path/to/opencode/config
 ```
 
-Use `asb bridge install --all` for all detected providers. From a source checkout, use `scripts/asb bridge` in place of `asb bridge`. Without a target flag, `asb bridge install` prints the detected targets and usage, and changes nothing.
+Use `asb bridge install --all` for all detected providers. `--all` adds OpenCode when its config folder exists. From a source checkout, use `scripts/asb bridge` in place of `asb bridge`. Without a target flag, `asb bridge install` prints the detected targets and usage, and changes nothing.
 
 `asb bridge status` reports `bunOnAppServerPath` for each Codex home: `true`, `false`, or `null`. On Linux, it uses the HOME, CODEX_HOME, and PATH of running `codex ... app-server` processes; without CODEX_HOME, the home is `$HOME/.codex`. It resolves relative PATH entries from that process's working directory. `false` means at least one matching process cannot find an executable Bun file. `true` means all matching processes checked can find it. `null` means no process matches, the platform is not Linux, or process data cannot be read or verified. An unreadable app-server environment can hide its home, so it prevents a `true` result for any home. Status and install print a warning for `false`; the warning does not fail install. This check does not start Bun.
 
@@ -77,6 +80,8 @@ The bridge runs on Windows with the same install command and the same tools. Bun
 - Windows has no `SIGTERM`. When a task ends, the `SessionEnd` hook stops the receiver and then removes its row and key file.
 - Codex desktop tasks use the desktop IPC pipe `\\.\pipe\codex-ipc`. A CLI task on the app-server daemon uses the daemon's socket file.
 - Any process can serve a free pipe name. So for a send by `reference`, the bridge proves the pipe server before the first byte: it must be the registry PID, with the recorded start time, of the same Windows user. Only the proved handle carries the bytes. A failed proof sends nothing (`target-changed`).
+- OpenCode on Windows uses the same named pipes, key files, and `auth` line. The placeholder process is `findstr.exe x`. The installer runs `opencode debug paths` for the config and state folders and falls back to `%XDG_CONFIG_HOME%\opencode` or `%USERPROFILE%\.config\opencode`.
+- Gaps on Windows for OpenCode: no exact-send proof for an OpenCode target, and a lost exact receipt for an OpenCode sender. The OpenCode config folder and `bun:ffi` are not verified on Windows yet.
 - Not on Windows: `asb bridge link-claude` (it refuses with `Linking Claude session folders is not supported on Windows.`) and the `bunOnAppServerPath` check (always `null`).
 
 ## Check that it works
@@ -132,6 +137,20 @@ A reference can also name a Codex or Claude Code CLI session on another machine 
 
 A `sessionId` that only the ASB engine lists (a session on another machine of the group, Linux) goes to the engine, which sends it to that machine. A local session with the ID always wins, with no engine call. When two or more other machines list the ID, the bridge refuses: `More than one other machine has session <id>. Nothing sent.` When the engine cannot list them: `ASB cannot list the sessions on the other machines. Nothing sent.` The bridge finds the engine through `$XDG_RUNTIME_DIR/asb/service.json`, so `.mcp.json` passes `XDG_RUNTIME_DIR` to the MCP server. The text limit is the same as for a local send. A refusal with proof that nothing went out leaves the message `not-sent` with one of these reasons: `<machine> is not reachable. Nothing sent.`, `Message too large for the other machine. Nothing sent.`, `Too many messages to this session just now. Nothing sent; wait or batch the text.`, or `<machine> refused the message. Nothing sent.` When the message can have gone out (the engine says `unknown`, an older engine says `target-unavailable`, or the engine does not answer), the outcome is `unknown` with `Send outcome unknown for <id>; inspect status before sending again`. The bridge never sends it again by itself, and the engine never sends one delivery to two addresses of the other machine. `socket-written` means only that the other machine wrote the frame. A new bridge with an older engine can still say "Nothing sent" after a timeout. `notify_when_idle` to another machine is refused: `Idle subscriptions do not work across machines yet.`
 
+## OpenCode
+
+The OpenCode plugin lives in `<opencode-config>/plugins/asb-bridge/` and loads by itself. OpenCode needs no Bun and no hook trust. A session shows to other agents after it runs a turn, or after it calls a bridge tool. At plugin start, the plugin also registers the root sessions that were updated in the last 30 minutes, newest first, at most 8. A subagent session never registers; its tool call sends as its root session.
+
+An OpenCode row is named `opencode-<title>-<suffix>`, or `opencode-<folder>-<suffix>` before it has a title. The bridge ID is a stable UUID v5 of `opencode:<session id>`, so the name and ID survive a restart. At most 24 sessions stay registered in one OpenCode server process. The oldest idle session goes first when a new one arrives; a running or held session never goes. After 12 hours of no activity a session unregisters and registers again on its next turn.
+
+A message is added to the OpenCode session with `ctx.session.synthetic` and delivery `steer`. It starts a turn when the session is idle and steers the running turn when it is busy. OpenCode accepts every message at once: there is no hold dialog and no permission prompt. The receive policy stays `default`. The model sees the same header and text as in a Codex task, with `Reply with tools.asb_bridge.send_message.`
+
+OpenCode exposes three tools: `list_sessions`, `send_message`, and `status`. It has no `inbox` tool. The mode of the agent rules only fills the outgoing `from-mode` of frames that OpenCode sends.
+
+The plugin never edits `opencode.json`, the OpenCode database, or `auth.json`. It writes its own state folder, registry rows, key files, and socket files. OpenCode also reads `~/.claude/skills`, so the Claude `bridge` skill can show in OpenCode when Claude's home is `~/.claude`. The OpenCode `skills/bridge` folder wins by precedence. The installer prints no warning for this.
+
+A message can cost a model turn when no window is open: the desktop app can run the turn in its service. The text is added to the session, and the model answers later.
+
 ## Control what arrives
 
 The receive setting belongs to one task. The bridge delivers every message at once under the `default` and `accept` settings. Held text reaches the model only after an accepting setting applies.
@@ -149,10 +168,10 @@ The sender sees Claude's status notices, among them `held`, `delivered`, `denied
 
 | Tool | Use |
 | --- | --- |
-| `list_sessions` | List local agents with ID, name, agent type, working directory, status, and start time (newest first). `startedAt` has whole seconds (`2026-10-20T10:00:00Z`), and the order uses the milliseconds. A field with no value is left out: a local agent with no start time has no `startedAt`. In an ASB machine group, the sessions on the other machines follow, with `remote: true`, `machine`, the name `<machine>-<session>`, and no `cwd` and no `startedAt`. On Linux and Windows with a running ASB engine, an entry also has its full session `reference`, or `referenceUnavailable` with the reason code when a send cannot use one. The optional `nameContains` (1 to 128 characters) keeps only the entries whose name, as the list shows it (`<machine>-<session>` for another machine), has that text in any letter case. |
+| `list_sessions` | List local agents with ID, name, agent type (`codex`, `opencode`, or `claude`), working directory, status, and start time (newest first). `startedAt` has whole seconds (`2026-10-20T10:00:00Z`), and the order uses the milliseconds. A field with no value is left out: a local agent with no start time has no `startedAt`. In an ASB machine group, the sessions on the other machines follow, with `remote: true`, `machine`, the name `<machine>-<session>`, and no `cwd` and no `startedAt`. On Linux and Windows with a running ASB engine, an entry also has its full session `reference`, or `referenceUnavailable` with the reason code when a send cannot use one. The optional `nameContains` (1 to 128 characters) keeps only the entries whose name, as the list shows it (`<machine>-<session>` for another machine), has that text in any letter case. |
 | `send_message` | Send text to one agent by `sessionId`, or on Linux and Windows by a full session `reference` (this machine, or another machine of the group: Linux or Windows at both ends). Set `notify_when_idle` for one notice when that agent next goes idle (this machine only). The advertised schema has a plain string for `sessionId` and `reference`. The handler checks the format (a UUID, or `asb:` and printable ASCII, at most 384 characters) before it reads the caller or sends anything, and a bad value gives the tool error `Input validation error: sessionId must be a UUID from list_sessions. Nothing sent.` (for `reference`: `... reference must be a full session reference (asb:1/...). Nothing sent.`). |
 | `status` | Show the receiver and recent transport outcomes. |
-| `inbox` | Open a dialog where you set the receive policy, or see how many messages the explicit hold keeps. |
+| `inbox` | Open a dialog where you set the receive policy, or see how many messages the explicit hold keeps. Codex only: OpenCode accepts every message at once and has no `inbox` tool. |
 
 ## Limits
 
@@ -177,11 +196,12 @@ bun run check
 bun test
 bun run build
 bun run test:native
+OPENCODE_BRIDGE_TEST_BINARY=/path/to/opencode bun test test/native-opencode.ts
 ```
 
 The tests that need Unix socket files, `/tmp`, file modes, links, or signals skip on Windows; the `bridge-windows` CI job runs the others there.
 
-The plugin runs the bundled `dist/server.js` and `dist/hook.js`, and CI fails when they lag `src/`. Run `bun run build` after changing `src/`, and commit `dist/`. When you change a shipped bridge file, change the version in `package.json` and `.codex-plugin/plugin.json` together, because Codex caches an installed plugin by version. `bun run test:native` starts the installed Codex binary in a temporary home with a local model stub. See [Testing](PROTOCOL-COVERAGE.md#testing) for its modes and environment variables.
+The Codex plugin runs the bundled `dist/server.js` and `dist/hook.js`. The OpenCode plugin runs `dist/opencode.js`. CI fails when they lag `src/`. Run `bun run build` after changing `src/`, and commit `dist/`. When you change a shipped bridge file, change the version in `package.json` and `.codex-plugin/plugin.json` together, because Codex caches an installed plugin by version. `bun run test:native` starts the installed Codex binary in a temporary home with a local model stub. See [Testing](PROTOCOL-COVERAGE.md#testing) for its modes and environment variables.
 
 ## License
 

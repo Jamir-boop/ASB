@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { hopChain, inbox, maxLineLength, ownedJson, peerAddress, peers, privateDirectory, processStart, removePeerKey, senderMode, sendFrames,
   SendRefused, serializeFrame, socketPath, userFrame, uuid, writePeerKey, type Frame, type Peer } from './claude';
 import { isWindows, keyName, pidDomain } from './platform';
+import { PLACEHOLDER } from './placeholder';
 import { bindingSchema, boundPeer, exactReceiptSchema, requestReceiver, sendBound } from './outbound';
 
 const homeSchema = z.object({ path: z.string().refine(isAbsolute), remoteClaude: z.enum(['auto', 'bridge', 'native']), hasRemoteControl: z.boolean() });
@@ -121,8 +122,6 @@ export function engineCaller(engine: string, sourceToken: string, timeoutMs = 30
 
 const rowKey = (home: string, machineId: string, sessionId: string) => `${home}\0${machineId}\0${sessionId}`;
 // A process that waits on stdin stands in for the remote session: its PID and start time make the row live.
-// `cat` comes from PATH: NixOS has no /usr/bin/cat, and macOS has cat only in /bin.
-const PLACEHOLDER = isWindows() ? [join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'findstr.exe'), 'x'] : ['cat'];
 const agentOf = (peer: Peer) => peer.entrypoint === 'codex-asb-bridge' ? 'codex' as const : 'claude' as const;
 
 // Plan 9.6: which remote sessions get a proxy row in each local Claude config home.

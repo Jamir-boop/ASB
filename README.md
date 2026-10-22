@@ -250,7 +250,7 @@ In a machine group, Claude and Codex sessions on one machine can message session
 
 ## OpenCode sessions (list only)
 
-ASB `1.10.0` also lists OpenCode 2 sessions from the local OpenCode database. OpenCode cards show state, the last result, and unread, but ASB cannot open them: OpenCode 2 has no link that opens one session. See [OpenCode](ASB.md#opencode).
+ASB `1.10.0` also lists OpenCode 2 sessions from the local OpenCode database. OpenCode cards show state, the last result, and unread, but ASB cannot open them: OpenCode 2 has no link that opens one session. With the optional ASB Bridge, an OpenCode session can also send and receive messages. See [OpenCode](ASB.md#opencode).
 
 ## CLI sessions (view only)
 
@@ -262,9 +262,9 @@ ASB has `asb agent status` and `asb agent sources` commands to list, get, add, u
 
 ## ASB Bridge (optional)
 
-ASB Bridge lets local Claude Code sessions and Codex tasks message each other. When ASB Bridge is installed, a message that one agent sends starts a turn in the receiving app.
+ASB Bridge lets local Claude Code sessions, Codex tasks, and OpenCode 2 sessions message each other. When ASB Bridge is installed, a message that one agent sends starts a turn in the receiving app.
 
-The ASB `1.10.0` packages include ASB Bridge `0.7.0`; ASB `1.8.1` or older packages do not. It needs Bun. From a source checkout, run `scripts/asb bridge install --all`. With an ASB `1.10.0` package, run `asb bridge install --all`. Then open Plugins > ASB Bridge in Codex, trust both hooks, and restart Codex. Without a target flag, `asb bridge install` shows usage and changes nothing. See the [bridge guide](bridge/README.md) for explicit targets and the usage skills.
+The ASB `1.10.0` packages include ASB Bridge `0.7.0`; ASB `1.8.1` or older packages do not. It needs Bun. From a source checkout, run `scripts/asb bridge install --all`. With an ASB `1.10.0` package, run `asb bridge install --all`. Then open Plugins > ASB Bridge in Codex, trust both hooks, and restart Codex. `asb bridge install --opencode` adds the OpenCode plugin; `--all` adds it when the OpenCode config folder exists. Without a target flag, `asb bridge install` shows usage and changes nothing. See the [bridge guide](bridge/README.md) for explicit targets and the usage skills.
 
 Separate Claude profiles can opt in to shared peer discovery with `asb bridge link-claude <profile-home> <shared-home>`. This shares only peer metadata and IPC authentication keys. App data and provider credentials stay separate. Read the [setup and backup limits](bridge/README.md#link-claude-profiles) first.
 

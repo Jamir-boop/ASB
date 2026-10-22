@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { accountReceipt, findPeer, findPeerProcess, hopChain, inbox, peerAddress, peers, privateDirectory, processStart, register, SendRefused, sendFrames, senderMode, serializeFrame, socketPath, userFrame, uuid, type Frame, type Peer } from './claude';
 import type { Runtime } from './desktop';
+import type { Inputs } from './desktop-input';
 import { deliverToCodex, readCodexInputs, readCodexRuntime, targetSchema, type Target } from './codex';
 import { z } from 'zod';
 import { bindingSchema, boundPeer, outboundServer, refreshReceiver, refuse, sendBound, sendBoundViaReceiver, sendViaReceiver, type Binding, type ExactReceipt } from './outbound';
@@ -40,6 +41,23 @@ const remoteRefusals: Record<'machine-offline' | 'too-large' | 'rate-limited' | 
   refused: machine => `${machine} refused the message. Nothing sent.`,
 };
 
+// The native host behind one Bridge: Codex (desktop or app-server IPC) or the OpenCode plugin.
+// Policy, receipts, idle notices, limits, and hop chains stay in Bridge and do not depend on the host.
+export type Host = {
+  entrypoint: 'codex-asb-bridge' | 'opencode-asb-bridge';
+  transport: string;
+  remoteAgent: 'codex' | 'claude';
+  replyHint: string;
+  identity: { pid: number; procStart?: string };
+  // Codex registers under its own title rule; OpenCode passes its nameBase and extra row fields.
+  nameBase?: (cwd: string, sessionId: string) => string;
+  extraRow?: Record<string, unknown>;
+  receiverError: string;
+  runtime(): Promise<Runtime>;
+  inputs(awaiting: string[]): Promise<Inputs>;
+  deliver(inputId: string, text: string): Promise<{ status: string; turnId: string | null }>;
+};
+
 export class Bridge {
   private db: Database;
   private guard: PeerGuard;
@@ -53,7 +71,8 @@ export class Bridge {
   private serial: Promise<unknown> = Promise.resolve();
   private expiryTimer?: ReturnType<typeof setTimeout>;
   private incomingMessages = 0;
-  constructor(readonly threadId: string, readonly configDir: string, stateDir: string, readonly ipcPath: string) {
+  private host: Host;
+  constructor(readonly threadId: string, readonly configDir: string, stateDir: string, readonly ipcPath: string, host?: Host) {
     uuid.parse(threadId);
     mkdirSync(stateDir, { recursive: true, mode: 0o700 });
     privateDirectory(stateDir);
@@ -122,6 +141,25 @@ export class Bridge {
     if (!this.db.query<{ name: string }, []>('PRAGMA table_info(inbound_policy)').all().some(column => column.name === 'dialog_expiry')) {
       this.db.exec("ALTER TABLE inbound_policy ADD COLUMN dialog_expiry TEXT NOT NULL DEFAULT '5m'");
     }
+    this.host = host ?? this.codexHost();
+  }
+
+  // The default host: the Codex desktop or app-server transport that this class always used.
+  private codexHost(): Host {
+    const bridge = this;
+    return {
+      entrypoint: 'codex-asb-bridge',
+      get transport() { return bridge.target().kind; },
+      remoteAgent: 'codex',
+      replyHint: 'Reply with send_message.',
+      identity: { pid: process.pid },
+      receiverError: 'This Codex task has no active receiver or has more than one registration. The receiver starts at the first turn '
+        + 'and when Codex loads a task that registered before. If it stays inactive during a turn, the plugin hooks are not trusted '
+        + 'or the SessionStart hook failed: ask the user to check hook trust. No tool restarts it.',
+      runtime: () => readCodexRuntime(bridge.target(), bridge.threadId),
+      inputs: awaiting => readCodexInputs(bridge.target(), bridge.threadId, awaiting),
+      deliver: (inputId, text) => deliverToCodex(bridge.target(), bridge.threadId, inputId, text),
+    };
   }
 
   private exclusive<T>(operation: () => Promise<T>): Promise<T> {
@@ -188,13 +226,14 @@ export class Bridge {
         }
         if (alive && await processStart(old.pid) === old.proc_start) throw new Error('Receiver is already starting or running');
       }
-      const procStart = await processStart(process.pid);
+      const hostPid = this.host.identity.pid;
+      const procStart = this.host.identity.procStart ?? await processStart(hostPid);
       this.db.transaction(() => {
         if (!this.db.query('SELECT 1 FROM lifecycle WHERE singleton=1 AND generation=? AND active=1').get(generation)) {
           throw new Error('Session ended or was replaced before receiver startup');
         }
         if (old) this.db.run('DELETE FROM receiver WHERE singleton=1 AND pid=? AND proc_start=?', [old.pid, old.proc_start]);
-        const claim = this.db.run('INSERT OR IGNORE INTO receiver VALUES (1,?,?)', [process.pid, procStart]);
+        const claim = this.db.run('INSERT OR IGNORE INTO receiver VALUES (1,?,?)', [hostPid, procStart]);
         if (!claim.changes) throw new Error('Another receiver claimed this task');
       })();
       this.ownsReceiver = true;
@@ -203,6 +242,7 @@ export class Bridge {
       this.db.run("UPDATE messages SET status='unknown',awaiting_input=0 WHERE status='submitting'");
       // Windows needs the token in the inbox before the row exists (plan 17.2).
       const token = isWindows() ? randomBytes(16).toString('hex') : undefined;
+      // One socket name per receiver process: Codex uses its own PID, OpenCode the placeholder PID.
       this.listener = await inbox(directory, frame => {
         if (this.closing) return;
         if (frame.type === 'user') this.incomingMessages++;
@@ -211,14 +251,20 @@ export class Bridge {
           finally { if (frame.type === 'user') this.incomingMessages--; }
           await this.flushIdle();
         }).catch(() => console.error('Peer message handling failed; inspect bridge status.'));
-      }, undefined, { token });
+      }, `${this.host.identity.pid}.sock`, { token });
       this.db.run('UPDATE runtime SET hop_token=? WHERE singleton=1',
         [createHmac('sha256', randomBytes(32)).update(this.listener.address).digest('hex').slice(0, 24)]);
       if (this.closing) throw new Error('Receiver is closing');
       this.closeOutbound = await outboundServer(outboxPath(socketPath(this.listener.address)), this.configDir, this.listener.address,
         frames => !this.closing && (!frames.some(frame => frame.type === 'control' && frame.action === 'peer_idle_notice' && frame.state === 'idle') || this.canNotifyIdle()),
         () => this.scheduleExpiry(), token, receipt => this.applyExactReceipt(receipt));
-      this.registration = await register(this.configDir, this.threadId, this.listener.address, cwd, this.runtime().status, token);
+      this.registration = await register(this.configDir, this.threadId, this.listener.address, cwd, this.runtime().status, token, {
+        pid: this.host.identity.pid,
+        procStart: this.host.identity.procStart ?? this.procStart,
+        entrypoint: this.host.entrypoint,
+        nameBase: this.host.nameBase,
+        extra: this.host.extraRow,
+      });
       if (this.closing) throw new Error('Receiver is closing');
       for (const message of this.db.query<Message, []>("SELECT * FROM messages WHERE direction='in' AND status='pending' ORDER BY created_at,rowid").all()) {
         if (this.closing) break;
@@ -252,7 +298,7 @@ export class Bridge {
     const awaiting = this.db.query<{ desktop_input_id: string | null }, []>(
       "SELECT desktop_input_id FROM messages WHERE direction='in' AND awaiting_input=1").all()
       .flatMap(message => message.desktop_input_id ? [message.desktop_input_id] : []);
-    const inputs = await readCodexInputs(this.target(), this.threadId, awaiting);
+    const inputs = await this.host.inputs(awaiting);
     this.db.transaction(() => {
       for (const input of inputs.consumed) this.db.run(
         "UPDATE messages SET awaiting_input=0,native_input_id=? WHERE direction='in' AND (desktop_input_id=? OR native_input_id=?) AND status IN ('submitting','started','steered','accepted','unknown')",
@@ -277,10 +323,8 @@ export class Bridge {
   private receiver() {
     const matches = peers(this.configDir).filter(peer => peer.sessionId === this.threadId);
     const receiver = matches[0];
-    if (matches.length !== 1 || receiver?.entrypoint !== 'codex-asb-bridge') {
-      throw new Error('This Codex task has no active receiver or has more than one registration. The receiver starts at the first turn '
-        + 'and when Codex loads a task that registered before. If it stays inactive during a turn, the plugin hooks are not trusted '
-        + 'or the SessionStart hook failed: ask the user to check hook trust. No tool restarts it.');
+    if (matches.length !== 1 || receiver?.entrypoint !== this.host.entrypoint) {
+      throw new Error(this.host.receiverError);
     }
     return receiver;
   }
@@ -412,7 +456,7 @@ export class Bridge {
   // The receipt of an exact member send, from the local engine through the outbox. It applies only to this receiver
   // process and to rows of sendMember (the reference as peer_id, no peer address). It never sends anything.
   private applyExactReceipt(receipt: ExactReceipt) {
-    if (this.closing || !this.ownsReceiver || receipt.runtimeSessionId !== this.threadId || receipt.pid !== process.pid
+    if (this.closing || !this.ownsReceiver || receipt.runtimeSessionId !== this.threadId || receipt.pid !== this.host.identity.pid
       || receipt.procStart !== this.procStart) return 0;
     const status = receipt.status === 'expired' && receipt.status_detail === 'refused' ? 'refused' : receipt.status;
     return this.db.transaction(() => receipt.msgIds.reduce((applied, id) => applied + this.db.run(`UPDATE messages SET status=?,drop_reason=?,status_reason=?
@@ -441,7 +485,7 @@ export class Bridge {
     let reply: z.infer<typeof relayReply>;
     try {
       reply = relayReply.parse(await engineRequest(runtime, '/api/relay/send', { method: 'POST', body: { machineId: target.machineId, targetSessionId: target.sessionId,
-        sender: { machineId, sessionId: this.threadId, name: receiver.name, mode: ['prompting', 'bypass'].includes(mode) ? mode : 'unknown', agent: 'codex' },
+        sender: { machineId, sessionId: this.threadId, name: receiver.name, mode: ['prompting', 'bypass'].includes(mode) ? mode : 'unknown', agent: this.host.remoteAgent },
         message: { msgId: id, text, hopChain: hops } } }));
     } catch { reply = { ok: false, reason: 'unknown' }; }
     if (!reply.ok) {
@@ -653,7 +697,7 @@ export class Bridge {
     const pending = this.db.query<Subscription, [number]>("SELECT * FROM idle_requests WHERE direction='in' AND status='waiting' AND expires_at>?").all(Date.now());
     if (!pending.length) return;
     await this.syncInputs();
-    if (this.unreadCount() || (await readCodexRuntime(this.target(), this.threadId)).status !== 'idle') return;
+    if (this.unreadCount() || (await this.host.runtime()).status !== 'idle') return;
     for (const subscription of pending) {
       if (!this.db.run("UPDATE idle_requests SET status='submitting' WHERE id=? AND status='waiting'", [subscription.id]).changes) continue;
       try {
@@ -703,10 +747,10 @@ export class Bridge {
       }
     }
     try {
-      const target = this.target();
       const { sessionId, name } = this.currentPeer(message);
-      const text = `${peerHeader(sessionId, name, target.kind === 'app-server' ? inputId : undefined)}\n${body}`;
-      const result = await deliverToCodex(target, this.threadId, inputId, text);
+      const embedInput = this.host.transport === 'app-server' ? inputId : undefined;
+      const text = `${peerHeader(sessionId, name, embedInput, this.host.replyHint)}\n${body}`;
+      const result = await this.host.deliver(inputId, text);
       this.db.run('UPDATE messages SET status=?,turn_id=? WHERE id=?', [result.status, result.turnId, message.id]);
       if (message.status === 'held') await this.receipt(message, 'delivered');
     } catch (error) {
@@ -718,9 +762,9 @@ export class Bridge {
   }
 
   status() {
-    const receiver = peers(this.configDir).find(peer => peer.sessionId === this.threadId && peer.entrypoint === 'codex-asb-bridge');
+    const receiver = peers(this.configDir).find(peer => peer.sessionId === this.threadId && peer.entrypoint === this.host.entrypoint);
     return { threadId: this.threadId, name: receiver?.name ?? null, replyAddress: receiver ? peerAddress(receiver.messagingSocketPath) : null,
-      transport: this.target().kind,
+      transport: this.host.transport,
       runtime: this.runtime(),
       inboundPolicy: this.policy(), heldCount: this.held().length, unreadCount: this.unreadCount(),
       idleRequests: this.db.query<Pick<Subscription, 'id' | 'peer_id' | 'direction'> & { status: string }, [number]>(
@@ -741,7 +785,7 @@ export class Bridge {
       this.registration = undefined;
       await this.listener?.close();
       this.listener = undefined;
-      if (this.ownsReceiver) this.db.run('DELETE FROM receiver WHERE singleton=1 AND pid=?', [process.pid]);
+      if (this.ownsReceiver) this.db.run('DELETE FROM receiver WHERE singleton=1 AND pid=?', [this.host.identity.pid]);
       this.ownsReceiver = false;
     };
     await withdraw();

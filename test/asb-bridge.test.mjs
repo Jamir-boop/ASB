@@ -2,11 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { codexBunOnPath, hasOldPlugin, linkClaudeRegistry, skillState } from '../scripts/asb-bridge.mjs';
+import { codexBunOnPath, commandLine, executable, hasOldPlugin, linkClaudeRegistry, opencodePaths, parseDebugPaths, skillState } from '../scripts/asb-bridge.mjs';
 
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const SCRIPT = path.join(ROOT, 'scripts/asb-bridge.mjs');
@@ -248,7 +249,11 @@ test('bridge status reports configuration, version, trust, skill ownership and l
   assert.equal(report.claude.version, 'claude 2.1.224');
   assert.match(report.claude.requirement, /2\.1\.224/);
   assert.equal(report.liveReceivers, 1);
-  assert.deepEqual(report.versions, { bun: 'bun 2.1.224', codex: 'codex 2.1.224' });
+  assert.deepEqual(report.versions, { bun: 'bun 2.1.224', codex: 'codex 2.1.224', opencode: null });
+  assert.equal(report.opencode.plugin, 'missing');
+  assert.equal(report.opencode.expectedVersion, expectedVersion);
+  assert.equal(report.opencode.versionMatches, false);
+  assert.equal(report.opencode.liveReceivers, 0);
   assert.ok((await f.calls()).every((line) => line.endsWith('|--version')));
   assert.deepEqual(await snapshot(f.home), before);
 });
@@ -693,4 +698,129 @@ test('Claude registry CLI requires exactly two explicit absolute homes and never
     assert.deepEqual(await snapshot(f.home), before);
     assert.deepEqual(await f.calls(), []);
   }
+});
+
+test('OpenCode install writes the plugin bundle and skill and leaves opencode.json untouched', async (t) => {
+  const f = await fixture(t);
+  const opencodeConfig = path.join(f.env.XDG_CONFIG_HOME, 'opencode');
+  const opencodeState = path.join(f.env.XDG_STATE_HOME, 'opencode');
+  await mkdir(path.join(opencodeConfig, 'plugins'), { recursive: true });
+  await writeFile(path.join(opencodeConfig, 'opencode.json'), '{"$schema":"https://opencode.ai/config.json"}\n');
+  await writeFile(path.join(f.bin, 'opencode'), `#!/bin/sh\nif [ "\${1-}" = debug ] && [ "\${2-}" = paths ]; then printf 'config: %s\nstate: %s\n' '${opencodeConfig}' '${opencodeState}'; exit 0; fi\nprintf 'opencode 2.1.2\n'\n`, { mode: 0o755 });
+  const before = await snapshot(f.home);
+  const result = f.run(['install', '--opencode']);
+  passed(result);
+  assert.match(result.stdout, /OpenCode .*installed 0\.8\.0/);
+  const plugin = path.join(opencodeConfig, 'plugins', 'asb-bridge');
+  assert.equal(await skillState(plugin), 'ok');
+  assert.equal(await skillState(path.join(opencodeConfig, 'skills/bridge')), 'ok');
+  const packageJson = JSON.parse(await readFile(path.join(plugin, 'package.json'), 'utf8'));
+  assert.equal(packageJson.name, 'asb-bridge');
+  assert.equal(packageJson.version, '0.8.0');
+  assert.equal(packageJson.type, 'module');
+  const baked = JSON.parse(await readFile(path.join(plugin, 'asb-bridge.json'), 'utf8'));
+  assert.equal(baked.schema, 1);
+  assert.equal(baked.claudeConfigDir, f.claude);
+  assert.equal(baked.stateDir, path.join(opencodeState, 'plugin-state', 'asb-bridge'));
+  const bundle = await readFile(path.join(plugin, 'index.js'), 'utf8');
+  assert.ok(bundle.includes('asb.bridge') || bundle.includes('asb_bridge'));
+  assert.equal(await readFile(path.join(opencodeConfig, 'opencode.json'), 'utf8'), '{"$schema":"https://opencode.ai/config.json"}\n');
+  const after = await snapshot(f.home);
+  const underConfig = (file) => file === '.config/opencode' || file.startsWith('.config/opencode/');
+  for (const [file, value] of Object.entries(after)) if (!underConfig(file)) assert.equal(value, before[file], file);
+  for (const file of Object.keys(before)) if (!underConfig(file)) assert.ok(file in after, file);
+});
+
+test('OpenCode install is repeatable and refuses modified or foreign folders without force', async (t) => {
+  const f = await fixture(t);
+  const opencodeConfig = path.join(f.env.XDG_CONFIG_HOME, 'opencode');
+  await mkdir(opencodeConfig, { recursive: true });
+  await writeFile(path.join(f.bin, 'opencode'), `#!/bin/sh\nif [ "\${1-}" = debug ]; then printf 'config: %s\nstate: %s\n' '${opencodeConfig}' '${path.join(f.env.XDG_STATE_HOME, 'opencode')}'; exit 0; fi\nprintf 'opencode 2.1.2\n'\n`, { mode: 0o755 });
+  passed(f.run(['install', '--opencode']));
+  passed(f.run(['install', '--opencode']));
+  await writeFile(path.join(opencodeConfig, 'plugins', 'asb-bridge', 'index.js'), '// modified\n');
+  const refused = f.run(['install', '--opencode']);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /modified/);
+  passed(f.run(['install', '--opencode', '--force']));
+  assert.notEqual(await readFile(path.join(opencodeConfig, 'plugins', 'asb-bridge', 'index.js'), 'utf8'), '// modified\n');
+});
+
+test('OpenCode --all installs only when the config folder exists and uninstall removes the plugin and skill', async (t) => {
+  const f = await fixture(t);
+  const opencodeConfig = path.join(f.env.XDG_CONFIG_HOME, 'opencode');
+  await writeFile(path.join(f.bin, 'opencode'), `#!/bin/sh\nif [ "\${1-}" = debug ]; then printf 'config: %s\nstate: %s\n' '${opencodeConfig}' '${path.join(f.env.XDG_STATE_HOME, 'opencode')}'; exit 0; fi\nprintf 'opencode 2.1.2\n'\n`, { mode: 0o755 });
+  const missing = f.run(['install', '--all']);
+  passed(missing);
+  assert.ok(!existsSync(path.join(opencodeConfig, 'plugins', 'asb-bridge')));
+  await mkdir(opencodeConfig, { recursive: true });
+  const installed = f.run(['install', '--all']);
+  passed(installed);
+  assert.ok(existsSync(path.join(opencodeConfig, 'plugins', 'asb-bridge', 'index.js')));
+  const removed = f.run(['uninstall', '--opencode']);
+  passed(removed);
+  assert.ok(!existsSync(path.join(opencodeConfig, 'plugins', 'asb-bridge')));
+  assert.ok(!existsSync(path.join(opencodeConfig, 'skills', 'bridge')));
+});
+
+test('parseDebugPaths reads key: value and key=value lines with either line ending', () => {
+  assert.deepEqual(parseDebugPaths('Config: /tmp/c\nstate = /tmp/s\n'), { config: '/tmp/c', state: '/tmp/s' });
+  assert.deepEqual(parseDebugPaths('CONFIG=C:\\Users\\a\\AppData\\Roaming\\opencode\r\nState: C:\\Users\\a\\AppData\\Local\\opencode\r\n'),
+    { config: 'C:\\Users\\a\\AppData\\Roaming\\opencode', state: 'C:\\Users\\a\\AppData\\Local\\opencode' });
+  assert.deepEqual(parseDebugPaths(''), {});
+  assert.deepEqual(parseDebugPaths(null), {});
+  assert.deepEqual(parseDebugPaths('nonsense\nconfig: /tmp/only\n'), { config: '/tmp/only' });
+});
+
+test('opencodePaths prefers --opencode-config, then debug paths, then XDG', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'asb-opencode-paths-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const bin = path.join(temporary, 'bin');
+  await mkdir(bin, { recursive: true });
+  const home = path.join(temporary, 'home');
+  await mkdir(home, { recursive: true });
+  const env = { PATH: `${bin}:/usr/bin:/bin`, HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'), XDG_STATE_HOME: path.join(home, '.local/state') };
+  // 1. Explicit config wins and nothing is executed.
+  assert.deepEqual(await opencodePaths({ opencodeConfig: '/tmp/explicit', env }), { config: path.resolve('/tmp/explicit'), state: path.resolve(path.join(home, '.local/state', 'opencode')) });
+  // 2. No binary: XDG fallbacks.
+  assert.deepEqual(await opencodePaths({ env }), {
+    config: path.resolve(path.join(home, '.config', 'opencode')),
+    state: path.resolve(path.join(home, '.local/state', 'opencode')),
+  });
+  // 3. A fake opencode that prints debug paths.
+  await writeFile(path.join(bin, 'opencode'), '#!/bin/sh\nif [ "$1" = debug ] && [ "$2" = paths ]; then printf \'config: /tmp/from-debug\\nstate = /tmp/state-debug\\n\'; exit 0; fi\nexit 1\n', { mode: 0o755 });
+  assert.deepEqual(await opencodePaths({ env }), { config: path.resolve('/tmp/from-debug'), state: path.resolve('/tmp/state-debug') });
+  // 4. A failing binary falls back to XDG.
+  await writeFile(path.join(bin, 'opencode'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  assert.deepEqual(await opencodePaths({ env }), {
+    config: path.resolve(path.join(home, '.config', 'opencode')),
+    state: path.resolve(path.join(home, '.local/state', 'opencode')),
+  });
+  // 5. Without XDG, the process home is the default (options.env.HOME is not read here).
+  assert.deepEqual(await opencodePaths({ env: { PATH: '/usr/bin:/bin', HOME: home } }), {
+    config: path.resolve(path.join(os.homedir(), '.config', 'opencode')),
+    state: path.resolve(path.join(os.homedir(), '.local', 'state', 'opencode')),
+  });
+});
+
+test('commandLine and executable handle the Windows shapes with an injected platform', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'asb-win-shapes-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const bin = path.join(temporary, 'bin');
+  await mkdir(bin, { recursive: true });
+  // commandLine: a plain exe is direct; a .cmd goes through cmd.exe.
+  assert.deepEqual(commandLine('/tools/opencode.exe', ['debug', 'paths'], 'win32'), { command: '/tools/opencode.exe', args: ['debug', 'paths'], options: {} });
+  assert.deepEqual(commandLine('C:\\tools\\opencode.cmd', ['debug', 'paths'], 'win32'),
+    { command: 'cmd.exe', args: ['/d', '/s', '/c', '""C:\\tools\\opencode.cmd" "debug" "paths""'], options: { windowsVerbatimArguments: true } });
+  assert.deepEqual(commandLine('/tools/opencode.sh', ['debug'], 'linux'), { command: '/tools/opencode.sh', args: ['debug'], options: {} });
+  assert.throws(() => commandLine('C:\\tools\\bad&name.cmd', [], 'win32'));
+  // executable: win32 uses PATHEXT and ';'; linux needs the execute bit.
+  // PATHEXT is lowercased before the lookup, so the file name must be lowercase on a case-sensitive test host.
+  await writeFile(path.join(bin, 'opencode.exe'), 'x', { mode: 0o644 });
+  await writeFile(path.join(bin, 'other'), 'x', { mode: 0o755 });
+  const win = await executable('opencode', { platform: 'win32', env: { PATH: bin, PATHEXT: '.COM;.EXE' }, searchPath: bin, cwd: temporary });
+  assert.equal(win, path.join(bin, 'opencode.exe'));
+  const lin = await executable('other', { platform: 'linux', env: { PATH: bin }, searchPath: bin, cwd: temporary });
+  assert.equal(lin, path.join(bin, 'other'));
+  assert.equal(await executable('missing', { platform: 'linux', env: { PATH: bin }, searchPath: bin, cwd: temporary }), '');
 });

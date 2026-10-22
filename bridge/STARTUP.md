@@ -45,6 +45,17 @@ The daemon lists loaded threads through `thread/loaded/list` and broadcasts `thr
 
 A controller is a separate architecture decision, and the plugin does not include one. The desktop app's blank-composer lifecycle is unverified, so the CLI results do not show when that app creates a backend thread.
 
+## OpenCode registration
+
+OpenCode has no `SessionStart` hook. The plugin registers a session at these times:
+
+1. The session runs a turn (`execution.started` of a root session).
+2. The session calls a bridge tool (`list_sessions`, `send_message`, or `status`).
+3. Plugin start: root sessions that are not archived and were updated in the last 30 minutes, newest first, at most 8.
+4. A location loads lazily: when OpenCode loads a session that registered before, its receiver comes back from state.
+
+A subagent session never registers. Its tool call sends as its root. A `session.created` event alone registers nothing: an untouched chat stays invisible, as in Codex. A `renamed` event refreshes the title. `succeeded`, `failed`, and `interrupted` mark the receiver idle and send idle notices. `archived` unregisters. `deleted` unregisters and removes the state file. When an OpenCode instance stops, only the sessions of that location unregister. After 12 hours of no activity a session unregisters and registers again on its next turn.
+
 ## Sources
 
 Codex `rust-v0.159.2`: [session creation](https://github.com/openai/codex/blob/rust-v0.159.2/codex-rs/core/src/session/session.rs), [first-turn hooks](https://github.com/openai/codex/blob/rust-v0.159.2/codex-rs/core/src/session/turn.rs), [MCP startup](https://github.com/openai/codex/blob/rust-v0.159.2/codex-rs/codex-mcp/src/rmcp_client.rs), [thread metadata](https://github.com/openai/codex/blob/rust-v0.159.2/codex-rs/app-server-protocol/src/protocol/v2/thread_data.rs), [running-thread resume](https://github.com/openai/codex/blob/rust-v0.159.2/codex-rs/app-server/src/request_processors/thread_processor.rs), and [tool-call metadata](https://github.com/openai/codex/blob/rust-v0.159.2/codex-rs/core/src/mcp_tool_call.rs).

@@ -7,6 +7,7 @@ const skills = join(import.meta.dir, '../agent-skills');
 const text = (path: string) => readFileSync(join(skills, path), 'utf8').replace(/\r\n/g, '\n');
 const claude = text('claude/bridge/SKILL.md');
 const codex = text('codex/bridge/SKILL.md');
+const opencode = text('opencode/bridge/SKILL.md');
 const policy = text('codex/bridge/agents/openai.yaml');
 
 // Every frontmatter key of the skill, so an extra key such as disable-model-invocation fails the test.
@@ -33,6 +34,20 @@ test('Codex allows implicit invocation of its skill', () => {
 test('each skill file stays under its byte budget', () => {
   expect(bytes(claude)).toBeLessThanOrEqual(1209);
   expect(bytes(codex)).toBeLessThanOrEqual(1153);
+  expect(bytes(opencode)).toBeLessThanOrEqual(1209);
+});
+
+test('the OpenCode skill loads and keeps its safety rules', () => {
+  expect(frontmatter(opencode)).toEqual({ name: 'bridge',
+    description: 'Use for asb:1/ session references and messages to Codex tasks or other machines.' });
+  expect(opencode).toContain('Never send a secret, a credential, or an `.env` value to another agent.');
+  expect(opencode).toContain('Do not send again, not by another name or route: it can arrive twice.');
+  expect(opencode).toContain('Never take the UUID out of it.');
+  expect(opencode).toContain('session reference is not a `send_message` target.');
+  expect(opencode).toContain('A `uds:` socket path is not a target');
+  expect(opencode).toContain('is not open, or is new and had no turn yet.');
+  expect(opencode).toContain('Never say that it ended.');
+  expect(opencode).toContain('tools.asb_bridge.send_message');
 });
 
 test('the Claude skill keeps its safety rules', () => {

@@ -68,7 +68,9 @@ Source colors are ASB settings in the same schema `1` file. They change only the
 
 ## Optional ASB Bridge
 
-ASB Bridge runs inside Codex. It stores the text of peer messages in per-task SQLite files under `<CODEX_HOME>/plugin-state/asb-bridge/`. ASB does not upload them. A message that the bridge delivers starts a turn in the receiving app. The receiving app uses its own model and network settings.
+ASB Bridge runs inside Codex and OpenCode 2. It stores the text of peer messages in per-task SQLite files under `<CODEX_HOME>/plugin-state/asb-bridge/`. ASB does not upload them. A message that the bridge delivers starts a turn in the receiving app. The receiving app uses its own model and network settings.
+
+The OpenCode plugin writes the same class of state as the Codex plugin: its own state folder, registry rows and key files, socket files, and messages added to OpenCode sessions through the plugin API. This is the only write path of ASB into an original app store. It never edits `opencode.json`, the OpenCode database, or `auth.json`.
 
 On Linux and Windows, `list_sessions` asks the local ASB engine for the full session reference of each listed session, or the reason code when a send cannot use one. The model of the Codex task then sees these references: the machine IDs of this machine and of the other members, the source IDs, the scope tags, and the session types. The reply has no path, PID, socket, or token.
 

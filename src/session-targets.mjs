@@ -110,7 +110,7 @@ export const notSentMessage = (code) => BOUND_MESSAGES[code] ?? MESSAGES[code];
 async function callerRecord(caller, io) {
   const registry = await io.registry(caller.configDir);
   const own = registry?.records.filter((record) => record.sessionId === caller.runtimeSessionId) ?? [];
-  return own.length === 1 && own[0].entrypoint === 'codex-asb-bridge' ? { registry, record: own[0] } : null;
+  return own.length === 1 && (own[0].entrypoint === 'codex-asb-bridge' || own[0].entrypoint === 'opencode-asb-bridge') ? { registry, record: own[0] } : null;
 }
 
 // The live receiver of the identity in the given registries. It never selects one of more candidates.
@@ -173,7 +173,7 @@ export async function memberTarget({ reference, caller }, context, io) {
   const name = typeof own.record.name === 'string' ? own.record.name.replace(CONTROLS, ' ').slice(0, 128) : '';
   // Internal: the receipts of the member go to the outbox of this receiver process only. No route reply has it.
   const { sessionId: runtimeSessionId, pid, procStart, messagingSocketPath } = own.record;
-  return { ok: true, identity, name: name || 'Codex', returnTo: { runtimeSessionId, pid, procStart, messagingSocketPath, configDir: caller.configDir } };
+  return { ok: true, identity, name: name || (own.record.entrypoint === 'opencode-asb-bridge' ? 'OpenCode' : 'Codex'), returnTo: { runtimeSessionId, pid, procStart, messagingSocketPath, configDir: caller.configDir } };
 }
 
 const LIST_MAX = 256;

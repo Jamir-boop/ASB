@@ -424,6 +424,38 @@ test('on Windows the engine binds a live local CLI target only for a bridge that
   assert.equal((await bind({ pipeProof: true })).code, 'not-live');
 });
 
+test('the engine accepts an OpenCode bridge caller', {
+  skip: process.platform !== 'linux' || !sqlite ? 'needs Linux and node:sqlite' : false }, async (t) => {
+  const { homeDir, registry } = await fixture(t);
+  const CLI = '77777777-7777-4777-8777-777777777777';
+  const sessions = path.join(homeDir, '.claude', 'sessions');
+  await mkdir(sessions, { recursive: true, mode: 0o700 });
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  t.after(() => child.kill());
+  const starts = [];
+  for (const pid of [process.pid, child.pid]) {
+    let start = null;
+    for (let tries = 0; start === null && tries < 100; tries += 1) { start = await processStart(pid); if (start === null) await new Promise((resolve) => setTimeout(resolve, 10)); }
+    starts.push(start);
+  }
+  const write = (pid, fields) => writeFile(path.join(sessions, `${pid}.json`), JSON.stringify({ pid, name: 'Secret name', cwd: '/synthetic/private',
+    peerProtocol: 1, messagingSocketPath: `/synthetic/s/${pid}.sock`, ...fields }), { mode: 0o600 });
+  await write(process.pid, { sessionId: CALLER, procStart: starts[0], entrypoint: 'opencode-asb-bridge' });
+  await write(child.pid, { sessionId: CLI, procStart: starts[1], entrypoint: 'cli' });
+  const { request } = await serve(t, { switchboard: true, sourceRegistry: registry, pendingStatePath: path.join(homeDir, 'pending.json'),
+    machineIdentity: () => ({ machineId: MACHINE_ID, machineName: 'synthetic-pc' }), referenceScopes: () => () => 'ab'.repeat(16),
+    machineGroup: { status: async () => ({ members: [{ machineId: MACHINE_ID, name: 'synthetic-pc', online: true, isSelf: true }] }), merge: () => {} },
+    loadDashboard: async () => ({ providers: [], threads: [
+      { id: `cli:${CLI}`, externalId: CLI, provider: 'claude-desktop-code', providerLabel: 'Claude Code CLI', surface: 'cli', sourceId: 'claude-desktop-code',
+        sourceName: 'claude-desktop-code', state: 'idle', title: 'Secret title' }] }) });
+  const [reference] = (await request('/api/dashboard')).json().threads.map((row) => row.reference);
+  const reply = await request(BOUND, { method: 'POST', body: boundBody({ reference, caller: { runtimeSessionId: CALLER, configDir: path.join(homeDir, '.claude') } }) });
+  assert.equal(reply.status, 200);
+  const bound = reply.json();
+  assert.equal(bound.ok, true);
+  assert.equal(bound.binding.runtimeSessionId, CLI);
+});
+
 const LIST = '/api/agent/list-references';
 
 test('the list-references route is a token-only POST action with exactly the caller', async (t) => {

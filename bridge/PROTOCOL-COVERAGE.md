@@ -130,6 +130,18 @@ Exact member sends (Linux or Windows at both ends, Codex senders, `codex` and `c
 | Capability `notify_idle` | yes | | protocol |
 | Capabilities `reply_across_default_dirs`, `artifact_yield` | no | The first needs peer process evidence that regular Bun cannot provide. The second needs an Artifact watcher. | none |
 
+### OpenCode plugin
+
+| Case | State | Note | Test |
+| --- | --- | --- | --- |
+| Discovery | yes | The plugin registers a root session on its first turn, on a bridge tool call, or at plugin start (updated in the last 30 minutes, at most 8). A subagent never registers; its tool call sends as its root. At most 24 sessions per server process; the oldest idle goes first. Unregister after 12 hours idle. | opencode |
+| Names | yes | `opencode-<title>-<suffix>` or `opencode-<folder>-<suffix>`. The bridge ID is UUID v5 of `opencode:<session id>`, stable across restarts. The suffix lengthens on a clash. | opencode |
+| Delivery | yes | `ctx.session.synthetic` with delivery `steer`. `started` when idle, `steered` when running. A sender with any mode is delivered at once: no hold and no permission prompt. The stored policy stays `default`. | opencode |
+| Receipts | yes | The same receipt values as Codex. An OpenCode sender gets them on its inbox socket. | opencode |
+| Windows proof limit | partial | Same named pipes, key files, and `auth` line as Codex. No exact-send proof for an OpenCode target, and a lost exact receipt for an OpenCode sender. | none |
+| Machine group label | yes | The wire keeps `claude` or `codex` only. A remote OpenCode session lists as `claude`. A local row reports `agent: opencode`. | opencode, engine |
+| Tools | yes | `list_sessions`, `send_message`, `status`. No `inbox` tool. The agent rule mode fills only the outgoing `from-mode`. | opencode |
+
 ### Delivery
 
 | Case | State | Note | Test |

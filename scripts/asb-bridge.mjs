@@ -7,8 +7,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
-export const NEXT_STEPS = 'Next: open Codex, go to Plugins > ASB Bridge, and trust both hooks. Then restart Codex.\nUse $bridge in Codex and /bridge in Claude Code when you want the usage guide.\nAfter an ASB upgrade, run `asb bridge install` again.';
-const USAGE = 'Use: asb bridge status [--json]\n     asb bridge install (--all | --codex-home <path> ... | --claude) [--force]\n     asb bridge uninstall (--all | --codex-home <path> ... | --claude) [--force]\n     asb bridge link-claude <profile-home> <shared-home>';
+export const NEXT_STEPS = 'Next: open Codex, go to Plugins > ASB Bridge, and trust both hooks. Then restart Codex.\nOpenCode loads the plugin by itself. A session shows to other agents after it runs a turn.\nUse $bridge in Codex and /bridge in Claude Code when you want the usage guide.\nAfter an ASB upgrade, run `asb bridge install` again.';
+const USAGE = 'Use: asb bridge status [--json]\n     asb bridge install (--all | --codex-home <path> ... | --claude | --opencode) [--opencode-config <path>] [--force]\n     asb bridge uninstall (--all | --codex-home <path> ... | --claude | --opencode) [--opencode-config <path>] [--force]\n     asb bridge link-claude <profile-home> <shared-home>';
 const RECORD = '.asb-bridge.json';
 const OLD_PLUGIN = 'claude-uds-bridge@leonkohli';
 const OLD_WARNING = 'the old claude-uds-bridge plugin is installed here; run bridge/scripts/migrate-from-claude-uds-bridge.mjs first';
@@ -202,7 +202,7 @@ async function copySkill(bytes, directory, force) {
 }
 async function checkRoot(sourceRoot) {
   const root = absolute(sourceRoot);
-  for (const file of ['.agents/plugins/marketplace.json', 'bridge/dist/server.js']) {
+  for (const file of ['.agents/plugins/marketplace.json', 'bridge/dist/server.js', 'bridge/dist/opencode.js', 'bridge/agent-skills/opencode/bridge/SKILL.md']) {
     if (!(await contents(path.join(root, file)))) throw new Error(`Missing ASB Bridge runtime file: ${file}`);
   }
   return root;
@@ -336,6 +336,125 @@ export async function installClaude(home = defaultClaudeHome(), options = {}) {
   await copySkill(await skillFiles(path.join(root, 'bridge/agent-skills/claude/bridge')), path.join(home, 'skills/bridge'), options.force);
   return { home, installed: true };
 }
+// OpenCode paths: --opencode-config, else `opencode debug paths`, else XDG, else ~/.config/opencode.
+export function parseDebugPaths(output) {
+  const paths = {};
+  for (const line of String(output ?? '').split(/\r?\n/)) {
+    const match = /^\s*([a-z]+)\s*[:=]\s*(.+?)\s*$/i.exec(line);
+    if (match) paths[match[1].toLowerCase()] = match[2];
+  }
+  return paths;
+}
+export async function opencodePaths(options = {}) {
+  const home = os.homedir();
+  const fallbackConfig = options.env?.XDG_CONFIG_HOME
+    ? path.join(options.env.XDG_CONFIG_HOME, 'opencode')
+    : path.join(home, '.config', 'opencode');
+  const fallbackState = options.env?.XDG_STATE_HOME
+    ? path.join(options.env.XDG_STATE_HOME, 'opencode')
+    : path.join(home, '.local', 'state', 'opencode');
+  let config = options.opencodeConfig ? absolute(options.opencodeConfig) : null;
+  let state = null;
+  if (!config) {
+    const file = await executable('opencode', options);
+    if (file) {
+      try {
+        const run = commandLine(file, ['debug', 'paths']);
+        const paths = parseDebugPaths(execFileSync(run.command, run.args, {
+          ...run.options, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000,
+          env: options.env || process.env,
+        }));
+        if (paths.config) config = absolute(paths.config);
+        if (paths.state) state = absolute(paths.state);
+      } catch { /* Fall through to the XDG defaults. */ }
+    }
+  }
+  return { config: config ?? absolute(fallbackConfig), state: state ?? absolute(fallbackState) };
+}
+async function opencodePluginRecord(directory) {
+  return skillState(directory);
+}
+async function installOpencode(options = {}) {
+  const root = await checkRoot(options.sourceRoot || ROOT);
+  const paths = await opencodePaths(options);
+  const pluginDir = path.join(paths.config, 'plugins', 'asb-bridge');
+  const skillDir = path.join(paths.config, 'skills', 'bridge');
+  for (const file of ['plugins/asb-bridge/.asb-bridge.json', 'skills/bridge/.asb-bridge.json', 'plugins/asb-bridge/index.js']) {
+    await safeParents(path.join(paths.config, file));
+  }
+  const state = await opencodePluginRecord(pluginDir);
+  if (!options.force && !['ok', 'missing'].includes(state)) throw new Error(`ASB will not change a ${state} OpenCode plugin: ${pluginDir}. Use --force to replace it.`);
+  const skill = await skillState(skillDir);
+  if (!options.force && !['ok', 'missing'].includes(skill)) throw new Error(`ASB will not change a ${skill} bridge skill: ${skillDir}. Use --force to replace it.`);
+  const version = JSON.parse(await contents(path.join(root, 'bridge/.codex-plugin/plugin.json'))).version;
+  const bundle = await contents(path.join(root, 'bridge/dist/opencode.js'));
+  if (!bundle) throw new Error('Missing ASB Bridge runtime file: bridge/dist/opencode.js');
+  const claudeConfigDir = absolute(options.claudeHome || defaultClaudeHome());
+  const staging = path.join(paths.config, `plugins/.asb-bridge-stage-${createHash('sha256').update(String(Math.random())).digest('hex').slice(0, 12)}`);
+  await mkdir(staging, { recursive: true });
+  try {
+    const files = new Map([
+      ['index.js', bundle],
+      ['package.json', Buffer.from(`${JSON.stringify({ name: 'asb-bridge', version, type: 'module', exports: { '.': './index.js' } }, null, 2)}\n`)],
+      ['asb-bridge.json', Buffer.from(`${JSON.stringify({ schema: 1, claudeConfigDir, stateDir: path.join(paths.state, 'plugin-state', 'asb-bridge') }, null, 2)}\n`)],
+    ]);
+    for (const [name, value] of files) {
+      await safeParents(path.join(staging, name));
+      await writeFile(path.join(staging, name), value, { flag: 'wx' });
+    }
+    await writeFile(path.join(staging, RECORD), `${JSON.stringify({ owner: 'asb-bridge', files: Object.fromEntries([...files].map(([name, value]) => [name, digest(value)])) }, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+    const previous = path.join(paths.config, `plugins/.asb-bridge-old-${Date.now()}`);
+    let moved = false;
+    if (await info(pluginDir)) {
+      await rename(pluginDir, previous);
+      moved = true;
+    }
+    await rename(staging, pluginDir);
+    if (moved) await rm(previous, { recursive: true, force: true });
+  } finally {
+    await rm(staging, { recursive: true, force: true }).catch(() => {});
+  }
+  await copySkill(await skillFiles(path.join(root, 'bridge/agent-skills/opencode/bridge')), skillDir, options.force);
+  return {
+    config: paths.config, state: paths.state, installed: true, version,
+    claudeConfigDir, stateDir: path.join(paths.state, 'plugin-state', 'asb-bridge'),
+  };
+}
+async function uninstallOpencode(options = {}) {
+  await checkRoot(options.sourceRoot || ROOT);
+  const paths = await opencodePaths(options);
+  const pluginDir = path.join(paths.config, 'plugins', 'asb-bridge');
+  const skillDir = path.join(paths.config, 'skills', 'bridge');
+  await checkSkill(pluginDir, options.force);
+  let claudeConfigDir = absolute(options.claudeHome || defaultClaudeHome());
+  try {
+    const record = JSON.parse(String(await contents(path.join(pluginDir, 'asb-bridge.json')) || 'null'));
+    if (record?.claudeConfigDir) claudeConfigDir = absolute(record.claudeConfigDir);
+  } catch { /* No record: fall back to the CLI home. */ }
+  await rm(pluginDir, { recursive: true, force: true });
+  await checkSkill(skillDir, options.force);
+  await rm(skillDir, { recursive: true, force: true });
+  await withdrawOpenCodeRows(claudeConfigDir);
+  return { config: paths.config, removed: true, historyKept: path.join(paths.state, 'plugin-state', 'asb-bridge') };
+}
+// Uninstall must withdraw live OpenCode registry rows. The running server keeps the loaded plugin in memory.
+async function withdrawOpenCodeRows(claudeConfigDir) {
+  const sessions = path.join(claudeConfigDir, 'sessions');
+  for (const entry of await entries(sessions)) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    const file = path.join(sessions, entry.name);
+    try {
+      const row = JSON.parse(String(await contents(file)));
+      if (row?.entrypoint !== 'opencode-asb-bridge' || !Number.isInteger(row.pid) || row.pid <= 0) continue;
+      await rm(file, { force: true });
+      for (const other of await entries(sessions)) {
+        if (other.isFile() && other.name.startsWith(`${row.pid}.`) && other.name.endsWith('.key')) {
+          await rm(path.join(sessions, other.name), { force: true });
+        }
+      }
+    } catch { /* A stale or partial registry row is not a live receiver. */ }
+  }
+}
 export async function detectTargets(options = {}) {
   const home = absolute(options.home || os.homedir());
   const codexHomes = [];
@@ -345,7 +464,12 @@ export async function detectTargets(options = {}) {
     if ((await info(path.join(directory, 'config.toml')))?.isFile()) codexHomes.push(directory);
   }
   const claudeHome = absolute(options.claudeHome || defaultClaudeHome());
-  return { codexHomes: codexHomes.sort(), claudeHome: (await info(claudeHome))?.isDirectory() ? claudeHome : null };
+  const openCode = await opencodePaths(options);
+  return {
+    codexHomes: codexHomes.sort(),
+    claudeHome: (await info(claudeHome))?.isDirectory() ? claudeHome : null,
+    opencodeConfig: (await info(openCode.config))?.isDirectory() ? openCode.config : null,
+  };
 }
 export async function install(options = {}) {
   const codexHomes = [...new Set(options.codexHomes || [])];
@@ -354,7 +478,8 @@ export async function install(options = {}) {
   const codex = [];
   for (const home of codexHomes) codex.push(await installCodex(home, options));
   const claude = options.claudeHome ? await installClaude(options.claudeHome, options) : null;
-  return { codex, claude };
+  const opencode = options.opencode ? await installOpencode(options) : null;
+  return { codex, claude, opencode };
 }
 export async function uninstall(options = {}) {
   const tools = options.codexHomes?.length ? await checkDependencies(['codex']) : {};
@@ -374,7 +499,8 @@ export async function uninstall(options = {}) {
     await checkSkill(path.join(claude.home, 'skills/bridge'), options.force);
     await rm(path.join(claude.home, 'skills/bridge'), { recursive: true, force: true });
   }
-  return { codex, claude };
+  const opencode = options.opencode ? await uninstallOpencode(options) : null;
+  return { codex, claude, opencode };
 }
 async function entries(directory) {
   try { return await readdir(directory, { withFileTypes: true }); }
@@ -418,8 +544,47 @@ export async function status(options = {}) {
       try { process.kill(row.pid, 0); liveReceivers++; } catch (error) { if (error.code === 'EPERM') liveReceivers++; }
     } catch { /* A stale or partial registry row is not a live receiver. */ }
   }
-  return { codex, claude: { home: claudeHome, detected: Boolean(targets.claudeHome), skill: await skillState(path.join(claudeHome, 'skills/bridge')), version: await toolVersion('claude'), requirement: 'Cross-session messaging needs Claude Code 2.1.224 or later.' },
-    liveReceivers, versions: { bun: await toolVersion('bun'), codex: await toolVersion('codex') } };
+  const openCodePaths = await opencodePaths(options);
+  const opencodePluginDir = path.join(openCodePaths.config, 'plugins', 'asb-bridge');
+  const opencodeVersionRaw = await toolVersion('opencode');
+  const opencodeVersion = opencodeVersionRaw?.match(/(\d+\.\d+\.\d+)/)?.[1] ?? null;
+  let opencodeLive = 0;
+  for (const entry of await entries(path.join(claudeHome, 'sessions'))) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    try {
+      const row = JSON.parse(await contents(path.join(claudeHome, 'sessions', entry.name)));
+      if (row.entrypoint !== 'opencode-asb-bridge' || !Number.isInteger(row.pid) || row.pid <= 0) continue;
+      try { process.kill(row.pid, 0); opencodeLive++; } catch (error) { if (error.code === 'EPERM') opencodeLive++; }
+    } catch { /* A stale or partial registry row is not a live receiver. */ }
+  }
+  let installedVersion = null;
+  try { installedVersion = JSON.parse((await contents(path.join(opencodePluginDir, 'package.json')))?.toString() || 'null')?.version ?? null; }
+  catch { /* Missing or unreadable plugin package. */ }
+  return {
+    codex,
+    claude: { home: claudeHome, detected: Boolean(targets.claudeHome), skill: await skillState(path.join(claudeHome, 'skills/bridge')), version: await toolVersion('claude'), requirement: 'Cross-session messaging needs Claude Code 2.1.224 or later.' },
+    opencode: {
+      config: openCodePaths.config,
+      detected: Boolean(targets.opencodeConfig),
+      plugin: await opencodePluginRecord(opencodePluginDir),
+      version: installedVersion,
+      expectedVersion,
+      versionMatches: installedVersion === expectedVersion,
+      skill: await skillState(path.join(openCodePaths.config, 'skills/bridge')),
+      claudeConfigDir: absolute(options.claudeHome || defaultClaudeHome()),
+      stateDir: path.join(openCodePaths.state, 'plugin-state', 'asb-bridge'),
+      opencodeVersion,
+      warning: opencodeVersion && compareSemver(opencodeVersion, '2.1.2') < 0 ? 'OpenCode is older than 2.1.2; the ASB Bridge plugin will not load.' : null,
+      liveReceivers: opencodeLive,
+    },
+    liveReceivers, versions: { bun: await toolVersion('bun'), codex: await toolVersion('codex'), opencode: opencodeVersionRaw },
+  };
+}
+function compareSemver(a, b) {
+  const left = String(a).split('.').map((part) => Number(part) || 0);
+  const right = String(b).split('.').map((part) => Number(part) || 0);
+  for (let i = 0; i < 3; i++) if ((left[i] ?? 0) !== (right[i] ?? 0)) return (left[i] ?? 0) < (right[i] ?? 0) ? -1 : 1;
+  return 0;
 }
 export async function main(args = process.argv.slice(2), context = {}) {
   const command = args.shift() || 'status';
@@ -440,6 +605,8 @@ export async function main(args = process.argv.slice(2), context = {}) {
       }
       console.log(`Claude ${result.claude.home}: skill ${result.claude.skill}; version ${result.claude.version || 'missing'}`);
       console.log(result.claude.requirement);
+      console.log(`OpenCode ${result.opencode.config}: plugin ${result.opencode.plugin}; version ${result.opencode.version || 'missing'} (${result.opencode.versionMatches ? 'current' : `expected ${result.opencode.expectedVersion}`}); skill ${result.opencode.skill}; opencode ${result.opencode.opencodeVersion || 'missing'}; live receivers ${result.opencode.liveReceivers}`);
+      if (result.opencode.warning) console.log(`Warning: ${result.opencode.warning}`);
       console.log(`Live receivers: ${result.liveReceivers}; bun: ${result.versions.bun || 'missing'}; codex: ${result.versions.codex || 'missing'}`);
     }
     for (const item of result.codex) if (item.bunOnAppServerPath === false) warnBun(item.home);
@@ -447,23 +614,30 @@ export async function main(args = process.argv.slice(2), context = {}) {
   }
   if (!['install', 'uninstall'].includes(command)) throw new Error(USAGE);
   const options = { ...context, codexHomes: [] };
-  let all = false, claude = false;
+  let all = false, claude = false, opencode = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--all') all = true;
     else if (args[i] === '--claude') claude = true;
+    else if (args[i] === '--opencode') opencode = true;
     else if (args[i] === '--force') options.force = true;
+    else if (args[i] === '--opencode-config' && args[i + 1] && !args[i + 1].startsWith('--')) options.opencodeConfig = absolute(args[++i]);
     else if (args[i] === '--codex-home' && args[i + 1] && !args[i + 1].startsWith('--')) options.codexHomes.push(absolute(args[++i]));
     else throw new Error(USAGE);
   }
-  if (all && (claude || options.codexHomes.length)) throw new Error(USAGE);
-  if (all || (!claude && !options.codexHomes.length)) {
+  if (all && (claude || opencode || options.codexHomes.length)) throw new Error(USAGE);
+  if (all || (!claude && !opencode && !options.codexHomes.length)) {
     const targets = await detectTargets(context);
     if (!all) {
-      console.log(`Detected Codex homes: ${targets.codexHomes.join(', ') || 'none'}\nDetected Claude home: ${targets.claudeHome || 'none'}\n${USAGE}`);
+      console.log(`Detected Codex homes: ${targets.codexHomes.join(', ') || 'none'}\nDetected Claude home: ${targets.claudeHome || 'none'}\nDetected OpenCode config: ${targets.opencodeConfig || 'none'}\n${USAGE}`);
       return 0;
     }
     Object.assign(options, targets);
-  } else if (claude) options.claudeHome = absolute(defaultClaudeHome());
+    options.opencode = Boolean(targets.opencodeConfig);
+    if (targets.opencodeConfig) options.opencodeConfig = targets.opencodeConfig;
+  } else {
+    if (claude) options.claudeHome = absolute(defaultClaudeHome());
+    if (opencode) options.opencode = true;
+  }
   const result = await (command === 'install' ? install(options) : uninstall(options));
   let refused = false;
   for (const item of result.codex) {
@@ -474,6 +648,7 @@ export async function main(args = process.argv.slice(2), context = {}) {
     }
   }
   if (result.claude) console.log(`Claude ${result.claude.home}: ${command === 'install' ? 'installed' : 'removed'}`);
+  if (result.opencode) console.log(`OpenCode ${result.opencode.config}: ${command === 'install' ? `installed ${result.opencode.version}` : `removed; message history stays at ${result.opencode.historyKept}`}`);
   if (command === 'install') console.log(NEXT_STEPS);
   return refused ? 1 : 0;
 }

@@ -315,6 +315,15 @@ test('memberTarget checks in order with no io before the caller check, and does 
   for (const name of ['', undefined, 7]) assert.equal(await named(name), 'Codex');
 });
 
+test('an OpenCode bridge caller registers and falls back to the name OpenCode', async () => {
+  const openCodeCaller = record(10, CALLER, 'opencode-asb-bridge');
+  assert.equal((await member(memberFound.reference, { io: records([openCodeCaller]) })).ok, true);
+  assert.equal((await member(memberFound.reference, { io: records([{ ...openCodeCaller, name: 'kept' }]) })).name, 'kept');
+  for (const name of ['', undefined, 7]) {
+    assert.equal((await member(memberFound.reference, { io: records([{ ...openCodeCaller, name }]) })).name, 'OpenCode');
+  }
+});
+
 // list_sessions references: each item is checked like a send, with one caller registry read for the whole list.
 const UUID_5 = '77777777-7777-4777-8777-777777777777';
 const UUID_6 = '88888888-8888-4888-8888-888888888888';

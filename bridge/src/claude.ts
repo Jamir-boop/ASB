@@ -25,6 +25,7 @@ const registry = z.object({
   peerProtocol: z.literal(1), procStart: z.string().optional(),
   entrypoint: z.string().optional(), startedAt: z.number().int().nonnegative().optional(),
   peerFeatures: z.array(z.string()).default([]), bridgeSessionId: z.string().optional(),
+  opencodeSessionId: z.string().optional(),
 });
 export type Peer = z.infer<typeof registry>;
 export const modeSchema = z.enum(['prompting', 'bypass']);
@@ -75,7 +76,7 @@ export function peers(configDir: string): Peer[] {
 
 // A relay deletes every .sock file in its own folder, and a receiver row can carry any folder: only a native Claude row names a folder for a new receiver socket.
 export function nativePeer(rows: Peer[]) {
-  return rows.find(peer => peer.entrypoint !== 'asb-relay' && peer.entrypoint !== 'codex-asb-bridge');
+  return rows.find(peer => peer.entrypoint !== 'asb-relay' && peer.entrypoint !== 'codex-asb-bridge' && peer.entrypoint !== 'opencode-asb-bridge');
 }
 
 export function findPeer(configDir: string, sessionId: string): Peer {
@@ -94,10 +95,23 @@ export function findPeerProcess(configDir: string, address: string, procStart: s
   return matches[0]!;
 }
 
-// Claude's ListAgents gives the model only the name, so name the task after its Codex title (its
+// Claude's ListAgents gives the model only the name, so name the task after its title (its
 // folder when it has none) and lengthen the suffix until no other live peer holds the name.
 export function sessionName(configDir: string, cwd: string, sessionId: string) {
-  return uniqueName(configDir, nameBase(cwd, sessionId), sessionId);
+  return namedSession(configDir, codexPrefix(), taskTitle(sessionId), cwd, sessionId);
+}
+
+// The shared name rule of Codex and OpenCode rows: prefix, title slug of 22, else folder slug.
+export function bridgeNameBase(prefix: string, title: string | undefined, cwd: string) {
+  const name = trim(slug(title ?? '').slice(0, 22));
+  if (name) return `${prefix}-${name}`;
+  const folder = slug(basename(cwd)) || 'task';
+  // A task folder comes from the opening prompt, so keep both ends: long ones differ at the tail.
+  return `${prefix}-${folder.length <= 22 ? folder : `${trim(folder.slice(0, 14))}-${trim(folder.slice(-7))}`}`;
+}
+
+export function namedSession(configDir: string, prefix: string, title: string | undefined, cwd: string, sessionId: string) {
+  return uniqueName(configDir, bridgeNameBase(prefix, title, cwd), sessionId);
 }
 
 function codexPrefix() {
@@ -124,14 +138,10 @@ function taskTitle(threadId: string) {
 }
 
 function nameBase(cwd: string, sessionId: string) {
-  const title = trim(slug(taskTitle(sessionId) ?? '').slice(0, 22));
-  if (title) return `${codexPrefix()}-${title}`;
-  const folder = slug(basename(cwd)) || 'task';
-  // Codex derives a task folder from the opening prompt, so keep both ends: long ones differ at the tail.
-  return `${codexPrefix()}-${folder.length <= 22 ? folder : `${trim(folder.slice(0, 14))}-${trim(folder.slice(-7))}`}`;
+  return bridgeNameBase(codexPrefix(), taskTitle(sessionId), cwd);
 }
 
-function uniqueName(configDir: string, base: string, sessionId: string) {
+export function uniqueName(configDir: string, base: string, sessionId: string) {
   const taken = new Set(peers(configDir).filter(peer => peer.sessionId !== sessionId).map(peer => peer.name));
   const candidates = [2, 4, 8].map(length => `${base}-${sessionId.slice(-length)}`);
   return candidates.find(name => !taken.has(name)) ?? `${base}-${sessionId}`;
@@ -147,28 +157,62 @@ export function writePeerKey(sessions: string, pid: number, socketPath: string, 
   return path;
 }
 
+// A receiver cannot remove its own row and key file when it is killed (SIGTERM is a hard stop on Windows, and a crash on any system).
+export function removeReceiverFiles(configDir: string, pid: number, procStart: string) {
+  const path = join(configDir, 'sessions', `${pid}.json`);
+  try {
+    const row = z.object({ pid: z.literal(pid), procStart: z.literal(procStart), messagingSocketPath: z.string() }).parse(ownedJson(path, 256 * 1024));
+    unlinkSync(path);
+    removePeerKey(join(configDir, 'sessions', keyName(pid, row.messagingSocketPath)), procStart);
+  } catch { /* Gone, or another process has the row now. */ }
+}
+
+// The row of a dead receiver stays visible while another process has its PID. Its files go; that process is never signaled.
+// A row stays when its start time is missing or when the start time of the process cannot be read: neither proves that the
+// receiver is gone (on Windows the read can fail for a live process). Only a start time that is read and differs removes it.
+export async function removeStaleReceivers(configDir: string, threadId: string, entrypoint = 'codex-asb-bridge') {
+  for (const row of peers(configDir)) {
+    if (row.sessionId !== threadId || row.entrypoint !== entrypoint || !row.procStart) continue;
+    const started = await processStart(row.pid).catch(() => undefined);
+    if (started !== undefined && started !== row.procStart) removeReceiverFiles(configDir, row.pid, row.procStart);
+  }
+}
+
 // Only while the key still belongs to this process: a reused PID writes its own key under the same name.
 export function removePeerKey(path: string, procStart: string) {
   try { if (z.object({ procStart: z.string() }).parse(ownedJson(path, 4096)).procStart === procStart) unlinkSync(path); }
   catch { /* Already gone. */ }
 }
 
+export type RegisterIdentity = {
+  pid: number;
+  procStart?: string;
+  entrypoint?: string;
+  nameBase?: (cwd: string, sessionId: string) => string;
+  extra?: Record<string, unknown>;
+};
+
 // The receiver's inbox checks the auth line with peerToken; Windows always needs one (plan 17.2).
+// The identity defaults to this process and the Codex entrypoint. OpenCode passes its placeholder PID.
 export async function register(configDir: string, sessionId: string, address: string, cwd: string, status: string,
-  peerToken = isWindows() ? randomBytes(16).toString('hex') : undefined) {
+  peerToken = isWindows() ? randomBytes(16).toString('hex') : undefined,
+  identity: RegisterIdentity = { pid: process.pid, entrypoint: 'codex-asb-bridge' }) {
   const sessions = join(configDir, 'sessions');
   mkdirSync(sessions, { recursive: true, mode: 0o700 });
   const directory = realpathSync(sessions);
   privateDirectory(directory);
-  const path = join(directory, `${process.pid}.json`);
-  let base = nameBase(cwd, sessionId);
+  const pid = identity.pid;
+  const entrypoint = identity.entrypoint ?? 'codex-asb-bridge';
+  const nameOf = identity.nameBase ?? nameBase;
+  const path = join(directory, `${pid}.json`);
+  let base = nameOf(cwd, sessionId);
   const domain = pidDomain();
-  const record = { pid: process.pid, sessionId, cwd, name: uniqueName(configDir, base, sessionId),
-    startedAt: Date.now(), procStart: await processStart(process.pid), peerProtocol: 1,
+  const record = { pid, sessionId, cwd, name: uniqueName(configDir, base, sessionId),
+    startedAt: Date.now(), procStart: identity.procStart ?? await processStart(pid), peerProtocol: 1,
     ...(domain ? { pidDomain: domain } : {}),
-    kind: 'interactive', entrypoint: 'codex-asb-bridge', messagingSocketPath: socketPath(address),
-    status, statusUpdatedAt: Date.now(), peerFeatures: ['notify_idle'] };
-  const keyPath = peerToken ? writePeerKey(directory, process.pid, record.messagingSocketPath, peerToken, record.procStart) : undefined;
+    kind: 'interactive', entrypoint, messagingSocketPath: socketPath(address),
+    status, statusUpdatedAt: Date.now(), peerFeatures: ['notify_idle'], ...(identity.extra ?? {}) };
+  const keyPath = peerToken ? writePeerKey(directory, pid, record.messagingSocketPath, peerToken, record.procStart) : undefined;
   try { writeFileSync(path, JSON.stringify(record), { flag: 'wx', mode: 0o600 }); }
   catch (error) { if (keyPath) removePeerKey(keyPath, record.procStart); throw error; }
   const check = () => {
@@ -185,7 +229,7 @@ export async function register(configDir: string, sessionId: string, address: st
       check();
       if (record.status === status) return;
       // A new task gets its title during its first turn. Keep the name while its base holds, so the suffix does not flap.
-      const next = nameBase(cwd, sessionId);
+      const next = nameOf(cwd, sessionId);
       if (next !== base) { base = next; record.name = uniqueName(configDir, base, sessionId); }
       record.status = status;
       record.statusUpdatedAt = Date.now();

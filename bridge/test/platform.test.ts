@@ -111,6 +111,14 @@ test('pidDomain names the Windows host and macOS, and Linux has none', () => {
   expect(pidDomain('linux')).toBeUndefined();
 });
 
+test('placeholderCommand is findstr.exe on Windows and cat elsewhere', async () => {
+  const { placeholderCommand } = await import('../src/placeholder');
+  expect(placeholderCommand('win32', { SystemRoot: 'D:\\Windows' })).toEqual([join('D:\\Windows', 'System32', 'findstr.exe'), 'x']);
+  expect(placeholderCommand('win32', {})).toEqual([join('C:\\Windows', 'System32', 'findstr.exe'), 'x']);
+  expect(placeholderCommand('linux', {})).toEqual(['cat']);
+  expect(placeholderCommand('darwin', {})).toEqual(['cat']);
+});
+
 // A registered receiver with a token, as the Bridge makes it on Windows (plan 17.2).
 async function receiver() {
   const root = temporary('asb-platform-trip-');

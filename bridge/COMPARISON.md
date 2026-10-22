@@ -49,7 +49,7 @@ The top row is Claude's own path. The bridge keeps that path and adds a receiver
 - **Teams, broadcast, and roles.** cross-agent-teams-mcp and team-mcp address groups. The bridge addresses one agent at a time.
 - **Discovery scopes and shared state.** The peers projects filter by repo or directory and publish a summary of current work. The bridge lists every local agent.
 - **Reading a peer's transcript.** agent-bus, chat-across, and oxtail read another session's history. The bridge sends text only, as Claude's own messaging does.
-- **Other agents.** Gemini, Cursor, and opencode appear in several projects. The bridge covers Claude and Codex.
+- **Other agents.** Gemini and Cursor appear in several projects. The bridge covers Claude, Codex, and OpenCode 2 (OpenCode sends and receives; ASB lists OpenCode sessions without the bridge).
 - **Cockpit.** oxtail ships a tmux dashboard.
 
 ## What the bridge has and others lack
