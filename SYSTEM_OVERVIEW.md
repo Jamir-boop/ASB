@@ -704,7 +704,7 @@ XDG state/config/data overrides apply. The per-user package also installs ASB un
 
 Only when the user runs them with targets, `asb bridge install` and `asb bridge uninstall` change Codex plugin configuration through the `codex` CLI and OpenCode plugin folders under the OpenCode config folder. They copy or remove the Codex `$bridge` and Claude Code `/bridge` skill folders and the OpenCode `bridge` skill. `--opencode` installs only the OpenCode plugin; `--opencode-config <path>` names the OpenCode config folder; `--all` adds OpenCode when that folder exists. Without targets, they show usage and change nothing.
 
-On Windows, close Codex before `asb bridge install` because it cannot change a Codex home while Codex runs (`Access is denied`); if this occurs, the install warns for that home, installs the other targets, and exits 1.
+On Windows, close Codex before `asb bridge install` or `asb bridge uninstall` because these commands cannot change a Codex home while Codex runs (`Access is denied`). If this occurs, the command warns for that home, continues with the other targets, and exits 1. The warning tells you which command to run again.
 
 `asb bridge status` shows Codex marketplace sources without Windows verbatim drive or UNC prefixes, in text and JSON. The installer compares the same normalized paths, so an unchanged source does not cause marketplace removal. Other paths stay unchanged. This uses the same path rule as Codex session folder display. The installer keeps a local copy of the rule so it can run without `src/`.
 

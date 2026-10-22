@@ -323,6 +323,11 @@ async function codexTarget(home, force) {
   await checkSkill(path.join(home, 'skills/bridge'), force);
   return { home, config };
 }
+function codexFailure(error, platform, command) {
+  let warning = error.message;
+  if (platform === 'win32' && /Access is denied|os error 5\b/i.test(warning)) warning += ` On Windows, a running Codex keeps the plugin folder in use: close Codex, then run asb bridge ${command} again.`;
+  return warning;
+}
 export async function installCodex(home, options = {}) {
   const { codex } = await checkDependencies();
   const root = await checkRoot(options.sourceRoot || ROOT);
@@ -336,9 +341,7 @@ export async function installCodex(home, options = {}) {
     runCodex(target.home, ['plugin', 'marketplace', 'add', root], codex);
     runCodex(target.home, ['plugin', 'add', 'asb-bridge@asb'], codex);
   } catch (error) {
-    let warning = error.message;
-    if ((options.platform || process.platform) === 'win32' && /Access is denied|os error 5\b/i.test(warning)) warning += ' On Windows, a running Codex keeps the plugin folder in use: close Codex, then run asb bridge install again.';
-    return { home: target.home, skipped: true, warning };
+    return { home: target.home, skipped: true, warning: codexFailure(error, options.platform || process.platform, 'install') };
   }
   await copySkill(bytes, path.join(target.home, 'skills/bridge'), options.force);
   return { home: target.home, installed: true };
@@ -501,8 +504,13 @@ export async function uninstall(options = {}) {
   for (const home of [...new Set(options.codexHomes || [])]) {
     const target = await codexTarget(home, options.force);
     if (target.skipped) { codex.push(target); continue; }
-    runCodex(target.home, ['plugin', 'remove', 'asb-bridge@asb'], tools.codex);
-    runCodex(target.home, ['plugin', 'marketplace', 'remove', 'asb'], tools.codex);
+    try {
+      runCodex(target.home, ['plugin', 'remove', 'asb-bridge@asb'], tools.codex);
+      runCodex(target.home, ['plugin', 'marketplace', 'remove', 'asb'], tools.codex);
+    } catch (error) {
+      codex.push({ home: target.home, skipped: true, warning: codexFailure(error, options.platform || process.platform, 'uninstall') });
+      continue;
+    }
     await checkSkill(path.join(target.home, 'skills/bridge'), options.force);
     await rm(path.join(target.home, 'skills/bridge'), { recursive: true, force: true });
     codex.push({ home: target.home, removed: true, historyKept: path.join(target.home, 'plugin-state/asb-bridge') });

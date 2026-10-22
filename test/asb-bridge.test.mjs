@@ -120,6 +120,35 @@ for (const [label, platform, reason, windowsHint] of [
   });
 }
 
+for (const [label, platform, reason, windowsHint] of [
+  ['D: Windows access denied', 'win32', 'Error: Access is denied. (os error 5)', true],
+  ['E: Linux access denied', 'linux', 'Error: Access is denied. (os error 5)', false],
+  ['F: Windows other error', 'win32', 'Error: something else', false],
+]) {
+  test(`bridge uninstall continues after a Codex command failure (${label})`, async (t) => {
+    const f = await fixture(t), opencode = path.join(f.home, '.config/opencode');
+    await writeFile(path.join(f.bin, 'codex'), `${await readFile(path.join(f.bin, 'codex'), 'utf8')}if [ "$CODEX_HOME" = "$BRIDGE_FAIL_HOME" ] && [ "$*" = 'plugin remove asb-bridge@asb' ]; then printf '%s\\n' "$BRIDGE_FAIL_REASON" >&2; exit 1; fi\n`);
+    const targets = ['--codex-home', f.personal, '--codex-home', f.codex, '--claude', '--opencode', '--opencode-config', opencode];
+    const env = { BRIDGE_FAIL_HOME: f.personal, BRIDGE_FAIL_REASON: reason };
+    passed(f.run(['install', ...targets], env, { platform }));
+    await rm(f.log);
+    const result = f.run(['uninstall', ...targets], env, { platform });
+    assert.equal(result.status, 1);
+    const hint = windowsHint ? ' On Windows, a running Codex keeps the plugin folder in use: close Codex, then run asb bridge uninstall again.' : '';
+    assert.equal(result.stderr, `Warning: ${f.personal}: codex plugin remove asb-bridge@asb failed. ${reason}${hint}\n`);
+    assert.ok(result.stdout.includes(`Codex ${f.codex}: removed; message history stays at ${path.join(f.codex, 'plugin-state/asb-bridge')}\n`));
+    assert.ok(result.stdout.includes(`Claude ${f.claude}: removed\n`));
+    assert.ok(result.stdout.includes(`OpenCode ${opencode}: removed; message history stays at ${path.join(f.home, '.local/state/opencode/plugin-state/asb-bridge')}\n`));
+    await owned(path.join(f.personal, 'skills/bridge'), 'codex');
+    for (const directory of [f.codex, f.claude, opencode]) assert.equal(existsSync(path.join(directory, 'skills/bridge')), false);
+    assert.equal(existsSync(path.join(opencode, 'plugins/asb-bridge')), false);
+    assert.deepEqual(await f.calls(), [
+      `codex|${f.personal}|plugin remove asb-bridge@asb`,
+      `codex|${f.codex}|plugin remove asb-bridge@asb`, `codex|${f.codex}|plugin marketplace remove asb`,
+    ]);
+  });
+}
+
 test('Codex failures show only the last nonempty stderr line, capped at 200 characters', async (t) => {
   const f = await fixture(t), stderr = path.join(f.temporary, 'stderr.txt');
   await writeFile(path.join(f.bin, 'codex'), '#!/bin/sh\nprintf \'%s|%s|%s\\n\' codex "$CODEX_HOME" "$*" >> "$BRIDGE_LOG"\ncat "$BRIDGE_STDERR" >&2\nexit 1\n', { mode: 0o755 });
