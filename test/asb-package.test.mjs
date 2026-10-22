@@ -18,6 +18,11 @@ test('release runtime includes the drawer glyph of the native row panel', () => 
   assert.ok(RUNTIME_FILES.includes('assets/icons/asb-drawer-symbolic.svg'));
 });
 
+test('release runtime includes the card copy kind glyphs', () => {
+  assert.ok(RUNTIME_FILES.includes('assets/icons/asb-link-symbolic.svg'));
+  assert.ok(RUNTIME_FILES.includes('assets/icons/asb-globe-symbolic.svg'));
+});
+
 const sourceRoot = fileURLToPath(new URL('..', import.meta.url));
 
 // The launcher starts a detached engine; it gets a private runtime folder and a fake systemctl, and the test stops it.

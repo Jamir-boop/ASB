@@ -200,10 +200,76 @@ def copy_values(row):
     return (None if short_reason else short), short_reason, (None if full_reason else full), full_reason
 
 
-def card_copy(row):
-    """(value, its reason, "relative" or "absolute") for the card copy button: a remote row copies the absolute reference."""
+COPY_KINDS = ("relative", "absolute")
+COPY_KIND_WORDS = {"relative": "Relative", "absolute": "Absolute"}
+COPY_DONE_TEXT = {"relative": "Relative session copied", "absolute": "Absolute session copied"}
+COPY_KIND_ICONS = {"relative": "asb-link-symbolic", "absolute": "asb-globe-symbolic"}
+COPY_REST_S = .25
+# Each window copies this as its own wheel accumulator.
+COPY_WHEEL_STATE = {"ts": 0.0, "acc": 0.0, "armed": True}
+
+
+def validate_copy_kind(value):
+    if value not in COPY_KINDS:
+        raise ValueError("Copy kind must be Relative or Absolute.")
+    return value
+
+
+def card_copy(row, kind="relative"):
+    """(value, its reason, "relative" or "absolute") for the chosen kind: a remote row copies the absolute reference."""
     short, short_reason, full, full_reason = copy_values(row)
-    return (full, full_reason, "absolute") if row.get("remote") is True else (short, short_reason, "relative")
+    if row.get("remote") is True or kind == "absolute":
+        return (full, full_reason, "absolute")
+    return (short, short_reason, "relative")
+
+
+def copy_relative_reason(row):
+    """Why a remote row cannot copy a relative reference; same phrasing as the referenceUnavailable reasons."""
+    return f"Relative works only on this machine. This session runs on {row.get('machineName') or 'another machine'}."
+
+
+def copy_rest_ready(rested_at, now):
+    """True after the pointer has rested on the copy button for 250 ms."""
+    return rested_at is not None and now - rested_at >= COPY_REST_S
+
+
+def copy_wheel_captured(rested_at, now, tag_shown=False, keyboard_focus=False):
+    """The kind switch takes the wheel only after that rest, or while the tag shows."""
+    return bool(keyboard_focus or tag_shown or copy_rest_ready(rested_at, now))
+
+
+def copy_wheel_step(state, delta, now, surface=False):
+    """(step, state): +1/-1 for one kind step. A wheel notch steps once; smooth deltas accumulate to one step."""
+    if not delta:
+        return 0, state
+    state = dict(state)
+    if not surface:
+        # One wheel notch is 1.0. Hi-res wheels send fractions that add up to one notch; a large event is still one step.
+        if now - state["ts"] > .2:
+            state["acc"] = 0.0
+        state["ts"] = now
+        if state["acc"] and (state["acc"] > 0) != (delta > 0):
+            state["acc"] = 0.0
+        state["acc"] += delta
+        if abs(state["acc"]) < 1.0:
+            return 0, state
+        step = 1 if state["acc"] > 0 else -1
+        state["acc"] -= step
+        if abs(delta) >= 1.0 or abs(state["acc"]) >= 1.0:
+            state["acc"] = 0.0
+        return step, state
+    # A trackpad: one step per burst of smooth deltas.
+    if now - state["ts"] > .12:
+        state["acc"] = 0.0
+        state["armed"] = True
+    state["ts"] = now
+    if not state["armed"]:
+        return 0, state
+    state["acc"] += delta
+    if abs(state["acc"]) < 30:
+        return 0, state
+    state["armed"] = False
+    return (1 if state["acc"] > 0 else -1), {**state, "acc": 0.0}
 
 
 def panel_place(x, y, width, height, window_width, window_height, margin=6):
@@ -599,10 +665,11 @@ def validate_card_limit(value):
 
 def read_layout(path):
     if not path or not Path(path).exists():
-        return {"columnWidth": DEFAULT_COLUMN_WIDTH, "view": "compact", "showAppPills": False, "cardLimit": DEFAULT_CARD_LIMIT}
+        return {"columnWidth": DEFAULT_COLUMN_WIDTH, "view": "compact", "showAppPills": False, "cardLimit": DEFAULT_CARD_LIMIT,
+                "copyKind": "relative"}
     value = json.loads(Path(path).read_text())
     if not isinstance(value, dict) or not {"version", "columnWidth"}.issubset(value) \
-            or set(value) - {"version", "columnWidth", "view", "showAppPills", "cardLimit"} or value["version"] != 1:
+            or set(value) - {"version", "columnWidth", "view", "showAppPills", "cardLimit", "copyKind"} or value["version"] != 1:
         raise ValueError("The saved layout is not valid. Reset the width.")
     view = value.get("view", "compact")
     if view not in ("compact", "comfortable"):
@@ -611,22 +678,26 @@ def read_layout(path):
     if type(show_apps) is not bool:
         raise ValueError("Show app pills must be on or off.")
     return {"columnWidth": validate_column_width(value["columnWidth"]), "view": view, "showAppPills": show_apps,
-            "cardLimit": validate_card_limit(value.get("cardLimit", DEFAULT_CARD_LIMIT))}
+            "cardLimit": validate_card_limit(value.get("cardLimit", DEFAULT_CARD_LIMIT)),
+            "copyKind": validate_copy_kind(value.get("copyKind", "relative"))}
 
 
-def write_layout(path, width=None, view=None, show_app_pills=None, card_limit=None):
+def write_layout(path, width=None, view=None, show_app_pills=None, card_limit=None, copy_kind=None):
     explicit_apps = show_app_pills is not None
-    if view is None or show_app_pills is None or card_limit is None:
+    if view is None or show_app_pills is None or card_limit is None or copy_kind is None:
         saved = read_layout(path)
         view = saved["view"] if view is None else view
         show_app_pills = saved["showAppPills"] if show_app_pills is None else show_app_pills
         card_limit = saved["cardLimit"] if card_limit is None else card_limit
+        copy_kind = saved["copyKind"] if copy_kind is None else copy_kind
     if view not in ("compact", "comfortable"):
         raise ValueError("Choose Compact or Comfortable view.")
     if type(show_app_pills) is not bool:
         raise ValueError("Show app pills must be on or off.")
     validate_card_limit(card_limit)
-    if width is None and view == "compact" and not show_app_pills and not explicit_apps and card_limit == DEFAULT_CARD_LIMIT:
+    validate_copy_kind(copy_kind)
+    if width is None and view == "compact" and not show_app_pills and not explicit_apps \
+            and card_limit == DEFAULT_CARD_LIMIT and copy_kind == "relative":
         write_config(path, None)
         return
     value = {"version": 1, "columnWidth": validate_column_width(DEFAULT_COLUMN_WIDTH if width is None else width)}
@@ -636,6 +707,8 @@ def write_layout(path, width=None, view=None, show_app_pills=None, card_limit=No
         value["showAppPills"] = show_app_pills
     if card_limit != DEFAULT_CARD_LIMIT:
         value["cardLimit"] = card_limit
+    if copy_kind != "relative":
+        value["copyKind"] = copy_kind
     write_config(path, value)
 
 
@@ -2899,6 +2972,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     drawer_view, drawer_peek, drawer_count, column_pixel_width = False, False, 0, DEFAULT_COLUMN_WIDTH
     wide_controls, tiny_controls, search_expanded, show_app_pills = False, False, False, False
     card_limit, show_all_cards = DEFAULT_CARD_LIMIT, False
+    copy_kind = "relative"
     message_seen = None
     number_hold = number_idle = number_scroll = number_pressed = None
     row_cache_trim = None
@@ -2919,8 +2993,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.column_width, self.view = layout["columnWidth"], layout["view"]
             self.show_app_pills = layout["showAppPills"]
             self.card_limit = layout["cardLimit"]
+            self.copy_kind = layout["copyKind"]
         except (OSError, ValueError) as error:
-            self.column_width, self.view, layout_error = DEFAULT_COLUMN_WIDTH, "compact", str(error)
+            self.column_width, self.view, self.copy_kind, layout_error = DEFAULT_COLUMN_WIDTH, "compact", "relative", str(error)
         self.row_height = COMFORTABLE_ROW_HEIGHT if self.view == "comfortable" else ROW_HEIGHT
         self.focused_id = None
         if self.view == "comfortable":
@@ -2936,6 +3011,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.clock_interval = self.clock_timer = None
         self.notice_timer, self.notice_generation, self.provider_notice = None, 0, ""
         self.opening, self.focus_widgets, self.row_cache = set(), {}, {}
+        self.copy_wheel_state = dict(COPY_WHEEL_STATE)
+        self.copy_hover = self.copy_rest_timer = self.copy_tag_button = None
         self.palette_sent = self.palette_wanted = None
         self.palette_sending = False
         # A replaced column stays alive: a card can keep a pointer into its internal list until the card is inserted again.
@@ -3456,6 +3533,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-copy-button.asb-copy-confirmed {{ color: @success_color; background: alpha(@success_color, .12); }}
 {base} .asb-session.asb-hovered .asb-copy-button.asb-copy-off, {base} .asb-key-focus .asb-copy-button.asb-copy-off {{ opacity: .45; }}
 {base} .asb-copy-button.asb-copy-off, {base} .asb-copy-button.asb-copy-off:hover, {base} .asb-copy-button.asb-copy-off:focus-visible {{ background: none; }}
+{base} .asb-copy-tag {{ min-height: 18px; padding: 2px 7px 2px 8px; border-radius: 9px; background: alpha(@window_fg_color, .12); }}
+{base} .asb-copy-tag-word {{ font-size: 10px; font-weight: bold; letter-spacing: .04em; }}
+{base} .asb-copy-tag-dot {{ min-width: 4px; min-height: 4px; border-radius: 50%; background: alpha(@window_fg_color, .3); }}
+{base} .asb-copy-tag-dot.asb-copy-tag-on {{ background: @accent_color; }}
+{base} .asb-copy-tag-dot.asb-copy-tag-off {{ background: none; border: 1px solid alpha(@window_fg_color, .3); }}
+{base} .asb-copy-feedback {{ color: @success_color; }}
 {base} .asb-corner-wide {{ padding: 0 0 2px 16px; border-radius: 0 0 0 12px; }}
 {base} .asb-session.asb-hovered .asb-corner-wide, {base} .asb-key-focus .asb-corner-wide {{
     background: linear-gradient(to right, alpha(@window_bg_color, 0), @window_bg_color 16px); }}
@@ -3537,6 +3620,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} .asb-copy-button:hover, {scope} .asb-copy-button:focus-visible {{ background: alpha({colors['accent']}, .15); }}
 {scope} .asb-copy-button.asb-copy-confirmed {{ color: {colors['accent']}; background: alpha({colors['accent']}, .15); }}
 {scope} .asb-copy-button.asb-copy-off, {scope} .asb-copy-button.asb-copy-off:hover, {scope} .asb-copy-button.asb-copy-off:focus-visible {{ background: none; }}
+{scope} .asb-copy-feedback {{ color: {colors['accent']}; }}
+{scope} .asb-copy-tag-dot.asb-copy-tag-on {{ background: {colors['accent']}; }}
 {scope} .asb-session.asb-hovered .asb-corner-wide, {scope} .asb-key-focus .asb-corner-wide {{
     background: linear-gradient(to right, alpha({colors['background']}, 0), {colors['background']} 16px); }}
 .asb-tooltip.asb-custom {{ color: {colors['text']}; }}
@@ -3926,7 +4011,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if selected == self.show_app_pills:
             return
         try:
-            write_layout(self.layout_path, self.column_width, self.view, selected, card_limit=self.card_limit)
+            write_layout(self.layout_path, self.column_width, self.view, selected, card_limit=self.card_limit, copy_kind=self.copy_kind)
         except (OSError, ValueError) as error:
             self.app_pills_setting.set_active(self.show_app_pills)
             self.app_pills_error.set_label(str(error))
@@ -3942,7 +4027,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if selected == self.card_limit:
             return
         try:
-            write_layout(self.layout_path, self.column_width, self.view, self.show_app_pills, card_limit=selected)
+            write_layout(self.layout_path, self.column_width, self.view, self.show_app_pills, card_limit=selected, copy_kind=self.copy_kind)
         except (OSError, ValueError) as error:
             self.card_limit_setting.set_selected(limits.index(self.card_limit))
             self.card_limit_error.set_label(str(error))
@@ -3951,6 +4036,33 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.card_limit_error.set_label("")
         self.show_all_cards = False
         self.filter_changed()
+
+    def change_copy_kind(self, kind):
+        """Save the board copy kind. A failed save keeps the old kind and shows the error."""
+        if kind == self.copy_kind:
+            return
+        previous = self.copy_kind
+        try:
+            write_layout(self.layout_path, self.column_width, self.view, self.show_app_pills,
+                         self.card_limit, copy_kind=kind)
+        except (OSError, ValueError) as error:
+            self.copy_kind = previous
+            self.layout_error.set_label(str(error))
+            self.set_notice(str(error), temporary=True)
+            return
+        self.copy_kind = kind
+        self.layout_error.set_label("")
+        for widget in list(getattr(self, "focus_widgets", {}).values()):
+            if getattr(widget, "asb_view", None) == "comfortable":
+                widget.asb_action_signature = None
+                self.update_card_actions(widget)
+
+    def step_copy_kind(self, direction=1, widget=None):
+        """Toggle the board copy kind. A remote card never moves it; direction only sets the odometer roll."""
+        row = getattr(widget, "asb_thread", None) or {}
+        if row.get("remote") is True:
+            return
+        self.change_copy_kind("absolute" if self.copy_kind == "relative" else "relative")
 
     def set_column_width(self, *_args):
         width = validate_column_width(self.width_control.get_value_as_int())
@@ -3965,7 +4077,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def save_width(self):
         try:
-            write_layout(self.layout_path, self.column_width, self.view, self.show_app_pills, card_limit=self.card_limit)
+            write_layout(self.layout_path, self.column_width, self.view, self.show_app_pills, card_limit=self.card_limit, copy_kind=self.copy_kind)
             self.layout_error.set_label("")
         except (OSError, ValueError) as error:
             self.layout_error.set_label(str(error))
@@ -3975,7 +4087,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.width_control.set_value(DEFAULT_COLUMN_WIDTH)
         self.dragging = False
         try:
-            write_layout(self.layout_path, view=self.view, show_app_pills=self.show_app_pills, card_limit=self.card_limit)
+            write_layout(self.layout_path, view=self.view, show_app_pills=self.show_app_pills, card_limit=self.card_limit, copy_kind=self.copy_kind)
             self.layout_error.set_label("")
         except (OSError, ValueError):
             self.layout_error.set_label("Cannot reset the width. Check the ASB config folder.")
@@ -4003,6 +4115,18 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         delta = dx if dx else dy
         if self.closed or not delta:
             return True
+        # The kind switch takes the wheel only after the pointer rests on the copy button, or while the tag shows.
+        copy = self.copy_under_pointer()
+        if copy is not None:
+            unit = controller.get_unit() if controller else Gdk.ScrollUnit.WHEEL
+            now = time.monotonic()
+            if copy_wheel_captured(getattr(copy, "asb_rest_at", None), now, bool(getattr(copy, "asb_tag_shown", False)),
+                                   self.copy_has_keyboard_focus(copy)):
+                step, self.copy_wheel_state = copy_wheel_step(self.copy_wheel_state, delta, now,
+                                                              surface=unit != Gdk.ScrollUnit.WHEEL)
+                if step:
+                    self.step_copy_kind(step, getattr(copy, "asb_card", None))
+                return True
         adjustment = self.scroll.get_hadjustment()
         unit = controller.get_unit() if controller else Gdk.ScrollUnit.WHEEL
         distance = max(32, adjustment.get_step_increment()) if unit == Gdk.ScrollUnit.WHEEL else 1
@@ -4210,6 +4334,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             if row:
                 row.add_css_class("asb-key-focus")
             self.key_focus_row = row
+        if self.get_focus_visible() and focus is not None and getattr(focus, "asb_card_action", None) == "copy":
+            self.show_copy_tag(focus, True)
+        elif getattr(self, "copy_tag_button", None) is not None and self.copy_hover is not self.copy_tag_button:
+            self.show_copy_tag(self.copy_tag_button, False)
 
     def clear_search(self, *_args):
         self.cancel_scroll()
@@ -4944,7 +5072,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.asb_action_signature = None
             self.cancel_card_copy(widget)
             for name in ("asb_folder", "asb_pin_button", "asb_read_button", "asb_drawer_button", "asb_copy_button", "asb_age_label", "asb_limited",
-                         "asb_mute_glyph", "asb_where_icon", "asb_where_label", "asb_more_glyph"):
+                         "asb_mute_glyph", "asb_where_icon", "asb_where_label", "asb_more_glyph", "asb_copy_tag", "asb_copy_words",
+                         "asb_copy_dot_relative", "asb_copy_dot_absolute", "asb_feedback", "asb_feedback_label", "asb_footer_stack"):
                 if hasattr(widget, name):
                     delattr(widget, name)
             content = Gtk.Box(spacing=6, margin_start=5, margin_end=5, valign=Gtk.Align.CENTER)
@@ -5013,9 +5142,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 title.set_margin_start(21)
                 title.set_margin_end(54)
                 content.append(title)
-                metadata = Gtk.Box(spacing=6, margin_start=21)
-                metadata.append(clock)
-                metadata.append(state)
+                line = Gtk.Box(spacing=6)
+                line.append(clock)
+                line.append(state)
                 age = label("", "caption")
                 age.add_css_class("asb-age")
                 age.add_css_class("dim-label")
@@ -5037,8 +5166,22 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 right.append(where)
                 right.append(age)
                 widget.asb_where_icon, widget.asb_where_label = where_icon, where
-                metadata.append(right)
-                content.append(metadata)
+                line.append(right)
+                feedback = Gtk.Box(spacing=6)
+                feedback.add_css_class("asb-copy-feedback")
+                feedback_icon = Gtk.Image(icon_name="object-select-symbolic", pixel_size=12)
+                feedback_label = label("", "caption")
+                feedback_label.add_css_class("asb-copy-feedback")
+                feedback.append(feedback_icon)
+                feedback.append(feedback_label)
+                # The done text replaces the footer line for 1.6 s; the limit clock keeps its own rule on the line.
+                footer = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=100,
+                                   hhomogeneous=True, vhomogeneous=True, margin_start=21)
+                footer.add_named(line, "line")
+                footer.add_named(feedback, "copied")
+                widget.asb_feedback, widget.asb_feedback_label = feedback, feedback_label
+                widget.asb_footer_stack = footer
+                content.append(footer)
                 overlay = Gtk.Overlay(child=content)
                 actions = Gtk.Box(spacing=2, halign=Gtk.Align.END, valign=Gtk.Align.START,
                                   margin_end=5, margin_top=2)
@@ -5053,6 +5196,25 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 pin = Gtk.Button(child=Gtk.Image(icon_name="view-pin-symbolic", pixel_size=12))
                 drawer = Gtk.Button(child=self.drawer_glyph())
                 copy = Gtk.Button(child=Gtk.Image(icon_name="edit-copy-symbolic", pixel_size=12))
+                # The kind tag slides out to the left of the copy button, over the folder line.
+                tag_words = Gtk.Stack(transition_type=Gtk.StackTransitionType.SLIDE_UP, transition_duration=200)
+                for name in COPY_KINDS:
+                    word = label(COPY_KIND_WORDS[name], "asb-copy-tag-word")
+                    tag_words.add_named(word, name)
+                tag_dots = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, valign=Gtk.Align.CENTER)
+                tag_dot_relative = Gtk.Box()
+                tag_dot_relative.add_css_class("asb-copy-tag-dot")
+                tag_dot_absolute = Gtk.Box()
+                tag_dot_absolute.add_css_class("asb-copy-tag-dot")
+                tag_dots.append(tag_dot_relative)
+                tag_dots.append(tag_dot_absolute)
+                tag_box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+                tag_box.add_css_class("asb-copy-tag")
+                tag_box.append(tag_words)
+                tag_box.append(tag_dots)
+                tag = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.SLIDE_RIGHT, transition_duration=200,
+                                   reveal_child=False, child=tag_box)
+                actions.append(tag)
                 for button, name in ((copy, "copy"), (drawer, "drawer"), (read, "read"), (pin, "pin")):
                     button.add_css_class("flat")
                     button.add_css_class("asb-card-action")
@@ -5060,8 +5222,16 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     button.asb_card_action = name
                     button.asb_identity, button.asb_action = row["id"], None
                     button.connect("clicked", self.card_action_clicked)
+                copy.asb_card, copy.asb_tag, copy.asb_tag_shown, copy.asb_rest_at = widget, tag, False, None
+                copy.asb_copy_words, copy.asb_copy_dot_relative, copy.asb_copy_dot_absolute = tag_words, tag_dot_relative, tag_dot_absolute
+                copy_motion = Gtk.EventControllerMotion()
+                copy_motion.connect("enter", self.copy_button_motion)
+                copy_motion.connect("leave", self.copy_button_motion)
+                copy.add_controller(copy_motion)
                 widget.asb_drawer_button, widget.asb_read_button, widget.asb_pin_button = drawer, read, pin
                 widget.asb_copy_button = copy
+                widget.asb_copy_tag, widget.asb_copy_words = tag, tag_words
+                widget.asb_copy_dot_relative, widget.asb_copy_dot_absolute = tag_dot_relative, tag_dot_absolute
                 actions.append(copy)
                 actions.append(drawer)
                 read_slot.append(read)
@@ -5144,6 +5314,49 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if button.asb_action:
             self.activate_action(button.asb_action, GLib.Variant("s", button.asb_identity))
 
+    def copy_under_pointer(self):
+        return self.copy_hover if getattr(self, "copy_hover", None) is not None else None
+
+    def copy_has_keyboard_focus(self, button):
+        return self.get_focus() is button and self.get_focus_visible()
+
+    def show_copy_tag(self, button, shown):
+        tag = getattr(button, "asb_tag", None)
+        if tag is None:
+            return
+        button.asb_tag_shown = bool(shown)
+        tag.set_reveal_child(bool(shown))
+        self.copy_tag_button = button if shown else (None if self.copy_tag_button is button else self.copy_tag_button)
+        if getattr(button, "asb_card", None) is not None and button.asb_card.asb_view == "comfortable":
+            button.asb_card.asb_action_signature = None
+            self.update_card_actions(button.asb_card)
+
+    def copy_button_motion(self, controller, *_args):
+        button = controller.get_widget()
+        if controller.contains_pointer():
+            # The rest counts from the enter into the button. Motion inside it does not restart the timer.
+            if self.copy_hover is button:
+                return
+            self.copy_hover = button
+            button.asb_rest_at = time.monotonic()
+            if self.copy_rest_timer:
+                GLib.source_remove(self.copy_rest_timer)
+            self.copy_rest_timer = GLib.timeout_add(int(COPY_REST_S * 1000), self.copy_tag_due, button)
+        else:
+            self.copy_hover = None
+            button.asb_rest_at = None
+            if self.copy_rest_timer:
+                GLib.source_remove(self.copy_rest_timer)
+                self.copy_rest_timer = None
+            if not self.copy_has_keyboard_focus(button):
+                self.show_copy_tag(button, False)
+
+    def copy_tag_due(self, button):
+        self.copy_rest_timer = None
+        if self.copy_hover is button:
+            self.show_copy_tag(button, True)
+        return False
+
     def update_card_actions(self, widget):
         if widget.asb_view != "comfortable":
             return
@@ -5155,9 +5368,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         drawer = getattr(widget, "asb_drawer_button", None)
         pending = row["id"] in self.session_actions
         indicator = attention_indicator(row, True)
+        copy_choice = card_copy(row, self.copy_kind)
         signature = (indicator, row.get("state"), row.get("actionRequired"), row.get("discardResult"),
                      row.get("pinned"), row.get("drawer"), row.get("muted"), row.get("title"), pending, bool(widget.asb_read_timer),
-                     self.column_pixel_width >= 190, bool(getattr(widget, "asb_copy_timer", None)), card_copy(row))
+                     self.column_pixel_width >= 190, bool(getattr(widget, "asb_copy_timer", None)), copy_choice,
+                     getattr(getattr(widget, "asb_copy_button", None), "asb_tag_shown", False) is True)
         if signature == getattr(widget, "asb_action_signature", None):
             return
         widget.asb_action_signature = signature
@@ -5212,28 +5427,61 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         copy = getattr(widget, "asb_copy_button", None)
         if copy:
             # Copy sends no request, so it has no pending state. The corner fades the title for it at every width that shows it.
-            value, reason, kind = card_copy(row)
+            value, reason, kind = copy_choice
+            word = COPY_KIND_WORDS[kind]
             wide, copied = self.column_pixel_width >= 190, bool(widget.asb_copy_timer and value)
+            tag_shown = getattr(copy, "asb_tag_shown", False) is True
             copy.set_visible(wide)
             (copy.get_parent().add_css_class if wide else copy.get_parent().remove_css_class)("asb-corner-wide")
             # With no reference to copy the button keeps its place, but has no action and says why.
             copy.asb_action = "win.copy-reference" if value else None
             (copy.add_css_class if not value else copy.remove_css_class)("asb-copy-off")
             copy.update_state([Gtk.AccessibleState.DISABLED], [not value])
-            copy.get_child().set_from_icon_name("object-select-symbolic" if copied else "edit-copy-symbolic")
+            glyph = "object-select-symbolic" if copied else COPY_KIND_ICONS[kind] if tag_shown else "edit-copy-symbolic"
+            set_icon(copy.get_child(), glyph)
             (copy.add_css_class if copied else copy.remove_css_class)("asb-copy-confirmed")
-            if copy.get_tooltip_text() != (tip := reason or ("Copied" if copied else f"Copy {kind} reference")):
+            done = COPY_DONE_TEXT[kind] if copied else None
+            if row.get("remote") is True:
+                tip = reason or (done if copied else f"Copy absolute reference. {copy_relative_reason(row)}")
+            else:
+                tip = reason or (done if copied else f"Copy {kind} reference")
+            if copy.get_tooltip_text() != tip:
                 copy.set_tooltip_text(tip)
             copy.update_property([Gtk.AccessibleProperty.LABEL], [f"Copy {kind} reference: " + row.get("title", "Untitled session")])
-            if copied:
-                copy.update_property([Gtk.AccessibleProperty.DESCRIPTION], ["Copied"])
+            if done:
+                copy.update_property([Gtk.AccessibleProperty.DESCRIPTION], [done])
             else:
                 copy.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
+            self.update_copy_tag(widget, kind, row.get("remote") is True)
+            self.update_copy_feedback(widget, done)
+
+    def update_copy_tag(self, widget, kind, remote):
+        tag, copy = getattr(widget, "asb_copy_tag", None), getattr(widget, "asb_copy_button", None)
+        if tag is None or copy is None:
+            return
+        words = getattr(widget, "asb_copy_words", None)
+        if words and words.get_visible_child_name() != kind:
+            words.set_transition_type(Gtk.StackTransitionType.SLIDE_UP if kind == "absolute" else Gtk.StackTransitionType.SLIDE_DOWN)
+            words.set_visible_child_name(kind)
+        for name, dot in (("relative", getattr(widget, "asb_copy_dot_relative", None)),
+                          ("absolute", getattr(widget, "asb_copy_dot_absolute", None))):
+            if dot is None:
+                continue
+            (dot.add_css_class if name == kind else dot.remove_css_class)("asb-copy-tag-on")
+            (dot.add_css_class if remote and name == "relative" else dot.remove_css_class)("asb-copy-tag-off")
+
+    def update_copy_feedback(self, widget, done):
+        footer, label = getattr(widget, "asb_footer_stack", None), getattr(widget, "asb_feedback_label", None)
+        if footer is None or label is None:
+            return
+        if done:
+            label.set_label(done)
+        footer.set_visible_child_name("copied" if done else "line")
 
     def copy_reference(self, _action, target):
         identity = target.get_string()
         widget = self.focus_widgets.get(identity)
-        value, _reason, kind = card_copy(widget.asb_thread) if widget else (None, None, "")
+        value, _reason, kind = card_copy(widget.asb_thread, self.copy_kind) if widget else (None, None, "")
         if not value or self.closed:
             return
         # The check of an earlier copy must not stay on after this one fails.
@@ -5248,6 +5496,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if self.open_errors.get(identity, "").startswith(("Cannot copy the relative reference: ", "Cannot copy the absolute reference: ")):
             self.open_errors.pop(identity)
             self.update_open_state(widget)
+        done = COPY_DONE_TEXT[kind]
         def clear():
             widget.asb_copy_timer = None
             if not self.closed and self.focus_widgets.get(identity) is widget and widget.asb_view == "comfortable":
@@ -5346,13 +5595,21 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.update_open_state(widget, now_ms)
 
     def row_key(self, _controller, key, _code, _state, identity):
+        # Alt+Up and Alt+Down switch the copy kind on a focused copy button. Ctrl shows the number keycaps.
+        if key in (Gdk.KEY_Up, Gdk.KEY_Down) and _state & Gdk.ModifierType.ALT_MASK \
+                and not _state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SUPER_MASK | Gdk.ModifierType.META_MASK):
+            focus = self.get_focus()
+            if getattr(focus, "asb_card_action", None) == "copy":
+                self.step_copy_kind(-1 if key == Gdk.KEY_Up else 1, getattr(focus, "asb_card", None))
+                return True
         if _state & SHORTCUT_MASK or (self.context_menu and self.context_menu.get_visible()):
             return False
-        focus = self.get_focus()
-        if key in (Gdk.KEY_space, Gdk.KEY_Return, Gdk.KEY_KP_Enter) and getattr(focus, "asb_card_action", None):
-            if focus.get_sensitive() and getattr(focus, "asb_action", None):
-                focus.activate()
-            return True
+        if key in (Gdk.KEY_space, Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            focus = self.get_focus()
+            if getattr(focus, "asb_card_action", None):
+                if focus.get_sensitive() and getattr(focus, "asb_action", None):
+                    focus.activate()
+                return True
         if key == Gdk.KEY_Menu or (key == Gdk.KEY_F10 and _state & Gdk.ModifierType.SHIFT_MASK):
             self.show_context(self.focus_widgets[identity])
             return True
@@ -5569,6 +5826,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         else:
             panel.asb_copy_error, panel.asb_copied = "", slot
             self.show_copy_rows(panel)
+            done = COPY_DONE_TEXT["relative" if slot == "short" else "absolute"]
             def clear():
                 panel.asb_copy_timer = None
                 self.clear_copy_feedback(panel)
@@ -5588,11 +5846,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if not panel.asb_copy_values:
             return
         short, short_reason, full, full_reason = panel.asb_copy_values
-        for slot, button, value, reason, caption in (("short", panel.asb_copy, short, short_reason, "Relative: in the same app"),
-                                                     ("full", panel.asb_copy_full, full, full_reason, "Absolute: with ASB, any machine")):
+        for slot, button, value, reason, caption, done in (
+                ("short", panel.asb_copy, short, short_reason, "Relative: in the same app", COPY_DONE_TEXT["relative"]),
+                ("full", panel.asb_copy_full, full, full_reason, "Absolute: with ASB, any machine", COPY_DONE_TEXT["absolute"])):
             copied = panel.asb_copied == slot
             # One reason for both rows shows once, under row 2.
-            note = caption if value else "" if slot == "short" and reason == full_reason else reason
+            note = done if copied else caption if value else "" if slot == "short" and reason == full_reason else reason
             button.asb_caption.set_label(note)
             button.asb_caption.set_lines(1 if value else 2)
             button.asb_caption.set_visible(bool(note))
@@ -5601,7 +5860,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             (button.add_css_class if copied else button.remove_css_class)("asb-copy-done")
             button.update_state([Gtk.AccessibleState.DISABLED], [not value])
             set_icon(button.asb_icon, "object-select-symbolic" if copied else "edit-copy-symbolic")
-            button.asb_tip = "Copied" if copied else value or reason
+            button.asb_tip = done if copied else value or reason
             if slot == "short":
                 button.set_tooltip_text(button.asb_tip)
             button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [button.asb_tip])

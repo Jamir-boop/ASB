@@ -1404,7 +1404,7 @@ class DataChecks(unittest.TestCase):
     def test_layout_width_validation_persistence_and_reset(self):
         with TemporaryDirectory(prefix="asb-layout-test-") as directory:
             path = Path(directory) / "layout.json"
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "showAppPills": False, "cardLimit": 100})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "showAppPills": False, "cardLimit": 100, "copyKind": "relative"})
             asb.write_layout(path, 160)
             self.assertEqual(asb.read_layout(path)["columnWidth"], 160)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
@@ -1415,20 +1415,20 @@ class DataChecks(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), previous)
             asb.write_layout(path)
             self.assertFalse(path.exists())
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "showAppPills": False, "cardLimit": 100})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "showAppPills": False, "cardLimit": 100, "copyKind": "relative"})
 
     def test_view_setting_legacy_width_save_and_reset(self):
         with TemporaryDirectory(prefix="asb-view-test-") as directory:
             path = Path(directory) / "layout.json"
             path.write_text(json.dumps({"version": 1, "columnWidth": 180}))
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "showAppPills": False, "cardLimit": 100})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "showAppPills": False, "cardLimit": 100, "copyKind": "relative"})
             asb.write_layout(path, 180, "comfortable")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "comfortable", "showAppPills": False, "cardLimit": 100})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "comfortable", "showAppPills": False, "cardLimit": 100, "copyKind": "relative"})
             asb.write_layout(path, 320)
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": False, "cardLimit": 100})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": False, "cardLimit": 100, "copyKind": "relative"})
             asb.write_layout(path)
             self.assertTrue(path.exists())
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": False, "cardLimit": 100})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": False, "cardLimit": 100, "copyKind": "relative"})
             before = path.read_bytes()
             with self.assertRaises(ValueError):
                 asb.write_layout(path, 240, "unknown")
@@ -1449,9 +1449,9 @@ class DataChecks(unittest.TestCase):
             asb.write_layout(path, 180, "compact", True)
             self.assertTrue(asb.read_layout(path)["showAppPills"])
             asb.write_layout(path, 320, "comfortable")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": True, "cardLimit": 100})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": True, "cardLimit": 100, "copyKind": "relative"})
             asb.write_layout(path)
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": True, "cardLimit": 100})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": True, "cardLimit": 100, "copyKind": "relative"})
             asb.write_layout(path, 240, "compact", False)
             self.assertFalse(json.loads(path.read_text())["showAppPills"])
             before = path.read_bytes()
@@ -1459,7 +1459,7 @@ class DataChecks(unittest.TestCase):
                 asb.write_layout(path, 240, "compact", "false")
             self.assertEqual(path.read_bytes(), before)
             window = object.__new__(Window)
-            window.show_app_pills, window.column_width, window.view, window.layout_path = False, 180, "comfortable", path
+            window.show_app_pills, window.column_width, window.view, window.layout_path, window.copy_kind = False, 180, "comfortable", path, "relative"
             window.app_pills_setting = Mock(get_active=Mock(return_value=True))
             window.app_pills_error, window.layout_error = Mock(), Mock()
             window.update_toolbar_presentation, window.render = Mock(), Mock()
@@ -1479,7 +1479,7 @@ class DataChecks(unittest.TestCase):
             window.dragging = False
             window.width_control = Mock(set_value=Mock(side_effect=lambda width: setattr(window, "column_width", width)))
             window.reset_width()
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": True, "cardLimit": 100})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": True, "cardLimit": 100, "copyKind": "relative"})
             window.save_width()
             self.assertTrue(asb.read_layout(path)["showAppPills"])
 
@@ -1506,19 +1506,19 @@ class DataChecks(unittest.TestCase):
             asb.write_layout(path, 320)
             asb.write_layout(path, 320, "comfortable")
             asb.write_layout(path, 320, "comfortable", True)
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": True, "cardLimit": 200})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": True, "cardLimit": 200, "copyKind": "relative"})
             window = object.__new__(Window)
-            window.show_app_pills, window.column_width, window.view, window.layout_path = True, 320, "comfortable", path
-            window.card_limit, window.layout_error, window.dragging = 200, Mock(), False
+            window.show_app_pills, window.column_width, window.view, window.layout_path, window.copy_kind = True, 320, "comfortable", path, "relative"
+            window.card_limit, window.layout_error, window.dragging, window.copy_kind = 200, Mock(), False, "relative"
             window.width_control = Mock(set_value=Mock(side_effect=lambda width: setattr(window, "column_width", width)))
             window.reset_width()
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": True, "cardLimit": 200})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": True, "cardLimit": 200, "copyKind": "relative"})
             window.save_width()
             self.assertEqual(asb.read_layout(path)["cardLimit"], 200)
             window.app_pills_setting, window.app_pills_error = Mock(get_active=Mock(return_value=False)), Mock()
             window.update_toolbar_presentation, window.sync_filter_chips = Mock(), Mock()
             window.change_app_pills_setting()
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": False, "cardLimit": 200})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": False, "cardLimit": 200, "copyKind": "relative"})
             # The delete branch keeps a file that holds a limit other than the default.
             path.write_text(json.dumps({"version": 1, "columnWidth": 240, "cardLimit": 0}))
             asb.write_layout(path)
@@ -1526,7 +1526,7 @@ class DataChecks(unittest.TestCase):
             asb.write_layout(path, card_limit=100)
             self.assertFalse(path.exists())
             # The Preferences control: the same value does nothing, a failed save selects the old value again.
-            window.card_limit, window.show_all_cards = 100, True
+            window.card_limit, window.show_all_cards, window.copy_kind = 100, True, "relative"
             window.card_limit_setting, window.card_limit_error, window.filter_changed = Mock(get_selected=Mock(return_value=1)), Mock(), Mock()
             window.change_card_limit()
             window.filter_changed.assert_not_called()
@@ -1543,6 +1543,156 @@ class DataChecks(unittest.TestCase):
             window.card_limit_setting.set_selected.assert_called_once_with(2)
             window.card_limit_error.set_label.assert_called_with("Save failed")
             window.filter_changed.assert_called_once_with()
+
+    def test_copy_kind_layout_validation_and_setting_preservation(self):
+        with TemporaryDirectory(prefix="asb-copy-kind-layout-") as directory:
+            path = Path(directory) / "layout.json"
+            self.assertEqual(asb.read_layout(path)["copyKind"], "relative")
+            path.write_text(json.dumps({"version": 1, "columnWidth": 240}))
+            self.assertEqual(asb.read_layout(path)["copyKind"], "relative")
+            asb.write_layout(path, 240, copy_kind="absolute")
+            self.assertEqual(asb.read_layout(path)["copyKind"], "absolute")
+            self.assertEqual(json.loads(path.read_text())["copyKind"], "absolute")
+            # A Relative kind is the default and is not written.
+            asb.write_layout(path, 240, copy_kind="relative")
+            self.assertEqual(asb.read_layout(path)["copyKind"], "relative")
+            self.assertNotIn("copyKind", json.loads(path.read_text()))
+            previous = path.read_bytes()
+            for invalid in ("session", "Relative", "ABSOLUTE", 1, True, None, [], {}):
+                path.write_bytes(previous)
+                if invalid is not None:
+                    with self.assertRaises(ValueError):
+                        asb.write_layout(path, 240, copy_kind=invalid)
+                    self.assertEqual(path.read_bytes(), previous)
+                path.write_text(json.dumps({"version": 1, "columnWidth": 240, "copyKind": invalid}))
+                with self.assertRaisesRegex(ValueError, "Copy kind must be Relative or Absolute."):
+                    asb.read_layout(path)
+            path.write_text(json.dumps({"version": 1, "columnWidth": 240, "copyKind": "absolute"}))
+            asb.write_layout(path, 320)
+            asb.write_layout(path, 320, "comfortable")
+            asb.write_layout(path, 320, "comfortable", True)
+            asb.write_layout(path, 320, "comfortable", True, card_limit=200)
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": True,
+                                                     "cardLimit": 200, "copyKind": "absolute"})
+            # A default layout is deleted; an Absolute kind keeps the file.
+            asb.write_layout(path, copy_kind="absolute")
+            self.assertTrue(path.exists())
+            self.assertEqual(json.loads(path.read_text())["copyKind"], "absolute")
+            asb.write_layout(path)
+            self.assertTrue(path.exists())
+            self.assertEqual(asb.read_layout(path)["copyKind"], "absolute")
+            path.write_text(json.dumps({"version": 1, "columnWidth": 240}))
+            asb.write_layout(path, copy_kind="relative")
+            self.assertFalse(path.exists())
+            window = object.__new__(Window)
+            window.show_app_pills, window.column_width, window.view, window.layout_path = False, 240, "compact", path
+            window.card_limit, window.layout_error, window.dragging, window.copy_kind = 100, Mock(), False, "absolute"
+            window.width_control = Mock(set_value=Mock(side_effect=lambda width: setattr(window, "column_width", width)))
+            window.save_width()
+            self.assertEqual(asb.read_layout(path)["copyKind"], "absolute")
+            window.reset_width()
+            self.assertEqual(asb.read_layout(path)["copyKind"], "absolute")
+            # A failed save keeps the old kind and shows the error.
+            window.copy_kind = "relative"
+            window.set_notice = Mock()
+            with patch.dict(SCOPE, {"write_layout": Mock(side_effect=OSError("Save failed"))}):
+                window.change_copy_kind("absolute")
+            self.assertEqual(window.copy_kind, "relative")
+            window.layout_error.set_label.assert_called_with("Save failed")
+            window.set_notice.assert_called_once_with("Save failed", temporary=True)
+            window.change_copy_kind("absolute")
+            self.assertEqual((window.copy_kind, asb.read_layout(path)["copyKind"]), ("absolute", "absolute"))
+            self.assertEqual(window.change_copy_kind("absolute"), None)
+
+    def test_card_copy_kind_rule_for_local_remote_and_missing_values(self):
+        full = "asb:1/0123456789abcdef/codex/" + "f" * 32 + "/codex:123e4567-e89b-12d3-a456-426614174000"
+        short = "codex/123e4567-e89b-12d3-a456-426614174000"
+        local = {"id": "x", "externalId": "123e4567-e89b-12d3-a456-426614174000", "provider": "codex",
+                 "sessionReference": short, "reference": full}
+        remote = {**local, "id": "m:0123456789abcdef:x", "remote": True, "machineName": "homeLP"}
+        self.assertEqual(asb.card_copy(local), (short, None, "relative"))
+        self.assertEqual(asb.card_copy(local, "relative"), (short, None, "relative"))
+        self.assertEqual(asb.card_copy(local, "absolute"), (full, None, "absolute"))
+        # A remote row copies the Absolute reference whatever the board kind is.
+        self.assertEqual(asb.card_copy(remote), (full, None, "absolute"))
+        self.assertEqual(asb.card_copy(remote, "relative"), (full, None, "absolute"))
+        self.assertEqual(asb.card_copy(remote, "absolute"), (full, None, "absolute"))
+        self.assertEqual(asb.copy_relative_reason(remote), "Relative works only on this machine. This session runs on homeLP.")
+        self.assertEqual(asb.copy_relative_reason({**remote, "machineName": None}),
+                         "Relative works only on this machine. This session runs on another machine.")
+        # A missing value keeps the disabled rule: no value, the reason, and the kind that was asked for.
+        broken = {"id": "b", "title": "Chat", "externalId": "bad id", "provider": "codex",
+                  "referenceUnavailable": "invalid-app-id"}
+        self.assertEqual(asb.card_copy(broken), (None, "This session has an ID in a form that ASB does not know.", "relative"))
+        self.assertEqual(asb.card_copy(broken, "absolute"), (None, "This session has an ID in a form that ASB does not know.", "absolute"))
+        self.assertEqual(asb.card_copy(remote, "relative")[1], None)
+
+    def test_copy_rest_and_wheel_notch_rules(self):
+        self.assertIs(asb.validate_copy_kind("relative"), "relative")
+        self.assertIs(asb.validate_copy_kind("absolute"), "absolute")
+        for bad in ("session", "", None, 1):
+            with self.assertRaises(ValueError):
+                asb.validate_copy_kind(bad)
+        # The pointer must rest 250 ms before the wheel may switch the kind.
+        self.assertFalse(asb.copy_rest_ready(None, 10.0))
+        self.assertFalse(asb.copy_rest_ready(10.0, 10.0))
+        self.assertFalse(asb.copy_rest_ready(10.0, 10.249))
+        self.assertTrue(asb.copy_rest_ready(10.0, 10.25))
+        self.assertTrue(asb.copy_rest_ready(10.0, 11.0))
+        # The tag show (rest or keyboard focus) also arms the wheel.
+        self.assertFalse(asb.copy_wheel_captured(None, 10.0))
+        self.assertFalse(asb.copy_wheel_captured(10.0, 10.1))
+        self.assertTrue(asb.copy_wheel_captured(10.0, 10.3))
+        self.assertTrue(asb.copy_wheel_captured(None, 10.0, tag_shown=True))
+        self.assertTrue(asb.copy_wheel_captured(None, 10.0, keyboard_focus=True))
+        # A wheel notch is 1.0. Hi-res fractions add up to one notch; one large event is still one step.
+        state = dict(asb.COPY_WHEEL_STATE)
+        step, state = asb.copy_wheel_step(state, 1.0, 1.0)
+        self.assertEqual(step, 1)
+        step, state = asb.copy_wheel_step(state, -1.0, 1.1)
+        self.assertEqual(step, -1)
+        state = dict(asb.COPY_WHEEL_STATE)
+        for tick in range(3):
+            step, state = asb.copy_wheel_step(state, .25, 1.0 + tick * .01)
+            self.assertEqual(step, 0, tick)
+        step, state = asb.copy_wheel_step(state, .25, 1.04)
+        self.assertEqual((step, state["acc"]), (1, 0.0))
+        state = dict(asb.COPY_WHEEL_STATE)
+        step, state = asb.copy_wheel_step(state, .5, 1.0)
+        self.assertEqual(step, 0)
+        step, state = asb.copy_wheel_step(state, .5, 1.01)
+        self.assertEqual(step, 1)
+        state = dict(asb.COPY_WHEEL_STATE)
+        step, state = asb.copy_wheel_step(state, 2.0, 1.0)
+        self.assertEqual((step, state["acc"]), (1, 0.0))
+        step, state = asb.copy_wheel_step(state, .1, 1.01)
+        self.assertEqual(step, 0)
+        state = dict(asb.COPY_WHEEL_STATE)
+        step, state = asb.copy_wheel_step(state, .5, 1.0)
+        step, state = asb.copy_wheel_step(state, -.5, 1.01)
+        self.assertEqual(step, 0)
+        state = dict(asb.COPY_WHEEL_STATE)
+        step, state = asb.copy_wheel_step(state, .5, 1.0)
+        step, state = asb.copy_wheel_step(state, .5, 1.1)
+        self.assertEqual(step, 1)
+        state = dict(asb.COPY_WHEEL_STATE)
+        step, state = asb.copy_wheel_step(state, .5, 1.0)
+        step, state = asb.copy_wheel_step(state, .5, 1.3)
+        self.assertEqual(step, 0)
+        # Smooth trackpad deltas accumulate to one step per burst.
+        state = dict(asb.COPY_WHEEL_STATE)
+        for tick in range(9):
+            step, state = asb.copy_wheel_step(state, 3, 1.0 + tick * .01, surface=True)
+            self.assertEqual(step, 0, tick)
+        step, state = asb.copy_wheel_step(state, 3, 1.10, surface=True)
+        self.assertEqual(step, 1)
+        step, state = asb.copy_wheel_step(state, 3, 1.11, surface=True)
+        self.assertEqual(step, 0)
+        # A gap opens a new burst, and a negative burst steps down.
+        step, state = asb.copy_wheel_step(state, -30, 1.5, surface=True)
+        self.assertEqual(step, -1)
+        step, _state = asb.copy_wheel_step(state, 0, 1.6, surface=True)
+        self.assertEqual(step, 0)
 
     def test_limit_rows_keeps_the_first_rows_and_one_more_row(self):
         rows = [{"id": f"r{index}", "updatedAtMs": 1000 - index if index != 7 else 5000, "canOpen": True} for index in range(10)]
@@ -3990,6 +4140,10 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertFalse(window.focus_widgets)
         gtk = SimpleNamespace(ListBox=Box, Box=lambda **_kwargs: Mock(), Image=lambda **_kwargs: Mock(),
                               Overlay=lambda **_kwargs: Mock(), Button=lambda **_kwargs: Mock(),
+                              Stack=lambda **_kwargs: Mock(), Revealer=lambda **_kwargs: Mock(),
+                              EventControllerMotion=lambda: Mock(),
+                              StackTransitionType=SimpleNamespace(SLIDE_UP=0, SLIDE_DOWN=1, CROSSFADE=2),
+                              RevealerTransitionType=SimpleNamespace(SLIDE_RIGHT=0),
                               SelectionMode=SimpleNamespace(NONE=0), Align=SimpleNamespace(START=0, CENTER=1, END=2),
                               Orientation=SimpleNamespace(VERTICAL=0), AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1),
                               AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
@@ -4258,7 +4412,7 @@ class NativeLogicChecks(unittest.TestCase):
             widget.asb_copy_timer = 7
             window.update_card_actions(widget)
             pin.set_tooltip_text.assert_called_once_with("Unpin in ASB")
-            copy.set_tooltip_text.assert_called_once_with("Copied")
+            copy.set_tooltip_text.assert_called_once_with("Relative session copied")
             read.set_tooltip_text.assert_not_called()
             drawer.set_tooltip_text.assert_not_called()
 
@@ -4831,7 +4985,8 @@ class NativeLogicChecks(unittest.TestCase):
         button = SimpleNamespace(asb_card_action="pin", get_sensitive=lambda: True, activate=Mock(),
                                  get_visible=lambda: True, asb_action="win.pin")
         window.get_focus = lambda: button
-        gdk = SimpleNamespace(KEY_space=32, KEY_Return=13, KEY_KP_Enter=44)
+        gdk = SimpleNamespace(KEY_space=32, KEY_Return=13, KEY_KP_Enter=44, KEY_Up=1, KEY_Down=2,
+                              ModifierType=SimpleNamespace(ALT_MASK=1, CONTROL_MASK=2, SUPER_MASK=4, META_MASK=8))
         with patch.dict(SCOPE, {"Gdk": gdk, "SHORTCUT_MASK": 8}):
             for key in (32, 13, 44):
                 self.assertTrue(window.row_key(None, key, 0, 0, "a"))
@@ -4929,7 +5084,8 @@ class NativeLogicChecks(unittest.TestCase):
         window.get_focus = lambda: read
         gtk = SimpleNamespace(Button=object, PickFlags=SimpleNamespace(DEFAULT=0, INSENSITIVE=1),
                               AccessibleProperty=SimpleNamespace(LABEL=0), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
-        gdk = SimpleNamespace(KEY_space=32, KEY_Return=13, KEY_KP_Enter=44,
+        gdk = SimpleNamespace(KEY_space=32, KEY_Return=13, KEY_KP_Enter=44, KEY_Up=1, KEY_Down=2,
+                              ModifierType=SimpleNamespace(ALT_MASK=1, CONTROL_MASK=2, SUPER_MASK=4, META_MASK=8),
                               ContentProvider=SimpleNamespace(new_for_value=lambda value: value))
         with patch.dict(SCOPE, {"Gtk": gtk, "Gdk": gdk, "SHORTCUT_MASK": 8,
                                "GObject": SimpleNamespace(TYPE_STRING=0, Value=lambda _type, value: value)}):
@@ -4965,7 +5121,8 @@ class NativeLogicChecks(unittest.TestCase):
         menu = SimpleNamespace(get_visible=lambda: True)
         window.context_menu, window.get_focus = menu, Mock(return_value=None)
         gdk = SimpleNamespace(KEY_Up=1, KEY_Down=2, KEY_Left=3, KEY_Right=4, KEY_Home=5, KEY_End=6,
-                              KEY_Menu=7, KEY_F10=8, KEY_space=9, KEY_Return=10, KEY_KP_Enter=11)
+                              KEY_Menu=7, KEY_F10=8, KEY_space=9, KEY_Return=10, KEY_KP_Enter=11,
+                              ModifierType=SimpleNamespace(ALT_MASK=1, CONTROL_MASK=2, SUPER_MASK=4, META_MASK=8, SHIFT_MASK=16))
         with patch.dict(SCOPE, {"Gdk": gdk, "SHORTCUT_MASK": 16}):
             for key in range(1, 12):
                 self.assertFalse(window.row_key(None, key, 0, 0, "a"))
@@ -5283,8 +5440,8 @@ class NativeLogicChecks(unittest.TestCase):
             clipboard.set.assert_called_once_with("codex/1")
             icon.assert_any_call(short.asb_icon, "object-select-symbolic")
             short.add_css_class.assert_any_call("asb-copy-done")
-            short.set_tooltip_text.assert_called_with("Copied")
-            short.update_property.assert_called_with([1], ["Copied"])
+            short.set_tooltip_text.assert_called_with("Relative session copied")
+            short.update_property.assert_called_with([1], ["Relative session copied"])
             short.asb_label.set_label.assert_not_called()  # The label stays.
             self.assertEqual(timers[1][0], 1600)
             window.update_row_panel.assert_called_with(panel, row)
@@ -5295,8 +5452,8 @@ class NativeLogicChecks(unittest.TestCase):
             icon.assert_any_call(short.asb_icon, "edit-copy-symbolic")
             icon.assert_called_with(absolute.asb_icon, "object-select-symbolic")
             short.update_property.assert_called_with([1], ["codex/1"])
-            absolute.update_property.assert_called_with([1], ["Copied"])
-            self.assertEqual(absolute.asb_tip, "Copied")
+            absolute.update_property.assert_called_with([1], ["Absolute session copied"])
+            self.assertEqual(absolute.asb_tip, "Absolute session copied")
             # After 1.6 seconds the description is the exact value again; nothing resets it to empty.
             timers[2][1]()
             self.assertEqual((panel.asb_copy_timer, panel.asb_copied, absolute.asb_tip), (None, None, full))
@@ -5397,7 +5554,8 @@ class NativeLogicChecks(unittest.TestCase):
         gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         def feedback(widget):
             button = widget.asb_copy_button
-            return (widget.asb_copy_timer, button.get_child().set_from_icon_name.call_args.args[0], button.set_tooltip_text.call_args.args[0],
+            glyph = SCOPE["set_icon"].call_args.args[1]
+            return (widget.asb_copy_timer, glyph, button.set_tooltip_text.call_args.args[0],
                     button.update_property.call_args.args if button.update_property.call_args.args[0] == [1] else button.reset_property.call_args.args)
         with patch.dict(SCOPE, {"GLib": glib, "request_async": request, "Gtk": gtk}):
             for row, text in zip(rows, ("claude-proxy/local_1", "codex/123e4567", "claude-desktop-code/local_2")):
@@ -5424,7 +5582,7 @@ class NativeLogicChecks(unittest.TestCase):
             window.update_card_actions.assert_not_called()
             # Success, then a failure within 1.6 seconds: the check ends and the copy button comes back.
             third = widgets[rows[2]["id"]]
-            self.assertEqual(feedback(third), (3, "object-select-symbolic", "Copied", ([1], ["Copied"])))
+            self.assertEqual(feedback(third), (3, "object-select-symbolic", "Relative session copied", ([1], ["Relative session copied"])))
             third.asb_copy_button.reset_mock()
             clipboard.set.side_effect = TypeError("no clipboard")
             window.copy_reference(None, target(rows[2]["id"]))
@@ -5438,7 +5596,7 @@ class NativeLogicChecks(unittest.TestCase):
             window.copy_reference(None, target(rows[2]["id"]))
             self.assertEqual(window.open_errors, {})
             self.assertEqual(window.update_open_state.call_count, 2)
-            self.assertEqual(feedback(third), (6, "object-select-symbolic", "Copied", ([1], ["Copied"])))
+            self.assertEqual(feedback(third), (6, "object-select-symbolic", "Relative session copied", ([1], ["Relative session copied"])))
             window.open_errors[rows[2]["id"]] = "The server did not answer."
             window.copy_reference(None, target(rows[2]["id"]))
             self.assertEqual(window.open_errors, {rows[2]["id"]: "The server did not answer."})
@@ -5459,13 +5617,13 @@ class NativeLogicChecks(unittest.TestCase):
                 copy.set_visible.assert_called_with(width >= 190)
                 (corner.add_css_class if width >= 190 else corner.remove_css_class).assert_called_with("asb-corner-wide")
                 self.assertEqual(copy.asb_action, "win.copy-reference")
-                copy.get_child().set_from_icon_name.assert_called_with("object-select-symbolic" if copied else "edit-copy-symbolic")
+                SCOPE["set_icon"].assert_called_with(copy.get_child(), "object-select-symbolic" if copied else "edit-copy-symbolic")
                 (copy.add_css_class if copied else copy.remove_css_class).assert_called_with("asb-copy-confirmed")
-                copy.set_tooltip_text.assert_called_with("Copied" if copied else "Copy relative reference")
+                copy.set_tooltip_text.assert_called_with("Relative session copied" if copied else "Copy relative reference")
                 copy.update_property.assert_any_call([0], ["Copy relative reference: Chat"])
                 copy.update_state.assert_called_with([1], [False])
                 if copied:
-                    copy.update_property.assert_called_with([1], ["Copied"])
+                    copy.update_property.assert_called_with([1], ["Relative session copied"])
                 else:
                     copy.reset_property.assert_called_with(1)
             self.assertNotIn(("asb-action-pending",), [call.args for call in copy.add_css_class.call_args_list])
@@ -5513,15 +5671,15 @@ class NativeLogicChecks(unittest.TestCase):
         with patch.dict(SCOPE, {"Gtk": gtk, "GLib": glib}):
             window.update_card_actions(widget)
             self.assertEqual(copy.asb_action, "win.copy-reference")
-            copy.set_tooltip_text.assert_called_with("Copy absolute reference")
+            copy.set_tooltip_text.assert_called_with("Copy absolute reference. Relative works only on this machine. This session runs on homeLP.")
             copy.update_property.assert_any_call([0], ["Copy absolute reference: Chat"])
             copy.update_state.assert_called_with([1], [False])
             copy.remove_css_class.assert_any_call("asb-copy-off")
-            # The button and the copy-reference action copy the same value, and the check shows "Copied".
+            # The button and the copy-reference action copy the same value, and the check shows the done text.
             window.copy_reference(None, SimpleNamespace(get_string=lambda: row["id"]))
             clipboard.set.assert_called_once_with(full)
-            copy.set_tooltip_text.assert_called_with("Copied")
-            copy.get_child().set_from_icon_name.assert_called_with("object-select-symbolic")
+            copy.set_tooltip_text.assert_called_with("Absolute session copied")
+            SCOPE["set_icon"].assert_called_with(copy.get_child(), "object-select-symbolic")
             # The reference goes away: the signature changes, so the button loses its action and gives the absolute reason.
             widget.asb_copy_timer = None
             widget.asb_thread = {key: value for key, value in row.items() if key != "reference"} | {"referenceUnavailable": "old-peer"}
@@ -5539,7 +5697,7 @@ class NativeLogicChecks(unittest.TestCase):
             window.update_card_actions(widget)
             self.assertEqual(copy.asb_action, "win.copy-reference")
             copy.update_state.assert_called_with([1], [False])
-            copy.set_tooltip_text.assert_called_with("Copy absolute reference")
+            copy.set_tooltip_text.assert_called_with("Copy absolute reference. Relative works only on this machine. This session runs on homeLP.")
             # A local row, also a view-only CLI row, keeps the relative texts and value.
             for extra in ({}, {"surface": "cli"}):
                 local = {**row, "id": "local" + str(len(extra)), "remote": False, **extra}
