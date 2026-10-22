@@ -11,7 +11,7 @@ import { peers, register, uniqueName, bridgeNameBase, namedSession, inbox, peerA
 import { createOpenCodeHost, modeFromRules, opencodeBridgeId, uuidV5 } from '../src/opencode-host';
 import { listSessions, sendMessage, agentLabel } from '../src/tools';
 import { Bridge } from '../src/bridge';
-import { ensureCoordinator, bridgeIdOf, registerSession, unregister, deleteSession, recentInputs, CAP, START_LIMIT, START_WINDOW_MS, IDLE_MS } from '../src/opencode';
+import { ensureCoordinator, bridgeIdOf, registerSession, unregister, deleteSession, handleEvent, recentInputs, CAP, START_LIMIT, START_WINDOW_MS, IDLE_MS } from '../src/opencode';
 
 const posix = test.skipIf(process.platform === 'win32');
 // The ASB engine runs on Linux and Windows only: `engineRuntime` gives null on macOS, so no references come back.
@@ -211,7 +211,7 @@ posix('send_message validation errors are byte-equal across the Codex and OpenCo
   try {
     const instance = { ctx: fake.ctx, directory: '/tmp/opencode-project', disposers: [] };
     co.instances.set('/tmp/opencode-project', instance);
-    fake.setSession('ses_eq', { cwd: '/tmp/proj', title: 'Equal' });
+    fake.setSession('ses_eq', { location: { directory: '/tmp/proj' }, title: 'Equal' });
     const { default: plugin } = await import('../src/opencode');
     const tools: Array<{ name: string; execute: (input: unknown, toolCtx: { sessionID?: string }) => Promise<{ content: unknown }> }> = [];
     fake.ctx.tool.transform = (callback: (editor: { namespace: () => void; add: (tool: { name: string; execute: (input: unknown, toolCtx: { sessionID?: string }) => Promise<{ content: unknown }> }) => void }) => void) => {
@@ -377,10 +377,10 @@ posix('inbound delivery is synthetic steer; started when idle and steered when r
   const co = ensureCoordinator(configDir, stateDir);
   try {
     const openCodeId = 'ses_inbound_1';
-    fake.setSession(openCodeId, { cwd: '/tmp/proj', title: 'Inbound' });
+    fake.setSession(openCodeId, { location: { directory: '/tmp/proj' }, title: 'Inbound' });
     co.instances.set('/tmp/opencode-project', { ctx: fake.ctx, directory: '/tmp/opencode-project', disposers: [] });
     const instance = [...co.instances.values()][0]!;
-    const receiver = await registerSession(co, instance, { id: openCodeId, cwd: '/tmp/proj', title: 'Inbound' });
+    const receiver = await registerSession(co, instance, { id: openCodeId, location: { directory: '/tmp/proj' }, title: 'Inbound' });
     expect(receiver && 'bridge' in receiver).toBe(true);
     const row = receiver as { bridge: Bridge; host: ReturnType<typeof createOpenCodeHost> };
     expect(row.bridge.threadId).toBe(bridgeIdOf(openCodeId));
@@ -442,9 +442,9 @@ posix('register triggers, rename, archive, delete, and child sessions never regi
   const fake = fakeCtx();
   const co = ensureCoordinator(configDir, stateDir);
   try {
-    fake.setSession('ses_exec', { cwd: '/tmp/proj', title: 'Exec', time: { updated: Date.now() - START_WINDOW_MS - 1000 } });
-    fake.setSession('ses_child', { cwd: '/tmp/proj', title: 'Child', parentID: 'ses_exec' });
-    fake.setSession('ses_fresh', { cwd: '/tmp/proj', title: 'Fresh', time: { updated: Date.now() - START_WINDOW_MS - 1000 } });
+    fake.setSession('ses_exec', { location: { directory: '/tmp/proj' }, title: 'Exec', time: { updated: Date.now() - START_WINDOW_MS - 1000 } });
+    fake.setSession('ses_child', { location: { directory: '/tmp/proj' }, title: 'Child', parentID: 'ses_exec' });
+    fake.setSession('ses_fresh', { location: { directory: '/tmp/proj' }, title: 'Fresh', time: { updated: Date.now() - START_WINDOW_MS - 1000 } });
     const { default: plugin } = await import('../src/opencode');
     const api = await plugin.setup(fake.ctx);
 
@@ -495,7 +495,7 @@ posix('dispose aborts the event loop and no event after dispose is handled', asy
   const fake = fakeCtx();
   const co = ensureCoordinator(configDir, stateDir);
   try {
-    fake.setSession('ses_dispose', { cwd: '/tmp/proj', title: 'Dispose', time: { updated: Date.now() } });
+    fake.setSession('ses_dispose', { location: { directory: '/tmp/proj' }, title: 'Dispose', time: { updated: Date.now() } });
     const { default: plugin } = await import('../src/opencode');
     const api = await plugin.setup(fake.ctx);
     fake.pushEvent({ id: 'e1', type: 'session.execution.started', data: { sessionID: 'ses_dispose' } });
@@ -530,7 +530,7 @@ posix('dispose waits for an in-flight registration and leaves no receiver or pla
     const { default: plugin } = await import('../src/opencode');
     const api = await plugin.setup(fake.ctx);
     const instance = co.instances.get(fake.ctx.location.directory)!;
-    const session = { id: sessionId, cwd: '/tmp/proj', title: 'Cleanup race', time: { updated: Date.now() } };
+    const session = { id: sessionId, location: { directory: '/tmp/proj' }, title: 'Cleanup race', time: { updated: Date.now() } };
     fake.setSession(sessionId, session);
     const pending = registerSession(co, instance, session as any);
     await api?.();
@@ -600,8 +600,8 @@ posix('a bridge tool call registers the session; a child tool call sends as its 
   try {
     const instance = { ctx: fake.ctx, directory: '/tmp/opencode-project', disposers: [] };
     co.instances.set('/tmp/opencode-project', instance);
-    fake.setSession('ses_tool', { cwd: '/tmp/proj', title: 'Tool Call' });
-    fake.setSession('ses_sub', { cwd: '/tmp/proj', title: 'Sub', parentID: 'ses_tool' });
+    fake.setSession('ses_tool', { location: { directory: '/tmp/proj' }, title: 'Tool Call' });
+    fake.setSession('ses_sub', { location: { directory: '/tmp/proj' }, title: 'Sub', parentID: 'ses_tool' });
     const { default: plugin } = await import('../src/opencode');
     const tools: Array<{ name: string; execute: (input: unknown, toolCtx: { sessionID?: string }) => Promise<{ content: unknown }> }> = [];
     // plugin.setup calls ctx.tool.transform(callback); the callback receives the editor.
@@ -638,9 +638,9 @@ posix('plugin start registers at most 8 sessions updated in the last 30 minutes,
   try {
     const now = Date.now();
     for (let i = 0; i < 12; i++) {
-      fake.setSession(`ses_start_${i}`, { cwd: '/tmp/proj', title: `Start ${i}`, time: { updated: now - i * 1000 } });
+      fake.setSession(`ses_start_${i}`, { location: { directory: '/tmp/proj' }, title: `Start ${i}`, time: { updated: now - i * 1000 } });
     }
-    fake.setSession('ses_stale', { cwd: '/tmp/proj', title: 'Stale', time: { updated: now - START_WINDOW_MS - 1000 } });
+    fake.setSession('ses_stale', { location: { directory: '/tmp/proj' }, title: 'Stale', time: { updated: now - START_WINDOW_MS - 1000 } });
     const { default: plugin } = await import('../src/opencode');
     const fake2 = fakeCtx();
     fake2.ctx.session.list = fake.ctx.session.list;
@@ -670,10 +670,10 @@ posix('instance cleanup unregisters only the sessions of that location', async (
     const there = { ctx: other.ctx, directory: '/tmp/other-project', disposers: [] };
     co.instances.set(here.directory, here);
     co.instances.set(there.directory, there);
-    fake.setSession('ses_here', { cwd: '/tmp/proj', title: 'Here' });
-    other.setSession('ses_there', { cwd: '/tmp/other', title: 'There' });
-    await registerSession(co, here, { id: 'ses_here', cwd: '/tmp/proj', title: 'Here' });
-    await registerSession(co, there, { id: 'ses_there', cwd: '/tmp/other', title: 'There' });
+    fake.setSession('ses_here', { location: { directory: '/tmp/proj' }, title: 'Here' });
+    other.setSession('ses_there', { location: { directory: '/tmp/other' }, title: 'There' });
+    await registerSession(co, here, { id: 'ses_here', location: { directory: '/tmp/proj' }, title: 'Here' });
+    await registerSession(co, there, { id: 'ses_there', location: { directory: '/tmp/other' }, title: 'There' });
     // Cleanup of one location: only its receivers go.
     for (const receiver of [...co.receivers.values()]) {
       if (receiver.location === here.directory) await unregister(co, receiver.openCodeSessionId);
@@ -687,18 +687,74 @@ posix('instance cleanup unregisters only the sessions of that location', async (
   }
 });
 
+posix('an event for a session of the second folder registers with that folder', async () => {
+  const { root, configDir, stateDir } = tempHome();
+  const fakeA = fakeCtx();
+  const fakeB = fakeCtx();
+  const co = ensureCoordinator(configDir, stateDir);
+  try {
+    const here = { ctx: fakeA.ctx, directory: '/tmp/opencode-project', disposers: [] };
+    const there = { ctx: fakeB.ctx, directory: '/tmp/other-project', disposers: [] };
+    co.instances.set(here.directory, here);
+    co.instances.set(there.directory, there);
+    fakeB.setSession('ses_second', { location: { directory: '/tmp/other-project' }, title: 'Second' });
+    await handleEvent(co, { id: 'ev_second', type: 'session.execution.started', data: { sessionID: 'ses_second' } });
+    const receiver = co.receivers.get('ses_second');
+    expect(receiver).toBeDefined();
+    expect(receiver!.location).toBe('/tmp/other-project');
+    expect(receiver!.cwd).toBe('/tmp/other-project');
+  } finally {
+    await resetCoordinator(co);
+    rmSync(root, { recursive: true });
+  }
+});
+
+posix('a tool call for a session of the second folder registers with that folder', async () => {
+  const { root, configDir, stateDir } = tempHome();
+  const fakeA = fakeCtx();
+  const fakeB = fakeCtx();
+  const co = ensureCoordinator(configDir, stateDir);
+  try {
+    const here = { ctx: fakeA.ctx, directory: '/tmp/opencode-project', disposers: [] };
+    const there = { ctx: fakeB.ctx, directory: '/tmp/other-project', disposers: [] };
+    co.instances.set(here.directory, here);
+    co.instances.set(there.directory, there);
+    fakeB.setSession('ses_second', { location: { directory: '/tmp/other-project' }, title: 'Second' });
+    fakeB.ctx.location = { directory: '/tmp/other-project' };
+    const { default: plugin } = await import('../src/opencode');
+    const tools: Array<{ name: string; execute: (input: unknown, toolCtx: { sessionID?: string }) => Promise<{ content: unknown }> }> = [];
+    fakeB.ctx.tool.transform = (callback: (editor: { namespace: () => void; add: (tool: { name: string; execute: (input: unknown, toolCtx: { sessionID?: string }) => Promise<{ content: unknown }> }) => void }) => void) => {
+      const editor = {
+        namespace() { /* noop */ },
+        add(tool: { name: string; execute: (input: unknown, toolCtx: { sessionID?: string }) => Promise<{ content: unknown }> }) { tools.push(tool); return editor; },
+      };
+      callback(editor);
+    };
+    await plugin.setup(fakeB.ctx);
+    const status = tools.find(tool => tool.name === 'status')!;
+    await status.execute({}, { sessionID: 'ses_second' });
+    const receiver = co.receivers.get('ses_second');
+    expect(receiver).toBeDefined();
+    expect(receiver!.location).toBe('/tmp/other-project');
+    expect(receiver!.cwd).toBe('/tmp/other-project');
+  } finally {
+    await resetCoordinator(co);
+    rmSync(root, { recursive: true });
+  }
+});
+
 posix('two registerSession calls for one session share one receiver and one generation', async () => {
   const { root, configDir, stateDir } = tempHome();
   const fake = fakeCtx();
   const co = ensureCoordinator(configDir, stateDir);
   try {
-    fake.setSession('ses_race', { cwd: '/tmp/proj', title: 'Race', time: { updated: Date.now() } });
+    fake.setSession('ses_race', { location: { directory: '/tmp/proj' }, title: 'Race', time: { updated: Date.now() } });
     const { default: plugin, registerSession } = await import('../src/opencode');
     const instance = { ctx: fake.ctx, directory: '/tmp/proj', disposers: [] };
     co.instances.set(instance.directory, instance);
     // Two calls without awaiting the first.
-    const a = registerSession(co, instance, { id: 'ses_race', cwd: '/tmp/proj', title: 'Race' } as any);
-    const b = registerSession(co, instance, { id: 'ses_race', cwd: '/tmp/proj', title: 'Race' } as any);
+    const a = registerSession(co, instance, { id: 'ses_race', location: { directory: '/tmp/proj' }, title: 'Race' } as any);
+    const b = registerSession(co, instance, { id: 'ses_race', location: { directory: '/tmp/proj' }, title: 'Race' } as any);
     expect(co.registering.size).toBe(1);
     const [ra, rb] = await Promise.all([a, b]);
     expect(ra).toBe(rb);
@@ -727,8 +783,8 @@ posix('cap 24 evicts the idle oldest and refuses the new one when nothing can go
     for (let i = 0; i < CAP; i++) {
       const id = `ses_cap_${i}`;
       ids.push(id);
-      fake.setSession(id, { cwd: '/tmp/proj', title: `Cap ${i}` });
-      const receiver = await registerSession(co, instance, { id, cwd: '/tmp/proj', title: `Cap ${i}` });
+      fake.setSession(id, { location: { directory: '/tmp/proj' }, title: `Cap ${i}` });
+      const receiver = await registerSession(co, instance, { id, location: { directory: '/tmp/proj' }, title: `Cap ${i}` });
       expect(receiver && 'bridge' in receiver).toBe(true);
       // Stagger activity so the oldest is ses_cap_0.
       (receiver as { lastActivity: number }).lastActivity = Date.now() - (CAP - i) * 1000;
@@ -737,8 +793,8 @@ posix('cap 24 evicts the idle oldest and refuses the new one when nothing can go
     // One running session cannot be evicted; the idle oldest goes instead.
     co.running.add('ses_cap_0');
     co.receivers.get('ses_cap_0')!.running = true;
-    fake.setSession('ses_extra', { cwd: '/tmp/proj', title: 'Extra' });
-    const extra = await registerSession(co, instance, { id: 'ses_extra', cwd: '/tmp/proj', title: 'Extra' });
+    fake.setSession('ses_extra', { location: { directory: '/tmp/proj' }, title: 'Extra' });
+    const extra = await registerSession(co, instance, { id: 'ses_extra', location: { directory: '/tmp/proj' }, title: 'Extra' });
     expect(extra && 'bridge' in extra).toBe(true);
     expect(co.receivers.has('ses_cap_0')).toBe(true);
     expect(co.receivers.has('ses_cap_1')).toBe(false);
@@ -748,8 +804,8 @@ posix('cap 24 evicts the idle oldest and refuses the new one when nothing can go
       co.running.add(id);
       co.receivers.get(id)!.running = true;
     }
-    fake.setSession('ses_limited', { cwd: '/tmp/proj', title: 'Limited' });
-    const limited = await registerSession(co, instance, { id: 'ses_limited', cwd: '/tmp/proj', title: 'Limited' });
+    fake.setSession('ses_limited', { location: { directory: '/tmp/proj' }, title: 'Limited' });
+    const limited = await registerSession(co, instance, { id: 'ses_limited', location: { directory: '/tmp/proj' }, title: 'Limited' });
     expect(limited && 'limited' in limited).toBe(true);
     expect(co.receivers.has('ses_limited')).toBe(false);
   } finally {
@@ -765,8 +821,8 @@ posix('12 hour idle unregisters a quiet receiver that holds nothing', async () =
   try {
     const instance = { ctx: fake.ctx, directory: '/tmp/opencode-project', disposers: [] };
     co.instances.set('/tmp/opencode-project', instance);
-    fake.setSession('ses_idle', { cwd: '/tmp/proj', title: 'Idle' });
-    const receiver = await registerSession(co, instance, { id: 'ses_idle', cwd: '/tmp/proj', title: 'Idle' });
+    fake.setSession('ses_idle', { location: { directory: '/tmp/proj' }, title: 'Idle' });
+    const receiver = await registerSession(co, instance, { id: 'ses_idle', location: { directory: '/tmp/proj' }, title: 'Idle' });
     expect(receiver && 'bridge' in receiver).toBe(true);
     (receiver as { lastActivity: number }).lastActivity = Date.now() - IDLE_MS - 1000;
     // The expire path is the same as the hourly timer: drop idle rows past 12 h.
@@ -786,7 +842,7 @@ posix('inbox.delivered frees the unread slot and human input resets the hop chai
   const fake = fakeCtx();
   const co = ensureCoordinator(configDir, stateDir);
   try {
-    fake.setSession('ses_inbox', { cwd: '/tmp/proj', title: 'Inbox', time: { updated: Date.now() } });
+    fake.setSession('ses_inbox', { location: { directory: '/tmp/proj' }, title: 'Inbox', time: { updated: Date.now() } });
     const { default: plugin } = await import('../src/opencode');
     const api = await plugin.setup(fake.ctx);
     fake.pushEvent({ id: 'e1', type: 'session.execution.started', data: { sessionID: 'ses_inbox' } });

@@ -445,6 +445,33 @@ test('native OpenCode bridge', async () => {
     await assertMockOnly(sessionA);
     console.log('PASS location reload: cleanup ran, re-registered, delivery works');
 
+    // Second folder: a session there registers with its own folder and receives.
+    const work2 = join(root, 'work2');
+    mkdirSync(work2, { recursive: true, mode: 0o700 });
+    const createdD = await api(password, 'POST', '/api/session', { title: 'Second Folder', location: { directory: work2 } });
+    assert.equal(createdD.status, 200);
+    const bodyD = createdD.json();
+    const sessionD = (bodyD.id ?? bodyD.data?.id) as string;
+    assert(sessionD?.startsWith('ses_'), `second folder session id: ${JSON.stringify(bodyD).slice(0, 200)}`);
+    const secondPrompt = await api(password, 'POST', `/api/session/${sessionD}/prompt`, { text: 'NATIVE_SECOND_FOLDER' });
+    assert.equal(secondPrompt.status, 200);
+    await until(() => rowsOf().some(r => (r as any).opencodeSessionId === sessionD), 'second folder session registers');
+    const rowD = rowsOf().find(r => (r as any).opencodeSessionId === sessionD)!;
+    const normCwd = (value: string) => {
+      let path = value;
+      try { path = realpathSync.native(value); } catch { /* Keep the given form. */ }
+      return windows ? path.toLowerCase() : path;
+    };
+    assert.equal(normCwd(String(rowD.cwd)), normCwd(work2), `row cwd must be the second folder: ${rowD.cwd} vs ${work2}`);
+    let secondPlaceholderAlive = true;
+    try { process.kill(rowD.pid, 0); } catch { secondPlaceholderAlive = false; }
+    assert(secondPlaceholderAlive, `placeholder PID ${rowD.pid} must be alive for the second folder`);
+    const secondText = `NATIVE_SECOND_IN ${crypto.randomUUID()}`;
+    await sendToOpenCode(secondText, sessionD);
+    await until(() => mockRequests.some(r => r.messages.some((m: any) => String(m.content).includes(secondText))), 'second folder receives');
+    await assertMockOnly(sessionD);
+    console.log('PASS second folder registers with its own folder and receives');
+
     // Uninstall: rows go away live and the plugin folder is gone.
     await uninstall({ opencode: true, opencodeConfig, claudeHome, sourceRoot: join(import.meta.dir, '../..'), env: { ...env } });
     assert(!existsSync(join(opencodeConfig, 'plugins', 'asb-bridge')), 'plugin folder removed');

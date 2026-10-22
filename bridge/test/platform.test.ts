@@ -119,6 +119,21 @@ test('placeholderCommand is findstr.exe on Windows and cat elsewhere', async () 
   expect(placeholderCommand('darwin', {})).toEqual(['cat']);
 });
 
+test('placeholderSpawnOptions detaches only on Windows', async () => {
+  const { placeholderSpawnOptions } = await import('../src/placeholder');
+  const win = placeholderSpawnOptions('win32');
+  expect(win.detached).toBe(true);
+  expect(win.stdin).toBe('pipe');
+  expect(win.stdout).toBe('ignore');
+  expect(win.stderr).toBe('ignore');
+  const linux = placeholderSpawnOptions('linux');
+  expect('detached' in linux).toBe(false);
+  expect(linux.stdin).toBe('pipe');
+  expect(linux.stdout).toBe('ignore');
+  expect(linux.stderr).toBe('ignore');
+  expect('detached' in placeholderSpawnOptions('darwin')).toBe(false);
+});
+
 // A registered receiver with a token, as the Bridge makes it on Windows (plan 17.2).
 async function receiver() {
   const root = temporary('asb-platform-trip-');

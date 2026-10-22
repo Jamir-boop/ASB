@@ -22,7 +22,7 @@ const SEEN_LIMIT = 256;
 type SessionInfo = {
   id: string;
   title?: string | undefined;
-  cwd?: string | undefined;
+  location?: { directory?: string | undefined } | undefined;
   parentID?: string | undefined;
   time?: { updated?: number; idle?: number } | undefined;
   archived?: boolean | undefined;
@@ -85,7 +85,7 @@ function bridgeIdOf(sessionId: string) {
 }
 
 function sessionCwd(session: SessionInfo) {
-  return session.cwd || process.cwd();
+  return session.location?.directory || process.cwd();
 }
 
 function titleOf(session: SessionInfo) {
@@ -245,9 +245,15 @@ function touch(co: Coordinator, openCodeSessionId: string) {
   if (receiver) receiver.lastActivity = Date.now();
 }
 
-function findInstanceFor(co: Coordinator, openCodeSessionId: string): Instance | undefined {
+async function findInstanceFor(co: Coordinator, openCodeSessionId: string): Promise<Instance | undefined> {
   const receiver = co.receivers.get(openCodeSessionId);
   if (receiver) return co.instances.get(receiver.location);
+  // No receiver: the instance of the session folder; get can miss across folders, so try in order.
+  for (const instance of co.instances.values()) {
+    const session = await getSession(instance, openCodeSessionId);
+    if (!session) continue;
+    return co.instances.get(session.location?.directory ?? '') ?? co.instances.values().next().value;
+  }
   return co.instances.values().next().value;
 }
 
@@ -266,9 +272,9 @@ async function handleEvent(co: Coordinator, event: { id?: string; type?: string;
   const data = event.data ?? {};
   const sessionId = String(data.sessionID ?? data.sessionId ?? '');
   const type = event.type ?? '';
-  const instance = sessionId ? findInstanceFor(co, sessionId) : co.instances.values().next().value;
+  const instance = sessionId ? await findInstanceFor(co, sessionId) : co.instances.values().next().value;
   if (!instance) return;
-  const session = sessionId ? (await getSession(instance, sessionId) ?? { id: sessionId, title: data.title as string | undefined, cwd: data.cwd as string | undefined, parentID: data.parentID as string | undefined }) : undefined;
+  const session = sessionId ? (await getSession(instance, sessionId) ?? { id: sessionId, title: data.title as string | undefined, location: data.location as { directory?: string } | undefined, parentID: data.parentID as string | undefined }) : undefined;
   if (!session) return;
 
   if (type === 'session.created') return;
@@ -493,10 +499,10 @@ async function rootSessionId(instance: Instance, openCodeSessionId: string): Pro
 
 async function ensureToolReceiver(co: Coordinator, openCodeSessionId: string): Promise<string | undefined> {
   if (!openCodeSessionId) return undefined;
-  const instance = findInstanceFor(co, openCodeSessionId);
+  const instance = await findInstanceFor(co, openCodeSessionId);
   if (!instance) return undefined;
   const rootId = await rootSessionId(instance, openCodeSessionId);
-  const session = await getSession(instance, rootId) ?? { id: rootId, cwd: process.cwd() };
+  const session = await getSession(instance, rootId) ?? { id: rootId };
   await registerSession(co, instance, session as SessionInfo).catch(() => {});
   return rootId;
 }

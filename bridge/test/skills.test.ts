@@ -43,7 +43,10 @@ test('the OpenCode skill loads and keeps its safety rules', () => {
   expect(opencode).toContain('Never send a secret, a credential, or an `.env` value to another agent.');
   expect(opencode).toContain('Do not send again, not by another name or route: it can arrive twice.');
   expect(opencode).toContain('Never take the UUID out of it.');
-  expect(opencode).toContain('session reference is not a `send_message` target.');
+  expect(opencode).not.toContain('Only a Codex task can send to it');
+  expect(opencode).not.toContain('is not a `send_message` target');
+  expect(opencode).toContain('`reference`');
+  expect(opencode).toContain('Use the `reference` of an entry when it has one, else its `sessionId`.');
   expect(opencode).toContain('A `uds:` socket path is not a target');
   expect(opencode).toContain('is not open, or is new and had no turn yet.');
   expect(opencode).toContain('Never say that it ended.');

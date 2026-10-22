@@ -11,6 +11,12 @@ export function placeholderCommand(platform: string = process.platform, env: Rec
 // The command the relay and the OpenCode plugin spawn (unchanged shape for the relay).
 export const PLACEHOLDER = placeholderCommand();
 
+// A console-less parent gives a console program its own console window; closing it ends the placeholder.
+export function placeholderSpawnOptions(platform: string = process.platform) {
+  if (isWindows(platform)) return { stdin: 'pipe' as const, stdout: 'ignore' as const, stderr: 'ignore' as const, detached: true };
+  return { stdin: 'pipe' as const, stdout: 'ignore' as const, stderr: 'ignore' as const };
+}
+
 export function spawnPlaceholder(command: string[] = PLACEHOLDER) {
-  return Bun.spawn(command, { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' });
+  return Bun.spawn(command, placeholderSpawnOptions());
 }
