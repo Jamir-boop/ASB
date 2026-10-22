@@ -14,6 +14,8 @@ import { Bridge } from '../src/bridge';
 import { ensureCoordinator, bridgeIdOf, registerSession, unregister, deleteSession, recentInputs, CAP, START_LIMIT, START_WINDOW_MS, IDLE_MS } from '../src/opencode';
 
 const posix = test.skipIf(process.platform === 'win32');
+// The ASB engine runs on Linux and Windows only: `engineRuntime` gives null on macOS, so no references come back.
+const linux = test.skipIf(process.platform !== 'linux');
 
 function fakeCtx() {
   const syntheticCalls: Array<{ sessionID: string; text: string; delivery: string }> = [];
@@ -245,7 +247,7 @@ posix('send_message validation errors are byte-equal across the Codex and OpenCo
   }
 });
 
-posix('list_sessions merges remote entries and references for an OpenCode caller', async () => {
+linux('list_sessions merges remote entries and references for an OpenCode caller', async () => {
   const { root, configDir } = tempHome();
   const placeholders: Array<{ kill(): void }> = [];
   const inboxes: Array<{ close(): Promise<void> }> = [];
