@@ -330,10 +330,16 @@ export async function installCodex(home, options = {}) {
   if (target.skipped) return target;
   const bytes = await skillFiles(path.join(root, 'bridge/agent-skills/codex/bridge'));
   const marketplace = sections(target.config).get('marketplaces.asb');
-  // Codex 0.162.1 refuses a changed source; remove the named marketplace before add.
-  if (marketplace !== undefined && sourceValue(marketplace) !== stripWindowsVerbatimPath(root)) runCodex(target.home, ['plugin', 'marketplace', 'remove', 'asb'], codex);
-  runCodex(target.home, ['plugin', 'marketplace', 'add', root], codex);
-  runCodex(target.home, ['plugin', 'add', 'asb-bridge@asb'], codex);
+  try {
+    // Codex 0.162.1 refuses a changed source; remove the named marketplace before add.
+    if (marketplace !== undefined && sourceValue(marketplace) !== stripWindowsVerbatimPath(root)) runCodex(target.home, ['plugin', 'marketplace', 'remove', 'asb'], codex);
+    runCodex(target.home, ['plugin', 'marketplace', 'add', root], codex);
+    runCodex(target.home, ['plugin', 'add', 'asb-bridge@asb'], codex);
+  } catch (error) {
+    let warning = error.message;
+    if ((options.platform || process.platform) === 'win32' && /Access is denied|os error 5\b/i.test(warning)) warning += ' On Windows, a running Codex keeps the plugin folder in use: close Codex, then run asb bridge install again.';
+    return { home: target.home, skipped: true, warning };
+  }
   await copySkill(bytes, path.join(target.home, 'skills/bridge'), options.force);
   return { home: target.home, installed: true };
 }
