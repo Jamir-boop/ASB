@@ -73,7 +73,7 @@ The directory link follows the unpublished native registry behavior checked in C
 
 The bridge runs on Windows with the same install command and the same tools. Bun must be on the `PATH` of the Codex app.
 
-On Windows, close Codex before `asb bridge install` or `asb bridge uninstall` because these commands cannot change a Codex home while Codex runs (`Access is denied`). If this occurs, the command warns for that home, continues with the other targets, and exits 1. The warning tells you which command to run again.
+On Windows, close Codex before `asb bridge install` or `asb bridge uninstall` because these commands cannot change a Codex home while Codex runs (`Access is denied` or `being used by another process`). If this occurs, the command warns for that home, continues with the other targets, and exits 1. The warning tells you which command to run again.
 
 - `asb bridge install` finds `bun` and `codex` with `PATH` and `PATHEXT`. It runs a `codex.cmd` through `cmd.exe` and refuses a path or argument that has `"`, `%`, `^`, `&`, `|`, `<`, `>`, `!`, or a line break, with `This path cannot go to codex.cmd safely.`
 - Each receiver listens on a named pipe `\\.\pipe\LOCAL\cc-msg-<32 hex>`, as Claude Code does. Its registry row has `pidDomain` `win32:<host name>` and a `procStart` from `GetProcessTimes`.

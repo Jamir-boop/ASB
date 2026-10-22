@@ -95,6 +95,7 @@ for (const [label, platform, reason, windowsHint] of [
   ['A: Windows access denied', 'win32', 'Error: Access is denied. (os error 5)', true],
   ['B: Linux access denied', 'linux', 'Error: Access is denied. (os error 5)', false],
   ['C: Windows other error', 'win32', 'Error: something else', false],
+  ['G: Windows file in use', 'win32', 'Error: The process cannot access the file because it is being used by another process. (os error 32)', true],
 ]) {
   test(`bridge install continues after a Codex command failure (${label})`, async (t) => {
     const f = await fixture(t), opencode = path.join(f.home, '.config/opencode');
@@ -124,6 +125,7 @@ for (const [label, platform, reason, windowsHint] of [
   ['D: Windows access denied', 'win32', 'Error: Access is denied. (os error 5)', true],
   ['E: Linux access denied', 'linux', 'Error: Access is denied. (os error 5)', false],
   ['F: Windows other error', 'win32', 'Error: something else', false],
+  ['H: Windows file in use', 'win32', 'Error: The process cannot access the file because it is being used by another process. (os error 32)', true],
 ]) {
   test(`bridge uninstall continues after a Codex command failure (${label})`, async (t) => {
     const f = await fixture(t), opencode = path.join(f.home, '.config/opencode');

@@ -325,7 +325,7 @@ async function codexTarget(home, force) {
 }
 function codexFailure(error, platform, command) {
   let warning = error.message;
-  if (platform === 'win32' && /Access is denied|os error 5\b/i.test(warning)) warning += ` On Windows, a running Codex keeps the plugin folder in use: close Codex, then run asb bridge ${command} again.`;
+  if (platform === 'win32' && /Access is denied|being used by another process|os error (?:5|32)\b/i.test(warning)) warning += ` On Windows, a running Codex keeps the plugin folder in use: close Codex, then run asb bridge ${command} again.`;
   return warning;
 }
 export async function installCodex(home, options = {}) {
