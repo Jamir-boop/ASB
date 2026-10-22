@@ -1,27 +1,30 @@
 // Real OpenCode check. Skipped without OPENCODE_BRIDGE_TEST_BINARY.
+// Windows (PowerShell): $env:OPENCODE_BRIDGE_TEST_BINARY="C:\path\opencode.exe"; bun test ./test/native-opencode.ts
 // Temporary HOME/XDG_*/TMPDIR, mock provider only, never the live service.
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { test } from 'bun:test';
-import { peers, peerAddress, uuid } from '../src/claude';
+import { inbox, peers, peerAddress, peerKey, processStart, socketPath, uuid, writePeerKey } from '../src/claude';
+import { assertWindowsRow, liveServiceCommand, liveServiceLines, nativeEnv, nativePeerToken, peerInboxPath } from './native-env';
 // @ts-ignore -- plain JS installer, no declaration file
 import { install, uninstall } from '../../scripts/asb-bridge.mjs';
 
 const binary = process.env.OPENCODE_BRIDGE_TEST_BINARY;
+const windows = process.platform === 'win32';
 
 const liveService = () => {
-  const out = Bun.spawnSync(['ps', '-o', 'pid,lstart,cmd', '-C', 'opencode-cli'], { stdout: 'pipe', stderr: 'ignore' });
-  const lines = out.stdout.toString().split('\n').filter(line => /serve --service/.test(line));
-  return lines.map(line => line.trim());
+  const out = Bun.spawnSync(liveServiceCommand(), { stdout: 'pipe', stderr: 'ignore' });
+  return liveServiceLines(out.stdout.toString());
 };
 
 test('native OpenCode bridge', async () => {
   const before = liveService();
-  const root = mkdtempSync('/tmp/opencode-native-');
+  const root = mkdtempSync(join(tmpdir(), 'opencode-native-'));
   const home = join(root, 'home');
   const configHome = join(root, 'config');
   const opencodeConfig = join(configHome, 'opencode');
@@ -35,18 +38,7 @@ test('native OpenCode bridge', async () => {
   for (const dir of [home, opencodeConfig, data, cache, state, run, tmp, join(claudeHome, 'sessions'), work]) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
-  const env: Record<string, string> = {
-    PATH: process.env.PATH ?? '/usr/bin:/bin',
-    HOME: home,
-    XDG_CONFIG_HOME: configHome,
-    XDG_DATA_HOME: data,
-    XDG_CACHE_HOME: cache,
-    XDG_STATE_HOME: state,
-    XDG_RUNTIME_DIR: run,
-    TMPDIR: tmp,
-    TERM: 'dumb',
-    ASB_NATIVE_OUT: run,
-  };
+  const env = nativeEnv(root);
 
   // Mock OpenAI-compatible provider. CALL_CODE:<js> emits an execute tool_call. SLOW delays 5 s.
   const mockRequests: any[] = [];
@@ -165,33 +157,21 @@ test('native OpenCode bridge', async () => {
   const openCodeRow = () => peers(claudeHome).find(row => row.entrypoint === 'opencode-asb-bridge');
   const rowsOf = () => peers(claudeHome).filter(row => row.entrypoint === 'opencode-asb-bridge');
 
-  // Fake Claude peer: one socket and one registry row in the temporary CLAUDE_CONFIG_DIR.
+  // Fake Claude peer: use the same inbox, key, and sender helpers as Claude.
   const peerId = uuid.parse(crypto.randomUUID());
-  const peerPath = join(work, `${process.pid}.sock`);
+  const peerToken = nativePeerToken();
   const receipts: any[] = [];
   const peerFrames: any[] = [];
-  const peerServer = net.createServer(connection => {
-    connection.setEncoding('utf8');
-    let buffer = '';
-    connection.on('data', data => {
-      buffer += data;
-      let end: number;
-      while ((end = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, end);
-        buffer = buffer.slice(end + 1);
-        try {
-          const parsed = JSON.parse(line);
-          if (parsed.action === 'peer_message_status') receipts.push(parsed);
-          else peerFrames.push(parsed);
-        } catch { /* Not JSON. */ }
-      }
-    });
-  });
-  peerServer.listen(peerPath);
-  await once(peerServer, 'listening');
-  chmodSync(peerPath, 0o600);
+  const peerServer = await inbox(work, frame => {
+    if (frame.type === 'control' && frame.action === 'peer_message_status') receipts.push(frame);
+    else peerFrames.push(frame);
+  }, undefined, { token: peerToken });
+  const peerPath = socketPath(peerServer.address);
+  if (!windows) assert.equal(peerPath, peerInboxPath(work));
+  const peerStart = await processStart(process.pid);
+  if (peerToken) writePeerKey(join(claudeHome, 'sessions'), process.pid, peerPath, peerToken, peerStart);
   writeFileSync(join(claudeHome, 'sessions', `${process.pid}.json`), JSON.stringify({
-    pid: process.pid, sessionId: peerId, messagingSocketPath: peerPath, cwd: work,
+    pid: process.pid, procStart: peerStart, sessionId: peerId, messagingSocketPath: peerPath, cwd: work,
     peerProtocol: 1, peerFeatures: ['notify_idle'], entrypoint: 'cli', name: 'native-peer',
   }), { mode: 0o600 });
 
@@ -199,8 +179,11 @@ test('native OpenCode bridge', async () => {
     const row = openCodeRow();
     assert(row, 'OpenCode session must be registered before send');
     const id = crypto.randomUUID();
+    const token = peerKey(claudeHome, row);
+    // Keep the original close timing: sendFrames' drain delay can miss the unread slot in (c).
     const connection = net.createConnection(row.messagingSocketPath);
     await once(connection, 'connect');
+    if (token) connection.write(JSON.stringify({ type: 'auth', token }) + '\n');
     connection.end(JSON.stringify({
       msgV: 1, msg_id: id, type: 'user', priority: 'next', from: peerAddress(peerPath),
       session_id: row.sessionId,
@@ -239,7 +222,10 @@ test('native OpenCode bridge', async () => {
       const configModels = configDocs.map((d: any) => d.info?.model).filter(Boolean);
       const configProviderKeys = configDocs.flatMap((d: any) => Object.keys(d.info?.providers ?? {}));
       console.log('R5-GUARD', JSON.stringify({ configPaths, configModels, configProviderKeys }));
-      for (const p of configPaths) assert(p.startsWith(root), `config folder outside temp: ${p}`);
+      // An empty answer proves nothing. Windows can report the long form of a short TEMP path, in another case.
+      assert(configPaths.length > 0 && configModels.length > 0, 'the config answer has no paths or no default model');
+      const roots = [root, realpathSync.native(root)].map(r => windows ? r.toLowerCase() : r);
+      for (const p of configPaths) assert(roots.some(r => (windows ? p.toLowerCase() : p).startsWith(r)), `config folder outside temp: ${p}`);
       for (const m of configModels) assert.equal(`${m.providerID}/${m.model}`, 'mock/mock-1', `default model: ${JSON.stringify(m)}`);
       assert(configProviderKeys.every((k: string) => k === 'mock'), `providers: ${configProviderKeys.join(',')}`);
       const guardProvider = await api(password, 'GET', '/api/provider');
@@ -340,6 +326,8 @@ test('native OpenCode bridge', async () => {
     assert.equal(latePrompt.status, 200);
     await until(() => rowsOf().some(r => (r as any).opencodeSessionId === sessionC), 'late session registers on session.execution.started');
     console.log('PASS (a) late session registers on session.execution.started');
+    const lateRow = rowsOf().find(r => r.opencodeSessionId === sessionC)!;
+    for (const line of assertWindowsRow(lateRow, claudeHome)) console.log(line);
     await assertMockOnly(sessionC);
 
     // R4(b): a rename through the API changes the row name (session.update -> PATCH).
@@ -446,7 +434,7 @@ test('native OpenCode bridge', async () => {
     try { server?.kill('SIGTERM'); } catch { /* Already gone. */ }
     try { await server?.exited; } catch { /* Already gone. */ }
     mock.stop(true);
-    await new Promise<void>(resolve => peerServer.close(() => resolve()));
+    await peerServer.close();
     rmSync(root, { recursive: true, force: true });
     const after = liveService();
     if (after.join() !== before.join()) console.error(`WARNING: live service changed\nbefore=${JSON.stringify(before)}\nafter=${JSON.stringify(after)}`);
