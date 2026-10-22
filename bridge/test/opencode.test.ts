@@ -483,7 +483,7 @@ posix('register triggers, rename, archive, delete, and child sessions never regi
     await settle();
     expect(co.receivers.has('ses_exec')).toBe(false);
 
-    await api.cleanup?.();
+    await api?.();
   } finally {
     await resetCoordinator(co);
     rmSync(root, { recursive: true });
@@ -500,7 +500,7 @@ posix('dispose aborts the event loop and no event after dispose is handled', asy
     const api = await plugin.setup(fake.ctx);
     fake.pushEvent({ id: 'e1', type: 'session.execution.started', data: { sessionID: 'ses_dispose' } });
     await until(() => co.receivers.has('ses_dispose'), 'register before dispose');
-    await api.cleanup?.();
+    await api?.();
     fake.pushEvent({ id: 'e2', type: 'session.execution.started', data: { sessionID: 'ses_dispose' } });
     await settle(50);
     expect(co.receivers.has('ses_dispose')).toBe(false);
@@ -533,7 +533,7 @@ posix('dispose waits for an in-flight registration and leaves no receiver or pla
     const session = { id: sessionId, cwd: '/tmp/proj', title: 'Cleanup race', time: { updated: Date.now() } };
     fake.setSession(sessionId, session);
     const pending = registerSession(co, instance, session as any);
-    await api.cleanup?.();
+    await api?.();
     const result = await pending;
     expect(result).toBeUndefined();
     expect(co.receivers.has(sessionId)).toBe(false);
@@ -803,7 +803,7 @@ posix('inbox.delivered frees the unread slot and human input resets the hop chai
     fake.pushEvent({ id: 'e3', type: 'session.inbox.enqueued', data: { sessionID: 'ses_inbox', inboxID: 'msg_h', item: { type: 'user', payload: { text: 'typed by the user' }, delivery: 'steer' } } });
     await until(async () => (await host.peekLatest())?.kind === 'user', 'human input resets the hop chain');
     expect((await host.peekLatest())?.text).toBe('typed by the user');
-    await api.cleanup?.();
+    await api?.();
   } finally {
     await resetCoordinator(co);
     rmSync(root, { recursive: true });
@@ -963,4 +963,20 @@ posix('host runtime mode is bypass, prompting, or unknown from V27 agent rules',
   expect((await createOpenCodeHost(parts).runtime()).mode).toBe('bypass');
   expect((await createOpenCodeHost({ ...parts, agent: { async list() { return [{ permissions: [{ action: 'shell', pattern: '*', permission: 'ask' }, { action: 'edit', pattern: '*', permission: 'allow' }] }]; } } }).runtime()).mode).toBe('prompting');
   expect((await createOpenCodeHost({ ...parts, agent: { async list() { return []; } } }).runtime()).mode).toBe('unknown');
+});
+
+posix('setup returns a cleanup function only when the required APIs are available', async () => {
+  const { root, configDir, stateDir } = tempHome();
+  const co = ensureCoordinator(configDir, stateDir);
+  const { default: plugin } = await import('../src/opencode');
+  let cleanup: Awaited<ReturnType<typeof plugin.setup>> = undefined;
+  try {
+    cleanup = await plugin.setup(fakeCtx().ctx);
+    const missing = await plugin.setup({ app: { version: '2.1.2' } });
+    expect({ cleanup: typeof cleanup, missing }).toEqual({ cleanup: 'function', missing: undefined });
+  } finally {
+    if (typeof cleanup === 'function') await cleanup();
+    await resetCoordinator(co);
+    rmSync(root, { recursive: true });
+  }
 });

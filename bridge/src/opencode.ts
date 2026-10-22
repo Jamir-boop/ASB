@@ -372,7 +372,7 @@ export default {
   async setup(ctx: any) {
     const appVersion = String(ctx.app?.version ?? '0');
     const missing = !ctx.session?.synthetic || !ctx.tool?.transform || !ctx.event?.subscribe || compareVersion(appVersion, '2.1.2') < 0;
-    if (missing) return {};
+    if (missing) return;
     const { claudeConfigDir, stateDir } = readPluginConfig();
     const co = ensureCoordinator(claudeConfigDir, stateDir);
     mkdirSync(co.stateDir, { recursive: true, mode: 0o700 });
@@ -465,18 +465,16 @@ export default {
     timer.unref?.();
     instance.disposers.push(() => clearInterval(timer));
 
-    return {
-      async cleanup() {
-        for (const disposer of instance.disposers) { try { disposer(); } catch (error) { /* Already gone. */ } }
-        co.instances.delete(directory);
-        await Promise.allSettled([...co.registering.values()]);
-        for (const receiver of [...co.receivers.values()]) {
-          if (receiver.location === directory) await unregister(co, receiver.openCodeSessionId).catch(() => {});
-        }
-        if (!co.instances.size) {
-          delete (globalThis as Record<symbol, unknown>)[COORDINATOR];
-        }
-      },
+    return async () => {
+      for (const disposer of instance.disposers) { try { disposer(); } catch (error) { /* Already gone. */ } }
+      co.instances.delete(directory);
+      await Promise.allSettled([...co.registering.values()]);
+      for (const receiver of [...co.receivers.values()]) {
+        if (receiver.location === directory) await unregister(co, receiver.openCodeSessionId).catch(() => {});
+      }
+      if (!co.instances.size) {
+        delete (globalThis as Record<symbol, unknown>)[COORDINATOR];
+      }
     };
   },
 };

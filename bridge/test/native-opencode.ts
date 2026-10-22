@@ -431,21 +431,29 @@ test('native OpenCode bridge', async () => {
     assert.equal(swept.status, 200);
     await until(() => !!openCodeRow(), 'row after sweep start');
 
-    // Plugin file change: OpenCode reloads and re-registers.
-    const indexPath = join(opencodeConfig, 'plugins', 'asb-bridge', 'index.js');
-    const original = readFileSync(indexPath);
-    writeFileSync(indexPath, Buffer.concat([original, Buffer.from('\n// native reload touch\n')]));
-    await until(() => !!openCodeRow(), 'row after plugin reload', 20000);
+    // Location reload must run cleanup before the session can register and receive again.
+    const reloadPid = rowOf(sessionA)!.pid;
+    const reload = await api(password, 'POST', '/api/location/reload');
+    assert.equal(reload.status, 204, `location reload: ${reload.status} ${JSON.stringify(reload.json())}`);
+    await until(() => { try { process.kill(reloadPid, 0); return false; } catch { return true; } }, 'location reload stops the old placeholder', 15000);
+    const resumed = await api(password, 'POST', `/api/session/${sessionA}/prompt`, { text: 'NATIVE_LOCATION_RELOAD' });
+    assert.equal(resumed.status, 200);
+    await until(() => !!rowOf(sessionA) && rowOf(sessionA)!.pid !== reloadPid, 'location reload registers a new placeholder');
+    const reloadText = `NATIVE_RELOAD_DELIVERY ${crypto.randomUUID()}`;
+    await sendToOpenCode(reloadText, sessionA);
+    await until(() => mockRequests.some(r => r.messages.some((m: any) => String(m.content).includes(reloadText))), 'delivery after location reload reaches the mock');
+    await assertMockOnly(sessionA);
+    console.log('PASS location reload: cleanup ran, re-registered, delivery works');
 
-    // Uninstall: rows go away live and the plugin folder is gone. force: the reload test just touched index.js.
-    await uninstall({ opencode: true, opencodeConfig, claudeHome, sourceRoot: join(import.meta.dir, '../..'), env: { ...env }, force: true });
+    // Uninstall: rows go away live and the plugin folder is gone.
+    await uninstall({ opencode: true, opencodeConfig, claudeHome, sourceRoot: join(import.meta.dir, '../..'), env: { ...env } });
     assert(!existsSync(join(opencodeConfig, 'plugins', 'asb-bridge')), 'plugin folder removed');
     await until(() => rowsOf().length === 0, 'uninstall removes live rows', 15000);
 
     // The Windows filter matches any `serve`, so leave out the server of this test.
     const after = liveService().filter(line => !server?.pid || !line.startsWith(`${server.pid} `));
     assert.deepEqual(after, before, `live OpenCode service must not change\nbefore=${JSON.stringify(before)}\nafter=${JSON.stringify(after)}`);
-    console.log(`Native OpenCode passed with ${binary}: register, inbound started, busy steer, outbound from-name, R4 a-f, SIGTERM, SIGKILL, reload, uninstall. Live service unchanged (${before.join(' | ') || 'none'}).`);
+    console.log(`Native OpenCode passed with ${binary}: register, inbound started, busy steer, outbound from-name, R4 a-f, SIGTERM, SIGKILL, location reload, uninstall. Live service unchanged (${before.join(' | ') || 'none'}).`);
   } finally {
     try { server?.kill('SIGTERM'); } catch { /* Already gone. */ }
     try { await server?.exited; } catch { /* Already gone. */ }
