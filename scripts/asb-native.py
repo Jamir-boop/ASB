@@ -1430,7 +1430,11 @@ class SessionStrip(Gtk.Box):
     def clear_hover(self, *_args):
         if self.hover_card:
             self.hover_card.remove_css_class("asb-hover-paint")
-            self.hover_card = None
+            card, self.hover_card = self.hover_card, None
+            get_root = getattr(self, "get_root", None)
+            root = get_root() if get_root else None
+            if root is not None and hasattr(root, "hide_copy_tag"):
+                root.hide_copy_tag(getattr(card, "asb_copy_button", None), keep_focused=True)
         if self.hover_rect is None and self.hover_target is None and self.hover_from is None:
             return
         self.hover_rect = self.hover_target = self.hover_from = self.hover_to = None
@@ -4936,6 +4940,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget = controller.get_widget()
         widget.add_css_class("asb-hovered" if hovered else "asb-unhovered")
         widget.remove_css_class("asb-unhovered" if hovered else "asb-hovered")
+        if not hovered:
+            self.hide_copy_tag(getattr(widget, "asb_copy_button", None), keep_focused=True)
 
     def release_row(self, widget):
         self.clear_read_feedback(widget)
@@ -5225,9 +5231,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 copy.asb_card, copy.asb_tag, copy.asb_tag_shown, copy.asb_rest_at = widget, tag, False, None
                 copy.asb_copy_words, copy.asb_copy_dot_relative, copy.asb_copy_dot_absolute = tag_words, tag_dot_relative, tag_dot_absolute
                 copy_motion = Gtk.EventControllerMotion()
-                copy_motion.connect("enter", self.copy_button_motion)
-                copy_motion.connect("leave", self.copy_button_motion)
+                copy_motion.connect("enter", self.copy_button_enter)
+                copy_motion.connect("leave", self.copy_button_leave)
                 copy.add_controller(copy_motion)
+                copy.connect("unmap", self.copy_button_unmap)
                 widget.asb_drawer_button, widget.asb_read_button, widget.asb_pin_button = drawer, read, pin
                 widget.asb_copy_button = copy
                 widget.asb_copy_tag, widget.asb_copy_words = tag, tag_words
@@ -5326,30 +5333,52 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return
         button.asb_tag_shown = bool(shown)
         tag.set_reveal_child(bool(shown))
-        self.copy_tag_button = button if shown else (None if self.copy_tag_button is button else self.copy_tag_button)
+        current = getattr(self, "copy_tag_button", None)
+        self.copy_tag_button = button if shown else (None if current is button else current)
         if getattr(button, "asb_card", None) is not None and button.asb_card.asb_view == "comfortable":
             button.asb_card.asb_action_signature = None
             self.update_card_actions(button.asb_card)
 
-    def copy_button_motion(self, controller, *_args):
-        button = controller.get_widget()
-        if controller.contains_pointer():
-            # The rest counts from the enter into the button. Motion inside it does not restart the timer.
-            if self.copy_hover is button:
-                return
-            self.copy_hover = button
-            button.asb_rest_at = time.monotonic()
-            if self.copy_rest_timer:
+    def hide_copy_tag(self, button, keep_focused=False):
+        # Safety net when leave does not fire: card hover ends, the button unmaps, or the card is released.
+        if button is None:
+            return
+        if getattr(self, "copy_hover", None) is button:
+            self.copy_hover = None
+            button.asb_rest_at = None
+            if getattr(self, "copy_rest_timer", None):
                 GLib.source_remove(self.copy_rest_timer)
-            self.copy_rest_timer = GLib.timeout_add(int(COPY_REST_S * 1000), self.copy_tag_due, button)
-        else:
+                self.copy_rest_timer = None
+        if keep_focused and self.copy_has_keyboard_focus(button):
+            return
+        if getattr(button, "asb_tag_shown", False):
+            self.show_copy_tag(button, False)
+
+    def copy_button_enter(self, controller, _x, _y):
+        button = controller.get_widget()
+        # The rest counts from the enter into the button. Motion inside it does not restart the timer.
+        if self.copy_hover is button:
+            return
+        self.copy_hover = button
+        button.asb_rest_at = time.monotonic()
+        if self.copy_rest_timer:
+            GLib.source_remove(self.copy_rest_timer)
+        self.copy_rest_timer = GLib.timeout_add(int(COPY_REST_S * 1000), self.copy_tag_due, button)
+
+    def copy_button_unmap(self, button, *_args):
+        self.hide_copy_tag(button, keep_focused=False)
+
+    def copy_button_leave(self, controller):
+        # Leave runs before contains-pointer turns false, so this handler must not read it.
+        button = controller.get_widget()
+        if self.copy_hover is button:
             self.copy_hover = None
             button.asb_rest_at = None
             if self.copy_rest_timer:
                 GLib.source_remove(self.copy_rest_timer)
                 self.copy_rest_timer = None
-            if not self.copy_has_keyboard_focus(button):
-                self.show_copy_tag(button, False)
+        if not self.copy_has_keyboard_focus(button):
+            self.show_copy_tag(button, False)
 
     def copy_tag_due(self, button):
         self.copy_rest_timer = None

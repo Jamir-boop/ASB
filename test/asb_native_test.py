@@ -1609,6 +1609,81 @@ class WidgetCheck(unittest.TestCase):
         self.assertIsNone(window.context_menu)
         self.assertFalse(window.opening or window.session_actions)
 
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real pointer movement needs xdotool and a nested test display (DISPLAY=:9 or :10).")
+    def test_copy_tag_hides_when_the_pointer_leaves_the_button(self):
+        # GTK emits leave before contains-pointer turns false, so leave must not read contains_pointer.
+        from gi.repository import GdkX11
+
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "request_async", lambda *args, **_kwargs: None)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        def xdo(*args):
+            return subprocess.run(["xdotool", *map(str, args)], check=True, capture_output=True, text=True).stdout
+
+        x, y = (line.split("=")[1] for line in xdo("getmouselocation", "--shell").splitlines()[:2])
+        self.addCleanup(xdo, "mousemove", x, y)
+        xdo("mousemove", 1500, 950)
+        app_id = "123e4567-e89b-12d3-a456-426614174000"
+        now = time.time() * 1000
+
+        def row(identity, order):
+            return {"id": identity, "provider": "codex", "providerLabel": "Codex",
+                    "title": "Summarize the open issues " + identity,
+                    "cwd": "/example/field-notes", "projectName": "field-notes", "state": "idle",
+                    "canOpen": True, "externalId": app_id, "sessionReference": "codex/" + app_id,
+                    "reference": "asb:1/0123456789abcdef/codex/" + "f" * 32 + "/codex:" + app_id,
+                    "updatedAtMs": now - order * 1000}
+
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1",
+                                       {"generatedAtMs": now, "providers": [], "threads": [row("one", 1), row("two", 2)]},
+                                       theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        clipboard = SimpleNamespace(texts=[])
+        clipboard.set = clipboard.texts.append
+        window.get_clipboard = lambda: clipboard
+        window.set_default_size(680, 420)
+        window.present(); window.set_focus(None); self.drain(.4)
+        window.view_filter.set_selected(1); self.drain(.5); window.check_geometry(); self.drain()
+        one = window.focus_widgets["one"].asb_copy_button
+        two = window.focus_widgets["two"].asb_copy_button
+
+        def move_to(widget, root):
+            found, bounds = widget.compute_bounds(root)
+            self.assertTrue(found)
+            left, top = root.get_surface_transform()
+            xdo("mousemove", "--window", GdkX11.X11Surface.get_xid(root.get_surface()),
+                int(bounds.origin.x + bounds.size.width / 2 + left),
+                int(bounds.origin.y + bounds.size.height / 2 + top))
+            self.drain()
+
+        # Rest on a copy button shows its tag; a leave that hides the tag is what the user sees.
+        move_to(one, window); self.drain(.35)
+        self.assertTrue(one.asb_tag_shown)
+        move_to(window.search, window); self.drain(.35)
+        self.assertFalse(one.asb_tag_shown)
+        # A click copies and keeps the tag; the wheel after a copy still switches the kind.
+        move_to(one, window); self.drain(.35)
+        self.assertTrue(one.asb_tag_shown)
+        xdo("click", 1); self.drain(.1)
+        self.assertTrue(one.asb_tag_shown)
+        self.assertEqual(window.focus_widgets["one"].asb_footer_stack.get_visible_child_name(), "copied")
+        before = window.copy_kind
+        scroll_before = window.scroll.get_hadjustment().get_value()
+        xdo("click", 4); self.drain(.1)
+        self.assertNotEqual(window.copy_kind, before)
+        self.assertEqual(window.scroll.get_hadjustment().get_value(), scroll_before)
+        # A direct move from one copy button to another leaves exactly one tag.
+        move_to(one, window); self.drain(.35)
+        self.assertTrue(one.asb_tag_shown)
+        move_to(two, window); self.drain(.35)
+        self.assertFalse(one.asb_tag_shown)
+        self.assertTrue(two.asb_tag_shown)
+
     def test_compact_short_toolbar_typing_inline_open_and_queued_unread(self):
         with tempfile.TemporaryDirectory(prefix="asb-compact-test-") as temporary:
             window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", mock_dashboard(),
@@ -2548,7 +2623,11 @@ class WidgetCheck(unittest.TestCase):
             self.assertFalse(tag_of("local").get_reveal_child())
             def motion(identity, inside):
                 button = copy_of(identity)
-                window.copy_button_motion(SimpleNamespace(get_widget=lambda: button, contains_pointer=lambda: inside))
+                controller = SimpleNamespace(get_widget=lambda: button)
+                if inside:
+                    window.copy_button_enter(controller, 0, 0)
+                else:
+                    window.copy_button_leave(controller)
             motion("local", True)
             self.assertFalse(copy_of("local").asb_tag_shown)
             self.drain(.05)
