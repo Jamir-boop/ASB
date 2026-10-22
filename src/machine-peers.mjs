@@ -1,6 +1,7 @@
 // The machine group's session export, the merge of peer rows, the pinned TLS client, and the poller of each member.
 import { createHash } from 'node:crypto';
 import https from 'node:https';
+import { createSecureContext } from 'node:tls';
 import { promisify } from 'node:util';
 import { gunzip } from 'node:zlib';
 import { OFFLINE_MEMBER, sessionMessageKeys, sortSessionMessages, switchboardRefreshInterval } from './switchboard.mjs';
@@ -17,6 +18,9 @@ const MAX_EXPORT_BYTES = MAX_REPLY_BYTES - 512 * 1024;
 export const OFFLINE_KEEP_MS = 600_000;
 const KIND_ORDER = ['lan', 'zerotier', 'tailscale'];
 const BACKOFF_MS = [5_000, 10_000, 30_000];
+// A kept connection closes after 30 s without traffic, before the 65 s keep-alive timeout of the member gateway.
+export const PEER_IDLE_SOCKET_MS = 30_000;
+const FREE_SOCKETS = 2;
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 
 // The row fields that go to group members (plan 9.2), with their types.
@@ -144,28 +148,83 @@ export function addressOrder(addresses, lastAddress = '') {
     || KIND_ORDER.indexOf(left.kind) - KIND_ORDER.indexOf(right.kind));
 }
 
+// The kept connections of GET requests: one agent for each address and port, for one pin and one client certificate. The agent has
+// the secure context of the client certificate, made once. A request with another pin or client certificate replaces the agent and
+// closes its sockets. The count of agents is small (a few addresses for each member), and an agent with no socket costs no resource.
+const agents = new Map();
+// key and cert on Linux, pfx and passphrase on Windows; the own fingerprint is not a TLS option.
+const clientCertificate = ({ fingerprint: _own, ...certificate }) => certificate;
+const clientId = (tls) => {
+  const hash = createHash('sha256');
+  for (const field of ['key', 'cert', 'pfx', 'passphrase']) hash.update(`${field}:`).update(tls[field] ?? '');
+  return hash.digest('hex');
+};
+function agentFor(address, port, fingerprint, tls) {
+  const key = `${address}|${port}`;
+  const client = clientId(tls);
+  let entry = agents.get(key);
+  if (entry && (entry.fingerprint !== fingerprint || entry.client !== client)) { entry.agent.destroy(); entry = undefined; }
+  if (!entry) {
+    // The minimum version is a context option: with a secureContext, the same option of the agent does not count.
+    // No session cache: each new connection makes a full handshake, so the pin check reads the certificate that the member sends now.
+    const agent = new https.Agent({ keepAlive: true, keepAliveMsecs: PEER_IDLE_SOCKET_MS, timeout: PEER_IDLE_SOCKET_MS, maxFreeSockets: FREE_SOCKETS,
+      maxCachedSessions: 0, minVersion: 'TLSv1.3', rejectUnauthorized: false,
+      secureContext: createSecureContext({ ...clientCertificate(tls), minVersion: 'TLSv1.3' }) });
+    entry = { agent, fingerprint, client };
+    agents.set(key, entry);
+  }
+  return entry.agent;
+}
+
+// Closes the kept connections of the member with this pin. The poller of a member calls it when it stops: the member left the
+// group, or the engine stopped.
+export function closePeerAgents(fingerprint) {
+  for (const [key, entry] of agents) {
+    if (entry.fingerprint !== fingerprint) continue;
+    entry.agent.destroy();
+    agents.delete(key);
+  }
+}
+
+// The sockets that passed the pin check, with their pin. A kept socket carries it, so its next request needs no new check.
+const pinned = new WeakMap();
+
+// A GET uses the kept connection of its address. A GET that fails on such a socket before any reply byte (the member closed the
+// socket) goes again on a new connection, one time, in the rest of the same timeout. Other methods always use a new connection:
+// after a hand-off, a failure on a reused socket cannot tell whether the member has the request, and a POST must not go out two times.
+function requestOnce(options) {
+  const startedAt = Date.now();
+  return attemptOnce(options, options.method === 'GET').catch((error) => {
+    const leftMs = options.timeoutMs - (Date.now() - startedAt);
+    if (!error.stale || leftMs <= 0) throw error;
+    return attemptOnce({ ...options, timeoutMs: leftMs, handoffMs: leftMs }, false);
+  });
+}
+
 // handoffMs limits the time before request.end; after it the request can use the rest of timeoutMs.
-function requestOnce({ address, port, fingerprint, path, method, body, etag, tls, timeoutMs, handoffMs = timeoutMs }) {
+function attemptOnce({ address, port, fingerprint, path, method, body, etag, tls, timeoutMs, handoffMs = timeoutMs }, kept) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let handedOff = false;
+    let reused = false;
+    let replied = false;
     let timer;
     const done = (error, value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       // After request.end the member can have the request: its outcome is not known.
-      if (error) { request.destroy(); reject(Object.assign(error, { handedOff })); } else resolve(value);
+      // stale: a kept socket failed before the reply started, so another connection can try the request again.
+      if (error) { request.destroy(); reject(Object.assign(error, { handedOff, stale: reused && !replied && error.code !== 'timeout' })); } else resolve(value);
     };
     const startedAt = Date.now();
     const expire = () => done(Object.assign(new Error('timeout'), { code: 'timeout' }));
     const bytes = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
-    // key and cert on Linux, pfx and passphrase on Windows; the own fingerprint is not a TLS option.
-    const { fingerprint: _own, ...clientCertificate } = tls;
-    const request = https.request({ host: address, port, path, method, agent: false, minVersion: 'TLSv1.3', rejectUnauthorized: false,
-      ...clientCertificate,
+    const request = https.request({ host: address, port, path, method, minVersion: 'TLSv1.3', rejectUnauthorized: false,
+      ...(kept ? { agent: agentFor(address, port, fingerprint, tls) } : { agent: false, ...clientCertificate(tls) }),
       headers: { 'accept-encoding': 'gzip', ...(etag ? { 'if-none-match': etag } : {}),
         ...(bytes ? { 'content-type': 'application/json', 'content-length': bytes.length } : {}) } }, (response) => {
+      replied = true;
       const chunks = [];
       let size = 0;
       response.on('data', (chunk) => {
@@ -188,14 +247,25 @@ function requestOnce({ address, port, fingerprint, path, method, body, etag, tls
     timer = setTimeout(expire, Math.min(handoffMs, timeoutMs));
     request.on('error', (error) => done(error));
     // The request goes out only after the server certificate matches the pin, so no code or header reaches another machine.
-    request.on('socket', (socket) => socket.once('secureConnect', () => {
-      const raw = socket.getPeerCertificate(true)?.raw;
-      if (!raw || sha256(raw) !== fingerprint) { done(Object.assign(new Error('pin-mismatch'), { code: 'pin-mismatch' })); return; }
-      handedOff = true;
-      clearTimeout(timer);
-      timer = setTimeout(expire, timeoutMs - (Date.now() - startedAt));
-      request.end(bytes);
-    }));
+    request.on('socket', (socket) => {
+      const mismatch = () => done(Object.assign(new Error('pin-mismatch'), { code: 'pin-mismatch' }));
+      const send = () => {
+        handedOff = true;
+        clearTimeout(timer);
+        timer = setTimeout(expire, timeoutMs - (Date.now() - startedAt));
+        request.end(bytes);
+      };
+      // A kept socket has the mark of its own check for this pin. A socket that is open (it has a cipher) and has no such mark
+      // never carries the request; a new socket has no cipher until its handshake ends.
+      if (pinned.get(socket) === fingerprint) { reused = true; send(); return; }
+      if (socket.getCipher()) { mismatch(); return; }
+      socket.once('secureConnect', () => {
+        const raw = socket.getPeerCertificate(true)?.raw;
+        if (!raw || sha256(raw) !== fingerprint) { mismatch(); return; }
+        pinned.set(socket, fingerprint);
+        send();
+      });
+    });
   });
 }
 
@@ -236,7 +306,8 @@ export function createPeerPoller({ member, tls, validAddresses, request = peerRe
     handle?.unref?.();
     handles.add(handle);
   };
-  const stop = () => { stopped = true; for (const handle of handles) timers.clearTimeout(handle); handles.clear(); };
+  // A stopped poller means that the member left the group, changed its pin, or the engine stopped: its kept connections close too.
+  const stop = () => { stopped = true; for (const handle of handles) timers.clearTimeout(handle); handles.clear(); closePeerAgents(state.member.certFingerprint); };
   const call = async (path) => {
     const reply = await request({ member: state.member, path, etag: path === '/peer/v1/sessions' ? etag : undefined, tls: await tls(), lastAddress: state.lastAddress });
     state.lastAddress = reply.address || state.lastAddress;

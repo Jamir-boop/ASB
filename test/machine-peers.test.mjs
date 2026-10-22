@@ -8,8 +8,8 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { addressOrder, createPeerPoller, EXPORT_FIELDS, exportBody, exportLocalSessions, MAX_REPLY_BYTES, mergePeerRows, peerRequest,
-  validExport } from '../src/machine-peers.mjs';
+import { addressOrder, closePeerAgents, createPeerPoller, EXPORT_FIELDS, exportBody, exportLocalSessions, MAX_REPLY_BYTES, mergePeerRows,
+  PEER_IDLE_SOCKET_MS, peerRequest, validExport } from '../src/machine-peers.mjs';
 import { buildSwitchboardDashboard, OFFLINE_MEMBER } from '../src/switchboard.mjs';
 
 let hasOpenSsl = true;
@@ -220,18 +220,29 @@ async function identity(dir, name) {
   return { ...tls, fingerprint: new X509Certificate(tls.cert).fingerprint256.replaceAll(':', '').toLowerCase() };
 }
 
-async function tlsServer(t, server, handler) {
+// `connections` has the TCP connection of every client that the server accepted, in order; `open()` has those that are not closed yet.
+async function tlsServer(t, server, handler, options = {}) {
   const records = [];
-  const listener = https.createServer({ key: server.key, cert: server.cert, minVersion: 'TLSv1.3', requestCert: true, rejectUnauthorized: false },
+  const connections = [];
+  const listener = https.createServer({ key: server.key, cert: server.cert, minVersion: 'TLSv1.3', requestCert: true, rejectUnauthorized: false, ...options },
     (request, response) => {
       const raw = request.socket.getPeerCertificate(true).raw;
       records.push({ url: request.url, method: request.method, headers: request.headers, client: raw ? createHash('sha256').update(raw).digest('hex') : '' });
       handler(request, response);
     });
+  listener.on('connection', (socket) => connections.push(socket));
   await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => { listener.closeAllConnections(); listener.close(resolve); }));
-  return { port: listener.address().port, records, listener };
+  return { port: listener.address().port, records, listener, connections, open: () => connections.filter((socket) => !socket.destroyed) };
 }
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function until(condition, what) {
+  for (let round = 0; round < 200 && !condition(); round += 1) await sleep(10);
+  assert.ok(condition(), `no change: ${what}`);
+}
+const memberAt = (server, port, extra = {}) => ({ machineId: server.fingerprint.slice(0, 16), certFingerprint: server.fingerprint, port,
+  addresses: [{ kind: 'lan', address: '127.0.0.1' }], ...extra });
 
 tlsTest('the peer client pins the server certificate, sends its own, and limits replies', async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'asb-peers-tls-'));
@@ -319,6 +330,151 @@ tlsTest('a POST address that hangs before the handoff gets only its share of the
   const listed = await peerRequest({ member, path: '/peer/v1/peers', tls: client, timeoutMs: 1000 });
   assert.equal(listed.address, '127.0.0.1');
   assert.ok(Date.now() - getStarted >= 950, `the GET left the first address after ${Date.now() - getStarted} ms`);
+});
+
+async function identities(t, prefix, ...names) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), `asb-peers-${prefix}-`));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  return Promise.all(names.map((name) => identity(dir, name)));
+}
+
+tlsTest('GET requests keep one TLS connection for each address; POST requests always use a new one', async (t) => {
+  const [server, client] = await identities(t, 'keep', 'server', 'client');
+  let delayMs = 0;
+  const { port, records, connections, open } = await tlsServer(t, server, (request, response) => {
+    setTimeout(() => response.end(JSON.stringify({ path: request.url })), delayMs);
+  });
+  const member = memberAt(server, port);
+  assert.ok(PEER_IDLE_SOCKET_MS < 65_000, 'a kept socket must close before the 65 s keep-alive timeout of the gateway');
+  for (let n = 0; n < 5; n += 1) assert.deepEqual((await peerRequest({ member, path: `/peer/v1/sessions?n=${n}`, tls: client })).body, { path: `/peer/v1/sessions?n=${n}` });
+  // One handshake for five GETs, and each one carries the client certificate.
+  assert.deepEqual([records.length, connections.length, [...new Set(records.map((record) => record.client))]], [5, 1, [client.fingerprint]]);
+  // A POST never takes the kept socket and never leaves one: a closed socket could fail after the hand-off.
+  for (const n of [1, 2]) assert.equal((await peerRequest({ member, path: '/peer/v1/deliver', method: 'POST', body: { n }, tls: client })).status, 200);
+  assert.equal(connections.length, 3);
+  await peerRequest({ member, path: '/peer/v1/hello', tls: client });
+  assert.equal(connections.length, 3);
+  await until(() => open().length === 1, 'only the kept socket stays open');
+  // Four GETs at the same time use four sockets; after they end, at most 2 sockets stay open.
+  delayMs = 50;
+  await Promise.all([1, 2, 3, 4].map((n) => peerRequest({ member, path: `/peer/v1/peers?n=${n}`, tls: client })));
+  assert.equal(connections.length, 6);
+  await until(() => open().length === 2, 'two kept sockets');
+  await sleep(50);
+  assert.equal(open().length, 2);
+});
+
+tlsTest('a kept connection serves only the pin and the client certificate that it passed with', async (t) => {
+  const [server, client, other, second] = await identities(t, 'pins', 'server', 'client', 'other', 'second');
+  const { port, records, connections, open } = await tlsServer(t, server, (request, response) => response.end('{}'));
+  const get = (pin, tls) => peerRequest({ member: memberAt(server, port, { certFingerprint: pin }), path: '/peer/v1/hello', tls });
+  await get(server.fingerprint, client);
+  assert.deepEqual([records.length, connections.length, open().length], [1, 1, 1]);
+  // Another pin for the same address and port: it never uses the kept socket. Its new connection fails at the pin before any request byte.
+  await assert.rejects(get(other.fingerprint, client), { code: 'pin-mismatch' });
+  assert.deepEqual([records.length, connections.length], [1, 2]);
+  await until(() => open().length === 0, 'the sockets of the old pin close');
+  await get(server.fingerprint, client);
+  assert.deepEqual([records.length, connections.length, open().length], [2, 3, 1]);
+  // Another client certificate with the same pin: a new connection with the new certificate, and the old socket closes.
+  await get(server.fingerprint, second);
+  assert.deepEqual([records.at(-1).client, connections.length], [second.fingerprint, 4]);
+  await until(() => open().length === 1, 'the socket of the old client certificate closes');
+  // The same client certificate in a new object keeps the connection.
+  await get(server.fingerprint, { ...second });
+  assert.deepEqual([connections.length, open().length], [4, 1]);
+});
+
+tlsTest('a server that changes its certificate is stopped at the pin on a new connection, before any request byte', async (t) => {
+  const [server, client, other] = await identities(t, 'changed', 'server', 'client', 'other');
+  const { port, records, listener, connections, open } = await tlsServer(t, server, (request, response) => response.end('{}'));
+  const member = memberAt(server, port);
+  await peerRequest({ member, path: '/peer/v1/hello', tls: client });
+  // A connection keeps the certificate of its own handshake, so the kept socket still serves.
+  listener.setSecureContext({ key: other.key, cert: other.cert });
+  await peerRequest({ member, path: '/peer/v1/hello', tls: client });
+  assert.deepEqual([records.length, connections.length], [2, 1]);
+  // The server closes the kept socket. The next GET, on a new connection (or on the old socket and then a new one), meets the new certificate.
+  for (const socket of open()) socket.destroy();
+  await assert.rejects(peerRequest({ member, path: '/peer/v1/hello', tls: client }), { code: 'pin-mismatch' });
+  assert.equal(records.length, 2);
+  await assert.rejects(peerRequest({ member, path: '/peer/v1/hello', tls: client }), { code: 'pin-mismatch' });
+  assert.equal(records.length, 2);
+});
+
+tlsTest('a GET that fails on a kept socket before any reply byte goes again one time on a new connection', async (t) => {
+  const [server, client] = await identities(t, 'stale', 'server', 'client');
+  let behavior = 'answer';
+  const { port, records, connections } = await tlsServer(t, server, (request, response) => {
+    const drop = behavior !== 'answer';
+    if (behavior === 'drop-first') behavior = 'answer';
+    if (drop) request.socket.destroy(); else response.end('{"ok":true}');
+  });
+  const member = memberAt(server, port);
+  const get = (extra = {}) => peerRequest({ member, path: '/peer/v1/sessions', tls: client, ...extra });
+  await get();
+  // The member closes the kept socket as the request arrives: the retry on a new connection answers.
+  behavior = 'drop-first';
+  assert.deepEqual([(await get()).body, records.length, connections.length], [{ ok: true }, 3, 2]);
+  // The retry connection is not kept: the next GET opens a kept one, and then the same. Now every request is dropped.
+  await get();
+  assert.equal(connections.length, 3);
+  behavior = 'drop';
+  const before = records.length;
+  await assert.rejects(get(), { code: 'ECONNRESET' });
+  assert.equal(records.length - before, 2, 'a kept socket gives the first try, a new connection the one retry');
+  // With no kept socket the first try is on a new connection, so there is no retry.
+  await assert.rejects(get(), { code: 'ECONNRESET' });
+  assert.equal(records.length - before, 3);
+  // A POST is never repeated; the error says that the request went out.
+  await assert.rejects(peerRequest({ member, path: '/peer/v1/deliver', method: 'POST', body: { n: 1 }, tls: client }),
+    (error) => error.code === 'ECONNRESET' && error.handedOff === true);
+  assert.equal(records.length - before, 4);
+});
+
+tlsTest('the retry of a GET uses the rest of the same timeout', async (t) => {
+  const [server, client] = await identities(t, 'budget', 'server', 'client');
+  let behavior = 'answer';
+  const { port } = await tlsServer(t, server, (request, response) => {
+    if (behavior === 'answer') response.end('{}');
+    else if (behavior === 'drop-then-hang') { behavior = 'hang'; request.socket.destroy(); }
+  });
+  const member = memberAt(server, port);
+  await peerRequest({ member, path: '/peer/v1/sessions', tls: client });
+  behavior = 'drop-then-hang';
+  const startedAt = Date.now();
+  await assert.rejects(peerRequest({ member, path: '/peer/v1/sessions', tls: client, timeoutMs: 600 }), { code: 'timeout' });
+  const tookMs = Date.now() - startedAt;
+  assert.ok(tookMs >= 550 && tookMs < 1100, `the GET and its retry took ${tookMs} ms`);
+});
+
+tlsTest('the peer client refuses a server below TLS 1.3, also with the kept connection', async (t) => {
+  const [server, client] = await identities(t, 'old', 'server', 'client');
+  const { port, records } = await tlsServer(t, server, (request, response) => response.end('{}'), { minVersion: 'TLSv1.2', maxVersion: 'TLSv1.2' });
+  for (const method of ['GET', 'POST']) {
+    await assert.rejects(peerRequest({ member: memberAt(server, port), path: '/peer/v1/hello', method, ...(method === 'POST' ? { body: {} } : {}), tls: client }),
+      (error) => !['timeout', 'pin-mismatch'].includes(error.code), method);
+  }
+  assert.equal(records.length, 0);
+});
+
+tlsTest('closePeerAgents and a stopped poller close the kept connections of that member only', async (t) => {
+  const [server, client] = await identities(t, 'close', 'server', 'client');
+  const { port, records, open } = await tlsServer(t, server, (request, response) => response.end('{}'));
+  const member = memberAt(server, port);
+  await peerRequest({ member, path: '/peer/v1/hello', tls: client });
+  assert.equal(open().length, 1);
+  closePeerAgents('f'.repeat(64));
+  await sleep(50);
+  assert.equal(open().length, 1);
+  closePeerAgents(server.fingerprint);
+  await until(() => open().length === 0, 'the kept socket closes');
+  // The poller of a member that leaves the group, or of a stopped engine, closes its sockets when it stops.
+  const poller = createPeerPoller({ member: { ...member, name: 'engine-s' }, tls: async () => client, validAddresses: () => true });
+  poller.start();
+  await until(() => records.length >= 3 && open().length >= 1, 'the first polls');
+  poller.stop();
+  await until(() => open().length === 0, 'the poller closes its sockets');
 });
 
 function fakeTimers() {

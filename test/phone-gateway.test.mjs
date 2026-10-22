@@ -13,6 +13,7 @@ import { createPhoneGateway, DEFAULT_PHONE_PORT, PHONE_API_VERSION, phoneSetting
   listPhoneAddresses, isAllowedRemote, acceptsGzip } from '../src/phone-gateway.mjs';
 import { RUNTIME_FILES } from '../scripts/asb-package.mjs';
 import { createMachineGroup } from '../src/machine-group.mjs';
+import { closePeerAgents, PEER_IDLE_SOCKET_MS, peerRequest } from '../src/machine-peers.mjs';
 
 let hasOpenSsl = true;
 try { execFileSync('openssl', ['version'], { stdio: 'ignore' }); } catch { hasOpenSsl = false; }
@@ -975,6 +976,28 @@ gatewayTest('the sessions route gives 304 for the same tag and gzip when the mem
   assert.deepEqual(JSON.parse(gunzipSync(zipped.raw)).rows, plain.json.rows);
   const cached = await peer('/peer/v1/sessions', { as: joiner, headers: { 'if-none-match': plain.headers.etag } });
   assert.deepEqual([cached.status, cached.text, cached.headers.etag], [304, '', plain.headers.etag]);
+});
+
+gatewayTest('the gateway keeps the connection of the peer client between GET requests and keeps idle ones longer than the client does', async (t) => {
+  // Every https listener that the gateway makes while the fixture starts.
+  const servers = [];
+  const create = https.createServer;
+  https.createServer = (...args) => { const server = create.apply(https, args); servers.push(server); return server; };
+  let fx;
+  try { fx = await peerFixture(t, { address: '127.0.0.5' }); } finally { https.createServer = create; }
+  const { peer, joiner, joinBody, code, gateway, port } = fx;
+  assert.equal((await peer('/peer/v1/join', { method: 'POST', as: joiner, body: joinBody(await code()) })).status, 200);
+  let connections = 0;
+  for (const server of servers) server.on('secureConnection', () => { connections += 1; });
+  const { fingerprint } = await gateway.credentials();
+  const member = { machineId: fingerprint.slice(0, 16), certFingerprint: fingerprint, port, addresses: [{ kind: 'lan', address: '127.0.0.5' }] };
+  t.after(() => closePeerAgents(fingerprint));
+  const statuses = [];
+  for (const route of ['/peer/v1/hello', '/peer/v1/group', '/peer/v1/sessions', '/peer/v1/sessions', '/peer/v1/hello']) {
+    statuses.push((await peerRequest({ member, path: route, tls: joiner.tls })).status);
+  }
+  assert.deepEqual([statuses, connections], [[200, 200, 200, 200, 200], 1]);
+  assert.ok(servers.length > 0 && servers.every((server) => server.keepAliveTimeout > PEER_IDLE_SOCKET_MS), String(servers.map((server) => server.keepAliveTimeout)));
 });
 
 gatewayTest('a group phone token works on the phone routes, and pairing and revoking follow the group', async (t) => {
