@@ -95,10 +95,17 @@ export function enrichThreadRuntime(thread, nowMs = Date.now()) {
   return applyThreadRuntime({ ...thread }, nowMs);
 }
 
+// Codex on Windows saves verbatim paths (\\?\C:\x, \\?\UNC\server\share).
+function displayCwd(cwd) {
+  if (cwd.startsWith('\\\\?\\UNC\\')) return `\\\\${cwd.slice(8)}`;
+  if (/^\\\\\?\\[a-z]:\\/i.test(cwd)) return cwd.slice(4);
+  return cwd;
+}
+
 // `titleByThreadId` is the Codex session index (thread ID to title). With it, a thread that has no name of its own gets the title of its entry,
 // and only a thread that has an entry is in the Codex sidebar. Without it, the fields of the row decide.
 export function normalizeThread(row, nowMs = Date.now(), titleByThreadId = null) {
-  const cwd = row.cwd || '';
+  const cwd = displayCwd(row.cwd || '');
   const id = String(row.id || '');
   const archived = Boolean(coerceNumber(row.archived));
   const updatedAtMs = unixValueToMs(row.updated_at_ms ?? row.updated_at);

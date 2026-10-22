@@ -6,6 +6,22 @@ import {
   normalizeThread,
 } from '../src/insights.mjs';
 
+test('normalizes Windows verbatim drive folders for display', () => {
+  assert.equal(normalizeThread({ cwd: String.raw`\\?\C:\Users\example\project` }).cwd,
+    String.raw`C:\Users\example\project`);
+});
+
+test('normalizes Windows verbatim UNC folders for display', () => {
+  assert.equal(normalizeThread({ cwd: String.raw`\\?\UNC\server\share\project` }).cwd,
+    String.raw`\\server\share\project`);
+});
+
+test('keeps other folders unchanged for display', () => {
+  for (const cwd of ['/home/example/project', '', String.raw`\\?\Volume{example}\project`, String.raw`\\?\relative`]) {
+    assert.equal(normalizeThread({ cwd }).cwd, cwd);
+  }
+});
+
 test('normalizes sqlite thread rows into dashboard thread objects', () => {
   const id = '123e4567-e89b-12d3-a456-426614174000';
   const thread = normalizeThread({
