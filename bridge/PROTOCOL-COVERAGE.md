@@ -151,17 +151,13 @@ Exact member sends (Linux or Windows at both ends, Codex senders, `codex` and `c
 
 | Case | State | Note | Test |
 | --- | --- | --- | --- |
-| Receive modes | yes | `default`, `accept`, `hold`, `refuse`, stored per task. | protocol |
-| Permission class | yes | A known matching pair is accepted. Without a sender mode, `prompting` is accepted. Unknown holds. Codex `never` counts as `bypass` only with `dangerFullAccess`. | protocol, desktop |
+| Receive modes | yes | `default`, `accept`, `hold`, `refuse`, stored per task. `default` and `accept` deliver every message at once. | protocol |
+| Permission class | partial | The bridge records the sender mode in `from_mode` and forwards it, but it does not use it to accept or hold. Codex `never` counts as `bypass` only with `dangerFullAccess`. | protocol, desktop |
 | Plan mode with bypass available | no | The current Codex permissions decide. | none |
 | Settings files, precedence, `CLAUDE_CODE_USER_DIALOG_TIMEOUT_MS` | no | The policy is per task. | none |
-| Release dialog | yes | Opens automatically, also between turns. `inbox` reuses the open request. Deny or dismiss discards. A dialog failure leaves the message held. | protocol |
-| Mode change | yes | The bridge rechecks held messages and does not extend deadlines. | protocol |
 | Change to `refuse` | yes | The bridge discards held messages and tells reachable senders. | protocol |
 | Explicit `hold` | yes | No expiry. An accepting change releases. | protocol |
-| Deadline values | yes | `60s`, `5m`, `10m`, `never`, default `5m`. | protocol |
 | Timers after MCP exits | yes | The receiver owns them. | protocol |
-| Dialog lifetime | yes | The MCP SDK's default request timeout of 60 seconds applies. A timeout leaves the message held. Expiry or a settings change cancels the request. | protocol |
 | Deadline pause without a window | no | Codex gives no trusted attachment signal. | none |
 | More than 100 held | yes | The bridge drops the oldest with `queue-full`. | protocol |
 | Session end | yes | The bridge acknowledges held messages as expired. A hard kill cannot guarantee it. | protocol |
@@ -225,4 +221,4 @@ Verified: native runs on Codex 0.159.0, 0.159.2, and 0.159.3, the live Claude ru
 Not verified:
 
 - A live Claude run on 2.1.288.
-- The native Codex desktop UI, and early closing of the release dialog (no `serverRequest/resolved` arrived before a late answer).
+- The native Codex desktop UI.

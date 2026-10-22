@@ -17,7 +17,6 @@ type Message = { id: string; peer_id: string; direction: string; text: string; s
   drop_reason: string | null; status_reason: string | null };
 type Subscription = { id: string; peer_id: string; peer_address: string; peer_start: string | null; direction: string };
 export const policySchema = z.enum(['default', 'accept', 'hold', 'refuse']);
-export const expirySchema = z.enum(['60s', '5m', '10m', 'never']);
 type Policy = z.infer<typeof policySchema>;
 const subscriptionLifetime = 12 * 60 * 60 * 1000;
 // `unknown` comes only from the local engine. An older engine sends target-unavailable also when the message can have
@@ -230,13 +229,11 @@ export class Bridge {
 
   updateRuntime(state: Runtime) {
     if (this.closing) return;
-    const modeChanged = this.runtime().mode !== state.mode;
     this.db.run('UPDATE runtime SET updated_at=CASE WHEN status<>? THEN ? ELSE updated_at END,status=?,mode=? WHERE singleton=1',
       [state.status, Date.now(), state.status, state.mode]);
     this.registration?.update(state.status);
     if (this.listener) void this.exclusive(async () => {
       if (state.status === 'idle') await this.syncInputs();
-      if (modeChanged) await this.recheckHeld();
       await this.flushIdle();
     }).catch(() => console.error('Inbound state update failed.'));
   }
@@ -520,33 +517,21 @@ export class Bridge {
     return policySchema.parse(this.db.query<{ policy: string }, []>('SELECT policy FROM inbound_policy WHERE singleton=1').get()?.policy);
   }
 
-  dialogExpiry() {
-    return expirySchema.parse(this.db.query<{ dialog_expiry: string }, []>('SELECT dialog_expiry FROM inbound_policy WHERE singleton=1').get()?.dialog_expiry);
-  }
-
-  private heldDeadline() {
-    const expiry = this.dialogExpiry();
-    return expiry === 'never' ? null : Date.now() + { '60s': 60000, '5m': 300000, '10m': 600000 }[expiry];
-  }
-
-  private decision(message: Message): Exclude<Policy, 'default'> {
+  private decision(): Exclude<Policy, 'default'> {
     const policy = this.policy();
-    if (policy !== 'default') return policy;
-    const mode = this.runtime().mode;
-    return mode !== 'unknown' && (message.from_mode === mode || (mode === 'prompting' && message.from_mode === null)) ? 'accept' : 'hold';
+    return policy === 'default' ? 'accept' : policy;
   }
 
   private async route(message: Message) {
-    const decision = this.decision(message);
+    const decision = this.decision();
     if (decision === 'accept') { await this.deliver(message); return; }
     if (message.kind === 'idle-notice') {
       this.db.run("UPDATE messages SET status=?,text='' WHERE id=? AND status='pending'",
         [decision === 'hold' ? 'recorded' : 'refused', message.id]);
       return;
     }
-    const expires = decision === 'hold' && this.policy() === 'default' ? this.heldDeadline() : null;
     const status = decision === 'hold' ? 'held' : 'refused';
-    this.db.run('UPDATE messages SET status=?,expires_at=? WHERE id=? AND status=\'pending\'', [status, expires, message.id]);
+    this.db.run("UPDATE messages SET status=?,expires_at=NULL WHERE id=? AND status='pending'", [status, message.id]);
     await this.receipt(message, status);
     for (const old of this.db.query<Message, []>("SELECT * FROM messages WHERE direction='in' AND status='held' ORDER BY created_at DESC,rowid DESC LIMIT -1 OFFSET 100").all()) {
       this.db.run("UPDATE messages SET status='dropped' WHERE id=? AND status='held'", [old.id]);
@@ -587,32 +572,17 @@ export class Bridge {
 
   private scheduleExpiry() {
     clearTimeout(this.expiryTimer);
-    const next = this.db.query<{ deadline: number | null }, []>(`SELECT min(expires_at) AS deadline FROM (
-      SELECT expires_at FROM messages WHERE direction='in' AND status='held'
-      UNION ALL SELECT expires_at FROM idle_requests WHERE status IN ('waiting','unknown')
-    )`).get()?.deadline;
+    const next = this.db.query<{ deadline: number | null }, []>(
+      "SELECT min(expires_at) AS deadline FROM idle_requests WHERE status IN ('waiting','unknown')").get()?.deadline;
     if (next == null || this.closing) return;
     this.expiryTimer = setTimeout(() => {
-      void this.exclusive(async () => { await this.expireHeld(); await this.flushIdle(); }).catch(() => console.error('Held message expiry failed.'));
+      void this.exclusive(async () => { await this.flushIdle(); }).catch(() => console.error('Idle expiry failed.'));
     }, Math.max(1, next - Date.now()));
     this.expiryTimer.unref();
   }
 
-  private async expireHeld() {
-    for (const message of this.db.query<Message, [number]>("SELECT * FROM messages WHERE direction='in' AND status='held' AND expires_at<=?").all(Date.now())) {
-      if (this.db.run("UPDATE messages SET status='expired' WHERE id=? AND status='held'", [message.id]).changes) await this.receipt(message, 'expired');
-    }
-    this.scheduleExpiry();
-  }
-
   held() {
     return this.db.query<Message, []>("SELECT * FROM messages WHERE direction='in' AND status='held' ORDER BY created_at,rowid").all();
-  }
-
-  reviewableHeld() {
-    if (this.policy() !== 'default') return [];
-    return this.db.query<Pick<Message, 'id'>, [number]>(`SELECT id FROM messages
-      WHERE direction='in' AND status='held' AND kind='message' AND (expires_at IS NULL OR expires_at>?) ORDER BY created_at,rowid`).all(Date.now());
   }
 
   async setPolicy(policy: Policy) {
@@ -629,18 +599,6 @@ export class Bridge {
     await this.refreshTimers();
   }
 
-  async setExpiry(expiry: z.infer<typeof expirySchema>) {
-    this.assertActive();
-    expirySchema.parse(expiry);
-    await this.exclusive(async () => {
-      await this.expireHeld();
-      this.db.run('UPDATE inbound_policy SET dialog_expiry=? WHERE singleton=1', [expiry]);
-      if (this.policy() === 'default') this.db.run("UPDATE messages SET expires_at=? WHERE direction='in' AND status='held'", [this.heldDeadline()]);
-      this.scheduleExpiry();
-    });
-    await this.refreshTimers();
-  }
-
   private async refreshTimers() {
     if (this.ownsReceiver) { this.scheduleExpiry(); return; }
     const receiver = this.receiver();
@@ -648,31 +606,14 @@ export class Bridge {
   }
 
   private async recheckHeld() {
-    await this.expireHeld();
     for (const message of this.held()) {
-      const decision = this.decision(message);
+      const decision = this.decision();
       if (decision === 'accept') await this.deliver(message);
       else if (decision === 'refuse') {
         if (this.db.run("UPDATE messages SET status='refused' WHERE id=? AND status='held'", [message.id]).changes) await this.receipt(message, 'refused');
-      } else {
-        this.db.run("UPDATE messages SET expires_at=? WHERE id=? AND status='held'",
-          [this.policy() === 'hold' ? null : message.expires_at ?? this.heldDeadline(), message.id]);
       }
     }
     this.scheduleExpiry();
-  }
-
-  async resolveHeld(id: string, action: 'approve' | 'deny') {
-    this.assertActive();
-    await this.exclusive(async () => {
-      if (this.policy() === 'hold') throw new Error('Change the explicit hold policy before releasing messages');
-      await this.expireHeld();
-      const message = this.db.query<Message, [string]>("SELECT * FROM messages WHERE id=? AND direction='in' AND status='held'").get(id);
-      if (!message) return;
-      if (action === 'approve' && this.policy() !== 'refuse') await this.deliver(message);
-      else if (this.db.run("UPDATE messages SET status='denied' WHERE id=? AND status='held'", [id]).changes) await this.receipt(message, 'denied');
-      await this.flushIdle();
-    });
   }
 
   private subscribe(id: string, peer: Peer, direction: 'in' | 'out') {
@@ -781,7 +722,7 @@ export class Bridge {
     return { threadId: this.threadId, name: receiver?.name ?? null, replyAddress: receiver ? peerAddress(receiver.messagingSocketPath) : null,
       transport: this.target().kind,
       runtime: this.runtime(),
-      inboundPolicy: this.policy(), dialogExpiry: this.dialogExpiry(), heldCount: this.held().length, unreadCount: this.unreadCount(),
+      inboundPolicy: this.policy(), heldCount: this.held().length, unreadCount: this.unreadCount(),
       idleRequests: this.db.query<Pick<Subscription, 'id' | 'peer_id' | 'direction'> & { status: string }, [number]>(
         'SELECT id,peer_id,direction,status FROM idle_requests WHERE expires_at>?').all(Date.now()),
       messages: this.db.query<Pick<Message, 'id' | 'peer_id' | 'direction' | 'status' | 'turn_id' | 'drop_reason' | 'status_reason'>, []>(

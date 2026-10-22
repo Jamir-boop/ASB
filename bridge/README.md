@@ -134,16 +134,14 @@ A `sessionId` that only the ASB engine lists (a session on another machine of th
 
 ## Control what arrives
 
-The receive setting belongs to one task. When the permission modes of sender and receiver differ, a native dialog opens, also between turns. Held text reaches the model only after you release it.
+The receive setting belongs to one task. The bridge delivers every message at once under the `default` and `accept` settings. Held text reaches the model only after an accepting setting applies.
 
 | Setting | Behavior |
 | --- | --- |
-| `default` | Accept a matching permission mode, hold a differing one. Without a sender mode, accept only `prompting`. |
-| `accept` | Accept everything and release held messages. |
+| `default` | Accept every message at once. |
+| `accept` | Accept every message at once and release held messages. |
 | `hold` | Hold without expiry until an accepting setting applies or the session ends. |
 | `refuse` | Drop messages and discard idle subscriptions. |
-
-A message held by the mode comparison expires after 5 minutes. You set the expiry to `60s`, `5m`, `10m`, or `never` in the `inbox` dialog.
 
 The sender sees Claude's status notices, among them `held`, `delivered`, `denied`, and `expired`, also a sender on another machine of the machine group. `delivered` means a held message was released. Ordinary acceptance sends no receipt. The `status` tool keeps Claude's explanation as `status_reason`.
 
@@ -154,7 +152,7 @@ The sender sees Claude's status notices, among them `held`, `delivered`, `denied
 | `list_sessions` | List local agents with ID, name, agent type, working directory, status, and start time (newest first). `startedAt` has whole seconds (`2026-10-20T10:00:00Z`), and the order uses the milliseconds. A field with no value is left out: a local agent with no start time has no `startedAt`. In an ASB machine group, the sessions on the other machines follow, with `remote: true`, `machine`, the name `<machine>-<session>`, and no `cwd` and no `startedAt`. On Linux and Windows with a running ASB engine, an entry also has its full session `reference`, or `referenceUnavailable` with the reason code when a send cannot use one. The optional `nameContains` (1 to 128 characters) keeps only the entries whose name, as the list shows it (`<machine>-<session>` for another machine), has that text in any letter case. |
 | `send_message` | Send text to one agent by `sessionId`, or on Linux and Windows by a full session `reference` (this machine, or another machine of the group: Linux or Windows at both ends). Set `notify_when_idle` for one notice when that agent next goes idle (this machine only). The advertised schema has a plain string for `sessionId` and `reference`. The handler checks the format (a UUID, or `asb:` and printable ASCII, at most 384 characters) before it reads the caller or sends anything, and a bad value gives the tool error `Input validation error: sessionId must be a UUID from list_sessions. Nothing sent.` (for `reference`: `... reference must be a full session reference (asb:1/...). Nothing sent.`). |
 | `status` | Show the receiver and recent transport outcomes. |
-| `inbox` | Open a dialog where you set the receive policy and hold expiry, or review the oldest held message. |
+| `inbox` | Open a dialog where you set the receive policy, or see how many messages the explicit hold keeps. |
 
 ## Limits
 

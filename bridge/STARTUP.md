@@ -30,7 +30,7 @@ Server-initiated requests do not fill the gap:
 - Ping returns an empty result.
 - Elicitation returns an action and content, with no thread ID or permission state.
 
-The daemon lists loaded threads through `thread/loaded/list` and broadcasts `thread/started`. Both identify threads globally. Neither binds one MCP process to its thread or reports the thread's approval and sandbox settings, which can differ between threads in one directory. On an untouched thread, `thread/read` returns metadata, but observer attachment through `thread/resume` fails with `no rollout found`. The bridge cannot read the permission mode before accepting input.
+The daemon lists loaded threads through `thread/loaded/list` and broadcasts `thread/started`. Both identify threads globally. Neither binds one MCP process to its thread or reports the thread's approval and sandbox settings, which can differ between threads in one directory. On an untouched thread, `thread/read` returns metadata, but observer attachment through `thread/resume` fails with `no rollout found`.
 
 ## Alternatives
 

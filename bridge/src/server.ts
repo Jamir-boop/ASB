@@ -5,9 +5,8 @@ import { homedir } from 'node:os';
 import { extname, isAbsolute, join, resolve } from 'node:path';
 import { maxLineLength, peers, uuid } from './claude';
 import { engineRuntime, listReferences, referenceText, remotePeers, type ListedReference } from './engine';
-import { Bridge, expirySchema, policySchema } from './bridge';
+import { Bridge, policySchema } from './bridge';
 import { codexIpcPath } from './codex';
-import { HeldDialogs } from './held-dialogs';
 import { version } from './version';
 
 const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
@@ -15,7 +14,6 @@ const codexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex');
 const stateDir = join(codexHome, 'plugin-state', 'asb-bridge');
 const hookPath = join(import.meta.dir, `hook${extname(import.meta.path)}`);
 let bridge: Bridge | undefined;
-let dialogs: HeldDialogs | undefined;
 
 export function callerThread(meta: Record<string, unknown> | undefined): string {
   let turn: unknown = meta?.['x-codex-turn-metadata'];
@@ -31,7 +29,6 @@ function current(meta: Record<string, unknown> | undefined) {
   if (bridge && bridge.threadId !== id) throw new Error('This MCP process is already bound to another Codex task');
   if (!bridge) {
     bridge = new Bridge(id, configDir, stateDir, codexIpcPath(codexHome));
-    dialogs = new HeldDialogs(bridge, server);
   }
   return bridge;
 }
@@ -52,7 +49,6 @@ async function startReceiver(threadId: string, cwd: string) {
   child.stdin.end();
   const [code, error] = await Promise.all([child.exited, new Response(child.stderr).text()]);
   if (code !== 0) throw new Error(error.trim() || 'Session receiver hook failed');
-  dialogs?.start();
 }
 
 server.registerTool('session_start', { description: 'Bind the native SessionStart lifecycle hook and start the receiver.',
@@ -104,29 +100,21 @@ server.registerTool('send_message', { description: 'Send text to one agent. Its 
 server.registerTool('status', { description: 'Show receiver and recent outcomes. It starts at the first turn; no tool restarts it. A null replyAddress in a turn means untrusted hooks or a failed SessionStart: ask the user to check hook trust. Check unknown outcomes before resending.',
   inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false } },
   async (_args, extra) => result(brief(current(extra._meta).status())));
-server.registerTool('inbox', { description: 'Ask the user in a dialog. view: policy (accept, hold, refuse, default), expiry (how long held messages wait), held (review the oldest). Only the answer releases held input. Held text stays out of your context.',
-  inputSchema: { view: z.enum(['policy', 'held', 'expiry']) }, annotations: { openWorldHint: false } }, async ({ view }, extra) => {
+server.registerTool('inbox', { description: 'Ask the user in a dialog. view: policy (accept, hold, refuse, default), held (how many wait). Only the answer releases held input. Held text stays out of your context.',
+  inputSchema: { view: z.enum(['policy', 'held']) }, annotations: { openWorldHint: false } }, async ({ view }, extra) => {
   const bridge = current(extra._meta);
-  if (view === 'expiry') {
-    const answer = await server.server.elicitInput({ mode: 'form', message: `Deadline for messages held by the permission-mode comparison. Currently: ${bridge.dialogExpiry()}.`,
-      requestedSchema: { type: 'object', properties: { expiry: { type: 'string', title: 'Expiry',
-        enum: ['60s', '5m', '10m', 'never'], enumNames: ['One minute', 'Five minutes', 'Ten minutes', 'No expiry'] } }, required: ['expiry'] } });
-    if (answer.action === 'accept') await bridge.setExpiry(expirySchema.parse(answer.content?.expiry));
-    return result({ action: answer.action, ...brief(bridge.status()) });
-  }
   if (view === 'policy') {
     const answer = await server.server.elicitInput({ mode: 'form',
       message: `ASB Bridge. Inbox of this Codex task. Currently: ${bridge.policy()}. Accept also delivers held messages. Refuse discards them.`,
       requestedSchema: { type: 'object', properties: { policy: { type: 'string', title: 'Inbox',
-        enum: ['default', 'accept', 'hold', 'refuse'], enumNames: ['Default: compare permission modes', 'Accept: receive', 'Hold: keep back', 'Refuse: reject'] } }, required: ['policy'] } });
+        enum: ['default', 'accept', 'hold', 'refuse'], enumNames: ['Default: accept every message', 'Accept: receive', 'Hold: keep back', 'Refuse: reject'] } }, required: ['policy'] } });
     if (answer.action === 'accept') await bridge.setPolicy(policySchema.parse(answer.content?.policy));
     return result({ action: answer.action, ...brief(bridge.status()) });
   }
   const held = bridge.held()[0];
   if (!held) return result({ heldCount: 0 });
-  if (bridge.policy() === 'hold') return result({ heldCount: bridge.held().length,
-    instruction: 'Explicit hold only releases after the user changes the policy. Open inbox with view: policy.' });
-  return result({ ...await dialogs?.review(), ...brief(bridge.status()) });
+  return result({ heldCount: bridge.held().length,
+    instruction: 'Held input only releases after the user changes the policy. Open inbox with view: policy.' });
 });
 
 // After a Codex restart, threads load again without a turn. The thread that spawned this process can need a moment to become reachable.
@@ -137,6 +125,6 @@ const revivals = [1000, 5000, 15000, 60000].map(delay => setTimeout(() => {
     { stdin: 'ignore', stdout: 'ignore', stderr: 'inherit', env: process.env });
 }, delay).unref());
 
-server.server.onclose = () => { for (const timer of revivals) clearTimeout(timer); void (async () => { await dialogs?.close(); await bridge?.close(); })()
+server.server.onclose = () => { for (const timer of revivals) clearTimeout(timer); void (async () => { await bridge?.close(); })()
   .catch(() => console.error('Bridge shutdown failed.')); };
 await server.connect(new StdioServerTransport());
