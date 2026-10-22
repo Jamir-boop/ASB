@@ -2856,6 +2856,20 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertGreaterEqual(contrast(dim, "#171c22"), 3)
         self.assertEqual(edge("#000000", "#101010", .5, ("#000000",)), "#101010")
 
+    def test_popover_shift_fits(self):
+        self.assertEqual(asb.popover_shift(180, 40, 280, 500), 0)
+
+    def test_popover_shift_left(self):
+        self.assertEqual(asb.popover_shift(20, 40, 280, 500), 108)
+
+    def test_popover_shift_right(self):
+        self.assertEqual(asb.popover_shift(460, 40, 280, 500), -128)
+
+    def test_popover_shift_wider_than_board(self):
+        shift = asb.popover_shift(100, 40, 280, 250)
+        self.assertEqual(100 + 40 / 2 - 280 / 2 + shift, 8)
+        self.assertEqual(asb.popover_shift(100, 40, 280, 250, margin=12), 32)
+
     def test_panel_place_keeps_the_centered_panel_inside_the_window(self):
         place = SCOPE["panel_place"]
         # Room everywhere: the pointer stays.

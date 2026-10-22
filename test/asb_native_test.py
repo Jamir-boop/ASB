@@ -747,6 +747,66 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(window.archived, "label click toggles the switch")
         self.assertTrue(switch.get_active())
 
+    def test_filters_popover_offset_at_smallest_toolbar_widths(self):
+        window = self.snapshot_window()
+        window.present(); self.drain(.3)
+        border_width = window.get_default_size().width - window.get_width()
+        for width in (680, 507, 320, 1040):
+            with self.subTest(width=width):
+                window.set_default_size(width + border_width, 600)
+                self.drain(.3); window.check_geometry(); self.drain(.1)
+                self.assertEqual(window.get_width(), width)
+                self.assertEqual(window.wide_controls, width >= 680)
+                window.open_filters_popover(); self.drain(.3)
+                found, bounds = window.filters_pill.compute_bounds(window)
+                self.assertTrue(found)
+                natural_width = window.filter_popover.measure(asb.Gtk.Orientation.HORIZONTAL, -1)[1]
+                expected = asb.popover_shift(bounds.origin.x, bounds.size.width, natural_width, window.get_width())
+                self.assertEqual(tuple(window.filter_popover.get_offset()), (expected, 0))
+                centered_left = bounds.origin.x + (bounds.size.width - natural_width) / 2
+                if centered_left < 8:
+                    self.assertGreater(expected, 0)
+                    self.assertAlmostEqual(centered_left + expected, 8, delta=.5)
+                if width == 320:
+                    self.assertLess(centered_left, 8)
+                window.filter_popover.popdown(); self.drain(.2)
+
+    def test_filters_popover_scroller_reserves_switch_space(self):
+        window = self.snapshot_window()
+        dashboard = mock_dashboard()
+        dashboard["providers"] = [{"id": f"codex-{index}", "label": f"Profile {index}", "provider": "codex"}
+                                  for index in range(40)]
+        window.dashboard = dashboard
+        window.filter_model = asb.filter_profiles(dashboard)
+        window.present(); self.drain(.3)
+        window.open_filters_popover(); self.drain(.3)
+        scroller = window.filter_popover.get_child().get_first_child()
+        body = scroller.get_child().get_child()
+        self.assertEqual(body.get_margin_end(), 10)
+        adjustment = scroller.get_vadjustment()
+        self.assertGreater(adjustment.get_upper(), adjustment.get_page_size())
+        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+        self.drain(.3)
+        switch = window.filter_popover_rows["archive"].asb_filter_switch
+        found, bounds = switch.compute_bounds(scroller)
+        self.assertTrue(found)
+        self.assertTrue(switch.get_mapped())
+        self.assertGreaterEqual(scroller.get_width() - bounds.origin.x - bounds.size.width, 10)
+
+    def test_filters_popover_suppresses_pill_tooltip_until_closed(self):
+        window = self.snapshot_window()
+        window.present(); self.drain(.3)
+        tooltip = window.filters_pill.get_tooltip_text()
+        self.assertEqual(tooltip, "Show the filter checklist.")
+        self.assertTrue(window.filters_pill.get_has_tooltip())
+        for _attempt in range(2):
+            window.open_filters_popover(); self.drain(.3)
+            self.assertFalse(window.filters_pill.get_has_tooltip())
+            self.assertEqual(window.filters_pill.get_tooltip_text(), tooltip)
+            window.filter_popover.popdown(); self.drain(.3)
+            self.assertTrue(window.filters_pill.get_has_tooltip())
+            self.assertEqual(window.filters_pill.get_tooltip_text(), tooltip)
+
     def test_filter_switch_space_direct(self):
         window = self.snapshot_window()
         window.present(); self.drain(.3)

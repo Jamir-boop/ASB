@@ -258,6 +258,13 @@ def copy_wheel_step(state, delta, now, surface=False):
     return (1 if state["acc"] > 0 else -1), {**state, "acc": 0.0}
 
 
+def popover_shift(anchor_x, anchor_width, popover_width, window_width, margin=8):
+    left = anchor_x + (anchor_width - popover_width) / 2
+    if popover_width > window_width - 2 * margin:
+        return round(margin - left)
+    return round(min(max(left, margin), window_width - margin - popover_width) - left)
+
+
 def panel_place(x, y, width, height, window_width, window_height, margin=6):
     """Where a panel of this size, centered on x, points and opens ("bottom" or "top") to stay inside the window."""
     half = width / 2
@@ -4749,9 +4756,17 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.filter_popover.set_size_request(280, -1)
             self.filter_popover.connect("closed", self.filters_popover_closed)
         self.rebuild_filters_popover()
+        self.filters_pill.set_has_tooltip(False)
+        # GTK measures a hidden popover as zero; show it before measuring and opening it.
+        self.filter_popover.set_visible(True)
+        found, bounds = self.filters_pill.compute_bounds(self)
+        width = self.filter_popover.measure(Gtk.Orientation.HORIZONTAL, -1)[1]
+        shift = popover_shift(bounds.origin.x, bounds.size.width, width, self.get_width()) if found else 0
+        self.filter_popover.set_offset(shift, 0)
         self.filter_popover.popup()
 
     def filters_popover_closed(self, *_args):
+        self.filters_pill.set_has_tooltip(True)
         self.sync_filter_chips()
         self.filters_pill.grab_focus()
 
@@ -4767,7 +4782,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                                       vscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
         scroller.set_max_content_height(440)
         scroller.set_propagate_natural_height(True)
-        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0, margin_end=10)
         scroller.set_child(body)
         root.append(scroller)
         self.filter_popover_rows = {}
