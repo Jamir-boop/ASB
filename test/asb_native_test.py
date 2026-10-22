@@ -1,9 +1,11 @@
 """Small native view checks. Session opens use a disposable mock server."""
+import contextlib
 import copy
 import ctypes
 import ctypes.util
 import gc
 import importlib.util
+import io
 import json
 import os
 import queue
@@ -250,7 +252,10 @@ class BoardProcessCheck(unittest.TestCase):
         self.assertEqual([item for item in self.received if item[:2] == ("POST", "/api/palette")][0][2], self.TOKEN)
         board.terminate()
         board.wait(10)
-        self.assertNotIn(self.TOKEN, board.stdout.read().decode() + board.stderr.read().decode())
+        output, errors = board.stdout.read().decode(), board.stderr.read().decode()
+        self.assertIn("Saved the native ASB window image.", output)
+        self.assertNotIn("Cannot save the native GTK image", errors)
+        self.assertNotIn(self.TOKEN, output + errors)
 
     def test_the_board_ends_with_exit_code_1_and_a_message_when_the_launcher_sends_no_address(self):
         board = self.board(subprocess.DEVNULL)
@@ -267,6 +272,53 @@ class BoardProcessCheck(unittest.TestCase):
         self.assertEqual(errors.decode().strip(), "Use the local ASB address: http://127.0.0.1:<port>.")
         self.assertNotIn(self.TOKEN, errors.decode())
         self.assertEqual(self.received, [])
+
+
+class SnapshotWatchCheck(unittest.TestCase):
+    """The ASB_SNAPSHOT image comes after a drawn frame. A fake frame clock gives the frame times, so no check waits for real time."""
+    NO_CONTENT = "The native window has no rendered content."
+
+    def frames(self, results, times):
+        """Calls tick for each frame time with a save_snapshot that gives the next of results (an exception is raised).
+        Returns the answers of tick, the saves, the stdout text, and the stderr text."""
+        watch, saves, answers = asb.SnapshotWatch("board.png"), iter(results), []
+        def save(window, output):
+            self.assertEqual((window, output), ("window", "board.png"))
+            result = next(saves)
+            if isinstance(result, Exception):
+                raise result
+        with patch.object(asb, "save_snapshot", side_effect=save) as saved, contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
+            for time_us in times:
+                answers.append(watch.tick("window", SimpleNamespace(get_frame_time=lambda: time_us)))
+        return answers, saved.call_count, out.getvalue(), errors.getvalue()
+
+    def test_nothing_is_saved_until_the_settle_time_after_the_first_frame_has_passed(self):
+        # The first tick is the first frame with the dashboard; the time of the first frame is not the start of the clock.
+        answers, saves, out, errors = self.frames([None], [5_000_000, 5_016_000, 5_100_000, 5_249_999])
+        self.assertEqual((answers, saves, out, errors), ([True] * 4, 0, "", ""))
+        answers, saves, out, errors = self.frames([None], [5_000_000, 5_249_999, 5_250_000])
+        self.assertEqual((answers, saves, out, errors), ([True, True, False], 1, "Saved the native ASB window image.\n", ""))
+
+    def test_a_save_with_no_content_runs_again_on_the_next_frame_and_the_image_is_saved_once(self):
+        answers, saves, out, errors = self.frames(
+            [RuntimeError(self.NO_CONTENT), RuntimeError(self.NO_CONTENT), None], [0, 250_000, 266_000, 282_000])
+        # False ends the tick callback: GTK calls it no more, so there is no second save.
+        self.assertEqual((answers, saves, out, errors), ([True, True, True, False], 3, "Saved the native ASB window image.\n", ""))
+
+    def test_the_tries_stop_at_the_limit_with_the_error_line_and_no_image(self):
+        times = list(range(0, 10_000_000, 16_000)) + [10_000_000]
+        answers, saves, out, errors = self.frames([RuntimeError(self.NO_CONTENT)] * len(times), times)
+        # The frames before 10 s keep the callback; the frame at 10 s prints the error once and ends it.
+        self.assertEqual(answers, [True] * (len(times) - 1) + [False])
+        self.assertEqual(saves, len([time_us for time_us in times if time_us >= 250_000]))
+        self.assertEqual((out, errors), ("", "Cannot save the native GTK image: " + self.NO_CONTENT + "\n"))
+        # One frame before the limit still tries again.
+        self.assertEqual(self.frames([RuntimeError(self.NO_CONTENT)] * 2, [0, 250_000, 9_999_999])[0], [True, True, True])
+
+    def test_an_error_that_is_not_a_missing_frame_ends_at_once(self):
+        answers, saves, out, errors = self.frames([OSError("The disk is full.")], [0, 250_000])
+        self.assertEqual((answers, saves, out, errors), ([True, False], 1, "", "Cannot save the native GTK image: The disk is full.\n"))
 
 
 @unittest.skipUnless(asb.Gtk.init_check(), "A GTK display is not available.")
@@ -573,6 +625,50 @@ class WidgetCheck(unittest.TestCase):
         self.drain(.2)
         self.assertIn("second", window.row_order)
         self.assertFalse(window.loading)
+
+    def snapshot_window(self):
+        """A window that has its first dashboard at once, as when the early request of the launcher start ends first. It is not mapped."""
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", mock_dashboard(), theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        return window
+
+    def test_the_snapshot_waits_for_a_drawn_frame_and_saves_one_image(self):
+        with tempfile.TemporaryDirectory(prefix="asb-snapshot-") as temporary:
+            image = Path(temporary) / "board.png"
+            with patch.dict(os.environ, {"ASB_SNAPSHOT": str(image)}), patch.object(asb, "save_snapshot", wraps=asb.save_snapshot) as saved, \
+                    contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as errors:
+                window = self.snapshot_window()
+                # A window that is not mapped draws no frame, so no save is tried. A fixed timer tried it here and failed.
+                self.drain(.6)
+                saved.assert_not_called()
+                self.assertFalse(image.exists())
+                window.present()
+                for _attempt in range(100):
+                    if image.exists():
+                        break
+                    self.drain(.1)
+                # Later frames must not save it again.
+                self.drain(.6)
+            self.assertGreater(image.stat().st_size, 0)
+            saved.assert_called_once()
+            self.assertEqual(out.getvalue(), "Saved the native ASB window image.\n")
+            self.assertNotIn("Cannot save the native GTK image", errors.getvalue())
+
+    def test_the_snapshot_starts_one_frame_watch_only_when_asb_snapshot_is_set(self):
+        with patch.object(asb.SwitchboardWindow, "add_tick_callback") as watch:
+            with patch.dict(os.environ):
+                os.environ.pop("ASB_SNAPSHOT", None)
+                self.snapshot_window()
+            watch.assert_not_called()
+            with patch.dict(os.environ, {"ASB_SNAPSHOT": "board.png"}):
+                window = self.snapshot_window()
+                window.apply_dashboard(copy.deepcopy(FIXTURE), None)
+            watch.assert_called_once()
 
     def test_the_preferences_window_exists_only_after_the_first_open_and_takes_a_custom_theme_set_before(self):
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),

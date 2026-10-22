@@ -1280,6 +1280,31 @@ def save_snapshot(window, output):
         raise RuntimeError("Cannot save the native window image.")
 
 
+class SnapshotWatch:
+    """Development check (ASB_SNAPSHOT): save the window image once, after GTK has drawn the first dashboard. Use tick as a tick callback.
+    A tick starts a frame, so the first tick is the first frame with the dashboard. The save comes one settle time later, because the
+    first layout renders the board again. A save that finds no content (the window is not mapped or has no size) runs again on the next frame."""
+    SETTLE_US, LIMIT_US = 250_000, 10_000_000
+
+    def __init__(self, output):
+        self.output, self.first = output, None
+
+    def tick(self, window, clock):
+        now = clock.get_frame_time()
+        if self.first is None:
+            self.first = now
+        if now - self.first < self.SETTLE_US:
+            return True
+        try:
+            save_snapshot(window, self.output)
+            print("Saved the native ASB window image.")
+        except (TypeError, RuntimeError, OSError) as error:
+            if isinstance(error, RuntimeError) and now - self.first < self.LIMIT_US:
+                return True
+            print(f"Cannot save the native GTK image: {error}", file=sys.stderr)
+        return False
+
+
 class SessionStrip(Gtk.Box):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -3761,7 +3786,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.update_clock()
         if self.snapshot_pending:
             self.snapshot_pending = False
-            GLib.timeout_add(250, self.capture)
+            self.add_tick_callback(SnapshotWatch(os.environ["ASB_SNAPSHOT"]).tick)
         return False
 
     def play_messages(self, messages):
@@ -3822,14 +3847,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.remove_css_class("asb-message-lit")
         widget.asb_light_timer = None
         widget.asb_light_generation = getattr(widget, "asb_light_generation", 0) + 1
-
-    def capture(self):
-        try:
-            save_snapshot(self, os.environ["ASB_SNAPSHOT"])
-            print("Saved the native ASB window image.")
-        except (TypeError, RuntimeError, OSError) as error:
-            print(f"Cannot save the native GTK image: {error}", file=sys.stderr)
-        return False
 
     def watch_layout(self, *_args):
         self.layout_surface = self.get_surface()
