@@ -160,7 +160,7 @@ check_engine() {
 
 # The logs of a board that failed its proof, then the end of the board.
 board_failed() {
-  tail -n 30 "$log" "$home/.local/state/asb/engine.log" >&2 || true
+  tail -n 30 "$log" "$xlog" "$home/.local/state/asb/engine.log" >&2 || true
   kill "$board" 2>/dev/null || true
 }
 
@@ -182,7 +182,8 @@ check_window() {
   fi
   png=/tmp/asb-board.png
   log=/tmp/asb-board.log
-  rm -f "$png" "$log"
+  xlog=/tmp/asb-xvfb.log
+  rm -f "$png" "$log" "$xlog"
   if [ "${ASB_CHECK_SNAPSHOT:-}" = skip ]; then
     step 7 "open the board in Xvfb and wait for UI: verified (this row cannot save the board image)"
     snapshot=
@@ -190,7 +191,9 @@ check_window() {
     step 7 "open the board in Xvfb and save its image"
     snapshot=ASB_SNAPSHOT=$png
   fi
-  as_user "dbus-run-session -- xvfb-run -a -s '-screen 0 1280x1024x24' env $snapshot $launcher >$log 2>&1" &
+  # xvfb-run can start its command before Xvfb accepts clients: the board starts only when GDK can open the display.
+  # Xvfb writes its errors to $xlog (xvfb-run sends them to /dev/null without -e).
+  as_user "dbus-run-session -- xvfb-run -a -e $xlog -s '-screen 0 1280x1024x24' sh -c 'python3 -I /asb/test/wait-for-display.py && exec env $snapshot $launcher' >$log 2>&1" &
   board=$!
   seconds=0
   if [ -n "$snapshot" ]; then
