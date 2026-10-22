@@ -155,6 +155,8 @@ test('native OpenCode bridge', async () => {
   };
 
   const openCodeRow = () => peers(claudeHome).find(row => row.entrypoint === 'opencode-asb-bridge');
+  // The registry folder order differs by platform (tmpfs lists the newest first), so a check that needs one session asks for it.
+  const rowOf = (openCodeSessionId: string) => peers(claudeHome).find(row => row.entrypoint === 'opencode-asb-bridge' && row.opencodeSessionId === openCodeSessionId);
   const rowsOf = () => peers(claudeHome).filter(row => row.entrypoint === 'opencode-asb-bridge');
 
   // Fake Claude peer: use the same inbox, key, and sender helpers as Claude.
@@ -175,8 +177,8 @@ test('native OpenCode bridge', async () => {
     peerProtocol: 1, peerFeatures: ['notify_idle'], entrypoint: 'cli', name: 'native-peer',
   }), { mode: 0o600 });
 
-  const sendToOpenCode = async (text: string) => {
-    const row = openCodeRow();
+  const sendToOpenCode = async (text: string, openCodeSessionId: string) => {
+    const row = rowOf(openCodeSessionId);
     assert(row, 'OpenCode session must be registered before send');
     const id = crypto.randomUUID();
     const token = peerKey(claudeHome, row);
@@ -235,18 +237,27 @@ test('native OpenCode bridge', async () => {
       throw error;
     }
 
+    // A non-mock provider fails at once. The message list can lag a turn (seen on Windows), so wait up to 5 s for one assistant message.
     const assertMockOnly = async (sessionId: string) => {
-      const msgRes = await api(password!, 'GET', `/api/session/${sessionId}/message`);
-      const msgRaw = msgRes.json() as any;
-      const messages = Array.isArray(msgRaw) ? msgRaw : (msgRaw?.data ?? []);
       let assistant = 0;
-      for (const m of messages) {
-        if (m?.type !== 'assistant') continue;
-        assistant++;
-        const pid = m.model?.providerID ?? m.data?.model?.providerID;
-        if (pid !== 'mock') assert.fail(`non-mock providerID: ${pid ?? '(missing)'} in ${sessionId}`);
-      }
-      if (!assistant) assert.fail(`no assistant message in ${sessionId} after a turn`);
+      let status = 0;
+      const deadline = Date.now() + 5000;
+      do {
+        const msgRes = await api(password!, 'GET', `/api/session/${sessionId}/message`);
+        status = msgRes.status;
+        const msgRaw = msgRes.json() as any;
+        const messages = Array.isArray(msgRaw) ? msgRaw : (msgRaw?.data ?? []);
+        assistant = 0;
+        for (const m of messages) {
+          if (m?.type !== 'assistant') continue;
+          assistant++;
+          const pid = m.model?.providerID ?? m.data?.model?.providerID;
+          if (pid !== 'mock') assert.fail(`non-mock providerID: ${pid ?? '(missing)'} in ${sessionId}`);
+        }
+        if (assistant) break;
+        await Bun.sleep(100);
+      } while (Date.now() < deadline);
+      if (!assistant) assert.fail(`no assistant message in ${sessionId} after a turn (last status ${status})`);
       console.log(`R5-MESSAGES ${sessionId} assistant=${assistant} provider=mock`);
     };
 
@@ -260,8 +271,8 @@ test('native OpenCode bridge', async () => {
     // First prompt triggers plugin setup and registers the session.
     const first = await api(password, 'POST', `/api/session/${sessionA}/prompt`, { text: 'NATIVE_BOOT alpha' });
     assert.equal(first.status, 200);
-    await until(() => !!openCodeRow(), 'OpenCode registry row');
-    const row = openCodeRow()!;
+    await until(() => !!rowOf(sessionA), 'OpenCode registry row');
+    const row = rowOf(sessionA)!;
     assert.equal(row.entrypoint, 'opencode-asb-bridge');
     assert(row.name.startsWith('opencode-'), `name rule: ${row.name}`);
     assert((row as any).opencodeSessionId === sessionA, 'row must carry the OpenCode session id');
@@ -279,7 +290,7 @@ test('native OpenCode bridge', async () => {
 
     // Inbound: fake peer sends to the OpenCode socket. Idle session gets status started.
     const inboundText = `NATIVE_INBOUND ${crypto.randomUUID()}`;
-    const inboundId = await sendToOpenCode(`<cross-session-message from="${peerAddress(peerPath)}" from-session="${peerId}" from-name="native-peer">\n${inboundText}\n</cross-session-message>`);
+    const inboundId = await sendToOpenCode(`<cross-session-message from="${peerAddress(peerPath)}" from-session="${peerId}" from-name="native-peer">\n${inboundText}\n</cross-session-message>`, sessionA);
     await until(() => mockRequests.some(r => r.messages.some((m: any) => String(m.content).includes(inboundText))), 'mock request for inbound');
     await until(() => messageStatus(row.sessionId, inboundId) === 'started', 'idle inbound status started');
     assert(!receipts.some(r => r.orig_msg_id === inboundId && r.status === 'delivered'), 'an at-once accept must not send a delivered receipt');
@@ -289,7 +300,7 @@ test('native OpenCode bridge', async () => {
     const slow = api(password, 'POST', `/api/session/${sessionA}/prompt`, { text: 'SLOW NATIVE_BUSY' });
     await until(() => mockRequests.some(r => r.messages.some((m: any) => String(m.content).includes('NATIVE_BUSY'))), 'slow turn started');
     const busyText = `NATIVE_BUSY_IN ${crypto.randomUUID()}`;
-    const busyId = await sendToOpenCode(`<cross-session-message from="${peerAddress(peerPath)}" from-session="${peerId}" from-name="native-peer">\n${busyText}\n</cross-session-message>`);
+    const busyId = await sendToOpenCode(`<cross-session-message from="${peerAddress(peerPath)}" from-session="${peerId}" from-name="native-peer">\n${busyText}\n</cross-session-message>`, sessionA);
     await until(() => mockRequests.some(r => r.messages.some((m: any) => String(m.content).includes(busyText))), 'busy inbound reaches the model');
     await until(() => messageStatus(row.sessionId, busyId) === 'steered', 'busy inbound status steered');
     await slow;
@@ -340,12 +351,16 @@ test('native OpenCode bridge', async () => {
     const hopA = 'a1b2c3d4e5f60718293a4b5c';
     const hopB = 'b2c3d4e5f60718293a4b5c6d';
     const cInbound = `NATIVE_C_IN ${crypto.randomUUID()}`;
-    await sendToOpenCode(`<cross-session-message from="${peerAddress(peerPath)}" from-session="${peerId}" hop-chain="${hopA},${hopB}" from-name="native-peer">\n${cInbound}\n</cross-session-message>`);
-    await until(() => mockRequests.some(r => r.messages.some((m: any) => String(m.content).includes(cInbound))), 'inbound for inbox.delivered');
     const rowC = rowsOf().find(r => (r as any).opencodeSessionId === sessionC)!;
-    const unreadBefore = unreadCount(rowC.sessionId);
-    assert(unreadBefore >= 1, `unread slot must be set after inbound: ${unreadBefore}`);
-    await until(() => unreadCount(rowC.sessionId) < unreadBefore, 'inbox.delivered frees the unread slot');
+    // Watch from before the send: on a fast system the slot is set and freed before the model sees the message.
+    let unreadBefore = 0;
+    const watch = setInterval(() => { try { unreadBefore = Math.max(unreadBefore, unreadCount(rowC.sessionId)); } catch { /* Not written yet. */ } }, 5);
+    try {
+      await sendToOpenCode(`<cross-session-message from="${peerAddress(peerPath)}" from-session="${peerId}" hop-chain="${hopA},${hopB}" from-name="native-peer">\n${cInbound}\n</cross-session-message>`, sessionC);
+      await until(() => mockRequests.some(r => r.messages.some((m: any) => String(m.content).includes(cInbound))), 'inbound for inbox.delivered');
+      await until(() => unreadBefore >= 1, 'unread slot is set after inbound');
+      await until(() => unreadCount(rowC.sessionId) === 0, 'inbox.delivered frees the unread slot');
+    } finally { clearInterval(watch); }
     const unreadAfter = unreadCount(rowC.sessionId);
     console.log(`PASS (c) inbox.delivered frees the unread slot (unread before=${unreadBefore}, after=${unreadAfter})`);
     await assertMockOnly(sessionC);
@@ -359,7 +374,7 @@ test('native OpenCode bridge', async () => {
     // d1 must run in the inbound turn itself: a CALL_CODE prompt is a user item and would reset the origin first.
     const d1 = `NATIVE_D1 ${crypto.randomUUID()}`;
     const dInbound = `NATIVE_D_IN ${crypto.randomUUID()}\nCALL_CODE: return await tools.asb_bridge.send_message({ sessionId: "${peerId}", text: ${JSON.stringify(d1)} })`;
-    await sendToOpenCode(`<cross-session-message from="${peerAddress(peerPath)}" from-session="${peerId}" hop-chain="${hopA},${hopB}" from-name="native-peer">\n${dInbound}\n</cross-session-message>`);
+    await sendToOpenCode(`<cross-session-message from="${peerAddress(peerPath)}" from-session="${peerId}" hop-chain="${hopA},${hopB}" from-name="native-peer">\n${dInbound}\n</cross-session-message>`, sessionC);
     await until(() => peerFrames.some(frame => String(frame.message?.content ?? '').includes(d1)), 'outbound with inbound hop chain');
     const d1Env = envelopeOf(d1);
     assert(d1Env.includes(hopA) || d1Env.includes(hopB), `hop chain should carry inbound hops: ${d1Env}`);
@@ -427,7 +442,8 @@ test('native OpenCode bridge', async () => {
     assert(!existsSync(join(opencodeConfig, 'plugins', 'asb-bridge')), 'plugin folder removed');
     await until(() => rowsOf().length === 0, 'uninstall removes live rows', 15000);
 
-    const after = liveService();
+    // The Windows filter matches any `serve`, so leave out the server of this test.
+    const after = liveService().filter(line => !server?.pid || !line.startsWith(`${server.pid} `));
     assert.deepEqual(after, before, `live OpenCode service must not change\nbefore=${JSON.stringify(before)}\nafter=${JSON.stringify(after)}`);
     console.log(`Native OpenCode passed with ${binary}: register, inbound started, busy steer, outbound from-name, R4 a-f, SIGTERM, SIGKILL, reload, uninstall. Live service unchanged (${before.join(' | ') || 'none'}).`);
   } finally {
