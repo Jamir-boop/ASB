@@ -824,3 +824,21 @@ test('commandLine and executable handle the Windows shapes with an injected plat
   assert.equal(lin, path.join(bin, 'other'));
   assert.equal(await executable('missing', { platform: 'linux', env: { PATH: bin }, searchPath: bin, cwd: temporary }), '');
 });
+
+for (const [name, source, expected] of [
+  ['drive', String.raw`\\?\C:\x\agent-switch-board`, String.raw`C:\x\agent-switch-board`],
+  ['UNC', String.raw`\\?\UNC\server\share\agent-switch-board`, String.raw`\\server\share\agent-switch-board`],
+  ['Linux', '/opt/agent-switch-board', '/opt/agent-switch-board'],
+  ['other prefix', String.raw`\\?\Volume{test}\agent-switch-board`, String.raw`\\?\Volume{test}\agent-switch-board`],
+]) {
+  for (const format of ['text', 'json']) {
+    test(`bridge status normalizes only Windows verbatim marketplace paths (${name}, ${format})`, async (t) => {
+      const f = await fixture(t);
+      await writeFile(path.join(f.codex, 'config.toml'), `[marketplaces.asb]\nsource = ${JSON.stringify(source)}\n`);
+      const result = f.run(['status', ...(format === 'json' ? ['--json'] : [])], {}, { platform: 'win32' });
+      passed(result);
+      if (format === 'json') assert.equal(JSON.parse(result.stdout).codex.find(row => row.home === f.codex).marketplace.source, expected);
+      else assert.ok(result.stdout.includes(`Codex ${f.codex}: marketplace ${expected};`), result.stdout);
+    });
+  }
+}

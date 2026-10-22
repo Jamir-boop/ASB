@@ -302,10 +302,17 @@ function sections(text) {
 export function hasOldPlugin(config) {
   return sections(config).has(`plugins."${OLD_PLUGIN}"`);
 }
+// The same rule as stripWindowsVerbatimPath in src/platform-paths.mjs; this script also runs without src/.
+function stripWindowsVerbatimPath(cwd) {
+  if (cwd.startsWith('\\\\?\\UNC\\')) return `\\\\${cwd.slice(8)}`;
+  if (/^\\\\\?\\[a-z]:\\/i.test(cwd)) return cwd.slice(4);
+  return cwd;
+}
+
 function sourceValue(section = '') {
   const value = section.match(/^\s*source\s*=\s*("(?:\\.|[^"\\])*"|'[^']*')\s*(?:#.*)?$/m)?.[1];
   if (!value) return null;
-  try { return value.startsWith("'") ? value.slice(1, -1) : JSON.parse(value); }
+  try { return stripWindowsVerbatimPath(value.startsWith("'") ? value.slice(1, -1) : JSON.parse(value)); }
   catch { return null; }
 }
 async function codexTarget(home, force) {
@@ -324,7 +331,7 @@ export async function installCodex(home, options = {}) {
   const bytes = await skillFiles(path.join(root, 'bridge/agent-skills/codex/bridge'));
   const marketplace = sections(target.config).get('marketplaces.asb');
   // Codex 0.162.1 refuses a changed source; remove the named marketplace before add.
-  if (marketplace !== undefined && sourceValue(marketplace) !== root) runCodex(target.home, ['plugin', 'marketplace', 'remove', 'asb'], codex);
+  if (marketplace !== undefined && sourceValue(marketplace) !== stripWindowsVerbatimPath(root)) runCodex(target.home, ['plugin', 'marketplace', 'remove', 'asb'], codex);
   runCodex(target.home, ['plugin', 'marketplace', 'add', root], codex);
   runCodex(target.home, ['plugin', 'add', 'asb-bridge@asb'], codex);
   await copySkill(bytes, path.join(target.home, 'skills/bridge'), options.force);

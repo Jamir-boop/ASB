@@ -82,3 +82,10 @@ export async function findBun({ platform = process.platform, env = process.env, 
 
 // The text for "no Bun": it names the folders that findBun tried after PATH.
 export const bunNotFound = (folders) => `Bun was not found on PATH${folders.length ? ` or in ${folders.join(' or ')}` : ''}.`;
+
+// Codex on Windows saves verbatim paths (\\?\C:\x, \\?\UNC\server\share); scripts/asb-bridge.mjs has the same rule.
+export function stripWindowsVerbatimPath(cwd) {
+  if (cwd.startsWith('\\\\?\\UNC\\')) return `\\\\${cwd.slice(8)}`;
+  if (/^\\\\\?\\[a-z]:\\/i.test(cwd)) return cwd.slice(4);
+  return cwd;
+}
