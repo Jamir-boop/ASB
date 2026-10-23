@@ -84,7 +84,7 @@ internal fun asbColorScheme(palette: Palette): ColorScheme {
         surfaceContainerHighest = highlight,
         secondaryContainer = accent,
         onSecondaryContainer = background,
-        // The snackbar uses the inverse roles; without them it is near white on a dark app.
+        // The message pill uses the inverse roles; the darkColorScheme defaults are near white.
         inverseSurface = hexColor(mixColor(palette.background, palette.text, .10)),
         inverseOnSurface = text,
         inversePrimary = accent,

@@ -1146,7 +1146,6 @@ def machine_invite_text(expires_at_ms):
 def request_json(base, route, method="GET", body=None, etag=None, headers=None):
     headers = {"Accept": "application/json", **(headers or {})}
     path = route.split("?", 1)[0]
-    dashboard_route = path == "/api/dashboard"
     source_route = path == "/api/sources" or path.startswith("/api/sources/")
     phone_route = path == "/api/phone" or path.startswith("/api/phone/")
     group_route = path == "/api/group" or path.startswith("/api/group/")
@@ -1157,7 +1156,7 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
     data = None
     if etag and etag[0] and method == "GET" and route.split("?")[0] == "/api/dashboard":
         headers["If-None-Match"] = etag[0]
-    if SOURCE_TOKEN and ((source_route and method == "POST") or phone_route or group_route or service_route or palette_route or agent_route or engine_route or dashboard_route):
+    if SOURCE_TOKEN and ((source_route and method == "POST") or phone_route or group_route or service_route or palette_route or agent_route or engine_route):
         headers["X-ASB-Source-Token"] = SOURCE_TOKEN
     if method == "POST":
         headers.update({"Origin": base, "Content-Type": "application/json"})

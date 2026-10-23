@@ -114,6 +114,7 @@ export async function loadOpenCodeDashboard({ dataDir, stateDir = '', nowMs = Da
       if (!incoming.has(to)) incoming.set(to, []);
       incoming.get(to).push({ from, atMs });
     }
+    if (!incoming.size) return result;
     return { ...result, threads: result.threads.map((thread) => {
       const messages = incoming.get(opencodeBridgeId(thread.externalId));
       return messages ? { ...thread, incomingMessages: messages } : thread;

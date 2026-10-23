@@ -242,8 +242,8 @@ class BoardProcessCheck(unittest.TestCase):
         self.assertIsNone(board.poll())
         self.assertGreater((self.directory / "board.png").stat().st_size, 0)
         dashboards = [item for item in self.received if item[0] == "GET" and item[1].split("?")[0] == "/api/dashboard"]
-        # The early request is the only dashboard request until the next poll and uses the token from stdin.
-        self.assertEqual(dashboards, [("GET", "/api/dashboard", self.TOKEN)])
+        # The early request is the only dashboard request until the next poll. Dashboard reads send no token.
+        self.assertEqual(dashboards, [("GET", "/api/dashboard", None)])
         # The token of the line is the token of later requests: the board shares its palette with it.
         for _attempt in range(50):
             if any(item[:2] == ("POST", "/api/palette") for item in self.received):
@@ -471,7 +471,7 @@ class WidgetCheck(unittest.TestCase):
             phone.request_phone()
             wait(lambda: all(any(route == wanted for route, _token in received[1])
                              for wanted in ("/api/dashboard", "/api/agent/ui", "/api/events", "/api/sources", "/api/phone")))
-            self.assertTrue(all(token == "token-b" for route, token in received[1] if route not in ("/api/events", "/api/sources")))
+            self.assertTrue(all(token == "token-b" for route, token in received[1] if route not in ("/api/dashboard", "/api/events", "/api/sources")))
             self.assertEqual(window.base, bases[1])
             self.assertIs(window.preferences_window, preferences)
             self.assertIs(preferences.profiles_editor, editor)

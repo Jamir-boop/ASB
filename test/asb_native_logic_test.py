@@ -3987,7 +3987,7 @@ class NativeLogicChecks(unittest.TestCase):
         for value, route, method, expected in ((token, "/api/sources", "POST", token),
                                                (token, "/api/sources/one/remove", "POST", token),
                                                (token, "/api/sources", "GET", None),
-                                               (token, "/api/dashboard", "GET", token),
+                                               (token, "/api/dashboard", "GET", None),
                                                (token, "/api/sourcesx", "POST", None),
                                                (token, "/api/threads/a/pin", "POST", None),
                                                ("", "/api/sources", "POST", None)):
