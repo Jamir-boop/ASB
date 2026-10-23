@@ -339,7 +339,8 @@ function sourceCacheScope(source) {
 
 function retainSourceCaches(sources) {
   const enabled = sources.filter((source) => source.enabled);
-  retainCodexDataScopes(enabled.filter((source) => source.provider === 'codex').map(sourceCacheScope));
+  // OpenCode rows read their receiver databases through the Codex bridge message cache, with the OpenCode source scope.
+  retainCodexDataScopes(enabled.filter((source) => source.provider === 'codex' || source.provider === 'opencode').map(sourceCacheScope));
   retainOpenCodeDataScopes(enabled.filter((source) => source.provider === 'opencode').map(sourceCacheScope));
   retainClaudeDataSources(enabled.filter((source) => source.provider === 'claude-desktop-code').map((source) => ({
     cacheScope: sourceCacheScope(source), appDir: source.dataDir,
