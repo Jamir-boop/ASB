@@ -568,3 +568,13 @@ test('a bad member port rejects at once and leaves no timer that throws later', 
   await assert.rejects(peerRequest({ member, path: '/peer/v1/hello', tls: {}, timeoutMs: 20 }), { code: 'ERR_SOCKET_BAD_PORT' });
   await new Promise((resolve) => setTimeout(resolve, 50));
 });
+
+test('a member OpenCode bridge key resolves a message to a local Claude row', () => {
+  const id = 'ses_asbTestOpenCode01', bridgeId = '18284f68-b2c6-5cca-8fb7-12d5973743f9';
+  const exported = exportLocalSessions(board([{ id, externalId: id, provider: 'opencode', title: 'Synthetic OpenCode', updatedAtMs: nowMs }], B), B, nowMs);
+  assert.deepEqual(exported.keys[id], [id, bridgeId]);
+  const dashboard = board([claude(1, { incomingMessages: [{ from: bridgeId, atMs: nowMs - 1000 }] })], A);
+  assert.deepEqual(dashboard.messages, []);
+  mergePeerRows(dashboard, [peerState(exported)], A, nowMs);
+  assert.deepEqual(dashboard.messages, [{ from: `m:${B.machineId}:${id}`, to: `claude-desktop-code:${local(1)}`, atMs: nowMs - 1000 }]);
+});

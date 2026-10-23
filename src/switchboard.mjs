@@ -7,7 +7,7 @@ import { DEFAULT_CLAUDE_PROJECTS_DIR, defaultClaudeAppDir, invalidateClaudeData,
 import { loadSwitchboardClaudeThreads, claudeRemoteDeepLink, claudeRemoteStatus,
   invalidateClaudeRemoteData, isClaudeRemoteCacheEvent, shutdownClaudeRemoteParser } from './claude-remote-data.mjs';
 import { normalizeDashboardThreads } from './insights.mjs';
-import { loadOpenCodeDashboard, invalidateOpenCodeData, retainOpenCodeDataScopes } from './opencode-data.mjs';
+import { loadOpenCodeDashboard, invalidateOpenCodeData, retainOpenCodeDataScopes, opencodeBridgeId, defaultOpenCodeStateDir } from './opencode-data.mjs';
 import { createAsbServer } from './asb-server.mjs';
 import { createSoundPlayer, createSoundWatcher } from './asb-sounds.mjs';
 import { openThreadInCodex, scopedCommand } from './session-opener.mjs';
@@ -294,6 +294,7 @@ export function resolveSessionMessages(threads, rows, { sinceMs, untilMs }) {
     if (!rowId) continue;
     const externalId = String(thread.externalId || thread.id || '');
     add(externalId, rowId);
+    if (thread.provider === 'opencode') add(opencodeBridgeId(externalId), rowId);
     if (thread.provider !== 'claude-desktop-code') continue;
     if (thread.source === 'claude-remote-cache') { addBridge(externalId, rowId); continue; }
     add(String(thread.cliSessionId || ''), rowId);
@@ -369,7 +370,7 @@ export async function loadSwitchboardDashboard({
         databasePath: await discoverCodexStateDatabase(source.dataDir),
         sessionIndexPath: path.join(source.dataDir, 'session_index.jsonl'),
         globalStatePath: path.join(source.dataDir, '.codex-global-state.json'),
-      } : source.provider === 'opencode' ? { dataDir: source.dataDir }
+      } : source.provider === 'opencode' ? { dataDir: source.dataDir, stateDir: defaultOpenCodeStateDir() }
         : { appDir: source.dataDir, projectsDir: source.projectsDir || path.join(os.homedir(), '.claude', 'projects') };
       sourceOptions.cacheScope = sourceCacheScope(source);
       if (source.provider === 'codex' && loadCodex === loadCodexDashboard) await fs.stat(sourceOptions.databasePath);

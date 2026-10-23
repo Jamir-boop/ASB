@@ -13,7 +13,9 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { defaultClaudeAppDir, normalizeClaudeDesktopCodeSession, loadClaudeDesktopCodeThreads, parseClaudeJsonlSignals } from '../src/claude-data.mjs';
 import { loadCodexDashboard, readThreads, discoverCodexStateDatabase, parseRolloutSignals, readRolloutSignals, getCodexCacheStats, codexNativeReadStatus } from '../src/codex-data.mjs';
-import { buildSwitchboardDashboard, createSwitchboardServer, loadSwitchboardDashboard, localMachineName, openSwitchboardThread, switchboardStatus, switchboardWatchPaths, PendingTracker } from '../src/switchboard.mjs';
+import { buildSwitchboardDashboard, createSwitchboardServer, loadSwitchboardDashboard, localMachineName, openSwitchboardThread, switchboardStatus, switchboardWatchPaths, PendingTracker,
+  resolveSessionMessages, sessionMessageKeys } from '../src/switchboard.mjs';
+import { defaultOpenCodeStateDir } from '../src/opencode-data.mjs';
 import { AppSourceRegistry } from '../src/app-sources.mjs';
 import { CLI_SESSION_IDS } from '../src/session-targets.mjs';
 
@@ -2109,7 +2111,7 @@ test('the registered OpenCode source loads from its fixed folder, is watched the
   assert.equal(missing.providers.find((item) => item.id === 'opencode').status, 'missing');
   await mkdir(dataDir, { recursive: true });
   const board = await load(sources);
-  assert.deepEqual(calls, [{ dataDir, cacheScope: dataDir, nowMs: now, maxCount: 5000 }]);
+  assert.deepEqual(calls, [{ dataDir, stateDir: defaultOpenCodeStateDir(), cacheScope: dataDir, nowMs: now, maxCount: 5000 }]);
   assert.equal(board.providers.find((item) => item.id === 'opencode').status, 'ready');
   const row = board.threads.find((item) => item.provider === 'opencode');
   assert.deepEqual([row.id, row.externalId, row.sourceId, row.sourceLabel, row.canOpen, row.nativeUnread],
@@ -2207,4 +2209,22 @@ test('the server passes the machine identity to the dashboard load', async (t) =
   t.after(() => { plain.closeAllConnections(); return new Promise((resolve) => plain.close(resolve)); });
   await fetch(`http://127.0.0.1:${plain.address().port}/api/dashboard`).then((response) => response.json());
   assert.deepEqual(seen.at(-1).machine, { machineId: '', machineName: localMachineName() });
+});
+
+test('OpenCode bridge sender resolves to its row and exports both message keys', () => {
+  const id = 'ses_asbTestOpenCode01', bridgeId = '18284f68-b2c6-5cca-8fb7-12d5973743f9';
+  const threads = [{ id, externalId: id, provider: 'opencode' },
+    { id: 'claude', externalId: 'local_claude', provider: 'claude-desktop-code',
+      incomingMessages: [{ from: bridgeId, atMs: now }] }];
+  const messages = resolveSessionMessages(threads, threads, { sinceMs: now - 60_000, untilMs: now });
+  assert.deepEqual(messages, [{ from: id, to: 'claude', atMs: now }]);
+  assert.deepEqual(sessionMessageKeys(messages).keysByRow.get(id), [id, bridgeId]);
+});
+
+test('OpenCode receiver resolves an incoming Claude CLI session ID', () => {
+  const threads = [{ id: 'ses_asbTestOpenCode01', externalId: 'ses_asbTestOpenCode01', provider: 'opencode',
+    incomingMessages: [{ from: '00000000-0000-4000-8000-000000000001', atMs: now }] },
+  { id: 'claude', externalId: 'local_claude', cliSessionId: '00000000-0000-4000-8000-000000000001', provider: 'claude-desktop-code' }];
+  assert.deepEqual(resolveSessionMessages(threads, threads, { sinceMs: now - 60_000, untilMs: now }),
+    [{ from: 'claude', to: 'ses_asbTestOpenCode01', atMs: now }]);
 });

@@ -1,6 +1,8 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { querySqliteJson } from './codex-data.mjs';
+import os from 'node:os';
+import { createHash } from 'node:crypto';
+import { querySqliteJson, readBridgeMessages, SESSION_MESSAGE_WINDOW_MS } from './codex-data.mjs';
 
 const MAX_THREADS = 5000;
 const SCHEMA_WARNING = 'ASB reads OpenCode 2 sessions only. Update OpenCode.';
@@ -9,6 +11,20 @@ const SESSION_COLUMNS = ['id', 'parent_id', 'title', 'slug', 'directory', 'time_
 const MESSAGE_COLUMNS = ['session_id', 'time_created'];
 const LIFECYCLE_KINDS = { succeeded: 'task_complete', failed: 'failed', interrupted: 'turn_aborted' };
 const cache = new Map();
+
+// Must stay the same as opencodeBridgeId in bridge/src/opencode-host.ts.
+export function opencodeBridgeId(sessionId) {
+  const ns = Buffer.from('a5b8c9d0-1e2f-4a3b-8c7d-9e0f1a2b3c4d'.replace(/-/g, ''), 'hex');
+  const hash = createHash('sha1').update(ns).update(`opencode:${sessionId}`, 'utf8').digest();
+  hash[6] = (hash[6] & 0x0f) | 0x50;
+  hash[8] = (hash[8] & 0x3f) | 0x80;
+  const hex = hash.subarray(0, 16).toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+export function defaultOpenCodeStateDir({ homeDir = os.homedir(), env = process.env } = {}) {
+  return path.join(env.XDG_STATE_HOME || path.join(homeDir, '.local', 'state'), 'opencode');
+}
 
 export function invalidateOpenCodeData() {
   cache.clear();
@@ -57,8 +73,8 @@ function openCodeThread(row, subagents, activity) {
   };
 }
 
-// Reads only session_v2 and the times of session_message, never message data, credentials, or other tables.
-export async function loadOpenCodeDashboard({ dataDir, nowMs = Date.now(), maxCount = MAX_THREADS, cacheScope = '',
+// Reads session_v2, session_message times, and the ASB Bridge receiver view (peer ID, status, time, kind), never text or credentials.
+export async function loadOpenCodeDashboard({ dataDir, stateDir = '', nowMs = Date.now(), maxCount = MAX_THREADS, cacheScope = '',
   query = querySqliteJson } = {}) {
   const databasePath = path.join(dataDir, 'opencode.db');
   const [main, wal] = await Promise.all([fs.stat(databasePath).catch((error) => {
@@ -70,26 +86,38 @@ export async function loadOpenCodeDashboard({ dataDir, nowMs = Date.now(), maxCo
   // A WAL append does not change the main file.
   const signature = `${fileSignature(main)}|${fileSignature(wal)}`;
   const cached = cache.get(key);
-  if (cached?.signature === signature) return cached.result;
-  let result;
-  if (!(await schemaReady(databasePath, query))) {
-    result = { generatedAtMs: nowMs, provider: { installed: true, status: 'warning', message: SCHEMA_WARNING }, threads: [] };
-  } else {
-    const limit = Math.min(Math.max(Number.parseInt(maxCount, 10) || MAX_THREADS, 1), MAX_THREADS);
-    const [roots, subagentRows, activityRows] = await Promise.all([
-      query(databasePath, `select id, title, slug, directory, time_created, time_updated,
-        time_suspended, time_idle, idle_outcome, time_viewed, time_archived
-        from session_v2 where parent_id is null order by time_updated desc limit ${limit};`),
-      query(databasePath, `select parent_id, count(*) as n from session_v2
-        where parent_id is not null group by parent_id;`),
-      query(databasePath, `select coalesce(s.parent_id, s.id) as root, max(m.time_created) as at
-        from session_message m join session_v2 s on s.id = m.session_id group by root;`),
-    ]);
-    const subagents = new Map(subagentRows.map((row) => [row.parent_id, row.n]));
-    const activity = new Map(activityRows.map((row) => [row.root, Number(row.at || 0)]));
-    const threads = roots.map((row) => openCodeThread(row, subagents, activity.get(row.id)));
-    result = { generatedAtMs: nowMs, provider: { installed: true, status: 'ready', message: '', threadCount: threads.length }, threads };
+  let result = cached?.signature === signature ? cached.result : null;
+  if (!result) {
+    if (!(await schemaReady(databasePath, query))) {
+      result = { generatedAtMs: nowMs, provider: { installed: true, status: 'warning', message: SCHEMA_WARNING }, threads: [] };
+    } else {
+      const limit = Math.min(Math.max(Number.parseInt(maxCount, 10) || MAX_THREADS, 1), MAX_THREADS);
+      const [roots, subagentRows, activityRows] = await Promise.all([
+        query(databasePath, `select id, title, slug, directory, time_created, time_updated,
+          time_suspended, time_idle, idle_outcome, time_viewed, time_archived
+          from session_v2 where parent_id is null order by time_updated desc limit ${limit};`),
+        query(databasePath, `select parent_id, count(*) as n from session_v2
+          where parent_id is not null group by parent_id;`),
+        query(databasePath, `select coalesce(s.parent_id, s.id) as root, max(m.time_created) as at
+          from session_message m join session_v2 s on s.id = m.session_id group by root;`),
+      ]);
+      const subagents = new Map(subagentRows.map((row) => [row.parent_id, row.n]));
+      const activity = new Map(activityRows.map((row) => [row.root, Number(row.at || 0)]));
+      const threads = roots.map((row) => openCodeThread(row, subagents, activity.get(row.id)));
+      result = { generatedAtMs: nowMs, provider: { installed: true, status: 'ready', message: '', threadCount: threads.length }, threads };
+    }
+    cache.set(key, { signature, result });
   }
-  cache.set(key, { signature, result });
+  if (typeof stateDir === 'string' && stateDir && result.threads.length) {
+    const incoming = new Map();
+    for (const { to, from, atMs } of await readBridgeMessages(stateDir, nowMs - SESSION_MESSAGE_WINDOW_MS, cacheScope)) {
+      if (!incoming.has(to)) incoming.set(to, []);
+      incoming.get(to).push({ from, atMs });
+    }
+    return { ...result, threads: result.threads.map((thread) => {
+      const messages = incoming.get(opencodeBridgeId(thread.externalId));
+      return messages ? { ...thread, incomingMessages: messages } : thread;
+    }) };
+  }
   return result;
 }

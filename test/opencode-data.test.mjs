@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { querySqliteJson } from '../src/codex-data.mjs';
-import { invalidateOpenCodeData, loadOpenCodeDashboard } from '../src/opencode-data.mjs';
+import { defaultOpenCodeStateDir, invalidateOpenCodeData, loadOpenCodeDashboard, opencodeBridgeId } from '../src/opencode-data.mjs';
 import { buildSwitchboardDashboard } from '../src/switchboard.mjs';
 
 const now = Date.parse('2026-10-19T12:00:00Z');
@@ -168,4 +168,83 @@ test('OpenCode reuses its result until the database or its WAL changes, and neve
     assert.deepEqual(await readFile(`${databasePath}-wal`), wal);
     assert.deepEqual(await readFile(databasePath), main);
   } finally { writer.close(); }
+});
+
+const bridgeIds = ['18284f68-b2c6-5cca-8fb7-12d5973743f9', '73d74cef-fea1-5f25-8922-19bb70b05a69'];
+const sessionIds = ['ses_asbTestOpenCode01', 'ses_asbTestOpenCode02'];
+const peerId = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+
+test('OpenCode bridge IDs match the bridge UUID v5 vectors', () => {
+  assert.deepEqual(sessionIds.map((id) => opencodeBridgeId(id)), bridgeIds);
+});
+
+test('OpenCode state defaults follow XDG_STATE_HOME or the supplied home', () => {
+  assert.equal(defaultOpenCodeStateDir({ homeDir: '/h', env: {} }), path.join('/h', '.local', 'state', 'opencode'));
+  assert.equal(defaultOpenCodeStateDir({ homeDir: '/h', env: { XDG_STATE_HOME: '/x' } }), path.join('/x', 'opencode'));
+});
+
+async function messageFixture(t) {
+  const { dataDir, databasePath } = await fixture(t);
+  const database = createDatabase(databasePath);
+  for (const id of sessionIds) addSession(database, { ...base, id, title: id });
+  database.close();
+  const stateDir = path.join(dataDir, '.local', 'state', 'opencode');
+  const directory = path.join(stateDir, 'plugin-state', 'asb-bridge');
+  await mkdir(directory, { recursive: true });
+  const writer = new DatabaseSync(path.join(directory, `${bridgeIds[0]}.sqlite`));
+  writer.exec(`pragma journal_mode=WAL;
+    create table messages(id integer primary key, peer_id text, direction text, text text, status text, created_at integer, kind text);`);
+  const insert = writer.prepare('insert into messages(peer_id, direction, text, status, created_at, kind) values (?, ?, ?, ?, ?, ?)');
+  const add = (n, direction, status, offset, kind = 'message') => insert.run(peerId(n), direction, PROMPT, status, now / 1000 + offset, kind);
+  return { dataDir, stateDir, writer, add };
+}
+
+test('OpenCode attaches only delivered incoming bridge messages to the receiving session', async (t) => {
+  const f = await messageFixture(t);
+  try {
+    f.add(1, 'in', 'started', -20);
+    f.add(2, 'in', 'steered', -10);
+    f.add(3, 'out', 'started', -9);
+    f.add(4, 'in', 'dropped', -8);
+    f.add(5, 'in', 'started', -7, 'idle-notice');
+    f.add(6, 'in', 'started', -121);
+    const result = await loadOpenCodeDashboard({ dataDir: f.dataDir, stateDir: f.stateDir, nowMs: now });
+    assert.deepEqual(result.threads.find((thread) => thread.id === sessionIds[0]).incomingMessages,
+      [{ from: peerId(1), atMs: now - 20_000 }, { from: peerId(2), atMs: now - 10_000 }]);
+    assert.equal(Object.hasOwn(result.threads.find((thread) => thread.id === sessionIds[1]), 'incomingMessages'), false);
+    assert.equal(JSON.stringify(result).includes(PROMPT), false);
+  } finally { f.writer.close(); }
+});
+
+test('OpenCode refreshes bridge messages on a database cache hit without changing earlier results', async (t) => {
+  const f = await messageFixture(t);
+  try {
+    const options = { dataDir: f.dataDir, stateDir: f.stateDir, nowMs: now, cacheScope: f.dataDir };
+    const { sql, query } = recordingQuery();
+    const bare = await loadOpenCodeDashboard({ dataDir: f.dataDir, nowMs: now, cacheScope: f.dataDir, query });
+    const queryCount = sql.length;
+    f.add(1, 'in', 'started', -20);
+    const first = await loadOpenCodeDashboard({ ...options, query });
+    const entries = [{ from: peerId(1), atMs: now - 20_000 }];
+    assert.deepEqual(first.threads.find((thread) => thread.id === sessionIds[0]).incomingMessages, entries);
+    f.add(2, 'in', 'steered', -10);
+    const second = await loadOpenCodeDashboard({ ...options, query });
+    assert.deepEqual(second.threads.find((thread) => thread.id === sessionIds[0]).incomingMessages,
+      [...entries, { from: peerId(2), atMs: now - 10_000 }]);
+    assert.equal(sql.length, queryCount);
+    assert.notEqual(second, first);
+    assert.deepEqual(first.threads.find((thread) => thread.id === sessionIds[0]).incomingMessages, entries);
+    assert.ok(bare.threads.every((thread) => !Object.hasOwn(thread, 'incomingMessages')));
+    assert.equal(second.threads.find((thread) => thread.id === sessionIds[1]), bare.threads.find((thread) => thread.id === sessionIds[1]));
+    assert.equal(await loadOpenCodeDashboard({ dataDir: f.dataDir, nowMs: now, cacheScope: f.dataDir, query }), bare);
+  } finally { f.writer.close(); }
+});
+
+test('OpenCode without stateDir ignores a plugin database under the temporary home', async (t) => {
+  const f = await messageFixture(t);
+  try {
+    f.add(1, 'in', 'started', -20);
+    const result = await loadOpenCodeDashboard({ dataDir: f.dataDir, nowMs: now });
+    assert.ok(result.threads.every((thread) => !Object.hasOwn(thread, 'incomingMessages')));
+  } finally { f.writer.close(); }
 });
