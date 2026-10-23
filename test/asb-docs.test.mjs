@@ -11,24 +11,26 @@ const REQUIRED = ['node', 'sqlite', 'openssl', 'xdg', 'gi', 'gtk', 'adw'];
 const OPTIONAL = ['gicairo', 'qrcode', 'sound'];
 const FLAKE = 'nix profile install github:Jamir-boop/ASB';
 
-// The README install blocks: the code block after a line that ends with (family `name`), as [name, lines].
-const familyBlocks = (readme) => [...readme.matchAll(/\(family `([a-z]+)`\)\n\n```bash\n([^`]*)```/g)]
+// The install guide blocks: the code block after a line that ends with (family `name`), as [name, lines].
+const familyBlocks = (markdown) => [...markdown.matchAll(/\(family `([a-z]+)`\)\n\n```bash\n([^`]*)```/g)]
   .map(([, name, body]) => [name, body.trimEnd().split('\n')]);
 
 test('documents ASB installation, video, privacy limits, and upstream credit', async () => {
-  const [readme, guide, privacy, changelog] = await Promise.all([
+  const [readme, install, guide, privacy, changelog] = await Promise.all([
     text('../README.md'),
+    text('../docs/INSTALL.md'),
     text('../ASB.md'),
     text('../docs/PRIVACY.md'),
     text('../CHANGELOG.md'),
   ]);
-  const download = readme.match(/\[Download v(\d+\.\d+\.\d+)\]/);
-  assert.ok(download, 'README should name the published download version');
+  const download = install.match(/\[Download v(\d+\.\d+\.\d+)\]/);
+  assert.ok(download, 'the install guide should name the published download version');
   const version = download[1];
 
   assert.match(readme, /!\[[^\]]*\]\(docs\/media\/asb-banner\.png\)/);
-  assert.match(readme, /native GNOME switcher for your Codex and Claude Desktop Code chats/);
-  assert.match(readme, /Select a chat to open it in its original app/);
+  assert.match(readme, /native switch board with GTK 4 and Libadwaita/);
+  assert.match(readme, /opens a chat in its own app/);
+  assert.match(readme, /makes no model calls/);
   assert.match(readme, /^https:\/\/github\.com\/user-attachments\/assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/mi);
   assert.match(privacy, /banner and Remotion demo use synthetic chats and folders/);
   assert.match(privacy, /not a capture of local conversations/);
@@ -36,21 +38,24 @@ test('documents ASB installation, video, privacy limits, and upstream credit', a
   assert.match(privacy, /The file has at most 5000 Codex records, 5000 Claude records, and 8 MiB\./);
   assert.match(privacy, /`%LOCALAPPDATA%\\asb\\cache` holds the reader positions file\. ASB limits these four folders/);
   assert.doesNotMatch(privacy, /transcript checkpoint/);
-  assert.ok(readme.includes(`[Download v${version}](https://github.com/Jamir-boop/ASB/releases/tag/v${version})`));
-  assert.ok(readme.includes(`[Release notes](docs/releases/v${version}.md)`));
+  assert.ok(install.includes(`[Download v${version}](https://github.com/Jamir-boop/ASB/releases/tag/v${version})`));
+  assert.ok(install.includes(`[Release notes](../docs/releases/v${version}.md)`));
   const releaseNotes = await text(`../docs/releases/v${version}.md`);
   assert.ok(releaseNotes.startsWith(`# ASB ${version}\n`));
-  assert.ok(readme.includes(`https://github.com/Jamir-boop/ASB/releases/download/v${version}/SHA256SUMS`));
-  assert.ok(readme.includes(`https://github.com/Jamir-boop/ASB/releases/download/v${version}/asb_${version}_all.deb`));
-  assert.ok(readme.includes(`https://github.com/Jamir-boop/ASB/releases/download/v${version}/asb-${version}-linux.tar.gz`));
-  assert.ok(readme.includes(`sudo apt install ./asb_${version}_all.deb`));
-  assert.ok(readme.includes(`tar -xzf asb-${version}-linux.tar.gz`));
-  assert.ok(readme.includes(`cd asb-${version}\n`));
+  assert.ok(install.includes(`https://github.com/Jamir-boop/ASB/releases/download/v${version}/SHA256SUMS`));
+  assert.ok(install.includes(`https://github.com/Jamir-boop/ASB/releases/download/v${version}/asb_${version}_all.deb`));
+  assert.ok(install.includes(`https://github.com/Jamir-boop/ASB/releases/download/v${version}/asb-${version}-linux.tar.gz`));
+  assert.ok(install.includes(`sudo apt install ./asb_${version}_all.deb`));
+  assert.ok(install.includes(`tar -xzf asb-${version}-linux.tar.gz`));
+  assert.ok(install.includes(`cd asb-${version}\n`));
   assert.ok(guide.includes(`for v${version} packages`));
   assert.match(readme, /Node\.js `>=20` \(`sqlite3` below `22\.13`\)/);
-  assert.match(readme, /Python 3 with PyGObject, GTK `>=4\.12`, Libadwaita `>=1\.4`, and `xdg-utils`/);
+  assert.match(install, /Python 3 with PyGObject, GTK `>=4\.12`, Libadwaita `>=1\.4`, and `xdg-utils`/);
   assert.match(readme, /working `codex:` and `claude:` URL handlers/);
   assert.match(readme, /## Install on Linux/);
+  // The short README keeps the npm route and links to the install guide.
+  for (const item of ['### Install with npm', 'npm install -g --install-links github:Jamir-boop/ASB', 'Keep `--install-links`',
+    '(docs/INSTALL.md)', '(docs/INSTALL.md#install-on-windows)', '(docs/INSTALL.md#asb-bridge-optional)']) assert.ok(readme.includes(item), item);
   assert.match(readme, /\[User guide\]\(ASB\.md\).*\[Privacy\]\(docs\/PRIVACY\.md\).*\[Source setup\]\(ASB\.md#start-and-stop\).*\[Contributing\]\(CONTRIBUTING\.md\)/);
   assert.match(readme, /\[MIT license\]\(LICENSE\)/);
   assert.match(guide, /http:\/\/127\.0\.0\.1:4629\//);
@@ -59,8 +64,8 @@ test('documents ASB installation, video, privacy limits, and upstream credit', a
   assert.match(changelog, /## Upstream history/);
 });
 
-test('the README has one install block for each Linux family, equal to installCommand', async () => {
-  const blocks = familyBlocks(await text('../README.md'));
+test('the install guide has one install block for each Linux family, equal to installCommand', async () => {
+  const blocks = familyBlocks(await text('../docs/INSTALL.md'));
   assert.deepEqual(blocks.map(([name]) => name), Object.keys(FAMILIES));
   for (const [name, lines] of blocks) {
     if (FAMILIES[name].packages === null) {
@@ -73,9 +78,9 @@ test('the README has one install block for each Linux family, equal to installCo
   }
 });
 
-test('the README blocks are the commands that asb doctor prints on a system with nothing installed', { skip: process.platform === 'win32' }, async () => {
-  const [{ collect }, readme] = await Promise.all([import('../scripts/asb-doctor.mjs'), text('../README.md')]);
-  const blocks = new Map(familyBlocks(readme));
+test('the install guide blocks are the commands that asb doctor prints on a system with nothing installed', { skip: process.platform === 'win32' }, async () => {
+  const [{ collect }, install] = await Promise.all([import('../scripts/asb-doctor.mjs'), text('../docs/INSTALL.md')]);
+  const blocks = new Map(familyBlocks(install));
   assert.equal(blocks.size, Object.keys(FAMILIES).length);
   for (const [name, family] of Object.entries(FAMILIES)) {
     const data = await collect({
@@ -96,21 +101,21 @@ test('the README blocks are the commands that asb doctor prints on a system with
   }
 });
 
-test('the README names the release packages and links only the files that the release has', async () => {
-  const readme = await text('../README.md');
-  const version = readme.match(/\[Download v(\d+\.\d+\.\d+)\]/)[1];
+test('the install guide names the release packages and links only the files that the release has', async () => {
+  const install = await text('../docs/INSTALL.md');
+  const version = install.match(/\[Download v(\d+\.\d+\.\d+)\]/)[1];
   // The release has five files: the .deb, the RPM, the archive, the PKGBUILD, and SHA256SUMS.
   const published = [`asb_${version}_all.deb`, `asb-${version}-1.noarch.rpm`, `asb-${version}-linux.tar.gz`, 'PKGBUILD', 'SHA256SUMS'];
-  const files = [...readme.matchAll(new RegExp(`releases/download/v${version}/([^)\\s]+)`, 'g'))].map(([, file]) => file);
+  const files = [...install.matchAll(new RegExp(`releases/download/v${version}/([^)\\s]+)`, 'g'))].map(([, file]) => file);
   for (const file of published) assert.ok(files.includes(file), file);
   for (const file of files) assert.ok(published.includes(file), file);
   for (const command of ['npm run build', 'rpmbuild', `sudo dnf install ./asb-${version}-1.noarch.rpm`, `sudo zypper install --allow-unsigned-rpm ./asb-${version}-1.noarch.rpm`,
-    'makepkg -si', FLAKE]) assert.ok(readme.includes(command), command);
+    'makepkg -si', FLAKE]) assert.ok(install.includes(command), command);
 });
 
 test('Install on Linux has the npm route, asb doctor, the family blocks, the release packages, engine only, autostart without systemd, and the firewall in this order', async () => {
-  const readme = await text('../README.md');
-  const section = readme.slice(readme.indexOf('## Install on Linux'), readme.indexOf('## Install on Windows'));
+  const install = await text('../docs/INSTALL.md');
+  const section = install.slice(install.indexOf('## Install on Linux'), install.indexOf('## Install on Windows'));
   let last = -1;
   for (const item of ['### Install with npm', 'npm install -g --install-links github:Jamir-boop/ASB', 'Keep `--install-links`', '### Check the system', '`asb doctor`',
     '### Packages for each distribution', '(family `debian`)', '### Release packages', '### Engine only', '### Start at login without systemd', '### Firewall']) {
@@ -121,8 +126,8 @@ test('Install on Linux has the npm route, asb doctor, the family blocks, the rel
 });
 
 test('the Node.js section has the routes of nodeRoute, the search order of the launcher, and a link to the package blocks', async () => {
-  const [readme, launcher] = await Promise.all([text('../README.md'), text('../scripts/asb')]);
-  const section = readme.slice(readme.indexOf('\n## Node.js\n'), readme.indexOf('\n## Android companion'));
+  const [install, launcher] = await Promise.all([text('../docs/INSTALL.md'), text('../scripts/asb')]);
+  const section = install.slice(install.indexOf('\n## Node.js\n'), install.indexOf('\n## Android companion'));
   const rhel = nodeRoute({ ID: 'almalinux', ID_LIKE: ['rhel', 'centos', 'fedora'], VERSION_ID: '9.8' }, 'fedora');
   assert.ok(section.includes(`\`sudo ${rhel.command.join(' ')}\``));
   for (const route of [nodeRoute({ ID: 'debian', VERSION_ID: '12' }, 'debian'), nodeRoute({ ID: 'steamos' }, null, { mode: 'readonly' })]) {
