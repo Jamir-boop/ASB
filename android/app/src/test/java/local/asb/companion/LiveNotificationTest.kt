@@ -15,9 +15,9 @@ class LiveNotificationTest {
         Thread(id = id, state = state, pending = pending, archived = archived, title = title)
 
     @Test fun titleCountsUnarchivedRowsWithTheCorrectNoun() {
-        assertEquals("0 sessions · 0 working · 0 pending", liveTitle(emptyList()))
-        assertEquals("1 session · 1 working · 1 pending", liveTitle(listOf(row("a", "working", pending = true))))
-        assertEquals("2 sessions · 1 working · 1 pending", liveTitle(listOf(
+        assertEquals("0 pending · 0 working · 0 sessions", liveTitle(emptyList()))
+        assertEquals("1 pending · 1 working · 1 session", liveTitle(listOf(row("a", "working", pending = true))))
+        assertEquals("1 pending · 1 working · 2 sessions", liveTitle(listOf(
             row("a", "working"), row("b", pending = true),
             row("c", "working", pending = true, archived = true),
         )))

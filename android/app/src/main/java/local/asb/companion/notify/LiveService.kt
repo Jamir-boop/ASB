@@ -47,7 +47,7 @@ private const val MAX_LINES = 6
 internal fun liveTitle(threads: List<Thread>): String {
     val rows = threads.filter { !it.archived }
     val sessions = if (rows.size == 1) "1 session" else "${rows.size} sessions"
-    return "$sessions · ${rows.count { it.state == "working" }} working · ${rows.count { it.pending }} pending"
+    return "${rows.count { it.pending }} pending · ${rows.count { it.state == "working" }} working · $sessions"
 }
 
 internal fun liveLines(threads: List<Thread>): List<String> {

@@ -52,7 +52,7 @@ baseline updates; only the current, resumed pairing can save that baseline.
 ## Live notification
 
 The live notification is an ongoing, silent notification with the session
-counts, for example `5 sessions · 2 working · 1 pending`. Archived sessions are
+counts, for example `1 pending · 2 working · 5 sessions`. Archived sessions are
 not counted. Expand it to see the titles of the Working sessions (six titles,
 then `+N more`). Tap it to open the app. Select Stop to turn it off. When
 Android hides sensitive content on the lock screen, the lock screen shows only
