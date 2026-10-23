@@ -134,7 +134,7 @@ Exact member sends (Linux or Windows at both ends, Codex senders, `codex` and `c
 
 | Case | State | Note | Test |
 | --- | --- | --- | --- |
-| Discovery | yes | The plugin registers a root session on its first turn, on a bridge tool call, or at plugin start (updated in the last 30 minutes, at most 8). A subagent never registers; its tool call sends as its root. At most 24 sessions per server process; the oldest idle goes first. Unregister after 12 hours idle. | opencode |
+| Discovery | yes | The plugin registers a root session on its first turn, on a bridge tool call, or at plugin start (updated in the last 30 minutes, at most 8). A subagent never registers; its tool call sends as its root. At most 24 sessions per server process. At the limit, the oldest receiver with no running turn, no held message, and no waiting idle notice goes first; the unregister after 12 hours idle uses the same rule (`canClose`). The plugin reads a session from OpenCode only for the event types that it handles. | opencode |
 | Names | yes | `opencode-<title>-<suffix>` or `opencode-<folder>-<suffix>`. The bridge ID is UUID v5 of `opencode:<session id>`, stable across restarts. The suffix lengthens on a clash. | opencode |
 | Delivery | yes | `ctx.session.synthetic` with delivery `steer`. `started` when idle, `steered` when running. A sender with any mode is delivered at once: no hold and no permission prompt. The stored policy stays `default`. | opencode |
 | Receipts | yes | The same receipt values as Codex. An OpenCode sender gets them on its inbox socket. | opencode |
