@@ -118,7 +118,7 @@ class Box:
     def get_sensitive(self):
         return True
 
-    def clear_hover(self):
+    def clear_hover(self, **_kwargs):
         pass
 
     def clear_flights(self):
@@ -1404,7 +1404,7 @@ class DataChecks(unittest.TestCase):
     def test_layout_width_validation_persistence_and_reset(self):
         with TemporaryDirectory(prefix="asb-layout-test-") as directory:
             path = Path(directory) / "layout.json"
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "showAppPills": False, "cardLimit": 100, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative"})
             asb.write_layout(path, 160)
             self.assertEqual(asb.read_layout(path)["columnWidth"], 160)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
@@ -1415,20 +1415,20 @@ class DataChecks(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), previous)
             asb.write_layout(path)
             self.assertFalse(path.exists())
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "showAppPills": False, "cardLimit": 100, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative"})
 
     def test_view_setting_legacy_width_save_and_reset(self):
         with TemporaryDirectory(prefix="asb-view-test-") as directory:
             path = Path(directory) / "layout.json"
             path.write_text(json.dumps({"version": 1, "columnWidth": 180}))
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "showAppPills": False, "cardLimit": 100, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "cardLimit": 100, "copyKind": "relative"})
             asb.write_layout(path, 180, "comfortable")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "comfortable", "showAppPills": False, "cardLimit": 100, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "comfortable", "cardLimit": 100, "copyKind": "relative"})
             asb.write_layout(path, 320)
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": False, "cardLimit": 100, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 100, "copyKind": "relative"})
             asb.write_layout(path)
             self.assertTrue(path.exists())
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": False, "cardLimit": 100, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 100, "copyKind": "relative"})
             before = path.read_bytes()
             with self.assertRaises(ValueError):
                 asb.write_layout(path, 240, "unknown")
@@ -1441,17 +1441,17 @@ class DataChecks(unittest.TestCase):
     def test_layout_accepts_legacy_show_app_pills_and_never_writes_it(self):
         with TemporaryDirectory(prefix="asb-toolbar-layout-") as directory:
             path = Path(directory) / "layout.json"
-            for invalid in (0, 1, "true", None, [], {}):
-                path.write_text(json.dumps({"version": 1, "columnWidth": 240, "showAppPills": invalid}))
-                with self.assertRaises(ValueError):
-                    asb.read_layout(path)
+            # ASB does not use the old value, so any value loads.
+            for value in (0, 1, "true", None, [], {}):
+                path.write_text(json.dumps({"version": 1, "columnWidth": 240, "showAppPills": value}))
+                self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative"})
             path.write_text(json.dumps({"version": 1, "columnWidth": 240, "showAppPills": True}))
-            self.assertTrue(asb.read_layout(path)["showAppPills"])
+            self.assertNotIn("showAppPills", asb.read_layout(path))
             asb.write_layout(path, 180, "compact")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "showAppPills": False, "cardLimit": 100, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "cardLimit": 100, "copyKind": "relative"})
             self.assertNotIn("showAppPills", json.loads(path.read_text()))
             asb.write_layout(path, 320, "comfortable")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": False, "cardLimit": 100, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 100, "copyKind": "relative"})
             self.assertNotIn("showAppPills", json.loads(path.read_text()))
             asb.write_layout(path)
             self.assertTrue(path.exists())
@@ -1466,7 +1466,7 @@ class DataChecks(unittest.TestCase):
             window.card_limit, window.layout_error, window.dragging = 100, Mock(), False
             window.width_control = Mock(set_value=Mock(side_effect=lambda width: setattr(window, "column_width", width)))
             window.reset_width()
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": False, "cardLimit": 100, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 100, "copyKind": "relative"})
             window.save_width()
             self.assertNotIn("showAppPills", json.loads(path.read_text()))
 
@@ -1493,13 +1493,13 @@ class DataChecks(unittest.TestCase):
             asb.write_layout(path, 320)
             asb.write_layout(path, 320, "comfortable")
             asb.write_layout(path, 320, "comfortable")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": False, "cardLimit": 200, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 200, "copyKind": "relative"})
             window = object.__new__(Window)
             window.column_width, window.view, window.layout_path, window.copy_kind = 320, "comfortable", path, "relative"
             window.card_limit, window.layout_error, window.dragging = 200, Mock(), False
             window.width_control = Mock(set_value=Mock(side_effect=lambda width: setattr(window, "column_width", width)))
             window.reset_width()
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "showAppPills": False, "cardLimit": 200, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 200, "copyKind": "relative"})
             window.save_width()
             self.assertEqual(asb.read_layout(path)["cardLimit"], 200)
             # The delete branch keeps a file that holds a limit other than the default.
@@ -1555,7 +1555,7 @@ class DataChecks(unittest.TestCase):
             asb.write_layout(path, 320, "comfortable")
             asb.write_layout(path, 320, "comfortable")
             asb.write_layout(path, 320, "comfortable", card_limit=200)
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "showAppPills": False,
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable",
                                                      "cardLimit": 200, "copyKind": "absolute"})
             # A default layout is deleted; an Absolute kind keeps the file.
             asb.write_layout(path, copy_kind="absolute")
@@ -1806,7 +1806,7 @@ class DataChecks(unittest.TestCase):
         window.get_settings = lambda: SimpleNamespace(get_property=lambda _name: False)
         window.get_mapped = lambda: False
         window.update_filters_pill = Mock()
-        window.make_filter_chip = Mock(side_effect=lambda key, title, detail, color, animations, after=None: (Mock(asb_chip_name=Mock(), asb_chip_dot=Mock(), set_tooltip_text=Mock(), update_property=Mock()), Mock()))
+        window.make_filter_chip = Mock(side_effect=lambda key, title, detail, color, animations, after=None: (Mock(asb_chip_dot=Mock(), set_tooltip_text=Mock(), update_property=Mock()), Mock()))
         window.scroll_chip_into_view = lambda: False
         with patch.dict(SCOPE, {"GLib": SimpleNamespace(idle_add=lambda fn: fn()),
                                 "Gtk": SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL="label"))}):

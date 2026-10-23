@@ -31,7 +31,6 @@ NUMBER_HOLD_MS = 400
 APP_ID = "local.asb.AgentSwitchBoard"
 STATES = ("working", "waiting", "idle", "unknown")
 SOURCE_PROVIDERS = ("codex", "claude-desktop-code")
-APP_PILLS = (("codex", "Codex"), ("claude-desktop-code", "Claude"), ("opencode", "OpenCode"))
 APP_NAMES = {"codex": "Codex", "claude-desktop-code": "Claude Desktop Code", "opencode": "OpenCode"}
 # How Claude in a profile reaches Claude sessions on other machines (`remoteClaude`, plan 9.6).
 REMOTE_CLAUDE = (("auto", "Automatic", "Claude in this profile reaches Claude sessions on other machines through ASB, unless both machines use Claude Remote Control."),
@@ -367,8 +366,7 @@ def filter_profiles(dashboard):
         provider = row.get("provider") or ""
         label = row.get("sourceLabel") or (APP_NAMES.get(provider, provider) if source_id == provider else source_id)
         entry = {"key": key, "label": str(label), "color": str(row.get("sourceColor") or ""),
-                 "provider": provider, "source": machine, "machineName": str(row.get("machineName") or machine),
-                 "sourceNumber": row.get("sourceNumber") if type(row.get("sourceNumber")) is int else 0}
+                 "provider": provider, "source": machine, "machineName": str(row.get("machineName") or machine)}
         remote.setdefault(machine, []).append(entry)
 
     def by_app(entries):
@@ -384,8 +382,7 @@ def filter_profiles(dashboard):
 
     machines = [{"machine": "", "machineName": local_name or "This machine", "apps": by_app(local)}]
     for machine in sorted(remote, key=lambda name: (remote[name][0].get("machineName", name), name)):
-        entries = sorted(remote[machine], key=lambda item: (order_of(item["provider"]),
-                                                            item.get("sourceNumber", 0), item["label"]))
+        entries = sorted(remote[machine], key=lambda item: (order_of(item["provider"]), item["label"]))
         machines.append({"machine": machine, "machineName": remote[machine][0].get("machineName") or machine,
                          "apps": by_app(entries)})
     return tuple(machines)
@@ -734,8 +731,7 @@ def validate_card_limit(value):
 
 def read_layout(path):
     if not path or not Path(path).exists():
-        return {"columnWidth": DEFAULT_COLUMN_WIDTH, "view": "compact", "showAppPills": False, "cardLimit": DEFAULT_CARD_LIMIT,
-                "copyKind": "relative"}
+        return {"columnWidth": DEFAULT_COLUMN_WIDTH, "view": "compact", "cardLimit": DEFAULT_CARD_LIMIT, "copyKind": "relative"}
     value = json.loads(Path(path).read_text())
     if not isinstance(value, dict) or not {"version", "columnWidth"}.issubset(value) \
             or set(value) - {"version", "columnWidth", "view", "showAppPills", "cardLimit", "copyKind"} or value["version"] != 1:
@@ -743,10 +739,7 @@ def read_layout(path):
     view = value.get("view", "compact")
     if view not in ("compact", "comfortable"):
         raise ValueError("Choose Compact or Comfortable view.")
-    show_apps = value.get("showAppPills", False)
-    if type(show_apps) is not bool:
-        raise ValueError("Show app pills must be on or off.")
-    return {"columnWidth": validate_column_width(value["columnWidth"]), "view": view, "showAppPills": show_apps,
+    return {"columnWidth": validate_column_width(value["columnWidth"]), "view": view,
             "cardLimit": validate_card_limit(value.get("cardLimit", DEFAULT_CARD_LIMIT)),
             "copyKind": validate_copy_kind(value.get("copyKind", "relative"))}
 
@@ -1298,7 +1291,7 @@ class LauncherStart:
                 return
             try:
                 base, token = launcher_address(line)
-            except (ValueError, UnicodeError):
+            except ValueError:
                 continue
             with self.lock:
                 if self.reconnect_target:
@@ -1531,13 +1524,13 @@ class SessionStrip(Gtk.Box):
             self.hover_from = self.hover_to = None
         self.queue_draw()
 
-    def clear_hover(self, *_args):
+    def clear_hover(self, *_args, copy_tag=True):
         if self.hover_card:
             self.hover_card.remove_css_class("asb-hover-paint")
             card, self.hover_card = self.hover_card, None
             get_root = getattr(self, "get_root", None)
             root = get_root() if get_root else None
-            if root is not None and hasattr(root, "hide_copy_tag"):
+            if copy_tag and root is not None and hasattr(root, "hide_copy_tag"):
                 root.hide_copy_tag(getattr(card, "asb_copy_button", None), keep_focused=True)
         if self.hover_rect is None and self.hover_target is None and self.hover_from is None:
             return
@@ -4133,12 +4126,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         """Save the board copy kind. A failed save keeps the old kind and shows the error."""
         if kind == self.copy_kind:
             return
-        previous = self.copy_kind
         try:
             write_layout(self.layout_path, self.column_width, self.view,
                          self.card_limit, copy_kind=kind)
         except (OSError, ValueError) as error:
-            self.copy_kind = previous
             self.layout_error.set_label(str(error))
             self.set_notice(str(error), temporary=True)
             return
@@ -4149,8 +4140,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 widget.asb_action_signature = None
                 self.update_card_actions(widget)
 
-    def step_copy_kind(self, direction=1, widget=None):
-        """Toggle the board copy kind. A remote card never moves it; direction only sets the odometer roll."""
+    def step_copy_kind(self, widget=None):
+        """Toggle the board copy kind. A remote card never moves it."""
         row = getattr(widget, "asb_thread", None) or {}
         if row.get("remote") is True:
             return
@@ -4208,7 +4199,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if self.closed or not delta:
             return True
         # The kind switch takes the wheel only after the pointer rests on the copy button, or while the tag shows.
-        copy = self.copy_under_pointer()
+        copy = getattr(self, "copy_hover", None)
         if copy is not None:
             unit = controller.get_unit() if controller else Gdk.ScrollUnit.WHEEL
             now = time.monotonic()
@@ -4217,7 +4208,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 step, self.copy_wheel_state = copy_wheel_step(self.copy_wheel_state, delta, now,
                                                               surface=unit != Gdk.ScrollUnit.WHEEL)
                 if step:
-                    self.step_copy_kind(step, getattr(copy, "asb_card", None))
+                    self.step_copy_kind(getattr(copy, "asb_card", None))
                 return True
         adjustment = self.scroll.get_hadjustment()
         unit = controller.get_unit() if controller else Gdk.ScrollUnit.WHEEL
@@ -4309,6 +4300,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def start_motion(self):
         self.redraw_visible_columns()
         old, self.motion_from = self.motion_from, None
+        # GTK sends no enter or leave when a card moves under a still pointer, so check the copy button after the layout.
+        copy = getattr(self, "copy_hover", None)
+        if old is not None and copy is not None and not self.pointer_on(copy):
+            self.hide_copy_tag(copy, keep_focused=True)
         if old in (None, False) or self.closed:
             return
         strip = self.list_body
@@ -4317,7 +4312,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         places = self.painted_places()
         strip.motion = motion_offsets(old, places)
         if strip.motion:
-            strip.clear_hover()
+            strip.clear_hover(copy_tag=False)
             self.motion_columns = list({self.focus_widgets[identity].get_parent() for identity in strip.motion})
             position = self.scroll.get_hadjustment().get_value()
             self.motion_bounds = {}
@@ -4700,18 +4695,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         chip.add_css_class("asb-filter-pill")
         chip.update_property([Gtk.AccessibleProperty.LABEL], [detail])
         content = Gtk.Box(spacing=6)
-        dot = Gtk.Box()
-        dot.set_size_request(8, 8)
-        dot.set_valign(Gtk.Align.CENTER)
-        dot.set_halign(Gtk.Align.CENTER)
-        dot.add_css_class("asb-chip-dot")
+        dot = self.chip_dot()
         dot.set_visible(False)
         content.append(dot)
         name = label(self.ellipsize_chip(title))
-        name.asb_full_title = title
         content.append(name)
         content.append(Gtk.Image(icon_name="window-close-symbolic", pixel_size=12))
-        chip.asb_chip_name, chip.asb_chip_dot = name, dot
+        chip.asb_chip_dot = dot
         chip.set_child(content)
         chip.connect("clicked", self.clear_filter_chip, key)
         keys = Gtk.EventControllerKey()
@@ -4747,6 +4737,16 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 revealer.get_parent().remove(revealer)
         wrapper.connect("notify::child-revealed", finished)
         wrapper.set_reveal_child(False)
+
+    @staticmethod
+    def chip_dot():
+        """The 8 px profile color dot of a filter chip and of a Filters popover row."""
+        dot = Gtk.Box()
+        dot.set_size_request(8, 8)
+        dot.set_valign(Gtk.Align.CENTER)
+        dot.set_halign(Gtk.Align.CENTER)
+        dot.add_css_class("asb-chip-dot")
+        return dot
 
     def apply_chip_dot(self, chip, color):
         dot = getattr(chip, "asb_chip_dot", None)
@@ -4802,7 +4802,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         focus = self.get_focus()
         chip = self.filter_chip_widgets.get(key, (None, None))[0]
         restore_focus = bool(focus and chip and (focus is chip or focus.is_ancestor(chip)))
-        visible_before = [other for other, _name in self.filter_chip_widgets.values() if other is not chip]
         if key == "pending":
             self.set_pending(False)
         elif key.startswith("state:"):
@@ -4818,7 +4817,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.filter_changed()
         if restore_focus:
             after = [other for other, _name in self.filter_chip_widgets.values()]
-            next_chip = next((widget for widget in after if widget in visible_before or widget is not chip), None)
+            next_chip = next((widget for widget in after if widget is not chip), None)
             if next_chip is None:
                 next_chip = self.filters_pill
             next_chip.grab_focus()
@@ -4859,7 +4858,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.sync_filters_popover_checks()
             return
         self.filter_popover_signature = model
-        focus_action = getattr(self.get_focus(), "asb_filter_action", None)
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
                                       vscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
@@ -4901,11 +4899,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     set_icon(icon, glyph)
                     content.append(icon)
                 if color:
-                    dot = Gtk.Box()
-                    dot.set_size_request(8, 8)
-                    dot.set_valign(Gtk.Align.CENTER)
-                    dot.set_halign(Gtk.Align.CENTER)
-                    dot.add_css_class("asb-chip-dot")
+                    dot = self.chip_dot()
                     dot.set_visible(True)
                     content.append(dot)
                     self.paint_dot(dot, color)
@@ -4916,7 +4910,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 row.set_active(checked)
                 row.set_inconsistent(mixed)
                 row.connect("toggled", self.filter_row_toggled, action)
-            row.asb_filter_action = action
             row.update_property([Gtk.AccessibleProperty.LABEL], [name])
             self.filter_popover_rows[action] = row
             return row
@@ -4965,7 +4958,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         footer = Gtk.Button(label="Clear filters", hexpand=True)
         footer.add_css_class("asb-filter-footer")
         footer.set_sensitive(self.filters_active())
-        footer.asb_filter_action = "clear"
         footer.connect("clicked", self.filter_row_clicked, "clear")
         self.filter_popover_rows["clear"] = footer
         root.append(footer)
@@ -4976,6 +4968,18 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.clear_filters()
             self.filter_popover.popdown()
             self.filters_pill.grab_focus()
+
+    def app_profile_keys(self, action):
+        """The profile keys of an app:<machine>:<provider> row of the Filters popover."""
+        _kind, machine, provider = action.split(":", 2)
+        keys = []
+        for entry in self.filter_model:
+            if entry["machine"] != machine:
+                continue
+            for app in entry["apps"]:
+                if app["provider"] == provider:
+                    keys = [profile["key"] for profile in app["profiles"]]
+        return keys
 
     def filter_row_toggled(self, button, action):
         if getattr(button, "asb_syncing", False):
@@ -4999,14 +5003,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.profiles.add(key)
             self.filter_changed()
         elif action.startswith("app:"):
-            _kind, machine, provider = action.split(":", 2)
-            keys = []
-            for entry in self.filter_model:
-                if entry["machine"] != machine:
-                    continue
-                for app in entry["apps"]:
-                    if app["provider"] == provider:
-                        keys = [profile["key"] for profile in app["profiles"]]
+            keys = self.app_profile_keys(action)
             if keys:
                 if on:
                     self.profiles.update(keys)
@@ -5021,11 +5018,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return True
         return False
 
-    def filter_switch_toggled(self, switch, _param, action):
+    def filter_switch_toggled(self, switch, _param, _action):
         if getattr(switch, "asb_syncing", False):
             return
-        if action == "archive":
-            self.set_archived(switch.get_active())
+        self.set_archived(switch.get_active())
         self.sync_filters_popover_checks()
 
     def sync_filters_popover_checks(self):
@@ -5045,14 +5041,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             elif action.startswith("profile:"):
                 self.set_row_check(row, action.split(":", 1)[1] in self.profiles)
             elif action.startswith("app:"):
-                _kind, machine, provider = action.split(":", 2)
-                keys = []
-                for entry in self.filter_model:
-                    if entry["machine"] != machine:
-                        continue
-                    for app in entry["apps"]:
-                        if app["provider"] == provider:
-                            keys = [profile["key"] for profile in app["profiles"]]
+                keys = self.app_profile_keys(action)
                 on = sum(key in self.profiles for key in keys)
                 self.set_row_check(row, on == len(keys), mixed=0 < on < len(keys))
         self.update_filters_pill()
@@ -5080,10 +5069,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.filter_popover.child_focus(direction)
             return True
         return False
-
-    def select_states(self, states):
-        self.states = set(states)
-        self.filter_changed()
 
     def set_drawer_peek(self, active):
         self.drawer_peek = active
@@ -5189,7 +5174,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.motion_from = False
         if repack:
             self.cancel_scroll()
-            self.list_body.clear_hover()
+            self.list_body.clear_hover(copy_tag=False)
         dashboard_ids = {row["id"] for row in self.dashboard.get("threads", [])}
         # The More card stays in the cache when it is not on the board.
         for identity in self.row_cache.keys() - dashboard_ids - {MORE_ID}:
@@ -5709,7 +5694,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     button.asb_identity, button.asb_action = row["id"], None
                     button.connect("clicked", self.card_action_clicked)
                 copy.asb_card, copy.asb_tag, copy.asb_tag_shown, copy.asb_rest_at = widget, tag, False, None
-                copy.asb_copy_words, copy.asb_copy_dot_relative, copy.asb_copy_dot_absolute = tag_words, tag_dot_relative, tag_dot_absolute
                 copy_motion = Gtk.EventControllerMotion()
                 copy_motion.connect("enter", self.copy_button_enter)
                 copy_motion.connect("leave", self.copy_button_leave)
@@ -5799,11 +5783,18 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if button.asb_action:
             self.activate_action(button.asb_action, GLib.Variant("s", button.asb_identity))
 
-    def copy_under_pointer(self):
-        return self.copy_hover if getattr(self, "copy_hover", None) is not None else None
-
     def copy_has_keyboard_focus(self, button):
         return self.get_focus() is button and self.get_focus_visible()
+
+    def pointer_on(self, widget):
+        """True when the pointer is over the widget or over a widget inside it."""
+        surface = self.get_surface()
+        if surface is None:
+            return False
+        found, x, y, _mask = surface.get_device_position(self.get_display().get_default_seat().get_pointer())
+        left, top = self.get_surface_transform()
+        picked = self.pick(x - left, y - top, Gtk.PickFlags.DEFAULT) if found else None
+        return picked is not None and (picked is widget or picked.is_ancestor(widget))
 
     def show_copy_tag(self, button, shown):
         tag = getattr(button, "asb_tag", None)
@@ -5933,7 +5924,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if copy:
             # Copy sends no request, so it has no pending state. The corner fades the title for it at every width that shows it.
             value, reason, kind = copy_choice
-            word = COPY_KIND_WORDS[kind]
             wide, copied = self.column_pixel_width >= 190, bool(widget.asb_copy_timer and value)
             tag_shown = getattr(copy, "asb_tag_shown", False) is True
             copy.set_visible(wide)
@@ -6002,7 +5992,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if self.open_errors.get(identity, "").startswith(("Cannot copy the relative reference: ", "Cannot copy the absolute reference: ")):
             self.open_errors.pop(identity)
             self.update_open_state(widget)
-        done = COPY_DONE_TEXT[kind]
         def clear():
             widget.asb_copy_timer = None
             if not self.closed and self.focus_widgets.get(identity) is widget and widget.asb_view == "comfortable":
@@ -6106,7 +6095,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 and not _state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SUPER_MASK | Gdk.ModifierType.META_MASK):
             focus = self.get_focus()
             if getattr(focus, "asb_card_action", None) == "copy":
-                self.step_copy_kind(-1 if key == Gdk.KEY_Up else 1, getattr(focus, "asb_card", None))
+                self.step_copy_kind(getattr(focus, "asb_card", None))
                 return True
         if _state & SHORTCUT_MASK or (self.context_menu and self.context_menu.get_visible()):
             return False
@@ -6332,7 +6321,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         else:
             panel.asb_copy_error, panel.asb_copied = "", slot
             self.show_copy_rows(panel)
-            done = COPY_DONE_TEXT["relative" if slot == "short" else "absolute"]
             def clear():
                 panel.asb_copy_timer = None
                 self.clear_copy_feedback(panel)

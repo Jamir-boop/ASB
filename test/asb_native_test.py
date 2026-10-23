@@ -98,6 +98,11 @@ def toggle_profile(window, key):
     window.filter_changed()
 
 
+def select_states(window, states):
+    window.states = set(states)
+    window.filter_changed()
+
+
 def mock_dashboard():
     titles = ["Account settings", "Build pipeline", "Cache invalidation", "Error messages", "Import parser",
               "Keyboard navigation", "Local sync", "Release checks", "Route migration", "Session history",
@@ -364,6 +369,16 @@ class WidgetCheck(unittest.TestCase):
             patcher = patch.object(target, name, 0)
             patcher.start()
             self.addCleanup(patcher.stop)
+        self.addCleanup(self.close_windows)
+
+    def close_windows(self):
+        # GTK does not close a window that was never shown, so its refresh timer would send requests in later tests.
+        for window in self.application.get_windows():
+            if isinstance(window, asb.SwitchboardWindow) and not window.closed:
+                window.emit("close-request")
+            window.destroy()
+        self.drain(.03)
+
     def assert_accessible_label(self, widget, expected, prop=None):
         # GTK's exact property check is variadic and is not exposed by PyGObject.
         prop = asb.Gtk.AccessibleProperty.LABEL if prop is None else prop
@@ -627,13 +642,14 @@ class WidgetCheck(unittest.TestCase):
         window.present(); self.drain(.3)
 
         def box_titles():
+            # Each title here has 18 characters or fewer, so the chip label shows all of it.
+            names = dict(window.filter_chip_widgets.values())
             titles = []
             child = window.chip_box.get_first_child()
             while child:
                 chip = child.get_child() if isinstance(child, asb.Gtk.Revealer) else child
-                name = getattr(chip, "asb_chip_name", None)
-                if name is not None:
-                    titles.append(name.asb_full_title)
+                if chip in names:
+                    titles.append(names[chip].get_label())
                 child = child.get_next_sibling()
             return titles
 
@@ -992,7 +1008,7 @@ class WidgetCheck(unittest.TestCase):
         window.set_default_size(1040, 400)
         window.present(); self.drain(.3)
         window.set_pending(True)
-        window.select_states({"working", "waiting"})
+        select_states(window, {"working", "waiting"})
         toggle_profile(window, "|codex")
         toggle_profile(window, "|claude-desktop-code")
         window.set_archived(True); self.drain(.4)
@@ -1004,7 +1020,7 @@ class WidgetCheck(unittest.TestCase):
 
     def test_active_filters_keep_normal_pill_css(self):
         window = self.snapshot_window()
-        window.select_states({"working"})
+        select_states(window, {"working"})
         for palette in (None, asb.validate_theme(CUSTOM)):
             with self.subTest(palette=palette):
                 window.set_palette(palette)
@@ -2172,6 +2188,81 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(one.asb_tag_shown)
         self.assertTrue(two.asb_tag_shown)
 
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real pointer movement needs xdotool and a nested test display (DISPLAY=:9 or :10).")
+    def test_a_card_glide_keeps_the_wheel_on_the_copy_button_under_a_still_pointer(self):
+        # GTK sends no enter to a copy button that stays under a still pointer, so a glide must not take its wheel.
+        from gi.repository import GdkX11
+
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "request_async", lambda *args, **_kwargs: None)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        def xdo(*args):
+            return subprocess.run(["xdotool", *map(str, args)], check=True, capture_output=True, text=True).stdout
+
+        x, y = (line.split("=")[1] for line in xdo("getmouselocation", "--shell").splitlines()[:2])
+        self.addCleanup(xdo, "mousemove", x, y)
+        xdo("mousemove", 1500, 950)
+        app_id = "123e4567-e89b-12d3-a456-426614174000"
+
+        def board(order):
+            # Idle rows sort newest first, so the board shows the cards in this order.
+            return {"generatedAtMs": NOW, "providers": [], "threads": [
+                {"id": identity, "provider": "codex", "providerLabel": "Codex", "title": "Summarize the open issues " + identity,
+                 "cwd": "/example/field-notes", "projectName": "field-notes", "state": "idle", "canOpen": True,
+                 "externalId": app_id, "sessionReference": "codex/" + app_id,
+                 "reference": "asb:1/0123456789abcdef/codex/" + "f" * 32 + "/codex:" + app_id,
+                 "updatedAtMs": NOW - place * 60_000} for place, identity in enumerate(order)]}
+
+        order = [f"s{n}" for n in range(16)]
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", board(order), theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(680, 420)
+        window.present(); window.set_focus(None); self.drain(.4)
+        window.view_filter.set_selected(1); self.drain(.5); window.check_geometry(); self.drain()
+        strip, adjustment = window.list_body, window.scroll.get_hadjustment()
+        self.assertGreater(adjustment.get_upper() - adjustment.get_page_size(), adjustment.get_value())  # The wheel can scroll the board.
+        button = window.focus_widgets["s1"].asb_copy_button
+
+        def glide(new_order):
+            frames = []
+            handler = window.get_frame_clock().connect("after-paint", lambda *_args: frames.append(bool(strip.motion)))
+            window.apply_dashboard(board(new_order), None)
+            end = time.monotonic() + 6
+            while not (any(frames) and not strip.motion and window.motion_from is None) and time.monotonic() < end:
+                self.drain(.02)
+            window.get_frame_clock().disconnect(handler)
+            self.assertTrue(any(frames))  # The cards glided.
+            self.assertEqual((strip.motion, window.row_order), ({}, new_order))
+            self.drain()
+
+        # The pointer rests on the copy button of s1 until its tag shows.
+        found, bounds = button.compute_bounds(window)
+        self.assertTrue(found)
+        left, top = window.get_surface_transform()
+        xdo("mousemove", "--window", GdkX11.X11Surface.get_xid(window.get_surface()),
+            int(bounds.origin.x + bounds.size.width / 2 + left), int(bounds.origin.y + bounds.size.height / 2 + top))
+        self.drain(asb.COPY_REST_S + .3)
+        self.assertTrue(button.asb_tag_shown)
+        self.assertIs(window.copy_hover, button)
+        # (a) Two cards below s1 change places. s1 stays under the pointer, so its copy button keeps the tag and the wheel.
+        order[3], order[4] = order[4], order[3]
+        glide(order)
+        self.assertIs(window.copy_hover, button)
+        self.assertTrue(button.asb_tag_shown)
+        kind, position = window.copy_kind, adjustment.get_value()
+        xdo("click", 5); self.drain(.5)
+        self.assertNotEqual(window.copy_kind, kind)
+        self.assertEqual(adjustment.get_value(), position)
+        # (b) s0 goes to the end, so s1 glides up from under the still pointer: its tag hides and it loses the wheel.
+        glide(order[1:] + order[:1])
+        self.assertFalse(button.asb_tag_shown)
+        self.assertIsNot(window.copy_hover, button)
+
     def test_compact_short_toolbar_typing_inline_open_and_queued_unread(self):
         with tempfile.TemporaryDirectory(prefix="asb-compact-test-") as temporary:
             window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", mock_dashboard(),
@@ -2248,7 +2339,7 @@ class WidgetCheck(unittest.TestCase):
             self.drain()
             self.assertEqual(window.columns, 4)
             self.assertEqual(window.column_width, 240)
-            self.assertEqual(asb.read_layout(window.layout_path), {"columnWidth": 240, "view": "compact", "showAppPills": False, "cardLimit": 0, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(window.layout_path), {"columnWidth": 240, "view": "compact", "cardLimit": 0, "copyKind": "relative"})
 
             row = window.focus_widgets["sample-15"]
             window.refresh_button.grab_focus()
@@ -2668,7 +2759,7 @@ class WidgetCheck(unittest.TestCase):
                         window.search.grab_focus(); self.drain(.2); adjustment.set_value(0); self.drain(.2)
                         self.capture(window, Path(output) / "view-comfortable-360-width160.png")
                     window.reset_width(); self.drain()
-                    self.assertEqual(asb.read_layout(layout_path), {"columnWidth": 240, "view": "comfortable", "showAppPills": False, "cardLimit": 0, "copyKind": "relative"})
+                    self.assertEqual(asb.read_layout(layout_path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 0, "copyKind": "relative"})
                 window.search.set_text("cl:"); window.render()
                 self.assertTrue(all(row["provider"] == "claude-desktop-code" for row in window.visible_rows()))
                 window.states = {"working", "idle"}
@@ -3083,7 +3174,7 @@ class WidgetCheck(unittest.TestCase):
             cards = {row["id"]: window.focus_widgets[row["id"]] for row in dashboard["threads"]}
             copy_of = lambda identity: cards[identity].asb_copy_button
             tag_of = lambda identity: copy_of(identity).asb_tag
-            words_of = lambda identity: copy_of(identity).asb_copy_words
+            words_of = lambda identity: cards[identity].asb_copy_words
             # The tag is hidden at rest and shows the complete word after the 250 ms rest.
             self.assertFalse(copy_of("local").asb_tag_shown)
             self.assertFalse(tag_of("local").get_reveal_child())
@@ -3308,7 +3399,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(local.asb_tag_shown)
         window.set_focus_visible(True); window.key_focus_changed(); self.drain(.1)
         self.assertTrue(local.asb_tag_shown)
-        self.assertEqual(local.asb_copy_words.get_visible_child_name(), "relative")
+        self.assertEqual(local.asb_card.asb_copy_words.get_visible_child_name(), "relative")
         # R6: the drawn kind glyphs resolve after the app adds the ASB icon path.
         theme = asb.Gtk.IconTheme.get_for_display(window.get_display())
         self.assertTrue(theme.has_icon("asb-link-symbolic"))
