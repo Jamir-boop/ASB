@@ -78,8 +78,8 @@ test('a forwarded message gets a refused receipt only when it was not sent', asy
     expect(await forwardOutcome(call('/api/relay/send', {}))).toBe('unknown');
     answer = () => new Response('{}', { status: 403 });
     expect(await forwardOutcome(call('/api/relay/send', {}))).toBe('machine-offline');
-  } finally { engine.stop(true); }
-  // No engine at the port: the request did not go out.
+  } finally { await engine.stop(true); }
+  // No engine at the port: the request did not go out. The stop must end first, else the closing listener can take the request.
   // Windows refuses a loopback connection only after about 1 to 2 s; Linux refuses at once.
   expect(await forwardOutcome(engineCaller(url, SOURCE_TOKEN, 5000)('/api/relay/send', {}))).toBe('machine-offline');
 });
