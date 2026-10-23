@@ -1318,7 +1318,7 @@ class DataChecks(unittest.TestCase):
             self.assertEqual((asb.is_view_only(row), asb.row_where(row)), (view_only, where))
         tone = asb.view_only_tone
         for extra, expected in (({"state": "idle"}, "rest"), ({"state": "unknown"}, "rest"), ({"state": "working"}, "quiet"),
-                                ({"state": "waiting"}, "quiet"), ({"state": "idle", "unread": True}, ""),
+                                ({"state": "waiting"}, "rest"), ({"state": "idle", "unread": True}, ""),
                                 ({"state": "waiting", "questionAttention": True}, ""), ({"state": "idle", "pending": True}, ""),
                                 ({"state": "idle", "limitResetsAtMs": NOW}, "")):
             self.assertEqual(tone({**cli, **extra}), expected)
@@ -5007,7 +5007,7 @@ class NativeLogicChecks(unittest.TestCase):
         row = {"id": "a", "provider": "codex", "state": "idle", "unread": False, "pending": False}
         for extra, quiet in (({}, True), ({"pinned": True}, True), ({"readStatus": "unknown"}, True),
                              ({"readStatus": "unread", "nativeUnread": True, "nativeAttention": False}, True),
-                             ({"state": "working"}, False), ({"state": "waiting"}, False), ({"state": "unknown"}, False),
+                             ({"state": "working"}, False), ({"state": "waiting"}, True), ({"state": "unknown"}, False),
                              ({}, True), ({"unread": True}, False), ({"questionAttention": True}, False), ({"pending": True}, False)):
             window.update_session_row(widget, {**row, **extra})
             self.assertEqual("asb-idle-read" in classes, quiet)
@@ -6098,6 +6098,22 @@ class NativeLogicChecks(unittest.TestCase):
             window.queue_number_keys(scrolled=True)
             self.assertEqual(removed[-1], len(timers) - 1)  # A scroll settles once.
             self.assertEqual(timers[len(timers)][0], 100)
+
+    def test_waiting_state_label_uses_idle_classes(self):
+        window = object.__new__(Window)
+        window.view, window.update_row_text, window.open_errors = "compact", Mock(), {}
+        for state, pending, expected in (("waiting", False, {"asb-waiting", "dim-label"}),
+                                         ("waiting", True, {"asb-waiting"}),
+                                         ("working", False, {"asb-working", "success"})):
+            with self.subTest(state=state, pending=pending):
+                classes = set()
+                label = Mock(add_css_class=classes.add, remove_css_class=classes.discard)
+                widget = SimpleNamespace(asb_view="compact", asb_thread={}, set_activatable=Mock(),
+                                         asb_mark=Mock(), asb_source_badge=Mock(), asb_where_icon=None,
+                                         asb_where_label=Mock(), asb_dot=Mock(), asb_state_label=label,
+                                         add_css_class=Mock(), remove_css_class=Mock())
+                window.update_session_row(widget, {"id": "a", "provider": "codex", "state": state, "pending": pending})
+                self.assertEqual(classes, expected)
 
 
 class NativeIOAuditChecks(unittest.TestCase):

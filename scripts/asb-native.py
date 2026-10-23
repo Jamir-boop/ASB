@@ -890,11 +890,11 @@ def row_where(row):
 
 
 def view_only_tone(row):
-    """The Grey tone of a view-only row with no attention: "quiet" keeps the state color, "rest" also dims the state."""
+    """The Grey tone of a view-only row with no attention: "quiet" keeps the Working color, "rest" also dims the state."""
     if (not is_view_only(row) or row.get("unread") or row.get("questionAttention") or row.get("pending")
             or (row.get("limitResetsAtMs") or 0) > 0):
         return ""
-    return "quiet" if row.get("state") in ("working", "waiting") else "rest"
+    return "quiet" if row.get("state") == "working" else "rest"
 
 
 # shortcut: a Comfortable column wider than about 370 px shows the … before its two lines are full; raise the limit if wide columns are common.
@@ -3622,14 +3622,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-drawer:not(.asb-drawer-lit) .asb-dot {{ opacity: 0; }}
 {base} .asb-unread.asb-hovered .asb-read-cue, {base} .asb-unread.asb-key-focus .asb-read-cue {{ opacity: 1; }}
 {base} .asb-drawer.asb-unhovered:not(.asb-drawer-lit):not(.asb-key-focus) .asb-read-button {{ opacity: 0; }}
-{base}:not(.asb-custom) .asb-unread.asb-hovered .asb-state:not(.success):not(.warning) {{ opacity: .55; }}
+{base}:not(.asb-custom) .asb-unread.asb-hovered .asb-state:not(.success) {{ opacity: .55; }}
 {base} .asb-drawer.asb-drawer-lit.asb-unhovered .asb-state {{ opacity: 1; }}
 .asb-tooltip {{ font-size: 12px; }}
 .asb-tooltip .asb-tooltip-title {{ font-size: 13px; }}
 .asb-tooltip .asb-tooltip-path, .asb-tooltip .asb-tooltip-footer, .asb-tooltip .asb-tooltip-flags {{ font-size: 11px; }}
 .asb-tooltip .asb-tooltip-muted {{ color: alpha(@window_fg_color, .72); opacity: 1; }}
 .asb-tooltip .asb-working {{ color: @success_color; }}
-.asb-tooltip .asb-waiting {{ color: @warning_color; }}
 .asb-tooltip .asb-provider {{ opacity: .65; }}
 .asb-tooltip .asb-source-badge {{ min-width: 6px; min-height: 6px; padding: 0; border: 1px solid @window_bg_color; border-radius: 50%; }}
 {base} popover.asb-row-panel > contents {{ padding: 8px; border: 1px solid alpha(@accent_color, .7); border-radius: 12px; background: @window_bg_color;
@@ -3657,7 +3656,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} .asb-row-panel .asb-panel-note, {scope} .asb-row-panel .asb-panel-caption {{ color: {colors['muted']}; }}
 {scope} .asb-row-panel button.asb-copy-done image {{ color: {colors['accent']}; }}
 {scope} .asb-state, {scope} .dim-label {{ color: {colors['muted']}; opacity: 1; }}
-{scope} .asb-working, {scope} .asb-waiting {{ color: {colors['accent']}; }}
+{scope} .asb-working {{ color: {colors['accent']}; }}
 {scope} .asb-message-lit .asb-provider {{ color: {colors['accent']}; }}
 {scope} .asb-dot, .asb-tooltip.asb-custom .asb-dot {{ background: {colors['accent']}; }}
 {scope} .asb-dot.asb-question, .asb-tooltip.asb-custom .asb-dot.asb-question {{ background: none; color: {colors['accent']}; }}
@@ -3706,7 +3705,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 .asb-tooltip.asb-custom {{ color: {colors['text']}; }}
 .asb-tooltip.asb-custom .asb-tooltip-muted, .asb-tooltip.asb-custom .asb-state {{ color: {colors['muted']}; }}
 .asb-tooltip.asb-custom .dim-label {{ opacity: 1; }}
-.asb-tooltip.asb-custom .asb-working, .asb-tooltip.asb-custom .asb-waiting {{ color: {colors['accent']}; }}
+.asb-tooltip.asb-custom .asb-working {{ color: {colors['accent']}; }}
 """
         else:
             self.remove_css_class("asb-custom")
@@ -5484,7 +5483,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         footer.add_css_class("asb-tooltip-footer")
         state = text(model["state_text"], "asb-state")
         state.add_css_class("asb-" + model["state"])
-        if model["state"] not in ("working", "waiting") and not row.get("pending"):
+        if model["state"] != "working" and not row.get("pending"):
             state.add_css_class("dim-label")
         footer.append(state)
         app = Gtk.Box(spacing=5, halign=Gtk.Align.END)
@@ -5550,7 +5549,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.open_errors.pop(row["id"], None)
         widget.asb_thread = dict(row)
         self.update_drawer_style(widget)
-        quiet = self.view == "comfortable" and row.get("state") == "idle" \
+        quiet = self.view == "comfortable" and row.get("state") in ("idle", "waiting") \
             and not (row.get("unread") or row.get("questionAttention") or row.get("pending"))
         (widget.add_css_class if quiet else widget.remove_css_class)("asb-idle-read")
         widget.set_activatable(bool(row.get("canOpen")))
@@ -5766,13 +5765,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         (widget.asb_dot.add_css_class if indicator == "stop" else widget.asb_dot.remove_css_class)("asb-stop")
         (widget.asb_dot.add_css_class if indicator == "discard" or discard_offer else widget.asb_dot.remove_css_class)("asb-discard")
         state = widget.asb_state_label
-        for css in (*("asb-" + value for value in STATES), "success", "warning", "dim-label"):
+        for css in (*("asb-" + value for value in STATES), "success", "dim-label"):
             state.remove_css_class(css)
         state.add_css_class("asb-" + row.get("state", "unknown"))
         if row.get("state") == "working":
             state.add_css_class("success")
-        elif row.get("state") == "waiting":
-            state.add_css_class("warning")
         elif not row.get("pending"):
             state.add_css_class("dim-label")
         if self.view == "comfortable":

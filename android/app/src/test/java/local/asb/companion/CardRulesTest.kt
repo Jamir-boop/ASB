@@ -33,7 +33,9 @@ class CardRulesTest {
     @Test fun stateToneFollowsUpdateSessionRow() {
         fun state(row: Thread, palette: Palette = gnome) = cardTones(palette, row, false, false, false, now).state
         assertEquals(gnome.success, state(idle.copy(state = "working")))
-        assertEquals(gnome.warning, state(idle.copy(state = "waiting")))
+        assertEquals(gnome.muted, state(idle.copy(state = "waiting")))
+        assertEquals(gnome.text, state(idle.copy(state = "waiting", pending = true)))
+        assertEquals(custom.muted, state(idle.copy(state = "waiting"), custom))
         assertEquals(gnome.muted, state(idle))
         assertEquals(gnome.muted, state(idle.copy(state = "unknown")))
         // GNOME Pending drops dim-label; Custom keeps the muted state color.
@@ -44,10 +46,11 @@ class CardRulesTest {
 
     @Test fun quietRuleIsComfortableIdleReadOnly() {
         assertTrue(quietRow(idle, comfortable = true, drawerView = false, nowMs = now))
+        assertTrue(quietRow(idle.copy(state = "waiting"), comfortable = true, drawerView = false, nowMs = now))
         assertTrue(quietRow(idle.copy(pinned = true), comfortable = true, drawerView = false, nowMs = now))
         assertFalse(quietRow(idle, comfortable = false, drawerView = false, nowMs = now))
         for (row in listOf(idle.copy(unread = true), idle.copy(questionAttention = true), idle.copy(pending = true),
-            idle.copy(state = "waiting"), idle.copy(state = "working"), limited)) {
+            idle.copy(state = "working"), limited)) {
             assertFalse(row.toString(), quietRow(row, comfortable = true, drawerView = false, nowMs = now))
         }
         // A drawer row is quiet as a read row, but not while the Drawer pill shows it as unread.
@@ -180,7 +183,8 @@ class CardRulesTest {
         assertEquals("", viewOnlyTone(idle))
         assertEquals("rest", viewOnlyTone(remote))
         assertEquals("rest", viewOnlyTone(cli.copy(state = "unknown")))
-        for (state in listOf("working", "waiting")) assertEquals("quiet", viewOnlyTone(remote.copy(state = state)))
+        assertEquals("quiet", viewOnlyTone(remote.copy(state = "working")))
+        assertEquals("rest", viewOnlyTone(remote.copy(state = "waiting")))
         for (row in listOf(remote.copy(unread = true), remote.copy(questionAttention = true), remote.copy(pending = true),
             remote.copy(limitResetsAtMs = now + 60_000))) assertEquals(row.toString(), "", viewOnlyTone(row))
     }
@@ -192,7 +196,7 @@ class CardRulesTest {
             assertEquals(CardTones(gnome.quietTitle, gnome.quietCaption, gnome.success), cardTones(gnome, working, comfortable, false, false, now))
             assertEquals(CardTones(gnome.quietTitle, gnome.quietCaption, gnome.quietCaption), cardTones(gnome, remote, comfortable, false, false, now))
         }
-        assertEquals(CardTones(custom.quietTitle, custom.quietCaption, custom.warning),
+        assertEquals(CardTones(custom.quietTitle, custom.quietCaption, custom.quietCaption),
             cardTones(custom, cli.copy(state = "waiting"), false, false, false, now))
         assertEquals(CardTones(gnome.limited, gnome.limited, gnome.limited),
             cardTones(gnome, working.copy(limitResetsAtMs = now + 60_000), false, false, false, now))

@@ -1178,7 +1178,6 @@ private fun SessionInspector(
     val muted = hexColor(readableColor(palette.muted, palette.text, listOf(surface, group)))
     val stateColor = when {
         row.state == "working" -> hexColor(readableColor(palette.success, palette.text, listOf(surface)))
-        row.state == "waiting" -> hexColor(readableColor(palette.warning, palette.text, listOf(surface)))
         controls.getValue("unread").on -> text
         else -> muted
     }

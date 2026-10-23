@@ -51,7 +51,6 @@ h1 { font-size: 28px; line-height: 1; letter-spacing: -.03em; margin: 0; }
 .state { display: inline-flex; align-items: center; gap: 4px; }
 .state::before { content: ''; width: 5px; height: 5px; border: 1px solid currentColor; border-radius: 50%; }
 .state.working { color: var(--green); }
-.state.waiting { color: var(--amber); }
 .state.working::before, .state.waiting::before { background: currentColor; }
 .open-icon { width: 15px; height: 15px; margin-top: 3px; color: var(--muted); }
 .attention { align-self: center; flex: none; color: var(--amber); }

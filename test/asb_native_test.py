@@ -5307,5 +5307,12 @@ class WidgetCheck(unittest.TestCase):
         check_limited()
         window.close(); self.drain(.03)
 
+    def test_waiting_has_no_palette_color_override(self):
+        window = self.snapshot_window()
+        for palette in (None, asb.validate_theme(CUSTOM)):
+            with self.subTest(palette=palette):
+                window.set_palette(palette)
+                self.assertNotIn(".asb-waiting", window.css.to_string())
+
 if __name__ == "__main__":
     unittest.main()

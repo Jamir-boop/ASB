@@ -169,7 +169,7 @@ fun rowWhere(row: Thread): Pair<Int?, String> = when {
 // Port of view_only_tone
 fun viewOnlyTone(row: Thread): String = when {
     !isViewOnly(row) || row.unread || row.questionAttention || row.pending || row.limitResetsAtMs > 0 -> ""
-    row.state == "working" || row.state == "waiting" -> "quiet"
+    row.state == "working" -> "quiet"
     else -> "rest"
 }
 
@@ -340,7 +340,7 @@ fun startIndex(anchorIndex: Int, flow: Boolean, capacity: Int, lead: Int): Int =
 
 /** The quiet Idle-read rule of the Comfortable view (the `.asb-idle-read` CSS); pressed rows keep normal text. */
 fun quietRow(row: Thread, comfortable: Boolean, drawerView: Boolean, nowMs: Long = System.currentTimeMillis()): Boolean =
-    comfortable && row.state == "idle" && !(row.unread || row.questionAttention || row.pending) &&
+    comfortable && (row.state == "idle" || row.state == "waiting") && !(row.unread || row.questionAttention || row.pending) &&
         limitLeft(row, nowMs) == 0L && !(drawerView && row.drawer)
 
 data class CardTones(val title: String, val caption: String, val state: String)
@@ -359,12 +359,11 @@ fun cardTones(
     }
     val state = when {
         row.state == "working" -> palette.success
-        row.state == "waiting" -> palette.warning
         // GNOME drops dim-label for Pending; Custom keeps the muted state color.
         row.pending && !palette.custom -> palette.text
         else -> palette.muted
     }
-    // The Grey tone of a view-only card with no attention; Working and Waiting keep their state color.
+    // The Grey tone of a view-only card with no attention; Working keeps its state color.
     if (!pressed && !(drawerView && row.drawer)) when (viewOnlyTone(row)) {
         "quiet" -> return CardTones(palette.quietTitle, palette.quietCaption, state)
         "rest" -> return CardTones(palette.quietTitle, palette.quietCaption, palette.quietCaption)
