@@ -214,7 +214,9 @@ private fun PairedApp(
                         loadBaseline = { engine -> store.loadBaselineIfPaired(token, engine) },
                         initialView = store.view,
                         savePalette = app::usePalette,
-                        showLive = { app.liveUpdates.value = LiveUpdate(it.threads, System.currentTimeMillis()) },
+                        showLive = { dashboard, engine ->
+                            app.liveUpdates.value = LiveUpdate(dashboard.threads, System.currentTimeMillis(), engine)
+                        },
                         networkChanges = app.networkChanges,
                     )
                 }

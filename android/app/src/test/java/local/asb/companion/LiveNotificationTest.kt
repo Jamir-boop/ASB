@@ -3,6 +3,7 @@ package local.asb.companion
 import local.asb.companion.data.Thread
 import local.asb.companion.notify.LiveBadge
 import local.asb.companion.notify.LiveChip
+import local.asb.companion.notify.LiveUpdate
 import local.asb.companion.notify.liveBadge
 import local.asb.companion.notify.liveIntervalMs
 import local.asb.companion.notify.liveLines
@@ -86,13 +87,33 @@ class LiveNotificationTest {
     @Test fun newlyDoneNeedsAResultThatThePreviousListDidNotHave() {
         val done = row("a").copy(completionAttention = true)
         // The first update has nothing to compare with.
-        assertFalse(newlyDone(null, listOf(done)))
-        assertTrue(newlyDone(listOf(row("a")), listOf(done)))
+        assertFalse(newlyDone(null, LiveUpdate(listOf(done), now, "")))
+        assertTrue(newlyDone(LiveUpdate(listOf(row("a")), now, ""), LiveUpdate(listOf(done), now, "")))
         // A result that was already there is not new.
-        assertFalse(newlyDone(listOf(done), listOf(done)))
+        assertFalse(newlyDone(LiveUpdate(listOf(done), now, ""), LiveUpdate(listOf(done), now, "")))
         // A row that is new in the list is not a new result.
-        assertFalse(newlyDone(listOf(row("b")), listOf(done)))
+        assertFalse(newlyDone(LiveUpdate(listOf(row("b")), now, ""), LiveUpdate(listOf(done), now, "")))
         // A done row that became archived has no Done mark any more.
-        assertFalse(newlyDone(listOf(done), listOf(done.copy(archived = true))))
+        assertFalse(newlyDone(LiveUpdate(listOf(done), now, ""), LiveUpdate(listOf(done.copy(archived = true)), now, "")))
+    }
+
+    @Test fun newlyDoneSkipsAUsageLimitStop() {
+        // A usage-limit stop ends the turn as a result, but diff() posts no Done for it.
+        val limited = row("a", "idle").copy(completionAttention = true, limitResetsAtMs = now + 3_600_000)
+        assertFalse(newlyDone(LiveUpdate(listOf(row("a", "working")), now, ""), LiveUpdate(listOf(limited), now, "")))
+    }
+
+    @Test fun newlyDoneSkipsTheFirstResultAfterALimitReset() {
+        // diff() also posts no Done for the first return of the mark after the reset.
+        val limited = row("a").copy(completionAttention = false, limitResetsAtMs = now + 1_000)
+        assertFalse(newlyDone(LiveUpdate(listOf(limited), now, ""),
+            LiveUpdate(listOf(limited.copy(completionAttention = true)), now + 2_000, "")))
+    }
+
+    @Test fun newlyDoneSkipsAChangeOfEngine() {
+        // The read marks are per engine: a row that the new engine has unread is not a new result.
+        val done = listOf(row("a").copy(completionAttention = true))
+        assertFalse(newlyDone(LiveUpdate(listOf(row("a")), now, ""), LiveUpdate(done, now, "m1")))
+        assertTrue(newlyDone(LiveUpdate(listOf(row("a")), now, "m1"), LiveUpdate(done, now, "m1")))
     }
 }

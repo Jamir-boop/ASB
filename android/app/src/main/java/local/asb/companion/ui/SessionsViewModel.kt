@@ -56,7 +56,7 @@ class SessionsViewModel(
     private val loadBaseline: (String) -> Map<String, Int>? = { null },
     initialView: String = "comfortable",
     private val savePalette: (Palette) -> Unit = {},
-    private val showLive: (Dashboard) -> Unit = {},
+    private val showLive: (Dashboard, String) -> Unit = { _, _ -> },
     /** Counts the default-network changes (AsbApp.networkChanges). */
     private val networkChanges: StateFlow<Long> = MutableStateFlow(0L),
 ) : ViewModel() {
@@ -200,7 +200,7 @@ class SessionsViewModel(
                 val engine = if (result is DashboardResult.Fetched) result.engine else state.value.engine
                 dashboard?.let { saveBaseline(updateBaseline(loadBaseline(engine), it.threads), engine) }
                 Palette.parse(dashboard?.palette)?.let(savePalette)
-                dashboard?.let(showLive)
+                dashboard?.let { showLive(it, engine) }
                 if (result is DashboardResult.Fetched) {
                     etag = result.etag
                     etagEngine = result.engine

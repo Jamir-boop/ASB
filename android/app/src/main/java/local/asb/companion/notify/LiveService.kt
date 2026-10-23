@@ -36,9 +36,10 @@ import local.asb.companion.net.AsbApi
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.DashboardResult
 import local.asb.companion.ui.idleAge
+import local.asb.companion.ui.limitLeft
 
-/** The last dashboard rows that the screen or the live service read, and when. */
-data class LiveUpdate(val threads: List<Thread>, val atMs: Long)
+/** The last dashboard rows that the screen or the live service read, when, and from which engine ("" is the paired PC). */
+data class LiveUpdate(val threads: List<Thread>, val atMs: Long, val engine: String)
 
 private const val LIVE_CHANNEL = "asb_live"
 private const val LIVE_ID = 1
@@ -90,11 +91,19 @@ internal fun liveBadge(threads: List<Thread>, doneFlash: Boolean): LiveBadge? {
     return if (working > 0) LiveBadge(LiveChip.WORKING, "$working") else null
 }
 
-/** True when a row has the Done mark now that it did not have in [previous]. A row that is new in the list does not count. */
-internal fun newlyDone(previous: List<Thread>?, current: List<Thread>): Boolean {
-    if (previous == null) return false
-    val before = previous.associate { it.key to bits(it) }
-    return current.any { row -> bits(row) and BIT_DONE != 0 && before[row.key]?.let { it and BIT_DONE == 0 } == true }
+/**
+ * True when a row has the Done mark now that it did not have in [previous]. A row that is new in the list does not count.
+ * As in [diff], a row with a usage limit now or in [previous] does not count. A change of engine does not count,
+ * because the read marks are per engine.
+ */
+internal fun newlyDone(previous: LiveUpdate?, current: LiveUpdate): Boolean {
+    if (previous == null || previous.engine != current.engine) return false
+    val before = previous.threads.associateBy { it.key }
+    return current.threads.any { row ->
+        val old = before[row.key]
+        old != null && bits(row) and BIT_DONE != 0 && bits(old) and BIT_DONE == 0 &&
+            limitLeft(row, current.atMs) == 0L && limitLeft(old, previous.atMs) == 0L
+    }
 }
 
 internal data class LiveContent(val title: String, val lines: List<String>, val status: String?, val badge: LiveBadge?)
@@ -160,7 +169,7 @@ class LiveService : Service() {
             launch {
                 app.liveUpdates.collect { update ->
                     if (update == null) return@collect
-                    if (newlyDone(last?.threads, update.threads)) {
+                    if (newlyDone(last, update)) {
                         doneUntilMs = System.currentTimeMillis() + DONE_FLASH_MS
                         flash?.cancel()
                         flash = scope.launch {
@@ -230,7 +239,7 @@ class LiveService : Service() {
                                     app.store.saveBaselineIfPaired(token, AsbJson.encodeToString(update(baseline, threads, nowMs)), reply.engine)
                                 }
                             }
-                            own = LiveUpdate(threads, nowMs).also { app.liveUpdates.value = it }
+                            own = LiveUpdate(threads, nowMs, reply.engine).also { app.liveUpdates.value = it }
                         }
                         DashboardResult.NotModified -> last?.let { own = it.copy(atMs = nowMs).also { u -> app.liveUpdates.value = u } }
                     }
