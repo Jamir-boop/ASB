@@ -116,6 +116,7 @@ posix('bridge UUID is a stable UUID v5 of opencode:<ses_...>', () => {
   expect(z.uuid().safeParse(first).success).toBe(true);
   expect(first).not.toBe(opencodeBridgeId('ses_other'));
   expect(uuidV5('opencode:ses_01abcdefghijklmnop')).toBe(first);
+  expect(opencodeBridgeId('ses_asbTestOpenCode01')).toBe('18284f68-b2c6-5cca-8fb7-12d5973743f9');
 });
 
 posix('name rule is opencode-<title slug>-<suffix> and falls back to the folder', () => {
@@ -516,6 +517,45 @@ posix('register triggers, rename, archive, delete, and child sessions never regi
     expect(co.receivers.has('ses_exec')).toBe(false);
 
     await api?.();
+  } finally {
+    await resetCoordinator(co);
+    rmSync(root, { recursive: true });
+  }
+});
+
+posix('a rename of an idle session keeps the row idle and changes its name', async () => {
+  const { root, configDir, stateDir } = tempHome();
+  const fake = fakeCtx();
+  const co = ensureCoordinator(configDir, stateDir);
+  try {
+    const instance = { ctx: fake.ctx, directory: '/tmp/opencode-project', disposers: [] };
+    co.instances.set(instance.directory, instance);
+    fake.setSession('ses_rename', { location: { directory: '/tmp/proj' }, title: 'Old Title', time: { updated: 1000, idle: 1000 } });
+    await registerSession(co, instance, fake.sessions.get('ses_rename') as any);
+    const row = () => peers(configDir).find(peer => peer.sessionId === bridgeIdOf('ses_rename'));
+    expect(row()?.status).toBe('idle');
+    expect(row()?.name).toStartWith('opencode-old-title-');
+    // OpenCode 2.1.4 sets time.updated, not time.idle, on a rename.
+    fake.setSession('ses_rename', { location: { directory: '/tmp/proj' }, title: 'New Title', time: { updated: 2000, idle: 1000 } });
+    await handleEvent(co, { id: 'ev_rename', type: 'session.renamed', data: { sessionID: 'ses_rename', title: 'New Title' } });
+    expect(row()?.status).toBe('idle');
+    expect(row()?.name).toStartWith('opencode-new-title-');
+  } finally {
+    await resetCoordinator(co);
+    rmSync(root, { recursive: true });
+  }
+});
+
+posix('a session with time.updated after time.idle and no start event registers as idle', async () => {
+  const { root, configDir, stateDir } = tempHome();
+  const fake = fakeCtx();
+  const co = ensureCoordinator(configDir, stateDir);
+  try {
+    const instance = { ctx: fake.ctx, directory: '/tmp/opencode-project', disposers: [] };
+    co.instances.set(instance.directory, instance);
+    fake.setSession('ses_updated', { location: { directory: '/tmp/proj' }, title: 'Updated', time: { updated: 2000, idle: 1000 } });
+    await registerSession(co, instance, fake.sessions.get('ses_updated') as any);
+    expect(peers(configDir).find(peer => peer.sessionId === bridgeIdOf('ses_updated'))?.status).toBe('idle');
   } finally {
     await resetCoordinator(co);
     rmSync(root, { recursive: true });
@@ -1051,6 +1091,24 @@ posix('host runtime mode is bypass, prompting, or unknown from V27 agent rules',
   expect((await createOpenCodeHost(parts).runtime()).mode).toBe('bypass');
   expect((await createOpenCodeHost({ ...parts, agent: { async list() { return [{ permissions: [{ action: 'shell', pattern: '*', permission: 'ask' }, { action: 'edit', pattern: '*', permission: 'allow' }] }]; } } }).runtime()).mode).toBe('prompting');
   expect((await createOpenCodeHost({ ...parts, agent: { async list() { return []; } } }).runtime()).mode).toBe('unknown');
+});
+
+posix('host runtime mode comes from the agent of the session and then its own rules', async () => {
+  // OpenCode 2.1.4 shapes: the default agent is listed first, and session.agent is the agent id.
+  const agents = [
+    { id: 'build', name: 'Build', permissions: [{ action: '*', resource: '*', effect: 'allow' }] },
+    { id: 'plan', name: 'Plan', permissions: [{ action: '*', resource: '*', effect: 'allow' }, { action: 'edit', resource: '*', effect: 'ask' }] },
+  ];
+  const mode = async (session: Record<string, unknown>) => (await createOpenCodeHost({
+    openCodeSessionId: 'ses_agent', title: 'Agent', cwd: '/tmp',
+    session: { ...fakeCtx().ctx.session, async get() { return { data: { id: 'ses_agent', ...session } }; } },
+    agent: { async list() { return agents; } },
+    isRunning: () => false, recentInputs: () => [], pid: process.pid,
+  }).runtime()).mode;
+  expect(await mode({ agent: 'plan' })).toBe('prompting');
+  expect(await mode({ agent: 'build', permissions: [{ action: 'edit', resource: '*', effect: 'ask' }] })).toBe('prompting');
+  expect(await mode({ agent: 'missing' })).toBe('unknown');
+  expect(await mode({})).toBe('bypass');
 });
 
 posix('setup returns a cleanup function only when the required APIs are available', async () => {

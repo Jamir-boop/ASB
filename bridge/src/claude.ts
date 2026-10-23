@@ -225,14 +225,16 @@ export async function register(configDir: string, sessionId: string, address: st
       try { check(); unlinkSync(path); }
       finally { if (keyPath) removePeerKey(keyPath, record.procStart); }
     },
-    update(status: string) {
+    update(status: string, renamed = false) {
       check();
-      if (record.status === status) return;
+      if (record.status === status && !renamed) return;
       // A new task gets its title during its first turn. Keep the name while its base holds, so the suffix does not flap.
       const next = nameOf(cwd, sessionId);
       if (next !== base) { base = next; record.name = uniqueName(configDir, base, sessionId); }
-      record.status = status;
-      record.statusUpdatedAt = Date.now();
+      if (record.status !== status) {
+        record.status = status;
+        record.statusUpdatedAt = Date.now();
+      }
       const temporary = `${path}.${randomUUID()}.tmp`;
       writeFileSync(temporary, JSON.stringify(record), { flag: 'wx', mode: 0o600 });
       renameSync(temporary, path);

@@ -273,11 +273,11 @@ export class Bridge {
     });
   }
 
-  updateRuntime(state: Runtime) {
+  updateRuntime(state: Runtime, renamed = false) {
     if (this.closing) return;
     this.db.run('UPDATE runtime SET updated_at=CASE WHEN status<>? THEN ? ELSE updated_at END,status=?,mode=? WHERE singleton=1',
       [state.status, Date.now(), state.status, state.mode]);
-    this.registration?.update(state.status);
+    this.registration?.update(state.status, renamed);
     if (this.listener) void this.exclusive(async () => {
       if (state.status === 'idle') await this.syncInputs();
       await this.flushIdle();
@@ -781,7 +781,7 @@ export class Bridge {
     const withdraw = async () => {
       await this.closeOutbound?.();
       this.closeOutbound = undefined;
-      this.registration?.close();
+      try { this.registration?.close(); } catch { /* An uninstall can remove the row first; the inbox must still close. */ }
       this.registration = undefined;
       await this.listener?.close();
       this.listener = undefined;

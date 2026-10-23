@@ -66,7 +66,7 @@ export type OpenCodeHostParts = {
   cwd: string;
   session: OpenCodeSessionLike;
   agent: OpenCodeAgentLike;
-  // The running set is owned by the coordinator; the host only reads it. May be async (session.get time fields).
+  // The running set is owned by the coordinator; the host only reads it.
   isRunning(sessionId: string): boolean | Promise<boolean>;
   // Newest-first messages of the session, used after a plugin reload. May be async (ctx.session.context is a Promise).
   recentInputs(sessionId: string): Array<{ id: string; kind: 'user' | 'synthetic' | 'other'; text: string }> | Promise<Array<{ id: string; kind: 'user' | 'synthetic' | 'other'; text: string }>>;
@@ -119,7 +119,7 @@ export function createOpenCodeHost(parts: OpenCodeHostParts): Host & {
     receiverError: 'This OpenCode session has no active receiver or has more than one registration. The receiver starts at the first turn '
       + 'and when OpenCode loads a session that registered before. If it stays inactive during a turn, ask the user to open the ASB Bridge plugin. No tool restarts it.',
     async runtime() {
-      const permissions = await firstAgentPermissions(parts.agent);
+      const permissions = await sessionPermissions(parts);
       const running = await parts.isRunning(parts.openCodeSessionId);
       return { status: parts.limited ? 'unknown' : running ? 'busy' : 'idle', mode: modeFromRules(permissions) };
     },
@@ -157,11 +157,16 @@ export function createOpenCodeHost(parts: OpenCodeHostParts): Host & {
   };
 }
 
-async function firstAgentPermissions(agent: OpenCodeAgentLike) {
+// OpenCode 2.1.4 fields: session.agent is an agent id (no key for the default agent), session.permissions is optional, and agent.list() entries have id, name, and permissions.
+async function sessionPermissions(parts: OpenCodeHostParts) {
   try {
-    const list = unwrap<Array<{ permissions?: unknown }>>(await agent.list());
-    const first = Array.isArray(list) ? list[0] : undefined;
-    return first?.permissions;
+    const session = unwrap<{ agent?: unknown; permissions?: unknown } | undefined>(await parts.session.get({ sessionID: parts.openCodeSessionId }));
+    const list = unwrap<Array<{ id?: unknown; permissions?: unknown }>>(await parts.agent.list());
+    if (!Array.isArray(list)) return undefined;
+    const id = session?.agent;
+    const agent = typeof id === 'string' && id ? list.find(entry => entry?.id === id) : list[0];
+    if (!Array.isArray(agent?.permissions)) return undefined;
+    return Array.isArray(session?.permissions) ? [...agent.permissions, ...session.permissions] : agent.permissions;
   } catch { return undefined; }
 }
 

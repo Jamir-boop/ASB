@@ -321,6 +321,27 @@ test('native OpenCode bridge', async () => {
     console.log('PASS outbound from-mode is bypass for the default agent');
     await assertMockOnly(sessionA);
 
+    // The plan agent denies edit, so a session on it must not send from-mode="bypass".
+    const createdP = await api(password, 'POST', '/api/session', { title: 'Plan Native', directory: work });
+    assert.equal(createdP.status, 200);
+    const bodyP = createdP.json();
+    const sessionP = (bodyP.id ?? bodyP.data?.id) as string;
+    assert(sessionP?.startsWith('ses_'), `plan session id: ${JSON.stringify(bodyP).slice(0, 200)}`);
+    const switched = await api(password, 'POST', `/api/session/${sessionP}/agent`, { agent: 'plan' });
+    assert(switched.status >= 200 && switched.status < 300, `switch to plan: ${switched.status} ${JSON.stringify(switched.json()).slice(0, 200)}`);
+    const planText = `NATIVE_PLAN ${crypto.randomUUID()}`;
+    const planPrompt = await api(password, 'POST', `/api/session/${sessionP}/prompt`, {
+      text: `CALL_CODE: return await tools.asb_bridge.send_message({ sessionId: "${peerId}", text: ${JSON.stringify(planText)} })`,
+    });
+    assert.equal(planPrompt.status, 200);
+    await until(() => peerFrames.some(frame => String(frame.message?.content ?? '').includes(planText)), 'outbound frame from the plan session');
+    const planFrame = peerFrames.find(frame => String(frame.message?.content ?? '').includes(planText));
+    const planEnvelope = /^<cross-session-message\s[^>]*>/.exec(String(planFrame.message?.content ?? ''))?.[0] ?? '';
+    assert(planEnvelope.includes(`from-session="${rowOf(sessionP)?.sessionId}"`), `from-session in plan envelope: ${planEnvelope}`);
+    assert(!planEnvelope.includes('from-mode="bypass"'), `outbound from-mode must not be bypass for the plan agent: ${planEnvelope}`);
+    console.log('PASS outbound from-mode is not bypass for the plan agent');
+    await assertMockOnly(sessionP);
+
     // list_sessions shows the fake peer as claude and this session as opencode.
     const listPrompt = await api(password, 'POST', `/api/session/${sessionA}/prompt`, {
       text: 'CALL_CODE: return await tools.asb_bridge.list_sessions({})',

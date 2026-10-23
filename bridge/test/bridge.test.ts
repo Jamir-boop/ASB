@@ -211,6 +211,25 @@ posix('a new Bridge waits for a lock that another process holds on its state dat
   }
 });
 
+posix('close still closes the inbox after an uninstall removed the registry row', async () => {
+  const root = mkdtempSync('/tmp/uds-withdrawn-');
+  const configDir = join(root, 'config');
+  const directory = join(root, 's');
+  mkdirSync(join(configDir, 'sessions'), { recursive: true, mode: 0o700 });
+  mkdirSync(directory, { mode: 0o700 });
+  const bridge = new Bridge(randomUUID(), configDir, join(root, 'state'), join(root, 'unavailable.sock'));
+  try {
+    await bridge.start(directory, root, bridge.beginSession());
+    const socket = z.string().parse(bridge.status().replyAddress).slice(4);
+    expect(existsSync(socket)).toBe(true);
+    rmSync(join(configDir, 'sessions', `${process.pid}.json`));
+    await bridge.close();
+    expect(existsSync(socket)).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 linux('B1: send_message takes exactly one of sessionId or a well-formed reference and asks the engine nothing otherwise', async () => {
   const root = mkdtempSync(join(tmpdir(), 'uds-mcp-'));
   const engine = fakeEngine(z.string().parse(process.env.XDG_RUNTIME_DIR), () => ({ apiVersion: 1, ok: false, code: 'not-found', message: 'No session.' }));

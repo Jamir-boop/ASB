@@ -24,7 +24,7 @@ type SessionInfo = {
   title?: string | undefined;
   location?: { directory?: string | undefined } | undefined;
   parentID?: string | undefined;
-  time?: { updated?: number; idle?: number } | undefined;
+  time?: { updated?: number } | undefined;
   archived?: boolean | undefined;
 };
 
@@ -166,16 +166,7 @@ async function registerSessionOnce(co: Coordinator, instance: Instance, session:
     cwd,
     session: instance.ctx.session,
     agent: instance.ctx.agent,
-    isRunning: async (id) => {
-      if (co.running.has(id)) return true;
-      // V25: a session is running when time.updated > time.idle. The event set can miss a start.
-      try {
-        const session = await getSession(instance, id);
-        const time = session?.time;
-        if (time && typeof time.updated === 'number' && typeof time.idle === 'number') return time.updated > time.idle;
-      } catch (error) { /* Treat as idle. */ }
-      return false;
-    },
+    isRunning: async (id) => co.running.has(id),
     recentInputs: id => recentInputs(instance, id),
     pid: placeholder.pid,
   };
@@ -284,7 +275,7 @@ async function handleEvent(co: Coordinator, event: { id?: string; type?: string;
     const title = String(data.title ?? session.title ?? '');
     receiver.title = title;
     receiver.host.setTitle(title);
-    try { receiver.bridge.updateRuntime(await receiver.host.runtime()); } catch (error) { /* Keep the old name. */ }
+    try { receiver.bridge.updateRuntime(await receiver.host.runtime(), true); } catch (error) { /* Keep the old name. */ }
     return;
   }
   if (type === 'session.execution.started') {
