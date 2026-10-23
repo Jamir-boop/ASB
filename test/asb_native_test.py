@@ -4677,6 +4677,74 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(strip.flights, [])
         self.assertFalse(rows["m2"].has_css_class("asb-message-lit"))
 
+    def test_message_courier_waits_for_card_motion_and_uses_final_icon_centers(self):
+        threads = [{"id": f"m{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Sample session {n}",
+                    "cwd": "/example/notes", "projectName": "notes", "state": "working" if n == 1 else "idle",
+                    "canOpen": True, "updatedAtMs": NOW - n * 60_000, "workingSinceMs": NOW - 60_000}
+                   for n in (1, 2, 3)]
+        dashboard = {"generatedAtMs": NOW, "providers": [], "threads": threads, "messages": []}
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(700, 420)
+        window.present()
+        self.settle(window)
+        strip = window.list_body
+        self.assertEqual(window.row_order[:2], ["m1", "m2"])
+        samples, starts = [], []
+        start_messages, start_flight = window.start_messages, strip.start_flight
+        def observed_messages(play):
+            result = start_messages(play)
+            samples.append((bool(strip.motion), len(strip.flights)))
+            return result
+        def observed_flight(source, target, color, ends):
+            starts.append((bool(strip.motion), ends))
+            start_flight(source, target, color, ends)
+            for animation in strip.flights[-1]["animations"]:
+                animation.pause()
+        with patch.object(window, "start_messages", observed_messages), patch.object(strip, "start_flight", observed_flight):
+            changed = copy.deepcopy(dashboard)
+            changed["threads"][1].update(state="working", workingSinceMs=NOW + 1000)
+            changed["messages"] = [{"from": "m1", "to": "m2", "atMs": time.time() * 1000}]
+            window.apply_dashboard(changed, None)
+            deadline = time.monotonic() + 6
+            saw_motion = False
+            while time.monotonic() < deadline and (not starts or strip.motion):
+                self.drain(.01)
+                if strip.motion:
+                    saw_motion = True
+                    self.assertEqual(strip.flights, [])
+            self.assertTrue(saw_motion)
+            self.assertIn((True, 0), samples)
+            self.assertEqual(len(starts), 1)
+            self.assertFalse(starts[0][0])
+            self.assertEqual(len(strip.flights), 1)
+            self.assertEqual(window.row_order[:2], ["m2", "m1"])
+            flight = strip.flights[0]
+            ends = strip.message_ends(flight)
+            self.assertEqual(starts[0][1], ends)
+            centers = []
+            for row in flight["rows"]:
+                found, bounds = row.asb_mark.compute_bounds(strip)
+                self.assertTrue(found)
+                centers.append((bounds.origin.x + bounds.size.width / 2, bounds.origin.y + bounds.size.height / 2))
+            self.assertEqual([point[:2] for point in ends], centers)
+            start, end = centers
+            self.assertLess(end[1], start[1])
+            ys = [start[1]]
+            for progress in (.25, .5, .75):
+                strip.advance_flight(flight, "flight", progress)
+                self.drain(.02)
+                self.assertEqual(strip.message_ends(flight), ends)
+                ys.append(asb.bezier_point(start, asb.message_control(start, end), end,
+                                           asb.ease_in_out_cubic(flight["flight"]))[1])
+            ys.append(end[1])
+            self.assertTrue(all(before > after for before, after in zip(ys, ys[1:])), ys)
+
     def test_message_courier_out_of_view_edges(self):
         threads = [{"id": f"e{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Sample row {n}", "cwd": "/example/notes",
                     "projectName": "notes", "state": "idle", "canOpen": True, "updatedAtMs": NOW - n * 60_000} for n in range(80)]

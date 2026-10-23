@@ -3054,6 +3054,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     filter_model = ()
     filter_popover_signature = None
     message_seen = None
+    pending_messages = ()
     number_hold = number_idle = number_scroll = number_pressed = None
     row_cache_trim = None
     numbers_shown = False
@@ -3929,6 +3930,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def start_messages(self, play):
         if self.closed:
+            self.pending_messages = []
+            return False
+        if getattr(self.list_body, "motion", None):
+            self.pending_messages = list(dict.fromkeys([*self.pending_messages, *play]))[-MESSAGE_FLIGHT_LIMIT:]
             return False
         # A flight draws with Gsk.PathBuilder (GTK 4.14). GTK 4.12 lights the rows, as with animations off.
         animations = self.get_settings().get_property("gtk-enable-animations") and hasattr(Gsk, "PathBuilder")
@@ -4277,6 +4282,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if value <= 0:
             strip.motion, self.motion_columns = {}, []
             self.motion_bounds = {}
+            pending, self.pending_messages = self.pending_messages, []
+            if pending and not self.closed:
+                GLib.idle_add(self.start_messages, pending)
 
     def cancel_motion(self, *_args):
         self.motion_from = None
@@ -6462,6 +6470,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def on_close(self, *_args):
         self.closed = True
+        self.pending_messages = []
         if getattr(self, "search_popover", None):
             self.search_popover.unparent()
         if getattr(self, "preferences_window", None):

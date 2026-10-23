@@ -2161,6 +2161,68 @@ class MessageChecks(unittest.TestCase):
         self.assertEqual((play, seen), ([], set()))
         self.assertEqual(select(None, set(), visible, now, 6), ([], set()))
 
+    def test_messages_wait_for_card_motion_and_keep_bounded_unique_pending_pairs(self):
+        window = object.__new__(Window)
+        window.closed = False
+        window.motion_columns = []
+        ends = [(1, 4, False), (1, 2, False)]
+        window.list_body = SimpleNamespace(motion={"a": (0, 20, 0)}, flights=[],
+                                           message_ends=Mock(return_value=ends), start_flight=Mock())
+        window.focus_widgets = {"a": Mock(), "b": Mock()}
+        window.get_settings = lambda: SimpleNamespace(get_property=lambda _name: True)
+        window.light_row, window.message_color = Mock(), Mock(return_value="accent")
+        pairs = [("a", "b", 1), ("b", "a", 2)]
+        idle = Mock()
+        with patch.dict(SCOPE, {"GLib": SimpleNamespace(idle_add=idle), "Gsk": SimpleNamespace(PathBuilder=object)}):
+            self.assertFalse(window.start_messages(pairs))
+            window.list_body.start_flight.assert_not_called()
+            window.light_row.assert_not_called()
+            self.assertEqual(window.pending_messages, pairs)
+            window.start_messages(pairs)
+            self.assertEqual(window.pending_messages, pairs)
+            window.advance_motion(.5)
+            idle.assert_not_called()
+            window.advance_motion(0)
+            idle.assert_called_once_with(window.start_messages, pairs)
+            self.assertEqual(window.pending_messages, [])
+            self.assertEqual(window.list_body.motion, {})
+            window.advance_motion(0)
+            self.assertEqual(idle.call_count, 1)
+            callback, pending = idle.call_args.args
+            callback(pending)
+            self.assertEqual(window.list_body.start_flight.call_count, 2)
+
+            # Both fallback modes wait too; the checks run again at the end of the motion.
+            for animations, gsk in ((False, SimpleNamespace(PathBuilder=object)), (True, SimpleNamespace())):
+                window.get_settings = lambda: SimpleNamespace(get_property=lambda _name: animations)
+                window.list_body.motion = {"a": (0, 20, 0)}
+                window.light_row.reset_mock()
+                idle.reset_mock()
+                with patch.dict(SCOPE, {"Gsk": gsk}):
+                    window.start_messages(pairs[:1])
+                    window.light_row.assert_not_called()
+                    window.motion_animation = SimpleNamespace(skip=lambda: window.advance_motion(0))
+                    window.cancel_motion()
+                    idle.assert_called_once_with(window.start_messages, pairs[:1])
+                    idle.call_args.args[0](idle.call_args.args[1])
+                    self.assertEqual(window.light_row.call_count, 2)
+
+            window.list_body.motion = {"a": (0, 20, 0)}
+            many = [("a", "b", at) for at in range(asb.MESSAGE_FLIGHT_LIMIT + 3)]
+            window.start_messages(many[:4])
+            window.start_messages(many[2:])
+            self.assertEqual(window.pending_messages, many[-asb.MESSAGE_FLIGHT_LIMIT:])
+            self.assertEqual(len(set(window.pending_messages)), asb.MESSAGE_FLIGHT_LIMIT)
+            idle.reset_mock()
+            window.closed = True
+            window.advance_motion(0)
+            self.assertEqual(window.pending_messages, [])
+            idle.assert_not_called()
+            window.pending_messages = pairs[:]
+            window.start_messages(pairs)
+            self.assertEqual(window.pending_messages, [])
+            idle.assert_not_called()
+
     def test_dashboards_keep_message_state_apart_from_the_dashboard(self):
         window = object.__new__(Window)
         window.list_body = SimpleNamespace(flights=[], add_tick_callback=Mock())
