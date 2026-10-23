@@ -3128,7 +3128,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.notice_timer, self.notice_generation, self.provider_notice = None, 0, ""
         self.opening, self.focus_widgets, self.row_cache = set(), {}, {}
         self.copy_wheel_state = dict(COPY_WHEEL_STATE)
-        self.copy_hover = self.copy_rest_timer = self.copy_tag_button = None
+        self.copy_hover = self.copy_rest_timer = self.copy_focus_button = None
         self.palette_sent = self.palette_wanted = None
         self.palette_sending = False
         # A replaced column stays alive: a card can keep a pointer into its internal list until the card is inserted again.
@@ -3752,6 +3752,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             chip = self.filter_chip_widgets.get(key, (None, None))[0]
             if chip is not None:
                 self.apply_chip_dot(chip, color)
+        # The Filters popover makes its rows again at the next open, so their dots get rules.
+        self.filter_popover_signature = None
         if getattr(self, "preferences_window", None):
             preferences = self.preferences_window
             (preferences.add_css_class if colors else preferences.remove_css_class)("asb-custom")
@@ -3948,7 +3950,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             if model != self.filter_model:
                 self.filter_model = model
                 known = {profile["key"] for machine in model for app in machine["apps"] for profile in app["profiles"]}
-                self.profiles.intersection_update(known)
+                if self.profiles - known:
+                    self.profiles.intersection_update(known)
+                    self.sync_filter_chips()
+                    # The rows render again also when the thread list did not change.
+                    self.signature = None
                 self.filter_popover_signature = None
         preferences = self.preferences_window
         if preferences and preferences.profiles_editor:
@@ -4424,10 +4430,17 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             if row:
                 row.add_css_class("asb-key-focus")
             self.key_focus_row = row
+        # The tag of the copy button under the pointer stays until the pointer leaves.
+        old = getattr(self, "copy_focus_button", None)
         if self.get_focus_visible() and focus is not None and getattr(focus, "asb_card_action", None) == "copy":
+            if old is not None and old is not focus and old is not self.copy_hover:
+                self.show_copy_tag(old, False)
+            self.copy_focus_button = focus
             self.show_copy_tag(focus, True)
-        elif getattr(self, "copy_tag_button", None) is not None and self.copy_hover is not self.copy_tag_button:
-            self.show_copy_tag(self.copy_tag_button, False)
+        elif old is not None:
+            if old is not self.copy_hover:
+                self.show_copy_tag(old, False)
+            self.copy_focus_button = None
 
     def clear_search(self, *_args):
         self.cancel_scroll()
@@ -4639,20 +4652,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.archived = on
         self.filter_changed()
 
-    def toggle_state(self, state):
-        if state in self.states:
-            self.states.discard(state)
-        else:
-            self.states.add(state)
-        self.filter_changed()
-
-    def toggle_profile(self, key):
-        if key in self.profiles:
-            self.profiles.discard(key)
-        else:
-            self.profiles.add(key)
-        self.filter_changed()
-
     def clear_filters(self):
         self.pending, self.archived = False, False
         self.states, self.profiles = set(), set()
@@ -4756,9 +4755,20 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.paint_dot(dot, color)
 
     def paint_dot(self, dot, color):
-        dot.set_visible(bool(color))
-        if color:
-            dot.add_css_class(self.badge_class(color))
+        try:
+            color = validate_source_color(color)
+        except ValueError:
+            color = ""
+        displayed = display_source_color(color, self.profile_surfaces) if color else ""
+        dot.set_visible(bool(displayed))
+        name = self.badge_class(displayed) if displayed else ""
+        old = getattr(dot, "asb_color_class", "")
+        if name != old:
+            if old:
+                dot.remove_css_class(old)
+            if name:
+                dot.add_css_class(name)
+            dot.asb_color_class = name
 
     @staticmethod
     def ellipsize_chip(title):
@@ -4797,9 +4807,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if key == "pending":
             self.set_pending(False)
         elif key.startswith("state:"):
-            self.toggle_state(key.split(":", 1)[1])
+            self.states.discard(key.split(":", 1)[1])
+            self.filter_changed()
         elif key.startswith("profile:"):
-            self.toggle_profile(key.split(":", 1)[1])
+            self.profiles.discard(key.split(":", 1)[1])
+            self.filter_changed()
         elif key == "archive":
             self.set_archived(False)
         elif key == "all":
@@ -4824,6 +4836,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.filter_popover.set_parent(self.filters_pill)
             self.filter_popover.set_size_request(280, -1)
             self.filter_popover.connect("closed", self.filters_popover_closed)
+            keys = Gtk.EventControllerKey()
+            keys.connect("key-pressed", self.filter_popover_key)
+            self.filter_popover.add_controller(keys)
         self.rebuild_filters_popover()
         self.filters_pill.set_has_tooltip(False)
         # GTK measures a hidden popover as zero; show it before measuring and opening it.
@@ -4956,9 +4971,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.filter_popover_rows["clear"] = footer
         root.append(footer)
         self.filter_popover.set_child(root)
-        keys = Gtk.EventControllerKey()
-        keys.connect("key-pressed", self.filter_popover_key)
-        self.filter_popover.add_controller(keys)
 
     def filter_row_clicked(self, _button, action):
         if action == "clear":
@@ -4981,10 +4993,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.filter_changed()
         elif action.startswith("profile:"):
             key = action.split(":", 1)[1]
-            if on:
-                self.profiles.add(key)
-            else:
+            if not on:
                 self.profiles.discard(key)
+            elif key in {profile["key"] for machine in self.filter_model for app in machine["apps"] for profile in app["profiles"]}:
+                # A popover row can be older than the model; a profile that left the model is not added.
+                self.profiles.add(key)
             self.filter_changed()
         elif action.startswith("app:"):
             _kind, machine, provider = action.split(":", 2)
@@ -5801,8 +5814,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return
         button.asb_tag_shown = bool(shown)
         tag.set_reveal_child(bool(shown))
-        current = getattr(self, "copy_tag_button", None)
-        self.copy_tag_button = button if shown else (None if current is button else current)
         if getattr(button, "asb_card", None) is not None and button.asb_card.asb_view == "comfortable":
             button.asb_card.asb_action_signature = None
             self.update_card_actions(button.asb_card)

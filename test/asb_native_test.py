@@ -90,6 +90,14 @@ def board_rows(count):
              "workingSinceMs": NOW - n * 900_000 if n < 6 else 0, "pending": 6 <= n < 20, "unread": 6 <= n < 20} for n in range(count)]
 
 
+def toggle_profile(window, key):
+    if key in window.profiles:
+        window.profiles.discard(key)
+    else:
+        window.profiles.add(key)
+    window.filter_changed()
+
+
 def mock_dashboard():
     titles = ["Account settings", "Build pipeline", "Cache invalidation", "Error messages", "Import parser",
               "Keyboard navigation", "Local sync", "Release checks", "Route migration", "Session history",
@@ -650,7 +658,7 @@ class WidgetCheck(unittest.TestCase):
                     if profile["label"] == "Codex Account One":
                         profile_key = profile["key"]
         self.assertIsNotNone(profile_key)
-        window.toggle_profile(profile_key); self.drain(.1)
+        toggle_profile(window, profile_key); self.drain(.1)
         self.assertEqual(box_titles(), expected_titles())
         self.assertEqual(box_titles(), ["Pending", "Working", "Codex Account One"])
 
@@ -688,7 +696,7 @@ class WidgetCheck(unittest.TestCase):
                 for profile in app["profiles"]:
                     if profile_key is None:
                         profile_key = profile["key"]
-        window.toggle_profile(profile_key)
+        toggle_profile(window, profile_key)
         window.set_archived(True)
         self.drain(.2)
         self.assertEqual(len(window.filter_chip_widgets), 6)
@@ -720,7 +728,7 @@ class WidgetCheck(unittest.TestCase):
             for app in machine["apps"]:
                 for profile in app["profiles"]:
                     profile_key = profile["key"]
-        window.toggle_profile(profile_key); self.drain(.2)
+        toggle_profile(window, profile_key); self.drain(.2)
         chip, _name = window.filter_chip_widgets[f"profile:{profile_key}"]
         dot = chip.asb_chip_dot
         self.assertTrue(dot.get_visible())
@@ -773,13 +781,13 @@ class WidgetCheck(unittest.TestCase):
                     if len(profiles) >= 2:
                         key1, key2 = profiles[0]["key"], profiles[1]["key"]
         self.assertIsNotNone(key1)
-        window.toggle_profile(key1); self.drain(.2)
+        toggle_profile(window, key1); self.drain(.2)
         window.sync_filters_popover_checks()
         header = window.filter_popover_rows.get("app::codex")
         self.assertIsNotNone(header)
         self.assertTrue(header.get_inconsistent(), "header inconsistent with one of two on")
         self.assertFalse(header.get_active())
-        window.toggle_profile(key2); self.drain(.2)
+        toggle_profile(window, key2); self.drain(.2)
         window.sync_filters_popover_checks()
         self.assertTrue(header.get_active(), "header active with both on")
         self.assertFalse(header.get_inconsistent(), "header not inconsistent with both on")
@@ -952,6 +960,13 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(window.filters_active())
         self.assertEqual(window.filter_chip_widgets, {})
         self.assertIsNone(window.chip_box.get_first_child())
+        # A new model builds the rows again. GTK gives each popover one key controller; ASB adds exactly one more.
+        dashboard["providers"].append({"id": "codex-2", "label": "Codex Account Two", "provider": "codex", "color": "#c4a882"})
+        window.filter_model = asb.filter_profiles(dashboard)
+        window.open_filters_popover(); self.drain(.2)
+        self.assertIn("profile:|codex-2", window.filter_popover_rows)
+        key_controllers = lambda widget: sum(isinstance(controller, asb.Gtk.EventControllerKey) for controller in widget.observe_controllers())
+        self.assertEqual(key_controllers(window.filter_popover), key_controllers(asb.Gtk.Popover()) + 1)
 
     def test_wide_search_allows_one_resize_to_narrow(self):
         window = self.snapshot_window()
@@ -978,8 +993,8 @@ class WidgetCheck(unittest.TestCase):
         window.present(); self.drain(.3)
         window.set_pending(True)
         window.select_states({"working", "waiting"})
-        window.toggle_profile("|codex")
-        window.toggle_profile("|claude-desktop-code")
+        toggle_profile(window, "|codex")
+        toggle_profile(window, "|claude-desktop-code")
         window.set_archived(True); self.drain(.4)
         self.assertEqual(len(window.filter_chip_widgets), 6)
         self.assertEqual(window.search.get_max_width_chars(), 22)

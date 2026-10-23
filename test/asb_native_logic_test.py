@@ -1677,6 +1677,45 @@ class DataChecks(unittest.TestCase):
         step, _state = asb.copy_wheel_step(state, 0, 1.6, surface=True)
         self.assertEqual(step, 0)
 
+    def test_the_keyboard_copy_tag_goes_with_the_focus_after_a_pointer_rest_elsewhere(self):
+        def button():
+            tag = SimpleNamespace(shown=False)
+            tag.set_reveal_child = lambda value: setattr(tag, "shown", value)
+            return SimpleNamespace(asb_card_action="copy", asb_tag=tag, asb_tag_shown=False, asb_rest_at=None,
+                                   asb_card=None, get_ancestor=lambda _type: None)
+        a, b, c = button(), button(), button()
+        other = SimpleNamespace(asb_card_action="drawer", get_ancestor=lambda _type: None)
+        window = object.__new__(Window)
+        window.copy_hover = window.copy_rest_timer = window.copy_focus_button = window.key_focus_row = None
+        focus = {"widget": None, "visible": True}
+        window.get_focus = lambda: focus["widget"]
+        window.get_focus_visible = lambda: focus["visible"]
+        def move_focus(widget):
+            focus["widget"] = widget
+            window.key_focus_changed()
+        with patch.dict(SCOPE, {"GLib": SimpleNamespace(timeout_add=Mock(return_value=9), source_remove=Mock()),
+                                "Gtk": SimpleNamespace(ListBoxRow=object)}):
+            move_focus(a)
+            self.assertTrue(a.asb_tag.shown)
+            # The pointer rests on B and leaves it; A keeps the focus and its tag.
+            window.copy_button_enter(SimpleNamespace(get_widget=lambda: b), 0, 0)
+            window.copy_tag_due(b)
+            window.copy_button_leave(SimpleNamespace(get_widget=lambda: b))
+            self.assertEqual((a.asb_tag.shown, b.asb_tag.shown), (True, False))
+            move_focus(other)
+            self.assertEqual((a.asb_tag.shown, b.asb_tag.shown), (False, False))
+            self.assertIsNone(window.copy_focus_button)
+            # The focus goes from one copy button to the next: only the new one shows its tag.
+            move_focus(a)
+            move_focus(c)
+            self.assertEqual((a.asb_tag.shown, c.asb_tag.shown, window.copy_focus_button), (False, True, c))
+            # The pointer is on C when the focus leaves: the tag stays until the pointer leaves.
+            window.copy_button_enter(SimpleNamespace(get_widget=lambda: c), 0, 0)
+            move_focus(other)
+            self.assertEqual((c.asb_tag.shown, window.copy_focus_button), (True, None))
+            window.copy_button_leave(SimpleNamespace(get_widget=lambda: c))
+            self.assertFalse(c.asb_tag.shown)
+
     def test_limit_rows_keeps_the_first_rows_and_one_more_row(self):
         rows = [{"id": f"r{index}", "updatedAtMs": 1000 - index if index != 7 else 5000, "canOpen": True} for index in range(10)]
         before = copy.deepcopy(rows)
@@ -1742,8 +1781,6 @@ class DataChecks(unittest.TestCase):
         window.filter_changed = Mock()
         window.set_pending = lambda on: setattr(window, "pending", bool(on))
         window.set_archived = lambda on: setattr(window, "archived", bool(on))
-        window.toggle_state = lambda state: window.states.discard(state) if state in window.states else window.states.add(state)
-        window.toggle_profile = lambda key: window.profiles.discard(key) if key in window.profiles else window.profiles.add(key)
         window.clear_filter_chip(None, "pending")
         self.assertFalse(window.pending)
         window.clear_filter_chip(None, "state:working")
@@ -1818,7 +1855,6 @@ class DataChecks(unittest.TestCase):
         window.show_all_cards, window.card_limit = False, 100
         window.filter_changed = Mock()
         window.set_archived = lambda on: setattr(window, "archived", on)
-        window.toggle_state = lambda s: window.states.discard(s) if s in window.states else window.states.add(s)
         window.clear_filter_chip(chips["state:working"][0], "state:working")
         self.assertNotIn("working", window.states)
         chips["archive"][0].grab_focus.assert_called_once_with()
@@ -1833,6 +1869,64 @@ class DataChecks(unittest.TestCase):
         window.preferences_window.set_visible.assert_called_once_with(False)
         window.present.assert_called_once_with()
         window.open_search.assert_called_once_with()
+
+    def test_a_profile_that_leaves_the_model_leaves_no_chip_and_no_filter(self):
+        def row(identity, remote=False):
+            value = {"id": identity, "provider": "codex", "state": "idle", "title": identity, "updatedAtMs": 1,
+                     "sourceId": "codex", "machineName": "laptop"}
+            if remote:
+                value.update(remote=True, machineId="m1", machineName="studio", sourceLabel="Codex")
+            return value
+        providers = [{"id": "codex", "provider": "codex", "label": "Codex"}]
+        window = object.__new__(Window)
+        window.closed = window.loading = window.refresh_queued = window.refresh_force_queued = False
+        window.refresh_button, window.preferences_window, window.snapshot_pending = Mock(), None, False
+        window.signature, window.dashboard, window.filter_model = None, None, ()
+        window.pending, window.archived, window.states, window.profiles = False, False, set(), set()
+        window.show_all_cards, window.card_limit = False, 100
+        window.refresh_interval_ms = 5000
+        for name in ("set_notice", "report_ui", "sync_unread_setting", "render", "play_messages", "update_clock",
+                     "sync_filter_chips", "filter_changed"):
+            setattr(window, name, Mock())
+        window.apply_dashboard({"providers": providers, "threads": [row("local-1"), row("m:m1:a", remote=True)]}, None, [None])
+        window.profiles.add("m1|codex")
+        self.assertEqual([chip[1] for chip in window.active_filter_chips()], ["Codex · studio"])
+        window.sync_filter_chips.reset_mock()
+        # The studio machine leaves: its profile goes from the filter and from the chips.
+        window.apply_dashboard({"providers": providers, "threads": [row("local-1")]}, None, [None])
+        window.sync_filter_chips.assert_called_once_with()
+        self.assertEqual(window.profiles, set())
+        # A click on the old chip only removes a filter.
+        chip = Mock()
+        window.filter_chip_widgets, window.get_focus = {"profile:m1|codex": (chip, Mock())}, lambda: None
+        window.clear_filter_chip(chip, "profile:m1|codex")
+        self.assertEqual(window.profiles, set())
+        window.filter_changed.assert_called_once_with()
+        # A local profile leaves and the thread list stays the same: the rows render again.
+        threads = window.dashboard["threads"]
+        window.apply_dashboard({"providers": providers + [{"id": "codex-2", "provider": "codex", "label": "Two"}],
+                                "threads": threads}, None, [None])
+        window.profiles.add("|codex-2")
+        window.sync_filter_chips.reset_mock()
+        window.render.reset_mock()
+        window.apply_dashboard({"providers": providers, "threads": threads}, None, [None])
+        self.assertEqual(window.profiles, set())
+        window.sync_filter_chips.assert_called_once_with()
+        window.render.assert_called_once_with()
+
+    def test_an_old_filters_popover_row_adds_no_profile_that_left_the_model(self):
+        window = object.__new__(Window)
+        window.filter_model = asb.filter_profiles({"providers": [{"id": "codex", "provider": "codex", "label": "Codex"}],
+                                                   "threads": []})
+        window.profiles = set()
+        window.filter_changed, window.sync_filters_popover_checks = Mock(), Mock()
+        window.filter_row_toggled(SimpleNamespace(get_active=lambda: True), "profile:m9|codex")
+        self.assertEqual(window.profiles, set())
+        window.sync_filters_popover_checks.assert_called_once_with()
+        window.filter_row_toggled(SimpleNamespace(get_active=lambda: True), "profile:|codex")
+        self.assertEqual(window.profiles, {"|codex"})
+        window.filter_row_toggled(SimpleNamespace(get_active=lambda: False), "profile:|codex")
+        self.assertEqual(window.profiles, set())
 
     def test_toolbar_presentation_keeps_fixed_corners_and_reparents_only_on_mode_changes(self):
         class Control(Box):
@@ -2841,6 +2935,41 @@ class NativeLogicChecks(unittest.TestCase):
         window.badge_css.load_from_string.assert_not_called()
         for _name, preset in SCOPE["SOURCE_COLOR_PRESETS"]:
             self.assertEqual(SCOPE["validate_source_color"](preset), preset)
+
+    def test_a_filter_dot_drops_a_peer_color_that_is_not_a_color(self):
+        window = object.__new__(Window)
+        window.profile_surfaces, window.badge_css, window.badge_colors = ("#1e1e1e", "#2a2a2a"), Mock(), {}
+        dot = SimpleNamespace(set_visible=Mock(), add_css_class=Mock(), remove_css_class=Mock())
+        # A group member can send this sourceColor; filter_profiles copies it into the filter model.
+        model = asb.filter_profiles({"providers": [], "threads": [
+            {"id": "m:m1:a", "remote": True, "machineId": "m1", "provider": "codex", "sourceId": "codex", "state": "idle",
+             "sourceColor": '#000; } window { background: url("https://example.invalid/x.png"); } .x {'}]})
+        window.paint_dot(dot, model[1]["apps"][0]["profiles"][0]["color"])
+        dot.set_visible.assert_called_once_with(False)
+        dot.add_css_class.assert_not_called()
+        self.assertFalse(any("window" in made.args[0] for made in window.badge_css.load_from_string.call_args_list))
+
+    def test_a_filter_dot_has_one_class_of_its_displayed_color(self):
+        window = object.__new__(Window)
+        surfaces = ("#1e1e1e", "#2a2a2a")
+        window.profile_surfaces, window.badge_css, window.badge_colors = surfaces, Mock(), {}
+        classes = set()
+        dot = SimpleNamespace(set_visible=Mock(), add_css_class=classes.add, remove_css_class=classes.discard)
+        for color in ("#8296b4", "#b28f80", "#8296b4"):
+            window.paint_dot(dot, color)
+        self.assertEqual(classes, {window.badge_class(asb.display_source_color("#8296b4", surfaces))})
+        window.paint_dot(dot, "#3a4a6a")
+        displayed = asb.display_source_color("#3a4a6a", surfaces)
+        self.assertNotEqual(displayed, "#3a4a6a")
+        self.assertEqual(classes, {window.badge_class(displayed)})
+        dot.set_visible.assert_called_with(True)
+        # set_palette empties the shared rules: the next paint writes the rule of the dot again.
+        window.badge_colors.clear()
+        window.badge_css.load_from_string.reset_mock()
+        window.paint_dot(dot, "#3a4a6a")
+        self.assertIn(".asb-chip-dot." + window.badge_class(displayed) + " { background: " + displayed + "; }",
+                      window.badge_css.load_from_string.call_args.args[0])
+        self.assertEqual(classes, {window.badge_class(displayed)})
 
     def test_source_count_type_change_refreshes_markers_despite_numeric_equality(self):
         window = object.__new__(Window)
