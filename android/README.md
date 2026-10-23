@@ -169,9 +169,8 @@ stays open after a change and shows the new row data. It covers the message
 bar, so it shows the current message (for example an error) as a caption below
 the switches. Back, a tap outside, Open, or the row leaving the list closes it.
 
-After a good Open, the card of the session shows `Opened on <PC>` in the accent
-color for 1.6 seconds, in place of the state text. Other messages and errors
-show in a dark strip.
+After a good Open, `Opened on <PC>` shows in a small dark pill over the toolbar.
+All other messages and errors show in the same pill. A tap closes it.
 
 The app turns with the phone. A window narrower than 600 dp shows one list. A
 wider window, for example landscape, shows the desktop Column Flow: 240 dp

@@ -1,6 +1,14 @@
 package local.asb.companion.ui
 
-import androidx.compose.foundation.border
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.systemBars
@@ -11,7 +19,9 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Snackbar
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.darkColorScheme
@@ -19,9 +29,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import local.asb.companion.R
 import local.asb.companion.data.Palette
 import local.asb.companion.data.contrast
 import local.asb.companion.data.mixColor
@@ -83,12 +99,30 @@ fun AsbTheme(palette: Palette, content: @Composable () -> Unit) {
     }
 }
 
-// The message strip is a raised dark strip with a thin edge, so it reads as part of the dark app.
+/** In-app messages: a small dark pill over the toolbar, the shape of the HyperOS island. A tap closes it. */
 @Composable
-fun AsbSnackbarHost(state: SnackbarHostState) {
+fun AsbMessagePill(state: SnackbarHostState, toolbarHeight: Dp, modifier: Modifier = Modifier) {
     val palette = LocalPalette.current
-    val shape = RoundedCornerShape(12.dp)
-    SnackbarHost(state) { data ->
-        Snackbar(data, shape = shape, modifier = Modifier.border(1.dp, hexColor(mixColor(palette.background, palette.text, .20)), shape))
+    SnackbarHost(state, modifier.windowInsetsPadding(SafeTopBarInsets)
+        .padding(top = (toolbarHeight - 36.dp) / 2, start = 16.dp, end = 16.dp)) { data ->
+        Surface(
+            shape = RoundedCornerShape(50),
+            color = MaterialTheme.colorScheme.inverseSurface,
+            contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+            border = BorderStroke(1.dp, hexColor(mixColor(palette.background, palette.text, .20))),
+            modifier = Modifier.clickable(onClickLabel = "Close message") { data.dismiss() },
+        ) {
+            Row(
+                Modifier.heightIn(min = 36.dp).widthIn(max = 480.dp)
+                    .padding(start = 10.dp, end = 14.dp, top = 6.dp, bottom = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(painterResource(R.drawable.ic_stat_asb), contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                Text(data.visuals.message, fontSize = 13.sp, lineHeight = 17.sp,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+        }
     }
 }

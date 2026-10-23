@@ -412,7 +412,6 @@ fun SessionsScreen(
             busy = row.id in state.busyIds,
             opening = row.id in state.openingIds,
             confirmed = row.id in state.readConfirmedIds,
-            echo = state.openedEchoes[row.id],
             nowMs = nowMs,
             messageLit = row.id in highlights,
             onProviderCenter = { center -> providerCenters[row.id] = center },
@@ -624,7 +623,6 @@ fun SessionsScreen(
 
     Scaffold(
         contentWindowInsets = SafeContentInsets,
-        snackbarHost = { AsbSnackbarHost(snackbar) },
         topBar = { if (!state.revoked) topBar() },
     ) { padding ->
         Box(
@@ -709,6 +707,7 @@ fun SessionsScreen(
             }
         }
     }
+    AsbMessagePill(snackbar, if (flow) 48.dp else 56.dp, Modifier.align(Alignment.TopCenter))
     if (showFilters && !state.revoked) FilterSheet(
         filter = state.filter,
         onChange = viewModel::setFilter,
@@ -814,11 +813,10 @@ private fun ProviderWarning(provider: Provider, onDismiss: () -> Unit) {
 @Composable
 private fun SessionCard(
     row: Thread, comfortable: Boolean, drawerView: Boolean, busy: Boolean, opening: Boolean, confirmed: Boolean,
-    echo: String?, nowMs: Long, messageLit: Boolean, onProviderCenter: (Offset) -> Unit, onOpen: () -> Unit,
-    onActions: (Offset) -> Unit, onCorner: (String) -> Unit, modifier: Modifier = Modifier,
+    nowMs: Long, messageLit: Boolean, onProviderCenter: (Offset) -> Unit, onOpen: () -> Unit, onActions: (Offset) -> Unit,
+    onCorner: (String) -> Unit, modifier: Modifier = Modifier,
 ) {
     val palette = LocalPalette.current
-    val accent = hexColor(palette.accent)
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     // The inspector opens at the long-press point; a long click with no touch (accessibility) uses the card center.
@@ -848,8 +846,6 @@ private fun SessionCard(
     val viewOnly = isViewOnly(row)
     val (whereGlyph, where) = rowWhere(row)
     val description = listOf(
-        // First, because a screen reader says this text when the echo shows.
-        echo.orEmpty(),
         row.title, row.projectName, state,
         if (limited) "Usage limit. Resets in ${spokenLimit(left)}" else working.ifEmpty { idleAge(row.updatedAtMs, nowMs) },
         indicatorMeaning,
@@ -868,8 +864,6 @@ private fun SessionCard(
     val fontScale = density.fontScale
     val card = modifier.fillMaxWidth().onPlaced { coordinates.value = it }
         .heightIn(min = (if (comfortable) comfortableCardHeight(fontScale) else compactRowHeight(fontScale)).dp)
-        // The echo keeps the highlight for its 1.6 s; the press highlight draws over it.
-        .then(if (echo != null) Modifier.background(hexColor(palette.highlight), RoundedCornerShape(3.dp)) else Modifier)
         .combinedClickable(
             interactionSource = interaction,
             indication = remember(palette.highlight) { HighlightIndication(hexColor(palette.highlight)) },
@@ -890,10 +884,7 @@ private fun SessionCard(
         })
     }
     if (!comfortable) Row(
-        modifier = card.semantics(mergeDescendants = true) {
-            contentDescription = description
-            if (echo != null) liveRegion = LiveRegionMode.Polite
-        }.padding(horizontal = 5.dp),
+        modifier = card.semantics(mergeDescendants = true) { contentDescription = description }.padding(horizontal = 5.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -901,16 +892,13 @@ private fun SessionCard(
         Text(title, fontSize = 13.sp, lineHeight = 16.sp, color = hexColor(tones.title), maxLines = 1,
             overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).clearAndSetSemantics { })
         if (indicator.isNotEmpty()) IndicatorMark(indicator, palette)
-        if (limited && echo == null) LimitClock(tones.state)
-        Text(echo ?: if (limited) "Resets $countdown" else state + if (working.isNotEmpty()) " ·$working" else "",
-            fontSize = 11.sp, lineHeight = 14.sp, color = if (echo != null) accent else hexColor(tones.state), maxLines = 1,
+        if (limited) LimitClock(tones.state)
+        Text(if (limited) "Resets $countdown" else state + if (working.isNotEmpty()) " ·$working" else "",
+            fontSize = 11.sp, lineHeight = 14.sp, color = hexColor(tones.state), maxLines = 1,
             modifier = Modifier.clearAndSetSemantics { })
-        if (viewOnly && echo == null) Text("· $where", fontSize = 11.sp, lineHeight = 14.sp, color = hexColor(tones.caption), maxLines = 1,
+        if (viewOnly) Text("· $where", fontSize = 11.sp, lineHeight = 14.sp, color = hexColor(tones.caption), maxLines = 1,
             overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = with(density) { 66.sp.toDp() }).clearAndSetSemantics { })
-    } else Box(card.semantics {
-        contentDescription = description
-        if (echo != null) liveRegion = LiveRegionMode.Polite
-    }) {
+    } else Box(card.semantics { contentDescription = description }) {
         Column(
             modifier = Modifier.fillMaxWidth().align(Alignment.CenterStart)
                 .padding(start = 8.dp, end = 8.dp, top = COMFORTABLE_PADDING.dp, bottom = COMFORTABLE_PADDING.dp),
@@ -927,27 +915,20 @@ private fun SessionCard(
                 modifier = Modifier.padding(start = 21.dp, end = 54.dp).clearAndSetSemantics { })
             Row(Modifier.padding(start = 21.dp).clearAndSetSemantics { }, horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically) {
-                if (echo != null) {
-                    // The echo takes the whole footer: it replaces the state, the place, and the age.
-                    Icon(Icons.Filled.Check, contentDescription = null, tint = accent, modifier = Modifier.size(11.dp))
-                    Text(echo, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = accent, maxLines = 1,
-                        overflow = TextOverflow.Ellipsis)
-                } else {
-                    if (limited) LimitClock(tones.state)
-                    Text(if (limited) "Resets in" else state, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
-                        color = hexColor(tones.state), maxLines = 1)
-                    Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
-                        verticalAlignment = Alignment.CenterVertically) {
-                        if (whereGlyph != null) Icon(painterResource(whereGlyph), contentDescription = null, tint = hexColor(tones.caption),
-                            modifier = Modifier.size(11.dp))
-                        // About 12 characters of the 11 sp caption; the machine name ellipsizes before the age.
-                        if (viewOnly) Text("$where ·", fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(tones.caption),
-                            maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false).widthIn(max = with(density) { 80.sp.toDp() }))
-                        Text(countdown.ifEmpty { working.ifEmpty { idleAge(row.updatedAtMs, nowMs) } }, fontSize = 11.sp,
-                            lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(tones.caption), maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            textAlign = TextAlign.End)
-                    }
+                if (limited) LimitClock(tones.state)
+                Text(if (limited) "Resets in" else state, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
+                    color = hexColor(tones.state), maxLines = 1)
+                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    if (whereGlyph != null) Icon(painterResource(whereGlyph), contentDescription = null, tint = hexColor(tones.caption),
+                        modifier = Modifier.size(11.dp))
+                    // About 12 characters of the 11 sp caption; the machine name ellipsizes before the age.
+                    if (viewOnly) Text("$where ·", fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(tones.caption),
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false).widthIn(max = with(density) { 80.sp.toDp() }))
+                    Text(countdown.ifEmpty { working.ifEmpty { idleAge(row.updatedAtMs, nowMs) } }, fontSize = 11.sp,
+                        lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(tones.caption), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.End)
                 }
             }
         }

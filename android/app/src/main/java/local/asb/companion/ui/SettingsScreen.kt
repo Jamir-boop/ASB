@@ -198,191 +198,193 @@ fun SettingsScreen(
         }
     }
 
-    Scaffold(
-        contentWindowInsets = SafeContentInsets,
-        topBar = {
-            TopAppBar(windowInsets = SafeTopBarInsets, title = { Text("Settings") }, navigationIcon = {
-                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
-            })
-        },
-        snackbarHost = { AsbSnackbarHost(snackbar) },
-    ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding), contentAlignment = Alignment.TopCenter) {
-            Column(
-                modifier = Modifier.widthIn(max = 600.dp).fillMaxWidth()
-                    .verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(24.dp),
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    SettingsHeading("Connection")
-                    // Another engine of the group can answer the hello; the title names the paired PC.
-                    val pairedName = (if (helloEngine.isEmpty()) hello?.serverName else null)
-                        ?.takeIf { it.isNotBlank() } ?: store.serverName.ifBlank { "Paired PC" }
-                    Text(pairedName, style = MaterialTheme.typography.titleMedium)
-                    EndpointList(store.endpoints, store.currentEndpoint, store.port)
-                    if (engines.isNotEmpty()) EngineList(pairedName, engines, engineOnline, engineInUse)
-                    Text(
-                        when {
-                            refreshing -> "Checking ASB…"
-                            hello != null -> "Connected to ASB ${hello!!.asbVersion}"
-                            else -> "Connection needs attention"
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-                    )
-                    connectionError?.let { SettingsError(it) }
-                    Text("Certificate fingerprint", style = MaterialTheme.typography.labelLarge)
-                    SelectionContainer {
-                        Text(store.fingerprint.chunked(4).joinToString(" "),
-                            style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace)
+    Box(Modifier.fillMaxSize()) {
+        Scaffold(
+            contentWindowInsets = SafeContentInsets,
+            topBar = {
+                TopAppBar(windowInsets = SafeTopBarInsets, title = { Text("Settings") }, navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+                })
+            },
+        ) { padding ->
+            Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding), contentAlignment = Alignment.TopCenter) {
+                Column(
+                    modifier = Modifier.widthIn(max = 600.dp).fillMaxWidth()
+                        .verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(24.dp),
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        SettingsHeading("Connection")
+                        // Another engine of the group can answer the hello; the title names the paired PC.
+                        val pairedName = (if (helloEngine.isEmpty()) hello?.serverName else null)
+                            ?.takeIf { it.isNotBlank() } ?: store.serverName.ifBlank { "Paired PC" }
+                        Text(pairedName, style = MaterialTheme.typography.titleMedium)
+                        EndpointList(store.endpoints, store.currentEndpoint, store.port)
+                        if (engines.isNotEmpty()) EngineList(pairedName, engines, engineOnline, engineInUse)
+                        Text(
+                            when {
+                                refreshing -> "Checking ASB…"
+                                hello != null -> "Connected to ASB ${hello!!.asbVersion}"
+                                else -> "Connection needs attention"
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                        )
+                        connectionError?.let { SettingsError(it) }
+                        Text("Certificate fingerprint", style = MaterialTheme.typography.labelLarge)
+                        SelectionContainer {
+                            Text(store.fingerprint.chunked(4).joinToString(" "),
+                                style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace)
+                        }
+                        OutlinedButton(onClick = { attempt++ }, enabled = !refreshing && !savingUnread && !revoked,
+                            modifier = Modifier.fillMaxWidth()) { Text("Check connection") }
+                        TextButton(onClick = { confirmUnpair = true }, enabled = !savingUnread,
+                            colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                            modifier = Modifier.fillMaxWidth()) {
+                            Text("Unpair this phone")
+                        }
                     }
-                    OutlinedButton(onClick = { attempt++ }, enabled = !refreshing && !savingUnread && !revoked,
-                        modifier = Modifier.fillMaxWidth()) { Text("Check connection") }
-                    TextButton(onClick = { confirmUnpair = true }, enabled = !savingUnread,
-                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                        modifier = Modifier.fillMaxWidth()) {
-                        Text("Unpair this phone")
-                    }
-                }
-                HorizontalDivider()
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SettingsHeading("ASB")
-                    val unread = persistentUnread
-                    if (unread != null) {
-                        SettingsSwitch("Persistent unread", unread, !refreshing && !savingUnread && !revoked) { checked ->
-                            savingUnread = true
-                            settingsError = null
-                            scope.launch {
-                                requests.withLock {
-                                    try {
-                                        api.setPersistentUnread(checked, unreadEngine)
-                                        currentCoroutineContext().ensureActive()
-                                        currentOnPersistentUnreadChanged()
-                                        val result = api.dashboard(null, force = true)
-                                        currentCoroutineContext().ensureActive()
-                                        unreadEngine = (result as? DashboardResult.Fetched)?.engine.orEmpty()
-                                        persistentUnread = (result as? DashboardResult.Fetched)?.dashboard?.persistentUnread
-                                            ?: throw AsbError.Server("ASB did not return the current setting. Check connection and try again.")
-                                    } catch (cause: AsbError) {
-                                        currentCoroutineContext().ensureActive()
-                                        persistentUnread = null
-                                        settingsError = cause.message
-                                        if (cause === AsbError.NotPaired) {
-                                            revoked = true
-                                            hello = null
-                                            connectionError = cause.message
-                                        }
-                                    } finally { savingUnread = false }
+                    HorizontalDivider()
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SettingsHeading("ASB")
+                        val unread = persistentUnread
+                        if (unread != null) {
+                            SettingsSwitch("Persistent unread", unread, !refreshing && !savingUnread && !revoked) { checked ->
+                                savingUnread = true
+                                settingsError = null
+                                scope.launch {
+                                    requests.withLock {
+                                        try {
+                                            api.setPersistentUnread(checked, unreadEngine)
+                                            currentCoroutineContext().ensureActive()
+                                            currentOnPersistentUnreadChanged()
+                                            val result = api.dashboard(null, force = true)
+                                            currentCoroutineContext().ensureActive()
+                                            unreadEngine = (result as? DashboardResult.Fetched)?.engine.orEmpty()
+                                            persistentUnread = (result as? DashboardResult.Fetched)?.dashboard?.persistentUnread
+                                                ?: throw AsbError.Server("ASB did not return the current setting. Check connection and try again.")
+                                        } catch (cause: AsbError) {
+                                            currentCoroutineContext().ensureActive()
+                                            persistentUnread = null
+                                            settingsError = cause.message
+                                            if (cause === AsbError.NotPaired) {
+                                                revoked = true
+                                                hello = null
+                                                connectionError = cause.message
+                                            }
+                                        } finally { savingUnread = false }
+                                    }
                                 }
                             }
-                        }
-                    } else {
-                        Text("Persistent unread", style = MaterialTheme.typography.bodyLarge)
-                        Text(if (refreshing) "Loading PC setting…" else "Check connection to load this setting.",
-                            style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Text("Keep unread marks until you select Read. This is the same setting as on the PC.",
-                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (savingUnread) Text("Saving…", style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
-                    settingsError?.let { SettingsError(it) }
-                }
-                HorizontalDivider()
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SettingsHeading("Appearance")
-                    Text(
-                        "Theme: follows the PC (" + when {
-                            !paletteFromPc -> "default colors until the PC sends its colors"
-                            palette.custom -> "Custom colors"
-                            else -> "GNOME colors"
-                        } + ")",
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
-                    Text("View", style = MaterialTheme.typography.labelLarge)
-                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                        listOf("compact" to "Compact", "comfortable" to "Comfortable").forEachIndexed { index, (value, label) ->
-                            SegmentedButton(
-                                selected = view == value,
-                                onClick = { view = value; store.view = value; onViewChanged(value) },
-                                shape = SegmentedButtonDefaults.itemShape(index, 2),
-                                modifier = Modifier.heightIn(min = 48.dp),
-                            ) { Text(label) }
-                        }
-                    }
-                    Text("Card text size", style = MaterialTheme.typography.labelLarge)
-                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                        TEXT_SCALES.forEachIndexed { index, (value, label) ->
-                            SegmentedButton(
-                                selected = textScale == value,
-                                onClick = { textScale = value; onTextScaleChanged(value) },
-                                shape = SegmentedButtonDefaults.itemShape(index, TEXT_SCALES.size),
-                                modifier = Modifier.heightIn(min = 48.dp),
-                            ) { Text(label) }
-                        }
-                    }
-                    Text("Changes the text on the session cards. Other text follows the phone font size.",
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    SettingsSwitch("Use the camera area", useCameraArea, onChecked = onUseCameraAreaChanged)
-                    Text("Draw the app under the camera hole. Turn off to keep that band clear.",
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                HorizontalDivider()
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SettingsHeading("Notifications")
-                    SettingsSwitch("Done", notifyDone) { notifyDone = it; store.notifyDone = it }
-                    SettingsSwitch("Failed", notifyFailed) { notifyFailed = it; store.notifyFailed = it }
-                    SettingsSwitch("Needs input", notifyInput) { notifyInput = it; store.notifyInput = it }
-                    SettingsSwitch("Live notification", liveNotification) {
-                        // The setter runs first, because startIfEnabled reads the saved switch.
-                        onLiveNotificationChanged(it)
-                        if (it) LiveService.startIfEnabled(context) else LiveService.stop(context)
-                    }
-                    Text("Shows the number of sessions, Working, and Pending. While the phone is awake, it checks every 5 seconds while a session is working, and every 30 seconds when not. Android can delay checks while the screen is off.",
-                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (!notificationsAllowed) {
-                        Text("Notifications are off for ASB.", style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Button(onClick = onRequestNotificationPermission, modifier = Modifier.fillMaxWidth()) {
-                            Text("Allow notifications")
-                        }
-                    }
-                    OutlinedButton(onClick = {
-                        openSettings(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                            .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName))
-                    }, modifier = Modifier.fillMaxWidth()) { Text("Notification sound and style") }
-                }
-                HorizontalDivider()
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    SettingsHeading("Background")
-                    Text("Background checks run about every 15 minutes. Android and HyperOS can delay them.",
-                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    OutlinedButton(onClick = { onCheckNow(); feedback("Background check requested.") },
-                        enabled = !revoked, modifier = Modifier.fillMaxWidth()) { Text("Check now") }
-                    OutlinedCard(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Text("HyperOS can stop background checks. In app info, set Battery saver to No restrictions. Turn on Autostart in HyperOS settings.",
-                                style = MaterialTheme.typography.bodyMedium)
-                            Text("The names and location of these settings can differ by phone.",
+                        } else {
+                            Text("Persistent unread", style = MaterialTheme.typography.bodyLarge)
+                            Text(if (refreshing) "Loading PC setting…" else "Check connection to load this setting.",
                                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            TextButton(onClick = {
-                                openSettings(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                    Uri.parse("package:${context.packageName}")))
-                            }, modifier = Modifier.fillMaxWidth()) { Text("Open app info") }
+                        }
+                        Text("Keep unread marks until you select Read. This is the same setting as on the PC.",
+                            style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (savingUnread) Text("Saving…", style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                        settingsError?.let { SettingsError(it) }
+                    }
+                    HorizontalDivider()
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SettingsHeading("Appearance")
+                        Text(
+                            "Theme: follows the PC (" + when {
+                                !paletteFromPc -> "default colors until the PC sends its colors"
+                                palette.custom -> "Custom colors"
+                                else -> "GNOME colors"
+                            } + ")",
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        Text("View", style = MaterialTheme.typography.labelLarge)
+                        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                            listOf("compact" to "Compact", "comfortable" to "Comfortable").forEachIndexed { index, (value, label) ->
+                                SegmentedButton(
+                                    selected = view == value,
+                                    onClick = { view = value; store.view = value; onViewChanged(value) },
+                                    shape = SegmentedButtonDefaults.itemShape(index, 2),
+                                    modifier = Modifier.heightIn(min = 48.dp),
+                                ) { Text(label) }
+                            }
+                        }
+                        Text("Card text size", style = MaterialTheme.typography.labelLarge)
+                        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                            TEXT_SCALES.forEachIndexed { index, (value, label) ->
+                                SegmentedButton(
+                                    selected = textScale == value,
+                                    onClick = { textScale = value; onTextScaleChanged(value) },
+                                    shape = SegmentedButtonDefaults.itemShape(index, TEXT_SCALES.size),
+                                    modifier = Modifier.heightIn(min = 48.dp),
+                                ) { Text(label) }
+                            }
+                        }
+                        Text("Changes the text on the session cards. Other text follows the phone font size.",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        SettingsSwitch("Use the camera area", useCameraArea, onChecked = onUseCameraAreaChanged)
+                        Text("Draw the app under the camera hole. Turn off to keep that band clear.",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    HorizontalDivider()
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SettingsHeading("Notifications")
+                        SettingsSwitch("Done", notifyDone) { notifyDone = it; store.notifyDone = it }
+                        SettingsSwitch("Failed", notifyFailed) { notifyFailed = it; store.notifyFailed = it }
+                        SettingsSwitch("Needs input", notifyInput) { notifyInput = it; store.notifyInput = it }
+                        SettingsSwitch("Live notification", liveNotification) {
+                            // The setter runs first, because startIfEnabled reads the saved switch.
+                            onLiveNotificationChanged(it)
+                            if (it) LiveService.startIfEnabled(context) else LiveService.stop(context)
+                        }
+                        Text("Shows the number of sessions, Working, and Pending. While the phone is awake, it checks every 5 seconds while a session is working, and every 30 seconds when not. Android can delay checks while the screen is off.",
+                            style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (!notificationsAllowed) {
+                            Text("Notifications are off for ASB.", style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Button(onClick = onRequestNotificationPermission, modifier = Modifier.fillMaxWidth()) {
+                                Text("Allow notifications")
+                            }
+                        }
+                        OutlinedButton(onClick = {
+                            openSettings(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName))
+                        }, modifier = Modifier.fillMaxWidth()) { Text("Notification sound and style") }
+                    }
+                    HorizontalDivider()
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        SettingsHeading("Background")
+                        Text("Background checks run about every 15 minutes. Android and HyperOS can delay them.",
+                            style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        OutlinedButton(onClick = { onCheckNow(); feedback("Background check requested.") },
+                            enabled = !revoked, modifier = Modifier.fillMaxWidth()) { Text("Check now") }
+                        OutlinedCard(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Text("HyperOS can stop background checks. In app info, set Battery saver to No restrictions. Turn on Autostart in HyperOS settings.",
+                                    style = MaterialTheme.typography.bodyMedium)
+                                Text("The names and location of these settings can differ by phone.",
+                                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                TextButton(onClick = {
+                                    openSettings(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        Uri.parse("package:${context.packageName}")))
+                                }, modifier = Modifier.fillMaxWidth()) { Text("Open app info") }
+                            }
                         }
                     }
-                }
-                HorizontalDivider()
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SettingsHeading("About")
-                    Text("App version $version", style = MaterialTheme.typography.bodyMedium)
-                    SettingsLicenses.keys.forEach { title ->
-                        TextButton(onClick = { license = title }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                            Text(title, modifier = Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyLarge)
+                    HorizontalDivider()
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SettingsHeading("About")
+                        Text("App version $version", style = MaterialTheme.typography.bodyMedium)
+                        SettingsLicenses.keys.forEach { title ->
+                            TextButton(onClick = { license = title }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                                Text(title, modifier = Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyLarge)
+                            }
                         }
                     }
                 }
             }
         }
+        AsbMessagePill(snackbar, 64.dp, Modifier.align(Alignment.TopCenter))
     }
     if (confirmUnpair) AlertDialog(
         onDismissRequest = { confirmUnpair = false },
