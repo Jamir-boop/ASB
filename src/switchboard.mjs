@@ -87,7 +87,7 @@ export function switchboardWatchPaths({ homeDir = os.homedir(), appDir = default
 }
 
 export function isSwitchboardRoot(thread) {
-  return !thread.isSubagent && !['subagent', 'guardian_review'].includes(thread.threadSource);
+  return !thread.isSubagent && !thread.sideChat && !['subagent', 'guardian_review'].includes(thread.threadSource);
 }
 
 // A pending Claude tool with a known time is current for six hours only.

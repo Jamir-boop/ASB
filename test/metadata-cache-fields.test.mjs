@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  CLAUDE_SESSION_FIELDS, CLAUDE_SESSION_METADATA_FIELDS, loadClaudeDesktopCodeThreads, normalizeClaudeDesktopCodeSession,
+  CLAUDE_SESSION_FIELDS, CLAUDE_SESSION_METADATA_FIELDS, CLAUDE_SESSION_SPAWNED_FIELDS, loadClaudeDesktopCodeThreads, normalizeClaudeDesktopCodeSession,
   pickClaudeSession, readClaudeSessionFile,
 } from '../src/claude-data.mjs';
 import {
@@ -22,7 +22,9 @@ const fullSession = () => ({
   lastActivityAt: nowMs - 60_000, createdAt: '2026-10-21T10:00:00Z', title: 'Full title', name: 'Name', displayName: 'Display',
   conversationTitle: 'Conversation', model: 'claude-synthetic', isArchived: true, priorCliSessionIds: ['prior-1', 'not valid!'],
   bridgeSessionIds: ['session_abc', 'wrong'], permissionMode: 'acceptEdits', completedTurns: 7,
-  metadata: { title: 'Meta title', name: 'Meta name', note: 'PRIVATE-metadata' }, ...extraFields,
+  metadata: { title: 'Meta title', name: 'Meta name', note: 'PRIVATE-metadata' },
+  spawnedFrom: { btw: true, sideSession: true, userFork: true, sessionId: 'local_parent', taskId: 'task_1',
+    title: 'PRIVATE-parent (fork)', name: 'PRIVATE-fork' }, ...extraFields,
 });
 
 async function temporaryDirectory(t) {
@@ -39,8 +41,9 @@ test('the Claude session cache keeps only the fields that the readers read', asy
   const fileStat = await stat(filePath);
   assert.ok(fileStat.size > 90_000);
   const cached = await readClaudeSessionFile(filePath, fileStat);
-  assert.deepEqual(Object.keys(cached).sort(), [...CLAUDE_SESSION_FIELDS, 'metadata'].sort());
+  assert.deepEqual(Object.keys(cached).sort(), [...CLAUDE_SESSION_FIELDS, 'metadata', 'spawnedFrom'].sort());
   assert.deepEqual(Object.keys(cached.metadata).sort(), [...CLAUDE_SESSION_METADATA_FIELDS].sort());
+  assert.deepEqual(cached.spawnedFrom, { btw: true });
   assert.ok(JSON.stringify(cached).length < 1000);
   assert.equal(JSON.stringify(cached).includes('PRIVATE'), false);
   // The next read gives the cached object, so the cache holds the picked object and not the parsed file.
@@ -58,21 +61,24 @@ test('the Claude readers read the same values from the picked session', () => {
   assert.equal(expected.cwd, '/work/origin');
   assert.equal(expected.model, 'claude-synthetic');
   assert.equal(expected.archived, true);
+  assert.equal(expected.sideChat, true);
   assert.deepEqual(expected.priorCliSessionIds, ['prior-1']);
   assert.deepEqual(expected.bridgeSessionIds, ['session_abc']);
   assert.equal(expected.permissionMode, 'acceptEdits');
   assert.equal(expected.completedTurns, 7);
-  // Each step removes one more field, so every fallback of the readers runs (id, cwd, the title sources, metadata).
+  // Each step removes one more field, so the fallbacks and nested fields of the readers run.
   const variant = { ...full };
-  for (const name of [...CLAUDE_SESSION_FIELDS, 'metadata']) {
+  for (const name of [...CLAUDE_SESSION_FIELDS, 'metadata', 'spawnedFrom']) {
     assert.deepEqual(normalizeClaudeDesktopCodeSession(pickClaudeSession(variant), {}, nowMs),
       normalizeClaudeDesktopCodeSession(variant, {}, nowMs), `before the removal of ${name}`);
     delete variant[name];
   }
   assert.deepEqual(normalizeClaudeDesktopCodeSession(pickClaudeSession(variant), {}, nowMs).title, 'General coding session');
-  // Odd values of the title sources and the metadata field.
+  // Odd values of the title sources and nested fields.
   for (const odd of [{ title: 42 }, { title: ['a', 'b'] }, { metadata: 'text', name: 'Name' }, { metadata: [], name: 'Name' },
-    { metadata: null, name: 'Name' }, { metadata: { title: 'Meta title' } }, { metadata: { name: ' Meta\n name ' }, title: '' }]) {
+    { metadata: null, name: 'Name' }, { metadata: { title: 'Meta title' } }, { metadata: { name: ' Meta\n name ' }, title: '' },
+    { spawnedFrom: 'text' }, { spawnedFrom: null }, { spawnedFrom: [] }, { spawnedFrom: { btw: 'true' } }, { spawnedFrom: { btw: true } }]) {
+    assert.equal(normalizeClaudeDesktopCodeSession({ sessionId: 'local_odd', ...odd }, {}, nowMs).sideChat, odd.spawnedFrom?.btw === true);
     assert.deepEqual(normalizeClaudeDesktopCodeSession(pickClaudeSession({ sessionId: 'local_odd', ...odd }), {}, nowMs),
       normalizeClaudeDesktopCodeSession({ sessionId: 'local_odd', ...odd }, {}, nowMs), JSON.stringify(odd));
   }
@@ -81,15 +87,17 @@ test('the Claude readers read the same values from the picked session', () => {
 test('the Claude session fields list has every field that the readers read, and no other', () => {
   const read = new Set();
   const readMetadata = new Set();
+  const readSpawned = new Set();
   const recorder = (names, nested = null) => new Proxy({}, { get: (_target, name) => {
     if (typeof name !== 'string') return undefined;
     names.add(name);
     return nested?.[name];
   } });
-  normalizeClaudeDesktopCodeSession(recorder(read, { metadata: recorder(readMetadata) }), {}, nowMs);
+  normalizeClaudeDesktopCodeSession(recorder(read, { metadata: recorder(readMetadata), spawnedFrom: recorder(readSpawned) }), {}, nowMs);
   // The transcript lookup of `loadClaudeDesktopCodeThreads` reads `cliSessionId`, which `normalizeClaudeDesktopCodeSession` reads too.
-  assert.deepEqual([...read].sort(), [...CLAUDE_SESSION_FIELDS, 'metadata'].sort());
+  assert.deepEqual([...read].sort(), [...CLAUDE_SESSION_FIELDS, 'metadata', 'spawnedFrom'].sort());
   assert.deepEqual([...readMetadata].sort(), [...CLAUDE_SESSION_METADATA_FIELDS].sort());
+  assert.deepEqual([...readSpawned].sort(), [...CLAUDE_SESSION_SPAWNED_FIELDS].sort());
 });
 
 test('the Claude scan gives the same rows from a large session file, and fails the same for a bad file', async (t) => {

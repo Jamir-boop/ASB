@@ -14,7 +14,7 @@ import vm from 'node:vm';
 import { defaultClaudeAppDir, normalizeClaudeDesktopCodeSession, loadClaudeDesktopCodeThreads, parseClaudeJsonlSignals } from '../src/claude-data.mjs';
 import { loadCodexDashboard, readThreads, discoverCodexStateDatabase, parseRolloutSignals, readRolloutSignals, getCodexCacheStats, codexNativeReadStatus } from '../src/codex-data.mjs';
 import { buildSwitchboardDashboard, createSwitchboardServer, loadSwitchboardDashboard, localMachineName, openSwitchboardThread, switchboardStatus, switchboardWatchPaths, PendingTracker,
-  resolveSessionMessages, sessionMessageKeys } from '../src/switchboard.mjs';
+  isSwitchboardRoot, resolveSessionMessages, sessionMessageKeys } from '../src/switchboard.mjs';
 import { defaultOpenCodeStateDir } from '../src/opencode-data.mjs';
 import { AppSourceRegistry } from '../src/app-sources.mjs';
 import { CLI_SESSION_IDS } from '../src/session-targets.mjs';
@@ -192,6 +192,46 @@ test('ASB refreshes Claude transcript stats and discovers newly created transcri
   await writeFile(transcript, jsonl([{ type: 'result', timestamp: new Date(now + 1_001).toISOString() }]) + '\n', { flag: 'a' });
   assert.equal((await scan(now + 1_999)).threads[0].state, 'idle');
   assert.equal((await scan(now + 2_000)).threads[0].state, 'idle');
+});
+
+test('the board excludes only marked side chats from its roots', () => {
+  assert.equal(isSwitchboardRoot({ sideChat: true }), false);
+  assert.equal(isSwitchboardRoot({ sideChat: false }), true);
+});
+
+test('the board hides active and archived /btw chats without listing their CLI transcripts', async (t) => {
+  const dir = await temp(t);
+  const appDir = path.join(dir, 'app');
+  const projectsDir = path.join(dir, 'projects');
+  const sessions = path.join(appDir, 'claude-code-sessions', 'account');
+  const project = path.join(projectsDir, 'project');
+  await mkdir(sessions, { recursive: true });
+  await mkdir(project, { recursive: true });
+  const parent = { sessionId: 'local_parent', taskId: 'task_1', title: 'Parent', name: 'parent' };
+  const fixtures = [
+    { sessionId: 'local_parent' },
+    { sessionId: 'local_btw', spawnedFrom: { ...parent, sideSession: true, userFork: true, btw: true } },
+    { sessionId: 'local_btw_archived', isArchived: true, spawnedFrom: { ...parent, sideSession: true, userFork: true, btw: true } },
+    { sessionId: 'local_handoff', spawnedFrom: { ...parent, sideSession: true, handOff: true } },
+    { sessionId: 'local_shared_handoff', spawnedFrom: { ...parent, sideSession: true, handOff: true, sharedFolder: true } },
+    { sessionId: 'local_user_fork', spawnedFrom: { ...parent, sideSession: true, userFork: true } },
+    { sessionId: 'local_spawned', spawnedFrom: { sessionId: parent.sessionId, taskId: parent.taskId, title: parent.title } },
+    { sessionId: 'local_forked', forkedFromSessionId: parent.sessionId },
+  ];
+  for (const [index, fixture] of fixtures.entries()) {
+    const cliSessionId = `123e4567-e89b-42d3-a456-${String(index).padStart(12, '0')}`;
+    await writeFile(path.join(sessions, `${fixture.sessionId}.json`), JSON.stringify({ ...fixture, cliSessionId, title: fixture.sessionId }));
+    await writeFile(path.join(project, `${cliSessionId}.jsonl`), jsonl([
+      { type: 'user', timestamp: new Date(now - 60_000).toISOString(), sessionId: cliSessionId, entrypoint: 'cli',
+        message: { role: 'user', content: 'Synthetic prompt' } },
+      { type: 'assistant', timestamp: new Date(now - 50_000).toISOString(), sessionId: cliSessionId, entrypoint: 'cli',
+        message: { role: 'assistant', stop_reason: 'end_turn', content: 'Synthetic answer' } },
+    ]) + '\n');
+  }
+  const dashboard = await loadSwitchboardDashboard({ nowMs: now, loadCodex: async () => ({ threads: [] }),
+    claudeOptions: { appDir, projectsDir } });
+  assert.deepEqual(dashboard.threads.map((row) => row.id).sort(), fixtures.filter((fixture) => !fixture.spawnedFrom?.btw)
+    .map((fixture) => `claude-desktop-code:${fixture.sessionId}`).sort());
 });
 
 test('Claude roots include only explicitly linked child work and observe its final completion', async (t) => {

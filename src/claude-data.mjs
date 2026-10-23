@@ -678,11 +678,13 @@ export function claudeDesktopCodeDeepLink(cliSessionId, localSessionId = '') {
 
 // The fields of a Desktop session file that ASB reads: `deriveClaudeDesktopCodeTitle`, `normalizeClaudeDesktopCodeSession`, and the
 // transcript lookup of `loadClaudeDesktopCodeThreads`. The metadata cache keeps only these fields (a file has about 90 KB of others).
+// Nested `metadata` and `spawnedFrom` keep only their listed fields.
 // A reader of a new field must add its name here: the test of this list reads the fields of the readers.
 export const CLAUDE_SESSION_FIELDS = ['sessionId', 'id', 'cliSessionId', 'originCwd', 'cwd', 'lastActivityAt', 'createdAt', 'title',
   'name', 'displayName', 'conversationTitle', 'model', 'isArchived', 'priorCliSessionIds', 'bridgeSessionIds', 'permissionMode',
   'completedTurns'];
 export const CLAUDE_SESSION_METADATA_FIELDS = ['title', 'name'];
+export const CLAUDE_SESSION_SPAWNED_FIELDS = ['btw'];
 
 const pickFields = (source, names) => Object.fromEntries(names.filter((name) => source[name] !== undefined).map((name) => [name, source[name]]));
 
@@ -691,6 +693,7 @@ export function pickClaudeSession(session) {
   if (!session || typeof session !== 'object') return session;
   const picked = pickFields(session, CLAUDE_SESSION_FIELDS);
   if (session.metadata && typeof session.metadata === 'object') picked.metadata = pickFields(session.metadata, CLAUDE_SESSION_METADATA_FIELDS);
+  if (session.spawnedFrom && typeof session.spawnedFrom === 'object') picked.spawnedFrom = pickFields(session.spawnedFrom, CLAUDE_SESSION_SPAWNED_FIELDS);
   return picked;
 }
 
@@ -851,6 +854,8 @@ export function normalizeClaudeDesktopCodeSession(session, {
     updatedAtMs,
     signals,
     extra: {
+      // The app session files mark /btw with spawnedFrom.btw; this is not a published API.
+      sideChat: session.spawnedFrom?.btw === true,
       appDeepLink,
       cliSessionId,
       priorCliSessionIds: Array.isArray(session.priorCliSessionIds)
