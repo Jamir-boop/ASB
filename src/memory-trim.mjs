@@ -35,7 +35,7 @@ function lastResortGc() {
 }
 
 export function createMemoryTrim({ gc = lastResortGc(), rss = () => process.memoryUsage.rss(), intervalMs = TRIM_INTERVAL_MS,
-  settleMs = TRIM_SETTLE_MS, growthBytes = TRIM_GROWTH_BYTES, now = Date.now, setTimer = setTimeout } = {}) {
+  settleMs = TRIM_SETTLE_MS, growthBytes = TRIM_GROWTH_BYTES, now = () => performance.now(), setTimer = setTimeout } = {}) {
   let timer = null;
   let lastAt = -Infinity;
   // The memory after the last trim, or the lowest memory since then (V8 can also give memory back by itself). 0: no trim yet.
