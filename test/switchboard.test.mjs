@@ -2228,3 +2228,104 @@ test('OpenCode receiver resolves an incoming Claude CLI session ID', () => {
   assert.deepEqual(resolveSessionMessages(threads, threads, { sinceMs: now - 60_000, untilMs: now }),
     [{ from: 'claude', to: 'ses_asbTestOpenCode01', atMs: now }]);
 });
+
+test('sendName T2 engine selects one live unique local or member registry name', async (t) => {
+  const { chmod } = await import('node:fs/promises');
+  const { processStart } = await import('../src/claude-registry.mjs');
+  const { exportLocalSessions, mergePeerRows } = await import('../src/machine-peers.mjs');
+  const home = await temp(t);
+  const configDir = path.join(home, 'caller');
+  const sessions = path.join(configDir, 'sessions');
+  await mkdir(sessions, { recursive: true, mode: 0o700 });
+  await chmod(sessions, 0o700);
+  const otherDir = path.join(home, 'other');
+  await mkdir(path.join(otherDir, 'sessions'), { recursive: true, mode: 0o700 });
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  t.after(() => child.kill());
+  const start = await processStart(process.pid);
+  const childStart = await processStart(child.pid);
+  assert.ok(start && childStart);
+  const uuid = '11111111-1111-4111-8111-111111111111';
+  const prior = '22222222-2222-4222-8222-222222222222';
+  const self = { machineId: 'a'.repeat(16), name: 'desk' };
+  const member = { machineId: 'b'.repeat(16), name: 'homelp', online: true };
+  const scope = 'ab'.repeat(16);
+  const sources = ['codex', 'claude-desktop-code', 'opencode'].map((provider) => ({ id: provider, provider, label: provider, enabled: true }));
+  let memberOnline = true;
+  let memberMode = false;
+  let current;
+  const server = createSwitchboardServer({ sourceToken: 'synthetic-token', pendingStatePath: false, palettePath: false,
+    dashboardWatchPaths: [], sourceRegistry: { read: async () => sources },
+    machineIdentity: () => ({ machineId: self.machineId, machineName: self.name }), referenceScopes: () => () => scope,
+    machineGroup: { status: async () => ({ members: [{ ...member, online: memberOnline }] }), merge: (dashboard) => {
+      if (!memberMode) return;
+      const remote = buildSwitchboardDashboard([current], [], Date.now(), { machineId: member.machineId, machineName: member.name });
+      remote.threads[0].referenceScope = scope;
+      mergePeerRows(dashboard, [{ member, sessions: exportLocalSessions(remote, member), online: memberOnline, lastOkAtMs: Date.now() }], self);
+    } },
+    loadDashboard: async () => buildSwitchboardDashboard(memberMode ? [] : [current], [], Date.now()) });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const record = async (sessionId, entrypoint = 'cli', name = 'sample', duplicate) => {
+    await rm(path.join(sessions, `${child.pid}.json`), { force: true });
+    await writeFile(path.join(sessions, `${process.pid}.json`), JSON.stringify({ pid: process.pid, procStart: start, sessionId, entrypoint, name }));
+    if (duplicate) await writeFile(path.join(sessions, `${child.pid}.json`), JSON.stringify({ pid: child.pid, procStart: childStart, ...duplicate }));
+  };
+  const resolve = async ({ short = false, folder = configDir, missing = false } = {}) => {
+    const board = await fetch(`${base}/api/dashboard?force=1`).then((reply) => reply.json());
+    const row = board.threads[0];
+    const reference = missing ? row.reference.replace(uuid, prior) : short ? row.sessionReference : row.reference;
+    const reply = await fetch(`${base}/api/agent/resolve-session`, { method: 'POST', headers: {
+      origin: base, 'x-asb-source-token': 'synthetic-token', 'content-type': 'application/json' }, body: JSON.stringify({ reference, ...(folder === null ? {} : { configDir: folder }) }) });
+    assert.equal(reply.status, 200);
+    return reply.json();
+  };
+  const rows = [
+    ['codex', 'codex', uuid, uuid],
+    ['claude-local', 'claude-desktop-code', `local_${uuid}`, uuid],
+    ['claude-prior', 'claude-desktop-code', `local_${uuid}`, prior],
+    ['claude-cli', 'claude-desktop-code', uuid, uuid],
+    ['opencode', 'opencode', 'ses_asbTestOpenCode01', '18284f68-b2c6-5cca-8fb7-12d5973743f9'],
+  ];
+  for (const [type, provider, externalId, key] of rows) await t.test(type, async () => {
+    current = { id: `${type}:${externalId}`, externalId, provider, sourceId: provider, source: provider,
+      surface: type === 'claude-cli' ? 'cli' : 'app', cliSessionId: uuid, priorCliSessionIds: [prior] };
+    await record(key);
+    const found = await resolve();
+    assert.equal(found.sendName, 'sample', JSON.stringify(found));
+    assert.equal((await resolve({ short: true })).sendName, 'sample');
+  });
+  current = { id: uuid, externalId: uuid, provider: 'codex', sourceId: 'codex', surface: 'app' };
+  await t.test('member keys and relay-only match', async () => {
+    memberMode = true;
+    await record(uuid, 'asb-relay', 'homelp-sample');
+    assert.equal((await resolve()).sendName, 'homelp-sample');
+    await record(uuid);
+    assert.equal(Object.hasOwn(await resolve(), 'sendName'), false);
+    await record(uuid, 'asb-relay', 'homelp-sample');
+    memberOnline = false;
+    assert.equal(Object.hasOwn(await resolve(), 'sendName'), false);
+    memberOnline = true;
+    memberMode = false;
+  });
+  await t.test('no name for unsafe or ambiguous registry matches', async () => {
+    for (const [key, entrypoint, name, duplicate] of [
+      [uuid, 'asb-relay', 'sample'], [prior, 'cli', 'sample'], [uuid, 'cli', ''],
+      [uuid, 'cli', 'sample', { sessionId: uuid, entrypoint: 'cli', name: 'second' }],
+      [uuid, 'cli', 'sample', { sessionId: prior, entrypoint: 'asb-relay', name: 'sample' }],
+    ]) {
+      await record(key, entrypoint, name, duplicate);
+      assert.equal(Object.hasOwn(await resolve(), 'sendName'), false);
+    }
+    await record(uuid);
+    assert.equal(Object.hasOwn(await resolve({ folder: null }), 'sendName'), false);
+    assert.equal(Object.hasOwn(await resolve({ folder: otherDir }), 'sendName'), false);
+    assert.equal(Object.hasOwn(await resolve({ missing: true }), 'sendName'), false);
+    if (process.platform === 'linux') {
+      await chmod(sessions, 0o755);
+      assert.equal(Object.hasOwn(await resolve(), 'sendName'), false);
+      await chmod(sessions, 0o700);
+    }
+  });
+});

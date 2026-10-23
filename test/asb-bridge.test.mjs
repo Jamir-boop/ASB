@@ -963,3 +963,11 @@ for (const [name, source, expected] of [
     });
   }
 }
+
+test('sendName T5 Claude rules 4 and 7 are exact and other rules stay unchanged', async () => {
+  const skill = await readFile(path.join(ROOT, 'bridge/agent-skills/claude/bridge/SKILL.md'), 'utf8');
+  const unchanged = skill.slice(0, skill.indexOf('7. ')).split('\n').filter((line) => !line.startsWith('4. ')).join('\n');
+  assert.equal(digest(unchanged), '8f74476291f523b5d351ee22b19fe24d4aa4dd65c319c592df77a831904e4edc');
+  assert.equal(skill.split('\n').find((line) => line.startsWith('4. ')), "4. Send all in one message. Put more than about 2,000 characters in a file, and send the path.");
+  assert.equal(skill.slice(skill.indexOf('7. ')).trimEnd(), "7. An `asb:1/...` session reference is not a `SendMessage` target. Never take an ID out of it. Send to the `Send name` of `asb agent resolve-session <reference>`. Else tell the user.");
+});

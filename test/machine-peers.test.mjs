@@ -578,3 +578,23 @@ test('a member OpenCode bridge key resolves a message to a local Claude row', ()
   mergePeerRows(dashboard, [peerState(exported)], A, nowMs);
   assert.deepEqual(dashboard.messages, [{ from: `m:${B.machineId}:${id}`, to: `claude-desktop-code:${local(1)}`, atMs: nowMs - 1000 }]);
 });
+
+test('sendName T3 member keys stay private without changing local exports or messages', async () => {
+  const { MEMBER_MESSAGE_KEYS } = await import('../src/machine-peers.mjs');
+  const dashboard = boardA();
+  const before = exportLocalSessions(dashboard, A, nowMs);
+  const exported = exportLocalSessions(boardB(), B, nowMs);
+  mergePeerRows(dashboard, [peerState(exported)], A, nowMs);
+  assert.equal(typeof MEMBER_MESSAGE_KEYS, 'symbol');
+  assert.deepEqual(dashboard[MEMBER_MESSAGE_KEYS], new Map(Object.entries(exported.keys).map(([id, keys]) => [`m:${B.machineId}:${id}`, keys])));
+  assert.equal(Object.getOwnPropertyDescriptor(dashboard, MEMBER_MESSAGE_KEYS).enumerable, false);
+  assert.deepEqual(exportLocalSessions(dashboard, A, nowMs), before);
+  const remoteId = `m:${B.machineId}:claude-desktop-code:${local(5)}`;
+  assert.deepEqual(dashboard.messages, [
+    { from: `claude-desktop-code:${local(1)}`, to: remoteId, atMs: nowMs - 20_000 },
+    { from: remoteId, to: `claude-desktop-code:${local(1)}`, atMs: nowMs - 10_000 },
+    { from: remoteId, to: `claude-desktop-code:${local(3)}`, atMs: nowMs - 5000 },
+  ]);
+  assert.equal(exportBody(exportLocalSessions(dashboard, A, nowMs)).body, exportBody(before).body);
+  assert.equal(JSON.stringify(dashboard).includes('MEMBER_MESSAGE_KEYS'), false);
+});

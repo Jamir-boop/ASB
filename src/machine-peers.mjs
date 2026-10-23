@@ -9,6 +9,7 @@ import { SESSION_MESSAGE_WINDOW_MS } from './codex-data.mjs';
 import { rowReference, shortReference, validScopeTag } from './session-references.mjs';
 
 const gunzipAsync = promisify(gunzip);
+export const MEMBER_MESSAGE_KEYS = Symbol('ASB member session message keys');
 export const MAX_REPLY_BYTES = 4 * 1024 * 1024;
 // The most that a member reads from an export: validExport reads 5000 rows and 500 incoming messages. The byte limit leaves room for
 // the incoming messages and the envelope.
@@ -124,6 +125,7 @@ export function mergePeerRows(dashboard, peerStates, self, nowMs = Date.now()) {
   }
   dashboard.threads = [...dashboard.threads.filter((row) => !replaced.has(row.id)), ...peerRows];
   const rowIds = new Set(dashboard.threads.map((row) => row.id));
+  Object.defineProperty(dashboard, MEMBER_MESSAGE_KEYS, { value: new Map(peerKeys.filter(([id]) => rowIds.has(id))), configurable: true });
   const lookup = new Map(local.ambiguous.map((key) => [key, null]));
   const add = (key, rowId) => { if (key) lookup.set(key, lookup.has(key) && lookup.get(key) !== rowId ? null : rowId); };
   for (const [rowId, keys] of local.keysByRow) for (const key of keys) add(key, replaced.get(rowId) || rowId);

@@ -634,3 +634,19 @@ test('a member send gives sendExact the receiver record of the caller as returnT
   assert.deepEqual(calls[0].returnTo, { runtimeSessionId: CALLER, pid: process.pid, procStart, messagingSocketPath: socket, configDir: path.join(homeDir, '.claude') });
   for (const value of [socket, procStart, 'Secret', 'private', 'configDir', homeDir]) assert.equal(reply.text.includes(value), false, value);
 });
+
+test('sendName T1 resolve route accepts only absolute optional configDir and sourceId', async (t) => {
+  const calls = [];
+  const { request } = await serve(t, { resolveSession: async (body) => { calls.push(body); return { ok: true }; } });
+  for (const optional of [{}, { sourceId: 'codex' }, { configDir: '/synthetic/claude' }, { configDir: '/synthetic/claude', sourceId: 'codex' }]) {
+    const body = { reference: `codex/${SESSION}`, ...optional };
+    assert.equal((await request(RESOLVE, { method: 'POST', body })).status, 200);
+    assert.deepEqual(calls.at(-1), body);
+  }
+  for (const optional of [{ configDir: 'relative' }, { configDir: 1 }, { configDir: '/' + 'x'.repeat(4096) },
+    { configDir: '/synthetic/claude', extra: true }]) {
+    const reply = await request(RESOLVE, { method: 'POST', body: { reference: 'x', ...optional } });
+    assert.equal(reply.status, 400);
+    assert.deepEqual(reply.json(), { error: 'Invalid resolve request.' });
+  }
+});

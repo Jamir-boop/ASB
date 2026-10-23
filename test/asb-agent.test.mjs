@@ -499,7 +499,7 @@ test('agent resolve-session parses its arguments, sends the request body, and fa
   assert.equal(found.stdout.includes('Secret title') || found.stdout.includes('/synthetic/'), false);
   const short = await f.command(['resolve-session', `codex/${session}`, '--source', 'codex']);
   assert.equal(short.code, 0, short.stderr);
-  assert.equal(short.stdout, `Session reference (short): found.\nReference: ${reference}\nMachine: synthetic-pc. Source: codex. App: Codex.\nLocation: local.\n`);
+  assert.equal(short.stdout, `Session reference (short): found.\nReference: ${reference}\nMachine: synthetic-pc. Source: codex. App: Codex.\nLocation: local.\nSend name: none (the session is not open here, or its name is not unique)\n`);
   const mismatch = await f.command(['resolve-session', reference, '--source', 'opencode', '--json']);
   assert.equal(mismatch.code, 1);
   assert.deepEqual(mismatch.result, { ok: false, command: 'resolve-session', error: { code: 'scope-mismatch',
@@ -508,5 +508,50 @@ test('agent resolve-session parses its arguments, sends the request body, and fa
   assert.equal(invalid.code, 1);
   assert.equal(invalid.stderr, 'ASB agent: This is not a valid session reference.\n');
   assert.deepEqual(bodies, [{ reference }, { reference: `codex/${session}`, sourceId: 'codex' }, { reference, sourceId: 'opencode' },
-    { reference: 'not a reference' }]);
+    { reference: 'not a reference' }].map((body) => ({ ...body, configDir: f.env.CLAUDE_CONFIG_DIR })));
+});
+
+test('sendName T4 CLI sends the canonical caller config and validates engine names', async (t) => {
+  const bodies = [];
+  let sendName = 'sample';
+  const f = await fixture(t, 'service');
+  f.server.removeAllListeners('request');
+  f.server.on('request', async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    response.setHeader('content-type', 'application/json');
+    if (request.url === '/api/agent/status') response.end(JSON.stringify({ apiVersion: 1, pid: process.pid, mode: 'service',
+      appVersion: 'test', rootDir: f.home, sourcesPath: f.input, sourcesRevision: 'a'.repeat(64), backendRevision: null, ui: { clients: [] } }));
+    else {
+      bodies.push(JSON.parse(Buffer.concat(chunks)));
+      response.end(JSON.stringify({ apiVersion: 1, ok: true, form: 'short', availability: 'found', ...(sendName === undefined ? {} : { sendName }) }));
+    }
+  });
+  const config = path.join(f.home, 'registry');
+  await mkdir(config);
+  const link = path.join(f.home, 'registry-link');
+  await symlink(config, link);
+  const reference = 'codex/11111111-1111-4111-8111-111111111111';
+  const named = await f.command(['resolve-session', reference, '--json'], { extraEnv: { CLAUDE_CONFIG_DIR: link } });
+  assert.equal(named.code, 0, named.stderr);
+  assert.equal(named.result.sendName, 'sample');
+  assert.deepEqual(bodies.at(-1), { reference, configDir: await realpath(config) });
+  assert.match((await f.command(['resolve-session', reference])).stdout, /Send name: sample\n/);
+  for (const configDir of ['', 'relative']) {
+    await f.command(['resolve-session', reference, '--json'], { extraEnv: { CLAUDE_CONFIG_DIR: configDir } });
+    assert.equal(bodies.at(-1).configDir, path.join(f.home, '.claude'));
+  }
+  const missing = path.join(f.home, 'not-created');
+  await f.command(['resolve-session', reference, '--json'], { extraEnv: { CLAUDE_CONFIG_DIR: missing } });
+  assert.equal(bodies.at(-1).configDir, missing);
+  sendName = '测试';
+  assert.equal((await f.command(['resolve-session', reference, '--json'])).result.sendName, sendName);
+  for (sendName of ['', 42, 'bad\u2028name', 'bad\u200bname', 'x'.repeat(257), 'bad\nname', 'bad\x7fname', 'bad\x85name']) {
+    const reply = await f.command(['resolve-session', reference, '--json']);
+    assert.equal(reply.code, 0, reply.stderr);
+    assert.equal(Object.hasOwn(reply.result, 'sendName'), false);
+  }
+  sendName = undefined;
+  assert.match((await f.command(['resolve-session', reference])).stdout,
+    /Send name: none \(the session is not open here, or its name is not unique\)\n/);
 });

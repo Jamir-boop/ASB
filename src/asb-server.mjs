@@ -221,13 +221,15 @@ export function createAsbServer({
         catch { sendJson(response, 500, { error: 'Cannot resolve the session reference.' }); }
         return;
       }
-      if (!['reference', 'reference,sourceId'].includes(fields) || typeof body.reference !== 'string'
-        || (fields === 'reference,sourceId' && (typeof body.sourceId !== 'string' || !SOURCE_ID.test(body.sourceId)))) {
+      if (!['reference', 'reference,sourceId', 'configDir,reference', 'configDir,reference,sourceId'].includes(fields) || typeof body.reference !== 'string'
+        || (Object.hasOwn(body, 'sourceId') && (typeof body.sourceId !== 'string' || !SOURCE_ID.test(body.sourceId)))
+        || (Object.hasOwn(body, 'configDir') && (typeof body.configDir !== 'string' || body.configDir.length > 4096 || !path.isAbsolute(body.configDir)))) {
         sendJson(response, 400, { error: 'Invalid resolve request.' });
         return;
       }
       // Read-only: the cached dashboard, never a forced scan.
-      try { sendJson(response, 200, await resolveSession({ reference: body.reference, ...(fields === 'reference' ? {} : { sourceId: body.sourceId }) }, await dashboardForRequest())); }
+      try { sendJson(response, 200, await resolveSession({ reference: body.reference, ...(Object.hasOwn(body, 'sourceId') ? { sourceId: body.sourceId } : {}),
+        ...(Object.hasOwn(body, 'configDir') ? { configDir: body.configDir } : {}) }, await dashboardForRequest())); }
       catch { sendJson(response, 500, { error: 'Cannot resolve the session reference.' }); }
       return;
     }

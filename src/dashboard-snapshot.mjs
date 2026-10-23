@@ -405,10 +405,12 @@ export class DashboardSnapshot {
 
     const dashboardForRequest = async (options = {}) => {
       const dashboard = await loadSharedDashboard(options);
-      return {
+      const result = {
         ...dashboard,
         summary: { ...(dashboard.summary || {}) },
       };
+      for (const symbol of Object.getOwnPropertySymbols(dashboard)) Object.defineProperty(result, symbol, Object.getOwnPropertyDescriptor(dashboard, symbol));
+      return result;
     };
 
     const openThreadOnce = (thread) => {

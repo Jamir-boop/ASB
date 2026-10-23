@@ -56,7 +56,7 @@ test('the OpenCode skill loads and keeps its safety rules', () => {
 test('the Claude skill keeps its safety rules', () => {
   expect(claude).toContain('Never send a secret, a credential, or an `.env` value to another agent.');
   expect(claude).toContain('Do not send again, not by another name or route: it can arrive twice.');
-  expect(claude).toContain('Never take the UUID out of it.');
+  expect(claude).toContain('Never take an ID out of it.');
   expect(claude).toContain('session reference is not a `SendMessage` target.');
   expect(claude).toContain('A `uds:` socket path is not a target');
   expect(claude).toContain('is not open, or is new and had no turn yet.');

@@ -229,10 +229,13 @@ async function run(args, rememberRuntime) {
   const instance = await status(runtime);
   if (parsed.command === 'status') return { ok: true, command: parsed.command, instance };
   if (parsed.command === 'resolve-session') {
-    const body = { reference: parsed.reference, ...(parsed.sourceId === undefined ? {} : { sourceId: parsed.sourceId }) };
+    const configDir = await canonical(path.isAbsolute(process.env.CLAUDE_CONFIG_DIR || '') ? process.env.CLAUDE_CONFIG_DIR : path.join(os.homedir(), '.claude'));
+    const body = { reference: parsed.reference, ...(parsed.sourceId === undefined ? {} : { sourceId: parsed.sourceId }), configDir };
     const value = await api(runtime, '/api/agent/resolve-session', { method: 'POST', body, timeoutMs: 15_000, maxBytes: 16 * 1024 });
     if (!object(value) || value.apiVersion !== 1 || typeof value.ok !== 'boolean') throw failure('invalid_response', 'ASB sent an invalid resolve result.');
     if (!value.ok) throw failure(typeof value.code === 'string' ? value.code : 'invalid_response', typeof value.message === 'string' ? value.message : 'ASB could not resolve the reference.');
+    if (Object.hasOwn(value, 'sendName') && (typeof value.sendName !== 'string' || !value.sendName.length || value.sendName.length > 256
+      || /[\p{C}\p{Zl}\p{Zp}]/u.test(value.sendName))) delete value.sendName;
     return { ...value, ok: true, command: parsed.command };
   }
   const report = await sources(runtime);
@@ -295,6 +298,7 @@ function human(result) {
     if (result.referenceUnavailable) lines.push(`No full reference: ${printable(result.referenceUnavailable)}.`);
     if (result.display) lines.push(`Machine: ${printable(result.display.machineName ?? 'unknown')}. Source: ${printable(result.display.sourceName ?? 'unknown')}.${result.display.providerLabel ? ` App: ${printable(result.display.providerLabel)}.` : ''}`);
     if (result.location) lines.push(`Location: ${result.location}.`);
+    lines.push(result.sendName !== undefined ? `Send name: ${result.sendName}` : 'Send name: none (the session is not open here, or its name is not unique)');
     return lines.join('\n');
   }
   return `App sources ${result.changed ? 'saved' : 'unchanged'}.\nSaved: ${result.verification.saved.status}. Backend: ${result.verification.backend.status}. UI: ${result.verification.ui.status}.${result.verification.error ? `\n${result.verification.error.message}` : ''}`;

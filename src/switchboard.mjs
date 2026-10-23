@@ -14,6 +14,7 @@ import { openThreadInCodex, scopedCommand } from './session-opener.mjs';
 import { AppSourceRegistry, appSourcesRevision, numberAppSources, sourceName, validateSourceLauncher } from './app-sources.mjs';
 import { stateDir } from './platform-paths.mjs';
 import { rowReference, shortReference } from './session-references.mjs';
+import { MEMBER_MESSAGE_KEYS } from './machine-peers.mjs';
 import { CLI_SESSION_IDS, bindLocalTarget, bindMemberTarget, memberTarget, notSentMessage, referencesForList, resolveSessionReference } from './session-targets.mjs';
 import { readLiveClaudeRegistry } from './claude-registry.mjs';
 import { spawn } from 'node:child_process';
@@ -900,7 +901,23 @@ export function createSwitchboardServer(options = {}) {
       Object.defineProperty(dashboard, 'localRefreshIntervalMs', { value: localRefreshIntervalMs });
       return dashboard;
     },
-    resolveSession: async (request, dashboard) => resolveSessionReference(request, await referenceContext(dashboard)),
+    resolveSession: async (request, dashboard) => {
+      const result = resolveSessionReference(request, await referenceContext(dashboard));
+      if (!request.configDir || !result.ok || result.availability !== 'found' || !['local', 'member'].includes(result.location)
+        || !result.identity) return result;
+      const rows = dashboard.threads.filter((row) => row.reference === result.identity.reference);
+      if (rows.length !== 1) return result;
+      const keys = (result.location === 'local' ? sessionMessageKeys(dashboard).keysByRow : dashboard[MEMBER_MESSAGE_KEYS])?.get(rows[0].id);
+      if (!keys?.length) return result;
+      const registry = await privateRegistry(request.configDir);
+      if (!registry) return result;
+      const candidates = registry.records.filter((record) => (record.entrypoint === 'asb-relay') === (result.location === 'member')
+        && keys.includes(record.sessionId));
+      if (candidates.length !== 1) return result;
+      const { name } = candidates[0];
+      if (typeof name === 'string' && name.length && registry.records.filter((record) => record.name === name).length === 1) result.sendName = name;
+      return result;
+    },
     resolveBound: async (request, dashboard) => bindLocalTarget(request, await referenceContext(dashboard), boundIo),
     listReferences: async (request, dashboard) => referencesForList(request, await referenceContext(dashboard), boundIo,
       options.machineRelay?.remotePeers?.().peers ?? []),
