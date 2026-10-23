@@ -4,6 +4,9 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+## ASB 1.11.0 - 2026-10-23
+
+- ASB Bridge is `0.8.0` in this release.
 - Fixed a crash of the Android app. When you sent a message to a busy Claude Desktop Code session, Claude Desktop kept the message in a `waiting-input/local_<id>.json` file next to the session file, and the engine read that file as a second session with the same row ID. The session list of the app needs unique row IDs, so the app stopped. The engine now does not read `waiting-input/` (its files hold message text, not session data), and the app keeps only the first row when a dashboard has a row ID two times.
 - Added Android 16 Live updates to the live notification of the Android app, so that HyperOS can show it in its island. The chip shows `Done` with a check mark for 8 s after a session gets a Done result, else the number of pending sessions (a question mark when one needs input, else a filled disc), else the number of working sessions (an open ring). When nothing is pending or working, or the PC does not answer, the notification is not a Live update and looks as before. The expanded notification lists the Working sessions with `BigTextStyle`, because Live updates do not accept `InboxStyle`. The app now asks for the normal permission `POST_PROMOTED_NOTIFICATIONS`. A phone without Live updates shows the same notification.
 - Changed the in-app messages of the Android app (for example `Opened on <PC>` after a good Open, and errors) to a small dark pill over the toolbar, the shape of the HyperOS island. A tap closes it. Before, they showed in a near-white strip with black text at the bottom of the dark app, because the theme did not set the Material colors that the strip uses.
@@ -47,6 +50,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Added `asb doctor` on Windows. It checks Node.js and the ASB window, and prints the `winget` and `pacman` commands that install MSYS2 and the board packages; ASB never runs them. `asb setup` now prints these checks on Windows too, and prints `asb bridge install --all` instead of saying that the bridge is not available.
 - Added the ASB window on Windows: `asb` with no command, and **Open ASB** in the tray menu (or a left click on the tray icon), start the engine and open the same board as on Linux. The board needs MSYS2 Python with PyGObject, GTK 4.12 or later, and Libadwaita 1.4 or later (an absolute `ASB_PYTHON`, else `C:\msys64\ucrt64\bin\python.exe`, then `python` on `PATH`). Without them, the launcher exits with code 3, and the tray (in a balloon) or the Start menu link (in a message box) shows `ASB has no window on this PC. Run asb doctor.`
 - Added PC sounds on Windows: the engine plays the Done, Needs input, and Failed sounds with Windows PowerShell (`Media.SoundPlayer`). It plays them only while an ASB window is open, as on Linux.
+
+See [ASB 1.11.0 release notes](docs/releases/v1.11.0.md) for downloads, upgrades, and check limits.
 
 ## ASB 1.10.0 - 2026-10-21
 

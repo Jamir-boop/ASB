@@ -1,14 +1,12 @@
 # ASB
 
-**Agent Switch Board** is a native switch board with GTK 4 and Libadwaita: GNOME on Linux, and Windows with MSYS2 in the current source. It lists your Codex and Claude Desktop Code chats and opens a chat in its own app; it also lists OpenCode 2 sessions and shows Claude Code CLI and Codex CLI sessions (view only). An optional machine group shows sessions from your other computers, an optional Android app shows them on your phone, and the optional ASB Bridge lets sessions message each other. ASB reads the app stores read-only and makes no model calls.
+**Agent Switch Board** is a native switch board with GTK 4 and Libadwaita: GNOME on Linux, and Windows with MSYS2. It lists your Codex and Claude Desktop Code chats and opens a chat in its own app; it also lists OpenCode 2 sessions and shows Claude Code CLI and Codex CLI sessions (view only). An optional machine group shows sessions from your other computers, an optional Android app shows them on your phone, and the optional ASB Bridge lets sessions message each other. ASB reads the app stores read-only and makes no model calls.
 
 ![ASB banner](docs/media/asb-banner.png)
 
 https://github.com/user-attachments/assets/c85742f4-d1b0-4ffc-9497-144069fec36b
 
 ## What it does
-
-These features describe the current source, which comes after `1.10.0`.
 
 - List Codex and Claude Desktop Code chats and open them in their own app.
 - List OpenCode 2 sessions and show Claude Code CLI and Codex CLI sessions (view only).
@@ -37,18 +35,18 @@ See the [full install guide](docs/INSTALL.md) for system checks, distribution pa
 ## Install on Windows
 
 Windows needs Node.js `22.13` or later and uses the same npm commands.
-ASB `1.10.0` runs only the engine on Windows; the current source also runs the GTK window with MSYS2 Python, PyGObject, GTK `>=4.12`, and Libadwaita `>=1.4`.
+ASB runs the engine and the GTK window on Windows. The window needs MSYS2 Python, PyGObject, GTK `>=4.12`, and Libadwaita `>=1.4`.
 See [Windows setup](docs/INSTALL.md#install-on-windows) for the packages and commands.
 
 ## Android companion (optional)
 
 The optional Android app shows your sessions and notifications on your phone; phone access is off by default.
-In the current source, the [live notification](android/README.md#live-notification) shows Pending counts first and can be an Android 16 Live update, so HyperOS can show it in its island; in-app messages show in a small dark pill over the toolbar.
+The [live notification](android/README.md#live-notification) shows Pending counts first and can be an Android 16 Live update, so HyperOS can show it in its island; in-app messages show in a small dark pill over the toolbar.
 See the [Android guide](android/README.md) for pairing, building, and installing the app.
 
 ## ASB Bridge (optional)
 
-The ASB `1.10.0` packages have ASB Bridge `0.7.0`; the current source has `0.8.0` (unreleased), with OpenCode 2 support and sends by session reference (`asb:1/...`) from Codex and OpenCode.
+The ASB `1.11.0` packages have ASB Bridge `0.8.0`, with OpenCode 2 support and sends by session reference (`asb:1/...`) from Codex and OpenCode.
 Claude Code sessions run `asb agent resolve-session <reference>` to get the `SendMessage` name (`Send name:`); `asb bridge status` says when an installed skill is out of date and which `asb bridge install` target updates it.
 See the [bridge guide](bridge/README.md) and [setup and recovery](docs/INSTALL.md#asb-bridge-optional).
 
