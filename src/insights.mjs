@@ -12,17 +12,6 @@ function coerceNumber(value, fallback = 0) {
   return Number.isFinite(number) ? number : fallback;
 }
 
-function coerceBoolean(value, fallback = false) {
-  if (value === undefined || value === null || value === '') return fallback;
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase();
-    if (['false', '0', 'no', 'off'].includes(normalized)) return false;
-    if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
-  }
-  return Boolean(coerceNumber(value));
-}
-
 function unixValueToMs(value) {
   const number = coerceNumber(value);
   if (number <= 0) return 0;
@@ -96,8 +85,7 @@ export function enrichThreadRuntime(thread, nowMs = Date.now()) {
   return applyThreadRuntime({ ...thread }, nowMs);
 }
 
-// `titleByThreadId` is the Codex session index (thread ID to title). With it, a thread that has no name of its own gets the title of its entry,
-// and only a thread that has an entry is in the Codex sidebar. Without it, the fields of the row decide.
+// `titleByThreadId` is the Codex session index (thread ID to title). A thread that has no name of its own gets the title of its entry.
 export function normalizeThread(row, nowMs = Date.now(), titleByThreadId = null) {
   const cwd = stripWindowsVerbatimPath(row.cwd || '');
   const id = String(row.id || '');
@@ -107,8 +95,6 @@ export function normalizeThread(row, nowMs = Date.now(), titleByThreadId = null)
   const projectName = cwd ? path.basename(cwd) : '未知项目';
   const source = String(row.source || '');
   const isCodexCli = ['cli', 'terminal', 'tui'].includes(source.toLowerCase());
-  const inCodexSidebar = titleByThreadId ? titleByThreadId.has(id) : coerceBoolean(row.in_codex_sidebar ?? row.inCodexSidebar, true);
-  const defaultOpenMode = isCodexCli ? 'codex-cli-resume' : 'codex-deeplink';
   const subagent = subagentInfo(row);
   const goalStatus = String(row.goal_status || '').toLowerCase();
   const goalCreatedAtMs = unixValueToMs(row.goal_created_at_ms);
@@ -120,14 +106,12 @@ export function normalizeThread(row, nowMs = Date.now(), titleByThreadId = null)
     provider: isCodexCli ? 'codex-cli' : 'codex',
     providerLabel: isCodexCli ? 'Codex CLI' : 'Codex',
     title: row.name || titleByThreadId?.get(id) || row.thread_name || row.title || '',
-    desktopName: row.name || '',
     cwd,
     projectName,
     source,
     model: row.model || row.model_provider || '',
     reasoningEffort: row.reasoning_effort || '',
     tokensUsed: coerceNumber(row.tokens_used),
-    hasUnreadTurn: Boolean(coerceNumber(row.has_unread_turn ?? row.hasUnreadTurn ?? row.awaiting_review ?? row.awaitingReview)),
     threadSource: row.thread_source || '',
     originator: row.originator || '',
     agentPath: row.agent_path || '',
@@ -142,9 +126,6 @@ export function normalizeThread(row, nowMs = Date.now(), titleByThreadId = null)
     gitOriginUrl: row.git_origin_url || '',
     appDeepLink: UUID_RE.test(id) ? `codex://threads/${id}` : '',
     canOpen: UUID_RE.test(id),
-    openLabel: '打开',
-    defaultOpenMode,
-    inCodexSidebar,
     isSubagent: subagent.isSubagent,
     parentThreadId: subagent.parentThreadId,
     subagentDepth: subagent.depth,

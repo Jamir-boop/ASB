@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { groupPath, parseJoinLink } from '../src/machine-group.mjs';
+import { RELAY_LIMIT } from '../src/machine-relay.mjs';
 import { phoneTlsDir, tlsFiles } from '../src/phone-gateway.mjs';
 import { bunNotFound } from '../src/platform-paths.mjs';
 import { findRunningService, readServiceRuntime, requestInstance } from './asb-instance.mjs';
@@ -61,7 +62,7 @@ export async function api(runtime, route, options = {}) {
 // The engine sends `relay` only for a group with another machine (src/machine-relay.mjs, status).
 function relayText({ state, bunFolders = [] }) {
   if (state === 'running') return 'Message relay: running.';
-  if (state === 'stopped') return 'Message relay: stopped after 5 restarts in 10 minutes.';
+  if (state === 'stopped') return `Message relay: stopped after ${RELAY_LIMIT}.`;
   return `Message relay: not running.${state === 'no-bun' ? ` ${bunNotFound(bunFolders)}` : ''}`;
 }
 

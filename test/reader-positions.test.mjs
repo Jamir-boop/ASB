@@ -887,9 +887,10 @@ test('Claude lifecycle positions from disk give the result of a full read after 
 
 // Measured with the same synthetic set: the reader with no positions reads the same bytes and gives the same rows as d9700f1,
 // except `updatedAtMs` and `status` (the row time now ignores records with no turn, and the file time of the session file),
-// and the four text fields that the reader no longer keeps (the digest is the digest of the rows of 52a1849 with these four fields removed).
+// the four text fields that the reader no longer keeps, and the three row fields that no code read (the digest is the digest of the
+// rows of 52a1849 with these seven fields removed).
 // To measure again: ASB_HEAD_ROOT=file:///<copy of the same commit>/ node --test --test-name-pattern="Claude reader reads the same" test/reader-positions.test.mjs
-const CLAUDE_HEAD_OFF = { bytes: 939657, digest: 'c5eb3445555838336ccdd132c60f902d3d1835b52d8056487d84b3ddfa102365' };
+const CLAUDE_HEAD_OFF = { bytes: 939657, digest: '16ba719c1ccfaae46e0d2dfe43a1285d5e1c6b24d8865026b911e11dcc4e5d02' };
 
 test('with no positions the Claude reader reads the same bytes and gives the same rows as before positions', async (t) => {
   const home = await temporaryDirectory(t);

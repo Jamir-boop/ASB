@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { normalizeClaudeDesktopCodeSession } from '../src/claude-data.mjs';
 import {
   inferThreadStatus,
   normalizeDashboardThreads,
@@ -47,35 +48,30 @@ test('normalizes sqlite thread rows into dashboard thread objects', () => {
   assert.equal(thread.projectName, 'bilibili toy');
   assert.equal(thread.tokensUsed, 1200);
   assert.equal(thread.archived, false);
-  assert.equal(thread.hasUnreadTurn, true);
   assert.equal(thread.status, 'warm');
   assert.equal(thread.createdAtMs, 1777420000000);
   assert.equal(thread.updatedAtMs, 1777423600000);
   assert.equal(thread.appDeepLink, `codex://threads/${id}`);
   assert.equal(thread.canOpen, true);
-  assert.equal(thread.openLabel, '打开');
-  assert.equal(thread.defaultOpenMode, 'codex-deeplink');
-  assert.equal(thread.inCodexSidebar, true);
+  // No code reads these fields, so the Codex and Claude rows do not have them.
+  const claude = normalizeClaudeDesktopCodeSession({ sessionId: 'local_fields', cliSessionId: id }, {}, 1777427200000);
+  for (const row of [thread, claude]) assert.deepEqual(['inCodexSidebar', 'defaultOpenMode', 'desktopName', 'hasUnreadTurn', 'openLabel', 'awaitingReview'].filter((name) => Object.hasOwn(row, name)), []);
 });
 
-test('uses desktop deep link for Codex threads missing from the sidebar index', () => {
+test('uses the desktop deep link for a Codex thread that the sidebar index does not have', () => {
   const id = '123e4567-e89b-12d3-a456-426614174000';
   const thread = normalizeThread({
     id,
     title: 'Old hidden thread',
     cwd: '/Users/example/Documents/work',
     source: 'vscode',
-    in_codex_sidebar: 0,
     archived: 0,
     created_at: 1777420000,
     updated_at: 1777423600,
   }, 1777427200000);
 
   assert.equal(thread.provider, 'codex');
-  assert.equal(thread.inCodexSidebar, false);
   assert.equal(thread.appDeepLink, `codex://threads/${id}`);
-  assert.equal(thread.defaultOpenMode, 'codex-deeplink');
-  assert.equal(thread.openLabel, '打开');
 });
 
 test('prefers Codex sidebar thread names over stale sqlite titles', () => {

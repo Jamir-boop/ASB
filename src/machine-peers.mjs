@@ -125,7 +125,7 @@ export function mergePeerRows(dashboard, peerStates, self, nowMs = Date.now()) {
   }
   dashboard.threads = [...dashboard.threads.filter((row) => !replaced.has(row.id)), ...peerRows];
   const rowIds = new Set(dashboard.threads.map((row) => row.id));
-  Object.defineProperty(dashboard, MEMBER_MESSAGE_KEYS, { value: new Map(peerKeys.filter(([id]) => rowIds.has(id))), configurable: true });
+  Object.defineProperty(dashboard, MEMBER_MESSAGE_KEYS, { value: new Map(peerKeys), configurable: true });
   const lookup = new Map(local.ambiguous.map((key) => [key, null]));
   const add = (key, rowId) => { if (key) lookup.set(key, lookup.has(key) && lookup.get(key) !== rowId ? null : rowId); };
   for (const [rowId, keys] of local.keysByRow) for (const key of keys) add(key, replaced.get(rowId) || rowId);
@@ -151,29 +151,24 @@ export function addressOrder(addresses, lastAddress = '') {
 }
 
 // The kept connections of GET requests: one agent for each address, port, and pin (two members on different LANs can have the same
-// private address and port), for one client certificate. The agent has the secure context of the client certificate, made once.
-// A request with another client certificate replaces the agent and closes its sockets. The count of agents is small (a few
+// private address and port), with the client certificate of its first request, because the client certificate does not change while
+// the engine runs. The agent has the secure context of that client certificate, made once. The count of agents is small (a few
 // addresses for each member), and an agent with no socket costs no resource.
+// shortcut: the agents belong to the process, so tests that run several engines in one process share them (and their client
+// certificate), key them by the client certificate if a test must tell such engines apart.
 const agents = new Map();
 // key and cert on Linux, pfx and passphrase on Windows; the own fingerprint is not a TLS option.
 const clientCertificate = ({ fingerprint: _own, ...certificate }) => certificate;
-const clientId = (tls) => {
-  const hash = createHash('sha256');
-  for (const field of ['key', 'cert', 'pfx', 'passphrase']) hash.update(`${field}:`).update(tls[field] ?? '');
-  return hash.digest('hex');
-};
 function agentFor(address, port, fingerprint, tls) {
   const key = `${address}|${port}|${fingerprint}`;
-  const client = clientId(tls);
   let entry = agents.get(key);
-  if (entry && entry.client !== client) { entry.agent.destroy(); entry = undefined; }
   if (!entry) {
     // The minimum version is a context option: with a secureContext, the same option of the agent does not count.
     // No session cache: each new connection makes a full handshake, so the pin check reads the certificate that the member sends now.
     const agent = new https.Agent({ keepAlive: true, keepAliveMsecs: PEER_IDLE_SOCKET_MS, timeout: PEER_IDLE_SOCKET_MS, maxFreeSockets: FREE_SOCKETS,
       maxCachedSessions: 0, minVersion: 'TLSv1.3', rejectUnauthorized: false,
       secureContext: createSecureContext({ ...clientCertificate(tls), minVersion: 'TLSv1.3' }) });
-    entry = { agent, fingerprint, client };
+    entry = { agent, fingerprint };
     agents.set(key, entry);
   }
   return entry.agent;

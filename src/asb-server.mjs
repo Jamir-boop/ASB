@@ -4,7 +4,7 @@ import { mkdir, rename, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { DashboardSnapshot } from './dashboard-snapshot.mjs';
-import { DEFAULT_PUBLIC_DIR, parseBooleanSearchParam, readJsonBody, sendJson, serveStatic, threadNotFound } from './local-http.mjs';
+import { DEFAULT_PUBLIC_DIR, exactKeys, parseBooleanSearchParam, readJsonBody, sendJson, serveStatic, threadNotFound } from './local-http.mjs';
 
 const PALETTE_KEYS = ['background', 'text', 'accent', 'muted', 'divider', 'success', 'warning'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -188,11 +188,10 @@ export function createAsbServer({
       }
       let body;
       try { body = await readBody(request, 8 * 1024); } catch (error) { sendJson(response, error.statusCode === 413 ? 413 : 400, { error: 'Invalid resolve request.' }); return; }
-      const fields = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join(',') : 'invalid';
       if (listReferencesRoute) {
-        if (!['caller', 'caller,hostCheck', 'caller,hostCheck,pipeProof', 'caller,pipeProof'].includes(fields) || !validCaller(body.caller)
-          || (fields.includes('hostCheck') && body.hostCheck !== true)
-          || (fields.includes('pipeProof') && body.pipeProof !== true)) {
+        if (!exactKeys(body, ['caller'], ['hostCheck', 'pipeProof']) || !validCaller(body.caller)
+          || (Object.hasOwn(body, 'hostCheck') && body.hostCheck !== true)
+          || (Object.hasOwn(body, 'pipeProof') && body.pipeProof !== true)) {
           sendJson(response, 400, { error: 'Invalid resolve request.' });
           return;
         }
@@ -204,9 +203,8 @@ export function createAsbServer({
       }
       if (resolveBoundRoute) {
         const caller = body?.caller;
-        if (!['caller,msgId,reference,remainingMs', 'caller,hostCheck,msgId,reference,remainingMs',
-          'caller,hostCheck,msgId,pipeProof,reference,remainingMs', 'caller,msgId,pipeProof,reference,remainingMs'].includes(fields)
-          || (fields.includes('pipeProof') && body.pipeProof !== true) || (fields.includes('hostCheck') && body.hostCheck !== true)
+        if (!exactKeys(body, ['caller', 'msgId', 'reference', 'remainingMs'], ['hostCheck', 'pipeProof'])
+          || (Object.hasOwn(body, 'pipeProof') && body.pipeProof !== true) || (Object.hasOwn(body, 'hostCheck') && body.hostCheck !== true)
           || typeof body.reference !== 'string' || !validCaller(caller)
           || typeof body.msgId !== 'string' || !UUID.test(body.msgId)
           || !Number.isInteger(body.remainingMs) || body.remainingMs < 0 || body.remainingMs > 20_000) {
@@ -221,7 +219,7 @@ export function createAsbServer({
         catch { sendJson(response, 500, { error: 'Cannot resolve the session reference.' }); }
         return;
       }
-      if (!['reference', 'reference,sourceId', 'configDir,reference', 'configDir,reference,sourceId'].includes(fields) || typeof body.reference !== 'string'
+      if (!exactKeys(body, ['reference'], ['configDir', 'sourceId']) || typeof body.reference !== 'string'
         || (Object.hasOwn(body, 'sourceId') && (typeof body.sourceId !== 'string' || !SOURCE_ID.test(body.sourceId)))
         || (Object.hasOwn(body, 'configDir') && (typeof body.configDir !== 'string' || body.configDir.length > 4096 || !path.isAbsolute(body.configDir)))) {
         sendJson(response, 400, { error: 'Invalid resolve request.' });

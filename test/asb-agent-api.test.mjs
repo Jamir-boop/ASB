@@ -650,3 +650,28 @@ test('sendName T1 resolve route accepts only absolute optional configDir and sou
     assert.deepEqual(reply.json(), { error: 'Invalid resolve request.' });
   }
 });
+
+test('list-references, resolve-bound, and resolve-session accept each combination of their optional fields and no other keys', async (t) => {
+  const caller = { runtimeSessionId: CALLER, configDir: '/synthetic/claude' };
+  for (const { route, handler, required, optional } of [
+    { route: LIST, handler: 'listReferences', required: { caller }, optional: { hostCheck: true, pipeProof: true } },
+    { route: BOUND, handler: 'resolveBound', required: boundBody(), optional: { hostCheck: true, pipeProof: true } },
+    { route: RESOLVE, handler: 'resolveSession', required: { reference: `codex/${SESSION}` }, optional: { configDir: '/synthetic/claude', sourceId: 'codex' } },
+  ]) {
+    const { request } = await serve(t, { [handler]: async () => ({ apiVersion: 1, ok: true }) });
+    const status = async (body) => (await request(route, { method: 'POST', body })).status;
+    const names = Object.keys(optional);
+    for (const subset of names.reduce((sets, name) => [...sets, ...sets.map((set) => [...set, name])], [[]])) {
+      const body = { ...required, ...Object.fromEntries(subset.map((name) => [name, optional[name]])) };
+      assert.equal(await status(body), 200, `${route} ${Object.keys(body)}`);
+    }
+    const full = { ...required, ...optional };
+    assert.equal(await status({ ...full, extra: true }), 400, `${route} with an unknown field`);
+    for (const name of Object.keys(required)) {
+      const { [name]: _, ...missing } = full;
+      assert.equal(await status(missing), 400, `${route} without ${name}`);
+    }
+    assert.equal(await status([full]), 400, `${route} with an array body`);
+    for (const name of names) assert.equal(await status({ ...required, [name]: false }), 400, `${route} with ${name}: false`);
+  }
+});

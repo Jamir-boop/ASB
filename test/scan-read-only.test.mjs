@@ -106,12 +106,9 @@ test('a runtime copy is a new object, and a thread of normalizeThread has its ru
   const row = deepFreeze({ id: uuid(1), title: 'Stored', source: 'vscode', updated_at_ms: nowMs, archived: 0 });
   const index = readOnlyMap([[uuid(1), 'Sidebar title']]);
   const normalized = normalizeThread(row, nowMs, index);
-  assert.deepEqual([normalized.title, normalized.inCodexSidebar], ['Sidebar title', true]);
+  assert.equal(normalized.title, 'Sidebar title');
   assert.deepEqual(Object.keys(normalized).slice(-3), ['currentTurnStartedAtMs', 'currentTurnElapsedMs', 'status']);
   assert.deepEqual(enrichThreads([row], nowMs, index), [normalized]);
-  // With no index, the row says whether the thread is in the sidebar.
-  assert.equal(normalizeThread(row, nowMs).inCodexSidebar, true);
-  assert.equal(normalizeThread({ ...row, in_codex_sidebar: 0 }, nowMs).inCodexSidebar, false);
 });
 
 async function temporaryDirectory(t, prefix) {
@@ -210,5 +207,5 @@ test('the kept thread query result is frozen and shared, and a scan of it change
   const thread = (id) => first.threads.find((item) => item.id === id);
   assert.equal(thread(uuid(1)).latestUserMessageAtMs > 0, true);
   assert.equal(Object.hasOwn(kept.find((row) => row.id === uuid(1)), 'latestUserMessageAtMs'), false);
-  assert.deepEqual([thread(uuid(3)).title, thread(uuid(3)).inCodexSidebar, thread(uuid(1)).inCodexSidebar], ['Sidebar title', true, false]);
+  assert.equal(thread(uuid(3)).title, 'Sidebar title');
 });

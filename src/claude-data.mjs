@@ -730,7 +730,6 @@ export function baseClaudeThread({
   updatedAtMs,
   signals,
   canOpen = true,
-  openLabel = '打开',
   extra = {},
 }, nowMs) {
   const pendingTools = Array.isArray(signals?.pendingTools) ? signals.pendingTools : [];
@@ -746,9 +745,7 @@ export function baseClaudeThread({
     source,
     model: model || signals?.model || '',
     reasoningEffort: '',
-    hasUnreadTurn: false,
     awaitingPermission: pendingTools.length > 0,
-    awaitingReview: false,
     pendingTools,
     pendingToolCount: pendingTools.length,
     pendingToolAtMs: coerceNumber(signals?.pendingToolAtMs),
@@ -780,7 +777,6 @@ export function baseClaudeThread({
     gitOriginUrl: '',
     appDeepLink: '',
     canOpen,
-    openLabel,
     ...extra,
   };
 

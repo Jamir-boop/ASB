@@ -185,7 +185,7 @@ test('parses Codex session index titles used by the sidebar', () => {
   assert.equal(index.has('empty'), false);
 });
 
-test('marks threads missing from the Codex sidebar index', () => {
+test('takes the titles of the Codex sidebar index, and the own name of a thread wins', () => {
   const rows = [
     { id: 'visible-thread', title: 'Stored title' },
     { id: 'hidden-thread', title: 'Old title' },
@@ -198,12 +198,9 @@ test('marks threads missing from the Codex sidebar index', () => {
   ]));
 
   assert.equal(threads[0].title, 'Sidebar title');
-  assert.equal(threads[0].inCodexSidebar, true);
   assert.equal(threads[1].title, 'Old title');
-  assert.equal(threads[1].inCodexSidebar, false);
   // The own name of a thread wins over the index.
   assert.equal(threads[2].title, 'Own name');
-  assert.equal(threads[2].inCodexSidebar, true);
   // The rows are read only: the kept result of the database query is made of such rows.
   assert.equal(JSON.stringify(rows), before);
 });

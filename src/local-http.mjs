@@ -50,6 +50,12 @@ export async function readJsonBody(request, limit = 64 * 1024) {
   return JSON.parse(raw);
 }
 
+// Exactly the required keys, and only these optional ones.
+export function exactKeys(value, required, optional = []) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) && required.every((key) => Object.hasOwn(value, key))
+    && Object.keys(value).every((key) => required.includes(key) || optional.includes(key));
+}
+
 function safeStaticPath(publicDir, pathname) {
   const requestedPath = pathname === '/' ? '/index.html' : pathname;
   const decodedPath = decodeURIComponent(requestedPath);

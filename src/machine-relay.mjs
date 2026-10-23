@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readLiveClaudeRegistry } from './claude-registry.mjs';
+import { exactKeys as keys } from './local-http.mjs';
 import { peerRequest } from './machine-peers.mjs';
 import { bunFolders, bunNotFound, findBun, findExecutable, runtimeDir } from './platform-paths.mjs';
 import { formatReference } from './session-references.mjs';
@@ -35,12 +36,10 @@ const LIST_STALE_MS = 15_000;
 const CHECK_MS = 30_000;
 const RESTARTS = 5;
 const RESTART_WINDOW_MS = 600_000;
-export const RELAY_STOPPED = 'ASB: the message relay stopped after 5 restarts in 10 minutes.';
+export const RELAY_LIMIT = `${RESTARTS} restarts in ${RESTART_WINDOW_MS / 60_000} minutes`;
+export const RELAY_STOPPED = `ASB: the message relay stopped after ${RELAY_LIMIT}.`;
 
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
-// Exactly the required keys, and only these optional ones.
-const keys = (value, required, optional = []) => object(value) && required.every((key) => Object.hasOwn(value, key))
-  && Object.keys(value).every((key) => required.includes(key) || optional.includes(key));
 const text = (value, min, max) => typeof value === 'string' && value.length >= min && value.length <= max;
 const uuid = (value) => typeof value === 'string' && UUID.test(value);
 const hex16 = (value) => typeof value === 'string' && HEX16.test(value);
