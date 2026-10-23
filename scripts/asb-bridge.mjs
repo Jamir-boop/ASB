@@ -190,6 +190,20 @@ async function skillFiles(source) {
   if (!bytes.size) throw new Error(`Missing bridge skill files: ${source}`);
   return bytes;
 }
+async function skillCurrent(directory, sourceDirectory) {
+  try {
+    if (await skillState(directory) !== 'ok') return null;
+    const record = JSON.parse(await contents(path.join(directory, RECORD)));
+    const files = await skillFiles(sourceDirectory);
+    return files.size === Object.keys(record.files).length
+      && [...files].every(([file, bytes]) => record.files[file] === digest(bytes));
+  } catch { return null; }
+}
+function skillText(item, target) {
+  if (item.skillCurrent === true) return `${item.skill} (current)`;
+  if (item.skillCurrent === false) return `${item.skill} (out of date: run asb bridge install ${target})`;
+  return item.skill;
+}
 async function copySkill(bytes, directory, force) {
   await checkSkill(directory, force);
   await rm(directory, { recursive: true, force: true });
@@ -551,7 +565,9 @@ export async function status(options = {}) {
     const hooks = Object.fromEntries(['session_start', 'session_end'].map((event) => [event, parsed.has(`hooks.state."asb-bridge@asb:hooks/hooks.json:${event}:0:0"`)]));
     codex.push({ home, marketplace: { installed: parsed.has('marketplaces.asb'), source: sourceValue(parsed.get('marketplaces.asb')) },
       plugin: { installed: plugin !== undefined, enabled: plugin?.match(/^\s*enabled\s*=\s*(true|false)\s*(?:#.*)?$/m)?.[1] === 'true', versions, version, expectedVersion, versionMatches: version === expectedVersion },
-      hooks, skill: await skillState(path.join(home, 'skills/bridge')), oldPlugin, warning: oldPlugin ? OLD_WARNING : null,
+      hooks, skill: await skillState(path.join(home, 'skills/bridge')),
+      skillCurrent: await skillCurrent(path.join(home, 'skills/bridge'), path.join(root, 'bridge/agent-skills/codex/bridge')),
+      oldPlugin, warning: oldPlugin ? OLD_WARNING : null,
       bunOnAppServerPath: await codexBunOnPath(home, options),
       stateFiles: (await entries(path.join(home, 'plugin-state/asb-bridge'))).filter((entry) => entry.isFile()).length });
   }
@@ -583,7 +599,7 @@ export async function status(options = {}) {
   catch { /* Missing or unreadable plugin package. */ }
   return {
     codex,
-    claude: { home: claudeHome, detected: Boolean(targets.claudeHome), skill: await skillState(path.join(claudeHome, 'skills/bridge')), version: await toolVersion('claude'), requirement: 'Cross-session messaging needs Claude Code 2.1.224 or later.' },
+    claude: { home: claudeHome, detected: Boolean(targets.claudeHome), skill: await skillState(path.join(claudeHome, 'skills/bridge')), skillCurrent: await skillCurrent(path.join(claudeHome, 'skills/bridge'), path.join(root, 'bridge/agent-skills/claude/bridge')), version: await toolVersion('claude'), requirement: 'Cross-session messaging needs Claude Code 2.1.224 or later.' },
     opencode: {
       config: openCodePaths.config,
       detected: Boolean(targets.opencodeConfig),
@@ -592,6 +608,7 @@ export async function status(options = {}) {
       expectedVersion,
       versionMatches: installedVersion === expectedVersion,
       skill: await skillState(path.join(openCodePaths.config, 'skills/bridge')),
+      skillCurrent: await skillCurrent(path.join(openCodePaths.config, 'skills/bridge'), path.join(root, 'bridge/agent-skills/opencode/bridge')),
       claudeConfigDir: absolute(options.claudeHome || defaultClaudeHome()),
       stateDir: path.join(openCodePaths.state, 'plugin-state', 'asb-bridge'),
       opencodeVersion,
@@ -621,12 +638,12 @@ export async function main(args = process.argv.slice(2), context = {}) {
     if (args[0] === '--json') console.log(JSON.stringify(result));
     else {
       for (const item of result.codex) {
-        console.log(`Codex ${item.home}: marketplace ${item.marketplace.source || 'missing'}; plugin ${item.plugin.installed ? item.plugin.enabled ? 'enabled' : 'disabled' : 'missing'}; version ${item.plugin.version || 'missing'} (${item.plugin.versionMatches ? 'current' : `expected ${item.plugin.expectedVersion}`}); hooks start=${item.hooks.session_start} end=${item.hooks.session_end}; skill ${item.skill}; state files ${item.stateFiles}; bun on app-server PATH=${item.bunOnAppServerPath}`);
+        console.log(`Codex ${item.home}: marketplace ${item.marketplace.source || 'missing'}; plugin ${item.plugin.installed ? item.plugin.enabled ? 'enabled' : 'disabled' : 'missing'}; version ${item.plugin.version || 'missing'} (${item.plugin.versionMatches ? 'current' : `expected ${item.plugin.expectedVersion}`}); hooks start=${item.hooks.session_start} end=${item.hooks.session_end}; skill ${skillText(item, `--codex-home ${item.home}`)}; state files ${item.stateFiles}; bun on app-server PATH=${item.bunOnAppServerPath}`);
         if (item.warning) console.log(`Warning: ${item.home}: ${item.warning}`);
       }
-      console.log(`Claude ${result.claude.home}: skill ${result.claude.skill}; version ${result.claude.version || 'missing'}`);
+      console.log(`Claude ${result.claude.home}: skill ${skillText(result.claude, '--claude')}; version ${result.claude.version || 'missing'}`);
       console.log(result.claude.requirement);
-      console.log(`OpenCode ${result.opencode.config}: plugin ${result.opencode.plugin}; version ${result.opencode.version || 'missing'} (${result.opencode.versionMatches ? 'current' : `expected ${result.opencode.expectedVersion}`}); skill ${result.opencode.skill}; opencode ${result.opencode.opencodeVersion || 'missing'}; live receivers ${result.opencode.liveReceivers}`);
+      console.log(`OpenCode ${result.opencode.config}: plugin ${result.opencode.plugin}; version ${result.opencode.version || 'missing'} (${result.opencode.versionMatches ? 'current' : `expected ${result.opencode.expectedVersion}`}); skill ${skillText(result.opencode, '--opencode')}; opencode ${result.opencode.opencodeVersion || 'missing'}; live receivers ${result.opencode.liveReceivers}`);
       if (result.opencode.warning) console.log(`Warning: ${result.opencode.warning}`);
       console.log(`Live receivers: ${result.liveReceivers}; bun: ${result.versions.bun || 'missing'}; codex: ${result.versions.codex || 'missing'}`);
     }

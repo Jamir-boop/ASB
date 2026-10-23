@@ -52,6 +52,67 @@ async function fixture(t) {
   return { temporary, home, bin, log, codex, personal, claude, env, procRoot, run, processRow, calls };
 }
 function passed(result) { assert.equal(result.status, 0, result.stderr); }
+async function outdatedSkill(directory) {
+  const file = path.join(directory, 'SKILL.md');
+  const bytes = Buffer.concat([await readFile(file), Buffer.from('x')]);
+  await writeFile(file, bytes);
+  const recordFile = path.join(directory, '.asb-bridge.json');
+  const record = JSON.parse(await readFile(recordFile, 'utf8'));
+  record.files['SKILL.md'] = digest(bytes);
+  await writeFile(recordFile, JSON.stringify(record));
+}
+
+for (const provider of ['claude', 'codex', 'opencode']) {
+  test(`bridge status distinguishes current and out-of-date ${provider} skills`, async (t) => {
+    const f = await fixture(t);
+    const home = provider === 'claude' ? f.claude : provider === 'codex' ? f.personal : path.join(f.env.XDG_CONFIG_HOME, 'opencode');
+    const args = provider === 'codex' ? ['--codex-home', home] : [`--${provider}`];
+    const directory = path.join(home, 'skills/bridge');
+    const report = () => {
+      const result = f.run(['status', '--json']);
+      passed(result);
+      const status = JSON.parse(result.stdout);
+      return provider === 'codex' ? status.codex.find((item) => item.home === home) : status[provider];
+    };
+    assert.equal(report().skill, 'missing');
+    assert.equal(report().skillCurrent, null);
+    passed(f.run(['install', ...args]));
+    assert.equal(report().skill, 'ok');
+    assert.equal(report().skillCurrent, true);
+    const current = f.run(['status']);
+    passed(current);
+    assert.ok(current.stdout.split('\n').some((line) => line.includes(home) && line.includes('skill ok (current)')));
+    await outdatedSkill(directory);
+    assert.equal(report().skill, 'ok');
+    assert.equal(report().skillCurrent, false);
+    const outdated = f.run(['status']);
+    passed(outdated);
+    assert.ok(outdated.stdout.split('\n').some((line) => line.includes(home) && line.includes(`skill ok (out of date: run asb bridge install ${args.join(' ')})`)));
+    await writeFile(path.join(directory, 'SKILL.md'), 'User edit\n');
+    assert.equal(report().skill, 'modified');
+    assert.equal(report().skillCurrent, null);
+    const modified = f.run(['status']);
+    passed(modified);
+    assert.ok(modified.stdout.split('\n').some((line) => line.includes(home) && line.includes('skill modified;')));
+  });
+}
+
+test('bridge install updates an out-of-date Claude skill without force', async (t) => {
+  const f = await fixture(t);
+  passed(f.run(['install', '--claude']));
+  await outdatedSkill(path.join(f.claude, 'skills/bridge'));
+  const before = f.run(['status', '--json']);
+  passed(before);
+  assert.equal(JSON.parse(before.stdout).claude.skill, 'ok');
+  assert.equal(JSON.parse(before.stdout).claude.skillCurrent, false);
+  passed(f.run(['install', '--claude']));
+  const after = f.run(['status', '--json']);
+  passed(after);
+  assert.equal(JSON.parse(after.stdout).claude.skill, 'ok');
+  assert.equal(JSON.parse(after.stdout).claude.skillCurrent, true);
+  await owned(path.join(f.claude, 'skills/bridge'), 'claude');
+});
+
 async function owned(directory, provider) {
   const record = JSON.parse(await readFile(path.join(directory, '.asb-bridge.json'), 'utf8'));
   assert.equal(record.owner, 'asb-bridge');
