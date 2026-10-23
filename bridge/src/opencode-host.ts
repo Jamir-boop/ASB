@@ -23,15 +23,18 @@ export function opencodeBridgeId(openCodeSessionId: string) {
 }
 
 // V27: mode is only for the outgoing `from-mode` of frames that OpenCode sends.
+// The last matching rule wins, as in OpenCode.
 export function modeFromRules(permissions: unknown): Runtime['mode'] {
   const parsed = Array.isArray(permissions) ? permissions : null;
   if (!parsed) return 'unknown';
   const effective = (action: string) => {
     let answer: string | undefined;
     for (const row of parsed) {
-      const rule = row as { action?: unknown; pattern?: unknown; permission?: unknown };
-      if (rule.action !== action || rule.pattern !== '*') continue;
-      if (rule.permission === 'allow' || rule.permission === 'ask' || rule.permission === 'deny') answer = rule.permission;
+      const rule = row as { action?: unknown; resource?: unknown; pattern?: unknown; effect?: unknown; permission?: unknown };
+      const resource = typeof rule.resource === 'string' ? rule.resource : rule.pattern;
+      const effect = typeof rule.effect === 'string' ? rule.effect : rule.permission;
+      if ((rule.action !== action && rule.action !== '*') || resource !== '*') continue;
+      if (effect === 'allow' || effect === 'ask' || effect === 'deny') answer = effect;
     }
     return answer;
   };

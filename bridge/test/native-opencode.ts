@@ -317,6 +317,8 @@ test('native OpenCode bridge', async () => {
     const envelope = /^<cross-session-message\s[^>]*>/.exec(String(outFrame.message?.content ?? ''))?.[0] ?? '';
     assert(envelope.includes(`from-name="${row.name}"`) || envelope.includes('from-name="opencode-'), `from-name in envelope: ${envelope}`);
     assert(envelope.includes(`from-session="${row.sessionId}"`), `from-session in envelope: ${envelope}`);
+    assert(envelope.includes(' from-mode="bypass"'), `outbound from-mode must be bypass for the default agent: ${envelope}`);
+    console.log('PASS outbound from-mode is bypass for the default agent');
     await assertMockOnly(sessionA);
 
     // list_sessions shows the fake peer as claude and this session as opencode.

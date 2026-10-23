@@ -147,7 +147,7 @@ An OpenCode row is named `opencode-<title>-<suffix>`, or `opencode-<folder>-<suf
 
 A message is added to the OpenCode session with `ctx.session.synthetic` and delivery `steer`. It starts a turn when the session is idle and steers the running turn when it is busy. OpenCode accepts every message at once: there is no hold dialog and no permission prompt. The receive policy stays `default`. The model sees the same header and text as in a Codex task, with `Reply with tools.asb_bridge.send_message.`
 
-OpenCode exposes three tools: `list_sessions`, `send_message`, and `status`. It has no `inbox` tool. The mode of the agent rules only fills the outgoing `from-mode` of frames that OpenCode sends.
+OpenCode exposes three tools: `list_sessions`, `send_message`, and `status`. It has no `inbox` tool. The mode of the agent rules only fills the outgoing `from-mode` of frames that OpenCode sends. It reads the OpenCode 2.1.x rules (`action`, `resource`, `effect`) of the first agent: `*` matches any action, and the last matching rule wins. A Claude Code session in bypass mode holds a message with no `from-mode`.
 
 The plugin never edits `opencode.json`, the OpenCode database, or `auth.json`. It writes its own state folder, registry rows, key files, and socket files. OpenCode also reads `~/.claude/skills`, so the Claude `bridge` skill can show in OpenCode when Claude's home is `~/.claude`. The OpenCode `skills/bridge` folder wins by precedence. The installer prints no warning for this.
 

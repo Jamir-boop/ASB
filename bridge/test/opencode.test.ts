@@ -147,6 +147,38 @@ test('modeFromRules is bypass, prompting, or unknown from shell and edit', () =>
   expect(modeFromRules([])).toBe('unknown');
 });
 
+test.each([
+  ['default build agent', [
+    { action: '*', resource: '*', effect: 'allow' },
+    { action: 'read', resource: '*.env', effect: 'ask' },
+    { action: 'read', resource: '*.env.*', effect: 'ask' },
+    { action: 'read', resource: '*.env.example', effect: 'allow' },
+    { action: 'question', resource: '*', effect: 'allow' },
+  ], 'bypass'],
+  ['explore agent denies edit', [
+    { action: '*', resource: '*', effect: 'allow' },
+    { action: '*', resource: '*', effect: 'deny' },
+    { action: 'shell', resource: '*', effect: 'allow' },
+  ], 'unknown'],
+  ['plan agent denies edit', [
+    { action: '*', resource: '*', effect: 'allow' },
+    { action: 'edit', resource: '*', effect: 'deny' },
+  ], 'unknown'],
+  ['shell asks', [
+    { action: '*', resource: '*', effect: 'allow' },
+    { action: 'shell', resource: '*', effect: 'ask' },
+  ], 'prompting'],
+  ['specific resource does not set mode', [
+    { action: 'shell', resource: '*.env', effect: 'ask' },
+  ], 'unknown'],
+  ['last wildcard allow wins', [
+    { action: 'shell', resource: '*', effect: 'ask' },
+    { action: '*', resource: '*', effect: 'allow' },
+  ], 'bypass'],
+] as const)('modeFromRules reads OpenCode 2.1.x rules: %s', (_name, rules, expected) => {
+  expect(modeFromRules(rules)).toBe(expected);
+});
+
 posix('send_message validation texts match the Codex tool bodies', async () => {
   const { root, configDir, stateDir } = tempHome();
   try {
