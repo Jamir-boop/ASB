@@ -136,6 +136,15 @@ class SessionsViewModelTest {
         server.takeRequest()
     }
 
+    // A good open of the row "one", then the board refresh that ends its busy state.
+    private suspend fun openOne(model: SessionsViewModel, dashboard: Dashboard, generation: Long) {
+        server.enqueue(MockResponse().setBody("{\"opened\":true}"))
+        server.enqueue(response(dashboard.copy(generatedAtMs = generation)))
+        model.action("one", "open")
+        await { model.state.value.dashboard?.generatedAtMs == generation }
+        await { model.state.value.busyIds.isEmpty() }
+    }
+
     @Test fun pollingRetainsEtagAndDashboardOn304AndUsesOnlyApprovedIntervals() = runBlocking {
         val working = Dashboard(1, refreshIntervalMs = 2000,
             threads = listOf(Thread(id = "one", state = "working", completionAttention = true)))
@@ -478,7 +487,8 @@ class SessionsViewModelTest {
         release.countDown()
         await { model.state.value.dashboard?.generatedAtMs == 3L }
         assertTrue(model.state.value.busyIds.isEmpty())
-        assertEquals("Opened on Test PC", model.state.value.banner)
+        assertEquals(mapOf("one" to "Opened on Test PC"), model.state.value.openedEchoes)
+        assertNull(model.state.value.banner)
         assertEquals("/phone/v1/dashboard", server.takeRequest().path)
         assertEquals("/phone/v1/threads/two/mark-read", server.takeRequest().path)
         assertEquals("/phone/v1/dashboard", server.takeRequest().path)
@@ -520,6 +530,7 @@ class SessionsViewModelTest {
             assertEquals("ASB did not open this session. Try again.", model.state.value.lastError)
             assertFalse(model.state.value.offline)
             assertNull(model.state.value.banner)
+            assertTrue(model.state.value.openedEchoes.isEmpty())
             server.takeRequest()
             model.clearError()
         }
@@ -674,6 +685,36 @@ class SessionsViewModelTest {
         assertTrue(model.state.value.readConfirmedIds.isEmpty())
     }
 
+    @Test fun aGoodOpenEchoesOnTheCardFor1600MsAndLeavesTheBannerAlone() = runBlocking {
+        val dashboard = Dashboard(1, threads = listOf(Thread(id = "one", canOpen = true)))
+        val model = model()
+        load(model, dashboard)
+        openOne(model, dashboard, 2)
+        assertEquals(mapOf("one" to "Opened on Test PC"), model.state.value.openedEchoes)
+        assertNull(model.state.value.banner)
+        advance(1599)
+        assertEquals(mapOf("one" to "Opened on Test PC"), model.state.value.openedEchoes)
+        advance(1)
+        assertTrue(model.state.value.openedEchoes.isEmpty())
+        assertNull(model.state.value.banner)
+    }
+
+    @Test fun anotherOpenOfTheSameRowRestartsTheEchoTime() = runBlocking {
+        val dashboard = Dashboard(1, threads = listOf(Thread(id = "one", canOpen = true)))
+        val model = model()
+        load(model, dashboard)
+        openOne(model, dashboard, 2)
+        advance(1000)
+        openOne(model, dashboard, 3)
+        // The time of the first open ends here; the second open keeps the echo until 1600 ms after itself.
+        advance(600)
+        assertEquals(mapOf("one" to "Opened on Test PC"), model.state.value.openedEchoes)
+        advance(999)
+        assertEquals(mapOf("one" to "Opened on Test PC"), model.state.value.openedEchoes)
+        advance(1)
+        assertTrue(model.state.value.openedEchoes.isEmpty())
+    }
+
     @Test fun thePollReadsHelloOnceAtItsStart() = runBlocking {
         server.enqueue(response(Dashboard(1)))
         server.enqueue(helloReply)
@@ -709,9 +750,10 @@ class SessionsViewModelTest {
             other.enqueue(MockResponse().setBody("""{"opened":true}"""))
             other.enqueue(response(dashboard))
             model.action("m:x:one", "open")
-            await { model.state.value.banner != null }
+            await { model.state.value.openedEchoes.isNotEmpty() }
             assertEquals("POST", other.takeRequest().method)
-            assertEquals("Opened on workLP", model.state.value.banner)
+            assertEquals(mapOf("m:x:one" to "Opened on workLP"), model.state.value.openedEchoes)
+            assertNull(model.state.value.banner)
             assertEquals(0, server.requestCount)
         } finally { other.shutdown() }
     }

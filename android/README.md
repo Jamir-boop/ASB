@@ -53,11 +53,22 @@ baseline updates; only the current, resumed pairing can save that baseline.
 
 The live notification is an ongoing, silent notification with the session
 counts, for example `1 pending · 2 working · 5 sessions`. Archived sessions are
-not counted. Expand it to see the titles of the Working sessions (six titles,
-then `+N more`). Tap it to open the app. Select Stop to turn it off. When
-Android hides sensitive content on the lock screen, the lock screen shows only
-the counts (and the offline status). When the PC does not answer, the
+not counted. Expand it to see the titles of the Working sessions, one on each
+line (six titles, then `+N more`). Tap it to open the app. Select Stop to turn
+it off. When Android hides sensitive content on the lock screen, the lock screen
+shows only the counts (and the offline status). When the PC does not answer, the
 notification keeps the last counts and shows `Offline · last update 5m ago`.
+
+On Android 16, the notification can use Live updates. HyperOS can show it
+in its island. The chip has a small icon and a short text. For 8 seconds after a
+session gets the Done mark, the chip shows a check mark in a ring and `Done`.
+After that, it shows the number of pending sessions. The icon is a question mark
+in a ring when a pending session needs input, and a filled disc when not. When
+no session is pending, the chip shows the number of working sessions with an
+open ring. After the Done time, when no session is pending or working, the
+notification is not a Live update, and the status bar shows the ASB icon.
+The same applies when the PC does not answer. A phone without Live updates or
+an island has no chip. It shows the same notification and the same small icon.
 
 A foreground service runs the notification. It is on by default after pairing.
 Turn it on or off in Settings > Notifications > Live notification. The service
@@ -157,6 +168,10 @@ Working row. A control that the row does not allow is dimmed. The inspector
 stays open after a change and shows the new row data. It covers the message
 bar, so it shows the current message (for example an error) as a caption below
 the switches. Back, a tap outside, Open, or the row leaving the list closes it.
+
+After a good Open, the card of the session shows `Opened on <PC>` in the accent
+color for 1.6 seconds, in place of the state text. Other messages and errors
+show in a dark strip.
 
 The app turns with the phone. A window narrower than 600 dp shows one list. A
 wider window, for example landscape, shows the desktop Column Flow: 240 dp

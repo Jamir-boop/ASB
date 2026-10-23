@@ -1,11 +1,18 @@
 package local.asb.companion
 
 import local.asb.companion.data.Thread
+import local.asb.companion.notify.LiveBadge
+import local.asb.companion.notify.LiveChip
+import local.asb.companion.notify.liveBadge
 import local.asb.companion.notify.liveIntervalMs
 import local.asb.companion.notify.liveLines
 import local.asb.companion.notify.liveOfflineText
 import local.asb.companion.notify.liveTitle
+import local.asb.companion.notify.newlyDone
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LiveNotificationTest {
@@ -49,5 +56,43 @@ class LiveNotificationTest {
         assertEquals("Offline · last update just now", liveOfflineText(now - 30_000, now))
         assertEquals("Offline · last update 5m ago", liveOfflineText(now - 300_000, now))
         assertEquals("Offline · last update 2h ago", liveOfflineText(now - 7_200_000, now))
+    }
+
+    @Test fun badgeShowsDoneFirstThenThePendingCountThenTheWorkingCount() {
+        // The Done flash wins over the pending rows.
+        assertEquals(LiveBadge(LiveChip.DONE, "Done"), liveBadge(listOf(row("a", pending = true)), doneFlash = true))
+        // One pending row asks a question, so the chip shows the input icon with the pending count.
+        assertEquals(LiveBadge(LiveChip.INPUT, "2"), liveBadge(listOf(
+            row("a", pending = true).copy(questionAttention = true), row("b", pending = true),
+        ), doneFlash = false))
+        // A pending row with only a result shows the pending icon, and pending wins over working.
+        assertEquals(LiveBadge(LiveChip.PENDING, "1"), liveBadge(listOf(
+            row("a", pending = true).copy(completionAttention = true), row("b", "working"),
+        ), doneFlash = false))
+        // Without a pending row the chip counts the unarchived working rows.
+        assertEquals(LiveBadge(LiveChip.WORKING, "2"), liveBadge(listOf(
+            row("a", "working"), row("b", "working"), row("c", "working", archived = true),
+        ), doneFlash = false))
+        assertNull(liveBadge(listOf(row("a"), row("b", "waiting")), doneFlash = false))
+        assertNull(liveBadge(emptyList(), doneFlash = false))
+    }
+
+    @Test fun badgeIgnoresArchivedRows() {
+        val archived = row("a", "working", pending = true, archived = true).copy(questionAttention = true)
+        assertNull(liveBadge(listOf(archived), doneFlash = false))
+        assertEquals(LiveBadge(LiveChip.WORKING, "1"), liveBadge(listOf(archived, row("b", "working")), doneFlash = false))
+    }
+
+    @Test fun newlyDoneNeedsAResultThatThePreviousListDidNotHave() {
+        val done = row("a").copy(completionAttention = true)
+        // The first update has nothing to compare with.
+        assertFalse(newlyDone(null, listOf(done)))
+        assertTrue(newlyDone(listOf(row("a")), listOf(done)))
+        // A result that was already there is not new.
+        assertFalse(newlyDone(listOf(done), listOf(done)))
+        // A row that is new in the list is not a new result.
+        assertFalse(newlyDone(listOf(row("b")), listOf(done)))
+        // A done row that became archived has no Done mark any more.
+        assertFalse(newlyDone(listOf(done), listOf(done.copy(archived = true))))
     }
 }

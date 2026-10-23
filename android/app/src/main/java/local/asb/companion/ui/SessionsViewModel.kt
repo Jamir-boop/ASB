@@ -39,6 +39,8 @@ data class UiState(
     val view: String = "comfortable",
     val openingIds: Set<String> = emptySet(),
     val readConfirmedIds: Set<String> = emptySet(),
+    /** The card of an opened session says where it opened (`Opened on <PC>`) for 1.6 s. */
+    val openedEchoes: Map<String, String> = emptyMap(),
     /** The last failed action of a row, as the desktop row panel error. */
     val actionErrors: Map<String, String> = emptyMap(),
     /** The kind of endpoint that gave the last dashboard: lan, zerotier, or tailscale. */
@@ -77,6 +79,7 @@ class SessionsViewModel(
      */
     private var learnAddresses = false
     private val readTimers = mutableMapOf<String, Job>()
+    private val openTimers = mutableMapOf<String, Job>()
 
     fun setFilter(filter: Filter) { mutableState.update { it.copy(filter = filter) } }
     fun setView(view: String) { mutableState.update { it.copy(view = view) } }
@@ -156,7 +159,7 @@ class SessionsViewModel(
                         if (reply["opened"] != JsonPrimitive(true)) {
                             throw AsbError.Server("ASB did not open this session. Try again.")
                         }
-                        mutableState.update { it.copy(banner = "Opened on ${api.engineName(state.value.engine) ?: serverName}") }
+                        echoOpened(id, "Opened on ${api.engineName(state.value.engine) ?: serverName}")
                     }
                     // The row stays busy until the board refresh below, so its controls never act on the old row.
                     // The snackbar of the old failure closes with the row's error.
@@ -184,6 +187,17 @@ class SessionsViewModel(
             delay(1600)
             readTimers.remove(id)
             mutableState.update { it.copy(readConfirmedIds = it.readConfirmedIds - id) }
+        }
+    }
+
+    // The card says where the session opened for 1.6 s. A new open of the same row restarts the time.
+    private fun echoOpened(id: String, text: String) {
+        mutableState.update { it.copy(openedEchoes = it.openedEchoes + (id to text)) }
+        openTimers.remove(id)?.cancel()
+        openTimers[id] = viewModelScope.launch {
+            delay(1600)
+            openTimers.remove(id)
+            mutableState.update { it.copy(openedEchoes = it.openedEchoes - id) }
         }
     }
 

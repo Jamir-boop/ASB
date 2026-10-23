@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Island chip icon: a question mark in a ring for Needs input. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2"
+        android:pathData="M12,2.5A9.5,9.5 0,1 1,12,21.5A9.5,9.5 0,1 1,12,2.5Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M9.2,9.3A2.9,2.9 0,1 1,13.8,11.6C12.7,12.4 12,12.9 12,14.5" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,16.6A1.25,1.25 0,1 1,12,19.1A1.25,1.25 0,1 1,12,16.6Z" />
+</vector>

@@ -11,6 +11,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
 import android.os.Build
+import android.os.Bundle
 import android.os.IBinder
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
@@ -43,6 +44,9 @@ private const val LIVE_CHANNEL = "asb_live"
 private const val LIVE_ID = 1
 private const val ACTION_STOP = "local.asb.companion.STOP_LIVE"
 private const val MAX_LINES = 6
+internal const val DONE_FLASH_MS = 8_000L
+// Notification.EXTRA_REQUEST_PROMOTED_ONGOING: compileSdk 36 has no constant or setter for it (API 36.1).
+private const val REQUEST_PROMOTED_ONGOING = "android.requestPromotedOngoing"
 
 internal fun liveTitle(threads: List<Thread>): String {
     val rows = threads.filter { !it.archived }
@@ -67,6 +71,34 @@ internal fun liveOfflineText(lastMs: Long, nowMs: Long): String =
     if (lastMs <= 0) "Offline"
     else "Offline · last update " + idleAge(lastMs, nowMs).replaceFirstChar { it.lowercaseChar() }
 
+/** The small icon of the live notification. Android 16 Live Updates and the HyperOS island show it in the chip. */
+internal enum class LiveChip { DONE, INPUT, PENDING, WORKING }
+
+/** The chip: the icon and the short text (a count, or Done). */
+internal data class LiveBadge(val chip: LiveChip, val text: String)
+
+/** Done for a short time after a result, then the pending count, then the working count; null when nothing is. */
+internal fun liveBadge(threads: List<Thread>, doneFlash: Boolean): LiveBadge? {
+    if (doneFlash) return LiveBadge(LiveChip.DONE, "Done")
+    val rows = threads.filter { !it.archived }
+    val pending = rows.filter { it.pending }
+    if (pending.isNotEmpty()) {
+        val chip = if (pending.any { bits(it) and BIT_INPUT != 0 }) LiveChip.INPUT else LiveChip.PENDING
+        return LiveBadge(chip, "${pending.size}")
+    }
+    val working = rows.count { it.state == "working" }
+    return if (working > 0) LiveBadge(LiveChip.WORKING, "$working") else null
+}
+
+/** True when a row has the Done mark now that it did not have in [previous]. A row that is new in the list does not count. */
+internal fun newlyDone(previous: List<Thread>?, current: List<Thread>): Boolean {
+    if (previous == null) return false
+    val before = previous.associate { it.key to bits(it) }
+    return current.any { row -> bits(row) and BIT_DONE != 0 && before[row.key]?.let { it and BIT_DONE == 0 } == true }
+}
+
+internal data class LiveContent(val title: String, val lines: List<String>, val status: String?, val badge: LiveBadge?)
+
 /**
  * Shows the session counts in an ongoing notification. While the session screen polls, this service only
  * shows its dashboards; otherwise the service polls, and in the background it also posts the attention alerts.
@@ -77,7 +109,9 @@ class LiveService : Service() {
     private var last: LiveUpdate? = null
     private var own: LiveUpdate? = null // the last update that this service wrote
     private var offline = false
-    private var shown: Triple<String, List<String>, String?>? = null
+    private var doneUntilMs = 0L // the chip says Done until this time
+    private var flash: Job? = null
+    private var shown: LiveContent? = null
 
     companion object {
         /**
@@ -126,6 +160,14 @@ class LiveService : Service() {
             launch {
                 app.liveUpdates.collect { update ->
                     if (update == null) return@collect
+                    if (newlyDone(last?.threads, update.threads)) {
+                        doneUntilMs = System.currentTimeMillis() + DONE_FLASH_MS
+                        flash?.cancel()
+                        flash = scope.launch {
+                            delay(DONE_FLASH_MS)
+                            show()
+                        }
+                    }
                     last = update
                     offline = false
                     show()
@@ -221,11 +263,13 @@ class LiveService : Service() {
         }
     }
 
-    private fun content(): Triple<String, List<String>, String?> {
+    private fun content(): LiveContent {
         val update = last
-        return Triple(update?.let { liveTitle(it.threads) } ?: "ASB",
+        val nowMs = System.currentTimeMillis()
+        return LiveContent(update?.let { liveTitle(it.threads) } ?: "ASB",
             update?.let { liveLines(it.threads) }.orEmpty(),
-            if (offline) liveOfflineText(update?.atMs ?: 0, System.currentTimeMillis()) else null)
+            if (offline) liveOfflineText(update?.atMs ?: 0, nowMs) else null,
+            if (offline || update == null) null else liveBadge(update.threads, nowMs < doneUntilMs))
     }
 
     // Most updates change only the time, so the same content is not posted again.
@@ -239,23 +283,34 @@ class LiveService : Service() {
         } catch (_: SecurityException) {}
     }
 
-    private fun build(content: Triple<String, List<String>, String?>): Notification {
-        val (title, lines, status) = content
+    private fun build(content: LiveContent): Notification {
+        val (title, lines, status, badge) = content
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val stop = PendingIntent.getService(this, 0, Intent(this, LiveService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        fun builder() = Notification.Builder(this, LIVE_CHANNEL).setSmallIcon(R.drawable.ic_stat_asb)
+        val icon = when (badge?.chip) {
+            LiveChip.DONE -> R.drawable.ic_live_done
+            LiveChip.INPUT -> R.drawable.ic_live_input
+            LiveChip.PENDING -> R.drawable.ic_live_pending
+            LiveChip.WORKING -> R.drawable.ic_live_working
+            null -> R.drawable.ic_stat_asb
+        }
+        fun builder() = Notification.Builder(this, LIVE_CHANNEL).setSmallIcon(icon)
             .setContentTitle(title).setOngoing(true).setOnlyAlertOnce(true).setShowWhen(false)
             .setContentIntent(open).setCategory(Notification.CATEGORY_STATUS)
         return builder()
             .setContentText(status ?: lines.joinToString(", ").ifEmpty { "Checking ASB…" })
             .apply {
-                if (lines.isNotEmpty()) setStyle(Notification.InboxStyle().also { style ->
-                    lines.forEach { style.addLine(it) }
+                // BigTextStyle, not InboxStyle: Android 16 Live Updates accept only the standard styles.
+                if (lines.isNotEmpty()) setStyle(Notification.BigTextStyle().bigText(lines.joinToString("\n")).also { style ->
                     status?.let { style.setSummaryText(it) }
                 })
+                if (badge != null && Build.VERSION.SDK_INT >= 36) {
+                    setShortCriticalText(badge.text)
+                    addExtras(Bundle().apply { putBoolean(REQUEST_PROMOTED_ONGOING, true) })
+                }
             }
             .addAction(Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_stat_asb), "Stop", stop).build())
             .setVisibility(Notification.VISIBILITY_PRIVATE)

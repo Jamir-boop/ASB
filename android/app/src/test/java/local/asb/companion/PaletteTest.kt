@@ -1,5 +1,6 @@
 package local.asb.companion
 
+import androidx.compose.ui.graphics.Color
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import local.asb.companion.data.AsbJson
@@ -14,6 +15,7 @@ import local.asb.companion.data.luminance
 import local.asb.companion.data.mixColor
 import local.asb.companion.data.quietColor
 import local.asb.companion.data.readableColor
+import local.asb.companion.ui.asbColorScheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -107,6 +109,16 @@ class PaletteTest {
         val black = Palette("custom", "#000000", "#ffffff", "#ffb900", "#bcbcbc", "#030303", "#ffb900", "#ffb900")
         assertEquals("#bcbcbc", local.asb.companion.ui.controlOutline(black))
         assertEquals("#5e5e5e", local.asb.companion.ui.controlOutline(black.copy(divider = "#5e5e5e")))
+    }
+
+    @Test fun snackbarRolesFollowTheBackgroundTextAndAccent() {
+        val black = Palette("custom", "#000000", "#ffffff", "#ffb900", "#bcbcbc", "#030303", "#ffb900", "#ffb900")
+        // The strip is the background mixed 10% toward the text: 25.5 rounds to 26 (half to even).
+        assertEquals("#1a1a1a", mixColor("#000000", "#ffffff", .10))
+        val scheme = asbColorScheme(black)
+        assertEquals(Color(0xFF1A1A1A), scheme.inverseSurface)
+        assertEquals(Color(0xFFFFFFFF), scheme.inverseOnSurface)
+        assertEquals(Color(0xFFFFB900), scheme.inversePrimary)
     }
 
     @Test fun inspectorEdgeMatchesPython() {
