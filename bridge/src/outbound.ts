@@ -8,7 +8,8 @@ import { checkSocket, isWindows, listenPrivate, outboxPath, pipeProof } from './
 
 // The live target of one exact send, from the engine route /api/agent/resolve-bound.
 export const bindingSchema = z.strictObject({ registryHome: z.string().min(1), runtimeSessionId: uuid, pid: z.number().int().positive(),
-  procStart: z.string().min(1), messagingSocketPath: z.string().min(1), msgId: uuid, expiresAtMs: z.number().int().nonnegative() });
+  procStart: z.string().min(1), messagingSocketPath: z.string().min(1), msgId: uuid, expiresAtMs: z.number().int().nonnegative(),
+  hostSessionId: z.string().regex(/^local_[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/).optional() });
 export type Binding = z.infer<typeof bindingSchema>;
 const frames = z.array(frameSchema).min(1).max(200);
 // The receipt of an exact member send, from the local ASB engine (src/machine-relay.mjs). It names this receiver process.
@@ -44,6 +45,7 @@ export function boundPeer(configDir: string, binding: Binding): Peer | undefined
   const matches = peers(configDir).filter(peer => peer.entrypoint !== 'asb-relay' && peer.sessionId === binding.runtimeSessionId);
   const peer = matches.length === 1 ? matches[0] : undefined;
   return peer && peer.pid === binding.pid && peer.procStart === binding.procStart && peer.messagingSocketPath === binding.messagingSocketPath
+    && (binding.hostSessionId === undefined || peer.hostSessionId === binding.hostSessionId)
     ? peer : undefined;
 }
 

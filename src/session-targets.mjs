@@ -4,6 +4,8 @@
 import { sourceName } from './app-sources.mjs';
 import { parseReference, parseShortReference, validMachineId } from './session-references.mjs';
 
+export const CLI_SESSION_IDS = Symbol('ASB Claude CLI session IDs');
+
 const MESSAGES = {
   'invalid-reference': 'This is not a valid session reference.',
   'unsupported-reference-version': 'This session reference has an unsupported version.',
@@ -77,7 +79,8 @@ const BOUND_MESSAGES = {
   'local-target': 'This reference is for a session on this machine, not on another machine.',
   'unsupported-platform': 'ASB can send by reference only on Linux and Windows.',
   'bridge-upgrade-required': 'This version of ASB Bridge cannot send by reference on Windows. Update ASB Bridge.',
-  'unsupported-type': 'ASB can send by reference only to Codex and Claude Code CLI sessions.',
+  'unsupported-type': 'ASB can send by reference only to Codex, Claude Code CLI, and Claude Desktop Code sessions.',
+  'host-check-required': 'This version of ASB Bridge cannot send by reference to a Claude Desktop Code session. Update ASB Bridge.',
   'source-disabled': 'The source of this session is disabled.',
   'not-found': 'ASB has no session with this reference.',
   'caller-unregistered': 'The sending task has no single live registration in its session registry.',
@@ -98,7 +101,7 @@ const BOUND_MESSAGES = {
 };
 const refuse = (code) => ({ apiVersion: 1, ok: false, code, message: BOUND_MESSAGES[code] });
 const BINDING_LIFE_MS = 10_000;
-const BOUND_TYPES = ['codex', 'claude-cli'];
+const BOUND_TYPES = ['codex', 'claude-cli', 'claude-local'];
 const CONTROLS = /[\x00-\x1f\x7f-\x9f]/g;
 // A writer must prove its target before the first byte: Linux checks the socket owner, and on Windows ASB Bridge proves the pipe server.
 const exactPlatform = (io) => io.platform === 'linux' || io.platform === 'win32';
@@ -119,6 +122,11 @@ async function bindIn(identity, reference, context, io, registries, msgId, remai
   if (identity.type === 'codex') {
     if (context.threads.some((row) => !row.remote && row.provider === 'codex' && row.externalId === identity.appId
       && row.reference !== reference)) return refuse('ambiguous-source');
+  } else if (identity.type === 'claude-local') {
+    if (context.threads.some((row) => !row.remote && row.provider === 'claude-desktop-code' && row.externalId === identity.appId
+      && row.reference !== reference)) return refuse('ambiguous-source');
+    const root = await io.claudeRoot(source);
+    if (!registries.some((registry) => registry.root === root)) return refuse('native-scope-unavailable');
   } else {
     const root = await io.claudeRoot(source);
     if (!registries.some((registry) => registry.root === root)) return refuse('native-scope-unavailable');
@@ -127,22 +135,28 @@ async function bindIn(identity, reference, context, io, registries, msgId, remai
     }
   }
   const candidates = registries.flatMap((registry) => registry.records.filter((record) => record.entrypoint !== 'asb-relay'
-    && record.sessionId === identity.appId && typeof record.messagingSocketPath === 'string').map((record) => ({ registry, record })));
+    && (identity.type === 'claude-local' ? record.hostSessionId === identity.appId : record.sessionId === identity.appId)
+    && typeof record.messagingSocketPath === 'string').map((record) => ({ registry, record })));
   if (!candidates.length) return refuse('not-live');
   if (candidates.length > 1) return fail('ambiguous-identity');
   const [{ registry, record: target }] = candidates;
   if (identity.type === 'codex') {
     const claim = target.entrypoint === 'codex-asb-bridge' ? await io.receiverClaim(source, identity.appId) : null;
     if (claim?.pid !== target.pid || String(claim.proc_start) !== target.procStart) return refuse('not-mapped');
+  } else if (identity.type === 'claude-local') {
+    const row = context.threads.find((item) => !item.remote && item.reference === reference);
+    const ids = new Set(row?.[CLI_SESSION_IDS] ?? []);
+    if (!['claude-desktop', 'claude-desktop-3p'].includes(target.entrypoint) || !ids.has(target.sessionId)) return refuse('not-mapped');
   } else if (target.entrypoint !== 'cli') return refuse('not-mapped');
   return { apiVersion: 1, ok: true, pid: io.pid, binding: { registryHome: registry.root, runtimeSessionId: target.sessionId,
     pid: target.pid, procStart: target.procStart, messagingSocketPath: target.messagingSocketPath, msgId,
+    ...(identity.type === 'claude-local' ? { hostSessionId: identity.appId } : {}),
     expiresAtMs: io.now() + Math.min(remainingMs, BINDING_LIFE_MS) } };
 }
 
 // The live local process of one full reference, for one send by the ASB Bridge (SYSTEM_OVERVIEW.md, "Session references").
 // Steps 1 to 6 use only the given rows; io reads the registries and the bridge receiver row. The first failure is the reply.
-export async function bindLocalTarget({ reference, caller, msgId, remainingMs, pipeProof }, context, io) {
+export async function bindLocalTarget({ reference, caller, msgId, remainingMs, pipeProof, hostCheck }, context, io) {
   if (typeof reference !== 'string' || !reference.startsWith('asb:')) return fail('invalid-reference');
   const resolved = resolveSessionReference({ reference }, context);
   if (!resolved.ok) return resolved.code === 'evidence-incomplete' ? refuse('peer-upgrade-required') : resolved;
@@ -151,6 +165,8 @@ export async function bindLocalTarget({ reference, caller, msgId, remainingMs, p
   if (!exactPlatform(io)) return refuse('unsupported-platform');
   if (io.platform === 'win32' && pipeProof !== true) return refuse('bridge-upgrade-required');
   if (!BOUND_TYPES.includes(identity.type)) return refuse('unsupported-type');
+  // An older bridge gets no binding with an extra key its strict schema would refuse.
+  if (identity.type === 'claude-local' && hostCheck !== true) return refuse('host-check-required');
   if (['source-disabled', 'not-found'].includes(availability)) return refuse(availability);
   const own = await callerRecord(caller, io);
   if (!own) return refuse('caller-unregistered');
@@ -181,7 +197,7 @@ const LOCAL_TYPES = ['cli', 'codex-asb-bridge'];
 
 // The references that a send of this caller accepts now, for list_sessions (SYSTEM_OVERVIEW.md, "Session references").
 // The caller registry is read one time; each item is checked like a send, and only the reference or the reason code goes out.
-export async function referencesForList({ caller, pipeProof }, context, io, listed = []) {
+export async function referencesForList({ caller, pipeProof, hostCheck }, context, io, listed = []) {
   if (!exactPlatform(io)) return refuse('unsupported-platform');
   const own = await callerRecord(caller, io);
   if (!own) return refuse('caller-unregistered');
@@ -202,10 +218,15 @@ export async function referencesForList({ caller, pipeProof }, context, io, list
   }
   const local = [];
   for (const [sessionId, same] of [...records].slice(0, LIST_MAX)) {
+    const one = same.length === 1 ? same[0] : null;
+    const desktop = one && ['claude-desktop', 'claude-desktop-3p'].includes(one.entrypoint);
     const item = same.length > 1 ? { referenceUnavailable: 'ambiguous-identity' }
-      : !LOCAL_TYPES.includes(same[0].entrypoint) ? { referenceUnavailable: 'unsupported-type' }
-        : await check(context.threads.filter((row) => !row.remote && row.externalId === sessionId),
-          (reference) => bindLocalTarget({ reference, caller, msgId: null, remainingMs: 0, pipeProof }, context, once));
+      : desktop && typeof one.hostSessionId !== 'string' ? { referenceUnavailable: 'unsupported-type' }
+        : desktop ? await check(context.threads.filter((row) => !row.remote && row.externalId === one.hostSessionId),
+          (reference) => bindLocalTarget({ reference, caller, msgId: null, remainingMs: 0, pipeProof, hostCheck }, context, once))
+          : !LOCAL_TYPES.includes(same[0].entrypoint) ? { referenceUnavailable: 'unsupported-type' }
+            : await check(context.threads.filter((row) => !row.remote && row.externalId === sessionId),
+              (reference) => bindLocalTarget({ reference, caller, msgId: null, remainingMs: 0, pipeProof, hostCheck }, context, once));
     local.push({ sessionId, ...item });
   }
   const remote = [];

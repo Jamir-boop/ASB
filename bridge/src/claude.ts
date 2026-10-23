@@ -25,7 +25,7 @@ const registry = z.object({
   peerProtocol: z.literal(1), procStart: z.string().optional(),
   entrypoint: z.string().optional(), startedAt: z.number().int().nonnegative().optional(),
   peerFeatures: z.array(z.string()).default([]), bridgeSessionId: z.string().optional(),
-  opencodeSessionId: z.string().optional(),
+  opencodeSessionId: z.string().optional(), hostSessionId: z.string().optional(),
 });
 export type Peer = z.infer<typeof registry>;
 export const modeSchema = z.enum(['prompting', 'bypass']);

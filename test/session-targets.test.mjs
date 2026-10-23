@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { formatReference, rowReference, shortReference } from '../src/session-references.mjs';
-import { bindLocalTarget, bindMemberTarget, memberTarget, notSentMessage, referencesForList, resolveSessionReference } from '../src/session-targets.mjs';
+import { CLI_SESSION_IDS, bindLocalTarget, bindMemberTarget, memberTarget, notSentMessage, referencesForList, resolveSessionReference } from '../src/session-targets.mjs';
 
 // Synthetic data only. Platform-neutral (test/windows-tests.json).
 const SELF = '0123456789abcdef';
@@ -180,8 +180,8 @@ const fakeIo = (overrides = {}) => {
     ...overrides };
   return { io, calls };
 };
-const bind = async (reference, { io = fakeIo().io, remainingMs = 10_000, pipeProof, ...overrides } = {}) => {
-  const result = await bindLocalTarget({ reference, caller: { runtimeSessionId: CALLER, configDir: '/synthetic/claude' }, msgId: MSG, remainingMs, pipeProof },
+const bind = async (reference, { io = fakeIo().io, remainingMs = 10_000, pipeProof, hostCheck, ...overrides } = {}) => {
+  const result = await bindLocalTarget({ reference, caller: { runtimeSessionId: CALLER, configDir: '/synthetic/claude' }, msgId: MSG, remainingMs, pipeProof, hostCheck },
     { ...boundContext, ...overrides }, io);
   const text = JSON.stringify(result);
   for (const value of [SECRET.title, SECRET.cwd, SECRET.message, SECRET.path]) assert.equal(text.includes(value), false, `${value} must not be in the result`);
@@ -217,7 +217,7 @@ test('exact binding failures come in check order, and steps 1 to 6 use no io', a
   await early(memberFound.reference, 'member-target');
   await early(soloRow.reference, 'unsupported-platform', { io: { ...io, platform: 'darwin' } });
   await early(soloRow.reference, 'unsupported-platform', { io: { ...io, platform: 'darwin' }, pipeProof: true });
-  await early(full(SELF, 'claude-desktop-code', SCOPE_B, 'claude-local', `local_${UUID_4}`), 'unsupported-type');
+  await early(full(SELF, 'claude-desktop-code', SCOPE_B, 'claude-local', `local_${UUID_4}`), 'host-check-required');
   await early(cacheRow.reference, 'unsupported-type');
   await early(full(SELF, 'off', SCOPE, 'codex', UUID_3), 'source-disabled');
   await early(full(SELF, 'codex', SCOPE, 'codex', UUID_4), 'not-found');
@@ -293,7 +293,6 @@ test('memberTarget checks in order with no io before the caller check, and does 
   await early(memberFound.reference, 'unsupported-platform', { io: { ...io, platform: 'darwin' } });
   // A Windows sender passes with a Windows caller record and no pipe proof: the bridge writes no pipe in this path.
   assert.equal((await member(memberFound.reference, { io: winIo().io })).returnTo.messagingSocketPath, pipe(10));
-  await early(full(MEMBER, 'codex', SCOPE_M, 'claude-local', `local_${UUID_2}`), 'unsupported-type');
   await early(full(MEMBER, 'codex', SCOPE_M, 'opencode', 'abc'), 'unsupported-type');
   assert.deepEqual(calls, []);
   for (const list of [[], [record(10, CALLER, 'cli')], [callerRecord, record(11, CALLER, 'codex-asb-bridge')]]) {
@@ -331,9 +330,9 @@ const UUID_7 = '99999999-9999-4999-8999-999999999999';
 const UUID_8 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const UUID_9 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const UUID_10 = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
-const listFor = async (list, { io, listed = [], pipeProof, ...overrides } = {}) => {
+const listFor = async (list, { io, listed = [], pipeProof, hostCheck, ...overrides } = {}) => {
   const fake = io ?? fakeIo({ registry: async (configDir) => { fake.calls.push(['registry', configDir]); return { root: ROOT, records: list }; } });
-  const result = await referencesForList({ caller, pipeProof }, { ...boundContext, ...overrides }, fake.io ?? fake, listed);
+  const result = await referencesForList({ caller, pipeProof, hostCheck }, { ...boundContext, ...overrides }, fake.io ?? fake, listed);
   const text = JSON.stringify(result);
   for (const value of ['/synthetic/', 'procStart', 'returnTo', 'configDir', 'binding', 'messagingSocketPath', SECRET.title, SECRET.cwd, '"name"']) {
     assert.equal(text.includes(value), false, `${value} must not be in the reply`);
@@ -399,7 +398,7 @@ const HOME_2 = '/synthetic/h2';
 const homeIo = (homes, overrides = {}) => {
   const calls = [];
   const io = { platform: 'linux', pid: 999, now: () => 1_000,
-    targetHomes: async (type, source) => { calls.push(['targetHomes', type, source.id]); return type === 'claude-cli' ? ['/synthetic/claude'] : Object.keys(homes); },
+    targetHomes: async (type, source) => { calls.push(['targetHomes', type, source.id]); return ['claude-cli', 'claude-local'].includes(type) ? ['/synthetic/claude'] : Object.keys(homes); },
     registry: async (home) => { calls.push(['registry', home]); return homes[home] ? { root: `${home}/sessions`, records: homes[home] } : null; },
     claudeRoot: async (source) => { calls.push(['claudeRoot', source.id]); return source.id === 'claude-desktop-code' ? ROOT : '/synthetic/other/sessions'; },
     receiverClaim: async (source, appId) => { calls.push(['receiverClaim', source.id, appId]); return { pid: 30, proc_start: '300' }; },
@@ -450,10 +449,96 @@ test('on Windows bindMemberTarget binds a codex or claude-cli target as on Linux
   assert.deepEqual(cli.calls.slice(0, 2), [['targetHomes', 'claude-cli', 'claude-desktop-code'], ['registry', '/synthetic/claude']]);
 });
 
+// Claude Desktop Code (claude-local): the host check, the hostSessionId match, and the CLI IDs of the board row.
+const CLI_NOW = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const CLI_PRIOR = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+const CLI_OTHER = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+const DESKTOP_APP = `local_${UUID}`;
+const desktopRow = local({ provider: 'claude-desktop-code', surface: 'app', sourceId: 'claude-desktop-code', externalId: DESKTOP_APP,
+  providerLabel: 'Claude Desktop Code' });
+Object.defineProperty(desktopRow, CLI_SESSION_IDS, { value: [CLI_NOW, CLI_PRIOR] });
+const desktopContext = { ...boundContext, threads: [...boundContext.threads, desktopRow] };
+const desktopRecord = (sessionId, extra = {}) => record(40, sessionId, 'claude-desktop-3p', { hostSessionId: DESKTOP_APP, ...extra });
+const desktopBind = (options = {}) => bind(desktopRow.reference, { ...options, ...('threads' in options ? {} : { threads: desktopContext.threads }) });
+
+test('a claude-local target binds with hostCheck, keeps hostSessionId, and refuses an older bridge', async () => {
+  const ok = await desktopBind({ io: records([callerRecord, desktopRecord(CLI_NOW)]), hostCheck: true });
+  assert.deepEqual(ok, { apiVersion: 1, ok: true, pid: 999, binding: { registryHome: ROOT, runtimeSessionId: CLI_NOW,
+    pid: 40, procStart: '400', messagingSocketPath: '/synthetic/s/40.sock', msgId: MSG, hostSessionId: DESKTOP_APP, expiresAtMs: 11_000 } });
+  failed(await desktopBind({ io: records([callerRecord, desktopRecord(CLI_NOW)]) }), 'host-check-required');
+  failed(await desktopBind({ io: records([callerRecord, desktopRecord(CLI_NOW)]), hostCheck: false }), 'host-check-required');
+  failed(await desktopBind({ io: records([callerRecord, desktopRecord(CLI_NOW)]), hostCheck: 'true' }), 'host-check-required');
+  assert.equal(notSentMessage('host-check-required'),
+    'This version of ASB Bridge cannot send by reference to a Claude Desktop Code session. Update ASB Bridge.');
+  // The codex and claude-cli bindings get no hostSessionId key.
+  assert.equal(Object.hasOwn((await bind(soloRow.reference)).binding, 'hostSessionId'), false);
+  assert.equal(Object.hasOwn((await bind(cliRow.reference)).binding, 'hostSessionId'), false);
+});
+
+test('a claude-local target needs the entrypoint and a CLI ID of the row, and never selects among candidates', async () => {
+  // A prior CLI ID passes; another session ID of the same host does not.
+  assert.equal((await desktopBind({ io: records([callerRecord, desktopRecord(CLI_PRIOR)]), hostCheck: true })).binding.runtimeSessionId, CLI_PRIOR);
+  failed(await desktopBind({ io: records([callerRecord, desktopRecord(CLI_OTHER)]), hostCheck: true }), 'not-mapped');
+  failed(await desktopBind({ io: records([callerRecord, desktopRecord(CLI_NOW, { entrypoint: 'cli' })]), hostCheck: true }), 'not-mapped');
+  assert.equal((await desktopBind({ io: records([callerRecord, desktopRecord(CLI_NOW, { entrypoint: 'claude-desktop' })]), hostCheck: true })).binding.runtimeSessionId,
+    CLI_NOW);
+  failed(await desktopBind({ io: records([callerRecord, desktopRecord(CLI_NOW), desktopRecord(CLI_NOW, { pid: 41, procStart: '410' })]), hostCheck: true }),
+    'ambiguous-identity');
+  for (const list of [[callerRecord], [callerRecord, desktopRecord(CLI_NOW, { messagingSocketPath: undefined })],
+    [callerRecord, desktopRecord(CLI_NOW, { entrypoint: 'asb-relay' })]]) {
+    failed(await desktopBind({ io: records(list), hostCheck: true }), 'not-live');
+  }
+});
+
+test('a claude-local row with only enumerable CLI IDs is not mapped', async () => {
+  const plain = { ...desktopRow, cliSessionId: CLI_NOW, priorCliSessionIds: [CLI_PRIOR] };
+  assert.equal(Object.hasOwn(plain, CLI_SESSION_IDS), false);
+  failed(await desktopBind({ io: records([callerRecord, desktopRecord(CLI_NOW)]), hostCheck: true,
+    threads: desktopContext.threads.map((row) => row === desktopRow ? plain : row) }), 'not-mapped');
+});
+
+test('claude-local binds across one shared registry root and refuses a second row for the same app ID', async () => {
+  // Two Claude sources with one root: the claude-cli rule would refuse, the claude-local rule does not.
+  const shared = { ...boundContext, threads: desktopContext.threads,
+    sources: [...boundSources, { id: 'claude-3', provider: 'claude-desktop-code', label: 'Claude 3', enabled: true, projectsDir: '/synthetic/third/projects' }] };
+  const calls = [];
+  const io = fakeIo({ registry: async (configDir) => { calls.push(['registry', configDir]); return { root: ROOT, records: [callerRecord, desktopRecord(CLI_NOW)] }; },
+    claudeRoot: async (source) => { calls.push(['claudeRoot', source.id]); return ROOT; } }).io;
+  assert.equal((await bind(desktopRow.reference, { io, hostCheck: true, ...shared })).binding.hostSessionId, DESKTOP_APP);
+  assert.deepEqual(calls, [['registry', '/synthetic/claude'], ['claudeRoot', 'claude-desktop-code']]);
+  const twin = { ...desktopRow, id: 'twin', reference: full(SELF, 'work', SCOPE, 'claude-local', DESKTOP_APP) };
+  failed(await desktopBind({ io: records([callerRecord, desktopRecord(CLI_NOW)]), hostCheck: true,
+    threads: [...desktopContext.threads, twin] }), 'ambiguous-source');
+  failed(await desktopBind({ io: fakeIo({ claudeRoot: async () => '/synthetic/other/sessions' }).io, hostCheck: true }), 'native-scope-unavailable');
+});
+
+test('memberTarget accepts a claude-local member reference and bindMemberTarget binds one in the source home', async () => {
+  const memberLocal = full(MEMBER, 'claude-desktop-code', SCOPE_M, 'claude-local', DESKTOP_APP);
+  assert.equal((await member(memberLocal, { io: records([callerRecord]) })).ok, true);
+  assert.equal((await member(memberLocal, { io: records([callerRecord]) })).identity.type, 'claude-local');
+  const { io, calls } = homeIo({ '/synthetic/claude': [desktopRecord(CLI_NOW)] });
+  const bound = await bindMember(desktopRow.reference, io, { threads: desktopContext.threads });
+  assert.deepEqual(bound, { apiVersion: 1, ok: true, pid: 999, binding: { registryHome: '/synthetic/claude/sessions', runtimeSessionId: CLI_NOW,
+    pid: 40, procStart: '400', messagingSocketPath: '/synthetic/s/40.sock', msgId: MSG, hostSessionId: DESKTOP_APP, expiresAtMs: 11_000 } });
+  assert.deepEqual(calls, [['targetHomes', 'claude-local', 'claude-desktop-code'], ['registry', '/synthetic/claude'], ['claudeRoot', 'claude-desktop-code']]);
+});
+
+test('referencesForList checks a Desktop record by hostSessionId and keeps the item key as its sessionId', async () => {
+  assert.deepEqual((await listFor([callerRecord, desktopRecord(CLI_NOW)], { threads: desktopContext.threads, hostCheck: true })).result.local,
+    [{ sessionId: CLI_NOW, reference: desktopRow.reference }]);
+  assert.deepEqual((await listFor([callerRecord, desktopRecord(CLI_NOW)], { threads: desktopContext.threads })).result.local,
+    [{ sessionId: CLI_NOW, referenceUnavailable: 'host-check-required' }]);
+  // A Desktop record with no hostSessionId keeps unsupported-type.
+  assert.deepEqual((await listFor([callerRecord, record(50, CLI_PRIOR, 'claude-desktop-3p')], { threads: desktopContext.threads, hostCheck: true })).result.local,
+    [{ sessionId: CLI_PRIOR, referenceUnavailable: 'unsupported-type' }]);
+  assert.deepEqual((await listFor([callerRecord, record(60, CLI_OTHER, 'claude-desktop')], { threads: desktopContext.threads, hostCheck: true })).result.local,
+    [{ sessionId: CLI_OTHER, referenceUnavailable: 'unsupported-type' }]);
+});
+
 test('every code has a not-sent message that ends with a period and has no em dash', () => {
   for (const code of ['invalid-reference', 'unsupported-reference-version', 'scope-mismatch', 'scope-required', 'no-machine-identity', 'unknown-machine',
     'stale-source', 'stale-source-scope', 'ambiguous-identity', 'evidence-incomplete', 'member-target', 'peer-upgrade-required', 'local-target',
-    'unsupported-platform', 'unsupported-type', 'source-disabled', 'not-found', 'caller-unregistered', 'native-scope-unavailable', 'ambiguous-source',
+    'unsupported-platform', 'unsupported-type', 'host-check-required', 'source-disabled', 'not-found', 'caller-unregistered', 'native-scope-unavailable', 'ambiguous-source',
     'not-live', 'not-mapped', 'machine-offline', 'capability-unknown', 'refused', 'too-large', 'rate-limited', 'target-unavailable',
     'relay-unavailable', 'binding-expired', 'target-changed', 'invalid-request', 'bridge-upgrade-required']) {
     assert.match(notSentMessage(code) ?? '', /^[^—]+\.$/, code);

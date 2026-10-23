@@ -306,7 +306,8 @@ test('the resolve-bound route is a token-only POST action with an exact body', a
     { ...body, caller: { ...caller, configDir: 'relative/dir' } }, { ...body, caller: { ...caller, configDir: 7 } },
     { ...body, caller: { ...caller, configDir: `/${'x'.repeat(4096)}` } }, { ...body, msgId: 'x' }, { ...body, msgId: null },
     { ...body, remainingMs: -1 }, { ...body, remainingMs: 20_001 }, { ...body, remainingMs: 1.5 }, { ...body, remainingMs: '10' },
-    { ...body, pipeProof: false }, { ...body, pipeProof: 'true' }, { ...body, pipeProof: 1 }, { ...body, pipeProof: null }]) {
+    { ...body, pipeProof: false }, { ...body, pipeProof: 'true' }, { ...body, pipeProof: 1 }, { ...body, pipeProof: null },
+    { ...body, hostCheck: false }, { ...body, hostCheck: 'true' }, { ...body, hostCheck: 1 }, { ...body, hostCheck: null }]) {
     const response = await request(BOUND, { method: 'POST', body: invalid });
     assert.equal(response.status, 400, JSON.stringify(invalid).slice(0, 200));
     assert.deepEqual(response.json(), { error: 'Invalid resolve request.' });
@@ -319,8 +320,12 @@ test('the resolve-bound route is a token-only POST action with an exact body', a
   }
   // Only a bridge that proves the pipe server sends pipeProof, and only exactly true passes.
   assert.equal((await request(BOUND, { method: 'POST', body: { ...body, pipeProof: true } })).json().code, 'not-live');
+  // hostCheck is optional and must be exactly true, alone or with pipeProof.
+  assert.equal((await request(BOUND, { method: 'POST', body: { ...body, hostCheck: true } })).json().code, 'not-live');
+  assert.equal((await request(BOUND, { method: 'POST', body: { ...body, hostCheck: true, pipeProof: true } })).json().code, 'not-live');
   assert.deepEqual(calls, [{ body: { ...body, remainingMs: 0 }, threads: 0 }, { body: { ...body, remainingMs: 20_000 }, threads: 0 },
-    { body: { ...body, pipeProof: true }, threads: 0 }]);
+    { body: { ...body, pipeProof: true }, threads: 0 }, { body: { ...body, hostCheck: true }, threads: 0 },
+    { body: { ...body, hostCheck: true, pipeProof: true }, threads: 0 }]);
   const failing = await serve(t, { resolveBound: async () => { throw new Error('/synthetic/secret'); } });
   const error = await failing.request(BOUND, { method: 'POST', body });
   assert.deepEqual([error.status, error.headers.get('cache-control'), error.json()], [500, 'no-store', { error: 'Cannot resolve the session reference.' }]);
@@ -474,7 +479,8 @@ test('the list-references route is a token-only POST action with exactly the cal
   for (const invalid of ['{', 'null', '[]', '{}', { ...body, extra: 1 }, { ...body, reference: 'asb:1/x' }, { caller: null }, { caller: [] },
     { caller: { ...caller, extra: 1 } }, { caller: { configDir: caller.configDir } }, { caller: { ...caller, runtimeSessionId: 'x' } },
     { caller: { ...caller, configDir: 'relative/dir' } }, { caller: { ...caller, configDir: 7 } }, { caller: { ...caller, configDir: `/${'x'.repeat(4096)}` } },
-    { caller, pipeProof: false }, { caller, pipeProof: 'true' }, { caller, pipeProof: 1 }, { caller, pipeProof: null }]) {
+    { caller, pipeProof: false }, { caller, pipeProof: 'true' }, { caller, pipeProof: 1 }, { caller, pipeProof: null },
+    { caller, hostCheck: false }, { caller, hostCheck: 'true' }, { caller, hostCheck: 1 }, { caller, hostCheck: null }]) {
     const response = await request(LIST, { method: 'POST', body: invalid });
     assert.equal(response.status, 400, JSON.stringify(invalid).slice(0, 200));
     assert.deepEqual(response.json(), { error: 'Invalid resolve request.' });
@@ -484,7 +490,10 @@ test('the list-references route is a token-only POST action with exactly the cal
   const reply = await request(LIST, { method: 'POST', body });
   assert.deepEqual([reply.status, reply.headers.get('cache-control'), reply.json()], [200, 'no-store', { apiVersion: 1, ok: true, pid: process.pid, local: [], remote: [] }]);
   assert.equal((await request(LIST, { method: 'POST', body: { caller, pipeProof: true } })).status, 200);
-  assert.deepEqual(calls, [{ body, threads: 0 }, { body: { caller, pipeProof: true }, threads: 0 }]);
+  assert.equal((await request(LIST, { method: 'POST', body: { caller, hostCheck: true } })).status, 200);
+  assert.equal((await request(LIST, { method: 'POST', body: { caller, hostCheck: true, pipeProof: true } })).status, 200);
+  assert.deepEqual(calls, [{ body, threads: 0 }, { body: { caller, pipeProof: true }, threads: 0 }, { body: { caller, hostCheck: true }, threads: 0 },
+    { body: { caller, hostCheck: true, pipeProof: true }, threads: 0 }]);
   const failing = await serve(t, { listReferences: async () => { throw new Error('/synthetic/secret'); } });
   const error = await failing.request(LIST, { method: 'POST', body });
   assert.deepEqual([error.status, error.headers.get('cache-control'), error.json()], [500, 'no-store', { error: 'Cannot resolve the session reference.' }]);

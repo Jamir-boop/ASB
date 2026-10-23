@@ -1,4 +1,4 @@
-import { test, expect } from 'bun:test';
+import { test, expect, spyOn } from 'bun:test';
 import { mkdirSync, chmodSync, writeFileSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { basename, join } from 'node:path';
@@ -15,7 +15,7 @@ import { receiver } from './desktop-fixture';
 import { outboxPath } from '../src/platform';
 import { appServer } from './app-server-fixture';
 import { fakeEngine } from './engine-fixture';
-import { requestReceiver } from '../src/outbound';
+import { bindingSchema, boundPeer, requestReceiver, sendBound } from '../src/outbound';
 import { processStart } from '../src/claude';
 // POSIX only on Windows CI: Unix socket files, /tmp, and file modes.
 const posix = test.skipIf(process.platform === 'win32');
@@ -1186,7 +1186,7 @@ linux('list_sessions adds the reference or its reason to each entry, and keeps a
       { ...remoteRow({ ...remote, sessionId: f.peerId }), reference: ref(remote.machineId, f.peerId) },
       { ...remoteRow({ ...gamma, sessionId: caller }), reference: ref(gamma.machineId, caller) }]);
     expect(engine.calls.find(call => call.route === '/api/agent/list-references')).toMatchObject({ method: 'POST',
-      body: { caller: { runtimeSessionId: caller, configDir: f.configDir } } });
+      body: { caller: { runtimeSessionId: caller, configDir: f.configDir }, hostCheck: true } });
     engine.close();
     expect(await text()).toBe(JSON.stringify(localRows));
   } finally { engine.close(); await client.close(); await f.close(); }
@@ -1397,6 +1397,62 @@ async function exact(f: Awaited<ReturnType<typeof fixture>>) {
   return { procStart, record, binding, engine, row, rows, setReply(value: typeof reply) { reply = value; } };
 }
 
+linux('Desktop registry parsing keeps hostSessionId and bindings accept only local UUID host IDs', async () => {
+  const f = await fixture();
+  const x = await exact(f);
+  const hostSessionId = `local_${randomUUID()}`;
+  try {
+    x.record({ entrypoint: 'claude-desktop-3p', hostSessionId });
+    expect(peers(f.configDir).find(peer => peer.sessionId === f.peerId)?.hostSessionId).toBe(hostSessionId);
+    const binding = x.binding(randomUUID(), { hostSessionId });
+    expect(bindingSchema.parse(binding).hostSessionId).toBe(hostSessionId);
+    for (const invalid of ['', randomUUID(), 'local_x', `${hostSessionId}\n`, `${hostSessionId}/x`, 1, null]) {
+      expect(bindingSchema.safeParse({ ...binding, hostSessionId: invalid }).success).toBe(false);
+    }
+  } finally { x.engine.close(); await f.close(); }
+});
+
+linux('Desktop boundPeer and sendBound reject another or missing host ID before connect and before the first byte', async () => {
+  const f = await fixture();
+  const x = await exact(f);
+  const hostSessionId = `local_${randomUUID()}`;
+  const original = net.createConnection;
+  try {
+    const binding = bindingSchema.parse(x.binding(randomUUID(), { hostSessionId }));
+    const frames = [userFrame({ sessionId: f.peerId }, `uds:${f.peerPath}`, 'test', randomUUID(), binding.msgId, 'host check', 'prompting', null)];
+    x.record({ entrypoint: 'claude-desktop', hostSessionId });
+    expect(boundPeer(f.configDir, binding)?.hostSessionId).toBe(hostSessionId);
+    expect(await sendBound(f.configDir, binding, frames, () => true)).toBe(true);
+    expect(f.frames).toHaveLength(1);
+    f.frames.length = 0;
+    for (const changed of [undefined, `local_${randomUUID()}`]) {
+      x.record({ hostSessionId: changed });
+      expect(boundPeer(f.configDir, binding)).toBeUndefined();
+      const connect = spyOn(net, 'createConnection');
+      try {
+        await expect(sendBound(f.configDir, binding, frames, () => true)).rejects.toThrow('Nothing sent (target-changed).');
+        expect(connect).not.toHaveBeenCalled();
+      } finally { connect.mockRestore(); }
+      expect(f.frames).toHaveLength(0);
+      x.record({ hostSessionId });
+      const duringConnect = spyOn(net, 'createConnection').mockImplementation((...args: any[]) => {
+        const socket = Reflect.apply(original, net, args) as net.Socket;
+        // Change the record after connect, before sendFrames runs its canWrite check.
+        socket.prependOnceListener('connect', () => x.record({ hostSessionId: changed }));
+        return socket;
+      });
+      try {
+        await expect(sendBound(f.configDir, binding, frames, () => true)).rejects.toThrow('Nothing sent (target-changed).');
+        expect(duringConnect).toHaveBeenCalledTimes(1);
+      } finally { duringConnect.mockRestore(); }
+      await Bun.sleep(20);
+      expect(f.frames).toHaveLength(0);
+    }
+    // A binding without the new key keeps the old behavior.
+    expect(boundPeer(f.configDir, bindingSchema.parse(x.binding(randomUUID())))).toBeDefined();
+  } finally { x.engine.close(); await f.close(); }
+});
+
 linux('B2: an exact send through the real outbox socket binds once, writes one frame, and keeps receipts', async () => {
   const f = await fixture();
   const x = await exact(f);
@@ -1411,7 +1467,7 @@ linux('B2: an exact send through the real outbox socket binds once, writes one f
     expect(value).toEqual({ messageId: expect.any(String), subscriptionId: null, status: 'socket-written' });
     expect(x.engine.calls.map(call => [call.method, call.route])).toEqual([['POST', '/api/agent/resolve-bound']]);
     expect(x.engine.calls[0]!.body).toEqual({ reference: REFERENCE(f.peerId), caller: { runtimeSessionId: f.desktop.threadId, configDir: f.configDir },
-      msgId: value.messageId, remainingMs: 10_000 });
+      msgId: value.messageId, remainingMs: 10_000, hostCheck: true });
     const users = f.frames.filter(frame => frame.type === 'user');
     expect(users).toHaveLength(1);
     expect(users[0]).toMatchObject({ msg_id: value.messageId, session_id: f.peerId });

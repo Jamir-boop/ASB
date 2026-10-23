@@ -320,7 +320,7 @@ linux('two relays carry a message, the reply, a receipt, and an offline refusal 
   }
 }, 60_000);
 
-linux('/deliver-bound writes one frame to the bound record only, and the receipt of an exact message stays on this machine', async () => {
+linux.each([false, true])('/deliver-bound writes one frame to the bound record only, and the receipt of an exact message stays on this machine (hostSessionId: %s)', async (hostCheck) => {
   const root = mkdtempSync('/tmp/asb-relay-bound-');
   const dirs = Object.fromEntries(['h1/claude/sessions', 'h2/claude/sessions', 'h1/s', 'h2/s'].map(item => {
     mkdirSync(join(root, item), { recursive: true, mode: 0o700 });
@@ -351,18 +351,22 @@ linux('/deliver-bound writes one frame to the bound record only, and the receipt
   const twin = row(home2);
   writeFileSync(join(home2, 'sessions', `${twin.pid}.json`), JSON.stringify({ ...twin, sessionId: first.sessionId }), { mode: 0o600 });
   const target = peers(home1).find(peer => peer.sessionId === first.sessionId)!;
+  const hostSessionId = `local_${randomUUID()}`;
+  if (hostCheck) writeFileSync(join(home1, 'sessions', `${target.pid}.json`), JSON.stringify({ ...target, hostSessionId }), { mode: 0o600 });
   let relay: Relay | undefined;
   try {
     relay = await startRelay(engine.port!, join(root, 'relay'));
     const sender = { machineId: 'b'.repeat(16), sessionId: randomUUID(), name: 'codex-task', mode: 'prompting', agent: 'codex' };
     const binding = (fields: Record<string, unknown> = {}) => ({ registryHome: realpathSync(join(home1, 'sessions')), runtimeSessionId: first.sessionId,
-      pid: target.pid, procStart: target.procStart, messagingSocketPath: target.messagingSocketPath, msgId: fields.msgId ?? msgId, expiresAtMs: Date.now() + 10_000, ...fields });
+      pid: target.pid, procStart: target.procStart, messagingSocketPath: target.messagingSocketPath, msgId: fields.msgId ?? msgId, expiresAtMs: Date.now() + 10_000,
+      ...(hostCheck ? { hostSessionId } : {}), ...fields });
     const msgId = randomUUID();
     const message = (id = msgId) => ({ msgId: id, text: 'exact hello', hopChain: [] });
     const deliverBound = (body: unknown) => fetch(`http://127.0.0.1:${relay!.port}/deliver-bound`, { method: 'POST',
       headers: { authorization: `Bearer ${relay!.token}` }, body: JSON.stringify(body) });
     const changed = [{ pid: target.pid + 100_000 }, { procStart: 'other' }, { messagingSocketPath: '/tmp/other.sock' }, { runtimeSessionId: randomUUID() },
-      { registryHome: realpathSync(join(home2, 'sessions')) }, { registryHome: '/tmp/none/sessions' }];
+      { registryHome: realpathSync(join(home2, 'sessions')) }, { registryHome: '/tmp/none/sessions' },
+      ...(hostCheck ? [{ hostSessionId: `local_${randomUUID()}` }] : [])];
     for (const fields of changed) {
       expect(await (await deliverBound({ binding: binding(fields), sender, message: message() })).json()).toEqual({ outcome: 'not-sent', reason: 'target-changed' });
     }

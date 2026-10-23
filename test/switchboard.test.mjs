@@ -15,6 +15,7 @@ import { defaultClaudeAppDir, normalizeClaudeDesktopCodeSession, loadClaudeDeskt
 import { loadCodexDashboard, readThreads, discoverCodexStateDatabase, parseRolloutSignals, readRolloutSignals, getCodexCacheStats, codexNativeReadStatus } from '../src/codex-data.mjs';
 import { buildSwitchboardDashboard, createSwitchboardServer, loadSwitchboardDashboard, localMachineName, openSwitchboardThread, switchboardStatus, switchboardWatchPaths, PendingTracker } from '../src/switchboard.mjs';
 import { AppSourceRegistry } from '../src/app-sources.mjs';
+import { CLI_SESSION_IDS } from '../src/session-targets.mjs';
 
 const id = '123e4567-e89b-12d3-a456-426614174000';
 const localId = `local_${id}`;
@@ -54,6 +55,26 @@ test('Linux Claude uses the XDG directory and opens the original local session',
   const legacy = normalizeClaudeDesktopCodeSession({ sessionId: 'local_legacy', cliSessionId: id }, {}, now);
   assert.equal(legacy.appDeepLink, `claude://resume?session=${id}`);
   assert.equal(buildSwitchboardDashboard([legacy], [], now).threads[0].canOpen, false);
+});
+
+test('the board keeps Claude CLI IDs only in memory for its reference binder', () => {
+  const cli = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const prior1 = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const prior2 = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  const ids = { cliSessionId: cli, priorCliSessionIds: [prior1, prior2] };
+  const rows = buildSwitchboardDashboard([
+    { id: 'desktop-row', externalId: localId, provider: 'claude-desktop-code', ...ids },
+    { id: 'cache-row', externalId: 'cse_synthetic', provider: 'claude-desktop-code', source: 'claude-remote-cache', ...ids },
+    { id, provider: 'codex', ...ids },
+  ], [], now).threads;
+  const desktop = rows.find((row) => row.id === 'desktop-row');
+  assert.deepEqual(desktop[CLI_SESSION_IDS], [cli, prior1, prior2]);
+  assert.equal(Object.getOwnPropertyDescriptor(desktop, CLI_SESSION_IDS).enumerable, false);
+  for (const row of rows) {
+    const json = JSON.stringify(row);
+    for (const value of [cli, prior1, prior2]) assert.equal(json.includes(value), false);
+    if (row !== desktop) assert.equal(Object.hasOwn(row, CLI_SESSION_IDS), false);
+  }
 });
 
 test('Claude recursively reads local metadata, keeps archives, and deduplicates CLI IDs', async (t) => {

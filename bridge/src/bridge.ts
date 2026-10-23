@@ -366,7 +366,7 @@ export class Bridge {
       try {
         // On Windows the engine binds only for a bridge that proves the pipe server before each bound write.
         reply = boundReply.parse(await engineRequest(runtime, '/api/agent/resolve-bound', { method: 'POST', timeoutMs: 5_000, body: { reference,
-          caller: { runtimeSessionId: this.threadId, configDir: resolve(this.configDir) }, msgId, remainingMs: 10_000,
+          caller: { runtimeSessionId: this.threadId, configDir: resolve(this.configDir) }, msgId, remainingMs: 10_000, hostCheck: true,
           ...(isWindows() ? { pipeProof: true } : {}) } }));
       } catch { throw engineUnavailable(); }
       if (!reply.ok && reply.code === 'member-target') {

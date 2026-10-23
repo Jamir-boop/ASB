@@ -251,7 +251,7 @@ test.skipIf(process.platform !== 'win32')('on Windows, resolve-bound asks for a 
   try {
     await expect(bridge.sendReference(reference, 'hello')).rejects.toThrow('No session. Nothing sent (not-found).');
     expect(engine.calls.map(call => [call.route, call.body])).toEqual([['/api/agent/resolve-bound', { reference,
-      caller: { runtimeSessionId: threadId, configDir }, msgId: expect.any(String), remainingMs: 10_000, pipeProof: true }]]);
+      caller: { runtimeSessionId: threadId, configDir }, msgId: expect.any(String), remainingMs: 10_000, hostCheck: true, pipeProof: true }]]);
   } finally {
     await bridge.close();
     engine.close();

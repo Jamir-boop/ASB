@@ -129,7 +129,7 @@ posix('listReferences posts the caller and keeps only valid items, keyed by sess
     answer = reply();
     expect([...await listReferences(runtime, caller)]).toEqual([[local, { reference }], [`${machineId}:${remote}`, { referenceUnavailable: 'old-peer' }]]);
     expect(engine.calls[0]).toMatchObject({ method: 'POST', route: '/api/agent/list-references' });
-    expect(engine.calls[0]!.body).toEqual({ caller });
+    expect(engine.calls[0]!.body).toEqual({ caller, hostCheck: true });
     // A wrong pid, a refusal, another shape, or an engine error: an empty map.
     for (const value of [reply({ pid: process.pid + 1 }), { apiVersion: 1, ok: false, code: 'caller-unregistered', message: 'x.' }, reply({ extra: 1 }),
       reply({ apiVersion: 2 }), { ...reply(), local: undefined }, new Response('{}', { status: 500 }), new Response('{')]) {
@@ -162,6 +162,6 @@ test.skipIf(process.platform !== 'win32')('on Windows, listReferences asks for a
     const runtime = engineRuntime({ LOCALAPPDATA: root }, 'win32');
     expect(runtime).not.toBeNull();
     expect((await listReferences(runtime!, caller)).size).toBe(0);
-    expect(engine.calls.map(call => [call.route, call.body])).toEqual([['/api/agent/list-references', { caller, pipeProof: true }]]);
+    expect(engine.calls.map(call => [call.route, call.body])).toEqual([['/api/agent/list-references', { caller, hostCheck: true, pipeProof: true }]]);
   } finally { engine.close(); rmSync(root, { recursive: true, force: true }); }
 });

@@ -14,7 +14,7 @@ import { openThreadInCodex, scopedCommand } from './session-opener.mjs';
 import { AppSourceRegistry, appSourcesRevision, numberAppSources, sourceName, validateSourceLauncher } from './app-sources.mjs';
 import { stateDir } from './platform-paths.mjs';
 import { rowReference, shortReference } from './session-references.mjs';
-import { bindLocalTarget, bindMemberTarget, memberTarget, notSentMessage, referencesForList, resolveSessionReference } from './session-targets.mjs';
+import { CLI_SESSION_IDS, bindLocalTarget, bindMemberTarget, memberTarget, notSentMessage, referencesForList, resolveSessionReference } from './session-targets.mjs';
 import { readLiveClaudeRegistry } from './claude-registry.mjs';
 import { spawn } from 'node:child_process';
 
@@ -253,6 +253,9 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
       } });
       if (thread.sourceDataDir) Object.defineProperty(row, SOURCE_DIR, { value: thread.sourceDataDir });
       if (thread.cliSharedSource) Object.defineProperty(row, SHARED_CLI, { value: true });
+      // Only this engine's reference binder reads these IDs; row JSON (dashboard API, phone, members) never has them.
+      if (thread.provider === 'claude-desktop-code' && thread.source !== 'claude-remote-cache') Object.defineProperty(row, CLI_SESSION_IDS,
+        { value: [thread.cliSessionId, ...(thread.priorCliSessionIds || [])].filter((id) => typeof id === 'string' && id) });
       return row;
     }),
   };
@@ -833,9 +836,9 @@ export function createSwitchboardServer(options = {}) {
   const receiverClaim = async (source, appId) => (await querySqliteJson(path.join(source.dataDir, 'plugin-state', 'asb-bridge', `${appId}.sqlite`),
     'select pid, proc_start from receiver where singleton = 1;').catch(() => []))[0] ?? null;
   const boundIo = { platform, now: Date.now, pid: process.pid, registry: privateRegistry, claudeRoot, receiverClaim };
-  // The homes where the receiving engine looks for the target of an exact member send: a CLI session only in its own
-  // source home, a Codex task in the homes that the relay serves.
-  const targetHomes = async (type, source) => type === 'claude-cli' ? [path.dirname(source.projectsDir || DEFAULT_CLAUDE_PROJECTS_DIR)]
+  // The homes where the receiving engine looks for the target of an exact member send: a CLI or Desktop Code session
+  // only in its own source home, a Codex task in the homes that the relay serves.
+  const targetHomes = async (type, source) => ['claude-cli', 'claude-local'].includes(type) ? [path.dirname(source.projectsDir || DEFAULT_CLAUDE_PROJECTS_DIR)]
     : options.machineRelay ? (await options.machineRelay.homes(registeredLoad ? await registry.read() : [])).homes.map((home) => home.path) : [];
   const sourceWatchPaths = async () => {
     const sources = await registry.read();
