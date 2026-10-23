@@ -48,7 +48,7 @@ export type Host = {
   transport: string;
   remoteAgent: 'codex' | 'claude';
   replyHint: string;
-  identity: { pid: number; procStart?: string };
+  identity: { pid: number };
   // Codex registers under its own title rule; OpenCode passes its nameBase and extra row fields.
   nameBase?: (cwd: string, sessionId: string) => string;
   extraRow?: Record<string, unknown>;
@@ -138,9 +138,6 @@ export class Bridge {
       this.db.exec('ALTER TABLE runtime ADD COLUMN hop_token TEXT');
     }
     this.guard = new PeerGuard(this.db);
-    if (!this.db.query<{ name: string }, []>('PRAGMA table_info(inbound_policy)').all().some(column => column.name === 'dialog_expiry')) {
-      this.db.exec("ALTER TABLE inbound_policy ADD COLUMN dialog_expiry TEXT NOT NULL DEFAULT '5m'");
-    }
     this.host = host ?? this.codexHost();
   }
 
@@ -227,7 +224,7 @@ export class Bridge {
         if (alive && await processStart(old.pid) === old.proc_start) throw new Error('Receiver is already starting or running');
       }
       const hostPid = this.host.identity.pid;
-      const procStart = this.host.identity.procStart ?? await processStart(hostPid);
+      const procStart = await processStart(hostPid);
       this.db.transaction(() => {
         if (!this.db.query('SELECT 1 FROM lifecycle WHERE singleton=1 AND generation=? AND active=1').get(generation)) {
           throw new Error('Session ended or was replaced before receiver startup');
@@ -260,7 +257,7 @@ export class Bridge {
         () => this.scheduleExpiry(), token, receipt => this.applyExactReceipt(receipt));
       this.registration = await register(this.configDir, this.threadId, this.listener.address, cwd, this.runtime().status, token, {
         pid: this.host.identity.pid,
-        procStart: this.host.identity.procStart ?? this.procStart,
+        procStart: this.procStart,
         entrypoint: this.host.entrypoint,
         nameBase: this.host.nameBase,
         extra: this.host.extraRow,

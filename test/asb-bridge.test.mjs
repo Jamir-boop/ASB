@@ -13,6 +13,13 @@ import { defaultOpenCodeStateDir } from '../src/opencode-data.mjs';
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const SCRIPT = path.join(ROOT, 'scripts/asb-bridge.mjs');
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
+// The next-step lines that bridge install prints.
+const STEP = {
+  codex: 'Next: open Codex, go to Plugins > ASB Bridge, and trust both hooks. Then restart Codex.',
+  opencode: 'OpenCode loads the plugin by itself. A session shows to other agents after it runs a turn.',
+  guide: 'Use $bridge in Codex and /bridge in Claude Code when you want the usage guide.',
+  upgrade: 'After an ASB upgrade, run the install command again with the same targets.',
+};
 async function snapshot(directory, prefix = '') {
   const result = {};
   for (const entry of await readdir(path.join(directory, prefix), { withFileTypes: true })) {
@@ -149,8 +156,26 @@ test('bridge installs explicit Codex and Claude skills through the selected Code
   await owned(path.join(f.personal, 'skills/bridge'), 'codex');
   await owned(path.join(f.claude, 'skills/bridge'), 'claude');
   await assert.rejects(lstat(path.join(f.codex, 'skills')), { code: 'ENOENT' });
-  assert.match(result.stdout, /trust both hooks/);
-  assert.match(result.stdout, /Use \$bridge in Codex and \/bridge in Claude Code/);
+  assert.equal(result.stdout, `Codex ${f.personal}: installed\nClaude ${f.claude}: installed\n${STEP.codex}\n${STEP.guide}\n${STEP.upgrade}\n`);
+});
+
+test('bridge install prints only the next steps of what it installed', async (t) => {
+  const f = await fixture(t), opencode = path.join(f.home, '.config/opencode');
+  const version = JSON.parse(await readFile(path.join(ROOT, 'bridge/.codex-plugin/plugin.json'), 'utf8')).version;
+  const openCode = f.run(['install', '--opencode', '--opencode-config', opencode]);
+  passed(openCode);
+  assert.equal(openCode.stdout, `OpenCode ${opencode}: installed ${version}\n${STEP.opencode}\n${STEP.upgrade}\n`);
+  const codex = f.run(['install', '--codex-home', f.codex]);
+  passed(codex);
+  assert.equal(codex.stdout, `Codex ${f.codex}: installed\n${STEP.codex}\nUse $bridge in Codex when you want the usage guide.\n${STEP.upgrade}\n`);
+  const claude = f.run(['install', '--claude']);
+  passed(claude);
+  assert.equal(claude.stdout, `Claude ${f.claude}: installed\nUse /bridge in Claude Code when you want the usage guide.\n${STEP.upgrade}\n`);
+  // The only Codex home is skipped: no Codex step.
+  await writeFile(path.join(f.bin, 'codex'), `${await readFile(path.join(f.bin, 'codex'), 'utf8')}if [ "$CODEX_HOME" = "$BRIDGE_FAIL_HOME" ] && [ "$*" = 'plugin add asb-bridge@asb' ]; then exit 1; fi\n`);
+  const skipped = f.run(['install', '--codex-home', f.personal], { BRIDGE_FAIL_HOME: f.personal });
+  assert.equal(skipped.status, 1);
+  assert.equal(skipped.stdout, `${STEP.upgrade}\n`);
 });
 
 for (const [label, platform, reason, windowsHint] of [
@@ -170,7 +195,8 @@ for (const [label, platform, reason, windowsHint] of [
     assert.ok(result.stdout.includes(`Codex ${f.codex}: installed\n`));
     assert.ok(result.stdout.includes(`Claude ${f.claude}: installed\n`));
     assert.ok(result.stdout.includes(`OpenCode ${opencode}: installed `));
-    assert.match(result.stdout, /After an ASB upgrade, run `asb bridge install` again\./);
+    // One Codex home is installed, so the Codex step stays.
+    assert.ok(result.stdout.endsWith(`${STEP.codex}\n${STEP.opencode}\n${STEP.guide}\n${STEP.upgrade}\n`));
     await owned(path.join(f.codex, 'skills/bridge'), 'codex');
     await owned(path.join(f.claude, 'skills/bridge'), 'claude');
     await owned(path.join(opencode, 'skills/bridge'), 'opencode');

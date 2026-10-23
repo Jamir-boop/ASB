@@ -187,6 +187,8 @@ type Row = { key: string; home: string; peer: RemotePeer; path: string; keyPath?
 async function main() {
   const engine = process.env.ASB_ENGINE_URL ?? '';
   const sourceToken = process.env.ASB_SOURCE_TOKEN ?? '';
+  // No child of the relay gets the token. Bun.spawn without env uses the start environment, so a delete has no effect.
+  const { ASB_SOURCE_TOKEN: _token, ...placeholderEnv } = process.env;
   const relayDir = process.env.ASB_RELAY_DIR ?? '';
   const enginePort = Number(/^http:\/\/127\.0\.0\.1:([1-9][0-9]{0,4})$/.exec(engine)?.[1] ?? 0);
   if (!enginePort || enginePort > 65535 || !/^[a-f0-9]{64}$/.test(sourceToken) || !isAbsolute(relayDir)) {
@@ -223,7 +225,7 @@ async function main() {
     mkdirSync(sessions, { recursive: true, mode: 0o700 });
     const real = realpathSync(sessions);
     privateDirectory(real);
-    const child = Bun.spawn(PLACEHOLDER, { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' });
+    const child = Bun.spawn(PLACEHOLDER, { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore', env: placeholderEnv });
     let socket: { address: string; close(): Promise<void> } | undefined;
     let keyPath: string | undefined;
     let procStart = '';

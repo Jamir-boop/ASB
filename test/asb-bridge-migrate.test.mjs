@@ -6,7 +6,7 @@ import { link, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, 
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { NEXT_STEPS, ROOT, skillState } from '../scripts/asb-bridge.mjs';
+import { nextSteps, ROOT, skillState } from '../scripts/asb-bridge.mjs';
 import { main } from '../bridge/scripts/migrate-from-claude-uds-bridge.mjs';
 
 const SCRIPT = fileURLToPath(new URL('../bridge/scripts/migrate-from-claude-uds-bridge.mjs', import.meta.url));
@@ -126,7 +126,7 @@ test('migration apply uses normal installers and renames history without writing
     assert.match(config, /\[hooks\.state\."claude-uds-bridge@leonkohli:/);
     assert.ok(!config.includes('[hooks.state."asb-bridge@asb:'));
   }
-  assert.ok(result.stdout.endsWith(`${NEXT_STEPS}\n`));
+  assert.ok(result.stdout.endsWith(`${nextSteps({ codex: true, claude: true })}\n`));
 });
 
 test('migration retries a failed plugin add with and without old history', async (t) => {

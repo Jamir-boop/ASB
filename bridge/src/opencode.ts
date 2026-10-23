@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { Bridge } from './bridge';
 import { peers, privateDirectory, removeStaleReceivers } from './claude';
-import { createOpenCodeHost, opencodeBridgeId, type OpenCodeHostParts } from './opencode-host';
+import { createOpenCodeHost, opencodeBridgeId, unwrap, type OpenCodeHostParts } from './opencode-host';
 import { placeholderCommand, spawnPlaceholder } from './placeholder';
 import { isWindows } from './platform';
 import { listSessions, listSessionsInput, sendMessage, sendMessageInput, statusBrief } from './tools';
@@ -18,6 +18,9 @@ const START_LIMIT = 8;
 const START_WINDOW_MS = 30 * 60 * 1000;
 const IDLE_MS = 12 * 60 * 60 * 1000;
 const SEEN_LIMIT = 256;
+// The event types that handleEvent uses. OpenCode streams many more during a turn.
+const HANDLED_EVENTS = new Set(['session.renamed', 'session.execution.started', 'session.execution.succeeded', 'session.execution.failed',
+  'session.execution.interrupted', 'session.archived', 'session.deleted', 'session.inbox.delivered', 'session.inbox.enqueued']);
 
 type SessionInfo = {
   id: string;
@@ -35,11 +38,7 @@ type Receiver = {
   openCodeSessionId: string;
   bridgeId: string;
   location: string;
-  title: string | undefined;
-  cwd: string;
   lastActivity: number;
-  running: boolean;
-  limited: boolean;
   closed: boolean;
 };
 
@@ -92,12 +91,6 @@ function titleOf(session: SessionInfo) {
   return session.title;
 }
 
-// The OpenCode plugin client wraps HTTP results as { data }. A plain array or object is also accepted.
-function unwrap<T>(value: unknown): T {
-  if (value && typeof value === 'object' && 'data' in (value as Record<string, unknown>)) return (value as { data: T }).data;
-  return value as T;
-}
-
 async function listLocationSessions(instance: Instance): Promise<SessionInfo[]> {
   try {
     const rows = unwrap<SessionInfo[]>(await instance.ctx.session.list({ directory: instance.directory }));
@@ -110,7 +103,7 @@ async function getSession(instance: Instance, id: string): Promise<SessionInfo |
   catch (error) { return undefined; }
 }
 
-function socketDirectory(configDir: string) {
+function socketDirectory() {
   let directory = join(process.env.XDG_RUNTIME_DIR ?? '/tmp', 'asb-bridge-socks');
   try {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -120,7 +113,6 @@ function socketDirectory(configDir: string) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     privateDirectory(directory);
   }
-  void configDir;
   return directory;
 }
 
@@ -138,14 +130,12 @@ async function registerSessionOnce(co: Coordinator, instance: Instance, session:
   const existing = co.receivers.get(session.id);
   if (existing && !existing.closed) {
     existing.lastActivity = Date.now();
-    existing.title = titleOf(session);
-    existing.host.setTitle(existing.title);
+    existing.host.setTitle(titleOf(session));
     try { existing.bridge.updateRuntime(await existing.host.runtime()); } catch (error) { /* Still registered. */ }
     return existing;
   }
   if (co.receivers.size >= CAP) {
-    const victim = [...co.receivers.values()].filter(row => !row.running && !row.limited && !row.bridge.held().length)
-      .sort((a, b) => a.lastActivity - b.lastActivity)[0];
+    const victim = [...co.receivers.values()].sort((a, b) => a.lastActivity - b.lastActivity).find(row => canClose(co, row));
     if (!victim) return { limited: true as const, openCodeSessionId: session.id, bridgeId: bridgeIdOf(session.id) };
     await unregister(co, victim.openCodeSessionId);
   }
@@ -163,7 +153,6 @@ async function registerSessionOnce(co: Coordinator, instance: Instance, session:
   const parts: OpenCodeHostParts = {
     openCodeSessionId: session.id,
     title,
-    cwd,
     session: instance.ctx.session,
     agent: instance.ctx.agent,
     isRunning: async (id) => co.running.has(id),
@@ -174,12 +163,11 @@ async function registerSessionOnce(co: Coordinator, instance: Instance, session:
   const bridge = new Bridge(bridgeId, co.configDir, co.stateDir, '', host);
   const receiver: Receiver = {
     bridge, host, placeholder, openCodeSessionId: session.id, bridgeId,
-    location: instance.directory, title, cwd, lastActivity: Date.now(),
-    running: co.running.has(session.id), limited: false, closed: false,
+    location: instance.directory, lastActivity: Date.now(), closed: false,
   };
   const generation = bridge.beginSession();
   try {
-    await bridge.start(isWindows() ? '' : socketDirectory(co.configDir), cwd, generation);
+    await bridge.start(isWindows() ? '' : socketDirectory(), cwd, generation);
   } catch (error) {
     placeholder.kill();
     await bridge.close().catch(() => {});
@@ -252,29 +240,22 @@ function receiverOf(co: Coordinator, openCodeSessionId: string) {
   return co.receivers.get(openCodeSessionId);
 }
 
-async function noteActivity(co: Coordinator, instance: Instance, session: SessionInfo) {
-  touch(co, session.id);
-  await registerSession(co, instance, session);
-}
-
 async function handleEvent(co: Coordinator, event: { id?: string; type?: string; data?: Record<string, unknown> }) {
+  const type = event.type ?? '';
+  if (!HANDLED_EVENTS.has(type)) return;
   const id = event.id;
   if (id && !remember(co, id)) return;
   const data = event.data ?? {};
   const sessionId = String(data.sessionID ?? data.sessionId ?? '');
-  const type = event.type ?? '';
   const instance = sessionId ? await findInstanceFor(co, sessionId) : co.instances.values().next().value;
   if (!instance) return;
   const session = sessionId ? (await getSession(instance, sessionId) ?? { id: sessionId, title: data.title as string | undefined, location: data.location as { directory?: string } | undefined, parentID: data.parentID as string | undefined }) : undefined;
   if (!session) return;
 
-  if (type === 'session.created') return;
   if (type === 'session.renamed') {
     const receiver = receiverOf(co, session.id);
     if (!receiver) return;
-    const title = String(data.title ?? session.title ?? '');
-    receiver.title = title;
-    receiver.host.setTitle(title);
+    receiver.host.setTitle(String(data.title ?? session.title ?? ''));
     try { receiver.bridge.updateRuntime(await receiver.host.runtime(), true); } catch (error) { /* Keep the old name. */ }
     return;
   }
@@ -283,7 +264,6 @@ async function handleEvent(co: Coordinator, event: { id?: string; type?: string;
     co.running.add(session.id);
     const receiver = await registerSession(co, instance, session);
     if (receiver && 'bridge' in receiver) {
-      receiver.running = true;
       receiver.lastActivity = Date.now();
       receiver.bridge.updateRuntime(await receiver.host.runtime());
     }
@@ -293,7 +273,6 @@ async function handleEvent(co: Coordinator, event: { id?: string; type?: string;
     co.running.delete(session.id);
     const receiver = receiverOf(co, session.id);
     if (!receiver) return;
-    receiver.running = false;
     receiver.lastActivity = Date.now();
     receiver.bridge.updateRuntime(await receiver.host.runtime());
     return;
@@ -334,13 +313,16 @@ async function sweep(co: Coordinator) {
   }
 }
 
+// The one rule for the cap eviction and the 12 h expiry: no turn runs, no message is held, and no agent waits for an idle notice.
+function canClose(co: Coordinator, receiver: Receiver) {
+  return !co.running.has(receiver.openCodeSessionId) && !receiver.bridge.held().length
+    && !receiver.bridge.status().idleRequests.some(request => request.status === 'waiting');
+}
+
 async function expireIdle(co: Coordinator) {
   const now = Date.now();
   for (const receiver of [...co.receivers.values()]) {
-    if (receiver.running || receiver.bridge.held().length) continue;
-    const status = receiver.bridge.status();
-    if (status.idleRequests.some(request => request.status === 'waiting')) continue;
-    if (now - receiver.lastActivity >= IDLE_MS) await unregister(co, receiver.openCodeSessionId);
+    if (canClose(co, receiver) && now - receiver.lastActivity >= IDLE_MS) await unregister(co, receiver.openCodeSessionId);
   }
 }
 
@@ -508,4 +490,4 @@ function compareVersion(a: string, b: string) {
   return 0;
 }
 
-export { ensureCoordinator, coordinator, registerSession, unregister, deleteSession, handleEvent, bridgeIdOf, rootSessionId, recentInputs, CAP, START_LIMIT, START_WINDOW_MS, IDLE_MS };
+export { ensureCoordinator, coordinator, registerSession, unregister, deleteSession, handleEvent, canClose, expireIdle, bridgeIdOf, rootSessionId, recentInputs, CAP, START_LIMIT, START_WINDOW_MS, IDLE_MS };

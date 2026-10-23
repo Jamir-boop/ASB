@@ -3,7 +3,7 @@ import { lstatSync, mkdirSync, readFileSync, readdirSync, renameSync } from 'nod
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkDependencies, hasOldPlugin, installClaude, installCodex, NEXT_STEPS, ROOT, runCodex, skillState } from '../../scripts/asb-bridge.mjs';
+import { checkDependencies, hasOldPlugin, installClaude, installCodex, nextSteps, ROOT, runCodex, skillState } from '../../scripts/asb-bridge.mjs';
 
 const OLD_PLUGIN = 'claude-uds-bridge@leonkohli';
 const USAGE = 'Use: node bridge/scripts/migrate-from-claude-uds-bridge.mjs [--apply] [--codex-home <path> ...]';
@@ -126,7 +126,7 @@ export async function main(args = process.argv.slice(2)) {
     renameSync(path.join(home, 'plugin-state/claude-uds-bridge'), path.join(home, 'plugin-state/asb-bridge'));
     console.log(`Codex ${home}: migrated.`);
   }
-  console.log(NEXT_STEPS);
+  console.log(nextSteps({ codex: true, claude: true }));
   return 0;
 }
 

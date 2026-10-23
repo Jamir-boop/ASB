@@ -11,7 +11,7 @@ import { peers, register, uniqueName, bridgeNameBase, namedSession, inbox, peerA
 import { createOpenCodeHost, modeFromRules, opencodeBridgeId, uuidV5 } from '../src/opencode-host';
 import { listSessions, sendMessage, agentLabel } from '../src/tools';
 import { Bridge } from '../src/bridge';
-import { ensureCoordinator, bridgeIdOf, registerSession, unregister, deleteSession, handleEvent, recentInputs, CAP, START_LIMIT, START_WINDOW_MS, IDLE_MS } from '../src/opencode';
+import { ensureCoordinator, bridgeIdOf, registerSession, unregister, deleteSession, handleEvent, expireIdle, recentInputs, CAP, START_LIMIT, START_WINDOW_MS, IDLE_MS } from '../src/opencode';
 
 const posix = test.skipIf(process.platform === 'win32');
 // The ASB engine runs on Linux and Windows only: `engineRuntime` gives null on macOS, so no references come back.
@@ -379,7 +379,7 @@ posix('outgoing frames carry from-mode from V27 agent rules', async () => {
     peerProtocol: 1, peerFeatures: ['notify_idle'], startedAt: 1700000000000,
   }));
   const host = createOpenCodeHost({
-    openCodeSessionId: 'ses_mode', title: 'Mode', cwd: '/tmp',
+    openCodeSessionId: 'ses_mode', title: 'Mode',
     session: fake.ctx.session, agent: {
       async list() {
         return [{ permissions: [{ action: 'shell', pattern: '*', permission: 'allow' }, { action: 'edit', pattern: '*', permission: 'allow' }] }];
@@ -447,7 +447,7 @@ posix('a sender with any mode is delivered at once (no hold)', async () => {
   const fake = fakeCtx();
   try {
     const host = createOpenCodeHost({
-      openCodeSessionId: 'ses_mode', title: 'Mode', cwd: '/tmp',
+      openCodeSessionId: 'ses_mode', title: 'Mode',
       session: fake.ctx.session, agent: fake.ctx.agent,
       isRunning: () => false, recentInputs: () => [], pid: process.pid,
     });
@@ -487,18 +487,17 @@ posix('register triggers, rename, archive, delete, and child sessions never regi
 
     fake.pushEvent({ id: 'e2', type: 'session.execution.started', data: { sessionID: 'ses_exec' } });
     await until(() => co.receivers.has('ses_exec'), 'register on execution.started');
-    expect(co.receivers.get('ses_exec')?.running).toBe(true);
+    expect(co.running.has('ses_exec')).toBe(true);
 
     fake.pushEvent({ id: 'e3', type: 'session.execution.started', data: { sessionID: 'ses_child' } });
     await settle();
     expect(co.receivers.has('ses_child')).toBe(false);
 
     fake.pushEvent({ id: 'e4', type: 'session.renamed', data: { sessionID: 'ses_exec', title: 'Renamed Task' } });
-    await until(() => co.receivers.get('ses_exec')?.title === 'Renamed Task', 'rename');
+    await until(() => peers(configDir).find(peer => peer.sessionId === bridgeIdOf('ses_exec'))?.name.startsWith('opencode-renamed-task-') === true, 'rename');
 
     fake.pushEvent({ id: 'e5', type: 'session.execution.succeeded', data: { sessionID: 'ses_exec' } });
-    await until(() => co.receivers.get('ses_exec')?.running === false, 'succeeded');
-    expect(co.running.has('ses_exec')).toBe(false);
+    await until(() => !co.running.has('ses_exec'), 'succeeded');
 
     fake.pushEvent({ id: 'e6', type: 'session.archived', data: { sessionID: 'ses_exec' } });
     await until(() => !co.receivers.has('ses_exec'), 'archive');
@@ -517,6 +516,27 @@ posix('register triggers, rename, archive, delete, and child sessions never regi
     expect(co.receivers.has('ses_exec')).toBe(false);
 
     await api?.();
+  } finally {
+    await resetCoordinator(co);
+    rmSync(root, { recursive: true });
+  }
+});
+
+posix('events that no branch handles make no session.get call and are not remembered', async () => {
+  const { root, configDir, stateDir } = tempHome();
+  const fake = fakeCtx();
+  const co = ensureCoordinator(configDir, stateDir);
+  try {
+    let gets = 0;
+    const get = fake.ctx.session.get;
+    fake.ctx.session.get = async input => { gets++; return get(input); };
+    co.instances.set('/tmp/opencode-project', { ctx: fake.ctx, directory: '/tmp/opencode-project', disposers: [] });
+    fake.setSession('ses_stream', { location: { directory: '/tmp/proj' }, title: 'Stream' });
+    // OpenCode 2.1.4 streams these during a turn.
+    for (const type of ['session.text.delta', 'session.tool.started', 'session.step.started']) {
+      await handleEvent(co, { id: `ev_${type}`, type, data: { sessionID: 'ses_stream' } });
+    }
+    expect({ gets, seen: co.seen.size }).toEqual({ gets: 0, seen: 0 });
   } finally {
     await resetCoordinator(co);
     rmSync(root, { recursive: true });
@@ -646,7 +666,7 @@ test('constants match the approved limits', () => {
 
 posix('inputs after a reload take the last context message; none means unknown origin', async () => {
   const host = createOpenCodeHost({
-    openCodeSessionId: 'ses_reload', title: 'Reload', cwd: '/tmp',
+    openCodeSessionId: 'ses_reload', title: 'Reload',
     session: { async synthetic() { return { id: 'x' }; }, async context() { return []; }, async list() { return []; }, async get() { return {}; } },
     agent: { async list() { return []; } },
     isRunning: () => false,
@@ -655,7 +675,7 @@ posix('inputs after a reload take the last context message; none means unknown o
   });
   expect((await host.peekLatest())?.kind).toBe('synthetic');
   const empty = createOpenCodeHost({
-    openCodeSessionId: 'ses_empty', title: undefined, cwd: '/tmp/no-title-folder',
+    openCodeSessionId: 'ses_empty', title: undefined,
     session: { async synthetic() { return { id: 'x' }; }, async context() { return []; }, async list() { return []; }, async get() { return {}; } },
     agent: { async list() { return []; } },
     isRunning: () => false,
@@ -774,7 +794,7 @@ posix('an event for a session of the second folder registers with that folder', 
     const receiver = co.receivers.get('ses_second');
     expect(receiver).toBeDefined();
     expect(receiver!.location).toBe('/tmp/other-project');
-    expect(receiver!.cwd).toBe('/tmp/other-project');
+    expect(peers(configDir).find(peer => peer.sessionId === bridgeIdOf('ses_second'))?.cwd).toBe('/tmp/other-project');
   } finally {
     await resetCoordinator(co);
     rmSync(root, { recursive: true });
@@ -808,7 +828,7 @@ posix('a tool call for a session of the second folder registers with that folder
     const receiver = co.receivers.get('ses_second');
     expect(receiver).toBeDefined();
     expect(receiver!.location).toBe('/tmp/other-project');
-    expect(receiver!.cwd).toBe('/tmp/other-project');
+    expect(peers(configDir).find(peer => peer.sessionId === bridgeIdOf('ses_second'))?.cwd).toBe('/tmp/other-project');
   } finally {
     await resetCoordinator(co);
     rmSync(root, { recursive: true });
@@ -864,7 +884,6 @@ posix('cap 24 evicts the idle oldest and refuses the new one when nothing can go
     expect(co.receivers.size).toBe(CAP);
     // One running session cannot be evicted; the idle oldest goes instead.
     co.running.add('ses_cap_0');
-    co.receivers.get('ses_cap_0')!.running = true;
     fake.setSession('ses_extra', { location: { directory: '/tmp/proj' }, title: 'Extra' });
     const extra = await registerSession(co, instance, { id: 'ses_extra', location: { directory: '/tmp/proj' }, title: 'Extra' });
     expect(extra && 'bridge' in extra).toBe(true);
@@ -872,10 +891,7 @@ posix('cap 24 evicts the idle oldest and refuses the new one when nothing can go
     expect(co.receivers.has('ses_cap_1')).toBe(false);
     expect(co.receivers.has('ses_extra')).toBe(true);
     // When every row is running, the new session is limited and status says limit.
-    for (const id of [...co.receivers.keys()]) {
-      co.running.add(id);
-      co.receivers.get(id)!.running = true;
-    }
+    for (const id of [...co.receivers.keys()]) co.running.add(id);
     fake.setSession('ses_limited', { location: { directory: '/tmp/proj' }, title: 'Limited' });
     const limited = await registerSession(co, instance, { id: 'ses_limited', location: { directory: '/tmp/proj' }, title: 'Limited' });
     expect(limited && 'limited' in limited).toBe(true);
@@ -886,23 +902,58 @@ posix('cap 24 evicts the idle oldest and refuses the new one when nothing can go
   }
 });
 
-posix('12 hour idle unregisters a quiet receiver that holds nothing', async () => {
+// Another agent waits on the receiver (notify_when_idle): one waiting inbound idle request.
+function waitOn(stateDir: string, openCodeSessionId: string) {
+  const db = new Database(join(stateDir, `${bridgeIdOf(openCodeSessionId)}.sqlite`));
+  try { db.run("INSERT INTO idle_requests VALUES (?,?,?,?,'in','waiting',?)", [randomUUID(), randomUUID(), 'uds:/tmp/asb-waiting-peer.sock', null, Date.now() + 60 * 60_000]); }
+  finally { db.close(); }
+}
+
+posix('cap 24 keeps a receiver that another agent waits on and evicts the next quiet one', async () => {
+  const { root, configDir, stateDir } = tempHome();
+  const fake = fakeCtx();
+  const co = ensureCoordinator(configDir, stateDir);
+  try {
+    const instance = { ctx: fake.ctx, directory: '/tmp/opencode-project', disposers: [] };
+    co.instances.set(instance.directory, instance);
+    for (let i = 0; i < CAP; i++) {
+      const receiver = await registerSession(co, instance, { id: `ses_wait_${i}`, location: { directory: '/tmp/proj' }, title: `Wait ${i}` });
+      // The oldest is ses_wait_0.
+      (receiver as { lastActivity: number }).lastActivity = Date.now() - (CAP - i) * 1000;
+    }
+    await settle();
+    waitOn(stateDir, 'ses_wait_0');
+    const extra = await registerSession(co, instance, { id: 'ses_wait_extra', location: { directory: '/tmp/proj' }, title: 'Extra' });
+    expect(extra && 'bridge' in extra).toBe(true);
+    expect(['ses_wait_0', 'ses_wait_1', 'ses_wait_extra'].map(id => co.receivers.has(id))).toEqual([true, false, true]);
+  } finally {
+    await resetCoordinator(co);
+    rmSync(root, { recursive: true });
+  }
+});
+
+posix('12 hour idle closes a quiet old receiver and keeps a running, a held, a waited-on, and a recent one', async () => {
   const { root, configDir, stateDir } = tempHome();
   const fake = fakeCtx();
   const co = ensureCoordinator(configDir, stateDir);
   try {
     const instance = { ctx: fake.ctx, directory: '/tmp/opencode-project', disposers: [] };
     co.instances.set('/tmp/opencode-project', instance);
-    fake.setSession('ses_idle', { location: { directory: '/tmp/proj' }, title: 'Idle' });
-    const receiver = await registerSession(co, instance, { id: 'ses_idle', location: { directory: '/tmp/proj' }, title: 'Idle' });
-    expect(receiver && 'bridge' in receiver).toBe(true);
-    (receiver as { lastActivity: number }).lastActivity = Date.now() - IDLE_MS - 1000;
-    // The expire path is the same as the hourly timer: drop idle rows past 12 h.
-    const row = co.receivers.get('ses_idle')!;
-    if (!row.running && !row.bridge.held().length
-      && row.bridge.status().idleRequests.every(request => request.status !== 'waiting')
-      && Date.now() - row.lastActivity >= IDLE_MS) await unregister(co, 'ses_idle');
-    expect(co.receivers.has('ses_idle')).toBe(false);
+    for (const id of ['ses_quiet', 'ses_running', 'ses_held', 'ses_waiting', 'ses_recent']) {
+      const receiver = await registerSession(co, instance, { id, location: { directory: '/tmp/proj' }, title: id });
+      expect(receiver && 'bridge' in receiver).toBe(true);
+      (receiver as { lastActivity: number }).lastActivity = Date.now() - IDLE_MS - 1000;
+    }
+    co.receivers.get('ses_recent')!.lastActivity = Date.now() - IDLE_MS + 60_000;
+    co.running.add('ses_running');
+    const db = new Database(join(stateDir, `${bridgeIdOf('ses_held')}.sqlite`));
+    try { db.run("INSERT INTO messages (id,peer_id,direction,text,status) VALUES (?,?,'in','held text','held')", [randomUUID(), randomUUID()]); }
+    finally { db.close(); }
+    await settle();
+    waitOn(stateDir, 'ses_waiting');
+    // The function of the hourly timer.
+    await expireIdle(co);
+    expect([...co.receivers.keys()].sort()).toEqual(['ses_held', 'ses_recent', 'ses_running', 'ses_waiting']);
   } finally {
     await resetCoordinator(co);
     rmSync(root, { recursive: true });
@@ -949,7 +1000,7 @@ posix('after a reload the origin comes from context, else the exact refusal text
   expect(items).toHaveLength(1);
   expect(items[0]!.kind).toBe('synthetic');
   const host = createOpenCodeHost({
-    openCodeSessionId: 'ses_origin', title: 'Origin', cwd: '/tmp',
+    openCodeSessionId: 'ses_origin', title: 'Origin',
     session: fake.ctx.session, agent: fake.ctx.agent,
     isRunning: () => false,
     recentInputs: id => recentInputs(instance, id),
@@ -961,7 +1012,7 @@ posix('after a reload the origin comes from context, else the exact refusal text
   emptyFake.ctx.session.context = async () => [];
   const emptyInstance = { ctx: emptyFake.ctx, directory: '/tmp/opencode-project', disposers: [] };
   const empty = createOpenCodeHost({
-    openCodeSessionId: 'ses_none', title: undefined, cwd: '/tmp/no-title',
+    openCodeSessionId: 'ses_none', title: undefined,
     session: emptyFake.ctx.session, agent: emptyFake.ctx.agent,
     isRunning: () => false,
     recentInputs: id => recentInputs(emptyInstance, id),
@@ -999,7 +1050,7 @@ posix('queue-full, duplicate, and rate limit report their drop reason', async ()
   const fake = fakeCtx();
   try {
     const host = createOpenCodeHost({
-      openCodeSessionId: 'ses_drops', title: 'Drops', cwd: '/tmp',
+      openCodeSessionId: 'ses_drops', title: 'Drops',
       session: fake.ctx.session, agent: fake.ctx.agent,
       isRunning: () => false, recentInputs: () => [], pid: process.pid,
     });
@@ -1083,7 +1134,7 @@ posix('queue-full, duplicate, and rate limit report their drop reason', async ()
 posix('host runtime mode is bypass, prompting, or unknown from V27 agent rules', async () => {
   const fake = fakeCtx();
   const parts = {
-    openCodeSessionId: 'ses_v27', title: 'V27', cwd: '/tmp',
+    openCodeSessionId: 'ses_v27', title: 'V27',
     session: fake.ctx.session,
     agent: { async list() { return [{ permissions: [{ action: 'shell', pattern: '*', permission: 'allow' }, { action: 'edit', pattern: '*', permission: 'allow' }] }]; } },
     isRunning: () => false, recentInputs: () => [], pid: process.pid,
@@ -1100,7 +1151,7 @@ posix('host runtime mode comes from the agent of the session and then its own ru
     { id: 'plan', name: 'Plan', permissions: [{ action: '*', resource: '*', effect: 'allow' }, { action: 'edit', resource: '*', effect: 'ask' }] },
   ];
   const mode = async (session: Record<string, unknown>) => (await createOpenCodeHost({
-    openCodeSessionId: 'ses_agent', title: 'Agent', cwd: '/tmp',
+    openCodeSessionId: 'ses_agent', title: 'Agent',
     session: { ...fakeCtx().ctx.session, async get() { return { data: { id: 'ses_agent', ...session } }; } },
     agent: { async list() { return agents; } },
     isRunning: () => false, recentInputs: () => [], pid: process.pid,

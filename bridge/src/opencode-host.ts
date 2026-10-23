@@ -55,7 +55,7 @@ export type OpenCodeSessionLike = {
 export type OpenCodeAgentLike = { list(): Promise<unknown[]> };
 
 // The OpenCode plugin client wraps HTTP results as { data }. A plain array or object is also accepted.
-function unwrap<T>(value: unknown): T {
+export function unwrap<T>(value: unknown): T {
   if (value && typeof value === 'object' && 'data' in (value as Record<string, unknown>)) return (value as { data: T }).data;
   return value as T;
 }
@@ -63,7 +63,6 @@ function unwrap<T>(value: unknown): T {
 export type OpenCodeHostParts = {
   openCodeSessionId: string;
   title?: string | undefined;
-  cwd: string;
   session: OpenCodeSessionLike;
   agent: OpenCodeAgentLike;
   // The running set is owned by the coordinator; the host only reads it.
@@ -72,9 +71,6 @@ export type OpenCodeHostParts = {
   recentInputs(sessionId: string): Array<{ id: string; kind: 'user' | 'synthetic' | 'other'; text: string }> | Promise<Array<{ id: string; kind: 'user' | 'synthetic' | 'other'; text: string }>>;
   // The placeholder PID of this receiver, written into the registry row.
   pid: number;
-  procStart?: string;
-  // True when this session hit the register cap and is not registered.
-  limited?: boolean;
 };
 
 type PendingInput = { id: string; clientId: string | null; kind: 'user' | 'synthetic' | 'other'; text: string };
@@ -86,7 +82,6 @@ export function createOpenCodeHost(parts: OpenCodeHostParts): Host & {
   setTitle(title: string | undefined): void;
 } {
   const delivered = new Map<string, PendingInput>();
-  const consumed: PendingInput[] = [];
   const ownIds = new Set<string>();
   let latest: PendingInput | null | undefined;
   let restorePromise: Promise<void> | undefined;
@@ -97,7 +92,6 @@ export function createOpenCodeHost(parts: OpenCodeHostParts): Host & {
       restorePromise = (async () => {
         for (const item of await parts.recentInputs(parts.openCodeSessionId)) {
           const row = { id: item.id, clientId: null, kind: item.kind, text: item.text };
-          consumed.push(row);
           // A live deliver/noteHuman origin wins over the context fallback.
           if (latest === undefined) latest = row;
           if (item.kind !== 'other') break;
@@ -112,7 +106,7 @@ export function createOpenCodeHost(parts: OpenCodeHostParts): Host & {
     transport: 'opencode',
     remoteAgent: 'claude',
     replyHint: 'Reply with tools.asb_bridge.send_message.',
-    identity: { pid: parts.pid, procStart: parts.procStart },
+    identity: { pid: parts.pid },
     nameBase: (cwd) => namedOpenCode(cwd, liveTitle),
     extraRow: { opencodeSessionId: parts.openCodeSessionId },
     setTitle(title: string | undefined) { liveTitle = title; },
@@ -121,13 +115,12 @@ export function createOpenCodeHost(parts: OpenCodeHostParts): Host & {
     async runtime() {
       const permissions = await sessionPermissions(parts);
       const running = await parts.isRunning(parts.openCodeSessionId);
-      return { status: parts.limited ? 'unknown' : running ? 'busy' : 'idle', mode: modeFromRules(permissions) };
+      return { status: running ? 'busy' : 'idle', mode: modeFromRules(permissions) };
     },
     async inputs() {
       await restore();
       const drained = [...delivered.values()];
       delivered.clear();
-      consumed.push(...drained);
       if (drained.length) latest = drained[drained.length - 1]!;
       return { latest, consumed: drained.map(row => ({ id: row.id, clientId: row.clientId })) };
     },
@@ -150,7 +143,6 @@ export function createOpenCodeHost(parts: OpenCodeHostParts): Host & {
       // Synthetic deliveries also land as inbox.enqueued user items. Keep their hop origin.
       if (ownIds.has(id)) return;
       const row = { id, clientId: null, kind: 'user' as const, text };
-      consumed.push(row);
       latest = row;
     },
     async peekLatest() { await restore(); return latest; },

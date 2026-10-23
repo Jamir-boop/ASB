@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { hopChain, inbox, peers, processStart, sendFrames, socketPath, userFrame, type Frame } from '../src/claude';
@@ -229,6 +229,8 @@ linux('two relays carry a message, the reply, a receipt, and an offline refusal 
     const proxy = await until(() => proxyRows(homeA).find(row => row.sessionId === codex.sessionId));
     expect(proxy).toMatchObject({ name: 'beta-codex-fixture', cwd: '', status: 'idle', peerFeatures: [] });
     expect(proxyRows(homeA).map(row => row.sessionId)).toEqual([codex.sessionId]);
+    // The placeholder of the row does not get the source token; the steps below show that the relay still has it.
+    expect(readFileSync(`/proc/${proxy.pid}/environ`, 'utf8').split('\0').filter(entry => entry.startsWith('ASB_SOURCE_TOKEN='))).toEqual([]);
 
     // Claude writes to the proxy row; the Codex session gets the frame from the reverse row in its own home.
     // Engine B does not list alpha's sessions yet, so the reverse row uses the delivery's data.
