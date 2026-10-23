@@ -93,6 +93,20 @@ test('on Windows the Bun lookup tries bun.exe in BUN_INSTALL\\bin, then in USERP
   assert.deepEqual(seen, [['/home/a/.bun/bin/bun', 'linux']]);
 });
 
+// npm puts only its shim bun.cmd on PATH, and Node cannot start a .cmd file without a shell.
+const USER_BUN = 'C:\\Users\\a\\.bun\\bin\\bun.exe';
+for (const [files, standard, expected] of [[['bun.cmd'], false, () => ''], [['bun.cmd'], true, () => USER_BUN],
+  [['bun.cmd', 'bun.exe'], false, (folder) => path.join(folder, 'bun.exe')]]) {
+  test(`on Windows the Bun lookup does not take a bun.cmd on PATH: ${files.join(' and ')} on PATH${standard ? ', bun.exe in USERPROFILE' : ''}`, async (t) => {
+    const folder = await mkdtemp(path.join(os.tmpdir(), 'asb-bun-cmd-'));
+    t.after(() => rm(folder, { recursive: true, force: true }));
+    for (const file of files) await writeFile(path.join(folder, file), '');
+    const check = async (file) => standard && file === USER_BUN;
+    const env = { PATH: folder, PATHEXT: '.COM;.EXE;.BAT;.CMD', USERPROFILE: 'C:\\Users\\a' };
+    assert.equal(await findBun({ platform: 'win32', env, check }), expected(folder));
+  });
+}
+
 test('the Bun lookup takes PATH first, then BUN_INSTALL/bin, then ~/.bun/bin, and only a regular file that can run counts', { skip: process.platform === 'win32' }, async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'asb-bun-lookup-'));
   t.after(() => rm(dir, { recursive: true, force: true }));

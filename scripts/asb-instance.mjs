@@ -47,8 +47,8 @@ export async function writeQuitMarker(prepared, runtime) {
   const file = path.join(path.dirname(prepared.file), 'stopped.json');
   const temporary = `${file}.${randomBytes(6).toString('hex')}.tmp`;
   try {
-    await writeFile(temporary, JSON.stringify({ schema: 1, pid: runtime.pid,
-      token: createHash('sha256').update(runtime.sourceToken).digest('hex') }) + '\n', { flag: 'wx', mode: 0o600 });
+    await writeFile(temporary, JSON.stringify({ schema: 1, token: createHash('sha256').update(runtime.sourceToken).digest('hex') }) + '\n',
+      { flag: 'wx', mode: 0o600 });
     await rename(temporary, file);
   } finally { await rm(temporary, { force: true }); }
 }
@@ -58,9 +58,9 @@ export async function readQuitMarker(env = process.env, platform = process.platf
   if (!service) return null;
   try {
     const value = JSON.parse(await runtimeContents(path.join(path.dirname(service), 'stopped.json'), platform));
-    return value && Object.keys(value).sort().join(',') === 'pid,schema,token' && value.schema === 1
-      && Number.isSafeInteger(value.pid) && value.pid > 0 && value.pid <= 2147483647
-      && typeof value.token === 'string' && /^[a-f0-9]{64}$/.test(value.token) ? value : null;
+    // An engine of ASB 1.11.0 also writes its PID, and a newer window must see its quit too.
+    return value && ['schema,token', 'pid,schema,token'].includes(Object.keys(value).sort().join(',')) && value.schema === 1
+      && typeof value.token === 'string' && /^[a-f0-9]{64}$/.test(value.token) ? { schema: 1, token: value.token } : null;
   } catch { return null; }
 }
 

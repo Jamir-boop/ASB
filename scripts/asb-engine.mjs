@@ -62,7 +62,7 @@ export const readerPositionsPath = (env, platform = process.platform) => (platfo
   .join(cacheDir(env, platform), 'readers', 'positions.json');
 
 export async function runEngine({ env = process.env, platform = process.platform, execFile = execFileAsync } = {}) {
-  // The glibc settings of the start belong to this process: the relay, the tray, and the apps that ASB opens must not get them.
+  // The ASB glibc settings of the start belong to this process: the relay, the tray, and the apps that ASB opens get only the values of the user.
   forgetMallocEnv(process.env, env);
   const trim = createMemoryTrim();
   if (platform === 'win32') {
@@ -95,7 +95,7 @@ export async function runEngine({ env = process.env, platform = process.platform
     onStop: async () => {
       if (stopping || quitRequested) return;
       quitRequested = true;
-      try { await writeQuitMarker(prepared, { pid: process.pid, sourceToken }); }
+      try { await writeQuitMarker(prepared, { sourceToken }); }
       catch (error) { console.error(`Cannot write ASB quit marker: ${error.message}`); }
       shutdown('the stop request');
     } });
@@ -210,7 +210,7 @@ export async function startEngine({ env = process.env, execFile = execFileAsync,
     const fd = openSync(log, 'w', 0o600);
     try {
       const child = spawn(process.execPath, [...ENGINE_NODE_FLAGS, fileURLToPath(import.meta.url), 'run'],
-        { detached: true, stdio: ['ignore', fd, fd], env: { ...env, ...MALLOC_ENV } });
+        { detached: true, stdio: ['ignore', fd, fd], env: { ...MALLOC_ENV, ...env } });
       child.once('error', () => {});
       child.unref();
     } finally { closeSync(fd); }

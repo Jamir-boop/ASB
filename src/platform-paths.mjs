@@ -69,9 +69,14 @@ export function bunFolders({ platform = process.platform, env = process.env } = 
     .filter((root) => typeof root === 'string' && flavor.isAbsolute(root)).map((root) => flavor.join(root, 'bin')))];
 }
 
+// Node cannot start a `.cmd` file (for example the npm shim of Bun) without a shell.
+export function bunOnPath({ platform = process.platform, env = process.env } = {}) {
+  return findExecutable('bun', { platform, env: platform === 'win32' ? { PATHEXT: '.EXE' } : env, searchPath: env.PATH || '' });
+}
+
 // The Bun file for the engine ('' when none): PATH first, then the folders of bunFolders. `check` tells if a file can run.
 export async function findBun({ platform = process.platform, env = process.env, check = executableFile } = {}) {
-  const onPath = await findExecutable('bun', { platform, env });
+  const onPath = await bunOnPath({ platform, env });
   if (onPath) return onPath;
   for (const folder of bunFolders({ platform, env })) {
     const file = (platform === 'win32' ? path.win32 : path.posix).join(folder, platform === 'win32' ? 'bun.exe' : 'bun');

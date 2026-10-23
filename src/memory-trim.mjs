@@ -3,7 +3,8 @@
 // 1. a full GC of the "last resort" kind, which makes V8 release its free pages (createMemoryTrim);
 // 2. a smaller V8 young generation (ENGINE_NODE_FLAGS, a Node argument: it has no effect at run time);
 // 3. glibc settings that return freed blocks to the system (MALLOC_ENV, read by glibc at process start).
-// The launcher scripts/asb, the detached start in scripts/asb-engine.mjs, and the Windows tray scripts/asb-tray.ps1 pass 2 and 3.
+// The launcher scripts/asb and the detached start in scripts/asb-engine.mjs pass 2 and 3; a glibc setting that the user set stays.
+// The Windows tray scripts/asb-tray.ps1 passes 2 (Windows has no glibc).
 import v8 from 'node:v8';
 import vm from 'node:vm';
 
@@ -17,9 +18,10 @@ export const TRIM_INTERVAL_MS = 30_000;
 export const TRIM_SETTLE_MS = 3_000;
 export const TRIM_GROWTH_BYTES = 128 * 1024 * 1024;
 
-// The engine must not pass the glibc settings on: the message relay, the tray, and the apps that ASB opens have their own needs.
+// The engine must not pass the ASB glibc settings on: the message relay, the tray, and the apps that ASB opens have their own needs.
+// shortcut: a user value that equals the ASB value is also removed from the children, upgrade to a list of the names that the start set if that matters.
 export function forgetMallocEnv(...targets) {
-  for (const env of targets) for (const name of Object.keys(MALLOC_ENV)) delete env[name];
+  for (const env of targets) for (const name of Object.keys(MALLOC_ENV)) if (env[name] === MALLOC_ENV[name]) delete env[name];
 }
 
 // The gc function without the --expose-gc argument; null when the engine cannot make it. Node.js 20 (V8 11) ignores the flavor, so a

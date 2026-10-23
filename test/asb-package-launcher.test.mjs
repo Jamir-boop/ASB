@@ -94,8 +94,13 @@ test('the launcher starts only the engine commands with the V8 flag and the glib
     + "malloc: Object.fromEntries(Object.entries(process.env).filter(([name]) => name.startsWith('MALLOC_'))) }));\n");
   const base = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('MALLOC_')));
   const launcher = path.join(scripts, 'asb');
-  const run = (args) => JSON.parse(execFileSync(launcher, args, { encoding: 'utf8', env: { ...base, ASB_NODE: process.execPath } }));
-  for (const args of [['service', 'run'], ['engine', 'run']]) assert.deepEqual(run(args), { flags: ENGINE_NODE_FLAGS, args, malloc: MALLOC_ENV });
+  const run = (args, extra = {}) => JSON.parse(execFileSync(launcher, args, { encoding: 'utf8', env: { ...base, ASB_NODE: process.execPath, ...extra } }));
+  for (const args of [['service', 'run'], ['engine', 'run']]) {
+    assert.deepEqual(run(args), { flags: ENGINE_NODE_FLAGS, args, malloc: MALLOC_ENV });
+    // A glibc setting that the user set stays, also an empty one.
+    assert.deepEqual(run(args, { MALLOC_ARENA_MAX: '8' }), { flags: ENGINE_NODE_FLAGS, args, malloc: { ...MALLOC_ENV, MALLOC_ARENA_MAX: '8' } });
+    assert.deepEqual(run(args, { MALLOC_TRIM_THRESHOLD_: '' }).malloc, { ...MALLOC_ENV, MALLOC_TRIM_THRESHOLD_: '' });
+  }
   for (const args of [[], ['engine', 'start'], ['engine', 'status'], ['engine', 'stop'], ['service', 'install'], ['service', 'status'], ['service', 'run', 'extra'],
     ['engine', 'run', 'extra'], ['doctor'], ['agent', 'list'], ['bridge', 'install'], ['setup'], ['--package', 'install']]) {
     assert.deepEqual(run(args), { flags: [], args, malloc: {} }, args.join(' '));

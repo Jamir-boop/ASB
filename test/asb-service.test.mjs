@@ -517,7 +517,7 @@ test('the engine helpers choose the tray, the tray launcher, and the log path', 
 test('engine start uses the enabled user service, a detached engine, or the running engine', async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'asb-engine-start-'));
   t.after(() => rm(home, { recursive: true, force: true }));
-  const env = { XDG_STATE_HOME: path.join(home, 'state'), XDG_RUNTIME_DIR: path.join(home, 'runtime') };
+  const env = { XDG_STATE_HOME: path.join(home, 'state'), XDG_RUNTIME_DIR: path.join(home, 'runtime'), MALLOC_ARENA_MAX: '8' };
   const runtime = { schema: 1, pid: 12, port: 23456, sourceToken: 'a'.repeat(64) };
   const fake = ({ enabled = false, startFails = false, answerAt = 3 } = {}) => {
     const calls = [];
@@ -532,9 +532,9 @@ test('engine start uses the enabled user service, a detached engine, or the runn
       spawn: (program, args, options) => {
         calls.push(['spawn', program, ...args]);
         assert.equal(options.detached, true);
-        // The detached engine gets the glibc settings of the engine; the caller's environment object stays as it was.
-        assert.deepEqual(options.env, { ...env, ...MALLOC_ENV });
-        assert.deepEqual(Object.keys(env), ['XDG_STATE_HOME', 'XDG_RUNTIME_DIR']);
+        // The detached engine gets the glibc settings of the engine, but the user value stays; the caller's environment object stays as it was.
+        assert.deepEqual(options.env, { ...env, ...MALLOC_ENV, MALLOC_ARENA_MAX: '8' });
+        assert.deepEqual(Object.keys(env), ['XDG_STATE_HOME', 'XDG_RUNTIME_DIR', 'MALLOC_ARENA_MAX']);
         assert.equal(options.stdio[0], 'ignore');
         assert.ok(Number.isInteger(options.stdio[1]) && options.stdio[1] === options.stdio[2]);
         const child = new EventEmitter();
@@ -968,8 +968,7 @@ test('the engine stop request publishes its quit marker before runtime removal',
   assert.equal(response.status, 200);
   assert.equal((await child.closed)[0], 0, child.errors);
   const file = path.join(path.dirname(f.runtime), 'stopped.json');
-  assert.equal(await readFile(file, 'utf8'), JSON.stringify({ schema: 1, pid: child.pid,
-    token: createHash('sha256').update(runtime.sourceToken).digest('hex') }) + '\n');
+  assert.equal(await readFile(file, 'utf8'), JSON.stringify({ schema: 1, token: createHash('sha256').update(runtime.sourceToken).digest('hex') }) + '\n');
   assert.equal((await stat(file)).mode & 0o777, 0o600);
   await assert.rejects(stat(f.runtime), { code: 'ENOENT' });
 });

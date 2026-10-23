@@ -181,3 +181,9 @@ test('forgetMallocEnv removes the glibc settings from each environment object an
   // The same object twice is no error (the engine passes process.env and its env, which are one object).
   forgetMallocEnv(first, first);
 });
+
+test('forgetMallocEnv keeps a glibc value that the user set, also an empty one, and removes only the ASB values', () => {
+  const env = { ...MALLOC_ENV, MALLOC_ARENA_MAX: '8', MALLOC_TRIM_THRESHOLD_: '', MALLOC_CHECK_: '3' };
+  forgetMallocEnv(env);
+  assert.deepEqual(env, { MALLOC_ARENA_MAX: '8', MALLOC_TRIM_THRESHOLD_: '', MALLOC_CHECK_: '3' });
+});

@@ -107,7 +107,7 @@ export function watchEngine(service, { window, stop, env = process.env, platform
       deadline = later(finish, 20_000);
       const quit = await marker();
       if (cancelled) return;
-      if (quit?.pid === service.pid && quit.token === createHash('sha256').update(service.sourceToken).digest('hex')) {
+      if (quit?.token === createHash('sha256').update(service.sourceToken).digest('hex')) {
         finish();
         return;
       }

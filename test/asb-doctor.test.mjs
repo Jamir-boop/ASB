@@ -449,8 +449,8 @@ test('the firewall functions without the engine', async () => {
   assert.equal(shellText(['echo', "it's", 'a b', 'plain']), "echo 'it'\\''s' 'a b' plain");
 });
 
-// The Windows fakes: Python and reg never run. `msys2` is whether pacman.exe exists, `autostart` whether the Run value exists (an Error: reg fails),
-// and `python` the MSYS2 Python of ASB_PYTHON (null: ASB_PYTHON is not set, so no Python is found).
+// The Windows fakes: Python and reg never run. `msys2` is whether `pacman` exists, `autostart` whether the Run value exists (an Error: reg fails),
+// and `python` the MSYS2 Python of ASB_PYTHON, which answers the probe (null: ASB_PYTHON is not set, so no Python is found).
 const WIN_PYTHON = 'C:\\msys64\\ucrt64\\bin\\python.exe';
 const PACMAN = 'C:\\msys64\\usr\\bin\\pacman.exe';
 const WIN_NODE = { path: 'C:\\Program Files\\nodejs\\node.exe', version: '24.11.1', sqlite: true };
@@ -459,7 +459,7 @@ const RUN_QUERY = ['reg', 'query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentV
 const WIN_SYSTEM = { name: os.version() || 'Windows', id: null, versionId: os.release(), family: 'windows', mode: 'normal' };
 const NO_RUN_VALUE = Object.assign(new Error('ERROR: The system was unable to find the specified registry key or value.'), { code: 1 });
 
-async function fakeWindows(t, { bins = ['bun.exe'], values = {}, node = WIN_NODE, msys2 = true, autostart = true, python = WIN_PYTHON } = {}) {
+async function fakeWindows(t, { bins = ['bun.exe'], values = {}, node = WIN_NODE, msys2 = true, autostart = true, python = WIN_PYTHON, pacman = PACMAN } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'asb-doctor-win-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   for (const name of bins) await writeFile(path.join(directory, name), '');
@@ -467,13 +467,13 @@ async function fakeWindows(t, { bins = ['bun.exe'], values = {}, node = WIN_NODE
   const reads = [];
   const deps = {
     platform: 'win32', node, env: { PATH: directory, ...(python && { ASB_PYTHON: python }) },
-    exists: async (file) => { reads.push(file); return file === PACMAN && msys2; },
+    exists: async (file) => { reads.push(file); return file === pacman && msys2; },
     // Windows reads no os-release and asks no engine for the firewall.
     read: async (file) => { throw new Error(`Unexpected read: ${file}`); },
     find: async () => { throw new Error('Unexpected engine lookup'); },
     execFile: async (file, args) => {
       calls.push([file, ...args]);
-      if (file === WIN_PYTHON) return { stdout: `${probe({ python: '3.12.7', qrcode: false, trayHost: null, ...values })}\n` };
+      if (file === python) return { stdout: `${probe({ python: '3.12.7', qrcode: false, trayHost: null, ...values })}\n` };
       if (file === 'reg' && autostart === true) return { stdout: '    ASB    REG_SZ    powershell.exe\n' };
       if (file === 'reg') throw autostart;
       throw Object.assign(new Error(`Unexpected program: ${file}`), { code: 'ENOENT' });
@@ -580,6 +580,17 @@ test('Windows with GTK or Libadwaita too old prints the pacman update line', asy
     `  ${PACMAN} -Syu --needed ${WIN_PACKAGES}`]);
 });
 
+test('Windows uses the MSYS2 folder of the board Python for pacman, so it asks for no second MSYS2', async (t) => {
+  const python = 'C:\\tools\\msys64\\ucrt64\\bin\\python.exe';
+  const pacman = 'C:\\tools\\msys64\\usr\\bin\\pacman.exe';
+  const system = await fakeWindows(t, { python, pacman, values: { gi: null, gtk: null, adw: null, cairo: false } });
+  const data = await collect(system.deps);
+  assert.equal(data.commands.required[0], pacman);
+  assert.deepEqual(system.reads, [pacman]);
+  assert.equal(data.commands.msys2, null);
+  assert.deepEqual(data.advice, ['Install the board packages:', `  ${pacman} -S --needed ${WIN_PACKAGES}`]);
+});
+
 test('Windows needs built-in SQLite for the engine and shows the QR code and the Run value as they are', async (t) => {
   const old = await fakeWindows(t, { node: { ...WIN_NODE, version: '22.12.0', sqlite: false } });
   const { code, out } = await old.run();
@@ -589,6 +600,13 @@ test('Windows needs built-in SQLite for the engine and shows the QR code and the
   assert.deepEqual([(await none.run()).code, (await none.lines())[3]], [1, '  missing  Node.js']);
   const full = await fakeWindows(t, { values: { qrcode: true }, bins: [], autostart: NO_RUN_VALUE });
   assert.deepEqual((await full.lines()).slice(-3), ['  ok       QR code', '  info     Bun: not found. ASB Bridge needs it.', '  info     Autostart: not installed']);
+});
+
+// The engine cannot start the npm shim bun.cmd, so it does not count.
+test('Windows with only bun.cmd on PATH says that Bun is not found', async (t) => {
+  const system = await fakeWindows(t, { bins: ['bun.cmd'] });
+  assert.deepEqual((await collect(system.deps)).checks.find((check) => check.id === 'bun'),
+    { id: 'bun', group: 'Options', status: 'info', detail: 'Bun: not found. ASB Bridge needs it.' });
 });
 
 test('the Linux checks stay as they are, and the platform option picks the Windows checks', async (t) => {

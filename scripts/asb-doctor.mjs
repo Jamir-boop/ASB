@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import { PLAYERS } from '../src/asb-sounds.mjs';
 import { detectFamily, FAMILIES, installCommand, nodeRoute, parseOsRelease } from '../src/linux-distros.mjs';
 import { atLeast, BOARD_FLOORS, boardCheck, engineCheck, nodeFacts, pythonCandidates, shortVersion } from '../src/linux-system.mjs';
-import { findBun, findExecutable, runtimeDir } from '../src/platform-paths.mjs';
+import { bunOnPath, findBun, findExecutable, runtimeDir } from '../src/platform-paths.mjs';
 import { RUN_KEY } from './asb-engine.mjs';
 import { api as groupApi } from './asb-group.mjs';
 import { findRunningService } from './asb-instance.mjs';
@@ -28,8 +28,10 @@ const FLAKE_LINE = 'Use the flake: nix profile install github:Jamir-boop/ASB';
 // The firewall lines go into a root shell, so only these names get a command (plan 13 step 6).
 const INTERFACE_NAME = /^[A-Za-z0-9._@-]{1,15}$/;
 const ZONE_NAME = /^[A-Za-z0-9_-]{1,64}$/;
-// The Windows board runs on MSYS2 UCRT64 (the Python path is MSYS2_PYTHON in src/linux-system.mjs).
-const PACMAN = 'C:\\msys64\\usr\\bin\\pacman.exe';
+// The Windows board runs on MSYS2 UCRT64. The board Python gives the MSYS2 folder, else it is the default folder of MSYS2_PYTHON (src/linux-system.mjs).
+// MSYS2 does not support a folder with a space, so the pacman command has no quotes.
+const MSYS2_ROOT = 'C:\\msys64';
+const MSYS2_PYTHON_FILE = /^(.+)\\ucrt64\\bin\\python\.exe$/i;
 const WINGET_MSYS2 = ['winget', 'install', '--id', 'MSYS2.MSYS2', '-e'];
 const MSYS2_PACKAGES = ['mingw-w64-ucrt-x86_64-python-gobject', 'mingw-w64-ucrt-x86_64-gtk4', 'mingw-w64-ucrt-x86_64-libadwaita'];
 
@@ -113,7 +115,7 @@ function windowChecks(add, board, candidates) {
 async function bunCheck(add, env, platform) {
   // The engine's lookup. A Codex task runs bun from the PATH of Codex, so a Bun in the standard folder only is still ok but is named.
   const bun = await findBun({ env, platform });
-  const onPath = bun !== '' && bun === await findExecutable('bun', { env, platform });
+  const onPath = bun !== '' && bun === await bunOnPath({ env, platform });
   add('bun', 'Options', bun ? 'ok' : 'info', !bun ? 'Bun: not found. ASB Bridge needs it.' : onPath ? `Bun (${bun}), for ASB Bridge`
     : `Bun (${bun}), not on PATH. The message relay finds it. A Codex task needs it on PATH.`);
 }
@@ -147,8 +149,10 @@ async function collectWindows({ env, execFile, exists: present, node, platform }
   const commands = { required: null, optional: null, node: null, firewall: [], msys2: null };
   const advice = [];
   if (!board.ok) {
-    commands.required = [PACMAN, librariesOld ? '-Syu' : '-S', '--needed', ...MSYS2_PACKAGES];
-    if (!await present(PACMAN)) commands.msys2 = WINGET_MSYS2;
+    const root = [board.python, ...candidates].map((file) => MSYS2_PYTHON_FILE.exec(file ?? '')?.[1]).find(Boolean) ?? MSYS2_ROOT;
+    const pacman = `${root}\\usr\\bin\\pacman.exe`;
+    commands.required = [pacman, librariesOld ? '-Syu' : '-S', '--needed', ...MSYS2_PACKAGES];
+    if (!await present(pacman)) commands.msys2 = WINGET_MSYS2;
     advice.push(commands.msys2 ? 'Install MSYS2 and the board packages:' : 'Install the board packages:', ...[commands.msys2, commands.required].filter(Boolean).map((words) => `  ${words.join(' ')}`));
   }
   return { schema: 1, system, checks, board: { ok: board.ok, reason: board.reason }, commands, advice };

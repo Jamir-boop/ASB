@@ -23,7 +23,7 @@ const cachedBoardCheck = async ({ env }) => ({ ok: true, python: env.ASB_PYTHON 
 // The cache itself is tested in test/linux-system.test.mjs; here it is a stand-in, and a test replaces forgetBoardCheck to see the calls.
 const boardFakes = { cachedBoardCheck, forgetBoardCheck() {} };
 const pick = (watch) => ({ setInterval: watch.setInterval, clearInterval: watch.clearInterval, setTimeout, clearTimeout,
-  readFileSync, createHash, path, readQuitMarker: async () => ({ pid: engine.pid, token: createHash('sha256').update(engine.sourceToken).digest('hex') }) });
+  readFileSync, createHash, path, readQuitMarker: async () => ({ schema: 1, token: createHash('sha256').update(engine.sourceToken).digest('hex') }) });
 // The engine watch timer is captured; tests run its callback by hand.
 const timers = () => {
   const watch = { callbacks: [], cleared: [] };
@@ -560,17 +560,18 @@ test('reconnect watch sends B and C without ending stdin or closing the window',
   assert.deepEqual(f.lines, [b, c].map((runtime) => ({ url: `http://127.0.0.1:${runtime.port}`, token: runtime.sourceToken })));
   assert.deepEqual(f.kills, []); assert.equal(f.ended, false); f.cancel();
 });
-test('reconnect watch closes at once only for the matching quit marker', async () => {
-  const f = fixture({ marker: async () => ({ schema: 1, pid: a.pid, token: hash(a.sourceToken) }) });
-  await f.tick(2000);
-  assert.deepEqual(f.kills, ['SIGTERM']); assert.equal(f.finds, 0); assert.deepEqual(f.lines, []);
-});
-for (const marker of [{ schema: 1, pid: 99, token: hash(a.sourceToken) }, { schema: 1, pid: a.pid, token: hash(b.sourceToken) }]) {
-  test(`reconnect watch ignores an unrelated quit marker ${marker.pid}/${marker.token.slice(0, 4)}`, async () => {
-    const f = fixture({ marker: async () => marker }); await f.tick(2000); await f.tick(500);
-    assert.equal(f.lines.length, 1); assert.deepEqual(f.kills, []); f.cancel();
+// Only the token names the engine run: a PID in the marker does not change the result.
+for (const marker of [{ schema: 1, token: hash(a.sourceToken) }, { schema: 1, pid: 99, token: hash(a.sourceToken) }]) {
+  test(`reconnect watch closes at once for the quit marker of its engine ${marker.pid ?? 'no PID'}/${marker.token.slice(0, 4)}`, async () => {
+    const f = fixture({ marker: async () => marker });
+    await f.tick(2000);
+    assert.deepEqual(f.kills, ['SIGTERM']); assert.equal(f.finds, 0); assert.deepEqual(f.lines, []);
   });
 }
+test('reconnect watch ignores the quit marker of another engine', async () => {
+  const f = fixture({ marker: async () => ({ schema: 1, pid: a.pid, token: hash(b.sourceToken) }) }); await f.tick(2000); await f.tick(500);
+  assert.equal(f.lines.length, 1); assert.deepEqual(f.kills, []); f.cancel();
+});
 for (const status of [async () => ({ appVersion: '2.0.0', rootDir: '/example/asb' }),
   async () => ({ appVersion: '1.10.0', rootDir: '/another/asb' }), async () => { throw new Error('status failed'); }]) {
   test(`reconnect watch rejects incompatible status ${status}`, async () => {
@@ -597,12 +598,16 @@ test('quit markers are private, atomic runtime records and reject unsafe or malf
   assert.equal(await instance.readQuitMarker(env), null);
   await writeFile(service, JSON.stringify(a), { mode: 0o600 });
   await instance.writeQuitMarker({ file: service }, a);
-  assert.deepEqual(JSON.parse(await readFile(file)), { schema: 1, pid: a.pid, token: hash(a.sourceToken) });
+  assert.deepEqual(JSON.parse(await readFile(file)), { schema: 1, token: hash(a.sourceToken) });
   assert.equal((await readFile(file, 'utf8')).endsWith('\n'), true);
   assert.equal((await stat(file)).mode & 0o777, 0o600);
   assert.ok(await stat(service));
-  const marker = await instance.readQuitMarker(env); assert.equal(marker.pid, a.pid);
-  for (const value of ['{', '{}', JSON.stringify({ ...marker, extra: 1 }), JSON.stringify({ pid: a.pid, token: marker.token })]) {
+  const marker = await instance.readQuitMarker(env); assert.deepEqual(marker, { schema: 1, token: hash(a.sourceToken) });
+  // The form of ASB 1.11.0 has a PID; the reader gives the same marker.
+  await writeFile(file, JSON.stringify({ schema: 1, pid: a.pid, token: marker.token })); assert.deepEqual(await instance.readQuitMarker(env), marker);
+  for (const value of ['{', '{}', JSON.stringify({ ...marker, extra: 1 }), JSON.stringify({ schema: 1, pid: a.pid, token: marker.token, extra: 1 }),
+    JSON.stringify({ pid: a.pid, token: marker.token }), JSON.stringify({ schema: 1, pid: 1 }), JSON.stringify({ schema: 2, token: marker.token }),
+    JSON.stringify({ schema: 1, token: marker.token.toUpperCase() })]) {
     await writeFile(file, value); assert.equal(await instance.readQuitMarker(env), null);
   }
   await instance.writeQuitMarker({ file: service }, a);

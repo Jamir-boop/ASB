@@ -11,9 +11,10 @@ for ASB_CANDIDATE in "${ASB_NODE:-}" "$(command -v node || true)" "$HOME/.local/
   if [ -n "$ASB_CANDIDATE" ] && [ -x "$ASB_CANDIDATE" ] && "$ASB_CANDIDATE" --input-type=module -e 'if (Number(process.versions.node.split(".")[0]) < 20) process.exit(1); if (!["build","uninstall","agent","doctor","group","network","phone","setup"].includes(process.argv[1])) { try { await import("node:sqlite"); } catch { const {execFileSync}=await import("node:child_process"); execFileSync("sqlite3",["--version"],{stdio:"ignore"}); } }' "$ASB_PACKAGE_COMMAND" >/dev/null 2>&1; then
     export ASB_NODE="$ASB_CANDIDATE"
     # The engine (the user service runs `service run`) gets a smaller V8 young generation and the glibc settings that return freed memory
-    # (src/memory-trim.mjs). glibc reads them at start, so they cannot come later. The engine removes them from its own environment.
+    # (src/memory-trim.mjs). glibc reads them at start, so they cannot come later. A setting that the user set (also to an empty value) stays.
+    # The engine removes the ASB values from its own environment.
     if [ "$*" = "service run" ] || [ "$*" = "engine run" ]; then
-      export MALLOC_ARENA_MAX=2 MALLOC_MMAP_THRESHOLD_=131072 MALLOC_TRIM_THRESHOLD_=131072
+      export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX-2}" MALLOC_MMAP_THRESHOLD_="${MALLOC_MMAP_THRESHOLD_-131072}" MALLOC_TRIM_THRESHOLD_="${MALLOC_TRIM_THRESHOLD_-131072}"
       exec "$ASB_CANDIDATE" --max-semi-space-size=16 "$ASB_ROOT/scripts/asb.mjs" "$@"
     fi
     # One dispatcher for every command (scripts/asb.mjs).
