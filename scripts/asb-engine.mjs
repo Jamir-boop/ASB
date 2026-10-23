@@ -16,7 +16,7 @@ import { cacheDir, configDir, runtimeDir, stateDir } from '../src/platform-paths
 import { createReaderPositions } from '../src/reader-positions.mjs';
 import { createMemoryTrim, ENGINE_NODE_FLAGS, forgetMallocEnv, MALLOC_ENV } from '../src/memory-trim.mjs';
 import { findRunningService, prepareInstanceRuntime, protectWindowsFolder, publishInstanceRuntime,
-  removeInstanceRuntime, requestInstance } from './asb-instance.mjs';
+  removeInstanceRuntime, requestInstance, writeQuitMarker } from './asb-instance.mjs';
 
 const execFileAsync = promisify(execFileCallback);
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -75,6 +75,7 @@ export async function runEngine({ env = process.env, platform = process.platform
   let runtimeRecord;
   const port = switchboardPort(env.PORT);
   const sourceToken = randomBytes(32).toString('hex');
+  let quitRequested = false;
   const asbVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
   // Decision B: the group reads the gateway and the server lazily, so it is made first.
   const group = createMachineGroup({ gateway: () => gateway, server: () => server, asbVersion,
@@ -91,7 +92,13 @@ export async function runEngine({ env = process.env, platform = process.platform
     readerPositions: positions, onScanDone: trim.scanEnded,
     playSound: createSoundPlayer({ platform }),
     machineIdentity: () => ({ machineId, machineName: group.selfName() }), referenceScopes: () => referenceScopes,
-    onStop: () => shutdown('the stop request') });
+    onStop: async () => {
+      if (stopping || quitRequested) return;
+      quitRequested = true;
+      try { await writeQuitMarker(prepared, { pid: process.pid, sourceToken }); }
+      catch (error) { console.error(`Cannot write ASB quit marker: ${error.message}`); }
+      shutdown('the stop request');
+    } });
   let stopping = false;
   let cleanup;
   let startup;

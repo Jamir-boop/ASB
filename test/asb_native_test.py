@@ -242,8 +242,8 @@ class BoardProcessCheck(unittest.TestCase):
         self.assertIsNone(board.poll())
         self.assertGreater((self.directory / "board.png").stat().st_size, 0)
         dashboards = [item for item in self.received if item[0] == "GET" and item[1].split("?")[0] == "/api/dashboard"]
-        # The early request is the only dashboard request until the next poll; it is the first one, and it needs no token.
-        self.assertEqual(dashboards, [("GET", "/api/dashboard", None)])
+        # The early request is the only dashboard request until the next poll and uses the token from stdin.
+        self.assertEqual(dashboards, [("GET", "/api/dashboard", self.TOKEN)])
         # The token of the line is the token of later requests: the board shares its palette with it.
         for _attempt in range(50):
             if any(item[:2] == ("POST", "/api/palette") for item in self.received):
@@ -414,6 +414,75 @@ class WidgetCheck(unittest.TestCase):
         adjustment = window.scroll.get_hadjustment()
         self.assertGreaterEqual(bounds.origin.x, adjustment.get_value() - 1)
         self.assertLessEqual(bounds.origin.x + bounds.size.width, adjustment.get_value() + adjustment.get_page_size() + 1)
+
+    def test_reconnect_keeps_the_board_and_preferences_and_uses_the_new_engine(self):
+        received = [[], []]
+        servers = []
+        for index in range(2):
+            class Handler(BaseHTTPRequestHandler):
+                def do_GET(handler, index=index):
+                    received[index].append((handler.path, handler.headers.get("X-ASB-Source-Token")))
+                    handler.send_response(200)
+                    handler.send_header("Content-Type", "text/event-stream" if handler.path == "/api/events" else "application/json")
+                    handler.end_headers()
+                    if handler.path == "/api/events":
+                        handler.wfile.write(b": connected\n\n")
+                    else:
+                        body = mock_dashboard() if handler.path.startswith("/api/dashboard") else {"sources": [], "revision": "r1"}
+                        if handler.path == "/api/phone":
+                            body = {"devices": [], "addresses": [], "enabled": False, "port": 4630}
+                        handler.wfile.write(json.dumps(body).encode())
+                def do_POST(handler, index=index):
+                    received[index].append((handler.path, handler.headers.get("X-ASB-Source-Token")))
+                    handler.rfile.read(int(handler.headers.get("Content-Length", 0)))
+                    handler.send_response(200)
+                    handler.end_headers()
+                    handler.wfile.write(b"{}")
+                def log_message(handler, *_args):
+                    pass
+            server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            servers.append(server)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+        bases = [f"http://127.0.0.1:{server.server_port}" for server in servers]
+        def wait(done):
+            end = time.monotonic() + 6
+            while not done() and time.monotonic() < end:
+                self.drain(.02)
+            self.assertTrue(done())
+        with patch.object(asb, "SOURCE_TOKEN", "token-a"):
+            window = asb.SwitchboardWindow(self.application, bases[0], theme_path=False, layout_path=False)
+            self.addCleanup(window.close)
+            window.present()
+            wait(lambda: any(route == "/api/agent/ui" for route, _token in received[0]) and not window.loading)
+            window.open_preferences()
+            preferences = window.preferences_window
+            preferences.stack.set_visible_child_name("profiles")
+            wait(lambda: preferences.profiles_editor and not preferences.profiles_editor.loading)
+            editor = preferences.profiles_editor
+            preferences.stack.set_visible_child_name("phone")
+            wait(lambda: preferences.phone_editor and not preferences.phone_editor.loading)
+            phone = preferences.phone_editor
+            messages = copy.copy(window.message_seen)
+            old_events = window.events
+            self.application.reconnect(bases[1], "token-b")
+            editor.request_sources()
+            phone.request_phone()
+            wait(lambda: all(any(route == wanted for route, _token in received[1])
+                             for wanted in ("/api/dashboard", "/api/agent/ui", "/api/events", "/api/sources", "/api/phone")))
+            self.assertTrue(all(token == "token-b" for route, token in received[1] if route not in ("/api/events", "/api/sources")))
+            self.assertEqual(window.base, bases[1])
+            self.assertIs(window.preferences_window, preferences)
+            self.assertIs(preferences.profiles_editor, editor)
+            self.assertFalse(window.closed)
+            self.assertFalse(preferences.closed)
+            self.assertTrue(old_events.stopped.is_set())
+            self.assertEqual(window.events.address.port, servers[1].server_port)
+            self.assertEqual(window.message_seen, messages)
+            window.close()
+            self.application.reconnect(bases[0], "ignored")
+            self.assertEqual(window.base, bases[1])
 
     def test_toolbar_c_one_row_corners_search_filters_and_no_counters(self):
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),

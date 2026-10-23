@@ -1146,6 +1146,7 @@ def machine_invite_text(expires_at_ms):
 def request_json(base, route, method="GET", body=None, etag=None, headers=None):
     headers = {"Accept": "application/json", **(headers or {})}
     path = route.split("?", 1)[0]
+    dashboard_route = path == "/api/dashboard"
     source_route = path == "/api/sources" or path.startswith("/api/sources/")
     phone_route = path == "/api/phone" or path.startswith("/api/phone/")
     group_route = path == "/api/group" or path.startswith("/api/group/")
@@ -1156,7 +1157,7 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
     data = None
     if etag and etag[0] and method == "GET" and route.split("?")[0] == "/api/dashboard":
         headers["If-None-Match"] = etag[0]
-    if SOURCE_TOKEN and ((source_route and method == "POST") or phone_route or group_route or service_route or palette_route or agent_route or engine_route):
+    if SOURCE_TOKEN and ((source_route and method == "POST") or phone_route or group_route or service_route or palette_route or agent_route or engine_route or dashboard_route):
         headers["X-ASB-Source-Token"] = SOURCE_TOKEN
     if method == "POST":
         headers.update({"Origin": base, "Content-Type": "application/json"})
@@ -1215,7 +1216,7 @@ def request_async(base, route, callback, dispatch, method="GET", body=None, etag
 
 
 def launcher_address(line):
-    """The local engine URL and the token from the one JSON line of the launcher. ValueError when the line is not an address."""
+    """The local engine URL and the token from a JSON line of the launcher. ValueError when the line is not an address."""
     try:
         value = json.loads(line)
     except ValueError:
@@ -1227,7 +1228,7 @@ def launcher_address(line):
 
 class LauncherStart:
     """The engine address when the launcher starts the board before the engine is ready (the address argument is "-").
-    The launcher writes one JSON line {"url", "token"} to stdin when the engine is ready. A thread reads it and then loads the first
+    The launcher writes JSON address lines to stdin when the engine is ready or restarts. A thread reads it and then loads the first
     dashboard, so that the wait for the engine and the request overlap the slow GTK import and the window build."""
 
     def __init__(self, descriptor=0, fetch=None):
@@ -1236,25 +1237,40 @@ class LauncherStart:
         self.base = self.problem = self.outcome = self.waiting = None
         self.used = False
         self.lock = threading.Lock()
-        threading.Thread(target=self.run, daemon=True).start()
+        self.buffer = b""
+        self.reconnect_target, self.reconnect_pending = None, []
+        self.worker = threading.Thread(target=self.run, daemon=True)
+        self.worker.start()
 
-    def read_line(self):
+    def read_line(self, initial=False):
         # os.read and not sys.stdin: a thread that waits in a text stream can stop Python at exit.
-        data = b""
-        while b"\n" not in data and len(data) < 4096:
+        oversized = False
+        while True:
+            if b"\n" in self.buffer:
+                line, self.buffer = self.buffer.split(b"\n", 1)
+                return b"" if oversized or len(line) > 4096 else line
+            if len(self.buffer) > 4096:
+                oversized, self.buffer = True, b""
             try:
-                chunk = os.read(self.descriptor, 4096 - len(data))
+                chunk = os.read(self.descriptor, 4096)
             except OSError:
-                break
+                return None
             if not chunk:
-                break
-            data += chunk
-        return data.split(b"\n", 1)[0]
+                line, self.buffer = self.buffer, b""
+                return line if initial and not oversized and 0 < len(line) <= 4096 else None
+            self.buffer += chunk
+
+    def reconnect(self, callback, dispatch):
+        with self.lock:
+            self.reconnect_target = (callback, dispatch)
+            for base, token in self.reconnect_pending:
+                dispatch(callback, base, token)
+            self.reconnect_pending.clear()
 
     def run(self):
         global SOURCE_TOKEN
         try:
-            self.base, SOURCE_TOKEN = launcher_address(self.read_line())
+            self.base, SOURCE_TOKEN = launcher_address(self.read_line(initial=True) or b"")
         except ValueError as error:
             self.problem = str(error)
         finally:
@@ -1268,12 +1284,29 @@ class LauncherStart:
             outcome = (self.fetch(self.base, "/api/dashboard", etag=etag), None, etag)
         except RuntimeError as error:
             outcome = (None, str(error), etag)
+        except Exception:
+            pass
         finally:
             with self.lock:
                 waiting, self.waiting = self.waiting, None
                 self.outcome = None if waiting else outcome
             if waiting:
                 waiting[1](waiting[0], *outcome)
+
+        while True:
+            line = self.read_line()
+            if line is None:
+                return
+            try:
+                base, token = launcher_address(line)
+            except (ValueError, UnicodeError):
+                continue
+            with self.lock:
+                if self.reconnect_target:
+                    callback, dispatch = self.reconnect_target
+                    dispatch(callback, base, token)
+                else:
+                    self.reconnect_pending.append((base, token))
 
     def address(self):
         """The engine URL, as soon as the launcher has written it. ValueError when it never does."""
@@ -3055,6 +3088,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     filter_popover_signature = None
     message_seen = None
     pending_messages = ()
+    engine_generation = 0
     number_hold = number_idle = number_scroll = number_pressed = None
     row_cache_trim = None
     numbers_shown = False
@@ -3437,6 +3471,24 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.refresh()
         else:
             self.refresh()
+
+    def reconnect(self, base):
+        if self.closed:
+            return
+        self.base = base
+        self.engine_generation += 1
+        if self.preferences_window:
+            for name in ("profiles_editor", "phone_editor", "machines_editor"):
+                editor = getattr(self.preferences_window, name)
+                if editor:
+                    editor.base = base
+        self.events.close()
+        self.events = EventStream(base, self.source_changed, GLib.idle_add)
+        self.dashboard_etag = None
+        self.ui_report_last = None
+        self.ui_report_sending = False
+        self.report_ui()
+        self.refresh(queue=True)
 
     def first_dashboard(self, dashboard, error, etag):
         """The result of the early request of the launcher start. A failed request shows no notice: the normal first refresh runs."""
@@ -3840,12 +3892,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if self.ui_report_sending or payload == self.ui_report_last and time.monotonic() - self.ui_report_at < 25:
             return
         self.ui_report_last, self.ui_report_at, self.ui_report_sending = payload, time.monotonic(), True
+        base, generation = self.base, self.engine_generation
         def finished(_result, _error):
+            if generation != self.engine_generation:
+                return False
             self.ui_report_sending = False
             if not self.closed:
                 self.report_ui()
             return False
-        request_async(self.base, "/api/agent/ui", finished, GLib.idle_add, "POST", payload)
+        request_async(base, "/api/agent/ui", finished, GLib.idle_add, "POST", payload)
 
     def source_changed(self):
         self.refresh(queue=True)
@@ -3862,8 +3917,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return
         self.loading = True
         etag = [self.dashboard_etag]
-        request_async(self.base, "/api/dashboard?force=1" if force else "/api/dashboard",
-                      lambda dashboard, error: self.apply_dashboard(dashboard, error, etag, force), GLib.idle_add, "GET", None, etag)
+        base, generation = self.base, self.engine_generation
+        def finished(dashboard, error):
+            if generation != self.engine_generation:
+                self.loading = False
+                self.refresh(force, queue=True)
+                return False
+            return self.apply_dashboard(dashboard, error, etag, force)
+        request_async(base, "/api/dashboard?force=1" if force else "/api/dashboard",
+                      finished, GLib.idle_add, "GET", None, etag)
 
     def apply_dashboard(self, dashboard, error, etag=None, forced=False):
         if self.closed:
@@ -6521,6 +6583,17 @@ class SwitchboardApplication(Adw.Application):
         self.get_style_manager().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
         self.base, self.first_load = base, first_load
         self.connect("activate", self.on_activate)
+        if first_load:
+            first_load.reconnect(self.reconnect, GLib.idle_add)
+
+    def reconnect(self, base, token):
+        global SOURCE_TOKEN
+        SOURCE_TOKEN, self.base = token, base
+        self.first_load = None
+        for window in self.get_windows():
+            if isinstance(window, SwitchboardWindow):
+                window.reconnect(base)
+        return False
 
     def on_activate(self, *_args):
         window = self.get_active_window()

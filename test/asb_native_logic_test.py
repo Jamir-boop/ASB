@@ -3987,6 +3987,7 @@ class NativeLogicChecks(unittest.TestCase):
         for value, route, method, expected in ((token, "/api/sources", "POST", token),
                                                (token, "/api/sources/one/remove", "POST", token),
                                                (token, "/api/sources", "GET", None),
+                                               (token, "/api/dashboard", "GET", token),
                                                (token, "/api/sourcesx", "POST", None),
                                                (token, "/api/threads/a/pin", "POST", None),
                                                ("", "/api/sources", "POST", None)):
@@ -3999,9 +4000,9 @@ class NativeLogicChecks(unittest.TestCase):
                 self.assertNotIn(token, str(caught.exception))
         source = SOURCE.read_text()
         # The environment is read once (a board started by hand). The token is used in the header rule (3 lines), in report_ui, and in the
-        # launcher start, which sets it (a global statement and the assignment) from the one line on stdin.
+        # launcher start and reconnect, which set it (a global statement and the assignment each) from stdin.
         self.assertEqual(source.count("ASB_SOURCE_TOKEN"), 1)
-        self.assertEqual(source.count("SOURCE_TOKEN"), 7)
+        self.assertEqual(source.count("SOURCE_TOKEN"), 9)
 
     def test_row_error_clears_when_the_row_state_changes(self):
         window = object.__new__(Window)
@@ -6322,16 +6323,71 @@ class BoardStartChecks(unittest.TestCase):
     def start(self, data, fetch=None):
         """A LauncherStart that reads data from a real pipe; the end of the data is the end of the input."""
         read, write = os.pipe()
-        self.addCleanup(os.close, read)
         os.write(write, data)
         os.close(write)
-        return SCOPE["LauncherStart"](read, fetch or Mock(return_value={"threads": []}))
+        start = SCOPE["LauncherStart"](read, fetch or Mock(return_value={"threads": []}))
+        def close_reader():
+            start.worker.join(5)
+            os.close(read)
+        self.addCleanup(close_reader)
+        return start
 
     def outcome(self, start):
         done, got = threading.Event(), []
         start.deliver(lambda *args: (got.append(args), done.set()), lambda callback, *args: callback(*args))
         self.assertTrue(done.wait(5))
         return got
+
+    def test_reconnect_lines_are_delivered_in_order_and_eof_ends_the_reader(self):
+        read, write = os.pipe()
+        self.addCleanup(os.close, read)
+        got, queued = [], []
+        start = SCOPE["LauncherStart"](read, Mock(return_value={"threads": []}))
+        start.reconnect(lambda *args: got.append(args), lambda callback, *args: queued.append((callback, args)))
+        os.write(write, self.line() + b"invalid\n" + b"x" * 5000 + b"\n\xff\n"
+                 + self.line(url="http://127.0.0.1:4631", token="new")
+                 + self.line(url="http://127.0.0.1:4632", token="incomplete").rstrip(b"\n"))
+        os.close(write)
+        start.worker.join(5)
+        self.assertFalse(start.worker.is_alive())
+        self.assertEqual(start.address(), self.BASE)
+        self.assertEqual(got, [])
+        self.assertEqual(len(queued), 1)
+        queued[0][0](*queued[0][1])
+        self.assertEqual(got, [("http://127.0.0.1:4631", "new")])
+
+    def test_reconnect_before_application_creation_waits_for_main_loop_delivery(self):
+        start = self.start(self.line() + self.line(url="http://127.0.0.1:4631", token="new"))
+        start.worker.join(5)
+        self.assertFalse(start.worker.is_alive())
+        callback, dispatch = Mock(), Mock()
+        start.reconnect(callback, dispatch)
+        dispatch.assert_called_once_with(callback, "http://127.0.0.1:4631", "new")
+        callback.assert_not_called()
+
+    def test_a_late_dashboard_from_the_previous_engine_cannot_set_the_new_etag(self):
+        window = object.__new__(Window)
+        window.base, window.engine_generation = self.BASE, 0
+        window.closed = window.loading = False
+        window.dashboard_etag = '"old"'
+        window.apply_dashboard = Mock()
+        window.refresh_button = Mock()
+        # A forced refresh asks the new engine with force too, so that its answer enables the refresh button again.
+        for force in (False, True):
+            window.loading, window.engine_generation, window.dashboard_etag = False, 0, '"old"'
+            refresh = Window.refresh.__get__(window)
+            with patch.dict(SCOPE, {"request_async": Mock(), "GLib": Mock()}):
+                refresh(force)
+                callback = SCOPE["request_async"].call_args.args[2]
+            # A replacement engine can use the same port and URL.
+            window.engine_generation += 1
+            window.dashboard_etag = None
+            window.refresh = Mock()
+            callback({"threads": []}, None)
+            window.apply_dashboard.assert_not_called()
+            self.assertIsNone(window.dashboard_etag)
+            self.assertFalse(window.loading)
+            window.refresh.assert_called_once_with(force, queue=True)
 
     def test_the_address_line_gives_the_local_url_and_the_token_and_starts_the_first_request(self):
         def fetch(base, route, etag):

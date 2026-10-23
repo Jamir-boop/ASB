@@ -65,10 +65,10 @@ const descendantBoards = (processes, rootPid) => {
 const boardPids = (rootPid) => descendantBoards(JSON.parse(spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
   'ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, CommandLine)'],
 { encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024 }).stdout), rootPid);
-// The boards that are still below the root after up to 20 s.
+// The boards that are still below the root after up to 25 s (the 2 s PID check, the 20 s reconnect wait, and cleanup).
 async function boardsLeft(rootPid) {
   let left = boardPids(rootPid);
-  for (const deadline = Date.now() + 20_000; left.length && Date.now() < deadline;) { await delay(500); left = boardPids(rootPid); }
+  for (const deadline = Date.now() + 25_000; left.length && Date.now() < deadline;) { await delay(500); left = boardPids(rootPid); }
   return left;
 }
 
@@ -99,7 +99,7 @@ test('the board finder returns only the boards below the root, also from a root 
   assert.deepEqual(descendantBoards([], 5), []);
 });
 
-test('the board opens its window against an engine and closes when the engine stops, and the Start menu command opens it too', {
+test('the board opens its window against an engine and closes after the reconnect timeout, and the Start menu command opens it too', {
   skip: process.platform === 'win32' && process.env.ASB_BOARD_SMOKE === '1' ? false
     : 'Windows with MSYS2 GTK in a desktop session: set ASB_BOARD_SMOKE=1 (and ASB_PYTHON)',
   timeout: 300_000,
@@ -150,11 +150,11 @@ test('the board opens its window against an engine and closes when the engine st
   // The board is a child of the launcher. The finder must see it now, so that the check after the stop means something.
   assert.ok(boardPids(launcher.pid).length > 0, 'The test cannot find the board of the launcher.');
 
-  // The launcher watches the engine process and closes the board when it is gone.
+  // With no replacement engine, the launcher closes the board after its reconnect wait.
   engine.kill();
-  const closed = await Promise.race([exited, delay(20_000, null, { ref: false })]);
-  assert.deepEqual(closed, { code: 0, signal: null }, `The launcher did not exit with code 0 within 20 s after the engine stopped.\n${output}`);
-  assert.deepEqual(await boardsLeft(launcher.pid), [], 'The board of the launcher did not close within 20 s after its engine stopped.');
+  const closed = await Promise.race([exited, delay(25_000, null, { ref: false })]);
+  assert.deepEqual(closed, { code: 0, signal: null }, `The launcher did not exit with code 0 within 25 s after the engine stopped.\n${output}`);
+  assert.deepEqual(await boardsLeft(launcher.pid), [], 'The board of the launcher did not close within 25 s after its engine stopped.');
 
   // The Start menu link runs this command. The tray script starts the launcher with no console and exits at once, so the test waits for the image.
   // The launcher is a child of the PowerShell process (the root), and the board is a child of the launcher.
@@ -168,7 +168,7 @@ test('the board opens its window against an engine and closes when the engine st
   assert.ok(await saved(startMenuImage), 'The Start menu command saved no window image.');
   assert.ok(boardPids(menu.pid).length > 0, 'The test cannot find the board of the Start menu command.');
 
-  // The launcher that the command started closes its board when its engine is gone, as the first launcher did.
+  // The launcher that the command started also closes its board after the reconnect wait.
   second.kill();
-  assert.deepEqual(await boardsLeft(menu.pid), [], 'The board of the Start menu command did not close within 20 s after its engine stopped.');
+  assert.deepEqual(await boardsLeft(menu.pid), [], 'The board of the Start menu command did not close within 25 s after its engine stopped.');
 });

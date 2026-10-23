@@ -1,24 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { EventEmitter, once } from 'node:events';
-import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, chown, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
+import * as desktop from '../scripts/asb-desktop.mjs';
+import * as instance from '../scripts/asb-instance.mjs';
 import { cachedBoardCheck as realCachedBoardCheck, forgetBoardCheck as realForgetBoardCheck } from '../src/linux-system.mjs';
 
 const launcherUrl = new URL('../scripts/asb-desktop.mjs', import.meta.url);
 // The script body runs in a context with fake modules; its main() is called as the file entry would.
-const launcher = (await readFile(launcherUrl, 'utf8')).replace(/^import[^\n]*\n/gm, '').replace(/^export /m, '')
+const launcher = (await readFile(launcherUrl, 'utf8')).replace(/^import[^\n]*\n/gm, '').replace(/^export /gm, '')
   .replace(/\nif \(process\.argv\[1\][^\n]*\n$/, '\nmain();\n').replaceAll('import.meta.url', 'launcherUrl');
 const engine = { pid: 12, port: 23456, sourceToken: 'service-token' };
 // No test runs the real Python probe. As the real check does, an absolute ASB_PYTHON is the only candidate.
 const cachedBoardCheck = async ({ env }) => ({ ok: true, python: env.ASB_PYTHON || '/opt/python3' });
 // The cache itself is tested in test/linux-system.test.mjs; here it is a stand-in, and a test replaces forgetBoardCheck to see the calls.
 const boardFakes = { cachedBoardCheck, forgetBoardCheck() {} };
-const pick = (watch) => ({ setInterval: watch.setInterval, clearInterval: watch.clearInterval });
+const pick = (watch) => ({ setInterval: watch.setInterval, clearInterval: watch.clearInterval, setTimeout, clearTimeout,
+  readFileSync, createHash, path, readQuitMarker: async () => ({ pid: engine.pid, token: createHash('sha256').update(engine.sourceToken).digest('hex') }) });
 // The engine watch timer is captured; tests run its callback by hand.
 const timers = () => {
   const watch = { callbacks: [], cleared: [] };
@@ -30,7 +35,7 @@ const timers = () => {
 // The window stand-in: stdin keeps what the launcher writes (a real child process has a pipe there).
 const fakeWindow = (exitCode = 0) => Object.assign(new EventEmitter(), {
   exitCode, kills: [], kill(signal) { this.kills.push(signal); },
-  stdin: { handlers: [], written: [], on(name, handler) { this.handlers.push(name); }, end(text) { this.written.push(text); } },
+  stdin: { handlers: [], written: [], ended: false, on(name, handler) { this.handlers.push(name); }, write(text) { this.written.push(text); }, end() { this.ended = true; } },
 });
 const addressLine = `${JSON.stringify({ url: 'http://127.0.0.1:23456', token: 'service-token' })}\n`;
 
@@ -58,7 +63,7 @@ test('the window gets the engine URL and token on stdin, never in its arguments 
     },
   });
   assert.equal(registered, 1);
-  // One JSON line on the pipe, and the pipe ends after it. No part of the address is in the arguments or the options.
+  // The first JSON line leaves the pipe open for a reconnect. No part of the address is in the arguments or the options.
   assert.deepEqual(native.stdin.written, [addressLine]);
   assert.deepEqual(native.stdin.handlers, ['error']);
   assert.doesNotMatch(JSON.stringify(spawnCalls), /service-token|23456/);
@@ -289,7 +294,7 @@ for (const exitCode of [0, 1]) test(`launcher exit ${exitCode} stops its synthet
   t.after(() => { if (native?.exitCode === null && native?.signalCode === null) native.kill('SIGKILL'); });
   // The synthetic window prints the line that it reads from its stdin pipe and then stays alive.
   const synthetic = `let text = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', (chunk) => { text += chunk; })
-    .on('end', () => process.stdout.write('line:' + text)); setInterval(() => {}, 1000)`;
+    ; process.stdin.on('data', () => { if (text.includes('\\n')) process.stdout.write('line:' + text); }); setInterval(() => {}, 1000)`;
   const launch = vm.runInNewContext(launcher, { ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
     startEngine: async () => engine, registerAppIcon: async () => {},
     console: { log() {}, error() {}, warn() {} },
@@ -384,7 +389,7 @@ test('a stop during engine startup stops the window that already started, and th
   assert.equal(owner.exitCode, 0);
 });
 
-for (const failure of ['', 'ESRCH', 'EPERM']) test(`the engine watch ${failure === 'ESRCH' ? 'closes the window when the engine is gone' : `keeps the window while the engine lives (${failure || 'alive'})`}`, async () => {
+for (const failure of ['', 'ESRCH', 'EPERM']) test(`the engine watch ${failure === 'ESRCH' ? 'closes the window for an explicit engine quit' : `keeps the window while the engine lives (${failure || 'alive'})`}`, async () => {
   const owner = new EventEmitter();
   owner.platform = 'linux';
   owner.env = { ASB_SYSTEM_INSTALL: '1' };
@@ -402,7 +407,7 @@ for (const failure of ['', 'ESRCH', 'EPERM']) test(`the engine watch ${failure =
     spawn: () => native,
   });
   assert.equal(watch.callbacks.length, 1);
-  watch.callbacks[0]();
+  await watch.callbacks[0]();
   assert.deepEqual(checked, [[12, 0]]);
   if (failure === 'ESRCH') {
     assert.deepEqual(signals, ['SIGTERM']);
@@ -448,7 +453,7 @@ async function openBoard({ forgetBoardCheck, warnings = [], windowEvent }) {
   });
   assert.equal(asked.length, 1);
   assert.equal(asked[0].env, owner.env);
-  windowEvent({ native, owner, watch });
+  await windowEvent({ native, owner, watch });
   return owner;
 }
 
@@ -470,9 +475,9 @@ for (const [name, event, failed, exitCode] of [
 
 test('a stop that the launcher asked for keeps the saved board check', async () => {
   const forgotten = [];
-  const owner = await openBoard({ forgetBoardCheck: (options) => forgotten.push(options), windowEvent: ({ native, owner: current, watch }) => {
+  const owner = await openBoard({ forgetBoardCheck: (options) => forgotten.push(options), windowEvent: async ({ native, owner: current, watch }) => {
     current.kill = () => { throw Object.assign(new Error('gone'), { code: 'ESRCH' }); };
-    watch.callbacks[0]();
+    await watch.callbacks[0]();
     native.emit('exit', null, 'SIGTERM');
   } });
   assert.deepEqual(forgotten, []);
@@ -525,4 +530,98 @@ test('with the real saved check, a good start skips the probe and a board error 
   assert.deepEqual([await probes(), await saved()], [1, '']);
   assert.equal(await start([0, null]), 0);
   assert.deepEqual([await probes(), await saved()], [2, 'board-check.json']);
+});
+
+const hash = (token) => createHash('sha256').update(token).digest('hex');
+const a = { pid: 10, port: 10001, sourceToken: 'a'.repeat(64) };
+const b = { pid: 20, port: 10002, sourceToken: 'b'.repeat(64) };
+const c = { pid: 30, port: 10003, sourceToken: 'c'.repeat(64) };
+function fixture(options = {}) {
+  const intervals = new Map(), timeouts = new Map(), lines = [], kills = [];
+  let sequence = 0, finds = 0, ended = false;
+  const window = { stdin: { write: (line) => lines.push(JSON.parse(line)), end: () => { ended = true; } }, kill: (signal) => kills.push(signal) };
+  let cancel;
+  const stop = () => { cancel(); window.stdin.end(); window.kill('SIGTERM'); };
+  cancel = desktop.watchEngine(a, { window, stop, version: '1.10.0', root: '/example/asb',
+    find: async () => { finds++; return b; }, status: async () => ({ appVersion: '1.10.0', rootDir: '/example/asb' }),
+    marker: async () => null, alive: () => { throw Object.assign(new Error('gone'), { code: 'ESRCH' }); },
+    every: (callback, delay) => { const id = ++sequence; intervals.set(id, { callback, delay }); return id; },
+    clearEvery: (id) => intervals.delete(id), later: (callback, delay) => { const id = ++sequence; timeouts.set(id, { callback, delay }); return id; },
+    clearLater: (id) => timeouts.delete(id), ...options });
+  return { lines, kills, cancel, get finds() { return finds; }, get ended() { return ended; }, intervals, timeouts,
+    tick: async (delay) => { const task = [...intervals.values()].find((task) => task.delay === delay); assert.ok(task, `timer ${delay}`); await task.callback(); } };
+}
+test('reconnect watch sends B and C without ending stdin or closing the window', async () => {
+  let next = b;
+  const f = fixture({ find: async () => next });
+  await f.tick(2000); await f.tick(500);
+  next = c;
+  await f.tick(2000); await f.tick(500);
+  assert.deepEqual(f.lines, [b, c].map((runtime) => ({ url: `http://127.0.0.1:${runtime.port}`, token: runtime.sourceToken })));
+  assert.deepEqual(f.kills, []); assert.equal(f.ended, false); f.cancel();
+});
+test('reconnect watch closes at once only for the matching quit marker', async () => {
+  const f = fixture({ marker: async () => ({ schema: 1, pid: a.pid, token: hash(a.sourceToken) }) });
+  await f.tick(2000);
+  assert.deepEqual(f.kills, ['SIGTERM']); assert.equal(f.finds, 0); assert.deepEqual(f.lines, []);
+});
+for (const marker of [{ schema: 1, pid: 99, token: hash(a.sourceToken) }, { schema: 1, pid: a.pid, token: hash(b.sourceToken) }]) {
+  test(`reconnect watch ignores an unrelated quit marker ${marker.pid}/${marker.token.slice(0, 4)}`, async () => {
+    const f = fixture({ marker: async () => marker }); await f.tick(2000); await f.tick(500);
+    assert.equal(f.lines.length, 1); assert.deepEqual(f.kills, []); f.cancel();
+  });
+}
+for (const status of [async () => ({ appVersion: '2.0.0', rootDir: '/example/asb' }),
+  async () => ({ appVersion: '1.10.0', rootDir: '/another/asb' }), async () => { throw new Error('status failed'); }]) {
+  test(`reconnect watch rejects incompatible status ${status}`, async () => {
+    const f = fixture({ status }); await f.tick(2000); await f.tick(500);
+    assert.deepEqual(f.kills, ['SIGTERM']); assert.deepEqual(f.lines, []);
+  });
+}
+test('reconnect watch ends after 20 seconds with no engine', async () => {
+  const f = fixture({ find: async () => null }); await f.tick(2000); await f.tick(500);
+  const deadline = [...f.timeouts.values()][0]; assert.equal(deadline.delay, 20000); deadline.callback();
+  assert.deepEqual(f.kills, ['SIGTERM']); assert.equal(f.intervals.size, 0);
+});
+test('reconnect watch cancels pending discovery when the window ends', async () => {
+  const found = Promise.withResolvers(); const f = fixture({ find: () => found.promise });
+  await f.tick(2000); const pending = f.tick(500); f.cancel(); found.resolve(b); await pending;
+  assert.deepEqual(f.lines, []); assert.equal(f.intervals.size, 0); assert.equal(f.timeouts.size, 0);
+});
+test('quit markers are private, atomic runtime records and reject unsafe or malformed files', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'asb-quit-marker-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const env = { XDG_RUNTIME_DIR: temporary }, directory = path.join(temporary, 'asb');
+  await mkdir(directory, { mode: 0o700 });
+  const file = path.join(directory, 'stopped.json'), service = path.join(directory, 'service.json');
+  assert.equal(await instance.readQuitMarker(env), null);
+  await writeFile(service, JSON.stringify(a), { mode: 0o600 });
+  await instance.writeQuitMarker({ file: service }, a);
+  assert.deepEqual(JSON.parse(await readFile(file)), { schema: 1, pid: a.pid, token: hash(a.sourceToken) });
+  assert.equal((await readFile(file, 'utf8')).endsWith('\n'), true);
+  assert.equal((await stat(file)).mode & 0o777, 0o600);
+  assert.ok(await stat(service));
+  const marker = await instance.readQuitMarker(env); assert.equal(marker.pid, a.pid);
+  for (const value of ['{', '{}', JSON.stringify({ ...marker, extra: 1 }), JSON.stringify({ pid: a.pid, token: marker.token })]) {
+    await writeFile(file, value); assert.equal(await instance.readQuitMarker(env), null);
+  }
+  await instance.writeQuitMarker({ file: service }, a);
+  await chmod(file, 0o644); assert.equal(await instance.readQuitMarker(env), null); await chmod(file, 0o600);
+  await chmod(directory, 0o755); assert.equal(await instance.readQuitMarker(env), null); await chmod(directory, 0o700);
+  if (process.getuid?.() === 0) {
+    await chown(file, 1, 1); assert.equal(await instance.readQuitMarker(env), null); await chown(file, 0, 0);
+    await chown(directory, 1, 1); assert.equal(await instance.readQuitMarker(env), null); await chown(directory, 0, 0);
+  } else {
+    const getuid = process.getuid, uid = getuid();
+    try {
+      process.getuid = () => uid + 1;
+      assert.equal(await instance.readQuitMarker(env), null);
+      let checks = 0;
+      process.getuid = () => ++checks === 1 ? uid : uid + 1;
+      assert.equal(await instance.readQuitMarker(env), null);
+      assert.equal(checks, 2);
+    } finally { process.getuid = getuid; }
+  }
+  await writeFile(service, JSON.stringify(marker));
+  await rm(file); await symlink(service, file); assert.equal(await instance.readQuitMarker(env), null);
 });

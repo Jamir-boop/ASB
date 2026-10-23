@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
 import { chmod, link, lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
@@ -40,6 +40,27 @@ export async function readServiceRuntime(env = process.env, platform = process.p
   try {
     const value = JSON.parse(await runtimeContents(file, platform));
     return validRuntime(value) ? value : null;
+  } catch { return null; }
+}
+
+export async function writeQuitMarker(prepared, runtime) {
+  const file = path.join(path.dirname(prepared.file), 'stopped.json');
+  const temporary = `${file}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    await writeFile(temporary, JSON.stringify({ schema: 1, pid: runtime.pid,
+      token: createHash('sha256').update(runtime.sourceToken).digest('hex') }) + '\n', { flag: 'wx', mode: 0o600 });
+    await rename(temporary, file);
+  } finally { await rm(temporary, { force: true }); }
+}
+
+export async function readQuitMarker(env = process.env, platform = process.platform) {
+  const service = instanceRuntimePath(env, platform);
+  if (!service) return null;
+  try {
+    const value = JSON.parse(await runtimeContents(path.join(path.dirname(service), 'stopped.json'), platform));
+    return value && Object.keys(value).sort().join(',') === 'pid,schema,token' && value.schema === 1
+      && Number.isSafeInteger(value.pid) && value.pid > 0 && value.pid <= 2147483647
+      && typeof value.token === 'string' && /^[a-f0-9]{64}$/.test(value.token) ? value : null;
   } catch { return null; }
 }
 

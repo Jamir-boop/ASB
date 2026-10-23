@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { findRunningService, readQuitMarker, requestInstance } from './asb-instance.mjs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +14,8 @@ let stopping = false;
 function stop(code = 0) {
   if (stopping) return;
   stopping = true;
-  clearInterval(engineWatch);
+  engineWatch?.();
+  window?.stdin?.end();
   process.exitCode = code;
   if (window && window.exitCode === null) window.kill('SIGTERM');
 }
@@ -48,7 +52,7 @@ async function start() {
   }
   if (stopping) return;
   // The window starts while the engine starts, so that its slow GTK import overlaps the engine start. The argument "-" tells it to read the
-  // engine URL and the source token from stdin: one JSON line, written when the engine is ready. Neither goes into an argument or a file.
+  // engine URL and the source token from stdin: JSON lines, written when the engine is ready or restarts. Neither goes into an argument or a file.
   window = spawn(board.python, [fileURLToPath(new URL('./asb-board.py', import.meta.url)), '-'], {
     stdio: ['pipe', 'inherit', 'inherit'], ...(windows ? { windowsHide: true } : {}),
   });
@@ -69,15 +73,71 @@ async function start() {
   const url = `http://127.0.0.1:${service.port}`;
   // A launcher that already stops (the window ended first) sends no address and starts no watch, but the line still names the engine.
   if (!stopping) {
-    window.stdin.end(`${JSON.stringify({ url, token: service.sourceToken })}\n`);
-    // The window closes when its engine stops, for example after Quit ASB in the tray; a restarted engine has a new token.
-    engineWatch = setInterval(() => {
-      try { process.kill(service.pid, 0); }
-      catch (error) { if (error.code === 'ESRCH') stop(0); }
-    }, 2000);
+    window.stdin.write(`${JSON.stringify({ url, token: service.sourceToken })}\n`);
+    engineWatch = watchEngine(service, { window, stop });
   }
   console.log(`ASB: ${url}`);
 }
+// Discovery never starts an engine: an update must be able to stop and replace the installed engine.
+export function watchEngine(service, { window, stop, env = process.env, platform = process.platform,
+  find = () => findRunningService(env, platform), marker = () => readQuitMarker(env, platform),
+  status = async (runtime) => {
+    const reply = await requestInstance(runtime, '/api/agent/status');
+    if (reply.statusCode !== 200) throw new Error('Cannot read ASB engine status.');
+    return reply.body;
+  }, alive = (pid) => process.kill(pid, 0), every = setInterval, clearEvery = clearInterval,
+  later = setTimeout, clearLater = clearTimeout,
+  version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version,
+  root = fileURLToPath(new URL('..', import.meta.url)) } = {}) {
+  let interval, deadline, cancelled = false, busy = false;
+  const cancel = () => {
+    if (cancelled) return;
+    cancelled = true;
+    if (interval !== undefined) clearEvery(interval);
+    if (deadline !== undefined) clearLater(deadline);
+  };
+  const finish = () => { if (!cancelled) { cancel(); stop(0); } };
+  const watch = () => {
+    interval = every(async () => {
+      if (cancelled) return;
+      try { alive(service.pid); return; }
+      catch (error) { if (error.code !== 'ESRCH') return; }
+      clearEvery(interval);
+      interval = undefined;
+      deadline = later(finish, 20_000);
+      const quit = await marker();
+      if (cancelled) return;
+      if (quit?.pid === service.pid && quit.token === createHash('sha256').update(service.sourceToken).digest('hex')) {
+        finish();
+        return;
+      }
+      interval = every(async () => {
+        if (cancelled || busy) return;
+        busy = true;
+        try {
+          const next = await find();
+          if (cancelled || !next || next.pid === service.pid) return;
+          const info = await status(next);
+          if (cancelled) return;
+          if (info?.appVersion !== version || typeof info.rootDir !== 'string' || path.resolve(info.rootDir) !== path.resolve(root)) {
+            finish();
+            return;
+          }
+          window.stdin.write(`${JSON.stringify({ url: `http://127.0.0.1:${next.port}`, token: next.sourceToken })}\n`);
+          service = next;
+          clearEvery(interval);
+          clearLater(deadline);
+          deadline = undefined;
+          watch();
+        } catch { if (!cancelled) finish(); }
+        finally { busy = false; }
+      }, 500);
+    }, 2000);
+  };
+  watch();
+  return cancel;
+}
+
 // Opens the board: starts the engine when it is not running, then the native window as its client.
 export function main() {
   if (process.platform !== 'linux' && process.platform !== 'win32') {

@@ -929,3 +929,47 @@ test('a stale record in the state folder with a live PID that does not answer is
   assert.equal((await child.closed)[0], 0, child.errors);
   await assert.rejects(stat(file), { code: 'ENOENT' });
 });
+
+for (const signal of ['SIGTERM', 'SIGINT']) test(`quit marker is absent after ${signal}`, async (t) => {
+  const f = await fixture(t);
+  const child = f.launch([engineScript, 'run']);
+  await ready(child);
+  child.kill(signal);
+  assert.equal((await child.closed)[0], 0, child.errors);
+  await assert.rejects(stat(path.join(path.dirname(f.runtime), 'stopped.json')), { code: 'ENOENT' });
+});
+
+test('the engine stop request publishes its quit marker before runtime removal', async (t) => {
+  const { createHash } = await import('node:crypto');
+  const f = await fixture(t);
+  const child = f.launch([engineScript, 'run']);
+  await ready(child);
+  const runtime = await readServiceRuntime(f.env);
+  const source = await readFile(engineScript, 'utf8');
+  const callback = source.match(/onStop: (async \(\) => \{[\s\S]*?\n    \})/);
+  assert.ok(callback, 'the stop request has its own marker callback');
+  const order = [];
+  const pending = Promise.withResolvers();
+  const callbackFor = Function('writeQuitMarker', 'prepared', 'process', 'sourceToken', 'shutdown', 'console', 'stopping', 'quitRequested', `return (${callback[1]});`);
+  const onStop = callbackFor(
+    async () => { order.push('marker'); await pending.promise; order.push('renamed'); }, {}, { pid: 1 }, 't',
+    () => order.push('shutdown'), { error: () => order.push('error') }, false, false);
+  const stopping = onStop();
+  await onStop();
+  assert.deepEqual(order, ['marker']); pending.resolve(); await stopping;
+  assert.deepEqual(order, ['marker', 'renamed', 'shutdown']);
+  const failed = [];
+  const failStop = callbackFor(async () => { throw new Error('write failed'); }, {}, { pid: 1 }, 't',
+    () => failed.push('shutdown'), { error: (text) => failed.push(text) }, false, false);
+  await failStop(); await failStop();
+  assert.deepEqual(failed, ['Cannot write ASB quit marker: write failed', 'shutdown']);
+  const response = await fetch(`http://127.0.0.1:${runtime.port}/api/engine/stop`, {
+    method: 'POST', headers: { 'X-ASB-Source-Token': runtime.sourceToken, origin: `http://127.0.0.1:${runtime.port}` } });
+  assert.equal(response.status, 200);
+  assert.equal((await child.closed)[0], 0, child.errors);
+  const file = path.join(path.dirname(f.runtime), 'stopped.json');
+  assert.equal(await readFile(file, 'utf8'), JSON.stringify({ schema: 1, pid: child.pid,
+    token: createHash('sha256').update(runtime.sourceToken).digest('hex') }) + '\n');
+  assert.equal((await stat(file)).mode & 0o777, 0o600);
+  await assert.rejects(stat(f.runtime), { code: 'ENOENT' });
+});
