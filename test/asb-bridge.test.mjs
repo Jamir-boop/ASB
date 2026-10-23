@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { codexBunOnPath, commandLine, executable, hasOldPlugin, linkClaudeRegistry, opencodePaths, parseDebugPaths, skillState } from '../scripts/asb-bridge.mjs';
+import { defaultOpenCodeStateDir } from '../src/opencode-data.mjs';
 
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const SCRIPT = path.join(ROOT, 'scripts/asb-bridge.mjs');
@@ -201,7 +202,7 @@ for (const [label, platform, reason, windowsHint] of [
     assert.equal(result.stderr, `Warning: ${f.personal}: codex plugin remove asb-bridge@asb failed. ${reason}${hint}\n`);
     assert.ok(result.stdout.includes(`Codex ${f.codex}: removed; message history stays at ${path.join(f.codex, 'plugin-state/asb-bridge')}\n`));
     assert.ok(result.stdout.includes(`Claude ${f.claude}: removed\n`));
-    assert.ok(result.stdout.includes(`OpenCode ${opencode}: removed; message history stays at ${path.join(f.home, '.local/state/opencode/plugin-state/asb-bridge')}\n`));
+    assert.ok(result.stdout.includes(`OpenCode ${opencode}: removed; message history stays at ${path.join(f.home, '.local/state/opencode/plugin-state/asb-bridge')}\nRestart OpenCode to unload the ASB Bridge plugin.\n`));
     await owned(path.join(f.personal, 'skills/bridge'), 'codex');
     for (const directory of [f.codex, f.claude, opencode]) assert.equal(existsSync(path.join(directory, 'skills/bridge')), false);
     assert.equal(existsSync(path.join(opencode, 'plugins/asb-bridge')), false);
@@ -884,6 +885,33 @@ test('OpenCode --all installs only when the config folder exists and uninstall r
   assert.ok(!existsSync(path.join(opencodeConfig, 'skills', 'bridge')));
 });
 
+test('a foreign OpenCode plugin folder refuses install before any Codex call or skill write', async (t) => {
+  const f = await fixture(t), opencode = path.join(f.home, '.config/opencode');
+  await mkdir(path.join(opencode, 'plugins/asb-bridge'), { recursive: true });
+  await writeFile(path.join(opencode, 'plugins/asb-bridge/index.js'), 'User file\n');
+  const before = await snapshot(f.home);
+  const result = f.run(['install', '--codex-home', f.codex, '--claude', '--opencode', '--opencode-config', opencode]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /ASB will not change a foreign OpenCode plugin/);
+  assert.deepEqual(await f.calls(), []);
+  assert.deepEqual(await snapshot(f.home), before);
+});
+
+test('a changed OpenCode skill refuses uninstall before any Codex call and keeps the plugin folder', async (t) => {
+  const f = await fixture(t), opencode = path.join(f.home, '.config/opencode');
+  const targets = ['--codex-home', f.codex, '--opencode', '--opencode-config', opencode];
+  passed(f.run(['install', ...targets]));
+  await writeFile(path.join(opencode, 'skills/bridge/SKILL.md'), 'User edit\n');
+  await rm(f.log);
+  const before = await snapshot(f.home);
+  const result = f.run(['uninstall', ...targets]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /ASB will not change a modified bridge skill/);
+  assert.deepEqual(await f.calls(), []);
+  assert.equal(await skillState(path.join(opencode, 'plugins/asb-bridge')), 'ok');
+  assert.deepEqual(await snapshot(f.home), before);
+});
+
 test('parseDebugPaths reads key: value and key=value lines with either line ending', () => {
   assert.deepEqual(parseDebugPaths('Config: /tmp/c\nstate = /tmp/s\n'), { config: '/tmp/c', state: '/tmp/s' });
   assert.deepEqual(parseDebugPaths('CONFIG=C:\\Users\\a\\AppData\\Roaming\\opencode\r\nState: C:\\Users\\a\\AppData\\Local\\opencode\r\n'),
@@ -891,6 +919,25 @@ test('parseDebugPaths reads key: value and key=value lines with either line endi
   assert.deepEqual(parseDebugPaths(''), {});
   assert.deepEqual(parseDebugPaths(null), {});
   assert.deepEqual(parseDebugPaths('nonsense\nconfig: /tmp/only\n'), { config: '/tmp/only' });
+});
+
+test('parseDebugPaths reads the OpenCode 2.1.4 form: the key padded to 10 characters, a space, and the value', () => {
+  // `opencode debug paths` of OpenCode 2.1.4, captured in the temporary environment of bridge/test/native-opencode.ts.
+  const output = 'home       /tmp/opencode-native-Y9j1z1/home\ndata       /tmp/opencode-native-Y9j1z1/data/opencode\ncache      /tmp/opencode-native-Y9j1z1/cache/opencode\nconfig     /tmp/opencode-native-Y9j1z1/config/opencode\nstate      /tmp/opencode-native-Y9j1z1/state/opencode\ntmp        /tmp/opencode-native-Y9j1z1/tmp/opencode\nbin        /tmp/opencode-native-Y9j1z1/cache/opencode/bin\nlog        /tmp/opencode-native-Y9j1z1/data/opencode/log\nrepos      /tmp/opencode-native-Y9j1z1/data/opencode/repos\ndb         /tmp/opencode-native-Y9j1z1/data/opencode/opencode.db\n';
+  assert.deepEqual(parseDebugPaths(output), {
+    home: '/tmp/opencode-native-Y9j1z1/home',
+    data: '/tmp/opencode-native-Y9j1z1/data/opencode',
+    cache: '/tmp/opencode-native-Y9j1z1/cache/opencode',
+    config: '/tmp/opencode-native-Y9j1z1/config/opencode',
+    state: '/tmp/opencode-native-Y9j1z1/state/opencode',
+    tmp: '/tmp/opencode-native-Y9j1z1/tmp/opencode',
+    bin: '/tmp/opencode-native-Y9j1z1/cache/opencode/bin',
+    log: '/tmp/opencode-native-Y9j1z1/data/opencode/log',
+    repos: '/tmp/opencode-native-Y9j1z1/data/opencode/repos',
+    db: '/tmp/opencode-native-Y9j1z1/data/opencode/opencode.db',
+  });
+  assert.deepEqual(parseDebugPaths('config     /home/a b/.config/opencode\r\nstate      C:\\Users\\a b\\opencode\r\n'),
+    { config: '/home/a b/.config/opencode', state: 'C:\\Users\\a b\\opencode' });
 });
 
 test('opencodePaths prefers --opencode-config, then debug paths, then XDG', async (t) => {
@@ -922,6 +969,25 @@ test('opencodePaths prefers --opencode-config, then debug paths, then XDG', asyn
     config: path.resolve(path.join(os.homedir(), '.config', 'opencode')),
     state: path.resolve(path.join(os.homedir(), '.local', 'state', 'opencode')),
   });
+});
+
+test('opencodePaths without options.env reads XDG_CONFIG_HOME and XDG_STATE_HOME of the process', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'asb-opencode-xdg-'));
+  const saved = Object.fromEntries(['PATH', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME'].map((key) => [key, process.env[key]]));
+  t.after(async () => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await rm(temporary, { recursive: true, force: true });
+  });
+  // The CLI passes no env. An empty PATH folder: no opencode runs.
+  process.env.PATH = temporary;
+  process.env.XDG_CONFIG_HOME = path.join(temporary, 'config');
+  process.env.XDG_STATE_HOME = path.join(temporary, 'state');
+  const paths = await opencodePaths({});
+  assert.deepEqual(paths, { config: path.join(temporary, 'config', 'opencode'), state: path.join(temporary, 'state', 'opencode') });
+  assert.equal(paths.state, defaultOpenCodeStateDir());
 });
 
 test('commandLine and executable handle the Windows shapes with an injected platform', async (t) => {

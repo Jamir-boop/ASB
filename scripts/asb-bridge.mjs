@@ -370,18 +370,20 @@ export async function installClaude(home = defaultClaudeHome(), options = {}) {
 export function parseDebugPaths(output) {
   const paths = {};
   for (const line of String(output ?? '').split(/\r?\n/)) {
-    const match = /^\s*([a-z]+)\s*[:=]\s*(.+?)\s*$/i.exec(line);
+    // OpenCode 2.1.4 pads the key to 10 characters and puts the value after a space, with no ':' or '='.
+    const match = /^\s*([a-z]+)(?:\s*[:=]\s*|\s+)(.+?)\s*$/i.exec(line);
     if (match) paths[match[1].toLowerCase()] = match[2];
   }
   return paths;
 }
 export async function opencodePaths(options = {}) {
   const home = os.homedir();
-  const fallbackConfig = options.env?.XDG_CONFIG_HOME
-    ? path.join(options.env.XDG_CONFIG_HOME, 'opencode')
+  const env = options.env || process.env;
+  const fallbackConfig = env.XDG_CONFIG_HOME
+    ? path.join(env.XDG_CONFIG_HOME, 'opencode')
     : path.join(home, '.config', 'opencode');
-  const fallbackState = options.env?.XDG_STATE_HOME
-    ? path.join(options.env.XDG_STATE_HOME, 'opencode')
+  const fallbackState = env.XDG_STATE_HOME
+    ? path.join(env.XDG_STATE_HOME, 'opencode')
     : path.join(home, '.local', 'state', 'opencode');
   let config = options.opencodeConfig ? absolute(options.opencodeConfig) : null;
   let state = null;
@@ -392,7 +394,7 @@ export async function opencodePaths(options = {}) {
         const run = commandLine(file, ['debug', 'paths']);
         const paths = parseDebugPaths(execFileSync(run.command, run.args, {
           ...run.options, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000,
-          env: options.env || process.env,
+          env,
         }));
         if (paths.config) config = absolute(paths.config);
         if (paths.state) state = absolute(paths.state);
@@ -404,18 +406,21 @@ export async function opencodePaths(options = {}) {
 async function opencodePluginRecord(directory) {
   return skillState(directory);
 }
-async function installOpencode(options = {}) {
-  const root = await checkRoot(options.sourceRoot || ROOT);
-  const paths = await opencodePaths(options);
+async function checkOpencodeInstall(paths, force) {
   const pluginDir = path.join(paths.config, 'plugins', 'asb-bridge');
   const skillDir = path.join(paths.config, 'skills', 'bridge');
   for (const file of ['plugins/asb-bridge/.asb-bridge.json', 'skills/bridge/.asb-bridge.json', 'plugins/asb-bridge/index.js']) {
     await safeParents(path.join(paths.config, file));
   }
   const state = await opencodePluginRecord(pluginDir);
-  if (!options.force && !['ok', 'missing'].includes(state)) throw new Error(`ASB will not change a ${state} OpenCode plugin: ${pluginDir}. Use --force to replace it.`);
+  if (!force && !['ok', 'missing'].includes(state)) throw new Error(`ASB will not change a ${state} OpenCode plugin: ${pluginDir}. Use --force to replace it.`);
   const skill = await skillState(skillDir);
-  if (!options.force && !['ok', 'missing'].includes(skill)) throw new Error(`ASB will not change a ${skill} bridge skill: ${skillDir}. Use --force to replace it.`);
+  if (!force && !['ok', 'missing'].includes(skill)) throw new Error(`ASB will not change a ${skill} bridge skill: ${skillDir}. Use --force to replace it.`);
+  return { pluginDir, skillDir };
+}
+async function installOpencode(options, paths) {
+  const root = await checkRoot(options.sourceRoot || ROOT);
+  const { pluginDir, skillDir } = await checkOpencodeInstall(paths, options.force);
   const version = JSON.parse(await contents(path.join(root, 'bridge/.codex-plugin/plugin.json'))).version;
   const bundle = await contents(path.join(root, 'bridge/dist/opencode.js'));
   if (!bundle) throw new Error('Missing ASB Bridge runtime file: bridge/dist/opencode.js');
@@ -450,19 +455,22 @@ async function installOpencode(options = {}) {
     claudeConfigDir, stateDir: path.join(paths.state, 'plugin-state', 'asb-bridge'),
   };
 }
-async function uninstallOpencode(options = {}) {
-  await checkRoot(options.sourceRoot || ROOT);
-  const paths = await opencodePaths(options);
+async function checkOpencodeUninstall(paths, force) {
   const pluginDir = path.join(paths.config, 'plugins', 'asb-bridge');
   const skillDir = path.join(paths.config, 'skills', 'bridge');
-  await checkSkill(pluginDir, options.force);
+  await checkSkill(pluginDir, force);
+  await checkSkill(skillDir, force);
+  return { pluginDir, skillDir };
+}
+async function uninstallOpencode(options, paths) {
+  await checkRoot(options.sourceRoot || ROOT);
+  const { pluginDir, skillDir } = await checkOpencodeUninstall(paths, options.force);
   let claudeConfigDir = absolute(options.claudeHome || defaultClaudeHome());
   try {
     const record = JSON.parse(String(await contents(path.join(pluginDir, 'asb-bridge.json')) || 'null'));
     if (record?.claudeConfigDir) claudeConfigDir = absolute(record.claudeConfigDir);
   } catch { /* No record: fall back to the CLI home. */ }
   await rm(pluginDir, { recursive: true, force: true });
-  await checkSkill(skillDir, options.force);
   await rm(skillDir, { recursive: true, force: true });
   await withdrawOpenCodeRows(claudeConfigDir);
   return { config: paths.config, removed: true, historyKept: path.join(paths.state, 'plugin-state', 'asb-bridge') };
@@ -505,15 +513,23 @@ export async function install(options = {}) {
   const codexHomes = [...new Set(options.codexHomes || [])];
   if (codexHomes.length) await checkDependencies();
   await checkRoot(options.sourceRoot || ROOT);
+  // Check the Claude and OpenCode folders before Codex changes anything, so their refusal leaves no partial install.
+  if (options.claudeHome) await checkSkill(path.join(absolute(options.claudeHome), 'skills/bridge'), options.force);
+  const openCodePaths = options.opencode ? await opencodePaths(options) : null;
+  if (openCodePaths) await checkOpencodeInstall(openCodePaths, options.force);
   const codex = [];
   for (const home of codexHomes) codex.push(await installCodex(home, options));
   const claude = options.claudeHome ? await installClaude(options.claudeHome, options) : null;
-  const opencode = options.opencode ? await installOpencode(options) : null;
+  const opencode = openCodePaths ? await installOpencode(options, openCodePaths) : null;
   return { codex, claude, opencode };
 }
 export async function uninstall(options = {}) {
   const tools = options.codexHomes?.length ? await checkDependencies(['codex']) : {};
   await checkRoot(options.sourceRoot || ROOT);
+  // Check the Claude and OpenCode folders before Codex changes anything, so their refusal leaves no partial uninstall.
+  if (options.claudeHome) await checkSkill(path.join(absolute(options.claudeHome), 'skills/bridge'), options.force);
+  const openCodePaths = options.opencode ? await opencodePaths(options) : null;
+  if (openCodePaths) await checkOpencodeUninstall(openCodePaths, options.force);
   const codex = [];
   for (const home of [...new Set(options.codexHomes || [])]) {
     const target = await codexTarget(home, options.force);
@@ -534,7 +550,7 @@ export async function uninstall(options = {}) {
     await checkSkill(path.join(claude.home, 'skills/bridge'), options.force);
     await rm(path.join(claude.home, 'skills/bridge'), { recursive: true, force: true });
   }
-  const opencode = options.opencode ? await uninstallOpencode(options) : null;
+  const opencode = openCodePaths ? await uninstallOpencode(options, openCodePaths) : null;
   return { codex, claude, opencode };
 }
 async function entries(directory) {
@@ -687,6 +703,8 @@ export async function main(args = process.argv.slice(2), context = {}) {
   }
   if (result.claude) console.log(`Claude ${result.claude.home}: ${command === 'install' ? 'installed' : 'removed'}`);
   if (result.opencode) console.log(`OpenCode ${result.opencode.config}: ${command === 'install' ? `installed ${result.opencode.version}` : `removed; message history stays at ${result.opencode.historyKept}`}`);
+  // OpenCode keeps the loaded plugin in memory, so it can register sessions again until it restarts.
+  if (result.opencode && command === 'uninstall') console.log('Restart OpenCode to unload the ASB Bridge plugin.');
   if (command === 'install') console.log(NEXT_STEPS);
   return refused ? 1 : 0;
 }
