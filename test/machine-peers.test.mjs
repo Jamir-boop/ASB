@@ -370,19 +370,40 @@ tlsTest('a kept connection serves only the pin and the client certificate that i
   const get = (pin, tls) => peerRequest({ member: memberAt(server, port, { certFingerprint: pin }), path: '/peer/v1/hello', tls });
   await get(server.fingerprint, client);
   assert.deepEqual([records.length, connections.length, open().length], [1, 1, 1]);
-  // Another pin for the same address and port: it never uses the kept socket. Its new connection fails at the pin before any request byte.
+  // Another pin for the same address and port never uses or closes the kept socket. Its new connection fails at the pin before any request byte.
   await assert.rejects(get(other.fingerprint, client), { code: 'pin-mismatch' });
   assert.deepEqual([records.length, connections.length], [1, 2]);
-  await until(() => open().length === 0, 'the sockets of the old pin close');
+  await until(() => open().length === 1, 'the socket of the other pin closes');
+  // The kept socket of the first pin stays open: the next GET with that pin uses it again.
   await get(server.fingerprint, client);
-  assert.deepEqual([records.length, connections.length, open().length], [2, 3, 1]);
+  assert.deepEqual([records.length, connections.length, open().length], [2, 2, 1]);
   // Another client certificate with the same pin: a new connection with the new certificate, and the old socket closes.
   await get(server.fingerprint, second);
-  assert.deepEqual([records.at(-1).client, connections.length], [second.fingerprint, 4]);
+  assert.deepEqual([records.at(-1).client, connections.length], [second.fingerprint, 3]);
   await until(() => open().length === 1, 'the socket of the old client certificate closes');
   // The same client certificate in a new object keeps the connection.
   await get(server.fingerprint, { ...second });
-  assert.deepEqual([connections.length, open().length], [4, 1]);
+  assert.deepEqual([connections.length, open().length], [3, 1]);
+});
+
+// Members on two LANs can have the same private address and port: B is at 127.0.0.1, and C lists that address first, then its own.
+tlsTest('a GET that fails at the pin on the address and port of another member does not close the kept socket of that member', async (t) => {
+  const [b, c, client] = await identities(t, 'shared', 'b', 'c', 'client');
+  const serverB = await tlsServer(t, b, (request, response) => response.end('{"who":"b"}'));
+  const serverC = https.createServer({ key: c.key, cert: c.cert, minVersion: 'TLSv1.3' }, (request, response) => response.end('{"who":"c"}'));
+  const bound = await new Promise((resolve) => { serverC.once('error', () => resolve(false)); serverC.listen(serverB.port, '127.0.0.2', () => resolve(true)); });
+  if (!bound) { t.skip('127.0.0.2 cannot be bound here.'); return; }
+  t.after(() => new Promise((resolve) => { serverC.closeAllConnections(); serverC.close(resolve); }));
+  const memberB = memberAt(b, serverB.port);
+  const memberC = memberAt(c, serverB.port, { addresses: [{ kind: 'lan', address: '127.0.0.1' }, { kind: 'zerotier', address: '127.0.0.2' }] });
+  await peerRequest({ member: memberB, path: '/peer/v1/sessions', tls: client });
+  assert.deepEqual([serverB.records.length, serverB.connections.length], [1, 1]);
+  // C has no proven address, so its GET tries the address of B first: the pin stops it there before any request byte, and C answers.
+  const replyC = await peerRequest({ member: memberC, path: '/peer/v1/sessions', tls: client });
+  assert.deepEqual([replyC.body, replyC.address, serverB.records.length, serverB.connections.length], [{ who: 'c' }, '127.0.0.2', 1, 2]);
+  // The kept socket of B stays open: the next GET to B uses it again.
+  await peerRequest({ member: memberB, path: '/peer/v1/sessions', tls: client });
+  assert.deepEqual([serverB.records.length, serverB.connections.length, serverB.connections[0].destroyed], [2, 2, false]);
 });
 
 tlsTest('a server that changes its certificate is stopped at the pin on a new connection, before any request byte', async (t) => {

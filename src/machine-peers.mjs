@@ -150,9 +150,10 @@ export function addressOrder(addresses, lastAddress = '') {
     || KIND_ORDER.indexOf(left.kind) - KIND_ORDER.indexOf(right.kind));
 }
 
-// The kept connections of GET requests: one agent for each address and port, for one pin and one client certificate. The agent has
-// the secure context of the client certificate, made once. A request with another pin or client certificate replaces the agent and
-// closes its sockets. The count of agents is small (a few addresses for each member), and an agent with no socket costs no resource.
+// The kept connections of GET requests: one agent for each address, port, and pin (two members on different LANs can have the same
+// private address and port), for one client certificate. The agent has the secure context of the client certificate, made once.
+// A request with another client certificate replaces the agent and closes its sockets. The count of agents is small (a few
+// addresses for each member), and an agent with no socket costs no resource.
 const agents = new Map();
 // key and cert on Linux, pfx and passphrase on Windows; the own fingerprint is not a TLS option.
 const clientCertificate = ({ fingerprint: _own, ...certificate }) => certificate;
@@ -162,10 +163,10 @@ const clientId = (tls) => {
   return hash.digest('hex');
 };
 function agentFor(address, port, fingerprint, tls) {
-  const key = `${address}|${port}`;
+  const key = `${address}|${port}|${fingerprint}`;
   const client = clientId(tls);
   let entry = agents.get(key);
-  if (entry && (entry.fingerprint !== fingerprint || entry.client !== client)) { entry.agent.destroy(); entry = undefined; }
+  if (entry && entry.client !== client) { entry.agent.destroy(); entry = undefined; }
   if (!entry) {
     // The minimum version is a context option: with a secureContext, the same option of the agent does not count.
     // No session cache: each new connection makes a full handshake, so the pin check reads the certificate that the member sends now.
