@@ -14,7 +14,7 @@ ASB [1.11.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.11.0) was publish
 - The Android app on the test phone, built from the same Android source, showed its live notification as a Live update with data from the `1.11.0` engine. No crash of the app was logged after its install.
 - The release text is the notes file with its seven relative links made absolute at the `v1.11.0` tag. All 14 links of the release page returned HTTP `200`, and the source of the `PKGBUILD` downloaded and matched its SHA-256.
 - A privacy scan of the lines added since `v1.10.0` found no private addresses, keys, or tokens. Its hits were synthetic test paths, a sample LAN address in a test, and the standard Homebrew path `/home/linuxbrew` in the docs. The MIT licenses and the upstream credits did not change.
-- No `apt`, `dnf`, `zypper`, or `makepkg` install on a real machine (CI installed the packages in its images), real-app opens with the release build, Codex with the `1.11.0` build of the ASB Bridge plugin (the Codex plugin caches of the test machines keep an earlier `0.8.0` build), macOS, or FPS check on the real display was run. See [release notes](releases/v1.11.0.md) for check limits.
+- No `apt`, `dnf`, `zypper`, or `makepkg` install on a real machine (CI installed the packages in its images), real-app opens with the release build, Codex with the `1.11.0` build of the ASB Bridge plugin (both test machines got this build in their Codex plugin caches after the publication, but Codex ran no task with it), macOS, or FPS check on the real display was run. See [release notes](releases/v1.11.0.md) for check limits.
 
 ## Earlier publications
 
