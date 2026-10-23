@@ -52,7 +52,8 @@ server.listen(0, '127.0.0.1', () => {
 // The ids of the board processes below one root process. The board gets its engine URL and token on stdin, so its command line is only
 // `<python> asb-board.py -`, the same for every ASB on the PC: a match on the command line alone would also find the board of the user's own
 // ASB. A board is found by ancestry instead. A process that has ended still shows as the ParentProcessId of its children, so the walk also
-// starts from the PID of a process that has ended (the PowerShell process of the Start menu command exits at once).
+// starts from the PID of a process that has ended (the PowerShell process of the Start menu command waits at most 30 s for the launcher,
+// so it can end before the board).
 const descendantBoards = (processes, rootPid) => {
   const children = new Map();
   for (const { ProcessId: pid, ParentProcessId: parent } of processes) children.set(parent, [...(children.get(parent) ?? []), pid]);
@@ -156,13 +157,16 @@ test('the board opens its window against an engine and closes after the reconnec
   assert.deepEqual(closed, { code: 0, signal: null }, `The launcher did not exit with code 0 within 25 s after the engine stopped.\n${output}`);
   assert.deepEqual(await boardsLeft(launcher.pid), [], 'The board of the launcher did not close within 25 s after its engine stopped.');
 
-  // The Start menu link runs this command. The tray script starts the launcher with no console and exits at once, so the test waits for the image.
+  // The Start menu link runs this command. The tray script starts the launcher with no console and waits at most 30 s for its exit, and an
+  // open board keeps the launcher running, so the test waits for the image.
   // The launcher is a child of the PowerShell process (the root), and the board is a child of the launcher.
   const startMenuImage = path.join(directory, 'board-start-menu.png');
   const { child: second } = await startEngine();
   const menu = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', tray, process.execPath, '-Open'],
     { stdio: 'ignore', windowsHide: true, env: environment(startMenuImage) });
   assert.ok(menu.pid, 'The Start menu command did not start.');
+  // After a failure the command can still wait for its launcher or show its message box, so the cleanup ends it too.
+  children.push(menu);
   roots.push(menu.pid);
   for (const deadline = Date.now() + 90_000; !(await saved(startMenuImage)) && Date.now() < deadline;) await delay(250);
   assert.ok(await saved(startMenuImage), 'The Start menu command saved no window image.');

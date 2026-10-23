@@ -225,9 +225,24 @@ test('the tray script starts the engine once after the mutex and before Windows 
   const [first, restart] = calls.map((call) => call.index);
   const definition = script.indexOf('function Start-Engine');
   assert.doesNotMatch(script.slice(definition, script.indexOf('\n}', definition)), /Forms|Drawing/);
-  assert.equal(script.match(/Add-Type/g).length, 1);
-  assert.ok(script.indexOf('.WaitOne(0)') < definition && definition < first && first < script.indexOf('Add-Type'));
+  // The -Open branch exits before the tray starts, so its message box is the only other Add-Type.
+  const open = script.indexOf('if ($Open) {');
+  const addTypes = [...script.matchAll(/Add-Type/g)].map((match) => match.index);
+  assert.deepEqual(addTypes.map((index) => open < index && index < script.indexOf('\n}', open)), [true, false]);
+  assert.ok(script.indexOf('.WaitOne(0)') < definition && definition < first && first < addTypes[1]);
   assert.ok(restart > script.indexOf('.add_Tick('));
+});
+
+// With no board packages the launcher exits with code 3, and a Start menu open without the tray showed nothing.
+test('the -Open branch waits 30 s for the launcher and shows the text of the tray balloon in a message box on exit code 3', async () => {
+  const script = await readFile(new URL('../scripts/asb-tray.ps1', import.meta.url), 'utf8');
+  const start = script.indexOf('if ($Open) {');
+  const branch = script.slice(start, script.indexOf('\n}', start));
+  assert.match(branch, /^  if \(\$launcher\.WaitForExit\(30000\) -and \$launcher\.ExitCode -eq 3\) \{$/m);
+  const shown = branch.match(/\[System\.Windows\.Forms\.MessageBox\]::Show\('([^']*)', 'ASB', 'OK', 'Warning'\)/)?.[1];
+  const balloon = script.match(/if \(\$code -eq 3\) \{ \$icon\.ShowBalloonTip\(10000, 'ASB', '([^']*)'/)?.[1];
+  assert.deepEqual([shown, balloon], ['ASB has no window on this PC. Run asb doctor.', 'ASB has no window on this PC. Run asb doctor.']);
+  assert.ok(branch.trimEnd().endsWith('exit 0'));
 });
 
 // The V8 flag makes the young generation of the engine smaller (src/memory-trim.mjs). Windows has no glibc, so it gets no MALLOC setting.

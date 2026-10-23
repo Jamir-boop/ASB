@@ -2,7 +2,8 @@
 # powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "<root>\scripts\asb-tray.ps1" "<node.exe>"
 # It starts the engine with no window, starts it again after a crash (at most 5 times in 10 minutes),
 # shows the ASB icon, opens the board on Open ASB (or a left click), and stops the engine on Quit ASB.
-# With -Open (the Start menu link), it only starts the launcher, which starts the engine when none runs, and exits.
+# With -Open (the Start menu link), it only starts the launcher, which starts the engine when none runs. When the launcher exits
+# with code 3 within 30 s, it shows the same text as the tray in a message box.
 param([string]$Node = '', [switch]$Open)
 
 $ErrorActionPreference = 'Stop'
@@ -19,7 +20,15 @@ function Start-Launcher {
   return [System.Diagnostics.Process]::Start($info)
 }
 
-if ($Open) { [void](Start-Launcher); exit 0 }
+if ($Open) {
+  $launcher = Start-Launcher
+  # Exit code 3: the launcher found no way to open the board (see asb doctor). An open board keeps the launcher running.
+  if ($launcher.WaitForExit(30000) -and $launcher.ExitCode -eq 3) {
+    Add-Type -AssemblyName System.Windows.Forms
+    [void][System.Windows.Forms.MessageBox]::Show('ASB has no window on this PC. Run asb doctor.', 'ASB', 'OK', 'Warning')
+  }
+  exit 0
+}
 
 $mutex = New-Object System.Threading.Mutex($false, 'Local\ASB-tray')
 if (-not $mutex.WaitOne(0)) { exit 0 }
