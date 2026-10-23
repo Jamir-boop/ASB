@@ -84,10 +84,9 @@ internal fun asbColorScheme(palette: Palette): ColorScheme {
         surfaceContainerHighest = highlight,
         secondaryContainer = accent,
         onSecondaryContainer = background,
-        // The message pill uses the inverse roles; the darkColorScheme defaults are near white.
+        // The message pill uses these two inverse roles; the darkColorScheme defaults give a near-white pill with dark text.
         inverseSurface = hexColor(mixColor(palette.background, palette.text, .10)),
         inverseOnSurface = text,
-        inversePrimary = accent,
     )
 }
 

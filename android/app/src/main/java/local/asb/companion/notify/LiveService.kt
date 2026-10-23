@@ -13,6 +13,7 @@ import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -118,7 +119,7 @@ class LiveService : Service() {
     private var last: LiveUpdate? = null
     private var own: LiveUpdate? = null // the last update that this service wrote
     private var offline = false
-    private var doneUntilMs = 0L // the chip says Done until this time
+    private var doneUntilMs = 0L // SystemClock.elapsedRealtime() time: a wall clock change has no effect, and deep sleep counts
     private var flash: Job? = null
     private var shown: LiveContent? = null
 
@@ -170,10 +171,11 @@ class LiveService : Service() {
                 app.liveUpdates.collect { update ->
                     if (update == null) return@collect
                     if (newlyDone(last, update)) {
-                        doneUntilMs = System.currentTimeMillis() + DONE_FLASH_MS
+                        doneUntilMs = SystemClock.elapsedRealtime() + DONE_FLASH_MS
                         flash?.cancel()
                         flash = scope.launch {
-                            delay(DONE_FLASH_MS)
+                            // 1 ms more: uptime and elapsedRealtime round to ms at different points.
+                            delay(DONE_FLASH_MS + 1)
                             show()
                         }
                     }
@@ -278,7 +280,7 @@ class LiveService : Service() {
         return LiveContent(update?.let { liveTitle(it.threads) } ?: "ASB",
             update?.let { liveLines(it.threads) }.orEmpty(),
             if (offline) liveOfflineText(update?.atMs ?: 0, nowMs) else null,
-            if (offline || update == null) null else liveBadge(update.threads, nowMs < doneUntilMs))
+            if (offline || update == null) null else liveBadge(update.threads, SystemClock.elapsedRealtime() < doneUntilMs))
     }
 
     // Most updates change only the time, so the same content is not posted again.
