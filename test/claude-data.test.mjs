@@ -393,6 +393,23 @@ test('deduplicates Claude Desktop Code metadata that points at the same CLI sess
   assert.equal(desktopThreads[0].pendingToolCount, 0);
 });
 
+test('reads no Claude Desktop waiting-input record as a second session', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'claude-desktop-code-waiting-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const appDir = path.join(dir, 'Claude');
+  const desktopDir = path.join(appDir, 'claude-code-sessions', 'account', 'workspace');
+  // Claude Desktop keeps the messages that wait for a busy session in waiting-input/, in a file with the session ID.
+  await mkdir(path.join(desktopDir, 'waiting-input'), { recursive: true });
+  await writeFile(path.join(desktopDir, 'local_busy.json'), JSON.stringify({ sessionId: 'local_busy', cliSessionId: 'cli_busy',
+    createdAt: Date.parse('2026-05-09T01:00:00.000Z'), lastActivityAt: Date.parse('2026-05-09T01:05:00.000Z'), title: 'Busy task' }));
+  await writeFile(path.join(desktopDir, 'waiting-input', 'local_busy.json'), JSON.stringify({ v: 1, sessionId: 'local_busy',
+    savedAt: Date.parse('2026-05-09T01:06:00.000Z'), entries: [], cleanShutdown: false }));
+
+  const result = await loadClaudeDesktopCodeThreads({ appDir, projectsDir: path.join(dir, 'projects'),
+    nowMs: Date.parse('2026-05-09T03:00:00.000Z') });
+  assert.deepEqual(result.threads.map((thread) => [thread.id, thread.title]), [['claude-desktop-code:local_busy', 'Busy task']]);
+});
+
 test('normalizes Claude Desktop Code sessions with a desktop resume deep link', () => {
   const cliSessionId = '123e4567-e89b-12d3-a456-426614174000';
   const thread = normalizeClaudeDesktopCodeSession({

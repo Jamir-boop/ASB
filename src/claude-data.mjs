@@ -1272,7 +1272,9 @@ export async function loadClaudeDesktopCodeThreads({
   const root = path.join(appDir, 'claude-code-sessions');
   if (strictMetadataRead) await fs.stat(root);
   let metadataReadErrors = 0;
-  const files = await recentFiles(root, (_filePath, name) => /^local_.*\.json$/.test(name), maxCount,
+  // waiting-input/ holds the messages that wait for a busy session under its ID: not a session record.
+  const files = await recentFiles(root, (filePath, name) => /^local_.*\.json$/.test(name)
+    && path.basename(path.dirname(filePath)) !== 'waiting-input', maxCount,
     strictMetadataRead ? () => { metadataReadErrors += 1; } : null);
   const projectIndex = await indexClaudeProjectFiles(projectsDir)
     .catch(() => ({ files: new Map(), subagentsBySession: new Map(), agentLogs: new Map() }));

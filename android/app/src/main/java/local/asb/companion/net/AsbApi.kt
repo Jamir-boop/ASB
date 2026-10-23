@@ -153,7 +153,9 @@ class AsbApi(
     suspend fun dashboard(etag: String? = null, force: Boolean = false, etagEngine: String = ""): DashboardResult {
         val response = request("dashboard", etag = etag, etagEngine = etagEngine, force = force, allowNotModified = true)
         return if (response.code == 304) DashboardResult.NotModified
-        else DashboardResult.Fetched(decode<Dashboard>(response.body), response.etag, response.engine)
+        // The list keys need unique row IDs; an engine with a reader bug can send a row twice. Keep the first.
+        else DashboardResult.Fetched(decode<Dashboard>(response.body).let { it.copy(threads = it.threads.distinctBy { row -> row.id }) },
+            response.etag, response.engine)
     }
 
     suspend fun action(id: String, action: String, body: String = "{}", engine: String = ""): JsonObject {

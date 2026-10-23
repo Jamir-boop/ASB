@@ -147,6 +147,14 @@ class AsbApiTest {
         assertEquals(1792106050500L, board.messages.single().atMs)
     }
 
+    @Test fun dashboardKeepsTheFirstRowOfARepeatedId() = runBlocking {
+        server.enqueue(MockResponse().setBody(
+            """{"threads":[{"id":"one","state":"working"},{"id":"two"},{"id":"one","state":"unknown"}]}"""))
+        val threads = (api().dashboard() as DashboardResult.Fetched).dashboard.threads
+        assertEquals(listOf("one", "two"), threads.map { it.id })
+        assertEquals("working", threads.first().state)
+    }
+
     @Test fun invalidActionInputIsAnAsbErrorWithoutARequest() = runBlocking {
         for ((id, action, body) in listOf(Triple("", "open", "{}"), Triple(".", "open", "{}"), Triple("..", "open", "{}"),
             Triple("one", "delete", "{}"), Triple("one", "open", "[]"), Triple("one", "open", "not JSON"))) {
