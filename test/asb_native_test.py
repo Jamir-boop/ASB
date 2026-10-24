@@ -2115,6 +2115,55 @@ class WidgetCheck(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
                          "Real pointer movement needs xdotool and a nested test display (DISPLAY=:9 or :10).")
+    def test_a_held_right_click_opens_a_row_panel_that_takes_the_next_click(self):
+        # A hand holds the button for a moment. A panel that opened under the held button lost the next click to GDK.
+        from gi.repository import GdkX11
+
+        requests = []
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "request_async", lambda *args, **_kwargs: requests.append(args))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        def xdo(*args):
+            return subprocess.run(["xdotool", *map(str, args)], check=True, capture_output=True, text=True).stdout
+
+        x, y = (line.split("=")[1] for line in xdo("getmouselocation", "--shell").splitlines()[:2])
+        self.addCleanup(xdo, "mousemove", x, y)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", copy.deepcopy(FIXTURE),
+                                      theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        # A short window moves the panel up, so the panel opens with the pointer well inside it.
+        window.set_default_size(900, 300)
+        window.present(); self.drain(.3)
+
+        def move_to(widget, root, x=None):
+            found, bounds = widget.compute_bounds(root)
+            self.assertTrue(found)
+            left, top = root.get_surface_transform()
+            xdo("mousemove", "--window", GdkX11.X11Surface.get_xid(root.get_surface()),
+                int(bounds.origin.x + (bounds.size.width / 2 if x is None else x) + left),
+                int(bounds.origin.y + bounds.size.height / 2 + top))
+            self.drain()
+
+        identity, card = max(((identity, widget) for identity, widget in window.focus_widgets.items()
+                              if identity != asb.MORE_ID and widget.get_mapped()),
+                             key=lambda item: item[1].compute_bounds(window)[1].origin.y)
+        move_to(card, window)
+        xdo("mousedown", 3); self.drain(.25)
+        xdo("mouseup", 3); self.drain(.3)
+        panel = window.context_menu
+        self.assertTrue(panel is not None and panel.get_mapped())
+        move_to(panel.asb_actions["mute"], panel, 40)
+        xdo("click", 1); self.drain(.3)
+        self.assertEqual([request[1] for request in requests if request[1].startswith("/api/threads/")],
+                         ["/api/threads/" + asb.quote(identity, safe="") + "/mute"])
+        self.assertIsNone(window.context_menu)
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real pointer movement needs xdotool and a nested test display (DISPLAY=:9 or :10).")
     def test_copy_tag_hides_when_the_pointer_leaves_the_button(self):
         # GTK emits leave before contains-pointer turns false, so leave must not read contains_pointer.
         from gi.repository import GdkX11
@@ -4602,7 +4651,7 @@ class WidgetCheck(unittest.TestCase):
             beside(cards[identity], cards[identity].asb_state_label, cards[identity].asb_where_label)
         window.view_filter.set_selected(1); self.drain(.3); settle()
 
-        # The row panel: Mute comes right after the drawer slot and before Pin, and sends mute and then unmute.
+        # The row panel: Mute comes right after the drawer slot and before Pin. Mute and Unmute close the panel, which covers the card.
         other = cards["other"]
         window.show_context(other); self.drain()
         panel = window.context_menu
@@ -4615,22 +4664,30 @@ class WidgetCheck(unittest.TestCase):
                          ("Mute", None, "asb-muted-symbolic.svg"))
         self.assertTrue(muted.get_visible())
         muted.grab_focus()
-        muted.emit("clicked")
+        muted.emit("clicked"); self.drain()
         self.assertEqual(requests[-1][1], "/api/threads/other/mute")
-        self.assertFalse(muted.get_sensitive())
+        self.assertIsNone(window.context_menu)
+        self.assertFalse(panel.get_visible())
+        self.assertIs(window.get_focus(), other)
         requests[-1][2]({"changed": True, "threadId": "other", "thread": dict(other.asb_thread, muted=True)}, None); settle()
-        self.assertIs(window.context_menu, panel)
-        self.assertIs(panel.asb_actions["mute"], muted)
-        self.assertEqual((muted.asb_label.get_label(), muted.asb_icon.get_icon_name()), ("Unmute", "preferences-system-notifications-symbolic"))
-        self.assertIs(window.get_focus(), muted)
-        self.assertTrue(other.asb_mute_glyph.get_visible())
-        muted.emit("clicked")
+        self.assertTrue(other.asb_mute_glyph.get_visible() and other.asb_mute_glyph.get_mapped())
+        self.assertIs(window.get_focus(), other)
+        window.show_context(other); self.drain()
+        unmute = window.context_menu.asb_actions["mute"]
+        self.assertEqual((unmute.asb_label.get_label(), unmute.asb_icon.get_icon_name()), ("Unmute", "preferences-system-notifications-symbolic"))
+        unmute.emit("clicked"); self.drain()
         self.assertEqual(requests[-1][1], "/api/threads/other/unmute")
+        self.assertIsNone(window.context_menu)
         requests[-1][2]({"changed": True, "threadId": "other", "thread": dict(other.asb_thread, muted=False)}, None); settle()
-        self.assertEqual(muted.asb_label.get_label(), "Mute")
         self.assertFalse(other.asb_mute_glyph.get_visible())
         self.assertEqual([request[1] for request in requests if request[1].startswith("/api/threads/")],
                          ["/api/threads/other/mute", "/api/threads/other/unmute"])
+        # Another action keeps the panel open.
+        window.show_context(other); self.drain()
+        panel = window.context_menu
+        panel.asb_actions["pin"].emit("clicked"); self.drain()
+        self.assertEqual(requests[-1][1], "/api/threads/other/pin")
+        self.assertIs(window.context_menu, panel)
         panel.popdown(); self.drain()
         # A muted Working row offers no Discard action.
         window.show_context(busy); self.drain()

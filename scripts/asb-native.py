@@ -5384,11 +5384,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget.asb_tooltip_content = widget.asb_tooltip_key = None
         widget.set_has_tooltip(True)
         widget.asb_tooltip_handler = widget.connect("query-tooltip", self.query_row_tooltip)
+        # The row panel opens on the right-button release. A panel that maps while the button is down gets the
+        # pointer grab with no pointer enter, and GDK then takes the next click on the panel for a click outside it.
         for controller, signals in (
                 (Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE), (("key-pressed", self.row_key),)),
                 (Gtk.EventControllerFocus(), (("enter", self.row_focus),)),
                 (Gtk.EventControllerMotion(), (("notify::contains-pointer", self.row_hover),)),
-                (Gtk.GestureClick(button=3), (("pressed", self.row_context),)),
+                (Gtk.GestureClick(button=3), (("released", self.row_context),)),
                 (Gtk.DragSource(actions=Gdk.DragAction.MOVE), (("prepare", self.pin_drag_prepare),
                                                           ("drag-end", self.pin_drag_end))),
                 (Gtk.DropTarget.new(GObject.TYPE_STRING, Gdk.DragAction.MOVE), (("drop", self.pin_drop),))):
@@ -6302,6 +6304,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget = self.focus_widgets.get(panel.asb_identity)
         action = row_panel_controls(widget.asb_thread).get(slot, (None,))[0] if widget else None
         if action:
+            if slot == "mute":
+                # The panel covers the card, so Mute and Unmute close it: the card shows its mute icon at once.
+                panel.popdown()
             self.activate_action("win." + action, GLib.Variant("s", panel.asb_identity))
 
     def panel_copy(self, button, slot):
