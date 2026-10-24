@@ -3634,6 +3634,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-row-panel button.asb-panel-captioned {{ padding-top: 5px; padding-bottom: 5px; }}
 {base} .asb-row-panel button.asb-copy-off .asb-panel-label, {base} .asb-row-panel button.asb-copy-off image {{ opacity: .5; }}
 {base} .asb-row-panel button.asb-copy-off:hover, {base} .asb-row-panel button.asb-copy-off:active {{ background: none; }}
+{base} .asb-row-panel button.asb-action-pending > * {{ opacity: .5; }}
+{base} .asb-row-panel button.asb-action-pending:hover, {base} .asb-row-panel button.asb-action-pending:active {{ background: none; }}
 {base} .asb-row-panel button.asb-copy-done image {{ color: @accent_color; }}
 """
         if colors:
@@ -6251,10 +6253,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             # A new value or an availability change ends the feedback of a copy of the old one.
             panel.asb_copy_values = values
             self.clear_copy_feedback(panel)
-        focus = self.get_focus()
-        if pending and focus and focus.is_ancestor(panel):
-            # An insensitive control loses the focus; it gets it back when the action ends.
-            panel.asb_return_focus = focus
         panel.update_property([Gtk.AccessibleProperty.LABEL], [model["title"]])
         panel.asb_title.set_label(" ".join(model["title"].split()))
         panel.asb_title.set_tooltip_text(model["path"] + ("\n" + values[0] if values[0] else ""))
@@ -6267,26 +6265,18 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             panel.asb_open.set_sensitive(False)
         else:
             set_panel_label(panel.asb_open, "Open in " + model["app"])
-            panel.asb_open.set_sensitive(bool(row.get("canOpen")) and not pending and row["id"] not in self.opening)
+            panel.asb_open.set_sensitive(bool(row.get("canOpen")) and row["id"] not in self.opening)
         for slot, button in panel.asb_actions.items():
             button.set_visible(slot in controls)
             if slot in controls:
                 _action, text, icon = controls[slot]
                 set_panel_label(button, text)
                 set_icon(button.asb_icon, icon)
-            button.set_sensitive(not pending)
-        panel.asb_copy.set_sensitive(not pending)
-        panel.asb_copy_full.set_sensitive(not pending)
-        if not pending and getattr(panel, "asb_return_focus", None):
-            GLib.idle_add(self.restore_panel_focus, panel, panel.asb_return_focus)
-            panel.asb_return_focus = None
-
-    def restore_panel_focus(self, panel, control):
-        focus = self.get_focus()
-        if self.context_menu is panel and control.is_ancestor(panel) and control.get_mapped() and control.get_sensitive() \
-                and (focus is None or not focus.is_ancestor(panel)):
-            self.set_focus(control)
-        return False
+        # A control that turned insensitive under the pointer made GTK pick a new pointer target in the board: the panel got a leave and closed.
+        for button in (panel.asb_open, *panel.asb_actions.values()):
+            (button.add_css_class if pending else button.remove_css_class)("asb-action-pending")
+            button.update_state([Gtk.AccessibleState.BUSY, Gtk.AccessibleState.DISABLED], [pending, pending or not button.get_sensitive()])
+        self.show_copy_rows(panel)
 
     def sync_row_panel(self):
         panel = getattr(self, "context_menu", None)
@@ -6301,6 +6291,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def panel_action(self, button, slot):
         # The panel comes from the widget: a panel in the handler data makes a cycle that Python cannot free.
         panel = button.get_ancestor(Gtk.Popover)
+        if panel.asb_identity in self.session_actions:
+            return
         widget = self.focus_widgets.get(panel.asb_identity)
         action = row_panel_controls(widget.asb_thread).get(slot, (None,))[0] if widget else None
         if action:
@@ -6314,7 +6306,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget = self.focus_widgets.get(panel.asb_identity)
         value = panel.asb_copy_values[0 if slot == "short" else 2] if panel.asb_copy_values else None
         # An unavailable row is focusable but has no action.
-        if not widget or self.closed or not value:
+        if not widget or self.closed or not value or panel.asb_identity in self.session_actions:
             return
         # A copy ends the check on both rows first.
         self.clear_copy_feedback(panel)
@@ -6344,6 +6336,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if not panel.asb_copy_values:
             return
         short, short_reason, full, full_reason = panel.asb_copy_values
+        pending = panel.asb_identity in self.session_actions
         for slot, button, value, reason, caption, done in (
                 ("short", panel.asb_copy, short, short_reason, "Relative: in the same app", COPY_DONE_TEXT["relative"]),
                 ("full", panel.asb_copy_full, full, full_reason, "Absolute: with ASB, any machine", COPY_DONE_TEXT["absolute"])):
@@ -6356,7 +6349,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             (button.remove_css_class if value else button.add_css_class)("asb-copy-off")
             (button.add_css_class if note or not value else button.remove_css_class)("asb-panel-captioned")
             (button.add_css_class if copied else button.remove_css_class)("asb-copy-done")
-            button.update_state([Gtk.AccessibleState.DISABLED], [not value])
+            (button.add_css_class if pending else button.remove_css_class)("asb-action-pending")
+            button.update_state([Gtk.AccessibleState.BUSY, Gtk.AccessibleState.DISABLED], [pending, not value or pending])
             set_icon(button.asb_icon, "object-select-symbolic" if copied else "edit-copy-symbolic")
             # The caption shows the copied text, so the tooltip keeps the reference.
             button.asb_tip = value or reason
@@ -6372,10 +6366,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def panel_move_pin(self, button, direction):
         panel = button.get_ancestor(Gtk.Popover)
+        if panel.asb_identity in self.session_actions:
+            return
         self.activate_action("win.pin-" + direction, GLib.Variant("s", panel.asb_identity))
 
     def panel_open(self, button):
         panel = button.get_ancestor(Gtk.Popover)
+        if panel.asb_identity in self.session_actions:
+            return
         widget = self.focus_widgets.get(panel.asb_identity)
         panel.popdown()
         if widget:

@@ -396,6 +396,13 @@ class WidgetCheck(unittest.TestCase):
             self.g_free(error)
             self.fail(message)
 
+    def assert_accessible_busy(self, widget, expected):
+        error = self.gtk_state(self.capsule_pointer(widget.__gpointer__, None), int(asb.Gtk.AccessibleState.BUSY), ctypes.c_int(expected))
+        if error:
+            message = ctypes.string_at(error).decode()
+            self.g_free(error)
+            self.fail(message)
+
     def drain(self, duration=0.18):
         end = time.monotonic() + duration
         context = asb.GLib.MainContext.default()
@@ -1897,17 +1904,29 @@ class WidgetCheck(unittest.TestCase):
                 panel.asb_actions["read"].emit("clicked")
                 action.assert_called_once_with("second", "mark-read")
             self.assertIs(window.context_menu, panel)
-            # While an action runs, every control is insensitive and keeps its label; the focused slot gets the focus
-            # back, with its new label, when the action ends.
+            # While an action runs, every control stays sensitive and keeps the focus and its label, but is busy and does nothing.
             read, signature = panel.asb_actions["read"], panel.asb_signature
             read.grab_focus()
             window.session_actions.add("second")
             row.asb_thread.update(unread=False, pending=False, pendingSource="")
             window.sync_row_panel()
-            self.assertFalse(any(button.get_sensitive() for button in (panel.asb_open, panel.asb_copy, panel.asb_copy_full, *panel.asb_actions.values())))
-            self.assertEqual(actions(panel)["read"], ("Mark read", False))
+            controls = (panel.asb_open, panel.asb_copy, panel.asb_copy_full,
+                        *(button for button in panel.asb_actions.values() if button.get_visible()))
+            for control in controls:
+                self.assertTrue(control.get_sensitive())
+                self.assertTrue(control.has_css_class("asb-action-pending"))
+                self.assert_accessible_busy(control, True)
+                self.assert_accessible_disabled(control, True)
+            self.assertEqual(actions(panel)["read"], ("Mark read", True))
             self.assertIn("drawer", actions(panel))
-            self.assertIs(panel.asb_return_focus, read)
+            self.assertIs(window.get_focus(), read)
+            with patch.object(window, "session_action") as action, patch.object(window, "open_row") as open_row:
+                for control in controls:
+                    control.emit("clicked")
+                action.assert_not_called()
+                open_row.assert_not_called()
+            self.assertIs(window.context_menu, panel)
+            self.assertIsNone(panel.asb_copied)
             window.session_actions.discard("second")
             window.sync_row_panel()
             self.drain()
@@ -1917,6 +1936,11 @@ class WidgetCheck(unittest.TestCase):
             self.assertNotIn("drawer", actions(panel))
             self.assertIs(window.get_focus(), read)
             self.assertNotEqual(panel.asb_signature, signature)
+            self.assertFalse(any(control.has_css_class("asb-action-pending") for control in controls))
+            self.assert_accessible_busy(read, False)
+            self.assert_accessible_disabled(read, False)
+            self.assert_accessible_busy(panel.asb_copy_full, False)
+            self.assert_accessible_disabled(panel.asb_copy_full, panel.asb_copy_values[2] is None)
             row.asb_thread.update(unread=True, pending=True, pendingSource="observed-completion")
             window.sync_row_panel()
             self.drain()  # Tab order follows the allocation of the shown drawer row.
@@ -2161,6 +2185,68 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual([request[1] for request in requests if request[1].startswith("/api/threads/")],
                          ["/api/threads/" + asb.quote(identity, safe="") + "/mute"])
         self.assertIsNone(window.context_menu)
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real pointer movement needs xdotool and a nested test display (DISPLAY=:9 or :10).")
+    def test_a_pointer_click_on_a_row_panel_action_keeps_the_panel_open(self):
+        # A panel row that turned insensitive under the pointer made GTK pick a new pointer target in the board:
+        # the panel got a leave and closed, and a click without a pointer move went to the board under it.
+        from gi.repository import GdkX11
+
+        requests = []
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "request_async", lambda *args, **_kwargs: requests.append(args))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        def xdo(*args):
+            return subprocess.run(["xdotool", *map(str, args)], check=True, capture_output=True, text=True).stdout
+
+        x, y = (line.split("=")[1] for line in xdo("getmouselocation", "--shell").splitlines()[:2])
+        self.addCleanup(xdo, "mousemove", x, y)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", copy.deepcopy(FIXTURE),
+                                      theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(900, 700)
+        window.present(); self.drain(.3)
+
+        def move_to(widget, root, x=None):
+            found, bounds = widget.compute_bounds(root)
+            self.assertTrue(found)
+            left, top = root.get_surface_transform()
+            xdo("mousemove", "--window", GdkX11.X11Surface.get_xid(root.get_surface()),
+                int(bounds.origin.x + (bounds.size.width / 2 if x is None else x) + left),
+                int(bounds.origin.y + bounds.size.height / 2 + top))
+            self.drain()
+
+        # The first card: a pin keeps it in its place, so its panel stays under the pointer.
+        identity = window.row_order[0]
+        move_to(window.focus_widgets[identity], window)
+        xdo("click", 3); self.drain(.3)
+        panel = window.context_menu
+        self.assertTrue(panel is not None and panel.get_mapped())
+        pin = panel.asb_actions["pin"]
+        self.assertEqual(pin.asb_label.get_label(), "Pin")
+        move_to(pin, panel, 40)
+        xdo("click", 1); self.drain(.3)
+        routes = lambda: [request[1] for request in requests if request[1].startswith("/api/threads/")]
+        self.assertEqual(routes(), ["/api/threads/" + asb.quote(identity, safe="") + "/pin"])
+        # While the request runs, the panel stays open and its rows are busy.
+        self.assertIs(window.context_menu, panel)
+        self.assertTrue(panel.get_mapped())
+        self.assertTrue(pin.get_sensitive() and pin.has_css_class("asb-action-pending"))
+        requests[-1][2]({"changed": True, "pinnedOrder": [identity]}, None); self.drain(.3)
+        self.assertIs(window.context_menu, panel)
+        self.assertEqual(pin.asb_label.get_label(), "Unpin")
+        self.assertFalse(pin.has_css_class("asb-action-pending"))
+        # A second click without a pointer move goes to the same row, not to the board under the panel.
+        xdo("click", 1); self.drain(.3)
+        self.assertEqual(routes(), ["/api/threads/" + asb.quote(identity, safe="") + "/pin",
+                                    "/api/threads/" + asb.quote(identity, safe="") + "/unpin"])
+        self.assertIs(window.context_menu, panel)
+        self.assertTrue(panel.get_mapped())
 
     @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
                          "Real pointer movement needs xdotool and a nested test display (DISPLAY=:9 or :10).")
@@ -2584,8 +2670,8 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual(button.asb_label.get_label(), before)
             button.grab_focus()
             button.emit("clicked")
-            # The real request runs: every control is insensitive and keeps its label.
-            self.assertFalse(button.get_sensitive() or popup.asb_open.get_sensitive() or popup.asb_copy.get_sensitive())
+            # The real request runs: every control stays sensitive, keeps its label, and is busy.
+            self.assertTrue(all(control.get_sensitive() and control.has_css_class("asb-action-pending") for control in (button, popup.asb_open, popup.asb_copy)))
             self.assertEqual(button.asb_label.get_label(), before)
             self.drain(.35)
             # The panel stays open on its row, with the new row data, and the same slot keeps the focus.
@@ -2596,6 +2682,7 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual(button.asb_label.get_label(), after)
             self.assert_accessible_label(button, after)
             self.assertTrue(button.get_sensitive())
+            self.assertFalse(button.has_css_class("asb-action-pending"))
             self.assertIs(window.get_focus(), button)
             popup.popdown()
             self.drain()

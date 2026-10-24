@@ -5585,9 +5585,9 @@ class NativeLogicChecks(unittest.TestCase):
             timers[len(timers) + 1] = (delay, callback)
             return len(timers)
         glib = SimpleNamespace(timeout_add=timeout_add, source_remove=removed.append, Error=type("GError", (Exception,), {}))
-        gtk = SimpleNamespace(Popover=object, AccessibleProperty=SimpleNamespace(DESCRIPTION=1), AccessibleState=SimpleNamespace(DISABLED=2))
+        gtk = SimpleNamespace(Popover=object, AccessibleProperty=SimpleNamespace(DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=2))
         window = object.__new__(Window)
-        window.closed, window.update_row_panel = False, Mock()
+        window.closed, window.update_row_panel, window.session_actions = False, Mock(), set()
         clipboard = Mock()
         window.get_clipboard = lambda: clipboard
         row = {"id": "a"}
@@ -5611,7 +5611,7 @@ class NativeLogicChecks(unittest.TestCase):
             short.asb_caption.set_label.assert_called_with("Relative: in the same app")
             absolute.asb_caption.set_label.assert_called_with("Absolute: with ASB, any machine")
             absolute.asb_caption.set_lines.assert_called_with(1)
-            absolute.update_state.assert_called_with([2], [False])
+            absolute.update_state.assert_called_with([0, 2], [False, False])
             absolute.update_property.assert_called_with([1], [full])
             window.panel_copy(short, "short")
             clipboard.set.assert_called_once_with("codex/1")
@@ -5649,6 +5649,15 @@ class NativeLogicChecks(unittest.TestCase):
             clipboard.set.side_effect = None
             window.panel_copy(absolute, "full")
             self.assertEqual(panel.asb_copy_error, "")
+            # While an action for the row runs, both rows are busy and copy nothing.
+            window.session_actions.add("a")
+            window.show_copy_rows(panel)
+            for button in (short, absolute):
+                button.update_state.assert_called_with([0, 2], [True, True])
+                button.add_css_class.assert_any_call("asb-action-pending")
+            clipboard.set.reset_mock()
+            window.panel_copy(short, "short")
+            clipboard.set.assert_not_called()
 
     def test_an_unavailable_copy_row_is_focusable_has_no_action_and_shows_its_reason(self):
         invalid = "This session has an ID in a form that ASB does not know."
@@ -5658,7 +5667,7 @@ class NativeLogicChecks(unittest.TestCase):
             window.show_copy_rows(panel)
             for button in (short, absolute):
                 window.panel_copy(button, "short" if button is short else "full")
-                button.update_state.assert_called_with([2], [True])
+                button.update_state.assert_called_with([0, 2], [False, True])
                 button.add_css_class.assert_any_call("asb-copy-off")
                 button.update_property.assert_called_with([1], [invalid])
                 self.assertEqual(button.asb_tip, invalid)
@@ -5679,7 +5688,7 @@ class NativeLogicChecks(unittest.TestCase):
             # Available again: no DISABLED state.
             panel.asb_copy_values = ("codex/1", None, None, unknown)
             window.show_copy_rows(panel)
-            short.update_state.assert_called_with([2], [False])
+            short.update_state.assert_called_with([0, 2], [False, False])
             short.remove_css_class.assert_any_call("asb-copy-off")
 
     def test_the_disabled_card_copy_button_has_no_action_and_never_copies(self):
