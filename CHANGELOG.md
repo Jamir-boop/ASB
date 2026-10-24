@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Fixed the mute icon of a card, which was too faint to see, so that a card looked the same after **Mute**. The icon had 35% of the gray of the folder name (about 1.9:1 on a black board). It now has the color of the folder name next to it, also on a read Idle card, a card that runs elsewhere, and a card with a usage limit, so it has the contrast of that name (at least 4.5:1).
 - Fixed the copy button of a Comfortable card after a card move. When another card moved while the pointer rested on the copy button, the wheel scrolled the board in place of switching between Relative and Absolute, until the pointer left the button and came back. After a move, the board now checks whether the pointer is still on the button.
 - Changed the text of Waiting cards to the colors of Idle cards: on the board (also in the tooltip), on the phone (also in the session inspector), and in the web view. Before, the word `Waiting` had the warning color, or the accent color with a custom palette. The `?` or dot and the place of Waiting cards at the top still show that a session waits for you.
 - Changed the board so that it no longer lists the side chats that `/btw` makes in the Claude app (Claude Desktop Code, also under another config folder), open or archived. ASB knows them by `spawnedFrom.btw` in their session file. Hand-offs, forks, and sessions that another session started stay on the board. Codex side chats were never on the board: Codex does not save them.

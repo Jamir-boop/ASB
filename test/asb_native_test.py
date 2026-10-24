@@ -4638,6 +4638,40 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(window.context_menu.asb_actions["mute"].asb_label.get_label(), "Unmute")
         window.context_menu.popdown(); self.drain()
 
+    def test_the_mute_icon_has_the_color_and_the_ink_of_the_folder_name(self):
+        # At 35% of the folder gray, the icon had about 1.9:1 on a black board, so a muted card looked unchanged.
+        now = time.time() * 1000
+        def row(identity, **extra):
+            return {"id": identity, "provider": "codex", "providerLabel": "Codex", "title": "Summarize the open issues " + identity,
+                    "cwd": "/example/field-notes", "projectName": "field-notes", "state": "idle", "canOpen": True,
+                    "updatedAtMs": now - 60_000, "muted": True, **extra}
+        rows = [row("read"), row("busy", state="working"), row("remote", remote=True, machineName="homeLP", surface="app", canOpen=False),
+                row("limited", limitResetsAtMs=now + 3_600_000)]
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", {"generatedAtMs": now, "providers": [], "threads": rows},
+                                       theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(720, 500)
+        window.present(); window.set_focus(None); self.drain(.3)
+        window.view_filter.set_selected(1); self.settle(window)
+        cards = window.focus_widgets
+        self.assertEqual([cards["read"].has_css_class("asb-idle-read"), cards["remote"].has_css_class("asb-view-only-quiet"),
+                          cards["limited"].has_css_class("asb-limited"), cards["busy"].has_css_class("asb-idle-read")], [True, True, True, False])
+        hex_color = lambda widget: asb.SwitchboardWindow.hex_color(widget.get_color())
+        for custom in (None, {"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#030303"}):
+            window.set_palette(custom); self.settle(window)
+            for identity in ("read", "busy", "remote", "limited"):
+                with self.subTest(custom=bool(custom), card=identity):
+                    glyph, folder = cards[identity].asb_mute_glyph, cards[identity].asb_folder
+                    self.assertTrue(glyph.get_visible() and glyph.get_mapped())
+                    self.assertEqual(hex_color(glyph), hex_color(folder))
+                    # The thin lines of the icon get nearly the ink of the folder text: no extra dimming.
+                    self.assertGreaterEqual(self.ink(glyph), .8 * self.ink(folder))
+
     def test_idle_card_offers_discard_for_the_next_task_and_sends_next(self):
         def row(identity, order, **extra):
             return {"id": identity, "provider": "codex", "providerLabel": "Codex", "title": "Summarize the open issues " + identity,

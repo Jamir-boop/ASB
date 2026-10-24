@@ -3545,7 +3545,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-toolbar searchentry {{ min-height: 26px; padding-top: 0; padding-bottom: 0; }}
 {base} .asb-state {{ font-size: 11px; }}
 {base} .asb-provider {{ opacity: .65; }}
-{base} .asb-mute-glyph {{ filter: opacity(.35); }}
 {base} .asb-message-lit .asb-provider {{ color: @accent_color; opacity: 1; }}
 {base} .asb-source-badge {{ min-width: 6px; min-height: 6px; padding: 0; border: 1px solid @window_bg_color;
     border-radius: 50%; box-shadow: none; opacity: 1; }}
@@ -3726,12 +3725,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         view_only, view_only_rest = f"{base} .asb-view-only-quiet{calm}", f"{base} .asb-view-only-rest{calm}"
         css += f"""
 {", ".join(row + " .asb-title" for row in quiet)} {{ color: {quiet_title}; opacity: 1; }}
-{", ".join(row + part for row in quiet for part in (" .asb-folder", " .asb-state", " .asb-age"))} {{ color: {quiet_caption}; opacity: 1; }}
+{", ".join(row + part for row in quiet for part in (" .asb-folder", " .asb-state", " .asb-age", " .asb-mute-glyph"))} {{ color: {quiet_caption}; opacity: 1; }}
 {", ".join(base + " .asb-limited" + part for part in parts)} {{ color: {limited}; opacity: 1; }}
 {", ".join(base + " .asb-limited" + state + part for state in (".asb-hovered", ":focus-within") for part in parts)} {{ color: {limited_hover}; }}
 {base} .asb-limited:not(.asb-message-lit) .asb-provider {{ opacity: .4; }}
 {view_only} .asb-title {{ color: {quiet_title}; opacity: 1; }}
-{", ".join(view_only + part for part in (" .asb-folder", " .asb-age", " .asb-where", " .asb-where-icon"))} {{ color: {quiet_caption}; opacity: 1; }}
+{", ".join(view_only + part for part in (" .asb-folder", " .asb-age", " .asb-where", " .asb-where-icon", " .asb-mute-glyph"))} {{ color: {quiet_caption}; opacity: 1; }}
 {view_only_rest} .asb-state {{ color: {quiet_caption}; opacity: 1; }}
 """
         self.css.load_from_string(css)
