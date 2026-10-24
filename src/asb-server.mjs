@@ -40,7 +40,7 @@ function readPalette(palettePath) {
 export function createAsbServer({
   markUnreadThread = null, markReadThread = null, setUnreadSettings = null, pinThread = null, discardThread = null, drawerThread = null, muteThread = null,
   listSources = null, updateSource = null, removeSource = null, sourceToken = '', phoneGateway = null, machineGroup = null, serviceMode = false, onStop = null,
-  machineRelay = null, readSources = async () => [], resolveSession = null, resolveBound = null, listReferences = null, sendMember = null,
+  machineRelay = null, bridgeCoverage = null, readSources = async () => [], resolveSession = null, resolveBound = null, listReferences = null, sendMember = null,
   appVersion = '', rootDir = '', sourcesPath = '', readSourcesRevision = async () => null,
   palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, now = Date.now, ...snapshotOptions
 } = {}) {
@@ -98,6 +98,7 @@ export function createAsbServer({
     const phoneRevoke = phoneGateway && url.pathname.match(/^\/api\/phone\/devices\/([a-f0-9]{12})\/revoke$/);
     const phoneActionRoute = phoneGateway && (['/api/phone/settings', '/api/phone/pairing'].includes(url.pathname) || Boolean(phoneRevoke));
     const groupRoute = machineGroup && url.pathname.match(/^\/api\/group(?:\/(invite|join|remove|leave))?$/);
+    const bridgeRoute = bridgeCoverage && url.pathname.match(/^\/api\/bridge(?:\/(install))?$/);
     // The receipt route exists only when the relay can send exact receipts.
     const relayRoute = machineRelay && url.pathname.match(machineRelay.sendReceipt ? /^\/api\/relay\/(homes|remote-peers|send|receipt)$/
       : /^\/api\/relay\/(homes|remote-peers|send)$/)?.[1];
@@ -110,10 +111,10 @@ export function createAsbServer({
     const listReferencesRoute = Boolean(listReferences) && url.pathname === '/api/agent/list-references';
     const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute
       || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute || resolveRoute || resolveBoundRoute || listReferencesRoute || sendMemberRoute
-      || Boolean(groupRoute?.[1]) || ['send', 'receipt'].includes(relayRoute);
+      || Boolean(groupRoute?.[1]) || Boolean(bridgeRoute?.[1]) || ['send', 'receipt'].includes(relayRoute);
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
     const readApiRoute = url.pathname === '/api/dashboard' || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute
-      || Boolean(groupRoute && !groupRoute[1]) || ['homes', 'remote-peers'].includes(relayRoute);
+      || Boolean(groupRoute && !groupRoute[1]) || Boolean(bridgeRoute && !bridgeRoute[1]) || ['homes', 'remote-peers'].includes(relayRoute);
     const readRoute = readApiRoute || staticRoutes.includes(url.pathname);
     if (!readRoute && !actionRoute) {
       sendJson(response, 404, { error: 'Route is not available in ASB.' });
@@ -152,6 +153,25 @@ export function createAsbServer({
       // The reply goes out before the engine closes its connections.
       response.once('close', () => onStop());
       sendJson(response, 200, { stopping: true });
+      return;
+    }
+    if (bridgeRoute) {
+      response.setHeader('Cache-Control', 'no-store');
+      if (!bridgeRoute[1]) {
+        try { sendJson(response, 200, await bridgeCoverage.status({ force: url.searchParams.get('refresh') === '1' })); }
+        catch { sendJson(response, 500, { error: 'ASB cannot check ASB Bridge.' }); }
+        return;
+      }
+      if (!expectedSourceToken.length || !sourceTokenAllowed(request)) {
+        sendJson(response, 403, { error: 'Use the current ASB source token to install ASB Bridge.' });
+        return;
+      }
+      let body;
+      try { body = await readBody(request, 4 * 1024); } catch (error) { sendJson(response, error.statusCode === 413 ? 413 : 400, { error: 'Invalid install request.' }); return; }
+      try {
+        const result = await bridgeCoverage.install(body);
+        sendJson(response, result.status, result.body);
+      } catch { sendJson(response, 500, { error: 'ASB cannot install ASB Bridge.' }); }
       return;
     }
     if (sendMemberRoute) {

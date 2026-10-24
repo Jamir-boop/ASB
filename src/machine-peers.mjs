@@ -289,6 +289,7 @@ export async function peerRequest({ member, path, method = 'GET', body, etag, tl
   throw failure;
 }
 
+const validVersion = (v) => typeof v === 'string' && v.length <= 40 && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(v);
 // One poller per member: sessions, group, and hello, each on its own timer.
 export function createPeerPoller({ member, tls, validAddresses, request = peerRequest, onGroup = () => {}, onChange = () => {},
   onRemoved = () => {}, now = Date.now, timers = { setTimeout, clearTimeout } }) {
@@ -351,6 +352,8 @@ export function createPeerPoller({ member, tls, validAddresses, request = peerRe
     try {
       const reply = await call('/peer/v1/hello');
       const value = reply.body;
+      // The ASB version stays in memory only, like the addresses.
+      if (reply.status === 200 && value?.machineId === state.member.machineId) state.member.asbVersion = validVersion(value.asbVersion) ? value.asbVersion : '';
       // The addresses stay in memory only; the next group merge keeps the saved ones.
       if (reply.status === 200 && value?.machineId === state.member.machineId && validAddresses(value.addresses) && Number.isInteger(value.port)
         && value.port >= 1024 && value.port <= 65535) {

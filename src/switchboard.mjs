@@ -9,6 +9,7 @@ import { loadSwitchboardClaudeThreads, claudeRemoteDeepLink, claudeRemoteStatus,
 import { normalizeDashboardThreads } from './insights.mjs';
 import { loadOpenCodeDashboard, invalidateOpenCodeData, retainOpenCodeDataScopes, opencodeBridgeId, defaultOpenCodeStateDir } from './opencode-data.mjs';
 import { createAsbServer } from './asb-server.mjs';
+import { createBridgeCoverage } from './bridge-coverage.mjs';
 import { createSoundPlayer, createSoundWatcher } from './asb-sounds.mjs';
 import { openThreadInCodex, scopedCommand } from './session-opener.mjs';
 import { AppSourceRegistry, appSourcesRevision, numberAppSources, sourceName, validateSourceLauncher } from './app-sources.mjs';
@@ -855,6 +856,13 @@ export function createSwitchboardServer(options = {}) {
             spec.source === (['codex', 'opencode'].includes(source.provider) ? source.provider : 'claude'))),
     ];
   };
+  // The check reads the rows of the server made below; it runs only after a request.
+  const bridgeCoverage = typeof options.runBridgeCli === 'function' ? createBridgeCoverage({ runCli: options.runBridgeCli,
+    readSources: () => registry.read(), readThreads: async () => (await server.dashboardForRequest()).threads || [],
+    machine: () => {
+      const identity = options.machineIdentity?.();
+      return { machineId: identity?.machineId || '', name: identity?.machineName || localMachineName(), asbVersion: options.asbVersion || APP_VERSION };
+    }, platform, group: options.machineGroup || null, relay: options.machineRelay || null }) : null;
   const server = createAsbServer({
     dashboardWatchDebounceMs: 250,
     appVersion: APP_VERSION,
@@ -973,8 +981,11 @@ export function createSwitchboardServer(options = {}) {
       return result;
     },
     sourceToken: options.sourceToken || '',
+    bridgeCoverage,
   });
   boardOpen = () => server.boardOpen();
+  // The member route GET /peer/v1/bridge (src/phone-gateway.mjs).
+  server.bridgeReport = () => bridgeCoverage ? bridgeCoverage.report() : Promise.resolve({ status: 404, body: { error: 'Route is not available.' } });
   // The receiving side of an exact member send (src/machine-relay.mjs): this engine's own binding, from the cached rows.
   server.bindMemberTarget = async (request) => bindMemberTarget(request, await referenceContext(await server.dashboardForRequest()), { ...boundIo, targetHomes });
   const close = server.close.bind(server);

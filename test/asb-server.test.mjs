@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -350,4 +350,93 @@ test('a static file that cannot be read does not stop the server', {
   const response = await fetch(`${base}/switchboard.js`);
   assert.equal(response.status, 200);
   assert.equal(await response.text(), '// ok');
+});
+
+test('ASB Bridge routes read the coverage and install with the source token', async (t) => {
+  const calls = [];
+  const bridgeCoverage = {
+    status: async (options) => { calls.push(['status', options]); return { api: 1, expectedVersion: '1.2.0', machines: [] }; },
+    install: async (body) => { calls.push(['install', body]); return { status: 202, body: { ok: true, output: 'done' } }; },
+  };
+  const { base, post } = await serve(t, { bridgeCoverage, sourceToken: 'token' });
+  const read = await fetch(`${base}/api/bridge`);
+  assert.equal(read.status, 200);
+  assert.equal(read.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(await read.json(), { api: 1, expectedVersion: '1.2.0', machines: [] });
+  assert.equal((await fetch(`${base}/api/bridge?refresh=1`)).status, 200);
+  assert.equal((await fetch(`${base}/api/bridge`, { headers: { Origin: 'http://example.test' } })).status, 403);
+  assert.equal((await fetch(`${base}/api/bridge`, { headers: { 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
+  assert.equal((await post('/api/bridge')).status, 405);
+  assert.deepEqual(calls, [['status', { force: false }], ['status', { force: true }]]);
+  calls.length = 0;
+  const get = await fetch(`${base}/api/bridge/install`);
+  assert.equal(get.status, 405);
+  assert.equal(get.headers.get('allow'), 'POST');
+  assert.equal((await fetch(`${base}/api/bridge/install`, { method: 'POST', headers: { 'x-asb-source-token': 'token' }, body: '{"all":true}' })).status, 403);
+  for (const headers of [{}, { 'x-asb-source-token': 'wrong' }]) {
+    const refused = await post('/api/bridge/install', '{"all":true}', headers);
+    assert.equal(refused.status, 403);
+    assert.deepEqual(await refused.json(), { error: 'Use the current ASB source token to install ASB Bridge.' });
+  }
+  const invalid = await post('/api/bridge/install', '{bad', { 'x-asb-source-token': 'token' });
+  assert.equal(invalid.status, 400);
+  assert.deepEqual(await invalid.json(), { error: 'Invalid install request.' });
+  assert.deepEqual(calls, []);
+  const done = await post('/api/bridge/install', '{"sourceId":"codex"}', { 'x-asb-source-token': 'token' });
+  assert.equal(done.status, 202);
+  assert.equal(done.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(await done.json(), { ok: true, output: 'done' });
+  assert.deepEqual(calls, [['install', { sourceId: 'codex' }]]);
+});
+
+test('ASB Bridge routes are 404 without bridge coverage, and a failed status is 500 with a fixed text', async (t) => {
+  const { base, post } = await serve(t, { sourceToken: 'token' });
+  assert.equal((await fetch(`${base}/api/bridge`)).status, 404);
+  assert.equal((await post('/api/bridge/install', '{"all":true}', { 'x-asb-source-token': 'token' })).status, 404);
+  const failing = await serve(t, { bridgeCoverage: { status: async () => { throw new Error('/secret/path'); }, install: async () => ({}) } });
+  const reply = await fetch(`${failing.base}/api/bridge`);
+  assert.equal(reply.status, 500);
+  assert.deepEqual(await reply.json(), { error: 'ASB cannot check ASB Bridge.' });
+});
+
+test('the switchboard server makes bridge coverage only with runBridgeCli and gives it the rows and machine', async (t) => {
+  const source = { id: 'codex', provider: 'codex', enabled: true, label: 'Codex', dataDir: path.resolve('/synthetic/home/.codex') };
+  const status = { codex: [], claude: { home: path.resolve('/synthetic/home/.claude') }, claudeHomes: [],
+    opencode: { plugin: 'missing', expectedVersion: '1.2.0', liveReceiverSessions: [] }, liveReceiverSessions: ['r1'], versions: {} };
+  const calls = [];
+  const options = { pendingTracker: new PendingTracker(false), palettePath: '', sourceRegistry: { read: async () => [source] },
+    machineIdentity: () => ({ machineId: 'm1', machineName: 'Desk' }),
+    loadDashboard: async () => ({ providers: [], threads: [{ id: 'r1', provider: 'codex', sourceId: 'codex', state: 'idle' }] }) };
+  const { base } = await serve(t, { ...options, runBridgeCli: async (args, opts) => { calls.push([args, opts]); return { code: 0, stdout: JSON.stringify(status), stderr: '' }; } },
+    createSwitchboardServer);
+  const reply = await (await fetch(`${base}/api/bridge`)).json();
+  assert.deepEqual(calls, [[['status', '--json'], { timeoutMs: 30_000, env: {} }]]);
+  const version = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version;
+  assert.equal(reply.expectedVersion, '1.2.0');
+  assert.deepEqual([reply.machines[0].machineId, reply.machines[0].name, reply.machines[0].asbVersion, reply.machines[0].state], ['m1', 'Desk', version, 'ok']);
+  assert.deepEqual(reply.machines[0].apps.map((app) => [app.sourceId, app.state, app.live]), [['codex', 'missing', 1]]);
+  const plain = await serve(t, options, createSwitchboardServer);
+  assert.equal((await fetch(`${plain.base}/api/bridge`)).status, 404);
+});
+
+test('a failed ASB Bridge install is 500 with a fixed text', async (t) => {
+  const { post } = await serve(t, { sourceToken: 'token',
+    bridgeCoverage: { status: async () => ({}), install: async () => { throw new Error('/secret/path'); } } });
+  const reply = await post('/api/bridge/install', '{"all":true}', { 'x-asb-source-token': 'token' });
+  assert.equal(reply.status, 500);
+  assert.deepEqual(await reply.json(), { error: 'ASB cannot install ASB Bridge.' });
+});
+
+test('server.bridgeReport gives the member report with runBridgeCli, and 404 without it', async (t) => {
+  const status = { codex: [], claude: { home: path.resolve('/synthetic/home/.claude') }, claudeHomes: [],
+    opencode: { plugin: 'missing', expectedVersion: '1.2.0', liveReceiverSessions: [] }, liveReceiverSessions: [], versions: {} };
+  const source = { id: 'opencode', provider: 'opencode', enabled: true, label: 'OpenCode', dataDir: path.resolve('/synthetic/home/.local/share/opencode') };
+  const options = { pendingTracker: new PendingTracker(false), palettePath: '', sourceRegistry: { read: async () => [source] } };
+  const { server } = await serve(t, { ...options, runBridgeCli: async () => ({ code: 0, stdout: JSON.stringify(status), stderr: '' }) }, createSwitchboardServer);
+  const version = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version;
+  const reply = await server.bridgeReport();
+  assert.deepEqual(reply, { status: 200, body: { api: 1, asbVersion: version, checkedAtMs: reply.body.checkedAtMs, expectedVersion: '1.2.0',
+    apps: [{ sourceId: 'opencode', label: 'OpenCode', provider: 'opencode', state: 'missing', version: null, live: 0, command: 'asb bridge install --opencode' }] } });
+  const plain = await serve(t, options, createSwitchboardServer);
+  assert.deepEqual(await plain.server.bridgeReport(), { status: 404, body: { error: 'Route is not available.' } });
 });

@@ -612,3 +612,24 @@ test('sendName T3 member keys stay private without changing local exports or mes
   assert.equal(exportBody(exportLocalSessions(dashboard, A, nowMs)).body, exportBody(before).body);
   assert.equal(JSON.stringify(dashboard).includes('MEMBER_MESSAGE_KEYS'), false);
 });
+
+test('the hello of the member sets its ASB version in memory; a bad value sets an empty one', async () => {
+  const hellos = [];
+  const timers = fakeTimers();
+  const poller = createPeerPoller({ member: { ...B, certFingerprint: 'b'.repeat(64), addresses: [{ kind: 'lan', address: '10.0.0.2' }], port: 4630 },
+    tls: async () => ({}), timers, validAddresses: () => false,
+    request: async ({ path: route }) => route === '/peer/v1/hello' ? { status: 200, body: hellos.shift() } : { status: 500, body: {} } });
+  hellos.push({ machineId: B.machineId, asbVersion: '1.12.0', port: 1 });
+  poller.start();
+  for (let round = 0; round < 5; round += 1) await new Promise((resolve) => setImmediate(resolve));
+  // Address and port checks fail, and the version is still set.
+  assert.equal(poller.state.member.asbVersion, '1.12.0');
+  for (const [body, expected] of [[{ machineId: 'other-machine', asbVersion: '9.9.9' }, '1.12.0'], [{ machineId: B.machineId, asbVersion: 112 }, ''],
+    [{ machineId: B.machineId, asbVersion: '1.12.0' }, '1.12.0'], [{ machineId: B.machineId, asbVersion: `1.12.0-${'a'.repeat(34)}` }, ''],
+    [{ machineId: B.machineId, asbVersion: '1.12.1-rc.1' }, '1.12.1-rc.1'], [{ machineId: B.machineId, asbVersion: '1.12' }, '']]) {
+    hellos.push(body);
+    await timers.fire(60_000);
+    assert.equal(poller.state.member.asbVersion, expected, JSON.stringify(body));
+  }
+  poller.stop();
+});

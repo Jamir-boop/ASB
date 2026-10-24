@@ -20,6 +20,7 @@ import { findRunningService, prepareInstanceRuntime, protectWindowsFolder, publi
 
 const execFileAsync = promisify(execFileCallback);
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
+const BRIDGE_SCRIPT = fileURLToPath(new URL('./asb-bridge.mjs', import.meta.url));
 export const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 // Plan P12: the HKCU Run value starts the hidden tray script, and the tray starts and watches the engine.
 export const trayArguments = (root = ROOT, node = process.execPath) => ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
@@ -83,7 +84,8 @@ export async function runEngine({ env = process.env, platform = process.platform
   const relay = createRelaySupervisor({ group, port, sourceToken, env, platform, bindTarget: (request) => server.bindMemberTarget(request) });
   const gateway = createPhoneGateway({ localPort: port, asbVersion,
     peer: { ...group.peer, peers: () => relay.peerPeers(), deliver: (value, fingerprint) => relay.peerDeliver(value, fingerprint),
-      resolveExact: (value, fingerprint) => relay.peerResolveExact(value, fingerprint), deliverExact: (value, fingerprint) => relay.peerDeliverExact(value, fingerprint) },
+      resolveExact: (value, fingerprint) => relay.peerResolveExact(value, fingerprint), deliverExact: (value, fingerprint) => relay.peerDeliverExact(value, fingerprint),
+      bridge: () => server.bridgeReport() },
     onPhonePaired: group.onPhonePaired, onPhoneRevoked: group.onPhoneRevoked });
   const positions = createReaderPositions({ file: readerPositionsPath(env, platform), key: () => gateway.readerPositionsKey(), platform });
   let machineId = '';
@@ -92,6 +94,11 @@ export async function runEngine({ env = process.env, platform = process.platform
     readerPositions: positions, onScanDone: trim.scanEnded,
     playSound: createSoundPlayer({ platform }),
     machineIdentity: () => ({ machineId, machineName: group.selfName() }), referenceScopes: () => referenceScopes,
+    // ASB Bridge status uses blocking calls, so it runs in a child process.
+    runBridgeCli: (args, { timeoutMs, env: extra }) => execFile(process.execPath, [BRIDGE_SCRIPT, ...args],
+      { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true, env: { ...process.env, ...extra } })
+      .then(({ stdout, stderr }) => ({ code: 0, stdout, stderr }),
+        (error) => ({ code: Number.isInteger(error.code) ? error.code : null, stdout: String(error.stdout ?? ''), stderr: String(error.stderr ?? '') })),
     onStop: async () => {
       if (stopping || quitRequested) return;
       quitRequested = true;

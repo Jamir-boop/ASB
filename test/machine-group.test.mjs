@@ -235,3 +235,39 @@ test('an invite after a port or address change saves them in the entry of this m
   await assert.rejects(machine.invite(), { statusCode: 409, message: 'ASB cannot save these network addresses in the group.' });
   assert.equal((await selfEntry()).port, 4700);
 });
+
+test('status gives the ASB version of each member, and fetchMember asks only an online member', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'asb-group-fetch-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const file = path.join(home, 'group.json');
+  const credentials = { key: '', cert: '', fingerprint: 'a'.repeat(64) };
+  const gateway = { credentials: async () => credentials, identity: async () => id('a'),
+    status: async () => ({ running: true, listening: [{ kind: 'lan', address: '192.168.1.10' }], port: 4630 }), devices: async () => [] };
+  const calls = [];
+  const request = async (options) => {
+    calls.push(options);
+    if (options.path === '/peer/v1/hello') return { status: 200, body: { machineId: options.member.machineId, asbVersion: options.member.machineId === id('b') ? '1.11.0' : 'bad' } };
+    if (options.path === '/peer/v1/bridge') return { status: 200, body: { api: 1 } };
+    return { status: 503, body: null };
+  };
+  const timers = { setTimeout: () => ({ unref() {} }), clearTimeout: () => {} };
+  await saveGroup(file, group({ members: [member('a', 'debian'), member('b', 'homeLP'), member('c', 'workLP')] }));
+  const machine = createMachineGroup({ file, gateway: () => gateway, request, timers, hostName: 'pc', log: () => {}, asbVersion: '1.12.0' });
+  await machine.start();
+  for (let round = 0; round < 5; round += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual((await machine.status()).members.map((item) => [item.name, item.asbVersion]), [['debian', '1.12.0'], ['homeLP', '1.11.0'], ['workLP', '']]);
+  const homeLP = machine.peerStates().find((state) => state.member.machineId === id('b'));
+  await assert.rejects(machine.fetchMember(id('b'), '/peer/v1/bridge'), { message: 'offline' });
+  await assert.rejects(machine.fetchMember(id('c'), '/peer/v1/bridge'), { message: 'offline' });
+  await assert.rejects(machine.fetchMember(id('d'), '/peer/v1/bridge'), { message: 'offline' });
+  homeLP.online = true;
+  homeLP.lastAddress = '192.168.1.10';
+  const before = JSON.stringify(homeLP);
+  calls.length = 0;
+  assert.deepEqual(await machine.fetchMember(id('b'), '/peer/v1/bridge', { timeoutMs: 1234 }), { status: 200, body: { api: 1 } });
+  assert.deepEqual(calls, [{ member: homeLP.member, path: '/peer/v1/bridge', tls: credentials, lastAddress: '192.168.1.10', timeoutMs: 1234 }]);
+  await machine.fetchMember(id('b'), '/peer/v1/bridge');
+  assert.equal(calls[1].timeoutMs, 4000);
+  assert.equal(JSON.stringify(homeLP), before);
+  await machine.stop();
+});

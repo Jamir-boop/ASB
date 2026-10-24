@@ -273,7 +273,8 @@ gatewayTest('the route allowlist blocks other APIs and checks methods before bea
     '/api/agent/status', '/api/agent/ui', '/phone/v1/agent/status', '/phone/v1/agent/ui', '/api/engine/stop', '/phone/v1/engine/stop',
     '/api/agent/resolve-session', '/phone/v1/agent/resolve-session', '/api/agent/resolve-bound', '/phone/v1/agent/resolve-bound',
     '/api/agent/list-references', '/phone/v1/agent/list-references',
-    '/api/relay/homes', '/api/relay/remote-peers', '/api/relay/send', '/phone/v1/relay/send']) {
+    '/api/relay/homes', '/api/relay/remote-peers', '/api/relay/send', '/phone/v1/relay/send',
+    '/api/bridge', '/api/bridge/install', '/phone/v1/bridge', '/phone/v1/bridge/install']) {
     for (const method of ['GET', 'POST']) {
       const response = await request(route, { method, token, ...(method === 'POST' ? { body: {} } : {}) });
       assert.equal(response.status, 404, `${method} ${route}`);
@@ -1022,4 +1023,24 @@ gatewayTest('a group phone token works on the phone routes, and pairing and revo
   await gateway.revokeDevice(before.deviceId);
   assert.deepEqual((await group.status()).phones.map((item) => item.name), ['Shared', 'After']);
   assert.equal((await request('/phone/v1/hello', { host: '127.0.0.2', token: before.token })).status, 401);
+});
+
+gatewayTest('the member route /peer/v1/bridge gives the reply of peer.bridge to members only, and is 404 without it', async (t) => {
+  let calls = 0;
+  const relay = { bridge: async () => { calls += 1; return { status: 200, body: { api: 1, apps: [] } }; } };
+  const { group, peer, joiner, stranger, joinBody, code } = await peerFixture(t, { address: '127.0.0.11', relay });
+  assert.equal((await peer('/peer/v1/bridge', { as: stranger })).status, 401);
+  assert.equal((await peer('/peer/v1/join', { method: 'POST', as: joiner, body: joinBody(await code()) })).status, 200);
+  const reply = await peer('/peer/v1/bridge', { as: joiner });
+  assert.deepEqual([reply.status, reply.json, reply.headers['cache-control']], [200, { api: 1, apps: [] }, 'no-store']);
+  const post = await peer('/peer/v1/bridge', { method: 'POST', as: joiner, body: {} });
+  assert.deepEqual([post.status, post.headers.allow], [405, 'GET']);
+  assert.equal(calls, 1);
+  await group.remove((await group.status()).members.find((item) => item.name === 'laptop').machineId);
+  assert.equal((await peer('/peer/v1/bridge', { as: joiner })).status, 410);
+  assert.equal(calls, 1);
+  const old = await peerFixture(t, { address: '127.0.0.12' });
+  assert.equal((await old.peer('/peer/v1/join', { method: 'POST', as: old.joiner, body: old.joinBody(await old.code()) })).status, 200);
+  const missing = await old.peer('/peer/v1/bridge', { as: old.joiner });
+  assert.deepEqual([missing.status, missing.json], [404, { error: 'Route is not available.' }]);
 });

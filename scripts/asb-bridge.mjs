@@ -16,7 +16,7 @@ export function nextSteps({ codex = false, claude = false, opencode = false } = 
     opencode ? 'OpenCode loads the plugin by itself. A session shows to other agents after it runs a turn.' : null,
     guide, 'After an ASB upgrade, run the install command again with the same targets.'].filter(Boolean).join('\n');
 }
-const USAGE = 'Use: asb bridge status [--json]\n     asb bridge install (--all | --codex-home <path> ... | --claude | --opencode) [--opencode-config <path>] [--force]\n     asb bridge uninstall (--all | --codex-home <path> ... | --claude | --opencode) [--opencode-config <path>] [--force]\n     asb bridge link-claude <profile-home> <shared-home>';
+const USAGE = 'Use: asb bridge status [--json] [--claude-home <path> ...]\n     asb bridge install (--all | --codex-home <path> ... | --claude | --opencode) [--opencode-config <path>] [--force]\n     asb bridge uninstall (--all | --codex-home <path> ... | --claude | --opencode) [--opencode-config <path>] [--force]\n     asb bridge link-claude <profile-home> <shared-home>';
 const RECORD = '.asb-bridge.json';
 const OLD_PLUGIN = 'claude-uds-bridge@leonkohli';
 const OLD_WARNING = 'the old claude-uds-bridge plugin is installed here; run bridge/scripts/migrate-from-claude-uds-bridge.mjs first';
@@ -572,18 +572,20 @@ async function toolVersion(name) {
   } catch { return null; }
   finally { if (codexHome) await rm(codexHome, { recursive: true, force: true }); }
 }
-async function liveRows(claudeHome, entrypoint) {
-  let count = 0;
+// The registry rows of claudeHome whose process runs.
+async function liveRows(claudeHome) {
+  const rows = [];
   for (const entry of await entries(path.join(claudeHome, 'sessions'))) {
     if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
     try {
       const row = JSON.parse(await contents(path.join(claudeHome, 'sessions', entry.name)));
-      if (row.entrypoint !== entrypoint || !Number.isInteger(row.pid) || row.pid <= 0) continue;
-      try { process.kill(row.pid, 0); count++; } catch (error) { if (error.code === 'EPERM') count++; }
+      if (!Number.isInteger(row.pid) || row.pid <= 0) continue;
+      try { process.kill(row.pid, 0); rows.push(row); } catch (error) { if (error.code === 'EPERM') rows.push(row); }
     } catch { /* A stale or partial registry row is not a live receiver. */ }
   }
-  return count;
+  return rows;
 }
+const sessionIds = (rows) => rows.map((row) => row.sessionId).filter((id) => typeof id === 'string');
 export async function status(options = {}) {
   const targets = await detectTargets(options);
   const root = absolute(options.sourceRoot || ROOT);
@@ -605,18 +607,25 @@ export async function status(options = {}) {
       stateFiles: (await entries(path.join(home, 'plugin-state/asb-bridge'))).filter((entry) => entry.isFile()).length });
   }
   const claudeHome = absolute(options.claudeHome || defaultClaudeHome());
-  const liveReceivers = await liveRows(claudeHome, 'codex-asb-bridge');
+  const rows = await liveRows(claudeHome);
+  const receivers = rows.filter((row) => row.entrypoint === 'codex-asb-bridge');
+  const opencodeReceivers = rows.filter((row) => row.entrypoint === 'opencode-asb-bridge');
   const openCodePaths = await opencodePaths(options);
   const opencodePluginDir = path.join(openCodePaths.config, 'plugins', 'asb-bridge');
   const opencodeVersionRaw = await toolVersion('opencode');
   const opencodeVersion = opencodeVersionRaw?.match(/(\d+\.\d+\.\d+)/)?.[1] ?? null;
-  const opencodeLive = await liveRows(claudeHome, 'opencode-asb-bridge');
   let installedVersion = null;
   try { installedVersion = JSON.parse((await contents(path.join(opencodePluginDir, 'package.json')))?.toString() || 'null')?.version ?? null; }
   catch { /* Missing or unreadable plugin package. */ }
+  const claudeHomes = [];
+  for (const home of [...new Set((options.claudeHomes || []).map(absolute))]) {
+    claudeHomes.push({ home, detected: Boolean((await info(home))?.isDirectory()), skill: await skillState(path.join(home, 'skills/bridge')),
+      skillCurrent: await skillCurrent(path.join(home, 'skills/bridge'), path.join(root, 'bridge/agent-skills/claude/bridge')) });
+  }
   return {
     codex,
     claude: { home: claudeHome, detected: Boolean(targets.claudeHome), skill: await skillState(path.join(claudeHome, 'skills/bridge')), skillCurrent: await skillCurrent(path.join(claudeHome, 'skills/bridge'), path.join(root, 'bridge/agent-skills/claude/bridge')), version: await toolVersion('claude'), requirement: 'Cross-session messaging needs Claude Code 2.1.224 or later.' },
+    claudeHomes,
     opencode: {
       config: openCodePaths.config,
       detected: Boolean(targets.opencodeConfig),
@@ -630,9 +639,10 @@ export async function status(options = {}) {
       stateDir: path.join(openCodePaths.state, 'plugin-state', 'asb-bridge'),
       opencodeVersion,
       warning: opencodeVersion && compareSemver(opencodeVersion, '2.1.2') < 0 ? 'OpenCode is older than 2.1.2; the ASB Bridge plugin will not load.' : null,
-      liveReceivers: opencodeLive,
+      liveReceivers: opencodeReceivers.length,
+      liveReceiverSessions: sessionIds(opencodeReceivers),
     },
-    liveReceivers, versions: { bun: await toolVersion('bun'), codex: await toolVersion('codex'), opencode: opencodeVersionRaw },
+    liveReceivers: receivers.length, liveReceiverSessions: sessionIds(receivers), versions: { bun: await toolVersion('bun'), codex: await toolVersion('codex'), opencode: opencodeVersionRaw },
   };
 }
 function compareSemver(a, b) {
@@ -650,15 +660,23 @@ export async function main(args = process.argv.slice(2), context = {}) {
     return 0;
   }
   if (command === 'status') {
-    if (args.length && (args.length !== 1 || args[0] !== '--json')) throw new Error(USAGE);
-    const result = await status(context);
-    if (args[0] === '--json') console.log(JSON.stringify(result));
+    let json = false;
+    const claudeHomes = [];
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '--json') json = true;
+      else if (args[i] === '--claude-home' && i + 1 < args.length) {
+        try { claudeHomes.push(absolute(args[++i])); } catch { throw new Error(USAGE); }
+      } else throw new Error(USAGE);
+    }
+    const result = await status({ ...context, claudeHomes });
+    if (json) console.log(JSON.stringify(result));
     else {
       for (const item of result.codex) {
         console.log(`Codex ${item.home}: marketplace ${item.marketplace.source || 'missing'}; plugin ${item.plugin.installed ? item.plugin.enabled ? 'enabled' : 'disabled' : 'missing'}; version ${item.plugin.version || 'missing'} (${item.plugin.versionMatches ? 'current' : `expected ${item.plugin.expectedVersion}`}); hooks start=${item.hooks.session_start} end=${item.hooks.session_end}; skill ${skillText(item, `--codex-home ${item.home}`)}; state files ${item.stateFiles}; bun on app-server PATH=${item.bunOnAppServerPath}`);
         if (item.warning) console.log(`Warning: ${item.home}: ${item.warning}`);
       }
       console.log(`Claude ${result.claude.home}: skill ${skillText(result.claude, '--claude')}; version ${result.claude.version || 'missing'}`);
+      for (const item of result.claudeHomes) console.log(`Claude ${item.home}: skill ${skillText(item, '--claude')}`);
       console.log(result.claude.requirement);
       console.log(`OpenCode ${result.opencode.config}: plugin ${result.opencode.plugin}; version ${result.opencode.version || 'missing'} (${result.opencode.versionMatches ? 'current' : `expected ${result.opencode.expectedVersion}`}); skill ${skillText(result.opencode, '--opencode')}; opencode ${result.opencode.opencodeVersion || 'missing'}; live receivers ${result.opencode.liveReceivers}`);
       if (result.opencode.warning) console.log(`Warning: ${result.opencode.warning}`);

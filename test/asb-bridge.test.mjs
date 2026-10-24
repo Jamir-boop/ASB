@@ -1063,3 +1063,56 @@ test('sendName T5 Claude rules 4 and 7 are exact and other rules stay unchanged'
   assert.equal(skill.split('\n').find((line) => line.startsWith('4. ')), "4. Send all in one message. Put more than about 2,000 characters in a file, and send the path.");
   assert.equal(skill.slice(skill.indexOf('7. ')).trimEnd(), "7. An `asb:1/...` session reference is not a `SendMessage` target. Never take an ID out of it. Send to the `Send name` of `asb agent resolve-session <reference>`. Else tell the user.");
 });
+
+test('bridge status reports extra Claude homes and live receiver ids', async (t) => {
+  const f = await fixture(t), extra = path.join(f.temporary, 'claude-work'), absent = path.join(f.temporary, 'claude-none');
+  passed(f.run(['install', '--claude']));
+  await mkdir(path.join(f.claude, 'sessions'), { recursive: true });
+  await mkdir(extra, { recursive: true });
+  const socket = '/synthetic/socket';
+  const rows = {
+    live: { pid: process.pid, messagingSocketPath: socket, sessionId: 's1', entrypoint: 'claude-desktop' },
+    plain: { pid: process.pid, messagingSocketPath: socket, sessionId: 's2' },
+    dead: { pid: 2147483647, messagingSocketPath: socket, sessionId: 's3', entrypoint: 'claude-desktop' },
+    nosocket: { pid: process.pid, sessionId: 's4', entrypoint: 'claude-desktop' },
+    receiver: { pid: process.pid, messagingSocketPath: socket, sessionId: 'r1', entrypoint: 'codex-asb-bridge' },
+    receiverNoId: { pid: process.pid, messagingSocketPath: socket, sessionId: 7, entrypoint: 'codex-asb-bridge' },
+    deadReceiver: { pid: 2147483647, sessionId: 'r2', entrypoint: 'codex-asb-bridge' },
+    opencode: { pid: process.pid, messagingSocketPath: socket, sessionId: 'o1', entrypoint: 'opencode-asb-bridge' },
+    relay: { pid: process.pid, messagingSocketPath: socket, sessionId: 'x1', entrypoint: 'asb-relay' },
+  };
+  for (const [file, row] of Object.entries(rows)) await writeFile(path.join(f.claude, 'sessions', `${file}.json`), JSON.stringify(row));
+  await writeFile(path.join(f.claude, 'sessions/broken.json'), '{');
+  const result = f.run(['status', '--claude-home', extra, '--json', '--claude-home', f.claude, '--claude-home', `${extra}/`, '--claude-home', absent]);
+  passed(result);
+  const report = JSON.parse(result.stdout);
+  assert.deepEqual(report.claudeHomes, [
+    { home: extra, detected: true, skill: 'missing', skillCurrent: null },
+    { home: f.claude, detected: true, skill: 'ok', skillCurrent: true },
+    { home: absent, detected: false, skill: 'missing', skillCurrent: null },
+  ]);
+  assert.equal(Object.hasOwn(report.claude, 'liveSessions'), false);
+  assert.equal(report.claude.skill, 'ok');
+  assert.equal(report.liveReceivers, 2);
+  assert.deepEqual(report.liveReceiverSessions, ['r1']);
+  assert.equal(report.opencode.liveReceivers, 1);
+  assert.deepEqual(report.opencode.liveReceiverSessions, ['o1']);
+  // Without --claude-home the list is empty and the text output has only the default Claude line.
+  const plain = f.run(['status', '--json']);
+  passed(plain);
+  assert.deepEqual(JSON.parse(plain.stdout).claudeHomes, []);
+  const text = f.run(['status']);
+  passed(text);
+  const claudeLines = text.stdout.split('\n').filter((line) => line.startsWith('Claude '));
+  assert.deepEqual(claudeLines, [`Claude ${f.claude}: skill ok (current); version claude 2.1.224`]);
+  const extraText = f.run(['status', '--claude-home', extra]);
+  passed(extraText);
+  assert.deepEqual(extraText.stdout.split('\n').filter((line) => line.startsWith('Claude ')),
+    [`Claude ${f.claude}: skill ok (current); version claude 2.1.224`, `Claude ${extra}: skill missing`]);
+  assert.equal(extraText.stdout.replace(`Claude ${extra}: skill missing\n`, ''), text.stdout);
+  for (const args of [['status', '--claude-home', 'relative'], ['status', '--claude-home'], ['status', '--json', '--claude-home', '--json'], ['status', '--claude-home', `${extra}\n`]]) {
+    const refused = f.run(args);
+    assert.equal(refused.status, 1, args.join(' '));
+    assert.match(refused.stderr, /^ASB Bridge failed: Use: asb bridge status \[--json\] \[--claude-home <path> \.\.\.\]\n/);
+  }
+});

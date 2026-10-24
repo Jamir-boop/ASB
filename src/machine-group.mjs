@@ -268,7 +268,8 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
         const state = pollers.get(member.machineId)?.state;
         const isSelf = member.machineId === group.self.machineId;
         return { machineId: member.machineId, name: member.name, online: isSelf || Boolean(state?.online),
-          lastOkAtMs: isSelf ? now() : state?.lastOkAtMs || 0, addresses: (state?.member.addresses || member.addresses).map((item) => ({ ...item })), isSelf };
+          lastOkAtMs: isSelf ? now() : state?.lastOkAtMs || 0, addresses: (state?.member.addresses || member.addresses).map((item) => ({ ...item })), isSelf,
+          asbVersion: isSelf ? asbVersion : state?.member.asbVersion || '' };
       }),
       phones: activePhones(group).map(({ deviceId, name }) => ({ deviceId, name })) };
   }
@@ -308,6 +309,12 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
     // The member TLS of this machine, for the message relay (plan 16.6).
     tls,
     status: () => serialize(currentStatus),
+    // One read-only request to an online member, with the request function and address of its poller; the poller state stays.
+    fetchMember: async (machineId, path, { timeoutMs = 4000 } = {}) => {
+      const state = pollers.get(machineId)?.state;
+      if (!state?.online) throw new Error('offline');
+      return request({ member: state.member, path, tls: await tls(), lastAddress: state.lastAddress, timeoutMs });
+    },
 
     invite: () => serialize(async () => {
       const { addresses, port } = await network();

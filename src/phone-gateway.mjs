@@ -402,6 +402,7 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
         if (!fields(value, [])) { reject(400, 'Invalid leave request.'); return; }
         result = await peer.leave(caller);
       } else if (route === 'peers') result = await peer.peers();
+      else if (route === 'bridge') result = await peer.bridge();
       else if (route === 'deliver') result = await peer.deliver(value, caller);
       else if (route === 'v2/resolve-session') result = await peer.resolveExact(value, caller);
       else if (route === 'v2/deliver') result = await peer.deliverExact(value, caller);
@@ -443,7 +444,9 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     try { url = new URL(request.url, 'https://asb'); }
     catch { reject(400, 'Invalid request URL.'); return; }
     pairRoute = url.pathname === '/phone/v1/pair';
-    const peerRoute = peer && url.pathname.match(/^\/peer\/v1\/(join|hello|group|sessions|leave|peers|deliver)$/);
+    // The bridge route exists only when the engine gives its function.
+    const peerRoute = peer && url.pathname.match(typeof peer.bridge === 'function' ? /^\/peer\/v1\/(join|hello|group|sessions|leave|peers|deliver|bridge)$/
+      : /^\/peer\/v1\/(join|hello|group|sessions|leave|peers|deliver)$/);
     if (peerRoute) { await handlePeer(request, response, group, peerRoute[1], reject); return; }
     // The exact member routes (v2) exist only when the engine gives their function; every other /peer/v2 path is 404.
     const exactRoute = peer && url.pathname.match(/^\/peer\/v2\/(resolve-session|deliver)$/)?.[1];
