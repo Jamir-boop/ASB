@@ -6,7 +6,7 @@ import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { main } from '../scripts/asb-group.mjs';
 import { main as setup } from '../scripts/asb-setup.mjs';
@@ -235,20 +235,43 @@ const WINDOWS_DOCTOR_LINES = ['ASB doctor: Windows 10 Pro, family windows', '', 
 // The firewall fakes: by default no firewall-cmd and no ufw.conf (the state none). `calls` records every program.
 const noProgram = async (file) => { throw Object.assign(new Error(`spawn ${file} ENOENT`), { code: 'ENOENT' }); };
 
-async function runSetup(state, args, { platform = 'linux', answer = '', doctor = async () => (platform === 'win32' ? windowsDoctorData() : doctorData()),
+const NO_APPS = { codex: [], claude: { detected: false }, opencode: { detected: false } };
+const NO_APPS_LINE = 'ASB did not find Codex, Claude Code, or OpenCode on this PC. To install ASB Bridge later, run: asb setup --only bridge';
+const GROUP_HINT = "On a machine in the group: asb group invite. Here: asb group join '<link>' --name <name>.";
+const BOARD_ONLY = 'To add ASB Bridge later, run: asb setup --only bridge';
+const BRIDGE_ONLY = 'The board is not set up. To add it, run: asb setup --only board';
+const BRIDGE_FAILURE = 'asb setup: ASB Bridge is not installed for every app. Fix the warnings above, then run asb setup --only bridge.';
+const EXISTING_BRIDGE = 'Setup does not change an existing ASB Bridge. To see its state, run: asb bridge status';
+const PARTS_LINES = ['Set up which parts of ASB?', '  1. Board and bridge', '  2. Board only', '  3. Bridge only'];
+const CODEX_NEXT = 'Next: open Codex, go to Plugins > ASB Bridge, and trust both hooks. Then restart Codex.';
+const OPENCODE_NEXT = 'OpenCode loads the plugin by itself. A session shows to other agents after it runs a turn.';
+const UPGRADE_NEXT = 'After an ASB upgrade, run the install command again with the same targets.';
+const codexTarget = (home, extra = {}) => ({ home, plugin: { installed: false }, ...extra });
+
+async function runSetup(state, args, { platform = 'linux', answer = '', input = Readable.from([answer]),
+  doctor = async () => (platform === 'win32' ? windowsDoctorData() : doctorData()),
+  bridgeStatus = async () => NO_APPS,
+  bridgeInstall = async (options) => ({ codex: (options.codexHomes || []).map((home) => ({ home, installed: true })),
+    claude: options.claudeHome ? { installed: true } : null, opencode: options.opencode ? { installed: true, version: '1.2.3' } : null }),
   execFile = noProgram, read = async () => '' } = {}) {
   const out = [];
   const err = [];
   const installs = [];
   const calls = [];
-  const code = await setup(args, { env: state.env, platform, input: Readable.from([answer]), output: { write: () => {} },
+  const bridgeInstalls = [];
+  const prompts = [];
+  let doctorCalls = 0;
+  let bridgeStatusCalls = 0;
+  const code = await setup(args, { env: state.env, platform, input, output: { write: (text) => prompts.push(text) },
     print: (line) => out.push(line), printError: (line) => err.push(line), node: 'C:\\Program Files\\nodejs\\node.exe', waitMs: 500,
     installService: async (argv) => { installs.push(['service', argv]); return 0; },
     installEngine: async (argv) => { installs.push(['engine', argv]); return 0; },
-    find: (env) => readServiceRuntime(env), doctor, execFile: (file, argv, options) => { calls.push([file, ...argv]); return execFile(file, argv, options); },
-    read });
+    find: (env) => readServiceRuntime(env), doctor: () => { doctorCalls++; return doctor(); }, execFile: (file, argv, options) => { calls.push([file, ...argv]); return execFile(file, argv, options); },
+    read, bridgeStatus: () => { bridgeStatusCalls++; return bridgeStatus(); },
+    bridgeInstall: (options) => { bridgeInstalls.push(options); return bridgeInstall(options); } });
   // `out` leaves out the lines of the default doctor (four on Linux, six on Windows); `all` has them.
-  return { code, out: out.slice((platform === 'win32' ? WINDOWS_DOCTOR_LINES : DOCTOR_LINES).length), all: out, err, installs, calls };
+  return { code, out: out.slice(doctorCalls ? (platform === 'win32' ? WINDOWS_DOCTOR_LINES : DOCTOR_LINES).length : 0),
+    all: out, err, installs, calls, prompts, doctorCalls, bridgeStatusCalls, bridgeInstalls };
 }
 
 test('asb setup step 0 prints the doctor output on Linux and Windows and stops when the engine cannot run', async (t) => {
@@ -286,14 +309,14 @@ test('asb setup installs the autostart, turns on the chosen addresses, and print
   assert.equal(linux.code, 0, linux.err.join('\n'));
   assert.deepEqual(linux.installs, [['service', ['install']]]);
   assert.deepEqual(linux.all.slice(0, DOCTOR_LINES.length), DOCTOR_LINES);
-  assert.deepEqual(linux.out, ['Network access is on, port 4630: 192.168.1.10 (lan).', 'To let agents send messages, run: asb bridge install --all',
+  assert.deepEqual(linux.out, ['Network access is on, port 4630: 192.168.1.10 (lan).', NO_APPS_LINE,
     "On a machine in the group: asb group invite. Here: asb group join '<link>' --name <name>."]);
   const chosen = await runSetup(state, ['--address', '10.147.0.1', '--address', '192.168.1.10', '--yes']);
   assert.equal(chosen.code, 0);
-  const asked = await runSetup(state, [], { answer: '2\n' });
+  const asked = await runSetup(state, ['--only', 'board'], { answer: '2\n' });
   assert.equal(asked.code, 0);
   assert.deepEqual(asked.out.slice(0, 3), ['Network addresses on this PC:', '  1. 192.168.1.10 (home network, wlan0)', '  2. 10.147.0.1 (ZeroTier, ztabc)']);
-  const kept = await runSetup(state, [], { answer: '' });
+  const kept = await runSetup(state, ['--only', 'board'], { answer: '' });
   assert.equal(kept.code, 0);
   state.replies.set('GET /api/phone', [200, phone]);
   const windows = await runSetup(state, ['--yes'], { platform: 'win32' });
@@ -303,7 +326,7 @@ test('asb setup installs the autostart, turns on the chosen addresses, and print
   assert.deepEqual(windows.out.slice(1), ['Run this command in an administrator PowerShell to let other machines and phones reach ASB:',
     '  New-NetFirewallRule -DisplayName "ASB engine" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 4630 -LocalAddress 192.168.1.10 '
       + '-Program "C:\\Program Files\\nodejs\\node.exe"',
-    'Windows can already allow node.exe on private networks; then this rule is not needed.', 'To let agents send messages, run: asb bridge install --all',
+    'Windows can already allow node.exe on private networks; then this rule is not needed.', NO_APPS_LINE,
     'On a machine in the group: asb group invite. Here: asb group join --name <name>, then paste the link.']);
   assert.deepEqual(state.posts().map((item) => item.body), [
     { enabled: true, bindAddresses: ['192.168.1.10'], port: 4630 }, { enabled: true, bindAddresses: ['10.147.0.1', '192.168.1.10'], port: 4630 },
@@ -312,7 +335,7 @@ test('asb setup installs the autostart, turns on the chosen addresses, and print
     { enabled: true, bindAddresses: ['192.168.1.10'], port: 4630 }]);
   const wrong = await runSetup(state, ['--address', '192.168.1.99']);
   assert.deepEqual([wrong.code, wrong.err], [1, ['asb setup: Choose network addresses on this PC: 192.168.1.10, 10.147.0.1.']]);
-  const badNumber = await runSetup(state, [], { answer: '7\n' });
+  const badNumber = await runSetup(state, ['--only', 'board'], { answer: '7\n' });
   assert.deepEqual([badNumber.code, badNumber.err], [1, ['asb setup: Enter numbers from 1 to 2.']]);
   assert.equal((await runSetup(state, ['--address'])).code, 2);
   assert.equal(state.posts().length, 5);
@@ -334,7 +357,7 @@ test('asb setup on Linux prints the firewalld rule for the chosen addresses and 
   const rule = (address) => `--add-rich-rule='rule family="ipv4" destination address="${address}" port port="4630" protocol="tcp" accept'`;
   assert.deepEqual(result.out, ['Network access is on, port 4630: 192.168.1.10 (lan).', 'Phone access and machine links through firewalld:',
     `  sudo firewall-cmd --permanent --zone=home ${rule('192.168.1.10')}`, `  sudo firewall-cmd --permanent ${rule('10.147.0.1')}`,
-    '  sudo firewall-cmd --reload', 'To let agents send messages, run: asb bridge install --all',
+    '  sudo firewall-cmd --reload', NO_APPS_LINE,
     "On a machine in the group: asb group invite. Here: asb group join '<link>' --name <name>."]);
   assert.deepEqual(result.calls, [['firewall-cmd', '--state'], ['firewall-cmd', '--get-zone-of-interface=wlan0'],
     ['firewall-cmd', '--get-zone-of-interface=ztabc']]);
@@ -345,4 +368,225 @@ test('asb setup on Linux prints the firewalld rule for the chosen addresses and 
   const windows = await runSetup({ ...state, env }, ['--yes'], { platform: 'win32', execFile });
   assert.equal(windows.code, 0);
   assert.deepEqual(windows.calls, []);
+});
+
+const assertNoSetup = (result, state) => {
+  assert.equal(result.doctorCalls, 0);
+  assert.deepEqual(result.installs, []);
+  assert.equal(result.bridgeStatusCalls, 0);
+  assert.deepEqual(result.bridgeInstalls, []);
+  assert.deepEqual(result.calls, []);
+  assert.deepEqual(state.records, []);
+};
+
+test('asb setup validates parts arguments before anything runs', async (t) => {
+  const state = await fixture(t);
+  for (const args of [['--only'], ['--only', 'x'], ['--only', 'board', '--only', 'bridge'],
+    ['--only', 'bridge', '--address', '192.168.1.10'], ['--yes', '--yes'], ['--unknown'], ['--address']]) {
+    const result = await runSetup(state, args);
+    assert.equal(result.code, 2, args.join(' '));
+    assert.deepEqual(result.err, ['Usage: asb setup [--yes] [--only board|bridge] [--address <address>]...']);
+    assert.deepEqual(result.all, []);
+    assert.deepEqual(result.prompts, []);
+    assertNoSetup(result, state);
+  }
+});
+
+test('asb setup parts question accepts empty input, EOF, and trimmed 1, 2, 3', async (t) => {
+  for (const answer of ['', '\n', ' 1 \n', ' 2 \n', ' 3 \n']) {
+    const state = await fixture(t);
+    const result = await runSetup(state, [], { answer });
+    assert.equal(result.code, 0, result.err.join('\n'));
+    assert.deepEqual(result.all.slice(0, 4), PARTS_LINES);
+    assert.equal(result.prompts[0], 'Enter a number [1]: ');
+    if (answer.trim() === '3') {
+      assert.equal(result.doctorCalls, 0);
+      assert.deepEqual(result.installs, []);
+      assert.deepEqual(state.records, []);
+      assert.deepEqual(result.all, [...PARTS_LINES, NO_APPS_LINE, BRIDGE_ONLY]);
+      assert.deepEqual(result.prompts, ['Enter a number [1]: ']);
+    } else {
+      assert.equal(result.doctorCalls, 1);
+      assert.deepEqual(result.installs, [['service', ['install']]]);
+      assert.equal(state.posts().length, 1);
+      assert.equal(result.all.at(-1), GROUP_HINT);
+      assert.equal(result.prompts.length, 2);
+    }
+    assert.equal(result.bridgeStatusCalls, answer.trim() === '2' ? 0 : 1);
+    assert.deepEqual(result.bridgeInstalls, []);
+    if (answer.trim() === '2') assert.deepEqual(result.all.slice(-2), [BOARD_ONLY, GROUP_HINT]);
+  }
+});
+
+test('asb setup rejects invalid parts and bridge-only addresses without changes', async (t) => {
+  const state = await fixture(t);
+  for (const [args, answer, message] of [[[], '4\n', 'Enter a number from 1 to 3.'],
+    [['--address', '192.168.1.10'], '3\n', 'Bridge only does not use --address.']]) {
+    const result = await runSetup(state, args, { answer });
+    assert.equal(result.code, 1);
+    assert.deepEqual(result.err, [`asb setup: ${message}`]);
+    assert.deepEqual(result.all, PARTS_LINES);
+    assert.deepEqual(result.prompts, ['Enter a number [1]: ']);
+    assertNoSetup(result, state);
+  }
+});
+
+test('asb setup --yes selects both without a question or an input read', async (t) => {
+  const state = await fixture(t);
+  const input = new Readable({ read() { assert.fail('--yes must not read input'); } });
+  const result = await runSetup(state, ['--yes'], { input });
+  assert.equal(result.code, 0);
+  assert.equal(result.doctorCalls, 1);
+  assert.equal(result.bridgeStatusCalls, 1);
+  assert.deepEqual(result.prompts, []);
+  assert.ok(!result.all.includes(PARTS_LINES[0]));
+  assert.deepEqual(result.all.slice(-2), [NO_APPS_LINE, GROUP_HINT]);
+  input.destroy();
+});
+
+test('asb setup defaults to both parts when the input stream fails', async (t) => {
+  const state = await fixture(t);
+  const input = new Readable({ read() { this.destroy(new Error('input failed')); } });
+  const result = await runSetup(state, [], { input });
+  assert.equal(result.code, 0, result.err.join('\n'));
+  assert.deepEqual(result.err, []);
+  assert.deepEqual(result.all.slice(0, 4), PARTS_LINES);
+  assert.equal(result.prompts[0], 'Enter a number [1]: ');
+  assert.equal(result.doctorCalls, 1);
+  assert.deepEqual(result.installs, [['service', ['install']]]);
+  assert.equal(result.bridgeStatusCalls, 1);
+  assert.deepEqual(result.bridgeInstalls, []);
+  assert.deepEqual(state.posts().map((item) => item.body), [{ enabled: true, bindAddresses: ['192.168.1.10'], port: 4630 }]);
+  assert.deepEqual(result.all.slice(-2), [NO_APPS_LINE, GROUP_HINT]);
+});
+
+test('asb setup keeps both answers in one chunk 1\\n2\\n', async (t) => {
+  const state = await fixture(t);
+  const result = await runSetup(state, [], { input: Readable.from(['1\n2\n']) });
+  assert.equal(result.code, 0, result.err.join('\n'));
+  assert.equal(result.bridgeStatusCalls, 1);
+  assert.deepEqual(result.prompts, ['Enter a number [1]: ', 'Turn on network access for which addresses? Enter the numbers [1]: ']);
+  assert.deepEqual(state.posts().map((item) => item.body), [{ enabled: true, bindAddresses: ['10.147.0.1'], port: 4630 }]);
+});
+
+test('asb setup installs only missing bridge targets in order and prints separate next steps', async (t) => {
+  const state = await fixture(t);
+  const result = await runSetup(state, ['--only', 'bridge'], { bridgeStatus: async () => ({
+    codex: [codexTarget('/fake/codex-one', { plugin: { installed: true }, warning: 'ignored', bunOnAppServerPath: false }), codexTarget('/fake/codex-two')],
+    claude: { detected: true, home: '/fake/claude', skill: 'missing' },
+    opencode: { detected: true, config: '/fake/opencode', plugin: 'missing' },
+  }) });
+  assert.equal(result.code, 0);
+  assert.deepEqual(result.err, []);
+  assert.deepEqual(result.bridgeInstalls, [{ codexHomes: ['/fake/codex-two'] }, { claudeHome: '/fake/claude' }, { opencode: true, opencodeConfig: '/fake/opencode' }]);
+  assert.deepEqual(result.all, ['Codex /fake/codex-one: already installed', 'Codex /fake/codex-two: installed', 'Claude /fake/claude: installed',
+    'OpenCode /fake/opencode: installed 1.2.3', CODEX_NEXT, OPENCODE_NEXT,
+    'Use $bridge in Codex and /bridge in Claude Code when you want the usage guide.', UPGRADE_NEXT, EXISTING_BRIDGE, BRIDGE_ONLY]);
+  assert.equal(result.doctorCalls, 0);
+  assert.deepEqual(result.installs, []);
+  assert.deepEqual(state.records, []);
+});
+
+test('asb setup bridge warnings do not stop other targets and both endings precede failure', async (t) => {
+  for (const args of [['--yes'], ['--only', 'bridge']]) {
+    const state = await fixture(t);
+    const result = await runSetup(state, args, { bridgeStatus: async () => ({
+      codex: [codexTarget('/fake/old', { warning: 'old Codex plugin' }), codexTarget('/fake/bun', { bunOnAppServerPath: false }),
+        codexTarget('/fake/skip'), codexTarget('/fake/throw'), codexTarget('/fake/good')],
+      claude: { detected: true, home: '/fake/claude', skill: 'foreign' },
+      opencode: { detected: true, config: '/fake/opencode', plugin: 'missing', warning: 'old OpenCode plugin' },
+    }), bridgeInstall: async ({ codexHomes: [home] }) => {
+      if (home === '/fake/throw') throw new Error('install failed');
+      return { codex: [home === '/fake/skip' ? { skipped: true, warning: 'skipped target' } : { installed: true }] };
+    } });
+    assert.equal(result.code, 1);
+    assert.deepEqual(result.err, [BRIDGE_FAILURE]);
+    assert.deepEqual(result.bridgeInstalls, ['/fake/skip', '/fake/throw', '/fake/good'].map((home) => ({ codexHomes: [home] })));
+    assert.deepEqual(result.all.slice(-11), [
+      'Warning: /fake/old: old Codex plugin',
+      'Warning: /fake/bun: a running Codex cannot find Bun. Make Bun visible to desktop apps and restart Codex, then run asb setup --only bridge.',
+      'Warning: /fake/skip: skipped target', 'Warning: /fake/throw: install failed', 'Codex /fake/good: installed',
+      'Warning: /fake/claude: skills/bridge is not from ASB. Setup does not change it.', 'Warning: /fake/opencode: old OpenCode plugin',
+      CODEX_NEXT, 'Use $bridge in Codex when you want the usage guide.', UPGRADE_NEXT, args.includes('--yes') ? GROUP_HINT : BRIDGE_ONLY]);
+  }
+});
+
+test('asb setup handles Claude and OpenCode install failures and foreign OpenCode without changing them', async (t) => {
+  for (const plugin of ['foreign', 'missing']) {
+    const state = await fixture(t);
+    const result = await runSetup(state, ['--only', 'bridge'], { bridgeStatus: async () => ({ codex: [codexTarget('/fake/good')],
+      claude: { detected: true, home: '/fake/claude', skill: 'missing' }, opencode: { detected: true, config: '/fake/opencode', plugin } }),
+    bridgeInstall: async (options) => {
+      if (options.codexHomes) return { codex: [{ installed: true }] };
+      throw new Error('cannot install');
+    } });
+    assert.equal(result.code, 1);
+    assert.deepEqual(result.err, [BRIDGE_FAILURE]);
+    assert.deepEqual(result.bridgeInstalls, [{ codexHomes: ['/fake/good'] }, { claudeHome: '/fake/claude' },
+      ...(plugin === 'missing' ? [{ opencode: true, opencodeConfig: '/fake/opencode' }] : [])]);
+    assert.deepEqual(result.all, ['Codex /fake/good: installed', 'Warning: /fake/claude: cannot install',
+      plugin === 'foreign' ? 'Warning: /fake/opencode: plugins/asb-bridge is not from ASB. Setup does not change it.' : 'Warning: /fake/opencode: cannot install',
+      CODEX_NEXT, 'Use $bridge in Codex when you want the usage guide.', UPGRADE_NEXT, BRIDGE_ONLY]);
+  }
+});
+
+test('asb setup with no detected apps does not install a bridge', async (t) => {
+  const state = await fixture(t);
+  const result = await runSetup(state, ['--only', 'bridge']);
+  assert.equal(result.code, 0);
+  assert.deepEqual(result.all, [NO_APPS_LINE, BRIDGE_ONLY]);
+  assert.deepEqual(result.bridgeInstalls, []);
+});
+
+test('asb setup preserves all existing bridges including modified skills and plugins', async (t) => {
+  for (const skill of ['ok', 'modified']) {
+    const state = await fixture(t);
+    const result = await runSetup(state, ['--only', 'bridge'], { bridgeStatus: async () => ({
+      codex: [codexTarget('/fake/codex', { plugin: { installed: true } })], claude: { detected: true, home: '/fake/claude', skill },
+      opencode: { detected: true, config: '/fake/opencode', plugin: skill },
+    }) });
+    assert.equal(result.code, 0);
+    assert.deepEqual(result.bridgeInstalls, []);
+    assert.deepEqual(result.all, ['Codex /fake/codex: already installed', 'Claude /fake/claude: already installed',
+      'OpenCode /fake/opencode: already installed', EXISTING_BRIDGE, BRIDGE_ONLY]);
+  }
+});
+
+test('asb setup reports a bridge status failure', async (t) => {
+  const state = await fixture(t);
+  const result = await runSetup(state, ['--only', 'bridge'], { bridgeStatus: async () => { throw new Error('status failed'); } });
+  assert.equal(result.code, 1);
+  assert.deepEqual(result.err, ['asb setup: ASB cannot check ASB Bridge: status failed']);
+  assert.deepEqual(result.bridgeInstalls, []);
+  assert.deepEqual(result.all, []);
+});
+
+test('asb setup closes the shared readline on return and on failure with input still open', async (t) => {
+  for (const answer of ['3\n', '4\n']) {
+    const state = await fixture(t);
+    const input = new PassThrough();
+    t.after(() => input.destroy());
+    const pending = runSetup(state, [], { input });
+    input.write(answer);
+    const result = await pending;
+    assert.equal(result.code, answer === '3\n' ? 0 : 1);
+    assert.equal(input.destroyed, false);
+    assert.equal(input.listenerCount('data'), 0);
+    assert.equal(input.listenerCount('end'), 0);
+    assert.equal(input.listenerCount('error'), 0);
+    assert.equal(input.isPaused(), true);
+  }
+});
+
+test('asb setup board-only has no bridge calls and board failure stops the bridge', async (t) => {
+  const state = await fixture(t);
+  const board = await runSetup(state, ['--only', 'board', '--yes']);
+  assert.equal(board.code, 0);
+  assert.equal(board.bridgeStatusCalls, 0);
+  assert.deepEqual(board.bridgeInstalls, []);
+  assert.deepEqual(board.all.slice(-2), [BOARD_ONLY, GROUP_HINT]);
+  const failed = await runSetup(state, ['--yes'], { doctor: async () => doctorData('missing') });
+  assert.equal(failed.code, 1);
+  assert.equal(failed.bridgeStatusCalls, 0);
+  assert.deepEqual(failed.bridgeInstalls, []);
 });
