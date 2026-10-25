@@ -3628,8 +3628,11 @@ class NativeLogicChecks(unittest.TestCase):
         drawer = {"state": "idle", "drawer": True}
         self.assertEqual(controls(drawer)["read"][:2], ("mark-read", "Mark read"))
         self.assertEqual(controls(drawer)["drawer"], ("drawer-out", "Take out of drawer", "asb-drawer-symbolic"))
-        waiting = {"state": "waiting", "actionRequired": True, "questionAttention": True}
-        self.assertEqual(list(controls(waiting)), ["mute", "pin"])
+        # A required action has the read slot: Read until it is read, then Unread.
+        waiting = {"state": "waiting", "actionRequired": True, "actionAttention": True}
+        self.assertEqual(list(controls(waiting)), ["read", "mute", "pin"])
+        self.assertEqual(controls(waiting)["read"][:2], ("mark-read", "Mark read"))
+        self.assertEqual(controls({**waiting, "actionAttention": False})["read"][:2], ("mark-unread", "Mark unread"))
         # A muted row offers Unmute and no Discard, Working or not.
         for row in (idle, working, {**working, "discardResult": True}):
             muted = {**row, "muted": True}
@@ -3743,15 +3746,18 @@ class NativeLogicChecks(unittest.TestCase):
     def test_stop_and_permission_marks_are_passive_and_keep_pin_actions(self):
         indicator, actions = SCOPE["attention_indicator"], SCOPE["row_menu_actions"]
         stop = {"id": "a", "title": "Chat", "state": "idle", "lastOutcome": "stopped"}
-        wait = {**stop, "state": "waiting", "actionRequired": True, "unread": True, "questionAttention": True}
+        # A required action keeps its "?" mark after Read, as a passive mark.
+        wait = {**stop, "state": "waiting", "actionRequired": True, "actionAttention": False}
         for row, expected in ((stop, "stop"), ({**stop, "unread": True}, "dot"),
                               ({**stop, "questionAttention": True}, "question"), (wait, "question"),
                               ({**stop, "state": "working"}, "")):
             self.assertEqual(indicator(row), expected)
         self.assertEqual(actions(stop)[0], ("Unread", "mark-unread"))
-        self.assertEqual(actions(wait), [("Mute", "mute"), ("Pin", "pin")])
-        self.assertEqual(actions({**wait, "pinned": True}), [("Mute", "mute"), ("Unpin", "unpin"),
+        self.assertEqual(actions(wait), [("Unread", "mark-unread"), ("Mute", "mute"), ("Pin", "pin")])
+        self.assertEqual(actions({**wait, "pinned": True}), [("Unread", "mark-unread"), ("Mute", "mute"), ("Unpin", "unpin"),
                          ("Move pin earlier", "pin-up"), ("Move pin later", "pin-down")])
+        for extra in ({"actionAttention": True}, {"unread": True}):
+            self.assertEqual(actions({**wait, **extra})[0], ("Read", "mark-read"))
         window = object.__new__(Window)
         window.session_actions = set()
         widget = SimpleNamespace(asb_view="comfortable", asb_thread=stop, asb_read_timer=None,
@@ -4275,8 +4281,8 @@ class NativeLogicChecks(unittest.TestCase):
             for row in rows:
                 if row["state"] == "working":
                     self.assertFalse(row.get("unread"))
-                    self.assertEqual(bool(row.get("pending")), bool(row.get("questionAttention") or row.get("actionRequired")))
-                if row.get("unread") or row.get("questionAttention") or row.get("actionRequired"):
+                    self.assertEqual(bool(row.get("pending")), bool(row.get("questionAttention") or row.get("actionAttention")))
+                if row.get("unread") or row.get("questionAttention") or row.get("actionAttention"):
                     self.assertTrue(row.get("pending"))
         def post(path, body=None):
             payload = json.dumps(body or {}).encode()
@@ -4307,10 +4313,13 @@ class NativeLogicChecks(unittest.TestCase):
         post("/api/threads/sample-0/mark-read")
         self.assertTrue(rows[0]["questionPending"])
         self.assertFalse(rows[0]["questionAttention"])
+        # Read on a required action keeps Waiting and the "?" mark, and takes the row out of pending.
+        self.assertIn(("Read", "mark-read"), SCOPE["row_menu_actions"](rows[1]))
         post("/api/threads/sample-1/mark-read")
         self.assertTrue(rows[1]["actionRequired"])
-        self.assertTrue(rows[1]["pending"])
-        self.assertNotIn(("Read", "mark-read"), SCOPE["row_menu_actions"](rows[1]))
+        self.assertFalse(rows[1]["pending"])
+        self.assertEqual((rows[1]["state"], SCOPE["attention_indicator"](rows[1])), ("waiting", "question"))
+        self.assertEqual(SCOPE["row_menu_actions"](rows[1])[0], ("Unread", "mark-unread"))
 
     def test_pending_and_drawer_are_exclusive_and_states_need_no_pill_sync(self):
         window = object.__new__(Window)
@@ -5984,7 +5993,8 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(actions({**tucked, "state": "working"}),
                          [("Read", "mark-read"), ("Take out of drawer", "drawer-out"), ("Mute", "mute"), ("Pin", "pin"),
                           ("Discard result", "discard-result")])
-        self.assertEqual(actions({**tucked, "actionRequired": True}), [("Take out of drawer", "drawer-out"), ("Mute", "mute"), ("Pin", "pin")])
+        self.assertEqual(actions({**tucked, "actionRequired": True}),
+                         [("Read", "mark-read"), ("Take out of drawer", "drawer-out"), ("Mute", "mute"), ("Pin", "pin")])
         for row in (base, {**base, "questionAttention": True}, {**unread, "questionAttention": True}, {**unread, "actionRequired": True}):
             self.assertFalse({"drawer-in", "drawer-out"} & {action for _title, action in actions(row)})
 
