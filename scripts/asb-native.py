@@ -5851,6 +5851,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 controller.disconnect(handler)
             widget.remove_controller(controller)
         widget.asb_handlers.clear()
+        # Free the panel first, or GTK frees its card and leaves the panel pointing to freed memory.
+        child = widget.get_first_child()
+        while child:
+            next_child = child.get_next_sibling()
+            if isinstance(child, Gtk.Popover):
+                child.popdown()
+                child.unparent()
+            child = next_child
         if widget.get_parent():
             widget.get_parent().remove(widget)
 

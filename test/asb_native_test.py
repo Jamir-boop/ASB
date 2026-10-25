@@ -2371,6 +2371,36 @@ class WidgetCheck(unittest.TestCase):
             window.close()
             self.drain(.03)
 
+    def test_a_card_that_leaves_the_board_drops_its_row_panel_first(self):
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "request_async", lambda *_args, **_kwargs: None)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for closing in (False, True):
+            with self.subTest(closing=closing):
+                GTK_WARNINGS.clear()
+                window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", copy.deepcopy(FIXTURE),
+                                              theme_path=False, layout_path=False)
+                self.addCleanup(window.close)
+                window.present(); self.drain()
+                window.show_context(window.focus_widgets["second"]); self.drain()
+                panel = window.context_menu
+                dashboard = copy.deepcopy(FIXTURE)
+                dashboard["threads"] = [row for row in dashboard["threads"] if row["id"] != "second"]
+                if closing:
+                    panel.popdown()
+                window.apply_dashboard(dashboard, None)
+                self.drain()
+                self.assertEqual(GTK_WARNINGS, [])
+                self.assertNotIn("second", window.row_cache)
+                self.assertIsNone(window.context_menu)
+                self.assertIsNone(panel.get_parent())
+                focus = window.get_focus()
+                self.assertTrue(focus is None or focus.get_root() is window)
+                window.close(); self.drain()
+
     def test_row_panel_open_follows_the_open_request_start_and_end(self):
         callbacks = []
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),

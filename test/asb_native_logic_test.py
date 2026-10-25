@@ -4168,6 +4168,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.update_session_row, window.clear_read_feedback = Mock(), Mock()
         widget = Mock()
         widget.get_parent.return_value = None
+        widget.get_first_child.return_value = None
         widget.connect.return_value = 77
         controllers = []
         def controller(**_kwargs):
@@ -5585,7 +5586,7 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         controller = SimpleNamespace(disconnect=disconnected.append)
         widget = SimpleNamespace(asb_handlers=[(controller, [1, 2])], remove_controller=calls.append,
-                                 get_parent=lambda: None)
+                                 get_parent=lambda: None, get_first_child=lambda: None)
         window.release_row(widget)
         self.assertEqual(disconnected, [1, 2])
         self.assertEqual(widget.asb_handlers, [])
@@ -5700,7 +5701,7 @@ class NativeLogicChecks(unittest.TestCase):
 
             window.confirm_read(widget)
             removed_feedback = timers[-1][1]
-            widget.asb_handlers, widget.get_parent = [], lambda: None
+            widget.asb_handlers, widget.get_parent, widget.get_first_child = [], lambda: None, lambda: None
             window.release_row(widget)
             window.focus_widgets["a"] = SimpleNamespace(asb_read_timer=None)
             widget.asb_read_button.set_visible.reset_mock()
