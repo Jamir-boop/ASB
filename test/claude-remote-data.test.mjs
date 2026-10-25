@@ -243,6 +243,18 @@ test('concurrent remote scans coalesce and shutdown cancels queued response read
   assert.equal((await loadClaudeRemoteThreads({ appDir: other, nowMs: now })).threads.length, 1);
 });
 
+test('remote card times use the last event before record updates, then fall back when absent', async (t) => {
+  const appDir = await temp(t);
+  await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions/watch', watch([
+    row('cse_01Event', { last_event_at: new Date(now - 1000).toISOString() }),
+    row('cse_01Updated', { last_event_at: null }),
+    row('cse_01Created', { last_event_at: null, updated_at: null }),
+  ]));
+  const { threads } = await loadClaudeRemoteThreads({ appDir, nowMs: now });
+  assert.deepEqual(Object.fromEntries(threads.map((thread) => [thread.externalId, thread.updatedAtMs])),
+    { cse_01Event: now - 1000, cse_01Updated: now, cse_01Created: now - 10_000 });
+});
+
 test('newest cursor chain excludes old login streams and applies changes and deletions', async (t) => {
   const appDir = await temp(t);
   await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions?limit=100', JSON.stringify({

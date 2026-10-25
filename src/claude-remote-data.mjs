@@ -88,7 +88,8 @@ function sessionRecord(value) {
     environmentKind: typeof value.environment_kind === 'string' ? value.environment_kind : '',
     unread: typeof value.unread === 'boolean' ? value.unread : null,
     createdAtMs: timestamp(value.created_at),
-    updatedAtMs: timestamp(value.updated_at) || timestamp(value.last_event_at) || timestamp(value.created_at),
+    // Read state, connection, and title changes can move updated_at without a turn.
+    updatedAtMs: timestamp(value.last_event_at) || timestamp(value.updated_at) || timestamp(value.created_at),
     eventAtMs: timestamp(value.last_event_at),
     statusBucket: typeof value.status_bucket === 'string' ? value.status_bucket : '',
   };

@@ -123,6 +123,22 @@ test('OpenCode roots map to threads and rows with states, outcomes, unread, arch
   }
 });
 
+test('OpenCode card times use messages and idle time before record updates', async (t) => {
+  const { dataDir, databasePath } = await fixture(t);
+  const database = createDatabase(databasePath);
+  for (const [id, idleAt, messageAt] of [['message', now - hour, now - minute],
+    ['idle', now - minute, now - hour], ['missing', null, null], ['zero', 0, 0]]) {
+    addSession(database, { ...base, id, time_updated: now, time_idle: idleAt });
+    if (messageAt != null) addMessage(database, id, messageAt);
+  }
+  addSession(database, { ...base, id: 'child', parent_id: 'message' });
+  addMessage(database, 'child', now - 1000);
+  database.close();
+  const { threads } = await loadOpenCodeDashboard({ dataDir, nowMs: now });
+  assert.deepEqual(Object.fromEntries(threads.map((thread) => [thread.id, thread.updatedAtMs])),
+    { message: now - 1000, idle: now - minute, missing: now, zero: now });
+});
+
 test('OpenCode reports a missing database, an old schema, and a missing column without rows', async (t) => {
   const { dataDir, databasePath } = await fixture(t);
   assert.deepEqual(await loadOpenCodeDashboard({ dataDir, nowMs: now }),

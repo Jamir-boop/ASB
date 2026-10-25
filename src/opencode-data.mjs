@@ -59,7 +59,8 @@ function openCodeThread(row, subagents, activity) {
     cwd: row.directory || '',
     archived: row.time_archived != null,
     createdAtMs: Number(row.time_created || 0),
-    updatedAtMs: Math.max(Number(row.time_updated || 0), idleAt || 0, activity || 0),
+    // OpenCode moves time_updated with no turn, so use it only when message and idle times are absent.
+    updatedAtMs: Math.max(idleAt || 0, activity || 0) || Number(row.time_updated || 0),
     // The dashboard counts listed children; OpenCode subagents are not listed.
     embeddedSubagentCount: Number(subagents.get(row.id) || 0),
     lifecycleRunning: suspendedAt != null,

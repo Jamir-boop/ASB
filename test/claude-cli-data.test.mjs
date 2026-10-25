@@ -89,6 +89,29 @@ test('Claude CLI rows come from live registry records and recent CLI transcripts
   assert.deepEqual([waiting.state, waiting.reason], ['waiting', 'Claude waits for your permission.']);
 });
 
+test('Claude CLI recent lists use the last turn, not a recently touched file', async (t) => {
+  const nowMs = Date.now();
+  const { projectsDir } = await configHome(t);
+  const old = await transcript(projectsDir, 'touched-old', { nowMs, ageMs: 8 * DAY_MS });
+  await utimes(old, nowMs / 1000, nowMs / 1000);
+  await transcript(projectsDir, 'recent-turn', { nowMs, ageMs: DAY_MS });
+  const { threads } = await loadClaudeCliThreads({ projectsDir, nowMs });
+  assert.deepEqual(threads.map((thread) => thread.externalId), ['recent-turn']);
+});
+
+test('Claude CLI live records keep old turns with recently touched files', { skip: process.platform !== 'linux' }, async (t) => {
+  const nowMs = Date.now();
+  const { home, projectsDir } = await configHome(t);
+  for (const id of ['live-old', 'not-live-old']) {
+    const file = await transcript(projectsDir, id, { nowMs, ageMs: 8 * DAY_MS });
+    await utimes(file, nowMs / 1000, nowMs / 1000);
+  }
+  await record(home, process.pid, { sessionId: 'live-old' });
+  const { threads } = await loadClaudeCliThreads({ projectsDir, nowMs });
+  assert.deepEqual(threads.map((thread) => [thread.externalId, thread.updatedAtMs]),
+    [['live-old', nowMs - 8 * DAY_MS - 50_000]]);
+});
+
 test('Claude CLI titles use the registry name, then the title records, then a fallback, never prompt text', async (t) => {
   const nowMs = Date.now();
   const { home, projectsDir } = await configHome(t);
