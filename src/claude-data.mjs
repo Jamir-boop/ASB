@@ -812,27 +812,39 @@ export function liveClaudeRecord(thread, records) {
   return newest(host.length ? host : records.filter((item) => sessionIds.has(item.sessionId)));
 }
 
+const CLAUDE_APPROVAL_GRACE_MS = 10_000;
+const APPROVAL_FORMAT_WARNING = 'ASB cannot read the approvals in the Claude app log. Update ASB.';
+
 // A permission prompt leaves no transcript signal, so a live registry record in the waiting status adds one.
 // Other statuses change nothing: the transcript stays the source for Working, Done, and questions.
 export function applyLiveClaudeStatus(thread, records, nowMs) {
   const record = liveClaudeRecord(thread, records);
   if (record?.status !== 'waiting') return thread;
-  const atMs = record.statusUpdatedAt || nowMs;
   const input = record.waitingFor === 'input needed';
+  // Permission waits that the user answers at once must not flash Waiting or play the Needs input sound.
+  if (!input && record.statusUpdatedAt > 0 && nowMs - record.statusUpdatedAt < CLAUDE_APPROVAL_GRACE_MS) {
+    return { ...thread, approvalCheckAtMs: record.statusUpdatedAt + CLAUDE_APPROVAL_GRACE_MS };
+  }
+  const atMs = record.statusUpdatedAt || nowMs;
   return enrichThreadRuntime({ ...thread, awaitingPermission: true, questionNonBlocking: false,
     pendingToolAtMs: Math.max(thread.pendingToolAtMs || 0, atMs), liveWaitingFor: record.waitingFor || 'permission prompt',
     ...(input ? { awaitingUserInput: true, latestUserQuestionAtMs: Math.max(thread.latestUserQuestionAtMs || 0, atMs) } : {}) }, nowMs);
 }
 
-const CLAUDE_APPROVAL_GRACE_MS = 10_000;
-
-export function applyClaudeAppApproval(thread, approvals, nowMs) {
+// liveSinceMs is the start of the chat's live process: a request before it belongs to an older process.
+export function applyClaudeAppApproval(thread, approvals, nowMs, liveSinceMs = 0) {
   const request = approvals.get(thread.externalId);
-  if (!request || request.tool === 'AskUserQuestion') return thread;
-  if (Number(thread.transcriptActivityAtMs || 0) >= request.atMs + 2_000) return thread;
+  // The transcript already shows AskUserQuestion, ExitPlanMode, and the permission-named tools.
+  if (!request || isPermissionToolUse({ name: request.tool })) return thread;
+  if (liveSinceMs >= request.atMs + 1_000) return thread;
+  // A turn end after the request means that it was answered; parallel tool results do not.
+  const turnEndAtMs = Math.max(Number(thread.latestAgentFinalAtMs || 0), Number(thread.latestUserMessageAtMs || 0),
+    Number(thread.latestTaskEndedAtMs || 0));
+  if (turnEndAtMs >= request.atMs + 2_000) return thread;
   // Approvals that the user answers at once must not flash Waiting or play the Needs input sound.
   if (nowMs - request.atMs < CLAUDE_APPROVAL_GRACE_MS) return { ...thread, approvalCheckAtMs: request.atMs + CLAUDE_APPROVAL_GRACE_MS };
-  return enrichThreadRuntime({ ...thread, awaitingPermission: true, questionNonBlocking: false,
+  // Only the log shows the answer, so check again every 5 s while the wait shows.
+  return enrichThreadRuntime({ ...thread, awaitingPermission: true, questionNonBlocking: false, approvalCheckAtMs: nowMs + 5_000,
     pendingToolAtMs: Math.max(thread.pendingToolAtMs || 0, request.atMs), liveWaitingFor: 'permission prompt' }, nowMs);
 }
 
@@ -1300,6 +1312,7 @@ export async function loadClaudeDesktopCodeThreads({
   strictMetadataRead = false,
   cacheScope = '',
   fileScan = null,
+  platform = process.platform,
 } = {}) {
   const root = path.join(appDir, 'claude-code-sessions');
   if (strictMetadataRead) await fs.stat(root);
@@ -1326,23 +1339,29 @@ export async function loadClaudeDesktopCodeThreads({
   });
   // The registry is best effort: a read failure keeps the transcript state.
   const live = await readLiveClaudeRegistry([path.join(path.dirname(projectsDir), 'sessions')]).catch(() => []);
-  const approvals = await readClaudeAppApprovals(appDir).catch(() => new Map());
+  const approvals = await readClaudeAppApprovals(appDir, { windows: platform === 'win32' }).catch(() => new Map());
   const threads = dedupeClaudeDesktopCodeThreads(parsed
     .filter(Boolean)
     .map((entry) => normalizeClaudeDesktopCodeSession(entry.session, entry, nowMs))
     .filter((thread) => thread.externalId))
     .map((thread) => applyLiveClaudeStatus(thread, live, nowMs))
-    .map((thread) => process.platform !== 'linux' || liveClaudeRecord(thread, live)
-      ? applyClaudeAppApproval(thread, approvals, nowMs) : thread);
+    .map((thread) => {
+      const record = liveClaudeRecord(thread, live);
+      // Windows has no live-record guard for now.
+      if (platform === 'linux' && !record) return thread;
+      return applyClaudeAppApproval(thread, approvals, nowMs, record?.startedAt || 0);
+    });
+  const status = metadataReadErrors ? (threads.length ? 'warning' : 'error') : files.length ? 'desktop' : 'missing';
+  const formatWarning = approvals.formatChanged === true && status !== 'error';
 
   return {
     provider: {
       ...CLAUDE_DESKTOP_CODE_PROVIDER,
       installed: files.length > 0,
       desktopInstalled: files.length > 0,
-      status: metadataReadErrors ? (threads.length ? 'warning' : 'error') : files.length ? 'desktop' : 'missing',
+      status: formatWarning ? 'warning' : status,
       metadataReadErrors,
-      message: files.length
+      message: formatWarning ? APPROVAL_FORMAT_WARNING : files.length
         ? `已读取 ${threads.length} 个 Claude Desktop Code 任务`
         : '未检测到 Claude Desktop Code 任务',
       threadCount: threads.length,

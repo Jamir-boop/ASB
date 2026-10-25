@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   applyClaudeAppApproval,
+  applyLiveClaudeStatus,
   claudeTitle,
   getClaudeCacheStats,
   invalidateClaudeData,
@@ -971,7 +972,7 @@ test('a live Claude registry record in the waiting status shows a permission pro
   };
   const record = (peer, fields = {}) => writeFile(path.join(sessions, `${peer.pid}.json`), JSON.stringify({ pid: peer.pid,
     procStart: peer.procStart, sessionId: 'other-cli', hostSessionId: 'local_root', name: 'synthetic', status: 'waiting',
-    waitingFor: 'permission prompt', statusUpdatedAt: resumeNowMs - 1_000, ...fields }));
+    waitingFor: 'permission prompt', statusUpdatedAt: resumeNowMs - 21_000, ...fields }));
   const tracker = new PendingTracker(false);
   const view = async () => {
     const { thread, row } = await observeFixture(fixture.projectsDir, resumeNowMs, tracker);
@@ -985,9 +986,9 @@ test('a live Claude registry record in the waiting status shows a permission pro
   const permission = await view();
   assert.deepEqual(permission.summary, ['waiting', true, false, false, true]);
   assert.deepEqual([permission.row.reason, permission.row.pendingSource, permission.thread.liveWaitingFor, permission.thread.pendingToolAtMs],
-    ['Claude waits for your permission.', 'user-action', 'permission prompt', resumeNowMs - 1_000]);
+    ['Claude waits for your permission.', 'user-action', 'permission prompt', resumeNowMs - 21_000]);
   // Each load starts from the transcript, so a later status leaves no stale overlay.
-  await record(live, { status: 'busy', statusUpdatedAt: resumeNowMs - 900 });
+  await record(live, { status: 'busy', statusUpdatedAt: resumeNowMs - 20_900 });
   assert.deepEqual((await view()).summary, working);
   await record(live, { procStart: '1' });
   assert.deepEqual((await view()).summary, working);
@@ -996,25 +997,25 @@ test('a live Claude registry record in the waiting status shows a permission pro
   await once(dead.child, 'exit');
   await record(dead);
   assert.deepEqual((await view()).summary, working);
-  await record(live, { waitingFor: 'input needed', statusUpdatedAt: resumeNowMs - 800 });
+  await record(live, { waitingFor: 'input needed', statusUpdatedAt: resumeNowMs - 20_800 });
   const question = await view();
   assert.deepEqual(question.summary, ['waiting', false, true, true, true]);
   assert.deepEqual([question.row.reason, question.row.pendingSource], ['Claude waits for your answer.', 'user-question']);
   await tracker.acknowledge(question.row.id);
   assert.equal((await view()).row.questionAttention, false);
-  await record(live, { status: 'busy', statusUpdatedAt: resumeNowMs - 700 });
+  await record(live, { status: 'busy', statusUpdatedAt: resumeNowMs - 20_700 });
   await view();
-  await record(live, { waitingFor: 'input needed', statusUpdatedAt: resumeNowMs - 600 });
+  await record(live, { waitingFor: 'input needed', statusUpdatedAt: resumeNowMs - 20_600 });
   assert.equal((await view()).row.questionAttention, true);
   // Without a host match, the CLI session id selects records, and the newest one wins.
   const other = await start();
-  await record(live, { hostSessionId: null, sessionId: 'cli_root', statusUpdatedAt: resumeNowMs - 500 });
-  await record(other, { hostSessionId: null, sessionId: 'cli_root', status: 'busy', statusUpdatedAt: resumeNowMs - 400 });
+  await record(live, { hostSessionId: null, sessionId: 'cli_root', statusUpdatedAt: resumeNowMs - 20_500 });
+  await record(other, { hostSessionId: null, sessionId: 'cli_root', status: 'busy', statusUpdatedAt: resumeNowMs - 20_400 });
   assert.equal((await view()).row.state, 'working');
-  await record(live, { hostSessionId: null, sessionId: 'cli_root', statusUpdatedAt: resumeNowMs - 300 });
+  await record(live, { hostSessionId: null, sessionId: 'cli_root', statusUpdatedAt: resumeNowMs - 20_300 });
   assert.equal((await view()).row.actionRequired, true);
   // A host match wins over a newer CLI session match.
-  await record(other, { status: 'busy', statusUpdatedAt: resumeNowMs - 1_000 });
+  await record(other, { status: 'busy', statusUpdatedAt: resumeNowMs - 21_000 });
   assert.equal((await view()).row.state, 'working');
 });
 
@@ -1399,24 +1400,53 @@ test('the group time of a Claude row follows the turn records of a linked child,
   assert.deepEqual(await load(), [resumeNowMs - 48_000, resumeNowMs - 10_000, resumeNowMs - 10_000]);
 });
 
-test('app approval grace, transcript guard, and question handling keep the existing state', () => {
+test('app approval tool, process start, turn end, and grace rules', () => {
   const atMs = new Date(2026, 9, 25, 7, 55, 48).getTime();
   const thread = { id: 'claude-desktop-code:local_approval', externalId: 'local_approval', provider: 'claude-desktop-code',
     transcriptActivityAtMs: atMs, pendingToolAtMs: atMs - 1000, lifecycleRunning: true };
   const approvals = (tool = 'browser:left_click') => new Map([[thread.externalId, { tool, atMs }]]);
   assert.equal(applyClaudeAppApproval(thread, new Map(), atMs + 20_000), thread);
-  assert.equal(applyClaudeAppApproval(thread, approvals('AskUserQuestion'), atMs + 20_000), thread);
-  const moved = { ...thread, transcriptActivityAtMs: atMs + 2000 };
-  assert.equal(applyClaudeAppApproval(moved, approvals(), atMs + 20_000), moved);
+  // The transcript already shows these tools.
+  for (const tool of ['AskUserQuestion', 'ExitPlanMode', 'mcp__synthetic__request_permission']) {
+    assert.equal(applyClaudeAppApproval(thread, approvals(tool), atMs + 20_000), thread, tool);
+  }
+  // A live process that started after the request is a newer process.
+  assert.equal(applyClaudeAppApproval(thread, approvals(), atMs + 20_000, atMs + 1000), thread);
+  assert.equal(applyClaudeAppApproval(thread, approvals(), atMs + 20_000, atMs + 999).awaitingPermission, true);
+  // A parallel tool result moves the transcript but does not end the turn.
+  const parallel = { ...thread, transcriptActivityAtMs: atMs + 5000 };
+  assert.equal(applyClaudeAppApproval(parallel, approvals(), atMs + 20_000).awaitingPermission, true);
+  for (const field of ['latestAgentFinalAtMs', 'latestUserMessageAtMs', 'latestTaskEndedAtMs']) {
+    const ended = { ...thread, [field]: atMs + 2000 };
+    assert.equal(applyClaudeAppApproval(ended, approvals(), atMs + 20_000), ended, field);
+    assert.equal(applyClaudeAppApproval({ ...thread, [field]: atMs + 1999 }, approvals(), atMs + 20_000).awaitingPermission, true, field);
+  }
   assert.deepEqual(applyClaudeAppApproval(thread, approvals(), atMs + 9999), { ...thread, approvalCheckAtMs: atMs + 10_000 });
   const waiting = applyClaudeAppApproval(thread, approvals(), atMs + 10_000);
   assert.equal(waiting.awaitingPermission, true);
   assert.equal(waiting.questionNonBlocking, false);
   assert.equal(waiting.pendingToolAtMs, atMs);
   assert.equal(waiting.liveWaitingFor, 'permission prompt');
-  const newerTool = { ...thread, transcriptActivityAtMs: atMs + 1999, pendingToolAtMs: atMs + 1000 };
+  // The status clock checks again every 5 s while the wait shows.
+  assert.equal(waiting.approvalCheckAtMs, atMs + 15_000);
+  assert.equal(applyClaudeAppApproval(thread, approvals(), atMs + 30_000).approvalCheckAtMs, atMs + 35_000);
+  const newerTool = { ...thread, pendingToolAtMs: atMs + 1000 };
   assert.equal(applyClaudeAppApproval(newerTool, approvals(), atMs + 20_000).pendingToolAtMs, atMs + 1000);
   assert.equal(thread.awaitingPermission, undefined);
+});
+
+test('a live registry permission wait gets the 10 s grace, and a question does not', () => {
+  const nowMs = new Date(2026, 9, 25, 7, 56, 0).getTime();
+  const thread = { id: 'claude-desktop-code:local_grace', externalId: 'local_grace', provider: 'claude-desktop-code', lifecycleRunning: true };
+  const records = (fields) => [{ hostSessionId: thread.externalId, status: 'waiting', waitingFor: 'permission prompt', ...fields }];
+  assert.deepEqual(applyLiveClaudeStatus(thread, records({ statusUpdatedAt: nowMs - 9999 }), nowMs),
+    { ...thread, approvalCheckAtMs: nowMs + 1 });
+  const late = applyLiveClaudeStatus(thread, records({ statusUpdatedAt: nowMs - 10_000 }), nowMs);
+  assert.deepEqual([late.awaitingPermission, late.pendingToolAtMs, late.approvalCheckAtMs], [true, nowMs - 10_000, undefined]);
+  const question = applyLiveClaudeStatus(thread, records({ waitingFor: 'input needed', statusUpdatedAt: nowMs - 1000 }), nowMs);
+  assert.deepEqual([question.awaitingPermission, question.awaitingUserInput], [true, true]);
+  const noTime = applyLiveClaudeStatus(thread, records({ statusUpdatedAt: 0 }), nowMs);
+  assert.deepEqual([noTime.awaitingPermission, noTime.pendingToolAtMs], [true, nowMs]);
 });
 
 test('desktop Claude loads an app approval for an open browser tool', async (t) => {
@@ -1441,7 +1471,11 @@ test('desktop Claude loads an app approval for an open browser tool', async (t) 
   ]));
   await writeFile(path.join(appDir, 'logs', 'main.log'),
     `2026-10-25 07:55:48 [info] Emitted tool permission request 11111111-2222-4333-8444-555555555555 for browser:left_click in session ${sessionId}\n`);
-  const load = async () => (await loadClaudeDesktopCodeThreads({ appDir, projectsDir, nowMs: atMs + 20_000 })).threads[0];
+  const result = (platform) => loadClaudeDesktopCodeThreads({ appDir, projectsDir, nowMs: atMs + 20_000, platform });
+  const load = async () => (await result()).threads[0];
+  // Windows has no live-record guard.
+  assert.equal((await result('win32')).threads[0].awaitingPermission, true);
+  assert.notEqual((await result('linux')).threads[0].awaitingPermission, true);
   if (process.platform === 'linux') {
     assert.notEqual((await load()).awaitingPermission, true, 'an ended process cannot leave an app approval wait');
     const registryDir = path.join(path.dirname(projectsDir), 'sessions');
@@ -1454,7 +1488,21 @@ test('desktop Claude loads an app approval for an open browser tool', async (t) 
   assert.equal(thread.awaitingPermission, true);
   assert.equal(thread.liveWaitingFor, 'permission prompt');
   if (process.platform === 'linux') {
-    await rm(path.join(path.dirname(projectsDir), 'sessions', `${process.pid}.json`));
+    const registryFile = path.join(path.dirname(projectsDir), 'sessions', `${process.pid}.json`);
+    const record = JSON.parse(await readFile(registryFile, 'utf8'));
+    await writeFile(registryFile, JSON.stringify({ ...record, startedAt: atMs + 1000 }));
+    assert.notEqual((await load()).awaitingPermission, true, 'a request of an older process does not count');
+    await writeFile(registryFile, JSON.stringify({ ...record, startedAt: atMs - 1000 }));
+    assert.equal((await load()).awaitingPermission, true);
+    await rm(registryFile);
     assert.notEqual((await load()).awaitingPermission, true, 'a lost live record clears the app approval wait');
   }
+  assert.equal((await result()).provider.status, 'desktop');
+  // Responses with no request line mean that the app changed the request form.
+  const received = (id) => `2026-10-25 07:55:49 [info] Received permission response for ${id}: once (tool: Bash)\n`;
+  await writeFile(path.join(appDir, 'logs', 'next.log'), received('11111111-2222-4333-8444-555555555555')
+    + received('22222222-3333-4444-8555-666666666666') + received('33333333-4444-4555-8666-777777777777'));
+  await rename(path.join(appDir, 'logs', 'next.log'), path.join(appDir, 'logs', 'main.log'));
+  const warned = (await result()).provider;
+  assert.deepEqual([warned.status, warned.message], ['warning', 'ASB cannot read the approvals in the Claude app log. Update ASB.']);
 });

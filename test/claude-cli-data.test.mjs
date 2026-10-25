@@ -80,12 +80,16 @@ test('Claude CLI rows come from live registry records and recent CLI transcripts
   assert.deepEqual([rows.get('live-without-transcript').state, rows.get('live-without-transcript').reason],
     ['idle', 'The CLI session has no task yet.']);
   assert.deepEqual([rows.get('recent-cli').state, rows.get('recent-cli').surface, rows.get('recent-cli').canOpen], ['idle', 'cli', false]);
-  // A live old transcript still shows; a registry `waiting` record gives Waiting.
+  // A live old transcript still shows; a registry `waiting` record gives Waiting after the 10 s grace.
   await transcript(projectsDir, 'live-with-transcript', { nowMs, ageMs: 9 * DAY_MS });
-  await record(home, process.pid, { sessionId: 'live-with-transcript', name: 'Registry name', status: 'waiting',
-    waitingFor: 'permission prompt', statusUpdatedAt: nowMs - 1000 });
-  const waiting = buildSwitchboardDashboard((await loadClaudeCliThreads({ projectsDir, nowMs })).threads, [], nowMs)
-    .threads.find((row) => row.externalId === 'live-with-transcript');
+  const permissionRow = async (statusUpdatedAt) => {
+    await record(home, process.pid, { sessionId: 'live-with-transcript', name: 'Registry name', status: 'waiting',
+      waitingFor: 'permission prompt', statusUpdatedAt });
+    return buildSwitchboardDashboard((await loadClaudeCliThreads({ projectsDir, nowMs })).threads, [], nowMs)
+      .threads.find((row) => row.externalId === 'live-with-transcript');
+  };
+  assert.notEqual((await permissionRow(nowMs - 1000)).state, 'waiting');
+  const waiting = await permissionRow(nowMs - 10_000);
   assert.deepEqual([waiting.state, waiting.reason], ['waiting', 'Claude waits for your permission.']);
 });
 

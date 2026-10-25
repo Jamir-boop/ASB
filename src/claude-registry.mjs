@@ -86,23 +86,26 @@ const APPROVAL_WINDOW_BYTES = 1024 * 1024;
 const approvalLogs = new Map();
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const LOG_TIME = '(\\d{4})-(\\d{2})-(\\d{2}) (\\d{2}):(\\d{2}):(\\d{2}) \\[info\\] ';
-const emittedApproval = new RegExp(`^${LOG_TIME}Emitted tool permission request (${UUID}) for ([A-Za-z0-9_:.-]{1,64}) in session (local_${UUID})$`);
+const TOOL = '[A-Za-z0-9_:.-]{1,128}';
+const emittedApproval = new RegExp(`^${LOG_TIME}Emitted tool permission request (${UUID}) for (${TOOL}) in session (local_${UUID})$`);
 const receivedApproval = new RegExp(`^${LOG_TIME}Received permission response for (${UUID}):`);
 const respondedApproval = new RegExp(`^${LOG_TIME}LocalSessions\\.respondToToolPermission: requestId=(${UUID}),`);
-const quitApprovals = new RegExp(`^${LOG_TIME}beforeQuit: handler fired$`);
+const abortedApproval = new RegExp(`^${LOG_TIME}Permission request (${UUID}) for ${TOOL} aborted$`);
+// Only a finished quit writes willQuit; a vetoed quit and a second app launch keep the approvals open.
+const quitApprovals = new RegExp(`^${LOG_TIME}willQuit: handler fired`);
 
 // shortcut: Requests older than the read window or open across a log rotation are not seen; upgrade when the app writes open approvals to a state file.
-export async function readClaudeAppApprovals(appDir) {
+export async function readClaudeAppApprovals(appDir, { windows = process.platform === 'win32' } = {}) {
   const file = path.join(appDir, 'logs', 'main.log');
   let handle;
   try {
-    handle = await fs.open(file, 'r');
+    handle = await fs.open(file, windows ? 'r' : constants.O_RDONLY | constants.O_NONBLOCK);
     const info = await handle.stat();
     if (!info.isFile()) return new Map();
     let state = approvalLogs.get(file);
     if (!state || state.dev !== info.dev || state.ino !== info.ino || info.size < state.offset
       || info.size - state.offset > 4 * APPROVAL_WINDOW_BYTES) {
-      state = { dev: info.dev, ino: info.ino, offset: Math.max(0, info.size - APPROVAL_WINDOW_BYTES), open: new Map() };
+      state = { dev: info.dev, ino: info.ino, offset: Math.max(0, info.size - APPROVAL_WINDOW_BYTES), open: new Map(), emitted: 0, received: 0 };
       state.skipFirst = state.offset > 0;
     }
     const readOffset = state.offset;
@@ -126,8 +129,11 @@ export async function readClaudeAppApprovals(appDir) {
         state.open.delete(requestId);
         state.open.set(requestId, { sessionId, tool, atMs: new Date(+year, +month - 1, +day, +hour, +minute, +second).getTime() });
         if (state.open.size > 256) state.open.delete(state.open.keys().next().value);
+        state.emitted += 1;
       } else {
-        const closed = receivedApproval.exec(line) || respondedApproval.exec(line);
+        const received = receivedApproval.exec(line);
+        if (received) state.received += 1;
+        const closed = received || respondedApproval.exec(line) || abortedApproval.exec(line);
         if (closed) state.open.delete(closed[7]);
         else if (quitApprovals.test(line)) state.open.clear();
       }
@@ -137,6 +143,8 @@ export async function readClaudeAppApprovals(appDir) {
     for (const { sessionId, tool, atMs } of state.open.values()) {
       if (!approvals.has(sessionId) || atMs >= approvals.get(sessionId).atMs) approvals.set(sessionId, { tool, atMs });
     }
+    // Many responses with no request mean that the app changed its request line.
+    Object.defineProperty(approvals, 'formatChanged', { value: state.received >= 3 && state.emitted === 0 });
     return approvals;
   } catch {
     approvalLogs.delete(file);

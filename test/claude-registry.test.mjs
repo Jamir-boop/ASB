@@ -81,12 +81,73 @@ test('both app response forms close requests for known and unknown decisions', a
   }
 });
 
-test('app quit closes all approvals and CRLF line ends work', async (t) => {
+const appLog = (text) => `${approvalTime} [info] ${text}\n`;
+
+test('a finished app quit closes all approvals only at willQuit, and CRLF line ends work', async (t) => {
   const { file, read } = approvalFixture(t);
   writeFileSync(file, (approvalLine() + approvalLine(OTHER_REQUEST, OTHER_APP_SESSION, 'Bash')).replaceAll('\n', '\r\n'));
   assert.equal((await read()).size, 2);
-  appendFileSync(file, `${approvalTime} [info] beforeQuit: handler fired\r\n`);
+  for (const text of ['beforeQuit: handler fired, going down',
+    'beforeQuit: handler is not yet run, preventing quit and cleaning things up',
+    'Successully ran all onQuitCleanup handlers, marking readyForQuit', 'beforeQuit: handler fired, going down',
+    'beforeQuit: handler is ready for quit, so quitting']) {
+    appendFileSync(file, appLog(text).replace('\n', '\r\n'));
+    assert.equal((await read()).size, 2, text);
+  }
+  appendFileSync(file, appLog('willQuit: handler fired, going down').replace('\n', '\r\n'));
   assert.equal((await read()).size, 0);
+  appendFileSync(file, appLog('willQuit: handler is ready for quit, so quitting'));
+  assert.equal((await read()).size, 0);
+});
+
+test('a vetoed quit and a second app launch keep the approvals open', async (t) => {
+  const { file, read } = approvalFixture(t);
+  writeFileSync(file, approvalLine());
+  for (const text of ['beforeQuit: handler fired, going down', 'beforeQuit: vetoed by before-quit interceptor',
+    'Not main instance, returning early from app ready', "Quit requested before 'ready'; not creating the main window"]) {
+    appendFileSync(file, appLog(text));
+    assert.equal((await read()).size, 1, text);
+  }
+});
+
+test('an aborted app approval closes its request only', async (t) => {
+  const { file, read } = approvalFixture(t);
+  writeFileSync(file, approvalLine() + approvalLine(OTHER_REQUEST, OTHER_APP_SESSION, 'Bash'));
+  appendFileSync(file, appLog(`Permission request ${OTHER_REQUEST} for Bash aborted`));
+  assert.deepEqual([...(await read()).keys()], [APP_SESSION]);
+  appendFileSync(file, appLog(`Permission request ${REQUEST} for browser:left_click aborted later`));
+  assert.deepEqual([...(await read()).keys()], [APP_SESSION]);
+  appendFileSync(file, appLog(`Permission request ${REQUEST} for browser:left_click aborted`));
+  assert.equal((await read()).size, 0);
+});
+
+test('app tool names have 1 to 128 characters', async (t) => {
+  const tool66 = `mcp__${'a'.repeat(8)}-bbbb-4ccc-8ddd-${'e'.repeat(12)}__${'n'.repeat(23)}`;
+  assert.equal(tool66.length, 66);
+  const { file, read } = approvalFixture(t);
+  writeFileSync(file, approvalLine(REQUEST, APP_SESSION, tool66) + approvalLine(OTHER_REQUEST, OTHER_APP_SESSION, 'x'.repeat(129)));
+  assert.deepEqual(await read(), new Map([[APP_SESSION, { tool: tool66, atMs: approvalAtMs }]]));
+  appendFileSync(file, approvalLine(OTHER_REQUEST, OTHER_APP_SESSION, 'x'.repeat(128)));
+  assert.equal((await read()).size, 2);
+});
+
+test('a request emitted twice and answered once is closed', async (t) => {
+  const { file, read } = approvalFixture(t);
+  writeFileSync(file, approvalLine() + approvalLine());
+  assert.equal((await read()).size, 1);
+  appendFileSync(file, appLog(`Received permission response for ${REQUEST}: once (tool: browser:left_click)`));
+  assert.equal((await read()).size, 0);
+});
+
+test('formatChanged shows responses with no request lines since the last reset', async (t) => {
+  const { file, read } = approvalFixture(t);
+  const received = (id) => appLog(`Received permission response for ${id}: once (tool: Bash)`);
+  writeFileSync(file, received(REQUEST) + received(OTHER_REQUEST));
+  assert.equal((await read()).formatChanged, false);
+  appendFileSync(file, received(REQUEST));
+  assert.equal((await read()).formatChanged, true);
+  appendFileSync(file, approvalLine());
+  assert.equal((await read()).formatChanged, false);
 });
 
 test('app approval lines wait for their final newline across appends', async (t) => {
@@ -117,12 +178,12 @@ test('unrelated and malformed app log lines cannot open or close approvals', asy
   writeFileSync(file, [
     'Starting app\n', `prefix ${approvalLine()}`, approvalLine().replace(' [info]', ' [debug]'),
     approvalLine(REQUEST, 'local_not-a-uuid'), approvalLine(REQUEST.replace('1', 'A')),
-    approvalLine(REQUEST, APP_SESSION, 'x'.repeat(65)), approvalLine(REQUEST, APP_SESSION, 'browser:bad/tool'),
+    approvalLine(REQUEST, APP_SESSION, 'x'.repeat(129)), approvalLine(REQUEST, APP_SESSION, 'browser:bad/tool'),
     `${approvalTime} [info] unrelated object { address: "https://example.invalid" }\n`,
   ].join(''));
   assert.deepEqual(await read(), new Map());
   appendFileSync(file, approvalLine());
-  appendFileSync(file, `prefix ${approvalTime} [info] beforeQuit: handler fired\n`);
+  appendFileSync(file, `prefix ${approvalTime} [info] willQuit: handler fired, going down\n`);
   assert.equal((await read()).size, 1);
 });
 
@@ -163,7 +224,8 @@ test('each public app line form works when its fields or CRLF are split across r
   const lines = [approvalLine(),
     `${approvalTime} [info] Received permission response for ${REQUEST}: always (tool: browser:left_click)\n`,
     `${approvalTime} [info] LocalSessions.respondToToolPermission: requestId=${REQUEST}, decision=deny, hasUpdatedInput=false\n`,
-    `${approvalTime} [info] beforeQuit: handler fired\n`];
+    `${approvalTime} [info] Permission request ${REQUEST} for browser:left_click aborted\n`,
+    `${approvalTime} [info] willQuit: handler fired, going down\n`];
   for (const [index, line] of lines.entries()) {
     const crlf = line.replace('\n', '\r\n');
     for (const split of [7, 30, 55, crlf.length - 1].filter((at) => at < crlf.length)) {
