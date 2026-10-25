@@ -1043,7 +1043,7 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
         flags += (" · " if flags else "") + "No direct link"
         if row.get("provider") == "opencode":
             flags += ". OpenCode cannot open one session from a link."
-    source = "App source: " + (source_label or source_id) if source_label or source_id else ""
+    source = "Profile: " + (source_label or source_id) if source_label or source_id else ""
     if source_label and source_id:
         source += " (" + source_id + ")"
     app_color = source_marker_color(row)

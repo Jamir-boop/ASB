@@ -3382,20 +3382,20 @@ class NativeLogicChecks(unittest.TestCase):
         gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0))
         with patch.dict(SCOPE, {"Gtk": gtk}):
             window.update_row_text(widget, 100_000)
-            self.assertIn("App source: ChatGPT Personal (codex-personal)", widget.asb_tooltip)
-            self.assertIn("App source: ChatGPT Personal (codex-personal)", widget.update_property.call_args.args[1][1])
+            self.assertIn("Profile: ChatGPT Personal (codex-personal)", widget.asb_tooltip)
+            self.assertIn("Profile: ChatGPT Personal (codex-personal)", widget.update_property.call_args.args[1][1])
             self.assertIn("Open failed", widget.update_property.call_args.args[1][1])
             row.update(sourceColor="#b28f80", sourceCount=2)
             widget.asb_time_signature = None
             window.update_row_text(widget, 100_000)
             self.assertIn("Profile color marker: #b28f80", widget.asb_tooltip)
-            self.assertIn("App source: ChatGPT Personal (codex-personal). Profile color marker: #b28f80", widget.update_property.call_args.args[1][1])
+            self.assertIn("Profile: ChatGPT Personal (codex-personal). Profile color marker: #b28f80", widget.update_property.call_args.args[1][1])
             del row["sourceLabel"], row["sourceId"], row["sourceColor"], row["sourceCount"]
             widget.asb_time_signature = None
             window.update_row_text(widget, 100_000)
-            self.assertNotIn("App source:", widget.asb_tooltip)
+            self.assertNotIn("Profile:", widget.asb_tooltip)
             self.assertIn("Open failed", widget.update_property.call_args.args[1][1])
-            self.assertNotIn("App source:", widget.update_property.call_args.args[1][1])
+            self.assertNotIn("Profile:", widget.update_property.call_args.args[1][1])
 
     def test_profile_circle_validates_color_and_updates_existing_rows_in_both_views(self):
         color = SCOPE["source_marker_color"]

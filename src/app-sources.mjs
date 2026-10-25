@@ -117,7 +117,7 @@ export class AppSourceRegistry {
       || (source.showMarker !== undefined && typeof source.showMarker !== 'boolean')
       || (stored && typeof source.id !== 'string')
       || (source.id !== undefined && (typeof source.id !== 'string' || !/^[a-z0-9][a-z0-9-]{0,79}$/.test(source.id)))) {
-      throw invalid('Invalid app source fields.');
+      throw invalid('Invalid profile fields.');
     }
     const dataDir = absolute(source.dataDir, 'Data folder');
     const launcher = stored || !checkLauncher ? source.launcher === '' ? '' : absolute(source.launcher, 'Launcher')
@@ -125,8 +125,8 @@ export class AppSourceRegistry {
     if (launcher && !APP_LAUNCHER.test(path.basename(launcher))) {
       throw invalid('Invalid app launcher.');
     }
-    if (source.projectsDir !== undefined && source.provider !== 'claude-desktop-code') throw invalid('Only Claude sources have a transcript folder.');
-    if (source.remoteClaude !== undefined && source.provider !== 'claude-desktop-code') throw invalid('Only Claude sources have a remote Claude setting.');
+    if (source.projectsDir !== undefined && source.provider !== 'claude-desktop-code') throw invalid('Only Claude profiles have a transcript folder.');
+    if (source.remoteClaude !== undefined && source.provider !== 'claude-desktop-code') throw invalid('Only Claude profiles have a remote Claude setting.');
     if (source.remoteClaude !== undefined && !REMOTE_CLAUDE.includes(source.remoteClaude)) {
       throw invalid('Remote Claude sessions must be Automatic, Through ASB, or Claude Remote Control only.');
     }
@@ -138,10 +138,10 @@ export class AppSourceRegistry {
   }
 
   async validateStores(sources) {
-    if (sources.length > MAX_APP_SOURCES) throw invalid(`ASB supports up to ${MAX_APP_SOURCES} app sources.`);
+    if (sources.length > MAX_APP_SOURCES) throw invalid(`ASB supports up to ${MAX_APP_SOURCES} profiles.`);
     const identities = await Promise.all(sources.map(storeIdentity));
     if (new Set(identities).size !== identities.length) throw invalid('This session store is already registered.');
-    if (new Set(sources.map((source) => source.id)).size !== sources.length) throw invalid('Duplicate app source ID.');
+    if (new Set(sources.map((source) => source.id)).size !== sources.length) throw invalid('Duplicate profile ID.');
   }
 
   async read() {
@@ -155,17 +155,17 @@ export class AppSourceRegistry {
       this.signature = signature;
       if (info) {
         try {
-          if (info.size > 256 * 1024) throw invalid('App source settings are too large.');
+          if (info.size > 256 * 1024) throw invalid('Profile settings are too large.');
           const value = JSON.parse(await fs.readFile(this.configPath, 'utf8'));
           if (value?.version !== 1 || Object.keys(value).sort().join(',') !== 'sources,version'
-            || !Array.isArray(value.sources) || value.sources.length > MAX_APP_SOURCES) throw invalid('Invalid app source settings.');
+            || !Array.isArray(value.sources) || value.sources.length > MAX_APP_SOURCES) throw invalid('Invalid profile settings.');
           const sources = await Promise.all(value.sources.map((source) => this.validate(source, { stored: true })));
           for (const builtin of ['codex', 'claude-desktop-code']) {
             const source = sources.find((item) => item.id === builtin);
-            if (!source || source.provider !== builtin) throw invalid('Default app sources must stay registered.');
+            if (!source || source.provider !== builtin) throw invalid('Default profiles must stay registered.');
           }
           const openCode = sources.find((item) => item.id === 'opencode' || item.provider === 'opencode');
-          if (openCode && (openCode.id !== 'opencode' || openCode.provider !== 'opencode')) throw invalid('Invalid app source settings.');
+          if (openCode && (openCode.id !== 'opencode' || openCode.provider !== 'opencode')) throw invalid('Invalid profile settings.');
           // The OpenCode folder is fixed; a file from before OpenCode support gets the default source.
           if (openCode) Object.assign(openCode, { dataDir: this.openCodeSource.dataDir, launcher: '' });
           else if (sources.length < MAX_APP_SOURCES) sources.push({ ...this.openCodeSource });
@@ -174,7 +174,7 @@ export class AppSourceRegistry {
           this.sources = sources;
           this.warning = '';
           this.bad = false;
-        } catch { this.bad = info.isFile(); this.warning = 'ASB cannot read its app source settings. The last valid sources are still in use.'; }
+        } catch { this.bad = info.isFile(); this.warning = 'ASB cannot read its profile settings. The last valid profiles are still in use.'; }
       } else if (first && this.discoverPersonal) {
         const dataDir = path.join(this.homeDir, '.codex-personal');
         const launcher = path.join(this.homeDir, '.local', 'bin', 'chatgpt-personal');
@@ -219,12 +219,12 @@ export class AppSourceRegistry {
       await this.read();
       this.checkRevision(expectedRevision);
       const existing = typeof source?.id === 'string' ? this.sources.find((item) => item.id === source.id) : null;
-      if (source?.provider === 'opencode' && existing?.id !== 'opencode') throw invalid('Only the default OpenCode source is supported.');
+      if (source?.provider === 'opencode' && existing?.id !== 'opencode') throw invalid('Only the default OpenCode profile is supported.');
       if (existing?.id === 'opencode' && (typeof source.dataDir !== 'string' || path.resolve(source.dataDir) !== existing.dataDir)) throw invalid('The OpenCode data folder cannot change.');
-      if (existing?.id === 'opencode' && source.launcher !== '') throw invalid('The OpenCode source takes no launcher.');
+      if (existing?.id === 'opencode' && source.launcher !== '') throw invalid('The OpenCode profile takes no launcher.');
       const next = await this.validate(source, { checkLauncher: source?.enabled !== false || !existing });
-      if (next.id && !existing) throw invalid('This app source is not registered.');
-      if (existing?.builtin && next.provider !== existing.provider) throw invalid('The default source provider cannot change.');
+      if (next.id && !existing) throw invalid('This profile is not registered.');
+      if (existing?.builtin && next.provider !== existing.provider) throw invalid('The app of a default profile cannot change.');
       next.id = existing?.id || `${next.provider === 'codex' ? 'codex' : 'claude'}-${randomUUID()}`;
       next.builtin = Boolean(existing?.builtin);
       next.color ??= existing?.color || defaultSourceColor(next.id);
@@ -239,7 +239,7 @@ export class AppSourceRegistry {
       }
       const name = sourceName(next);
       if (this.sources.some((item) => item.id !== next.id && (sourceName(item) === name || item.id === name))) {
-        throw invalid(`Another app source already uses the name ${name}. Choose another name.`);
+        throw invalid(`Another profile already uses the name ${name}. Choose another name.`);
       }
       const sources = existing ? this.sources.map((item) => item.id === next.id ? next : item) : [...this.sources, next];
       await this.validateStores(sources);
@@ -255,8 +255,8 @@ export class AppSourceRegistry {
       await this.read();
       this.checkRevision(expectedRevision);
       const source = this.sources.find((item) => item.id === id);
-      if (!source) throw invalid('This app source is not registered.');
-      if (source.builtin) throw invalid('Default app sources cannot be removed.');
+      if (!source) throw invalid('This profile is not registered.');
+      if (source.builtin) throw invalid('Default profiles cannot be removed.');
       const sources = this.sources.filter((item) => item.id !== id);
       await this.save(sources);
       return appSourcesRevision(sources);
@@ -267,7 +267,7 @@ export class AppSourceRegistry {
 
   checkRevision(expectedRevision) {
     if (expectedRevision !== undefined && expectedRevision !== appSourcesRevision(this.sources)) {
-      throw Object.assign(new Error('App sources changed. Reload Profiles before saving or removing a source.'), { statusCode: 409 });
+      throw Object.assign(new Error('Profiles changed. Reload Profiles before saving or removing a profile.'), { statusCode: 409 });
     }
   }
 

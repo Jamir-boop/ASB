@@ -426,7 +426,7 @@ export function createAsbServer({
         sendJson(response, 200, { ...(actionRoute ? { changed: true, savedRevision } : {}), ...await listSources(dashboard) });
       } catch (error) {
         sendJson(response, error.statusCode || 500, { error: error instanceof SyntaxError ? 'Invalid app source action.'
-          : [400, 409].includes(error.statusCode) ? error.message : 'Cannot update ASB app sources.' });
+          : [400, 409].includes(error.statusCode) ? error.message : 'Cannot update the ASB profiles.' });
       }
       return;
     }

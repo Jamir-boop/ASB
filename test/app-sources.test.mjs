@@ -70,7 +70,7 @@ test('source names come from labels, stay unique against names and ids, and are 
   const { builtin: workBuiltin, ...work } = (await registry.read()).find((item) => item.dataDir === path.join(homeDir, 'work'));
   await registry.update({ ...work, label: 'work profile' });
   await assert.rejects(registry.update(source(path.join(homeDir, 'copy'), { label: 'WORK profile' })),
-    { statusCode: 400, message: 'Another app source already uses the name work-profile. Choose another name.' });
+    { statusCode: 400, message: 'Another profile already uses the name work-profile. Choose another name.' });
   const { builtin, ...codex } = (await registry.read()).find((item) => item.id === 'codex');
   await registry.update({ ...codex, label: 'Main' });
   await assert.rejects(registry.update(source(path.join(homeDir, 'copy'), { label: 'Codex' })), /already uses the name codex\./);
@@ -823,10 +823,10 @@ test('OpenCode is the third default source, old settings gain it in memory, and 
 
   await assert.rejects(migrated.update({ ...edit, dataDir: path.join(homeDir, 'other') }),
     { statusCode: 400, message: 'The OpenCode data folder cannot change.' });
-  await assert.rejects(migrated.update({ ...edit, launcher }), { statusCode: 400, message: 'The OpenCode source takes no launcher.' });
+  await assert.rejects(migrated.update({ ...edit, launcher }), { statusCode: 400, message: 'The OpenCode profile takes no launcher.' });
   await assert.rejects(migrated.update({ ...edit, provider: 'codex' }), { statusCode: 400 });
   await assert.rejects(migrated.update(source(path.join(homeDir, 'opencode-copy'), { provider: 'opencode', launcher: '' })),
-    { statusCode: 400, message: 'Only the default OpenCode source is supported.' });
+    { statusCode: 400, message: 'Only the default OpenCode profile is supported.' });
   await assert.rejects(migrated.remove('opencode'), { statusCode: 400 });
 
   for (const bad of [{ ...saved.at(-1), provider: 'codex', dataDir: path.join(homeDir, 'store') },

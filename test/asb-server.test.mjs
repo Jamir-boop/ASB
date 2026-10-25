@@ -54,6 +54,16 @@ test('app source changes need the window token when the launcher sets one', asyn
   }
 });
 
+test('unexpected source update and removal errors use the profile fallback', async (t) => {
+  const fail = async () => { throw new Error('Synthetic failure'); };
+  const { post } = await serve(t, { listSources: async () => ({ sources: [] }), updateSource: fail, removeSource: fail });
+  for (const [route, body] of [['/api/sources', '{"source":{}}'], ['/api/sources/a/remove', '{}']]) {
+    const response = await post(route, body);
+    assert.equal(response.status, 500);
+    assert.deepEqual(await response.json(), { error: 'Cannot update the ASB profiles.' });
+  }
+});
+
 test('a successful open is not hidden by a scan that finished while the app opened', async (t) => {
   let acknowledged = false;
   let loads = 0;
