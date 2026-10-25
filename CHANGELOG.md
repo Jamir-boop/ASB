@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Changed the engine scans after a change of a Codex or Claude Desktop Code chat: they now check only the files that changed, so the engine uses less CPU with many chats. With 700 Codex tasks and 100 Claude chats, the scan after one new line in a task made 12 file checks in place of 911. A full scan still runs at least every 30 s, so a file event that the system loses leaves a card late for at most that time.
 - Fixed `asb agent status`, which showed `UI: verified` for up to 45 s after you closed the board window, and the PC sounds, which went on for that time. A board window that closes now sends one last report that removes it, so the status shows `UI: not-open` and the sounds stop within about 2 s. A board that stops in another way, for example a crash, still expires after 45 s.
 
 ## ASB 1.12.0 - 2026-10-25

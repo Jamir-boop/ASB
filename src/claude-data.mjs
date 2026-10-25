@@ -47,6 +47,7 @@ const claudeProjectIndexReads = new Map();
 const claudeSignalReads = new Map();
 const claudeJsonlSignalCache = new SourceCache(MAX_ASB_SESSION_COUNT);
 const claudeMetadataCache = new SourceCache(MAX_ASB_SESSION_COUNT);
+const claudeFileStatCache = new SourceCache(MAX_ASB_SESSION_COUNT * 2);
 const claudeFileIndexCache = new Map();
 let claudeFileIndexGeneration = 0;
 let claudeSourceRoots = new Set();
@@ -550,7 +551,20 @@ export async function readClaudeSessionFile(filePath, fileStat = null, cacheScop
   return value;
 }
 
-async function walkFiles(root, predicate, output = [], onReadError = null, directories = null) {
+async function claudeFileStat(filePath, { fileScan = null, cacheScope = '' } = {}) {
+  const cached = claudeFileStatCache.get(filePath, cacheScope);
+  if (cached && fileScan?.canReuse(filePath)) return cached;
+  try {
+    const stat = await fs.stat(filePath);
+    claudeFileStatCache.remember(filePath, stat, cacheScope);
+    return stat;
+  } catch (error) {
+    claudeFileStatCache.delete(filePath);
+    throw error;
+  }
+}
+
+async function walkFiles(root, predicate, output = [], onReadError = null, directories = null, options = {}) {
   let entries = [];
   try {
     if (directories) directories.set(root, statSignature(await fs.stat(root)));
@@ -563,13 +577,13 @@ async function walkFiles(root, predicate, output = [], onReadError = null, direc
   await Promise.all(entries.map(async (entry) => {
     const filePath = path.join(root, entry.name);
     if (entry.isDirectory()) {
-      await walkFiles(filePath, predicate, output, onReadError, directories);
+      await walkFiles(filePath, predicate, output, onReadError, directories, options);
       return;
     }
 
     if (entry.isFile() && predicate(filePath, entry.name)) {
       try {
-        const stat = await fs.stat(filePath);
+        const stat = await claudeFileStat(filePath, options);
         output.push({ filePath, stat });
       } catch (error) {
         onReadError?.(error);
@@ -581,11 +595,12 @@ async function walkFiles(root, predicate, output = [], onReadError = null, direc
   return output;
 }
 
-async function indexedFiles(root, predicate, { onReadError = null, refreshStats = true } = {}) {
+async function indexedFiles(root, predicate, { onReadError = null, refreshStats = true, fileScan = null, cacheScope = '' } = {}) {
   const generation = claudeFileIndexGeneration;
   const cached = claudeFileIndexCache.get(root);
   if (cached) {
     const unchanged = await Promise.all([...cached.directories].map(async ([directory, signature]) => {
+      if (fileScan?.canReuse(directory)) return true;
       try { return sameFileSignature(signature, statSignature(await fs.stat(directory))); }
       catch { return false; }
     }));
@@ -593,7 +608,7 @@ async function indexedFiles(root, predicate, { onReadError = null, refreshStats 
       claudeCacheMetrics.fileIndexHits += 1;
       if (!refreshStats) return cached.files;
       const files = await Promise.all(cached.files.map(async (entry) => {
-        try { return { filePath: entry.filePath, stat: await fs.stat(entry.filePath) }; }
+        try { return { filePath: entry.filePath, stat: await claudeFileStat(entry.filePath, { fileScan, cacheScope }) }; }
         catch (error) { onReadError?.(error); return null; }
       }));
       return files.filter(Boolean);
@@ -602,7 +617,7 @@ async function indexedFiles(root, predicate, { onReadError = null, refreshStats 
   claudeCacheMetrics.fileIndexWalks += 1;
   const directories = new Map();
   let errors = 0;
-  const files = await walkFiles(root, predicate, [], (error) => { errors += 1; onReadError?.(error); }, directories);
+  const files = await walkFiles(root, predicate, [], (error) => { errors += 1; onReadError?.(error); }, directories, { fileScan, cacheScope });
   if (generation === claudeFileIndexGeneration) {
     if (!errors) rememberBounded(claudeFileIndexCache, root, { files, directories }, 32);
     else claudeFileIndexCache.delete(root);
@@ -611,6 +626,9 @@ async function indexedFiles(root, predicate, { onReadError = null, refreshStats 
 }
 
 export function invalidateClaudeData({ filePath = '', index = false } = {}) {
+  for (const key of claudeFileStatCache.keys()) {
+    if (!filePath || key === filePath || key.startsWith(`${filePath}${path.sep}`)) claudeFileStatCache.delete(key);
+  }
   if (!filePath || index) claudeFileIndexGeneration += 1;
   for (const [key, cached] of claudeJsonlSignalCache) {
     if (filePath && (key.startsWith(`${filePath}\0`) || key.startsWith(`${filePath}${path.sep}`))) cached.invalidated = true;
@@ -637,7 +655,7 @@ export function invalidateClaudeData({ filePath = '', index = false } = {}) {
 }
 
 export function retainClaudeDataSources(sources) {
-  for (const cache of [claudeJsonlSignalCache, claudeMetadataCache]) cache.retainScopes(sources.map((source) => source.cacheScope));
+  for (const cache of [claudeJsonlSignalCache, claudeMetadataCache, claudeFileStatCache]) cache.retainScopes(sources.map((source) => source.cacheScope));
   const roots = new Set(sources.flatMap((source) => [path.join(source.appDir, 'claude-code-sessions'), source.projectsDir]));
   for (const root of claudeSourceRoots) {
     if (roots.has(root)) continue;
@@ -661,8 +679,8 @@ export async function mapWithConcurrency(items, concurrency, mapper) {
   return results;
 }
 
-async function recentFiles(root, predicate, maxCount = DEFAULT_MAX_COUNT, onReadError = null) {
-  return (await indexedFiles(root, predicate, { onReadError }))
+async function recentFiles(root, predicate, maxCount = DEFAULT_MAX_COUNT, onReadError = null, options = {}) {
+  return (await indexedFiles(root, predicate, { ...options, onReadError }))
     .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs)
     .slice(0, maxCount);
 }
@@ -986,10 +1004,10 @@ async function savedClaudePosition(filePath, stat) {
       messages: life.messages.map(([from, atMs]) => ({ from, atMs })) } };
 }
 
-async function readClaudeSignalFile(filePath, { maxBytes = DEFAULT_MAX_JSONL_BYTES, cacheScope = '' } = {}) {
+async function readClaudeSignalFile(filePath, { maxBytes = DEFAULT_MAX_JSONL_BYTES, cacheScope = '', fileScan = null } = {}) {
   try {
     // The cached file index does not refresh transcript stats, so each read gets a current one.
-    const fileStat = await fs.stat(filePath);
+    const fileStat = await claudeFileStat(filePath, { fileScan, cacheScope });
     const signature = statSignature(fileStat);
     const cacheKey = `${filePath}\0${maxBytes}`;
     const cached = claudeJsonlSignalCache.get(cacheKey, cacheScope);
@@ -1106,7 +1124,7 @@ export async function readClaudeRootSignals(entry, subagents, options, agentLogs
       const ownDir = path.join(entry.filePath.slice(0, -'.jsonl'.length), 'subagents', 'workflows', link.runId);
       const own = logs.filter((log) => path.dirname(log.filePath) === ownDir);
       const atMs = Math.max(-1, ...await Promise.all((own.length ? own : logs).map(async (log) => (
-        (await fs.stat(log.filePath).catch(() => null))?.mtimeMs ?? -1))));
+        (await claudeFileStat(log.filePath, options).catch(() => null))?.mtimeMs ?? -1))));
       if (atMs < link.startedAtMs) unknown = true;
       else work.push({ running: true, kind: 'task_started', startedAtMs: link.requestStartedAtMs || link.startedAtMs,
         activityAtMs: atMs, eventAtMs: atMs });
@@ -1120,7 +1138,7 @@ export async function readClaudeRootSignals(entry, subagents, options, agentLogs
       if (candidates.length === 1) child = candidates[0];
       else {
         const logs = await Promise.all(candidates.map(async (log) => (
-          { filePath: log.filePath, mtimeMs: (await fs.stat(log.filePath).catch(() => null))?.mtimeMs ?? -1 })));
+          { filePath: log.filePath, mtimeMs: (await claudeFileStat(log.filePath, options).catch(() => null))?.mtimeMs ?? -1 })));
         child = logs.sort((a, b) => b.mtimeMs - a.mtimeMs)[0];
       }
     }
@@ -1173,14 +1191,14 @@ export async function readClaudeRootSignals(entry, subagents, options, agentLogs
   };
 }
 
-export async function indexClaudeProjectFiles(projectsDir = DEFAULT_CLAUDE_PROJECTS_DIR) {
+export async function indexClaudeProjectFiles(projectsDir = DEFAULT_CLAUDE_PROJECTS_DIR, options = {}) {
   const pending = claudeProjectIndexReads.get(projectsDir);
   if (pending) {
     claudeCacheMetrics.projectIndexHits += 1;
     return pending;
   }
   const read = (async () => {
-    const files = await indexedFiles(projectsDir, (_filePath, name) => name.endsWith('.jsonl'), { refreshStats: false });
+    const files = await indexedFiles(projectsDir, (_filePath, name) => name.endsWith('.jsonl'), { ...options, refreshStats: false });
     const cached = claudeProjectIndexCacheByDir.get(projectsDir);
     if (cached?.sourceFiles === files) {
       claudeCacheMetrics.projectIndexHits += 1;
@@ -1212,10 +1230,10 @@ function claudeRootCopies(entries, projectsDir) {
 }
 
 // The app writes only to the newest copy. The index does not refresh stats, so each copy gets a current one.
-export async function currentClaudeRoot({ files, rootCopies }, sessionId) {
+export async function currentClaudeRoot({ files, rootCopies }, sessionId, options = {}) {
   const copies = rootCopies?.get(sessionId);
   if (!copies) return files.get(sessionId);
-  const current = await Promise.all(copies.map(async ({ filePath }) => ({ filePath, stat: await fs.stat(filePath).catch(() => null) })));
+  const current = await Promise.all(copies.map(async ({ filePath }) => ({ filePath, stat: await claudeFileStat(filePath, options).catch(() => null) })));
   return current.filter((entry) => entry.stat).sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs || b.stat.size - a.stat.size
     || (a.filePath < b.filePath ? -1 : 1))[0];
 }
@@ -1269,6 +1287,7 @@ export async function loadClaudeDesktopCodeThreads({
   nowMs = Date.now(),
   strictMetadataRead = false,
   cacheScope = '',
+  fileScan = null,
 } = {}) {
   const root = path.join(appDir, 'claude-code-sessions');
   if (strictMetadataRead) await fs.stat(root);
@@ -1276,16 +1295,16 @@ export async function loadClaudeDesktopCodeThreads({
   // waiting-input/ holds the messages that wait for a busy session under its ID: not a session record.
   const files = await recentFiles(root, (filePath, name) => /^local_.*\.json$/.test(name)
     && path.basename(path.dirname(filePath)) !== 'waiting-input', maxCount,
-    strictMetadataRead ? () => { metadataReadErrors += 1; } : null);
-  const projectIndex = await indexClaudeProjectFiles(projectsDir)
+    strictMetadataRead ? () => { metadataReadErrors += 1; } : null, { fileScan, cacheScope });
+  const projectIndex = await indexClaudeProjectFiles(projectsDir, { fileScan, cacheScope })
     .catch(() => ({ files: new Map(), subagentsBySession: new Map(), agentLogs: new Map() }));
   const { subagentsBySession, agentLogs } = projectIndex;
   const parsed = await mapWithConcurrency(files, SIGNAL_CONCURRENCY, async (entry) => {
     try {
       const session = await readClaudeSessionFile(entry.filePath, entry.stat, cacheScope);
-      const projectFile = await currentClaudeRoot(projectIndex, String(session.cliSessionId || ''));
+      const projectFile = await currentClaudeRoot(projectIndex, String(session.cliSessionId || ''), { fileScan, cacheScope });
       const rootSignals = projectFile
-        ? await readClaudeRootSignals(projectFile, subagentsBySession.get(projectFile.filePath), { maxBytes, nowMs, cacheScope }, agentLogs)
+        ? await readClaudeRootSignals(projectFile, subagentsBySession.get(projectFile.filePath), { maxBytes, nowMs, cacheScope, fileScan }, agentLogs)
         : { signals: parseClaudeJsonlSignals('') };
       return { session, ...rootSignals, stat: entry.stat };
     } catch {

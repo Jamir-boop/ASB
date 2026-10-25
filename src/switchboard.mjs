@@ -357,6 +357,7 @@ export async function loadSwitchboardDashboard({
   codexOptions = {},
   claudeOptions = {},
   sources = null,
+  sourceScans = {},
   machine,
 } = {}) {
   const inputs = sources ? numberAppSources(sources) : [
@@ -380,13 +381,13 @@ export async function loadSwitchboardDashboard({
     }
     if (source.provider === 'opencode') return loadOpenCode({ ...sourceOptions, nowMs, maxCount: 5000 });
     return source.provider === 'codex' ? loadCodex({
-      ...codexOptions, ...sourceOptions, nowMs,
+      ...codexOptions, ...sourceOptions, nowMs, fileScan: sourceScans.codex,
       codexNativeReadEnabled: true,
       maxRollouts: 5000,
       rolloutThreadFilter: isSwitchboardRoot,
       initialRolloutBytes: 64 * 1024,
       maxRolloutBytes: 256 * 1024,
-    }) : loadClaude({ ...claudeOptions, ...sourceOptions, nowMs, maxCount: 5000, strictMetadataRead: true });
+    }) : loadClaude({ ...claudeOptions, ...sourceOptions, nowMs, fileScan: sourceScans.claude, maxCount: 5000, strictMetadataRead: true });
   }));
   const providers = results.map((result, index) => {
     const source = inputs[index];
@@ -877,12 +878,12 @@ export function createSwitchboardServer(options = {}) {
       else { invalidateClaudeData(hint); invalidateClaudeRemoteData(hint); }
     },
     ...options,
-    loadDashboard: async () => {
+    loadDashboard: async ({ sourceScans } = {}) => {
       const sources = registeredLoad ? await registry.read() : null;
       const machine = options.machineIdentity?.() || { machineId: '', machineName: localMachineName() };
       // Only the engine passes reader positions: the first scan waits for their load, and each scan can save them.
       await options.readerPositions?.ready();
-      const loaded = await load({ ...(sources ? { sources } : {}), machine });
+      const loaded = await load({ ...(sources ? { sources } : {}), machine, sourceScans });
       options.readerPositions?.scanDone();
       options.onScanDone?.();
       // The npm start server has no machine identity, so its rows get no full reference.

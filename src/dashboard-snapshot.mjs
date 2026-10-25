@@ -54,6 +54,13 @@ export class DashboardSnapshot {
     const dashboardWatchStructure = new Map();
     const adaptiveWatchers = new Map();
     const dashboardSourceHints = new Map();
+    const dashboardFullScans = new Map();
+    let dashboardWatchEpoch = 0;
+    const fullScanIntervalMs = serviceMode ? SERVICE_SAFETY_SCAN_MS : 5_000;
+    const fullScanDue = () => ['codex', 'claude'].some((source) => {
+      const age = now() - (dashboardFullScans.get(source)?.atMs ?? -Infinity);
+      return age < 0 || age >= fullScanIntervalMs;
+    });
     const dashboardSources = { codex: false, claude: false };
     const threadOpenPromises = new Map();
     const serverMetrics = {
@@ -123,7 +130,7 @@ export class DashboardSnapshot {
       const clockExpired = now() >= Number(dashboardCache?.dashboard?.nextStatusCheckAtMs || Infinity);
       const busyThrottled = dashboardDirty && refreshIntervalMs === 2_000
         && now() - dashboardLastScanStartedAtMs < 2_000;
-      const cacheValid = !clockExpired && ((!dashboardDirty && cacheAgeMs < cacheTtlMs) || busyThrottled);
+      const cacheValid = !fullScanDue() && !clockExpired && ((!dashboardDirty && cacheAgeMs < cacheTtlMs) || busyThrottled);
       if (!force && dashboardCache?.dashboard && cacheAgeMs >= 0
         && (cacheValid || now() < dashboardRetryAfterMs)) {
         serverMetrics.dashboardCacheHits += 1;
@@ -155,7 +162,33 @@ export class DashboardSnapshot {
             for (const [source, files] of hints) {
               for (const [filePath, index] of files) await dashboardSourceChanged(source, { filePath, index });
             }
-            return loadDashboard();
+            const scanEpoch = dashboardWatchEpoch;
+            const scanAtMs = now();
+            const sourceScans = {};
+            for (const source of ['codex', 'claude']) {
+              const previous = dashboardFullScans.get(source);
+              const files = new Map(hints).get(source) || new Map();
+              const age = scanAtMs - (previous?.atMs ?? -Infinity);
+              const trusted = !force && dashboardWatchCoverage && previous?.epoch === scanEpoch
+                && age >= 0 && age < fullScanIntervalMs && !files.has('');
+              const watchKey = (filePath) => dashboardPlatform === 'win32' ? path.resolve(filePath).toLowerCase() : path.resolve(filePath);
+              const watched = [...adaptiveWatchers].filter(([, entry]) => entry.spec.source === source);
+              const directories = new Set(watched.map(([root]) => watchKey(root)));
+              const recursive = watched.filter(([, entry]) => entry.spec.recursive && !entry.spec.manualRecursive).map(([root]) => watchKey(root));
+              const changed = [...files.keys()].map(watchKey);
+              // shortcut: a lost watch event leaves a card late until the next full scan (30 s in service mode), go back to full scans if watch events prove unreliable
+              sourceScans[source] = trusted ? { canReuse: (filePath) => {
+                const target = watchKey(filePath);
+                return !changed.some((hint) => target === hint || target.startsWith(`${hint}${path.sep}`))
+                  && (directories.has(target) || directories.has(path.dirname(target))
+                    || recursive.some((root) => target.startsWith(`${root}${path.sep}`)));
+              } } : null;
+            }
+            const dashboard = await loadDashboard({ sourceScans });
+            for (const source of ['codex', 'claude']) if (!sourceScans[source]) {
+              dashboardFullScans.set(source, { atMs: scanAtMs, epoch: dashboardWatchCoverage && scanEpoch === dashboardWatchEpoch ? scanEpoch : null });
+            }
+            return dashboard;
           })
           .then((dashboard) => {
             serverMetrics.dashboardLoadCount += 1;
@@ -172,6 +205,7 @@ export class DashboardSnapshot {
           })
           .catch((error) => {
             dashboardDirty = true;
+            dashboardWatchEpoch += 1;
             dashboardRetryAfterMs = now() + 5_000;
             serverMetrics.dashboardLoadErrors += 1;
             serverMetrics.dashboardLastLoadMs = durationSince(startedAtMs);
@@ -205,6 +239,8 @@ export class DashboardSnapshot {
       // A scan in flight predates this change and must not clear the dirty mark.
       if (hard || dirty) dashboardGeneration += 1;
       if (hard) {
+        dashboardWatchEpoch += 1;
+        dashboardFullScans.clear();
         dashboardCache = null;
         serverMetrics.dashboardHardInvalidations += 1;
       } else {
@@ -260,6 +296,7 @@ export class DashboardSnapshot {
           else files.set(filePath, files.get(filePath) || event === 'rename');
         }
       }
+      if (!spec.source) dashboardWatchEpoch += 1;
       scheduleDashboardInvalidation('file-change');
     };
 
@@ -282,6 +319,7 @@ export class DashboardSnapshot {
       const signature = `${info.dev}:${info.ino}`;
       const previous = adaptiveWatchers.get(targetPath);
       if (previous?.signature === signature && previous?.spec?.source === spec.source) return true;
+      if (previous) dashboardWatchEpoch += 1;
       previous?.watcher.close?.();
       adaptiveWatchers.delete(targetPath);
       const watcher = watchDashboardPath(targetPath, { recursive }, (event, filename) => {
@@ -297,6 +335,7 @@ export class DashboardSnapshot {
         adaptiveWatchers.delete(targetPath);
         dashboardWatchFailures.set(spec.path, true);
         dashboardWatchCoverage = false;
+        dashboardWatchEpoch += 1;
         sourceChanged(spec, 'rename', null);
       });
       return true;
@@ -333,6 +372,7 @@ export class DashboardSnapshot {
         const watchPaths = await getWatchPaths();
         const walkedPaths = JSON.stringify(watchPaths.map((entry) => typeof entry === 'string' ? [entry]
           : [entry?.path, entry?.source, entry?.recursive, entry?.optional]));
+        if (dashboardWatchWalkedPaths && walkedPaths !== dashboardWatchWalkedPaths) dashboardWatchEpoch += 1;
         const walkAgeMs = now() - dashboardWatchWalkedAtMs;
         // The directory set almost never changes: events keep it current, and a full walk is the 60 s safety net.
         const reuse = (dashboardWatchCoverage || dashboardWatchFailures.size > 0)
@@ -378,12 +418,13 @@ export class DashboardSnapshot {
         if (reuse && recovered) serverMetrics.dashboardWatchWalks += 1;
         dashboardWatchCoverage = !dashboardClosed && Boolean(watchPaths.length)
           && ![...dashboardWatchFailures.values()].some(Boolean);
+        if (!dashboardWatchCoverage) dashboardWatchEpoch += 1;
       })().finally(() => { dashboardWatchReconcilePromise = null; });
       return dashboardWatchReconcilePromise;
     };
 
     const retryAdaptiveWatchers = async () => {
-      try { await reconcileAdaptiveWatchers(); } catch { dashboardWatchCoverage = false; }
+      try { await reconcileAdaptiveWatchers(); } catch { dashboardWatchCoverage = false; dashboardWatchEpoch += 1; }
       if (dashboardClosed) return;
       dashboardWatchRetryTimer = dashboardSetTimeout(retryAdaptiveWatchers, 5_000);
       dashboardWatchRetryTimer.unref?.();
@@ -395,8 +436,8 @@ export class DashboardSnapshot {
       try {
         const dashboard = await loadSharedDashboard();
         delay = !dashboardWatchCoverage ? scanIntervalMs(dashboard)
-          : Math.max(2_000, Math.min(Number(dashboardCache?.cachedAtMs ?? now()) + SERVICE_SAFETY_SCAN_MS,
-            Number(dashboard.nextStatusCheckAtMs || Infinity)) - now());
+          : Math.max(0, dashboardRetryAfterMs - now(), Math.min(...[...dashboardFullScans.values()].map((scan) => scan.atMs + SERVICE_SAFETY_SCAN_MS - now()),
+            Math.max(2_000, Number(dashboard.nextStatusCheckAtMs || Infinity) - now())));
       } catch {}
       if (dashboardClosed) return;
       dashboardServiceTimer = dashboardSetTimeout(pollServiceDashboard, delay);

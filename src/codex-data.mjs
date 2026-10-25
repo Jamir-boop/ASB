@@ -162,6 +162,9 @@ async function readCodexMetadata(filePath, parse, cacheScope) {
 }
 
 export function invalidateCodexData({ filePath = '' } = {}) {
+  for (const [key, cached] of rolloutSignalCache) {
+    if (!filePath || key.startsWith(`${filePath}\0`) || key.startsWith(`${filePath}${path.sep}`)) cached.invalidated = true;
+  }
   for (const cache of [codexMetadataCache, bridgeMessageCache]) {
     if (filePath) cache.delete(filePath);
     else cache.clear();
@@ -947,17 +950,21 @@ export async function readRolloutSignals(
     maxBytes = DEFAULT_MAX_ROLLOUT_BYTES,
     signalCacheLimit = DEFAULT_THREAD_LIMIT,
     cacheScope = '',
+    fileScan = null,
   } = {},
 ) {
   if (!rolloutPath) return parseRolloutSignals('');
 
   try {
-    const stat = await fs.stat(rolloutPath);
-    const signature = statSignature(stat);
     const cacheLimit = Math.min(DEFAULT_THREAD_LIMIT, Math.max(0, Number(signalCacheLimit) || 0));
     const cacheKey = `${rolloutPath}\0${initialBytes}\0${maxBytes}`;
     const cached = rolloutSignalCache.get(cacheKey, cacheScope, cacheLimit);
+    const reuse = cached && !cached.invalidated && fileScan?.canReuse(rolloutPath);
+    if (cached && !reuse) cached.invalidated = true;
+    const stat = reuse ? cached.signature : await fs.stat(rolloutPath);
+    const signature = statSignature(stat);
     if (cached && sameFileSignature(cached.signature, signature)) {
+      cached.invalidated = false;
       rolloutActivityCache.get(rolloutPath, cacheScope, cacheLimit);
       codexCacheMetrics.rolloutSignalHits += 1;
       return cached.signals;
@@ -1014,6 +1021,7 @@ async function attachRolloutSignals(threads, {
   signalCacheLimit = DEFAULT_THREAD_LIMIT,
   cacheScope = '',
   rolloutThreadFilter = () => true,
+  fileScan = null,
   initialRolloutBytes = DEFAULT_INITIAL_ROLLOUT_BYTES,
   maxRolloutBytes = DEFAULT_MAX_ROLLOUT_BYTES,
 } = {}) {
@@ -1036,6 +1044,7 @@ async function attachRolloutSignals(threads, {
       maxBytes: maxRolloutBytes,
       signalCacheLimit,
       cacheScope,
+      fileScan,
     }),
   );
 
