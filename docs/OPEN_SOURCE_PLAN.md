@@ -2,6 +2,20 @@
 
 ## Latest publication
 
+ASB [1.11.1](https://github.com/Jamir-boop/ASB/releases/tag/v1.11.1) was published on `2026-10-24` (Lima). Its source and tag use commit [994099c](https://github.com/Jamir-boop/ASB/commit/994099ceb48b413e31e0fd5deae574912b768095). ASB Bridge is still `0.8.0` in this release.
+
+- Uploaded `asb_1.11.1_all.deb`, `asb-1.11.1-1.noarch.rpm`, `asb-1.11.1-linux.tar.gz`, `PKGBUILD`, and `SHA256SUMS`. They are the `dist` artifact of the [Distros run](https://github.com/Jamir-boop/ASB/actions/runs/40152323148) of the release commit. All five downloads matched those CI files byte-for-byte, and `SHA256SUMS` passed. The `asb-linux` artifact of the [Test run](https://github.com/Jamir-boop/ASB/actions/runs/40152323207) is a second CI build, and its five files were byte-equal to the first. A local build on Debian from a clean export made the same `.deb`, archive, and `PKGBUILD` bytes as CI.
+- CI on the release commit: the Test workflow passed on Node.js `22.13.0` and `24` on Linux and on Windows, with the Windows bridge tests and the Windows board (6 jobs), and the Distros workflow passed (34 jobs). The Bridge workflow did not run, because the release commit changed no bridge file. On `84c43b6`, the last commit before the release that changed bridge files, the [Bridge run](https://github.com/Jamir-boop/ASB/actions/runs/40032595821) passed on Linux and macOS.
+- Local checks on `db3f0c6`, the source before the version change, passed: 983 Node tests (981 pass, 2 skipped), 215 native logic tests, 14 tray tests, 77 GTK widget tests on a hidden X display with synthetic data, 266 ASB Bridge tests with Bun (259 pass, 7 skipped), and the 195 Android unit tests and Android lint. On the release commit, the 983 Node tests passed again, and `npm pack --dry-run` listed 87 files.
+- Each package payload had 81 runtime files, all matching source bytes and modes. The RPM had the same files as the `.deb`, except the license file (`/usr/share/licenses/asb/LICENSE` in place of `/usr/share/doc/asb/copyright`). The Debian `Installed-Size` was 2187 KiB.
+- A disposable home installed the published `1.11.0` archive, then the `1.11.1` archive of the local build, which is byte-equal to the CI archive. The upgrade kept the config and state files byte-for-byte with their modes. The 81 installed runtime files matched source bytes. The engine answered HTTP `200` on `127.0.0.1` only, and `asb doctor` exited with code 0. The uninstall removed the launcher and the release folder and kept the settings.
+- The OpenCode plugin of both test machines was already the `1.11.1` build: its bytes match `bridge/dist/opencode.js` of the release. The Codex plugin caches of the test machines keep the `1.11.0` build of ASB Bridge `0.8.0`; the Codex files changed by one line each since then.
+- The release text is the notes file with its three relative links made absolute at the `v1.11.1` tag. All 10 links of the release page returned HTTP `200`, and the source of the `PKGBUILD` downloaded and matched its SHA-256.
+- A privacy scan of the lines added since `v1.11.0` found no private addresses, keys, or tokens. The MIT licenses and the upstream credits did not change.
+- No `apt`, `dnf`, `zypper`, or `makepkg` install on a real machine (CI installed the packages in its images), install of the release packages on the test machines, real-app opens with the release build, real OpenCode app with the `1.11.1` plugin, `asb doctor` with a real MSYS2 outside `C:\msys64`, macOS, or FPS check on the real display was run. See [release notes](releases/v1.11.1.md) for check limits.
+
+## Earlier publications
+
 ASB [1.11.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.11.0) was published on `2026-10-23` (Lima). Its source and tag use commit [f467a6d](https://github.com/Jamir-boop/ASB/commit/f467a6de86313133e860fdffd38fa709ae9fe0bf). ASB Bridge is `0.8.0` in this release.
 
 - Uploaded `asb_1.11.0_all.deb`, `asb-1.11.0-1.noarch.rpm`, `asb-1.11.0-linux.tar.gz`, `PKGBUILD`, and `SHA256SUMS`. They are the `dist` artifact of the [Distros run](https://github.com/Jamir-boop/ASB/actions/runs/39989911299) of the release commit, because the RPM needs `rpmbuild` and the local PC has none. All five downloads matched those CI files byte-for-byte, and `SHA256SUMS` passed. The `asb-linux` artifact of the [Test run](https://github.com/Jamir-boop/ASB/actions/runs/39989911374) is a second CI build, and its five files were byte-equal to the first. A local build on Debian from a clean export made the same `.deb`, archive, and `PKGBUILD` bytes as CI. The `.deb` members use xz.
@@ -15,8 +29,6 @@ ASB [1.11.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.11.0) was publish
 - The release text is the notes file with its seven relative links made absolute at the `v1.11.0` tag. All 14 links of the release page returned HTTP `200`, and the source of the `PKGBUILD` downloaded and matched its SHA-256.
 - A privacy scan of the lines added since `v1.10.0` found no private addresses, keys, or tokens. Its hits were synthetic test paths, a sample LAN address in a test, and the standard Homebrew path `/home/linuxbrew` in the docs. The MIT licenses and the upstream credits did not change.
 - No `apt`, `dnf`, `zypper`, or `makepkg` install on a real machine (CI installed the packages in its images), real-app opens with the release build, Codex with the `1.11.0` build of the ASB Bridge plugin (both test machines got this build in their Codex plugin caches after the publication, but Codex ran no task with it), macOS, or FPS check on the real display was run. See [release notes](releases/v1.11.0.md) for check limits.
-
-## Earlier publications
 
 ASB [1.10.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.10.0) was published on `2026-10-21` (Lima). Its source and tag use commit [f1282e5](https://github.com/Jamir-boop/ASB/commit/f1282e52f740b6dc24edb8134bd5ac9f06e3117c). ASB Bridge is `0.7.0` in this release.
 
