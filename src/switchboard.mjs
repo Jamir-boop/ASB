@@ -23,13 +23,14 @@ import { spawn } from 'node:child_process';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 const QUESTION_AT = Symbol('ASB question timestamp');
+const ACTION_AT = Symbol('ASB required action timestamp');
 const SOURCE_DIR = Symbol('ASB session store');
 // A CLI row that more than one source lists, with no single source of origin.
 const SHARED_CLI = Symbol('ASB shared CLI session');
 const DISCARD_TASK = Symbol('ASB discard task signals');
 // A member row that shows as Unknown only because the member is offline: its state is not new, so the tracker and the sounds keep their last values.
 export const OFFLINE_MEMBER = Symbol('ASB offline member row');
-const READ_FIELDS = ['questionSeen', 'questionAck', 'nativeAt', 'nativeAck', 'nativeSeen',
+const READ_FIELDS = ['questionSeen', 'questionAck', 'actionSeen', 'actionAck', 'nativeAt', 'nativeAck', 'nativeSeen',
   'discard', 'discardedAt', 'discardStart', 'discardEnd', 'discardNative', 'drawerSeen'];
 const RETAINED_SOURCES = ['native-unread', 'observed-completion', 'observed-failure'];
 // A record that ASB did not see for 30 days goes. The time of the last sight is the start of a UTC day. It moves at most once a day, and for all rows
@@ -245,6 +246,7 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
       const limit = Number(thread.limitResetsAtMs || 0);
       row.limitResetsAtMs = limit > nowMs && status.state !== 'working' && !(status.state === 'waiting' && row.actionRequired) ? limit : 0;
       Object.defineProperty(row, QUESTION_AT, { value: Number(thread.latestUserQuestionAtMs || 0) });
+      Object.defineProperty(row, ACTION_AT, { value: Number(thread.pendingToolAtMs || 0) });
       Object.defineProperty(row, DISCARD_TASK, { value: {
         atMs: thread.groupTaskEndedAtMs ?? Number(thread.latestTaskEndedAtMs || (thread.lifecycleRunning === false ? thread.latestLifecycleAtMs : 0)
           || row.completionAtMs || row.failedAtMs || 0),
@@ -566,7 +568,7 @@ export class PendingTracker {
       let record = this.records[row.id];
       if (!record) {
         record = this.records[row.id] = { seen: completion, working: 0, pending: 0, ack: 0, manual: 0, retained: '', pendingKind: '',
-          questionSeen: 0, questionAck: 0, nativeAt: 0, nativeAck: 0, nativeSeen: 0,
+          questionSeen: 0, questionAck: 0, actionSeen: 0, actionAck: 0, nativeAt: 0, nativeAck: 0, nativeSeen: 0,
           discard: 0, discardNext: 0, discardedAt: 0, discardStart: 0, discardEnd: 0, discardNative: 0,
           drawer: 0, drawerSeen: 0, muted: 0, lastSeen: today };
         this.dirty = true;
@@ -598,6 +600,10 @@ export class PendingTracker {
         this.set(record, 'discardNative', 0);
       }
       if (row.questionPending) this.set(record, 'questionSeen', Math.max(record.questionSeen, row[QUESTION_AT] || 1));
+      // The read mark of a required action lasts for one wait: a member row has no wait time, so the mark goes when the wait ends.
+      if (row.actionRequired ?? (row.state === 'waiting' && !row.questionPending)) {
+        this.set(record, 'actionSeen', Math.max(record.actionSeen, row[ACTION_AT] || 1));
+      } else if (!row[OFFLINE_MEMBER]) { this.set(record, 'actionSeen', 0); this.set(record, 'actionAck', 0); }
       if (row.nativeUnread === true && (!record.nativeSeen || completion > record.seen)) {
         this.set(record, 'nativeAt', Math.max(record.nativeAt + 1, Number(dashboard.generatedAtMs || Date.now()), completion));
       }
@@ -646,7 +652,8 @@ export class PendingTracker {
       const record = this.records[id];
       const machine = active && /^m:([a-f0-9]{16}):/.exec(id)?.[1];
       const kept = pinned.has(id) || record.manual === 1 || record.drawer === 1 || record.muted === 1 || record.discard === 1 || record.retained
-        || record.pending > record.ack || record.questionSeen > record.questionAck || record.nativeAt > record.nativeAck;
+        || record.pending > record.ack || record.questionSeen > record.questionAck || record.actionSeen > record.actionAck
+        || record.nativeAt > record.nativeAck;
       if (machine && !active.has(machine) && !present.has(id) || nowMs - record.lastSeen > RECORD_KEEP_MS && !kept) { delete this.records[id]; dropped = true; }
     }
     // A pin always has a record, so only a dropped record can leave a pin without one.
@@ -664,6 +671,7 @@ export class PendingTracker {
     row.pinned = row.pinIndex >= 0;
     row.manualUnread = record?.manual === 1;
     row.questionAttention = Boolean(row.questionPending && record?.questionSeen > record?.questionAck);
+    row.actionAttention = Boolean(row.actionRequired && (!record || record.actionSeen > record.actionAck));
     row.nativeAttention = Boolean(row.nativeUnread === true && record?.nativeAt > record?.nativeAck);
     const observedAttention = Boolean(!row.archived && row.state === 'idle' && row.nativeUnread === null && record?.pending > record?.ack);
     row.failedAttention = observedAttention && record?.pendingKind === 'failed';
@@ -684,8 +692,8 @@ export class PendingTracker {
     // A Working or usage-limited row shows only question attention. Stored marks stay and show again after Working or the limit ends.
     const working = row.state === 'working' || row.limitResetsAtMs > 0;
     row.unread = !working && !row.drawer && (row.manualUnread || row.nativeAttention || row.completionAttention || row.failedAttention || row.retainedUnread);
-    row.pending = Boolean(row.unread || row.questionAttention || row.actionRequired);
-    row.pendingSource = row.actionRequired ? 'user-action' : row.questionAttention ? 'user-question' : working ? ''
+    row.pending = Boolean(row.unread || row.questionAttention || row.actionAttention);
+    row.pendingSource = row.actionAttention ? 'user-action' : row.questionAttention ? 'user-question' : working ? ''
       : row.manualUnread ? 'manual-unread' : row.retainedUnread ? row.retainedUnreadSource
         : row.nativeAttention ? 'native-unread' : row.failedAttention ? 'observed-failure' : row.completionAttention ? 'observed-completion' : '';
   }
@@ -790,6 +798,7 @@ export class PendingTracker {
       this.set(record, 'manual', 0);
       this.set(record, 'retained', '');
       this.set(record, 'questionAck', record.questionSeen);
+      this.set(record, 'actionAck', record.actionSeen);
       this.set(record, 'nativeAck', record.nativeAt);
       this.set(record, 'drawer', 0);
     }

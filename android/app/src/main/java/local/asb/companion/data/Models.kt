@@ -108,6 +108,8 @@ data class Thread(
     val readStatus: String = "",
     val questionPending: Boolean = false,
     val actionRequired: Boolean = false,
+    // An older engine sends none.
+    val actionAttention: Boolean? = null,
     val lastOutcome: String = "",
     @Serializable(with = MillisSerializer::class)
     val failedAtMs: Long = 0,

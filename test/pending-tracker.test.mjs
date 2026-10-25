@@ -532,8 +532,9 @@ function loadAsV110(record) {
     drawer: record.drawer === 1 ? 1 : 0, muted: record.muted === 1 ? 1 : 0, lastSeen: number(record.lastSeen) ? record.lastSeen : null });
 }
 const asV110 = (records) => Object.fromEntries(Object.entries(records).map(([key, record]) => [key, loadAsV110(record)]));
-// `discardNext` is newer than ASB 1.10.0, which ignores it.
-const withoutNext = (records) => Object.fromEntries(Object.entries(records).map(([key, { discardNext, ...record }]) => [key, record]));
+// `discardNext`, `actionSeen`, and `actionAck` are newer than ASB 1.10.0, which ignores them.
+const withoutNext = (records) => Object.fromEntries(Object.entries(records)
+  .map(([key, { discardNext, actionSeen, actionAck, ...record }]) => [key, record]));
 
 // Watches the change marks of a tracker. `touched` has the record fields that changed through set(), and `marks` counts the times that other code set the
 // flag (a new or dropped record, the pin order, Persistent unread).
@@ -693,10 +694,10 @@ test('the Discard, drawer, and native paths that the random run reaches rarely m
 
 test('pending.json has no field that holds its default, and it keeps the fields that ASB 1.10.0 needs', async (t) => {
   const statePath = path.join(await temp(t), 'pending.json');
-  const zero = { seen: 0, working: 0, pending: 0, ack: 0, manual: 0, retained: '', pendingKind: '', questionSeen: 0, questionAck: 0, nativeAt: 0, nativeAck: 0,
-    nativeSeen: 0, discard: 0, discardNext: 0, discardedAt: 0, discardStart: 0, discardEnd: 0, discardNative: 0, drawer: 0, drawerSeen: 0, muted: 0, lastSeen: 0 };
+  const zero = { seen: 0, working: 0, pending: 0, ack: 0, manual: 0, retained: '', pendingKind: '', questionSeen: 0, questionAck: 0, actionSeen: 0, actionAck: 0,
+    nativeAt: 0, nativeAck: 0, nativeSeen: 0, discard: 0, discardNext: 0, discardedAt: 0, discardStart: 0, discardEnd: 0, discardNative: 0, drawer: 0, drawerSeen: 0, muted: 0, lastSeen: 0 };
   const rich = { seen: 500, working: 1, pending: 400, ack: 300, manual: 1, retained: 'observed-failure', pendingKind: 'failed', questionSeen: 7, questionAck: 5,
-    nativeAt: 9, nativeAck: 8, nativeSeen: 1, discard: 1, discardNext: 1, discardedAt: 11, discardStart: 12, discardEnd: 13, discardNative: 1,
+    actionSeen: 16, actionAck: 15, nativeAt: 9, nativeAck: 8, nativeSeen: 1, discard: 1, discardNext: 1, discardedAt: 11, discardStart: 12, discardEnd: 13, discardNative: 1,
     drawer: 1, drawerSeen: 14, muted: 1, lastSeen: now };
   const some = { ...zero, seen: 20, retained: 'native-unread', nativeAt: 3, lastSeen: now };
   // A file in the full form, as an older ASB wrote it.

@@ -4,10 +4,10 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
-- Fixed Claude Desktop Code chats that showed Working while the Claude app waited for a tool approval. ASB now reads open app approvals and shows Waiting after 10 s. A quick answer does not flash Waiting or play the Needs input sound. Claude Code permission waits from the live session registry (desktop chats and CLI cards) also get this 10 s grace.
-- Fixed app approvals that stayed open or closed too early. ASB now reads the real Claude app log lines: an aborted request closes, only a finished quit (`willQuit`) closes all requests, and a vetoed quit or a second app launch does not. Tool names can have up to 128 characters.
-- Fixed app approval waits that a parallel tool result hid. Only a turn end after the request cancels the wait. On Linux, a request from before the chat's current process does not count. While an approval shows Waiting, ASB checks again every 5 s.
+- Fixed Claude Desktop Code chats that showed Working while the Claude app waited for a tool approval, for example to click on a site. ASB now reads the open approvals from the Claude app log and shows the chat as Waiting after 10 s, so a quick answer does not flash Waiting or play the Needs input sound. An answer, an aborted request, a finished quit of the app, or the end of the turn ends the wait, and ASB checks again every 5 s while the wait shows. On Linux, an approval counts only while the chat's Claude Code process runs.
+- Changed the Claude Code permission waits from the live session registry (desktop chats and CLI cards): they now also show Waiting only after 10 s.
 - Added a Claude Desktop Code source warning when ASB cannot read the approval request lines in the Claude app log.
+- Added Read for an approval card. Read (the menu, the `?` corner, or Open) moves the card down to the read cards. It stays Waiting with its `?` mark and the note "Waits for your permission.", and Unread marks it again. A new wait of the chat is unread again. Only an unread approval plays Needs input. The Android app has the same rule.
 
 ## ASB 1.12.1 - 2026-10-25
 

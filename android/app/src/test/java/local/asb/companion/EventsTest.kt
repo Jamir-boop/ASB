@@ -24,6 +24,9 @@ class EventsTest {
         assertEquals(2, bits(row.copy(failedAttention = true)))
         assertEquals(4, bits(row.copy(questionAttention = true)))
         assertEquals(4, bits(row.copy(actionRequired = true)))
+        assertEquals(4, bits(row.copy(actionRequired = true, actionAttention = true)))
+        // A read required action plays nothing.
+        assertEquals(0, bits(row.copy(actionRequired = true, actionAttention = false)))
         assertEquals(4, bits(row.copy(questionAttention = true, actionRequired = true)))
     }
 

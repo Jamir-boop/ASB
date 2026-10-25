@@ -15,8 +15,10 @@ test('sound bits follow the phone rules', () => {
   assert.equal(soundBits(row({ completionAttention: true })), BIT_DONE);
   assert.equal(soundBits(row({ failedAttention: true })), BIT_FAILED);
   assert.equal(soundBits(row({ questionAttention: true })), BIT_INPUT);
-  assert.equal(soundBits(row({ actionRequired: true })), BIT_INPUT);
-  assert.equal(soundBits(row({ archived: true, completionAttention: true, actionRequired: true })), 0);
+  assert.equal(soundBits(row({ actionRequired: true, actionAttention: true })), BIT_INPUT);
+  // A read approval keeps its required action but plays nothing.
+  assert.equal(soundBits(row({ actionRequired: true, actionAttention: false })), 0);
+  assert.equal(soundBits(row({ archived: true, completionAttention: true, actionAttention: true })), 0);
   assert.equal(soundBits(row({ nativeAttention: true, state: 'idle' })), BIT_DONE);
   assert.equal(soundBits(row({ nativeAttention: true, state: 'working' })), 0);
   assert.equal(soundBits(row({ nativeAttention: true, state: 'idle', lastOutcome: 'failed' })), BIT_FAILED);
@@ -34,7 +36,7 @@ test('sound events need a baseline and fire only newly set bits', () => {
   assert.deepEqual(soundEvents(null, done, now), []);
   assert.deepEqual(kinds(soundEvents(new Map(), done, now)), [['a', BIT_DONE]]);
   assert.deepEqual(soundEvents(soundBaseline(null, done, now), done, now), []);
-  const both = [row({ completionAttention: true, actionRequired: true }), row({ id: 'b', failedAttention: true })];
+  const both = [row({ completionAttention: true, actionAttention: true }), row({ id: 'b', failedAttention: true })];
   assert.deepEqual(kinds(soundEvents(soundBaseline(null, done, now), both, now)), [['a', BIT_INPUT], ['b', BIT_FAILED]]);
   assert.deepEqual(soundEvents(new Map(), [row({ archived: true, completionAttention: true })], now), []);
 });
@@ -43,7 +45,7 @@ test('a limited row plays only Needs input until its first update after the limi
   const limit = now + 60_000;
   const limitedDone = [row({ completionAttention: true, limitResetsAtMs: limit })];
   assert.deepEqual(soundEvents(new Map(), limitedDone, now), []);
-  assert.deepEqual(kinds(soundEvents(new Map(), [row({ actionRequired: true, limitResetsAtMs: limit })], now)), [['a', BIT_INPUT]]);
+  assert.deepEqual(kinds(soundEvents(new Map(), [row({ actionRequired: true, actionAttention: true, limitResetsAtMs: limit })], now)), [['a', BIT_INPUT]]);
   // The limited baseline keeps Done, so the restored attention after the reset stays silent.
   const during = soundBaseline(soundBaseline(null, [row({ completionAttention: true })], now), [row({ limitResetsAtMs: limit })], now);
   assert.equal(during.get('a') & BIT_DONE, BIT_DONE);

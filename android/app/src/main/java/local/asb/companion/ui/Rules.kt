@@ -136,13 +136,14 @@ fun filteredRows(threads: List<Thread>, f: Filter): List<Thread> {
     )
 }
 
+// A required action keeps its "?" mark after Read; an older engine sends no read mark, so the action stays unread.
+fun actionNeedsAttention(row: Thread): Boolean = row.actionAttention ?: row.actionRequired
+
 // Port of row_menu_actions
 fun rowMenuActions(row: Thread): List<MenuAction> = buildList {
     val indicator = attentionIndicator(row)
-    if (!row.actionRequired) add(
-        if (row.drawer || indicator in setOf("question", "dot")) MenuAction("Read", "mark-read")
-        else MenuAction("Unread", "mark-unread"),
-    )
+    val unread = if (row.actionRequired) actionNeedsAttention(row) || row.unread else indicator in setOf("question", "dot")
+    add(if (row.drawer || unread) MenuAction("Read", "mark-read") else MenuAction("Unread", "mark-unread"))
     if (row.drawer) add(MenuAction("Take out of drawer", "drawer-out"))
     else if (indicator == "dot") add(MenuAction("Put in drawer", "drawer-in"))
     add(if (row.pinned) MenuAction("Unpin", "unpin") else MenuAction("Pin", "pin"))
@@ -388,6 +389,8 @@ fun cornerControls(
         discard && row.discardResult -> add(CornerControl("discard", "keep-result", "Keep result: show the dot when this task ends"))
         discard -> Unit
         confirmed -> add(CornerControl("confirmed", null, "Read in ASB"))
+        row.actionRequired && (actionNeedsAttention(row) || row.unread) ->
+            add(CornerControl("question", "mark-read", "A user action is required in the original app. Mark read in ASB"))
         row.actionRequired -> add(CornerControl("question", null, "A user action is required in the original app"))
         indicator == "question" -> add(CornerControl("question", "mark-read", "Mark read in ASB"))
         indicator == "dot" -> add(CornerControl("dot", "mark-read", "Mark read in ASB"))

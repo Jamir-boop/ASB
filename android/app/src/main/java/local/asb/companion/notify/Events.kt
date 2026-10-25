@@ -1,6 +1,7 @@
 package local.asb.companion.notify
 
 import local.asb.companion.data.Thread
+import local.asb.companion.ui.actionNeedsAttention
 import local.asb.companion.ui.limitLeft
 
 const val BIT_DONE = 1
@@ -15,7 +16,7 @@ fun bits(row: Thread): Int {
     val nativeFailed = native && row.lastOutcome == "failed"
     return (if (row.completionAttention || (native && !nativeFailed)) BIT_DONE else 0) or
         (if (row.failedAttention || nativeFailed) BIT_FAILED else 0) or
-        (if (row.questionAttention || row.actionRequired) BIT_INPUT else 0)
+        (if (row.questionAttention || actionNeedsAttention(row)) BIT_INPUT else 0)
 }
 
 data class Event(val row: Thread, val kind: Int)

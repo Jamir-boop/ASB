@@ -197,8 +197,10 @@ def refresh_interval(dashboard):
 
 
 def row_menu_actions(row):
-    actions = [] if row.get("actionRequired") else [("Read", "mark-read")
-               if row.get("drawer") or attention_indicator(row) in ("question", "dot") else ("Unread", "mark-unread")]
+    # A required action keeps its "?" mark after Read, so its own attention decides between Read and Unread.
+    unread = row.get("actionAttention") or row.get("unread") if row.get("actionRequired") \
+        else attention_indicator(row) in ("question", "dot")
+    actions = [("Read", "mark-read") if row.get("drawer") or unread else ("Unread", "mark-unread")]
     if row.get("drawer"):
         actions.append(("Take out of drawer", "drawer-out"))
     elif attention_indicator(row) == "dot":
@@ -376,7 +378,7 @@ def pin_move_body(rows, identity, direction):
 def attention_signature(row):
     return tuple(row.get(key) for key in ("unread", "questionAttention", "nativeUnread", "manualUnread",
                  "nativeAttention", "completionAttention", "failedAttention", "retainedUnread", "retainedUnreadSource",
-                 "completionAtMs", "failedAtMs", "lastOutcome", "actionRequired", "discardResult", "updatedAtMs", "state", "workingSinceMs", "questionPending", "drawer"))
+                 "completionAtMs", "failedAtMs", "lastOutcome", "actionRequired", "actionAttention", "discardResult", "updatedAtMs", "state", "workingSinceMs", "questionPending", "drawer"))
 
 
 def attention_indicator(row, drawer=False):
@@ -6330,14 +6332,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         pending = row["id"] in self.session_actions
         indicator = attention_indicator(row, True)
         copy_choice = card_copy(row, self.copy_kind)
-        signature = (indicator, row.get("state"), row.get("actionRequired"), row.get("discardResult"),
+        signature = (indicator, row.get("state"), row.get("actionRequired"), row.get("actionAttention"), row.get("unread"), row.get("discardResult"),
                      row.get("pinned"), row.get("drawer"), row.get("muted"), row.get("title"), pending, bool(widget.asb_read_timer),
                      self.column_pixel_width >= 190, bool(getattr(widget, "asb_copy_timer", None)), copy_choice,
                      getattr(getattr(widget, "asb_copy_button", None), "asb_tag_shown", False) is True)
         if signature == getattr(widget, "asb_action_signature", None):
             return
         widget.asb_action_signature = signature
-        unread = indicator in ("question", "dot") and not row.get("actionRequired")
+        unread = bool(row.get("actionAttention") or row.get("unread")) if row.get("actionRequired") \
+            else indicator in ("question", "dot")
         idle = row.get("state") == "idle"
         # An Idle row offers Discard for its next task when it has no mark. The check after a Read keeps the slot until it ends.
         discard = not row.get("muted") and not row.get("remote") and (
@@ -6362,7 +6365,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         pin.asb_action = ("win.unpin" if pinned else "win.pin") if not pending else None
         (pin.add_css_class if pinned else pin.remove_css_class)("asb-pinned")
         # Keep native gestures active so busy controls and the Read cue cannot open the row.
-        read_text = "A user action is required in the original app" if row.get("actionRequired") else "Task stopped" \
+        read_text = ("A user action is required in the original app. Mark read in ASB" if unread
+                     else "A user action is required in the original app") if row.get("actionRequired") else "Task stopped" \
             if indicator == "stop" else "Read in ASB" if confirmed else "Mark read in ASB"
         if discard:
             read_text = ("Keep result: show the dot when the next task ends" if idle else "Keep result: show the dot when this task ends") \

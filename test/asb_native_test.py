@@ -43,7 +43,8 @@ FIXTURE = {
          "cwd": "/example/Tools", "projectName": "Tools", "state": "unknown", "canOpen": False, "updatedAtMs": NOW - 300_000},
         {"id": "claude:local_mock", "provider": "claude-desktop-code", "providerLabel": "Claude Desktop Code",
          "title": "Choose the folder for the next check", "cwd": "/example/Notes", "projectName": "Notes",
-         "state": "waiting", "canOpen": True, "updatedAtMs": NOW - 120_000, "pending": True, "pendingSource": "user-action", "actionRequired": True},
+         "state": "waiting", "canOpen": True, "updatedAtMs": NOW - 120_000, "pending": True, "pendingSource": "user-action", "actionRequired": True,
+         "actionAttention": True},
         {"id": "archive", "provider": "codex", "providerLabel": "Codex", "title": "Completed setup",
          "cwd": "/example/ASB", "projectName": "ASB", "state": "idle", "canOpen": True,
          "archived": True, "updatedAtMs": NOW - 3600_000},
@@ -121,7 +122,7 @@ def mock_dashboard():
                      "nativeUnread": True if index == 15 else None,
                      "nativeAttention": index == 15,
                      "pendingSource": "manual-unread" if manual and pending else "user-question" if index == 0 else "user-action" if state == "waiting" else "observed-completion" if pending else "",
-                     "actionRequired": state == "waiting" and index != 0,
+                     "actionRequired": state == "waiting" and index != 0, "actionAttention": state == "waiting" and index != 0,
                      "questionPending": index == 0, "questionAttention": index == 0,
                      "readStatus": "read" if index == 0 else "unread" if index == 15 else "unknown", "updatedAtMs": NOW - index * 60_000})
     return {"generatedAtMs": NOW, "providers": [], "threads": rows, "persistentUnread": False}
@@ -2505,7 +2506,8 @@ class WidgetCheck(unittest.TestCase):
             window.show_context(window.focus_widgets["claude:local_mock"])
             self.drain()
             panel = window.context_menu
-            self.assertEqual(actions(panel), {"mute": ("Mute", True), "pin": ("Pin", True)})
+            # An unread required action offers Read and keeps its note.
+            self.assertEqual(actions(panel), {"read": ("Mark read", True), "mute": ("Mute", True), "pin": ("Pin", True)})
             self.assertTrue(panel.asb_note.get_visible())
             self.assertEqual(panel.asb_note.get_label(), "Waits for your permission.")
             # The note comes after Open and its separator.
@@ -3151,14 +3153,14 @@ class WidgetCheck(unittest.TestCase):
                 if action == "mark-unread":
                     working = row["state"] == "working"
                     row.update(manualUnread=True, unread=not working,
-                               pending=not working or bool(row.get("questionAttention") or row.get("actionRequired")),
-                               pendingSource="user-action" if row.get("actionRequired") else "user-question" if row.get("questionAttention")
+                               pending=not working or bool(row.get("questionAttention") or row.get("actionAttention")),
+                               pendingSource="user-action" if row.get("actionAttention") else "user-question" if row.get("questionAttention")
                                else "" if working else "manual-unread")
                     result = {"marked": True, "thread": row}
                 elif action == "mark-read":
                     row.update(manualUnread=False, retainedUnread=False, retainedUnreadSource="", nativeAttention=False,
-                               completionAttention=False, failedAttention=False, questionAttention=False, unread=False,
-                               pending=bool(row.get("actionRequired")), pendingSource="user-action" if row.get("actionRequired") else "")
+                               completionAttention=False, failedAttention=False, questionAttention=False, actionAttention=False,
+                               unread=False, pending=False, pendingSource="")
                     result = {"changed": True, "threadId": identity, "thread": row}
                 else:
                     if action == "pin":
@@ -5347,6 +5349,61 @@ class WidgetCheck(unittest.TestCase):
                     self.assertEqual(hex_color(glyph), hex_color(folder))
                     # The thin lines of the icon get nearly the ink of the folder text: no extra dimming.
                     self.assertGreaterEqual(self.ink(glyph), .8 * self.ink(folder))
+
+    def test_read_required_action_keeps_its_mark_and_offers_unread(self):
+        def row(identity, order, **extra):
+            return {"id": identity, "provider": "claude-desktop-code", "providerLabel": "Claude Desktop Code",
+                    "title": "Approve the synthetic tool " + identity, "cwd": "/example/field-notes", "projectName": "field-notes",
+                    "state": "waiting", "canOpen": True, "actionRequired": True, "updatedAtMs": NOW - order * 1000, **extra}
+        waiting = dict(actionAttention=True, pending=True, pendingSource="user-action")
+        dashboard = {"generatedAtMs": NOW, "providers": [], "threads": [row("action", 1, **waiting), row("seen", 2, actionAttention=False)]}
+        # The menu: Read for an unread action, the drawer, or a manual Unread; else Unread.
+        self.assertEqual(asb.row_menu_actions(dashboard["threads"][0])[0], ("Read", "mark-read"))
+        self.assertEqual(asb.row_menu_actions(dashboard["threads"][1])[0], ("Unread", "mark-unread"))
+        for extra in ({"unread": True}, {"drawer": True}):
+            self.assertEqual(asb.row_menu_actions({**dashboard["threads"][1], **extra})[0], ("Read", "mark-read"), extra)
+        changed = {**dashboard["threads"][0], "actionAttention": False}
+        self.assertNotEqual(asb.attention_signature(dashboard["threads"][0]), asb.attention_signature(changed))
+        requests = []
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "request_async", lambda *args: requests.append(args))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(640, 560)
+        window.present(); window.set_focus(None); self.drain(.3)
+        window.view_filter.set_selected(1); self.drain(.3); window.check_geometry(); self.drain()
+        self.settle(window)
+        card = lambda identity: window.focus_widgets[identity]
+        unread_text = "A user action is required in the original app. Mark read in ASB"
+        read_text = "A user action is required in the original app"
+        for identity in ("action", "seen"):
+            self.assertTrue(card(identity).asb_dot.get_visible(), identity)
+            self.assertEqual(asb.attention_indicator(card(identity).asb_thread), "question")
+            window.show_context(card(identity)); self.drain()
+            self.assertTrue(window.context_menu.asb_note.get_visible(), identity)
+            self.assertEqual(window.context_menu.asb_actions["read"].asb_label.get_label(),
+                             "Mark read" if identity == "action" else "Mark unread")
+            window.context_menu.popdown(); self.drain()
+        read = card("action").asb_read_button
+        self.assertEqual((read.get_tooltip_text(), read.asb_action, read.has_css_class("asb-passive-indicator")),
+                         (unread_text, "win.mark-read", False))
+        seen = card("seen").asb_read_button
+        self.assertEqual((seen.get_tooltip_text(), seen.asb_action, seen.has_css_class("asb-passive-indicator")), (read_text, None, True))
+        # Read in the corner sends mark-read, and the answer turns the card into a read card that keeps its mark.
+        read.emit("clicked")
+        self.assertEqual(requests[-1][1], "/api/threads/action/mark-read")
+        requests[-1][2]({"changed": True, "threadId": "action", "thread": {**card("action").asb_thread, "actionAttention": False,
+                                                                          "pending": False, "pendingSource": ""}}, None)
+        self.settle(window)
+        read = card("action").asb_read_button
+        self.assertEqual((read.get_tooltip_text(), read.asb_action, read.has_css_class("asb-passive-indicator")), (read_text, None, True))
+        self.assertTrue(card("action").asb_dot.get_visible())
+        self.assertEqual(card("action").asb_thread["state"], "waiting")
+        self.assertEqual(asb.row_menu_actions(card("action").asb_thread)[0], ("Unread", "mark-unread"))
 
     def test_idle_card_offers_discard_for_the_next_task_and_sends_next(self):
         def row(identity, order, **extra):

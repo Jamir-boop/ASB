@@ -13,6 +13,7 @@ import local.asb.companion.ui.MESSAGE_MAX_AGE_MS
 import local.asb.companion.ui.MenuAction
 import local.asb.companion.ui.PanelControl
 import local.asb.companion.ui.STATES
+import local.asb.companion.ui.actionNeedsAttention
 import local.asb.companion.ui.attentionIndicator
 import local.asb.companion.ui.casefold
 import local.asb.companion.ui.clockInterval
@@ -232,9 +233,18 @@ class RulesTest {
         assertEquals(MenuAction("Unread", "mark-unread"), rowMenuActions(Thread(nativeUnread = true, nativeAttention = false)).first())
         assertEquals(listOf("mark-unread", "unpin", "pin-up", "pin-down"),
             rowMenuActions(Thread(pinned = true)).map { it.action })
-        val permission = Thread(state = "waiting", actionRequired = true, unread = true, questionAttention = true)
-        assertEquals(listOf(MenuAction("Pin", "pin")), rowMenuActions(permission))
-        assertEquals(listOf("unpin", "pin-up", "pin-down"), rowMenuActions(permission.copy(pinned = true)).map { it.action })
+        // A required action has Read while it is unread (an older engine sends no read mark), and Unread after Read.
+        val permission = Thread(state = "waiting", actionRequired = true)
+        assertEquals(listOf("mark-read", "pin"), rowMenuActions(permission).map { it.action })
+        assertEquals(listOf("mark-read", "pin"), rowMenuActions(permission.copy(actionAttention = true)).map { it.action })
+        val read = permission.copy(actionAttention = false)
+        assertEquals(listOf("mark-unread", "pin"), rowMenuActions(read).map { it.action })
+        assertEquals(listOf("mark-unread", "unpin", "pin-up", "pin-down"), rowMenuActions(read.copy(pinned = true)).map { it.action })
+        assertEquals(MenuAction("Read", "mark-read"), rowMenuActions(read.copy(unread = true)).first())
+        assertEquals(MenuAction("Read", "mark-read"), rowMenuActions(read.copy(drawer = true)).first())
+        assertTrue(actionNeedsAttention(permission))
+        assertFalse(actionNeedsAttention(read))
+        assertFalse(actionNeedsAttention(Thread(actionAttention = null)))
         assertEquals(MenuAction("Unread", "mark-unread"), rowMenuActions(Thread(state = "idle", lastOutcome = "stopped")).first())
         assertEquals(MenuAction("Keep result", "keep-result"), rowMenuActions(Thread(state = "working", discardResult = true)).last())
         assertEquals(MenuAction("Discard result", "discard-result"), rowMenuActions(Thread(state = "working")).last())
@@ -268,7 +278,7 @@ class RulesTest {
         assertEquals(listOf("mark-read", "drawer-out", "pin"), rowMenuActions(tucked).map { it.action })
         assertEquals(listOf("mark-read", "drawer-out", "pin", "discard-result"),
             rowMenuActions(tucked.copy(state = "working")).map { it.action })
-        assertEquals(listOf("drawer-out", "pin"), rowMenuActions(tucked.copy(actionRequired = true)).map { it.action })
+        assertEquals(listOf("mark-read", "drawer-out", "pin"), rowMenuActions(tucked.copy(actionRequired = true)).map { it.action })
         for (row in listOf(base, base.copy(questionAttention = true), unread.copy(questionAttention = true),
             unread.copy(actionRequired = true))) assertFalse(rowMenuActions(row).any { it.action.startsWith("drawer-") })
     }
@@ -440,7 +450,8 @@ class RulesTest {
         assertEquals(PanelControl(true, "drawer-out"), rowPanelControls(drawer)["drawer"])
         assertEquals("Finished. Not read yet.", rowPanelNote(drawer))
         val waiting = Thread(state = "waiting", actionRequired = true, questionAttention = true)
-        assertEquals(PanelControl(true, null), rowPanelControls(waiting)["unread"])
+        assertEquals(PanelControl(true, "mark-read"), rowPanelControls(waiting)["unread"])
+        assertEquals(PanelControl(false, "mark-unread"), rowPanelControls(waiting.copy(actionAttention = false))["unread"])
         assertEquals(PanelControl(false, null), rowPanelControls(waiting)["drawer"])
         assertEquals("Waits for your permission.", rowPanelNote(waiting))
         assertEquals("Asks a question.", rowPanelNote(Thread(state = "idle", questionAttention = true)))

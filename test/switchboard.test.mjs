@@ -14,7 +14,8 @@ import vm from 'node:vm';
 import { defaultClaudeAppDir, normalizeClaudeDesktopCodeSession, loadClaudeDesktopCodeThreads, parseClaudeJsonlSignals } from '../src/claude-data.mjs';
 import { loadCodexDashboard, readThreads, discoverCodexStateDatabase, parseRolloutSignals, readRolloutSignals, getCodexCacheStats, codexNativeReadStatus } from '../src/codex-data.mjs';
 import { buildSwitchboardDashboard, createSwitchboardServer, loadSwitchboardDashboard, localMachineName, openSwitchboardThread, switchboardStatus, switchboardWatchPaths, PendingTracker,
-  isSwitchboardRoot, resolveSessionMessages, sessionMessageKeys } from '../src/switchboard.mjs';
+  isSwitchboardRoot, OFFLINE_MEMBER, resolveSessionMessages, sessionMessageKeys } from '../src/switchboard.mjs';
+import { BIT_INPUT, soundBits } from '../src/asb-sounds.mjs';
 import { defaultOpenCodeStateDir } from '../src/opencode-data.mjs';
 import { AppSourceRegistry } from '../src/app-sources.mjs';
 import { CLI_SESSION_IDS } from '../src/session-targets.mjs';
@@ -432,7 +433,8 @@ test('a pending Claude AskUserQuestion gives question attention, and Working onl
   assert.deepEqual([permission.row.state, permission.row.actionRequired, permission.row.pending], ['waiting', true, true]);
   await tracker.acknowledge(permission.row.id);
   const permissionRead = (await scan()).row;
-  assert.deepEqual([permissionRead.questionAttention, permissionRead.actionRequired, permissionRead.pending], [false, true, true]);
+  assert.deepEqual([permissionRead.state, permissionRead.questionAttention, permissionRead.actionRequired, permissionRead.actionAttention,
+    permissionRead.pending], ['waiting', false, true, false, false]);
   const plan = await scan([result('permission', -2_800), use('plan', 'ExitPlanMode', -2_500)]);
   assert.deepEqual([plan.row.state, plan.row.actionRequired, plan.row.pending, plan.thread.questionNonBlocking], ['waiting', true, true, false]);
   const answered = await scan([result('plan', -2_000), result('ask', -1_000)]);
@@ -1419,7 +1421,7 @@ test('the last Codex group end sets failure or stop, while active work and later
   assert.deepEqual([historical.unread, historical.pending], [false, false]);
 });
 
-test('fresh remote permission waits keep attention after Read and stale waits give Unknown', async () => {
+test('fresh remote permission waits stay Waiting after Read, a new wait is unread again, and stale waits give Unknown', async () => {
   const thread = { id: 'claude-desktop-code:cse_example', externalId: 'cse_example', provider: 'claude-desktop-code',
     source: 'claude-remote-cache', remoteObservedAtMs: now, remoteEnvironmentKind: 'anthropic_cloud',
     remoteSessionStatus: 'active', remoteWorkerStatus: 'requires_action', nativeUnread: true };
@@ -1429,10 +1431,58 @@ test('fresh remote permission waits keep attention after Read and stale waits gi
   assert.deepEqual([waiting.state, waiting.actionRequired, waiting.pending], ['waiting', true, true]);
   await tracker.acknowledge(waiting.id);
   const read = (await scan()).threads[0];
-  assert.deepEqual([read.unread, read.actionRequired, read.pending], [false, true, true]);
+  assert.deepEqual([read.state, read.unread, read.actionRequired, read.actionAttention, read.pending], ['waiting', false, true, false, false]);
   assert.equal((await scan({ remoteWorkerStatus: 'idle' })).threads[0].pending, false);
+  assert.equal((await scan()).threads[0].actionAttention, true);
   const stale = (await scan({}, now + 7 * 3_600_000)).threads[0];
   assert.deepEqual([stale.state, stale.actionRequired, stale.pending], ['unknown', false, false]);
+});
+
+test('Read moves a required action down: it stays Waiting with its mark until a new wait', async () => {
+  const tracker = new PendingTracker(false);
+  const base = { id: 'claude-desktop-code:local_action', externalId: 'local_action', provider: 'claude-desktop-code', lifecycleRunning: true,
+    awaitingPermission: true, liveWaitingFor: 'permission prompt', pendingToolAtMs: now - 20_000, agentActivityAtMs: now - 20_000,
+    latestTaskStartedAtMs: now - 30_000 };
+  const other = { id: 'claude-desktop-code:local_other', externalId: 'local_other', provider: 'claude-desktop-code', lifecycleRunning: false,
+    latestLifecycleKind: 'task_complete', latestLifecycleAtMs: now - 40_000, nativeUnread: false };
+  const scan = async (extra = {}) => (await tracker.observe(buildSwitchboardDashboard([{ ...base, ...extra }, other], [], now))).threads
+    .find((row) => row.id === base.id);
+  const view = (row) => [row.state, row.actionRequired, row.actionAttention, row.pending, row.pendingSource, soundBits(row)];
+  assert.deepEqual(view(await scan()), ['waiting', true, true, true, 'user-action', BIT_INPUT]);
+  // An unread required action keeps its record.
+  tracker.prune(now + 40 * 86_400_000, null, []);
+  assert.ok(tracker.records[base.id]);
+  await assert.rejects(tracker.setDrawer(await scan(), true), /drawer takes only unread/);
+  await tracker.acknowledge(base.id);
+  const read = await scan();
+  assert.deepEqual(view(read), ['waiting', true, false, false, '', 0]);
+  assert.equal(read.reason, 'Claude waits for your permission.');
+  assert.deepEqual(view(await scan({ pendingToolAtMs: now - 10_000 })), ['waiting', true, true, true, 'user-action', BIT_INPUT]);
+  // Unread marks the read wait again, as for other rows.
+  await tracker.acknowledge(base.id);
+  await tracker.markUnread(base.id);
+  assert.deepEqual(view(await scan({ pendingToolAtMs: now - 10_000 })).slice(0, 4), ['waiting', true, false, true]);
+  await tracker.acknowledge(base.id);
+  assert.equal(tracker.records[base.id].actionAck, now - 10_000);
+  // The mark lasts for one wait: an ended wait clears it.
+  await scan({ awaitingPermission: false, liveWaitingFor: '' });
+  assert.deepEqual([tracker.records[base.id].actionSeen, tracker.records[base.id].actionAck], [0, 0]);
+});
+
+test('a member required action without a wait time is unread again after it stopped waiting, and an offline member row keeps its mark', async () => {
+  const tracker = new PendingTracker(false);
+  const id = `m:${'a'.repeat(16)}:local_member`;
+  const member = (fields) => ({ id, state: 'waiting', actionRequired: true, questionPending: false, nativeUnread: null, ...fields });
+  const scan = async (row) => (await tracker.observe({ generatedAtMs: now, providers: [], threads: [row] })).threads[0];
+  assert.equal((await scan(member())).actionAttention, true);
+  await tracker.acknowledge(id);
+  assert.deepEqual([(await scan(member())).actionAttention, (await scan(member())).pending], [false, false]);
+  const offline = member({ state: 'unknown', actionRequired: false });
+  Object.defineProperty(offline, OFFLINE_MEMBER, { value: true });
+  await scan(offline);
+  assert.equal((await scan(member())).actionAttention, false);
+  await scan(member({ state: 'working', actionRequired: false }));
+  assert.equal((await scan(member())).actionAttention, true);
 });
 
 test('browser rows show question, unread, then stop and name the actual end outcome', async () => {

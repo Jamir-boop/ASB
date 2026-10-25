@@ -23,7 +23,7 @@ export function soundBits(row) {
   const nativeFailed = native && row.lastOutcome === 'failed';
   return (row.completionAttention || (native && !nativeFailed) ? BIT_DONE : 0)
     | (row.failedAttention || nativeFailed ? BIT_FAILED : 0)
-    | (row.questionAttention || row.actionRequired ? BIT_INPUT : 0);
+    | (row.questionAttention || row.actionAttention ? BIT_INPUT : 0);
 }
 
 export function soundEvents(baseline, rows, nowMs = Date.now()) {
