@@ -4,6 +4,9 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+## ASB 1.12.0 - 2026-10-25
+
+- ASB Bridge is still `0.8.0` in this release.
 - Added the ASB Bridge state of each profile to Preferences > Profiles, which is now one list in place of the wide table that scrolled sideways. Each row shows the app, the chat count, and the bridge state of the profile on this machine (for example **Ready**, **Hooks not trusted**, **Not installed**, or **Old version**). A row opens the profile in a dialog with the edit form, the next step for its bridge, and **Install** or **Update** when ASB can do it. A disabled profile shows **Off**, because ASB checks the bridge only for enabled profiles.
 - Added a Bridge line to each machine in Preferences > Machines, with the ASB Bridge state of its enabled profiles, for example `Bridge: Codex ready · OpenCode old version`. A machine with an older ASB shows `Bridge: unknown, needs ASB 1.12 or later` and the number of its live sessions.
 - Added the local routes `GET /api/bridge` and `POST /api/bridge/install` (with the source token) and the member route `GET /peer/v1/bridge`, which sends no path. The engine checks the bridge with `asb bridge status --json` only when a request asks, and keeps the result for 60 s. The phone gateway does not forward these routes.
@@ -16,6 +19,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Fixed the card time of OpenCode sessions, which could move to a later time with no new turn. OpenCode changes the update time of a session also when another session gets a turn, so a card could show a time hours or days after its last message. The card time is now the newer of the last message and the end of the last turn. The update time of the session counts only when the session has neither.
 - Changed the card time of Claude sessions that run in the cloud to the time of their last event, so that reading such a session no longer moves its card. The server also changes the update time of a session when you read it.
 - Fixed the Claude Code CLI list, which showed a session whose last turn was more than 7 days old when a resume or a copy had changed its transcript file. A session now stays in the list for 7 days after its last turn, or while it runs.
+
+See [ASB 1.12.0 release notes](docs/releases/v1.12.0.md) for downloads, upgrades, and check limits.
 
 ## ASB 1.11.1 - 2026-10-24
 
