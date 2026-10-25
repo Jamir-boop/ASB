@@ -30,6 +30,8 @@ asb bridge install --opencode --opencode-config /path/to/opencode/config
 
 Use `asb bridge install --all` for all detected providers. `--all` adds OpenCode when its config folder exists. From a source checkout, use `scripts/asb bridge` in place of `asb bridge`. Without a target flag, `asb bridge install` prints the detected targets and usage, and changes nothing.
 
+`asb setup --only bridge` installs the bridge for each detected provider that does not have it, and does not change an existing install. Preferences > Profiles in the ASB window shows the bridge state of each enabled profile, with **Install** or **Update**. `asb bridge status --claude-home <path>` (you can give it more than once) adds the skill state of each named Claude home to the output.
+
 `asb bridge status` reports `bunOnAppServerPath` for each Codex home: `true`, `false`, or `null`. On Linux, it uses the HOME, CODEX_HOME, and PATH of running `codex ... app-server` processes; without CODEX_HOME, the home is `$HOME/.codex`. It resolves relative PATH entries from that process's working directory. `false` means at least one matching process cannot find an executable Bun file. `true` means all matching processes checked can find it. `null` means no process matches, the platform is not Linux, or process data cannot be read or verified. An unreadable app-server environment can hide its home, so it prevents a `true` result for any home. Status and install print a warning for `false`; the warning does not fail install. This check does not start Bun.
 
 To install only the plugin manually from a local checkout:

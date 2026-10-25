@@ -30,6 +30,7 @@ asb setup
 ```
 
 Keep `--install-links`: npm 11 needs it to keep the install working.
+`asb setup` asks what to set up: the board and ASB Bridge, the board only (`--only board`), or the bridge only (`--only bridge`).
 See the [full install guide](docs/INSTALL.md) for system checks, distribution packages, release packages, and engine-only use.
 
 ## Install on Windows

@@ -4,6 +4,13 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Added the ASB Bridge state of each profile to Preferences > Profiles, which is now one list in place of the wide table that scrolled sideways. Each row shows the app, the chat count, and the bridge state of the profile on this machine (for example **Ready**, **Hooks not trusted**, **Not installed**, or **Old version**). A row opens the profile in a dialog with the edit form, the next step for its bridge, and **Install** or **Update** when ASB can do it. A disabled profile shows **Off**, because ASB checks the bridge only for enabled profiles.
+- Added a Bridge line to each machine in Preferences > Machines, with the ASB Bridge state of its enabled profiles, for example `Bridge: Codex ready · OpenCode old version`. A machine with an older ASB shows `Bridge: unknown, needs ASB 1.12 or later` and the number of its live sessions.
+- Added the local routes `GET /api/bridge` and `POST /api/bridge/install` (with the source token) and the member route `GET /peer/v1/bridge`, which sends no path. The engine checks the bridge with `asb bridge status --json` only when a request asks, and keeps the result for 60 s. The phone gateway does not forward these routes.
+- Added `--claude-home <path>` to `asb bridge status` (you can give it more than once). The JSON output also has the skill state of each Claude home and the session IDs of the live receivers.
+- Changed `asb setup` so that it asks which parts to set up: the board and ASB Bridge, the board only, or the bridge only (`--only board` and `--only bridge` choose without the question). The bridge part installs ASB Bridge for each app that does not have it and never changes an existing install. It skips a Codex home when the running Codex cannot find Bun, because the install would stop Codex from starting tasks. Before, setup only printed `asb bridge install --all`.
+- Fixed Preferences, which showed the next page after you made a narrow window wide again while a tab had the keyboard focus. When the focused tabs or sidebar hid, GTK moved the focus one item too far, and the sidebar opened the page of that item (for example **Phone** in place of **Profiles**). Now the focus goes to the item of the page that shows: its tab in a narrow window, and its sidebar row in a wide window.
+
 ## ASB 1.11.1 - 2026-10-24
 
 - ASB Bridge is still `0.8.0` in this release.

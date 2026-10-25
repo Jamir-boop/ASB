@@ -19,7 +19,7 @@ asb setup
 
 Keep `--install-links`: without it, npm 11 links the package to a temporary folder that it then deletes, and `asb` stops working.
 
-`asb setup` checks the system as `asb doctor` does, and stops when the engine cannot run. Then it makes the engine start when you sign in, waits for it, and asks which network addresses to turn on. It prints the firewall rule when firewalld or ufw is active. ASB never runs that rule itself.
+`asb setup` asks which parts to set up: the board and ASB Bridge (the default), the board only (`--only board`), or ASB Bridge only (`--only bridge`). For the board, it checks the system as `asb doctor` does, and stops when the engine cannot run. Then it makes the engine start when you sign in, waits for it, and asks which network addresses to turn on. It prints the firewall rule when firewalld or ufw is active. ASB never runs that rule itself. For the bridge, it installs [ASB Bridge](#asb-bridge-optional) for each app that does not have it yet, and does not change a bridge that is already installed.
 
 ### Check the system
 
@@ -260,7 +260,7 @@ ASB has `asb agent status` and `asb agent sources` commands to list, get, add, u
 
 ASB Bridge lets local Claude Code sessions, Codex tasks, and OpenCode 2 sessions message each other. When ASB Bridge is installed, a message that one agent sends starts a turn in the receiving app.
 
-The ASB `1.11.1` packages include ASB Bridge `0.8.0`; ASB `1.8.1` or older packages do not. It needs Bun. From a source checkout, run `scripts/asb bridge install --all`. With an ASB `1.11.1` package, run `asb bridge install --all`. Then open Plugins > ASB Bridge in Codex, trust both hooks, and restart Codex. `asb bridge install --opencode` adds the OpenCode plugin; `--all` adds it when the OpenCode config folder exists. Without a target flag, `asb bridge install` shows usage and changes nothing. See the [bridge guide](../bridge/README.md) for explicit targets and the usage skills.
+The ASB `1.11.1` packages include ASB Bridge `0.8.0`; ASB `1.8.1` or older packages do not. It needs Bun. From a source checkout, run `scripts/asb bridge install --all`. With an ASB `1.11.1` package, run `asb bridge install --all`. `asb setup` also installs it for the apps that do not have it (`asb setup --only bridge` installs only the bridge), and Preferences > Profiles shows its state for each profile, with **Install** or **Update**. Then open Plugins > ASB Bridge in Codex, trust both hooks, and restart Codex. `asb bridge install --opencode` adds the OpenCode plugin; `--all` adds it when the OpenCode config folder exists. Without a target flag, `asb bridge install` shows usage and changes nothing. See the [bridge guide](../bridge/README.md) for explicit targets and the usage skills.
 
 Codex tasks and OpenCode sessions can send by session reference (`asb:1/...`). Claude Code sessions first run `asb agent resolve-session <reference>`, which prints the `SendMessage` name on the `Send name:` line. If it prints `Send name: none`, send nothing. `asb bridge status` says when an installed bridge skill is out of date and which `asb bridge install` target updates it.
 
