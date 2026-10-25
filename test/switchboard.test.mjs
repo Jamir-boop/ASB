@@ -2369,3 +2369,21 @@ test('sendName T2 engine selects one live unique local or member registry name',
     }
   });
 });
+
+test('a Claude app approval grace schedules its own status check', () => {
+  const approvalCheckAtMs = now + 5000;
+  const board = buildSwitchboardDashboard([{ id: `claude-desktop-code:${localId}`, externalId: localId,
+    provider: 'claude-desktop-code', lifecycleRunning: true, transcriptActivityAtMs: now,
+    agentActivityAtMs: now, approvalCheckAtMs }], [], now);
+  assert.equal(board.nextStatusCheckAtMs, approvalCheckAtMs + 1);
+});
+
+test('an open Claude app approval gives a Waiting row with a required permission action', () => {
+  const board = buildSwitchboardDashboard([{ id: `claude-desktop-code:${localId}`, externalId: localId,
+    provider: 'claude-desktop-code', lifecycleRunning: true, awaitingPermission: true, questionNonBlocking: false,
+    pendingToolAtMs: now - 20_000, liveWaitingFor: 'permission prompt' }], [], now);
+  const [row] = board.threads;
+  assert.equal(row.state, 'waiting');
+  assert.equal(row.reason, 'Claude waits for your permission.');
+  assert.equal(row.actionRequired, true);
+});

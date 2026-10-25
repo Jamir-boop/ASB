@@ -4,6 +4,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Fixed Claude Desktop Code chats that showed Working while the Claude app waited for a tool approval. ASB now reads open app approvals and shows Waiting after 10 s. A quick answer does not flash Waiting or play the Needs input sound.
+
 ## ASB 1.12.1 - 2026-10-25
 
 - ASB Bridge is still `0.8.0` in this release.

@@ -7,6 +7,7 @@ import { appendFile, mkdir, mkdtemp, readFile, rename, rm, utimes, writeFile } f
 import os from 'node:os';
 import path from 'node:path';
 import {
+  applyClaudeAppApproval,
   claudeTitle,
   getClaudeCacheStats,
   invalidateClaudeData,
@@ -15,6 +16,7 @@ import {
   openClaudeThread,
   parseClaudeJsonlSignals,
 } from '../src/claude-data.mjs';
+import { processStart } from '../src/claude-registry.mjs';
 import { buildSwitchboardDashboard, PendingTracker } from '../src/switchboard.mjs';
 
 function jsonl(records) {
@@ -1395,4 +1397,64 @@ test('the group time of a Claude row follows the turn records of a linked child,
   // A turn record of the child moves the time.
   await appendFile(path.join(childDir, 'agent-kid.jsonl'), jsonl([resumeEnd(-10_000)]));
   assert.deepEqual(await load(), [resumeNowMs - 48_000, resumeNowMs - 10_000, resumeNowMs - 10_000]);
+});
+
+test('app approval grace, transcript guard, and question handling keep the existing state', () => {
+  const atMs = new Date(2026, 9, 25, 7, 55, 48).getTime();
+  const thread = { id: 'claude-desktop-code:local_approval', externalId: 'local_approval', provider: 'claude-desktop-code',
+    transcriptActivityAtMs: atMs, pendingToolAtMs: atMs - 1000, lifecycleRunning: true };
+  const approvals = (tool = 'browser:left_click') => new Map([[thread.externalId, { tool, atMs }]]);
+  assert.equal(applyClaudeAppApproval(thread, new Map(), atMs + 20_000), thread);
+  assert.equal(applyClaudeAppApproval(thread, approvals('AskUserQuestion'), atMs + 20_000), thread);
+  const moved = { ...thread, transcriptActivityAtMs: atMs + 2000 };
+  assert.equal(applyClaudeAppApproval(moved, approvals(), atMs + 20_000), moved);
+  assert.deepEqual(applyClaudeAppApproval(thread, approvals(), atMs + 9999), { ...thread, approvalCheckAtMs: atMs + 10_000 });
+  const waiting = applyClaudeAppApproval(thread, approvals(), atMs + 10_000);
+  assert.equal(waiting.awaitingPermission, true);
+  assert.equal(waiting.questionNonBlocking, false);
+  assert.equal(waiting.pendingToolAtMs, atMs);
+  assert.equal(waiting.liveWaitingFor, 'permission prompt');
+  const newerTool = { ...thread, transcriptActivityAtMs: atMs + 1999, pendingToolAtMs: atMs + 1000 };
+  assert.equal(applyClaudeAppApproval(newerTool, approvals(), atMs + 20_000).pendingToolAtMs, atMs + 1000);
+  assert.equal(thread.awaitingPermission, undefined);
+});
+
+test('desktop Claude loads an app approval for an open browser tool', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'asb-approval-data-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const appDir = path.join(dir, 'Claude');
+  const metadataDir = path.join(appDir, 'claude-code-sessions', 'account', 'organization');
+  const projectsDir = path.join(dir, 'projects');
+  const projectDir = path.join(projectsDir, 'synthetic-project');
+  const sessionId = 'local_aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  const cliSessionId = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
+  const atMs = new Date(2026, 9, 25, 7, 55, 48).getTime();
+  await mkdir(metadataDir, { recursive: true });
+  await mkdir(projectDir, { recursive: true });
+  await mkdir(path.join(appDir, 'logs'));
+  await writeFile(path.join(metadataDir, `${sessionId}.json`), JSON.stringify({ sessionId, cliSessionId }));
+  await writeFile(path.join(projectDir, `${cliSessionId}.jsonl`), jsonl([
+    { type: 'user', sessionId: cliSessionId, timestamp: new Date(atMs - 1000).toISOString(), message: { role: 'user', content: 'Synthetic browser task' } },
+    { type: 'assistant', timestamp: new Date(atMs).toISOString(), message: { role: 'assistant', content: [
+      { type: 'tool_use', id: 'synthetic_browser', name: 'mcp__Claude_Browser__browser_batch', input: {} },
+    ] } },
+  ]));
+  await writeFile(path.join(appDir, 'logs', 'main.log'),
+    `2026-10-25 07:55:48 [info] Emitted tool permission request 11111111-2222-4333-8444-555555555555 for browser:left_click in session ${sessionId}\n`);
+  const load = async () => (await loadClaudeDesktopCodeThreads({ appDir, projectsDir, nowMs: atMs + 20_000 })).threads[0];
+  if (process.platform === 'linux') {
+    assert.notEqual((await load()).awaitingPermission, true, 'an ended process cannot leave an app approval wait');
+    const registryDir = path.join(path.dirname(projectsDir), 'sessions');
+    await mkdir(registryDir);
+    await writeFile(path.join(registryDir, `${process.pid}.json`), JSON.stringify({ pid: process.pid,
+      procStart: await processStart(process.pid), name: 'synthetic-approval', sessionId: cliSessionId,
+      hostSessionId: sessionId, status: 'busy' }));
+  }
+  const thread = await load();
+  assert.equal(thread.awaitingPermission, true);
+  assert.equal(thread.liveWaitingFor, 'permission prompt');
+  if (process.platform === 'linux') {
+    await rm(path.join(path.dirname(projectsDir), 'sessions', `${process.pid}.json`));
+    assert.notEqual((await load()).awaitingPermission, true, 'a lost live record clears the app approval wait');
+  }
 });

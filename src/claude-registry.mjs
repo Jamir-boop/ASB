@@ -1,4 +1,4 @@
-// Reads Claude Code's live session registry (<config>/sessions/<pid>.json). It is not a published API;
+// Reads Claude Code's live session registry (<config>/sessions/<pid>.json) and app approvals (<appDir>/logs/main.log). Neither is a published API;
 // the waiting status and waitingFor fields were observed in Claude Code 2.1.299, so callers treat them as best effort.
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -80,4 +80,66 @@ export async function readLiveClaudeRegistry(roots, { windows = false, isAlive =
     }
   }
   return [...records.values()];
+}
+
+const APPROVAL_WINDOW_BYTES = 1024 * 1024;
+const approvalLogs = new Map();
+const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const LOG_TIME = '(\\d{4})-(\\d{2})-(\\d{2}) (\\d{2}):(\\d{2}):(\\d{2}) \\[info\\] ';
+const emittedApproval = new RegExp(`^${LOG_TIME}Emitted tool permission request (${UUID}) for ([A-Za-z0-9_:.-]{1,64}) in session (local_${UUID})$`);
+const receivedApproval = new RegExp(`^${LOG_TIME}Received permission response for (${UUID}):`);
+const respondedApproval = new RegExp(`^${LOG_TIME}LocalSessions\\.respondToToolPermission: requestId=(${UUID}),`);
+const quitApprovals = new RegExp(`^${LOG_TIME}beforeQuit: handler fired$`);
+
+// shortcut: Requests older than the read window or open across a log rotation are not seen; upgrade when the app writes open approvals to a state file.
+export async function readClaudeAppApprovals(appDir) {
+  const file = path.join(appDir, 'logs', 'main.log');
+  let handle;
+  try {
+    handle = await fs.open(file, 'r');
+    const info = await handle.stat();
+    if (!info.isFile()) return new Map();
+    let state = approvalLogs.get(file);
+    if (!state || state.dev !== info.dev || state.ino !== info.ino || info.size < state.offset
+      || info.size - state.offset > 4 * APPROVAL_WINDOW_BYTES) {
+      state = { dev: info.dev, ino: info.ino, offset: Math.max(0, info.size - APPROVAL_WINDOW_BYTES), open: new Map() };
+      state.skipFirst = state.offset > 0;
+    }
+    const readOffset = state.offset;
+    const buffer = Buffer.alloc(info.size - readOffset);
+    let size = 0;
+    while (size < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, size, buffer.length - size, readOffset + size);
+      if (!bytesRead) break;
+      size += bytesRead;
+    }
+    const completeEnd = buffer.subarray(0, size).lastIndexOf(10) + 1;
+    state.offset = readOffset + completeEnd;
+    const lines = buffer.subarray(0, completeEnd).toString('utf8').split('\n');
+    lines.pop();
+    for (const raw of lines) {
+      if (state.skipFirst) { state.skipFirst = false; continue; }
+      const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+      const emitted = emittedApproval.exec(line);
+      if (emitted) {
+        const [, year, month, day, hour, minute, second, requestId, tool, sessionId] = emitted;
+        state.open.delete(requestId);
+        state.open.set(requestId, { sessionId, tool, atMs: new Date(+year, +month - 1, +day, +hour, +minute, +second).getTime() });
+        if (state.open.size > 256) state.open.delete(state.open.keys().next().value);
+      } else {
+        const closed = receivedApproval.exec(line) || respondedApproval.exec(line);
+        if (closed) state.open.delete(closed[7]);
+        else if (quitApprovals.test(line)) state.open.clear();
+      }
+    }
+    approvalLogs.set(file, state);
+    const approvals = new Map();
+    for (const { sessionId, tool, atMs } of state.open.values()) {
+      if (!approvals.has(sessionId) || atMs >= approvals.get(sessionId).atMs) approvals.set(sessionId, { tool, atMs });
+    }
+    return approvals;
+  } catch {
+    approvalLogs.delete(file);
+    return new Map();
+  } finally { await handle?.close().catch(() => {}); }
 }

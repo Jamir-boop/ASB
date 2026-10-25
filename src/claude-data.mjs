@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { rememberBounded, sameFileSignature, SourceCache, statSignature } from './data-cache.mjs';
 import { enrichThreadRuntime } from './insights.mjs';
-import { readLiveClaudeRegistry } from './claude-registry.mjs';
+import { readClaudeAppApprovals, readLiveClaudeRegistry } from './claude-registry.mjs';
 import { openCommandForUrl, runOpener } from './session-opener.mjs';
 
 export const DEFAULT_CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
@@ -824,6 +824,18 @@ export function applyLiveClaudeStatus(thread, records, nowMs) {
     ...(input ? { awaitingUserInput: true, latestUserQuestionAtMs: Math.max(thread.latestUserQuestionAtMs || 0, atMs) } : {}) }, nowMs);
 }
 
+const CLAUDE_APPROVAL_GRACE_MS = 10_000;
+
+export function applyClaudeAppApproval(thread, approvals, nowMs) {
+  const request = approvals.get(thread.externalId);
+  if (!request || request.tool === 'AskUserQuestion') return thread;
+  if (Number(thread.transcriptActivityAtMs || 0) >= request.atMs + 2_000) return thread;
+  // Approvals that the user answers at once must not flash Waiting or play the Needs input sound.
+  if (nowMs - request.atMs < CLAUDE_APPROVAL_GRACE_MS) return { ...thread, approvalCheckAtMs: request.atMs + CLAUDE_APPROVAL_GRACE_MS };
+  return enrichThreadRuntime({ ...thread, awaitingPermission: true, questionNonBlocking: false,
+    pendingToolAtMs: Math.max(thread.pendingToolAtMs || 0, request.atMs), liveWaitingFor: 'permission prompt' }, nowMs);
+}
+
 function dedupeClaudeDesktopCodeThreads(threads) {
   const bySession = new Map();
 
@@ -1314,11 +1326,14 @@ export async function loadClaudeDesktopCodeThreads({
   });
   // The registry is best effort: a read failure keeps the transcript state.
   const live = await readLiveClaudeRegistry([path.join(path.dirname(projectsDir), 'sessions')]).catch(() => []);
+  const approvals = await readClaudeAppApprovals(appDir).catch(() => new Map());
   const threads = dedupeClaudeDesktopCodeThreads(parsed
     .filter(Boolean)
     .map((entry) => normalizeClaudeDesktopCodeSession(entry.session, entry, nowMs))
     .filter((thread) => thread.externalId))
-    .map((thread) => applyLiveClaudeStatus(thread, live, nowMs));
+    .map((thread) => applyLiveClaudeStatus(thread, live, nowMs))
+    .map((thread) => process.platform !== 'linux' || liveClaudeRecord(thread, live)
+      ? applyClaudeAppApproval(thread, approvals, nowMs) : thread);
 
   return {
     provider: {
