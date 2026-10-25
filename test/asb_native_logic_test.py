@@ -125,11 +125,34 @@ class Box:
         pass
 
 
+class FakeMarker:
+    def __init__(self, _owner, color=""):
+        self.configured_color, self.set_valign, self.add_css_class = color, Mock(), Mock()
+
+    def set_color(self, color):
+        self.configured_color = color
+
+
 class ProfileSyncChecks(unittest.TestCase):
     REV_A, REV_B, REV_C = "a" * 64, "b" * 64, "c" * 64
 
     def setUp(self):
         class Row(Box):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+                self.title, self.subtitle = kwargs.get("title", ""), kwargs.get("subtitle", "")
+
+            def set_title(self, value):
+                self.title = value
+
+            def set_subtitle(self, value):
+                self.subtitle = value
+
+            def __getattr__(self, name):
+                value = Mock()
+                setattr(self, name, value)
+                return value
+
             def set_child(self, child):
                 self.child = child
 
@@ -140,22 +163,6 @@ class ProfileSyncChecks(unittest.TestCase):
                 self.focused = True
 
         class Table(Box):
-            selected = None
-
-            def get_row_at_index(self, index):
-                return self.children[index] if index < len(self.children) else None
-
-            def get_selected_row(self):
-                return self.selected
-
-            def select_row(self, row):
-                self.selected = row
-                if row:
-                    self.editor.selected_source(self, row)
-
-            def unselect_all(self):
-                self.selected = None
-
             def set_sensitive(self, value):
                 self.sensitive = value
 
@@ -164,11 +171,13 @@ class ProfileSyncChecks(unittest.TestCase):
 
         self.Table = Table
         self.request = Mock()
-        self.gtk = SimpleNamespace(Box=Mock(), ListBoxRow=Row, Align=SimpleNamespace(CENTER=0),
+        self.gtk = SimpleNamespace(Box=Mock(), Image=Mock(), ListBoxRow=Row, Align=SimpleNamespace(CENTER=0),
+                                   NaturalWrapMode=SimpleNamespace(NONE=0), Justification=SimpleNamespace(RIGHT=0),
                                    AccessibleState=SimpleNamespace(BUSY=0),
                                    AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1))
-        self.patcher = patch.dict(SCOPE, {"Gtk": self.gtk, "Pango": SimpleNamespace(EllipsizeMode=SimpleNamespace(END=0)),
-            "SourceMarker": lambda _owner, color: SimpleNamespace(configured_color=color, set_valign=Mock()),
+        self.patcher = patch.dict(SCOPE, {"Gtk": self.gtk, "Adw": SimpleNamespace(ActionRow=Row, Dialog=Mock()),
+            "Pango": SimpleNamespace(EllipsizeMode=SimpleNamespace(END=0), WrapMode=SimpleNamespace(WORD=0)),
+            "SourceMarker": FakeMarker,
             "label": Mock(), "request_async": self.request, "GLib": SimpleNamespace(idle_add=Mock())})
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
@@ -187,17 +196,27 @@ class ProfileSyncChecks(unittest.TestCase):
         editor.preferences, editor.base = Mock(), editor.owner.base
         editor.preferences.get_focus.return_value = None
         editor.closed = editor.loading = editor.saving = editor.choosing = editor.editing = False
-        editor.refresh_queued = editor.rendering = editor.setting_form = editor.conflict = False
+        editor.refresh_queued = editor.setting_form = editor.conflict = False
         editor.loaded = editor.active = True
         editor.editing_id, editor.max_sources = "", 8
         editor.revision = editor.observed_revision = self.REV_A
         editor.edit_revision = editor.form_baseline = editor.baseline_source = None
         editor.sources = [self.source(), self.source(id="other", label="Other", enabled=False)]
         editor.transcript_widgets, editor.preset_markers, editor.table_markers = [], [], []
-        editor.choose_buttons, editor.fixed_provider, editor.provider_text = [Mock(), Mock()], "", Mock()
+        editor.choose_buttons, editor.fixed_provider = [Mock(), Mock()], ""
         editor.table = self.Table()
         editor.table.editor = editor
-        editor.table_line = Mock()
+        editor.dialog, editor.dialog_title = Mock(), Mock()
+        editor.ensure_dialog = Mock()
+        editor.cancellable = Mock()
+        editor.bridge_apps, editor.installing = None, ""
+        editor.bridge_loading, editor.bridge_generation, editor.bridge_refresh = False, 0, False
+        editor.bridge_queued, editor.feedback = None, False
+        editor.header_tick = editor.focus_after_close = None
+        editor.request_bridge = Mock()
+        for name in ("dialog_message", "install_result", "bridge_header", "bridge_group", "bridge_row", "bridge_icon",
+                     "install_button", "files_group", "color_row", "provider_fixed", "launcher_fixed", "count"):
+            setattr(editor, name, Mock())
         editor.provider = self.control(0, "get_selected", "set_selected")
         for name in ("name", "data_dir", "launcher", "projects_dir"):
             setattr(editor, name, self.control("", "get_text", "set_text"))
@@ -205,10 +224,11 @@ class ProfileSyncChecks(unittest.TestCase):
         editor.show_marker = self.control(True, "get_active", "set_active")
         editor.source_color = self.control("#8296b4", "get_rgba", "set_rgba")
         editor.remote_claude, editor.remote_claude_note = self.control(0, "get_selected", "set_selected"), Mock()
-        for name in ("message", "form", "form_title", "source_id", "source_color_hex", "source_status",
+        for name in ("message", "form", "source_id", "source_status",
                      "add_button", "save_button", "remove_button", "cancel_button", "reload_button"):
             setattr(editor, name, Mock())
         editor.render_sources()
+        editor.open_source(editor.sources[0])
         return editor
 
     def source(self, **changes):
@@ -234,7 +254,7 @@ class ProfileSyncChecks(unittest.TestCase):
 
     def test_external_add_reuses_selection_and_keeps_every_raw_dirty_field(self):
         editor = self.editor()
-        row = editor.table.get_selected_row()
+        row = next((row for row in editor.table.children if row.asb_source["id"] == "main"), None)
         baseline = editor.baseline_source
         raw = self.edit_all_fields(editor)
         self.assertTrue(editor.is_dirty())
@@ -245,7 +265,7 @@ class ProfileSyncChecks(unittest.TestCase):
         self.reply(updated, self.REV_B)
         self.assertEqual(editor.sources, updated)
         self.assertEqual(len(editor.table.children), 3)
-        self.assertIs(editor.table.get_selected_row(), row)
+        self.assertIs(next((row for row in editor.table.children if row.asb_source["id"] == "main"), None), row)
         self.assertEqual(editor.form_values(), raw)
         self.assertIs(editor.baseline_source, baseline)
         self.assertEqual(editor.edit_revision, self.REV_B)
@@ -255,7 +275,7 @@ class ProfileSyncChecks(unittest.TestCase):
 
     def test_remote_claude_choice_loads_clean_makes_the_form_dirty_and_is_saved(self):
         editor = self.editor()
-        editor.render_sources("main")
+        editor.open_source(editor.sources[0])
         claude = self.source(id="claude", provider="claude-desktop-code", label="Claude", remoteClaude="bridge")
         editor.set_form(claude)
         self.assertEqual(editor.remote_claude.get_selected(), 1)
@@ -268,43 +288,55 @@ class ProfileSyncChecks(unittest.TestCase):
 
     def test_clean_selected_source_syncs_and_get_can_finish_after_selection_changes(self):
         editor = self.editor()
-        row = editor.table.get_selected_row()
+        row = next((row for row in editor.table.children if row.asb_source["id"] == "main"), None)
         editor.reload_sources()
         changed = self.source(label="Saved elsewhere", color="#404040", showMarker=False)
         self.reply([changed, editor.sources[1]], self.REV_B)
-        self.assertIs(editor.table.get_selected_row(), row)
+        self.assertIs(next((row for row in editor.table.children if row.asb_source["id"] == "main"), None), row)
         self.assertEqual((editor.name.get_text(), editor.source_color.get_rgba(), editor.show_marker.get_active()),
                          ("Saved elsewhere", "#404040", False))
         self.assertFalse(editor.is_dirty())
         self.assertEqual(editor.edit_revision, self.REV_B)
         editor.reload_sources()
         other_row = editor.table.children[1]
-        editor.table.select_row(other_row)
+        editor.open_source(other_row.asb_source)
         self.reply([changed, self.source(id="other", label="Other updated", enabled=False)], self.REV_C)
-        self.assertIs(editor.table.get_selected_row(), other_row)
+        self.assertEqual(editor.editing_id, "other")
         self.assertEqual((editor.editing_id, editor.name.get_text()), ("other", "Other updated"))
+
+    def test_status_text_joins_parts_with_one_period_each(self):
+        editor = self.editor()
+        for source, text in (({"status": "ready"}, "Ready."), ({"status": "warning", "message": "Store is missing."}, "Warning: Store is missing."),
+                ({"status": "warning", "message": "Store is missing"}, "Warning: Store is missing."),
+                ({"status": "ready", "builtin": True}, "Ready. Default profile: you can edit or turn it off. You cannot remove it."),
+                ({"status": "warning", "message": "X.", "builtin": True}, "Warning: X. Default profile: you can edit or turn it off. You cannot remove it."),
+                ({"builtin": True}, "Default profile: you can edit or turn it off. You cannot remove it."), ({}, "")):
+            with self.subTest(source=source):
+                editor.set_source_status(source)
+                editor.source_status.set_label.assert_called_with(text)
+                editor.source_status.set_visible.assert_called_with(bool(text))
 
     def test_status_only_refresh_updates_metadata_and_keeps_dirty_fields_and_baseline(self):
         editor = self.editor()
         missing = self.source(status="missing", sessionCount=0, message="Store is missing.")
         editor.sources[0] = missing
-        editor.render_sources("main")
+        editor.open_source(editor.sources[0])
         baseline, form_baseline = editor.baseline_source, editor.form_baseline
-        row = editor.table.get_selected_row()
+        row = next((row for row in editor.table.children if row.asb_source["id"] == "main"), None)
         raw = self.edit_all_fields(editor)
         editor.preferences.get_focus.return_value = editor.name
-        editor.table_line.reset_mock()
+
         editor.reload_sources()
         ready = self.source(status="ready", sessionCount=1, message="Store is ready.")
         self.reply([ready, editor.sources[1]], self.REV_A)
-        editor.source_status.set_label.assert_called_with("Ready: Store is ready")
-        self.assertEqual(editor.table_line.call_args.args[0][-1], "1 chats · Ready\nStore is ready.")
+        editor.source_status.set_label.assert_called_with("Ready: Store is ready.")
+        self.assertEqual(editor.table.children[0].subtitle, "Codex · 1 chat")
         self.assertEqual(editor.form_values(), raw)
         self.assertTrue(editor.is_dirty())
         self.assertIs(editor.baseline_source, baseline)
         self.assertIs(editor.form_baseline, form_baseline)
         self.assertEqual(editor.edit_revision, self.REV_A)
-        self.assertIs(editor.table.get_selected_row(), row)
+        self.assertIs(next((row for row in editor.table.children if row.asb_source["id"] == "main"), None), row)
         self.assertIs(editor.preferences.get_focus(), editor.name)
 
     def test_dirty_changed_or_deleted_source_keeps_old_baseline_and_blocks_overwrite(self):
@@ -319,7 +351,7 @@ class ProfileSyncChecks(unittest.TestCase):
                 self.assertIs(editor.baseline_source, baseline)
                 self.assertEqual(editor.edit_revision, self.REV_A)
                 self.assertTrue(editor.conflict)
-                self.assertIn("Your edits are kept", editor.message.set_label.call_args.args[0])
+                self.assertIn("Your edits are kept", editor.dialog_message.set_label.call_args.args[0])
                 self.request.reset_mock()
                 editor.save_source()
                 editor.remove_source()
@@ -327,7 +359,9 @@ class ProfileSyncChecks(unittest.TestCase):
                 editor.cancel_form()
                 self.assertFalse(editor.conflict)
                 self.assertFalse(editor.is_dirty())
-                self.assertEqual(editor.edit_revision, self.REV_B)
+                self.assertIsNone(editor.edit_revision)
+                self.assertFalse(editor.editing)
+                editor.open_source(editor.sources[0])
                 self.assertEqual(editor.name.get_text(), "Other" if deleted else "External edit")
 
     def test_add_draft_and_manual_refresh_keep_exact_fields(self):
@@ -337,13 +371,13 @@ class ProfileSyncChecks(unittest.TestCase):
         editor.reload_sources()
         self.reply([*editor.sources, self.source(id="new")], self.REV_B)
         self.assertEqual(editor.editing_id, "")
-        self.assertIsNone(editor.table.get_selected_row())
+        self.assertEqual(editor.dialog_title.set_title.call_args.args[0], "New profile")
         self.assertEqual(editor.form_values(), raw)
         self.assertEqual(editor.edit_revision, self.REV_B)
         self.assertFalse(editor.conflict)
         editor.cancel_form()
         self.assertFalse(editor.is_dirty())
-        self.assertEqual(editor.editing_id, "main")
+        self.assertEqual(editor.editing_id, "")
 
     def test_if_match_failure_keeps_edits_and_own_success_updates_baseline(self):
         editor = self.editor()
@@ -361,7 +395,8 @@ class ProfileSyncChecks(unittest.TestCase):
         self.assertEqual(self.request.call_args.kwargs["headers"]["If-Match"], '"' + self.REV_B + '"')
         self.reply([self.source(label="My edit"), editor.sources[1]], self.REV_C)
         self.assertFalse(editor.is_dirty())
-        self.assertEqual((editor.edit_revision, editor.baseline_source["label"]), (self.REV_C, "My edit"))
+        self.assertEqual((editor.edit_revision, editor.baseline_source, editor.editing), (None, None, False))
+        editor.message.set_label.assert_called_with("Saved.")
         editor.owner.refresh.assert_called_once_with(True)
 
     def test_revision_changes_during_a_mutation_coalesce_and_are_not_lost(self):
@@ -420,12 +455,12 @@ class ProfileSyncChecks(unittest.TestCase):
 
     def test_reordered_rows_keep_keyboard_focus_without_resetting_the_form(self):
         editor = self.editor()
-        selected = editor.table.get_selected_row()
+        selected = next((row for row in editor.table.children if row.asb_source["id"] == "main"), None)
         raw = self.edit_all_fields(editor)
         editor.preferences.get_focus.side_effect = [selected, None]
         editor.sources.reverse()
         editor.render_sources("main", preserve_form=True)
-        self.assertIs(editor.table.get_selected_row(), selected)
+        self.assertIs(next((row for row in editor.table.children if row.asb_source["id"] == "main"), None), selected)
         self.assertTrue(selected.focused)
         self.assertEqual(editor.form_values(), raw)
 
@@ -2416,6 +2451,7 @@ class MachinesDialogChecks(unittest.TestCase):
         editor.preferences, editor.owner, editor.dialog = SimpleNamespace(closed=False), SimpleNamespace(closed=False), None
         editor.active, editor.loaded, editor.loading, editor.closed = True, True, False, False
         editor.generation, editor.poll_loading, editor.poll_timer = 0, False, None
+        editor.bridge, editor.bridge_loading = None, False
         editor.close_invite = Mock()
         return editor
 
@@ -2510,6 +2546,526 @@ class MachinesDialogChecks(unittest.TestCase):
         self.assertEqual((editor.generation, editor.active), (1, False))
 
 
+class BridgeHelperChecks(unittest.TestCase):
+    def test_state_lines_details_actions_cover_every_state_and_unknown_values(self):
+        details = {"ready": None, "update": "Update, then restart Codex.",
+            "hooks": "In Codex, open Plugins > ASB Bridge, trust both hooks, and restart Codex.",
+            "off": "In Codex, open Plugins > ASB Bridge and turn it on.",
+            "nobun": "Codex cannot start or resume tasks. Make Bun visible to desktop apps, then restart Codex.",
+            "missing": "Install it to let your agents send messages to each other. The board works without it.",
+            "conflict": "Run asb bridge status in a terminal to see what is in the way.",
+            "old-app": "ASB Bridge needs OpenCode 2.1.2 or later. Update OpenCode.",
+            "unknown": "ASB cannot find the Claude folder of this profile."}
+        for state in (*asb.BRIDGE_STATES, "future-state"):
+            for version in (None, "", "0.8.0", 123):
+                for live in (None, 0, 2, -1, True, "2"):
+                    with self.subTest(state=state, version=version, live=live):
+                        app = {"state": state, "provider": "codex", "version": version, "live": live}
+                        text = asb.BRIDGE_STATES.get(state, asb.BRIDGE_STATES["unknown"])[0]
+                        if state in ("ready", "update") and version == "0.8.0":
+                            text += " · 0.8.0"
+                        if type(live) is int and live > 0:
+                            text += " · 2 live"
+                        self.assertEqual(asb.bridge_state_line(app), text)
+                        self.assertEqual(asb.bridge_detail(app), details.get(state, details["unknown"]))
+                        for allowed in (False, True):
+                            self.assertEqual(asb.bridge_action({**app, "canInstall": allowed}),
+                                {"missing": "Install", "update": "Update"}.get(state) if allowed else None)
+        for provider, detail in (("claude-desktop-code", "Update. New Claude sessions use it."),
+                                 ("opencode", "Update, then restart OpenCode.")):
+            self.assertEqual(asb.bridge_detail({"state": "update", "provider": provider}), detail)
+
+    def test_bridge_validation_rejects_bad_shapes_and_self_uses_first_match(self):
+        app = {"sourceId": "a", "label": "Codex", "state": "ready"}
+        machine = {"name": "atlas", "isSelf": True, "state": "ok", "apps": [app]}
+        data = {"api": 1, "machines": [machine]}
+        self.assertTrue(asb.bridge_valid(data))
+        for value in (None, [], {}, {"api": 1}, {"api": True, "machines": []}, {"api": 2, "machines": []},
+                      {"api": 1, "machines": {}}, {"api": 1, "machines": [None]}):
+            with self.subTest(value=value):
+                self.assertFalse(asb.bridge_valid(value))
+        for field, value in (("name", None), ("name", 1), ("isSelf", 1), ("state", None), ("apps", None), ("apps", [None])):
+            self.assertFalse(asb.bridge_valid({**data, "machines": [{**machine, field: value}]}))
+        for field in ("sourceId", "label", "state"):
+            for value in (None, 1, False, []):
+                self.assertFalse(asb.bridge_valid({**data, "machines": [{**machine, "apps": [{**app, field: value}]}]}))
+        self.assertEqual(asb.bridge_self_apps({"api": 1, "machines": [{**machine, "isSelf": False}, machine,
+            {**machine, "apps": [{**app, "sourceId": "later"}]}]}), {"a": app})
+        self.assertEqual(asb.bridge_self_apps({"api": 1, "machines": []}), {})
+
+    def test_machine_bridge_line_covers_every_branch_and_phrase(self):
+        for machine, text in (({"state": "offline"}, "Bridge: not checked while offline"),
+                ({"state": "old"}, "Bridge: unknown, needs ASB 1.12 or later"),
+                ({"state": "old", "live": 2}, "Bridge: unknown, needs ASB 1.12 or later · 2 live"),
+                ({"state": "old", "live": True}, "Bridge: unknown, needs ASB 1.12 or later"),
+                ({"state": "error", "error": "Try again."}, "Bridge: Try again."),
+                ({"state": "error", "error": 2}, "Bridge: ASB cannot check it."),
+                ({"state": "error", "error": ""}, "Bridge: ASB cannot check it."),
+                ({"state": "checking", "apps": []}, "Bridge: checking…"),
+                ({"state": "ok", "checking": True, "apps": []}, "Bridge: checking…"),
+                ({"state": "ok", "apps": []}, "Bridge: no app profiles"),
+                ({"state": "ok", "apps": [{"label": "A", "state": "missing"}, {"label": "B", "state": "missing"}]}, "Bridge: not installed")):
+            with self.subTest(machine=machine):
+                self.assertEqual(asb.machine_bridge_line(machine), text)
+        apps = [{"label": "Codex", "state": "ready"}, {"label": "Codex Personal", "state": "hooks"},
+                {"label": "OpenCode", "state": "update"}]
+        self.assertEqual(asb.machine_bridge_line({"state": "ok", "apps": apps}),
+                         "Bridge: Codex ready · Codex Personal hooks not trusted · OpenCode old version")
+        for state, phrase in (*asb.MACHINE_BRIDGE_PHRASES.items(), ("new", "unknown")):
+            apps = [{"label": "A", "state": state}, {"label": "B", "state": "ready"}]
+            self.assertEqual(asb.machine_bridge_line({"state": "ok", "apps": apps}), f"Bridge: A {phrase} · B ready")
+
+    def test_bridge_http_token_timeout_success_and_error_texts(self):
+        for route, method, timeout, token in (("/api/bridge", "GET", 15, None),
+                ("/api/bridge?refresh=1", "GET", 15, None), ("/api/bridge/install", "POST", 420, "fake-token"),
+                ("/api/bridge/other", "POST", 15, "fake-token")):
+            transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(b'{"ok": false, "output": "text"}')))
+            with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": "fake-token"}):
+                self.assertEqual(asb.request_json("http://127.0.0.1:1", route, method, {"sourceId": "main"})["ok"], False)
+            request = transport.open.call_args.args[0]
+            self.assertEqual(request.get_header("X-asb-source-token"), token)
+            self.assertEqual(transport.open.call_args.kwargs["timeout"], timeout)
+            if method == "POST":
+                self.assertEqual(json.loads(request.data), {"sourceId": "main"})
+        for code in (400, 404, 409):
+            error = asb.HTTPError("http://127.0.0.1:1/api/bridge/install", code, "Error", {}, io.BytesIO(b'{"error":"Install failed."}'))
+            with patch.dict(SCOPE, {"LOCAL_HTTP": Mock(open=Mock(side_effect=error))}):
+                with self.assertRaisesRegex(RuntimeError, "^Install failed\\.$"):
+                    asb.request_json("http://127.0.0.1:1", "/api/bridge/install", "POST", {})
+        for error in (OSError(), ValueError()):
+            with patch.dict(SCOPE, {"LOCAL_HTTP": Mock(open=Mock(side_effect=error))}):
+                with self.assertRaisesRegex(RuntimeError, "^Cannot load or change ASB Bridge\\. Check that ASB is running, then try again\\.$"):
+                    asb.request_json("http://127.0.0.1:1", "/api/bridge")
+
+
+class ProfileBridgeChecks(unittest.TestCase):
+    def setUp(self):
+        self.fixture = ProfileSyncChecks()
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.editor = self.fixture.editor()
+        del self.editor.request_bridge
+        self.request = self.fixture.request
+
+    def reply(self, data=None, error=None):
+        self.request.call_args.args[2](data, error)
+
+    def bridge(self, state="missing", can_install=True):
+        return {"api": 1, "machines": [{"name": "atlas", "isSelf": True, "state": "ok", "apps": [
+            {"sourceId": "main", "label": "Main", "provider": "codex", "state": state, "canInstall": can_install}]}]}
+
+    def test_sources_get_then_bridge_and_manual_refresh_uses_refresh_query(self):
+        editor = self.editor
+        editor.reload_sources()
+        self.fixture.reply(editor.sources, self.fixture.REV_A)
+        self.assertEqual(self.request.call_args.args[1], "/api/bridge")
+        self.reply(self.bridge())
+        self.assertEqual(editor.bridge_apps, {"main": self.bridge()["machines"][0]["apps"][0]})
+        self.assertEqual(len(editor.table.children), 2)
+        editor.refresh_sources()
+        self.assertEqual(self.request.call_args.args[1], "/api/sources")
+        self.fixture.reply(editor.sources, self.fixture.REV_A)
+        self.assertEqual(self.request.call_args.args[1], "/api/bridge?refresh=1")
+        self.reply(self.bridge())
+        editor.dialog_message.set_label.assert_called_with("")
+
+    def test_bridge_errors_keep_data_only_refresh_shows_error_and_hide_voids_reply(self):
+        editor = self.editor
+        editor.request_bridge()
+        self.request.assert_called_once()
+        editor.request_bridge(True)
+        self.request.assert_called_once()
+        self.reply(self.bridge())
+        # The call made while the first ran starts now, with its refresh.
+        self.assertEqual(self.request.call_args.args[1], "/api/bridge?refresh=1")
+        self.reply(self.bridge())
+        previous = editor.bridge_apps
+        for refresh in (False, True):
+            for error, result in (("Cannot check.", None), (None, {})):
+                editor.message.reset_mock()
+                editor.request_bridge(refresh)
+                self.reply(result, error)
+                self.assertIs(editor.bridge_apps, previous)
+                if refresh:
+                    editor.message.set_label.assert_called_once_with(error or "The ASB Bridge response is not valid. Try again.")
+                else:
+                    editor.message.set_label.assert_not_called()
+        editor.request_bridge()
+        late = self.request.call_args.args[2]
+        editor.set_active(False)
+        late(self.bridge("ready"), None)
+        self.assertIs(editor.bridge_apps, previous)
+        self.assertFalse(editor.bridge_loading)
+        count = self.request.call_count
+        editor.request_bridge()
+        self.assertEqual(self.request.call_count, count)
+        editor.set_active(True)
+        self.fixture.reply(editor.sources, self.fixture.REV_A)
+        current = self.request.call_args.args[2]
+        late(self.bridge("ready"), None)
+        self.assertTrue(editor.bridge_loading)
+        current(self.bridge("update"), None)
+        self.assertEqual(editor.bridge_apps["main"]["state"], "update")
+
+    def test_install_body_busy_results_last_twelve_lines_and_followup_get(self):
+        editor = self.editor
+        for state, result, error, text, monospace in (
+                ("missing", {"ok": True, "output": "ok"}, None, "Installed.", False),
+                ("update", {"ok": True}, None, "Updated.", False),
+                ("missing", {"ok": False, "output": "\n".join(map(str, range(20)))}, None,
+                 asb.BRIDGE_INSTALL_FAILED + "\n" + "\n".join(map(str, range(8, 20))), True),
+                ("missing", None, "Install error.", "Install error.", False)):
+            with self.subTest(state=state, result=result, error=error):
+                editor.bridge_apps = asb.bridge_self_apps(self.bridge(state))
+                self.request.reset_mock()
+                editor.install_bridge()
+                self.assertEqual(self.request.call_args.args[1], "/api/bridge/install")
+                self.assertEqual(self.request.call_args.args[4:], ("POST", {"sourceId": "main"}))
+                self.assertEqual(editor.installing, "main")
+                editor.install_button.set_label.assert_called_with("Installing…")
+                editor.install_button.set_sensitive.assert_called_with(False)
+                editor.install_result.set_visible.assert_called_with(False)
+                editor.install_bridge()
+                self.request.assert_called_once()
+                self.reply(result, error)
+                editor.install_result.set_label.assert_called_with(text)
+                (editor.install_result.add_css_class if monospace else editor.install_result.remove_css_class).assert_called_with("monospace")
+                self.assertEqual(editor.installing, "")
+                self.assertEqual(self.request.call_args.args[1], "/api/bridge")
+                self.reply(self.bridge(state))
+        editor.install_bridge()
+        callback = self.request.call_args.args[2]
+        editor.cancel_form()
+        callback({"ok": True}, None)
+        editor.message.set_label.assert_called_with("Installed.")
+        self.reply(self.bridge())
+        editor.open_source(editor.sources[0])
+        editor.install_bridge()
+        callback = self.request.call_args.args[2]
+        editor.close()
+        editor.message.reset_mock()
+        editor.install_result.reset_mock()
+        self.request.reset_mock()
+        callback({"ok": True}, None)
+        editor.message.set_label.assert_not_called()
+        editor.install_result.set_label.assert_not_called()
+        self.request.assert_not_called()
+
+    def test_close_reset_deleted_clean_close_and_save_feedback(self):
+        editor = self.editor
+        editor.reload_sources()
+        self.fixture.reply([editor.sources[1]], self.fixture.REV_B)
+        self.assertFalse(editor.editing)
+        self.assertEqual((editor.editing_id, editor.form_baseline, editor.baseline_source, editor.edit_revision, editor.conflict),
+                         ("", None, None, None, False))
+        editor.dialog.close.assert_called_once()
+        editor.cancellable.cancel.assert_called_once()
+        editor.open_source(editor.sources[0])
+        editor.name.set_text("Edit")
+        editor.save_source()
+        self.fixture.reply([{**editor.sources[0], "label": "Edit"}], self.fixture.REV_C)
+        self.assertFalse(editor.editing)
+        editor.message.set_label.assert_called_with("Saved.")
+        editor.dialog.close.reset_mock()
+        self.assertFalse(editor.end_edit())
+        editor.dialog.close.assert_not_called()
+
+    def test_feedback_stays_after_later_gets_and_open_add_refresh_clear_it(self):
+        editor = self.editor
+        for remove in (False, True):
+            for clear in ("open", "add", "refresh"):
+                with self.subTest(remove=remove, clear=clear):
+                    editor.open_source(editor.sources[-1] if remove else editor.sources[0])
+                    if remove:
+                        editor.sources[-1]["builtin"] = False
+                        editor.remove_source()
+                    else:
+                        editor.name.set_text("Edit")
+                        editor.save_source()
+                    self.fixture.reply(editor.sources, self.fixture.REV_B)
+                    text = "Removed." if remove else "Saved."
+                    editor.message.set_label.assert_called_with(text)
+                    editor.reload_sources()
+                    self.assertEqual(self.request.call_args.args[1:5:3], ("/api/sources", "GET"))
+                    self.fixture.reply(editor.sources, self.fixture.REV_C)
+                    editor.message.set_label.assert_called_with(text)
+                    self.reply(self.bridge())
+                    editor.message.set_label.assert_called_with(text)
+                    if clear == "open":
+                        editor.open_source(editor.sources[0])
+                    elif clear == "add":
+                        editor.add_source()
+                    else:
+                        editor.refresh_sources()
+                        self.fixture.reply(editor.sources, self.fixture.REV_C)
+                        self.reply(self.bridge())
+                    editor.message.set_label.assert_called_with("")
+                    self.assertFalse(editor.feedback)
+                    editor.cancel_form()
+        # A load error replaces the loading text, and a later successful GET clears it.
+        editor.reload_sources()
+        self.fixture.reply([], self.fixture.REV_C, "Cannot load profiles.")
+        editor.message.set_label.assert_called_with("Cannot load profiles.")
+        editor.reload_sources()
+        self.fixture.reply(editor.sources, self.fixture.REV_C)
+        editor.message.set_label.assert_called_with("")
+
+    def test_bridge_calls_while_loading_queue_once_keep_refresh_and_hide_drops_queue(self):
+        editor = self.editor
+        for outcome in ((self.bridge(), None), (None, "Error."), ({}, None)):
+            with self.subTest(outcome=outcome):
+                self.request.reset_mock()
+                editor.request_bridge()
+                editor.request_bridge()
+                editor.request_bridge(True)
+                editor.request_bridge()
+                self.request.assert_called_once()
+                self.assertIs(editor.bridge_queued, True)
+                self.reply(*outcome)
+                self.assertEqual(self.request.call_count, 2)
+                self.assertEqual(self.request.call_args.args[1], "/api/bridge?refresh=1")
+                self.assertIsNone(editor.bridge_queued)
+                self.reply(self.bridge())
+                self.assertEqual(self.request.call_count, 2)
+                self.assertFalse(editor.bridge_loading)
+        self.request.reset_mock()
+        editor.request_bridge()
+        editor.request_bridge()
+        self.assertIs(editor.bridge_queued, False)
+        late = self.request.call_args.args[2]
+        editor.set_active(False)
+        self.assertIsNone(editor.bridge_queued)
+        late(self.bridge(), None)
+        self.request.assert_called_once()
+
+    def test_rows_update_in_place_per_id_and_only_a_new_id_makes_a_row(self):
+        editor = self.editor
+        made = Mock(side_effect=editor.make_row)
+        editor.make_row = made
+        editor.bridge_apps = asb.bridge_self_apps(self.bridge())
+        editor.render_sources("main", preserve_form=True)
+        main, other = editor.table.children
+        made.assert_not_called()
+        state = main.asb_state
+        editor.preferences.get_focus.return_value = main
+        main.add_css_class, main.update_property = Mock(), Mock()
+        editor.bridge_apps = asb.bridge_self_apps(self.bridge("ready"))
+        editor.sources = [{**editor.sources[0], "label": "Renamed", "color": "#404040", "enabled": False}, editor.sources[1]]
+        editor.render_sources("main", preserve_form=True)
+        self.assertEqual(editor.table.children, [main, other])
+        self.assertIs(main.asb_state, state)
+        self.assertEqual((main.title, main.subtitle, main.asb_marker.configured_color), ("Renamed", "Codex · Off", "#404040"))
+        main.add_css_class.assert_called_with("dim-label")
+        main.update_property.assert_called_with([1], ["ASB Bridge: Off. Profile color: #404040"])
+        made.assert_not_called()
+        editor.sources = [*editor.sources, self.fixture.source(id="new", label="New")]
+        editor.render_sources("main", preserve_form=True)
+        made.assert_called_once_with()
+        self.assertEqual(editor.table.children[:2], [main, other])
+        editor.sources = [editor.sources[2], editor.sources[0]]
+        editor.render_sources("main", preserve_form=True)
+        self.assertEqual(editor.table.children[1], main)
+        self.assertNotIn(other, editor.table.children)
+        made.assert_called_once_with()
+
+    def test_post_success_renders_before_close_and_remove_moves_focus_after_close(self):
+        editor = self.editor
+        order = []
+        render, cancel = editor.render_sources, editor.cancel_form
+        editor.render_sources = Mock(side_effect=lambda *args, **kwargs: (order.append("render"), render(*args, **kwargs)))
+        editor.cancel_form = Mock(side_effect=lambda *args: (order.append("close"), cancel(*args)))
+        editor.name.set_text("Edit")
+        editor.save_source()
+        self.fixture.reply([{**editor.sources[0], "label": "Edit"}, editor.sources[1]], self.fixture.REV_B)
+        self.assertEqual(order, ["render", "close"])
+        self.assertIsNone(editor.focus_after_close)
+        editor.dialog_closed()
+        rows = list(editor.table.children)
+        for row in rows:
+            row.grab_focus = Mock()
+        editor.add_button.grab_focus.assert_not_called()
+        for sources, removed, expected in ((["main", "other"], "main", 0), (["main", "other"], "other", 0), (["main"], "main", None)):
+            with self.subTest(removed=removed, sources=sources):
+                editor.sources = [self.fixture.source(id=identity, label=identity) for identity in sources]
+                editor.render_sources()
+                for row in editor.table.children:
+                    row.grab_focus = Mock()
+                editor.add_button.reset_mock()
+                editor.open_source(next(source for source in editor.sources if source["id"] == removed))
+                order.clear()
+                editor.remove_source()
+                remaining = [source for source in editor.sources if source["id"] != removed]
+                self.fixture.reply(remaining, self.fixture.REV_C)
+                self.assertEqual(order, ["render", "close"])
+                self.assertEqual(editor.focus_after_close, sources.index(removed))
+                editor.dialog_closed()
+                self.assertIsNone(editor.focus_after_close)
+                if expected is None:
+                    editor.add_button.grab_focus.assert_called_once_with()
+                else:
+                    editor.table.children[expected].grab_focus.assert_called_once_with()
+
+    def test_a_running_save_blocks_escape_close_and_14_close_request(self):
+        editor = self.editor
+        editor.name.set_text("Edit")
+        editor.save_source()
+        self.assertTrue(editor.saving)
+        editor.dialog.set_can_close.assert_called_with(False)
+        with patch.dict(SCOPE, {"Gdk": SimpleNamespace(KEY_Escape=27), "SHORTCUT_MASK": 1}):
+            self.assertTrue(editor.dialog_key(None, 27, 0, 0))
+        editor.cancel_form()
+        self.assertTrue(editor.dialog_closed())
+        self.assertTrue(editor.editing)
+        editor.dialog.close.assert_not_called()
+        self.fixture.reply([], self.fixture.REV_B, "The store is in use.")
+        self.assertTrue(editor.editing)
+        editor.dialog_message.set_label.assert_called_with("The store is in use.")
+        self.assertEqual(editor.name.get_text(), "Edit")
+        editor.dialog.set_can_close.assert_called_with(True)
+        self.assertFalse(editor.dialog_closed())
+        self.assertFalse(editor.editing)
+
+
+class ProfileDialogChecks(unittest.TestCase):
+    def test_modern_and_14_containers_reuse_present_and_dispose(self):
+        for modern in (True, False):
+            with self.subTest(modern=modern):
+                fixture = ProfileSyncChecks()
+                fixture.setUp()
+                try:
+                    editor = fixture.editor()
+                    del editor.ensure_dialog
+                    editor.dialog = None
+                    adw = SimpleNamespace(**{name: Mock() for name in ("Window", "ToolbarView", "HeaderBar", "WindowTitle",
+                        "PreferencesPage", "PreferencesGroup", "EntryRow", "ComboRow", "ActionRow", "SwitchRow")})
+                    if modern:
+                        adw.Dialog = Mock()
+                    gtk = SimpleNamespace(**{name: Mock() for name in ("Button", "Image", "Box", "ColorDialogButton", "ColorDialog", "EventControllerKey", "StringList")},
+                        Align=SimpleNamespace(CENTER=0, START=1), NaturalWrapMode=SimpleNamespace(NONE=0),
+                        AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0))
+                    editor.preferences.has_css_class.return_value = True
+                    with patch.dict(SCOPE, {"Adw": adw, "Gtk": gtk, "SourceMarker": Mock(), "label": Mock(),
+                                            "Pango": SimpleNamespace(WrapMode=SimpleNamespace(WORD=0))}):
+                        editor.ensure_dialog()
+                        dialog = editor.dialog
+                        if modern:
+                            adw.Dialog.assert_called_once_with(content_width=560)
+                            dialog.set_child.assert_called_once()
+                            editor.form.get_first_child().set_propagate_natural_height.assert_called_once_with(True)
+                        else:
+                            adw.Window.assert_called_once_with(transient_for=editor.preferences, modal=True, default_width=560,
+                                default_height=640, hide_on_close=True)
+                            self.assertEqual(dialog.add_css_class.call_args_list, [call("asb-column-flow"), call("asb-preferences"), call("asb-custom")])
+                            dialog.set_content.assert_called_once()
+                        editor.ensure_dialog()
+                        self.assertIs(editor.dialog, dialog)
+                        editor.present_dialog()
+                        dialog.present.assert_called_once_with(*([editor.preferences] if modern else []))
+                        self.assertEqual(dialog.connect.call_args.args[0], "closed" if modern else "close-request")
+                        editor.close()
+                        (dialog.force_close if modern else dialog.destroy).assert_called_once_with()
+                finally:
+                    fixture.doCleanups()
+
+    def test_escape_guard_and_each_close_handler_reset_once(self):
+        fixture = ProfileSyncChecks()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        editor = fixture.editor()
+        preferences = object.__new__(Preferences)
+        preferences.profiles_editor, preferences.close = editor, Mock()
+        with patch.dict(SCOPE, {"Gdk": SimpleNamespace(KEY_Escape=27), "SHORTCUT_MASK": 1}):
+            editor.dialog.get_mapped.return_value = True
+            self.assertFalse(preferences.window_key(None, 27, 0, 0))
+            preferences.close.assert_not_called()
+            # Libadwaita 1.4: Preferences opened on another page with a hidden draft; Escape closes Preferences.
+            editor.dialog.get_mapped.return_value = False
+            self.assertTrue(preferences.window_key(None, 27, 0, 0))
+            preferences.close.assert_called_once_with()
+            self.assertTrue(editor.editing)
+            preferences.close.reset_mock()
+            editor.dialog.get_mapped.return_value = True
+            self.assertTrue(editor.dialog_key(None, 27, 0, 0))
+            self.assertFalse(editor.editing)
+            self.assertTrue(preferences.window_key(None, 27, 0, 0))
+            preferences.close.assert_called_once_with()
+        editor.owner.report_ui.reset_mock()
+        editor.cancellable.cancel.reset_mock()
+        editor.end_edit()
+        editor.owner.report_ui.assert_not_called()
+        editor.cancellable.cancel.assert_not_called()
+
+
+class MachineBridgeChecks(unittest.TestCase):
+    def editor(self):
+        editor = MachinesDialogChecks().editor()
+        editor.base = "http://127.0.0.1:1"
+        editor.loaded = False
+        editor.request_group, editor.render, editor.expire_invite = Mock(), Mock(), Mock(return_value=False)
+        return editor
+
+    def bridge(self):
+        return {"api": 1, "machines": [
+            {"machineId": "atlas-id", "name": "atlas", "isSelf": True, "state": "ok", "apps": [{"sourceId": "codex", "label": "Codex", "state": "ready"}]},
+            {"machineId": "studio-id", "name": "studio", "isSelf": False, "state": "offline", "apps": []}]}
+
+    def test_activation_poll_single_flight_hide_void_and_retained_errors(self):
+        editor = self.editor()
+        editor.active = False
+        request = Mock()
+        with patch.dict(SCOPE, {"request_async": request, "GLib": SimpleNamespace(idle_add=Mock(), timeout_add_seconds=Mock(return_value=5), source_remove=Mock())}):
+            editor.set_active(True)
+            editor.request_group.assert_called_once_with()
+            self.assertEqual(request.call_args.args[1], "/api/bridge")
+            editor.poll()
+            request.assert_called_once()
+            self.assertEqual(editor.request_group.call_args, call(poll=True))
+            request.call_args.args[2](self.bridge(), None)
+            previous = editor.bridge
+            editor.group, editor.loaded = {"fake": "group"}, True
+            editor.poll()
+            request.call_args.args[2](self.bridge(), None)
+            editor.render.assert_called_once_with(editor.group)
+            for result, error in ((None, "Error"), ({}, None)):
+                editor.request_bridge()
+                request.call_args.args[2](result, error)
+                self.assertEqual(editor.bridge, previous)
+            editor.request_bridge()
+            late = request.call_args.args[2]
+            editor.set_active(False)
+            late({"api": 1, "machines": []}, None)
+            self.assertEqual(editor.bridge, previous)
+            self.assertFalse(editor.bridge_loading)
+            editor.set_active(True)
+            late({"api": 1, "machines": []}, None)
+            self.assertTrue(editor.bridge_loading)
+            request.call_args.args[2](self.bridge(), None)
+            self.assertFalse(editor.bridge_loading)
+
+    def test_bridge_subtitles_and_equal_poll_keep_rows(self):
+        editor = self.editor()
+        del editor.render
+        editor.bridge = self.bridge()
+        for name in ("self_row", "off", "phones", "others_heading", "others", "empty", "alone", "leave_button", "join_open", "body"):
+            setattr(editor, name, Mock())
+        editor.join_box = Mock(get_visible=Mock(return_value=False))
+        editor.render_others, editor.rows_shown = Mock(), None
+        own = {"machineId": "atlas-id", "name": "atlas"}
+        studio = {"machineId": "studio-id", "name": "studio", "isSelf": False, "online": False, "lastOkAtMs": 0, "addresses": []}
+        group = {"self": own, "members": [{**own, "isSelf": True}, studio], "groupId": "group", "networkEnabled": True, "phones": []}
+        editor.render(group)
+        editor.self_row.set_subtitle.assert_called_with("ID atlas-id\nBridge: Codex ready")
+        rows = editor.render_others.call_args.args[1]
+        self.assertTrue(rows[0][2].endswith("\nBridge: not checked while offline"))
+        editor.rows_shown = rows
+        editor.render_others.reset_mock()
+        editor.render(group)
+        editor.render_others.assert_not_called()
+        self.assertEqual(editor.bridge_suffix("absent"), "")
+        editor.bridge = None
+        self.assertEqual(editor.bridge_suffix(is_self=True), "")
+
+
 class NativeLogicChecks(unittest.TestCase):
     def test_source_form_sends_only_editable_fields_and_valid_local_paths(self):
         body = SCOPE["source_form_body"]
@@ -2564,27 +3120,21 @@ class NativeLogicChecks(unittest.TestCase):
             with self.subTest(identity=identity), self.assertRaises(ValueError):
                 body("opencode", "OpenCode", "/data/opencode", "", True, identity)
         self.assertEqual(asb.SOURCE_PROVIDERS, ("codex", "claude-desktop-code"))
-        window = object.__new__(SourcesEditor)
-        window.owner = SimpleNamespace(rgba=lambda color: color, hex_color=lambda color: color)
-        for name in ("form_title", "source_id", "provider", "name", "data_dir", "launcher", "projects_dir", "enabled",
-                     "show_marker", "source_color", "source_color_hex", "source_status", "provider_text",
-                     "remote_claude", "remote_claude_note"):
-            setattr(window, name, Mock())
-        window.provider.get_selected.return_value = window.remote_claude.get_selected.return_value = 0
-        window.source_color.get_rgba.return_value = "#899e91"
-        window.transcript_widgets, window.choose_buttons = [Mock()], [Mock(), Mock()]
-        window.update_controls = Mock()
+        fixture = ProfileSyncChecks()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        window = fixture.editor()
         default = {"id": "opencode", "provider": "opencode", "label": "OpenCode", "builtin": True, "enabled": True,
                    "launcher": "", "dataDir": "/data/opencode", "color": "#899e91"}
-        with patch.dict(SCOPE, {"Gtk": SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0))}):
+        with patch.dict(SCOPE, {"Gtk": SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0), AccessibleState=SimpleNamespace(BUSY=0))}):
+            window.sources = [default]
             window.set_form(default)
             self.assertEqual(window.fixed_provider, "opencode")
             window.provider.set_visible.assert_called_with(False)
-            window.provider_text.set_label.assert_called_with("OpenCode")
-            window.provider_text.set_visible.assert_called_with(True)
+            window.provider_fixed.set_visible.assert_called_with(True)
             for entry in (window.data_dir, window.launcher):
                 entry.set_editable.assert_called_with(False)
-            window.transcript_widgets[0].set_visible.assert_called_with(False)
+            self.assertFalse(any(widget.get_visible() for widget in window.transcript_widgets))
             window.closed = window.loading = window.choosing = window.conflict = False
             window.loaded, window.editing_id, window.request_sources = True, "opencode", Mock()
             window.name.get_text.return_value, window.data_dir.get_text.return_value = "OpenCode", "/data/opencode"
@@ -2595,12 +3145,17 @@ class NativeLogicChecks(unittest.TestCase):
             window.set_form({"provider": "codex"})
             self.assertEqual(window.fixed_provider, "")
             window.provider.set_visible.assert_called_with(True)
-            window.provider_text.set_visible.assert_called_with(False)
+            window.provider_fixed.set_visible.assert_called_with(False)
             for entry in (window.data_dir, window.launcher):
                 entry.set_editable.assert_called_with(True)
 
     def test_source_requests_serialize_keep_failed_form_and_refresh_after_changes(self):
-        window = object.__new__(SourcesEditor)
+        fixture = ProfileSyncChecks()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        window = fixture.editor()
+        window.edit_revision = window.revision = None
+        window.active = False
         builtin = {"id": "codex", "provider": "codex", "builtin": True, "dataDir": "/default"}
         personal = {"id": "codex-personal", "provider": "codex", "builtin": False}
         window.closed = window.loading = window.choosing = False
@@ -2624,7 +3179,7 @@ class NativeLogicChecks(unittest.TestCase):
             window.owner.hex_color.return_value = "#12345g"
             window.save_source()
             request.assert_not_called()
-            window.message.set_label.assert_called_with("Profile color must use a #RRGGBB value.")
+            window.dialog_message.set_label.assert_called_with("Profile color must use a #RRGGBB value.")
             window.source_color.set_rgba.assert_not_called()
             window.owner.hex_color.return_value = "#404040"
             window.save_source()
@@ -2640,7 +3195,7 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertIs(body["source"]["showMarker"], False)
             self.assertFalse(callback(None, "This session store is already registered."))
             self.assertFalse(window.loading)
-            window.message.set_label.assert_called_with("This session store is already registered.")
+            window.dialog_message.set_label.assert_called_with("This session store is already registered.")
             window.name.set_text.assert_not_called()
             window.source_color.set_rgba.assert_not_called()
             window.render_sources.assert_not_called()
@@ -2652,9 +3207,9 @@ class NativeLogicChecks(unittest.TestCase):
             created = {**personal, "id": "codex-new", "dataDir": "/profile"}
             callback = request.call_args.args[2]
             self.assertFalse(callback({"changed": True, "sources": [builtin, created]}, None))
-            window.render_sources.assert_called_with("codex-new")
+            window.render_sources.assert_called_with()
             window.owner.refresh.assert_called_once_with(True)
-            window.message.set_label.assert_called_with("Saved. 2 of 8 app sources")
+            window.message.set_label.assert_called_with("Saved.")
 
             request.reset_mock()
             window.editing_id = "codex"
@@ -2674,14 +3229,14 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertFalse(callback({"changed": True, "sources": [builtin]}, None))
             self.assertEqual(window.sources, [builtin])
             self.assertEqual(window.owner.refresh.call_count, 2)
-            window.message.set_label.assert_called_with("Removed. 1 of 2 app sources")
+            window.message.set_label.assert_called_with("Removed.")
 
             window.reload_sources()
             self.assertEqual(request.call_args.args[1], "/api/sources")
             callback = request.call_args.args[2]
             window.close()
             self.assertTrue(window.closed)
-            window.cancellable.cancel.assert_called_once()
+            self.assertTrue(window.cancellable.cancel.called)
             window.render_sources.reset_mock()
             self.assertFalse(callback({"sources": []}, None))
             window.render_sources.assert_not_called()
@@ -2747,20 +3302,16 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertFalse(source.choosing)
 
     def test_source_editor_reload_keeps_the_saved_picker_color_and_dot_setting(self):
-        window = object.__new__(SourcesEditor)
-        window.owner = SimpleNamespace(rgba=lambda color: color, hex_color=lambda color: color)
-        for name in ("form_title", "source_id", "provider", "name", "data_dir", "launcher", "projects_dir", "enabled",
-                     "show_marker", "source_color", "source_color_hex", "source_status", "provider_text",
-                     "remote_claude", "remote_claude_note"):
-            setattr(window, name, Mock())
-        window.source_color.get_rgba.return_value = "#404040"
-        window.provider_changed = window.update_controls = Mock()
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0))
+        fixture = ProfileSyncChecks()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        window = fixture.editor()
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0), AccessibleState=SimpleNamespace(BUSY=0))
         with patch.dict(SCOPE, {"Gtk": gtk}):
             window.set_form({"id": "codex", "provider": "codex", "label": "Codex", "enabled": True,
                              "color": "#404040", "showMarker": False})
             window.source_color.set_rgba.assert_called_with("#404040")
-            window.source_color_hex.set_label.assert_called_with("#404040")
+            window.color_row.set_subtitle.assert_called_with("#404040")
             window.show_marker.set_active.assert_called_with(False)
             window.enabled.set_active.assert_called_with(True)
             window.set_form({"provider": "codex", "color": "#404040", "showMarker": True})
@@ -2770,7 +3321,7 @@ class NativeLogicChecks(unittest.TestCase):
             window.show_marker.set_active.assert_called_with(True)
             # Remote Claude sessions follows the saved value; a missing or unknown value is Automatic.
             for remote, index in (("native", 2), ("bridge", 1), (None, 0), ("remote", 0), ({}, 0)):
-                source = {"id": "claude", "provider": "claude-desktop-code", "label": "Claude"}
+                source = {"id": "claude", "provider": "claude-desktop-code", "label": "Claude", "enabled": True}
                 window.set_form(source if remote is None else {**source, "remoteClaude": remote})
                 window.remote_claude.set_selected.assert_called_with(index)
 
@@ -2808,7 +3359,7 @@ class NativeLogicChecks(unittest.TestCase):
         response = Mock(read=Mock(side_effect=IncompleteRead(b"SYNTHETIC_PRIVATE_BODY", 100)))
         http_error = SCOPE["HTTPError"]("http://127.0.0.1:1/api/sources", 400, "Bad Request", {}, response)
         with patch.dict(SCOPE, {"LOCAL_HTTP": Mock(open=Mock(side_effect=http_error))}):
-            with self.assertRaisesRegex(RuntimeError, "Cannot load or change app sources") as caught:
+            with self.assertRaisesRegex(RuntimeError, "Cannot load or change profiles") as caught:
                 SCOPE["request_json"]("http://127.0.0.1:1", "/api/sources")
             self.assertNotIn("SYNTHETIC_PRIVATE", str(caught.exception))
 

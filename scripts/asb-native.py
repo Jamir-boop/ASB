@@ -39,6 +39,90 @@ REMOTE_CLAUDE = (("auto", "Automatic", "Claude in this profile reaches Claude se
 SOURCE_COLOR_PRESETS = (("Slate blue", "#8296b4"), ("Clay", "#b28f80"), ("Plum", "#a28caa"), ("Sage", "#899e91"))
 
 
+BRIDGE_STATES = {
+    "ready": ("Ready", "object-select-symbolic", "success"),
+    "update": ("Old version", "software-update-available-symbolic", "warning"),
+    "hooks": ("Hooks not trusted", "dialog-warning-symbolic", "warning"),
+    "off": ("Turned off in Codex", "dialog-warning-symbolic", "warning"),
+    "nobun": ("Codex cannot find Bun", "dialog-error-symbolic", "error"),
+    "missing": ("Not installed", "action-unavailable-symbolic", "dim-label"),
+    "conflict": ("Needs a manual fix", "dialog-error-symbolic", "error"),
+    "old-app": ("OpenCode is too old", "dialog-warning-symbolic", "warning"),
+    "unknown": ("Unknown", "dialog-question-symbolic", "dim-label"),
+}
+BRIDGE_NONE_BODY = "Install it to let your agents send messages to each other. The board works without it."
+BRIDGE_INSTALL_FAILED = "The install did not work. Output:"
+MACHINE_BRIDGE_PHRASES = {"ready": "ready", "update": "old version", "hooks": "hooks not trusted", "off": "turned off",
+    "nobun": "cannot find Bun", "missing": "not installed", "conflict": "needs a manual fix", "old-app": "app too old",
+    "unknown": "unknown"}
+PROFILE_CONFLICT = "This profile changed outside this dialog. Your edits are kept. Select Cancel, open the profile again, then edit and save."
+
+
+def bridge_state_line(app):
+    state = app.get("state")
+    text = BRIDGE_STATES.get(state, BRIDGE_STATES["unknown"])[0]
+    version, live = app.get("version"), app.get("live")
+    if state in ("ready", "update") and isinstance(version, str) and version:
+        text += " · " + version
+    if type(live) is int and live > 0:
+        text += f" · {live} live"
+    return text
+
+
+def bridge_detail(app):
+    update = {"codex": "Update, then restart Codex.", "opencode": "Update, then restart OpenCode.",
+              "claude-desktop-code": "Update. New Claude sessions use it."}
+    return {"ready": None, "update": update.get(app.get("provider")),
+        "hooks": "In Codex, open Plugins > ASB Bridge, trust both hooks, and restart Codex.",
+        "off": "In Codex, open Plugins > ASB Bridge and turn it on.",
+        "nobun": "Codex cannot start or resume tasks. Make Bun visible to desktop apps, then restart Codex.",
+        "missing": BRIDGE_NONE_BODY, "conflict": "Run asb bridge status in a terminal to see what is in the way.",
+        "old-app": "ASB Bridge needs OpenCode 2.1.2 or later. Update OpenCode."}.get(
+            app.get("state"), "ASB cannot find the Claude folder of this profile.")
+
+
+def bridge_action(app):
+    return {"missing": "Install", "update": "Update"}.get(app.get("state")) if app.get("canInstall") is True else None
+
+
+def bridge_valid(data):
+    return (isinstance(data, dict) and type(data.get("api")) is int and data["api"] == 1
+        and isinstance(data.get("machines"), list) and all(isinstance(machine, dict)
+            and isinstance(machine.get("name"), str) and type(machine.get("isSelf")) is bool
+            and isinstance(machine.get("state"), str) and isinstance(machine.get("apps"), list)
+            and all(isinstance(app, dict) and all(isinstance(app.get(key), str) for key in ("sourceId", "label", "state"))
+                    for app in machine["apps"]) for machine in data["machines"]))
+
+
+def bridge_self_apps(data):
+    return next(({app["sourceId"]: app for app in machine["apps"]}
+                 for machine in data["machines"] if machine["isSelf"]), {})
+
+
+def machine_bridge_line(machine):
+    state, apps, live = machine.get("state"), machine.get("apps", []), machine.get("live")
+    if state == "offline":
+        return "Bridge: not checked while offline"
+    if state == "old":
+        return "Bridge: unknown, needs ASB 1.12 or later" + (f" · {live} live" if type(live) is int and live > 0 else "")
+    if state == "error":
+        error = machine.get("error")
+        return "Bridge: " + (error if isinstance(error, str) and error else "ASB cannot check it.")
+    if not apps:
+        return "Bridge: checking…" if state == "checking" or machine.get("checking") is True else "Bridge: no app profiles"
+    if all(app["state"] == "missing" for app in apps):
+        return "Bridge: not installed"
+    return "Bridge: " + " · ".join(f"{app['label']} {MACHINE_BRIDGE_PHRASES.get(app['state'], 'unknown')}" for app in apps)
+
+
+def profile_subtitle(source):
+    app = APP_NAMES.get(source["provider"], source["provider"])
+    count = source.get("sessionCount", 0)
+    status = "Off" if not source["enabled"] else (f"{count} chat" + ("" if count == 1 else "s")) \
+        if source.get("status") in ("ready", "ok") else source.get("status", "unknown").capitalize()
+    return f"{app} · {status}"
+
+
 def source_marker_color(row):
     count = row.get("sourceCount")
     if type(count) is not int or count <= 1 or row.get("sourceShowMarker", True) is not True:
@@ -61,7 +145,7 @@ def source_form_body(provider, name, data_dir, launcher, enabled, identity="", p
     if not isinstance(name, str) or not name.strip() or len(name) > 80 or re.search(r"[\x00-\x1f\x7f]", name):
         raise ValueError("Name must have 1–80 characters with no control characters.")
     if identity and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", identity):
-        raise ValueError("The app source ID is not valid. Refresh the source list.")
+        raise ValueError("The profile ID is not valid. Refresh the list.")
     source = {"provider": provider, "label": name.strip(), "enabled": enabled}
     for key, title, value, optional in (("dataDir", "Session folder", data_dir, False),
                                        ("launcher", "Open with", launcher, True),
@@ -1140,6 +1224,7 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
     headers = {"Accept": "application/json", **(headers or {})}
     path = route.split("?", 1)[0]
     source_route = path == "/api/sources" or path.startswith("/api/sources/")
+    bridge_route = path == "/api/bridge" or path.startswith("/api/bridge/")
     phone_route = path == "/api/phone" or path.startswith("/api/phone/")
     group_route = path == "/api/group" or path.startswith("/api/group/")
     service_route = path == "/api/service"
@@ -1149,7 +1234,7 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
     data = None
     if etag and etag[0] and method == "GET" and route.split("?")[0] == "/api/dashboard":
         headers["If-None-Match"] = etag[0]
-    if SOURCE_TOKEN and ((source_route and method == "POST") or phone_route or group_route or service_route or palette_route or agent_route or engine_route):
+    if SOURCE_TOKEN and (((source_route or bridge_route) and method == "POST") or phone_route or group_route or service_route or palette_route or agent_route or engine_route):
         headers["X-ASB-Source-Token"] = SOURCE_TOKEN
     if method == "POST":
         headers.update({"Origin": base, "Content-Type": "application/json"})
@@ -1157,13 +1242,13 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
     request = Request(base + route, data=data, headers=headers, method=method)
     try:
         # Join and leave wait for the other machines.
-        timeout = 30 if method == "POST" and path in ("/api/group/join", "/api/group/leave") else 15
+        timeout = 420 if method == "POST" and path == "/api/bridge/install" else 30 if method == "POST" and path in ("/api/group/join", "/api/group/leave") else 15
         with LOCAL_HTTP.open(request, timeout=timeout) as response:
             result = json.load(response)
         if not isinstance(result, dict):
             raise ValueError("The ASB response is not an object.")
         success = "opened" if route.endswith("/open") else "marked" if route.endswith("/mark-unread") else "changed"
-        if method == "POST" and not (phone_route or group_route or service_route or palette_route or agent_route or engine_route) and not result.get(success):
+        if method == "POST" and not (bridge_route or phone_route or group_route or service_route or palette_route or agent_route or engine_route) and not result.get(success):
             raise ValueError("The session action did not succeed.")
         if etag is not None:
             etag[0] = response.headers.get("ETag")
@@ -1172,7 +1257,7 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
         if isinstance(error, HTTPError) and error.code == 304 and "If-None-Match" in headers:
             error.close()
             return None
-        if source_route or phone_route or group_route or service_route or palette_route or agent_route or engine_route:
+        if bridge_route or source_route or phone_route or group_route or service_route or palette_route or agent_route or engine_route:
             detail = ""
             if isinstance(error, HTTPError):
                 try:
@@ -1184,8 +1269,8 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
                             detail += f" Try the name {suggestion}."
                 except (HTTPException, OSError, ValueError):
                     pass
-            subject = "phone access" if phone_route else "the machine group" if group_route else "the ASB service" if service_route \
-                else "the phone palette" if palette_route else "the native UI status" if agent_route else "ASB" if engine_route else "app sources"
+            subject = "ASB Bridge" if bridge_route else "phone access" if phone_route else "the machine group" if group_route else "the ASB service" if service_route \
+                else "the phone palette" if palette_route else "the native UI status" if agent_route else "ASB" if engine_route else "profiles"
             raise RuntimeError(detail or f"Cannot load or change {subject}. Check that ASB is running, then try again.") from error
         action = "open this session" if route.endswith("/open") else "change the unread setting" if route == "/api/settings/unread" \
             else "change this session" if method == "POST" else "load sessions"
@@ -1775,143 +1860,228 @@ class AppSourcesEditor(Gtk.Box):
         self.preferences = preferences
         self.owner, self.base = owner, owner.base
         self.closed = self.loading = self.choosing = self.loaded = self.editing = False
-        self.active = self.refresh_queued = self.rendering = self.setting_form = self.conflict = False
+        self.active = self.refresh_queued = self.setting_form = self.conflict = False
         self.revision = self.edit_revision = self.observed_revision = self.form_baseline = self.baseline_source = None
         self.sources, self.max_sources, self.editing_id = [], 8, ""
         self.preset_markers, self.table_markers = [], []
+        self.saving = self.bridge_loading = False
+        self.bridge_apps, self.installing, self.dialog = None, "", None
+        self.bridge_generation, self.bridge_refresh = 0, False
+        # A bridge call while one runs waits here (True when one of them asked for a refresh).
+        self.bridge_queued, self.feedback = None, False
+        self.header_tick = self.focus_after_close = None
         self.cancellable = Gio.Cancellable()
-        content = self
-        self.message = label("Loading app sources…", "caption")
-        self.message.set_wrap(True)
-        self.message.set_selectable(True)
-        content.append(self.message)
-        self.table = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
-        self.table.connect("row-selected", self.selected_source)
-        table_body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        table_body.append(self.table_line(["Enabled", "Name / App", "Session folder", "Open with", "Chats / Status"]))
-        table_body.append(self.table)
-        content.append(Gtk.ScrolledWindow(child=table_body, vexpand=True, min_content_height=180,
-                                         hscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
-                                         vscrollbar_policy=Gtk.PolicyType.AUTOMATIC))
-        self.form = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        content.append(self.form)
-        self.form_title = label("Select an app source", "heading")
-        self.form.append(self.form_title)
-        self.source_id = label("", "caption")
-        self.source_id.set_selectable(True)
-        self.form.append(self.source_id)
-        self.provider = Gtk.DropDown.new_from_strings(["Codex", "Claude Desktop Code"])
+        self.message = self.text("Loading profiles…")
+        self.append(self.message)
+        self.bridge_header = label("ASB Bridge", "caption")
+        self.bridge_header.add_css_class("dim-label")
+        self.bridge_header.set_halign(Gtk.Align.END)
+        self.bridge_header.set_margin_end(36)
+        self.bridge_header.set_visible(False)
+        self.bridge_header.connect("map", self.queue_align)
+        self.append(self.bridge_header)
+        self.table = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.table.add_css_class("boxed-list")
+        self.table.connect("row-activated", lambda _table, row: self.open_source(row.asb_source))
+        self.append(self.table)
+        footer = Gtk.Box(spacing=8)
+        self.add_button = Gtk.Button(child=Adw.ButtonContent(icon_name="list-add-symbolic", label="Add a profile"))
+        self.add_button.connect("clicked", self.add_source)
+        footer.append(self.add_button)
+        self.reload_button = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Refresh")
+        self.reload_button.add_css_class("flat")
+        self.reload_button.update_property([Gtk.AccessibleProperty.LABEL], ["Refresh"])
+        self.reload_button.connect("clicked", self.refresh_sources)
+        footer.append(self.reload_button)
+        self.count = label("", "caption")
+        self.count.add_css_class("dim-label")
+        self.count.set_hexpand(True)
+        self.count.set_xalign(1)
+        footer.append(self.count)
+        self.append(footer)
+        self.update_controls()
+
+    @staticmethod
+    def text(value, css="caption"):
+        widget = label(value, css)
+        widget.set_wrap(True)
+        widget.set_selectable(True)
+        widget.set_visible(bool(value))
+        return widget
+
+    def show_message(self, text, dialog=False):
+        widget = self.dialog_message if dialog else self.message
+        widget.set_label(text)
+        widget.set_visible(bool(text))
+        if not dialog:
+            self.feedback = False
+
+    def show_feedback(self, text):
+        # Saved., Removed., and install results stay after later sources GETs.
+        self.show_message(text)
+        self.feedback = bool(text)
+
+    def ensure_dialog(self):
+        if self.dialog is not None:
+            return
+        modern = hasattr(Adw, "Dialog")
+        if modern:
+            self.dialog = Adw.Dialog(content_width=560)
+            self.dialog.connect("closed", self.dialog_closed)
+        else:
+            self.dialog = Adw.Window(transient_for=self.preferences, modal=True, default_width=560,
+                                     default_height=640, hide_on_close=True)
+            self.dialog.add_css_class("asb-column-flow")
+            self.dialog.add_css_class("asb-preferences")
+            if self.preferences.has_css_class("asb-custom"):
+                self.dialog.add_css_class("asb-custom")
+            self.dialog.connect("close-request", self.dialog_closed)
+        toolbar = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        header.set_show_start_title_buttons(False)
+        header.set_show_end_title_buttons(False)
+        self.cancel_button, self.save_button = Gtk.Button(label="Cancel"), Gtk.Button(label="Save")
+        self.cancel_button.connect("clicked", self.cancel_form)
+        self.save_button.connect("clicked", self.save_source)
+        self.save_button.add_css_class("suggested-action")
+        header.pack_start(self.cancel_button)
+        header.pack_end(self.save_button)
+        self.dialog_title = Adw.WindowTitle()
+        header.set_title_widget(self.dialog_title)
+        toolbar.add_top_bar(header)
+        self.form = Adw.PreferencesPage()
+        def group(title=""):
+            widget = Adw.PreferencesGroup(title=title)
+            self.form.add(widget)
+            return widget
+        self.dialog_message = self.text("", "caption")
+        self.dialog_message.add_css_class("warning")
+        group().add(self.dialog_message)
+        fields = group()
+        self.name = Adw.EntryRow(title="Name")
+        self.name.get_delegate().set_max_length(80)
+        self.provider = Adw.ComboRow(title="App", model=Gtk.StringList.new(["Codex", "Claude Desktop Code"]))
         self.provider.connect("notify::selected", self.provider_changed)
-        self.name, self.data_dir, self.launcher, self.projects_dir = (Gtk.Entry(hexpand=True) for _ in range(4))
-        self.name.set_max_length(80)
-        self.projects_dir.set_placeholder_text("Default: ~/.claude/projects")
-        self.launcher.set_placeholder_text("Installed app launcher required")
-        self.transcript_widgets, self.choose_buttons, self.fixed_provider = [], [], ""
-        for title, widget, folder in (("Name", self.name, None), ("App", self.provider, None),
-                ("Session folder", self.data_dir, True), ("Open with", self.launcher, False),
-                ("Transcript folder", self.projects_dir, True)):
-            caption = label(title)
-            caption.set_mnemonic_widget(widget)
-            widget.update_property([Gtk.AccessibleProperty.LABEL], [title])
-            field = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-            field.append(caption)
-            line = Gtk.Box(spacing=8)
-            widget.set_hexpand(True)
-            line.append(widget)
-            field.append(line)
-            self.form.append(field)
-            if folder is not None:
-                choose = Gtk.Button(label="Choose…", tooltip_text="Choose " + title.lower())
-                choose.update_property([Gtk.AccessibleProperty.LABEL], ["Choose " + title.lower()])
-                choose.connect("clicked", lambda _button, entry=widget, directory=folder: self.choose_path(entry, directory))
-                line.append(choose)
-                if widget is not self.projects_dir:
-                    self.choose_buttons.append(choose)
-            if widget is self.provider:
-                self.provider_text = label("")
-                self.provider_text.set_xalign(0)
-                self.provider_text.set_visible(False)
-                line.append(self.provider_text)
-            if widget is self.projects_dir:
-                self.transcript_widgets = [field]
-        # Claude only, like Transcript folder: the note under the choice says what it does.
-        self.remote_claude = Gtk.DropDown.new_from_strings([title for _value, title, _note in REMOTE_CLAUDE])
-        self.remote_claude.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION],
-                                           ["Remote Claude sessions", REMOTE_CLAUDE[0][2]])
-        caption = label("Remote Claude sessions")
-        caption.set_mnemonic_widget(self.remote_claude)
-        field = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        field.append(caption)
-        line = Gtk.Box(spacing=8)
-        self.remote_claude.set_hexpand(True)
-        line.append(self.remote_claude)
-        field.append(line)
-        self.remote_claude_note = label(REMOTE_CLAUDE[0][2], "caption")
-        self.remote_claude_note.set_wrap(True)
+        self.provider_fixed = Adw.ActionRow(title="App")
+        self.provider_fixed.add_suffix(label("OpenCode"))
+        self.enabled = Adw.SwitchRow(title="Enabled", subtitle="Show the chats of this profile on the board.")
+        for row in (self.name, self.provider, self.provider_fixed, self.enabled):
+            fields.add(row)
+        self.bridge_group = group("ASB Bridge")
+        self.bridge_row = Adw.ActionRow(use_markup=False)
+        self.bridge_row.set_subtitle_lines(0)
+        self.bridge_icon = Gtk.Image()
+        self.bridge_row.add_prefix(self.bridge_icon)
+        self.install_button = Gtk.Button(valign=Gtk.Align.CENTER)
+        self.install_button.connect("clicked", self.install_bridge)
+        self.bridge_row.add_suffix(self.install_button)
+        self.bridge_group.add(self.bridge_row)
+        self.remote_claude = Adw.ComboRow(title="Remote Claude sessions", use_subtitle=True)
+        self.remote_claude.set_model(Gtk.StringList.new([title for _value, title, _note in REMOTE_CLAUDE]))
+        self.remote_claude.set_title_lines(0)
+        self.remote_claude.set_subtitle_lines(0)
+        self.remote_claude.update_property([Gtk.AccessibleProperty.LABEL], ["Remote Claude sessions"])
+        self.bridge_group.add(self.remote_claude)
+        self.remote_claude_note = self.text(REMOTE_CLAUDE[0][2])
+        self.remote_claude_note.add_css_class("dim-label")
+        self.remote_claude_note.set_wrap_mode(Pango.WrapMode.WORD)
+        self.remote_claude_note.set_natural_wrap_mode(Gtk.NaturalWrapMode.NONE)
         self.remote_claude_note.set_xalign(0)
-        field.append(self.remote_claude_note)
-        self.form.append(field)
-        self.transcript_widgets.append(field)
+        self.bridge_group.add(self.remote_claude_note)
+        # The install result is the last item, so the note stays right under its row.
+        self.install_result = self.text("")
+        self.bridge_group.add(self.install_result)
         self.remote_claude.connect("notify::selected", self.remote_claude_changed)
-        self.source_color = Gtk.ColorDialogButton.new(Gtk.ColorDialog(title="Profile color", with_alpha=False))
-        for accessible in (self.source_color, self.source_color.get_first_child()):
-            accessible.update_property([Gtk.AccessibleProperty.LABEL], ["Profile color"])
-        self.source_color.connect("notify::rgba", self.color_changed)
-        color_row = Gtk.Box(spacing=8)
-        color_row.append(self.source_color)
-        self.source_color_hex = label("", "caption")
-        self.source_color_hex.set_selectable(True)
-        color_row.append(self.source_color_hex)
-        color_name = label("Profile color")
-        color_name.set_mnemonic_widget(self.source_color)
-        self.form.append(color_name)
-        self.form.append(color_row)
-        presets = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, column_spacing=6, row_spacing=6,
-                              min_children_per_line=2, max_children_per_line=4, homogeneous=True)
+        self.files_group = group("Files")
+        self.data_dir, self.launcher, self.projects_dir = (Adw.EntryRow(title=title)
+            for title in ("Session folder", "Open with", "Transcript folder"))
+        self.choose_buttons, self.fixed_provider = [], ""
+        for entry, icon, title, folder in ((self.data_dir, "folder-open-symbolic", "Choose session folder", True),
+                (self.launcher, "document-open-symbolic", "Choose app launcher", False),
+                (self.projects_dir, "folder-open-symbolic", "Choose transcript folder", True)):
+            choose = Gtk.Button(icon_name=icon, tooltip_text=title, valign=Gtk.Align.CENTER)
+            choose.add_css_class("flat")
+            choose.update_property([Gtk.AccessibleProperty.LABEL], [title])
+            choose.connect("clicked", lambda _button, entry=entry, folder=folder: self.choose_path(entry, folder))
+            entry.add_suffix(choose)
+            if entry is not self.projects_dir:
+                self.choose_buttons.append(choose)
+        self.launcher_fixed = Adw.ActionRow(title="Open with", subtitle="Not used: OpenCode cannot open one session from a link.")
+        self.launcher_fixed.set_subtitle_lines(0)
+        for row in (self.data_dir, self.launcher, self.launcher_fixed, self.projects_dir):
+            self.files_group.add(row)
+        self.transcript_widgets = [self.projects_dir, self.remote_claude, self.remote_claude_note]
+        colors = group("Color and dot")
+        self.color_row = Adw.ActionRow(title="Profile color")
+        presets = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER)
         for name, color in SOURCE_COLOR_PRESETS:
-            marker = SourceMarker(owner, color)
+            marker = SourceMarker(self.owner, color)
             marker.set_valign(Gtk.Align.CENTER)
+            marker.add_css_class("asb-preset-swatch")
             self.preset_markers.append(marker)
-            preset = Gtk.Box(spacing=6)
-            preset.append(marker)
-            preset.append(label(name, "caption"))
-            button = Gtk.Button(child=preset, tooltip_text=f"{name}: {color}")
+            button = Gtk.Button(child=marker, valign=Gtk.Align.CENTER, tooltip_text=f"{name}: {color}")
+            button.add_css_class("flat")
+            button.add_css_class("circular")
             button.update_property([Gtk.AccessibleProperty.LABEL], [f"Use {name} profile color"])
-            button.connect("clicked", lambda _button, value=color: self.source_color.set_rgba(owner.rgba(value)))
-            presets.insert(button, -1)
-        self.form.append(presets)
-        self.show_marker = Gtk.CheckButton(label="Show profile dot", active=True)
-        self.form.append(self.show_marker)
-        self.enabled = Gtk.CheckButton(label="Enabled", active=True)
-        self.form.append(self.enabled)
+            button.connect("clicked", lambda _button, value=color: self.source_color.set_rgba(self.owner.rgba(value)))
+            presets.append(button)
+        self.source_color = Gtk.ColorDialogButton.new(Gtk.ColorDialog(title="Profile color", with_alpha=False))
+        self.source_color.set_valign(Gtk.Align.CENTER)
+        self.source_color.connect("notify::rgba", self.color_changed)
+        presets.append(self.source_color)
+        self.color_row.add_suffix(presets)
+        colors.add(self.color_row)
+        self.show_marker = Adw.SwitchRow(title="Show profile dot")
+        colors.add(self.show_marker)
+        identity = group()
+        self.source_id = self.text("")
+        self.source_id.add_css_class("dim-label")
+        self.source_status = self.text("")
+        self.remove_button = Gtk.Button(label="Remove profile", halign=Gtk.Align.START)
+        self.remove_button.add_css_class("destructive-action")
+        self.remove_button.connect("clicked", self.remove_source)
+        for widget in (self.source_id, self.source_status, self.remove_button):
+            identity.add(widget)
         for entry in (self.name, self.data_dir, self.launcher, self.projects_dir):
             entry.connect("changed", self.form_changed)
         for check in (self.enabled, self.show_marker):
-            check.connect("toggled", self.form_changed)
-        help_text = label("Codex: choose CODEX_HOME, such as ~/.codex-personal. Claude: choose the app profile folder with "
-                          "claude-code-sessions or Cache. Added sources need an installed app launcher. "
-                          "Only default sources can leave Open with empty to use the default app.", "caption")
-        help_text.set_wrap(True)
-        content.append(help_text)
-        self.source_status = label("", "caption")
-        self.source_status.set_wrap(True)
-        self.source_status.set_selectable(True)
-        content.append(self.source_status)
-        actions = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, column_spacing=8, row_spacing=8,
-                              min_children_per_line=3, max_children_per_line=5, homogeneous=True)
-        content.append(actions)
-        self.add_button, self.save_button, self.remove_button, self.cancel_button, self.reload_button = (
-            Gtk.Button(label=title) for title in ("Add", "Save", "Remove", "Cancel", "Refresh"))
-        for button, callback in ((self.add_button, self.add_source), (self.save_button, self.save_source),
-                                 (self.remove_button, self.remove_source), (self.cancel_button, self.cancel_form),
-                                 (self.reload_button, self.reload_sources)):
-            button.connect("clicked", callback)
-            actions.insert(button, -1)
-        self.save_button.add_css_class("suggested-action")
-        self.update_controls()
+            check.connect("notify::active", self.form_changed)
+        toolbar.set_content(self.form)
+        if modern:
+            self.dialog.set_child(toolbar)
+            self.form.get_first_child().set_propagate_natural_height(True)
+        else:
+            self.dialog.set_content(toolbar)
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self.dialog_key)
+        self.dialog.add_controller(keys)
+
+    def present_dialog(self):
+        if hasattr(Adw, "Dialog"):
+            self.dialog.present(self.preferences)
+        else:
+            self.dialog.present()
+
+    def dialog_key(self, _controller, key, _code, modifiers):
+        if key == Gdk.KEY_Escape and not modifiers & SHORTCUT_MASK:
+            # A running save or remove keeps the dialog open for its reply.
+            if not self.saving:
+                self.cancel_form()
+            return True
+        return False
+
+    def end_edit(self, *_args):
+        if self.editing:
+            self.editing, self.editing_id = False, ""
+            self.form_baseline = self.baseline_source = self.edit_revision = None
+            self.conflict = False
+            self.cancel_dialogs()
+            self.update_controls()
+            self.form_changed()
+        return False
 
     def color_changed(self, *_args):
-        self.source_color_hex.set_label(self.owner.hex_color(self.source_color.get_rgba()))
+        self.color_row.set_subtitle(self.owner.hex_color(self.source_color.get_rgba()))
         self.form_changed()
 
     def remote_claude_changed(self, *_args):
@@ -1937,7 +2107,13 @@ class AppSourcesEditor(Gtk.Box):
     def set_active(self, active):
         active = bool(active and not self.closed and not self.owner.closed)
         previous, self.active = getattr(self, "active", False), active
+        if not active and previous:
+            self.bridge_generation += 1
+            self.bridge_loading, self.bridge_queued = False, None
         if active and not previous:
+            # Libadwaita 1.4: Preferences hid the dialog window with the draft; show it again.
+            if self.editing and self.dialog is not None and not hasattr(Adw, "Dialog"):
+                self.dialog.present()
             self.reload_sources()
 
     def observe_revision(self, revision):
@@ -1955,60 +2131,76 @@ class AppSourcesEditor(Gtk.Box):
         for marker in self.preset_markers + self.table_markers:
             marker.set_color(marker.configured_color)
 
-    @staticmethod
-    def table_line(values):
-        line = Gtk.Box(spacing=8, margin_start=8, margin_end=8, margin_top=6, margin_bottom=6)
-        for value, width in zip(values, (64, 150, 210, 180, 180)):
-            cell = label(value, "caption") if isinstance(value, str) else value
-            cell.set_size_request(width, -1)
-            if isinstance(value, str):
-                cell.set_max_width_chars(1)
-                cell.set_ellipsize(Pango.EllipsizeMode.END)
-                cell.set_tooltip_text(value)
-            line.append(cell)
-        return line
-
     def update_controls(self):
-        busy = self.loading or self.choosing
-        form_busy = self.choosing or self.loading and (not self.loaded or getattr(self, "saving", False))
-        current = next((source for source in self.sources if source["id"] == self.editing_id), {})
+        busy = self.loading or self.choosing or self.saving
+        form_busy = self.choosing or self.saving or self.loading and not self.loaded
         self.table.set_sensitive(self.loaded and not form_busy)
+        self.add_button.set_sensitive(self.loaded and not busy and len(self.sources) < self.max_sources)
+        self.reload_button.set_sensitive(not busy)
+        self.table.update_state([Gtk.AccessibleState.BUSY], [busy])
+        if self.dialog is None:
+            return
+        current = next((source for source in self.sources if source["id"] == self.editing_id), {})
         self.form.set_sensitive(self.editing and not form_busy)
         self.provider.set_sensitive(not current.get("builtin"))
         for button in self.choose_buttons:
             button.set_sensitive(not self.fixed_provider)
-        self.add_button.set_sensitive(self.loaded and not busy and len(self.sources) < self.max_sources)
-        self.save_button.set_sensitive(self.loaded and not busy and self.editing)
+        self.save_button.set_sensitive(self.loaded and self.editing and not busy)
+        self.cancel_button.set_sensitive(self.loaded and self.editing and not busy)
         self.remove_button.set_sensitive(self.loaded and not busy and bool(current) and not current.get("builtin"))
-        self.cancel_button.set_sensitive(self.loaded and not busy and self.editing)
-        self.reload_button.set_sensitive(not busy)
-        self.table.update_state([Gtk.AccessibleState.BUSY], [busy])
+        self.install_button.set_sensitive(not self.installing)
+        if hasattr(Adw, "Dialog"):
+            self.dialog.set_can_close(not self.saving)
 
     def provider_changed(self, *_args):
+        claude = self.provider.get_selected() == 1 and not self.fixed_provider
         for widget in self.transcript_widgets:
-            widget.set_visible(self.provider.get_selected() == 1 and not self.fixed_provider)
+            widget.set_visible(claude)
+        if self.fixed_provider:
+            description = None
+        else:
+            builtin = bool(next((source for source in self.sources if source["id"] == self.editing_id), {}).get("builtin"))
+            description = ("Choose the app profile folder with claude-code-sessions or Cache." if claude
+                           else "Choose CODEX_HOME, such as ~/.codex-personal.")
+            description += (" Leave Open with empty to use the default app." if builtin
+                            else " Added profiles need an installed app launcher.")
+            if claude:
+                description += " An empty Transcript folder uses ~/.claude/projects."
+        self.files_group.set_description(description)
+        self.update_bridge_row()
         self.form_changed()
 
     def set_source_status(self, source):
         status = source.get("status", "").capitalize()
         if source.get("message"):
             status += ": " + source["message"]
-        if source.get("builtin"):
-            status += ". Default source: you can edit or disable it. You cannot remove it."
-        self.source_status.set_label(status.strip(". "))
+        parts = [status, "Default profile: you can edit or turn it off. You cannot remove it." if source.get("builtin") else ""]
+        status = " ".join(part.rstrip(". ") + "." for part in parts if part.rstrip(". "))
+        self.source_status.set_label(status)
+        self.source_status.set_visible(bool(status))
 
     def set_form(self, source=None):
+        self.ensure_dialog()
         source = source or {}
         self.setting_form = True
         self.editing, self.editing_id = True, source.get("id", "")
-        self.form_title.set_label("Edit app source" if self.editing_id else "Add app source")
+        self.dialog_title.set_title(source.get("label") or "New profile")
+        self.dialog_title.set_subtitle(profile_subtitle(source) if self.editing_id else "")
+        self.save_button.set_label("Save" if self.editing_id else "Add")
+        self.remove_button.set_visible(bool(self.editing_id) and not source.get("builtin"))
+        self.show_message("", dialog=True)
+        self.install_result.set_label("")
+        self.install_result.set_visible(False)
+        self.install_result.remove_css_class("monospace")
         self.source_id.set_label("ID: " + (self.editing_id or "Assigned when saved"))
+        self.source_id.set_visible(True)
         provider = source.get("provider", "codex")
         # The default OpenCode source keeps its app, folder, and empty launcher.
         self.fixed_provider = provider if provider not in SOURCE_PROVIDERS else ""
         self.provider.set_visible(not self.fixed_provider)
-        self.provider_text.set_label(APP_NAMES.get(provider, provider))
-        self.provider_text.set_visible(bool(self.fixed_provider))
+        self.provider_fixed.set_visible(bool(self.fixed_provider))
+        self.launcher_fixed.set_visible(bool(self.fixed_provider))
+        self.launcher.set_visible(not self.fixed_provider)
         self.provider.set_selected(0 if self.fixed_provider else SOURCE_PROVIDERS.index(provider))
         for entry in (self.data_dir, self.launcher):
             entry.set_editable(not self.fixed_provider)
@@ -2025,10 +2217,8 @@ class AppSourcesEditor(Gtk.Box):
             color = SOURCE_COLOR_PRESETS[0][1]
         self.source_color.set_rgba(self.owner.rgba(color))
         for accessible in (self.source_color, self.source_color.get_first_child()):
-            accessible.update_property([Gtk.AccessibleProperty.LABEL], ["Profile color for " + source.get("label", "new app source")])
+            accessible.update_property([Gtk.AccessibleProperty.LABEL], ["Profile color for " + source.get("label", "new profile")])
         self.color_changed()
-        self.launcher.set_placeholder_text("Not used: OpenCode cannot open one session from a link." if self.fixed_provider
-                                           else "Default app link handler" if source.get("builtin") else "Installed app launcher required")
         self.set_source_status(source)
         self.provider_changed()
         self.form_baseline = self.form_values()
@@ -2038,80 +2228,233 @@ class AppSourcesEditor(Gtk.Box):
         self.update_controls()
         self.form_changed()
 
-    def selected_source(self, _table, row):
-        if row and not (self.choosing or self.closed or getattr(self, "saving", False) or getattr(self, "rendering", False)):
-            self.set_form(row.asb_source)
+    def open_source(self, source):
+        if self.closed or self.saving or self.choosing or self.loading and not self.loaded:
+            return
+        self.show_feedback("")
+        self.set_form(source)
+        self.present_dialog()
 
     def render_sources(self, preferred="", preserve_form=False):
         focus = self.preferences.get_focus()
         current = next((source for source in self.sources if source["id"] == preferred), None)
         keep_form = False
         if preserve_form and self.editing:
-            unchanged = source_edit_values(current) == source_edit_values(getattr(self, "baseline_source", None))
+            unchanged = source_edit_values(current) == source_edit_values(self.baseline_source)
             keep_form = not self.editing_id or unchanged or self.is_dirty() or self.choosing
             if not self.editing_id or unchanged:
                 self.edit_revision, self.conflict = self.revision, False
             elif keep_form:
                 self.conflict = True
-        self.rendering = True
+                self.show_message(PROFILE_CONFLICT, dialog=True)
         existing = {}
         child = self.table.get_first_child()
         while child:
             following = child.get_next_sibling()
-            if any(source["id"] == child.asb_source["id"] for source in self.sources):
-                existing[child.asb_source["id"]] = child
-            else:
-                self.table.remove(child)
+            existing[child.asb_source["id"]] = child
             child = following
         self.table_markers = []
-        selected = None
         for index, source in enumerate(self.sources):
-            row = existing.get(source["id"])
-            if row is None or row.asb_source != source:
-                provider = APP_NAMES.get(source["provider"], source["provider"])
-                marker = SourceMarker(self.owner, source.get("color", ""))
-                marker.set_valign(Gtk.Align.CENTER)
-                name_cell = Gtk.Box(spacing=6)
-                name_cell.append(marker)
-                name = label(source["label"] + "\n" + provider, "caption")
-                name.set_ellipsize(Pango.EllipsizeMode.END)
-                name.set_max_width_chars(1)
-                name.set_hexpand(True)
-                name_cell.append(name)
-                name_cell.set_tooltip_text(source["label"] + "\n" + provider + "\nProfile color: " + marker.configured_color)
-                status = f"{source.get('sessionCount', 0)} chats · {source.get('status', 'unknown').capitalize()}"
-                if source.get("message"):
-                    status += "\n" + source["message"]
-                row = row or Gtk.ListBoxRow()
-                row.asb_source, row.asb_marker = source, marker
-                row.set_child(self.table_line(["Yes" if source["enabled"] else "No", name_cell,
-                                               source["dataDir"], source["launcher"] or "Default app", status]))
-                row.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION],
-                                    [f"{source['label']}, {provider}, {status}", "Profile color: " + marker.configured_color])
+            row = existing.pop(source["id"], None)
+            app = self.bridge_apps.get(source["id"]) if self.bridge_apps is not None else None
+            if row is None:
+                row = self.make_row()
+            # One row object per source ID keeps the keyboard focus and the focus that a closed dialog gives back.
+            if row.asb_source != source or row.asb_bridge != app or row.asb_bridge_known != (self.bridge_apps is not None):
+                self.update_row(row, source, app)
             self.table_markers.append(row.asb_marker)
             if self.table.get_row_at_index(index) is not row:
                 if row.get_parent() is self.table:
                     self.table.remove(row)
                 self.table.insert(row, index)
-            if source["id"] == preferred or selected is None and not keep_form:
-                selected = row
-        self.table.select_row(selected)
-        self.rendering = False
-        if focus is not None and focus in existing.values() and focus.get_parent() is self.table \
-                and self.preferences.get_focus() is not focus:
+        for row in existing.values():
+            self.table.remove(row)
+        if focus is not None and focus.get_parent() is self.table and self.preferences.get_focus() is not focus:
             focus.grab_focus()
-        if keep_form and current:
-            self.set_source_status(current)
-        elif not keep_form:
-            if selected:
-                self.set_form(selected.asb_source)
+        self.bridge_header.set_visible(self.bridge_apps is not None)
+        self.queue_align()
+        self.count.set_label(f"{len(self.sources)} of {self.max_sources} profiles" if self.loaded else "")
+        if preserve_form and self.editing:
+            if keep_form:
+                if current:
+                    self.dialog_title.set_subtitle(profile_subtitle(current))
+                    self.set_source_status(current)
+                self.update_bridge_row()
+            elif current:
+                self.set_form(current)
             else:
-                self.editing, self.editing_id = False, ""
-                self.form_baseline = self.baseline_source = self.edit_revision = None
-                self.conflict = False
-                self.form_title.set_label("Add an app source to show its chats")
-                self.source_id.set_label("")
-                self.source_status.set_label("")
+                self.cancel_form()
+
+    def make_row(self):
+        row = Adw.ActionRow(activatable=True, use_markup=False)
+        row.set_title_lines(0)
+        row.set_subtitle_lines(0)
+        row.asb_marker = SourceMarker(self.owner, "")
+        row.asb_marker.set_valign(Gtk.Align.CENTER)
+        row.add_prefix(row.asb_marker)
+        # The row keeps this box; an update changes only its children.
+        row.asb_state = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        row.add_suffix(row.asb_state)
+        row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
+        row.asb_source = row.asb_bridge = row.asb_state_label = row.asb_state_icon = None
+        row.asb_bridge_known = None
+        return row
+
+    def update_row(self, row, source, app):
+        row.set_title(source["label"])
+        row.set_subtitle(profile_subtitle(source))
+        row.asb_marker.set_color(source.get("color", ""))
+        for widget in (row.asb_state_icon, row.asb_state_label):
+            if widget is not None:
+                row.asb_state.remove(widget)
+        row.asb_state_icon = row.asb_state_label = None
+        state_text = ""
+        if self.bridge_apps is not None:
+            if not source["enabled"]:
+                state_text = "Off"
+            elif app is not None:
+                state_text, icon, css = BRIDGE_STATES.get(app["state"], BRIDGE_STATES["unknown"])
+                row.asb_state_icon = Gtk.Image(icon_name=icon)
+                row.asb_state_icon.add_css_class(css)
+                row.asb_state.append(row.asb_state_icon)
+            if state_text:
+                state_label = label(state_text, "dim-label")
+                state_label.set_wrap(True)
+                state_label.set_wrap_mode(Pango.WrapMode.WORD)
+                state_label.set_natural_wrap_mode(Gtk.NaturalWrapMode.NONE)
+                state_label.set_xalign(1)
+                state_label.set_justify(Gtk.Justification.RIGHT)
+                row.asb_state_label = state_label
+                row.asb_state.append(state_label)
+        row.asb_state.set_visible(bool(state_text))
+        (row.remove_css_class if source["enabled"] else row.add_css_class)("dim-label")
+        row.update_property([Gtk.AccessibleProperty.DESCRIPTION],
+            [(f"ASB Bridge: {state_text}. " if state_text else "") + "Profile color: " + row.asb_marker.configured_color])
+        row.asb_source, row.asb_bridge = source, app
+        row.asb_bridge_known = self.bridge_apps is not None
+
+    def queue_align(self, *_args):
+        # Only a shown header measures; its map signal starts the measure again after a hidden render.
+        if self.bridge_apps is not None and self.header_tick is None and self.bridge_header.get_mapped():
+            self.header_tick = self.bridge_header.add_tick_callback(self.align_header)
+
+    def align_header(self, *_args):
+        # Theme fonts change the row padding; the header ends where the first state text ends.
+        state = next((row.asb_state_label for row in self.rows() if row.asb_state_label is not None
+                      and row.asb_state_label.get_mapped() and row.asb_state_label.get_width() > 0), None)
+        if state is None:
+            if self.bridge_header.get_mapped() and any(row.asb_state_label is not None for row in self.rows()):
+                return True
+            self.header_tick = None
+            return False
+        found, bounds = state.compute_bounds(self)
+        if found:
+            self.bridge_header.set_margin_end(max(0, round(self.get_width() - bounds.get_x() - bounds.get_width())))
+        self.header_tick = None
+        return False
+
+    def rows(self):
+        row = self.table.get_first_child()
+        while row:
+            yield row
+            row = row.get_next_sibling()
+
+    def dialog_closed(self, *_args):
+        if self.saving:
+            return True
+        self.end_edit()
+        index, self.focus_after_close = self.focus_after_close, None
+        if index is not None:
+            count = len(self.sources)
+            row = self.table.get_row_at_index(min(index, count - 1)) if count else None
+            (row or self.add_button).grab_focus()
+        return False
+
+    def update_bridge_row(self):
+        if self.dialog is None:
+            return
+        source = next((source for source in self.sources if source["id"] == self.editing_id), None)
+        app = self.bridge_apps.get(self.editing_id) if self.bridge_apps is not None else None
+        disabled = source is not None and not source["enabled"] and self.bridge_apps is not None
+        visible = bool(self.editing_id and (disabled or app is not None))
+        self.bridge_row.set_visible(visible)
+        self.bridge_icon.set_visible(visible and not disabled)
+        action = None
+        if disabled:
+            self.bridge_row.set_title("Not checked")
+            self.bridge_row.set_subtitle("ASB checks ASB Bridge only for enabled profiles.")
+        elif app is not None:
+            self.bridge_row.set_title(bridge_state_line(app))
+            self.bridge_row.set_subtitle(bridge_detail(app) or "")
+            _text, icon, css = BRIDGE_STATES.get(app["state"], BRIDGE_STATES["unknown"])
+            self.bridge_icon.set_from_icon_name(icon)
+            for name in ("success", "warning", "error", "dim-label"):
+                self.bridge_icon.remove_css_class(name)
+            self.bridge_icon.add_css_class(css)
+            action = bridge_action(app)
+        self.install_button.set_visible(bool(action) and visible)
+        self.install_button.set_label("Installing…" if self.installing == self.editing_id else action or "Install")
+        self.install_button.set_sensitive(not self.installing)
+        self.bridge_group.set_visible(visible or self.remote_claude.get_visible() or self.install_result.get_visible())
+
+    def request_bridge(self, refresh=False):
+        if not self.active or self.closed or self.owner.closed:
+            return
+        if self.bridge_loading:
+            self.bridge_queued = bool(self.bridge_queued) or refresh
+            return
+        self.bridge_loading = True
+        generation = self.bridge_generation
+        def finished(result, error):
+            if self.closed or self.owner.closed or not self.active or generation != self.bridge_generation:
+                return False
+            self.bridge_loading = False
+            if not error and not bridge_valid(result):
+                error = "The ASB Bridge response is not valid. Try again."
+            if error:
+                if refresh:
+                    self.show_message(error)
+            else:
+                self.bridge_apps = bridge_self_apps(result)
+                self.render_sources(self.editing_id, preserve_form=True)
+            queued, self.bridge_queued = self.bridge_queued, None
+            if queued is not None:
+                self.request_bridge(queued)
+            return False
+        request_async(self.base, "/api/bridge" + ("?refresh=1" if refresh else ""), finished, GLib.idle_add)
+
+    def install_bridge(self, *_args):
+        app = self.bridge_apps.get(self.editing_id) if self.bridge_apps is not None else None
+        action = bridge_action(app) if app is not None else None
+        if self.closed or self.installing or not self.editing or not action:
+            return
+        identity = self.installing = self.editing_id
+        self.install_result.set_visible(False)
+        self.install_result.remove_css_class("monospace")
+        self.update_bridge_row()
+        def finished(result, error):
+            if self.closed or self.owner.closed:
+                return False
+            self.installing = ""
+            failed = not error and isinstance(result, dict) and result.get("ok") is False
+            if error:
+                text = error
+            elif failed:
+                text = BRIDGE_INSTALL_FAILED + "\n" + "\n".join(str(result.get("output", "")).splitlines()[-12:])
+            elif isinstance(result, dict) and result.get("ok") is True:
+                text = "Installed." if action == "Install" else "Updated."
+            else:
+                text = "The ASB Bridge response is not valid. Try again."
+            if self.editing and self.editing_id == identity:
+                self.install_result.set_label(text)
+                self.install_result.set_visible(True)
+                (self.install_result.add_css_class if failed else self.install_result.remove_css_class)("monospace")
+                self.update_bridge_row()
+            else:
+                self.show_feedback(text)
+            self.request_bridge()
+            return False
+        request_async(self.base, "/api/bridge/install", finished, GLib.idle_add, "POST", {"sourceId": identity})
 
     def request_sources(self, route="/api/sources", method="GET", body=None):
         if self.closed or self.owner.closed:
@@ -2121,40 +2464,45 @@ class AppSourcesEditor(Gtk.Box):
                 self.refresh_queued = True
             return
         self.refresh_queued = False
-        preferred = self.editing_id
         self.loading = True
         self.saving = method == "POST"
-        self.message.set_label("Loading app sources…" if method == "GET" else "Saving app sources…")
+        refresh_bridge, self.bridge_refresh = self.bridge_refresh, False
+        if method == "POST":
+            self.show_message("Saving…" if body else "Removing…", dialog=True)
+        elif not self.loaded:
+            self.show_message("Loading profiles…")
         self.update_controls()
         def finished(result, error):
             if self.closed or self.owner.closed:
                 return False
             self.loading = False
             self.saving = False
+            # The dialog may close again (Adw.Dialog can-close) before the render below.
+            self.update_controls()
             if not error and (not isinstance(result, dict) or not isinstance(result.get("sources"), list)):
-                error = "The app source list is not valid. Refresh the list, then try again."
+                error = "The profile list is not valid. Refresh the list, then try again."
             if error:
                 if method == "GET":
                     self.observed_revision = None
                     self.refresh_queued = False
-                self.message.set_label(error)
+                self.show_message(error, dialog=method == "POST")
             else:
+                if method == "POST" and not body:
+                    self.focus_after_close = next((index for index, source in enumerate(self.sources)
+                                                   if source["id"] == self.editing_id), None)
                 self.sources, self.loaded = result["sources"], True
                 self.revision = source_revision(result.get("revision"))
                 self.max_sources = result.get("maxSources", self.max_sources)
-                identity = preferred
-                if method == "POST" and body and not body["source"].get("id"):
-                    identity = next((source["id"] for source in self.sources
-                                     if source["provider"] == body["source"]["provider"]
-                                     and source["dataDir"] == os.path.normpath(body["source"]["dataDir"])), "")
                 if method == "GET":
                     self.render_sources(self.editing_id, preserve_form=True)
+                    if not self.feedback:
+                        self.show_message("")
+                    self.request_bridge(refresh_bridge)
                 else:
-                    self.render_sources(identity)
-                feedback = "Saved. " if method == "POST" and body else "Removed. " if method == "POST" else ""
-                self.message.set_label("This app source changed outside this form. Your edits are kept. Select Cancel to load the saved source, then edit and save again."
-                                       if getattr(self, "conflict", False) else f"{feedback}{len(self.sources)} of {self.max_sources} app sources")
-                if method == "POST":
+                    # The same row object gets the focus back when the dialog closes.
+                    self.render_sources()
+                    self.cancel_form()
+                    self.show_feedback("Saved." if body else "Removed.")
                     self.owner.refresh(True)
             self.update_controls()
             self.form_changed()
@@ -2169,28 +2517,31 @@ class AppSourcesEditor(Gtk.Box):
     def reload_sources(self, *_args):
         self.request_sources()
 
+    def refresh_sources(self, *_args):
+        self.show_feedback("")
+        self.bridge_refresh = True
+        self.reload_sources()
+
     def add_source(self, *_args):
         if self.loading or self.choosing or not self.loaded or len(self.sources) >= self.max_sources:
             return
-        self.table.unselect_all()
+        self.show_feedback("")
         self.set_form()
+        self.present_dialog()
         self.name.grab_focus()
 
     def cancel_form(self, *_args):
-        row = self.table.get_selected_row() or self.table.get_row_at_index(0)
-        if row:
-            self.table.select_row(row)
-            self.set_form(row.asb_source)
-        else:
-            self.editing = False
-            self.update_controls()
-            self.form_changed()
+        if self.saving:
+            return
+        self.end_edit()
+        if self.dialog is not None:
+            self.dialog.close()
 
     def save_source(self, *_args):
         if self.closed or self.loading or self.choosing or not self.loaded or not self.editing:
             return
         if getattr(self, "conflict", False):
-            self.message.set_label("This app source changed outside this form. Your edits are kept. Select Cancel to load the saved source, then edit and save again.")
+            self.show_message(PROFILE_CONFLICT, dialog=True)
             return
         try:
             body = source_form_body(self.fixed_provider or SOURCE_PROVIDERS[self.provider.get_selected()], self.name.get_text(),
@@ -2199,13 +2550,13 @@ class AppSourcesEditor(Gtk.Box):
                                     self.owner.hex_color(self.source_color.get_rgba()), self.show_marker.get_active(),
                                     remote_claude=REMOTE_CLAUDE[self.remote_claude.get_selected()][0])
         except ValueError as error:
-            self.message.set_label(str(error))
+            self.show_message(str(error), dialog=True)
             return
         self.request_sources("/api/sources", "POST", body)
 
     def remove_source(self, *_args):
         if getattr(self, "conflict", False):
-            self.message.set_label("This app source changed outside this form. Select Cancel to load the saved source before removal.")
+            self.show_message("This profile changed outside this dialog. Select Cancel and open the profile again before you remove it.", dialog=True)
             return
         current = next((source for source in self.sources if source["id"] == self.editing_id), {})
         if current and not current.get("builtin"):
@@ -2237,9 +2588,9 @@ class AppSourcesEditor(Gtk.Box):
             except GLib.Error as error:
                 if not error.matches(Gtk.dialog_error_quark(), Gtk.DialogError.DISMISSED) \
                         and not error.matches(Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED):
-                    self.message.set_label("Cannot select this path. Enter its local path, then try again.")
+                    self.show_message("Cannot select this path. Enter its local path, then try again.", dialog=True)
             except ValueError as error:
-                self.message.set_label(str(error))
+                self.show_message(str(error), dialog=True)
             self.update_controls()
             self.form_changed()
             self.flush_refresh()
@@ -2257,6 +2608,11 @@ class AppSourcesEditor(Gtk.Box):
     def close(self):
         self.closed = True
         self.cancel_dialogs()
+        if self.dialog is not None:
+            if hasattr(Adw, "Dialog"):
+                self.dialog.force_close()
+            else:
+                self.dialog.destroy()
 
 
 class PhoneEditor(Gtk.Box):
@@ -2554,6 +2910,7 @@ class MachinesEditor(Gtk.Box):
         self.owner, self.preferences, self.base = owner, preferences, owner.base
         self.closed = self.active = self.loaded = self.loading = self.poll_loading = False
         self.generation, self.poll_timer, self.dialog = 0, None, None
+        self.bridge, self.bridge_loading = None, False
         self.group, self.view, self.summary = {}, machines_view({}), None
         self.invite_link, self.invite_expires, self.invite_ids, self.matrix = "", 0, set(), None
         self.remove_buttons, self.rows_shown = [], None
@@ -2701,7 +3058,7 @@ class MachinesEditor(Gtk.Box):
                     self.dialog.destroy()
                     self.dialog = None
             self.generation += 1
-            self.loading = self.poll_loading = False
+            self.loading = self.poll_loading = self.bridge_loading = False
             if self.poll_timer:
                 GLib.source_remove(self.poll_timer)
             self.poll_timer = None
@@ -2709,6 +3066,7 @@ class MachinesEditor(Gtk.Box):
         else:
             # Members change while the page is hidden, so each open reads the group again; a poll keeps the panels.
             self.request_group()
+            self.request_bridge()
             self.poll_timer = GLib.timeout_add_seconds(5, self.poll)
 
     def show_message(self, text):
@@ -2751,11 +3109,11 @@ class MachinesEditor(Gtk.Box):
         self.group, self.view, self.loaded = group, machines_view(group), True
         own = group["self"]
         self.self_row.set_title(own["name"])
-        self.self_row.set_subtitle("ID " + own["machineId"][:8])
+        self.self_row.set_subtitle("ID " + own["machineId"][:8] + self.bridge_suffix(is_self=True))
         self.off.set_visible(self.view["off"])
         grouped, others = self.view["grouped"], self.view["others"]
         now_ms = time.time() * 1000
-        rows = [(member["machineId"], member["name"], machine_member_subtitle(member, now_ms), bool(member.get("online")))
+        rows = [(member["machineId"], member["name"], machine_member_subtitle(member, now_ms) + self.bridge_suffix(member["machineId"]), bool(member.get("online")))
                 for member in others]
         # A poll every 5 s must not make the same rows again: that drops the keyboard focus of a Remove button.
         if rows != self.rows_shown:
@@ -2771,6 +3129,28 @@ class MachinesEditor(Gtk.Box):
             self.close_join()
         self.body.set_visible(True)
 
+    def bridge_suffix(self, identity="", is_self=False):
+        machines = self.bridge["machines"] if self.bridge is not None else []
+        machine = next((machine for machine in machines
+                        if (machine["isSelf"] if is_self else machine.get("machineId") == identity)), None)
+        return "\n" + machine_bridge_line(machine) if machine is not None else ""
+
+    def request_bridge(self):
+        if not self.active or self.closed or self.owner.closed or self.bridge_loading:
+            return
+        self.bridge_loading = True
+        generation = self.generation
+        def finished(result, error):
+            if self.closed or self.owner.closed or not self.active or generation != self.generation:
+                return False
+            self.bridge_loading = False
+            if not error and bridge_valid(result):
+                self.bridge = result
+                if self.loaded:
+                    self.render(self.group)
+            return False
+        request_async(self.base, "/api/bridge", finished, GLib.idle_add)
+
     def request_group(self, route="/api/group", method="GET", body=None, poll=False, feedback="", done=None):
         """A GET renders the group and shows feedback; a POST calls done with the reply."""
         if self.closed or self.owner.closed or not self.active or self.loading or (poll and self.poll_loading):
@@ -2779,6 +3159,7 @@ class MachinesEditor(Gtk.Box):
             self.poll_loading = True
         else:
             self.generation += 1
+            self.bridge_loading = False
             self.poll_loading = False
             self.loading = True
             if not self.loaded:
@@ -2822,6 +3203,7 @@ class MachinesEditor(Gtk.Box):
             return False
         if not self.expire_invite():
             self.request_group(poll=True)
+        self.request_bridge()
         return True
 
     def invite(self, *_args):
@@ -3039,6 +3421,10 @@ class PreferencesWindow(Adw.Window):
 
     def window_key(self, _controller, key, _code, modifiers):
         if key == Gdk.KEY_Escape and not modifiers & SHORTCUT_MASK:
+            editor = self.profiles_editor
+            # Only a shown profile dialog takes Escape; a hidden 1.4 draft does not keep Preferences open.
+            if editor and editor.editing and editor.dialog is not None and editor.dialog.get_mapped():
+                return False
             self.close()
             return True
         return False
@@ -3048,7 +3434,15 @@ class PreferencesWindow(Adw.Window):
             self.profiles_editor.cancel_dialogs()
         for window in Gtk.Window.list_toplevels():
             if window.get_transient_for() is self:
-                window.close()
+                # The profile dialog keeps its draft while Preferences is hidden.
+                if self.profiles_editor and window is self.profiles_editor.dialog:
+                    window.set_visible(False)
+                else:
+                    window.close()
+
+    def close(self):
+        # Gtk.Window.close() closes an embedded Adw.Dialog first instead of hiding Preferences.
+        self.on_close()
 
     def on_close(self, *_args):
         if self.profiles_editor:
@@ -3548,6 +3942,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-message-lit .asb-provider {{ color: @accent_color; opacity: 1; }}
 {base} .asb-source-badge {{ min-width: 6px; min-height: 6px; padding: 0; border: 1px solid @window_bg_color;
     border-radius: 50%; box-shadow: none; opacity: 1; }}
+{base} .asb-source-badge.asb-preset-swatch {{ min-width: 14px; min-height: 14px; }}
 {base} .asb-column {{ background: transparent; }}
 {base} .asb-number {{ min-width: 16px; min-height: 15px; padding: 0; border: 1px solid alpha(@window_fg_color, .36);
     border-bottom-width: 2px; border-radius: 3px; background: mix(@window_bg_color, @window_fg_color, .17);
@@ -3751,7 +4146,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             preferences = self.preferences_window
             (preferences.add_css_class if colors else preferences.remove_css_class)("asb-custom")
             if preferences.profiles_editor:
-                preferences.profiles_editor.update_marker_colors()
+                editor = preferences.profiles_editor
+                if editor.dialog is not None and not hasattr(Adw, "Dialog"):
+                    (editor.dialog.add_css_class if colors else editor.dialog.remove_css_class)("asb-custom")
+                editor.update_marker_colors()
 
     def badge_class(self, displayed):
         """The style class of a profile badge color; the rules of all badge colors are in self.badge_css."""

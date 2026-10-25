@@ -1039,7 +1039,207 @@ class WidgetCheck(unittest.TestCase):
         requests = []
         def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None, headers=None):
             if route != "/api/palette":
-                requests.append((route, callback, method, body))
+                requests.append((route, callback, method, body, headers))
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                   (asb, "request_async", request)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        def reply(route, value=None, error=None):
+            item = next(item for item in reversed(requests) if item[0] == route)
+            item[1](copy.deepcopy(value), error)
+            self.drain(.15)
+            return item
+        def walk(widget):
+            yield widget
+            child = widget.get_first_child()
+            while child:
+                yield from walk(child)
+                child = child.get_next_sibling()
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", copy.deepcopy(FIXTURE),
+                                      theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.present(); self.drain(.2)
+        window.open_preferences(); self.drain(.2)
+        preferences = window.preferences_window
+        preferences.stack.set_visible_child_name("profiles"); self.drain(.1)
+        editor = preferences.profiles_editor
+        self.assertEqual(editor.message.get_label(), "Loading profiles…")
+        self.assertFalse(editor.bridge_header.get_visible())
+        self.assertIsNone(editor.dialog)
+        sources = [{"id": "codex", "provider": "codex", "label": "Personal", "enabled": True, "builtin": True,
+                    "dataDir": "/example/profiles/codex", "launcher": "", "color": "#8296b4", "showMarker": True,
+                    "sessionCount": 5, "status": "ok"},
+                   {"id": "studio", "provider": "claude-desktop-code", "label": "Studio", "enabled": True,
+                    "dataDir": "/example/profiles/studio", "launcher": "/example/apps/studio.desktop",
+                    "projectsDir": "/example/transcripts", "color": "#b28f80", "showMarker": True,
+                    "sessionCount": 1, "status": "ready", "remoteClaude": "native"},
+                   {"id": "opencode", "provider": "opencode", "label": "OpenCode", "enabled": True, "builtin": True,
+                    "dataDir": "/example/profiles/opencode", "launcher": "", "color": "#899e91", "showMarker": True,
+                    "sessionCount": 2, "status": "ok"},
+                   {"id": "off", "provider": "codex", "label": "Test", "enabled": False,
+                    "dataDir": "/example/profiles/off", "launcher": "", "color": "#a28caa", "showMarker": False,
+                    "sessionCount": 0, "status": "disabled"}]
+        source_reply = {"sources": sources, "maxSources": 8, "revision": "a" * 64}
+        reply("/api/sources", source_reply)
+        self.assertFalse(editor.message.get_visible())
+        self.assertFalse(editor.bridge_header.get_visible())
+        self.assertEqual(requests[-1][0], "/api/bridge")
+        apps = [{"sourceId": identity, "label": title, "provider": provider, "state": state,
+                 "version": version, "live": live, "canInstall": install}
+                for identity, title, provider, state, version, live, install in
+                (("codex", "Codex", "codex", "ready", "0.8.0", 2, False),
+                 ("studio", "Studio", "claude-desktop-code", "missing", None, 0, True),
+                 ("opencode", "OpenCode", "opencode", "update", "0.7.0", 1, False))]
+        bridge = {"api": 1, "machines": [{"machineId": "self123456", "name": "atlas", "isSelf": True, "state": "ok", "apps": apps}]}
+        reply("/api/bridge", bridge)
+        self.assertTrue(editor.bridge_header.get_visible())
+        self.assertEqual(editor.bridge_header.get_label(), "ASB Bridge")
+        self.assertTrue(all(editor.bridge_header.has_css_class(css) for css in ("caption", "dim-label")))
+        self.assertEqual(editor.table.get_selection_mode(), asb.Gtk.SelectionMode.NONE)
+        self.assertTrue(editor.table.has_css_class("boxed-list"))
+        rows = board_listed(editor.table)
+        self.assertEqual([row.get_title() for row in rows], ["Personal", "Studio", "OpenCode", "Test"])
+        self.assertEqual([row.get_subtitle() for row in rows],
+                         ["Codex · 5 chats", "Claude Desktop Code · 1 chat", "OpenCode · 2 chats", "Codex · Off"])
+        self.assertEqual([row.asb_state_label.get_label() for row in rows], ["Ready", "Not installed", "Old version", "Off"])
+        for row, source, state in zip(rows, sources, ("ready", "missing", "update", None)):
+            self.assertTrue(row.get_activatable())
+            self.assertFalse(row.get_use_markup())
+            self.assertEqual((row.get_title_lines(), row.get_subtitle_lines()), (0, 0))
+            self.assertEqual(row.asb_marker.get_valign(), asb.Gtk.Align.CENTER)
+            self.assertEqual(row.asb_state_label.get_wrap_mode(), asb.Pango.WrapMode.WORD)
+            self.assertEqual(row.asb_state_label.get_natural_wrap_mode(), asb.Gtk.NaturalWrapMode.NONE)
+            self.assertTrue(row.asb_state_label.has_css_class("dim-label"))
+            if state:
+                self.assertEqual(row.asb_state_icon.get_icon_name(), asb.BRIDGE_STATES[state][1])
+                self.assertTrue(row.asb_state_icon.has_css_class(asb.BRIDGE_STATES[state][2]))
+            else:
+                self.assertIsNone(row.asb_state_icon)
+            self.assertIn("go-next-symbolic", [node.get_icon_name() for node in walk(row) if isinstance(node, asb.Gtk.Image)])
+            self.assert_accessible_label(row, f"ASB Bridge: {row.asb_state_label.get_label()}. Profile color: {source['color']}",
+                                         asb.Gtk.AccessibleProperty.DESCRIPTION)
+        header_bounds = editor.bridge_header.compute_bounds(editor)[1]
+        state_bounds = rows[0].asb_state_label.compute_bounds(editor)[1]
+        header_right = header_bounds.get_x() + header_bounds.get_width()
+        state_right = state_bounds.get_x() + state_bounds.get_width()
+        self.assertLessEqual(abs(header_right - state_right), 4)
+        self.assertEqual(editor.add_button.get_child().get_label(), "Add a profile")
+        self.assertEqual(editor.reload_button.get_icon_name(), "view-refresh-symbolic")
+        self.assertTrue(editor.reload_button.has_css_class("flat"))
+        self.assert_accessible_label(editor.reload_button, "Refresh")
+        self.assertEqual(editor.count.get_label(), "4 of 8 profiles")
+        editor.table.emit("row-activated", rows[1]); self.drain(.3)
+        self.assertIsInstance(editor.dialog, asb.Adw.Dialog)
+        self.assertIs(editor.dialog.get_root(), preferences)
+        self.assertEqual(editor.dialog.get_content_width(), 560)
+        dialog = editor.dialog
+        self.assertEqual((editor.dialog_title.get_title(), editor.dialog_title.get_subtitle()),
+                         ("Studio", "Claude Desktop Code · 1 chat"))
+        self.assertEqual(editor.name.get_delegate().get_max_length(), 80)
+        self.assertTrue(all(isinstance(widget, asb.Adw.EntryRow) for widget in
+                            (editor.name, editor.data_dir, editor.launcher, editor.projects_dir)))
+        self.assertEqual(editor.enabled.get_subtitle(), "Show the chats of this profile on the board.")
+        self.assertEqual(editor.bridge_row.get_title(), "Not installed")
+        self.assertEqual(editor.bridge_row.get_subtitle(), asb.BRIDGE_NONE_BODY)
+        self.assertEqual(editor.install_button.get_label(), "Install")
+        self.assertEqual(editor.files_group.get_description(), "Choose the app profile folder with claude-code-sessions or Cache. Added profiles need an installed app launcher. An empty Transcript folder uses ~/.claude/projects.")
+        self.assertTrue(all(widget.get_visible() for widget in editor.transcript_widgets))
+        self.assertTrue(editor.remote_claude.get_use_subtitle())
+        self.assertEqual(editor.remote_claude.get_selected(), 2)
+        self.assertEqual(editor.remote_claude_note.get_label(), asb.REMOTE_CLAUDE[2][2])
+        self.assertGreaterEqual(editor.remote_claude_note.compute_bounds(editor.form)[1].get_y(),
+                                editor.remote_claude.compute_bounds(editor.form)[1].get_y() + editor.remote_claude.get_height())
+        self.assertTrue(editor.remove_button.get_visible())
+        self.assertEqual(editor.color_row.get_subtitle(), "#b28f80")
+        for marker, (name, color) in zip(editor.preset_markers, asb.SOURCE_COLOR_PRESETS):
+            button = marker.get_parent()
+            self.assertTrue(marker.has_css_class("asb-preset-swatch"))
+            self.assertTrue(button.has_css_class("flat") and button.has_css_class("circular"))
+            self.assertEqual(button.get_tooltip_text(), f"{name}: {color}")
+            self.assert_accessible_label(button, f"Use {name} profile color")
+            self.assertGreaterEqual(marker.get_width(), 14)
+        self.assertFalse(preferences.window_key(None, asb.Gdk.KEY_Escape, 0, 0))
+        editor.remote_claude.set_selected(1); self.drain(.05)
+        self.assertEqual(editor.remote_claude_note.get_label(), asb.REMOTE_CLAUDE[1][2])
+        self.assert_accessible_label(editor.remote_claude, asb.REMOTE_CLAUDE[1][2], asb.Gtk.AccessibleProperty.DESCRIPTION)
+        editor.name.set_text("Draft Studio")
+        editor.save_button.emit("clicked")
+        self.assertEqual(requests[-1][3], {"source": {"id": "studio", "provider": "claude-desktop-code", "label": "Draft Studio",
+            "dataDir": "/example/profiles/studio", "launcher": "/example/apps/studio.desktop", "projectsDir": "/example/transcripts",
+            "enabled": True, "color": "#b28f80", "showMarker": True, "remoteClaude": "bridge"}})
+        self.assertEqual(requests[-1][4], {"If-Match": '"' + "a" * 64 + '"'})
+        reply("/api/sources", error="The store is in use.")
+        self.assertTrue(editor.editing)
+        self.assertEqual(editor.dialog_message.get_label(), "The store is in use.")
+        self.assertEqual(editor.name.get_text(), "Draft Studio")
+        editor.install_button.emit("clicked")
+        self.assertEqual((requests[-1][0], requests[-1][2], requests[-1][3]),
+                         ("/api/bridge/install", "POST", {"sourceId": "studio"}))
+        self.assertEqual(editor.install_button.get_label(), "Installing…")
+        self.assertFalse(editor.install_button.get_sensitive())
+        reply("/api/bridge/install", {"ok": True, "output": "ok"})
+        self.assertEqual(editor.install_result.get_label(), "Installed.")
+        self.drain(.1)
+        self.assertTrue(editor.install_result.get_mapped() and editor.remote_claude_note.get_mapped())
+        note_y = editor.remote_claude_note.compute_bounds(editor.form)[1].get_y()
+        result_y = editor.install_result.compute_bounds(editor.form)[1].get_y()
+        self.assertGreater(result_y, note_y)
+        self.assertEqual(requests[-1][0], "/api/bridge")
+        reply("/api/bridge", bridge)
+        preferences.close(); self.drain(.15)
+        self.assertTrue(editor.editing)
+        window.open_preferences(); self.drain(.15)
+        reply("/api/sources", source_reply)
+        reply("/api/bridge", bridge)
+        self.assertIs(editor.dialog, dialog)
+        self.assertTrue(editor.editing)
+        self.assertEqual(editor.name.get_text(), "Draft Studio")
+        editor.save_button.emit("clicked")
+        reply("/api/sources", {**source_reply, "sources": [sources[0], {**sources[1], "label": "Draft Studio", "remoteClaude": "bridge"}, *sources[2:]]})
+        self.drain(.3)
+        self.assertFalse(editor.editing)
+        self.assertEqual(editor.message.get_label(), "Saved.")
+        self.assertEqual((editor.editing_id, editor.form_baseline, editor.baseline_source, editor.edit_revision), ("", None, None, None))
+        editor.open_source(editor.sources[2]); self.drain(.3)
+        self.assertIs(editor.dialog, dialog)
+        self.assertFalse(editor.provider.get_visible())
+        self.assertTrue(editor.provider_fixed.get_visible())
+        self.assertTrue(editor.launcher_fixed.get_visible())
+        self.assertFalse(editor.launcher.get_visible())
+        self.assertFalse(editor.data_dir.get_editable())
+        self.assertTrue(all(not button.get_sensitive() for button in editor.choose_buttons))
+        self.assertFalse(any(widget.get_visible() for widget in editor.transcript_widgets))
+        self.assertFalse(editor.remove_button.get_visible())
+        self.assertEqual(editor.bridge_row.get_title(), "Old version · 0.7.0 · 1 live")
+        self.assertEqual(editor.bridge_row.get_subtitle(), "Update, then restart OpenCode.")
+        self.assertIn(editor.files_group.get_description(), (None, ""))
+        self.assertTrue(editor.dialog_key(None, asb.Gdk.KEY_Escape, 0, 0)); self.drain(.3)
+        preferences.set_default_size(420, 700); self.drain(.3)
+        self.assertEqual(preferences.get_width(), 420)
+        # Check the list and every form at phone width, including long state and error text.
+        for source in (None, *editor.sources):
+            if source is not None:
+                editor.open_source(source)
+                self.drain(.3)
+            for scroll in (node for node in walk(preferences) if isinstance(node, asb.Gtk.ScrolledWindow)
+                           and node is not preferences.tabs_scroll and node.get_mapped()):
+                adjustment = scroll.get_hadjustment()
+                self.assertLessEqual(adjustment.get_upper(), adjustment.get_page_size() + 1)
+                for row in (node for node in walk(scroll) if isinstance(node, asb.Gtk.ListBoxRow) and node.get_mapped()):
+                    found, bounds = row.compute_bounds(scroll)
+                    self.assertTrue(found)
+                    self.assertGreaterEqual(bounds.get_x(), -1)
+                    self.assertLessEqual(bounds.get_x() + bounds.get_width(), scroll.get_width() + 1)
+            if source is not None:
+                editor.cancel_form(); self.drain(.3)
+
+    def test_machines_show_bridge_lines_for_this_machine_and_members(self):
+        requests = []
+        def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None, headers=None):
+            if route != "/api/palette":
+                requests.append((route, callback))
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
                                    (asb, "request_async", request)):
@@ -1052,42 +1252,128 @@ class WidgetCheck(unittest.TestCase):
         window.present(); self.drain(.2)
         window.open_preferences(); self.drain(.2)
         preferences = window.preferences_window
+        preferences.stack.set_visible_child_name("machines"); self.drain(.1)
+        editor = preferences.machines_editor
+        self.assertEqual([route for route, _callback in requests], ["/api/group", "/api/bridge"])
+        own = {"machineId": "3f9a2c71e0b4d58a", "name": "atlas"}
+        laptop = {"machineId": "8c41e9d27b3a05f6", "name": "laptop", "online": True, "lastOkAtMs": NOW, "isSelf": False,
+                  "addresses": [{"kind": "lan", "address": "192.168.1.24"}]}
+        studio = {"machineId": "51b7f0aa3c8e2d9b", "name": "studio", "online": False, "lastOkAtMs": 0, "isSelf": False,
+                  "addresses": []}
+        group = {"groupId": "7d2e91c4b06fa358", "self": own, "networkEnabled": True, "phones": [],
+                 "members": [{**own, "isSelf": True, "online": True, "lastOkAtMs": NOW, "addresses": []}, laptop, studio]}
+        requests[0][1](copy.deepcopy(group), None); self.drain(.05)
+        bridge = {"api": 1, "machines": [
+            {"machineId": own["machineId"], "name": "atlas", "isSelf": True, "state": "ok",
+             "apps": [{"sourceId": "codex", "label": "Codex", "state": "ready"},
+                      {"sourceId": "personal", "label": "Codex Personal", "state": "hooks"},
+                      {"sourceId": "opencode", "label": "OpenCode", "state": "update"}]},
+            {"machineId": laptop["machineId"], "name": "laptop", "isSelf": False, "state": "old", "live": 2, "apps": []},
+            {"machineId": studio["machineId"], "name": "studio", "isSelf": False, "state": "offline", "apps": []}]}
+        requests[1][1](bridge, None); self.drain(.05)
+        self.assertEqual(editor.self_row.get_subtitle(),
+                         "ID 3f9a2c71\nBridge: Codex ready · Codex Personal hooks not trusted · OpenCode old version")
+        subtitles = [row.get_subtitle() for row in board_listed(editor.others)]
+        self.assertTrue(subtitles[0].endswith("\nBridge: unknown, needs ASB 1.12 or later · 2 live"))
+        self.assertTrue(subtitles[1].endswith("\nBridge: not checked while offline"))
+
+    def test_profile_rows_keep_focus_and_a_running_save_keeps_the_dialog(self):
+        requests = []
+        def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None, headers=None):
+            if route != "/api/palette":
+                requests.append((route, callback, method, body))
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                   (asb, "request_async", request)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        def reply(route, value=None, error=None):
+            item = next(item for item in reversed(requests) if item[0] == route)
+            item[1](copy.deepcopy(value), error)
+            self.drain(.5)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", copy.deepcopy(FIXTURE),
+                                      theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.present(); self.drain(.2)
+        window.open_preferences(); self.drain(.2)
+        preferences = window.preferences_window
         preferences.stack.set_visible_child_name("profiles"); self.drain(.1)
         editor = preferences.profiles_editor
-        sources = [{"id": "codex", "provider": "codex", "label": "Personal", "enabled": True, "builtin": True,
-                    "dataDir": "/example/profiles/codex", "launcher": "", "color": "#8296b4", "showMarker": True,
-                    "sessionCount": 5, "status": "ok"},
-                   {"id": "studio", "provider": "claude-desktop-code", "label": "Studio", "enabled": True,
-                    "dataDir": "/example/profiles/studio", "launcher": "/example/apps/studio.desktop",
-                    "projectsDir": "/example/transcripts", "color": "#b28f80", "showMarker": True,
-                    "sessionCount": 3, "status": "ok", "remoteClaude": "native"}]
-        requests[-1][1]({"sources": sources, "maxSources": 8}, None)
-        transcript, remote = editor.transcript_widgets
-        # The field follows Transcript folder and has the caption, the dropdown, and the note.
-        self.assertIs(transcript.get_next_sibling(), remote)
-        self.assertIs(editor.remote_claude.get_ancestor(asb.Gtk.Box).get_parent(), remote)
-        self.assertIs(remote.get_last_child(), editor.remote_claude_note)
-        self.assert_accessible_label(editor.remote_claude, "Remote Claude sessions")
-        editor.table.select_row(editor.table.get_row_at_index(1)); self.drain(.1)
-        self.assertTrue(remote.get_visible())
-        self.assertEqual(editor.remote_claude.get_selected(), 2)
-        self.assertEqual(editor.remote_claude_note.get_label(), asb.REMOTE_CLAUDE[2][2])
-        self.assertFalse(editor.is_dirty())
-        editor.remote_claude.set_selected(1); self.drain(.05)
-        self.assertEqual(editor.remote_claude_note.get_label(), asb.REMOTE_CLAUDE[1][2])
-        self.assert_accessible_label(editor.remote_claude, asb.REMOTE_CLAUDE[1][2], asb.Gtk.AccessibleProperty.DESCRIPTION)
-        self.assertTrue(editor.is_dirty())
+        def source(identity, title, builtin=False):
+            return {"id": identity, "provider": "codex", "label": title, "enabled": True, "builtin": builtin,
+                    "dataDir": "/example/profiles/" + identity, "launcher": "" if builtin else "/example/apps/codex.desktop",
+                    "color": "#8296b4", "showMarker": True, "sessionCount": 2, "status": "ok"}
+        sources = [source("codex", "Codex", True), source("personal", "Codex Personal"), source("added", "Added"),
+                   source("work", "Work")]
+        def bridge(personal="ready"):
+            return {"api": 1, "machines": [{"machineId": "self", "name": "atlas", "isSelf": True, "state": "ok", "apps": [
+                {"sourceId": item["id"], "label": item["label"], "provider": "codex",
+                 "state": personal if item["id"] == "personal" else "ready", "version": "0.8.0", "live": 1,
+                 "canInstall": False} for item in sources]}]}
+        reply("/api/sources", {"sources": sources, "maxSources": 8, "revision": "a" * 64})
+        reply("/api/bridge", bridge())
+        rows = board_listed(editor.table)
+        # A render while another page shows starts no frame tick; showing Profiles again aligns the header once.
+        preferences.stack.set_visible_child_name("appearance"); self.drain(.1)
+        editor.render_sources()
+        self.drain(.5)
+        self.assertIsNone(editor.header_tick)
+        preferences.stack.set_visible_child_name("profiles"); self.drain(.5)
+        self.assertIsNone(editor.header_tick)
+        # The page shows again, so it reads the profiles and the bridge again.
+        self.assertEqual(requests[-1][0], "/api/sources")
+        reply("/api/sources", {"sources": sources, "maxSources": 8, "revision": "a" * 64})
+        reply("/api/bridge", bridge())
+        self.assertIsNone(editor.header_tick)
+        rows = board_listed(editor.table)
+        # (e) The measured header margin puts its right edge on the right edge of the state text.
+        header = editor.bridge_header.compute_bounds(editor)[1]
+        state = rows[0].asb_state_label.compute_bounds(editor)[1]
+        self.assertLessEqual(abs(header.get_x() + header.get_width() - state.get_x() - state.get_width()), 1)
+        # (a) A bridge reply that changes only the focused row keeps that row object and its focus.
+        personal = rows[1]
+        personal.grab_focus(); self.drain(.05)
+        editor.request_bridge()
+        reply("/api/bridge", bridge("hooks"))
+        self.assertEqual(board_listed(editor.table), rows)
+        self.assertIs(preferences.get_focus(), personal)
+        self.assertEqual(personal.asb_state_label.get_label(), "Hooks not trusted")
+        self.assertEqual(personal.asb_state_icon.get_icon_name(), "dialog-warning-symbolic")
+        # (d) Escape and dialog.close() during a save keep the dialog; the error shows there with the edits.
+        editor.table.emit("row-activated", personal); self.drain(.3)
+        dialog = editor.dialog
+        editor.name.set_text("Codex Private")
         editor.save_button.emit("clicked")
-        self.assertEqual((requests[-1][0], requests[-1][2], requests[-1][3]["source"]["remoteClaude"]), ("/api/sources", "POST", "bridge"))
-        requests[-1][1]({"sources": [sources[0], {**sources[1], "remoteClaude": "bridge"}], "maxSources": 8}, None); self.drain(.1)
-        editor.table.select_row(editor.table.get_row_at_index(0)); self.drain(.1)
-        self.assertFalse(remote.get_visible())
-        self.assertEqual(editor.remote_claude.get_selected(), 0)
-        self.assertEqual(editor.remote_claude_note.get_label(), asb.REMOTE_CLAUDE[0][2])
+        self.assertTrue(editor.saving)
+        self.assertFalse(dialog.get_can_close())
+        self.assertTrue(editor.dialog_key(None, asb.Gdk.KEY_Escape, 0, 0))
+        dialog.close(); self.drain(.5)
+        self.assertTrue(editor.editing)
+        self.assertTrue(dialog.get_mapped())
+        reply("/api/sources", error="The store is in use.")
+        self.assertTrue(editor.editing and dialog.get_mapped())
+        self.assertEqual(editor.dialog_message.get_label(), "The store is in use.")
+        self.assertEqual(editor.name.get_text(), "Codex Private")
+        # (b) Save gives the focus back to the same row object, which shows the new name.
         editor.save_button.emit("clicked")
-        self.assertEqual((requests[-1][2], requests[-1][3]["source"]["provider"]), ("POST", "codex"))
-        self.assertNotIn("remoteClaude", requests[-1][3]["source"])
-        requests[-1][1]({"sources": sources, "maxSources": 8}, None); self.drain(.1)
+        sources[1] = {**sources[1], "label": "Codex Private"}
+        reply("/api/sources", {"sources": sources, "maxSources": 8, "revision": "b" * 64})
+        self.assertFalse(editor.editing)
+        self.assertIs(board_listed(editor.table)[1], personal)
+        self.assertEqual(personal.get_title(), "Codex Private")
+        self.assertIs(preferences.get_focus(), personal)
+        # (c) Remove gives the focus to the row that took the place of the removed row.
+        added, work = board_listed(editor.table)[2:]
+        added.grab_focus()
+        editor.table.emit("row-activated", added); self.drain(.3)
+        editor.remove_button.emit("clicked")
+        self.assertEqual(requests[-1][0::2], ("/api/sources/added/remove", "POST"))
+        del sources[2]
+        reply("/api/sources/added/remove", {"sources": sources, "maxSources": 8, "revision": "c" * 64})
+        self.assertFalse(editor.editing)
+        self.assertEqual(board_listed(editor.table)[2], work)
+        self.assertIs(preferences.get_focus(), work)
 
     def early_window(self, taken=False):
         """A window that waits for the early request of the launcher start; waiting keeps the callback that the request calls.
@@ -1226,8 +1512,10 @@ class WidgetCheck(unittest.TestCase):
 
     def test_preferences_sections_reuse_lazy_profiles_theme_and_narrow_layout(self):
         requests = []
-        def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None):
-            if route != "/api/palette":  # The window shares its palette at start; this test checks the other requests.
+        def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None, headers=None):
+            if route == "/api/bridge":
+                callback({"api": 1, "machines": []}, None)
+            elif route != "/api/palette":  # The window shares its palette at start; this test checks the other requests.
                 requests.append((route, callback, method, body))
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
@@ -1284,22 +1572,24 @@ class WidgetCheck(unittest.TestCase):
                     "dataDir": "/example/profiles/opencode", "launcher": "", "color": "#899e91", "showMarker": True,
                     "sessionCount": 2, "status": "ok"}]
         requests[-1][1]({"sources": sources, "maxSources": 8}, None)
+        editor.open_source(sources[0])
         self.assertFalse(editor.provider.get_sensitive())
         self.assertFalse(editor.remove_button.get_sensitive())
-        editor.table.select_row(editor.table.get_row_at_index(2))
-        self.assertEqual((editor.provider.get_visible(), editor.provider_text.get_visible(), editor.provider_text.get_label()),
-                         (False, True, "OpenCode"))
+        editor.open_source(sources[2])
+        self.assertEqual((editor.provider.get_visible(), editor.provider_fixed.get_visible(), editor.provider_fixed.get_title()),
+                         (False, True, "App"))
         self.assertEqual((editor.data_dir.get_editable(), editor.launcher.get_editable()), (False, False))
         self.assertTrue(all(not button.get_sensitive() for button in editor.choose_buttons))
         self.assertFalse(any(widget.get_visible() for widget in editor.transcript_widgets))
-        editor.table.select_row(editor.table.get_row_at_index(0))
-        self.assertEqual((editor.provider.get_visible(), editor.provider_text.get_visible(), editor.data_dir.get_editable()),
+        editor.open_source(sources[0])
+        self.assertEqual((editor.provider.get_visible(), editor.provider_fixed.get_visible(), editor.data_dir.get_editable()),
                          (True, False, True))
         self.assertTrue(all(button.get_sensitive() for button in editor.choose_buttons))
+        editor.cancel_form(); self.drain(.3)
         capture("profiles-wide")
-        editor.add_source()
+        editor.add_source(); self.drain(.3)
         editor.name.set_text("Draft profile")
-        self.assertIs(editor.name.get_root(), preferences)
+        self.assertIs(editor.dialog.get_root(), preferences)
         self.assertEqual(window.search.get_text(), "")
         preferences.stack.set_visible_child_name("sessions")
         preferences.stack.set_visible_child_name("profiles")
@@ -1359,8 +1649,10 @@ class WidgetCheck(unittest.TestCase):
 
     def test_preferences_machines_page_flows_dialogs_timer_and_narrow_tabs(self):
         requests = []
-        def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None):
-            if route != "/api/palette":
+        def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None, headers=None):
+            if route == "/api/bridge":
+                callback({"api": 1, "machines": []}, None)
+            elif route != "/api/palette":
                 requests.append((route, callback, method, body))
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
