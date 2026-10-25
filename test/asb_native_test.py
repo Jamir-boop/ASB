@@ -1647,6 +1647,48 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(callback({"sources": []}, None))
         self.assertEqual(editor.sources, sources)
 
+    def test_preferences_layout_change_keeps_the_page_and_moves_focus_to_its_navigation_item(self):
+        requests = []
+        def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None):
+            if route != "/api/palette":
+                requests.append((route, callback, method, body))
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                   (asb, "request_async", request)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", copy.deepcopy(FIXTURE),
+                                      theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.present(); self.drain(.2)
+        window.open_preferences(); self.drain(.2)
+        preferences = window.preferences_window
+        self.assertEqual(preferences.get_width(), 780)
+        preferences.stack.set_visible_child_name("profiles"); self.drain(.1)
+        rows = preferences.sidebar.get_first_child()
+        while rows and not isinstance(rows, asb.Gtk.ListBox):
+            rows = rows.get_first_child()
+        profiles_row = rows.get_selected_row()
+        self.assertEqual(profiles_row.get_index(), 2)
+        profiles_row.grab_focus(); self.drain(.1)
+        self.assertIs(preferences.get_focus(), profiles_row)
+        before = list(requests)
+        preferences.set_default_size(420, 560); self.drain(.3)
+        self.assertEqual(preferences.stack.get_visible_child_name(), "profiles")
+        self.assertIsNotNone(preferences.get_current_breakpoint())
+        focus = preferences.get_focus()
+        self.assertIsInstance(focus, asb.Gtk.ToggleButton)
+        self.assertIs(focus.get_parent(), preferences.tabs)
+        self.assertTrue(focus.get_active())
+        preferences.set_default_size(780, 560); self.drain(.3)
+        self.assertEqual(preferences.stack.get_visible_child_name(), "profiles")
+        self.assertIsNone(preferences.get_current_breakpoint())
+        self.assertIs(preferences.get_focus(), profiles_row)
+        self.assertIs(rows.get_selected_row(), profiles_row)
+        self.assertNotIn("/api/phone", [item[0] for item in requests[len(before):]])
+        self.assertEqual((preferences.phone_editor, preferences.machines_editor), (None, None))
+
     def test_preferences_machines_page_flows_dialogs_timer_and_narrow_tabs(self):
         requests = []
         def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None, headers=None):

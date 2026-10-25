@@ -3370,10 +3370,14 @@ class PreferencesWindow(Adw.Window):
             self.stack.add_titled(scroll, title.lower(), title)
         self.stack.connect("notify::visible-child-name", self.section_changed)
         self.set_content(body)
-        breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 600px"))
-        breakpoint.add_setter(self.sidebar, "visible", False)
-        breakpoint.add_setter(self.tabs_scroll, "visible", True)
-        self.add_breakpoint(breakpoint)
+        self.breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 600px"))
+        self.breakpoint.add_setter(self.sidebar, "visible", False)
+        self.breakpoint.add_setter(self.tabs_scroll, "visible", True)
+        self.add_breakpoint(self.breakpoint)
+        # GTK moves the focus one step too far when the focused navigation hides, so it goes to the item of the shown page.
+        self.navigation_focus = False
+        self.breakpoint.connect("unapply", self.navigation_unapply)
+        self.connect("notify::current-breakpoint", self.navigation_changed)
         self.stack.update_property([Gtk.AccessibleProperty.LABEL], ["Preferences sections"])
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self.window_key)
@@ -3400,6 +3404,30 @@ class PreferencesWindow(Adw.Window):
             self.machines_editor.set_active(machines_visible)
         self.scroll_tabs()
         self.owner.report_ui()
+
+    def navigation_unapply(self, *_args):
+        focus = self.get_focus()
+        if focus and (focus is self.tabs_scroll or focus.is_ancestor(self.tabs_scroll)):
+            self.navigation_focus = True
+            self.set_focus(None)
+
+    def navigation_changed(self, *_args):
+        focus = self.get_focus()
+        if self.get_current_breakpoint() is None:
+            if self.navigation_focus:
+                self.navigation_focus = False
+                rows = self.sidebar.get_first_child()
+                while rows and not isinstance(rows, Gtk.ListBox):
+                    rows = rows.get_first_child()
+                row = rows.get_selected_row() if rows else None
+                if row:
+                    row.grab_focus()
+        elif focus and (focus is self.sidebar or focus.is_ancestor(self.sidebar)):
+            button = self.tabs.get_first_child()
+            while button and not button.get_active():
+                button = button.get_next_sibling()
+            if button:
+                button.grab_focus()
 
     def scroll_tabs(self, *_args):
         # The switcher updates its buttons and the tab row gets its size after this signal, so the scroll waits.
