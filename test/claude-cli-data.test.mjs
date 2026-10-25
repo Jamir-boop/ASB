@@ -250,6 +250,30 @@ test('a Claude CLI card with an open task shows Unknown when no live process has
   try { assert.deepEqual(await check(projectsDir, 'dead'), working); } finally { Object.defineProperty(process, 'platform', platform); }
 });
 
+test('on Windows the CLI cards read the live registry: a permission wait shows after its grace, and an open task with no live record ends the process', async (t) => {
+  const nowMs = Date.now();
+  const { home, projectsDir } = await configHome(t);
+  const sessionId = 'cccccccc-dddd-4eee-8fff-000000000000';
+  const at = (offset) => new Date(nowMs + offset).toISOString();
+  await writeFile(path.join(projectsDir, 'project', `${sessionId}.jsonl`), jsonl([
+    { type: 'user', timestamp: at(-60_000), sessionId, cwd: '/work/cli', entrypoint: 'cli', message: { role: 'user', content: 'Synthetic task' } },
+    { type: 'assistant', timestamp: at(-30_000), sessionId, message: { role: 'assistant', content: [
+      { type: 'tool_use', id: 'synthetic_tool', name: 'Bash', input: {} },
+    ] } },
+  ]));
+  const statusUpdatedAt = nowMs - 20_000;
+  const registryFile = path.join(home, 'sessions', `${process.pid}.json`);
+  await writeFile(registryFile, JSON.stringify({ pid: process.pid, procStart: '133000000000000000', name: 'synthetic-cli', sessionId,
+    entrypoint: 'cli', status: 'waiting', waitingFor: 'permission prompt', statusUpdatedAt, startedAt: nowMs - 120_000 }));
+  // On a Linux runner the pipe list cannot be read, so the PID rule applies.
+  const card = async (atMs) => (await loadClaudeCliThreads({ projectsDir, nowMs: atMs, platform: 'win32' })).threads
+    .find((thread) => thread.externalId === sessionId);
+  assert.notEqual((await card(statusUpdatedAt + 9_999)).awaitingPermission, true);
+  assert.equal((await card(statusUpdatedAt + 10_000)).awaitingPermission, true);
+  await rm(registryFile);
+  assert.equal((await card(nowMs)).cliProcessEnded, true);
+});
+
 test('a Claude CLI registry that cannot be read does not end the open tasks', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async (t) => {
   const nowMs = Date.now();
   const { home, projectsDir } = await configHome(t);

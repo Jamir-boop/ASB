@@ -32,11 +32,29 @@ test('the Windows rules keep a live pipe record with its recorded start and drop
       writeFileSync(path.join(root, 'outside', '109.json'), JSON.stringify({ pid: 109, sessionId: SESSION, name: 'synthetic', procStart: '1' }));
       symlinkSync(path.join(root, 'outside', '109.json'), path.join(root, '109.json'));
     }
-    const records = await readLiveClaudeRegistry([root], { windows: true, isAlive });
+    // An injected pipe list, so a Windows runner does not read its real pipes.
+    const records = await readLiveClaudeRegistry([root], { windows: true, isAlive, listPipes: async () => [PIPE.slice(9)] });
     assert.deepEqual(records.map((record) => [record.pid, record.procStart, record.messagingSocketPath]).sort(),
       [[101, '133000000000000000', PIPE], [102, '133000000000000000', undefined], [103, '133000000000000000', undefined]]);
     if (process.platform === 'win32') assert.deepEqual(await readLiveClaudeRegistry([root], { isAlive }), []);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('on Windows a record with a message pipe counts only while its pipe is listed, and a list failure keeps the PID rule', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'asb-registry-pipes-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const listed = `\\\\.\\pipe\\LOCAL\\cc-msg-${'cd'.repeat(16)}`;
+  const missing = `\\\\.\\pipe\\LOCAL\\cc-msg-${'ef'.repeat(16)}`;
+  const write = (pid, fields) => writeFileSync(path.join(root, `${pid}.json`), JSON.stringify({ pid, sessionId: SESSION, name: 'synthetic',
+    procStart: '133000000000000000', peerProtocol: 1, ...fields }));
+  write(301, { messagingSocketPath: listed });
+  write(302, { messagingSocketPath: missing });
+  write(303, {});
+  const pids = async (listPipes) => (await readLiveClaudeRegistry([root], { windows: true, isAlive: () => true, listPipes }))
+    .map((record) => record.pid).sort();
+  // The names come without `\\.\pipe\`, in other letter case than the record.
+  assert.deepEqual(await pids(async () => ['other', `local\\CC-MSG-${'CD'.repeat(16)}`]), [301, 303]);
+  assert.deepEqual(await pids(async () => { throw Object.assign(new Error('synthetic'), { code: 'EACCES' }); }), [301, 302, 303]);
 });
 
 const APP_SESSION = 'local_aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';

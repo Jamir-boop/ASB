@@ -1473,8 +1473,8 @@ test('desktop Claude loads an app approval for an open browser tool', async (t) 
     `2026-10-25 07:55:48 [info] Emitted tool permission request 11111111-2222-4333-8444-555555555555 for browser:left_click in session ${sessionId}\n`);
   const result = (platform) => loadClaudeDesktopCodeThreads({ appDir, projectsDir, nowMs: atMs + 20_000, platform });
   const load = async () => (await result()).threads[0];
-  // Windows has no live-record guard.
-  assert.equal((await result('win32')).threads[0].awaitingPermission, true);
+  // With no live record, an approval does not count on Windows or Linux.
+  assert.notEqual((await result('win32')).threads[0].awaitingPermission, true);
   assert.notEqual((await result('linux')).threads[0].awaitingPermission, true);
   if (process.platform === 'linux') {
     assert.notEqual((await load()).awaitingPermission, true, 'an ended process cannot leave an app approval wait');
@@ -1505,4 +1505,50 @@ test('desktop Claude loads an app approval for an open browser tool', async (t) 
   await rename(path.join(appDir, 'logs', 'next.log'), path.join(appDir, 'logs', 'main.log'));
   const warned = (await result()).provider;
   assert.deepEqual([warned.status, warned.message], ['warning', 'ASB cannot read the approvals in the Claude app log. Update ASB.']);
+});
+
+test('on Windows an app approval counts only with a live registry record, and the registry statuses apply as on Linux', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'asb-approval-win-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const appDir = path.join(dir, 'Claude');
+  const metadataDir = path.join(appDir, 'claude-code-sessions', 'account', 'organization');
+  const projectsDir = path.join(dir, 'projects');
+  const projectDir = path.join(projectsDir, 'synthetic-project');
+  const registryDir = path.join(path.dirname(projectsDir), 'sessions');
+  const sessionId = 'local_aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  const cliSessionId = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
+  const atMs = new Date(2026, 9, 25, 7, 55, 48).getTime();
+  await mkdir(metadataDir, { recursive: true });
+  await mkdir(projectDir, { recursive: true });
+  await mkdir(path.join(appDir, 'logs'));
+  await mkdir(registryDir);
+  await writeFile(path.join(metadataDir, `${sessionId}.json`), JSON.stringify({ sessionId, cliSessionId }));
+  await writeFile(path.join(projectDir, `${cliSessionId}.jsonl`), jsonl([
+    { type: 'user', sessionId: cliSessionId, timestamp: new Date(atMs - 1000).toISOString(), message: { role: 'user', content: 'Synthetic browser task' } },
+    { type: 'assistant', timestamp: new Date(atMs).toISOString(), message: { role: 'assistant', content: [
+      { type: 'tool_use', id: 'synthetic_browser', name: 'mcp__Claude_Browser__browser_batch', input: {} },
+    ] } },
+  ]));
+  const logFile = path.join(appDir, 'logs', 'main.log');
+  await writeFile(logFile,
+    `2026-10-25 07:55:48 [info] Emitted tool permission request 11111111-2222-4333-8444-555555555555 for browser:left_click in session ${sessionId}\n`);
+  const registryFile = path.join(registryDir, `${process.pid}.json`);
+  const record = JSON.stringify({ pid: process.pid, procStart: '133000000000000000', name: 'synthetic-approval', sessionId: cliSessionId,
+    hostSessionId: sessionId, status: 'waiting', waitingFor: 'permission prompt', statusUpdatedAt: atMs - 5000, startedAt: atMs - 5000 });
+  const load = async (nowMs = atMs + 20_000) => (await loadClaudeDesktopCodeThreads({ appDir, projectsDir, nowMs, platform: 'win32' })).threads[0];
+  // (b) With no record file, the chat keeps its transcript state.
+  const transcript = await load();
+  assert.notEqual(transcript.awaitingPermission, true);
+  // (a) With the record, the approval shows Waiting after the 10 s grace. The next app-log check in 5 s shows that the approval gave it.
+  await writeFile(registryFile, record);
+  const waiting = await load(atMs + 10_000);
+  assert.equal(waiting.awaitingPermission, true);
+  assert.equal(waiting.liveWaitingFor, 'permission prompt');
+  assert.equal(waiting.approvalCheckAtMs, atMs + 15_000);
+  // (c) With the record but no app-log request, the registry `waiting` status shows after its 10 s grace, as on Linux.
+  await writeFile(logFile, '');
+  assert.notEqual((await load(atMs - 5000 + 9_999)).awaitingPermission, true);
+  const registryWait = await load(atMs - 5000 + 10_000);
+  assert.equal(registryWait.awaitingPermission, true);
+  assert.equal(registryWait.liveWaitingFor, 'permission prompt');
 });

@@ -44,11 +44,16 @@ async function readRecord(file, windows = false) {
 }
 
 // Returns verified live records only: owned files whose process is alive with the recorded start time.
-// The Windows rules run only for a caller that asks for them, so the Windows board and the relay homes do not change.
-// The engine runs on Node with no FFI, so on Windows it checks only the PID; ASB Bridge proves the start time,
+// The Windows rules run only for a caller that asks for them.
+// The engine runs on Node with no FFI, so on Windows it checks the PID and, for a record with a message pipe, that the pipe exists.
+// A dead process's pipe goes with it, so a reused PID cannot keep its record. ASB Bridge proves the start time,
 // the pipe server, and the user at the write.
-export async function readLiveClaudeRegistry(roots, { windows = false, isAlive = pidAlive } = {}) {
+export async function readLiveClaudeRegistry(roots, { windows = false, isAlive = pidAlive, listPipes = () => fs.readdir('\\\\.\\pipe\\') } = {}) {
   if (!windows && process.platform !== 'linux') return [];
+  // The pipe names without the `\\.\pipe\` part, in lower case; null when the list cannot be read, so the PID rule applies.
+  const pipes = windows ? await listPipes().then((names) => new Set(names.map((name) => name.toLowerCase())), () => null) : null;
+  const pipeListed = (record) => pipes === null || typeof record.messagingSocketPath !== 'string' || !PEER_PIPE.test(record.messagingSocketPath)
+    || pipes.has(record.messagingSocketPath.slice('\\\\.\\pipe\\'.length).toLowerCase());
   const realRoots = new Set();
   for (const root of roots) {
     const real = await fs.realpath(root).catch(() => null);
@@ -63,7 +68,7 @@ export async function readLiveClaudeRegistry(roots, { windows = false, isAlive =
       if (!record || typeof record !== 'object' || Array.isArray(record) || record.pid !== Number(file.slice(0, -5))
         || typeof record.name !== 'string' || typeof record.sessionId !== 'string'
         || record.procStart === undefined || record.procStart === null) continue;
-      const start = windows ? (typeof record.procStart === 'string' && FILETIME.test(record.procStart) && isAlive(record.pid) ? record.procStart : null)
+      const start = windows ? (typeof record.procStart === 'string' && FILETIME.test(record.procStart) && isAlive(record.pid) && pipeListed(record) ? record.procStart : null)
         : await processStart(record.pid);
       if (start === null || start !== String(record.procStart)) continue;
       records.set(`${record.pid}:${start}`, { pid: record.pid, procStart: start, sessionId: record.sessionId,

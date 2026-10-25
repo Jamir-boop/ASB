@@ -1337,9 +1337,10 @@ export async function loadClaudeDesktopCodeThreads({
       return null;
     }
   });
+  const windows = platform === 'win32';
   // The registry is best effort: a read failure keeps the transcript state.
-  const live = await readLiveClaudeRegistry([path.join(path.dirname(projectsDir), 'sessions')]).catch(() => []);
-  const approvals = await readClaudeAppApprovals(appDir, { windows: platform === 'win32' }).catch(() => new Map());
+  const live = await readLiveClaudeRegistry([path.join(path.dirname(projectsDir), 'sessions')], { windows }).catch(() => []);
+  const approvals = await readClaudeAppApprovals(appDir, { windows }).catch(() => new Map());
   const threads = dedupeClaudeDesktopCodeThreads(parsed
     .filter(Boolean)
     .map((entry) => normalizeClaudeDesktopCodeSession(entry.session, entry, nowMs))
@@ -1347,8 +1348,8 @@ export async function loadClaudeDesktopCodeThreads({
     .map((thread) => applyLiveClaudeStatus(thread, live, nowMs))
     .map((thread) => {
       const record = liveClaudeRecord(thread, live);
-      // Windows has no live-record guard for now.
-      if (platform === 'linux' && !record) return thread;
+      // An approval counts only while the chat's Claude Code process runs.
+      if ((platform === 'linux' || windows) && !record) return thread;
       return applyClaudeAppApproval(thread, approvals, nowMs, record?.startedAt || 0);
     });
   const status = metadataReadErrors ? (threads.length ? 'warning' : 'error') : files.length ? 'desktop' : 'missing';

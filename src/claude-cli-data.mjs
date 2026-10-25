@@ -11,11 +11,11 @@ const RECENT_MS = 7 * 24 * 60 * 60 * 1000;
 const PROCESS_START_GRACE_MS = 10_000;
 
 export async function loadClaudeCliThreads({ projectsDir = DEFAULT_CLAUDE_PROJECTS_DIR, desktopSessionIds = new Set(), nowMs = Date.now(),
-  maxCount = 500, maxBytes = DEFAULT_MAX_JSONL_BYTES, cacheScope = '' } = {}) {
+  maxCount = 500, maxBytes = DEFAULT_MAX_JSONL_BYTES, cacheScope = '', platform = process.platform } = {}) {
   const registryDir = path.join(path.dirname(projectsDir), 'sessions');
-  // `registry` is null when no registry shows which processes live: an old CLI has no folder, only Linux has a reader, and a read can fail.
-  const registry = process.platform === 'linux' && await fs.stat(registryDir).then((info) => info.isDirectory(), () => false)
-    ? await readLiveClaudeRegistry([registryDir]).catch(() => null) : null;
+  // `registry` is null when no registry shows which processes live: an old CLI has no folder, macOS has no reader, and a read can fail.
+  const registry = (platform === 'linux' || platform === 'win32') && await fs.stat(registryDir).then((info) => info.isDirectory(), () => false)
+    ? await readLiveClaudeRegistry([registryDir], { windows: platform === 'win32' }).catch(() => null) : null;
   const live = (registry || []).filter((record) => record.entrypoint === 'cli');
   const liveById = new Map(live.map((record) => [record.sessionId, record]));
   const projectIndex = await indexClaudeProjectFiles(projectsDir)
