@@ -519,13 +519,17 @@ test('engine start uses the enabled user service, a detached engine, or the runn
   t.after(() => rm(home, { recursive: true, force: true }));
   const env = { XDG_STATE_HOME: path.join(home, 'state'), XDG_RUNTIME_DIR: path.join(home, 'runtime'), MALLOC_ARENA_MAX: '8' };
   const runtime = { schema: 1, pid: 12, port: 23456, sourceToken: 'a'.repeat(64) };
-  const fake = ({ enabled = false, startFails = false, answerAt = 3 } = {}) => {
+  const fake = ({ enabled = false, startFails = false, conditionFails = false, showFails = false, answerAt = 3 } = {}) => {
     const calls = [];
     let finds = 0;
     return { calls, options: { env, intervalMs: 1,
       execFile: async (program, args) => {
         calls.push([program, ...args]);
         if (args[1] === 'is-enabled') { if (!enabled) throw Object.assign(new Error('disabled'), { stdout: 'disabled\n' }); return { stdout: 'enabled\n' }; }
+        if (args[1] === 'show') {
+          if (showFails) throw new Error('Synthetic show failure');
+          return { stdout: conditionFails ? 'no\n' : 'yes\n' };
+        }
         if (startFails) throw new Error('Synthetic start failure');
         return { stdout: '' };
       },
@@ -543,10 +547,28 @@ test('engine start uses the enabled user service, a detached engine, or the runn
       },
       find: async () => (finds++ === answerAt ? runtime : null) } };
   };
-  const enabled = fake({ enabled: true });
-  assert.equal(await startEngine(enabled.options), runtime);
-  assert.deepEqual(enabled.calls, [['systemctl', '--user', 'is-enabled', 'asb.service'], ['systemctl', '--user', 'start', 'asb.service']]);
+  const warnings = [];
+  t.mock.method(console, 'warn', (message) => warnings.push(message));
+  const serviceCalls = [['systemctl', '--user', 'is-enabled', 'asb.service'], ['systemctl', '--user', 'start', 'asb.service'],
+    ['systemctl', '--user', 'show', '--property=ConditionResult', '--value', 'asb.service']];
   const log = path.join(env.XDG_STATE_HOME, 'asb/engine.log');
+  const skipped = fake({ enabled: true, conditionFails: true });
+  assert.equal(await startEngine(skipped.options), runtime);
+  assert.deepEqual(skipped.calls, [...serviceCalls, ['spawn', process.execPath, ...ENGINE_NODE_FLAGS, engineScript, 'run'], ['unref']]);
+  assert.deepEqual(warnings, ['The ASB user service starts a launcher that is gone, so ASB starts its engine without it. Run asb service install to repair the service.']);
+  warnings.length = 0;
+  await assert.rejects(startEngine({ ...fake({ enabled: true, conditionFails: true, answerAt: -1 }).options, timeoutMs: 50 }),
+    { message: `ASB cannot start its engine. See ${log}.` });
+  assert.equal(warnings.length, 1);
+  warnings.length = 0;
+  for (const showFails of [false, true]) {
+    const enabled = fake({ enabled: true, showFails });
+    assert.equal(await startEngine(enabled.options), runtime);
+    assert.deepEqual(enabled.calls, serviceCalls);
+    await assert.rejects(startEngine({ ...fake({ enabled: true, showFails, answerAt: -1 }).options, timeoutMs: 50 }),
+      { message: 'ASB cannot start its engine. See journalctl --user -u asb.service.' });
+  }
+  assert.deepEqual(warnings, []);
   const detached = fake();
   assert.equal(await startEngine(detached.options), runtime);
   assert.deepEqual(detached.calls, [['systemctl', '--user', 'is-enabled', 'asb.service'], ['spawn', process.execPath, ...ENGINE_NODE_FLAGS, engineScript, 'run'], ['unref']]);

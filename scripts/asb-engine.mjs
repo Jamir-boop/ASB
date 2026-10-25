@@ -207,11 +207,15 @@ export async function startEngine({ env = process.env, execFile = execFileAsync,
   let enabled = false;
   try { enabled = (await execFile('systemctl', ['--user', 'is-enabled', 'asb.service'])).stdout.trim() === 'enabled'; } catch {}
   let where;
+  let skipped = false;
   if (enabled) {
     try { await execFile('systemctl', ['--user', 'start', 'asb.service']); }
     catch { throw new Error('ASB cannot start its engine. See journalctl --user -u asb.service.'); }
+    try { skipped = (await execFile('systemctl', ['--user', 'show', '--property=ConditionResult', '--value', 'asb.service'])).stdout.trim() === 'no'; } catch {}
+    if (skipped) console.warn('The ASB user service starts a launcher that is gone, so ASB starts its engine without it. Run asb service install to repair the service.');
     where = 'journalctl --user -u asb.service';
-  } else {
+  }
+  if (!enabled || skipped) {
     const log = engineLogPath(env);
     mkdirSync(path.dirname(log), { recursive: true, mode: 0o700 });
     const fd = openSync(log, 'w', 0o600);
