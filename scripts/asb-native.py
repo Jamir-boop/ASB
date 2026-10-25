@@ -104,7 +104,7 @@ def machine_bridge_line(machine):
     if state == "offline":
         return "Bridge: not checked while offline"
     if state == "old":
-        return "Bridge: unknown, needs ASB 1.12 or later" + (f" · {live} live" if type(live) is int and live > 0 else "")
+        return "Bridge: unknown, needs ASB 1.12+" + (f" · {live} live" if type(live) is int and live > 0 else "")
     if state == "error":
         error = machine.get("error")
         return "Bridge: " + (error if isinstance(error, str) and error else "ASB cannot check it.")
@@ -2058,6 +2058,9 @@ class AppSourcesEditor(Gtk.Box):
 
     def present_dialog(self):
         if hasattr(Adw, "Dialog"):
+            # A narrow Preferences gets a full-height dialog, so the dialog top is the same for each profile.
+            narrow = self.preferences.get_current_breakpoint() is self.preferences.breakpoint
+            self.dialog.set_content_height(self.preferences.get_height() if narrow else -1)
             self.dialog.present(self.preferences)
         else:
             self.dialog.present()
@@ -2918,7 +2921,7 @@ class MachinesEditor(Gtk.Box):
         self.off = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.off.append(self.text(MACHINE_OFF, "warning"))
         phone = Gtk.Button(label="Open Phone settings", halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
-        phone.connect("clicked", lambda *_args: self.preferences.stack.set_visible_child_name("phone"))
+        phone.connect("clicked", lambda *_args: self.preferences.show_section("phone"))
         self.off.append(phone)
         self.body.append(self.off)
         self.body.append(self.text(MACHINE_INTRO))
@@ -3338,24 +3341,34 @@ class PreferencesWindow(Adw.Window):
         self.connect("map", self.section_changed)
         self.connect("unmap", self.section_changed)
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        body.append(Adw.HeaderBar())
+        header = Adw.HeaderBar()
+        self.title = Adw.WindowTitle(title="Preferences")
+        header.set_title_widget(self.title)
+        self.back = Gtk.Button(icon_name="go-previous-symbolic", tooltip_text="Back", visible=False)
+        self.back.add_css_class("flat")
+        self.back.update_property([Gtk.AccessibleProperty.LABEL], ["Back"])
+        self.back.connect("clicked", self.go_back)
+        header.pack_start(self.back)
+        body.append(header)
         self.stack = Gtk.Stack(vexpand=True, hexpand=True, hhomogeneous=False, vhomogeneous=False)
         self.sidebar = Gtk.StackSidebar(stack=self.stack)
         self.sidebar.set_size_request(150, -1)
         self.sidebar.add_css_class("asb-preferences-nav")
-        self.tabs = Gtk.StackSwitcher(stack=self.stack, halign=Gtk.Align.FILL,
-                                      margin_start=6, margin_end=6, margin_top=6, margin_bottom=6)
-        self.tabs.get_layout_manager().set_homogeneous(False)
-        # Five tabs do not fit in 420 px; the row scrolls instead of making the window wider.
-        self.tabs_scroll = Gtk.ScrolledWindow(child=self.tabs, visible=False, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
-                                              vscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True)
-        self.tabs_scroll.get_hadjustment().connect("changed", self.scroll_tabs)
-        self.tabs_reveal = None
-        body.append(self.tabs_scroll)
         layout = Gtk.Box()
         layout.append(self.sidebar)
         layout.append(self.stack)
-        body.append(layout)
+        # Five tabs do not fit in 420 px, so the narrow layout shows a section list first.
+        self.section_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, valign=Gtk.Align.START,
+                                        margin_start=20, margin_end=20, margin_top=20, margin_bottom=20)
+        self.section_list.add_css_class("boxed-list")
+        self.section_list.update_property([Gtk.AccessibleProperty.LABEL], ["Preferences sections"])
+        self.section_list.connect("row-activated", lambda _list, row: self.show_section(row.get_title().lower()))
+        self.pages = Gtk.Stack(vexpand=True)
+        self.pages.add_named(Gtk.ScrolledWindow(child=self.section_list, hscrollbar_policy=Gtk.PolicyType.NEVER), "list")
+        self.pages.add_named(layout, "section")
+        self.pages.set_visible_child_name("section")
+        self.pages.connect("notify::visible-child-name", self.section_changed)
+        body.append(self.pages)
         self.profiles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.phone = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.machines = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -3368,15 +3381,14 @@ class PreferencesWindow(Adw.Window):
             scroll = Gtk.ScrolledWindow(child=page, hscrollbar_policy=Gtk.PolicyType.NEVER,
                                        vscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
             self.stack.add_titled(scroll, title.lower(), title)
+            row = Adw.ActionRow(title=title, activatable=True)
+            row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
+            self.section_list.append(row)
         self.stack.connect("notify::visible-child-name", self.section_changed)
         self.set_content(body)
         self.breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 600px"))
         self.breakpoint.add_setter(self.sidebar, "visible", False)
-        self.breakpoint.add_setter(self.tabs_scroll, "visible", True)
         self.add_breakpoint(self.breakpoint)
-        # GTK moves the focus one step too far when the focused navigation hides, so it goes to the item of the shown page.
-        self.navigation_focus = False
-        self.breakpoint.connect("unapply", self.navigation_unapply)
         self.connect("notify::current-breakpoint", self.navigation_changed)
         self.stack.update_property([Gtk.AccessibleProperty.LABEL], ["Preferences sections"])
         keys = Gtk.EventControllerKey()
@@ -3387,65 +3399,71 @@ class PreferencesWindow(Adw.Window):
         if not self.closed and self.stack.get_visible_child_name() == "profiles" and self.profiles_editor is None:
             self.profiles_editor = AppSourcesEditor(self.owner, self)
             self.profiles.append(self.profiles_editor)
-        profiles_visible = not self.closed and self.get_visible() and self.get_mapped() and self.stack.get_visible_child_name() == "profiles"
+        # The narrow section list covers the section page.
+        shown = not self.closed and self.get_visible() and self.get_mapped() and self.pages.get_visible_child_name() == "section"
+        section = self.stack.get_visible_child_name()
         if self.profiles_editor:
-            self.profiles_editor.set_active(profiles_visible)
-        phone_visible = not self.closed and self.get_visible() and self.get_mapped() and self.stack.get_visible_child_name() == "phone"
+            self.profiles_editor.set_active(shown and section == "profiles")
+        phone_visible = shown and section == "phone"
         if phone_visible and self.phone_editor is None:
             self.phone_editor = PhoneEditor(self.owner, self)
             self.phone.append(self.phone_editor)
         if self.phone_editor:
             self.phone_editor.set_active(phone_visible)
-        machines_visible = not self.closed and self.get_visible() and self.get_mapped() and self.stack.get_visible_child_name() == "machines"
+        machines_visible = shown and section == "machines"
         if machines_visible and self.machines_editor is None:
             self.machines_editor = MachinesEditor(self.owner, self)
             self.machines.append(self.machines_editor)
         if self.machines_editor:
             self.machines_editor.set_active(machines_visible)
-        self.scroll_tabs()
         self.owner.report_ui()
 
-    def navigation_unapply(self, *_args):
-        focus = self.get_focus()
-        if focus and (focus is self.tabs_scroll or focus.is_ancestor(self.tabs_scroll)):
-            self.navigation_focus = True
-            self.set_focus(None)
+    def narrow(self):
+        return self.get_current_breakpoint() is self.breakpoint
+
+    def show_section(self, name):
+        self.stack.set_visible_child_name(name)
+        if self.narrow():
+            self.title.set_title(self.stack.get_page(self.stack.get_visible_child()).get_title())
+            self.back.set_visible(True)
+            self.pages.set_visible_child_name("section")
+            self.back.grab_focus()
+
+    def show_list(self):
+        self.title.set_title("Preferences")
+        self.back.set_visible(False)
+        self.pages.set_visible_child_name("list")
+
+    def go_back(self, *_args):
+        self.show_list()
+        self.section_row().grab_focus()
+
+    def section_row(self):
+        row = self.section_list.get_first_child()
+        while row and row.get_title().lower() != self.stack.get_visible_child_name():
+            row = row.get_next_sibling()
+        return row
 
     def navigation_changed(self, *_args):
+        # The focused navigation hides, so the focus goes to the item of the shown section.
         focus = self.get_focus()
-        if self.get_current_breakpoint() is None:
-            if self.navigation_focus:
-                self.navigation_focus = False
-                rows = self.sidebar.get_first_child()
-                while rows and not isinstance(rows, Gtk.ListBox):
-                    rows = rows.get_first_child()
-                row = rows.get_selected_row() if rows else None
-                if row:
-                    row.grab_focus()
-        elif focus and (focus is self.sidebar or focus.is_ancestor(self.sidebar)):
-            button = self.tabs.get_first_child()
-            while button and not button.get_active():
-                button = button.get_next_sibling()
-            if button:
-                button.grab_focus()
-
-    def scroll_tabs(self, *_args):
-        # The switcher updates its buttons and the tab row gets its size after this signal, so the scroll waits.
-        if self.tabs_reveal is None and self.tabs_scroll.get_visible() and not self.closed:
-            self.tabs_reveal = GLib.idle_add(self.reveal_tab)
-
-    def reveal_tab(self):
-        self.tabs_reveal = None
-        button = self.tabs.get_first_child()
-        while button and not button.get_active():
-            button = button.get_next_sibling()
-        found, bounds = button.compute_bounds(self.tabs_scroll) if button and not self.closed else (False, None)
-        if found:
-            adjustment = self.tabs_scroll.get_hadjustment()
-            value = adjustment.get_value()
-            left, right = value + bounds.get_x() - 6, value + bounds.get_x() + bounds.get_width() + 6
-            adjustment.set_value(min(max(value, right - adjustment.get_page_size()), left))
-        return False
+        if self.narrow():
+            moved = focus and (focus is self.sidebar or focus.is_ancestor(self.sidebar))
+            self.show_list()
+            if moved:
+                self.section_row().grab_focus()
+            return
+        moved = focus and (focus is self.back or focus.is_ancestor(self.section_list))
+        self.title.set_title("Preferences")
+        self.back.set_visible(False)
+        self.pages.set_visible_child_name("section")
+        if moved:
+            rows = self.sidebar.get_first_child()
+            while rows and not isinstance(rows, Gtk.ListBox):
+                rows = rows.get_first_child()
+            row = rows.get_selected_row() if rows else None
+            if row:
+                row.grab_focus()
 
     def window_key(self, _controller, key, _code, modifiers):
         if key == Gdk.KEY_Escape and not modifiers & SHORTCUT_MASK:
@@ -3453,7 +3471,10 @@ class PreferencesWindow(Adw.Window):
             # Only a shown profile dialog takes Escape; a hidden 1.4 draft does not keep Preferences open.
             if editor and editor.editing and editor.dialog is not None and editor.dialog.get_mapped():
                 return False
-            self.close()
+            if self.narrow() and self.pages.get_visible_child_name() == "section":
+                self.go_back()
+            else:
+                self.close()
             return True
         return False
 
@@ -4305,7 +4326,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         preferences = self.preferences_window
         editor = preferences.profiles_editor if preferences else None
         visible = bool(preferences and not preferences.closed and preferences.get_visible() and preferences.get_mapped()
-                       and preferences.stack.get_visible_child_name() == "profiles")
+                       and preferences.stack.get_visible_child_name() == "profiles"
+                       and preferences.pages.get_visible_child_name() == "section")
         payload = {"clientId": self.ui_client_id, "sourcesRevision": self.sources_revision,
                    "profilesRevision": editor.revision if editor and editor.loaded else None,
                    "profilesVisible": visible, "dirty": editor.is_dirty() if editor else False}

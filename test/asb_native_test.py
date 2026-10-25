@@ -1247,13 +1247,14 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(editor.dialog_key(None, asb.Gdk.KEY_Escape, 0, 0)); self.drain(.3)
         preferences.set_default_size(420, 700); self.drain(.3)
         self.assertEqual(preferences.get_width(), 420)
+        preferences.show_section("profiles"); self.drain(.3)
         # Check the list and every form at phone width, including long state and error text.
         for source in (None, *editor.sources):
             if source is not None:
                 editor.open_source(source)
                 self.drain(.3)
             for scroll in (node for node in walk(preferences) if isinstance(node, asb.Gtk.ScrolledWindow)
-                           and node is not preferences.tabs_scroll and node.get_mapped()):
+                           and node.get_mapped()):
                 adjustment = scroll.get_hadjustment()
                 self.assertLessEqual(adjustment.get_upper(), adjustment.get_page_size() + 1)
                 for row in (node for node in walk(scroll) if isinstance(node, asb.Gtk.ListBoxRow) and node.get_mapped()):
@@ -1303,7 +1304,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(editor.self_row.get_subtitle(),
                          "ID 3f9a2c71\nBridge: Codex ready · Codex Personal hooks not trusted · OpenCode old version")
         subtitles = [row.get_subtitle() for row in board_listed(editor.others)]
-        self.assertTrue(subtitles[0].endswith("\nBridge: unknown, needs ASB 1.12 or later · 2 live"))
+        self.assertTrue(subtitles[0].endswith("\nBridge: unknown, needs ASB 1.12+ · 2 live"))
         self.assertTrue(subtitles[1].endswith("\nBridge: not checked while offline"))
 
     def test_profile_rows_keep_focus_and_a_running_save_keeps_the_dialog(self):
@@ -1570,7 +1571,8 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(preferences.get_destroy_with_parent())
         self.assertFalse(preferences.get_modal())
         self.assertTrue(preferences.sidebar.get_visible())
-        self.assertFalse(preferences.tabs_scroll.get_visible())
+        self.assertEqual(preferences.pages.get_visible_child_name(), "section")
+        self.assertFalse(preferences.back.get_visible())
         self.assert_accessible_label(window.menu_button, "Open Preferences")
         window.open_preferences()
         self.assertEqual(sum(isinstance(item, asb.PreferencesWindow) for item in self.application.get_windows()), 1)
@@ -1641,12 +1643,14 @@ class WidgetCheck(unittest.TestCase):
         preferences.set_default_size(420, 560); self.drain(.3)
         self.assertEqual(preferences.get_width(), 420)
         self.assertFalse(preferences.sidebar.get_visible())
-        self.assertTrue(preferences.tabs_scroll.get_visible())
+        self.assertEqual(preferences.pages.get_visible_child_name(), "list")
+        capture("list-narrow")
+        preferences.show_section("profiles"); self.drain(.2)
         capture("profiles-narrow")
-        preferences.stack.set_visible_child_name("sessions"); self.drain(.2)
+        preferences.go_back(); preferences.show_section("sessions"); self.drain(.2)
         self.assertEqual(preferences.get_width(), 420)
         capture("sessions-narrow")
-        preferences.stack.set_visible_child_name("appearance"); self.drain(.2)
+        preferences.go_back(); preferences.show_section("appearance"); self.drain(.2)
         self.assertEqual(preferences.get_width(), 420)
         window.set_theme_pickers(CUSTOM)
         window.theme_mode.set_selected(1)
@@ -1666,7 +1670,8 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(window.persistent_unread.get_sensitive())
         self.assertFalse(window.persistent_unread.get_active())
         window.open_preferences()
-        self.assertEqual(sum(route == "/api/sources" for route, *_args in requests), 3)
+        # The narrow Profiles page showed again after the section list, so it loaded once more.
+        self.assertEqual(sum(route == "/api/sources" for route, *_args in requests), 4)
         editor.reload_sources()
         callback = requests[-1][1]
         window.close(); self.drain(.1)
@@ -1706,19 +1711,150 @@ class WidgetCheck(unittest.TestCase):
         preferences.set_default_size(420, 560); self.drain(.3)
         self.assertEqual(preferences.stack.get_visible_child_name(), "profiles")
         self.assertIsNotNone(preferences.get_current_breakpoint())
-        focus = preferences.get_focus()
-        self.assertIsInstance(focus, asb.Gtk.ToggleButton)
-        self.assertIs(focus.get_parent(), preferences.tabs)
-        self.assertTrue(focus.get_active())
+        self.assertEqual(preferences.pages.get_visible_child_name(), "list")
+        list_row = preferences.get_focus()
+        self.assertIs(list_row.get_parent(), preferences.section_list)
+        self.assertEqual(list_row.get_title(), "Profiles")
         preferences.set_default_size(780, 560); self.drain(.3)
         self.assertEqual(preferences.stack.get_visible_child_name(), "profiles")
         self.assertIsNone(preferences.get_current_breakpoint())
         self.assertIs(preferences.get_focus(), profiles_row)
         self.assertIs(rows.get_selected_row(), profiles_row)
+        # Wide again from the back button: the focus goes to the sidebar row, not out of the window.
+        preferences.set_default_size(420, 560); self.drain(.3)
+        preferences.show_section("profiles"); self.drain(.1)
+        self.assertIs(preferences.get_focus(), preferences.back)
+        preferences.set_default_size(780, 560); self.drain(.3)
+        self.assertIs(preferences.get_focus(), profiles_row)
         self.assertNotIn("/api/phone", [item[0] for item in requests[len(before):]])
         self.assertEqual((preferences.phone_editor, preferences.machines_editor), (None, None))
 
-    def test_preferences_machines_page_flows_dialogs_timer_and_narrow_tabs(self):
+    def test_preferences_narrow_section_list_back_escape_report_and_full_height_dialog(self):
+        requests = []
+        def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None, headers=None):
+            if route != "/api/palette":
+                requests.append((route, callback, method, body))
+            if route == "/api/agent/ui":
+                callback({}, None)
+            return SimpleNamespace(join=lambda *_args: None)
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                   (asb, "request_async", request), (asb, "SOURCE_TOKEN", "fake-token")):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        def visible():
+            return [body for route, _callback, _method, body in requests if route == "/api/agent/ui"][-1]["profilesVisible"]
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", copy.deepcopy(FIXTURE),
+                                      theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.present(); self.drain(.2)
+        window.open_preferences(); self.drain(.2)
+        preferences = window.preferences_window
+        preferences.set_default_size(420, 560); self.drain(.3)
+        self.assertEqual(preferences.get_width(), 420)
+        rows = board_listed(preferences.section_list)
+        self.assertEqual([row.get_title() for row in rows], ["Sessions", "Appearance", "Profiles", "Phone", "Machines"])
+        pages = preferences.stack.get_pages()
+        self.assertEqual([row.get_title() for row in rows], [pages.get_item(n).get_title() for n in range(pages.get_n_items())])
+        self.assertTrue(rows[0].get_mapped())
+        self.assertEqual(preferences.pages.get_visible_child_name(), "list")
+        self.assertFalse(preferences.sidebar.get_visible())
+        def walk(widget):
+            yield widget
+            child = widget.get_first_child()
+            while child:
+                yield from walk(child)
+                child = child.get_next_sibling()
+        self.assertFalse(any(isinstance(node, asb.Gtk.StackSwitcher) for node in walk(preferences)))
+        self.assertEqual((preferences.title.get_title(), preferences.get_title()), ("Preferences", "Preferences"))
+        self.assertFalse(preferences.back.get_visible())
+        self.assert_accessible_label(preferences.back, "Back")
+        self.assert_accessible_label(preferences.section_list, "Preferences sections")
+        # Enter on Profiles: the page, its title, and the focus on Back.
+        rows[2].grab_focus(); preferences.section_list.emit("activate-cursor-row"); self.drain(.2)
+        self.assertEqual((preferences.stack.get_visible_child_name(), preferences.pages.get_visible_child_name()),
+                         ("profiles", "section"))
+        self.assertEqual((preferences.title.get_title(), preferences.get_title()), ("Profiles", "Preferences"))
+        self.assertTrue(preferences.back.get_visible())
+        self.assertIs(preferences.get_focus(), preferences.back)
+        editor = preferences.profiles_editor
+        self.assertTrue(editor.active)
+        self.assertTrue(visible())
+        preferences.back.emit("clicked"); self.drain(.2)
+        self.assertEqual(preferences.pages.get_visible_child_name(), "list")
+        self.assertEqual(preferences.title.get_title(), "Preferences")
+        self.assertFalse(preferences.back.get_visible())
+        self.assertIs(preferences.get_focus(), rows[2])
+        # The list covers the Profiles page, so the editor stops and the report says not visible.
+        self.assertFalse(editor.active)
+        self.assertFalse(visible())
+        preferences.section_list.emit("row-activated", rows[2]); self.drain(.2)
+        self.assertTrue(preferences.window_key(None, asb.Gdk.KEY_Escape, 0, 0)); self.drain(.2)
+        self.assertEqual(preferences.pages.get_visible_child_name(), "list")
+        self.assertTrue(preferences.get_visible())
+        self.assertIs(preferences.get_focus(), rows[2])
+        preferences.show_section("phone"); self.drain(.2)
+        self.assertEqual((preferences.stack.get_visible_child_name(), preferences.pages.get_visible_child_name()),
+                         ("phone", "section"))
+        self.assertEqual(preferences.title.get_title(), "Phone")
+        self.assertTrue(preferences.back.get_visible())
+        self.assertIs(preferences.get_focus(), preferences.back)
+        # The Phone button of the Machines page opens the narrow Phone page the same way.
+        preferences.go_back(); preferences.show_section("machines"); self.drain(.2)
+        self.assertEqual(preferences.title.get_title(), "Machines")
+        button = next(node for node in walk(preferences.machines_editor.off)
+                      if isinstance(node, asb.Gtk.Button) and node.get_label() == "Open Phone settings")
+        button.emit("clicked"); self.drain(.2)
+        self.assertEqual((preferences.stack.get_visible_child_name(), preferences.pages.get_visible_child_name(),
+                          preferences.title.get_title()), ("phone", "section", "Phone"))
+        self.assertIs(preferences.get_focus(), preferences.back)
+        # Wide: the sidebar and the current section; narrow again: the list.
+        preferences.set_default_size(780, 560); self.drain(.3)
+        self.assertTrue(preferences.sidebar.get_visible())
+        self.assertEqual((preferences.stack.get_visible_child_name(), preferences.pages.get_visible_child_name()),
+                         ("phone", "section"))
+        self.assertFalse(preferences.back.get_visible())
+        self.assertEqual(preferences.title.get_title(), "Preferences")
+        preferences.show_section("profiles"); self.drain(.2)
+        self.assertFalse(preferences.back.get_visible())
+        self.assertEqual(preferences.title.get_title(), "Preferences")
+        self.assertTrue(visible())
+        preferences.set_default_size(420, 560); self.drain(.3)
+        self.assertEqual(preferences.pages.get_visible_child_name(), "list")
+        self.assertFalse(preferences.back.get_visible())
+        # The profile dialog fills the narrow Preferences height for each provider, and has its natural height when wide.
+        sources = [{"id": "claude-work", "provider": "claude-desktop-code", "label": "Claude Work", "enabled": True,
+                    "builtin": False, "dataDir": "/example/profiles/claude-work", "launcher": "/example/apps/claude.desktop",
+                    "projectsDir": "/example/transcripts", "color": "#b28f80", "showMarker": True, "sessionCount": 3,
+                    "status": "ok"},
+                   {"id": "opencode", "provider": "opencode", "label": "OpenCode", "enabled": True, "builtin": True,
+                    "dataDir": "/example/profiles/opencode", "launcher": "", "color": "#899e91", "showMarker": True,
+                    "sessionCount": 2, "status": "ok"}]
+        preferences.show_section("profiles"); self.drain(.2)
+        next(item for item in reversed(requests) if item[0] == "/api/sources")[1]({"sources": sources, "maxSources": 8}, None)
+        self.drain(.2)
+        heights = []
+        for source in sources:
+            editor.open_source(source); self.drain(.3)
+            if hasattr(asb.Adw, "Dialog"):
+                heights.append(editor.dialog.get_content_height())
+            editor.cancel_form(); self.drain(.3)
+        preferences.set_default_size(780, 560); self.drain(.3)
+        # The getter gives the measured height after -1, so the set value is read from a spy.
+        with (patch.object(editor.dialog, "set_content_height", wraps=editor.dialog.set_content_height)
+              if hasattr(asb.Adw, "Dialog") else contextlib.nullcontext()) as spy:
+            editor.open_source(sources[0]); self.drain(.3)
+        if hasattr(asb.Adw, "Dialog"):
+            self.assertEqual(heights, [preferences.get_height(), preferences.get_height()])
+            self.assertEqual(preferences.get_height(), 560)
+            spy.assert_called_once_with(-1)
+        editor.cancel_form(); self.drain(.3)
+        preferences.set_default_size(420, 560); self.drain(.3)
+        self.assertTrue(preferences.window_key(None, asb.Gdk.KEY_Escape, 0, 0)); self.drain(.2)
+        self.assertFalse(preferences.get_visible())
+
+    def test_preferences_machines_page_flows_dialogs_timer_and_narrow_section(self):
         requests = []
         def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None, headers=None):
             if route == "/api/bridge":
@@ -1933,21 +2069,14 @@ class WidgetCheck(unittest.TestCase):
         preferences.stack.set_visible_child_name("machines"); self.drain(.1)
         reply(grouped)
 
-        # Narrow: the tabs scroll and the selected tab is in view.
+        # Narrow: the section list covers the Machines page, so its timer stops until the page shows again.
         preferences.set_default_size(420, 560); self.drain(.3)
-        self.assertIs(preferences.tabs.get_ancestor(asb.Gtk.ScrolledWindow), preferences.tabs_scroll)
-        self.assertTrue(preferences.tabs_scroll.get_visible())
-        tab = preferences.tabs.get_last_child()
-        self.assertTrue(tab.get_active())
-        found, bounds = tab.compute_bounds(preferences.tabs_scroll)
-        self.assertTrue(found)
-        self.assertGreaterEqual(bounds.get_x(), 0)
-        self.assertLessEqual(bounds.get_x() + bounds.get_width(), preferences.tabs_scroll.get_width())
-        preferences.stack.set_visible_child_name("sessions"); self.drain(.1)
-        self.assertEqual(preferences.tabs_scroll.get_hadjustment().get_value(), 0)
-        preferences.stack.set_visible_child_name("machines"); self.drain(.1)
+        self.assertEqual(preferences.pages.get_visible_child_name(), "list")
+        self.assertFalse(editor.active)
+        preferences.show_section("machines"); self.drain(.1)
         reply(grouped)
-        self.assertGreater(preferences.tabs_scroll.get_hadjustment().get_value(), 0)
+        self.assertTrue(editor.active)
+        self.assertEqual(preferences.title.get_title(), "Machines")
 
         # The custom theme keeps destructive text red.
         normal = editor.add_button.get_color()

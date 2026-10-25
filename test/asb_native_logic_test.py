@@ -503,7 +503,8 @@ class ProfileSyncChecks(unittest.TestCase):
         editor = self.editor()
         editor.observed_revision = self.REV_B
         preferences = SimpleNamespace(closed=False, profiles_editor=editor, get_visible=lambda: True,
-                                      get_mapped=lambda: True, stack=Mock(get_visible_child_name=Mock(return_value="profiles")))
+                                      get_mapped=lambda: True, stack=Mock(get_visible_child_name=Mock(return_value="profiles")),
+                                      pages=Mock(get_visible_child_name=Mock(return_value="section")))
         window.closed, window.base, window.preferences_window = False, editor.base, preferences
         window.ui_client_id = str(SCOPE["uuid"].uuid4())
         window.sources_revision = self.REV_B
@@ -532,19 +533,25 @@ class ProfileSyncChecks(unittest.TestCase):
             window.apply_dashboard(None, None)
             self.assertEqual(self.request.call_count, 3)
             self.request.call_args.args[2]({}, None)
+            preferences.pages.get_visible_child_name.return_value = "list"
+            window.report_ui()
+            self.assertEqual(self.request.call_count, 4)
+            self.assertFalse(self.request.call_args.args[5]["profilesVisible"])
+            self.request.call_args.args[2]({}, None)
+            preferences.pages.get_visible_child_name.return_value = "section"
             preferences.stack.get_visible_child_name.return_value = "sessions"
             editor.loaded = False
             window.report_ui()
-            self.assertEqual(self.request.call_count, 4)
+            self.assertEqual(self.request.call_count, 5)
             self.assertEqual(self.request.call_args.args[5], {"clientId": window.ui_client_id,
                 "sourcesRevision": self.REV_B, "profilesRevision": None, "profilesVisible": False, "dirty": True})
             window.closed = True
             self.request.call_args.args[2]({}, None)
-            self.assertEqual(self.request.call_count, 4)
+            self.assertEqual(self.request.call_count, 5)
             window.closed = False
             with patch.dict(SCOPE, {"SOURCE_TOKEN": ""}):
                 window.report_ui()
-            self.assertEqual(self.request.call_count, 4)
+            self.assertEqual(self.request.call_count, 5)
 
     def test_final_ui_report_has_a_bounded_wait_and_uses_the_shared_request_path(self):
         window = object.__new__(Window)
@@ -1062,9 +1069,9 @@ class PhoneChecks(unittest.TestCase):
     def test_preferences_loads_phone_once_and_stops_it_on_page_and_window_hide(self):
         preferences = object.__new__(Preferences)
         preferences.owner, preferences.closed = SimpleNamespace(closed=False, report_ui=Mock()), False
-        preferences.profiles_editor = preferences.phone_editor = preferences.machines_editor = preferences.tabs_reveal = None
+        preferences.profiles_editor = preferences.phone_editor = preferences.machines_editor = None
         preferences.phone, preferences.machines = Mock(), Mock()
-        preferences.tabs_scroll = Mock(get_visible=Mock(return_value=False))
+        preferences.pages = Mock(get_visible_child_name=Mock(return_value="section"))
         preferences.stack = Mock(get_visible_child_name=Mock(return_value="sessions"))
         preferences.get_visible = Mock(return_value=True)
         preferences.get_mapped = Mock(return_value=True)
@@ -1078,6 +1085,10 @@ class PhoneChecks(unittest.TestCase):
             SCOPE["PhoneEditor"].assert_called_once_with(preferences.owner, preferences)
             preferences.phone.append.assert_called_once_with(editor)
             editor.set_active.assert_called_with(True)
+            preferences.pages.get_visible_child_name.return_value = "list"
+            preferences.section_changed()
+            editor.set_active.assert_called_with(False)
+            preferences.pages.get_visible_child_name.return_value = "section"
             preferences.stack.get_visible_child_name.return_value = "appearance"
             preferences.section_changed()
             editor.set_active.assert_called_with(False)
@@ -2629,9 +2640,9 @@ class BridgeHelperChecks(unittest.TestCase):
 
     def test_machine_bridge_line_covers_every_branch_and_phrase(self):
         for machine, text in (({"state": "offline"}, "Bridge: not checked while offline"),
-                ({"state": "old"}, "Bridge: unknown, needs ASB 1.12 or later"),
-                ({"state": "old", "live": 2}, "Bridge: unknown, needs ASB 1.12 or later · 2 live"),
-                ({"state": "old", "live": True}, "Bridge: unknown, needs ASB 1.12 or later"),
+                ({"state": "old"}, "Bridge: unknown, needs ASB 1.12+"),
+                ({"state": "old", "live": 2}, "Bridge: unknown, needs ASB 1.12+ · 2 live"),
+                ({"state": "old", "live": True}, "Bridge: unknown, needs ASB 1.12+"),
                 ({"state": "error", "error": "Try again."}, "Bridge: Try again."),
                 ({"state": "error", "error": 2}, "Bridge: ASB cannot check it."),
                 ({"state": "error", "error": ""}, "Bridge: ASB cannot check it."),
@@ -2995,6 +3006,15 @@ class ProfileDialogChecks(unittest.TestCase):
                         self.assertIs(editor.dialog, dialog)
                         editor.present_dialog()
                         dialog.present.assert_called_once_with(*([editor.preferences] if modern else []))
+                        if modern:
+                            dialog.set_content_height.assert_called_once_with(-1)
+                            editor.preferences.get_current_breakpoint.return_value = editor.preferences.breakpoint
+                            editor.preferences.get_height.return_value = 560
+                            editor.present_dialog()
+                            dialog.set_content_height.assert_called_with(560)
+                            dialog.present.reset_mock()
+                        else:
+                            dialog.set_content_height.assert_not_called()
                         self.assertEqual(dialog.connect.call_args.args[0], "closed" if modern else "close-request")
                         editor.close()
                         (dialog.force_close if modern else dialog.destroy).assert_called_once_with()
@@ -3008,6 +3028,7 @@ class ProfileDialogChecks(unittest.TestCase):
         editor = fixture.editor()
         preferences = object.__new__(Preferences)
         preferences.profiles_editor, preferences.close = editor, Mock()
+        preferences.narrow = Mock(return_value=False)
         with patch.dict(SCOPE, {"Gdk": SimpleNamespace(KEY_Escape=27), "SHORTCUT_MASK": 1}):
             editor.dialog.get_mapped.return_value = True
             self.assertFalse(preferences.window_key(None, 27, 0, 0))
@@ -3284,8 +3305,8 @@ class NativeLogicChecks(unittest.TestCase):
         owner.closed = False
         preferences = object.__new__(Preferences)
         preferences.owner, preferences.closed, preferences.profiles_editor, preferences.phone_editor = owner, False, None, None
-        preferences.machines_editor = preferences.tabs_reveal = None
-        preferences.tabs_scroll = Mock(get_visible=Mock(return_value=False))
+        preferences.machines_editor = None
+        preferences.pages = Mock(get_visible_child_name=Mock(return_value="section"))
         preferences.get_visible = Mock(return_value=True)
         preferences.get_mapped = Mock(return_value=True)
         preferences.stack = Mock(get_visible_child_name=Mock(return_value="sessions"))
