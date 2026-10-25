@@ -189,8 +189,8 @@ class RulesTest {
             Thread(id = "unknown", state = "unknown", updatedAtMs = 100000),
         )
         val before = rows.toList()
-        assertEquals(listOf("pin-a", "pin-b", "pin-last", "pending-work", "wait", "work-new", "work-old",
-            "work-unknown", "idle-a", "idle-b", "unknown"), ids(rows))
+        assertEquals(listOf("pin-a", "pin-b", "pin-last", "pending-work", "work-new", "work-old",
+            "work-unknown", "idle-a", "idle-b", "wait", "unknown"), ids(rows))
         assertEquals(before, rows)
         val supplementary = "\uD800\uDC00"
         for (pinned in listOf(false, true)) {
@@ -199,6 +199,18 @@ class RulesTest {
             }
             assertEquals(listOf("a", "aa", "\uE000", supplementary), ids(tied))
         }
+    }
+
+    @Test fun readWaitingRowSortsWithTheIdleRows() {
+        val rows = listOf(
+            Thread(id = "done", state = "idle", pending = true, updatedAtMs = 500),
+            Thread(id = "asks", state = "waiting", pending = true, questionAttention = true, updatedAtMs = 400),
+            Thread(id = "approve", state = "waiting", pending = true, actionRequired = true, updatedAtMs = 300),
+            Thread(id = "work", state = "working", workingSinceMs = 100, updatedAtMs = 900),
+            Thread(id = "read", state = "waiting", pending = false, updatedAtMs = 800),
+            Thread(id = "old", state = "idle", pending = false, updatedAtMs = 200),
+        )
+        assertEquals(listOf("done", "asks", "approve", "work", "read", "old"), ids(rows))
     }
 
     @Test fun attentionUsesOnlyTheCurrentAsbFlagsInPriorityOrder() {

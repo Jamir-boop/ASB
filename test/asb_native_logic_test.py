@@ -2121,6 +2121,18 @@ class DataChecks(unittest.TestCase):
         self.assertEqual({row["id"] for row in asb.filtered_rows(board, profiles={"|c1"}, state="idle")}, {"i"})
         self.assertEqual({row["id"] for row in asb.filtered_rows(board, pending_only=True)}, {"w"})
         self.assertEqual({row["id"] for row in asb.filtered_rows(board, pending_only=True, state={"working"})}, {"w", "u"})
+
+    def test_filtered_rows_sorts_a_read_waiting_row_with_the_idle_rows(self):
+        board = {"threads": [
+            {"id": "done", "state": "idle", "pending": True, "updatedAtMs": 500},
+            {"id": "asks", "state": "waiting", "pending": True, "questionAttention": True, "updatedAtMs": 400},
+            {"id": "approve", "state": "waiting", "pending": True, "actionRequired": True, "updatedAtMs": 300},
+            {"id": "work", "state": "working", "workingSinceMs": 100, "updatedAtMs": 900},
+            {"id": "read", "state": "waiting", "pending": False, "updatedAtMs": 800},
+            {"id": "old", "state": "idle", "pending": False, "updatedAtMs": 200},
+        ]}
+        self.assertEqual([row["id"] for row in asb.filtered_rows(board)], ["done", "asks", "approve", "work", "read", "old"])
+
     def test_provider_prefixes(self):
         for prefix, provider in (("cl:", "claude-desktop-code"), ("claude:", "claude-desktop-code"),
                                  (" CL : ", "claude-desktop-code"), ("ClaUde: ", "claude-desktop-code"),

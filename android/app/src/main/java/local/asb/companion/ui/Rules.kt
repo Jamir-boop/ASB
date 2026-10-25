@@ -111,9 +111,9 @@ fun providerIcon(provider: String): Int = when (provider) {
 fun filteredRows(threads: List<Thread>, f: Filter): List<Thread> {
     val (query, app) = providerQuery(f.query, f.app)
     val workingOrUnread = f.pendingOnly && f.states == setOf("working")
-    fun bucket(row: Thread) = if (row.pending || row.state == "waiting") 0 else when (row.state) {
+    fun bucket(row: Thread) = if (row.pending) 0 else when (row.state) {
         "working" -> 1
-        "idle" -> 2
+        "idle", "waiting" -> 2
         else -> 3
     }
     fun moment(row: Thread) = if (row.state == "working") row.workingSinceMs.coerceAtLeast(0) else row.updatedAtMs

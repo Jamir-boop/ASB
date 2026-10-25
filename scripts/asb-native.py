@@ -490,9 +490,9 @@ def filtered_rows(dashboard, query="", app="all", state="all", archived=False, p
     # One card for each ID: the first row wins. A card in a column twice makes GTK list it twice, with no warning.
     rows = list({row["id"]: row for row in reversed(rows)}.values())
     def bucket(row):
-        if row.get("pending") or row.get("state") == "waiting":
+        if row.get("pending"):
             return 0
-        return {"working": 1, "idle": 2, "unknown": 3}.get(row.get("state"), 3)
+        return {"working": 1, "idle": 2, "waiting": 2, "unknown": 3}.get(row.get("state"), 3)
     def moment(row):
         # Output changes updatedAtMs at each scan; the task start keeps a Working row in its place.
         if row.get("state") != "working":
