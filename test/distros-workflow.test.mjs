@@ -32,10 +32,14 @@ test('the check job has the rows of the probe job, each with the package of its 
   const check = rows(jobs.check);
   assert.equal(probe.length, 16);
   // The same job, image, runner, family, tier, node, and window, in the same order.
-  assert.deepEqual(check.map(({ package: _package, snapshot: _snapshot, ...row }) => row), probe);
+  assert.deepEqual(check.map(({ package: _package, snapshot: _snapshot, preferences: _preferences, ...row }) => row), probe);
   for (const row of check) assert.equal(row.package, PACKAGES[row.family], row.job);
   // PyGObject 3.40 cannot save the board image, so only the AlmaLinux 9 row waits for UI: verified.
   assert.deepEqual(check.filter((row) => row.snapshot !== undefined).map((row) => [row.job, row.snapshot]), [['alma-9', 'skip']]);
+  assert.deepEqual(check.filter((row) => row.preferences !== undefined).map((row) => [row.job, row.preferences]), [['alma-9', 'check']]);
+  assert.ok(jobs.check.includes('    timeout-minutes: 30'));
+  assert.ok(jobs.check.some((line) => line.includes('PREFERENCES: ${{ matrix.preferences }}')));
+  assert.ok(jobs.check.some((line) => line.includes('-e ASB_CHECK_PREFERENCES="$PREFERENCES"')));
 });
 
 test('the check job needs the build job, and the nix job exists', () => {
@@ -68,4 +72,12 @@ test('distro-check.sh stops with code 2 for a user other than root', { skip: pro
   assert.equal(result.status, 2);
   assert.match(result.stderr, /root/);
   assert.equal(result.stdout, '');
+});
+
+test('the Preferences step checks the installed board only when enabled, after the release package install', async () => {
+  const source = await readFile(script, 'utf8');
+  assert.match(source, /check_preferences\(\) \{\n  \[ "\$\{ASB_CHECK_PREFERENCES:-\}" = check \] \|\| return 0\n  step 11/);
+  assert.match(source, /native=\/usr\/lib\/asb\/scripts\/asb-native\.py/);
+  assert.match(source, /as_user "ASB_TRAY=0 PYTHONDONTWRITEBYTECODE=1 timeout 120 dbus-run-session -- xvfb-run -a -e \/tmp\/asb-preferences-xvfb\.log -s '-screen 0 1280x1024x24 -noreset' python3 -I \/asb\/test\/preferences-check\.py --board \$native"/);
+  assert.match(source, /\ninstall_package\ncheck_preferences\necho "==> all steps passed"/);
 });

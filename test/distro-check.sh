@@ -14,6 +14,7 @@
 #   ASB_CHECK_REQUIRED, ASB_CHECK_BOARD, ASB_CHECK_OPTIONAL, ASB_CHECK_CI   the install commands of the four key groups
 #   ASB_CHECK_WINDOW=skip   the row has no Xvfb, so the board window is not opened
 #   ASB_CHECK_SNAPSHOT=skip   the board cannot save its image on the row, so step 7 waits for "UI: verified" from asb agent status
+#   ASB_CHECK_PREFERENCES=check   step 11 opens Preferences > Profiles and one profile dialog with the installed board
 # The repository is mounted read only at /asb, and the build output is at /asb/dist.
 # Each step prints one "==> step N" line before it starts, and the script stops at the first error.
 # POSIX sh only: Alpine (busybox ash), Void, Arch, Fedora, openSUSE, Debian, and Ubuntu all run it with their own sh.
@@ -300,6 +301,18 @@ install_package() {
   check_engine /usr/bin/asb
 }
 
+check_preferences() {
+  [ "${ASB_CHECK_PREFERENCES:-}" = check ] || return 0
+  step 11 "check Preferences > Profiles with the installed board in Xvfb"
+  # The release launcher /usr/bin/asb runs /usr/lib/asb/scripts/asb.
+  native=/usr/lib/asb/scripts/asb-native.py
+  [ -f "$native" ] || fail "The installed board script $native is missing."
+  as_user "ASB_TRAY=0 PYTHONDONTWRITEBYTECODE=1 timeout 120 dbus-run-session -- xvfb-run -a -e /tmp/asb-preferences-xvfb.log -s '-screen 0 1280x1024x24 -noreset' python3 -I /asb/test/preferences-check.py --board $native" || {
+    cat /tmp/asb-preferences-xvfb.log >&2 || true
+    fail "Preferences > Profiles failed."
+  }
+}
+
 install_packages
 create_user
 install_asb
@@ -309,4 +322,5 @@ check_window
 run_python_tests
 uninstall_asb
 install_package
+check_preferences
 echo "==> all steps passed"
