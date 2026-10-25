@@ -1248,6 +1248,10 @@ class WidgetCheck(unittest.TestCase):
         preferences.set_default_size(420, 700); self.drain(.3)
         self.assertEqual(preferences.get_width(), 420)
         preferences.show_section("profiles"); self.drain(.3)
+        # The editor reloads when its section shows again; the engine answers before a form opens.
+        reply("/api/sources", {**source_reply, "sources": editor.sources})
+        self.assertFalse(editor.loading)
+        GTK_WARNINGS.clear()
         # Check the list and every form at phone width, including long state and error text.
         for source in (None, *editor.sources):
             if source is not None:
@@ -1264,6 +1268,7 @@ class WidgetCheck(unittest.TestCase):
                     self.assertLessEqual(bounds.get_x() + bounds.get_width(), scroll.get_width() + 1)
             if source is not None:
                 editor.cancel_form(); self.drain(.3)
+        self.assertEqual(GTK_WARNINGS, [])
 
     def test_machines_show_bridge_lines_for_this_machine_and_members(self):
         requests = []
@@ -1832,14 +1837,19 @@ class WidgetCheck(unittest.TestCase):
                     "dataDir": "/example/profiles/opencode", "launcher": "", "color": "#899e91", "showMarker": True,
                     "sessionCount": 2, "status": "ok"}]
         preferences.show_section("profiles"); self.drain(.2)
-        next(item for item in reversed(requests) if item[0] == "/api/sources")[1]({"sources": sources, "maxSources": 8}, None)
-        self.drain(.2)
+        # The reload of the wide Profiles page is still open, so the shown section queues one more; the engine answers both.
+        for _ in range(2):
+            next(item for item in reversed(requests) if item[0] == "/api/sources")[1]({"sources": sources, "maxSources": 8}, None)
+            self.drain(.2)
+        self.assertFalse(editor.loading)
+        GTK_WARNINGS.clear()
         heights = []
         for source in sources:
             editor.open_source(source); self.drain(.3)
             if hasattr(asb.Adw, "Dialog"):
                 heights.append(editor.dialog.get_content_height())
             editor.cancel_form(); self.drain(.3)
+        self.assertEqual(GTK_WARNINGS, [])
         preferences.set_default_size(780, 560); self.drain(.3)
         # The getter gives the measured height after -1, so the set value is read from a spy.
         with (patch.object(editor.dialog, "set_content_height", wraps=editor.dialog.set_content_height)
