@@ -192,8 +192,9 @@ check_window() {
     snapshot=ASB_SNAPSHOT=$png
   fi
   # xvfb-run can start its command before Xvfb accepts clients: the board starts only when GDK can open the display.
+  # -noreset: without it, Xvfb resets when its last set-up client leaves (the engine's GTK check), and the reset drops a board connection that is not set up yet.
   # Xvfb writes its errors to $xlog (xvfb-run sends them to /dev/null without -e).
-  as_user "dbus-run-session -- xvfb-run -a -e $xlog -s '-screen 0 1280x1024x24' sh -c 'python3 -I /asb/test/wait-for-display.py && exec env $snapshot $launcher' >$log 2>&1" &
+  as_user "dbus-run-session -- xvfb-run -a -e $xlog -s '-screen 0 1280x1024x24 -noreset' sh -c 'python3 -I /asb/test/wait-for-display.py && exec env $snapshot $launcher' >$log 2>&1" &
   board=$!
   seconds=0
   if [ -n "$snapshot" ]; then
