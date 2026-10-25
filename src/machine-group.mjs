@@ -297,9 +297,9 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
     // Decision E: the name of local rows.
     selfName: () => group?.self.name || hostName,
     self: () => group ? { ...group.self } : null,
-    // For the tracker: the machine IDs of the active members. It is null before the group is loaded and when this machine is in no group,
-    // so no record goes then.
-    memberIds: () => started && group ? activeMembers(group).map((member) => member.machineId) : null,
+    // For the tracker: the machine IDs of the active members. It is null before the group is loaded, so no record goes then,
+    // and an empty list when this machine is in no group, so the records and pins of the old members go.
+    memberIds: () => started ? (group ? activeMembers(group).map((member) => member.machineId) : []) : null,
     // Decision D: the export comes from the loaded dashboard before the merge, while it has only local rows.
     merge: (dashboard, nowMs = now()) => {
       exported = group ? exportBody(exportLocalSessions(dashboard, group.self, nowMs)) : null;

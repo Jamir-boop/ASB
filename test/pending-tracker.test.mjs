@@ -459,6 +459,24 @@ test('the server gives the tracker the group members, so the records of a member
   assert.deepEqual(await savedRecords(statePath), [`m:${a}:one`, 'codex:local'].sort());
 });
 
+test('with no group, the records and pins of the old members go at the next scan; before the group loads they stay', async (t) => {
+  const statePath = path.join(await temp(t), 'pending.json');
+  const a = 'a'.repeat(16);
+  const tracker = new PendingTracker(statePath);
+  await tracker.observe(live(now, [`m:${a}:one`, 'codex:local']), [a]);
+  await tracker.setPinned(`m:${a}:one`, true);
+  await tracker.setPinned('codex:local', true);
+  const before = await tracker.observe(live(now + 1000, ['codex:local']), null);
+  assert.deepEqual(Object.keys(tracker.records).sort(), [`m:${a}:one`, 'codex:local'].sort());
+  assert.deepEqual([...before.pinnedOrder].sort(), [`m:${a}:one`, 'codex:local'].sort());
+  assert.deepEqual(await savedRecords(statePath), [`m:${a}:one`, 'codex:local'].sort());
+  const after = await tracker.observe(live(now + 2000, ['codex:local']), []);
+  assert.deepEqual(Object.keys(tracker.records), ['codex:local']);
+  assert.deepEqual(after.pinnedOrder, ['codex:local']);
+  assert.deepEqual(await savedRecords(statePath), ['codex:local']);
+  assert.deepEqual(JSON.parse(await readFile(statePath, 'utf8')).pinnedOrder, ['codex:local']);
+});
+
 test('a scan that changes nothing serializes nothing, compares nothing, and writes nothing', async (t) => {
   const tracker = new PendingTracker(path.join(await temp(t), 'pending.json'));
   const states = ['idle', 'working', 'waiting', 'unknown'];

@@ -170,7 +170,7 @@ test('a tombstone for this machine makes the engine leave at once, from a member
   await assert.rejects(again.remove(id('b')), { statusCode: 409, message: 'This machine is not in a group.' });
 });
 
-test('memberIds gives the active members to the tracker, and null before the start and with no group', async (t) => {
+test('memberIds gives the active members to the tracker, null before the start, and an empty list with no group', async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'asb-group-members-'));
   t.after(() => rm(home, { recursive: true, force: true }));
   const file = path.join(home, 'group.json');
@@ -187,9 +187,12 @@ test('memberIds gives the active members to the tracker, and null before the sta
   await machine.remove(id('b'));
   assert.deepEqual(machine.memberIds(), [id('a')]);
   await machine.leave();
-  assert.equal(machine.memberIds(), null);
+  assert.deepEqual(machine.memberIds(), []);
   const again = createMachineGroup({ file, gateway: () => gateway, request, timers, hostName: 'pc', log: () => {} });
+  assert.equal(again.memberIds(), null);
   await again.start();
+  assert.deepEqual(again.memberIds(), []);
+  await again.stop();
   assert.equal(again.memberIds(), null);
 });
 
