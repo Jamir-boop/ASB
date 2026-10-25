@@ -7,12 +7,12 @@ export const BRIDGE_STATES = ['ready', 'update', 'hooks', 'off', 'nobun', 'missi
 const PROVIDERS = ['codex', 'claude-desktop-code', 'opencode'];
 const CHECK_ERROR = 'ASB cannot check ASB Bridge. Run asb bridge status in a terminal.';
 const conflict = (state) => state === 'foreign' || state === 'modified';
-const pathsFor = (platform) => platform === 'win32' ? path.win32 : path;
+const pathsFor = (platform) => platform === 'win32' ? path.win32 : path.posix;
 const claudeHome = (source, platform) => pathsFor(platform).dirname(source.projectsDir || DEFAULT_CLAUDE_PROJECTS_DIR);
 
 function samePath(a, b, platform) {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
-  return platform === 'win32' ? path.win32.resolve(a).toLowerCase() === path.win32.resolve(b).toLowerCase() : path.resolve(a) === path.resolve(b);
+  return platform === 'win32' ? path.win32.resolve(a).toLowerCase() === path.win32.resolve(b).toLowerCase() : path.posix.resolve(a) === path.posix.resolve(b);
 }
 
 function codexApp(status, source, threads, platform) {

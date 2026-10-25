@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { BRIDGE_STATES, coverageApps, createBridgeCoverage, installCommand } from '../src/bridge-coverage.mjs';
 
-const HOME = path.resolve('/synthetic/home');
-const CODEX = path.join(HOME, '.codex');
-const CLAUDE = path.join(HOME, '.claude');
-const EXTRA = path.join(HOME, '.claude-work');
+// POSIX paths, as OPTIONS gives the linux platform; the tests also run on Windows.
+const HOME = '/synthetic/home';
+const CODEX = path.posix.join(HOME, '.codex');
+const CLAUDE = path.posix.join(HOME, '.claude');
+const EXTRA = path.posix.join(HOME, '.claude-work');
 const OPTIONS = { platform: 'linux', homeDir: HOME };
 
 const codexItem = (change = {}) => ({ home: CODEX, oldPlugin: false, skill: 'ok', skillCurrent: true, bunOnAppServerPath: true,
@@ -22,9 +23,9 @@ const report = (change = {}) => ({
 });
 const SOURCES = {
   codex: { id: 'codex', provider: 'codex', enabled: true, label: 'Codex', dataDir: CODEX },
-  claude: { id: 'claude', provider: 'claude-desktop-code', enabled: true, label: 'Claude', projectsDir: path.join(CLAUDE, 'projects') },
-  work: { id: 'claude-work', provider: 'claude-desktop-code', enabled: true, label: 'Work', projectsDir: path.join(EXTRA, 'projects') },
-  opencode: { id: 'opencode', provider: 'opencode', enabled: true, label: 'OpenCode', dataDir: path.join(HOME, '.local/share/opencode') },
+  claude: { id: 'claude', provider: 'claude-desktop-code', enabled: true, label: 'Claude', projectsDir: path.posix.join(CLAUDE, 'projects') },
+  work: { id: 'claude-work', provider: 'claude-desktop-code', enabled: true, label: 'Work', projectsDir: path.posix.join(EXTRA, 'projects') },
+  opencode: { id: 'opencode', provider: 'opencode', enabled: true, label: 'OpenCode', dataDir: path.posix.join(HOME, '.local/share/opencode') },
 };
 const only = (status, source, threads = []) => coverageApps(status, [source], threads, OPTIONS)[0];
 
@@ -351,7 +352,7 @@ test('an off Codex profile is not installable', async (t) => {
 const REPORT_KEYS = ['sourceId', 'label', 'provider', 'state', 'version', 'live', 'command'];
 
 test('report gives the member body without install data or paths', async (t) => {
-  const outside = { id: 'codex-other', provider: 'codex', enabled: true, label: 'Server', dataDir: path.resolve('/srv/private-data/.codex') };
+  const outside = { id: 'codex-other', provider: 'codex', enabled: true, label: 'Server', dataDir: '/srv/private-data/.codex' };
   const status = report({ codex: [codexItem(), codexItem({ home: outside.dataDir })] });
   const s = service(t, { status, sources: [...Object.values(SOURCES), outside] });
   const reply = await s.coverage.report();
