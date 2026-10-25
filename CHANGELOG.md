@@ -4,6 +4,9 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+## ASB 1.11.1 - 2026-10-24
+
+- ASB Bridge is still `0.8.0` in this release.
 - Fixed the row panel, which closed after a pointer click on **Pin**, **Mark read**, **Put in drawer**, and its other actions. While the action ran, the panel made its rows insensitive. GTK then moved the pointer out of the panel: the panel closed, and a second click without a pointer move went to the board under it. Now the rows stay sensitive while the action runs. They look dimmed and do nothing until it ends, as the card buttons do. **Mute** and **Unmute** still close the panel.
 - Fixed **Mute** and the other rows of the row panel, which did nothing after a normal right-click on X11. The panel opened when the right button went down. When the button was still down as the panel opened, GDK took the next click in the panel for a click outside it: it closed the panel and dropped the click. The panel now opens when the right button is released. **Mute** and **Unmute** now also close the panel, so that you see the mute icon on the card at once.
 - Fixed the mute icon of a card, which was too faint to see, so that a card looked the same after **Mute**. The icon had 35% of the gray of the folder name (about 1.9:1 on a black board). It now has the color of the folder name next to it, also on a read Idle card, a card that runs elsewhere, and a card with a usage limit, so it has the contrast of that name (at least 4.5:1).
@@ -17,9 +20,11 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Fixed the `Done` chip of the Android live notification when the phone clock changes. The chip now counts its 8 s with the monotonic clock of the phone, which also counts deep sleep (`SystemClock.elapsedRealtime`). Before, a clock that went back during the 8 s kept `Done` until a later change of the notification, and a clock that went forward ended it too soon. Also, the redraw at the end of the 8 s could come 1 ms before the end, because two clocks round to milliseconds at different points, and then `Done` stayed until the next update.
 - Removed six fields of the session rows of `GET /api/dashboard` that no ASB code reads: `inCodexSidebar`, `defaultOpenMode`, `desktopName`, `hasUnreadTurn`, and `openLabel` of Codex rows, and `hasUnreadTurn`, `awaitingReview`, and `openLabel` of Claude Desktop rows. The board, the Android app, and the machine group do not use them. A script of your own that reads these fields of `/api/dashboard` does not get them now.
 - Fixed the placeholder processes of the message relay (one `cat`, or `findstr.exe` on Windows, for each session of another machine), which got the source token of the engine in their environment for as long as the relay ran. The relay now starts them with its environment without `ASB_SOURCE_TOKEN`.
-- Fixed ASB Bridge for OpenCode at its limit of 24 receivers. A new session could close the receiver of a session that another agent waited on (`notify_when_idle`), and that agent then got the notice that the session ended while it still ran. The limit now uses the same rule as the 12 h expiry: it closes only a receiver with no turn, no held message, and no agent that waits on it.
+- Fixed ASB Bridge for OpenCode at its limit of 24 receivers. A new session could close the receiver of a session that another agent waited on (`notify_when_idle`), and that agent then got the notice that the session ended while the session still ran. The limit now uses the same rule as the 12 h expiry: it closes only a receiver with no turn, no held message, and no agent that waits on it.
 - Changed the ASB Bridge OpenCode plugin so that it asks OpenCode for a session only for the events that it uses. OpenCode streams many events during a turn (text, tool, and step events), and before, each of them caused one or more `session.get` calls.
 - Changed `asb bridge install` so that it prints only the next steps of the targets that it installed. `asb bridge install --opencode` no longer tells you to trust the Codex hooks and to restart Codex. The last line now says to run the install command again with the same targets after an ASB upgrade, because `asb bridge install` with no target only lists the targets. The installed OpenCode plugin folder now has the mode `0700`, so only your user can read it.
+
+See [ASB 1.11.1 release notes](docs/releases/v1.11.1.md) for downloads, upgrades, and check limits.
 
 ## ASB 1.11.0 - 2026-10-23
 
