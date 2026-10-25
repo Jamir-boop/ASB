@@ -514,6 +514,35 @@ class WidgetCheck(unittest.TestCase):
             self.application.reconnect(bases[0], "ignored")
             self.assertEqual(window.base, bases[1])
 
+    def test_close_reports_once_and_stops_ticks_and_inflight_callbacks(self):
+        reports, callbacks, waits = [], [], []
+        def request(_base, route, callback, _dispatch, method="GET", body=None, **_kwargs):
+            if route == "/api/agent/ui":
+                reports.append(body)
+                callbacks.append(callback)
+            return SimpleNamespace(join=waits.append)
+        with patch.object(asb, "SOURCE_TOKEN", "fake-token"), \
+                patch.object(asb, "request_async", request), \
+                patch.object(asb, "EventStream", lambda *_args: SimpleNamespace(close=lambda: None)), \
+                patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None):
+            window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", theme_path=False, layout_path=False)
+            window.present()
+            self.drain(.03)
+            window.report_ui()
+            self.assertEqual(len(callbacks), 1)
+            self.assertTrue(window.ui_report_sending)
+            window.close()
+            self.assertTrue(window.closed)
+            callbacks[0]({}, None)
+            self.assertFalse(window.tick())
+            window.report_ui()
+            window.on_close()
+            self.drain(.03)
+            self.assertEqual(len(reports), 2)
+            self.assertEqual(reports[-1], {"clientId": window.ui_client_id, "closed": True})
+            self.assertEqual(waits, [.75])
+            self.assertIsNone(window.timer)
+
     def test_toolbar_c_one_row_corners_search_filters_and_no_counters(self):
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
                                     (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):

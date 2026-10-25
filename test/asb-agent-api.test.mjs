@@ -165,6 +165,36 @@ test('UI reports replace each client, retain at most 16 recent clients, and expi
   assert.deepEqual((await request('/api/agent/status')).json().ui.clients, []);
 });
 
+test('a final UI report removes only its client and ignores reports still in flight', async (t) => {
+  let clock = 10_000;
+  const { request } = await serve(t, { now: () => clock });
+  const post = (body, extra = {}) => request('/api/agent/ui', { method: 'POST', body, ...extra });
+  const other = { ...report, clientId: '223e4567-e89b-12d3-a456-426614174000' };
+  await post(report);
+  await post(other);
+  const closed = { clientId, closed: true };
+  for (const body of [{ clientId, closed: false }, { clientId, closed: 1 }, { closed: true },
+    { clientId: 'invalid', closed: true }, { ...closed, dirty: false }, { ...report, closed: true }]) {
+    assert.equal((await post(body)).status, 400, JSON.stringify(body));
+  }
+  for (const extra of [{ token: '' }, { token: 'wrong' }, { origin: 'https://example.invalid' },
+    { headers: { host: 'example.invalid' } }, { headers: { 'sec-fetch-site': 'cross-site' } }]) {
+    assert.equal((await post(closed, extra)).status, 403);
+  }
+  assert.equal((await post(closed)).status, 200);
+  assert.equal((await post(closed)).status, 200);
+  assert.equal((await post(report)).status, 200);
+  assert.deepEqual((await request('/api/agent/status')).json().ui.clients.map((client) => client.clientId), [other.clientId]);
+  await post({ clientId: other.clientId, closed: true });
+  assert.deepEqual((await request('/api/agent/status')).json().ui.clients, []);
+  clock += 44_999;
+  await post(report);
+  assert.deepEqual((await request('/api/agent/status')).json().ui.clients, []);
+  clock += 1;
+  await post(report);
+  assert.deepEqual((await request('/api/agent/status')).json().ui.clients, [{ ...report, reportedAtMs: clock }]);
+});
+
 test('agent status reports service mode and hides internal state errors', async (t) => {
   const { request } = await serve(t, { serviceMode: true, readSourcesRevision: async () => { throw new Error('private token'); } });
   const failed = await request('/api/agent/status');

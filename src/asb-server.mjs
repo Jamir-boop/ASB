@@ -53,8 +53,10 @@ export function createAsbServer({
   let dashboardNotModified = 0;
   let savedList = null;
   const uiClients = new Map();
+  const closedUiClients = new Map();
   const expireUiClients = () => {
     for (const [id, client] of uiClients) if (now() - client.reportedAtMs >= 45_000) uiClients.delete(id);
+    for (const [id, closedAtMs] of closedUiClients) if (now() - closedAtMs >= 45_000) closedUiClients.delete(id);
   };
   let palette = readPalette(palettePath);
   let paletteWrite = Promise.resolve();
@@ -267,18 +269,25 @@ export function createAsbServer({
         } else {
           const body = await readBody(request);
           const revision = (value) => value === null || typeof value === 'string' && SOURCE_REVISION.test(value);
-          if (!body || typeof body !== 'object' || Array.isArray(body)
-            || Object.keys(body).sort().join(',') !== 'clientId,dirty,profilesRevision,profilesVisible,sourcesRevision'
-            || typeof body.clientId !== 'string' || !UUID.test(body.clientId)
-            || !revision(body.sourcesRevision) || !revision(body.profilesRevision)
-            || typeof body.profilesVisible !== 'boolean' || typeof body.dirty !== 'boolean') {
+          const closed = exactKeys(body, ['clientId', 'closed']) && body.closed === true;
+          const active = exactKeys(body, ['clientId', 'dirty', 'profilesRevision', 'profilesVisible', 'sourcesRevision'])
+            && revision(body.sourcesRevision) && revision(body.profilesRevision)
+            && typeof body.profilesVisible === 'boolean' && typeof body.dirty === 'boolean';
+          if ((!closed && !active) || typeof body.clientId !== 'string' || !UUID.test(body.clientId)) {
             sendJson(response, 400, { error: 'Invalid ASB UI report.' });
             return;
           }
           const reportedAtMs = now();
-          uiClients.delete(body.clientId);
-          uiClients.set(body.clientId, { ...body, reportedAtMs });
-          while (uiClients.size > 16) uiClients.delete(uiClients.keys().next().value);
+          if (closed) {
+            uiClients.delete(body.clientId);
+            closedUiClients.set(body.clientId, reportedAtMs);
+            while (closedUiClients.size > 16) closedUiClients.delete(closedUiClients.keys().next().value);
+          } else if (!closedUiClients.has(body.clientId)) {
+            // A report still in flight must not reopen a closed window.
+            uiClients.delete(body.clientId);
+            uiClients.set(body.clientId, { ...body, reportedAtMs });
+            while (uiClients.size > 16) uiClients.delete(uiClients.keys().next().value);
+          }
           sendJson(response, 200, { received: true, reportedAtMs });
         }
       } catch (error) {

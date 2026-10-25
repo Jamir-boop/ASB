@@ -546,6 +546,27 @@ class ProfileSyncChecks(unittest.TestCase):
                 window.report_ui()
             self.assertEqual(self.request.call_count, 4)
 
+    def test_final_ui_report_has_a_bounded_wait_and_uses_the_shared_request_path(self):
+        window = object.__new__(Window)
+        window.base, window.ui_client_id = "http://127.0.0.1:1", str(SCOPE["uuid"].uuid4())
+        request = Mock()
+        with patch.dict(SCOPE, {"request_async": request, "SOURCE_TOKEN": "fake-token"}):
+            window.report_ui_closed()
+            request.assert_called_once()
+            base, route, callback, dispatch, method, body = request.call_args.args
+            self.assertEqual((base, route, method, body), (window.base, "/api/agent/ui", "POST",
+                             {"clientId": window.ui_client_id, "closed": True}))
+            self.assertIsNone(callback({}, None))
+            self.assertIsNone(dispatch(callback, {}, None))
+            request.return_value.join.assert_called_once_with(.75)
+            request.reset_mock()
+            with patch.dict(SCOPE, {"SOURCE_TOKEN": ""}):
+                window.report_ui_closed()
+            request.assert_not_called()
+            del window.ui_client_id
+            window.report_ui_closed()
+            request.assert_not_called()
+
     def test_engine_stop_sends_the_token_and_keeps_the_server_error(self):
         import io
         token = "ef" * 32
@@ -600,6 +621,7 @@ class ProfileSyncChecks(unittest.TestCase):
                 asb.request_json("http://127.0.0.1:1", route, method, {})
             request = transport.open.call_args.args[0]
             self.assertEqual(request.get_header("X-asb-source-token"), token if "/agent/" in route else None)
+            self.assertEqual(request.get_header("Origin"), "http://127.0.0.1:1" if method == "POST" else None)
         transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(b'{"changed": true}')))
         with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": token}):
             received = []
@@ -4680,10 +4702,10 @@ class NativeLogicChecks(unittest.TestCase):
                 self.assertEqual(transport.open.call_args.args[0].get_header("X-asb-source-token"), expected)
                 self.assertNotIn(token, str(caught.exception))
         source = SOURCE.read_text()
-        # The environment is read once (a board started by hand). The token is used in the header rule (3 lines), in report_ui, and in the
+        # The environment is read once (a board started by hand). The token is used in the header rule (3 lines), in report_ui and the final UI report, and in the
         # launcher start and reconnect, which set it (a global statement and the assignment each) from stdin.
         self.assertEqual(source.count("ASB_SOURCE_TOKEN"), 1)
-        self.assertEqual(source.count("SOURCE_TOKEN"), 9)
+        self.assertEqual(source.count("SOURCE_TOKEN"), 10)
 
     def test_row_error_clears_when_the_row_state_changes(self):
         window = object.__new__(Window)

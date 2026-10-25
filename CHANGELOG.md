@@ -4,6 +4,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Fixed `asb agent status`, which showed `UI: verified` for up to 45 s after you closed the board window, and the PC sounds, which went on for that time. A board window that closes now sends one last report that removes it, so the status shows `UI: not-open` and the sounds stop within about 2 s. A board that stops in another way, for example a crash, still expires after 45 s.
+
 ## ASB 1.12.0 - 2026-10-25
 
 - ASB Bridge is still `0.8.0` in this release.

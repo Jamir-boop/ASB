@@ -4322,6 +4322,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return False
         request_async(base, "/api/agent/ui", finished, GLib.idle_add, "POST", payload)
 
+    def report_ui_closed(self):
+        if SOURCE_TOKEN and getattr(self, "ui_client_id", None):
+            # A slow engine must not keep the window process alive.
+            request_async(self.base, "/api/agent/ui", lambda *_args: None, lambda *_args: None, "POST",
+                          {"clientId": self.ui_client_id, "closed": True}).join(.75)
+
     def source_changed(self):
         self.refresh(queue=True)
         return False
@@ -6962,7 +6968,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         request_async(self.base, "/api/threads/" + quote(row["id"], safe="") + "/open", finished, GLib.idle_add, "POST")
 
     def on_close(self, *_args):
+        if self.closed:
+            return False
         self.closed = True
+        self.report_ui_closed()
         self.pending_messages = []
         if getattr(self, "search_popover", None):
             self.search_popover.unparent()
