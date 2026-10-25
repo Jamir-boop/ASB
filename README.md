@@ -47,7 +47,7 @@ See the [Android guide](android/README.md) for pairing, building, and installing
 
 ## ASB Bridge (optional)
 
-The ASB `1.12.0` packages have ASB Bridge `0.8.0`, with OpenCode 2 support and sends by session reference (`asb:1/...`) from Codex and OpenCode.
+The ASB `1.12.1` packages have ASB Bridge `0.8.0`, with OpenCode 2 support and sends by session reference (`asb:1/...`) from Codex and OpenCode.
 Claude Code sessions run `asb agent resolve-session <reference>` to get the `SendMessage` name (`Send name:`); `asb bridge status` says when an installed skill is out of date and which `asb bridge install` target updates it.
 See the [bridge guide](bridge/README.md) and [setup and recovery](docs/INSTALL.md#asb-bridge-optional).
 

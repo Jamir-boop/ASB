@@ -4,11 +4,16 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+## ASB 1.12.1 - 2026-10-25
+
+- ASB Bridge is still `0.8.0` in this release.
 - Added a CI check of Preferences with the oldest GTK and Libadwaita that ASB supports (4.12 and 1.4). The `alma-9` row of the Distros workflow opens Preferences at 420 px with the installed board script, made-up profiles, and no engine: the section list, Profiles, and the profile dialog of a Claude profile. Libadwaita 1.4 has no `Adw.Dialog`, so this runs the fallback of the dialog, a modal window.
 - Changed Preferences in a narrow window (600 px wide or less). It now shows a list of its sections in place of the tabs, which did not fit at 420 px. Select a section to open it. Use the Back button or Escape to go back to the list. In a narrow window, the profile dialog now uses the full height, so it starts at the same place for each profile. The Bridge line of a machine with an older ASB now shows `needs ASB 1.12+`, so it fits on one line.
 - Fixed the place of a Waiting card that you mark read. It now moves down to the Idle cards, like the other cards that you mark read. A Waiting card with an unread question or a necessary action stays at the top. The Android app uses the same order.
 - Changed the engine scans after a change of a Codex or Claude Desktop Code chat: they now check only the files that changed, so the engine uses less CPU with many chats. With 700 Codex tasks and 100 Claude chats, the scan after one new line in a task made 12 file checks in place of 911. A full scan still runs at least every 30 s, so a file event that the system loses leaves a card late for at most that time.
 - Fixed `asb agent status`, which showed `UI: verified` for up to 45 s after you closed the board window, and the PC sounds, which went on for that time. A board window that closes now sends one last report that removes it, so the status shows `UI: not-open` and the sounds stop within about 2 s. A board that stops in another way, for example a crash, still expires after 45 s.
+
+See [ASB 1.12.1 release notes](docs/releases/v1.12.1.md) for downloads, upgrades, and check limits.
 
 ## ASB 1.12.0 - 2026-10-25
 
