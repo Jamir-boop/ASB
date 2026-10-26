@@ -6330,6 +6330,62 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
                                                 "Output": "68.4M", "Cache savings": "$5,916.10"})
         self.assert_no_new_warnings()
 
+    def test_provider_heading_rows_and_unpriced_value(self):
+        window = self.window()
+        side = window.maker_rows.get_parent()
+        self.assertEqual([child.get_label() for child in self.children(side) if isinstance(child, asb.Gtk.Label)][:3],
+                         ["Machines", "Apps", "Providers"])
+        heading = window.maker_rows.get_prev_sibling()
+        self.assertEqual(heading.get_margin_top(), 20)
+        self.assertTrue(heading.has_css_class("asb-usage-heading"))
+        rows = self.children(window.maker_rows)
+        self.assertEqual([row.asb_maker for row in rows], ["Anthropic", "OpenAI", "Xiaomi MiMo"])
+        view = asb.usage_view(self.REPLIES["30d"], self.ALL, "cost")
+        for row, maker in zip(rows, view["makers"]):
+            self.assertEqual(self.labels(row), [maker["label"], asb.format_cost(maker["value"]),
+                                               "" if maker["share"] is None else asb.format_share(maker["share"])])
+            who, bar, value, share = self.children(row)
+            self.assertEqual(len(self.children(who.get_child())), 1)
+            self.assertEqual(bar.segments, [] if maker["value"] is None else [(maker["value"], "#8c929a")])
+        self.assertTrue(value.has_css_class("asb-dim"))
+        self.assertTrue(value.has_css_class("asb-usage-value"))
+        self.assertEqual(share.get_label(), "")
+        window.set_metric("tokens")
+        mimo = next(row for row in self.children(window.maker_rows) if row.asb_maker == "Xiaomi MiMo")
+        maker = next(row for row in asb.usage_view(self.REPLIES["30d"], self.ALL, "tokens")["makers"] if row["id"] == "Xiaomi MiMo")
+        self.assertEqual(self.labels(mimo), ["Xiaomi MiMo", asb.format_tokens(maker["tokens"]), asb.format_share(maker["share"])])
+        self.assertFalse(self.children(mimo)[2].has_css_class("asb-dim"))
+        self.assert_no_new_warnings()
+
+    def test_new_usage_app_rows_series_and_model_icons(self):
+        replies = copy.deepcopy(self.REPLIES)
+        for reply in replies.values():
+            template = reply["records"][0]
+            reply["records"] += [dict(copy.deepcopy(template), app=app, model=model, maker=maker)
+                                 for app, model, maker in (("grok", "grok-4", "xAI"), ("antigravity", "gemini-3", "Google"),
+                                                           ("cursor", "unknown", "Other"))]
+        window = self.window(replies)
+        rows = self.children(window.app_rows)
+        self.assertEqual([row.asb_app for row in rows], ["codex", "claude", "opencode", "antigravity", "grok", ""])
+        grok = next(row for row in rows if row.asb_app == "grok")
+        who = self.children(grok)[0].get_child()
+        self.assertEqual(self.labels(who), ["Grok"])
+        self.assertEqual(who.get_first_child().get_gicon().get_file().get_basename(), "asb-terminal-symbolic.svg")
+        self.assertEqual([key for key, _label, _color in window.chart.series], ["codex", "claude", "opencode", "antigravity", "grok", ""])
+        self.assertNotIn("pi", [key for key, _label, _color in window.chart.series])
+        for model, cells in self.model_rows(window):
+            if model[1] in ("grok", "antigravity", ""):
+                app = cells[1]
+                self.assertEqual(self.labels(app), [asb.ACTIVITY_APP_LABELS[model[1]]])
+                self.assertEqual(app.get_first_child().get_gicon().get_file().get_basename(), asb.ACTIVITY_APP_ICONS[model[1]] + ".svg")
+        window.data["records"].append(dict(copy.deepcopy(replies["30d"]["records"][0]), app="pi", model="pi-model"))
+        window.render_view()
+        self.assertEqual([key for key, _label, _color in window.chart.series], ["codex", "claude", "opencode", "antigravity", "grok", "pi", ""])
+        pi = next(cells[1] for model, cells in self.model_rows(window) if model[1] == "pi")
+        self.assertEqual(self.labels(pi), ["Pi"])
+        self.assertEqual(pi.get_first_child().get_gicon().get_file().get_basename(), "asb-terminal-symbolic.svg")
+        self.assert_no_new_warnings()
+
     def test_chart_bars_period_and_metric(self):
         window = self.window()
         chart = window.chart
@@ -6506,15 +6562,18 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
                 window = self.window(size=size)
                 self.drain(.1)
                 cells = []
-                for box in (window.machine_rows, window.app_rows):
+                for box in (window.machine_rows, window.app_rows, window.maker_rows):
                     for row in self.children(box):
                         who, bar = self.children(row)[:2]
                         found, cell = who.compute_bounds(window)
                         self.assertTrue(found)
                         found, track = bar.compute_bounds(window)
                         self.assertTrue(found)
-                        cells.append((cell.get_width(), track.get_x(), track.get_width()))
-                self.assertEqual(len(cells), 6)
+                        columns = tuple((bounds.get_x(), bounds.get_width()) for widget in self.children(row)
+                                        for found, bounds in [widget.compute_bounds(window)] if found)
+                        self.assertEqual(len(columns), 4)
+                        cells.append((cell.get_width(), track.get_x(), track.get_width(), columns))
+                self.assertEqual(len(cells), 9)
                 self.assertEqual(cells[0][0], cell_width)
                 self.assertEqual(set(cells), {cells[0]})
                 if size == (600, 900):

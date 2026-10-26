@@ -159,7 +159,12 @@ class ActivityHelperChecks(unittest.TestCase):
 
     def test_names_and_fixed_colors(self):
         self.assertEqual(asb.ACTIVITY_APPS, ("codex", "claude", "opencode"))
-        self.assertEqual(asb.ACTIVITY_APP_LABELS, {"codex": "Codex", "claude": "Claude Code", "opencode": "OpenCode", "": "Other"})
+        self.assertEqual(asb.USAGE_APPS, ("codex", "claude", "opencode", "antigravity", "grok", "pi"))
+        self.assertEqual(asb.ACTIVITY_APP_LABELS, {"codex": "Codex", "claude": "Claude Code", "opencode": "OpenCode", "": "Other",
+                                                  "antigravity": "Antigravity", "grok": "Grok", "pi": "Pi"})
+        self.assertEqual(asb.USAGE_MAKER_COLOR, "#8c929a")
+        self.assertEqual(asb.USAGE_OTHER_MAKER, "Other")
+        self.assertEqual([asb.ACTIVITY_APP_ICONS[app] for app in ("antigravity", "grok", "pi")], ["asb-terminal-symbolic"] * 3)
         self.assertEqual(asb.ACTIVITY_STATUSES, ("accepted", "written", "held", "not-sent", "unknown"))
         self.assertEqual([asb.ACTIVITY_STATUS_LABELS[key] for key in asb.ACTIVITY_STATUSES],
                          ["Accepted", "Socket written", "Held", "Not sent", "Unknown"])
@@ -769,6 +774,9 @@ class UsageLogicChecks(unittest.TestCase):
         self.assertAlmostEqual(sum(machine["value"] for machine in view["machines"]), total, delta=.01)
         self.assertAlmostEqual(sum(app["value"] for app in view["apps"]), total, delta=.01)
         self.assertAlmostEqual(sum(model["value"] for model in view["models"] if model["value"] is not None), total, delta=.01)
+        self.assertEqual(sum(maker["tokens"] for maker in view["makers"]), sum(app["tokens"] for app in view["apps"]))
+        self.assertAlmostEqual(sum(maker["cost"] for maker in view["makers"]), sum(app["cost"] for app in view["apps"]), delta=1e-9)
+        self.assertAlmostEqual(sum(maker["value"] or 0 for maker in view["makers"]), total, delta=1e-9)
         self.assertEqual(sum(view["parts"].values()), view["tokens"])
         self.assertAlmostEqual(sum(sum(bar["app"].values()) for bar in view["bars"]), total, delta=.01)
         self.assertAlmostEqual(sum(sum(bar["machine"].values()) for bar in view["bars"]), total, delta=.01)
@@ -807,6 +815,46 @@ class UsageLogicChecks(unittest.TestCase):
         self.assertEqual(tokens["models"][0]["model"], "gpt-6.1-sol")
         self.assertIsNotNone(tokens["models"][-1]["share"])
         self.assertEqual(asb.format_tokens(self.view("24h", metric="tokens")["total"]), "99.4M")
+
+    def test_makers_have_priced_cost_or_tokens_and_shares(self):
+        makers = self.view()["makers"]
+        self.assertEqual([row["id"] for row in makers], ["Anthropic", "OpenAI", "Xiaomi MiMo"])
+        self.assertEqual((makers[-1]["value"], makers[-1]["share"], makers[-1]["priced"]), (None, None, False))
+        self.assertGreater(makers[-1]["tokens"], 0)
+        tokens = self.view(metric="tokens")["makers"]
+        mimo = next(row for row in tokens if row["id"] == "Xiaomi MiMo")
+        self.assertEqual(mimo["value"], mimo["tokens"])
+        self.assertGreater(mimo["share"], 0)
+        self.assertAlmostEqual(sum(row["share"] for row in tokens), 1, delta=1e-9)
+
+    def test_maker_order_missing_values_and_machine_filter(self):
+        reply = copy.deepcopy(self.REPLIES["30d"])
+        template = reply["records"][0]
+        reply["records"] = [dict(copy.deepcopy(template), maker=maker, cost=copy.deepcopy(template["cost"]) if maker == "Google" else None,
+                                  tokens={part: count if part == "output" else 0 for part in asb.USAGE_PARTS})
+                            for maker, count in (("Other", 100), ("Google", 10), ("xAI", 20))]
+        self.assertEqual([row["id"] for row in self.view(reply=reply)["makers"]], ["Google", "xAI", "Other"])
+        for missing in (None, "", 123):
+            with self.subTest(maker=missing):
+                reply["records"][0]["maker"] = missing
+                if missing is None:
+                    del reply["records"][0]["maker"]
+                other = self.view(reply=reply)["makers"][-1]
+                self.assertEqual((other["id"], other["tokens"]), ("Other", 100))
+        reply["records"].append(dict(copy.deepcopy(template), maker="Off", machineId="studio"))
+        self.assertNotIn("Off", [row["id"] for row in self.view(reply=reply, on={"desk", "laptop"})["makers"]])
+
+    def test_usage_apps_keep_order_unknown_apps_and_new_ring_colors(self):
+        reply = copy.deepcopy(self.REPLIES["30d"])
+        template = reply["records"][0]
+        apps = ("pi", "cursor", "grok", "antigravity", "opencode", "claude", "codex")
+        reply["records"] = [dict(copy.deepcopy(template), app=app) for app in apps]
+        view = self.view(reply=reply)
+        self.assertEqual([row["id"] for row in view["apps"]], ["codex", "claude", "opencode", "antigravity", "grok", "pi", ""])
+        self.assertEqual(view["apps"][-1]["tokens"], sum(template["tokens"].values()))
+        arcs = asb.usage_round_arcs(view, reply["machines"], "cost")
+        self.assertEqual([arc["color"] for arc in arcs if arc["kind"] == "app"],
+                         ["#c9ccd1", "#d97757", "#7d848c", "#4f8fe0", "#e8e46a", "#c678dd", "#5d6268"])
 
     def test_a_machine_that_is_off_leaves_every_number(self):
         reply = self.REPLIES["30d"]
@@ -7815,6 +7863,14 @@ class MessagesLogicChecks(unittest.TestCase):
                     self.assertEqual(view["counts"][seat["id"]], {"sent": sum(record["from"] == seat["id"] for record in records),
                                                                  "received": sum(record["to"] == seat["id"] for record in records)})
                 self.assertEqual(view["recent"], sorted(records, key=lambda record: record["atMs"])[-6:][::-1])
+
+    def test_usage_only_apps_still_count_as_other_in_messages(self):
+        self.assertEqual(asb.ACTIVITY_APPS, ("codex", "claude", "opencode"))
+        self.assertEqual(asb.message_app({"app": "pi"}), "")
+        reply = self.reply()
+        self.assertEqual(asb.messages_view(reply)["apps"], ["codex", "claude", "opencode"])
+        reply["seats"][0]["app"] = "pi"
+        self.assertEqual(asb.messages_view(reply)["apps"], ["codex", "claude", "opencode", ""])
 
     def test_the_sample_numbers_match_the_preview(self):
         view = asb.messages_view(self.reply())

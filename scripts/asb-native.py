@@ -1260,9 +1260,12 @@ def machine_invite_text(expires_at_ms):
 
 # Messages and Usage windows: names, colors, and formats that both windows share.
 ACTIVITY_APPS = ("codex", "claude", "opencode")
-ACTIVITY_APP_LABELS = {"codex": "Codex", "claude": "Claude Code", "opencode": "OpenCode", "": "Other"}
-ACTIVITY_APP_ICONS = {"codex": "asb-openai-symbolic", "claude": "asb-claude-symbolic", "opencode": "asb-opencode-symbolic", "": "asb-machine-symbolic"}
-ACTIVITY_APP_COLORS = {"codex": "#c9ccd1", "claude": "#d97757", "opencode": "#7d848c", "": "#5d6268"}
+USAGE_APPS = ACTIVITY_APPS + ("antigravity", "grok", "pi")
+USAGE_MAKER_COLOR = "#8c929a"
+USAGE_OTHER_MAKER = "Other"
+ACTIVITY_APP_LABELS = {"codex": "Codex", "claude": "Claude Code", "opencode": "OpenCode", "": "Other", "antigravity": "Antigravity", "grok": "Grok", "pi": "Pi"}
+ACTIVITY_APP_ICONS = {"codex": "asb-openai-symbolic", "claude": "asb-claude-symbolic", "opencode": "asb-opencode-symbolic", "": "asb-machine-symbolic", "antigravity": "asb-terminal-symbolic", "grok": "asb-terminal-symbolic", "pi": "asb-terminal-symbolic"}
+ACTIVITY_APP_COLORS = {"codex": "#c9ccd1", "claude": "#d97757", "opencode": "#7d848c", "": "#5d6268", "antigravity": "#4f8fe0", "grok": "#e8e46a", "pi": "#c678dd"}
 ACTIVITY_STATUSES = ("accepted", "written", "held", "not-sent", "unknown")
 ACTIVITY_STATUS_LABELS = {"accepted": "Accepted", "written": "Socket written", "held": "Held", "not-sent": "Not sent", "unknown": "Unknown"}
 ACTIVITY_STATUS_COLORS = {"accepted": "#c9ccd1", "written": "#8c929a", "held": "#e0b45a", "not-sent": "#f5a090", "unknown": "#5d6268"}
@@ -1778,8 +1781,8 @@ def usage_view(reply, machines_on, metric):
             machines[machine["machineId"]] = {
                 "id": machine["machineId"], "name": machine["name"], "hue": machine_hue(index), "offline": offline,
                 "state": f"Offline · last report {format_day(at)}, {format_clock(at)}" if offline and at > 0 else machine_state_text(machine),
-                "apps": {app: zero() for app in ACTIVITY_APPS + ("",)}, **zero()}
-    total, apps, models = zero(), {app: zero() for app in ACTIVITY_APPS + ("",)}, {}
+                "apps": {app: zero() for app in USAGE_APPS + ("",)}, **zero()}
+    total, apps, models, makers = zero(), {app: zero() for app in USAGE_APPS + ("",)}, {}, {}
     parts, cost_parts = dict.fromkeys(USAGE_PARTS, 0), dict.fromkeys(USAGE_PARTS, 0.0)
     bars = [{"app": {}, "machine": {}} for _start in starts]
     savings = unpriced_tokens = 0
@@ -1788,13 +1791,20 @@ def usage_view(reply, machines_on, metric):
         machine, bucket = machines.get(record["machineId"]), record["bucket"]
         if machine is None or not 0 <= bucket < len(starts):
             continue
-        app = record["app"] if record["app"] in ACTIVITY_APPS else ""
+        app = record["app"] if record["app"] in USAGE_APPS else ""
         tokens, cost = record["tokens"], record["cost"]
         processed, spent = sum(tokens[part] for part in USAGE_PARTS), cost["total"] if cost else 0
         for item in (total, machine, machine["apps"][app], apps[app], bars[bucket]["app"].setdefault(app, zero()),
                      bars[bucket]["machine"].setdefault(machine["id"], zero())):
             item["cost"] += spent
             item["tokens"] += processed
+        maker = record.get("maker")
+        if not isinstance(maker, str) or not maker:
+            maker = USAGE_OTHER_MAKER
+        maker = makers.setdefault(maker, {"id": maker, "label": maker, **zero(), "priced": False})
+        maker["cost"] += spent
+        maker["tokens"] += processed
+        maker["priced"] = maker["priced"] or cost is not None
         model = models.setdefault((record["model"], app), {"model": record["model"], "app": app, "machines": set(), "cost": None, "tokens": 0})
         model["machines"].add(machine["id"])
         model["tokens"] += processed
@@ -1817,7 +1827,14 @@ def usage_view(reply, machines_on, metric):
         for item in machine["apps"].values():
             item["value"] = pick(item)
     app_rows = [{"id": app, "label": ACTIVITY_APP_LABELS[app], **apps[app], "value": pick(apps[app]), "share": share(pick(apps[app]))}
-                for app in ACTIVITY_APPS + ("",) if apps[app]["tokens"] > 0]
+                for app in USAGE_APPS + ("",) if apps[app]["tokens"] > 0]
+    maker_rows = []
+    for maker in makers.values():
+        if maker["tokens"] > 0:
+            maker_value = None if metric == "cost" and not maker["priced"] else pick(maker)
+            maker_rows.append({**maker, "value": maker_value, "share": None if maker_value is None else share(maker_value)})
+    maker_rows.sort(key=lambda row: (row["id"] == USAGE_OTHER_MAKER, row["value"] is None,
+                                     -(row["value"] or 0), -row["tokens"], row["label"]))
     order = list(machines)
     model_rows = []
     for model in models.values():
@@ -1829,7 +1846,7 @@ def usage_view(reply, machines_on, metric):
         for kind in ("app", "machine"):
             bar[kind] = {key: pick(item) for key, item in bar[kind].items()}
     return {"metric": metric, "cost": total["cost"], "tokens": total["tokens"], "total": value, "machines": rows, "apps": app_rows,
-            "models": model_rows, "parts": parts, "cost_parts": cost_parts, "savings": savings, "unpriced_tokens": unpriced_tokens,
+            "makers": maker_rows, "models": model_rows, "parts": parts, "cost_parts": cost_parts, "savings": savings, "unpriced_tokens": unpriced_tokens,
             "unpriced_models": unpriced_models, "buckets": reply["buckets"], "bars": bars}
 
 
@@ -1853,7 +1870,7 @@ def usage_round_arcs(view, machines, metric):
         if span >= .5:
             arcs.append({"kind": "machine", "id": machine["id"], "label": machine["name"], "value": pick(machine), "r0": 92, "r1": 114,
                          "a0": start, "a1": start + span, "color": machine["hue"]})
-        apps = [app for app in ACTIVITY_APPS + ("",) if pick(machine["apps"][app]) > 0]
+        apps = [app for app in USAGE_APPS + ("",) if pick(machine["apps"][app]) > 0]
         app_span = span - .6 * max(0, len(apps) - 1)
         app_start = start
         for app in apps:
@@ -9755,6 +9772,11 @@ class UsageWindow(ActivityWindow):
         side.append(apps)
         self.app_rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         side.append(self.app_rows)
+        providers = self.heading("Providers")
+        providers.set_margin_top(20)
+        side.append(providers)
+        self.maker_rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        side.append(self.maker_rows)
         self.note = Gtk.Label(xalign=0, wrap=True, margin_top=10, visible=False)
         self.note.add_css_class("asb-usage-small")
         self.note.add_css_class("asb-dim")
@@ -9978,8 +10000,9 @@ class UsageWindow(ActivityWindow):
         hourly = data["buckets"]["unit"] == "hour"
         self.chart_title.set_label(f"{'Hourly' if hourly else 'Daily'} {'cost' if cost else 'tokens'}")
         if self.split == "app":
-            other = ("",) if any(row["id"] == "" for row in view["apps"]) else ()
-            series = [(app, ACTIVITY_APP_LABELS[app], ACTIVITY_APP_COLORS[app]) for app in ACTIVITY_APPS + other]
+            other = [""] if any(row["id"] == "" for row in view["apps"]) else []
+            apps = [app for app in USAGE_APPS if app in ACTIVITY_APPS or any(row["id"] == app for row in view["apps"])] + other
+            series = [(app, ACTIVITY_APP_LABELS[app], ACTIVITY_APP_COLORS[app]) for app in apps]
         else:
             series = [(machine["id"], machine["name"], machine["hue"]) for machine in view["machines"]]
         key = (self.period, self.metric, self.split, frozenset(on))
@@ -10002,11 +10025,12 @@ class UsageWindow(ActivityWindow):
         # A wrapped state label asks for its full text width; the clamp keeps the cell at its column width.
         row.append(Adw.Clamp(maximum_size=widths[0], tightening_threshold=widths[0], child=who, hexpand=False))
         row.append(bar)
-        row.append(self.text(show(value), ("asb-mono", "asb-usage-value"), 1, width_request=widths[1]))
-        row.append(self.text(format_share(share), ("asb-usage-small", "asb-dim"), 1, width_request=widths[2]))
+        row.append(self.text(format_cost(None) if value is None else show(value),
+                             ("asb-dim" if value is None else "asb-mono", "asb-usage-value"), 1, width_request=widths[1]))
+        row.append(self.text("" if value is None else format_share(share), ("asb-usage-small", "asb-dim"), 1, width_request=widths[2]))
 
     def render_rows(self, view, show):
-        for box in (self.machine_rows, self.app_rows):
+        for box in (self.machine_rows, self.app_rows, self.maker_rows):
             remove_children(box)
         for machine in view["machines"]:
             row = self.row_box()
@@ -10023,7 +10047,7 @@ class UsageWindow(ActivityWindow):
                 sub.set_ellipsize(Pango.EllipsizeMode.END)
             who.append(sub)
             bar = UsageBar(10, "#2a2c30")
-            bar.set_segments([(machine["apps"][app]["value"], ACTIVITY_APP_COLORS[app]) for app in ACTIVITY_APPS + ("",)], machine["share"])
+            bar.set_segments([(machine["apps"][app]["value"], ACTIVITY_APP_COLORS[app]) for app in USAGE_APPS + ("",)], machine["share"])
             self.row_cells(row, who, bar, machine["value"], machine["share"], show)
             self.machine_rows.append(row)
         for app in view["apps"]:
@@ -10036,6 +10060,15 @@ class UsageWindow(ActivityWindow):
             bar.set_segments([(app["value"], ACTIVITY_APP_COLORS[app["id"]])], app["share"])
             self.row_cells(row, who, bar, app["value"], app["share"], show)
             self.app_rows.append(row)
+        for maker in view["makers"]:
+            row = self.row_box()
+            row.asb_maker = maker["id"]
+            who = Gtk.Box(spacing=7, valign=Gtk.Align.CENTER)
+            who.append(self.text(maker["label"], ("asb-usage-name",), ellipsize=Pango.EllipsizeMode.END, max_width_chars=1, hexpand=True))
+            bar = UsageBar(10, "#2a2c30")
+            bar.set_segments([(maker["value"] or 0, USAGE_MAKER_COLOR)], maker["share"] or 0)
+            self.row_cells(row, who, bar, maker["value"], maker["share"], show)
+            self.maker_rows.append(row)
 
     def render_totals(self, view):
         remove_children(self.figures)
