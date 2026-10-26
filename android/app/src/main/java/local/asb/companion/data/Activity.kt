@@ -293,16 +293,6 @@ fun ledger(reply: ActivityMessages): Ledger {
 
 private fun order(ids: List<String>, id: String): Int = ids.indexOf(id).let { if (it < 0) Int.MAX_VALUE else it }
 
-/** The bucket of a time: the last start at or before it; -1 before the first start. */
-fun bucketIndex(startsMs: List<Long>, atMs: Long): Int = startsMs.indexOfLast { it <= atMs }
-
-/** The message count per bucket. */
-fun stripCounts(startsMs: List<Long>, messages: List<ActivityMessage>): List<Int> {
-    val counts = IntArray(startsMs.size)
-    for (message in messages) bucketIndex(startsMs, message.atMs).takeIf { it >= 0 }?.let { counts[it]++ }
-    return counts.toList()
-}
-
 /** The newest message, or null. */
 fun newestMessage(messages: List<ActivityMessage>): ActivityMessage? = messages.withIndex()
     .maxWithOrNull(compareBy({ it.value.atMs }, { it.index }))?.value

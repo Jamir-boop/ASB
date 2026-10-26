@@ -23,7 +23,6 @@ import local.asb.companion.data.TokenParts
 import local.asb.companion.data.activeSeats
 import local.asb.companion.data.appRows
 import local.asb.companion.data.arrivals
-import local.asb.companion.data.bucketIndex
 import local.asb.companion.data.chartBars
 import local.asb.companion.data.chartLabelShown
 import local.asb.companion.data.chartSeries
@@ -39,7 +38,6 @@ import local.asb.companion.data.niceStep
 import local.asb.companion.data.roundArcs
 import local.asb.companion.data.seatCounts
 import local.asb.companion.data.seatedSeats
-import local.asb.companion.data.stripCounts
 import local.asb.companion.data.toggleMachine
 import local.asb.companion.data.tokenShares
 import local.asb.companion.data.unpricedNote
@@ -121,9 +119,6 @@ class ActivityTest {
             MachineRow(listOf("m1"), "Alpha", 1),
         ), ledger.machineRows)
         assertEquals(total, ledger.machineRows.sumOf { it.count })
-        val strip = stripCounts(messages.buckets.startsMs, messages.messages)
-        assertEquals(listOf(1, 1, 1, 1, 1, 1, 2), strip)
-        assertEquals(total, strip.sum())
         assertEquals(listOf("x8", "x7", "x6", "x5", "x4", "x3"), ledger.recent.map { it.id })
         assertEquals("x8", newestMessage(messages.messages)?.id)
         // Each seat's sent and received match the records.
@@ -200,12 +195,7 @@ class ActivityTest {
         assertEquals(emptyList<String>(), arrivals(null, list, now).map { it.id })
     }
 
-    @Test fun bucketsTakeTheLastStartAtOrBefore() {
-        val starts = listOf(100L, 200L, 300L)
-        assertEquals(-1, bucketIndex(starts, 99))
-        assertEquals(0, bucketIndex(starts, 100))
-        assertEquals(1, bucketIndex(starts, 299))
-        assertEquals(2, bucketIndex(starts, 1_000))
+    @Test fun machineHuesRepeatInMachineOrder() {
         assertEquals(listOf("#a28caa", "#7cc48a", "#5fb3b3", "#d6a15e", "#e38fb0", "#b4b86c", "#a28caa"), (0..6).map(::machineHue))
     }
 

@@ -110,11 +110,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import kotlin.math.abs
 import kotlin.math.cos
-import kotlin.math.floor
-import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -144,7 +141,6 @@ import local.asb.companion.data.seatCounts
 import local.asb.companion.data.seatedSeats
 import local.asb.companion.data.statusKey
 import local.asb.companion.data.statusLabel
-import local.asb.companion.data.stripCounts
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.AsbError
 
@@ -556,7 +552,6 @@ private fun MessagesContent(
         }
     }
     CenterPanel(reply, selected?.takeIf { id -> seated.any { it.id == id } }, selectedChord, counts, seats, machines, colors, title)
-    Strip(reply, colors)
     LedgerView(ledger, reply, hues, machines, colors, title)
 }
 
@@ -743,57 +738,6 @@ private fun CenterPanel(
                     Text(statusLabel(message.status), fontSize = 12.sp, color = color)
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun Strip(reply: ActivityMessages, colors: ActivityColors) {
-    val starts = reply.buckets.startsMs
-    val bars = remember(reply) { stripCounts(starts, reply.messages) }
-    val measurer = rememberTextMeasurer()
-    val unit = reply.buckets.unit
-    HorizontalDivider(thickness = 1.dp, color = colors.rule)
-    Canvas(Modifier.fillMaxWidth().height(84.dp).semantics { contentDescription = "Messages over time" }) {
-        val n = bars.size
-        if (n == 0) return@Canvas
-        val dp = density
-        val max = max(1, bars.max())
-        // One gridline at the largest round tick (1, 2, 2.5, 5 × 10^k) at or below the tallest bar.
-        val pw = 10.0.pow(floor(log10(max.toDouble())))
-        val tick = listOf(5.0, 2.5, 2.0, 1.0).map { it * pw }.first { it <= max && it == floor(it) }
-        val axis = TextStyle(color = colors.muted, fontSize = 11.sp)
-        val tickLayout = measurer.measure(formatCount(tick.toLong()), axis)
-        val left = 16 * dp + tickLayout.size.width + 6 * dp
-        val right = size.width - 16 * dp
-        val top = 16 * dp
-        val bottom = size.height - 20 * dp
-        val gap = 2 * dp
-        val bw = (right - left - gap * (n - 1)) / n
-        val gy = bottom - (bottom - top) * (tick / max).toFloat()
-        drawText(tickLayout, topLeft = Offset(16 * dp, gy - tickLayout.size.height / 2f))
-        drawLine(colors.rule, Offset(left, gy), Offset(right, gy), 1 * dp, pathEffect = PathEffect.dashPathEffect(floatArrayOf(3 * dp, 3 * dp)))
-        bars.forEachIndexed { i, v ->
-            val h = (bottom - top) * v / max
-            val x = left + i * (bw + gap)
-            val last = i == n - 1
-            val color = if (last) LIGHT.copy(alpha = .8f) else Color(0xff4a4f56)
-            if (h > 0) {
-                val r = min(2 * dp, min(bw / 2, h))
-                drawPath(Path().apply {
-                    moveTo(x, bottom); lineTo(x, bottom - h + r); quadraticTo(x, bottom - h, x + r, bottom - h)
-                    lineTo(x + bw - r, bottom - h); quadraticTo(x + bw, bottom - h, x + bw, bottom - h + r); lineTo(x + bw, bottom); close()
-                }, color)
-            }
-            if (last) {
-                val layout = measurer.measure(formatCount(v.toLong()), axis.copy(fontFamily = Mono))
-                drawText(layout, topLeft = Offset(x + bw / 2 - layout.size.width / 2f, bottom - h - 4 * dp - layout.size.height))
-            }
-        }
-        for (i in listOf(0, (n - 1) / 2, n - 1).distinct()) {
-            val layout = measurer.measure(bucketLabel(starts[i], unit, i == n - 1, short = true), axis)
-            val cx = (left + i * (bw + gap) + bw / 2).coerceIn(layout.size.width / 2f, size.width - layout.size.width / 2f)
-            drawText(layout, topLeft = Offset(cx - layout.size.width / 2f, bottom + 4 * dp))
         }
     }
 }
