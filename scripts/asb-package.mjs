@@ -38,6 +38,7 @@ export const RUNTIME_FILES = [
   'src/bridge-coverage.mjs',
   'src/activity-messages.mjs',
   'src/activity-usage.mjs', 'src/usage-aggregation.mjs', 'src/usage-claude.mjs', 'src/usage-codex.mjs', 'src/usage-opencode.mjs',
+  'src/usage-antigravity.mjs', 'src/usage-grok.mjs', 'src/usage-pi.mjs',
   'src/usage-pricing.mjs', 'src/usage-rates.mjs', 'src/usage-scan-cache.mjs', 'THIRD_PARTY_NOTICES.md',
   '.agents/plugins/marketplace.json',
   'bridge/.codex-plugin/plugin.json', 'bridge/.mcp.json', 'bridge/hooks/hooks.json',

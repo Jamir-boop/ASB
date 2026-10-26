@@ -8,6 +8,10 @@ ASB includes parts of the following software. Each part keeps its license.
 - Use: the token usage logic, ported to plain Node modules:
   - `apps/server/src/provider/Drivers/codexUsage.ts` -> `src/usage-codex.mjs`
   - `apps/server/src/provider/Drivers/claudeUsage.ts` -> `src/usage-claude.mjs`
+  - `packages/provider-grok/src/server/usage.ts` -> `src/usage-grok.mjs`
+  - `packages/provider-pi/src/server/usage.ts` -> `src/usage-pi.mjs`
+  - `apps/server/src/provider/Drivers/antigravityUsageReader.ts` and `AntigravityUsage.ts` -> `src/usage-antigravity.mjs`
+  - `packages/provider-opencode/src/server/usage.ts` (the tables and the dedupe) -> `src/usage-opencode.mjs`
   - `apps/server/src/usage/usagePricing.ts` -> `src/usage-pricing.mjs`
   - `apps/server/src/usage/usageAggregation.ts` -> `src/usage-aggregation.mjs`
   - `apps/server/src/usage/usageScanCache.ts` -> `src/usage-scan-cache.mjs`

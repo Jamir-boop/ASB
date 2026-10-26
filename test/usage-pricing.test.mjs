@@ -1,7 +1,7 @@
 // Cases from T3 Code's usagePricing.test.ts (MIT, Copyright (c) 2026 T3 Tools Inc.) that apply to the standard rates.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { lookupRate, parseRateTable, priceTokens, rateTableFromModels, rateTableModels } from '../src/usage-pricing.mjs';
+import { modelMaker, lookupRate, parseRateTable, priceTokens, rateTableFromModels, rateTableModels } from '../src/usage-pricing.mjs';
 
 const rate = (input, cacheRead) => ({ input_cost_per_token: input, output_cost_per_token: input * 5,
   ...(cacheRead === undefined ? {} : { cache_read_input_token_cost: cacheRead }) });
@@ -65,4 +65,33 @@ test('the disk form of a table gives the same table, and bad entries are dropped
   const models = JSON.parse(JSON.stringify(rateTableModels(table)));
   assert.deepEqual(rateTableFromModels(models), table);
   assert.equal(rateTableFromModels({ ...models, bad: { input: 1, output: 'x', cacheRead: null, cacheWrite: null } }).size, 2);
+});
+
+
+test('model makers follow every contract example and family rule', () => {
+  const examples = {
+    'claude-opus-5-5': 'Anthropic', opus: 'Anthropic', 'claude-opus-4-6[1m]': 'Anthropic',
+    sonnet: 'Anthropic', haiku: 'Anthropic', fable: 'Anthropic', 'gpt-6.1-sol': 'OpenAI',
+    'codex-auto-review': 'OpenAI', 'o3-mini': 'OpenAI', o4: 'OpenAI', o1: 'OpenAI', 'chatgpt-test': 'OpenAI',
+    'omni-x': 'Other', 'anthropic/claude-sonnet-4-5': 'Anthropic', 'gemini-3.1-pro': 'Google', gemma: 'Google',
+    grok: 'xAI', 'mimo-v2.6-pro': 'Xiaomi MiMo', 'kimi-k3': 'Moonshot AI', moonshot: 'Moonshot AI',
+    'glm-5.3-flash-free': 'Z.ai', 'qwen3.7-plus': 'Qwen', 'deepseek-v4.1-flash-free': 'DeepSeek',
+    'minimax-m3.1-flash-free': 'MiniMax', 'muse-spark-1.3-contributor-free': 'Meta', llama: 'Meta',
+    'devstral-small': 'Mistral AI', mistral: 'Mistral AI', codestral: 'Mistral AI', magistral: 'Mistral AI',
+    'space-bunny-free': 'Other', 'Tools/summaries': 'Other', '': 'Other', 'route/  GPT-Test[large]': 'OpenAI',
+  };
+  for (const [model, maker] of Object.entries(examples)) assert.equal(modelMaker(model), maker, model);
+});
+
+test('first-party aliases resolve reseller differences, including old cached tables', () => {
+  const document = { 'xiaomi_mimo/mimo-v2.6-pro': rate(1e-7, 3.6e-9), 'opencode_go/mimo-v2.6-pro': rate(1e-7, 3.625e-9) };
+  const table = parseRateTable(document);
+  assert.deepEqual(table.get('mimo-v2.6-pro'), table.get('xiaomi_mimo/mimo-v2.6-pro'));
+  const cached = Object.fromEntries([...table].filter(([key]) => key.includes('/')));
+  assert.deepEqual(rateTableFromModels(cached).get('mimo-v2.6-pro'), table.get('xiaomi_mimo/mimo-v2.6-pro'));
+  assert.equal(parseRateTable({ 'x/test': rate(1), 'y/test': rate(2) }).has('test'), false);
+  assert.equal(parseRateTable({ 'gemini/test': rate(1), 'xai/test': rate(2) }).has('test'), false);
+  assert.equal(parseRateTable({ 'route/xai/test': rate(1), 'y/test': rate(2) }).has('test'), false);
+  assert.equal(parseRateTable({ 'x/test': rate(1), 'y/test': rate(1) }).get('test').input, 1);
+  assert.equal(parseRateTable({ test: rate(3), 'gemini/test': rate(1), 'y/test': rate(2) }).get('test').input, 3);
 });

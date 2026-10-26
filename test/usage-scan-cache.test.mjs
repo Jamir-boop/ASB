@@ -127,3 +127,22 @@ test('limits: records older than the cutoff go, and only the newest files stay',
   pruneScanCache(kept, cutoffMs);
   assert.deepEqual(kept.get('old').records.map((record) => record[0]), [100, 101]);
 });
+
+
+test('array parsers keep every record in order and both new formats survive the disk encoding', async (t) => {
+  const dir = await folder(t);
+  const grok = path.join(dir, 'updates.jsonl');
+  await fs.writeFile(grok, `${JSON.stringify({ timestamp: at, params: { sessionId: 'a', update: {
+    sessionUpdate: 'turn_completed', prompt_id: 'p', usage: { modelUsage: {
+      'grok-test-a': { inputTokens: 3 }, 'grok-test-b': { outputTokens: 4 } } } } } })}\n`);
+  const pi = path.join(dir, 'pi.jsonl');
+  await fs.writeFile(pi, `${JSON.stringify({ type: 'usage', id: 'a', timestamp: stamp(0),
+    provider: 'test', model: 'model-a', usage: { output: 5 } })}\n`);
+  const first = await scanFile(grok, await fs.stat(grok), undefined, 'grok');
+  assert.deepEqual(first.records.map((row) => [row[1], row[2], row[5]]), [['grok-test-a', 3, 0], ['grok-test-b', 0, 4]]);
+  const second = await scanFile(pi, await fs.stat(pi), undefined, 'pi');
+  const cache = new Map([[pathKey(grok), first], [pathKey(pi), second]]);
+  const encoded = encodeScanCache(cache);
+  assert.equal(encoded.version, 1);
+  assert.deepEqual(decodeScanCache(JSON.parse(JSON.stringify(encoded))), cache);
+});

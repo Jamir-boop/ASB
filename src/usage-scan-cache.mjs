@@ -7,6 +7,8 @@ import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { claudeUsageFormat } from './usage-claude.mjs';
 import { codexUsageFormat } from './usage-codex.mjs';
+import { grokUsageFormat } from './usage-grok.mjs';
+import { piUsageFormat } from './usage-pi.mjs';
 
 export const USAGE_CACHE_VERSION = 1;
 export const MAX_CACHE_FILES = 10_000;
@@ -14,7 +16,7 @@ export const GUARD_LENGTH = 64;
 export const QUARTER_HOUR_MS = 15 * 60 * 1000;
 const CHUNK_BYTES = 1024 * 1024;
 const YIELD_AFTER_MS = 25;
-const FORMATS = { codex: codexUsageFormat, claude: claudeUsageFormat };
+const FORMATS = { codex: codexUsageFormat, claude: claudeUsageFormat, grok: grokUsageFormat, pi: piUsageFormat };
 const HEX32 = /^[0-9a-f]{32}$/;
 
 export const pathKey = (file) => createHash('sha256').update(file).digest('hex');
@@ -61,7 +63,9 @@ function readLines(data, format, entry, seen) {
   }
   for (const start of [...starts].sort((a, b) => a - b)) {
     const record = format.parseLine(data.toString('utf8', start, data.indexOf(10, start)), entry.state);
-    if (record) addRecord(entry, record, seen);
+    if (Array.isArray(record)) {
+      for (const part of record) addRecord(entry, part, seen);
+    } else if (record) addRecord(entry, record, seen);
   }
 }
 

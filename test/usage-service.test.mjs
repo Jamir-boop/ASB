@@ -107,7 +107,7 @@ test('report and localHourly match the contract shapes, with dedupe, cost, and U
   const byApp = Object.fromEntries(report.records.map((record) => [record.app, record]));
   assert.equal(report.records.length, 3);
   for (const record of report.records) {
-    assert.deepEqual(Object.keys(record), ['machineId', 'app', 'model', 'bucket', 'tokens', 'cost']);
+    assert.deepEqual(Object.keys(record), ['machineId', 'app', 'model', 'maker', 'bucket', 'tokens', 'cost']);
     assert.deepEqual(Object.keys(record.tokens), ['uncached', 'cacheRead', 'cacheWrite', 'output']);
     assert.equal(record.machineId, 'machine-test-1');
   }

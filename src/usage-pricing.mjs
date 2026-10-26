@@ -29,6 +29,43 @@ function stripVariantSuffix(key) {
   return bracket === -1 ? key : key.slice(0, bracket);
 }
 
+const FIRST_PARTY_PROVIDERS = new Set(['gemini', 'xai', 'xiaomi_mimo', 'moonshot', 'zai', 'dashscope', 'deepseek', 'minimax', 'mistral']);
+
+function addBareAliases(table) {
+  const candidates = new Map();
+  for (const [key, rate] of table) {
+    const alias = bareModelName(key);
+    if (!alias || alias === key || table.has(alias)) continue;
+    if (!candidates.has(alias)) candidates.set(alias, []);
+    candidates.get(alias).push({ key, rate });
+  }
+  for (const [alias, entries] of candidates) {
+    if (entries.every(({ rate }) => sameTokenRates(rate, entries[0].rate))) table.set(alias, entries[0].rate);
+    else {
+      // First-party rates resolve reseller cache-rate differences without guessing between resellers.
+      const firstParty = entries.filter(({ key }) => key.split('/').length === 2 && FIRST_PARTY_PROVIDERS.has(key.split('/')[0]));
+      if (firstParty.length === 1) table.set(alias, firstParty[0].rate);
+    }
+  }
+}
+
+export function modelMaker(model) {
+  const name = stripVariantSuffix(bareModelName(typeof model === 'string' ? model : '').trim().toLowerCase());
+  if (name.startsWith('claude') || ['opus', 'sonnet', 'haiku', 'fable'].includes(name)) return 'Anthropic';
+  if (/^(gpt-|chatgpt|codex-|o[134](-|$))/.test(name)) return 'OpenAI';
+  if (/^(gemini|gemma)/.test(name)) return 'Google';
+  if (name.startsWith('grok')) return 'xAI';
+  if (name.startsWith('mimo')) return 'Xiaomi MiMo';
+  if (/^(kimi|moonshot)/.test(name)) return 'Moonshot AI';
+  if (name.startsWith('glm')) return 'Z.ai';
+  if (name.startsWith('qwen')) return 'Qwen';
+  if (name.startsWith('deepseek')) return 'DeepSeek';
+  if (name.startsWith('minimax')) return 'MiniMax';
+  if (/^(llama|muse-spark)/.test(name)) return 'Meta';
+  if (/^(mistral|codestral|devstral|magistral)/.test(name)) return 'Mistral AI';
+  return 'Other';
+}
+
 // The rate table of a LiteLLM price document. Drops models missing input or output rates to avoid understating cost.
 export function parseRateTable(document) {
   const table = new Map();
@@ -39,16 +76,7 @@ export function parseRateTable(document) {
     const key = normalizeRateKey(name);
     if (rates !== null && key.length) table.set(key, rates);
   }
-  // A bare name gets the rate of its qualified entries only when they all agree.
-  const aliasCandidates = new Map();
-  for (const [key, rate] of table) {
-    const alias = bareModelName(key);
-    if (alias.length === 0 || alias === key || table.has(alias)) continue;
-    const held = aliasCandidates.get(alias);
-    if (held === undefined) aliasCandidates.set(alias, rate);
-    else if (held !== null && !sameTokenRates(held, rate)) aliasCandidates.set(alias, null);
-  }
-  for (const [alias, rate] of aliasCandidates) if (rate !== null) table.set(alias, rate);
+  addBareAliases(table);
   return table;
 }
 
@@ -62,6 +90,7 @@ export function rateTableFromModels(models) {
     if (finiteNumber(rate?.input) === null || finiteNumber(rate.output) === null || !cacheRate(rate.cacheRead) || !cacheRate(rate.cacheWrite)) continue;
     table.set(key, { input: rate.input, output: rate.output, cacheRead: rate.cacheRead, cacheWrite: rate.cacheWrite });
   }
+  addBareAliases(table);
   return table;
 }
 

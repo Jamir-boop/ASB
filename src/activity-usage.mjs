@@ -7,7 +7,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { cacheDir as defaultCacheDir } from './platform-paths.mjs';
 import { aggregateBuckets, aggregateHourly, periodBuckets, USAGE_PERIODS } from './usage-aggregation.mjs';
-import { readOpenCodeUsage } from './usage-opencode.mjs';
+import { antigravityRoots, expandHome, readAntigravityUsage } from './usage-antigravity.mjs';
+import { modelMaker } from './usage-pricing.mjs';
+import { openCodeDatabases, readOpenCodeUsage } from './usage-opencode.mjs';
 import { createRateLoader } from './usage-rates.mjs';
 import { createYielder, loadUsageCache, pathKey, pruneScanCache, QUARTER_HOUR_MS, saveUsageCache, scanFile } from './usage-scan-cache.mjs';
 
@@ -26,26 +28,36 @@ const TOKEN_TYPES = ['uncached', 'cacheRead', 'cacheWrite', 'output'];
 const validMemberRecord = (record) => typeof record?.app === 'string' && typeof record.model === 'string'
   && Number.isFinite(record.hourMs) && TOKEN_TYPES.every((type) => Number.isFinite(record.tokens?.[type]) && record.tokens[type] >= 0);
 
-// The transcript folders of the enabled sources: Codex rollouts and Claude projects (Claude Desktop Code and the CLI).
-function usageRoots(sources, homeDir) {
+// The first source of each resolved transcript root owns that root.
+function usageRoots(sources, homeDir, env) {
   const roots = new Map();
   const databases = new Set();
+  const add = (root, app, fileName) => {
+    root = path.resolve(root);
+    if (!roots.has(root)) roots.set(root, { root, app, fileName });
+  };
   for (const source of sources) {
     if (!source?.enabled) continue;
-    if (source.provider === 'codex') roots.set(path.resolve(source.dataDir, 'sessions'), 'codex');
-    else if (source.provider === 'claude-desktop-code') roots.set(path.resolve(source.projectsDir || path.join(homeDir, '.claude', 'projects')), 'claude');
+    if (source.provider === 'codex') {
+      add(path.join(source.dataDir, 'sessions'), 'codex');
+      add(path.join(source.dataDir, 'archived_sessions'), 'codex');
+    } else if (source.provider === 'claude-desktop-code') add(source.projectsDir || path.join(homeDir, '.claude', 'projects'), 'claude');
     else if (source.provider === 'opencode') databases.add(path.resolve(source.dataDir));
   }
-  return { roots, databases };
+  add(path.resolve(expandHome(env.GROK_HOME?.trim() || path.join(homeDir, '.grok'), homeDir), 'sessions'), 'grok', 'updates.jsonl');
+  const piSessions = env.PI_CODING_AGENT_SESSION_DIR?.trim();
+  add(piSessions ? expandHome(piSessions, homeDir)
+    : path.resolve(expandHome(env.PI_CODING_AGENT_DIR?.trim() || path.join(homeDir, '.pi', 'agent'), homeDir), 'sessions'), 'pi');
+  return { roots: [...roots.values()], databases };
 }
 
-async function listTranscripts(root, app, cutoffMs, files, pause) {
+async function listTranscripts(root, app, cutoffMs, files, pause, fileName) {
   let entries;
   try { entries = await fs.readdir(root, { withFileTypes: true }); } catch { return; }
   for (const entry of entries) {
     const file = path.join(root, entry.name);
-    if (entry.isDirectory()) await listTranscripts(file, app, cutoffMs, files, pause);
-    else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+    if (entry.isDirectory()) await listTranscripts(file, app, cutoffMs, files, pause, fileName);
+    else if (entry.isFile() && (fileName ? entry.name === fileName : entry.name.endsWith('.jsonl'))) {
       const info = await fs.stat(file).catch(() => null);
       if (info && info.mtimeMs >= cutoffMs) files.push({ file, app, info });
     }
@@ -54,13 +66,15 @@ async function listTranscripts(root, app, cutoffMs, files, pause) {
 }
 
 export function createActivityUsage({ readSources = async () => [], machine = {}, cacheDir = defaultCacheDir(), now = Date.now,
-  fetch = globalThis.fetch, homeDir = os.homedir(), platform = process.platform, refreshMs = REFRESH_MS,
+  fetch = globalThis.fetch, homeDir = os.homedir(), env = process.env, platform = process.platform, refreshMs = REFRESH_MS,
   log = console.error } = {}) {
   const cacheFile = path.join(cacheDir, 'usage', 'usage-cache.json');
-  const stats = { bytesRead: 0, scans: 0, saves: 0, openCodeQueries: 0 };
+  const stats = { bytesRead: 0, scans: 0, saves: 0, openCodeQueries: 0, openCodePages: 0 };
   const progress = { complete: false, files: 0, scannedFiles: 0 };
   let cache = null;
   let openCode = [];
+  let antigravity = [];
+  const antigravityCache = new Map();
   let openCodeReads = new Map();
   let dirty = false;
   let lastSavedAtMs = null;
@@ -75,9 +89,9 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     cache ??= await loadUsageCache(cacheFile, { platform });
     version += 1;
     const cutoffMs = now() - USAGE_RETENTION_MS;
-    const { roots, databases } = usageRoots(await readSources(), homeDir);
+    const { roots, databases } = usageRoots(await readSources(), homeDir, env);
     const files = [];
-    for (const [root, app] of roots) await listTranscripts(root, app, cutoffMs, files, pause);
+    for (const { root, app, fileName } of roots) await listTranscripts(root, app, cutoffMs, files, pause, fileName);
     // The first scan shows its progress; a refresh keeps the counts of the last full scan until it ends.
     if (!progress.complete) Object.assign(progress, { files: files.length, scannedFiles: 0 });
     const seen = new Set();
@@ -95,14 +109,16 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     const found = [];
     const queried = new Map();
     for (const dataDir of databases) {
-      // The query is synchronous SQLite work: it runs again only when the database or its WAL changed.
-      const database = path.join(dataDir, 'opencode.db');
-      const signature = (await Promise.all([database, `${database}-wal`].map((file) => fs.stat(file)
-        .then((info) => `${info.size}:${info.mtimeMs}`, () => 'null')))).join('|');
+      const databaseFiles = await openCodeDatabases(dataDir);
+      const signature = (await Promise.all(databaseFiles.map(async (database) => {
+        const info = await Promise.all([database, `${database}-wal`].map((file) => fs.stat(file)
+          .then((stat) => `${stat.size}:${stat.mtimeMs}`, () => 'null')));
+        return `${path.basename(database)}:${info.join('|')}`;
+      }))).join('/');
       let last = openCodeReads.get(dataDir);
       if (last?.signature !== signature) {
         let records = [];
-        try { records = await readOpenCodeUsage(dataDir, cutoffMs); } catch { /* No database or another schema: no usage. */ }
+        try { records = await readOpenCodeUsage(dataDir, cutoffMs, { stats, pause }); } catch { /* No database or another schema: no usage. */ }
         stats.openCodeQueries += 1;
         last = { signature, records };
       }
@@ -111,6 +127,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     }
     openCodeReads = queried;
     openCode = found;
+    antigravity = await readAntigravityUsage(await antigravityRoots(env, homeDir), cutoffMs, { cache: antigravityCache, pause });
     for (const key of cache.keys()) if (!seen.has(key)) { cache.delete(key); changed = true; }
     pruneScanCache(cache, cutoffMs);
     version += 1;
@@ -137,7 +154,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
 
   // Every token part in a stable order (by file key), so the first copy of a Claude message is always the same one.
   function allParts() {
-    if (parts?.version === version && parts.openCode === openCode) return parts.list;
+    if (parts?.version === version && parts.openCode === openCode && parts.antigravity === antigravity) return parts.list;
     const list = [];
     for (const key of [...(cache?.keys() || [])].sort()) {
       const { app, records } = cache.get(key);
@@ -145,8 +162,8 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
         list.push({ app, model, atMs: quarter * QUARTER_HOUR_MS, tokens: { uncached, cacheRead, cacheWrite, output }, key: dedupeKey });
       }
     }
-    for (const record of openCode) list.push({ ...record, atMs: record.timestampMs, key: null });
-    parts = { version, openCode, list };
+    for (const record of [...openCode, ...antigravity]) list.push({ ...record, atMs: record.timestampMs, key: null });
+    parts = { version, openCode, antigravity, list };
     return list;
   }
 
@@ -169,7 +186,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       rates.ensure();
       const table = rates.table();
       const { machineId, name } = self();
-      const withMachine = (id) => ({ app, model, bucket, tokens, cost }) => ({ machineId: id, app, model, bucket, tokens, cost });
+      const withMachine = (id) => ({ app, model, bucket, tokens, cost }) => ({ machineId: id, app, model, maker: modelMaker(model), bucket, tokens, cost });
       const records = aggregateBuckets(allParts(), { startsMs, endMs, rates: table }).map(withMachine(machineId));
       const scan = { ...progress };
       for (const member of members) {
