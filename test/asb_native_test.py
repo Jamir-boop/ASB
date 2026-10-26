@@ -6890,5 +6890,396 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertFalse(any("X-ASB-Source-Token" in sent for sent in headers))
 
 
+@unittest.skipUnless(asb.Gtk.init_check(), "A GTK display is not available.")
+class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
+    SAMPLE = Path(__file__).with_name("fixtures") / "activity" / "messages-sample.json"
+
+    @classmethod
+    def setUpClass(cls):
+        ActivityFixture.setUpClass.__func__(cls)
+        cls.sample = json.loads(cls.SAMPLE.read_text())
+        # The sample times are UTC: the buckets, clocks, and day lines are checked in UTC.
+        saved = os.environ.get("TZ")
+        os.environ["TZ"] = "UTC"
+        time.tzset()
+
+        def restore():
+            if saved is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = saved
+            time.tzset()
+        cls.addClassCleanup(restore)
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix="asb-messages-test-")
+        self.addCleanup(directory.cleanup)
+        patcher = patch.object(asb, "THEME_PATH", Path(directory.name) / "theme.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-font-name", settings.get_property("gtk-font-name"))
+        settings.set_property("gtk-font-name", "Cantarell 11")
+        self.addCleanup(settings.set_property, "gtk-enable-animations", settings.get_property("gtk-enable-animations"))
+        settings.set_property("gtk-enable-animations", True)
+        self.addCleanup(self.close_windows)
+        self.extra, self.routes = [], []
+        self.warnings = len(GTK_WARNINGS)
+        self.addCleanup(lambda: self.assertEqual(GTK_WARNINGS[self.warnings:], []))
+
+    def fetch(self, route):
+        """The contract replies of the preview's sample data: buckets in UTC, the seats of the period, text only for local messages."""
+        from urllib.parse import parse_qs
+        self.routes.append(route)
+        path, _mark, query = route.partition("?")
+        args = {key: values[0] for key, values in parse_qs(query).items()}
+        sample, now = self.sample, self.sample["nowMs"]
+        count, size = {"24h": (24, 3_600_000), "7d": (7, 86_400_000), "30d": (30, 86_400_000)}[args["period"]]
+        starts = [now // size * size - (count - 1 - index) * size for index in range(count)]
+        records = [record for record in sample["messages"] + self.extra if record[3] >= starts[0]]
+        machine = {seat["id"]: seat["machineId"] for seat in sample["seats"]}
+        local = lambda record: "desk" in (machine[record[1]], machine[record[2]])
+        if path == "/api/activity/messages":
+            ends = {record[1] for record in records} | {record[2] for record in records}
+            return {"period": args["period"], "nowMs": now, "buckets": {"unit": "hour" if count == 24 else "day", "startsMs": starts},
+                    "machines": sample["machines"], "truncated": False,
+                    "seats": [dict(seat, order=index) for index, seat in enumerate(sample["seats"]) if seat["id"] in ends],
+                    "messages": [{"id": record[0], "from": record[1], "to": record[2], "atMs": record[3], "status": record[4], "reason": record[5],
+                                  "local": local(record)} for record in records]}
+        self.assertEqual(path, "/api/activity/thread")
+        if "seat" in args:
+            mine = [record for record in records if args["seat"] in record[1:3]]
+        else:
+            mine = [record for record in records if {record[1], record[2]} == {args["a"], args["b"]}]
+        return {"total": len(mine), "messages": [{"id": record[0], "from": record[1], "to": record[2], "atMs": record[3], "status": record[4],
+                                                  "reason": record[5], "text": record[6] if local(record) else None} for record in mine[-60:]]}
+
+    def window(self, size=(968, 760), refresh=True):
+        window = asb.MessagesWindow(self.application, "http://127.0.0.1:1", fetch=self.fetch)
+        window.set_default_size(*size)
+        window.present()
+        self.drain(.2)
+        if refresh:
+            window.refresh()
+            self.drain(.4)
+        return window
+
+    def records(self, period="7d"):
+        now = self.sample["nowMs"]
+        count, size = {"24h": (24, 3_600_000), "7d": (7, 86_400_000), "30d": (30, 86_400_000)}[period]
+        start = now // size * size - (count - 1) * size
+        return [record for record in self.sample["messages"] + self.extra if record[3] >= start]
+
+    @staticmethod
+    def labels(widget):
+        found, child = [], widget.get_first_child()
+        while child is not None:
+            if isinstance(child, asb.Gtk.Label) and child.get_visible():
+                found.append(child.get_label())
+            found.extend(MessagesWindowCheck.labels(child))
+            child = child.get_next_sibling()
+        return found
+
+    def test_toolbar_chips_and_seat_count(self):
+        window = self.window()
+        self.assertEqual(window.get_title(), "Messages")
+        self.assertEqual(window.get_default_size(), (968, 760))
+        self.assertIs(asb.ACTIVITY_WINDOW_CLASSES["messages"], asb.MessagesWindow)
+        chips = []
+        child = window.chips.get_first_child()
+        while child is not None:
+            chips.append(child.get_child())
+            child = child.get_next_sibling()
+        self.assertEqual([self.labels(chip) for chip in chips[:3]], [["Desk", "Local"], ["Laptop", "Connected"], ["Studio", "Offline"]])
+        self.assertEqual([chip.get_tooltip_text() for chip in chips[:3]], [None, None, "Last report Oct 25, 14:30"])
+        self.assertTrue(chips[2].get_first_child().has_css_class("asb-msg-offline"))
+        view = window.view
+        self.assertEqual(chips[3].get_label(), f"{len(view['seated'])} of {view['active']} sessions")
+        self.assertEqual(chips[3].get_label(), "12 of 18 sessions")
+        self.assertFalse(any(child.get_parent().get_focusable() for child in chips))
+        self.assertEqual(self.labels(window.toolbar.get_last_child()), ["Live"])
+        rules = window.css.to_string()
+        self.assertIn("transform: scale(2.2", rules)
+        self.assertIn("animation-name: asb-msg-pulse;", rules)
+        self.assertIn("animation-duration: 2000ms;", rules)
+
+    def test_ledger_numbers_equal_the_logic(self):
+        window = self.window()
+        view = asb.messages_view(window.data)
+        self.assertEqual(window.total.get_visible_child().get_label(), asb.format_count(view["total"]))
+        self.assertEqual(window.total.get_visible_child().get_label(), "479")
+        self.assertEqual({status: label.get_label() for status, label in window.legend_counts.items()},
+                         {status: asb.format_count(count) for status, count in view["by_status"].items() if count})
+        self.assertEqual(window.share.counts, {status: count for status, count in view["by_status"].items() if count})
+        self.assert_accessible_label(window.share, "Accepted 434, Socket written 22, Held 10, Not sent 5, Unknown 8")
+        for (source, target), cell in window.matrix_cells.items():
+            value = view["matrix"][view["apps"].index(source)][view["apps"].index(target)]
+            self.assertEqual(cell.get_label(), asb.format_count(value) if value else "–")
+            if not value:
+                self.assert_accessible_label(cell, "none")
+        self.assertEqual(window.app_pairs.get_label(), "7 app pairs")
+        self.assertEqual({ids: label.get_label() for ids, label in window.machine_counts.items()},
+                         {row["ids"]: asb.format_count(row["count"]) for row in view["machine_rows"]})
+        self.assertEqual([self.labels(row)[:2] for row in window.recent_rows],
+                         [[asb.format_clock(record["atMs"]), f"{record['from']} → {record['to']}"] for record in view["recent"]])
+        self.assert_accessible_label(window.strip, "Messages over time")
+        self.assert_accessible_label(window.table, "Machines, sessions and messages")
+        self.assertEqual(window.strip.view["bars"], view["bars"])
+
+    def test_pins_and_chords_have_named_proxies_in_order(self):
+        window = self.window()
+        view, table = window.view, window.table
+        pins = [key for key in table.proxies if key[0] == "pin"]
+        chords = [key for key in table.proxies if key[0] == "chord"]
+        self.assertEqual([proxy.key for proxy in table.proxy_order], [("pin", seat_id) for seat_id in view["seated"]] + chords)
+        self.assertEqual(len(pins), 12)
+        seated = set(view["seated"])
+        self.assertEqual({key[1] for key in chords}, {key for key, pair in view["pairs"].items() if pair["a"] in seated and pair["b"] in seated})
+        names = {machine["machineId"]: machine["name"] for machine in view["machines"]}
+        for _kind, seat_id in pins:
+            seat, counts = view["seats"][seat_id], view["counts"][seat_id]
+            self.assert_accessible_label(table.proxies[("pin", seat_id)], f"{seat_id}, {asb.ACTIVITY_APP_LABELS[seat['app']]}, {names[seat['machineId']]}: "
+                                                                          f"{counts['sent']} sent, {counts['received']} received")
+        parser = view["counts"]["parser-review"]
+        self.assert_accessible_label(table.proxies[("pin", "parser-review")], f"parser-review, Claude Code, Laptop: {parser['sent']} sent, {parser['received']} received")
+        pair = view["pairs"][("release-plan", "parser-review")]
+        self.assert_accessible_label(table.proxies[("chord", ("release-plan", "parser-review"))], f"release-plan and parser-review: {pair['n']} messages")
+        self.assertEqual(pair["n"], 139)
+        for proxy in table.proxy_order:
+            self.assertTrue(proxy.get_focusable())
+            self.assertEqual(proxy.get_accessible_role(), asb.Gtk.AccessibleRole.BUTTON)
+        # Tab goes through the pins in circle order, then the chords.
+        table.proxy_order[0].grab_focus()
+        for proxy in table.proxy_order[1:4]:
+            self.assertTrue(table.child_focus(asb.Gtk.DirectionType.TAB_FORWARD))
+            self.assertTrue(proxy.has_focus())
+        table.proxy_order[11].grab_focus()
+        self.assertTrue(table.child_focus(asb.Gtk.DirectionType.TAB_FORWARD))
+        self.assertIs(window.get_focus(), table.proxy_order[12])
+        self.assertEqual(table.proxy_order[12].key[0], "chord")
+        # A chord takes the pointer only near its curve.
+        chord = table.proxies[("chord", ("release-plan", "parser-review"))]
+        points = chord.curve[0]
+        middle = points[32]
+        self.assertTrue(chord.contains(middle[0] - chord.origin[0], middle[1] - chord.origin[1]))
+        self.assertEqual(table.hit(*middle), (None, ("release-plan", "parser-review")))
+        x, y = asb.table_point(table.geometry, table.geometry["Rp"], table.geometry["seat"]["docs"])
+        self.assertEqual(table.hit(x + 15, y), ("docs", None))
+        self.assertEqual(table.hit(table.geometry["cx"], table.geometry["cy"]), (None, None))
+
+    def test_a_focused_pin_shows_its_center(self):
+        window = self.window()
+        self.assertEqual(self.labels(window.table.center)[:2], ["16:28", "docs → release-plan"])
+        self.assertIn("Changelog draft is in place.", self.labels(window.table.center))
+        window.table.proxies[("pin", "parser-review")].grab_focus()
+        self.drain(.05)
+        counts = window.view["counts"]["parser-review"]
+        self.assertEqual(self.labels(window.table.center),
+                         ["parser-review", "Claude Code · Laptop", "Sent", asb.format_count(counts["sent"]), "Received", asb.format_count(counts["received"])])
+        self.assertEqual((counts["sent"], counts["received"]), (81, 109))
+        self.assertTrue(window.table.labels["parser-review"]["shown"])
+        window.table.pointer_moved(None, *window.table.chords[0]["table"][0][32])
+        pair = window.view["pairs"][window.table.chords[0]["key"]]
+        self.assertEqual(self.labels(window.table.center)[1:3], [f"→ {pair['ab']}", f"← {pair['ba']}"])
+
+    def test_a_pair_thread_and_escape(self):
+        window = self.window()
+        key = ("release-plan", "parser-review")
+        proxy = window.table.proxies[("chord", key)]
+        self.assertTrue(proxy.key_pressed(None, asb.Gdk.KEY_Return, 0, 0))
+        self.drain(.3)
+        self.assertEqual(window.ledger.get_visible_child_name(), "thread")
+        self.assertEqual(window.thread_route.get_label(), "release-plan ⇄ parser-review")
+        mine = [record for record in self.records() if {record[1], record[2]} == set(key)]
+        forward = sum(record[1] == "release-plan" for record in mine)
+        self.assertEqual(window.thread_counts.get_label(), f"→ {forward}  ← {len(mine) - forward}")
+        self.assertEqual(len(mine), 139)
+        self.assertEqual(self.labels(window.thread_list)[0], "Latest 60 of 139")
+        self.assertEqual(list(window.thread_blocks), [record[0] for record in mine[-60:]])
+        last = window.thread_blocks[mine[-1][0]]
+        self.assertEqual(self.labels(last)[-1], mine[-1][6])
+        self.assertEqual(last.get_halign(), asb.Gtk.Align.START if mine[-1][1] == "release-plan" else asb.Gtk.Align.END)
+        self.assertIn("/api/activity/thread?period=7d&a=release-plan&b=parser-review", self.routes)
+        self.assertIn(asb.day_line(mine[-1][3], self.sample["nowMs"]), self.labels(window.thread_list))
+        # A pair with no local endpoint shows no text.
+        window.open_thread("pair", ("parser-review", "render-farm"))
+        self.assertTrue(window.thread_blocks)
+        self.assertTrue(all(self.labels(block)[-1] == "Body not shared" for block in window.thread_blocks.values()))
+        self.assertTrue(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0))
+        self.drain(.3)
+        self.assertEqual(window.ledger.get_visible_child_name(), "stats")
+        self.assertIsNone(window.thread)
+        self.assertFalse(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0))
+        # A click on an empty part of the table closes a thread too.
+        window.open_thread("pair", key)
+        window.table.clicked(None, 1, window.table.geometry["cx"], window.table.geometry["cy"])
+        self.assertIsNone(window.thread)
+
+    def test_show_session_opens_and_seats_the_session(self):
+        window = self.window()
+        outside = next(seat_id for seat_id in window.view["circle"] if seat_id not in window.view["seated"])
+        window.show_session(outside)
+        self.drain(.6)
+        self.assertEqual(window.ledger.get_visible_child_name(), "thread")
+        self.assertIn(outside, window.view["seated"])
+        self.assertEqual(len(window.view["seated"]), 12)
+        self.assertIn(("pin", outside), window.table.proxies)
+        self.assertIn(f"/api/activity/thread?period=7d&seat={outside}", self.routes)
+        window.show_session("parser-review")
+        self.drain(.6)
+        self.assertEqual(window.thread_route.get_label(), "parser-review")
+        self.assertEqual(window.thread_counts.get_label(), "Sent 81  Received 109")
+        self.assertTrue(window.table.proxies[("pin", "parser-review")].has_focus())
+        first = next(iter(window.thread_blocks))
+        record = next(record for record in self.records() if record[0] == first)
+        self.assertEqual(self.labels(window.thread_blocks[first])[0], ("→ " + record[2]) if record[1] == "parser-review" else ("← " + record[1]))
+        # A card with no message in the period.
+        window.show_session("not-in-reply", "Write the API examples")
+        self.assertEqual(window.thread_route.get_label(), "Write the API examples")
+        self.assertEqual(window.thread_counts.get_label(), "Sent 0  Received 0")
+        self.assertEqual(self.labels(window.thread_list), ["No messages in 7 days."])
+        window.show_session("not-in-reply")
+        self.assertEqual(window.thread_route.get_label(), "This session")
+        # Before the first reply, the window waits.
+        later = self.window(refresh=False)
+        later.show_session("docs")
+        self.assertIsNone(later.thread)
+        later.refresh()
+        self.assertEqual(later.thread["key"], "docs")
+        self.assertEqual(later.thread_route.get_label(), "docs")
+
+    def test_a_recent_row_opens_its_message(self):
+        window = self.window()
+        record = window.view["recent"][2]
+        window.recent_rows[2].emit("clicked")
+        self.drain(.3)
+        self.assertEqual(set(window.thread["key"]), {record["from"], record["to"]})
+        block = window.thread_blocks[record["id"]]
+        self.assertTrue(block.has_css_class("asb-msg-hl"))
+        self.assertIn("outline", window.css.to_string())
+        self.drain(1.3)
+        self.assertFalse(block.has_css_class("asb-msg-hl"))
+
+    def test_a_removed_scroll_target_ends_the_scroll_tick(self):
+        window = self.window()
+        window.recent_rows[2].emit("clicked")
+        self.assertIsNotNone(window.scroll_tick)
+        # A refresh before the next frame rebuilds the list, so the target block has no parent.
+        window.thread_stick = False
+        window.render_thread_list()
+        self.drain(.2)
+        self.assertIsNone(window.scroll_tick)
+        self.assertIsNone(window.scroll_target)
+
+    def test_bodies_keep_only_the_records_of_the_reply(self):
+        window = self.window()
+        window.open_thread("pair", ("release-plan", "parser-review"))
+        old = [record for record in self.records() if {record[1], record[2]} == {"release-plan", "parser-review"}][-60:]
+        self.assertEqual(window.bodies[old[0][0]], old[0][6])
+        window.set_period("24h")
+        ids = {record["id"] for record in window.data["messages"]}
+        self.assertNotIn(old[0][0], ids)
+        self.assertNotIn(old[0][0], window.bodies)
+        self.assertLessEqual(set(window.bodies), ids)
+        self.assertEqual(window.bodies[old[-1][0]], old[-1][6])
+
+    def test_a_live_message_flies_only_with_animations(self):
+        for animations in (True, False):
+            with self.subTest(animations=animations):
+                asb.Gtk.Settings.get_default().set_property("gtk-enable-animations", animations)
+                self.extra = []
+                window = self.window()
+                total = window.view["total"]
+                self.extra = [["m-live", "release-plan", "parser-review", self.sample["nowMs"] - 1000, "accepted", "", "Check parser edge cases."]]
+                window.refresh()
+                self.assertEqual(window.total.get_visible_child().get_label(), asb.format_count(total + 1))
+                self.assertEqual(window.total.get_transition_type(), asb.Gtk.StackTransitionType.CROSSFADE)
+                self.assertEqual(len(window.table.flights), 1 if animations else 0)
+                self.assertEqual(self.labels(window.recent_rows[0])[1], "release-plan → parser-review")
+                if animations:
+                    self.assertEqual(window.table.flights[0]["key"], ("release-plan", "parser-review"))
+                    self.drain(1.5)
+                    self.assertEqual((window.table.flights, window.table.rings, window.table.tick_id), ([], [], None))
+                window.close()
+                self.drain(.05)
+
+    def test_a_new_session_takes_a_seat_before_its_light_flies(self):
+        window = self.window()
+        outside = next(seat_id for seat_id in window.view["circle"] if seat_id not in window.view["seated"])
+        partner = window.view["seated"][0]
+        self.extra = [["m-seat", outside, partner, self.sample["nowMs"] - 1000, "accepted", "", None]]
+        window.refresh()
+        self.assertIn(outside, window.view["seated"])
+        self.assertEqual(len(window.view["seated"]), 12)
+        self.assertIsNotNone(window.table.move)
+        self.assertEqual(window.table.flights, [])
+        self.drain(.45)
+        self.assertEqual([flight["from"] for flight in window.table.flights], [outside])
+        self.drain(1.5)
+        self.assertIsNone(window.table.move)
+        asb.Gtk.Settings.get_default().set_property("gtk-enable-animations", False)
+        self.extra.append(["m-seat-2", window.view["circle"][-1], partner, self.sample["nowMs"] - 500, "accepted", "", None])
+        window.refresh()
+        self.assertIsNone(window.table.move)
+        self.assertEqual(window.table.flights, [])
+
+    def test_a_not_sent_light_stops_short(self):
+        window = self.window()
+        self.extra = [["m-fail", "release-plan", "sync-check", self.sample["nowMs"] - 1000, "not-sent", "Machine offline", None]]
+        window.refresh()
+        self.assertEqual([flight["end"] for flight in window.table.flights], [.85])
+
+    def test_seat_labels_do_not_overlap(self):
+        def overlap(a, b):
+            return a[0] < b[2] - .5 and b[0] < a[2] - .5 and a[1] < b[3] - .5 and b[1] < a[3] - .5
+        for size in ((968, 760), (1440, 900)):
+            with self.subTest(size=size):
+                window = self.window(size)
+                table = window.table
+                self.assertEqual(window.get_width(), size[0])
+                shown = [label["box"] for label in table.labels.values() if label["shown"]]
+                self.assertGreaterEqual(len(shown), 10)
+                pins = []
+                for seat_id in table.pins:
+                    x, y = asb.table_point(table.geometry, table.geometry["Rp"], table.geometry["seat"][seat_id])
+                    pins.append((x - 16, y - 16, x + 16, y + 16))
+                machines = [(item["x"], item["y"], item["x"] + item["w"], item["y"] + item["h"]) for entries in table.machine_items.values() for item in entries]
+                for index, box in enumerate(shown):
+                    self.assertFalse(any(overlap(box, other) for other in shown[index + 1:] + pins + machines))
+                window.close()
+                self.drain(.05)
+
+    def test_the_narrow_layout_shows_the_reader(self):
+        window = self.window((490, 800))
+        self.drain(.3)
+        self.assertTrue(window.narrow_scroll.get_visible())
+        self.assertFalse(window.wide.get_visible())
+        self.assertIs(window.ledger.get_parent(), window.narrow_box)
+        self.assertFalse(window.ledger.has_css_class("asb-msg-edge"))
+        self.assertEqual(window.table.get_height(), min(window.table.get_width(), 560))
+        self.assertTrue(window.table.small)
+        self.assertTrue(window.reader.get_visible())
+        self.assertFalse(window.table.center.get_visible())
+        self.assertEqual(self.labels(window.reader)[:2], ["16:28", "docs → release-plan"])
+        window.set_default_size(968, 760)
+        self.drain(.4)
+        self.assertTrue(window.wide.get_visible())
+        self.assertTrue(window.ledger.has_css_class("asb-msg-edge"))
+        self.assertFalse(window.reader.get_visible())
+        self.assertTrue(window.table.center.get_visible())
+
+    def test_without_gsk_paths_nothing_is_drawn(self):
+        with patch.object(asb, "ACTIVITY_PATHS", False):
+            window = self.window()
+            self.assertTrue(window.paths_note.get_visible())
+            self.assertEqual(window.table.proxies, {})
+            self.assertFalse(window.table.center.get_visible())
+            self.assertEqual(window.total.get_visible_child().get_label(), "479")
+            for widget in (window.table, window.strip):
+                snapshot = asb.Gtk.Snapshot()
+                asb.Gtk.WidgetPaintable.new(widget).snapshot(snapshot, widget.get_width(), widget.get_height())
+                self.assertIsNone(snapshot.to_node())
+
+
 if __name__ == "__main__":
     unittest.main()
