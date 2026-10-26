@@ -3,8 +3,10 @@
 // The file on disk is private: keys are SHA-256 digests of the paths, and values are numbers, model names, the reader
 // state, and digests of the Claude message and request IDs. No path, title, folder name, or message text.
 import { createHash, randomBytes } from 'node:crypto';
-import { constants, promises as fs } from 'node:fs';
+import { constants, createReadStream, promises as fs } from 'node:fs';
 import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
+import * as zlib from 'node:zlib';
 import { claudeUsageFormat } from './usage-claude.mjs';
 import { codexUsageFormat } from './usage-codex.mjs';
 import { grokUsageFormat } from './usage-grok.mjs';
@@ -81,15 +83,40 @@ async function readExactly(handle, length, position, stats) {
   return buffer.subarray(0, done);
 }
 
+async function scanCompressed(file, info, format, handle, stats, pause) {
+  const entry = { app: format.app, size: info.size, mtimeMs: info.mtimeMs, offset: info.size,
+    guardLength: Math.min(GUARD_LENGTH, info.size), state: format.initialState(), records: [] };
+  const seen = new Set();
+  const input = createReadStream(file);
+  input.on('data', (chunk) => { stats.bytesRead = (stats.bytesRead || 0) + chunk.length; });
+  await pipeline(input, zlib.createZstdDecompress(), async (stream) => {
+    let pending = [];
+    for await (const chunk of stream) {
+      const newline = chunk.lastIndexOf(10);
+      if (newline === -1) pending.push(chunk);
+      else {
+        const data = pending.length ? Buffer.concat([...pending, chunk.subarray(0, newline + 1)]) : chunk.subarray(0, newline + 1);
+        readLines(data, format, entry, seen);
+        pending = newline + 1 < chunk.length ? [chunk.subarray(newline + 1)] : [];
+      }
+      await pause();
+    }
+    if (pending.length) readLines(Buffer.concat([...pending, Buffer.from('\n')]), format, entry, seen);
+  });
+  entry.guardHash = guardHash(await readExactly(handle, entry.guardLength, 0, stats));
+  return entry;
+}
+
 // Reads the usage of one transcript. An unchanged file gives the old entry with no read. A grown file whose first bytes
 // did not change is read from its offset; a shorter file, or one whose first bytes changed, is read again from 0.
-// Only complete lines are read: an unterminated last line counts once its newline is written.
+// Live files need a newline for their last line; compressed files also count their last line at end of stream.
 export async function scanFile(file, info, previous, app, { stats = {}, pause = createYielder() } = {}) {
   const format = FORMATS[app];
   const same = previous?.app === app;
   if (same && previous.size === info.size && previous.mtimeMs === info.mtimeMs) return previous;
   const handle = await fs.open(file, 'r');
   try {
+    if (file.endsWith('.zst')) return await scanCompressed(file, info, format, handle, stats, pause);
     let entry = null;
     if (same && previous.offset <= info.size && previous.guardLength <= previous.offset
       && guardHash(await readExactly(handle, previous.guardLength, 0, stats)) === previous.guardHash) {

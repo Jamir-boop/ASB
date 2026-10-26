@@ -22,6 +22,7 @@
   "test/usage-codex.test.mjs",
   "test/usage-claude.test.mjs",
   "test/usage-opencode.test.mjs",
+  "test/usage-zstd.test.mjs",
   "test/usage-grok.test.mjs",
   "test/usage-pi.test.mjs",
   "test/usage-antigravity.test.mjs",

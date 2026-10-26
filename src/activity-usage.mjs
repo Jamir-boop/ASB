@@ -5,6 +5,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import * as zlib from 'node:zlib';
 import { cacheDir as defaultCacheDir } from './platform-paths.mjs';
 import { aggregateBuckets, aggregateHourly, periodBuckets, USAGE_PERIODS } from './usage-aggregation.mjs';
 import { antigravityRoots, expandHome, readAntigravityUsage } from './usage-antigravity.mjs';
@@ -54,10 +55,13 @@ function usageRoots(sources, homeDir, env) {
 async function listTranscripts(root, app, cutoffMs, files, pause, fileName) {
   let entries;
   try { entries = await fs.readdir(root, { withFileTypes: true }); } catch { return; }
+  const names = new Set(entries.filter((entry) => entry.isFile()).map((entry) => entry.name));
   for (const entry of entries) {
     const file = path.join(root, entry.name);
     if (entry.isDirectory()) await listTranscripts(file, app, cutoffMs, files, pause, fileName);
-    else if (entry.isFile() && (fileName ? entry.name === fileName : entry.name.endsWith('.jsonl'))) {
+    // shortcut: Node.js before 22.15 has no zstd, so compressed Codex rollouts are not read; upgrade Node.js to read them.
+    else if (entry.isFile() && (fileName ? entry.name === fileName : entry.name.endsWith('.jsonl')
+      || (typeof zlib.createZstdDecompress === 'function' && entry.name.endsWith('.jsonl.zst') && !names.has(entry.name.slice(0, -4))))) {
       const info = await fs.stat(file).catch(() => null);
       if (info && info.mtimeMs >= cutoffMs) files.push({ file, app, info });
     }
@@ -103,7 +107,10 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       try {
         const entry = await scanFile(file, info, previous, app, { stats, pause });
         if (entry !== previous) { cache.set(key, entry); changed = true; version += 1; }
-      } catch { /* A file that went away or cannot be read keeps its old entry, if any. */ }
+      } catch {
+        if (file.endsWith('.zst') && cache.delete(key)) { changed = true; version += 1; }
+        // Other unreadable transcripts keep their old entry, if any.
+      }
       if (!progress.complete) progress.scannedFiles += 1;
     }
     const found = [];
