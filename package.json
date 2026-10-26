@@ -27,6 +27,7 @@
     "bridge/README.md",
     ".agents/plugins/marketplace.json",
     "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
     "README.md",
     "install.sh",
     "uninstall.sh"

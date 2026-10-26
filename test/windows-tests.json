@@ -18,5 +18,13 @@
   "test/claude-registry.test.mjs",
   "test/memory-trim.test.mjs",
   "test/bridge-coverage.test.mjs",
-  "test/activity-messages.test.mjs"
+  "test/activity-messages.test.mjs",
+  "test/usage-codex.test.mjs",
+  "test/usage-claude.test.mjs",
+  "test/usage-opencode.test.mjs",
+  "test/usage-pricing.test.mjs",
+  "test/usage-rates.test.mjs",
+  "test/usage-aggregation.test.mjs",
+  "test/usage-scan-cache.test.mjs",
+  "test/usage-service.test.mjs"
 ]
