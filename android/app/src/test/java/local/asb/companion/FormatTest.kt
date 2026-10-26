@@ -211,12 +211,26 @@ class FormatTest {
         assertEquals("Today", dayText(time, at("2026-10-24T23:59:00Z")))
         assertEquals("Yesterday", dayText(time, at("2026-10-25T00:01:00Z")))
         assertEquals("Oct 24", dayText(time, at("2026-10-26T12:00:00Z")))
-        assertEquals("09:00", bucketLabel(at("2026-10-24T09:00:00Z"), hourly = true, last = false, short = true))
-        assertEquals("Now", bucketLabel(at("2026-10-24T09:00:00Z"), hourly = true, last = true, short = true))
-        assertEquals("09:00", bucketLabel(at("2026-10-24T09:00:00Z"), hourly = true, last = true, short = false))
-        assertEquals("Oct 24", bucketLabel(at("2026-10-24T00:00:00Z"), hourly = false, last = false, short = true))
-        assertEquals("Today", bucketLabel(at("2026-10-24T00:00:00Z"), hourly = false, last = true, short = true))
-        assertEquals("Oct 24", bucketLabel(at("2026-10-24T00:00:00Z"), hourly = false, last = true, short = false))
+        assertEquals("09:00", bucketLabel(at("2026-10-24T09:00:00Z"), unit = "hour", last = false, short = true))
+        assertEquals("Now", bucketLabel(at("2026-10-24T09:00:00Z"), unit = "hour", last = true, short = true))
+        assertEquals("09:00", bucketLabel(at("2026-10-24T09:00:00Z"), unit = "hour", last = true, short = false))
+        assertEquals("Oct 24", bucketLabel(at("2026-10-24T00:00:00Z"), unit = "day", last = false, short = true))
+        assertEquals("Today", bucketLabel(at("2026-10-24T00:00:00Z"), unit = "day", last = true, short = true))
+        assertEquals("Oct 24", bucketLabel(at("2026-10-24T00:00:00Z"), unit = "day", last = true, short = false))
+    }
+
+    @Test fun monthBucketLabelsUseEnglishAndShowYearBoundaries() = utc {
+        val july = at("2026-07-01T00:00:00Z")
+        val october = at("2026-10-01T00:00:00Z")
+        val january = at("2027-01-01T00:00:00Z")
+        assertEquals("Jul 2026", bucketLabel(july, "month", last = false, short = true, first = true))
+        assertEquals("Jul", bucketLabel(july, "month", last = false, short = true))
+        assertEquals("Jan 2027", bucketLabel(january, "month", last = false, short = true))
+        assertEquals("This month", bucketLabel(january, "month", last = true, short = true, first = true))
+        assertEquals("This month", bucketLabel(october, "month", last = true, short = true))
+        assertEquals("October 2026", bucketLabel(october, "month", last = true, short = false))
+        assertEquals("July 2026", bucketLabel(july, "month", last = false, short = false))
+        assertEquals("January 2027", bucketLabel(january, "month", last = true, short = false))
     }
 
     @Test fun machineStatesAndLastReport() = utc {

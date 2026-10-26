@@ -150,7 +150,14 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
                 val offSet = off.toSet().intersect(machineIds.toSet())
                 Column(Modifier.fillMaxWidth().background(colors.pane).padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ChoiceRow(USAGE_PERIODS.map { it to periodLabel(it) }, period) { period = it }
+                    BoxWithConstraints(Modifier.fillMaxWidth()) {
+                        val periodWidth = maxOf(maxWidth, 480.dp)
+                        Row(Modifier.horizontalScroll(rememberScrollState())) {
+                            Box(Modifier.width(periodWidth)) {
+                                ChoiceRow(USAGE_PERIODS.map { it to periodLabel(it) }, period) { period = it }
+                            }
+                        }
+                    }
                     ChoiceRow(listOf(Metric.COST.name to "Cost", Metric.TOKENS.name to "Tokens"), metric.name) { metric = Metric.valueOf(it) }
                     if (current != null) {
                         val onCount = machineIds.count { it !in offSet }
@@ -172,7 +179,7 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
                 when {
                     current == null && error != null -> ActivityError(error.orEmpty(), colors) { attempt++ }
                     current == null -> ActivityLoading()
-                    current.records.isEmpty() -> ActivityEmpty("No usage in ${periodLabel(period)}", colors)
+                    current.records.isEmpty() -> ActivityEmpty(if (period == "all") "No usage yet" else "No usage in ${periodLabel(period)}", colors)
                     else -> {
                         error?.let { Text(it, fontSize = 12.sp, color = colors.muted, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) }
                         val totals = remember(current, offSet) { usageTotals(current, offSet) }
@@ -322,7 +329,7 @@ private fun RoundChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
 @Composable
 private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric, byMachine: Boolean, onSplit: (Boolean) -> Unit,
     hues: Map<String, Color>, colors: ActivityColors) {
-    val hourly = reply.buckets.unit == "hour"
+    val unit = reply.buckets.unit
     val starts = reply.buckets.startsMs
     val series = chartSeries(totals, byMachine)
     val bars = remember(totals, byMachine, metric) { chartBars(totals, byMachine, metric) }
@@ -332,7 +339,7 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
     var tapped by remember(bars) { mutableStateOf<Int?>(null) }
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
-    Text((if (hourly) "Hourly " else "Daily ") + if (metric == Metric.COST) "cost" else "tokens", fontSize = 13.sp,
+    Text((when (unit) { "hour" -> "Hourly "; "month" -> "Monthly "; else -> "Daily " }) + if (metric == Metric.COST) "cost" else "tokens", fontSize = 13.sp,
         fontWeight = FontWeight.SemiBold, color = colors.text)
     Spacer(Modifier.height(6.dp))
     ChoiceRow(listOf("app" to "By app", "machine" to "By machine"), if (byMachine) "machine" else "app") { onSplit(it == "machine") }
@@ -386,8 +393,8 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
                     val top = y(sums[i])
                     drawRect(colors.text, Offset(x - .5f * dp, top - .5f * dp), Size(bw + dp, plotB - top + dp), style = Stroke(1 * dp))
                 }
-                if (chartLabelShown(n, hourly, i)) {
-                    val layout = measurer.measure(bucketLabel(starts.getOrElse(i) { 0L }, hourly, i == n - 1, short = true), axis, maxLines = 1)
+                if (chartLabelShown(n, unit, i)) {
+                    val layout = measurer.measure(bucketLabel(starts.getOrElse(i) { 0L }, unit, i == n - 1, short = true, first = i == 0), axis, maxLines = 1)
                     val cx = (x + bw / 2).coerceIn(layout.size.width / 2f, size.width - layout.size.width / 2f)
                     drawText(layout, topLeft = Offset(cx - layout.size.width / 2f, plotB + 15 * dp - layout.size.height / 2f))
                 }
@@ -408,7 +415,7 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
             Column(Modifier.offset { IntOffset(tipLeft.roundToInt(), tipTop.roundToInt()) }.onSizeChanged { tipSize = it }
                 .widthIn(min = 150.dp).background(colors.pane2, RoundedCornerShape(4.dp)).border(1.dp, colors.divider, RoundedCornerShape(4.dp))
                 .padding(horizontal = 10.dp, vertical = 8.dp).semantics(mergeDescendants = true) {}) {
-                Text(bucketLabel(starts.getOrElse(i) { 0L }, hourly, i == n - 1, short = false), fontSize = 12.sp,
+                Text(bucketLabel(starts.getOrElse(i) { 0L }, unit, i == n - 1, short = false), fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold, color = colors.text, modifier = Modifier.padding(bottom = 4.dp))
                 series.forEachIndexed { s, id ->
                     TipRow(seriesLabel(id), formatValue(bars[i][s], metric), seriesColor(id), colors)

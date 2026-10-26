@@ -113,7 +113,7 @@ data class ActivityUsage(
 )
 
 val MESSAGE_PERIODS = listOf("24h", "7d", "30d")
-val USAGE_PERIODS = listOf("24h", "7d", "30d", "90d")
+val USAGE_PERIODS = listOf("24h", "7d", "30d", "90d", "all")
 const val SEAT_LIMIT = 12
 const val ARRIVAL_WINDOW_MS = 120_000L
 
@@ -135,6 +135,7 @@ fun periodLabel(period: String): String = when (period) {
     "7d" -> "7 days"
     "30d" -> "30 days"
     "90d" -> "90 days"
+    "all" -> "All time"
     else -> period
 }
 
@@ -532,10 +533,11 @@ fun niceStep(x: Double): Double {
     return 10 * p
 }
 
-/** Which x labels show: every bucket for 7 days, every 5th for 30, every 15th for 90, every 3rd hour; counted from the last. */
-fun chartLabelShown(count: Int, hourly: Boolean, index: Int): Boolean {
+/** Chart label intervals by bucket unit and count, counted from the last bar. */
+fun chartLabelShown(count: Int, unit: String, index: Int): Boolean {
     val every = when {
-        hourly -> 3
+        unit == "month" -> when { count <= 12 -> 1; count <= 36 -> 3; else -> 12 }
+        unit == "hour" -> 3
         count == 7 -> 1
         count == 30 -> 5
         else -> 15

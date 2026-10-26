@@ -752,7 +752,7 @@ private fun Strip(reply: ActivityMessages, colors: ActivityColors) {
     val starts = reply.buckets.startsMs
     val bars = remember(reply) { stripCounts(starts, reply.messages) }
     val measurer = rememberTextMeasurer()
-    val hourly = reply.buckets.unit == "hour"
+    val unit = reply.buckets.unit
     HorizontalDivider(thickness = 1.dp, color = colors.rule)
     Canvas(Modifier.fillMaxWidth().height(84.dp).semantics { contentDescription = "Messages over time" }) {
         val n = bars.size
@@ -791,7 +791,7 @@ private fun Strip(reply: ActivityMessages, colors: ActivityColors) {
             }
         }
         for (i in listOf(0, (n - 1) / 2, n - 1).distinct()) {
-            val layout = measurer.measure(bucketLabel(starts[i], hourly, i == n - 1, short = true), axis)
+            val layout = measurer.measure(bucketLabel(starts[i], unit, i == n - 1, short = true), axis)
             val cx = (left + i * (bw + gap) + bw / 2).coerceIn(layout.size.width / 2f, size.width - layout.size.width / 2f)
             drawText(layout, topLeft = Offset(cx - layout.size.width / 2f, bottom + 4 * dp))
         }

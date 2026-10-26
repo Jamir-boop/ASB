@@ -127,9 +127,17 @@ fun dayText(ms: Long, nowMs: Long): String = when (ChronoUnit.DAYS.between(local
     else -> formatDate(ms)
 }
 
-/** A bucket label: 09:00 or Now (hours), Oct 24 or Today (days); [short] axis labels name the last bucket Now or Today. */
-fun bucketLabel(startMs: Long, hourly: Boolean, last: Boolean, short: Boolean): String = when {
-    hourly -> if (short && last) "Now" else formatTime(startMs)
+/** Short labels name the current bucket; month labels add the year at the first bucket and January. */
+fun bucketLabel(startMs: Long, unit: String, last: Boolean, short: Boolean, first: Boolean = false): String = when (unit) {
+    "hour" -> if (short && last) "Now" else formatTime(startMs)
+    "month" -> {
+        val month = local(startMs)
+        when {
+            !short -> DateTimeFormatter.ofPattern("MMMM yyyy", Locale.US).format(month)
+            last -> "This month"
+            else -> DateTimeFormatter.ofPattern(if (first || month.monthValue == 1) "MMM yyyy" else "MMM", Locale.US).format(month)
+        }
+    }
     else -> if (short && last) "Today" else formatDate(startMs)
 }
 

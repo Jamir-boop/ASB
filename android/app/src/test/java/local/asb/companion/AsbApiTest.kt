@@ -577,8 +577,18 @@ class AsbApiTest {
         assertEquals("/phone/v1/activity/usage?period=30d", server.takeRequest().path)
     }
 
+    @Test fun usageAcceptsAllTimeWithMonthlyBuckets() = runBlocking {
+        server.enqueue(MockResponse().setBody("""{"period":"all","buckets":{"unit":"month","startsMs":[1790812800000]}}"""))
+        val reply = api().activityUsage("all", "")
+        assertEquals("all", reply.period)
+        assertEquals("month", reply.buckets.unit)
+        assertEquals(listOf(1790812800000L), reply.buckets.startsMs)
+        assertEquals("/phone/v1/activity/usage?period=all", server.takeRequest().path)
+    }
+
     @Test fun anInvalidPeriodThrowsBeforeAnyRequest() = runBlocking {
         for (call in listOf<suspend () -> Unit>({ api().activityMessages("90d", "") }, { api().activityMessages("", "") },
+            { api().activityMessages("all", "") },
             { api().activityUsage("1d", "") }, { api().activityUsage("30d&force=1", "") })) {
             assertEquals("Invalid period.", failure(call).message)
         }
