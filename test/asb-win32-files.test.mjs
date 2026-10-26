@@ -52,6 +52,26 @@ test('on Windows a live PID in service.json counts only when that engine answers
   assert.equal(asked.length, 2);
 });
 
+// After a Windows restart, the old engine PID in service.json can belong to a system process: kill(pid, 0) then gives EPERM.
+test('a PID that this user cannot signal counts only when that engine answers', async (t) => {
+  const { root, file } = await runtimeFolder(t, 0o700);
+  const saved = { schema: 1, pid: 4044, port: 4629, sourceToken: token };
+  await writeFile(file, JSON.stringify(saved), { mode: 0o600 });
+  let code = 'EPERM';
+  t.mock.method(process, 'kill', () => { throw Object.assign(new Error(`kill ${code}`), { code }); });
+  const asked = [];
+  const answers = (value) => async (runtime) => { asked.push(runtime); return value; };
+  for (const env of [{}, { XDG_RUNTIME_DIR: root }]) {
+    const platform = env.XDG_RUNTIME_DIR ? 'linux' : 'win32';
+    await assert.rejects(prepareInstanceRuntime(env, { platform, file, answers: answers(true) }), /belongs to a running process/);
+    const prepared = await prepareInstanceRuntime(env, { platform, file, answers: answers(false) });
+    assert.equal(prepared.previous.toString(), JSON.stringify(saved));
+  }
+  assert.deepEqual(asked, [saved, saved, saved, saved]);
+  code = 'EINVAL';
+  await assert.rejects(prepareInstanceRuntime({}, { platform: 'win32', file, answers: answers(false) }), /kill EINVAL/);
+});
+
 test('credentials are key and cert on Linux', async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'asb-linux-cert-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

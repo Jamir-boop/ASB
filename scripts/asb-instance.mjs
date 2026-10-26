@@ -145,11 +145,18 @@ export async function prepareInstanceRuntime(env = process.env, { platform = pro
     let saved;
     try { saved = JSON.parse(previous); } catch {}
     if (!validRuntime(saved)) throw new Error('ASB kept an invalid service.json. Remove it before starting ASB.');
-    let alive = true;
-    try { process.kill(saved.pid, 0); } catch (error) { if (error.code !== 'ESRCH') throw error; alive = false; }
-    // Windows soon gives an old PID to a new process, and the fallback folder survives a restart,
-    // so there a live PID counts only when that engine answers.
-    if (alive && ((platform !== 'win32' && !fallback) || await answers(saved))) throw new Error('The ASB runtime file belongs to a running process.');
+    let alive = true, denied = false;
+    try { process.kill(saved.pid, 0); } catch (error) {
+      if (error.code === 'ESRCH') alive = false;
+      else if (error.code === 'EPERM') denied = true;
+      else throw error;
+    }
+    // Windows soon gives an old PID to a new process, and the fallback folder survives a restart. A PID that this user
+    // cannot signal (EPERM) is a system process that got the old PID, or an elevated engine. There a live PID counts
+    // only when that engine answers.
+    if (alive && ((platform !== 'win32' && !fallback && !denied) || await answers(saved))) {
+      throw new Error('The ASB runtime file belongs to a running process.');
+    }
   }
   return { file, previous, platform };
 }
