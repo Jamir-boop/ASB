@@ -90,6 +90,7 @@ import local.asb.companion.data.chartLabelShown
 import local.asb.companion.data.chartSeries
 import local.asb.companion.data.costShares
 import local.asb.companion.data.machineHue
+import local.asb.companion.data.makerRows
 import local.asb.companion.data.machineRows
 import local.asb.companion.data.modelRows
 import local.asb.companion.data.niceStep
@@ -218,6 +219,17 @@ private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metr
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
+        Spacer(Modifier.height(20.dp))
+        SectionTitle("Providers", colors)
+        for (row in makerRows(totals, metric)) {
+            UsageRowView(row, metric, colors, sub = null, bar = {
+                Box(Modifier.fillMaxWidth(row.share.toFloat().coerceIn(0f, 1f)).height(10.dp)
+                    .background(hexColor("#8c929a"), RoundedCornerShape(2.dp)))
+            }) {
+                Text(row.key, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = colors.text,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
         if (metric == Metric.COST) unpricedNote(totals, ::formatTokens)?.let {
             Text(it, fontSize = 12.sp, color = colors.muted, modifier = Modifier.padding(top = 10.dp))
         }
@@ -256,9 +268,10 @@ private fun UsageRowView(row: UsageRow, metric: Metric, colors: ActivityColors, 
                 sub?.let { Text(it, fontSize = 11.sp, color = colors.muted, maxLines = 2, overflow = TextOverflow.Ellipsis) }
             }
             Box(Modifier.weight(1f).height(10.dp).background(colors.pane2, RoundedCornerShape(2.dp))) { bar() }
-            Text(formatValue(row.value, metric), fontSize = 13.sp, fontFamily = Mono, color = colors.text, textAlign = TextAlign.End,
+            Text(if (row.unpriced) formatCost(null) else formatValue(row.value, metric), fontSize = 13.sp, fontFamily = Mono,
+                color = if (row.unpriced) colors.muted else colors.text, textAlign = TextAlign.End,
                 maxLines = 1, modifier = Modifier.width(84.dp))
-            Text(formatShare(row.share), fontSize = 12.sp, color = colors.muted, textAlign = TextAlign.End, maxLines = 1,
+            Text(if (row.unpriced) "" else formatShare(row.share), fontSize = 12.sp, color = colors.muted, textAlign = TextAlign.End, maxLines = 1,
                 modifier = Modifier.width(44.dp))
         }
         HorizontalDivider(thickness = 1.dp, color = colors.rule)

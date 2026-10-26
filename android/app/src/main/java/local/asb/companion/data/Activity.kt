@@ -5,6 +5,10 @@ import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.pow
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonTransformingSerializer
 
 // The Messages and Usage replies (activity contract 2.1 and 2.3) and their pure rules (contract 5).
 
@@ -74,10 +78,16 @@ data class UsageRecord(
     val machineId: String = "",
     val app: String = "",
     val model: String = "",
+    @Serializable(with = MakerSerializer::class) val maker: String = "",
     val bucket: Int = 0,
     val tokens: TokenParts = TokenParts(),
     val cost: CostParts? = null,
 )
+
+private object MakerSerializer : JsonTransformingSerializer<String>(String.serializer()) {
+    override fun transformDeserialize(element: JsonElement): JsonElement =
+        if (element is JsonPrimitive && element.isString) element else JsonPrimitive("")
+}
 
 /** The LiteLLM price list of the engine: [status] loading, fresh, cached, or unavailable. */
 @Serializable
@@ -109,10 +119,12 @@ const val ARRIVAL_WINDOW_MS = 120_000L
 
 /** The apps in matrix and chart order; "" is Other. */
 val APP_ORDER = listOf("codex", "claude", "opencode")
+val USAGE_APP_ORDER = APP_ORDER + listOf("antigravity", "grok", "pi")
 val STATUS_ORDER = listOf("accepted", "written", "held", "not-sent", "unknown")
 
 val MACHINE_HUES = listOf("#a28caa", "#7cc48a", "#5fb3b3", "#d6a15e", "#e38fb0", "#b4b86c")
-val APP_COLORS = mapOf("codex" to "#c9ccd1", "claude" to "#d97757", "opencode" to "#7d848c", "" to "#5d6268")
+val APP_COLORS = mapOf("codex" to "#c9ccd1", "claude" to "#d97757", "opencode" to "#7d848c",
+    "antigravity" to "#4f8fe0", "grok" to "#e8e46a", "pi" to "#c678dd", "" to "#5d6268")
 val STATUS_COLORS = mapOf("accepted" to "#c9ccd1", "written" to "#8c929a", "held" to "#e0b45a",
     "not-sent" to "#f5a090", "unknown" to "#5d6268")
 val TOKEN_TYPES = listOf("cacheRead" to "Cache read", "cacheWrite" to "Cache write", "uncached" to "Uncached input", "output" to "Output")
@@ -130,11 +142,16 @@ fun appLabel(app: String): String = when (app) {
     "codex" -> "Codex"
     "claude" -> "Claude Code"
     "opencode" -> "OpenCode"
+    "antigravity" -> "Antigravity"
+    "grok" -> "Grok"
+    "pi" -> "Pi"
     else -> "Other"
 }
 
 /** An app outside the three known ones counts as Other (""). */
 fun appKey(app: String): String = if (app in APP_ORDER) app else ""
+
+fun usageAppKey(app: String): String = if (app in USAGE_APP_ORDER) app else ""
 
 fun statusLabel(status: String): String = when (status) {
     "accepted" -> "Accepted"
@@ -316,9 +333,11 @@ data class UsageTotals(
     val machineIds: List<String>,
     val byMachine: Map<String, Amount>,
     val byMachineApp: Map<String, Map<String, Amount>>,
-    /** The chart and row apps: the three apps, plus "" when a record has another app. */
+    /** The chart and row apps: the three base apps, extra apps with tokens, then Other. */
     val apps: List<String>,
     val byApp: Map<String, Amount>,
+    val byMaker: Map<String, Amount>,
+    val pricedMakers: Set<String>,
     val models: List<ModelRow>,
     val parts: TokenParts,
     /** The cost per token type of the priced records, keyed like [TOKEN_TYPES]. */
@@ -338,12 +357,15 @@ fun usageTotals(reply: ActivityUsage, off: Set<String> = emptySet()): UsageTotal
     val on = reply.machines.map { it.machineId }.filter { it !in off }
     val onSet = on.toSet()
     val records = reply.records.filter { it.machineId in onSet }
-    val other = records.any { appKey(it.app) == "" }
-    val apps = APP_ORDER + if (other) listOf("") else emptyList()
+    val other = records.any { usageAppKey(it.app) == "" }
+    val extraApps = USAGE_APP_ORDER.drop(APP_ORDER.size).filter { app -> records.any { it.app == app && it.tokens.processed > 0 } }
+    val apps = APP_ORDER + extraApps + if (other) listOf("") else emptyList()
     val byMachine = LinkedHashMap<String, Amount>()
     val byMachineApp = LinkedHashMap<String, MutableMap<String, Amount>>()
     for (id in on) { byMachine[id] = Amount(); byMachineApp[id] = apps.associateWith { Amount() }.toMutableMap() }
     val byApp = apps.associateWith { Amount() }.toMutableMap()
+    val byMaker = LinkedHashMap<String, Amount>()
+    val pricedMakers = mutableSetOf<String>()
     val models = LinkedHashMap<Pair<String, String>, ModelRow>()
     val n = reply.buckets.startsMs.size
     val barsByApp = List(n) { HashMap<String, Amount>() }
@@ -354,12 +376,15 @@ fun usageTotals(reply: ActivityUsage, off: Set<String> = emptySet()): UsageTotal
     var unpricedTokens = 0L
     val unpricedModels = mutableListOf<String>()
     for (record in records) {
-        val app = appKey(record.app)
+        val app = usageAppKey(record.app)
         val amount = Amount(record.cost?.total ?: 0.0, record.tokens.processed)
         byMachine[record.machineId] = byMachine[record.machineId].orZero() + amount
         val machineApps = byMachineApp.getValue(record.machineId)
         machineApps[app] = machineApps[app].orZero() + amount
         byApp[app] = byApp[app].orZero() + amount
+        val maker = record.maker.ifBlank { "Other" }
+        byMaker[maker] = byMaker[maker].orZero() + amount
+        if (record.cost != null) pricedMakers += maker
         val key = record.model to app
         val row = models[key]
         models[key] = if (row == null) ModelRow(record.model, app, listOf(record.machineId), record.cost?.total, amount.tokens)
@@ -395,6 +420,8 @@ fun usageTotals(reply: ActivityUsage, off: Set<String> = emptySet()): UsageTotal
         byMachineApp = byMachineApp,
         apps = apps,
         byApp = byApp,
+        byMaker = byMaker,
+        pricedMakers = pricedMakers,
         models = models.values.map { row -> row.copy(machineIds = row.machineIds.sortedBy { machineOrder.indexOf(it) }) },
         parts = TokenParts(uncached, cacheRead, cacheWrite, output),
         costParts = costParts,
@@ -417,7 +444,7 @@ fun toggleMachine(machineIds: List<String>, off: Set<String>, id: String): Set<S
     else -> off + id
 }
 
-data class UsageRow(val key: String, val value: Double, val share: Double, val segments: List<Pair<String, Double>>)
+data class UsageRow(val key: String, val value: Double, val share: Double, val segments: List<Pair<String, Double>>, val unpriced: Boolean = false)
 
 /** One row per machine that is on, with its app segments. */
 fun machineRows(totals: UsageTotals, metric: Metric): List<UsageRow> {
@@ -436,6 +463,17 @@ fun appRows(totals: UsageTotals, metric: Metric): List<UsageRow> {
         val value = totals.byApp[app].orZero().value(metric)
         UsageRow(app, value, if (total > 0) value / total else 0.0, listOf(app to value))
     }
+}
+
+/** Makers with tokens; Other stays last, and unpriced Cost rows follow priced rows. */
+fun makerRows(totals: UsageTotals, metric: Metric): List<UsageRow> {
+    val total = if (metric == Metric.COST) totals.cost else totals.tokens.toDouble()
+    return totals.byMaker.filterValues { it.tokens > 0 }.map { (maker, amount) ->
+        val unpriced = metric == Metric.COST && maker !in totals.pricedMakers
+        val value = if (unpriced) 0.0 else amount.value(metric)
+        UsageRow(maker, value, if (total > 0) value / total else 0.0, listOf(maker to value), unpriced)
+    }.sortedWith(compareBy<UsageRow> { it.key == "Other" }.thenBy { it.unpriced }
+        .thenByDescending { if (it.unpriced) totals.byMaker.getValue(it.key).tokens.toDouble() else it.value }.thenBy { it.key })
 }
 
 /** The note under the rows; null when every token is priced. Callers show it for the Cost metric only. */

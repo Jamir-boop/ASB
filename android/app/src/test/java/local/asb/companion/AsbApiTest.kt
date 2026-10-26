@@ -565,6 +565,18 @@ class AsbApiTest {
         assertEquals(2, server.requestCount)
     }
 
+    @Test fun activityUsageAcceptsMakersAndOlderRecordsWithExtraFields() = runBlocking {
+        server.enqueue(MockResponse().setBody("""{"future":true,"records":[
+            {"app":"pi","model":"model-a","maker":"Anthropic","tokens":{"output":10},"future":1},
+            {"app":"grok","model":"model-b","tokens":{"output":20}},
+            {"app":"antigravity","model":"model-c","maker":""}]}"""))
+        val usage = api().activityUsage("30d", "")
+        assertEquals(listOf("Anthropic", "", ""), usage.records.map { it.maker })
+        assertEquals(listOf("pi", "grok", "antigravity"), usage.records.map { it.app })
+        assertEquals(listOf(10L, 20L, 0L), usage.records.map { it.tokens.processed })
+        assertEquals("/phone/v1/activity/usage?period=30d", server.takeRequest().path)
+    }
+
     @Test fun anInvalidPeriodThrowsBeforeAnyRequest() = runBlocking {
         for (call in listOf<suspend () -> Unit>({ api().activityMessages("90d", "") }, { api().activityMessages("", "") },
             { api().activityUsage("1d", "") }, { api().activityUsage("30d&force=1", "") })) {

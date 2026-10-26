@@ -179,13 +179,6 @@ internal fun statusTextColor(status: String, colors: ActivityColors): Color = wh
     else -> hexColor(STATUS_COLORS.getValue(statusKey(status)))
 }
 
-internal fun appMark(app: String): Int = when (appKey(app)) {
-    "codex" -> R.drawable.ic_provider_openai
-    "claude" -> R.drawable.ic_provider_claude
-    "opencode" -> R.drawable.ic_provider_opencode
-    else -> R.drawable.ic_machine
-}
-
 internal fun machineOffline(machine: ActivityMachine?): Boolean = machine == null || machine.state !in setOf("local", "online")
 
 /** The animator duration scale is 0 when the user turned animations off. */

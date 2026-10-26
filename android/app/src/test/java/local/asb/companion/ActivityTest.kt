@@ -1,5 +1,16 @@
 package local.asb.companion
 
+import local.asb.companion.data.APP_COLORS
+import local.asb.companion.data.APP_ORDER
+import local.asb.companion.data.USAGE_APP_ORDER
+import local.asb.companion.data.ActivityMachine
+import local.asb.companion.data.CostParts
+import local.asb.companion.data.UsageRecord
+import local.asb.companion.data.appKey
+import local.asb.companion.data.appLabel
+import local.asb.companion.data.usageAppKey
+import local.asb.companion.data.makerRows
+import local.asb.companion.ui.appMark
 import local.asb.companion.data.ActivityMessages
 import local.asb.companion.data.ActivityUsage
 import local.asb.companion.data.AsbJson
@@ -322,5 +333,98 @@ class ActivityTest {
         val loading = AsbJson.decodeFromString<ActivityUsage>("""{"prices":{"source":"LiteLLM","status":"loading","fetchedAtMs":null,"models":0}}""")
         assertNull(loading.prices.fetchedAtMs)
         assertEquals(base, usage.prices.fetchedAtMs)
+    }
+
+    @Test fun usageAppsExtendUsageWithoutChangingMessages() {
+        val apps = listOf("codex", "claude", "grok", "pi", "cursor", "antigravity")
+        val reply = usage.copy(records = apps.map { UsageRecord(machineId = "m1", app = it, tokens = TokenParts(output = 100)) })
+        val totals = usageTotals(reply)
+        val expected = listOf("codex", "claude", "opencode", "antigravity", "grok", "pi", "")
+        assertEquals(expected, totals.apps)
+        assertEquals(100L, totals.byApp.getValue("").tokens)
+        assertEquals(expected, chartSeries(totals, false))
+        assertEquals(expected, machineRows(totals, Metric.TOKENS).first().segments.map { it.first })
+        assertEquals(expected.filter { it != "opencode" }, roundArcs(reply, totals, Metric.TOKENS).mapNotNull { it.app })
+        assertTrue(totals.apps.all { it in APP_COLORS })
+        assertEquals(listOf("Antigravity", "Grok", "Pi"), USAGE_APP_ORDER.drop(3).map(::appLabel))
+        assertEquals(listOf("#4f8fe0", "#e8e46a", "#c678dd"), USAGE_APP_ORDER.drop(3).map { APP_COLORS.getValue(it) })
+        assertEquals(APP_ORDER, usageTotals(reply.copy(records = reply.records.take(1))).apps)
+        assertEquals(APP_ORDER, usageTotals(reply, setOf("m1")).apps)
+        assertEquals(APP_ORDER, usageTotals(reply.copy(records = reply.records.map { it.copy(tokens = TokenParts(), app = "pi") })).apps)
+        for (app in listOf("antigravity", "grok", "pi")) {
+            assertEquals(app, usageAppKey(app))
+            assertEquals("", appKey(app))
+        }
+        assertEquals("", usageAppKey("cursor"))
+        assertEquals(listOf("codex", "claude", "opencode", ""), ledger(messages).apps)
+        val unknownApps = messages.copy(seats = messages.seats.map { if (it.app == "") it.copy(app = "pi") else it })
+        assertEquals(ledger(messages), ledger(unknownApps))
+    }
+
+    @Test fun usageAppMarksKeepExistingMarks() {
+        assertEquals(R.drawable.ic_provider_openai, appMark("codex"))
+        assertEquals(R.drawable.ic_provider_claude, appMark("claude"))
+        assertEquals(R.drawable.ic_provider_opencode, appMark("opencode"))
+        assertEquals(R.drawable.ic_machine, appMark("x"))
+        assertEquals(R.drawable.ic_machine, appMark(""))
+        for (app in listOf("antigravity", "grok", "pi")) assertEquals(R.drawable.ic_terminal, appMark(app))
+    }
+
+    private val makerUsage = ActivityUsage(machines = listOf(ActivityMachine(machineId = "m1"), ActivityMachine(machineId = "m2")),
+        records = listOf(
+            UsageRecord(machineId = "m1", maker = "Anthropic", tokens = TokenParts(output = 100), cost = CostParts(total = 2.0)),
+            UsageRecord(machineId = "m1", maker = "Xiaomi MiMo", tokens = TokenParts(output = 1000)),
+            UsageRecord(machineId = "m1", maker = "Other", tokens = TokenParts(output = 500), cost = CostParts(total = 3.0)),
+            UsageRecord(machineId = "m1", maker = "Google", tokens = TokenParts(output = 200)),
+            UsageRecord(machineId = "m1", maker = "Anthropic", tokens = TokenParts(output = 50)),
+            UsageRecord(machineId = "m2", maker = "OpenAI", tokens = TokenParts(output = 4000), cost = CostParts(total = 8.0)),
+        ))
+
+    @Test fun makerRowsSortByMetricAndKeepOtherLast() {
+        val totals = usageTotals(makerUsage, setOf("m2"))
+        assertEquals(setOf("Anthropic", "Other"), totals.pricedMakers)
+        assertEquals(totals.cost, totals.byMaker.values.sumOf { it.cost }, .001)
+        assertEquals(totals.tokens, totals.byMaker.values.sumOf { it.tokens })
+        val cost = makerRows(totals, Metric.COST)
+        assertEquals(listOf("Anthropic", "Xiaomi MiMo", "Google", "Other"), cost.map { it.key })
+        assertEquals(listOf(false, true, true, false), cost.map { it.unpriced })
+        assertEquals(listOf(2.0, 0.0, 0.0, 3.0), cost.map { it.value })
+        assertEquals(listOf(.4, 0.0, 0.0, .6), cost.map { it.share })
+        val tokens = makerRows(totals, Metric.TOKENS)
+        assertEquals(listOf("Xiaomi MiMo", "Google", "Anthropic", "Other"), tokens.map { it.key })
+        assertTrue(tokens.none { it.unpriced })
+        for (metric in Metric.entries) {
+            val rows = makerRows(totals, metric)
+            assertEquals(1.0, rows.sumOf { it.share }, .001)
+            assertTrue(rows.all { it.segments == listOf(it.key to it.value) })
+        }
+        assertEquals("OpenAI", makerRows(usageTotals(makerUsage, setOf("m1")), Metric.COST).single().key)
+    }
+
+    @Test fun makerRowsHandleTiesZeroCostsAndNoTokens() {
+        val reply = makerUsage.copy(records = listOf("Z", "A", "Other").flatMap { maker -> listOf(
+            UsageRecord(machineId = "m1", maker = maker, tokens = TokenParts(output = 10), cost = CostParts()),
+            UsageRecord(machineId = "m1", maker = "Unpriced $maker", tokens = TokenParts(output = 20)),
+        ) } + UsageRecord(machineId = "m1", maker = "No tokens"))
+        val totals = usageTotals(reply)
+        val rows = makerRows(totals, Metric.COST)
+        assertEquals(listOf("A", "Z", "Unpriced A", "Unpriced Other", "Unpriced Z", "Other"), rows.map { it.key })
+        assertTrue(rows.all { it.share == 0.0 })
+        assertFalse(rows.first().unpriced)
+        assertEquals(listOf("Unpriced A", "Unpriced Other", "Unpriced Z", "A", "Z", "Other"),
+            makerRows(totals, Metric.TOKENS).map { it.key })
+        assertTrue(makerRows(usageTotals(ActivityUsage()), Metric.COST).isEmpty())
+    }
+
+    @Test fun missingBlankAndNonStringMakersCountAsOther() {
+        for (field in listOf("", "null", "42", "true", "[]", "{}", "\"\"", "\"   \"")) {
+            val maker = if (field == "") "" else ",\"maker\":$field"
+            val reply = AsbJson.decodeFromString<ActivityUsage>("""{"machines":[{"machineId":"m1"}],
+                "records":[{"machineId":"m1","tokens":{"output":10}$maker,"future":true}]}""")
+            val totals = usageTotals(reply)
+            assertEquals(setOf("Other"), totals.byMaker.keys)
+            assertEquals(10L, totals.byMaker.getValue("Other").tokens)
+            assertTrue(makerRows(totals, Metric.COST).single().unpriced)
+        }
     }
 }
