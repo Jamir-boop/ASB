@@ -1505,7 +1505,8 @@ test('browser rows show question, unread, then stop and name the actual end outc
   vm.runInContext(await readFile(new URL('../public/switchboard.js', import.meta.url), 'utf8'), context);
   for (const [extra, indicator, text] of [[{ lastOutcome: 'stopped' }, 'stop', 'Task stopped.'],
     [{ lastOutcome: 'stopped', unread: true }, 'dot', 'Task stopped.'],
-    [{ lastOutcome: 'failed', unread: true, failedAttention: true }, 'dot', 'Task failed.'],
+    [{ lastOutcome: 'failed', unread: true, alert: true, failedAttention: true }, 'alert', 'Task failed.'],
+    [{ lastOutcome: 'limit', unread: true, alert: true }, 'alert', 'Usage limit stopped the task.'],
     [{ actionRequired: true, unread: true, questionAttention: true }, 'question', 'A user action is required in the original app.'],
     [{ questionAttention: true }, 'question', 'A question needs your answer.'],
     [{ completionAttention: true, unread: true }, 'dot', 'Task completed.']]) {
@@ -1514,6 +1515,11 @@ test('browser rows show question, unread, then stop and name the actual end outc
     assert.equal(row.children[1].className, `attention ${indicator}`);
     assert.ok(row.attributes['aria-label'].includes(text));
     assert.ok(row.title.includes(text));
+    if (indicator === 'alert') {
+      assert.equal(row.children[1].textContent, '!');
+      assert.ok(row.attributes['aria-label'].includes('Stopped.'));
+      assert.ok(row.attributes['aria-label'].includes('Unread in ASB.'));
+    }
   }
   context.rowData = { id, title: 'Synthetic', providerLabel: 'Codex', state: 'working', canOpen: false, unread: false, lastOutcome: '' };
   assert.equal(vm.runInContext('sessionRow(rowData)', context).children.length, 1);
@@ -2477,4 +2483,51 @@ test('an open Claude app approval gives a Waiting row with a required permission
   assert.equal(row.state, 'waiting');
   assert.equal(row.reason, 'Claude waits for your permission.');
   assert.equal(row.actionRequired, true);
+});
+
+test('usage-limit outcomes are failed ends, while user stops take priority', () => {
+  for (const provider of ['claude-desktop-code', 'codex']) {
+    const end = { id, provider, lifecycleRunning: false, latestLifecycleAtMs: now,
+      latestLifecycleKind: provider === 'codex' ? 'failed' : 'task_complete',
+      ...(provider === 'codex' ? { limitStoppedAtMs: now } : { limitResetsAtMs: now + 60_000 }) };
+    for (const clock of [now, now + 60_000]) {
+      const row = buildSwitchboardDashboard([end], [], clock).threads[0];
+      assert.deepEqual([row.lastOutcome, row.failedAtMs, row.completionAtMs], ['limit', now, 0]);
+    }
+    const stopped = buildSwitchboardDashboard([{ ...end, latestLifecycleKind: 'turn_aborted', limitResetsAtMs: now + 60_000 }], [], now).threads[0];
+    assert.deepEqual([stopped.lastOutcome, stopped.failedAtMs, stopped.completionAtMs], ['stopped', 0, 0]);
+  }
+});
+
+test('limit failures stay unread through Discard and Mute until Read', async () => {
+  for (const mode of ['plain', 'discard', 'mute']) {
+    const tracker = new PendingTracker(false);
+    const events = [discardEvent('task_started', -100)];
+    const working = await tracker.observe(discardBoard(events));
+    if (mode === 'discard') await tracker.setDiscard(working.threads[0], true);
+    if (mode === 'mute') await tracker.setMuted(working.threads[0], true);
+    events.push(discardEvent('task_complete', 10));
+    const scan = () => tracker.observe(discardBoard(events, { limitResetsAtMs: now + 60_000 }));
+    const failed = (await scan()).threads[0];
+    assert.deepEqual([failed.lastOutcome, failed.failedAtMs, failed.completionAtMs], ['limit', now + 10, 0]);
+    assert.deepEqual([failed.failedAttention, failed.unread, failed.alert, failed.pending, failed.pendingSource],
+      [true, true, true, true, 'observed-failure'], mode);
+    await tracker.acknowledge(id);
+    const read = (await scan()).threads[0];
+    assert.deepEqual([read.unread, read.alert, read.lastOutcome], [false, false, 'limit']);
+  }
+});
+
+test('manual unread stays a dot while native failed and limit outcomes use alert', async () => {
+  const end = { id, provider: 'codex', lifecycleRunning: false, latestLifecycleKind: 'failed', latestLifecycleAtMs: now };
+  const tracker = new PendingTracker(false);
+  const scan = (extra = {}) => tracker.observe(buildSwitchboardDashboard([{ ...end, ...extra }], [], now));
+  await scan();
+  await tracker.markUnread(id);
+  const manual = (await scan()).threads[0];
+  assert.deepEqual([manual.unread, manual.alert, manual.pendingSource], [true, false, 'manual-unread']);
+  for (const extra of [{}, { limitStoppedAtMs: now }, { latestLifecycleKind: 'task_complete' }]) {
+    const native = (await new PendingTracker(false).observe(buildSwitchboardDashboard([{ ...end, nativeUnread: true, ...extra }], [], now))).threads[0];
+    assert.deepEqual([native.unread, native.alert], [true, extra.latestLifecycleKind !== 'task_complete']);
+  }
 });

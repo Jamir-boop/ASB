@@ -199,11 +199,11 @@ def refresh_interval(dashboard):
 def row_menu_actions(row):
     # A required action keeps its "?" mark after Read, so its own attention decides between Read and Unread.
     unread = row.get("actionAttention") or row.get("unread") if row.get("actionRequired") \
-        else attention_indicator(row) in ("question", "dot")
+        else attention_indicator(row) in ("question", "alert", "dot")
     actions = [("Read", "mark-read") if row.get("drawer") or unread else ("Unread", "mark-unread")]
     if row.get("drawer"):
         actions.append(("Take out of drawer", "drawer-out"))
-    elif attention_indicator(row) == "dot":
+    elif attention_indicator(row) in ("dot", "alert"):
         actions.append(("Put in drawer", "drawer-in"))
     actions.append(("Unmute", "unmute") if row.get("muted") else ("Mute", "mute"))
     actions.append(("Unpin", "unpin") if row.get("pinned") else ("Pin", "pin"))
@@ -376,14 +376,14 @@ def pin_move_body(rows, identity, direction):
 
 
 def attention_signature(row):
-    return tuple(row.get(key) for key in ("unread", "questionAttention", "nativeUnread", "manualUnread",
+    return tuple(row.get(key) for key in ("unread", "alert", "questionAttention", "nativeUnread", "manualUnread",
                  "nativeAttention", "completionAttention", "failedAttention", "retainedUnread", "retainedUnreadSource",
                  "completionAtMs", "failedAtMs", "lastOutcome", "actionRequired", "actionAttention", "discardResult", "updatedAtMs", "state", "workingSinceMs", "questionPending", "drawer"))
 
 
 def attention_indicator(row, drawer=False):
-    """Return the row mark in question, unread, discard, then stopped order. With drawer, a drawer row shows its stored unread mark."""
-    return "question" if row.get("actionRequired") or row.get("questionAttention") else "dot" \
+    """Return the row mark in question, alert, unread, discard, then stopped order. With drawer, a drawer row shows its stored unread mark."""
+    return "question" if row.get("actionRequired") or row.get("questionAttention") else "alert" if row.get("alert") else "dot" \
         if row.get("unread") or (drawer and row.get("drawer") and row.get("state") != "working" and not limit_left(row)) \
         else "discard" if row.get("state") in ("working", "idle") and row.get("discardResult") \
         else "stop" if row.get("state") == "idle" and row.get("lastOutcome") == "stopped" else ""
@@ -998,7 +998,8 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
         path = "~" + path[len(home.rstrip(separator)):]
     state = row.get("state", "unknown")
     state = state if state in STATES else "unknown"
-    state_text = state.capitalize() + " · " + (working_duration(row, now_ms) or row_meta(row, now_ms).split(" · ")[1])
+    state_word = "Stopped" if state == "idle" and row.get("lastOutcome") in ("failed", "limit") else state.capitalize()
+    state_text = state_word + " · " + (working_duration(row, now_ms) or row_meta(row, now_ms).split(" · ")[1])
     provider = row.get("providerLabel") or APP_NAMES.get(row.get("provider"), "Unknown app")
     source_label, source_id = row.get("sourceLabel", ""), row.get("sourceId", "")
     app = provider + (" · " + source_label if source_label and source_label != provider else "")
@@ -1008,6 +1009,8 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
     note = ""
     if indicator == "question":
         note = "Waits for your permission." if row.get("actionRequired") else "Asks a question. Open the chat to answer."
+    elif indicator == "alert":
+        note = "Usage limit stopped the task. Not read yet." if row.get("lastOutcome") == "limit" else "Failed. Not read yet."
     elif indicator == "dot":
         source = row.get("pendingSource", "")
         dot_notes = {"manual-unread": "Marked unread in ASB.", "native-unread": "Unread in the original app.",
@@ -4032,7 +4035,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-number.asb-number-pressed {{ background: @accent_bg_color; color: @accent_fg_color; }}
 {base} .asb-column + .asb-column {{ border-left: 1px solid @borders; }}
 {base} .asb-dot, .asb-tooltip .asb-dot {{ min-width: 7px; min-height: 7px; border-radius: 50%; background: @accent_color; }}
-{base} .asb-dot.asb-question, .asb-tooltip .asb-dot.asb-question {{ min-width: 0; min-height: 0; border-radius: 0; background: none; color: @accent_color;
+{base} .asb-dot.asb-question, {base} .asb-dot.asb-alert, .asb-tooltip .asb-dot.asb-question, .asb-tooltip .asb-dot.asb-alert {{ min-width: 0; min-height: 0; border-radius: 0; background: none; color: @accent_color;
     font-size: 11px; font-weight: 800; }}
 {base} .asb-dot.asb-stop, .asb-tooltip .asb-dot.asb-stop {{ border-radius: 1px; background: alpha(@window_fg_color, .55); }}
 {base} .asb-dot.asb-discard, .asb-tooltip .asb-dot.asb-discard {{ min-width: 6px; min-height: 6px; border: 1.5px solid @window_fg_color;
@@ -4127,7 +4130,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} .asb-working {{ color: {colors['accent']}; }}
 {scope} .asb-message-lit .asb-provider {{ color: {colors['accent']}; }}
 {scope} .asb-dot, .asb-tooltip.asb-custom .asb-dot {{ background: {colors['accent']}; }}
-{scope} .asb-dot.asb-question, .asb-tooltip.asb-custom .asb-dot.asb-question {{ background: none; color: {colors['accent']}; }}
+{scope} .asb-dot.asb-question, {scope} .asb-dot.asb-alert, .asb-tooltip.asb-custom .asb-dot.asb-question,
+    .asb-tooltip.asb-custom .asb-dot.asb-alert {{ background: none; color: {colors['accent']}; }}
 {scope} .asb-dot.asb-stop, .asb-tooltip.asb-custom .asb-dot.asb-stop {{ background: {colors['muted']}; }}
 {scope} .asb-dot.asb-discard, .asb-tooltip.asb-custom .asb-dot.asb-discard {{ background: none; border-color: {colors['text']}; }}
 {scope} .asb-discard-offer .asb-discard {{ border-color: {colors['muted']}; }}
@@ -5984,9 +5988,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 if model["indicator"]:
                     mark = Gtk.Box(valign=Gtk.Align.CENTER)
                     mark.add_css_class("asb-dot")
-                    if model["indicator"] == "question":
-                        mark.add_css_class("asb-question")
-                        mark.append(label("?"))
+                    if model["indicator"] in ("question", "alert"):
+                        mark.add_css_class("asb-" + model["indicator"])
+                        mark.append(label("?" if model["indicator"] == "question" else "!"))
                     elif model["indicator"] in ("stop", "discard"):
                         mark.add_css_class("asb-" + model["indicator"])
                     line.append(mark)
@@ -6021,7 +6025,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 and source_marker_color(widget.asb_thread) == source_marker_color(row):
             self.update_drawer_style(widget)
             return
-        if layout_changed or ((attention_indicator(row) in ("question", "dot", "stop")
+        if layout_changed or ((attention_indicator(row) in ("question", "alert", "dot", "stop")
                                or row.get("discardResult") != widget.asb_thread.get("discardResult"))
                               and attention_signature(widget.asb_thread) != attention_signature(row)):
             self.clear_read_feedback(widget)
@@ -6232,14 +6236,16 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         (widget.add_css_class if tone else widget.remove_css_class)("asb-view-only-quiet")
         (widget.add_css_class if tone == "rest" else widget.remove_css_class)("asb-view-only-rest")
         indicator = attention_indicator(row, True)
-        (widget.add_css_class if indicator == "dot" else widget.remove_css_class)("asb-unread")
+        (widget.add_css_class if indicator in ("dot", "alert") else widget.remove_css_class)("asb-unread")
         (widget.add_css_class if indicator == "dot" and not row.get("unread") else widget.remove_css_class)("asb-drawer")
         discard_offer = self.view == "comfortable" and row.get("state") in ("working", "idle") and not indicator and not row.get("muted") \
             and not row.get("remote")
         if getattr(widget, "asb_mute_glyph", None):
             widget.asb_mute_glyph.set_visible(bool(row.get("muted")))
         widget.asb_dot.set_visible(bool(indicator) or discard_offer)
-        widget.asb_dot.get_first_child().set_visible(indicator == "question")
+        widget.asb_dot.get_first_child().set_visible(indicator in ("question", "alert"))
+        widget.asb_dot.get_first_child().set_label("!" if indicator == "alert" else "?")
+        (widget.asb_dot.add_css_class if indicator == "alert" else widget.asb_dot.remove_css_class)("asb-alert")
         (widget.asb_dot.add_css_class if indicator == "question" else widget.asb_dot.remove_css_class)("asb-question")
         (widget.asb_dot.add_css_class if indicator == "stop" else widget.asb_dot.remove_css_class)("asb-stop")
         (widget.asb_dot.add_css_class if indicator == "discard" or discard_offer else widget.asb_dot.remove_css_class)("asb-discard")
@@ -6368,11 +6374,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return
         widget.asb_action_signature = signature
         unread = bool(row.get("actionAttention") or row.get("unread")) if row.get("actionRequired") \
-            else indicator in ("question", "dot")
+            else indicator in ("question", "alert", "dot")
         idle = row.get("state") == "idle"
         # An Idle row offers Discard for its next task when it has no mark. The check after a Read keeps the slot until it ends.
         discard = not row.get("muted") and not row.get("remote") and (
-            row.get("state") == "working" and indicator not in ("question", "dot")
+            row.get("state") == "working" and indicator not in ("question", "alert", "dot")
             or idle and (indicator == "discard" or not indicator and not widget.asb_read_timer))
         if discard and widget.asb_read_timer:
             self.clear_read_feedback(widget)
@@ -6403,7 +6409,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         controls = [(read, read_text, (unread or discard) and not pending), (pin, "Unpin in ASB" if pinned else "Pin in ASB", not pending)]
         if drawer:
             tucked = bool(row.get("drawer"))
-            shown = self.column_pixel_width >= 190 and (tucked or indicator == "dot")
+            shown = self.column_pixel_width >= 190 and (tucked or indicator in ("dot", "alert"))
             drawer.set_visible(shown)
             (drawer.add_css_class if tucked else drawer.remove_css_class)("asb-drawer-filled")
             drawer.asb_action = ("win.drawer-out" if tucked else "win.drawer-in") if not pending else None
@@ -6555,7 +6561,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.update_property([Gtk.AccessibleProperty.LABEL], [
                 f"More sessions. {row['asbMore']} sessions after the first {row['asbLimit']}. Activate to show all cards."])
             return
-        state_text = row.get("state", "unknown").capitalize()
+        state_text = "Stopped" if row.get("state") == "idle" and row.get("lastOutcome") in ("failed", "limit") \
+            else row.get("state", "unknown").capitalize()
         # The row class keeps the grey look across a view change; at the reset the next tick lifts it.
         if bool(countdown) != getattr(widget, "asb_limited", False):
             widget.asb_limited = bool(countdown)
@@ -6575,8 +6582,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         question = " A user action is required in the original app." if row.get("actionRequired") \
             else " Question needs your answer." if row.get("questionAttention") else ""
         retained = " Unread retained in ASB. Use Read to clear it." if shown and row.get("retainedUnread") else ""
-        outcome = " Task stopped." if row.get("lastOutcome") == "stopped" else " Task failed." \
-            if row.get("lastOutcome") == "failed" or row.get("failedAttention") else " Task completed." if row.get("completionAttention") else ""
+        outcome = " Task stopped." if row.get("lastOutcome") == "stopped" \
+            else " Usage limit stopped the task." if row.get("lastOutcome") == "limit" \
+            else " Task failed." if row.get("lastOutcome") == "failed" or row.get("failedAttention") \
+            else " Task completed." if row.get("completionAttention") else ""
         discard = (" Discard is on for the next task." if row.get("state") == "idle" else " Discard is on.") if row.get("discardResult") else ""
         drawer = " In the drawer. Still unread." if row.get("drawer") else ""
         muted = " Muted." if row.get("muted") else ""

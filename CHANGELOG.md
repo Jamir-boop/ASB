@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Changed failed tasks and tasks that a usage limit stopped: they now show the state word `Stopped` and a `!` mark until Read, on the board, the web view, and the phone. A usage limit no longer hides the unread mark, and a limit stop plays the Failed sound once.
 - Fixed the taskbar button of the ASB board on Windows, which showed the Python icon, and its taskbar menu and pin, which named Python. The board now has its own app ID and the ASB icon, and the Start menu link has the same app ID. After the update, run `asb engine install` once on Windows to update the Start menu link.
 - Fixed Claude Desktop Code chats that showed Working while the Claude app waited for a tool approval, for example to click on a site. ASB now reads the open approvals from the Claude app log and shows the chat as Waiting after 10 s, so a quick answer does not flash Waiting or play the Needs input sound. An answer, an aborted request, a finished quit of the app, or the end of the turn ends the wait, and ASB checks again every 5 s while the wait shows. On Linux and Windows, an approval counts only while the chat's Claude Code process runs.
 - Changed the Claude Code permission waits from the live session registry (desktop chats and CLI cards): they now also show Waiting only after 10 s.

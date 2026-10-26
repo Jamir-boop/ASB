@@ -2197,6 +2197,19 @@ class WidgetCheck(unittest.TestCase):
                 question = window.focus_widgets["sample-0"]
                 self.assertTrue(question.asb_state_label.get_prev_sibling().has_css_class("asb-dot"))
                 self.assert_accessible_label(question, "Open Account settings in Codex. Waiting. Question needs your answer.")
+                alert = window.focus_widgets["sample-4"]
+                original_alert_row = dict(alert.asb_thread)
+                window.update_session_row(alert, {**original_alert_row, "lastOutcome": "failed", "unread": True, "alert": True})
+                self.assertEqual(alert.asb_state_label.get_text(), "Stopped")
+                self.assertTrue(alert.asb_dot.has_css_class("asb-alert"))
+                self.assertFalse(alert.asb_dot.has_css_class("asb-question"))
+                self.assertTrue(alert.asb_dot.get_first_child().get_visible())
+                self.assertEqual(alert.asb_dot.get_first_child().get_text(), "!")
+                window.update_session_row(alert, {**original_alert_row, "lastOutcome": "failed", "unread": False, "alert": False})
+                self.assertEqual(alert.asb_state_label.get_text(), "Stopped")
+                self.assertFalse(alert.asb_dot.get_first_child().get_visible())
+                self.assertFalse(alert.asb_dot.has_css_class("asb-alert"))
+                window.update_session_row(alert, original_alert_row)
                 self.assertEqual(window.focus_widgets["sample-12"].asb_state_label.get_text(), "Working")
                 self.assertEqual(window.focus_widgets["sample-94"].asb_state_label.get_text(), "Unknown")
                 native = window.focus_widgets["sample-15"]
@@ -3397,6 +3410,14 @@ class WidgetCheck(unittest.TestCase):
                         self.assertFalse(line.get_first_child().get_visible())  # The usage-limit clock.
                         self.assertEqual(line.get_first_child().get_next_sibling().get_text(), "Working")
                         self.assertIs(card.asb_dot.get_ancestor(asb.Gtk.Button), card.asb_read_button)
+                        alert, alert_row = window.focus_widgets["sample-4"], dict(window.focus_widgets["sample-4"].asb_thread)
+                        window.update_session_row(alert, {**alert_row, "lastOutcome": "limit", "unread": True, "alert": True})
+                        self.assertEqual(alert.asb_dot.get_first_child().get_text(), "!")
+                        self.assertTrue(alert.asb_dot.has_css_class("asb-alert"))
+                        self.assertEqual(alert.asb_read_button.asb_action, "win.mark-read")
+                        self.assertFalse(alert.asb_read_button.has_css_class("asb-passive-indicator"))
+                        self.assertTrue(alert.asb_read_button.get_focusable() and alert.asb_read_button.get_visible())
+                        window.update_session_row(alert, alert_row)
                         # The right part: the where glyph and label (hidden for a desktop row), then the age.
                         right, sample = line.get_last_child(), window.focus_widgets["sample-15"]
                         self.assertIs(right.get_first_child(), sample.asb_where_icon)

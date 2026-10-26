@@ -41,21 +41,16 @@ test('sound events need a baseline and fire only newly set bits', () => {
   assert.deepEqual(soundEvents(new Map(), [row({ archived: true, completionAttention: true })], now), []);
 });
 
-test('a limited row plays only Needs input until its first update after the limit', () => {
+test('a usage-limit stop plays Failed once and the reset plays nothing', () => {
   const limit = now + 60_000;
-  const limitedDone = [row({ completionAttention: true, limitResetsAtMs: limit })];
-  assert.deepEqual(soundEvents(new Map(), limitedDone, now), []);
-  assert.deepEqual(kinds(soundEvents(new Map(), [row({ actionRequired: true, actionAttention: true, limitResetsAtMs: limit })], now)), [['a', BIT_INPUT]]);
-  // The limited baseline keeps Done, so the restored attention after the reset stays silent.
-  const during = soundBaseline(soundBaseline(null, [row({ completionAttention: true })], now), [row({ limitResetsAtMs: limit })], now);
-  assert.equal(during.get('a') & BIT_DONE, BIT_DONE);
-  const after = [row({ completionAttention: true })];
-  assert.deepEqual(soundEvents(during, after, limit + 1), []);
-  // A row that was limited at the previous update is still silent for Done.
-  const restored = soundBaseline(null, [row({ limitResetsAtMs: limit })], now);
-  assert.deepEqual(soundEvents(restored, after, limit + 1), []);
-  const next = soundBaseline(restored, after, limit + 1);
-  assert.deepEqual(kinds(soundEvents(next, [row({ completionAttention: true, failedAttention: true })], limit + 2)), [['a', BIT_FAILED]]);
+  const stopped = [row({ state: 'idle', lastOutcome: 'limit', failedAttention: true, limitResetsAtMs: limit })];
+  const baseline = soundBaseline(null, [row({ state: 'working' })], now);
+  assert.deepEqual(kinds(soundEvents(baseline, stopped, now)), [['a', BIT_FAILED]]);
+  const during = soundBaseline(baseline, stopped, now);
+  assert.deepEqual(soundEvents(during, stopped, now + 1), []);
+  assert.deepEqual(soundEvents(during, [{ ...stopped[0], limitResetsAtMs: 0 }], limit), []);
+  assert.equal(soundBits(row({ state: 'idle', lastOutcome: 'limit', nativeAttention: true })), BIT_FAILED);
+  assert.deepEqual(kinds(soundEvents(new Map(), [row({ actionAttention: true, limitResetsAtMs: limit })], now)), [['a', BIT_INPUT]]);
 });
 
 test('the watcher plays one sound per update with Needs input first and the first update silent', () => {

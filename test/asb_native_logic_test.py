@@ -3703,12 +3703,16 @@ class NativeLogicChecks(unittest.TestCase):
 
     def test_attention_indicator_prefers_question_and_working_rows_hide_unread_text(self):
         indicator = SCOPE["attention_indicator"]
-        for row, expected in (({}, ""), ({"unread": True}, "dot"), ({"questionAttention": True}, "question"),
+        for row, expected in (({}, ""), ({"unread": True}, "dot"), ({"unread": True, "alert": True}, "alert"),
+                              ({"unread": True, "alert": True, "questionAttention": True}, "question"),
+                              ({"questionAttention": True}, "question"),
                               ({"unread": True, "questionAttention": True}, "question"),
                               ({"state": "working", "unread": False, "manualUnread": True, "nativeAttention": True,
                                 "retainedUnread": True}, ""),
                               ({"state": "working", "unread": False, "questionAttention": True}, "question")):
             self.assertEqual(indicator(row), expected)
+        self.assertEqual(SCOPE["row_menu_actions"]({"unread": True, "alert": True})[:2],
+                         [("Read", "mark-read"), ("Put in drawer", "drawer-in")])
         window = object.__new__(Window)
         window.view, window.update_row_text, window.open_errors = "compact", Mock(), {}
         widget = SimpleNamespace(asb_view="compact", asb_thread={}, set_activatable=Mock(), set_child=Mock(), asb_mark=Mock(),
@@ -3796,11 +3800,15 @@ class NativeLogicChecks(unittest.TestCase):
         with patch.dict(SCOPE, {"Gtk": gtk}):
             for extra, expected in (({"lastOutcome": "stopped"}, "Task stopped."),
                                     ({"lastOutcome": "failed", "unread": True, "failedAttention": True}, "Task failed."),
+                                    ({"lastOutcome": "limit", "unread": True, "alert": True}, "Usage limit stopped the task."),
                                     ({"state": "waiting", "actionRequired": True}, "A user action is required in the original app.")):
                 widget.asb_thread = {"id": "a", "title": "Chat", "providerLabel": "Codex", "state": "idle", **extra}
                 widget.asb_time_signature = None
                 window.update_row_text(widget, 100_000)
                 self.assertIn(expected, widget.asb_accessible_label)
+                if extra.get("lastOutcome") in ("failed", "limit"):
+                    self.assertIn("Stopped.", widget.asb_accessible_label)
+                    self.assertTrue(SCOPE["tooltip_model"](widget.asb_thread, 100_000, "/example")["state_text"].startswith("Stopped"))
                 self.assertNotIn("completed task", widget.asb_tooltip)
                 if extra.get("actionRequired"):
                     self.assertIn("Waits for your permission.", widget.asb_tooltip)
@@ -4094,6 +4102,8 @@ class NativeLogicChecks(unittest.TestCase):
                  ({"unread": True, "pendingSource": "native-unread", "nativeAttention": True}, "dot", "Unread in the original app."),
                  ({"unread": True, "pendingSource": "manual-unread", "manualUnread": True}, "dot", "Marked unread in ASB."),
                  ({"unread": True, "retainedUnread": True}, "dot", "Unread kept in ASB. Use Read to clear it."),
+                 ({"unread": True, "alert": True, "lastOutcome": "failed"}, "alert", "Failed. Not read yet."),
+                 ({"unread": True, "alert": True, "lastOutcome": "limit"}, "alert", "Usage limit stopped the task. Not read yet."),
                  ({"lastOutcome": "stopped"}, "stop", "You stopped this task."),
                  ({"state": "working", "discardResult": True}, "discard", "Discard is on for this task."),
                  ({"discardResult": True}, "discard", "Discard is on for the next task."),

@@ -291,7 +291,7 @@ test('Claude Desktop threads carry the limit, also from the full lifecycle scan 
   assert.equal(buildSwitchboardDashboard(threads, [], now).threads[0].limitResetsAtMs, 0);
 });
 
-test('a limited row hides its unread mark until the reset and adds the reset to the status check', async () => {
+test('a limited row keeps failed attention through the reset and adds the reset to the status check', async () => {
   const resetMs = now + 3_600_000;
   const thread = (extra = {}) => ({ id, externalId: id, provider: 'codex', title: 'Synthetic', cwd: '/work/ASB', updatedAtMs: now - 60_000,
     lifecycleRunning: false, latestLifecycleKind: 'task_complete', latestLifecycleAtMs: now - 60_000, latestTaskEndedAtMs: now - 60_000,
@@ -320,9 +320,10 @@ test('a limited row hides its unread mark until the reset and adds the reset to 
     agentStartedAtMs: now - 90_000, latestLifecycleKind: 'task_started', limitResetsAtMs: 0 })], [], now - 65_000));
   const limited = (await tracker.observe(buildSwitchboardDashboard([thread()], [], now))).threads[0];
   assert.equal(limited.state, 'idle');
-  assert.equal(limited.completionAttention, true);
-  assert.deepEqual([limited.unread, limited.pending, limited.pendingSource], [false, false, '']);
+  assert.equal(limited.failedAttention, true);
+  assert.equal(limited.completionAttention, false);
+  assert.deepEqual([limited.unread, limited.alert, limited.pending, limited.pendingSource], [true, true, true, 'observed-failure']);
   const after = (await tracker.observe(buildSwitchboardDashboard([thread()], [], resetMs))).threads[0];
   assert.equal(after.limitResetsAtMs, 0);
-  assert.deepEqual([after.unread, after.pending, after.pendingSource], [true, true, 'observed-completion']);
+  assert.deepEqual([after.unread, after.alert, after.pending, after.pendingSource], [true, true, true, 'observed-failure']);
 });

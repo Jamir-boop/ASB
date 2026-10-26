@@ -204,6 +204,9 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
       const status = switchboardStatus(thread, nowMs);
       const startedAtMs = Number(thread.lifecycleRunning === true ? thread.agentStartedAtMs
         : thread.provider === 'claude-desktop-code' ? thread.latestUserMessageAtMs : 0);
+      const lastOutcome = status.state !== 'idle' ? '' : STOPPED_KINDS.includes(thread.latestLifecycleKind) ? 'stopped'
+        : Number(thread.limitStoppedAtMs) > 0 || Number(thread.limitResetsAtMs) > 0 ? 'limit'
+          : thread.latestLifecycleKind === 'failed' ? 'failed' : '';
       const row = {
         id: thread.id,
         externalId,
@@ -234,10 +237,9 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
         actionRequired: status.state === 'waiting' && (thread.source === 'claude-remote-cache'
           || (thread.pendingTools || []).some((tool) => tool.tool !== 'AskUserQuestion')
           || (thread.awaitingPermission && !thread.awaitingUserInput)),
-        lastOutcome: status.state !== 'idle' ? '' : thread.latestLifecycleKind === 'failed' ? 'failed'
-          : STOPPED_KINDS.includes(thread.latestLifecycleKind) ? 'stopped' : '',
-        failedAtMs: status.state === 'idle' && thread.latestLifecycleKind === 'failed' ? Number(thread.latestLifecycleAtMs || 0) : 0,
-        completionAtMs: thread.groupCompletionAtMs ?? (['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled', 'failed'].includes(thread.latestLifecycleKind) ? 0
+        lastOutcome,
+        failedAtMs: ['failed', 'limit'].includes(lastOutcome) ? Number(thread.latestLifecycleAtMs || 0) : 0,
+        completionAtMs: lastOutcome === 'limit' ? 0 : thread.groupCompletionAtMs ?? (['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled', 'failed'].includes(thread.latestLifecycleKind) ? 0
           : Math.max(thread.latestLifecycleKind === 'task_complete' ? Number(thread.latestLifecycleAtMs || 0) : 0,
             Number(thread.latestAgentFinalAtMs || 0))),
         canOpen: !viewOnly && Boolean(appDeepLink) && thread.sourceCanOpen !== false,
@@ -251,7 +253,7 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
       Object.defineProperty(row, DISCARD_TASK, { value: {
         atMs: thread.groupTaskEndedAtMs ?? Number(thread.latestTaskEndedAtMs || (thread.lifecycleRunning === false ? thread.latestLifecycleAtMs : 0)
           || row.completionAtMs || row.failedAtMs || 0),
-        kind: thread.groupTaskEndKind ?? (thread.latestTaskEndKind || (thread.lifecycleRunning === false ? thread.latestLifecycleKind : '')
+        kind: lastOutcome === 'limit' ? 'failed' : thread.groupTaskEndKind ?? (thread.latestTaskEndKind || (thread.lifecycleRunning === false ? thread.latestLifecycleKind : '')
           || (row.failedAtMs ? 'failed' : row.completionAtMs ? 'task_complete' : '')),
         rootStart: Number(thread.latestTaskStartedAtMs || thread.agentStartedAtMs || 0),
         rootEnd: Number(thread.latestTaskEndedAtMs || (thread.lifecycleRunning === false ? thread.latestLifecycleAtMs : 0) || 0),
@@ -695,13 +697,15 @@ export class PendingTracker {
         || row.nativeUnread !== false && record.nativeAt > record.nativeAck))) this.set(record, 'drawer', 0);
     row.drawer = record?.drawer === 1;
     row.muted = record?.muted === 1;
-    // A Working or usage-limited row shows only question attention. Stored marks stay and show again after Working or the limit ends.
-    const working = row.state === 'working' || row.limitResetsAtMs > 0;
+    // A Working row shows only question attention. Stored marks stay and show again after Working ends.
+    const working = row.state === 'working';
     row.unread = !working && !row.drawer && (row.manualUnread || row.nativeAttention || row.completionAttention || row.failedAttention || row.retainedUnread);
     row.pending = Boolean(row.unread || row.questionAttention || row.actionAttention);
     row.pendingSource = row.actionAttention ? 'user-action' : row.questionAttention ? 'user-question' : working ? ''
       : row.manualUnread ? 'manual-unread' : row.retainedUnread ? row.retainedUnreadSource
         : row.nativeAttention ? 'native-unread' : row.failedAttention ? 'observed-failure' : row.completionAttention ? 'observed-completion' : '';
+    row.alert = row.unread && (row.pendingSource === 'observed-failure'
+      || (row.pendingSource === 'native-unread' && ['failed', 'limit'].includes(row.lastOutcome)));
   }
 
   async setPersistentUnread(enabled, dashboard) {

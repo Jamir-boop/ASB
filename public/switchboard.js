@@ -94,28 +94,29 @@ function sessionRow(thread) {
   entry.thread = thread;
   const where = rowWhere(thread);
   const signature = JSON.stringify([thread.title, thread.providerLabel, thread.state, thread.reason, thread.canOpen, where, thread.surface,
-    thread.pinned, thread.archived, thread.actionRequired, thread.questionAttention, thread.unread,
+    thread.pinned, thread.archived, thread.actionRequired, thread.questionAttention, thread.alert, thread.unread,
     thread.lastOutcome, thread.failedAttention, thread.completionAttention]);
   setText(entry.age, relativeTime(thread.updatedAtMs));
   if (entry.signature === signature) return entry.row;
   entry.signature = signature;
-  const indicator = thread.actionRequired || thread.questionAttention ? 'question' : thread.unread ? 'dot'
+  const indicator = thread.actionRequired || thread.questionAttention ? 'question' : thread.alert ? 'alert' : thread.unread ? 'dot'
     : thread.state === 'idle' && thread.lastOutcome === 'stopped' ? 'stop' : '';
   const attention = thread.actionRequired ? 'A user action is required in the original app.'
-    : indicator === 'question' ? 'A question needs your answer.' : indicator === 'dot' ? 'Unread in ASB.' : '';
-  const outcome = thread.lastOutcome === 'stopped' ? 'Task stopped.' : thread.lastOutcome === 'failed' || thread.failedAttention
-    ? 'Task failed.' : thread.completionAttention ? 'Task completed.' : '';
+    : indicator === 'question' ? 'A question needs your answer.' : indicator === 'dot' || indicator === 'alert' ? 'Unread in ASB.' : '';
+  const outcome = thread.lastOutcome === 'stopped' ? 'Task stopped.' : thread.lastOutcome === 'limit' ? 'Usage limit stopped the task.'
+    : thread.lastOutcome === 'failed' || thread.failedAttention ? 'Task failed.' : thread.completionAttention ? 'Task completed.' : '';
+  const stateText = thread.state === 'idle' && ['failed', 'limit'].includes(thread.lastOutcome) ? 'Stopped' : labels[thread.state] || 'Unknown';
   const { row, title, meta, state, age } = entry;
   const viewOnly = (thread.remote ? ` On ${where}.` : '') + (thread.surface === 'cli' ? ' CLI session.' : '') + (where ? ' View only.' : '');
   row.disabled = entry.opening || !thread.canOpen;
-  row.setAttribute('aria-label', `Open ${thread.title} in ${thread.providerLabel}. ${labels[thread.state]}.${viewOnly} ${attention} ${outcome}`.trim());
+  row.setAttribute('aria-label', `Open ${thread.title} in ${thread.providerLabel}. ${stateText}.${viewOnly} ${attention} ${outcome}`.trim());
   row.title = thread.remote ? `On ${where}. Open it on ${where}.` : where ? 'CLI session. ASB does not open CLI sessions.'
     : thread.canOpen ? `Open in ${thread.providerLabel}` : 'This session has no direct desktop link.';
   if (attention) row.title += ` ${attention}`;
   if (outcome) row.title += ` ${outcome}`;
   setText(title, thread.title);
   state.className = `state ${thread.state}`;
-  setText(state, labels[thread.state] || 'Unknown');
+  setText(state, stateText);
   state.title = thread.reason;
   if (where && !entry.where) {
     entry.where = [element('span', 'session-where'), element('span', '', '·')];
@@ -132,7 +133,7 @@ function sessionRow(thread) {
   if (indicator) {
     const mark = entry.mark ||= element('span');
     mark.className = `attention ${indicator}`;
-    setText(mark, indicator === 'question' ? '?' : '');
+    setText(mark, indicator === 'question' ? '?' : indicator === 'alert' ? '!' : '');
     mark.setAttribute('aria-hidden', 'true');
     if (mark.parentNode !== row) row.insertBefore(mark, entry.icon || null);
   } else if (entry.mark) { entry.mark.remove(); entry.mark = null; }

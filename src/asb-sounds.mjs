@@ -5,7 +5,6 @@ import { fileURLToPath } from 'node:url';
 export const BIT_DONE = 1;
 export const BIT_FAILED = 2;
 export const BIT_INPUT = 4;
-const BIT_LIMITED = 8;
 
 export const SOUND_DIR = fileURLToPath(new URL('../assets/sounds/', import.meta.url));
 export const SOUND_FILES = {
@@ -14,13 +13,11 @@ export const SOUND_FILES = {
   [BIT_FAILED]: 'opencode_nope_03.wav',
 };
 
-const limited = (row, nowMs) => Number(row.limitResetsAtMs || 0) > nowMs;
-
 export function soundBits(row) {
   if (row.archived) return 0;
   // A Codex chat with native read state shows its result only as native attention; the outcome says which sound.
   const native = row.nativeAttention && row.state === 'idle';
-  const nativeFailed = native && row.lastOutcome === 'failed';
+  const nativeFailed = native && ['failed', 'limit'].includes(row.lastOutcome);
   return (row.completionAttention || (native && !nativeFailed) ? BIT_DONE : 0)
     | (row.failedAttention || nativeFailed ? BIT_FAILED : 0)
     | (row.questionAttention || row.actionAttention ? BIT_INPUT : 0);
@@ -31,9 +28,7 @@ export function soundEvents(baseline, rows, nowMs = Date.now()) {
   const events = [];
   for (const row of rows) {
     const old = baseline.get(row.id) || 0;
-    let added = soundBits(row) & ~old;
-    // Stored attention survives a limit; do not play its first restoration after the reset.
-    if (limited(row, nowMs) || old & BIT_LIMITED) added &= BIT_INPUT;
+    const added = soundBits(row) & ~old;
     for (const kind of [BIT_INPUT, BIT_FAILED, BIT_DONE]) if (added & kind) events.push({ row, kind });
   }
   return events;
@@ -43,10 +38,7 @@ export function soundEvents(baseline, rows, nowMs = Date.now()) {
 export function soundBaseline(baseline, rows, nowMs = Date.now()) {
   const next = new Map(baseline || []);
   for (const row of rows) {
-    const current = soundBits(row);
-    next.set(row.id, !row.archived && limited(row, nowMs)
-      ? (current & BIT_INPUT) | ((baseline?.get(row.id) || 0) & (BIT_DONE | BIT_FAILED)) | BIT_LIMITED
-      : current);
+    next.set(row.id, soundBits(row));
   }
   return next;
 }
