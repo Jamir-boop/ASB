@@ -2216,6 +2216,47 @@ test('the registered OpenCode source loads from its fixed folder, is watched the
     [true, true, false, false, false, true]);
 });
 
+test('the registered Claude source lists Claude Code CLI sessions when its app folder does not exist', async (t) => {
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'asb-claude-source-'));
+  t.after(() => rm(homeDir, { recursive: true, force: true }));
+  const registry = new AppSourceRegistry({ homeDir, env: {}, platform: 'linux', discoverPersonal: false });
+  const sources = await registry.read();
+  const claude = sources.find((item) => item.id === 'claude-desktop-code');
+  const appDir = path.join(homeDir, '.config', 'Claude');
+  const projectsDir = path.join(homeDir, '.claude', 'projects');
+  assert.equal(claude.dataDir, appDir);
+  assert.equal(claude.projectsDir, projectsDir);
+  await assert.rejects(stat(appDir), { code: 'ENOENT' });
+  const sessionId = 'cccccccc-dddd-4eee-8fff-000000000000';
+  const project = path.join(projectsDir, 'synthetic-project');
+  await mkdir(project, { recursive: true });
+  const transcript = path.join(project, `${sessionId}.jsonl`);
+  const at = (offset) => new Date(now + offset).toISOString();
+  await writeFile(transcript, jsonl([
+    { type: 'user', timestamp: at(-60_000), sessionId, cwd: '/work/cli', entrypoint: 'cli', message: { role: 'user', content: 'Synthetic task' } },
+    { type: 'assistant', timestamp: at(-30_000), sessionId, message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }], stop_reason: 'end_turn' } },
+  ]) + '\n');
+  // Both file time and last turn must be in the CLI reader's 7-day window.
+  await utimes(transcript, now / 1000, now / 1000);
+  const load = () => loadSwitchboardDashboard({ sources, nowMs: now,
+    loadCodex: async () => ({ threads: [] }), loadOpenCode: async () => ({ threads: [] }) });
+  const board = await load();
+  const provider = board.providers.find((item) => item.id === 'claude-desktop-code');
+  assert.deepEqual([provider.status, provider.message], ['ready', '']);
+  assert.deepEqual(board.threads.filter((row) => row.provider === 'claude-desktop-code')
+    .map((row) => [row.surface, row.providerLabel, row.externalId, row.sourceId]), [['cli', 'Claude Code CLI', sessionId, 'claude-desktop-code']]);
+  await rm(project, { recursive: true });
+  const missing = await load();
+  assert.equal(missing.providers.find((item) => item.id === 'claude-desktop-code').status, 'missing');
+  assert.equal(missing.threads.some((row) => row.provider === 'claude-desktop-code'), false);
+  await mkdir(path.dirname(appDir), { recursive: true });
+  await writeFile(appDir, 'synthetic');
+  assert.equal((await load()).providers.find((item) => item.id === 'claude-desktop-code').status, 'error');
+  const paths = switchboardWatchPaths({ homeDir, appDir });
+  assert.equal(paths.find((item) => item.path === path.join(appDir, 'claude-code-sessions')).optional, true);
+  assert.equal(paths.find((item) => item.path === projectsDir).optional, undefined);
+});
+
 test('localMachineName keeps a short safe host name', () => {
   assert.equal(localMachineName('homeLP.lan'), 'homeLP');
   assert.equal(localMachineName('work lp_2-x.example.com'), 'worklp_2-x');

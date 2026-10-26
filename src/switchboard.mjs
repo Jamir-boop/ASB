@@ -76,7 +76,8 @@ export function switchboardWatchPaths({ homeDir = os.homedir(), appDir = default
       || /^(state_\d+\.sqlite(?:-wal)?|session_index\.jsonl|\.codex-global-state\.json|sessions)$/.test(filename) },
     { path: path.join(codexDir, 'sessions'), source: 'codex', recursive: true,
       acceptEvent: directoryOrFile(/^rollout-.*\.jsonl$/) },
-    { path: path.join(appDir, 'claude-code-sessions'), source: 'claude', recursive: true,
+    // A PC with only Claude Code CLI has no Claude app folder.
+    { path: path.join(appDir, 'claude-code-sessions'), source: 'claude', recursive: true, optional: true,
       acceptEvent: directoryOrFile(/^local_.*\.json$/) },
     { path: path.join(appDir, 'Cache', 'Cache_Data'), source: 'claude', optional: true,
       acceptEvent: (filename, event) => isClaudeRemoteCacheEvent(path.join(appDir, 'Cache', 'Cache_Data'), filename, event) },
@@ -372,7 +373,12 @@ export async function loadSwitchboardDashboard({
     if (!source.enabled) return null;
     let sourceOptions = {};
     if (sources) {
-      if (!(await fs.stat(source.dataDir)).isDirectory()) throw new Error('The source path is not a directory.');
+      // A Claude source also lists the Claude Code CLI sessions of its transcript folder, so its app folder can be absent (a PC with only the CLI).
+      const info = await fs.stat(source.dataDir).catch((error) => {
+        if (source.provider === 'claude-desktop-code' && error.code === 'ENOENT') return null;
+        throw error;
+      });
+      if (info && !info.isDirectory()) throw new Error('The source path is not a directory.');
       sourceOptions = source.provider === 'codex' ? {
         databasePath: await discoverCodexStateDatabase(source.dataDir),
         sessionIndexPath: path.join(source.dataDir, 'session_index.jsonl'),

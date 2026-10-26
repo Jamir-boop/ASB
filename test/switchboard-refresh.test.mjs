@@ -139,7 +139,7 @@ test('healthy watchers reuse clean active scans and reconcile missed events at f
 
 test('a missing optional remote cache preserves local watch coverage and retries discovery', async (t) => {
   const f = await fixture(t);
-  const remote = f.paths.find((entry) => entry.optional);
+  const remote = f.paths.find((entry) => entry.path === path.join(f.dir, 'app', 'Cache', 'Cache_Data'));
   assert.ok(remote);
   await rm(remote.path, { recursive: true });
   assert.equal((await f.scan()).performance.dashboard.watchCoverage, true);
@@ -151,6 +151,20 @@ test('a missing optional remote cache preserves local watch coverage and retries
   await until(() => f.watches.some((entry) => entry.target === remote.path && !entry.watcher.closed));
   assert.equal((await f.scan()).performance.dashboard.watchCoverage, true);
   assert.equal(f.loads(), 2);
+});
+
+test('a PC without the Claude app folder keeps full watch coverage and watches the desktop store when it appears', async (t) => {
+  const f = await fixture(t);
+  const desktopPath = path.join(f.dir, 'app', 'claude-code-sessions');
+  await rm(path.join(f.dir, 'app'), { recursive: true });
+  f.watches.findLast((item) => item.target === desktopPath && !item.watcher.closed)
+    .callback('rename', path.basename(desktopPath));
+  await f.clock.advance(5_000);
+  assert.equal((await f.scan()).performance.dashboard.watchCoverage, true);
+  await mkdir(desktopPath, { recursive: true });
+  await f.clock.advance(5_000);
+  await until(() => f.watches.some((item) => item.target === desktopPath && !item.watcher.closed));
+  assert.equal((await f.scan()).performance.dashboard.watchCoverage, true);
 });
 
 test('source bursts coalesce, cap busy scans, and emit only metadata', async (t) => {
@@ -235,7 +249,7 @@ test('watch failures use active fallback, retry missing stores, and follow atomi
   await f.clock.advance(5_000);
   assert.equal(old.watcher.closed, true);
   assert.ok(f.watches.length > f.paths.length);
-  const claudePath = f.paths.find((item) => item.source === 'claude').path;
+  const claudePath = f.paths.find((item) => item.source === 'claude' && !item.optional).path;
   await rm(claudePath, { recursive: true });
   f.watches.findLast((item) => item.target === claudePath).callback('rename', path.basename(claudePath));
   await f.clock.advance(5_000);

@@ -7,6 +7,7 @@ import { appendFile, chmod, mkdtemp, mkdir, rm, utimes, writeFile } from 'node:f
 import os from 'node:os';
 import path from 'node:path';
 import { loadClaudeCliThreads } from '../src/claude-cli-data.mjs';
+import { loadClaudeDesktopCodeThreads } from '../src/claude-data.mjs';
 import { loadSwitchboardClaudeThreads } from '../src/claude-remote-data.mjs';
 import { processStart } from '../src/claude-registry.mjs';
 import { buildSwitchboardDashboard } from '../src/switchboard.mjs';
@@ -152,10 +153,16 @@ test('the Claude source adds CLI rows after the desktop rows and keeps desktop t
   await transcript(projectsDir, 'cli-only', { nowMs });
   await transcript(projectsDir, 'desktop-cli', { nowMs });
   await transcript(projectsDir, 'desktop-prior', { nowMs });
-  // No desktop store: the CLI rows still load, with a warning.
+  // No app folder: the CLI rows load with no warning.
   const alone = await loadSwitchboardClaudeThreads({ appDir, projectsDir, nowMs, strictMetadataRead: true });
   assert.deepEqual([alone.threads.map((thread) => thread.externalId).sort(), alone.provider.status],
-    [['cli-only', 'desktop-cli', 'desktop-prior'], 'warning']);
+    [['cli-only', 'desktop-cli', 'desktop-prior'], 'desktop']);
+  assert.equal(alone.provider.message, '');
+  await mkdir(appDir);
+  const empty = await loadSwitchboardClaudeThreads({ appDir, projectsDir, nowMs, strictMetadataRead: true });
+  assert.deepEqual([empty.threads.map((thread) => thread.externalId).sort(), empty.provider.status],
+    [['cli-only', 'desktop-cli', 'desktop-prior'], 'desktop']);
+  assert.equal(empty.provider.message, '');
   const sessions = path.join(appDir, 'claude-code-sessions');
   await mkdir(sessions, { recursive: true });
   await writeFile(path.join(sessions, 'local_00000000-0000-4000-8000-000000000001.json'), JSON.stringify({
@@ -164,6 +171,22 @@ test('the Claude source adds CLI rows after the desktop rows and keeps desktop t
   const merged = await loadSwitchboardClaudeThreads({ appDir, projectsDir, nowMs, strictMetadataRead: true });
   assert.deepEqual(merged.threads.map((thread) => [thread.source, thread.externalId]), [
     ['claude-desktop-code', 'local_00000000-0000-4000-8000-000000000001'], ['claude-cli', 'cli-only']]);
+});
+
+test('a desktop read failure other than ENOENT keeps a warning with CLI rows', async (t) => {
+  const nowMs = Date.now();
+  const { home, projectsDir } = await configHome(t);
+  const appDir = path.join(home, 'app');
+  await transcript(projectsDir, 'cli-only', { nowMs });
+  await mkdir(appDir);
+  await writeFile(path.join(appDir, 'claude-code-sessions'), 'synthetic');
+  const options = { appDir, projectsDir, nowMs, strictMetadataRead: true };
+  // stat succeeds on the file, but the directory read fails with ENOTDIR.
+  const desktop = await loadClaudeDesktopCodeThreads(options);
+  assert.deepEqual([desktop.provider.status, desktop.provider.metadataReadErrors, desktop.threads.length], ['error', 1, 0]);
+  const merged = await loadSwitchboardClaudeThreads(options);
+  assert.equal(merged.provider.status, 'warning');
+  assert.deepEqual(merged.threads.map((thread) => [thread.source, thread.externalId]), [['claude-cli', 'cli-only']]);
 });
 
 test('a Claude CLI session with a transcript copy in more than one project folder gives one row from the newest copy', async (t) => {

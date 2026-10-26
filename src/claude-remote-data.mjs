@@ -558,6 +558,8 @@ export async function loadSwitchboardClaudeThreads(options = {}) {
   const results = await Promise.allSettled([loadClaudeDesktopCodeThreads(options), loadClaudeRemoteThreads(options)]);
   const local = results[0].status === 'fulfilled' ? results[0].value : null;
   const remote = results[1].status === 'fulfilled' ? results[1].value : null;
+  // No app folder or no `claude-code-sessions` folder means no desktop sessions (a PC with only Claude Code CLI), not a read error.
+  const desktopMissing = results[0].status === 'rejected' && results[0].reason?.code === 'ENOENT';
   // A desktop session can also be in the projects folder; it stays a desktop row.
   const desktopSessionIds = new Set((local?.threads || []).flatMap((thread) => [thread.cliSessionId, ...(thread.priorCliSessionIds || [])])
     .filter(Boolean));
@@ -582,7 +584,7 @@ export async function loadSwitchboardClaudeThreads(options = {}) {
       ? `bridge:${thread.externalId.replace(/^(?:cse|session)_/, '')}` : thread.externalId;
     return !aliases.get(key);
   })];
-  const warning = !local || local.provider?.status === 'warning' || local.provider?.status === 'error'
+  const warning = (!local && !desktopMissing) || local?.provider?.status === 'warning' || local?.provider?.status === 'error'
     || results[1].status === 'rejected' || remote?.partial || remote?.unread || cli === null;
   return { threads, provider: { ...local?.provider, installed: threads.length > 0,
     status: warning ? 'warning' : local?.provider?.status || 'desktop',

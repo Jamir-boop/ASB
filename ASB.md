@@ -160,7 +160,7 @@ The OpenCode profiles in the Filters popover and the `oc:` and `opencode:` searc
 
 ## CLI sessions
 
-ASB shows Claude Code CLI and Codex CLI sessions as view-only cards. A Codex CLI task (`codex`, `codex exec`) no longer opens from ASB. Claude Code CLI cards show each running `claude` session, and each CLI transcript with activity in the last 7 days. A running session with no transcript yet shows Idle. A Claude session that the Desktop app owns stays a Claude Desktop Code card.
+ASB shows Claude Code CLI and Codex CLI sessions as view-only cards. A Codex CLI task (`codex`, `codex exec`) no longer opens from ASB. Claude Code CLI cards show each running `claude` session, and each CLI transcript with activity in the last 7 days. They also show on a PC without the Claude desktop app. A running session with no transcript yet shows Idle. A Claude session that the Desktop app owns stays a Claude Desktop Code card.
 
 In Comfortable, the bottom line of a CLI card shows the terminal glyph and `CLI` before the age, for example `Idle` and `CLI · 12m ago`. In Compact, `· CLI` follows the state, for example `Idle · CLI`. A CLI card with no attention uses the Grey tone: its title and text use the quiet colors, and its state keeps its color while it is Working or Waiting. An unread dot, a `?`, and the usage-limit look keep full strength. Hover or keyboard focus restores the normal colors.
 

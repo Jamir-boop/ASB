@@ -389,6 +389,7 @@ test('enabled sources load independently and Claude uses its registered profile 
   const dashboard = await loadSwitchboardDashboard({ sources, nowMs: now,
     loadCodex: async () => { throw new Error('Bad sqlite'); },
     loadClaude: async (options) => {
+      if (options.appDir !== claudeDir) throw Object.assign(new Error('No app folder'), { code: 'ENOENT' });
       assert.equal(options.appDir, claudeDir);
       assert.equal(options.projectsDir, projectsDir);
       assert.equal(options.maxCount, 5000);
