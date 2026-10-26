@@ -1341,15 +1341,6 @@ def bucket_label(buckets, index):
     return format_clock(starts[index]) if hourly else format_day(starts[index])
 
 
-def bucket_of(buckets, at_ms):
-    found = None
-    for index, start in enumerate(buckets["startsMs"]):
-        if start > at_ms:
-            break
-        found = index
-    return found
-
-
 def activity_palette(colors):
     background, text, accent = colors["background"], colors["text"], colors["accent"]
     return {"win": background, "pane": mix_color(background, text, .035), "pane2": mix_color(background, text, .06),
@@ -1478,8 +1469,6 @@ def messages_view(reply, selected=(), limit=MESSAGE_SEATS):
     by_status = dict.fromkeys(ACTIVITY_STATUSES, 0)
     counts = {seat_id: {"sent": 0, "received": 0} for seat_id in circle}
     pairs, machine_counts, activity = {}, {}, {}
-    buckets = reply.get("buckets") or {"unit": "day", "startsMs": []}
-    bars = [0] * len(buckets.get("startsMs") or [])
     for record in records:
         source, target, at = record["from"], record["to"], record["atMs"]
         status = message_status(record)
@@ -1501,9 +1490,6 @@ def messages_view(reply, selected=(), limit=MESSAGE_SEATS):
         if None not in ends:
             key = tuple(sorted(set(ends), key=lambda machine: (machine_index.get(machine, len(machines)), machine)))
             machine_counts[key] = machine_counts.get(key, 0) + 1
-        bucket = bucket_of(buckets, at) if bars else None
-        if bucket is not None:
-            bars[bucket] += 1
         for seat_id in (source, target):
             if activity.get(seat_id, at - 1) < at:
                 activity[seat_id] = at
@@ -1517,7 +1503,7 @@ def messages_view(reply, selected=(), limit=MESSAGE_SEATS):
     return {"total": len(records), "by_status": by_status, "seats": seats, "machines": machines, "circle": circle, "counts": counts,
             "pairs": pairs, "apps": apps, "matrix": matrix, "app_pairs": sum(1 for row in matrix for cell in row if cell),
             "machine_rows": [{"ids": key, "label": " ⇄ ".join(names.get(machine, machine) for machine in key), "count": machine_counts[key]} for key in keys],
-            "bars": bars, "activity": activity, "seated": [seat_id for seat_id in circle if seat_id in chosen],
+            "activity": activity, "seated": [seat_id for seat_id in circle if seat_id in chosen],
             "active": sum(1 for seat_id in circle if seat_id in activity), "recent": sorted(records, key=lambda record: record["atMs"])[-6:][::-1]}
 
 
@@ -8558,103 +8544,6 @@ class RoundTable(Gtk.Overlay):
             snapshot.pop()
 
 
-class MessageStrip(Gtk.Widget):
-    """The Messages time strip (the preview's renderStrip): message counts per bucket, the last bucket in the light color."""
-    __gtype_name__ = "AsbMessageStrip"
-
-    def __init__(self, window):
-        super().__init__(accessible_role=Gtk.AccessibleRole.IMG, height_request=84, hexpand=True, has_tooltip=True)
-        self.window, self.view, self.buckets, self.bars = window, None, None, []
-        self.update_property([Gtk.AccessibleProperty.LABEL], ["Messages over time"])
-        self.connect("query-tooltip", self.query_tooltip)
-
-    def update(self, view, buckets):
-        self.view, self.buckets = view, buckets
-        self.queue_draw()
-
-    def layout(self):
-        """The bar rectangles (x, y, width, height) and the axis values for the current size."""
-        width, height = self.get_width(), self.get_height()
-        bars = self.view["bars"] if self.view else []
-        if not bars or not width:
-            return None
-        largest = max([1] + bars)
-        power = 10 ** math.floor(math.log10(largest))
-        tick = next(value for value in (5 * power, 2.5 * power, 2 * power, power) if value <= largest and float(value).is_integer())
-        tick_layout = activity_layout(self, format_count(int(tick)), 11)
-        left = 16 + tick_layout.get_pixel_extents()[1].width + 6
-        right, top, bottom = width - 16, 16, height - 20
-        bar_width = (right - left - 2 * (len(bars) - 1)) / len(bars)
-        rects = []
-        for index, value in enumerate(bars):
-            bar_height = (bottom - top) * value / largest
-            rects.append((left + index * (bar_width + 2), bottom - bar_height, bar_width, bar_height))
-        return {"rects": rects, "tick": tick, "tick_layout": tick_layout, "grid": bottom - (bottom - top) * tick / largest, "left": left,
-                "right": right, "bottom": bottom}
-
-    def do_snapshot(self, snapshot):
-        if not ACTIVITY_PATHS:
-            return
-        palette = self.window.palette
-        snapshot.append_color(rgba(palette["rule"]), Graphene.Rect().init(0, 0, self.get_width(), 1))
-        shape = self.layout()
-        if shape is None:
-            return
-        dim = rgba(palette["dim"])
-        tick = shape["tick_layout"]
-        snapshot_layout(snapshot, tick, 16, shape["grid"] - tick.get_pixel_extents()[1].height / 2, dim)
-        builder = Gsk.PathBuilder.new()
-        builder.move_to(shape["left"], shape["grid"])
-        builder.line_to(shape["right"], shape["grid"])
-        grid = Gsk.Stroke.new(1)
-        grid.set_dash([3, 3])
-        snapshot.append_stroke(builder.to_path(), grid, rgba(palette["rule"]))
-        last = len(shape["rects"]) - 1
-        bar_color = rgba(mix_color(palette["win"], palette["text"], .24))
-        for index, (x, y, width, height) in enumerate(shape["rects"]):
-            if height <= 0:
-                continue
-            radius = min(2, width / 2, height)
-            builder = Gsk.PathBuilder.new()
-            bottom = shape["bottom"]
-            builder.move_to(x, bottom)
-            builder.line_to(x, y + radius)
-            builder.quad_to(x, y, x + radius, y)
-            builder.line_to(x + width - radius, y)
-            builder.quad_to(x + width, y, x + width, y + radius)
-            builder.line_to(x + width, bottom)
-            builder.close()
-            snapshot.append_fill(builder.to_path(), Gsk.FillRule.WINDING, alpha_color(palette["light"], .8) if index == last else bar_color)
-        x, y, width, _height = shape["rects"][last]
-        count = activity_layout(self, format_count(self.view["bars"][last]), 11, mono=True)
-        extents = count.get_pixel_extents()[1]
-        snapshot_layout(snapshot, count, x + width / 2 - extents.width / 2, y - 4 - count.get_baseline() / Pango.SCALE, dim)
-        for index in sorted({0, (last) // 2, last}):
-            text = activity_layout(self, bucket_label(self.buckets, index), 11)
-            extents = text.get_pixel_extents()[1]
-            middle = shape["rects"][index][0] + shape["rects"][index][2] / 2
-            middle = min(max(middle, extents.width / 2), self.get_width() - extents.width / 2)
-            snapshot_layout(snapshot, text, middle - extents.width / 2, shape["bottom"] + 14 - text.get_baseline() / Pango.SCALE, dim)
-
-    def bar_at(self, x):
-        shape = self.layout()
-        if shape is None:
-            return None
-        for index, (left, _top, width, _height) in enumerate(shape["rects"]):
-            if left - 1 <= x <= left + width + 1:
-                return index
-        return None
-
-    def query_tooltip(self, _widget, x, _y, _keyboard, tooltip):
-        index = self.bar_at(x)
-        if index is None or self.buckets is None:
-            return False
-        starts, value = self.buckets["startsMs"], self.view["bars"][index]
-        when = format_clock(starts[index]) if self.buckets["unit"] == "hour" else format_day(starts[index])
-        tooltip.set_text(f"{when}: {format_count(value)} message{'' if value == 1 else 's'}")
-        return True
-
-
 class StatusShare(Gtk.Widget):
     """The ledger's status share bar: one segment per status with messages, 1px apart."""
     __gtype_name__ = "AsbStatusShare"
@@ -8729,13 +8618,12 @@ class MessagesWindow(ActivityWindow):
         live.get_last_child().add_css_class("asb-dim")
         self.toolbar.append(live)
 
-        # The table and the strip, the reader for a small table, and the ledger column.
+        # The table, the reader for a small table, and the ledger column.
         self.table = RoundTable(self)
         self.reader = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, visible=False)
         self.reader.add_css_class("asb-msg-reader")
-        self.strip = MessageStrip(self)
         self.left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
-        for widget in (self.table, self.reader, self.strip):
+        for widget in (self.table, self.reader):
             self.left.append(widget)
         self.ledger = Gtk.Stack(transition_type=Gtk.StackTransitionType.SLIDE_LEFT_RIGHT, transition_duration=200, vhomogeneous=False,
                                 hhomogeneous=True, interpolate_size=False)
@@ -8815,12 +8703,12 @@ class MessagesWindow(ActivityWindow):
         super().set_palette(colors)
         # The base class sets the first palette before this window has its drawn widgets.
         if hasattr(self, "share"):
-            for widget in (self.table.canvas, self.strip, self.share):
+            for widget in (self.table.canvas, self.share):
                 widget.queue_draw()
 
     # Layout.
     def set_narrow(self, narrow):
-        """Below 900px: one vertical scroll with the table, the reader, the strip, and the ledger."""
+        """Below 900px: one vertical scroll with the table, the reader, and the ledger."""
         self.table.narrow = narrow
         target, source = (self.narrow_box, self.wide) if narrow else (self.wide, self.narrow_box)
         for widget in (self.left, self.ledger):
@@ -9027,7 +8915,6 @@ class MessagesWindow(ActivityWindow):
         self.view = messages_view(data, self.selected_ids())
         self.render_toolbar()
         self.render_ledger(arrivals, previous is not None)
-        self.strip.update(self.view, data.get("buckets"))
         self.table.update(self.view, animate=previous is not None, after=[lambda: self.table.fly(arrivals)] if arrivals else [])
         if self.pending_session:
             seat_id, title = self.pending_session

@@ -230,12 +230,6 @@ class ActivityHelperChecks(unittest.TestCase):
         self.assertEqual([asb.bucket_label(hours, index) for index in range(4)], ["09:00", "10:00", "11:00", "Now"])
         days = {"unit": "day", "startsMs": [self.utc(2026, 10, day) for day in range(23, 27)]}
         self.assertEqual([asb.bucket_label(days, index) for index in range(4)], ["Oct 23", "Oct 24", "Oct 25", "Today"])
-        starts = days["startsMs"]
-        self.assertIsNone(asb.bucket_of(days, starts[0] - 1))
-        self.assertEqual(asb.bucket_of(days, starts[0]), 0)
-        self.assertEqual(asb.bucket_of(days, starts[1] + 3_600_000), 1)
-        self.assertEqual(asb.bucket_of(days, starts[2]), 2)
-        self.assertEqual(asb.bucket_of(days, starts[3] + 86_400_000 * 5), 3)
 
     def test_activity_palette(self):
         colors = {"background": "#101010", "text": "#f0f0f0", "accent": "#3080c0", "muted": "#a0a0a0", "divider": "#404040"}
@@ -7907,12 +7901,17 @@ class MessagesLogicChecks(unittest.TestCase):
                 self.assertEqual(sum(view["by_status"].values()), len(records))
                 self.assertEqual(sum(sum(row) for row in view["matrix"]), len(records))
                 self.assertEqual(sum(row["count"] for row in view["machine_rows"]), len(records))
-                self.assertEqual(sum(view["bars"]), len(records))
-                self.assertEqual(len(view["bars"]), {"24h": 24, "7d": 7, "30d": 30}[period])
                 for seat in reply["seats"]:
                     self.assertEqual(view["counts"][seat["id"]], {"sent": sum(record["from"] == seat["id"] for record in records),
                                                                  "received": sum(record["to"] == seat["id"] for record in records)})
                 self.assertEqual(view["recent"], sorted(records, key=lambda record: record["atMs"])[-6:][::-1])
+
+    def test_messages_ignore_time_buckets(self):
+        reply = self.reply()
+        view = asb.messages_view(reply)
+        self.assertNotIn("bars", view)
+        del reply["buckets"]
+        self.assertEqual(asb.messages_view(reply), view)
 
     def test_usage_only_apps_still_count_as_other_in_messages(self):
         self.assertEqual(asb.ACTIVITY_APPS, ("codex", "claude", "opencode"))

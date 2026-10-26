@@ -7121,9 +7121,12 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                          {row["ids"]: asb.format_count(row["count"]) for row in view["machine_rows"]})
         self.assertEqual([self.labels(row)[:2] for row in window.recent_rows],
                          [[asb.format_clock(record["atMs"]), f"{record['from']} → {record['to']}"] for record in view["recent"]])
-        self.assert_accessible_label(window.strip, "Messages over time")
         self.assert_accessible_label(window.table, "Machines, sessions and messages")
-        self.assertEqual(window.strip.view["bars"], view["bars"])
+        self.assertFalse(hasattr(asb, "MessageStrip"))
+        self.assertFalse(hasattr(window, "strip"))
+        self.assertIs(window.left.get_first_child(), window.table)
+        self.assertIs(window.table.get_next_sibling(), window.reader)
+        self.assertIsNone(window.reader.get_next_sibling())
 
     def test_pins_and_chords_have_named_proxies_in_order(self):
         window = self.window()
@@ -7372,16 +7375,37 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertTrue(window.ledger.has_css_class("asb-msg-edge"))
         self.assertFalse(window.reader.get_visible())
         self.assertTrue(window.table.center.get_visible())
-        # The wide layout has no reader, so the table keeps the whole column above the strip.
+        # The wide layout has no reader, so the table keeps the whole column.
         self.assertFalse(window.table.small)
-        self.assertEqual(window.table.get_height() + window.strip.get_height(), window.left.get_height())
+        self.assertEqual(window.table.get_height(), window.left.get_height())
         window.set_default_size(968, 520)
         self.wait_for(lambda: window.table.small and not window.table.center.get_visible())
         self.assertTrue(window.wide.get_visible())
         self.assertTrue(window.table.small)
         self.assertFalse(window.table.center.get_visible())
         self.assertFalse(window.reader.get_visible())
-        self.assertEqual(window.table.get_height() + window.strip.get_height(), window.left.get_height())
+        self.assertEqual(window.table.get_height(), window.left.get_height())
+
+    def test_small_table_threshold_uses_the_real_table_size(self):
+        window = self.window((968, 600))
+        overhead = window.get_height() - window.left.get_height()
+        for height, small in ((495, True), (496, False)):
+            with self.subTest(height=height):
+                window.set_default_size(968, overhead + height)
+                self.wait_for(lambda: window.left.get_height() == height and window.table.small == small)
+                self.assertEqual(window.table.get_height(), height)
+                self.assertEqual(window.table.small, small)
+                self.assertEqual(window.table.center.get_visible(), not small)
+                self.assertFalse(window.reader.get_visible())
+        for width in (495, 496):
+            with self.subTest(width=width):
+                window.set_default_size(width, 800)
+                self.wait_for(lambda: window.table.get_width() == width and window.narrow_scroll.get_visible())
+                self.drain(.05)
+                self.assertEqual(window.table.get_height(), width)
+                self.assertEqual(window.table.small, width < 496)
+                self.assertEqual(window.reader.get_visible(), width < 496)
+                self.assertEqual(window.table.center.get_visible(), width >= 496)
 
     def test_without_gsk_paths_nothing_is_drawn(self):
         with patch.object(asb, "ACTIVITY_PATHS", False):
@@ -7390,10 +7414,9 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
             self.assertEqual(window.table.proxies, {})
             self.assertFalse(window.table.center.get_visible())
             self.assertEqual(window.total.get_visible_child().get_label(), "479")
-            for widget in (window.table, window.strip):
-                snapshot = asb.Gtk.Snapshot()
-                asb.Gtk.WidgetPaintable.new(widget).snapshot(snapshot, widget.get_width(), widget.get_height())
-                self.assertIsNone(snapshot.to_node())
+            snapshot = asb.Gtk.Snapshot()
+            asb.Gtk.WidgetPaintable.new(window.table).snapshot(snapshot, window.table.get_width(), window.table.get_height())
+            self.assertIsNone(snapshot.to_node())
 
 
 def descendants(widget):
