@@ -29,7 +29,12 @@ const claudeLine = (atMs, id, output, filler = 0) => JSON.stringify({ type: 'ass
 
 async function setup(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'asb-usage-service-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const services = [];
+  // A report starts a price load that can still write into the cache folder after the test; on Windows the folder then cannot go.
+  t.after(async () => {
+    await Promise.all(services.flatMap((usage) => [usage.idle(), usage.pricesIdle()]));
+    await fs.rm(root, { recursive: true, force: true });
+  });
   const codexHome = path.join(root, 'codex');
   const projects = path.join(root, 'claude', 'projects');
   const openCode = path.join(root, 'opencode');
@@ -50,8 +55,12 @@ async function setup(t) {
     { id: 'opencode', provider: 'opencode', enabled: true, dataDir: openCode },
     { id: 'off', provider: 'codex', enabled: false, dataDir: path.join(root, 'off') },
   ];
-  const service = (extra = {}) => createActivityUsage({ readSources: async () => sources, machine, cacheDir: path.join(root, 'cache'),
-    now: () => NOW, fetch, homeDir: root, log: () => {}, ...extra });
+  const service = (extra = {}) => {
+    const usage = createActivityUsage({ readSources: async () => sources, machine, cacheDir: path.join(root, 'cache'),
+      now: () => NOW, fetch, homeDir: root, log: () => {}, ...extra });
+    services.push(usage);
+    return usage;
+  };
   return { root, codexHome, projects, openCode, fetches, service };
 }
 
