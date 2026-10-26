@@ -1,6 +1,6 @@
 # ASB
 
-**Agent Switch Board** is a native switch board with GTK 4 and Libadwaita: GNOME on Linux, and Windows with MSYS2. It lists your Codex and Claude Desktop Code chats and opens a chat in its own app; it also lists OpenCode 2 sessions and shows Claude Code CLI and Codex CLI sessions (view only). An optional machine group shows sessions from your other computers, an optional Android app shows them on your phone, and the optional ASB Bridge lets sessions message each other. ASB reads the app stores read-only and makes no model calls.
+**Agent Switch Board** is a native switch board with GTK 4 and Libadwaita: GNOME on Linux, and Windows with MSYS2. It lists your Codex and Claude Desktop Code chats and opens a chat in its own app; it also lists OpenCode 2 sessions and shows Claude Code CLI and Codex CLI sessions (view only). An optional machine group shows sessions from your other computers, an optional Android app shows them on your phone, and the optional ASB Bridge lets sessions message each other. The Messages window shows the bridge messages between sessions on all machines as a round table, and the Usage window shows the tokens and the API price of the agents on all machines. ASB reads the app stores read-only and makes no model calls.
 
 ![ASB banner](docs/media/asb-banner.png)
 
@@ -14,6 +14,8 @@ https://github.com/user-attachments/assets/c85742f4-d1b0-4ffc-9497-144069fec36b
 - Show sessions from your other computers in an optional machine group.
 - Show sessions and notifications on Android, with an Android 16 Live update chip and Pending counts first.
 - Let sessions message each other through ASB Bridge, also by session reference; Claude Code uses resolved send names.
+- Show the bridge messages between sessions on all machines as a round table in the Messages window.
+- Show the tokens and the API price of the agents on all machines in the Usage window. Usage downloads the LiteLLM price list (prices only) while you use it, and keeps it for a day.
 - Play Done, Needs input, and Failed sounds on the PC.
 - Read the app stores read-only and make no model calls.
 
@@ -57,6 +59,7 @@ See [Windows setup](docs/INSTALL.md#install-on-windows) for the packages and com
 
 The optional Android app shows your sessions and notifications on your phone; phone access is off by default.
 The [live notification](android/README.md#live-notification) shows Pending counts first and can be an Android 16 Live update, so HyperOS can show it in its island; in-app messages show in a small dark pill over the toolbar.
+The [Messages and Usage screens](android/README.md#messages-and-usage) show the bridge messages and the token usage of all machines.
 See the [Android guide](android/README.md) for pairing, building, and installing the app.
 
 ## ASB Bridge (optional)

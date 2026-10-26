@@ -142,6 +142,21 @@ the machine name or `CLI` before the age, and a tap says where the session
 runs. Settings > Connection lists the machines with Online or Offline and marks
 the one in use.
 
+## Messages and Usage
+
+The **Messages** and **Usage** screens show the same views as the Messages and
+Usage windows on the PC, for all machines of the group. Open them from the ⋮
+main menu of the sessions screen (**Messages**, **Usage**, **Settings**).
+**Show messages** in the session panel opens Messages with that session
+selected. Messages shows the round table of the 12 most recent sessions
+(TalkBack reaches each seat in circle order), the selected seat or pair, and
+the ledger. Usage shows the cost and the tokens by machine, app, and model,
+with the price line and `Reading usage` while the PC reads the transcripts.
+The screens read `/phone/v1/activity/messages` and `/phone/v1/activity/usage`
+every 10 seconds while they show. Usage reads every 2 seconds while the scan
+runs or the prices load. The phone gets counts, statuses, session titles, and
+token usage, never message text: the gateway has no thread route.
+
 ## Themes, views, and motion
 
 The app is dark only and follows the PC theme. The dashboard `palette` field
