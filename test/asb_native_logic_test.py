@@ -196,8 +196,8 @@ class ActivityHelperChecks(unittest.TestCase):
         self.assertEqual(asb.day_line(self.utc(2026, 10, 25, 23, 59), now), "Yesterday")
         self.assertEqual(asb.day_line(self.utc(2026, 10, 25, 0, 0), now), "Yesterday")
         self.assertEqual(asb.day_line(self.utc(2026, 10, 24, 23, 59), now), "Oct 24")
-        # The day comes from the local calendar.
-        os.environ["TZ"] = "Etc/GMT+3"
+        # The day comes from the local calendar. The POSIX form of UTC-3 needs no tzdata files (the Ubuntu 22.04 image has none).
+        os.environ["TZ"] = "<-03>3"
         time.tzset()
         self.assertEqual(asb.day_line(self.utc(2026, 10, 24, 23, 0), now), "Yesterday")
 
