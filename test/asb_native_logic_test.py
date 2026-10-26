@@ -742,6 +742,173 @@ class ProfileSyncChecks(unittest.TestCase):
         self.assertEqual(transport.open.call_args.args[0].get_header("X-asb-source-token"), token)
 
 
+class UsageLogicChecks(unittest.TestCase):
+    """The Usage window numbers over the preview's sample data (test/fixtures/activity/usage-sample.json, UTC buckets)."""
+    REPLIES = json.loads((Path(__file__).parent / "fixtures" / "activity" / "usage-sample.json").read_text())
+    ALL = {"desk", "laptop", "studio"}
+
+    def setUp(self):
+        saved = os.environ.get("TZ")
+        os.environ["TZ"] = "UTC"
+        time.tzset()
+
+        def restore():
+            if saved is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = saved
+            time.tzset()
+        self.addCleanup(restore)
+
+    def view(self, period="30d", on=None, metric="cost", reply=None):
+        return asb.usage_view(reply or self.REPLIES[period], self.ALL if on is None else on, metric)
+
+    def assert_consistent(self, view, metric):
+        total = view["total"]
+        self.assertAlmostEqual(total, view["cost"] if metric == "cost" else view["tokens"], delta=.01)
+        self.assertAlmostEqual(sum(machine["value"] for machine in view["machines"]), total, delta=.01)
+        self.assertAlmostEqual(sum(app["value"] for app in view["apps"]), total, delta=.01)
+        self.assertAlmostEqual(sum(model["value"] for model in view["models"] if model["value"] is not None), total, delta=.01)
+        self.assertEqual(sum(view["parts"].values()), view["tokens"])
+        self.assertAlmostEqual(sum(sum(bar["app"].values()) for bar in view["bars"]), total, delta=.01)
+        self.assertAlmostEqual(sum(sum(bar["machine"].values()) for bar in view["bars"]), total, delta=.01)
+        for machine in view["machines"]:
+            self.assertAlmostEqual(sum(app["value"] for app in machine["apps"].values()), machine["value"], delta=.01)
+        if metric == "cost":
+            self.assertAlmostEqual(sum(view["cost_parts"].values()), total, delta=.01)
+
+    def test_every_period_and_metric_is_consistent(self):
+        for period in ("24h", "7d", "30d", "90d"):
+            for metric in ("cost", "tokens"):
+                with self.subTest(period=period, metric=metric):
+                    view = self.view(period, metric=metric)
+                    self.assertEqual(len(view["bars"]), {"24h": 24, "7d": 7, "30d": 30, "90d": 90}[period])
+                    self.assert_consistent(view, metric)
+                    records = self.REPLIES[period]["records"]
+                    self.assertEqual(view["tokens"], sum(sum(record["tokens"].values()) for record in records))
+
+    def test_the_preview_numbers(self):
+        view = self.view()
+        self.assertEqual((asb.format_cost(view["cost"]), asb.format_tokens(view["tokens"]), asb.format_cost(view["savings"])),
+                         ("$2,343.50", "3.33B", "$5,916.10"))
+        self.assertEqual([(machine["name"], asb.format_cost(machine["value"]), asb.format_share(machine["share"]), machine["state"])
+                          for machine in view["machines"]],
+                         [("Desk", "$1,473.15", "62.9%", "Local"), ("Laptop", "$622.85", "26.6%", "Connected"),
+                          ("Studio", "$247.49", "10.6%", "Offline · last report Oct 25, 14:30")])
+        self.assertEqual([(app["label"], asb.format_cost(app["value"])) for app in view["apps"]],
+                         [("Codex", "$689.81"), ("Claude Code", "$1,573.32"), ("OpenCode", "$80.37")])
+        self.assertEqual([(model["model"], model["app"], model["machines"]) for model in view["models"]], [
+            ("claude-opus-5-5", "claude", ["desk", "studio"]), ("gpt-6.1-sol", "codex", ["desk", "laptop", "studio"]),
+            ("claude-sonnet-5-5", "claude", ["desk", "laptop"]), ("claude-sonnet-5-5", "opencode", ["laptop"]),
+            ("claude-haiku-5-5", "claude", ["desk"]), ("gpt-6.1-mini", "codex", ["laptop"]), ("mimo-v2.6-pro", "opencode", ["desk"])])
+        self.assertEqual((view["models"][-1]["cost"], view["models"][-1]["value"], view["models"][-1]["share"]), (None, None, None))
+        self.assertEqual(asb.format_share(view["models"][0]["share"]), "39.4%")
+        tokens = self.view(metric="tokens")
+        self.assertEqual(tokens["models"][0]["model"], "gpt-6.1-sol")
+        self.assertIsNotNone(tokens["models"][-1]["share"])
+        self.assertEqual(asb.format_tokens(self.view("24h", metric="tokens")["total"]), "99.4M")
+
+    def test_a_machine_that_is_off_leaves_every_number(self):
+        reply = self.REPLIES["30d"]
+        for metric in ("cost", "tokens"):
+            with self.subTest(metric=metric):
+                view = self.view(on={"desk", "laptop"}, metric=metric)
+                self.assert_consistent(view, metric)
+                kept = [record for record in reply["records"] if record["machineId"] != "studio"]
+                self.assertEqual(view["tokens"], sum(sum(record["tokens"].values()) for record in kept))
+                self.assertAlmostEqual(view["cost"], sum(record["cost"]["total"] for record in kept if record["cost"]), delta=.01)
+                self.assertEqual([machine["id"] for machine in view["machines"]], ["desk", "laptop"])
+                self.assertFalse(any("studio" in bar["machine"] for bar in view["bars"]))
+                self.assertFalse(any("studio" in model["machines"] for model in view["models"]))
+                self.assertFalse(any(arc["id"].startswith("studio") for arc in asb.usage_round_arcs(view, reply["machines"], metric)))
+                self.assertLess(view["total"], self.view(metric=metric)["total"])
+        self.assertEqual(asb.format_cost(self.view(on={"desk", "laptop"})["cost"]), "$2,096.01")
+
+    def test_the_last_machine_stays_on(self):
+        self.assertEqual(asb.usage_toggle({"desk", "laptop"}, "desk"), {"laptop"})
+        self.assertEqual(asb.usage_toggle({"laptop"}, "laptop"), {"laptop"})
+        self.assertEqual(asb.usage_toggle({"laptop"}, "desk"), {"desk", "laptop"})
+        self.assertEqual(asb.usage_toggle(set(), "desk"), {"desk"})
+
+    def test_the_opus_cost_follows_the_rate_formula(self):
+        records = [record for record in self.REPLIES["30d"]["records"] if record["model"] == "claude-opus-5-5"]
+        tokens = {part: sum(record["tokens"][part] for record in records) for part in asb.USAGE_PARTS}
+        expected = (tokens["uncached"] * 5 + tokens["cacheRead"] * .5 + tokens["cacheWrite"] * 6.25 + tokens["output"] * 25) / 1e6
+        row = next(model for model in self.view()["models"] if model["model"] == "claude-opus-5-5")
+        self.assertAlmostEqual(row["cost"], expected, delta=.01)
+        self.assertEqual(asb.format_cost(row["cost"]), "$923.90")
+
+    def test_the_unpriced_note(self):
+        self.assertEqual(asb.usage_unpriced_note(self.view()), "mimo-v2.6-pro is unpriced: 144.2M tokens not in the cost.")
+        self.assertEqual(asb.usage_unpriced_note(self.view(metric="tokens")), "")
+        self.assertEqual(asb.usage_unpriced_note(self.view(on={"laptop"})), "")
+        reply = copy.deepcopy(self.REPLIES["30d"])
+        for record in reply["records"]:
+            if record["model"] == "gpt-6.1-mini":
+                record["cost"] = None
+        view = self.view(reply=reply)
+        # The names keep the order of their first record.
+        order = list(dict.fromkeys(record["model"] for record in reply["records"] if record["cost"] is None))
+        self.assertEqual(sorted(order), ["gpt-6.1-mini", "mimo-v2.6-pro"])
+        self.assertEqual(asb.usage_unpriced_note(view), f"{', '.join(order)} are unpriced: 349.3M tokens not in the cost.")
+        self.assert_consistent(view, "cost")
+
+    def test_prices_text(self):
+        at = int(datetime(2026, 10, 26, 9, tzinfo=timezone.utc).timestamp() * 1000)
+        for prices, text in (({"source": "LiteLLM", "status": "fresh", "fetchedAtMs": at, "models": 2131}, "Prices: LiteLLM, Oct 26"),
+                             ({"source": "LiteLLM", "status": "cached", "fetchedAtMs": at - 86_400_000, "models": 2131}, "Prices: LiteLLM, Oct 25"),
+                             ({"source": "LiteLLM", "status": "loading", "fetchedAtMs": None, "models": 0}, "Prices: loading"),
+                             ({"source": "LiteLLM", "status": "unavailable", "fetchedAtMs": None, "models": 0}, "Prices: not available"),
+                             (None, "Prices: not available")):
+            with self.subTest(prices=prices):
+                self.assertEqual(asb.usage_prices_text(prices), text)
+
+    def test_scan_text(self):
+        self.assertEqual(asb.usage_scan_text({"complete": True, "files": 2707, "scannedFiles": 2707}), "")
+        self.assertEqual(asb.usage_scan_text({"complete": False, "files": 2707, "scannedFiles": 120}), "Reading usage: 120 of 2,707 files")
+        self.assertEqual(asb.usage_scan_text({"complete": False, "files": 0, "scannedFiles": 0}), "Reading usage")
+
+    def test_axis(self):
+        for maximum, metric, expected in ((150, "cost", (50, ["$50", "$100", "$150"])), (0, "cost", (1, ["$1", "$2", "$3"])),
+                                          (7.2, "cost", (2.5, ["$2.5", "$5", "$7.5"])), (4500, "cost", (2000, ["$2,000", "$4,000", "$6,000"])),
+                                          (13.5e6, "tokens", (5e6, ["5M", "10M", "15M"])), (4.5e9, "tokens", (2e9, ["2B", "4B", "6B"])),
+                                          (7.5e5, "tokens", (2.5e5, ["250K", "500K", "750K"])), (2400, "tokens", (1000, ["1K", "2K", "3K"])),
+                                          (12, "tokens", (5, ["5", "10", "15"]))):
+            with self.subTest(maximum=maximum, metric=metric):
+                step, labels = asb.usage_axis(maximum, metric)
+                self.assertAlmostEqual(step, expected[0])
+                self.assertEqual(labels, expected[1])
+                self.assertGreaterEqual(step * 3, maximum)
+
+    def test_round_arcs(self):
+        view, machines = self.view(), self.REPLIES["30d"]["machines"]
+        arcs = asb.usage_round_arcs(view, machines, "cost")
+        rings = [arc for arc in arcs if arc["kind"] == "machine"]
+        self.assertEqual([(arc["id"], arc["r0"], arc["r1"], arc["color"]) for arc in rings],
+                         [("desk", 92, 114, "#a28caa"), ("laptop", 92, 114, "#7cc48a"), ("studio", 92, 114, "#5fb3b3")])
+        self.assertEqual(rings[0]["a0"], -90)
+        self.assertAlmostEqual(sum(arc["a1"] - arc["a0"] for arc in rings), 360 - 3 * 1.5)
+        self.assertAlmostEqual(rings[1]["a0"] - rings[0]["a1"], 1.5)
+        self.assertAlmostEqual((rings[0]["a1"] - rings[0]["a0"]) / (360 - 4.5), view["machines"][0]["value"] / view["total"])
+        apps = [arc for arc in arcs if arc["kind"] == "app"]
+        self.assertEqual({(arc["r0"], arc["r1"]) for arc in apps}, {(118, 146)})
+        self.assertIn("Claude Code on Laptop", [arc["label"] for arc in apps])
+        for ring in rings:
+            inside = [arc for arc in apps if arc["id"].startswith(ring["id"] + "/")]
+            self.assertAlmostEqual(inside[0]["a0"], ring["a0"])
+            self.assertAlmostEqual(inside[-1]["a1"], ring["a1"])
+        self.assertTrue(all(arc["a1"] - arc["a0"] >= .5 for arc in arcs))
+        alone = asb.usage_round_arcs(self.view(on={"laptop"}, metric="tokens"), machines, "tokens")
+        self.assertEqual((alone[0]["a0"], alone[0]["a1"]), (-90, 270))
+        # Studio has no usage in the last 24 hours: no arc.
+        self.assertNotIn("studio", [arc["id"] for arc in asb.usage_round_arcs(self.view("24h"), machines, "cost")])
+
+    def test_bar_easing(self):
+        self.assertEqual((asb.usage_ease_bars(0), asb.usage_ease_bars(1), asb.usage_ease_bars(-1), asb.usage_ease_bars(2)), (0, 1, 0, 1))
+        self.assertGreater(asb.usage_ease_bars(.25), .75)
+        self.assertLess(asb.usage_ease_bars(.05), asb.usage_ease_bars(.1))
+
+
 class PhoneChecks(unittest.TestCase):
     def status(self, **changes):
         return {"enabled": True, "bindAddresses": ["192.168.50.4"], "port": 4630,

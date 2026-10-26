@@ -1510,6 +1510,165 @@ class LauncherStart:
         return True
 
 
+# Usage window: pure logic. It ports utotals, the round chart, and the axis of the approved preview (boards.html, window mode).
+USAGE_PARTS = ("cacheRead", "cacheWrite", "uncached", "output")
+USAGE_PART_LABELS = {"cacheRead": "Cache read", "cacheWrite": "Cache write", "uncached": "Uncached input", "output": "Output"}
+
+
+def usage_view(reply, machines_on, metric):
+    """Every number of the Usage window for the machines that are on. value is cost (priced only) for the Cost metric, else processed tokens."""
+    pick = (lambda item: item["cost"]) if metric == "cost" else (lambda item: item["tokens"])
+    starts = reply["buckets"]["startsMs"]
+    zero = lambda: {"cost": 0, "tokens": 0}
+    machines = {}
+    for index, machine in enumerate(reply["machines"]):
+        if machine["machineId"] in machines_on:
+            at, offline = machine.get("lastReportAtMs") or 0, machine.get("state") == "offline"
+            machines[machine["machineId"]] = {
+                "id": machine["machineId"], "name": machine["name"], "hue": machine_hue(index), "offline": offline,
+                "state": f"Offline · last report {format_day(at)}, {format_clock(at)}" if offline and at > 0 else machine_state_text(machine),
+                "apps": {app: zero() for app in ACTIVITY_APPS + ("",)}, **zero()}
+    total, apps, models = zero(), {app: zero() for app in ACTIVITY_APPS + ("",)}, {}
+    parts, cost_parts = dict.fromkeys(USAGE_PARTS, 0), dict.fromkeys(USAGE_PARTS, 0.0)
+    bars = [{"app": {}, "machine": {}} for _start in starts]
+    savings = unpriced_tokens = 0
+    unpriced_models = []
+    for record in reply["records"]:
+        machine, bucket = machines.get(record["machineId"]), record["bucket"]
+        if machine is None or not 0 <= bucket < len(starts):
+            continue
+        app = record["app"] if record["app"] in ACTIVITY_APPS else ""
+        tokens, cost = record["tokens"], record["cost"]
+        processed, spent = sum(tokens[part] for part in USAGE_PARTS), cost["total"] if cost else 0
+        for item in (total, machine, machine["apps"][app], apps[app], bars[bucket]["app"].setdefault(app, zero()),
+                     bars[bucket]["machine"].setdefault(machine["id"], zero())):
+            item["cost"] += spent
+            item["tokens"] += processed
+        model = models.setdefault((record["model"], app), {"model": record["model"], "app": app, "machines": set(), "cost": None, "tokens": 0})
+        model["machines"].add(machine["id"])
+        model["tokens"] += processed
+        for part in USAGE_PARTS:
+            parts[part] += tokens[part]
+        if cost:
+            model["cost"] = (model["cost"] or 0) + spent
+            savings += cost["savings"]
+            for part in USAGE_PARTS:
+                cost_parts[part] += cost[part]
+        else:
+            unpriced_tokens += processed
+            if record["model"] not in unpriced_models:
+                unpriced_models.append(record["model"])
+    value = pick(total)
+    share = lambda item: item / value if value else 0
+    rows = list(machines.values())
+    for machine in rows:
+        machine["value"], machine["share"] = pick(machine), share(pick(machine))
+        for item in machine["apps"].values():
+            item["value"] = pick(item)
+    app_rows = [{"id": app, "label": ACTIVITY_APP_LABELS[app], **apps[app], "value": pick(apps[app]), "share": share(pick(apps[app]))}
+                for app in ACTIVITY_APPS + ("",) if apps[app]["tokens"] > 0]
+    order = list(machines)
+    model_rows = []
+    for model in models.values():
+        model_value = None if metric == "cost" and model["cost"] is None else pick(model)
+        model_rows.append({**model, "machines": sorted(model["machines"], key=order.index), "value": model_value,
+                           "share": None if model_value is None else share(model_value)})
+    model_rows.sort(key=lambda row: (row["value"] is None, -(row["value"] or 0)))
+    for bar in bars:
+        for kind in ("app", "machine"):
+            bar[kind] = {key: pick(item) for key, item in bar[kind].items()}
+    return {"metric": metric, "cost": total["cost"], "tokens": total["tokens"], "total": value, "machines": rows, "apps": app_rows,
+            "models": model_rows, "parts": parts, "cost_parts": cost_parts, "savings": savings, "unpriced_tokens": unpriced_tokens,
+            "unpriced_models": unpriced_models, "buckets": reply["buckets"], "bars": bars}
+
+
+def usage_toggle(machines_on, machine_id):
+    """The machines that are on after a chip click. The last machine that is on stays on."""
+    changed = set(machines_on) ^ {machine_id}
+    return changed if changed else set(machines_on)
+
+
+def usage_round_arcs(view, machines, metric):
+    """The arcs of the round chart: machines on the inner ring, their apps on the outer ring, from -90 degrees, clockwise."""
+    pick = (lambda item: item["cost"]) if metric == "cost" else (lambda item: item["tokens"])
+    rows = {machine["id"]: machine for machine in view["machines"]}
+    shown = [rows[machine["machineId"]] for machine in machines if machine["machineId"] in rows and pick(rows[machine["machineId"]]) > 0]
+    total = sum(pick(machine) for machine in shown)
+    gap = 1.5 if len(shown) > 1 else 0
+    available = 360 - gap * len(shown)
+    arcs, start = [], -90
+    for machine in shown:
+        span = available * pick(machine) / total if total else 0
+        if span >= .5:
+            arcs.append({"kind": "machine", "id": machine["id"], "label": machine["name"], "value": pick(machine), "r0": 92, "r1": 114,
+                         "a0": start, "a1": start + span, "color": machine["hue"]})
+        apps = [app for app in ACTIVITY_APPS + ("",) if pick(machine["apps"][app]) > 0]
+        app_span = span - .6 * max(0, len(apps) - 1)
+        app_start = start
+        for app in apps:
+            part = app_span * pick(machine["apps"][app]) / pick(machine)
+            if part >= .5:
+                arcs.append({"kind": "app", "id": f"{machine['id']}/{app}", "label": f"{ACTIVITY_APP_LABELS[app]} on {machine['name']}",
+                             "value": pick(machine["apps"][app]), "r0": 118, "r1": 146, "a0": app_start, "a1": app_start + part,
+                             "color": ACTIVITY_APP_COLORS[app]})
+            app_start += part + .6
+        start += span + gap
+    return arcs
+
+
+def usage_axis(max_value, metric):
+    """The chart axis: three gridlines at multiples of a round step (1, 2, 2.5, or 5 times a power of 10), with their labels."""
+    step = 1
+    if max_value > 0:
+        power = 10 ** math.floor(math.log10(max_value / 3))
+        step = next((size * power for size in (1, 2, 2.5, 5, 10) if size * power >= max_value / 3 - 1e-12), 10 * power)
+
+    def number(value, size=1, unit=""):
+        shown = f"{float(f'{value / size:.6g}'):,.2f}"
+        return shown.rstrip("0").rstrip(".") + unit
+
+    def text(value):
+        if metric == "cost":
+            return "$" + number(value)
+        return number(value, 1e9, "B") if value >= 1e9 else number(value, 1e6, "M") if value >= 1e6 else number(value, 1e3, "K") if value >= 1e3 \
+            else number(value)
+    return step, [text(step * line) for line in (1, 2, 3)]
+
+
+def usage_unpriced_note(view):
+    models = view["unpriced_models"]
+    if view["metric"] != "cost" or not view["unpriced_tokens"] > 0:
+        return ""
+    return f"{', '.join(models)} {'are' if len(models) > 1 else 'is'} unpriced: {format_tokens(view['unpriced_tokens'])} tokens not in the cost."
+
+
+def usage_prices_text(prices):
+    prices = prices or {}
+    if prices.get("status") in ("fresh", "cached") and prices.get("fetchedAtMs"):
+        return f"Prices: {prices.get('source') or 'LiteLLM'}, {format_day(prices['fetchedAtMs'])}"
+    return "Prices: loading" if prices.get("status") == "loading" else "Prices: not available"
+
+
+def usage_scan_text(scan):
+    scan = scan or {}
+    if scan.get("complete", True):
+        return ""
+    files = scan.get("files") or 0
+    return f"Reading usage: {format_count(scan.get('scannedFiles') or 0)} of {format_count(files)} files" if files else "Reading usage"
+
+
+def usage_ease_bars(progress):
+    """cubic-bezier(.16, 1, .3, 1), the bar motion of the preview."""
+    if progress <= 0 or progress >= 1:
+        return min(max(progress, 0), 1)
+    curve = lambda t, first, second: 3 * first * t * (1 - t) ** 2 + 3 * second * t * t * (1 - t) + t ** 3
+    low, high = 0, 1
+    for _step in range(30):
+        middle = (low + high) / 2
+        low, high = (middle, high) if curve(middle, .16, .3) < progress else (low, middle)
+    return curve((low + high) / 2, 1, 1)
+
+
 class EventStream:
     def __init__(self, base, callback, dispatch):
         self.address = urlsplit(base)
@@ -7472,6 +7631,758 @@ class SwitchboardApplication(Adw.Application):
             window.close()
         self.quit()
         return False
+
+
+def usage_rgba(value, alpha=1):
+    color = Gdk.RGBA()
+    color.parse(value)
+    color.alpha *= alpha
+    return color
+
+
+def usage_layout(widget, text, size, weight=Pango.Weight.NORMAL, mono=False):
+    layout = widget.create_pango_layout(text)
+    font = widget.get_pango_context().get_font_description().copy()
+    if mono:
+        font.set_family("monospace")
+    font.set_absolute_size(size * Pango.SCALE)
+    font.set_weight(weight)
+    layout.set_font_description(font)
+    return layout
+
+
+def usage_text(snapshot, layout, x, y, color):
+    snapshot.save()
+    snapshot.translate(Graphene.Point().init(x, y))
+    snapshot.append_layout(layout, color)
+    snapshot.restore()
+
+
+def usage_rect(snapshot, x, y, width, height, color, radius=0, top_only=False):
+    bounds = Graphene.Rect().init(x, y, width, height)
+    if radius:
+        corner, flat = Graphene.Size().init(radius, radius), Graphene.Size().init(0, 0)
+        rounded = Gsk.RoundedRect()
+        rounded.init(bounds, corner, corner, flat if top_only else corner, flat if top_only else corner)
+        snapshot.push_rounded_clip(rounded)
+        snapshot.append_color(color, bounds)
+        snapshot.pop()
+    else:
+        snapshot.append_color(color, bounds)
+
+
+class UsageBar(Gtk.Widget):
+    """A share bar: an optional track, and stacked segments (radius 2, 1 px gaps) over a fraction of the width."""
+    def __init__(self, height, track=None, width=-1):
+        super().__init__(height_request=height, width_request=width, valign=Gtk.Align.CENTER, hexpand=width < 0)
+        self.track, self.segments, self.fraction = track, [], 1
+
+    def set_segments(self, segments, fraction=1):
+        self.segments, self.fraction = [(value, color) for value, color in segments if value > 0], max(0, min(1, fraction))
+        self.queue_draw()
+
+    def do_snapshot(self, snapshot):
+        width, height = self.get_width(), self.get_height()
+        if self.track:
+            usage_rect(snapshot, 0, 0, width, height, usage_rgba(self.track), 2)
+        total = sum(value for value, _color in self.segments)
+        room = width * self.fraction - (len(self.segments) - 1)
+        if not total or room <= 0:
+            return
+        if self.track:
+            # The fill keeps the rounded end of the track.
+            rounded = Gsk.RoundedRect()
+            rounded.init_from_rect(Graphene.Rect().init(0, 0, width, height), 2)
+            snapshot.push_rounded_clip(rounded)
+        x = 0
+        for value, color in self.segments:
+            size = room * value / total
+            usage_rect(snapshot, x, 0, size, height, color if isinstance(color, Gdk.RGBA) else usage_rgba(color), 2)
+            x += size + 1
+        if self.track:
+            snapshot.pop()
+
+
+class UsageRound(Gtk.Widget):
+    """The round chart: machines on the inner ring, their apps on the outer ring, and the total or the hovered arc in the center."""
+    SIZE = 320
+
+    def __init__(self):
+        super().__init__(accessible_role=Gtk.AccessibleRole.IMG, width_request=self.SIZE, height_request=self.SIZE,
+                         halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
+        self.update_property([Gtk.AccessibleProperty.LABEL], ["Usage by machine and app"])
+        self.arcs, self.total_text, self.sub_text, self.format = [], "", "", str
+        self.hover, self.raised = None, 0
+        motion = Gtk.EventControllerMotion()
+        motion.connect("motion", lambda _controller, x, y: self.set_hover(self.arc_at(x, y)))
+        motion.connect("leave", lambda *_: self.set_hover(None))
+        self.add_controller(motion)
+        self.animation = Adw.TimedAnimation.new(self, 0, 1, 150, Adw.CallbackAnimationTarget.new(self.advance))
+        self.animation.set_easing(Adw.Easing.EASE_OUT_CUBIC)
+
+    def set_arcs(self, arcs, total_text, sub_text, format_value):
+        self.arcs, self.total_text, self.sub_text, self.format = arcs, total_text, sub_text, format_value
+        self.hover = None
+        self.queue_draw()
+
+    def center(self):
+        """The center lines: the hovered arc, else the total."""
+        if self.hover:
+            return self.format(self.hover["value"]), self.hover["label"]
+        return self.total_text, self.sub_text
+
+    def arc_at(self, x, y):
+        half = self.SIZE / 2
+        radius = math.hypot(x - half, y - half)
+        angle = math.degrees(math.atan2(y - half, x - half))
+        angle = angle + 360 if angle < -90 else angle
+        return next((arc for arc in self.arcs if arc["r0"] <= radius <= arc["r1"] and arc["a0"] <= angle <= arc["a1"]), None)
+
+    def set_hover(self, arc):
+        if arc is self.hover:
+            return
+        # shortcut: the arc that the pointer leaves drops back at once; the preview eases it back over 150 ms too.
+        self.hover, self.raised = arc, 0
+        self.animation.reset()
+        if arc:
+            self.animation.play()
+        self.queue_draw()
+
+    def advance(self, value):
+        self.raised = value
+        self.queue_draw()
+
+    @staticmethod
+    def sector(builder, half, r0, r1, a0, a1):
+        point = lambda radius, angle: (half + radius * math.cos(math.radians(angle)), half + radius * math.sin(math.radians(angle)))
+        large = a1 - a0 > 180
+        builder.move_to(*point(r1, a0))
+        builder.svg_arc_to(r1, r1, 0, large, True, *point(r1, a1))
+        builder.line_to(*point(r0, a1))
+        builder.svg_arc_to(r0, r0, 0, large, False, *point(r0, a0))
+        builder.close()
+
+    def do_snapshot(self, snapshot):
+        if not ACTIVITY_PATHS:
+            return
+        palette, half = self.get_root().palette, self.SIZE / 2
+        for arc in self.arcs:
+            builder = Gsk.PathBuilder.new()
+            if arc["a1"] - arc["a0"] >= 359.99:
+                self.sector(builder, half, arc["r0"], arc["r1"], arc["a0"], arc["a0"] + 180)
+                self.sector(builder, half, arc["r0"], arc["r1"], arc["a0"] + 180, arc["a0"] + 360)
+            else:
+                self.sector(builder, half, arc["r0"], arc["r1"], arc["a0"], arc["a1"])
+            raised = arc is self.hover and self.raised
+            if raised:
+                middle = math.radians((arc["a0"] + arc["a1"]) / 2)
+                snapshot.save()
+                snapshot.translate(Graphene.Point().init(4 * raised * math.cos(middle), 4 * raised * math.sin(middle)))
+            snapshot.append_fill(builder.to_path(), Gsk.FillRule.WINDING, usage_rgba(arc["color"]))
+            if raised:
+                snapshot.restore()
+        value, sub = self.center()
+        # The preview places the text baselines 6 px above and 18 px below the center.
+        for text, size, weight, mono, color, baseline in ((value, 26, Pango.Weight.SEMIBOLD, True, palette["text"], half - 6),
+                                                          (sub, 12, Pango.Weight.NORMAL, False, palette["dim"], half + 18)):
+            layout = usage_layout(self, text, size, weight, mono)
+            width = layout.get_pixel_extents()[1].width
+            usage_text(snapshot, layout, half - width / 2, baseline - layout.get_baseline() / Pango.SCALE, usage_rgba(color))
+
+
+class UsageChart(Gtk.Widget):
+    """The chart: stacked bars per bucket over three dashed gridlines, with a tooltip box for the hovered bar."""
+    TOP, BOTTOM, LEFT, HEIGHT = 8, 220, 48, 242
+
+    def __init__(self):
+        super().__init__(accessible_role=Gtk.AccessibleRole.IMG, height_request=self.HEIGHT, hexpand=True)
+        self.update_property([Gtk.AccessibleProperty.LABEL], ["Usage over time"])
+        self.series, self.bars, self.buckets, self.sums = [], [], {"unit": "day", "startsMs": []}, []
+        self.step, self.axis, self.format = 1, [], str
+        self.targets, self.starts, self.progress = {}, {}, 1
+        self.hover = self.tip = None
+        motion = Gtk.EventControllerMotion()
+        motion.connect("motion", lambda _controller, x, y: self.set_hover(self.bar_at(x, y)))
+        motion.connect("leave", lambda *_: self.set_hover(None))
+        self.add_controller(motion)
+        self.animation = Adw.TimedAnimation.new(self, 0, 1, 220, Adw.CallbackAnimationTarget.new(self.advance))
+        self.animation.set_easing(Adw.Easing.LINEAR)
+
+    def y(self, value):
+        return self.BOTTOM - (self.BOTTOM - self.TOP) * value / (self.step * 3)
+
+    def set_data(self, series, bars, buckets, format_value, metric, animate):
+        """series: (id, label, color) in stack order; bars: per bucket, the value of each series id."""
+        self.series, self.bars, self.buckets, self.format = series, bars, buckets, format_value
+        self.sums = [sum(bar.get(key, 0) for key, _label, _color in series) for bar in bars]
+        self.step, self.axis = usage_axis(max(self.sums, default=0), metric)
+        targets = {}
+        for index, bar in enumerate(bars):
+            stacked = 0
+            for key, _label, _color in series:
+                if bar.get(key, 0) > 0:
+                    targets[(index, key)] = (self.y(stacked), self.y(stacked + bar[key]))
+                    stacked += bar[key]
+        self.starts = {key: self.targets.get(key, (self.BOTTOM, self.BOTTOM)) for key in targets}
+        self.targets, self.hover, self.tip = targets, None, None
+        self.animation.reset()
+        self.progress = 0 if animate else 1
+        if animate:
+            self.animation.play()
+        self.queue_draw()
+
+    def advance(self, value):
+        self.progress = usage_ease_bars(value)
+        self.queue_draw()
+
+    def geometry(self):
+        count = len(self.bars)
+        gap = 1 if count >= 90 else 2
+        return gap, (self.get_width() - self.LEFT - gap * (count - 1)) / count if count else 0
+
+    def bar_at(self, x, y):
+        gap, width = self.geometry()
+        if not self.bars or not self.TOP <= y <= self.BOTTOM or x < self.LEFT:
+            return None
+        index = int((x - self.LEFT) // (width + gap))
+        return index if index < len(self.bars) and x - self.LEFT - index * (width + gap) <= max(width, 1) else None
+
+    def set_hover(self, index):
+        if index == self.hover:
+            return
+        self.hover = index
+        self.tip = None if index is None else self.tip_box(index)
+        self.queue_draw()
+
+    def tip_box(self, index):
+        """The tooltip lines and its box inside the chart: right of the bar, or left when it would leave the chart."""
+        gap, width = self.geometry()
+        bar = self.bars[index]
+        rows = [(label, self.format(bar.get(key, 0)), color) for key, label, color in self.series]
+        title = usage_layout(self, self.full_label(index), 12, Pango.Weight.SEMIBOLD)
+        names = [usage_layout(self, label, 12) for label, _text, _color in rows] + [usage_layout(self, "Total", 12)]
+        values = [usage_layout(self, text, 12, mono=True) for _label, text, _color in rows] + [usage_layout(self, self.format(self.sums[index]), 12, mono=True)]
+        size = lambda layout: layout.get_pixel_extents()[1]
+        line = max(size(name).width + 8 + 12 + size(value).width + (16 if position < len(rows) else 0)
+                   for position, (name, value) in enumerate(zip(names, values)))
+        box_width = max(150, 22 + max(line, size(title).width))
+        box_height = 2 + 16 + size(title).height + 4 + 18 * len(rows) + 9 + 18
+        x = self.LEFT + index * (width + gap)
+        top_y = self.y(self.sums[index])
+        left = x + width + 8
+        if left + box_width > self.get_width():
+            left = x - box_width - 8
+        left = max(0, min(left, self.get_width() - box_width))
+        top = max(0, min(top_y - box_height / 2, self.HEIGHT - box_height))
+        return {"index": index, "title": self.full_label(index), "rows": [(label, text) for label, text, _color in rows], "total": self.sums[index],
+                "total_text": self.format(self.sums[index]), "bounds": (left, top, box_width, box_height), "layouts": (title, names, values),
+                "colors": [color for _label, _text, color in rows]}
+
+    def full_label(self, index):
+        starts = self.buckets["startsMs"]
+        return format_clock(starts[index]) if self.buckets["unit"] == "hour" else format_day(starts[index])
+
+    def do_snapshot(self, snapshot):
+        if not ACTIVITY_PATHS or not self.bars:
+            return
+        palette, chart_width = self.get_root().palette, self.get_width()
+        dim, rule, text = usage_rgba(palette["dim"]), usage_rgba(palette["rule"]), usage_rgba(palette["text"])
+        dash = Gsk.Stroke.new(1)
+        dash.set_dash([3, 3])
+        for line, label in enumerate(self.axis, 1):
+            y = self.y(self.step * line)
+            builder = Gsk.PathBuilder.new()
+            builder.move_to(self.LEFT, y)
+            builder.line_to(chart_width, y)
+            snapshot.append_stroke(builder.to_path(), dash, rule)
+            layout = usage_layout(self, label, 11)
+            extents = layout.get_pixel_extents()[1]
+            usage_text(snapshot, layout, self.LEFT - 8 - extents.width, y - extents.height / 2, dim)
+        gap, width = self.geometry()
+        colors = {key: usage_rgba(color) for key, _label, color in self.series}
+        for index, bar in enumerate(self.bars):
+            x = self.LEFT + index * (width + gap)
+            shown = [key for key, _label, _color in self.series if (index, key) in self.targets]
+            for key in shown:
+                (from_low, from_high), (to_low, to_high) = self.starts[(index, key)], self.targets[(index, key)]
+                low = from_low + (to_low - from_low) * self.progress
+                high = from_high + (to_high - from_high) * self.progress
+                if low - high > 0:
+                    top = key == shown[-1]
+                    usage_rect(snapshot, x, high, width, low - high, colors[key], min(2, width / 2, low - high) if top else 0, True)
+        every = 3 if self.buckets["unit"] == "hour" else {7: 1, 30: 5}.get(len(self.bars), 15)
+        for index in range(len(self.bars)):
+            if (len(self.bars) - 1 - index) % every == 0:
+                layout = usage_layout(self, bucket_label(self.buckets, index), 11)
+                label_width = layout.get_pixel_extents()[1].width
+                middle = min(max(self.LEFT + index * (width + gap) + width / 2, label_width / 2), chart_width - label_width / 2)
+                usage_text(snapshot, layout, middle - label_width / 2, self.BOTTOM + 15 - layout.get_baseline() / Pango.SCALE, dim)
+        if self.tip:
+            self.snapshot_tip(snapshot, palette, width, gap, text, rule)
+
+    def snapshot_tip(self, snapshot, palette, width, gap, text, rule):
+        index, tip = self.tip["index"], self.tip
+        x, top_y = self.LEFT + index * (width + gap), self.y(self.sums[index])
+        if self.sums[index] > 0:
+            outline = Gsk.RoundedRect()
+            outline.init_from_rect(Graphene.Rect().init(x - 1, top_y - 1, width + 2, self.BOTTOM - top_y + 2), 0)
+            snapshot.append_border(outline, [1] * 4, [text] * 4)
+        left, top, box_width, box_height = tip["bounds"]
+        box = Gsk.RoundedRect()
+        box.init_from_rect(Graphene.Rect().init(left, top, box_width, box_height), 4)
+        snapshot.append_outset_shadow(box, usage_rgba("#000000", .45), 0, 6, 0, 16)
+        snapshot.push_rounded_clip(box)
+        snapshot.append_color(usage_rgba("#2d3034"), box.bounds)
+        snapshot.pop()
+        snapshot.append_border(box, [1] * 4, [usage_rgba(palette["edge"])] * 4)
+        title, names, values = tip["layouts"]
+        usage_text(snapshot, title, left + 11, top + 9, text)
+        y = top + 9 + title.get_pixel_extents()[1].height + 4
+        right = left + box_width - 11
+        for position, (name, value) in enumerate(zip(names, values)):
+            if position == len(names) - 1:
+                usage_rect(snapshot, left + 11, y + 4, box_width - 22, 1, rule)
+                y += 9
+                start = left + 11
+            else:
+                usage_rect(snapshot, left + 11, y + 5, 8, 8, usage_rgba(tip["colors"][position]), 2)
+                start = left + 11 + 16
+            for layout, at in ((name, start), (value, right - value.get_pixel_extents()[1].width)):
+                usage_text(snapshot, layout, at, y + (18 - layout.get_pixel_extents()[1].height) / 2, text)
+            y += 18
+
+
+class UsageWindow(ActivityWindow):
+    """The Usage window: cost and tokens by machine, app, model, and time, as the approved preview's window mode."""
+    KIND = "usage"
+    TITLE = "Usage"
+    ROUTE = "/api/activity/usage"
+    PERIODS = USAGE_PERIODS
+    DEFAULT_PERIOD = "30d"
+    DEFAULT_SIZE = (948, 760)
+    FAST_POLL_SECONDS = 2
+
+    def __init__(self, application, base, fetch=None, clock=None):
+        self.metric, self.split, self.machines_off, self.chip_key, self.chart_key = "cost", "app", set(), None, None
+        self.narrow = self.small = False
+        super().__init__(application, base, fetch, clock)
+        periods = self.toolbar.get_first_child()
+        self.toolbar.remove(periods)
+        self.toolbar.set_orientation(Gtk.Orientation.VERTICAL)
+        self.toolbar.set_spacing(4)
+        # Adw.WrapBox (libadwaita 1.7) moves items that do not fit to a second line. shortcut: older libadwaita keeps one line.
+        wrap = Adw.WrapBox(child_spacing=8, line_spacing=6) if hasattr(Adw, "WrapBox") else Gtk.Box(spacing=8)
+        wrap.append(periods)
+        metrics = Gtk.Box(valign=Gtk.Align.CENTER)
+        metrics.add_css_class("linked")
+        self.metric_buttons = self.linked_toggles(metrics, (("cost", "Cost"), ("tokens", "Tokens")), self.metric, self.set_metric)
+        wrap.append(metrics)
+        self.chips = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        self.chip_buttons = {}
+        wrap.append(self.chips)
+        self.prices_label = Gtk.Label(valign=Gtk.Align.CENTER, margin_start=4)
+        self.prices_label.add_css_class("asb-usage-small")
+        self.prices_label.add_css_class("asb-dim")
+        wrap.append(self.prices_label)
+        self.toolbar.append(wrap)
+        self.scan_label = Gtk.Label(xalign=0, visible=False)
+        self.scan_label.add_css_class("asb-usage-small")
+        self.scan_label.add_css_class("asb-dim")
+        self.toolbar.append(self.scan_label)
+
+        self.scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
+        self.content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=28)
+        self.scroll.set_child(Adw.Clamp(maximum_size=1240, tightening_threshold=1240, child=self.content))
+        self.empty_label = Gtk.Label(vexpand=True, visible=False)
+        self.empty_label.add_css_class("asb-dim")
+        self.data_page.append(self.scroll)
+        self.data_page.append(self.empty_label)
+
+        self.overview = Gtk.Box(spacing=36)
+        self.round = UsageRound()
+        self.round_cell = Gtk.Box(width_request=340, valign=Gtk.Align.CENTER)
+        self.round_cell.append(self.round)
+        self.overview.append(self.round_cell)
+        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, valign=Gtk.Align.CENTER)
+        side.append(self.heading("Machines"))
+        self.machine_rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        side.append(self.machine_rows)
+        apps = self.heading("Apps")
+        apps.set_margin_top(20)
+        side.append(apps)
+        self.app_rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        side.append(self.app_rows)
+        self.note = Gtk.Label(xalign=0, wrap=True, margin_top=10, visible=False)
+        self.note.add_css_class("asb-usage-small")
+        self.note.add_css_class("asb-dim")
+        side.append(self.note)
+        self.overview.append(side)
+        self.content.append(self.overview)
+
+        chart_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        header = Gtk.Box(spacing=12, margin_bottom=12)
+        self.chart_title = self.heading("Daily cost")
+        self.chart_title.set_margin_bottom(0)
+        self.chart_title.set_hexpand(True)
+        header.append(self.chart_title)
+        splits = Gtk.Box(valign=Gtk.Align.CENTER)
+        splits.add_css_class("linked")
+        splits.add_css_class("asb-usage-split")
+        self.split_buttons = self.linked_toggles(splits, (("app", "By app"), ("machine", "By machine")), self.split, self.set_split)
+        header.append(splits)
+        chart_section.append(header)
+        self.chart = UsageChart()
+        chart_section.append(self.chart)
+        self.content.append(chart_section)
+
+        totals = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        totals.append(self.heading("Totals"))
+        self.figures = Gtk.Grid(column_homogeneous=True, column_spacing=16, row_spacing=16)
+        totals.append(self.figures)
+        self.blocks = Gtk.Box(homogeneous=True, spacing=36, margin_top=20)
+        totals.append(self.blocks)
+        self.content.append(totals)
+
+        models = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        models.append(self.heading("Models"))
+        self.models = Gtk.Grid()
+        models.append(self.models)
+        self.content.append(models)
+        self.layout_content()
+
+        for name, condition in (("narrow", "max-width: 899px"), ("small", "max-width: 639px")):
+            breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(condition))
+            breakpoint.asb_name = name
+            self.add_breakpoint(breakpoint)
+        # Libadwaita applies only the last breakpoint that matches, so "small" means narrow too.
+        self.connect("notify::current-breakpoint", self.breakpoint_changed)
+
+    def palette_css(self, palette):
+        scope, rule = self.css_scope, palette["rule"]
+        hues = "".join(f"{scope} .asb-usage-hue-{index} {{ background: {hue}; }}\n"
+                       f"{scope} .asb-usage-hollow-{index} {{ background: none; border: 1.5px solid {hue}; min-width: 4px; min-height: 4px; }}\n"
+                       for index, hue in enumerate(MACHINE_HUES))
+        swatches = "".join(f"{scope} .asb-usage-type-{part} {{ background: {color}; }}\n" for part, color in ACTIVITY_TOKEN_COLORS.items())
+        return f"""
+{scope} .asb-usage-heading {{ font-size: 13px; font-weight: 600; }}
+{scope} .asb-usage-small {{ font-size: 12px; }}
+{scope} .asb-usage-row {{ min-height: 44px; border-bottom: 1px solid {rule}; }}
+{scope} .asb-usage-row.asb-usage-narrow {{ padding: 6px 0; }}
+{scope} .asb-usage-name {{ font-size: 13px; font-weight: 600; }}
+{scope} .asb-usage-sub {{ font-size: 11px; color: {palette['dim']}; }}
+{scope} .asb-usage-value {{ font-size: 13px; }}
+{scope} .asb-usage-figure {{ font-size: 20px; }}
+{scope} .asb-usage-legend {{ min-height: 22px; font-size: 12px; }}
+{scope} .asb-usage-cell {{ min-height: 34px; padding-right: 10px; border-bottom: 1px solid {rule}; font-size: 12px; }}
+{scope} .asb-usage-head {{ min-height: 30px; padding-right: 10px; border-bottom: 1px solid {rule}; font-size: 11px; color: {palette['dim']}; }}
+{scope} .asb-usage-dot {{ min-width: 7px; min-height: 7px; border-radius: 50%; }}
+{scope} .asb-usage-swatch {{ min-width: 8px; min-height: 8px; border-radius: 2px; }}
+{scope} .asb-usage-chip {{ min-height: 22px; padding: 0 8px; border: 1px solid {rule}; border-radius: 4px; font-size: 12px; font-weight: normal;
+  background: none; box-shadow: none; color: {palette['text']}; }}
+{scope} .asb-usage-chip:hover {{ background: alpha(currentColor, .08); }}
+{scope} .asb-usage-chip:disabled {{ filter: none; opacity: 1; }}
+{scope} .asb-usage-chip:disabled label {{ color: {palette['text']}; }}
+{scope} .asb-usage-chip:disabled label.asb-dim {{ color: {palette['dim']}; }}
+{scope} .asb-usage-chip.asb-usage-off {{ opacity: .5; }}
+{scope} .asb-usage-chip.asb-usage-off .asb-usage-chip-name {{ text-decoration-line: line-through; }}
+{scope} .asb-usage-split button {{ min-height: 24px; padding: 0 10px; font-size: 12px; }}
+""" + hues + swatches
+
+    def set_palette(self, colors):
+        super().set_palette(colors)
+        # Drawn widgets keep their render nodes until they draw again.
+        for name in ("round", "chart"):
+            if hasattr(self, name):
+                getattr(self, name).queue_draw()
+
+    def linked_toggles(self, box, items, active, callback):
+        buttons = {}
+        for key, text in items:
+            button = Gtk.ToggleButton(label=text, active=key == active)
+            if buttons:
+                button.set_group(next(iter(buttons.values())))
+            button.connect("toggled", lambda button, key: button.get_active() and callback(key), key)
+            box.append(button)
+            buttons[key] = button
+        return buttons
+
+    @staticmethod
+    def heading(text):
+        widget = Gtk.Label(label=text, xalign=0, margin_bottom=12)
+        widget.add_css_class("asb-usage-heading")
+        return widget
+
+    @staticmethod
+    def text(value="", css=(), xalign=0, **kwargs):
+        widget = Gtk.Label(label=value, xalign=xalign, **kwargs)
+        for name in css:
+            widget.add_css_class(name)
+        return widget
+
+    def dot(self, machine):
+        index = MACHINE_HUES.index(machine["hue"])
+        widget = Gtk.Box(valign=Gtk.Align.CENTER, halign=Gtk.Align.CENTER)
+        widget.add_css_class("asb-usage-dot")
+        widget.add_css_class(f"asb-usage-hollow-{index}" if machine["offline"] else f"asb-usage-hue-{index}")
+        return widget
+
+    @staticmethod
+    def mark(app):
+        image = Gtk.Image(pixel_size=14, valign=Gtk.Align.CENTER)
+        set_icon(image, ACTIVITY_APP_ICONS[app])
+        return image
+
+    def set_metric(self, metric):
+        if metric != self.metric:
+            self.metric = metric
+            self.metric_buttons[metric].set_active(True)
+            self.render_view()
+
+    def set_split(self, split):
+        if split != self.split:
+            self.split = split
+            self.split_buttons[split].set_active(True)
+            self.render_view()
+
+    def machines_on(self):
+        ids = {machine["machineId"] for machine in self.data["machines"]}
+        return (ids - self.machines_off) or ids
+
+    def toggle_machine(self, machine_id):
+        ids = {machine["machineId"] for machine in self.data["machines"]}
+        self.machines_off = ids - usage_toggle(self.machines_on(), machine_id)
+        self.render_view()
+
+    def set_poll_seconds(self, seconds):
+        if seconds == self.POLL_SECONDS:
+            return
+        self.POLL_SECONDS = seconds
+        if self.poll_timer is not None:
+            if self.poll_timer:
+                GLib.source_remove(self.poll_timer)
+            self.poll_timer = GLib.timeout_add_seconds(seconds, self.poll_tick)
+
+    def breakpoint_changed(self, *_args):
+        name = getattr(self.get_current_breakpoint(), "asb_name", None)
+        self.narrow, self.small = name in ("narrow", "small"), name == "small"
+        self.layout_content()
+        if self.data is not None:
+            self.render_view()
+
+    def layout_content(self):
+        self.content.set_margin_top(16 if self.small else 20)
+        self.content.set_margin_bottom(32 if self.small else 40)
+        for side in ("start", "end"):
+            getattr(self.content, f"set_margin_{side}")(14 if self.small else 24)
+        self.overview.set_orientation(Gtk.Orientation.VERTICAL if self.narrow else Gtk.Orientation.HORIZONTAL)
+        self.round_cell.set_size_request(-1 if self.narrow else 340, -1)
+        self.round.set_halign(Gtk.Align.CENTER if self.narrow else Gtk.Align.START)
+        self.round.set_hexpand(self.narrow)
+        self.blocks.set_orientation(Gtk.Orientation.VERTICAL if self.narrow else Gtk.Orientation.HORIZONTAL)
+        self.blocks.set_spacing(20 if self.narrow else 36)
+
+    def render(self, data, previous):
+        self.prices_label.set_label(usage_prices_text(data.get("prices")))
+        scan = usage_scan_text(data.get("scan"))
+        self.scan_label.set_label(scan)
+        self.scan_label.set_visible(bool(scan))
+        busy = bool(scan) or (data.get("prices") or {}).get("status") == "loading"
+        self.set_poll_seconds(self.FAST_POLL_SECONDS if busy else ActivityWindow.POLL_SECONDS)
+        self.render_view()
+
+    def render_chips(self, on):
+        key = [(machine["machineId"], machine["name"], machine.get("state"), machine.get("lastReportAtMs")) for machine in self.data["machines"]]
+        if key != self.chip_key:
+            self.chip_key = key
+            while child := self.chips.get_first_child():
+                self.chips.remove(child)
+            self.chip_buttons = {}
+            for index, machine in enumerate(self.data["machines"]):
+                button = Gtk.ToggleButton(valign=Gtk.Align.CENTER)
+                button.add_css_class("asb-usage-chip")
+                inner = Gtk.Box(spacing=6)
+                inner.append(self.dot({"hue": machine_hue(index), "offline": machine.get("state") == "offline"}))
+                inner.append(self.text(machine["name"], ("asb-usage-chip-name",)))
+                inner.append(self.text(machine_state_text(machine), ("asb-dim",)))
+                button.set_child(inner)
+                button.update_property([Gtk.AccessibleProperty.LABEL], [f"{machine['name']}, {machine_state_text(machine)}"])
+                button.connect("toggled", lambda button, machine_id: button.asb_ready and self.toggle_machine(machine_id), machine["machineId"])
+                button.asb_report, button.asb_ready = machine_last_report(machine), False
+                self.chips.append(button)
+                self.chip_buttons[machine["machineId"]] = button
+        for machine_id, button in self.chip_buttons.items():
+            button.asb_ready = False
+            button.set_active(machine_id in on)
+            button.asb_ready = True
+            last = machine_id in on and len(on) == 1
+            button.set_sensitive(not last)
+            button.set_tooltip_text("Keep one machine" if last else button.asb_report or None)
+            if machine_id in on:
+                button.remove_css_class("asb-usage-off")
+            else:
+                button.add_css_class("asb-usage-off")
+
+    def render_view(self):
+        data = self.data
+        if data is None:
+            return
+        on = self.machines_on()
+        self.render_chips(on)
+        empty = not data["records"]
+        self.scroll.set_visible(not empty)
+        self.empty_label.set_visible(empty)
+        self.empty_label.set_label(f"No usage in {dict(self.PERIODS)[self.period]}.")
+        view = usage_view(data, on, self.metric)
+        cost = self.metric == "cost"
+        show = format_cost if cost else format_tokens
+        self.round.set_arcs(usage_round_arcs(view, data["machines"], self.metric), show(view["total"]),
+                            "at API prices" if cost else "processed tokens", show)
+        self.render_rows(view, show)
+        note = usage_unpriced_note(view)
+        self.note.set_label(note)
+        self.note.set_visible(bool(note))
+        hourly = data["buckets"]["unit"] == "hour"
+        self.chart_title.set_label(f"{'Hourly' if hourly else 'Daily'} {'cost' if cost else 'tokens'}")
+        if self.split == "app":
+            other = ("",) if any(row["id"] == "" for row in view["apps"]) else ()
+            series = [(app, ACTIVITY_APP_LABELS[app], ACTIVITY_APP_COLORS[app]) for app in ACTIVITY_APPS + other]
+        else:
+            series = [(machine["id"], machine["name"], machine["hue"]) for machine in view["machines"]]
+        key = (self.period, self.metric, self.split, frozenset(on))
+        self.chart.set_data(series, [bar[self.split] for bar in view["bars"]], data["buckets"], show, self.metric,
+                            self.chart_key is not None and key != self.chart_key)
+        self.chart_key = key
+        self.render_totals(view)
+        self.render_models(view, show)
+
+    def row_box(self):
+        row = Gtk.Box(spacing=8 if self.small else 14)
+        row.add_css_class("asb-usage-row")
+        if self.narrow:
+            row.add_css_class("asb-usage-narrow")
+        return row
+
+    def row_cells(self, row, who, bar, value, share, show):
+        widths = (112, 84, 44) if self.small else (150, 110, 56) if self.narrow else (210, 110, 56)
+        who.set_size_request(widths[0], -1)
+        # A wrapped state label asks for its full text width; the clamp keeps the cell at its column width.
+        row.append(Adw.Clamp(maximum_size=widths[0], tightening_threshold=widths[0], child=who, hexpand=False))
+        row.append(bar)
+        row.append(self.text(show(value), ("asb-mono", "asb-usage-value"), 1, width_request=widths[1]))
+        row.append(self.text(format_share(share), ("asb-usage-small", "asb-dim"), 1, width_request=widths[2]))
+
+    def render_rows(self, view, show):
+        for box in (self.machine_rows, self.app_rows):
+            while child := box.get_first_child():
+                box.remove(child)
+        for machine in view["machines"]:
+            row = self.row_box()
+            row.asb_machine = machine["id"]
+            who = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+            name = Gtk.Box(spacing=7)
+            name.append(self.dot(machine))
+            name.append(self.text(machine["name"], ("asb-usage-name",), ellipsize=Pango.EllipsizeMode.END, max_width_chars=1, hexpand=True))
+            who.append(name)
+            sub = self.text(machine["state"], ("asb-usage-sub",), max_width_chars=1, hexpand=True)
+            if self.narrow:
+                sub.set_wrap(True)
+            else:
+                sub.set_ellipsize(Pango.EllipsizeMode.END)
+            who.append(sub)
+            bar = UsageBar(10, "#2a2c30")
+            bar.set_segments([(machine["apps"][app]["value"], ACTIVITY_APP_COLORS[app]) for app in ACTIVITY_APPS + ("",)], machine["share"])
+            self.row_cells(row, who, bar, machine["value"], machine["share"], show)
+            self.machine_rows.append(row)
+        for app in view["apps"]:
+            row = self.row_box()
+            row.asb_app = app["id"]
+            who = Gtk.Box(spacing=7, valign=Gtk.Align.CENTER)
+            who.append(self.mark(app["id"]))
+            who.append(self.text(app["label"], ("asb-usage-name",), ellipsize=Pango.EllipsizeMode.END, max_width_chars=1, hexpand=True))
+            bar = UsageBar(10, "#2a2c30")
+            bar.set_segments([(app["value"], ACTIVITY_APP_COLORS[app["id"]])], app["share"])
+            self.row_cells(row, who, bar, app["value"], app["share"], show)
+            self.app_rows.append(row)
+
+    def render_totals(self, view):
+        while child := self.figures.get_first_child():
+            self.figures.remove(child)
+        parts = view["parts"]
+        figures = (("Processed tokens", format_tokens(view["tokens"])), ("Cached input", format_tokens(parts["cacheRead"] + parts["cacheWrite"])),
+                   ("Uncached input", format_tokens(parts["uncached"])), ("Output", format_tokens(parts["output"])),
+                   ("Cache savings", format_cost(view["savings"])))
+        columns = 2 if self.small else 5
+        for index, (title, value) in enumerate(figures):
+            figure = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            figure.append(self.text(title, ("asb-usage-small", "asb-dim")))
+            figure.append(self.text(value, ("asb-mono", "asb-usage-figure")))
+            self.figures.attach(figure, index % columns, index // columns, 1, 1)
+        while child := self.blocks.get_first_child():
+            self.blocks.remove(child)
+        for title, values, show in (("Tokens by type", parts, format_tokens), ("Cost by type", view["cost_parts"], format_cost)):
+            block = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            block.append(self.text(title, ("asb-usage-small", "asb-dim"), margin_bottom=8))
+            bar = UsageBar(10)
+            bar.set_margin_bottom(10)
+            bar.set_segments([(values[part], ACTIVITY_TOKEN_COLORS[part]) for part in USAGE_PARTS])
+            block.append(bar)
+            total = sum(values.values())
+            for part in USAGE_PARTS:
+                line = Gtk.Box(spacing=8)
+                line.add_css_class("asb-usage-legend")
+                line.asb_part = part
+                swatch = Gtk.Box(valign=Gtk.Align.CENTER)
+                swatch.add_css_class("asb-usage-swatch")
+                swatch.add_css_class(f"asb-usage-type-{part}")
+                line.append(swatch)
+                line.append(self.text(USAGE_PART_LABELS[part], (), ellipsize=Pango.EllipsizeMode.END, hexpand=True))
+                line.append(self.text(show(values[part]), ("asb-mono",), 1))
+                line.append(self.text(format_share(values[part] / total if total else 0), ("asb-mono", "asb-dim"), 1, width_request=52))
+                block.append(line)
+            self.blocks.append(block)
+
+    def render_models(self, view, show):
+        grid = self.models
+        while child := grid.get_first_child():
+            grid.remove(child)
+        names = {machine["machineId"]: machine["name"] for machine in self.data["machines"]}
+        rows = {machine["id"]: machine for machine in view["machines"]}
+        columns = [("Model", 0), ("App", 0), ("Cost", 1), ("Tokens", 1)] if self.small else \
+            [("Model", 0), ("App", 0), ("Machines", 0), ("Cost", 1), ("Share", 0), ("Tokens", 1)]
+        for column, (title, xalign) in enumerate(columns):
+            head = self.text(title, ("asb-usage-head",), xalign, hexpand=title in ("Model", "App", "Machines", "Tokens"))
+            grid.attach(head, column, 0, 1, 1)
+        for line, model in enumerate(view["models"], 1):
+            cells = {"Model": self.text(model["model"], ("asb-mono",)),
+                     "Cost": self.text(format_cost(model["cost"]), ("asb-dim",) if model["cost"] is None else ("asb-mono",), 1),
+                     "Tokens": self.text(format_tokens(model["tokens"]), ("asb-mono",), 1)}
+            app = Gtk.Box(spacing=6, tooltip_text=ACTIVITY_APP_LABELS[model["app"]])
+            app.append(self.mark(model["app"]))
+            if not self.small:
+                app.append(self.text(ACTIVITY_APP_LABELS[model["app"]]))
+            cells["App"] = app
+            dots = Gtk.Box(spacing=4, accessible_role=Gtk.AccessibleRole.IMG)
+            dots.update_property([Gtk.AccessibleProperty.LABEL], [", ".join(names[machine] for machine in model["machines"])])
+            for machine in model["machines"]:
+                dot = self.dot(rows[machine])
+                dot.set_tooltip_text(names[machine])
+                dots.append(dot)
+            cells["Machines"] = dots
+            share = Gtk.Box(spacing=8)
+            if model["share"] is not None:
+                bar = UsageBar(6, "#34373b", 60)
+                bar.set_segments([(1, usage_rgba(self.palette["light"], .75))], model["share"])
+                share.append(bar)
+                share.append(self.text(format_share(model["share"]), ("asb-mono",)))
+            cells["Share"] = share
+            for column, (title, _xalign) in enumerate(columns):
+                cell = cells[title]
+                cell.add_css_class("asb-usage-cell")
+                cell.asb_model = (model["model"], model["app"])
+                grid.attach(cell, column, line, 1, 1)
+
+
+ACTIVITY_WINDOW_CLASSES["usage"] = UsageWindow
 
 
 def main():

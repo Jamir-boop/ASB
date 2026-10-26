@@ -6210,6 +6210,348 @@ class ActivityFixture:
 
 
 @unittest.skipUnless(asb.Gtk.init_check(), "A GTK display is not available.")
+class UsageWindowCheck(ActivityFixture, unittest.TestCase):
+    REPLIES = json.loads((Path(__file__).parent / "fixtures" / "activity" / "usage-sample.json").read_text())
+    ALL = {"desk", "laptop", "studio"}
+
+    def setUp(self):
+        saved = os.environ.get("TZ")
+        os.environ["TZ"] = "UTC"
+        time.tzset()
+
+        def restore():
+            if saved is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = saved
+            time.tzset()
+        self.addCleanup(restore)
+        directory = tempfile.TemporaryDirectory(prefix="asb-usage-test-")
+        self.addCleanup(directory.cleanup)
+        self.directory = Path(directory.name)
+        patcher = patch.object(asb, "THEME_PATH", self.directory / "theme.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.close_windows)
+        self.warnings = len(GTK_WARNINGS)
+
+    def window(self, replies=None, size=(948, 760)):
+        """A shown Usage window that reads the sample replies (or replies[period]) and records its routes."""
+        replies, routes = replies or self.REPLIES, []
+
+        def fetch(route):
+            routes.append(route)
+            return copy.deepcopy(replies[route.rsplit("=", 1)[1]])
+        window = asb.UsageWindow(self.application, "http://127.0.0.1:1", fetch=fetch)
+        window.routes = routes
+        window.set_default_size(*size)
+        window.present()
+        self.drain(.1)
+        window.refresh()
+        self.drain(.25)
+        return window
+
+    @staticmethod
+    def children(widget):
+        child, found = widget.get_first_child(), []
+        while child:
+            found.append(child)
+            child = child.get_next_sibling()
+        return found
+
+    def labels(self, widget):
+        """Every label text under widget, in order."""
+        found = [widget.get_label()] if isinstance(widget, asb.Gtk.Label) else []
+        for child in self.children(widget):
+            found += self.labels(child)
+        return found
+
+    def figures(self, window):
+        return {self.labels(figure)[0]: self.labels(figure)[1] for figure in self.children(window.figures)}
+
+    def model_rows(self, window):
+        cells = [child for child in self.children(window.models) if hasattr(child, "asb_model")]
+        rows = []
+        for cell in cells:
+            if not rows or rows[-1][0] != cell.asb_model:
+                rows.append((cell.asb_model, []))
+            rows[-1][1].append(cell)
+        return rows
+
+    def assert_no_new_warnings(self):
+        self.assertEqual(GTK_WARNINGS[self.warnings:], [])
+
+    def test_toolbar(self):
+        window = self.window()
+        self.assertEqual((window.get_title(), window.get_default_size(), window.KIND), ("Usage", (948, 760), "usage"))
+        self.assertIs(asb.ACTIVITY_WINDOW_CLASSES["usage"], asb.UsageWindow)
+        self.assertEqual(window.routes, ["/api/activity/usage?period=30d"])
+        self.assertEqual([button.get_label() for button in window.period_buttons.values()], ["24 hours", "7 days", "30 days", "90 days"])
+        self.assertTrue(window.period_buttons["30d"].get_active())
+        self.assertEqual([(button.get_label(), button.get_active()) for button in window.metric_buttons.values()], [("Cost", True), ("Tokens", False)])
+        self.assertTrue(window.metric_buttons["cost"].get_parent().has_css_class("linked"))
+        chips = window.chip_buttons
+        self.assertEqual(list(chips), ["desk", "laptop", "studio"])
+        self.assertEqual([self.labels(chip) for chip in chips.values()], [["Desk", "Local"], ["Laptop", "Connected"], ["Studio", "Offline"]])
+        self.assertTrue(all(chip.get_active() and chip.get_sensitive() for chip in chips.values()))
+        self.assertEqual([chip.get_tooltip_text() for chip in chips.values()], [None, None, "Last report Oct 25, 14:30"])
+        self.assertTrue(chips["studio"].get_child().get_first_child().has_css_class("asb-usage-hollow-2"))
+        self.assertEqual(window.prices_label.get_label(), "Prices: LiteLLM, Oct 26")
+        self.assertFalse(window.scan_label.get_visible())
+        self.assert_no_new_warnings()
+
+    def test_overview_rows_and_note(self):
+        window = self.window()
+        view = asb.usage_view(self.REPLIES["30d"], self.ALL, "cost")
+        self.assertEqual(window.round.center(), (asb.format_cost(view["total"]), "at API prices"))
+        self.assertEqual(window.round.center(), ("$2,343.50", "at API prices"))
+        self.assert_accessible_label(window.round, "Usage by machine and app")
+        self.assertEqual(window.round.arcs, asb.usage_round_arcs(view, self.REPLIES["30d"]["machines"], "cost"))
+        rows = self.children(window.machine_rows)
+        self.assertEqual([row.asb_machine for row in rows], ["desk", "laptop", "studio"])
+        self.assertEqual([self.labels(row) for row in rows], [
+            ["Desk", "Local", "$1,473.15", "62.9%"], ["Laptop", "Connected", "$622.85", "26.6%"],
+            ["Studio", "Offline · last report Oct 25, 14:30", "$247.49", "10.6%"]])
+        self.assertEqual([self.labels(row) for row in self.children(window.app_rows)], [
+            ["Codex", "$689.81", "29.4%"], ["Claude Code", "$1,573.32", "67.1%"], ["OpenCode", "$80.37", "3.4%"]])
+        bar = self.children(rows[0])[1]
+        self.assertAlmostEqual(bar.fraction, view["machines"][0]["share"])
+        # Desk's OpenCode model is unpriced: no OpenCode segment under Cost.
+        self.assertEqual([color for _value, color in bar.segments], ["#c9ccd1", "#d97757"])
+        self.assertTrue(window.note.get_visible())
+        self.assertEqual(window.note.get_label(), "mimo-v2.6-pro is unpriced: 144.2M tokens not in the cost.")
+        found, round_bounds = window.round.compute_bounds(window)
+        self.assertTrue(found)
+        self.assertEqual((round_bounds.get_width(), round_bounds.get_height()), (320, 320))
+        found, side = rows[0].compute_bounds(window)
+        self.assertGreater(side.get_x(), round_bounds.get_x() + 320)
+        self.assertEqual(self.figures(window), {"Processed tokens": "3.33B", "Cached input": "2.95B", "Uncached input": "310.1M",
+                                                "Output": "68.4M", "Cache savings": "$5,916.10"})
+        self.assert_no_new_warnings()
+
+    def test_chart_bars_period_and_metric(self):
+        window = self.window()
+        chart = window.chart
+        self.assert_accessible_label(chart, "Usage over time")
+        self.assertEqual(chart.get_accessible_role(), asb.Gtk.AccessibleRole.IMG)
+        self.assertEqual((len(chart.bars), window.chart_title.get_label(), chart.get_height()), (30, "Daily cost", 242))
+        self.assertEqual(chart.axis, ["$50", "$100", "$150"])
+        self.assertEqual([key for key, _label, _color in chart.series], ["codex", "claude", "opencode"])
+        self.assertAlmostEqual(sum(chart.sums), asb.usage_view(self.REPLIES["30d"], self.ALL, "cost")["total"], delta=.01)
+        window.split_buttons["machine"].set_active(True)
+        self.assertEqual([key for key, _label, _color in chart.series], ["desk", "laptop", "studio"])
+        self.assertEqual(chart.progress, 0)
+        self.drain(.4)
+        self.assertEqual(chart.progress, 1)
+        window.period_buttons["24h"].set_active(True)
+        self.drain(.1)
+        self.assertEqual(window.routes[-1], "/api/activity/usage?period=24h")
+        self.assertEqual((len(chart.bars), window.chart_title.get_label()), (24, "Hourly cost"))
+        window.metric_buttons["tokens"].set_active(True)
+        self.assertEqual(len(window.routes), 2)
+        self.assertEqual(window.chart_title.get_label(), "Hourly tokens")
+        value, sub = window.round.center()
+        self.assertEqual((value, sub), ("99.4M", "processed tokens"))
+        self.assertRegex(value, r"^[\d.]+[MB]$")
+        self.assertFalse(window.note.get_visible())
+        self.assertEqual(chart.axis, ["5M", "10M", "15M"])
+        window.period_buttons["90d"].set_active(True)
+        self.drain(.1)
+        self.assertRegex(window.round.center()[0], r"^[\d.]+[MB]$")
+        self.assertEqual((len(chart.bars), window.chart_title.get_label()), (90, "Daily tokens"))
+        self.assert_no_new_warnings()
+
+    def test_a_chip_changes_every_number_and_the_last_stays_on(self):
+        window = self.window()
+        chips = window.chip_buttons
+        chips["studio"].set_active(False)
+        self.drain(.05)
+        view = asb.usage_view(self.REPLIES["30d"], {"desk", "laptop"}, "cost")
+        self.assertEqual(window.routes, ["/api/activity/usage?period=30d"])
+        self.assertEqual(window.round.center()[0], "$2,096.01")
+        self.assertEqual(window.round.center()[0], asb.format_cost(view["total"]))
+        self.assertEqual([row.asb_machine for row in self.children(window.machine_rows)], ["desk", "laptop"])
+        self.assertEqual(self.figures(window)["Processed tokens"], asb.format_tokens(view["tokens"]))
+        self.assertNotEqual(self.figures(window)["Processed tokens"], "3.33B")
+        self.assertNotIn("studio", {key for bar in asb.usage_view(self.REPLIES["30d"], {"desk", "laptop"}, "cost")["bars"] for key in bar["machine"]})
+        self.assertTrue(chips["studio"].has_css_class("asb-usage-off"))
+        self.assertTrue(all(chip.get_sensitive() for chip in chips.values()))
+        chips["laptop"].set_active(False)
+        self.drain(.05)
+        self.assertEqual([row.asb_machine for row in self.children(window.machine_rows)], ["desk"])
+        self.assertFalse(chips["desk"].get_sensitive())
+        self.assertEqual(chips["desk"].get_tooltip_text(), "Keep one machine")
+        self.assertEqual(chips["studio"].get_tooltip_text(), "Last report Oct 25, 14:30")
+        # A refresh keeps the filter.
+        window.refresh()
+        self.assertEqual([row.asb_machine for row in self.children(window.machine_rows)], ["desk"])
+        chips["studio"].set_active(True)
+        self.assertTrue(chips["desk"].get_sensitive())
+        self.assertEqual(chips["desk"].get_tooltip_text(), None)
+        self.assertFalse(chips["studio"].has_css_class("asb-usage-off"))
+        self.assert_no_new_warnings()
+
+    def test_the_tooltip_of_a_hovered_bar(self):
+        window = self.window()
+        chart = window.chart
+        gap, width = chart.geometry()
+        controller = next(item for item in chart.observe_controllers() if isinstance(item, asb.Gtk.EventControllerMotion))
+        for index, title in ((20, "Oct 17"), (29, "Oct 26"), (0, "Sep 27")):
+            with self.subTest(index=index):
+                controller.emit("motion", chart.LEFT + index * (width + gap) + width / 2, 150)
+                tip = chart.tip
+                self.assertEqual((tip["index"], tip["title"]), (index, title))
+                self.assertAlmostEqual(tip["total"], sum(chart.bars[index].values()))
+                self.assertEqual(tip["total_text"], asb.format_cost(tip["total"]))
+                self.assertEqual([label for label, _text in tip["rows"]], ["Codex", "Claude Code", "OpenCode"])
+                left, top, box_width, box_height = tip["bounds"]
+                self.assertGreaterEqual(min(left, top), 0)
+                self.assertLessEqual(left + box_width, chart.get_width())
+                self.assertLessEqual(top + box_height, chart.HEIGHT)
+                self.assertGreaterEqual(box_width, 150)
+        controller.emit("motion", chart.LEFT + 20 * (width + gap) + width / 2, 150)
+        self.assertEqual((chart.tip["total_text"], chart.tip["rows"]), ("$34.32", [("Codex", "$10.11"), ("Claude Code", "$22.88"), ("OpenCode", "$1.33")]))
+        # The last bar puts the box left of the bar.
+        controller.emit("motion", chart.LEFT + 29 * (width + gap) + width / 2, 150)
+        self.assertLess(chart.tip["bounds"][0] + chart.tip["bounds"][2], chart.LEFT + 29 * (width + gap))
+        controller.emit("leave")
+        self.assertIsNone(chart.tip)
+        self.assert_no_new_warnings()
+
+    def test_the_models_table(self):
+        window = self.window()
+        rows = self.model_rows(window)
+        self.assertEqual([key for key, _cells in rows], [
+            ("claude-opus-5-5", "claude"), ("gpt-6.1-sol", "codex"), ("claude-sonnet-5-5", "claude"), ("claude-sonnet-5-5", "opencode"),
+            ("claude-haiku-5-5", "claude"), ("gpt-6.1-mini", "codex"), ("mimo-v2.6-pro", "opencode")])
+        heads = [child.get_label() for child in self.children(window.models) if child.has_css_class("asb-usage-head")]
+        self.assertEqual(heads, ["Model", "App", "Machines", "Cost", "Share", "Tokens"])
+        first, last = rows[0][1], rows[-1][1]
+        self.assertEqual(self.labels(first[0]) + self.labels(first[1]) + self.labels(first[3]) + self.labels(first[4]) + self.labels(first[5]),
+                         ["claude-opus-5-5", "Claude Code", "$923.90", "39.4%", "625.9M"])
+        self.assert_accessible_label(first[2], "Desk, Studio")
+        self.assertEqual(self.labels(last[3]), ["Unpriced"])
+        self.assertTrue(last[3].has_css_class("asb-dim"))
+        self.assertEqual(self.children(last[4]), [])
+        window.metric_buttons["tokens"].set_active(True)
+        rows = self.model_rows(window)
+        self.assertEqual(rows[0][0], ("gpt-6.1-sol", "codex"))
+        view = asb.usage_view(self.REPLIES["30d"], self.ALL, "tokens")
+        self.assertEqual(self.labels(rows[-1][1][4]), [asb.format_share(view["models"][-1]["share"])])
+        self.assert_no_new_warnings()
+
+    def test_an_incomplete_scan_reads_every_two_seconds(self):
+        reading = copy.deepcopy(self.REPLIES)
+        reading["30d"]["scan"] = {"complete": False, "files": 2707, "scannedFiles": 120}
+        replies = {"30d": None}
+        with patch.object(asb, "EventStream"):
+            replies["30d"] = reading["30d"]
+            window = self.window(replies)
+            self.assertTrue(window.scan_label.get_visible())
+            self.assertEqual(window.scan_label.get_label(), "Reading usage: 120 of 2,707 files")
+            self.assertIs(window.scan_label.get_parent(), window.toolbar)
+            self.poll_calls.reset_mock()
+            self.addCleanup(setattr, self.poll_calls, "return_value", 0)
+            self.poll_calls.return_value = 41
+            window.start_live()
+            self.poll_calls.assert_called_once_with(2, window.poll_tick)
+            self.poll_calls.reset_mock()
+            replies["30d"] = dict(reading["30d"], scan={"complete": False, "files": 0, "scannedFiles": 0})
+            with patch.object(asb.GLib, "source_remove") as removed:
+                window.poll_tick()
+                self.assertEqual(window.scan_label.get_label(), "Reading usage")
+                self.poll_calls.assert_not_called()
+                replies["30d"] = self.REPLIES["30d"]
+                window.poll_tick()
+            removed.assert_called_once_with(41)
+            self.poll_calls.assert_called_once_with(15, window.poll_tick)
+            self.assertFalse(window.scan_label.get_visible())
+            self.poll_calls.reset_mock()
+            replies["30d"] = dict(self.REPLIES["30d"], prices={"source": "LiteLLM", "status": "loading", "fetchedAtMs": None, "models": 0})
+            with patch.object(asb.GLib, "source_remove"):
+                window.poll_tick()
+                self.assertEqual(window.prices_label.get_label(), "Prices: loading")
+                self.poll_calls.assert_called_once_with(2, window.poll_tick)
+                window.stop_live()
+        self.assert_no_new_warnings()
+
+    def test_narrow_layouts(self):
+        window = self.window(size=(860, 900))
+        self.assertTrue(window.narrow)
+        self.assertFalse(window.small)
+        self.assertEqual(window.overview.get_orientation(), asb.Gtk.Orientation.VERTICAL)
+        self.assertEqual(window.blocks.get_orientation(), asb.Gtk.Orientation.VERTICAL)
+        found, round_bounds = window.round.compute_bounds(window)
+        self.assertTrue(found)
+        self.assertAlmostEqual(round_bounds.get_x() + 160, window.get_width() / 2, delta=8)
+        self.assertEqual(len(self.children(window.figures)), 5)
+        self.assertIn("Machines", [child.get_label() for child in self.children(window.models) if child.has_css_class("asb-usage-head")])
+        small = self.window(size=(600, 900))
+        self.assertTrue(small.small and small.narrow)
+        heads = [child.get_label() for child in self.children(small.models) if child.has_css_class("asb-usage-head")]
+        self.assertEqual(heads, ["Model", "App", "Cost", "Tokens"])
+        self.assertEqual(self.labels(self.model_rows(small)[0][1][1]), [])
+        self.assertEqual({small.figures.query_child(figure)[0] for figure in self.children(small.figures)}, {0, 1})
+        self.assertEqual(small.content.get_margin_start(), 14)
+        wide = self.window()
+        self.assertFalse(wide.narrow)
+        self.assertEqual(wide.overview.get_orientation(), asb.Gtk.Orientation.HORIZONTAL)
+        self.assertEqual(wide.content.get_margin_start(), 24)
+        self.assert_no_new_warnings()
+
+    def test_row_columns_keep_their_width(self):
+        for size, cell_width in (((948, 760), 210), ((860, 900), 150), ((600, 900), 112)):
+            with self.subTest(size=size):
+                window = self.window(size=size)
+                self.drain(.1)
+                cells = []
+                for box in (window.machine_rows, window.app_rows):
+                    for row in self.children(box):
+                        who, bar = self.children(row)[:2]
+                        found, cell = who.compute_bounds(window)
+                        self.assertTrue(found)
+                        found, track = bar.compute_bounds(window)
+                        self.assertTrue(found)
+                        cells.append((cell.get_width(), track.get_x(), track.get_width()))
+                self.assertEqual(len(cells), 6)
+                self.assertEqual(cells[0][0], cell_width)
+                self.assertEqual(set(cells), {cells[0]})
+                if size == (600, 900):
+                    states = {row.asb_machine: self.children(self.children(row)[0].get_child())[1] for row in self.children(window.machine_rows)}
+                    studio, desk = states["studio"], states["desk"]
+                    self.assertEqual(studio.get_label(), "Offline · last report Oct 25, 14:30")
+                    self.assertFalse(studio.get_layout().is_ellipsized())
+                    self.assertGreater(studio.get_height(), desk.get_height())
+        self.assert_no_new_warnings()
+
+    def test_empty_period(self):
+        empty = {key: dict(reply, records=[]) for key, reply in self.REPLIES.items()}
+        window = self.window(empty)
+        self.assertTrue(window.empty_label.get_visible())
+        self.assertFalse(window.scroll.get_visible())
+        self.assertEqual(window.empty_label.get_label(), "No usage in 30 days.")
+        self.assertEqual(list(window.chip_buttons), ["desk", "laptop", "studio"])
+        window.period_buttons["24h"].set_active(True)
+        self.drain(.05)
+        self.assertEqual(window.empty_label.get_label(), "No usage in 24 hours.")
+        self.assert_no_new_warnings()
+
+    def test_without_gsk_paths_nothing_is_drawn(self):
+        with patch.object(asb, "ACTIVITY_PATHS", False):
+            window = self.window()
+            self.assertTrue(window.paths_note.get_visible())
+            for widget in (window.round, window.chart):
+                snapshot = asb.Gtk.Snapshot()
+                widget.do_snapshot(snapshot)
+                self.assertIsNone(snapshot.to_node())
+            self.assertEqual(len(self.children(window.machine_rows)), 3)
+            self.assertEqual(len(self.model_rows(window)), 7)
+            self.assertEqual(self.figures(window)["Processed tokens"], "3.33B")
+            self.capture(window, self.directory / "usage-no-paths.png")
+        self.assert_no_new_warnings()
+
+
+@unittest.skipUnless(asb.Gtk.init_check(), "A GTK display is not available.")
 class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
     snapshot_window = WidgetCheck.snapshot_window
 
