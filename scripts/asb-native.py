@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Native GNOME view for the local ASB session API."""
+from datetime import datetime
 import json
 import math
 import ntpath
@@ -1225,6 +1226,96 @@ def machine_invite_text(expires_at_ms):
             f"The link works once and ends at {ends}.")
 
 
+# Messages and Usage windows: names, colors, and formats that both windows share.
+ACTIVITY_APPS = ("codex", "claude", "opencode")
+ACTIVITY_APP_LABELS = {"codex": "Codex", "claude": "Claude Code", "opencode": "OpenCode", "": "Other"}
+ACTIVITY_APP_ICONS = {"codex": "asb-openai-symbolic", "claude": "asb-claude-symbolic", "opencode": "asb-opencode-symbolic", "": "asb-machine-symbolic"}
+ACTIVITY_APP_COLORS = {"codex": "#c9ccd1", "claude": "#d97757", "opencode": "#7d848c", "": "#5d6268"}
+ACTIVITY_STATUSES = ("accepted", "written", "held", "not-sent", "unknown")
+ACTIVITY_STATUS_LABELS = {"accepted": "Accepted", "written": "Socket written", "held": "Held", "not-sent": "Not sent", "unknown": "Unknown"}
+ACTIVITY_STATUS_COLORS = {"accepted": "#c9ccd1", "written": "#8c929a", "held": "#e0b45a", "not-sent": "#f5a090", "unknown": "#5d6268"}
+ACTIVITY_STATUS_ICONS = {"accepted": "object-select-symbolic", "written": "mail-send-symbolic", "held": "media-playback-pause-symbolic",
+                         "not-sent": "action-unavailable-symbolic", "unknown": "dialog-question-symbolic"}
+ACTIVITY_TOKEN_COLORS = {"cacheRead": "#4b5058", "cacheWrite": "#6b7179", "uncached": "#959ba3", "output": "#e4e6e8"}
+MACHINE_HUES = ("#a28caa", "#7cc48a", "#5fb3b3", "#d6a15e", "#e38fb0", "#b4b86c")
+MESSAGE_PERIODS = (("24h", "24 hours"), ("7d", "7 days"), ("30d", "30 days"))
+USAGE_PERIODS = (("24h", "24 hours"), ("7d", "7 days"), ("30d", "30 days"), ("90d", "90 days"))
+
+
+def format_count(n):
+    return f"{n:,}"
+
+
+def format_cost(usd):
+    return "Unpriced" if usd is None else f"${usd:,.2f}"
+
+
+def format_tokens(n):
+    if n < 1000:
+        return str(round(n))
+    for size, suffix, digits in ((1e3, "K", 1), (1e6, "M", 1), (1e9, "B", 2)):
+        # Round half up on the shown digit; a value that rounds to 1000 of a unit shows in the next unit.
+        shown = math.floor(n / size * 10 ** digits + .5) / 10 ** digits
+        if shown < 1000 or suffix == "B":
+            return f"{shown:.{digits}f}{suffix}"
+
+
+def format_share(fraction):
+    return f"{fraction * 100:.1f}%"
+
+
+def format_clock(ms):
+    return datetime.fromtimestamp(ms / 1000).strftime("%H:%M")
+
+
+def format_day(ms):
+    day = datetime.fromtimestamp(ms / 1000)
+    # English month names: the %b format follows the locale.
+    months = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    return f"{months[day.month - 1]} {day.day}"
+
+
+def day_line(ms, now_ms):
+    days = (datetime.fromtimestamp(now_ms / 1000).date() - datetime.fromtimestamp(ms / 1000).date()).days
+    return "Today" if days == 0 else "Yesterday" if days == 1 else format_day(ms)
+
+
+def machine_hue(index):
+    return MACHINE_HUES[index % len(MACHINE_HUES)]
+
+
+def machine_state_text(machine):
+    return {"local": "Local", "online": "Connected", "offline": "Offline"}.get(machine.get("state"), "")
+
+
+def machine_last_report(machine):
+    at = machine.get("lastReportAtMs") or 0
+    return f"Last report {format_day(at)}, {format_clock(at)}" if machine.get("state") == "offline" and at > 0 else ""
+
+
+def bucket_label(buckets, index):
+    starts, hourly = buckets["startsMs"], buckets["unit"] == "hour"
+    if index == len(starts) - 1:
+        return "Now" if hourly else "Today"
+    return format_clock(starts[index]) if hourly else format_day(starts[index])
+
+
+def bucket_of(buckets, at_ms):
+    found = None
+    for index, start in enumerate(buckets["startsMs"]):
+        if start > at_ms:
+            break
+        found = index
+    return found
+
+
+def activity_palette(colors):
+    background, text, accent = colors["background"], colors["text"], colors["accent"]
+    return {"win": background, "pane": mix_color(background, text, .035), "pane2": mix_color(background, text, .06),
+            "bar": mix_color(background, text, .094), "rule": mix_color(background, text, .13), "edge": mix_color(background, "#000000", .45),
+            "text": text, "dim": colors["muted"], "accent": accent, "light": mix_color(accent, "#ffffff", .35), "warn": "#e0b45a", "bad": "#f5a090"}
+
+
 def request_json(base, route, method="GET", body=None, etag=None, headers=None):
     headers = {"Accept": "application/json", **(headers or {})}
     path = route.split("?", 1)[0]
@@ -1236,6 +1327,7 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
     palette_route = path == "/api/palette"
     agent_route = path.startswith("/api/agent/")
     engine_route = path.startswith("/api/engine/")
+    activity_route = path.startswith("/api/activity/")
     data = None
     if etag and etag[0] and method == "GET" and route.split("?")[0] == "/api/dashboard":
         headers["If-None-Match"] = etag[0]
@@ -1262,7 +1354,8 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
         if isinstance(error, HTTPError) and error.code == 304 and "If-None-Match" in headers:
             error.close()
             return None
-        if bridge_route or source_route or phone_route or group_route or service_route or palette_route or agent_route or engine_route:
+        if bridge_route or source_route or phone_route or group_route or service_route or palette_route or agent_route or engine_route \
+                or activity_route:
             detail = ""
             if isinstance(error, HTTPError):
                 try:
@@ -1274,6 +1367,11 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
                             detail += f" Try the name {suggestion}."
                 except (HTTPException, OSError, ValueError):
                     pass
+            if activity_route:
+                # An engine from before the activity routes answers 404.
+                if isinstance(error, HTTPError) and error.code == 404:
+                    detail = "This ASB engine has no activity data. Update ASB, then try again."
+                raise RuntimeError(detail or "Cannot load the activity. Check that ASB is running, then try again.") from error
             subject = "ASB Bridge" if bridge_route else "phone access" if phone_route else "the machine group" if group_route else "the ASB service" if service_route \
                 else "the phone palette" if palette_route else "the native UI status" if agent_route else "ASB" if engine_route else "profiles"
             raise RuntimeError(detail or f"Cannot load or change {subject}. Check that ASB is running, then try again.") from error
@@ -3968,35 +4066,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     @staticmethod
     def rgba(value):
-        color = Gdk.RGBA()
-        color.parse(value)
-        return color
+        return rgba(value)
 
     @staticmethod
     def hex_color(color):
-        return "#" + "".join(f"{max(0, min(255, round(channel * 255))):02x}" for channel in (color.red, color.green, color.blue))
+        return hex_color(color)
 
     def native_colors(self):
-        context = self.get_style_context()
-        colors = {}
-        for key, name in (("background", "window_bg_color"), ("text", "window_fg_color"),
-                          ("accent", "accent_color"), ("muted", "window_fg_color"), ("divider", "window_fg_color")):
-            found, value = context.lookup_color(name)
-            if not found:
-                value = self.get_color()
-            colors[key] = self.hex_color(value)
-        # GNOME colors seed the editor. Custom text must pass the same contrast check.
-        if contrast(colors["accent"], colors["background"]) < 4.5:
-            colors["accent"] = colors["text"]
-        foreground, background = self.rgba(colors["text"]), self.rgba(colors["background"])
-        for key, fraction in (("muted", .72), ("divider", .3)):
-            value = Gdk.RGBA()
-            value.red = foreground.red * fraction + background.red * (1 - fraction)
-            value.green = foreground.green * fraction + background.green * (1 - fraction)
-            value.blue = foreground.blue * fraction + background.blue * (1 - fraction)
-            value.alpha = 1
-            colors[key] = self.hex_color(value)
-        return colors
+        return native_colors(self)
 
     def set_palette(self, colors):
         base = ".asb-column-flow"
@@ -4233,6 +4310,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 if editor.dialog is not None and not hasattr(Adw, "Dialog"):
                     (editor.dialog.add_css_class if colors else editor.dialog.remove_css_class)("asb-custom")
                 editor.update_marker_colors()
+        # The theme reaches the Messages and Usage windows too. The logic checks make this window without GTK.
+        application = self.get_application() if hasattr(self, "get_application") else None
+        for window in list(getattr(application, "activity_windows", {}).values()):
+            window.set_palette(colors)
 
     def badge_class(self, displayed):
         """The style class of a profile badge color; the rules of all badge colors are in self.badge_css."""
@@ -7079,12 +7160,277 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return False
 
 
+def rgba(value):
+    color = Gdk.RGBA()
+    color.parse(value)
+    return color
+
+
+def hex_color(color):
+    return "#" + "".join(f"{max(0, min(255, round(channel * 255))):02x}" for channel in (color.red, color.green, color.blue))
+
+
+def native_colors(widget):
+    context = widget.get_style_context()
+    colors = {}
+    for key, name in (("background", "window_bg_color"), ("text", "window_fg_color"),
+                      ("accent", "accent_color"), ("muted", "window_fg_color"), ("divider", "window_fg_color")):
+        found, value = context.lookup_color(name)
+        if not found:
+            value = widget.get_color()
+        colors[key] = hex_color(value)
+    # GNOME colors seed the editor. Custom text must pass the same contrast check.
+    if contrast(colors["accent"], colors["background"]) < 4.5:
+        colors["accent"] = colors["text"]
+    foreground, background = rgba(colors["text"]), rgba(colors["background"])
+    for key, fraction in (("muted", .72), ("divider", .3)):
+        value = Gdk.RGBA()
+        value.red = foreground.red * fraction + background.red * (1 - fraction)
+        value.green = foreground.green * fraction + background.green * (1 - fraction)
+        value.blue = foreground.blue * fraction + background.blue * (1 - fraction)
+        value.alpha = 1
+        colors[key] = hex_color(value)
+    return colors
+
+
+# The Messages and Usage charts draw curves with Gsk.PathBuilder (GTK 4.14).
+ACTIVITY_PATHS = hasattr(Gsk, "PathBuilder")
+ACTIVITY_WINDOW_CLASSES = {}   # "messages" / "usage" -> the window class; G1 and G2 register their classes here.
+
+
+class ActivityWindow(Adw.Window):
+    """The shared base of the Messages and Usage windows: the period buttons, the loading and error pages, and the live refresh."""
+    KIND = ""              # "messages" or "usage"
+    TITLE = ""             # "Messages" or "Usage"
+    ROUTE = ""             # "/api/activity/messages" or "/api/activity/usage"
+    PERIODS = ()           # MESSAGE_PERIODS or USAGE_PERIODS
+    DEFAULT_PERIOD = ""    # "7d" or "30d"
+    DEFAULT_SIZE = (0, 0)  # (968, 760) or (948, 760)
+    POLL_SECONDS = 15
+    serial = 0
+
+    def __init__(self, application, base, fetch=None, clock=None):
+        super().__init__()
+        self.set_title(self.TITLE)
+        self.set_default_size(*self.DEFAULT_SIZE)
+        self.set_application(application)
+        self.application = application
+        self.base, self.fetch = base, fetch
+        self.clock = clock or (lambda: int(time.time() * 1000))
+        self.period, self.data = self.DEFAULT_PERIOD, None
+        self.closed = self.loading = self.refresh_queued = False
+        self.events = self.poll_timer = self.event_timer = None
+        self.set_icon_name(APP_ID)
+        if os.name == "nt":
+            self.connect("realize", set_windows_icon)
+        # A class of its own: each window has its own palette provider, and two windows never match each other's rules.
+        ActivityWindow.serial += 1
+        self.scope_class = f"asb-activity-{ActivityWindow.serial}"
+        self.css_scope = "." + self.scope_class
+        self.add_css_class("asb-activity")
+        self.add_css_class(self.scope_class)
+        self.css = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_display(self.get_display(), self.css, Gtk.STYLE_PROVIDER_PRIORITY_USER + 1)
+
+        view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        header.set_title_widget(Adw.WindowTitle(title=self.TITLE, subtitle=""))
+        view.add_top_bar(header)
+        self.toolbar = Gtk.Box(spacing=8)
+        self.toolbar.add_css_class("asb-activity-toolbar")
+        periods = Gtk.Box()
+        periods.add_css_class("linked")
+        self.period_buttons = {}
+        for key, text in self.PERIODS:
+            button = Gtk.ToggleButton(label=text, active=key == self.DEFAULT_PERIOD)
+            if self.period_buttons:
+                button.set_group(next(iter(self.period_buttons.values())))
+            button.connect("toggled", self.period_toggled, key)
+            periods.append(button)
+            self.period_buttons[key] = button
+        self.toolbar.append(periods)
+        view.add_top_bar(self.toolbar)
+        self.paths_note = Gtk.Label(label="Charts need GTK 4.14 or later.", xalign=0, visible=not ACTIVITY_PATHS,
+                                    margin_top=4, margin_bottom=4, margin_start=10, margin_end=10)
+        self.paths_note.add_css_class("asb-dim")
+        self.paths_note.add_css_class("asb-paths-note")
+        view.add_top_bar(self.paths_note)
+
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.NONE, hexpand=True, vexpand=True)
+        self.stack.add_named(Gtk.Spinner(spinning=True, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER), "loading")
+        error = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+        self.error_label = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER)
+        error.append(Adw.Clamp(maximum_size=360, child=self.error_label))
+        self.retry_button = Gtk.Button(label="Try again", halign=Gtk.Align.CENTER)
+        self.retry_button.connect("clicked", lambda *_: self.refresh())
+        error.append(self.retry_button)
+        self.stack.add_named(error, "error")
+        self.data_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.stack.add_named(self.data_page, "data")
+        self.stack.set_visible_child_name("loading")
+        view.set_content(self.stack)
+        self.set_content(view)
+
+        shortcuts = Gtk.ShortcutController()
+        shortcuts.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("<Control>w"),
+                                                Gtk.CallbackAction.new(lambda *_: self.close() or True)))
+        self.add_controller(shortcuts)
+        # Tests give fetch and start the live refresh themselves.
+        if fetch is None:
+            self.connect("map", self.on_map)
+        self.connect("unmap", lambda *_: self.stop_live())
+        self.connect("close-request", self.on_close)
+        try:
+            saved = read_theme(THEME_PATH)
+        except (OSError, ValueError):
+            # The Board shows the theme error; this window keeps the GNOME colors.
+            saved = None
+        self.set_palette(saved)
+
+    def period_toggled(self, button, key):
+        if button.get_active() and key != self.period:
+            self.set_period(key)
+
+    def set_period(self, key):
+        if key not in self.period_buttons:
+            raise ValueError(f"Unknown period: {key}")
+        self.period = key
+        self.period_buttons[key].set_active(True)
+        self.data = None
+        self.stack.set_visible_child_name("loading")
+        self.refresh()
+
+    def refresh(self):
+        if self.closed:
+            return
+        if self.loading:
+            self.refresh_queued = True
+            return
+        self.loading = True
+        period, base = self.period, self.base
+        route = f"{self.ROUTE}?period={period}"
+
+        def finished(data, error):
+            self.loading = False
+            if self.closed:
+                return False
+            if (period, base) != (self.period, self.base):
+                # The period or the engine changed while the read ran: read again.
+                self.refresh_queued = False
+                self.refresh()
+                return False
+            if error:
+                if self.data is None:
+                    self.error_label.set_label(error)
+                    self.stack.set_visible_child_name("error")
+            else:
+                previous, self.data = self.data, data
+                self.stack.set_visible_child_name("data")
+                self.render(data, previous)
+            if self.refresh_queued:
+                self.refresh_queued = False
+                self.refresh()
+            return False
+
+        if self.fetch is None:
+            request_async(self.base, route, finished, GLib.idle_add)
+            return
+        try:
+            data, error = self.fetch(route), None
+        except RuntimeError as failure:
+            data, error = None, str(failure)
+        finished(data, error)
+
+    def render(self, data, previous):
+        pass
+
+    def on_map(self, *_args):
+        self.start_live()
+        self.refresh()
+
+    def start_live(self):
+        if self.closed:
+            return
+        if self.events is None:
+            self.events = EventStream(self.base, self.on_dashboard_event, GLib.idle_add)
+        if self.poll_timer is None:
+            self.poll_timer = GLib.timeout_add_seconds(self.POLL_SECONDS, self.poll_tick)
+
+    def stop_live(self):
+        if self.events:
+            self.events.close()
+        self.events = None
+        for name in ("poll_timer", "event_timer"):
+            if getattr(self, name):
+                GLib.source_remove(getattr(self, name))
+            setattr(self, name, None)
+
+    def poll_tick(self):
+        self.refresh()
+        return True
+
+    def on_dashboard_event(self):
+        # Several events in one second make one refresh.
+        if self.event_timer is None and not self.closed:
+            self.event_timer = GLib.timeout_add(1000, self.event_refresh)
+        return False
+
+    def event_refresh(self):
+        self.event_timer = None
+        self.refresh()
+        return False
+
+    def reconnect(self, base):
+        if self.closed:
+            return
+        streaming = self.events is not None
+        if streaming:
+            self.events.close()
+            self.events = None
+        self.base = base
+        if streaming and self.get_mapped():
+            self.events = EventStream(base, self.on_dashboard_event, GLib.idle_add)
+        self.refresh()
+
+    def set_palette(self, colors):
+        self.palette = palette = activity_palette(colors or native_colors(self))
+        scope = ".asb-activity" + self.css_scope
+        self.css.load_from_string(f"""
+{scope} {{ background: {palette['win']}; color: {palette['text']}; }}
+{scope} .asb-activity-toolbar {{ background: {palette['bar']}; padding: 6px 10px; border-bottom: 1px solid {palette['edge']}; }}
+{scope} .asb-dim {{ color: {palette['dim']}; }}
+{scope} .asb-pane2 {{ background: {palette['pane2']}; }}
+{scope} .asb-rule {{ border-top: 1px solid {palette['rule']}; }}
+{scope} .asb-mono {{ font-family: monospace; font-feature-settings: "tnum"; }}
+{scope} .asb-paths-note {{ font-size: 12px; }}
+""" + self.palette_css(palette))
+        self.queue_draw()
+
+    def palette_css(self, palette):
+        """Extra rules of a subclass, scoped with self.css_scope; they load with the rules above."""
+        return ""
+
+    def on_close(self, *_args):
+        if self.closed:
+            return False
+        self.closed = True
+        self.stop_live()
+        windows = getattr(self.application, "activity_windows", {})
+        if windows.get(self.KIND) is self:
+            del windows[self.KIND]
+        Gtk.StyleContext.remove_provider_for_display(self.get_display(), self.css)
+        return False
+
+
 class SwitchboardApplication(Adw.Application):
     def __init__(self, base, first_load=None):
         GLib.set_prgname(APP_ID)
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.NON_UNIQUE)
         self.get_style_manager().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
         self.base, self.first_load = base, first_load
+        self.activity_windows = {}
+        # A window destroyed without a close request (no "destroy" signal reaches Python) still stops its stream and is forgotten.
+        self.connect("window-removed", lambda _application, window: isinstance(window, ActivityWindow) and window.on_close())
         self.connect("activate", self.on_activate)
         if first_load:
             first_load.reconnect(self.reconnect, GLib.idle_add)
@@ -7096,7 +7442,20 @@ class SwitchboardApplication(Adw.Application):
         for window in self.get_windows():
             if isinstance(window, SwitchboardWindow):
                 window.reconnect(base)
+        for window in list(self.activity_windows.values()):
+            window.reconnect(base)
         return False
+
+    def show_activity(self, kind, seat=None):
+        if kind not in ACTIVITY_WINDOW_CLASSES:
+            raise ValueError(f"Unknown activity window: {kind}")
+        window = self.activity_windows.get(kind)
+        if window is None:
+            window = self.activity_windows[kind] = ACTIVITY_WINDOW_CLASSES[kind](self, self.base)
+        window.present()
+        if seat is not None and hasattr(window, "show_session"):
+            window.show_session(seat)
+        return window
 
     def on_activate(self, *_args):
         window = self.get_active_window()

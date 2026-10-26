@@ -17,7 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -342,8 +342,11 @@ class WidgetCheck(unittest.TestCase):
         cls.poll_timer = patch.object(asb.GLib, "timeout_add_seconds", return_value=0)
         cls.poll_calls = cls.poll_timer.start()
         cls.addClassCleanup(cls.poll_timer.stop)
-        cls.application = asb.SwitchboardApplication("http://127.0.0.1:1")
-        cls.application.register(None)
+        # One application for all GTK check classes: a second one cannot export the same D-Bus path.
+        if "shared_application" not in WidgetCheck.__dict__:
+            WidgetCheck.shared_application = asb.SwitchboardApplication("http://127.0.0.1:1")
+            WidgetCheck.shared_application.register(None)
+        cls.application = WidgetCheck.shared_application
         # The ink checks read icon pixels, and the highest alpha of an icon is different in each icon theme.
         asb.Gtk.Settings.get_default().set_property("gtk-icon-theme-name", "Adwaita")
         if os.environ.get("ASB_NATIVE_TEST_SNAPSHOTS"):
@@ -6192,6 +6195,358 @@ class WidgetCheck(unittest.TestCase):
             with self.subTest(palette=palette):
                 window.set_palette(palette)
                 self.assertNotIn(".asb-waiting", window.css.to_string())
+
+
+class ActivityFixture:
+    """The GTK fixture of WidgetCheck for the Messages and Usage window checks."""
+    @classmethod
+    def setUpClass(cls):
+        WidgetCheck.setUpClass.__func__(cls)
+
+    drain = WidgetCheck.drain
+    capture = WidgetCheck.capture
+    assert_accessible_label = WidgetCheck.assert_accessible_label
+    close_windows = WidgetCheck.close_windows
+
+
+@unittest.skipUnless(asb.Gtk.init_check(), "A GTK display is not available.")
+class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
+    snapshot_window = WidgetCheck.snapshot_window
+
+    class Probe(asb.ActivityWindow):
+        KIND, TITLE, ROUTE = "test", "Test activity", "/api/activity/messages"
+        PERIODS, DEFAULT_PERIOD, DEFAULT_SIZE = asb.MESSAGE_PERIODS, "7d", (640, 480)
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.renders, self.sessions = [], []
+
+        def render(self, data, previous):
+            self.renders.append((data, previous))
+
+        def show_session(self, seat):
+            self.sessions.append(seat)
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix="asb-activity-test-")
+        self.addCleanup(directory.cleanup)
+        # A missing theme file: the windows start with the GNOME colors, whatever this machine saved.
+        patcher = patch.object(asb, "THEME_PATH", Path(directory.name) / "theme.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.close_windows)
+
+    def probe(self, answers=None, **kwargs):
+        """A window with a fake fetch: each read takes the next answer (an exception is raised), then {"read": n}."""
+        answers, routes, pages = list(answers or ()), [], []
+
+        def fetch(route):
+            routes.append(route)
+            pages.append(window.stack.get_visible_child_name())
+            answer = answers.pop(0) if answers else {"read": len(routes)}
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+        window = self.Probe(self.application, "http://127.0.0.1:1", fetch=fetch, **kwargs)
+        window.routes, window.pages = routes, pages
+        return window
+
+    def test_window_title_size_periods_and_loading_page(self):
+        window = self.probe()
+        window.present()
+        self.drain(.05)
+        self.assertEqual(window.get_title(), "Test activity")
+        self.assertEqual(window.get_default_size(), (640, 480))
+        self.assertTrue(window.has_css_class("asb-activity"))
+        self.assertFalse(window.get_modal())
+        self.assertIsNone(window.get_transient_for())
+        self.assertIs(window.get_application(), self.application)
+        group = window.toolbar.get_first_child()
+        self.assertTrue(group.has_css_class("linked"))
+        self.assertTrue(window.toolbar.has_css_class("asb-activity-toolbar"))
+        labels, button = [], group.get_first_child()
+        while button:
+            labels.append(button.get_label())
+            button = button.get_next_sibling()
+        self.assertEqual(labels, ["24 hours", "7 days", "30 days"])
+        self.assertEqual(list(window.period_buttons), ["24h", "7d", "30d"])
+        self.assertEqual({key: button.get_active() for key, button in window.period_buttons.items()}, {"24h": False, "7d": True, "30d": False})
+        self.assertEqual((window.period, window.data, window.routes), ("7d", None, []))
+        self.assertEqual(window.stack.get_visible_child_name(), "loading")
+        self.assertTrue(window.stack.get_visible_child().get_spinning())
+
+    def test_replies_render_with_the_previous_reply(self):
+        window = self.probe([{"n": 1}, {"n": 2}])
+        window.refresh()
+        self.assertEqual(window.routes, ["/api/activity/messages?period=7d"])
+        self.assertEqual(window.stack.get_visible_child_name(), "data")
+        self.assertIs(window.stack.get_visible_child(), window.data_page)
+        self.assertEqual(window.renders, [({"n": 1}, None)])
+        window.refresh()
+        self.assertEqual(window.renders, [({"n": 1}, None), ({"n": 2}, {"n": 1})])
+        self.assertEqual(window.data, {"n": 2})
+
+    def test_errors_before_and_after_data(self):
+        window = self.probe([RuntimeError("Cannot load the activity. Check that ASB is running, then try again."), {"n": 1},
+                             RuntimeError("Later failure.")])
+        window.refresh()
+        self.assertEqual(window.stack.get_visible_child_name(), "error")
+        self.assertEqual(window.error_label.get_label(), "Cannot load the activity. Check that ASB is running, then try again.")
+        self.assertTrue(window.error_label.get_wrap())
+        self.assertEqual(window.retry_button.get_label(), "Try again")
+        window.retry_button.emit("clicked")
+        self.assertEqual((len(window.routes), window.stack.get_visible_child_name(), window.renders), (2, "data", [({"n": 1}, None)]))
+        window.refresh()
+        self.assertEqual((len(window.routes), window.stack.get_visible_child_name(), window.data), (3, "data", {"n": 1}))
+        self.assertEqual(len(window.renders), 1)
+
+    def test_period_change_reads_the_new_period(self):
+        window = self.probe()
+        window.refresh()
+        window.set_period("30d")
+        self.assertEqual(window.routes[-1], "/api/activity/messages?period=30d")
+        self.assertEqual(window.pages[-1], "loading")
+        self.assertIsNone(window.renders[-1][1])
+        self.assertEqual({key: button.get_active() for key, button in window.period_buttons.items()}, {"24h": False, "7d": False, "30d": True})
+        with self.assertRaises(ValueError):
+            window.set_period("x")
+        self.assertEqual(window.period, "30d")
+        window.period_buttons["24h"].emit("clicked")
+        self.assertEqual((window.period, window.routes[-1], window.pages[-1]), ("24h", "/api/activity/messages?period=24h", "loading"))
+        self.assertEqual(len(window.routes), 3)
+        self.assertEqual(window.stack.get_visible_child_name(), "data")
+
+    def test_a_reply_for_an_old_period_is_dropped(self):
+        window = self.probe()
+        inner = window.fetch
+
+        def fetch(route):
+            answer = inner(route)
+            if route.endswith("=7d"):
+                # The user picks another period while the first read runs.
+                window.set_period("24h")
+            return answer
+        window.fetch = fetch
+        window.refresh()
+        self.assertEqual(window.routes, ["/api/activity/messages?period=7d", "/api/activity/messages?period=24h"])
+        self.assertEqual(window.renders, [({"read": 2}, None)])
+        self.assertEqual(window.period, "24h")
+
+    def test_dashboard_events_coalesce_into_one_refresh(self):
+        window = self.probe()
+        for _event in range(3):
+            asb.GLib.idle_add(window.on_dashboard_event)
+            self.drain(.03)
+        self.assertEqual(window.routes, [])
+        self.drain(1.2)
+        self.assertEqual(window.routes, ["/api/activity/messages?period=7d"])
+        self.assertIsNone(window.event_timer)
+
+    def test_live_refresh_runs_only_while_mapped(self):
+        streams = []
+        stream = lambda *args: streams.append((args, Mock())) or streams[-1][1]
+        with patch.object(asb, "EventStream", side_effect=stream), patch.object(asb, "request_async") as request:
+            window = self.Probe(self.application, "http://127.0.0.1:1")
+            self.assertEqual((streams, request.call_count), ([], 0))
+            self.poll_calls.reset_mock()
+            self.poll_calls.return_value = 0
+            window.present()
+            self.drain(.1)
+            self.assertEqual(len(streams), 1)
+            self.assertEqual(streams[0][0], ("http://127.0.0.1:1", window.on_dashboard_event, asb.GLib.idle_add))
+            self.poll_calls.assert_called_once_with(15, window.poll_tick)
+            self.assertEqual(request.call_args.args[:2], ("http://127.0.0.1:1", "/api/activity/messages?period=7d"))
+            # A reconnect while mapped starts a new stream on the new engine.
+            request.call_args.args[2]({"n": 1}, None)
+            window.reconnect("http://127.0.0.1:2")
+            streams[0][1].close.assert_called_once()
+            self.assertEqual(streams[1][0][0], "http://127.0.0.1:2")
+            self.assertEqual(request.call_args.args[:2], ("http://127.0.0.1:2", "/api/activity/messages?period=7d"))
+            window.set_visible(False)
+            self.drain(.05)
+            streams[1][1].close.assert_called_once()
+            self.assertIsNone(window.events)
+            window.present()
+            self.drain(.1)
+            self.assertEqual(len(streams), 3)
+            window.close()
+            self.drain(.05)
+            streams[2][1].close.assert_called_once()
+            self.assertTrue(window.closed)
+
+    def test_control_w_closes_and_forgets_the_window(self):
+        with patch.dict(asb.ACTIVITY_WINDOW_CLASSES, {"test": lambda application, base: self.probe()}):
+            window = self.application.show_activity("test")
+        self.drain(.05)
+        self.assertIs(self.application.activity_windows["test"], window)
+        controllers = [controller for controller in window.observe_controllers() if isinstance(controller, asb.Gtk.ShortcutController)]
+        shortcuts = [controller.get_item(index) for controller in controllers for index in range(controller.get_n_items())]
+        closing = [shortcut for shortcut in shortcuts if shortcut.get_trigger().to_string() == "<Control>w"]
+        self.assertEqual(len(closing), 1)
+        closing[0].get_action().activate(asb.Gtk.ShortcutActionFlags.EXCLUSIVE, window, None)
+        self.drain(.05)
+        self.assertTrue(window.closed)
+        self.assertNotIn("test", self.application.activity_windows)
+        self.assertNotIn(window, self.application.get_windows())
+
+    def test_show_activity_keeps_one_window_per_kind(self):
+        made = []
+        factory = lambda application, base: made.append(self.probe()) or made[-1]
+        with patch.dict(asb.ACTIVITY_WINDOW_CLASSES, {"test": factory}):
+            first = self.application.show_activity("test")
+            with patch.object(first, "present", wraps=first.present) as present:
+                second = self.application.show_activity("test", seat="first")
+            present.assert_called_once()
+            with self.assertRaises(ValueError):
+                self.application.show_activity("nope")
+        self.assertIs(first, second)
+        self.assertEqual(len(made), 1)
+        self.assertEqual(first.sessions, ["first"])
+        self.assertEqual([window for window in self.application.get_windows() if isinstance(window, self.Probe)], [first])
+        self.addCleanup(setattr, self.application, "base", self.application.base)
+        with patch.object(first, "reconnect") as moved, patch.object(asb, "SOURCE_TOKEN", ""):
+            self.application.reconnect("http://127.0.0.1:3", "")
+        moved.assert_called_once_with("http://127.0.0.1:3")
+        first.close()
+        self.drain(.05)
+        self.assertNotIn("test", self.application.activity_windows)
+        # Reopening makes a new window; a window destroyed without a close request is forgotten too.
+        with patch.dict(asb.ACTIVITY_WINDOW_CLASSES, {"test": factory}):
+            third = self.application.show_activity("test")
+        self.assertIsNot(third, first)
+        third.destroy()
+        self.drain(.05)
+        self.assertTrue(third.closed)
+        self.assertNotIn("test", self.application.activity_windows)
+
+    def test_each_window_has_its_own_palette(self):
+        first, second = self.probe(), self.probe()
+        self.assertNotEqual(first.scope_class, second.scope_class)
+        self.assertIsNot(first.css, second.css)
+        custom = asb.validate_theme(CUSTOM)
+        first.set_palette(custom)
+        self.assertEqual(first.palette, asb.activity_palette(custom))
+        rules = first.css.to_string()
+        # GTK prints the selector classes in its own order.
+        self.assertTrue(all(f".{first.scope_class}" in line and ".asb-activity" in line for line in rules.splitlines() if line.endswith("{")))
+        self.assertIn("background-color:rgb(23,28,34);", rules.replace(" ", ""))
+        self.assertNotIn(second.scope_class, rules)
+        native = asb.activity_palette(asb.native_colors(second))
+        self.assertEqual(second.palette, native)
+        self.assertNotIn("rgb(23,28,34)", second.css.to_string().replace(" ", ""))
+        first.present()
+        self.drain(.2)
+        # A rendered pixel of the content area, away from the spinner, has the window color.
+        found, point = first.stack.compute_point(first, asb.Graphene.Point().init(20, first.stack.get_height() - 20))
+        self.assertTrue(found)
+        self.assertEqual(self.window_pixels(first, (point.x, point.y)), ["#171c22"])
+
+    def window_pixels(self, window, *points):
+        """The #rrggbb colors of the rendered window at points in window coordinates."""
+        snapshot = asb.Gtk.Snapshot()
+        asb.Gtk.WidgetPaintable.new(window).snapshot(snapshot, window.get_width(), window.get_height())
+        renderer = asb.Gsk.CairoRenderer()
+        renderer.realize(None)
+        self.addCleanup(renderer.unrealize)
+        viewport = asb.Graphene.Rect().init(0, 0, window.get_width(), window.get_height())
+        downloader = asb.Gdk.TextureDownloader.new(renderer.render_texture(snapshot.to_node(), viewport))
+        downloader.set_format(asb.Gdk.MemoryFormat.R8G8B8A8)
+        data, stride = downloader.download_bytes()
+        data = data.get_data()
+        return ["#" + data[round(y) * stride + round(x) * 4:][:3].hex() for x, y in points]
+
+    def test_the_toolbar_spans_the_window_and_pads_its_items(self):
+        window = self.probe()
+        window.set_palette(asb.validate_theme(CUSTOM))
+        window.present()
+        self.drain(.2)
+        self.assertEqual(window.get_width(), 640)
+        found, bounds = window.toolbar.compute_bounds(window)
+        self.assertTrue(found)
+        self.assertEqual((bounds.get_x(), bounds.get_width()), (0, 640))
+        middle = bounds.get_y() + bounds.get_height() / 2
+        bar = window.palette["bar"]
+        self.assertEqual(self.window_pixels(window, (1, middle), (638, middle)), [bar, bar])
+        # The toolbar touches the header bar.
+        header = window.toolbar.get_prev_sibling()
+        found, above = header.compute_bounds(window)
+        self.assertTrue(found)
+        self.assertEqual(above.get_y() + above.get_height(), bounds.get_y())
+        found, button = window.period_buttons["24h"].compute_bounds(window)
+        self.assertTrue(found)
+        self.assertEqual((button.get_x() - bounds.get_x(), button.get_y() - bounds.get_y()), (10, 6))
+
+    def test_the_paths_note_shows_only_without_gsk_paths(self):
+        self.assertEqual(asb.ACTIVITY_PATHS, hasattr(asb.Gsk, "PathBuilder"))
+        for paths in (False, True):
+            with self.subTest(paths=paths), patch.object(asb, "ACTIVITY_PATHS", paths):
+                window = self.probe()
+                note = window.paths_note
+                self.assertEqual(note.get_label(), "Charts need GTK 4.14 or later.")
+                self.assertTrue(note.has_css_class("asb-dim"))
+                self.assertEqual((note.get_margin_top(), note.get_margin_bottom(), note.get_margin_start(), note.get_margin_end()), (4, 4, 10, 10))
+                self.assertIs(window.toolbar.get_next_sibling(), note)
+                self.assertEqual(note.get_visible(), not paths)
+        self.assertIn(f"{window.css_scope}.asb-activity .asb-paths-note {{\n  font-size: 12px;", window.css.to_string())
+
+    def test_subclass_rules_load_with_the_palette(self):
+        class Styled(self.Probe):
+            def palette_css(self, palette):
+                return f"{self.css_scope} .asb-test-total {{ color: {palette['accent']}; }}\n"
+        window = Styled(self.application, "http://127.0.0.1:1", fetch=lambda route: {})
+        self.assertEqual(window.css_scope, "." + window.scope_class)
+        self.assertRegex(window.css_scope, r"^\.asb-activity-\d+$")
+        self.assertIn(f"{window.css_scope} .asb-test-total", window.css.to_string())
+        custom = asb.validate_theme(CUSTOM)
+        window.set_palette(custom)
+        rules = window.css.to_string()
+        self.assertIn("background-color:rgb(23,28,34);", rules.replace(" ", ""))
+        self.assertIn(f"{window.css_scope} .asb-test-total {{\n  color: rgb(243,198,107);", rules)
+        self.assertEqual(self.probe().palette_css(custom), "")
+
+    def test_a_board_theme_change_reaches_the_activity_windows(self):
+        with patch.dict(asb.ACTIVITY_WINDOW_CLASSES, {"test": lambda application, base: self.probe()}):
+            window = self.application.show_activity("test")
+        board = self.snapshot_window()
+        custom = asb.validate_theme(CUSTOM)
+        board.set_palette(custom)
+        self.assertEqual(window.palette, asb.activity_palette(custom))
+        board.set_palette(None)
+        self.assertEqual(window.palette, asb.activity_palette(asb.native_colors(window)))
+
+    def test_activity_routes_report_their_errors(self):
+        headers = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                headers.append(dict(self.headers))
+                path = self.path.split("?")[0]
+                code, body = {"/api/activity/messages": (404, {"error": "Not found."}), "/api/activity/usage": (400, {"error": "Invalid period."}),
+                              "/api/activity/thread": (500, None)}.get(path, (200, {"seats": []}))
+                self.send_response(code)
+                self.end_headers()
+                self.wfile.write(json.dumps(body).encode() if body else b"")
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        self.addCleanup(worker.join, 1)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        base = f"http://127.0.0.1:{server.server_port}"
+        with patch.object(asb, "SOURCE_TOKEN", "synthetic-test-value"):
+            for route, text in (("/api/activity/messages?period=7d", "This ASB engine has no activity data. Update ASB, then try again."),
+                                ("/api/activity/usage?period=1y", "Invalid period."),
+                                ("/api/activity/thread?seat=a", "Cannot load the activity. Check that ASB is running, then try again.")):
+                with self.subTest(route=route), self.assertRaises(RuntimeError) as caught:
+                    asb.request_json(base, route)
+                self.assertEqual(str(caught.exception), text)
+            self.assertEqual(asb.request_json(base, "/api/activity/other"), {"seats": []})
+        self.assertEqual(len(headers), 4)
+        self.assertFalse(any("X-ASB-Source-Token" in sent for sent in headers))
+
 
 if __name__ == "__main__":
     unittest.main()

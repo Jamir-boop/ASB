@@ -1,6 +1,7 @@
 """Native data, scheduling, and row reuse checks, without GTK or a display."""
 import ast
 import copy
+from datetime import datetime, timezone
 import io
 import itertools
 import json
@@ -9,6 +10,7 @@ import sys
 from pathlib import Path, PureWindowsPath
 from tempfile import TemporaryDirectory
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, call, patch
@@ -37,8 +39,10 @@ COLUMN = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.C
 COLUMN.bases = []
 # The signal helper follows the GI import block, so it is not in NODES.
 SIGNAL = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "unix_signal_add")
+# The color helpers of the Board and the activity windows also follow the GI import block.
+COLORS = [node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name in ("rgba", "hex_color", "native_colors")]
 SCOPE = {"__file__": str(SOURCE)}
-exec(compile(ast.Module(body=NODES + [SIGNAL, STRIP, COLUMN, MARKER, SOURCES, PHONE, MACHINES, PREFERENCES, WINDOW, APPLICATION],
+exec(compile(ast.Module(body=NODES + [SIGNAL] + COLORS + [STRIP, COLUMN, MARKER, SOURCES, PHONE, MACHINES, PREFERENCES, WINDOW, APPLICATION],
                         type_ignores=[]), str(SOURCE), "exec"), SCOPE)
 Column = SCOPE["SessionColumn"]
 SCOPE["SessionColumn"] = lambda **kwargs: SCOPE["Gtk"].ListBox(**kwargs)
@@ -132,6 +136,104 @@ class FakeMarker:
 
     def set_color(self, color):
         self.configured_color = color
+
+
+class ActivityHelperChecks(unittest.TestCase):
+    def setUp(self):
+        # Local times are checked in UTC, so the expected strings do not depend on the machine.
+        saved = os.environ.get("TZ")
+        os.environ["TZ"] = "UTC"
+        time.tzset()
+
+        def restore():
+            if saved is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = saved
+            time.tzset()
+        self.addCleanup(restore)
+
+    @staticmethod
+    def utc(*parts):
+        return int(datetime(*parts, tzinfo=timezone.utc).timestamp() * 1000)
+
+    def test_names_and_fixed_colors(self):
+        self.assertEqual(asb.ACTIVITY_APPS, ("codex", "claude", "opencode"))
+        self.assertEqual(asb.ACTIVITY_APP_LABELS, {"codex": "Codex", "claude": "Claude Code", "opencode": "OpenCode", "": "Other"})
+        self.assertEqual(asb.ACTIVITY_STATUSES, ("accepted", "written", "held", "not-sent", "unknown"))
+        self.assertEqual([asb.ACTIVITY_STATUS_LABELS[key] for key in asb.ACTIVITY_STATUSES],
+                         ["Accepted", "Socket written", "Held", "Not sent", "Unknown"])
+        self.assertEqual(set(asb.ACTIVITY_STATUS_COLORS), set(asb.ACTIVITY_STATUSES))
+        self.assertEqual(set(asb.ACTIVITY_STATUS_ICONS), set(asb.ACTIVITY_STATUSES))
+        self.assertEqual(set(asb.ACTIVITY_APP_ICONS), set(asb.ACTIVITY_APP_LABELS))
+        self.assertEqual(asb.ACTIVITY_APP_COLORS["claude"], "#d97757")
+        self.assertEqual(asb.ACTIVITY_TOKEN_COLORS, {"cacheRead": "#4b5058", "cacheWrite": "#6b7179", "uncached": "#959ba3", "output": "#e4e6e8"})
+        self.assertEqual([key for key, _label in asb.MESSAGE_PERIODS], ["24h", "7d", "30d"])
+        self.assertEqual(asb.USAGE_PERIODS[-1], ("90d", "90 days"))
+
+    def test_number_formats(self):
+        self.assertEqual(asb.format_count(1234), "1,234")
+        self.assertEqual(asb.format_count(0), "0")
+        self.assertEqual(asb.format_cost(2148.62), "$2,148.62")
+        self.assertEqual(asb.format_cost(0.074), "$0.07")
+        self.assertEqual(asb.format_cost(None), "Unpriced")
+        for value, expected in ((0, "0"), (999, "999"), (1000, "1.0K"), (412_340, "412.3K"), (412_350, "412.4K"), (999_950, "1.0M"),
+                                (845_200_000, "845.2M"), (999_950_000, "1.00B"), (1_940_000_000, "1.94B"), (1_945_000_000, "1.95B")):
+            with self.subTest(value=value):
+                self.assertEqual(asb.format_tokens(value), expected)
+        self.assertEqual(asb.format_share(.384), "38.4%")
+        self.assertEqual(asb.format_share(0), "0.0%")
+        self.assertEqual(asb.format_share(1), "100.0%")
+
+    def test_time_formats_and_day_lines(self):
+        self.assertEqual(asb.format_clock(self.utc(2026, 10, 24, 16, 38, 59)), "16:38")
+        self.assertEqual(asb.format_clock(self.utc(2026, 10, 24, 9, 5)), "09:05")
+        self.assertEqual(asb.format_day(self.utc(2026, 10, 24, 12)), "Oct 24")
+        self.assertEqual(asb.format_day(self.utc(2026, 10, 4, 12)), "Oct 4")
+        self.assertEqual(asb.format_day(self.utc(2026, 1, 31)), "Jan 31")
+        now = self.utc(2026, 10, 26, 0, 5)
+        self.assertEqual(asb.day_line(self.utc(2026, 10, 26, 0, 0), now), "Today")
+        self.assertEqual(asb.day_line(self.utc(2026, 10, 25, 23, 59), now), "Yesterday")
+        self.assertEqual(asb.day_line(self.utc(2026, 10, 25, 0, 0), now), "Yesterday")
+        self.assertEqual(asb.day_line(self.utc(2026, 10, 24, 23, 59), now), "Oct 24")
+        # The day comes from the local calendar.
+        os.environ["TZ"] = "Etc/GMT+3"
+        time.tzset()
+        self.assertEqual(asb.day_line(self.utc(2026, 10, 24, 23, 0), now), "Yesterday")
+
+    def test_month_names_do_not_follow_the_locale(self):
+        source = SOURCE.read_text()
+        body = source[source.index("def format_day(ms):"):source.index("def day_line(")]
+        self.assertNotIn("strftime", body)
+        self.assertEqual([asb.format_day(self.utc(2026, month, 1)) for month in range(1, 13)],
+                         [f"{name} 1" for name in "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()])
+
+    def test_machines(self):
+        self.assertEqual([asb.machine_hue(index) for index in (0, 1, 2, 5, 6, 13)],
+                         ["#a28caa", "#7cc48a", "#5fb3b3", "#b4b86c", "#a28caa", "#7cc48a"])
+        self.assertEqual([asb.machine_state_text({"state": state}) for state in ("local", "online", "offline")], ["Local", "Connected", "Offline"])
+        at = self.utc(2026, 10, 25, 14, 30)
+        self.assertEqual(asb.machine_last_report({"state": "online", "lastReportAtMs": at}), "")
+        self.assertEqual(asb.machine_last_report({"state": "offline", "lastReportAtMs": 0}), "")
+        self.assertEqual(asb.machine_last_report({"state": "offline", "lastReportAtMs": at}), "Last report Oct 25, 14:30")
+
+    def test_buckets(self):
+        hours = {"unit": "hour", "startsMs": [self.utc(2026, 10, 26, hour) for hour in range(9, 13)]}
+        self.assertEqual([asb.bucket_label(hours, index) for index in range(4)], ["09:00", "10:00", "11:00", "Now"])
+        days = {"unit": "day", "startsMs": [self.utc(2026, 10, day) for day in range(23, 27)]}
+        self.assertEqual([asb.bucket_label(days, index) for index in range(4)], ["Oct 23", "Oct 24", "Oct 25", "Today"])
+        starts = days["startsMs"]
+        self.assertIsNone(asb.bucket_of(days, starts[0] - 1))
+        self.assertEqual(asb.bucket_of(days, starts[0]), 0)
+        self.assertEqual(asb.bucket_of(days, starts[1] + 3_600_000), 1)
+        self.assertEqual(asb.bucket_of(days, starts[2]), 2)
+        self.assertEqual(asb.bucket_of(days, starts[3] + 86_400_000 * 5), 3)
+
+    def test_activity_palette(self):
+        colors = {"background": "#101010", "text": "#f0f0f0", "accent": "#3080c0", "muted": "#a0a0a0", "divider": "#404040"}
+        self.assertEqual(asb.activity_palette(colors), {
+            "win": "#101010", "pane": "#181818", "pane2": "#1d1d1d", "bar": "#252525", "rule": "#2d2d2d", "edge": "#090909",
+            "text": "#f0f0f0", "dim": "#a0a0a0", "accent": "#3080c0", "light": "#78acd6", "warn": "#e0b45a", "bad": "#f5a090"})
 
 
 class ProfileSyncChecks(unittest.TestCase):
