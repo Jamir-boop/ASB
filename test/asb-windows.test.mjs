@@ -252,7 +252,8 @@ test('the -Open branch waits 30 s for the launcher and shows the text of the tra
 
 // Messages and Usage ask an open board to show the window; without one, a new board opens it from ASB_OPEN_WINDOW.
 test('the tray menu has Messages and Usage, and Show-Window asks the engine before it starts a launcher with the window', async () => {
-  const script = await readFile(new URL('../scripts/asb-tray.ps1', import.meta.url), 'utf8');
+  // A Windows checkout has CRLF line ends; the launcher pattern below matches whole lines.
+  const script = (await readFile(new URL('../scripts/asb-tray.ps1', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
   const added = [...script.matchAll(/^\$\w+ = \$menu\.Items\.Add\('([^']*)'\)$|^\[void\]\$menu\.Items\.Add\(\(New-Object System\.Windows\.Forms\.(ToolStripSeparator)\)\)$/gm)]
     .map(([, label, separator]) => label ?? separator);
   assert.deepEqual(added, ['Open ASB', 'Messages', 'Usage', 'ToolStripSeparator', 'Copy phone pairing link', 'Quit ASB']);
