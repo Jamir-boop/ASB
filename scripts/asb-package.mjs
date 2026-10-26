@@ -23,7 +23,7 @@ export const RUNTIME_FILES = [
   'public/switchboard.html', 'public/switchboard.css', 'public/switchboard.js', 'public/icon.svg',
   'assets/icons/local.asb.AgentSwitchBoard.svg', 'assets/icons/asb-claude-symbolic.svg', 'assets/icons/asb-openai-symbolic.svg', 'assets/icons/asb-opencode-symbolic.svg',
   'assets/icons/asb-machine-symbolic.svg', 'assets/icons/asb-terminal-symbolic.svg', 'assets/icons/asb-drawer-symbolic.svg',
-  'assets/icons/asb-filter-symbolic.svg',
+  'assets/icons/asb-filter-symbolic.svg', 'assets/icons/asb-chat-symbolic.svg',
   'assets/icons/asb-muted-symbolic.svg', 'assets/icons/asb-link-symbolic.svg', 'assets/icons/asb-globe-symbolic.svg',
   'assets/icons/README.md', 'assets/icons/ASB-disc-provenance.md',
   'assets/sounds/opencode_staplebops_01.wav', 'assets/sounds/opencode_staplebops_02.wav', 'assets/sounds/opencode_nope_03.wav',

@@ -581,7 +581,6 @@ class WidgetCheck(unittest.TestCase):
             window.open_filters_popover(); self.drain(.3)
             self.assertIsNotNone(window.filter_popover)
             self.assertIsNotNone(window.filter_popover.get_child())
-            self.assertTrue(window.filters_label.get_visible() or not window.wide_controls)
             # Popover closes and focuses Filters.
             window.filter_popover.popdown(); self.drain(.3)
             self.assertEqual(window.get_focus(), window.filters_pill)
@@ -593,7 +592,7 @@ class WidgetCheck(unittest.TestCase):
                     pills = [window.drawer_only, window.filters_pill,
                              *(chip for chip, _name in window.filter_chip_widgets.values())]
                     controls = [*pills, window.menu_button, window.window_controls]
-                    controls += [window.search, window.refresh_button] if width >= 680 else [window.search_button]
+                    controls += [window.search_button, window.refresh_button] if width >= 680 else [window.search_button]
                     tallest = max(control.measure(asb.Gtk.Orientation.VERTICAL, -1)[1]
                                   for control in controls if control.get_visible())
                     self.assertLessEqual(current_height, tallest + window.tools.get_margin_top() + window.tools.get_margin_bottom())
@@ -605,9 +604,7 @@ class WidgetCheck(unittest.TestCase):
                             row_positions.append(round(bounds.origin.y))
                     self.assertEqual(len(set(row_positions)), 1)
                     self.assertEqual(window.app_mark.get_visible(), width >= 320)
-                    self.assertEqual(window.search_button.get_visible(), 320 <= width < 680)
-                    self.assertEqual(window.drawer_label.get_visible(), width >= 680)
-                    self.assertEqual(window.filters_label.get_visible(), width >= 680)
+                    self.assertEqual(window.search_button.get_visible(), width >= 320)
                     found, before = window.toolbar_end.compute_bounds(window.tools)
                     self.assertTrue(found)
                     self.assertLessEqual(abs(before.origin.x + before.size.width - window.tools.get_width()), 1)
@@ -615,10 +612,7 @@ class WidgetCheck(unittest.TestCase):
                     self.assertTrue(window.search.get_mapped())
                     self.assertTrue(window.search.has_focus() or window.get_focus().is_ancestor(window.search))
                     window.search.set_text("cx: example")
-                    if window.wide_controls:
-                        self.assertTrue(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0))
-                    else:
-                        window.search.emit("stop-search")
+                    window.search.emit("stop-search")
                     self.drain(.1)
                     self.assertEqual(window.search.get_text(), "")
                     found, after = window.toolbar_end.compute_bounds(window.tools)
@@ -652,13 +646,12 @@ class WidgetCheck(unittest.TestCase):
             window.drawer_only.set_active(True); self.drain(.1)
             self.assertFalse(window.pending)
             self.assertNotIn("pending", window.filter_chip_widgets)
-            # Search width stays at least 240 at wide widths.
+            # The search popover keeps its 240px field at wide widths too.
             window.set_default_size(1040 + border_width, 400); self.drain(.3); window.check_geometry(); self.drain(.1)
             self.assertTrue(window.wide_controls)
+            window.open_search(); self.drain(.3)
             self.assertGreaterEqual(window.search.get_width(), 240)
-            # No label in the toolbar contains a digit.
-            for label_widget in (window.drawer_label, window.filters_label):
-                self.assertFalse(any(c.isdigit() for c in label_widget.get_text()))
+            window.clear_search(); self.drain(.2)
             window.reset_width()
             self.assertNotIn("showAppPills", json.loads(path.read_text()) if path.exists() else {})
             window.view_filter.set_selected(1)
@@ -1035,7 +1028,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(window.get_width(), 400)
         self.assertFalse(window.wide_controls)
 
-    def test_wide_search_keeps_natural_width_with_six_chips(self):
+    def test_six_chips_keep_the_pills_at_their_natural_width(self):
         window = self.snapshot_window()
         dashboard = mock_dashboard()
         dashboard["providers"] = [
@@ -1054,7 +1047,6 @@ class WidgetCheck(unittest.TestCase):
         window.set_archived(True); self.drain(.4)
         self.assertEqual(len(window.filter_chip_widgets), 6)
         self.assertEqual(window.search.get_max_width_chars(), 22)
-        self.assertGreaterEqual(window.search.get_width(), 210)
         for pill in (window.drawer_only, window.filters_pill):
             self.assertGreaterEqual(pill.get_allocated_width(), pill.measure(asb.Gtk.Orientation.HORIZONTAL, -1)[1])
 
@@ -1570,7 +1562,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertIsNone(window.preferences_window)
         self.assertEqual(sum(isinstance(item, asb.PreferencesWindow) for item in self.application.get_windows()), 0)
         self.assertEqual(requests, [])
-        window.menu_button.emit("clicked"); self.drain(.2)
+        window.activate_action("win.preferences", None); self.drain(.2)
         preferences = window.preferences_window
         self.assertTrue(preferences.get_visible())
         self.assertIsNone(preferences.profiles_editor)
@@ -1582,7 +1574,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(preferences.sidebar.get_visible())
         self.assertEqual(preferences.pages.get_visible_child_name(), "section")
         self.assertFalse(preferences.back.get_visible())
-        self.assert_accessible_label(window.menu_button, "Open Preferences")
+        self.assert_accessible_label(window.menu_button, "Main menu")
         window.open_preferences()
         self.assertEqual(sum(isinstance(item, asb.PreferencesWindow) for item in self.application.get_windows()), 1)
         window.states = {"working"}
@@ -2468,7 +2460,11 @@ class WidgetCheck(unittest.TestCase):
             capture = next(controller for controller in keys if controller.get_propagation_phase() == asb.Gtk.PropagationPhase.CAPTURE)
             panel.asb_open.grab_focus()
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
+            self.assertIs(window.get_focus(), panel.asb_messages)
+            self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_actions["read"])
+            self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
+            self.assertIs(window.get_focus(), panel.asb_messages)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_open)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
@@ -2526,8 +2522,9 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual(actions(panel), {"read": ("Mark read", True), "mute": ("Mute", True), "pin": ("Pin", True)})
             self.assertTrue(panel.asb_note.get_visible())
             self.assertEqual(panel.asb_note.get_label(), "Waits for your permission.")
-            # The note comes after Open and its separator.
-            self.assertIs(panel.asb_note.get_prev_sibling().get_prev_sibling(), panel.asb_open)
+            # The note comes after Open, Show messages, and their separator.
+            self.assertIs(panel.asb_note.get_prev_sibling().get_prev_sibling(), panel.asb_messages)
+            self.assertIs(panel.asb_messages.get_prev_sibling(), panel.asb_open)
             # Open runs the card open path and closes the panel.
             with patch.object(window, "open_row") as open_row:
                 panel.asb_open.emit("clicked")
@@ -2964,7 +2961,7 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual(window.window_controls.get_decoration_layout(), ":close")
             self.assertTrue(window.wide_controls)
             self.assertFalse(hasattr(window, "feedback"))
-            self.assertLessEqual(window.window_handle.get_height(), window.search.get_height() + 4)
+            self.assertLessEqual(window.window_handle.get_height(), window.menu_button.get_height() + 4)
             self.assertGreaterEqual(window.scroll.get_height(), 240)
             self.assertEqual(window.columns, 4)
             self.assertGreaterEqual(window.capacity, 10)
@@ -3044,7 +3041,9 @@ class WidgetCheck(unittest.TestCase):
             window.render()
             self.assertTrue(window.visible_rows())
             self.assertTrue(all(row["provider"] == "claude-desktop-code" for row in window.visible_rows()))
-            self.assertTrue(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0))
+            # The search field is in its popover at this width too: Escape there stops the search.
+            self.assertTrue(window.search_popover.get_visible())
+            window.search.emit("stop-search")
             self.assertEqual(window.search.get_text(), "")
             window.set_pending(True)
             window.states = {"idle"}
@@ -4399,7 +4398,7 @@ class WidgetCheck(unittest.TestCase):
         identity = window.row_order[0]
         window.focus_widgets[identity].grab_focus()
         self.assertGreater(window.menu_button.get_width(), 0)
-        window.menu_button.emit("clicked"); self.drain(.2)
+        window.activate_action("win.preferences", None); self.drain(.2)
         preferences = window.preferences_window
         self.assertTrue(preferences.get_visible())
         preferences.stack.set_visible_child_name("appearance")
@@ -4653,7 +4652,8 @@ class WidgetCheck(unittest.TestCase):
         # A geometry repack sets motion_from to False until its layout; wait for that layout too.
         wait(lambda: len(frames) >= 3 and len(columns()) == 6 and columns()[0].get_width() == window.column_pixel_width
              and window.motion_from is None)
-        self.assertEqual((window.columns, window.capacity, len(window.focus_widgets)), (4, 20, 116))
+        # The icon-only toolbar is as tall at 1080px as at narrow widths, so a column has room for 21 cards.
+        self.assertEqual((window.columns, window.capacity, len(window.focus_widgets)), (4, 21, 116))
         self.assertTrue(all(isinstance(column, asb.SessionColumn) for column in columns()))
         self.assertFalse(any(frame[1] for frame in frames))  # The first render and its geometry repack do not move.
         assert_rest()
@@ -4952,14 +4952,14 @@ class WidgetCheck(unittest.TestCase):
             requests[-1][2]({"changed": True, "threadId": identity, "thread": dict(cards[identity].asb_thread, **change)}, None)
             settle()
 
-        # The pill: glyph, optional word, and a dot that is hidden when empty.
+        # The pill: the glyph and a dot that is hidden when empty; the word is only the accessible name and the tooltip.
         self.assertIsInstance(pill, asb.Gtk.ToggleButton)
         self.assertIs(window.toolbar_strip.get_first_child(), pill)
         self.assertIs(pill.get_next_sibling(), window.filters_pill)
         glyph = pill.get_child().get_first_child()
         self.assertTrue(glyph.has_css_class("asb-drawer-glyph"))
         self.assertEqual((glyph.get_width(), glyph.get_height()), (9, 5))  # Without the 1 px border.
-        self.assertEqual(glyph.get_next_sibling().get_text(), "Drawer")
+        self.assertIs(glyph.get_next_sibling(), bubble)
         self.assertIs(pill.get_child().get_last_child(), bubble)
         self.assertFalse(bubble.get_visible())
         self.assertFalse(pill.has_css_class("asb-drawer-filled"))
@@ -6295,7 +6295,8 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual([self.labels(chip) for chip in chips.values()], [["Desk", "Local"], ["Laptop", "Connected"], ["Studio", "Offline"]])
         self.assertTrue(all(chip.get_active() and chip.get_sensitive() for chip in chips.values()))
         self.assertEqual([chip.get_tooltip_text() for chip in chips.values()], [None, None, "Last report Oct 25, 14:30"])
-        self.assertTrue(chips["studio"].get_child().get_first_child().has_css_class("asb-usage-hollow-2"))
+        dot = chips["studio"].get_child().get_first_child()
+        self.assertTrue(dot.has_css_class("asb-activity-hue-2") and dot.has_css_class("asb-activity-hollow"))
         self.assertEqual(window.prices_label.get_label(), "Prices: LiteLLM, Oct 26")
         self.assertFalse(window.scan_label.get_visible())
         self.assert_no_new_warnings()
@@ -6566,8 +6567,8 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
         def render(self, data, previous):
             self.renders.append((data, previous))
 
-        def show_session(self, seat):
-            self.sessions.append(seat)
+        def show_session(self, seat, title=""):
+            self.sessions.append((seat, title))
 
     def setUp(self):
         directory = tempfile.TemporaryDirectory(prefix="asb-activity-test-")
@@ -6743,7 +6744,7 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
                 self.application.show_activity("nope")
         self.assertIs(first, second)
         self.assertEqual(len(made), 1)
-        self.assertEqual(first.sessions, ["first"])
+        self.assertEqual(first.sessions, [("first", "")])
         self.assertEqual([window for window in self.application.get_windows() if isinstance(window, self.Probe)], [first])
         self.addCleanup(setattr, self.application, "base", self.application.base)
         with patch.object(first, "reconnect") as moved, patch.object(asb, "SOURCE_TOKEN", ""):
@@ -6992,7 +6993,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
             child = child.get_next_sibling()
         self.assertEqual([self.labels(chip) for chip in chips[:3]], [["Desk", "Local"], ["Laptop", "Connected"], ["Studio", "Offline"]])
         self.assertEqual([chip.get_tooltip_text() for chip in chips[:3]], [None, None, "Last report Oct 25, 14:30"])
-        self.assertTrue(chips[2].get_first_child().has_css_class("asb-msg-offline"))
+        self.assertTrue(chips[2].get_first_child().has_css_class("asb-activity-hollow"))
         view = window.view
         self.assertEqual(chips[3].get_label(), f"{len(view['seated'])} of {view['active']} sessions")
         self.assertEqual(chips[3].get_label(), "12 of 18 sessions")
@@ -7279,6 +7280,407 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                 snapshot = asb.Gtk.Snapshot()
                 asb.Gtk.WidgetPaintable.new(widget).snapshot(snapshot, widget.get_width(), widget.get_height())
                 self.assertIsNone(snapshot.to_node())
+
+
+def descendants(widget):
+    child = widget.get_first_child()
+    while child is not None:
+        yield child
+        yield from descendants(child)
+        child = child.get_next_sibling()
+
+
+@unittest.skipUnless(asb.Gtk.init_check(), "A GTK display is not available.")
+class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
+    """The Board side of Messages and Usage: the icon-only toolbar, the main menu, the keys, the row panel, the tray event, and the sizes."""
+    snapshot_window = WidgetCheck.snapshot_window
+    fetch = MessagesWindowCheck.fetch
+    USAGE = UsageWindowCheck.REPLIES
+    REAL_KEYS = bool(shutil.which("xdotool")) and os.environ.get("DISPLAY") in (":9", ":10")
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix="asb-board-windows-test-")
+        self.addCleanup(directory.cleanup)
+        self.directory = Path(directory.name)
+        patcher = patch.object(asb, "THEME_PATH", self.directory / "theme.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-font-name", settings.get_property("gtk-font-name"))
+        settings.set_property("gtk-font-name", "Cantarell 11")
+        self.addCleanup(settings.set_property, "gtk-enable-animations", settings.get_property("gtk-enable-animations"))
+        settings.set_property("gtk-enable-animations", False)
+        self.sample = json.loads(MessagesWindowCheck.SAMPLE.read_text())
+        self.extra, self.routes = [], []
+        # The activity windows read the synthetic sample replies, never the network.
+        classes = {"messages": lambda application, base: asb.MessagesWindow(application, base, fetch=self.fetch),
+                   "usage": lambda application, base: asb.UsageWindow(application, base,
+                                                                      fetch=lambda route: copy.deepcopy(self.USAGE[route.rsplit("=", 1)[1]]))}
+        patcher = patch.dict(asb.ACTIVITY_WINDOW_CLASSES, classes)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.close_windows)
+        self.warnings = len(GTK_WARNINGS)
+        self.addCleanup(lambda: self.assertEqual(GTK_WARNINGS[self.warnings:], []))
+        self.output = os.environ.get("ASB_NATIVE_TEST_SNAPSHOTS")
+
+    def board(self, dashboard=None):
+        window = self.snapshot_window()
+        if dashboard is not None:
+            window.apply_dashboard(dashboard, None)
+        window.present(); window.set_focus(None); self.drain(.3)
+        return window
+
+    def resize(self, window, width):
+        border = window.get_default_size().width - window.get_width()
+        window.set_default_size(width + border, 420); self.drain(.3); window.check_geometry(); self.drain(.1)
+        self.assertEqual(window.get_width(), width)
+
+    def keys(self, *args, wait=.15):
+        subprocess.run(["xdotool", *args], check=True)
+        self.drain(wait)
+
+    def focus(self, window):
+        import gi
+        gi.require_version("GdkX11", "4.0")
+        from gi.repository import GdkX11  # noqa: F401  The X11 surface gives the window ID for the key focus.
+        subprocess.run(["xdotool", "windowfocus", str(window.get_surface().get_xid())], check=True)
+        self.drain(.3)
+
+    def shot(self, widget, name):
+        if self.output:
+            self.drain(.15)
+            self.capture(widget, Path(self.output) / name)
+
+    def pixels(self, widget):
+        """The unpremultiplied RGBA bytes of one widget, rendered with the Cairo renderer, and the row stride."""
+        snapshot = asb.Gtk.Snapshot()
+        asb.Gtk.WidgetPaintable.new(widget).snapshot(snapshot, widget.get_width(), widget.get_height())
+        renderer = asb.Gsk.CairoRenderer()
+        renderer.realize(None)
+        viewport = asb.Graphene.Rect().init(0, 0, widget.get_width(), widget.get_height())
+        downloader = asb.Gdk.TextureDownloader.new(renderer.render_texture(snapshot.to_node(), viewport))
+        downloader.set_format(asb.Gdk.MemoryFormat.R8G8B8A8)
+        data, stride = downloader.download_bytes()
+        renderer.unrealize()
+        return data.get_data(), stride
+
+    def test_toolbar_is_icon_only_and_search_uses_its_popover_at_every_width(self):
+        window = self.board()
+        heights = set()
+        for width in (900, 500, 300):
+            with self.subTest(width=width):
+                self.resize(window, width)
+                heights.add(window.window_handle.get_height())
+                self.assertEqual([widget for widget in descendants(window.tools)
+                                  if isinstance(widget, asb.Gtk.SearchEntry) and widget.get_ancestor(asb.Gtk.Popover) is None], [])
+                self.assertIs(window.search.get_ancestor(asb.Gtk.Popover), window.search_popover)
+                # The pills show only their glyphs; their names stay for screen readers and in the tooltips.
+                for pill in (window.drawer_only, window.filters_pill):
+                    self.assertEqual([widget.get_label() for widget in descendants(pill) if isinstance(widget, asb.Gtk.Label) and widget.get_mapped()], [])
+                self.assert_accessible_label(window.filters_pill, "Filters")
+                self.assertEqual(window.filters_pill.get_tooltip_text(), "Show the filter checklist.")
+                self.assertTrue(window.drawer_only.get_tooltip_text().startswith("Show only the sessions in the drawer"))
+                self.assertEqual((window.app_mark.get_visible(), window.search_button.get_visible()), (width >= 320,) * 2)
+                if width >= 680:
+                    self.assertIs(window.refresh_button.get_parent(), window.toolbar_end)
+                    self.assertIs(window.refresh_button.get_next_sibling(), window.menu_button)
+                    self.assertEqual(window.refresh_button.get_icon_name(), "view-refresh-symbolic")
+                else:
+                    self.assertIs(window.refresh_button.get_parent(), window.preferences_refresh_row)
+                self.shot(window, f"board-toolbar-{width}.png")
+                if width < 320:
+                    continue
+                window.search_button.emit("clicked"); self.drain(.3)
+                self.assertTrue(window.search_popover.get_visible())
+                self.assertTrue(window.get_focus().is_ancestor(window.search) or window.get_focus() is window.search)
+                window.search.emit("stop-search"); self.drain(.2)
+                self.assertFalse(window.search_popover.get_visible())
+                # Typing on the Board starts a search in the popover.
+                card = window.focus_widgets[window.row_order[0]]
+                card.grab_focus(); self.drain(.1)
+                self.assertTrue(window.window_key(None, asb.Gdk.KEY_a, 0, 0)); self.drain(.3)
+                self.assertTrue(window.search_popover.get_visible())
+                self.assertEqual(window.search.get_text(), "a")
+                window.search.emit("stop-search"); self.drain(.2)
+                self.assertEqual((window.search.get_text(), window.search_popover.get_visible()), ("", False))
+                if self.REAL_KEYS:
+                    self.focus(window)
+                    card.grab_focus(); self.drain(.1)
+                    self.keys("key", "a", wait=.3)
+                    self.assertTrue(window.search_popover.get_visible())
+                    self.assertEqual(window.search.get_text(), "a")
+                    self.keys("key", "Escape", wait=.3)
+                    self.assertEqual((window.search.get_text(), window.search_popover.get_visible()), ("", False))
+        # One toolbar height at every width: the wide toolbar has no search field that makes it taller.
+        self.assertEqual(len(heights), 1, heights)
+
+    def test_main_menu_has_messages_usage_and_preferences_with_their_keys(self):
+        window = self.board()
+        menu = window.menu_button
+        self.assertIsInstance(menu, asb.Gtk.MenuButton)
+        self.assertEqual((menu.get_icon_name(), menu.get_tooltip_text()), ("view-more-symbolic", "Main menu"))
+        self.assertTrue(menu.has_css_class("asb-toolbar-button"))
+        self.assert_accessible_label(menu, "Main menu")
+        model = menu.get_menu_model()
+        sections = [model.get_item_link(index, asb.Gio.MENU_LINK_SECTION) for index in range(model.get_n_items())]
+        items = [[tuple(section.get_item_attribute_value(index, name).get_string() for name in ("label", "action"))
+                  for index in range(section.get_n_items())] for section in sections]
+        self.assertEqual(items, [[("Messages", "app.messages"), ("Usage", "app.usage")], [("Preferences", "win.preferences")]])
+        accels = {action: self.application.get_accels_for_action(action) for action in ("app.messages", "app.usage", "win.preferences")}
+        self.assertEqual(accels, {"app.messages": ["<Control>m"], "app.usage": ["<Control>u"], "win.preferences": ["<Control>comma"]})
+        self.assertEqual(self.application.get_actions_for_accel("<Control><Shift>u"), [])
+        self.assertEqual(self.application.get_actions_for_accel("<Control>w"), [])
+        # The menu draws the separator and the key of each item; its popover takes the Board palette.
+        custom = {"background": "#171c22", "text": "#f0f2f5", "accent": "#f3c66b", "muted": "#b8c0cc", "divider": "#586372"}
+        window.set_palette(custom)
+        menu.popup(); self.drain(.4)
+        popover = menu.get_popover()
+        self.assertTrue(popover.get_visible() and popover.has_css_class("asb-main-menu"))
+        texts = [widget.get_label() for widget in descendants(popover) if isinstance(widget, asb.Gtk.Label) and widget.get_mapped()]
+        self.assertEqual(texts, ["Messages", "Ctrl+M", "Usage", "Ctrl+U", "Preferences", "Ctrl+,"])
+        self.assertEqual(sum(isinstance(widget, asb.Gtk.Separator) and widget.get_mapped() for widget in descendants(popover)), 1)
+        data, stride = self.pixels(popover)
+        found, bounds = popover.get_child().compute_bounds(popover)
+        x, y = int(bounds.origin.x + bounds.size.width / 2), int(bounds.origin.y + 3)
+        self.assertEqual(bytes(data[y * stride + x * 4:y * stride + x * 4 + 3]).hex(), "171c22")
+        self.shot(window, "board-main-menu-window.png")
+        self.shot(popover, "board-main-menu.png")
+        menu.popdown(); self.drain(.2)
+
+    def test_menu_actions_and_keys_open_the_windows_in_every_asb_window(self):
+        window = self.board()
+        application = self.application
+        application.activate_action("messages", None); self.drain(.3)
+        messages = application.activity_windows["messages"]
+        self.assertIsInstance(messages, asb.MessagesWindow)
+        self.assertTrue(messages.get_visible())
+        application.activate_action("messages", None); self.drain(.3)
+        self.assertIs(application.activity_windows["messages"], messages)
+        self.assertEqual(sum(isinstance(item, asb.MessagesWindow) for item in application.get_windows()), 1)
+        messages.close(); self.drain(.3)
+        self.assertNotIn("messages", application.activity_windows)
+        window.activate_action("win.preferences", None); self.drain(.3)
+        self.assertTrue(window.preferences_window.get_visible())
+        window.preferences_window.set_visible(False); self.drain(.2)
+        if not self.REAL_KEYS:
+            self.skipTest("Real keys need xdotool and DISPLAY=:9 or :10")
+        opened = []
+        window.open_row = lambda _listing, widget: opened.append(widget.asb_thread["id"])
+
+        def opens(kind, key, target):
+            self.focus(target)
+            self.keys("key", key, wait=.4)
+            self.assertIn(kind, application.activity_windows, (kind, key, target))
+            shown = application.activity_windows[kind]
+            self.assertTrue(shown.get_visible())
+            return shown
+        opens("messages", "ctrl+m", window).close(); self.drain(.3)
+        usage = opens("usage", "ctrl+u", window)
+        opens("messages", "ctrl+m", usage).close(); self.drain(.3)
+        self.focus(usage)
+        self.keys("key", "ctrl+w", wait=.4)
+        self.assertNotIn("usage", application.activity_windows)
+        # In the search field the keys open the windows too and type nothing; Ctrl+Shift+U stays the Unicode input.
+        self.focus(window)
+        window.open_search(); self.drain(.3)
+        self.keys("key", "ctrl+m", wait=.4)
+        self.assertIn("messages", application.activity_windows)
+        self.assertEqual(window.search.get_text(), "")
+        application.activity_windows["messages"].close(); self.drain(.3)
+        self.focus(window)
+        window.open_search(); self.drain(.3)
+        self.keys("key", "ctrl+shift+u", wait=.3)
+        self.keys("key", "Escape", "Escape", wait=.3)
+        self.assertNotIn("usage", application.activity_windows)
+        window.clear_search(); self.drain(.2)
+        # Ctrl+, opens Preferences, where Ctrl+U works too; Ctrl+W leaves the Board open.
+        self.focus(window)
+        self.keys("key", "ctrl+comma", wait=.4)
+        preferences = window.preferences_window
+        self.assertTrue(preferences.get_visible())
+        opens("usage", "ctrl+u", preferences).close(); self.drain(.3)
+        preferences.set_visible(False); self.drain(.2)
+        self.focus(window)
+        self.keys("key", "ctrl+w", wait=.4)
+        self.assertTrue(window.get_visible() and not window.closed)
+        # Holding Ctrl still shows the card numbers, and Ctrl+1 opens the first card.
+        window.focus_widgets[window.row_order[0]].grab_focus(); self.drain(.1)
+        self.keys("keydown", "Control_L", wait=.5)
+        self.assertTrue(window.numbers_shown)
+        self.keys("key", "1", wait=.2)
+        self.keys("keyup", "Control_L", wait=.2)
+        self.assertEqual(opened, [window.number_keys[0]])
+        self.assertFalse(window.numbers_shown)
+
+    def test_row_panel_show_messages_opens_the_thread_of_that_session(self):
+        rows = [{"id": "docs", "provider": "claude-desktop-code", "providerLabel": "Claude Desktop Code", "title": "Update the install guide",
+                 "cwd": "/example/docs", "projectName": "docs", "state": "idle", "canOpen": True, "updatedAtMs": NOW - 360_000, "unread": True},
+                {"id": "parser-review", "provider": "codex", "providerLabel": "Codex", "title": "Review   the parser changes",
+                 "cwd": "/example/parser-review", "projectName": "parser-review", "state": "working", "canOpen": False,
+                 "updatedAtMs": NOW - 120_000, "remote": True, "machineId": "laptop", "machineName": "Laptop", "sourceLabel": "Codex"}]
+        window = self.board({"generatedAtMs": NOW, "providers": [], "threads": rows, "persistentUnread": False})
+        custom = {"background": "#171c22", "text": "#f0f2f5", "accent": "#f3c66b", "muted": "#b8c0cc", "divider": "#586372"}
+        window.set_palette(custom); self.drain(.2)
+        for identity in ("docs", "parser-review"):
+            with self.subTest(identity=identity):
+                window.show_context(window.focus_widgets[identity]); self.drain(.3)
+                panel = window.context_menu
+                root = panel.get_child().get_child()
+                order = [root.get_first_child()]
+                while len(order) < 4:
+                    order.append(order[-1].get_next_sibling())
+                self.assertEqual(order[:3], [panel.asb_title, panel.asb_open, panel.asb_messages])
+                self.assertIsInstance(order[3], asb.Gtk.Separator)
+                messages = panel.asb_messages
+                self.assertEqual(messages.asb_label.get_label(), "Show messages")
+                self.assert_accessible_label(messages, "Show messages")
+                self.assertEqual(messages.asb_icon.get_gicon().get_file().get_basename(), "asb-chat-symbolic.svg")
+                self.assertTrue(messages.has_css_class("flat") and messages.has_css_class("asb-panel-action"))
+                # Sensitive for every row, also the view-only remote row whose Open row is not.
+                self.assertTrue(messages.get_sensitive())
+                self.assertEqual(panel.asb_open.get_sensitive(), identity == "docs")
+                # The new row is in the focus order of the panel keys, between Open in and the actions.
+                if identity == "docs":
+                    panel.asb_open.grab_focus()
+                    keys = SimpleNamespace(get_widget=lambda: panel)
+                    self.assertTrue(window.panel_key(keys, asb.Gdk.KEY_Down, 0, 0))
+                    self.assertIs(window.get_focus(), messages)
+                    self.assertTrue(window.panel_key(keys, asb.Gdk.KEY_Down, 0, 0))
+                    self.assertIs(window.get_focus(), next(button for button in panel.asb_actions.values() if button.get_visible()))
+                    self.assertTrue(window.panel_key(keys, asb.Gdk.KEY_Up, 0, 0))
+                    self.assertIs(window.get_focus(), messages)
+                    # The glyph is drawn in the Board text color, as the other ASB glyphs.
+                    data, stride = self.pixels(messages.asb_icon)
+                    alpha = max(data[3::4])
+                    index = data[3::4].index(alpha) * 4
+                    color = messages.asb_label.get_color()
+                    ink = [round(channel * 255) for channel in (color.red, color.green, color.blue)]
+                    self.assertGreater(alpha, 200)
+                    self.assertTrue(all(abs(data[index + channel] - ink[channel]) <= 2 for channel in range(3)), (data[index:index + 4], ink))
+                    self.shot(panel, "board-row-panel.png")
+                    panel.popdown(); self.drain(.3)
+                    continue
+                title = panel.asb_title.get_label()
+                self.assertEqual(title, "Review the parser changes")
+                with patch.object(self.application, "show_activity", wraps=self.application.show_activity) as shown:
+                    messages.emit("clicked"); self.drain(.3)
+                    shown.assert_called_once_with("messages", seat="parser-review", title=title)
+                self.assertFalse(panel.get_visible())
+                self.assertIsNone(window.context_menu)
+                thread = self.application.activity_windows["messages"]
+                thread.refresh(); self.drain(.4)
+                self.assertEqual((thread.thread["kind"], thread.thread["key"], thread.thread["title"]), ("session", "parser-review", title))
+                self.assertEqual(thread.ledger.get_visible_child_name(), "thread")
+                self.assertIn("/api/activity/thread?period=7d&seat=parser-review", self.routes)
+
+    def test_tray_event_opens_the_window_only_on_the_board_that_reported_last(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        ready, done, clients = threading.Event(), threading.Event(), []
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.end_headers()
+                self.wfile.flush()
+                ready.wait(2)
+                board = clients[0]
+                for data in ('{"window":"messages","clientId":"another-board"}', '{"window":"board","clientId":"%s"}' % board,
+                             '["usage"]', '{"window":"messages"}', '{"window":"usage","clientId":"%s"}' % board):
+                    self.wfile.write(f"event: show-window\ndata: {data}\n\n".encode())
+                self.wfile.flush()
+                done.wait(3)
+
+            def log_message(self, *_args):
+                pass
+
+        with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+            thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .01}, daemon=True)
+            thread.start()
+            self.addCleanup(lambda: (done.set(), server.shutdown(), thread.join(1)))
+            base = f"http://127.0.0.1:{server.server_port}"
+            patcher = patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+            with patch.object(self.application, "show_activity", wraps=self.application.show_activity) as shown:
+                window = asb.SwitchboardWindow(self.application, base, mock_dashboard(), theme_path=False, layout_path=False)
+                self.addCleanup(window.close)
+                window.present(); self.drain(.2)
+                # An activity window's stream gets the same events and passes none of them on.
+                usage = asb.UsageWindow(self.application, base, fetch=lambda route: copy.deepcopy(self.USAGE[route.rsplit("=", 1)[1]]))
+                usage.start_live()
+                self.assertIsNone(usage.events.on_show_window)
+                self.assertIsNotNone(window.events.on_show_window)
+                clients.append(window.ui_client_id)
+                ready.set()
+                for _attempt in range(40):
+                    self.drain(.05)
+                    if "usage" in self.application.activity_windows:
+                        break
+                self.drain(.3)
+                shown.assert_called_once_with("usage")
+            opened = self.application.activity_windows["usage"]
+            self.assertIsNot(opened, usage)
+            self.assertTrue(opened.get_visible())
+            self.assertNotIn("messages", self.application.activity_windows)
+            usage.close()
+
+    def test_open_window_variable_opens_the_board_then_the_window(self):
+        original = asb.SwitchboardWindow
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        # The Board of the start reads no layout or theme file of this machine.
+        board = lambda application, base, first_load=None: original(application, base, mock_dashboard(), theme_path=False, layout_path=False)
+        for value, expected in (("usage", ["usage"]), ("x", [])):
+            with self.subTest(value=value), patch.dict(os.environ, {"ASB_OPEN_WINDOW": value}):
+                with patch.object(asb, "SwitchboardWindow", board):
+                    self.application.on_activate()
+                self.assertNotIn("ASB_OPEN_WINDOW", os.environ)
+                boards = [item for item in self.application.get_windows() if isinstance(item, original)]
+                self.assertEqual(len(boards), 1)
+                self.assertEqual(list(self.application.activity_windows), [])
+                self.drain(.3)
+                self.assertEqual(list(self.application.activity_windows), expected)
+                if expected:
+                    self.assertTrue(self.application.activity_windows["usage"].get_visible())
+                    self.assertTrue(boards[0].get_visible())
+                self.close_windows()
+
+    def test_messages_and_usage_keep_their_own_size(self):
+        path = asb.THEME_PATH.with_name("activity-windows.json")
+        application = self.application
+        messages = application.show_activity("messages"); self.drain(.3)
+        self.assertEqual(messages.get_default_size(), (968, 760))
+        messages.set_default_size(1000, 700); self.drain(.3)
+        self.assertEqual((messages.get_width(), messages.get_height()), (1000, 700))
+        messages.close(); self.drain(.3)
+        self.assertEqual(json.loads(path.read_text()), {"version": 1, "messages": {"width": 1000, "height": 700, "maximized": False}})
+        messages = application.show_activity("messages"); self.drain(.3)
+        self.assertEqual(messages.get_default_size(), (1000, 700))
+        self.assertEqual((messages.get_width(), messages.get_height()), (1000, 700))
+        messages.close(); self.drain(.3)
+        # Usage keeps its own size.
+        usage = application.show_activity("usage"); self.drain(.3)
+        self.assertEqual(usage.get_default_size(), (948, 760))
+        usage.close(); self.drain(.3)
+        self.assertEqual(asb.read_window_sizes(path), {"messages": (1000, 700, False), "usage": (948, 760, False)})
+        # A broken file gives the defaults and no exception; the next close writes a valid file.
+        path.write_text("{")
+        messages = application.show_activity("messages"); self.drain(.3)
+        self.assertEqual(messages.get_default_size(), (968, 760))
+        messages.close(); self.drain(.3)
+        self.assertEqual(json.loads(path.read_text()), {"version": 1, "messages": {"width": 968, "height": 760, "maximized": False}})
+        # A saved maximized window opens maximized.
+        asb.write_window_size(path, "usage", 900, 600, True)
+        usage = application.show_activity("usage"); self.drain(.5)
+        self.assertEqual(usage.get_default_size(), (900, 600))
+        self.assertTrue(usage.is_maximized())
 
 
 if __name__ == "__main__":

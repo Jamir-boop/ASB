@@ -854,6 +854,38 @@ def write_layout(path, width=None, view=None, card_limit=None, copy_kind=None):
     write_config(path, value)
 
 
+ACTIVITY_SIZE_KINDS = ("messages", "usage")
+
+
+def valid_window_size(width, height, maximized):
+    return all(type(value) is int and 360 <= value <= 16384 for value in (width, height)) and type(maximized) is bool
+
+
+def read_window_sizes(path):
+    """The saved Messages and Usage window sizes, {kind: (width, height, maximized)}; a missing, broken, or invalid file or kind gives none."""
+    try:
+        value = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(value, dict) or value.get("version") != 1:
+        return {}
+    sizes = {}
+    for kind in ACTIVITY_SIZE_KINDS:
+        entry = value.get(kind)
+        if isinstance(entry, dict) and valid_window_size(entry.get("width"), entry.get("height"), entry.get("maximized")):
+            sizes[kind] = (entry["width"], entry["height"], entry["maximized"])
+    return sizes
+
+
+def write_window_size(path, kind, width, height, maximized):
+    """Save one window size next to layout.json; layout.json keeps its keys, because older ASB versions reject unknown keys there."""
+    if kind not in ACTIVITY_SIZE_KINDS or not valid_window_size(width, height, maximized):
+        return
+    sizes = read_window_sizes(path)
+    sizes[kind] = (width, height, maximized)
+    write_config(path, {"version": 1, **{name: {"width": w, "height": h, "maximized": m} for name, (w, h, m) in sizes.items()}})
+
+
 def filter_chips(pending, states, profiles, profile_model, archived, show_all=False, limit=DEFAULT_CARD_LIMIT):
     """One chip per active filter value, in toolbar order. Each chip is (key, label, detail, color)."""
     chips = []
@@ -1876,22 +1908,10 @@ def usage_scan_text(scan):
     return f"Reading usage: {format_count(scan.get('scannedFiles') or 0)} of {format_count(files)} files" if files else "Reading usage"
 
 
-def usage_ease_bars(progress):
-    """cubic-bezier(.16, 1, .3, 1), the bar motion of the preview."""
-    if progress <= 0 or progress >= 1:
-        return min(max(progress, 0), 1)
-    curve = lambda t, first, second: 3 * first * t * (1 - t) ** 2 + 3 * second * t * t * (1 - t) + t ** 3
-    low, high = 0, 1
-    for _step in range(30):
-        middle = (low + high) / 2
-        low, high = (middle, high) if curve(middle, .16, .3) < progress else (low, middle)
-    return curve((low + high) / 2, 1, 1)
-
-
 class EventStream:
-    def __init__(self, base, callback, dispatch):
+    def __init__(self, base, callback, dispatch, on_show_window=None):
         self.address = urlsplit(base)
-        self.callback, self.dispatch = callback, dispatch
+        self.callback, self.dispatch, self.on_show_window = callback, dispatch, on_show_window
         self.stopped = threading.Event()
         self.lock, self.socket = threading.Lock(), None
         self.worker = threading.Thread(target=self.run, daemon=True)
@@ -1926,6 +1946,14 @@ class EventStream:
                                 value = json.loads("\n".join(data))
                                 if isinstance(value, dict) and value.get("reason") != "connected":
                                     self.dispatch(self.callback)
+                            elif event == "show-window" and data and self.on_show_window:
+                                # The tray asks the Board that reported last to open a window; other data is ignored.
+                                try:
+                                    value = json.loads("\n".join(data))
+                                except ValueError:
+                                    value = None
+                                if isinstance(value, dict) and value.get("window") in ("messages", "usage") and isinstance(value.get("clientId"), str):
+                                    self.dispatch(self.on_show_window, value["window"], value["clientId"])
                             event, data = "", []
                         elif line.startswith("event:"):
                             event = line[6:].strip()
@@ -4125,9 +4153,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         tools.append(self.toolbar_center)
         self.search = Gtk.SearchEntry(placeholder_text="Find a session or folder", hexpand=True)
         self.search.set_search_delay(0)
-        # The natural width (about 240 px) keeps the search wide before the chips scroll; a low minimum lets one resize make the board narrow.
         self.search.set_max_width_chars(22)
-        self.search.set_size_request(0, -1)
         self.search.set_tooltip_text("Search title or folder. cl: or claude: selects Claude; cx: or codex: selects Codex; "
                                      "oc: or opencode: selects OpenCode.")
         self.search.connect("search-changed", self.filter_changed)
@@ -4138,11 +4164,17 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.search_popover.set_child(self.search)
         self.search.set_size_request(240, -1)
         self.search_popover.connect("closed", lambda *_args: setattr(self, "search_expanded", False))
-        # The narrow search popover gets its own key events; the number keys work there as on the board.
+        # The search popover gets its own key events; the number keys work there as on the board.
         popover_keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
         popover_keys.connect("key-pressed", lambda _controller, key, _code, modifiers: bool(self.number_key_pressed(key, modifiers)))
         popover_keys.connect("key-released", self.window_key_released)
         self.search_popover.add_controller(popover_keys)
+        # The window shortcuts do not see the keys of the popover surface, so the application keys also work in the search field.
+        popover_shortcuts = Gtk.ShortcutController(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        for action in ("app.messages", "app.usage", "win.preferences"):
+            for accel in application.get_accels_for_action(action):
+                popover_shortcuts.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string(accel), Gtk.NamedAction.new(action)))
+        self.search_popover.add_controller(popover_shortcuts)
         # Any other popover blocks the number keys, also one that does not take the focus.
         self.open_popovers = set()
         self.popover_hooks = [(name, GObject.add_emission_hook(Gtk.Popover, name, self.popover_visibility, name))
@@ -4152,10 +4184,19 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.search_button.update_property([Gtk.AccessibleProperty.LABEL], ["Search sessions"])
         self.search_button.connect("clicked", self.open_search)
         self.toolbar_center.append(self.search_button)
-        menu = Gtk.Button(icon_name="view-more-symbolic", tooltip_text="Preferences")
-        menu.update_property([Gtk.AccessibleProperty.LABEL], ["Open Preferences"])
-        menu.connect("clicked", self.open_preferences)
+        preferences = Gio.SimpleAction.new("preferences", None)
+        preferences.connect("activate", self.open_preferences)
+        self.add_action(preferences)
+        model, windows, settings = Gio.Menu(), Gio.Menu(), Gio.Menu()
+        windows.append("Messages", "app.messages")
+        windows.append("Usage", "app.usage")
+        settings.append("Preferences", "win.preferences")
+        model.append_section(None, windows)
+        model.append_section(None, settings)
+        menu = Gtk.MenuButton(icon_name="view-more-symbolic", tooltip_text="Main menu", menu_model=model)
+        menu.update_property([Gtk.AccessibleProperty.LABEL], ["Main menu"])
         menu.add_css_class("asb-toolbar-button")
+        menu.get_popover().add_css_class("asb-main-menu")
         self.menu_button = menu
         sessions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         appearance = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -4302,9 +4343,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.drawer_only.update_property([Gtk.AccessibleProperty.LABEL], ["Drawer only. The drawer is empty."])
         drawer = Gtk.Box(spacing=3)
         drawer.append(self.drawer_glyph())
-        self.drawer_label = label("Drawer")
-        self.drawer_label.set_visible(False)
-        drawer.append(self.drawer_label)
         self.drawer_dot = Gtk.Box(valign=Gtk.Align.CENTER, visible=False)
         self.drawer_dot.add_css_class("asb-drawer-dot")
         drawer.append(self.drawer_dot)
@@ -4323,9 +4361,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         funnel = Gtk.Image(pixel_size=14)
         set_icon(funnel, "asb-filter-symbolic")
         filters_box.append(funnel)
-        self.filters_label = label("Filters")
-        self.filters_label.set_visible(False)
-        filters_box.append(self.filters_label)
         self.filters_pill.set_child(filters_box)
         self.filters_pill.connect("clicked", self.open_filters_popover)
         self.toolbar_strip.append(self.filters_pill)
@@ -4404,7 +4439,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 style.connect("notify::" + name, lambda *_args: GLib.idle_add(self.publish_palette))
         self.connect("realize", self.watch_layout)
         self.timer = GLib.timeout_add(self.refresh_interval_ms, self.tick)
-        self.events = EventStream(self.base, self.source_changed, GLib.idle_add)
+        self.events = EventStream(self.base, self.source_changed, GLib.idle_add, self.show_window_event)
         if initial_dashboard is not None:
             self.apply_dashboard(initial_dashboard, None)
         elif first_load:
@@ -4427,12 +4462,18 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 if editor:
                     editor.base = base
         self.events.close()
-        self.events = EventStream(base, self.source_changed, GLib.idle_add)
+        self.events = EventStream(base, self.source_changed, GLib.idle_add, self.show_window_event)
         self.dashboard_etag = None
         self.ui_report_last = None
         self.ui_report_sending = False
         self.report_ui()
         self.refresh(queue=True)
+
+    def show_window_event(self, window, client_id):
+        # Only the Board that reported last opens the window, so two Boards do not both open it.
+        if client_id == self.ui_client_id and not self.closed:
+            self.get_application().show_activity(window)
+        return False
 
     def first_dashboard(self, dashboard, error, etag):
         """The result of the early request of the launcher start. A failed request shows no notice: the normal first refresh runs."""
@@ -4472,7 +4513,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-filter-footer {{ min-height: 30px; border-radius: 0 0 5px 5px; font-size: 13px; }}
 {base}.asb-preferences stackswitcher > button.text-button {{ min-width: 0; }}
 {base} .asb-toolbar-button,
+{base} menubutton.asb-toolbar-button > button,
 {base} .asb-toolbar windowcontrols button {{ min-height: 24px; min-width: 22px; padding: 2px; }}
+{base} menubutton.asb-toolbar-button {{ min-height: 0; min-width: 0; padding: 0; }}
 {base} .asb-toolbar searchentry {{ min-height: 26px; padding-top: 0; padding-bottom: 0; }}
 {base} .asb-state {{ font-size: 11px; }}
 {base} .asb-provider {{ opacity: .65; }}
@@ -5019,20 +5062,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def update_toolbar_presentation(self):
         wide = self.wide_controls
-        focused = self.get_focus()
-        search_focused = bool(focused and (focused is self.search or focused.is_ancestor(self.search)))
-        if wide != (self.search.get_parent() is self.toolbar_center):
-            if wide:
-                self.search_popover.popdown()
-                self.search_popover.set_child(None)
-                self.search.set_size_request(0, -1)
-                self.toolbar_center.prepend(self.search)
-            else:
-                self.toolbar_center.remove(self.search)
-                self.search.set_size_request(240, -1)
-                self.search_popover.set_child(self.search)
         self.app_mark.set_visible(not self.tiny_controls)
-        self.search_button.set_visible(not wide and not self.tiny_controls)
+        self.search_button.set_visible(not self.tiny_controls)
         if wide != (self.refresh_button.get_parent() is self.toolbar_end):
             self.refresh_button.get_parent().remove(self.refresh_button)
             if wide:
@@ -5042,10 +5073,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.refresh_button.set_label("Refresh sessions")
                 self.preferences_refresh_row.append(self.refresh_button)
         self.preferences_refresh_row.set_visible(not wide)
-        self.drawer_label.set_visible(wide)
-        self.filters_label.set_visible(wide)
-        if search_focused:
-            self.open_search()
 
     def scroll_toolbar(self, _controller, dx, dy):
         adjustment = self.toolbar_scroll.get_hadjustment()
@@ -5387,15 +5414,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def clear_search(self, *_args):
         self.cancel_scroll()
         self.search.set_text("")
-        if not self.wide_controls:
-            self.search_popover.popdown()
-            self.search_expanded = False
-            (self.menu_button if self.tiny_controls else self.search_button).grab_focus()
+        self.search_popover.popdown()
+        self.search_expanded = False
+        (self.menu_button if self.tiny_controls else self.search_button).grab_focus()
 
     def open_search(self, *_args):
         self.search_expanded = True
-        if not self.wide_controls:
-            self.search_popover.popup()
+        self.search_popover.popup()
         self.search.grab_focus()
 
     def open_search_from_preferences(self, *_args):
@@ -5414,7 +5439,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return True
 
     def numbers_blocked(self):
-        # The narrow search popover is part of the board; the row panel and every other popup block the numbers.
+        # The search popover is part of the board; the row panel and every other popup block the numbers.
         if not self.is_active() or (self.context_menu and self.context_menu.get_visible()) \
                 or any(popover.get_mapped() for popover in self.open_popovers):
             return True
@@ -5540,7 +5565,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if focus and focus.get_ancestor(Gtk.Popover):
             return False
         if key == Gdk.KEY_Escape:
-            if self.search.get_text() or (not self.wide_controls and self.search_expanded):
+            if self.search.get_text() or self.search_expanded:
                 self.clear_search()
                 return True
             return False
@@ -7115,6 +7140,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             root.append(button)
             return button
         panel.asb_open = action_row("go-next-symbolic", self.panel_open)
+        # Every row has messages to show: local, remote, and view-only, so the row is always sensitive.
+        panel.asb_messages = action_row("asb-chat-symbolic", self.panel_show_messages)
+        set_panel_label(panel.asb_messages, "Show messages")
         root.append(Gtk.Separator())
         panel.asb_note = label("Waits for your permission.", "asb-panel-note")
         root.append(panel.asb_note)
@@ -7340,6 +7368,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         panel.popdown()
         if widget:
             self.open_row(None, widget)
+
+    def panel_show_messages(self, button):
+        panel = button.get_ancestor(Gtk.Popover)
+        identity, title = panel.asb_identity, panel.asb_title.get_label()
+        panel.popdown()
+        self.get_application().show_activity("messages", seat=identity, title=title)
 
     def panel_key(self, controller, key, _code, state):
         panel = controller.get_widget()
@@ -7591,6 +7625,12 @@ class ActivityWindow(Adw.Window):
         super().__init__()
         self.set_title(self.TITLE)
         self.set_default_size(*self.DEFAULT_SIZE)
+        # GTK 4 has no window position API, so only the size is kept.
+        saved = read_window_sizes(THEME_PATH.with_name("activity-windows.json")).get(self.KIND)
+        if saved:
+            self.set_default_size(*saved[:2])
+            if saved[2]:
+                self.maximize()
         self.set_application(application)
         self.application = application
         self.base, self.fetch = base, fetch
@@ -7773,7 +7813,10 @@ class ActivityWindow(Adw.Window):
     def set_palette(self, colors):
         self.palette = palette = activity_palette(colors or native_colors(self))
         scope = ".asb-activity" + self.css_scope
-        self.css.load_from_string(f"""
+        hues = "".join(f"{scope} .asb-activity-hue-{index} {{ background: {hue}; }}\n"
+                       f"{scope} .asb-activity-hue-{index}.asb-activity-hollow {{ background: none; border: 1.5px solid {hue}; min-width: 4px; min-height: 4px; }}\n"
+                       for index, hue in enumerate(MACHINE_HUES))
+        self.css.load_from_string(hues + f"""
 {scope} {{ background: {palette['win']}; color: {palette['text']}; }}
 {scope} .asb-activity-toolbar {{ background: {palette['bar']}; padding: 6px 10px; border-bottom: 1px solid {palette['edge']}; }}
 {scope} .asb-dim {{ color: {palette['dim']}; }}
@@ -7781,8 +7824,20 @@ class ActivityWindow(Adw.Window):
 {scope} .asb-rule {{ border-top: 1px solid {palette['rule']}; }}
 {scope} .asb-mono {{ font-family: monospace; font-feature-settings: "tnum"; }}
 {scope} .asb-paths-note {{ font-size: 12px; }}
+{scope} .asb-activity-dot {{ min-width: 7px; min-height: 7px; border-radius: 50%; }}
 """ + self.palette_css(palette))
         self.queue_draw()
+
+    @staticmethod
+    def hue_dot(index, offline):
+        """The 7px machine dot: filled in the machine hue, a 1.5px ring when the machine is offline."""
+        # The size request keeps the ring at 7px: GTK draws the 1.5px border as 1px, and min-width alone gives a 6px ring.
+        dot = Gtk.Box(width_request=7, height_request=7, valign=Gtk.Align.CENTER, halign=Gtk.Align.CENTER)
+        dot.add_css_class("asb-activity-dot")
+        dot.add_css_class(f"asb-activity-hue-{index % len(MACHINE_HUES)}")
+        if offline:
+            dot.add_css_class("asb-activity-hollow")
+        return dot
 
     def palette_css(self, palette):
         """Extra rules of a subclass, scoped with self.css_scope; they load with the rules above."""
@@ -7793,6 +7848,11 @@ class ActivityWindow(Adw.Window):
             return False
         self.closed = True
         self.stop_live()
+        try:
+            write_window_size(THEME_PATH.with_name("activity-windows.json"), self.KIND, *self.get_default_size(), self.is_maximized())
+        except OSError:
+            # The size is a comfort; a read-only configuration folder does not stop the close.
+            pass
         windows = getattr(self.application, "activity_windows", {})
         if windows.get(self.KIND) is self:
             del windows[self.KIND]
@@ -7863,14 +7923,16 @@ def sector_path(cx, cy, inner, outer, start, end):
     def point(radius, degrees):
         angle = math.radians(degrees)
         return cx + radius * math.cos(angle), cy + radius * math.sin(angle)
-    large = end - start > 180
     builder = Gsk.PathBuilder.new()
-    builder.move_to(*point(outer, start))
-    builder.svg_arc_to(outer, outer, 0, large, True, *point(outer, end))
-    builder.line_to(*point(inner, end))
-    if inner > 0:
-        builder.svg_arc_to(inner, inner, 0, large, False, *point(inner, start))
-    builder.close()
+    # A full ring is two halves in one path: one arc cannot end where it starts, and two fills would show a seam.
+    for first, last in ((start, start + 180), (start + 180, start + 360)) if end - start >= 359.99 else ((start, end),):
+        large = last - first > 180
+        builder.move_to(*point(outer, first))
+        builder.svg_arc_to(outer, outer, 0, large, True, *point(outer, last))
+        builder.line_to(*point(inner, last))
+        if inner > 0:
+            builder.svg_arc_to(inner, inner, 0, large, False, *point(inner, first))
+        builder.close()
     return builder.to_path()
 
 
@@ -7880,7 +7942,7 @@ def alpha_color(value, alpha=1):
     return color
 
 
-def message_layout(widget, text, size, weight=Pango.Weight.NORMAL, mono=False):
+def activity_layout(widget, text, size, weight=Pango.Weight.NORMAL, mono=False):
     layout = widget.create_pango_layout(text)
     font = widget.get_pango_context().get_font_description().copy()
     if mono:
@@ -7998,7 +8060,7 @@ class RoundTable(Gtk.Overlay):
         machine = view["machines"][index] if index is not None else {}
         counts = view["counts"].get(seat_id, {"sent": 0, "received": 0})
         title = seat.get("title") or "Other sessions"
-        layout = message_layout(self, seat_label_text(title), 12)
+        layout = activity_layout(self, seat_label_text(title), 12)
         _ink, logical = layout.get_pixel_extents()
         return {"title": title, "app": message_app(seat), "machine": seat.get("machineId", ""), "hue": machine_hue(index if index is not None else 0),
                 "offline": machine.get("state") == "offline", "layout": layout, "w": logical.width, "h": logical.height,
@@ -8084,7 +8146,7 @@ class RoundTable(Gtk.Overlay):
             entries = []
             for text, size, weight, offset, role in ((machine.get("name", ""), 13, Pango.Weight.SEMIBOLD, -7, "text"),
                                                      (machine_state_text(machine), 11, Pango.Weight.NORMAL, 9, "dim")):
-                layout = message_layout(self, text, size, weight)
+                layout = activity_layout(self, text, size, weight)
                 _ink, logical = layout.get_pixel_extents()
                 left = x if cos > .25 else x - logical.width if cos < -.25 else x - logical.width / 2
                 entries.append({"layout": layout, "x": left, "y": y + dy + offset - logical.height / 2, "w": logical.width, "h": logical.height, "role": role})
@@ -8496,7 +8558,7 @@ class MessageStrip(Gtk.Widget):
         largest = max([1] + bars)
         power = 10 ** math.floor(math.log10(largest))
         tick = next(value for value in (5 * power, 2.5 * power, 2 * power, power) if value <= largest and float(value).is_integer())
-        tick_layout = message_layout(self, format_count(int(tick)), 11)
+        tick_layout = activity_layout(self, format_count(int(tick)), 11)
         left = 16 + tick_layout.get_pixel_extents()[1].width + 6
         right, top, bottom = width - 16, 16, height - 20
         bar_width = (right - left - 2 * (len(bars) - 1)) / len(bars)
@@ -8541,11 +8603,11 @@ class MessageStrip(Gtk.Widget):
             builder.close()
             snapshot.append_fill(builder.to_path(), Gsk.FillRule.WINDING, alpha_color(palette["light"], .8) if index == last else bar_color)
         x, y, width, _height = shape["rects"][last]
-        count = message_layout(self, format_count(self.view["bars"][last]), 11, mono=True)
+        count = activity_layout(self, format_count(self.view["bars"][last]), 11, mono=True)
         extents = count.get_pixel_extents()[1]
         snapshot_layout(snapshot, count, x + width / 2 - extents.width / 2, y - 4 - count.get_baseline() / Pango.SCALE, dim)
         for index in sorted({0, (last) // 2, last}):
-            text = message_layout(self, bucket_label(self.buckets, index), 11)
+            text = activity_layout(self, bucket_label(self.buckets, index), 11)
             extents = text.get_pixel_extents()[1]
             middle = shape["rects"][index][0] + shape["rects"][index][2] / 2
             middle = min(max(middle, extents.width / 2), self.get_width() - extents.width / 2)
@@ -8680,9 +8742,7 @@ class MessagesWindow(ActivityWindow):
 
     def palette_css(self, palette):
         scope = self.css_scope
-        hues = "".join(f"{scope} .asb-msg-hue-{index} {{ background: {hue}; }}\n"
-                       f"{scope} .asb-msg-hue-{index}.asb-msg-offline {{ background: none; border: 1.5px solid {hue}; min-width: 4px; min-height: 4px; }}\n"
-                       f"{scope} .asb-msg-bg-{index} {{ background: alpha({hue}, .14); }}\n" for index, hue in enumerate(MACHINE_HUES))
+        hues = "".join(f"{scope} .asb-msg-bg-{index} {{ background: alpha({hue}, .14); }}\n" for index, hue in enumerate(MACHINE_HUES))
         statuses = "".join(f"{scope} .asb-msg-sw-{status} {{ background: {ACTIVITY_STATUS_COLORS[status]}; }}\n"
                            f"{scope} .asb-msg-stt-{status} {{ color: {palette.get(color, color)}; }}\n" for status, color in MESSAGE_STATUS_TEXT.items())
         return hues + statuses + f"""
@@ -8691,7 +8751,6 @@ class MessagesWindow(ActivityWindow):
 {scope} .asb-msg-tiny {{ font-size: 11px; }}
 {scope} .asb-msg-chips, {scope} .asb-msg-chips > flowboxchild {{ padding: 0; background: none; }}
 {scope} .asb-msg-chip {{ min-height: 20px; padding: 0 8px; border: 1px solid {palette['rule']}; border-radius: 4px; font-size: 12px; }}
-{scope} .asb-msg-dot {{ min-width: 7px; min-height: 7px; border-radius: 50%; }}
 {scope} .asb-msg-live-dot {{ min-width: 7px; min-height: 7px; border-radius: 50%; background: {palette['light']}; }}
 {scope} .asb-msg-live-ring {{ min-width: 7px; min-height: 7px; border-radius: 50%; background: {palette['light']}; opacity: 0;
     animation: asb-msg-pulse 2000ms ease-out infinite; }}
@@ -8804,12 +8863,7 @@ class MessagesWindow(ActivityWindow):
     def machine_dot(self, machine_id):
         index = next((index for index, machine in enumerate(self.view["machines"]) if machine["machineId"] == machine_id), 0)
         offline = next((machine.get("state") == "offline" for machine in self.view["machines"] if machine["machineId"] == machine_id), False)
-        dot = Gtk.Box(width_request=7, height_request=7, valign=Gtk.Align.CENTER)
-        dot.add_css_class("asb-msg-dot")
-        dot.add_css_class(f"asb-msg-hue-{index % len(MACHINE_HUES)}")
-        if offline:
-            dot.add_css_class("asb-msg-offline")
-        return dot
+        return self.hue_dot(index, offline)
 
     def render_toolbar(self):
         self.chips.remove_all()
@@ -9306,6 +9360,13 @@ class SwitchboardApplication(Adw.Application):
         # A window destroyed without a close request (no "destroy" signal reaches Python) still stops its stream and is forgotten.
         self.connect("window-removed", lambda _application, window: isinstance(window, ActivityWindow) and window.on_close())
         self.connect("activate", self.on_activate)
+        for kind in ("messages", "usage"):
+            action = Gio.SimpleAction.new(kind, None)
+            action.connect("activate", lambda _action, _value, kind: self.show_activity(kind), kind)
+            self.add_action(action)
+        # Application accelerators work in every ASB window, also in a focused text field. Ctrl+Shift+U stays the GTK Unicode input.
+        for action, key in (("app.messages", "<Control>m"), ("app.usage", "<Control>u"), ("win.preferences", "<Control>comma")):
+            self.set_accels_for_action(action, [key])
         if first_load:
             first_load.reconnect(self.reconnect, GLib.idle_add)
 
@@ -9320,7 +9381,7 @@ class SwitchboardApplication(Adw.Application):
             window.reconnect(base)
         return False
 
-    def show_activity(self, kind, seat=None):
+    def show_activity(self, kind, seat=None, title=""):
         if kind not in ACTIVITY_WINDOW_CLASSES:
             raise ValueError(f"Unknown activity window: {kind}")
         window = self.activity_windows.get(kind)
@@ -9328,49 +9389,28 @@ class SwitchboardApplication(Adw.Application):
             window = self.activity_windows[kind] = ACTIVITY_WINDOW_CLASSES[kind](self, self.base)
         window.present()
         if seat is not None and hasattr(window, "show_session"):
-            window.show_session(seat)
+            window.show_session(seat, title)
         return window
 
     def on_activate(self, *_args):
+        # The tray starts the launcher with ASB_OPEN_WINDOW when no Board is open; a later child process must not open it again.
+        opened = os.environ.pop("ASB_OPEN_WINDOW", "")
         window = self.get_active_window()
         if window is None:
             window = SwitchboardWindow(self, self.base, first_load=self.first_load)
             window.present()
             # GTK focuses the search field on show; its cursor blink repaints the window.
             window.set_focus(None)
-            return
-        window.present()
+        else:
+            window.present()
+        if opened in ("messages", "usage"):
+            GLib.idle_add(lambda: self.show_activity(opened) and False)
 
     def close_windows(self):
         for window in self.get_windows():
             window.close()
         self.quit()
         return False
-
-
-def usage_rgba(value, alpha=1):
-    color = Gdk.RGBA()
-    color.parse(value)
-    color.alpha *= alpha
-    return color
-
-
-def usage_layout(widget, text, size, weight=Pango.Weight.NORMAL, mono=False):
-    layout = widget.create_pango_layout(text)
-    font = widget.get_pango_context().get_font_description().copy()
-    if mono:
-        font.set_family("monospace")
-    font.set_absolute_size(size * Pango.SCALE)
-    font.set_weight(weight)
-    layout.set_font_description(font)
-    return layout
-
-
-def usage_text(snapshot, layout, x, y, color):
-    snapshot.save()
-    snapshot.translate(Graphene.Point().init(x, y))
-    snapshot.append_layout(layout, color)
-    snapshot.restore()
 
 
 def usage_rect(snapshot, x, y, width, height, color, radius=0, top_only=False):
@@ -9399,7 +9439,7 @@ class UsageBar(Gtk.Widget):
     def do_snapshot(self, snapshot):
         width, height = self.get_width(), self.get_height()
         if self.track:
-            usage_rect(snapshot, 0, 0, width, height, usage_rgba(self.track), 2)
+            usage_rect(snapshot, 0, 0, width, height, alpha_color(self.track), 2)
         total = sum(value for value, _color in self.segments)
         room = width * self.fraction - (len(self.segments) - 1)
         if not total or room <= 0:
@@ -9412,7 +9452,7 @@ class UsageBar(Gtk.Widget):
         x = 0
         for value, color in self.segments:
             size = room * value / total
-            usage_rect(snapshot, x, 0, size, height, color if isinstance(color, Gdk.RGBA) else usage_rgba(color), 2)
+            usage_rect(snapshot, x, 0, size, height, color if isinstance(color, Gdk.RGBA) else alpha_color(color), 2)
             x += size + 1
         if self.track:
             snapshot.pop()
@@ -9467,42 +9507,27 @@ class UsageRound(Gtk.Widget):
         self.raised = value
         self.queue_draw()
 
-    @staticmethod
-    def sector(builder, half, r0, r1, a0, a1):
-        point = lambda radius, angle: (half + radius * math.cos(math.radians(angle)), half + radius * math.sin(math.radians(angle)))
-        large = a1 - a0 > 180
-        builder.move_to(*point(r1, a0))
-        builder.svg_arc_to(r1, r1, 0, large, True, *point(r1, a1))
-        builder.line_to(*point(r0, a1))
-        builder.svg_arc_to(r0, r0, 0, large, False, *point(r0, a0))
-        builder.close()
-
     def do_snapshot(self, snapshot):
         if not ACTIVITY_PATHS:
             return
         palette, half = self.get_root().palette, self.SIZE / 2
         for arc in self.arcs:
-            builder = Gsk.PathBuilder.new()
-            if arc["a1"] - arc["a0"] >= 359.99:
-                self.sector(builder, half, arc["r0"], arc["r1"], arc["a0"], arc["a0"] + 180)
-                self.sector(builder, half, arc["r0"], arc["r1"], arc["a0"] + 180, arc["a0"] + 360)
-            else:
-                self.sector(builder, half, arc["r0"], arc["r1"], arc["a0"], arc["a1"])
             raised = arc is self.hover and self.raised
             if raised:
                 middle = math.radians((arc["a0"] + arc["a1"]) / 2)
                 snapshot.save()
                 snapshot.translate(Graphene.Point().init(4 * raised * math.cos(middle), 4 * raised * math.sin(middle)))
-            snapshot.append_fill(builder.to_path(), Gsk.FillRule.WINDING, usage_rgba(arc["color"]))
+            snapshot.append_fill(sector_path(half, half, arc["r0"], arc["r1"], arc["a0"], arc["a1"]), Gsk.FillRule.WINDING,
+                                 alpha_color(arc["color"]))
             if raised:
                 snapshot.restore()
         value, sub = self.center()
         # The preview places the text baselines 6 px above and 18 px below the center.
         for text, size, weight, mono, color, baseline in ((value, 26, Pango.Weight.SEMIBOLD, True, palette["text"], half - 6),
                                                           (sub, 12, Pango.Weight.NORMAL, False, palette["dim"], half + 18)):
-            layout = usage_layout(self, text, size, weight, mono)
+            layout = activity_layout(self, text, size, weight, mono)
             width = layout.get_pixel_extents()[1].width
-            usage_text(snapshot, layout, half - width / 2, baseline - layout.get_baseline() / Pango.SCALE, usage_rgba(color))
+            snapshot_layout(snapshot, layout, half - width / 2, baseline - layout.get_baseline() / Pango.SCALE, alpha_color(color))
 
 
 class UsageChart(Gtk.Widget):
@@ -9547,7 +9572,7 @@ class UsageChart(Gtk.Widget):
         self.queue_draw()
 
     def advance(self, value):
-        self.progress = usage_ease_bars(value)
+        self.progress = ease_bars(value)
         self.queue_draw()
 
     def geometry(self):
@@ -9574,9 +9599,9 @@ class UsageChart(Gtk.Widget):
         gap, width = self.geometry()
         bar = self.bars[index]
         rows = [(label, self.format(bar.get(key, 0)), color) for key, label, color in self.series]
-        title = usage_layout(self, self.full_label(index), 12, Pango.Weight.SEMIBOLD)
-        names = [usage_layout(self, label, 12) for label, _text, _color in rows] + [usage_layout(self, "Total", 12)]
-        values = [usage_layout(self, text, 12, mono=True) for _label, text, _color in rows] + [usage_layout(self, self.format(self.sums[index]), 12, mono=True)]
+        title = activity_layout(self, self.full_label(index), 12, Pango.Weight.SEMIBOLD)
+        names = [activity_layout(self, label, 12) for label, _text, _color in rows] + [activity_layout(self, "Total", 12)]
+        values = [activity_layout(self, text, 12, mono=True) for _label, text, _color in rows] + [activity_layout(self, self.format(self.sums[index]), 12, mono=True)]
         size = lambda layout: layout.get_pixel_extents()[1]
         line = max(size(name).width + 8 + 12 + size(value).width + (16 if position < len(rows) else 0)
                    for position, (name, value) in enumerate(zip(names, values)))
@@ -9601,7 +9626,7 @@ class UsageChart(Gtk.Widget):
         if not ACTIVITY_PATHS or not self.bars:
             return
         palette, chart_width = self.get_root().palette, self.get_width()
-        dim, rule, text = usage_rgba(palette["dim"]), usage_rgba(palette["rule"]), usage_rgba(palette["text"])
+        dim, rule, text = alpha_color(palette["dim"]), alpha_color(palette["rule"]), alpha_color(palette["text"])
         dash = Gsk.Stroke.new(1)
         dash.set_dash([3, 3])
         for line, label in enumerate(self.axis, 1):
@@ -9610,11 +9635,11 @@ class UsageChart(Gtk.Widget):
             builder.move_to(self.LEFT, y)
             builder.line_to(chart_width, y)
             snapshot.append_stroke(builder.to_path(), dash, rule)
-            layout = usage_layout(self, label, 11)
+            layout = activity_layout(self, label, 11)
             extents = layout.get_pixel_extents()[1]
-            usage_text(snapshot, layout, self.LEFT - 8 - extents.width, y - extents.height / 2, dim)
+            snapshot_layout(snapshot, layout, self.LEFT - 8 - extents.width, y - extents.height / 2, dim)
         gap, width = self.geometry()
-        colors = {key: usage_rgba(color) for key, _label, color in self.series}
+        colors = {key: alpha_color(color) for key, _label, color in self.series}
         for index, bar in enumerate(self.bars):
             x = self.LEFT + index * (width + gap)
             shown = [key for key, _label, _color in self.series if (index, key) in self.targets]
@@ -9628,10 +9653,10 @@ class UsageChart(Gtk.Widget):
         every = 3 if self.buckets["unit"] == "hour" else {7: 1, 30: 5}.get(len(self.bars), 15)
         for index in range(len(self.bars)):
             if (len(self.bars) - 1 - index) % every == 0:
-                layout = usage_layout(self, bucket_label(self.buckets, index), 11)
+                layout = activity_layout(self, bucket_label(self.buckets, index), 11)
                 label_width = layout.get_pixel_extents()[1].width
                 middle = min(max(self.LEFT + index * (width + gap) + width / 2, label_width / 2), chart_width - label_width / 2)
-                usage_text(snapshot, layout, middle - label_width / 2, self.BOTTOM + 15 - layout.get_baseline() / Pango.SCALE, dim)
+                snapshot_layout(snapshot, layout, middle - label_width / 2, self.BOTTOM + 15 - layout.get_baseline() / Pango.SCALE, dim)
         if self.tip:
             self.snapshot_tip(snapshot, palette, width, gap, text, rule)
 
@@ -9645,13 +9670,13 @@ class UsageChart(Gtk.Widget):
         left, top, box_width, box_height = tip["bounds"]
         box = Gsk.RoundedRect()
         box.init_from_rect(Graphene.Rect().init(left, top, box_width, box_height), 4)
-        snapshot.append_outset_shadow(box, usage_rgba("#000000", .45), 0, 6, 0, 16)
+        snapshot.append_outset_shadow(box, alpha_color("#000000", .45), 0, 6, 0, 16)
         snapshot.push_rounded_clip(box)
-        snapshot.append_color(usage_rgba("#2d3034"), box.bounds)
+        snapshot.append_color(alpha_color("#2d3034"), box.bounds)
         snapshot.pop()
-        snapshot.append_border(box, [1] * 4, [usage_rgba(palette["edge"])] * 4)
+        snapshot.append_border(box, [1] * 4, [alpha_color(palette["edge"])] * 4)
         title, names, values = tip["layouts"]
-        usage_text(snapshot, title, left + 11, top + 9, text)
+        snapshot_layout(snapshot, title, left + 11, top + 9, text)
         y = top + 9 + title.get_pixel_extents()[1].height + 4
         right = left + box_width - 11
         for position, (name, value) in enumerate(zip(names, values)):
@@ -9660,10 +9685,10 @@ class UsageChart(Gtk.Widget):
                 y += 9
                 start = left + 11
             else:
-                usage_rect(snapshot, left + 11, y + 5, 8, 8, usage_rgba(tip["colors"][position]), 2)
+                usage_rect(snapshot, left + 11, y + 5, 8, 8, alpha_color(tip["colors"][position]), 2)
                 start = left + 11 + 16
             for layout, at in ((name, start), (value, right - value.get_pixel_extents()[1].width)):
-                usage_text(snapshot, layout, at, y + (18 - layout.get_pixel_extents()[1].height) / 2, text)
+                snapshot_layout(snapshot, layout, at, y + (18 - layout.get_pixel_extents()[1].height) / 2, text)
             y += 18
 
 
@@ -9774,9 +9799,6 @@ class UsageWindow(ActivityWindow):
 
     def palette_css(self, palette):
         scope, rule = self.css_scope, palette["rule"]
-        hues = "".join(f"{scope} .asb-usage-hue-{index} {{ background: {hue}; }}\n"
-                       f"{scope} .asb-usage-hollow-{index} {{ background: none; border: 1.5px solid {hue}; min-width: 4px; min-height: 4px; }}\n"
-                       for index, hue in enumerate(MACHINE_HUES))
         swatches = "".join(f"{scope} .asb-usage-type-{part} {{ background: {color}; }}\n" for part, color in ACTIVITY_TOKEN_COLORS.items())
         return f"""
 {scope} .asb-usage-heading {{ font-size: 13px; font-weight: 600; }}
@@ -9790,7 +9812,6 @@ class UsageWindow(ActivityWindow):
 {scope} .asb-usage-legend {{ min-height: 22px; font-size: 12px; }}
 {scope} .asb-usage-cell {{ min-height: 34px; padding-right: 10px; border-bottom: 1px solid {rule}; font-size: 12px; }}
 {scope} .asb-usage-head {{ min-height: 30px; padding-right: 10px; border-bottom: 1px solid {rule}; font-size: 11px; color: {palette['dim']}; }}
-{scope} .asb-usage-dot {{ min-width: 7px; min-height: 7px; border-radius: 50%; }}
 {scope} .asb-usage-swatch {{ min-width: 8px; min-height: 8px; border-radius: 2px; }}
 {scope} .asb-usage-chip {{ min-height: 22px; padding: 0 8px; border: 1px solid {rule}; border-radius: 4px; font-size: 12px; font-weight: normal;
   background: none; box-shadow: none; color: {palette['text']}; }}
@@ -9801,7 +9822,7 @@ class UsageWindow(ActivityWindow):
 {scope} .asb-usage-chip.asb-usage-off {{ opacity: .5; }}
 {scope} .asb-usage-chip.asb-usage-off .asb-usage-chip-name {{ text-decoration-line: line-through; }}
 {scope} .asb-usage-split button {{ min-height: 24px; padding: 0 10px; font-size: 12px; }}
-""" + hues + swatches
+""" + swatches
 
     def set_palette(self, colors):
         super().set_palette(colors)
@@ -9835,11 +9856,7 @@ class UsageWindow(ActivityWindow):
         return widget
 
     def dot(self, machine):
-        index = MACHINE_HUES.index(machine["hue"])
-        widget = Gtk.Box(valign=Gtk.Align.CENTER, halign=Gtk.Align.CENTER)
-        widget.add_css_class("asb-usage-dot")
-        widget.add_css_class(f"asb-usage-hollow-{index}" if machine["offline"] else f"asb-usage-hue-{index}")
-        return widget
+        return self.hue_dot(MACHINE_HUES.index(machine["hue"]), machine["offline"])
 
     @staticmethod
     def mark(app):
@@ -9909,8 +9926,7 @@ class UsageWindow(ActivityWindow):
         key = [(machine["machineId"], machine["name"], machine.get("state"), machine.get("lastReportAtMs")) for machine in self.data["machines"]]
         if key != self.chip_key:
             self.chip_key = key
-            while child := self.chips.get_first_child():
-                self.chips.remove(child)
+            remove_children(self.chips)
             self.chip_buttons = {}
             for index, machine in enumerate(self.data["machines"]):
                 button = Gtk.ToggleButton(valign=Gtk.Align.CENTER)
@@ -9988,8 +10004,7 @@ class UsageWindow(ActivityWindow):
 
     def render_rows(self, view, show):
         for box in (self.machine_rows, self.app_rows):
-            while child := box.get_first_child():
-                box.remove(child)
+            remove_children(box)
         for machine in view["machines"]:
             row = self.row_box()
             row.asb_machine = machine["id"]
@@ -10020,8 +10035,7 @@ class UsageWindow(ActivityWindow):
             self.app_rows.append(row)
 
     def render_totals(self, view):
-        while child := self.figures.get_first_child():
-            self.figures.remove(child)
+        remove_children(self.figures)
         parts = view["parts"]
         figures = (("Processed tokens", format_tokens(view["tokens"])), ("Cached input", format_tokens(parts["cacheRead"] + parts["cacheWrite"])),
                    ("Uncached input", format_tokens(parts["uncached"])), ("Output", format_tokens(parts["output"])),
@@ -10032,8 +10046,7 @@ class UsageWindow(ActivityWindow):
             figure.append(self.text(title, ("asb-usage-small", "asb-dim")))
             figure.append(self.text(value, ("asb-mono", "asb-usage-figure")))
             self.figures.attach(figure, index % columns, index // columns, 1, 1)
-        while child := self.blocks.get_first_child():
-            self.blocks.remove(child)
+        remove_children(self.blocks)
         for title, values, show in (("Tokens by type", parts, format_tokens), ("Cost by type", view["cost_parts"], format_cost)):
             block = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
             block.append(self.text(title, ("asb-usage-small", "asb-dim"), margin_bottom=8))
@@ -10058,8 +10071,7 @@ class UsageWindow(ActivityWindow):
 
     def render_models(self, view, show):
         grid = self.models
-        while child := grid.get_first_child():
-            grid.remove(child)
+        remove_children(grid)
         names = {machine["machineId"]: machine["name"] for machine in self.data["machines"]}
         rows = {machine["id"]: machine for machine in view["machines"]}
         columns = [("Model", 0), ("App", 0), ("Cost", 1), ("Tokens", 1)] if self.small else \
@@ -10086,7 +10098,7 @@ class UsageWindow(ActivityWindow):
             share = Gtk.Box(spacing=8)
             if model["share"] is not None:
                 bar = UsageBar(6, "#34373b", 60)
-                bar.set_segments([(1, usage_rgba(self.palette["light"], .75))], model["share"])
+                bar.set_segments([(1, alpha_color(self.palette["light"], .75))], model["share"])
                 share.append(bar)
                 share.append(self.text(format_share(model["share"]), ("asb-mono",)))
             cells["Share"] = share

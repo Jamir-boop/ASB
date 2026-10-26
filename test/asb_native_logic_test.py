@@ -904,9 +904,9 @@ class UsageLogicChecks(unittest.TestCase):
         self.assertNotIn("studio", [arc["id"] for arc in asb.usage_round_arcs(self.view("24h"), machines, "cost")])
 
     def test_bar_easing(self):
-        self.assertEqual((asb.usage_ease_bars(0), asb.usage_ease_bars(1), asb.usage_ease_bars(-1), asb.usage_ease_bars(2)), (0, 1, 0, 1))
-        self.assertGreater(asb.usage_ease_bars(.25), .75)
-        self.assertLess(asb.usage_ease_bars(.05), asb.usage_ease_bars(.1))
+        self.assertEqual((asb.ease_bars(0), asb.ease_bars(1), asb.ease_bars(-1), asb.ease_bars(2)), (0, 1, 0, 1))
+        self.assertGreater(asb.ease_bars(.25), .75)
+        self.assertLess(asb.ease_bars(.05), asb.ease_bars(.1))
 
 
 class PhoneChecks(unittest.TestCase):
@@ -2158,7 +2158,7 @@ class DataChecks(unittest.TestCase):
             window.sync_filter_chips()
             self.assertEqual(set(window.filter_chip_widgets), {"archive"})
 
-    def test_narrow_escape_collapses_search_and_keeps_filters(self):
+    def test_escape_collapses_search_at_every_width_and_keeps_filters(self):
         window = object.__new__(Window)
         window.search_expanded, window.wide_controls, window.context_menu = True, False, None
         window.cancel_scroll, window.number_key_pressed = Mock(), Mock(return_value=None)
@@ -2179,10 +2179,12 @@ class DataChecks(unittest.TestCase):
             self.assertTrue(window.window_key(None, ord("x"), 0, 0))
             self.assertEqual((text[0], window.search_expanded), ("x", True))
             window.search_popover.popup.assert_called_once_with()
+            # The wide Board has no search field in the toolbar: typing and Escape use the popover too.
             window.wide_controls = True
-            window.clear_search()
-            self.assertTrue(window.search_expanded)
-            self.assertEqual(text[0], "")
+            self.assertTrue(window.window_key(None, ord("a"), 0, 0))
+            self.assertEqual((text[0], window.search_expanded, window.search_popover.popup.call_count), ("xa", True, 2))
+            self.assertTrue(window.window_key(None, 27, 0, 0))
+            self.assertEqual((text[0], window.search_expanded, window.search_popover.popdown.call_count), ("", False, 2))
 
     def test_chip_clear_restores_keyboard_focus_and_preferences_search_raises_main(self):
         window = object.__new__(Window)
@@ -2267,7 +2269,7 @@ class DataChecks(unittest.TestCase):
         window.filter_row_toggled(SimpleNamespace(get_active=lambda: False), "profile:|codex")
         self.assertEqual(window.profiles, set())
 
-    def test_toolbar_presentation_keeps_fixed_corners_and_reparents_only_on_mode_changes(self):
+    def test_toolbar_presentation_keeps_fixed_corners_and_the_search_in_its_popover(self):
         class Control(Box):
             visible = True
             def prepend(self, child):
@@ -2286,9 +2288,8 @@ class DataChecks(unittest.TestCase):
         window = object.__new__(Window)
         window.toolbar_center, window.toolbar_end, window.search_popover = Control(), Control(), Control()
         window.search, window.search_button, window.app_mark, window.toolbar_scroll = Control(), Control(), Control(), Control()
-        window.preferences_refresh_row, window.refresh_button, window.drawer_label = Control(), Control(), Control()
+        window.preferences_refresh_row, window.refresh_button = Control(), Control()
         window.menu_button, window.window_controls = Control(), Control()
-        window.filters_label, window.filters_pill = Control(), Control()
         window.toolbar_center.append(window.search_button)
         window.toolbar_center.append(window.toolbar_scroll)
         window.toolbar_end.append(window.menu_button)
@@ -2298,16 +2299,15 @@ class DataChecks(unittest.TestCase):
         window.get_focus = lambda: None
         window.update_toolbar_presentation()
         self.assertIs(window.search.get_parent(), window.search_popover)
-        self.assertFalse(window.drawer_label.visible)
+        self.assertIs(window.refresh_button.get_parent(), window.preferences_refresh_row)
         self.assertTrue(window.search_button.visible)
         window.wide_controls = True
         window.update_toolbar_presentation()
-        self.assertIs(window.search.get_parent(), window.toolbar_center)
+        self.assertIs(window.search.get_parent(), window.search_popover)
         self.assertIs(window.refresh_button.get_parent(), window.toolbar_end)
-        self.assertFalse(window.search_button.visible)
-        self.assertTrue(window.drawer_label.visible)
-        self.assertTrue(window.filters_label.visible)
-        with patch.object(window.toolbar_center, "remove", wraps=window.toolbar_center.remove) as remove:
+        self.assertEqual(window.toolbar_end.children[:2], [window.refresh_button, window.menu_button])
+        self.assertTrue(window.search_button.visible)
+        with patch.object(window.toolbar_end, "remove", wraps=window.toolbar_end.remove) as remove:
             window.update_toolbar_presentation()
             remove.assert_not_called()
         window.wide_controls, window.tiny_controls = False, True
@@ -2317,7 +2317,6 @@ class DataChecks(unittest.TestCase):
         self.assertIs(window.search.get_parent(), window.search_popover)
         self.assertIs(window.menu_button.get_parent(), window.toolbar_end)
         self.assertIs(window.window_controls.get_parent(), window.toolbar_end)
-        self.assertFalse(window.filters_label.visible)
 
     def test_toolbar_wheel_scroll_clamps_without_a_timer(self):
         window = object.__new__(Window)
@@ -7973,6 +7972,119 @@ class MessagesLogicChecks(unittest.TestCase):
         self.assertEqual((asb.ease_flight(0), asb.ease_flight(1)), (0, 1))
         self.assertGreater(asb.ease_bars(.5), .85)
         self.assertLess(asb.ease_flight(.25), .25)
+
+
+class BoardWindowsLogicChecks(unittest.TestCase):
+    """The Board side of the Messages and Usage windows: the saved sizes, the tray event, and the start variable."""
+
+    def test_window_sizes_read_and_write_next_to_the_layout(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "activity-windows.json"
+            self.assertEqual(asb.read_window_sizes(path), {})
+            asb.write_window_size(path, "messages", 1000, 700, False)
+            self.assertEqual(json.loads(path.read_text()), {"version": 1, "messages": {"width": 1000, "height": 700, "maximized": False}})
+            asb.write_window_size(path, "usage", 360, 16384, True)
+            self.assertEqual(asb.read_window_sizes(path), {"messages": (1000, 700, False), "usage": (360, 16384, True)})
+            # Values out of range, of the wrong type, or of an unknown kind change nothing.
+            for args in (("messages", 359, 700, False), ("messages", 1000, 16385, False), ("messages", 1000.0, 700, False),
+                         ("messages", True, 700, False), ("messages", 1000, 700, 0), ("board", 1000, 700, False)):
+                with self.subTest(args=args):
+                    asb.write_window_size(path, *args)
+                    self.assertEqual(asb.read_window_sizes(path), {"messages": (1000, 700, False), "usage": (360, 16384, True)})
+            # A broken or invalid file gives no sizes and raises nothing; the next write makes a valid file.
+            for text in ("{", "[]", '{"version": 2, "messages": {"width": 1000, "height": 700, "maximized": false}}',
+                         '{"version": 1, "messages": {"width": "1000", "height": 700, "maximized": false}}',
+                         '{"version": 1, "messages": {"width": 1000, "height": 700}}'):
+                with self.subTest(text=text):
+                    path.write_text(text)
+                    self.assertEqual(asb.read_window_sizes(path), {})
+            path.write_text('{"version": 1, "messages": [], "usage": {"width": 948, "height": 760, "maximized": false}}')
+            self.assertEqual(asb.read_window_sizes(path), {"usage": (948, 760, False)})
+            path.write_text("{")
+            asb.write_window_size(path, "messages", 968, 760, True)
+            self.assertEqual(json.loads(path.read_text()), {"version": 1, "messages": {"width": 968, "height": 760, "maximized": True}})
+            self.assertEqual(asb.read_window_sizes(Path(directory) / "missing" / "activity-windows.json"), {})
+
+    def test_event_stream_passes_only_valid_show_window_events(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        events = (b'event: show-window\ndata: {"window":"usage","clientId":"board-b"}\n\n'
+                  b'event: show-window\ndata: {"window":"preferences","clientId":"board-a"}\n\n'
+                  b'event: show-window\ndata: ["usage", "board-a"]\n\n'
+                  b'event: show-window\ndata: {"window":"usage"}\n\n'
+                  b'event: show-window\ndata: {"window":"usage","clientId":7}\n\n'
+                  b'event: show-window\ndata: not json\n\n'
+                  b'event: show-window\ndata: {"window":"messages","clientId":"board-a"}\n\n'
+                  b'event: dashboard\ndata: {"reason":"source-dirty"}\n\n')
+        requests, done = [], threading.Event()
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self):
+                requests.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(events)
+                self.wfile.flush()
+                done.wait(2)
+
+            def log_message(self, *_args):
+                pass
+
+        with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+            server_thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .01}, daemon=True)
+            server_thread.start()
+            base = f"http://127.0.0.1:{server.server_port}"
+            board_calls, board_dashboards, activity_dashboards = [], threading.Event(), threading.Event()
+            board = SCOPE["EventStream"](base, board_dashboards.set, lambda callback, *args: callback(*args),
+                                         lambda window, client: board_calls.append((window, client)))
+            # An activity window passes no on_show_window: its stream ignores the event.
+            activity = SCOPE["EventStream"](base, activity_dashboards.set, lambda callback, *args: callback(*args))
+            try:
+                self.assertTrue(board_dashboards.wait(2))
+                self.assertTrue(activity_dashboards.wait(2))
+                # The bad data did not drop the connection: one request each, and the dashboard after it still came.
+                self.assertEqual(requests, ["/api/events", "/api/events"])
+                self.assertEqual(board_calls, [("usage", "board-b"), ("messages", "board-a")])
+            finally:
+                done.set()
+                for stream in (board, activity):
+                    stream.close()
+                    stream.worker.join(1)
+                server.shutdown()
+                server_thread.join(1)
+
+    def test_board_opens_a_tray_window_only_for_its_own_client_id(self):
+        window = object.__new__(Window)
+        window.ui_client_id, window.closed = "board-a", False
+        application = Mock()
+        window.get_application = lambda: application
+        for client in ("board-b", "", "BOARD-A"):
+            self.assertFalse(window.show_window_event("usage", client))
+        application.show_activity.assert_not_called()
+        self.assertFalse(window.show_window_event("usage", "board-a"))
+        application.show_activity.assert_called_once_with("usage")
+        window.closed = True
+        window.show_window_event("messages", "board-a")
+        application.show_activity.assert_called_once_with("usage")
+
+    def test_open_window_variable_opens_the_window_after_the_board(self):
+        application = object.__new__(SCOPE["SwitchboardApplication"])
+        order = []
+        board = Mock()
+        board.present.side_effect = lambda: order.append("board")
+        application.get_active_window = lambda: board
+        application.show_activity = Mock(side_effect=lambda kind: order.append(kind))
+        with patch.dict(SCOPE, {"GLib": SimpleNamespace(idle_add=lambda callback: order.append("idle") or callback())}):
+            for value, expected in (("usage", ["board", "idle", "usage"]), ("messages", ["board", "idle", "messages"]),
+                                    ("x", ["board"]), ("", ["board"])):
+                with self.subTest(value=value), patch.dict(os.environ, {"ASB_OPEN_WINDOW": value}):
+                    order.clear()
+                    application.on_activate()
+                    self.assertEqual(order, expected)
+                    self.assertNotIn("ASB_OPEN_WINDOW", os.environ)
 
 
 if __name__ == "__main__":
