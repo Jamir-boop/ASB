@@ -7250,9 +7250,15 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                 window.close()
                 self.drain(.05)
 
+    def wait_for(self, condition, timeout=3):
+        """Drain until the window reaches a state: a resize on a busy display can take more than one frame."""
+        end = time.monotonic() + timeout
+        while not condition() and time.monotonic() < end:
+            self.drain(.05)
+
     def test_the_narrow_layout_shows_the_reader(self):
         window = self.window((490, 800))
-        self.drain(.3)
+        self.wait_for(lambda: window.narrow_scroll.get_visible() and window.reader.get_visible())
         self.assertTrue(window.narrow_scroll.get_visible())
         self.assertFalse(window.wide.get_visible())
         self.assertIs(window.ledger.get_parent(), window.narrow_box)
@@ -7261,13 +7267,23 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertTrue(window.table.small)
         self.assertTrue(window.reader.get_visible())
         self.assertFalse(window.table.center.get_visible())
-        self.assertEqual(self.labels(window.reader)[:2], ["16:28", "docs → release-plan"])
+        self.assertEqual(self.labels(window.reader)[:2], ["16:28", "docs →\u00a0release-plan"])
         window.set_default_size(968, 760)
-        self.drain(.4)
+        self.wait_for(lambda: window.wide.get_visible() and window.table.center.get_visible())
         self.assertTrue(window.wide.get_visible())
         self.assertTrue(window.ledger.has_css_class("asb-msg-edge"))
         self.assertFalse(window.reader.get_visible())
         self.assertTrue(window.table.center.get_visible())
+        # The wide layout has no reader, so the table keeps the whole column above the strip.
+        self.assertFalse(window.table.small)
+        self.assertEqual(window.table.get_height() + window.strip.get_height(), window.left.get_height())
+        window.set_default_size(968, 520)
+        self.wait_for(lambda: window.table.small and not window.table.center.get_visible())
+        self.assertTrue(window.wide.get_visible())
+        self.assertTrue(window.table.small)
+        self.assertFalse(window.table.center.get_visible())
+        self.assertFalse(window.reader.get_visible())
+        self.assertEqual(window.table.get_height() + window.strip.get_height(), window.left.get_height())
 
     def test_without_gsk_paths_nothing_is_drawn(self):
         with patch.object(asb, "ACTIVITY_PATHS", False):

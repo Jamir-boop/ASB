@@ -8816,6 +8816,7 @@ class MessagesWindow(ActivityWindow):
         self.wide.set_visible(not narrow)
         self.narrow_scroll.set_visible(narrow)
         self.table.canvas.queue_resize()
+        GLib.idle_add(self.table_size_changed)
 
     def table_size_changed(self):
         if not self.closed:
@@ -9059,14 +9060,16 @@ class MessagesWindow(ActivityWindow):
                 self.bodies[record["id"]] = record["text"]
 
     def render_center(self):
-        """The preview's renderCenter, in the center of the table or in the reader under a small table."""
+        """The preview's renderCenter, in the center of the table or, in the narrow layout, in the reader under a small table."""
         if self.view is None:
             return
-        reader = self.table.small
+        # Only the narrow layout has the reader: there the table height does not depend on it. In the wide layout a shown reader
+        # would make the table smaller, and the small table would keep the reader.
+        reader = self.table.small and self.table.narrow
         box = self.reader if reader else self.table.center
         remove_children(self.table.center)
         remove_children(self.reader)
-        self.table.center.set_visible(ACTIVITY_PATHS and not reader and bool(self.view["seated"]))
+        self.table.center.set_visible(ACTIVITY_PATHS and not self.table.small and bool(self.view["seated"]))
         self.reader.set_visible(ACTIVITY_PATHS and reader and self.table.geometry is not None)
         align = Gtk.Align.START if reader else Gtk.Align.CENTER
 
