@@ -40,12 +40,13 @@ class NotificationActionsTest {
         assertNull(mergeActionBaseline(null, completed, 1000))
     }
 
-    @Test fun actionReadKeepsTheUsageLimitMarker() {
-        val limited = Thread(id = "read", completionAttention = true, limitResetsAtMs = 2000)
+    @Test fun actionReadOfALimitedRowClearsItsBitAndTheResetNotifiesNothing() {
+        val limited = Thread(id = "read", failedAttention = true, lastOutcome = "limit", limitResetsAtMs = 2000)
         val before = update(null, listOf(limited, Thread(id = "other", failedAttention = true)), 1000)
-        val after = mergeActionBaseline(before, limited.copy(completionAttention = false), 1001)!!
-        assertEquals(BIT_FAILED, after["other"])
-        assertTrue(diff(after, listOf(limited.copy(limitResetsAtMs = 0)), 2000).isEmpty())
+        val read = limited.copy(failedAttention = false)
+        val after = mergeActionBaseline(before, read, 1001)!!
+        assertEquals(mapOf("read" to 0, "other" to BIT_FAILED), after)
+        assertTrue(diff(after, listOf(read.copy(limitResetsAtMs = 0)), 2000).isEmpty())
     }
 
     @Test fun actionMergeNeverAddsABit() {

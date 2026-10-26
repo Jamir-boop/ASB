@@ -79,7 +79,7 @@ class Notifier(private val app: AsbApp) {
             }
             val title = when (event.kind) {
                 BIT_DONE -> "Done"
-                BIT_FAILED -> "Failed"
+                BIT_FAILED -> if (row.lastOutcome == "limit") "Usage limit" else "Failed"
                 else -> if (row.actionRequired) "Waiting for approval" else "Needs your answer"
             }
             // The key, so the same session from another engine of the group replaces its notification.

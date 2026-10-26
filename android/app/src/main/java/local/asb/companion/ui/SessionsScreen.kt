@@ -830,17 +830,18 @@ private fun SessionCard(
     val limited = left > 0
     val countdown = if (limited) limitText(left) else ""
     val indicator = attentionIndicator(row, drawerView, nowMs)
-    val state = stateLabel(row.state)
+    val state = cardStateLabel(row)
     val working = if (row.state == "working") workingDuration(row.workingSinceMs, nowMs) else ""
     val indicatorMeaning = when (indicator) {
         "question" -> if (row.actionRequired) "Action required on the PC" else "Question needs attention"
+        "alert" -> if (row.lastOutcome == "failed") "Failed task, unread" else "Usage limit stopped the task, unread"
         "dot" -> when {
             row.failedAttention -> "Failed task, unread"
             row.completionAttention -> "Completed task, unread"
             else -> "Unread"
         }
         "discard" -> "Discard result is on"
-        "stop" -> "Stopped"
+        "stop" -> "Task stopped"
         else -> ""
     }
     val viewOnly = isViewOnly(row)
@@ -980,6 +981,8 @@ private fun IndicatorMark(indicator: String, palette: Palette) {
     when (indicator) {
         "question" -> Text("?", color = hexColor(palette.accent), fontSize = 11.sp, lineHeight = 14.sp,
             fontWeight = FontWeight.ExtraBold)
+        "alert" -> Text("!", color = hexColor(palette.accent), fontSize = 11.sp, lineHeight = 14.sp,
+            fontWeight = FontWeight.ExtraBold)
         "dot" -> Box(Modifier.size(7.dp).background(hexColor(palette.accent), CircleShape))
         "discard" -> Box(Modifier.size(9.dp).border(1.5.dp, hexColor(palette.text), CircleShape))
         "stop" -> Box(Modifier.size(7.dp).background(hexColor(palette.muted), RoundedCornerShape(1.dp)))
@@ -990,7 +993,7 @@ private fun IndicatorMark(indicator: String, palette: Palette) {
 private fun CornerButton(control: CornerControl, title: String, busy: Boolean, palette: Palette, onCorner: (String) -> Unit) {
     val text = hexColor(palette.text)
     val background = when (control.kind) {
-        "dot", "drawer" -> text.copy(alpha = .08f)
+        "dot", "alert", "drawer" -> text.copy(alpha = .08f)
         "question" -> if (control.action != null) text.copy(alpha = .08f) else Color.Transparent
         "pin" -> text.copy(alpha = .12f)
         "confirmed" -> hexColor(palette.success).copy(alpha = .12f)
@@ -1211,7 +1214,7 @@ private fun SessionInspector(
                         }
                         Text(title, fontSize = 13.sp, lineHeight = 17.sp, fontWeight = FontWeight.Bold, color = text,
                             maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        Text(stateLabel(row.state) + if (time.isNotEmpty()) " · $time" else "", fontSize = 11.sp,
+                        Text(cardStateLabel(row) + if (time.isNotEmpty()) " · $time" else "", fontSize = 11.sp,
                             lineHeight = CAPTION_LINE_HEIGHT.sp, color = stateColor)
                     }
                     val canOpen = row.canOpen && !busy

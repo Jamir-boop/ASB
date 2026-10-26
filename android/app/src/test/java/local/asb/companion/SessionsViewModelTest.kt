@@ -299,11 +299,12 @@ class SessionsViewModelTest {
         assertEquals(2, baselines.size)
     }
 
-    @Test fun foregroundLimitSnapshotsAnd304PreserveStoredResultBitsInsideTheTransaction() = runBlocking {
+    @Test fun foregroundLimitSnapshotsAnd304SaveResultBitsInsideTheTransaction() = runBlocking {
         val nowMs = System.currentTimeMillis()
+        // A usage limit no longer hides attention, so the limited rows keep their result marks.
         val limited = Dashboard(1, threads = listOf(
-            Thread(id = "done", state = "idle", limitResetsAtMs = nowMs + 3600000),
-            Thread(id = "failed", state = "idle", limitResetsAtMs = nowMs + 3600000),
+            Thread(id = "done", state = "idle", completionAttention = true, limitResetsAtMs = nowMs + 3600000),
+            Thread(id = "failed", state = "idle", failedAttention = true, limitResetsAtMs = nowMs + 3600000),
         ))
         var stored: Map<String, Int>? = mapOf("done" to BIT_DONE, "failed" to BIT_FAILED, "gone" to BIT_DONE)
         val mutex = Mutex(locked = true)

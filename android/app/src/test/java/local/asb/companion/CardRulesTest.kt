@@ -91,6 +91,11 @@ class CardRulesTest {
         assertEquals("A user action is required in the original app",
             cornerControls(action.copy(actionAttention = false), false, false, now).single().label)
         assertEquals(listOf("stop" to null), kinds(idle.copy(lastOutcome = "stopped")))
+        val alert = idle.copy(unread = true, alert = true, lastOutcome = "limit")
+        assertEquals(listOf("alert" to "mark-read"), kinds(alert))
+        assertEquals(CornerControl("alert", "mark-read", "Mark read in ASB"), cornerControls(alert, false, false, now).single())
+        assertEquals(listOf("alert" to "mark-read"), kinds(alert.copy(state = "working", discardResult = true)))
+        assertEquals(listOf("mark-read", "drawer-in", "pin"), rowMenuActions(alert).map { it.action })
         assertEquals(listOf("pin" to "unpin"), kinds(idle.copy(pinned = true)))
         assertEquals(listOf("dot" to "mark-read", "pin" to "unpin"), kinds(idle.copy(unread = true, pinned = true)))
         // The armed Discard ring shows; the unarmed offer stays in the menu.

@@ -131,6 +131,8 @@ data class Thread(
     val retainedUnreadSource: String = "",
     val drawer: Boolean = false,
     val unread: Boolean = false,
+    // The unread mark comes from a failed or usage-limit stop; an older engine sends none.
+    val alert: Boolean = false,
     val pending: Boolean = false,
     val pendingSource: String = "",
     val machineId: String = "",

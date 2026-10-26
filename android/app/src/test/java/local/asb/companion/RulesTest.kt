@@ -223,6 +223,8 @@ class RulesTest {
             base to "discard", base.copy(unread = true) to "dot", base.copy(questionAttention = true) to "question",
             base.copy(actionRequired = true) to "question", base.copy(state = "idle", lastOutcome = "stopped") to "stop",
             base.copy(state = "idle") to "", Thread(state = "idle", lastOutcome = "stopped", unread = true) to "dot",
+            Thread(unread = true, alert = true) to "alert", Thread(unread = true, alert = true, questionAttention = true) to "question",
+            base.copy(unread = true, alert = true) to "alert",
         )) assertEquals(row.toString(), expected, attentionIndicator(row))
     }
 
@@ -440,6 +442,8 @@ class RulesTest {
         assertEquals(listOf("unread", "drawer", "pinned", "order"), rowPanelControls(idle).keys.toList())
         assertEquals("Finished. Not read yet.", rowPanelNote(idle))
         assertEquals("Marked unread.", rowPanelNote(idle.copy(manualUnread = true)))
+        assertEquals("Failed. Not read yet.", rowPanelNote(idle.copy(alert = true, lastOutcome = "failed")))
+        assertEquals("Usage limit stopped the task. Not read yet.", rowPanelNote(idle.copy(alert = true, lastOutcome = "limit")))
         val working = Thread(state = "working")
         assertEquals(mapOf("unread" to PanelControl(false, "mark-unread"), "drawer" to PanelControl(false, null),
             "pinned" to PanelControl(false, "pin"), "discard" to PanelControl(false, "discard-result")), rowPanelControls(working))

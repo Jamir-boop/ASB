@@ -1,5 +1,7 @@
 package local.asb.companion
 
+import local.asb.companion.data.Thread
+import local.asb.companion.ui.cardStateLabel
 import local.asb.companion.ui.connectionText
 import local.asb.companion.ui.durationText
 import local.asb.companion.ui.engineLine
@@ -120,6 +122,15 @@ class FormatTest {
             "unknown" to "Unknown", "" to "Unknown", "other" to "Unknown")) {
             assertEquals(label, stateLabel(state))
         }
+    }
+
+    @Test fun cardStateSaysStoppedOnlyForAnIdleFailedOrLimitStop() {
+        assertEquals("Stopped", cardStateLabel(Thread(state = "idle", lastOutcome = "failed")))
+        assertEquals("Stopped", cardStateLabel(Thread(state = "idle", lastOutcome = "limit")))
+        assertEquals("Idle", cardStateLabel(Thread(state = "idle", lastOutcome = "stopped")))
+        assertEquals("Idle", cardStateLabel(Thread(state = "idle", lastOutcome = "")))
+        assertEquals("Working", cardStateLabel(Thread(state = "working", lastOutcome = "failed")))
+        assertEquals("Idle", stateLabel("idle"))
     }
 
     @Test fun connectionTextShowsServerStateAndOnlyALivePath() {

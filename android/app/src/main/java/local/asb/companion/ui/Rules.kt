@@ -82,6 +82,7 @@ fun clockInterval(rows: List<Thread>, nowMs: Long = System.currentTimeMillis()):
 // Port of attention_indicator
 fun attentionIndicator(row: Thread, drawer: Boolean = false, nowMs: Long = System.currentTimeMillis()): String = when {
     row.actionRequired || row.questionAttention -> "question"
+    row.alert -> "alert"
     row.unread || (drawer && row.drawer && row.state != "working" && limitLeft(row, nowMs) == 0L) -> "dot"
     row.state == "working" && row.discardResult -> "discard"
     row.state == "idle" && row.lastOutcome == "stopped" -> "stop"
@@ -142,10 +143,10 @@ fun actionNeedsAttention(row: Thread): Boolean = row.actionAttention ?: row.acti
 // Port of row_menu_actions
 fun rowMenuActions(row: Thread): List<MenuAction> = buildList {
     val indicator = attentionIndicator(row)
-    val unread = if (row.actionRequired) actionNeedsAttention(row) || row.unread else indicator in setOf("question", "dot")
+    val unread = if (row.actionRequired) actionNeedsAttention(row) || row.unread else indicator in setOf("question", "alert", "dot")
     add(if (row.drawer || unread) MenuAction("Read", "mark-read") else MenuAction("Unread", "mark-unread"))
     if (row.drawer) add(MenuAction("Take out of drawer", "drawer-out"))
-    else if (indicator == "dot") add(MenuAction("Put in drawer", "drawer-in"))
+    else if (indicator == "dot" || indicator == "alert") add(MenuAction("Put in drawer", "drawer-in"))
     add(if (row.pinned) MenuAction("Unpin", "unpin") else MenuAction("Pin", "pin"))
     if (row.pinned) {
         add(MenuAction("Move pin earlier", "pin-up"))
@@ -204,6 +205,7 @@ fun panelFocusReturn(key: String?, controls: Map<String, PanelControl>): String?
 fun rowPanelNote(row: Thread): String = when {
     row.actionRequired -> "Waits for your permission."
     row.questionAttention -> "Asks a question."
+    row.alert -> if (row.lastOutcome == "failed") "Failed. Not read yet." else "Usage limit stopped the task. Not read yet."
     (row.unread || row.drawer) && row.state != "working" -> if (row.manualUnread) "Marked unread." else "Finished. Not read yet."
     else -> ""
 }
@@ -383,7 +385,7 @@ fun cornerControls(
     row: Thread, drawerView: Boolean, confirmed: Boolean, nowMs: Long = System.currentTimeMillis(),
 ): List<CornerControl> = buildList {
     val indicator = attentionIndicator(row, drawerView, nowMs)
-    val discard = row.state == "working" && indicator !in setOf("question", "dot")
+    val discard = row.state == "working" && indicator !in setOf("question", "alert", "dot")
     if (row.drawer) add(CornerControl("drawer", "drawer-out", "Take out of drawer: show as unread again"))
     when {
         discard && row.discardResult -> add(CornerControl("discard", "keep-result", "Keep result: show the dot when this task ends"))
@@ -393,6 +395,7 @@ fun cornerControls(
             add(CornerControl("question", "mark-read", "A user action is required in the original app. Mark read in ASB"))
         row.actionRequired -> add(CornerControl("question", null, "A user action is required in the original app"))
         indicator == "question" -> add(CornerControl("question", "mark-read", "Mark read in ASB"))
+        indicator == "alert" -> add(CornerControl("alert", "mark-read", "Mark read in ASB"))
         indicator == "dot" -> add(CornerControl("dot", "mark-read", "Mark read in ASB"))
         indicator == "stop" -> add(CornerControl("stop", null, "Task stopped"))
     }

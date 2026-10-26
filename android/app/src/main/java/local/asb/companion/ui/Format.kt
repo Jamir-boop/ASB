@@ -1,5 +1,7 @@
 package local.asb.companion.ui
 
+import local.asb.companion.data.Thread
+
 // Port of duration_text.
 fun durationText(seconds: Long): String {
     val total = seconds.coerceAtLeast(0)
@@ -67,6 +69,10 @@ fun stateLabel(state: String): String = when (state) {
     "idle" -> "Idle"
     else -> "Unknown"
 }
+
+// The card state word: an Idle row after a failed or usage-limit stop says Stopped; the filters keep stateLabel.
+fun cardStateLabel(row: Thread): String =
+    if (row.state == "idle" && row.lastOutcome in setOf("failed", "limit")) "Stopped" else stateLabel(row.state)
 
 // The top bar connection text, for example "PC · Live · ZeroTier". An offline phone has no current path.
 fun connectionText(serverName: String, offline: Boolean, pathLabel: String?): String =

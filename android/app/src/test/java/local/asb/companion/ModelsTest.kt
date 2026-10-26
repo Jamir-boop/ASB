@@ -121,6 +121,11 @@ class ModelsTest {
         assertFalse("key" in AsbJson.encodeToString(remote))
     }
 
+    @Test fun threadAlertReadsTrueAndAnOlderEngineSendsNone() {
+        assertTrue(AsbJson.decodeFromString<Thread>("""{"id":"one","alert":true}""").alert)
+        assertFalse(AsbJson.decodeFromString<Thread>("""{"id":"one"}""").alert)
+    }
+
     @Test fun helloReadsTheMachineIdAndEnginesAndOlderPcsSendNeither() {
         assertEquals(Pair("", emptyList<Engine>()), AsbJson.decodeFromString<Hello>("""{"api":1}""").let { it.machineId to it.engines })
         val hello = AsbJson.decodeFromString<Hello>("""{"api":1,"machineId":"aaaaaaaaaaaaaaaa","engines":[{"machineId":"bbbbbbbbbbbbbbbb",
