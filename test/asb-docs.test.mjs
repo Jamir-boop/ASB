@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import vm from 'node:vm';
 import { FAMILIES, installCommand, nodeRoute } from '../src/linux-distros.mjs';
 
 // A Windows checkout has CRLF line ends.
@@ -62,6 +63,15 @@ test('documents ASB installation, video, privacy limits, and upstream credit', a
   assert.match(guide, /Both modes bind only to `127\.0\.0\.1`/);
   assert.match(readme, /Agent Mission Control 0\.6\.0\]\(https:\/\/github\.com\/forxidian\/agent-mission-control\/releases\/tag\/v0\.6\.0\) by \*\*forxidian\*\*/);
   assert.match(changelog, /## Upstream history/);
+});
+
+test('the README support table equals the support table of the status mapping page', async () => {
+  const [readme, page] = await Promise.all([text('../README.md'), text('../docs/status-mapping.html')]);
+  // The page keeps its lists as array literals; runInThisContext makes arrays of this realm, so deepEqual compares them.
+  const list = (name) => vm.runInThisContext(page.match(new RegExp(`const ${name} = (\\[[\\s\\S]*?\\]);\\n`))[1]);
+  const table = readme.slice(readme.indexOf('## Support by app'), readme.indexOf('## Install on Linux')).split('\n')
+    .filter((line) => line.startsWith('| ') && !line.startsWith('| ---')).map((line) => line.slice(2, -2).split(' | '));
+  assert.deepEqual(table, [['App', ...list('FEATURES')], ...list('SUPPORT')]);
 });
 
 test('the install guide has one install block for each Linux family, equal to installCommand', async () => {

@@ -17,6 +17,20 @@ https://github.com/user-attachments/assets/c85742f4-d1b0-4ffc-9497-144069fec36b
 - Play Done, Needs input, and Failed sounds on the PC.
 - Read the app stores read-only and make no model calls.
 
+## Support by app
+
+| App | Cards | Status | Questions | Approvals | Open | Messages | Rename | Archive | Windows |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Codex app | ✓ | ✓ | ✓ | ✗ Codex saves no approval wait | ✓ | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
+| Codex CLI | ✓ | ✓ | ✓ | ✗ Codex saves no approval wait | ✗ Codex saves no process ID | ✓ daemon tasks only | ✗ ASB work | ✗ ASB work | ✓ |
+| Claude Desktop Code | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ Anthropic: no entry point | ✗ Anthropic: no entry point | ✓ |
+| Claude Code CLI | ✓ | ✓ | ✓ | ✓ | ✗ ASB work: terminal tab | ✓ | ✗ ASB work | ✗ Anthropic: no archive | ✓ |
+| OpenCode 2 | ✓ | ✓ | ✗ OpenCode: memory only | ✗ OpenCode: memory only | ✗ OpenCode: no session link | ✓ no reference sends to it | ✗ ASB work | ✗ ASB work | ✓ |
+| Claude Code on the web | ✓ Claude app cache | ✓ fresh cache only | ✓ one signal | ✓ one signal | ✓ | ✗ Anthropic: cloud only | ✗ Not planned: login | ✗ Not planned: login | ✗ ASB work: cache format |
+
+✓ works. ✗ not yet: the note says what it waits on. "ASB work" means only ASB code is missing. Rename and Archive mean from the board.
+All apps also have Read and Unread, pins, the drawer, Mute, Discard, sounds, and the phone. Cards of other machines do not open and have no Discard.
+
 ## Install on Linux
 
 Needs Node.js `>=20` (`sqlite3` below `22.13`), Python 3 with PyGObject, GTK `>=4.12`, Libadwaita `>=1.4`, `xdg-utils`, and `openssl`.
