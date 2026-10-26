@@ -36,6 +36,7 @@ export const RUNTIME_FILES = [
   'src/reader-positions.mjs',
   'src/memory-trim.mjs',
   'src/bridge-coverage.mjs',
+  'src/activity-messages.mjs',
   '.agents/plugins/marketplace.json',
   'bridge/.codex-plugin/plugin.json', 'bridge/.mcp.json', 'bridge/hooks/hooks.json',
   'bridge/dist/server.js', 'bridge/dist/hook.js', 'bridge/dist/relay.js', 'bridge/dist/opencode.js', 'bridge/LICENSE',

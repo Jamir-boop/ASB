@@ -21,6 +21,8 @@ const fields = (value, names) => value !== null && typeof value === 'object' && 
   && Object.keys(value).sort().join(',') === [...names].sort().join(',');
 const defaults = () => ({ schema: 2, enabled: false, bindAddresses: [], port: DEFAULT_PHONE_PORT, devices: [] });
 const KINDS = ['lan', 'zerotier', 'tailscale'];
+// The periods of the activity routes; the message routes take the first three.
+const ACTIVITY_PERIODS = ['24h', '7d', '30d', '90d'];
 const validPort = (port) => Number.isInteger(port) && port >= 1024 && port <= 65535;
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const equal = (left, right) => left.length === right.length && timingSafeEqual(left, right);
@@ -406,8 +408,14 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
       else if (route === 'deliver') result = await peer.deliver(value, caller);
       else if (route === 'v2/resolve-session') result = await peer.resolveExact(value, caller);
       else if (route === 'v2/deliver') result = await peer.deliverExact(value, caller);
-      else if (route === 'sessions') {
-        const answer = await peer.sessions(request.headers['if-none-match']);
+      else if (route === 'sessions' || route === 'activity') {
+        let answer;
+        if (route === 'activity') {
+          const period = new URL(request.url, 'https://asb').searchParams.get('period') ?? '7d';
+          if (!ACTIVITY_PERIODS.includes(period)) { reject(400, 'Invalid period.'); return; }
+          const { status, body } = await peer.activity(period);
+          answer = { status, etag: '', body: JSON.stringify(body) };
+        } else answer = await peer.sessions(request.headers['if-none-match']);
         if (response.destroyed) return;
         response.setHeader('vary', 'Accept-Encoding');
         if (answer.etag) response.setHeader('etag', answer.etag);
@@ -445,9 +453,10 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     catch { reject(400, 'Invalid request URL.'); return; }
     pairRoute = url.pathname === '/phone/v1/pair';
     // The bridge route exists only when the engine gives its function.
-    const peerRoute = peer && url.pathname.match(typeof peer.bridge === 'function' ? /^\/peer\/v1\/(join|hello|group|sessions|leave|peers|deliver|bridge)$/
-      : /^\/peer\/v1\/(join|hello|group|sessions|leave|peers|deliver)$/);
-    if (peerRoute) { await handlePeer(request, response, group, peerRoute[1], reject); return; }
+    const peerRoute = peer && url.pathname.match(typeof peer.bridge === 'function' ? /^\/peer\/v1\/(join|hello|group|sessions|leave|peers|deliver|bridge|activity)$/
+      : /^\/peer\/v1\/(join|hello|group|sessions|leave|peers|deliver|activity)$/);
+    // The activity route exists only when the engine gives its function.
+    if (peerRoute && (peerRoute[1] !== 'activity' || typeof peer.activity === 'function')) { await handlePeer(request, response, group, peerRoute[1], reject); return; }
     // The exact member routes (v2) exist only when the engine gives their function; every other /peer/v2 path is 404.
     const exactRoute = peer && url.pathname.match(/^\/peer\/v2\/(resolve-session|deliver)$/)?.[1];
     if (exactRoute && typeof peer[exactRoute === 'deliver' ? 'deliverExact' : 'resolveExact'] === 'function') {
@@ -458,8 +467,10 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     const hello = url.pathname === '/phone/v1/hello';
     const dashboard = url.pathname === '/phone/v1/dashboard';
     const unread = url.pathname === '/phone/v1/settings/unread';
-    if (!pairRoute && !hello && !dashboard && !unread && !match) { reject(404, 'Route is not available.'); return; }
-    const method = hello || dashboard ? 'GET' : 'POST';
+    // Contract 3: the two activity reads, never the thread.
+    const activity = url.pathname.match(/^\/phone\/v1\/activity\/(messages|usage)$/)?.[1];
+    if (!pairRoute && !hello && !dashboard && !unread && !match && !activity) { reject(404, 'Route is not available.'); return; }
+    const method = hello || dashboard || activity ? 'GET' : 'POST';
     if (request.method !== method) { response.setHeader('allow', method); reject(405, 'Method not allowed.'); return; }
     try {
       let device;
@@ -518,6 +529,11 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
           addresses: listening(), port: settings.port, machineId,
           engines: (peer?.engines() || []).map((engine) => engine.machineId === machineId
             ? { ...engine, addresses: listening(), port: settings.port } : engine) });
+      } else if (activity) {
+        // Only a valid period goes on; every other query value stays here.
+        const period = url.searchParams.get('period') ?? (activity === 'usage' ? '30d' : '7d');
+        if (!(activity === 'usage' ? ACTIVITY_PERIODS : ACTIVITY_PERIODS.slice(0, 3)).includes(period)) { reject(400, 'Invalid period.'); return; }
+        proxy(request, response, `/api/activity/${activity}?period=${period}`, body, true);
       } else {
         const target = dashboard ? `/api/dashboard${url.searchParams.get('force') === '1' ? '?force=1' : ''}`
           : unread ? '/api/settings/unread' : `/api/threads/${match[1]}/${match[2]}`;

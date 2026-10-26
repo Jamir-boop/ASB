@@ -17,5 +17,6 @@
   "test/session-targets.test.mjs",
   "test/claude-registry.test.mjs",
   "test/memory-trim.test.mjs",
-  "test/bridge-coverage.test.mjs"
+  "test/bridge-coverage.test.mjs",
+  "test/activity-messages.test.mjs"
 ]

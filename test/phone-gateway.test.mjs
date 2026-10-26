@@ -380,6 +380,37 @@ gatewayTest('the dashboard reply is gzip only when the phone accepts it and has 
   assert.deepEqual(failed.json, { error: 'ASB is not answering.' });
 });
 
+gatewayTest('the activity routes proxy only a valid period, gzip like the dashboard, and the thread is never reachable', async (t) => {
+  const body = JSON.stringify({ messages: Array.from({ length: 100 }, (_, i) => ({ id: `m-${i}`, status: 'accepted' })) });
+  const { request, pair, records } = await fixture(t, { reply: (request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(body);
+  } });
+  const token = (await pair()).json.token;
+  const zipped = await request('/phone/v1/activity/messages?period=24h&a=x&b=y&seat=z&force=1', { token, headers: { 'accept-encoding': 'gzip' } });
+  assert.deepEqual([zipped.status, zipped.headers['content-encoding'], zipped.headers.vary, zipped.headers['cache-control']], [200, 'gzip', 'Accept-Encoding', 'no-store']);
+  assert.equal(gunzipSync(zipped.raw).toString(), body);
+  assert.equal((await request('/phone/v1/activity/usage?period=90d&period=7d&x=1', { token })).text, body);
+  assert.equal((await request('/phone/v1/activity/messages', { token })).status, 200);
+  assert.equal((await request('/phone/v1/activity/usage', { token })).status, 200);
+  assert.deepEqual(records.map((record) => [record.method, record.url]), [['GET', '/api/activity/messages?period=24h'],
+    ['GET', '/api/activity/usage?period=90d'], ['GET', '/api/activity/messages?period=7d'], ['GET', '/api/activity/usage?period=30d']]);
+  records.length = 0;
+  for (const route of ['/phone/v1/activity/messages?period=90d', '/phone/v1/activity/messages?period=1y', '/phone/v1/activity/usage?period=']) {
+    const response = await request(route, { token });
+    assert.deepEqual([response.status, response.json], [400, { error: 'Invalid period.' }], route);
+  }
+  for (const route of ['/phone/v1/activity/messages?period=7d', '/phone/v1/activity/usage?period=7d']) {
+    assert.equal((await request(route)).status, 401, route);
+    assert.equal((await request(route, { method: 'POST', token, body: {} })).status, 405, route);
+  }
+  for (const route of ['/phone/v1/activity/thread?period=7d&seat=x', '/phone/v1/activity/thread', '/phone/v1/activity', '/api/activity/thread?period=7d&seat=x',
+    '/api/activity/messages?period=7d', '/phone/v1/activity/messages/x']) {
+    assert.equal((await request(route, { token })).status, 404, route);
+  }
+  assert.deepEqual(records, []);
+});
+
 gatewayTest('an upstream error after the gzip headers ends the phone reply', async (t) => {
   const { request, pair } = await fixture(t, { reply: (request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
@@ -803,7 +834,7 @@ async function peerFixture(t, options = {}) {
   const logs = [];
   const group = createMachineGroup({ file: path.join(store.home, 'group.json'), gateway: () => fx.gateway, addressOk: () => true,
     hostName: 'debian', log: (line) => logs.push(line),
-    server: () => ({ dashboardForRequest: async () => group.merge(structuredClone(exportBoard)) }) });
+    server: () => ({ dashboardForRequest: async () => group.merge(structuredClone(exportBoard)), ...options.server }) });
   const address = options.address || '127.0.0.2';
   fx = await fixture(t, { enabled: false, gateway: { peer: { ...group.peer, ...options.relay }, onPhonePaired: group.onPhonePaired, onPhoneRevoked: group.onPhoneRevoked,
     listAddresses: () => [{ address, interface: 'lo', kind: 'lan' }] } });
@@ -954,6 +985,30 @@ gatewayTest('an engine without the exact functions has no v2 routes: 404', async
   const old = await peerFixture(t, { address: '127.0.0.7' });
   assert.equal((await old.peer('/peer/v1/join', { method: 'POST', as: old.joiner, body: old.joinBody(await old.code()) })).status, 200);
   for (const route of ['/peer/v2/resolve-session', '/peer/v2/deliver']) assert.equal((await old.peer(route, { method: 'POST', as: old.joiner, body: {} })).status, 404);
+});
+
+gatewayTest('the activity member route needs a member certificate and a valid period, and its reply has no text', async (t) => {
+  const periods = [];
+  const reply = { messages: [{ id: 'm-1', from: 'a', to: 'b', atMs: 1, status: 'accepted', reason: '', direction: 'out' }], usage: [],
+    scan: { complete: true, files: 0, scannedFiles: 0 } };
+  const { peer, joiner, stranger, joinBody, code } = await peerFixture(t, { address: '127.0.0.8',
+    server: { activityMember: async (period) => { periods.push(period); return reply; } } });
+  assert.equal((await peer('/peer/v1/activity?period=7d', { as: stranger })).status, 401);
+  assert.equal((await peer('/peer/v1/activity?period=7d')).status, 401);
+  assert.equal((await peer('/peer/v1/join', { method: 'POST', as: joiner, body: joinBody(await code()) })).status, 200);
+  const plain = await peer('/peer/v1/activity?period=90d', { as: joiner });
+  assert.deepEqual([plain.status, plain.json, plain.headers['cache-control']], [200, reply, 'no-store']);
+  assert.equal(plain.text.includes('"text"'), false);
+  const zipped = await peer('/peer/v1/activity?period=24h', { as: joiner, headers: { 'accept-encoding': 'gzip' } });
+  assert.deepEqual([zipped.headers['content-encoding'], JSON.parse(gunzipSync(zipped.raw))], ['gzip', reply]);
+  assert.deepEqual((await peer('/peer/v1/activity?period=1y', { as: joiner })).json, { error: 'Invalid period.' });
+  assert.equal((await peer('/peer/v1/activity?period=7d', { method: 'POST', as: joiner, body: {} })).status, 405);
+  assert.equal((await peer('/peer/v1/activity/thread?a=x&b=y', { as: joiner })).status, 404);
+  assert.deepEqual(periods, ['90d', '24h']);
+  // An engine without the activity service answers 404.
+  const old = await peerFixture(t, { address: '127.0.0.9' });
+  assert.equal((await old.peer('/peer/v1/join', { method: 'POST', as: old.joiner, body: old.joinBody(await old.code()) })).status, 200);
+  assert.equal((await old.peer('/peer/v1/activity?period=7d', { as: old.joiner })).status, 404);
 });
 
 gatewayTest('a non-member certificate counts toward the throttle on peer routes', async (t) => {

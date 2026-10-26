@@ -10,6 +10,9 @@ const PALETTE_KEYS = ['background', 'text', 'accent', 'muted', 'divider', 'succe
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SOURCE_REVISION = /^[a-f0-9]{64}$/;
 const SOURCE_ID = /^[a-z0-9][a-z0-9-]{0,79}$/;
+const ACTIVITY_PERIODS = ['24h', '7d', '30d', '90d'];
+// A seat ID of the activity routes: a dashboard row ID or unknown:<machine ID>, with no control character.
+const SEAT = /^[^\x00-\x1f\x7f]{1,512}$/;
 // The sending task of an exact send: exactly its runtime session ID and its absolute config folder.
 const validCaller = (caller) => Boolean(caller) && typeof caller === 'object' && !Array.isArray(caller)
   && Object.keys(caller).sort().join(',') === 'configDir,runtimeSessionId'
@@ -40,7 +43,7 @@ function readPalette(palettePath) {
 export function createAsbServer({
   markUnreadThread = null, markReadThread = null, setUnreadSettings = null, pinThread = null, discardThread = null, drawerThread = null, muteThread = null,
   listSources = null, updateSource = null, removeSource = null, sourceToken = '', phoneGateway = null, machineGroup = null, serviceMode = false, onStop = null,
-  machineRelay = null, bridgeCoverage = null, readSources = async () => [], resolveSession = null, resolveBound = null, listReferences = null, sendMember = null,
+  machineRelay = null, bridgeCoverage = null, activityMessages = null, activityUsage = null, readSources = async () => [], resolveSession = null, resolveBound = null, listReferences = null, sendMember = null,
   appVersion = '', rootDir = '', sourcesPath = '', readSourcesRevision = async () => null,
   palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, now = Date.now, ...snapshotOptions
 } = {}) {
@@ -104,6 +107,9 @@ export function createAsbServer({
     // The receipt route exists only when the relay can send exact receipts.
     const relayRoute = machineRelay && url.pathname.match(machineRelay.sendReceipt ? /^\/api\/relay\/(homes|remote-peers|send|receipt)$/
       : /^\/api\/relay\/(homes|remote-peers|send)$/)?.[1];
+    // The activity reads (contract 2); each exists only when the engine gives its service.
+    const activityRoute = url.pathname.match(/^\/api\/activity\/(messages|thread|usage)$/)?.[1];
+    const activityReady = activityRoute === 'usage' ? Boolean(activityUsage) : Boolean(activityRoute) && Boolean(activityMessages);
     const eventRoute = url.pathname === '/api/events';
     const paletteRoute = url.pathname === '/api/palette';
     const engineStopRoute = Boolean(onStop) && url.pathname === '/api/engine/stop';
@@ -116,7 +122,7 @@ export function createAsbServer({
       || Boolean(groupRoute?.[1]) || Boolean(bridgeRoute?.[1]) || ['send', 'receipt'].includes(relayRoute);
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
     const readApiRoute = url.pathname === '/api/dashboard' || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute
-      || Boolean(groupRoute && !groupRoute[1]) || Boolean(bridgeRoute && !bridgeRoute[1]) || ['homes', 'remote-peers'].includes(relayRoute);
+      || Boolean(groupRoute && !groupRoute[1]) || Boolean(bridgeRoute && !bridgeRoute[1]) || ['homes', 'remote-peers'].includes(relayRoute) || activityReady;
     const readRoute = readApiRoute || staticRoutes.includes(url.pathname);
     if (!readRoute && !actionRoute) {
       sendJson(response, 404, { error: 'Route is not available in ASB.' });
@@ -140,6 +146,32 @@ export function createAsbServer({
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
     response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    if (activityReady) {
+      response.setHeader('Cache-Control', 'no-store');
+      const params = url.searchParams;
+      const period = params.get('period') ?? (activityRoute === 'usage' ? '30d' : '7d');
+      if (!(activityRoute === 'usage' ? ACTIVITY_PERIODS : ACTIVITY_PERIODS.slice(0, 3)).includes(period)) {
+        sendJson(response, 400, { error: 'Invalid period.' });
+        return;
+      }
+      let query = null;
+      if (activityRoute === 'thread') {
+        const names = [...new Set(params.keys())].filter((name) => name !== 'period').sort().join(',');
+        const seat = (name) => params.getAll(name).length === 1 && SEAT.test(params.get(name));
+        query = names === 'seat' && seat('seat') ? { seat: params.get('seat') } : names === 'a,b' && seat('a') && seat('b')
+          ? { a: params.get('a'), b: params.get('b') } : null;
+        if (!query) {
+          sendJson(response, 400, { error: 'Invalid session.' });
+          return;
+        }
+      }
+      // Read-only: the bridge databases, the cached rows, and the member replies.
+      try {
+        sendJson(response, 200, activityRoute === 'usage' ? await activityUsage.report(period)
+          : activityRoute === 'thread' ? await activityMessages.thread(period, query) : await activityMessages.report(period));
+      } catch { sendJson(response, 500, { error: 'Cannot read the ASB activity.' }); }
+      return;
+    }
     if (engineStopRoute) {
       response.setHeader('Cache-Control', 'no-store');
       if (!expectedSourceToken.length || !sourceTokenAllowed(request)) {

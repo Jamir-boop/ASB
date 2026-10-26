@@ -4,12 +4,14 @@ import https from 'node:https';
 import { createSecureContext } from 'node:tls';
 import { promisify } from 'node:util';
 import { gunzip } from 'node:zlib';
-import { OFFLINE_MEMBER, sessionMessageKeys, sortSessionMessages, switchboardRefreshInterval } from './switchboard.mjs';
+import { OFFLINE_MEMBER, sessionKeyLookup, sessionMessageKeys, sortSessionMessages, switchboardRefreshInterval } from './switchboard.mjs';
 import { SESSION_MESSAGE_WINDOW_MS } from './codex-data.mjs';
 import { rowReference, shortReference, validScopeTag } from './session-references.mjs';
 
 const gunzipAsync = promisify(gunzip);
 export const MEMBER_MESSAGE_KEYS = Symbol('ASB member session message keys');
+// The native key -> row ID map of the merged dashboard: local keys and the keys of every member.
+const ROW_KEY_LOOKUP = Symbol('ASB row key lookup');
 export const MAX_REPLY_BYTES = 4 * 1024 * 1024;
 // The most that a member reads from an export: validExport reads 5000 rows and 500 incoming messages. The byte limit leaves room for
 // the incoming messages and the envelope.
@@ -126,10 +128,10 @@ export function mergePeerRows(dashboard, peerStates, self, nowMs = Date.now()) {
   dashboard.threads = [...dashboard.threads.filter((row) => !replaced.has(row.id)), ...peerRows];
   const rowIds = new Set(dashboard.threads.map((row) => row.id));
   Object.defineProperty(dashboard, MEMBER_MESSAGE_KEYS, { value: new Map(peerKeys), configurable: true });
-  const lookup = new Map(local.ambiguous.map((key) => [key, null]));
-  const add = (key, rowId) => { if (key) lookup.set(key, lookup.has(key) && lookup.get(key) !== rowId ? null : rowId); };
-  for (const [rowId, keys] of local.keysByRow) for (const key of keys) add(key, replaced.get(rowId) || rowId);
-  for (const [rowId, keys] of peerKeys) for (const key of keys) add(key, rowId);
+  const lookup = sessionKeyLookup([...local.ambiguous.map((key) => [key, null]),
+    ...[...local.keysByRow].flatMap(([rowId, keys]) => keys.map((key) => [key, replaced.get(rowId) || rowId])),
+    ...peerKeys.flatMap(([rowId, keys]) => keys.map((key) => [key, rowId]))]);
+  Object.defineProperty(dashboard, ROW_KEY_LOOKUP, { value: lookup, configurable: true });
   const sinceMs = nowMs - SESSION_MESSAGE_WINDOW_MS;
   const messages = new Map();
   const keep = (from, to, atMs) => {
@@ -142,6 +144,38 @@ export function mergePeerRows(dashboard, peerStates, self, nowMs = Date.now()) {
   dashboard.messages = sortSessionMessages([...messages.values()]);
   dashboard.refreshIntervalMs = switchboardRefreshInterval(dashboard);
   return dashboard;
+}
+
+// The native key -> row ID map of a dashboard: the merged map when the group merge ran, else the local keys only.
+export function rowKeyLookup(dashboard) {
+  if (dashboard?.[ROW_KEY_LOOKUP]) return dashboard[ROW_KEY_LOOKUP];
+  const { keysByRow, ambiguous } = sessionMessageKeys(dashboard);
+  return sessionKeyLookup([...ambiguous.map((key) => [key, null]), ...[...keysByRow].flatMap(([rowId, keys]) => keys.map((key) => [key, rowId]))]);
+}
+
+export const MAX_ACTIVITY_MESSAGES = 20_000;
+// A busy member's activity reply (20,000 messages and up to 50,000 usage records) can be larger than MAX_REPLY_BYTES.
+export const MAX_ACTIVITY_BYTES = 16 * 1024 * 1024;
+const MAX_ACTIVITY_USAGE = 50_000;
+const ACTIVITY_GROUPS = ['accepted', 'written', 'held', 'not-sent', 'unknown'];
+const ACTIVITY_REASONS = ['', 'Refused', 'Denied', 'Dropped', 'Expired', 'Machine offline', 'Too large', 'Rate limited', 'Not sent'];
+const COUNT = (value) => NUMBER(value) && value >= 0;
+const KEY = (value) => typeof value === 'string' && value.length >= 1 && value.length <= 300;
+// A member's activity reply (contract 4): only valid records with only the contract fields, so no text or other key goes on.
+export function validActivity(value) {
+  if (!value || typeof value !== 'object' || !Array.isArray(value.messages) || !Array.isArray(value.usage)) return null;
+  const messages = value.messages.filter((item) => item && typeof item === 'object' && KEY(item.id) && item.id.length <= 128 && KEY(item.from)
+    && KEY(item.to) && NUMBER(item.atMs) && ACTIVITY_GROUPS.includes(item.status) && ACTIVITY_REASONS.includes(item.reason)
+    && ['in', 'out', 'both'].includes(item.direction)).slice(-MAX_ACTIVITY_MESSAGES)
+    .map(({ id, from, to, atMs, status, reason, direction }) => ({ id, from, to, atMs, status, reason, direction }));
+  const usage = value.usage.filter((item) => item && typeof item === 'object' && ['codex', 'claude', 'opencode'].includes(item.app)
+    && typeof item.model === 'string' && item.model.length <= 200 && NUMBER(item.hourMs) && item.tokens && typeof item.tokens === 'object'
+    && ['uncached', 'cacheRead', 'cacheWrite', 'output'].every((key) => COUNT(item.tokens[key]))).slice(0, MAX_ACTIVITY_USAGE)
+    .map(({ app, model, hourMs, tokens }) => ({ app, model, hourMs, tokens: { uncached: tokens.uncached, cacheRead: tokens.cacheRead,
+      cacheWrite: tokens.cacheWrite, output: tokens.output } }));
+  const scan = value.scan && typeof value.scan === 'object' && BOOLEAN(value.scan.complete) && COUNT(value.scan.files) && COUNT(value.scan.scannedFiles)
+    ? { complete: value.scan.complete, files: value.scan.files, scannedFiles: value.scan.scannedFiles } : { complete: true, files: 0, scannedFiles: 0 };
+  return { messages, usage, scan };
 }
 
 // The last address that worked first, then LAN, ZeroTier, and Tailscale.
@@ -200,7 +234,8 @@ function requestOnce(options) {
 }
 
 // handoffMs limits the time before request.end; after it the request can use the rest of timeoutMs.
-function attemptOnce({ address, port, fingerprint, path, method, body, etag, tls, timeoutMs, handoffMs = timeoutMs }, kept) {
+// maxBytes limits the reply, also after gunzip.
+function attemptOnce({ address, port, fingerprint, path, method, body, etag, tls, timeoutMs, handoffMs = timeoutMs, maxBytes = MAX_REPLY_BYTES }, kept) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let handedOff = false;
@@ -227,14 +262,14 @@ function attemptOnce({ address, port, fingerprint, path, method, body, etag, tls
       let size = 0;
       response.on('data', (chunk) => {
         size += chunk.length;
-        if (size > MAX_REPLY_BYTES) done(Object.assign(new Error('too-large'), { code: 'too-large' }));
+        if (size > maxBytes) done(Object.assign(new Error('too-large'), { code: 'too-large' }));
         else chunks.push(chunk);
       });
       response.on('error', (error) => done(error));
       response.on('end', async () => {
         let data = Buffer.concat(chunks);
         try {
-          if (response.headers['content-encoding'] === 'gzip') data = await gunzipAsync(data, { maxOutputLength: MAX_REPLY_BYTES });
+          if (response.headers['content-encoding'] === 'gzip') data = await gunzipAsync(data, { maxOutputLength: maxBytes });
         } catch { done(Object.assign(new Error('too-large'), { code: 'too-large' })); return; }
         let value = null;
         if (data.length) try { value = JSON.parse(data.toString('utf8')); } catch { done(new Error('invalid-json')); return; }
@@ -272,7 +307,7 @@ function attemptOnce({ address, port, fingerprint, path, method, body, etag, tls
 // the request did not go out: an error with `handedOff` ends the attempt, so a member never gets the same POST twice.
 // Before the handoff each address of a non-GET request gets an equal share of the time that is left, so one address
 // that hangs does not use it all.
-export async function peerRequest({ member, path, method = 'GET', body, etag, tls, timeoutMs = 4000, lastAddress = '' }) {
+export async function peerRequest({ member, path, method = 'GET', body, etag, tls, timeoutMs = 4000, lastAddress = '', maxBytes = MAX_REPLY_BYTES }) {
   let failure = new Error('no-address');
   const deadline = Date.now() + timeoutMs;
   const addresses = addressOrder(member.addresses, lastAddress);
@@ -280,7 +315,7 @@ export async function peerRequest({ member, path, method = 'GET', body, etag, tl
     const remainingMs = method === 'GET' ? timeoutMs : deadline - Date.now();
     if (remainingMs <= 0) break;
     const handoffMs = method === 'GET' ? timeoutMs : remainingMs / (addresses.length - index);
-    try { return await requestOnce({ address, port: member.port, fingerprint: member.certFingerprint, path, method, body, etag, tls, timeoutMs: remainingMs, handoffMs }); }
+    try { return await requestOnce({ address, port: member.port, fingerprint: member.certFingerprint, path, method, body, etag, tls, timeoutMs: remainingMs, handoffMs, maxBytes }); }
     catch (error) {
       failure = error;
       if (method !== 'GET' && error.handedOff) throw error;

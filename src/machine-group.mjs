@@ -2,7 +2,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { createPeerPoller, exportBody, exportLocalSessions, mergePeerRows, peerRequest } from './machine-peers.mjs';
+import { createPeerPoller, exportBody, exportLocalSessions, MAX_ACTIVITY_BYTES, mergePeerRows, peerRequest, validActivity } from './machine-peers.mjs';
 import { phoneSettingsPath, privateIPv4, tailscaleIPv4 } from './phone-gateway.mjs';
 import { localMachineName } from './switchboard.mjs';
 
@@ -194,6 +194,32 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
   };
   const tls = async () => credentials ??= await gateway().credentials();
   const peerStates = () => [...pollers.values()].map((poller) => poller.state);
+  // The last activity reply of each member and period (contract 4), kept 30 s; an offline member keeps its last reply.
+  const activityReplies = new Map();
+  const ACTIVITY_PERIODS = ['24h', '7d', '30d', '90d'];
+  async function memberActivity(state, period) {
+    const key = `${state.member.machineId}\0${period}`;
+    const entry = activityReplies.get(key) || { checkedAtMs: -Infinity, online: false, reply: null, lastReportAtMs: 0, pending: null };
+    activityReplies.set(key, entry);
+    if (!entry.pending && now() - entry.checkedAtMs >= 30_000) {
+      entry.pending = (async () => {
+        try {
+          if (!state.online) throw new Error('offline');
+          const answer = await request({ member: state.member, path: `/peer/v1/activity?period=${period}`, tls: await tls(),
+            lastAddress: state.lastAddress, timeoutMs: 5000, maxBytes: MAX_ACTIVITY_BYTES });
+          const reply = answer.status === 200 ? validActivity(answer.body) : null;
+          if (!reply) throw new Error('invalid-reply');
+          Object.assign(entry, { online: true, reply, lastReportAtMs: now() });
+        } catch { entry.online = false; }
+        entry.checkedAtMs = now();
+        entry.pending = null;
+      })();
+    }
+    await entry.pending;
+    return { machineId: state.member.machineId, name: state.member.name, state: entry.online ? 'online' : 'offline',
+      lastReportAtMs: entry.lastReportAtMs, messages: entry.reply?.messages || [], usage: entry.reply?.usage || [],
+      scan: entry.reply?.scan || { complete: true, files: 0, scannedFiles: 0 } };
+  }
 
   function syncPollers() {
     const wanted = new Map((group && started ? activeMembers(group) : [])
@@ -306,6 +332,16 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
       return group ? mergePeerRows(dashboard, peerStates(), group.self, nowMs) : dashboard;
     },
     peerStates,
+    // Contract 4, the asking side: the activity of each active member, asked in parallel (5 s timeout each), by name.
+    activity: async (period) => {
+      if (!ACTIVITY_PERIODS.includes(period)) throw new Error('Invalid period.');
+      const states = peerStates();
+      const ids = new Set(states.map((state) => state.member.machineId));
+      for (const key of activityReplies.keys()) if (!ids.has(key.split('\0')[0])) activityReplies.delete(key);
+      const members = await Promise.all(states.map((state) => memberActivity(state, period)));
+      const order = (item) => `${item.name.toLowerCase()}\0${item.machineId}`;
+      return members.sort((left, right) => order(left) < order(right) ? -1 : 1);
+    },
     // The member TLS of this machine, for the message relay (plan 16.6).
     tls,
     status: () => serialize(currentStatus),
@@ -432,6 +468,11 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
         if (!exported) await server()?.dashboardForRequest({ force: true });
         if (!exported) return { status: 503, etag: '', body: JSON.stringify({ error: 'ASB has no session list yet.' }) };
         return ifNoneMatch === exported.etag ? { status: 304, etag: exported.etag, body: '' } : { status: 200, ...exported };
+      },
+      // GET /peer/v1/activity (contract 4): this machine's local records only, never text.
+      activity: async (period) => {
+        const value = await server()?.activityMember?.(period);
+        return value ? reply(200, value) : reply(404, { error: 'Route is not available.' });
       },
       join: (value, fingerprint) => serialize(async () => {
         if (!group || checkInvite(invite, value.code, now()) !== 'ok') return reply(401, { error: 'This join code is not valid. Make a new invite.' });

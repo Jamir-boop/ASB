@@ -8,7 +8,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { addressOrder, closePeerAgents, createPeerPoller, EXPORT_FIELDS, exportBody, exportLocalSessions, MAX_REPLY_BYTES, mergePeerRows,
+import { addressOrder, closePeerAgents, createPeerPoller, EXPORT_FIELDS, exportBody, exportLocalSessions, MAX_ACTIVITY_BYTES, MAX_REPLY_BYTES, mergePeerRows,
   PEER_IDLE_SOCKET_MS, peerRequest, validExport } from '../src/machine-peers.mjs';
 import { buildSwitchboardDashboard, OFFLINE_MEMBER } from '../src/switchboard.mjs';
 
@@ -272,6 +272,11 @@ tlsTest('the peer client pins the server certificate, sends its own, and limits 
   await assert.rejects(peerRequest({ member: member(), path: '/bomb', tls: client }), { code: 'too-large' });
   reply = (request, response) => response.end(`"${'x'.repeat(4 * 1024 * 1024)}"`);
   await assert.rejects(peerRequest({ member: member(), path: '/large', tls: client }), { code: 'too-large' });
+  // The activity request takes up to MAX_ACTIVITY_BYTES: a reply of 5 MiB after gunzip passes there and is too large for the default.
+  const big = 'y'.repeat(5 * 1024 * 1024);
+  reply = (request, response) => { response.setHeader('content-encoding', 'gzip'); response.end(gzipSync(`"${big}"`)); };
+  assert.equal((await peerRequest({ member: member(), path: '/peer/v1/activity?period=7d', tls: client, maxBytes: MAX_ACTIVITY_BYTES })).body.length, big.length);
+  await assert.rejects(peerRequest({ member: member(), path: '/peer/v1/activity?period=7d', tls: client }), { code: 'too-large' });
   reply = () => {};
   await assert.rejects(peerRequest({ member: member(), path: '/slow', tls: client, timeoutMs: 200 }), { code: 'timeout' });
 });

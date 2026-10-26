@@ -10,6 +10,7 @@ import { normalizeDashboardThreads } from './insights.mjs';
 import { loadOpenCodeDashboard, invalidateOpenCodeData, retainOpenCodeDataScopes, opencodeBridgeId, defaultOpenCodeStateDir } from './opencode-data.mjs';
 import { createAsbServer } from './asb-server.mjs';
 import { createBridgeCoverage } from './bridge-coverage.mjs';
+import { createActivityMessages } from './activity-messages.mjs';
 import { createSoundPlayer, createSoundWatcher } from './asb-sounds.mjs';
 import { openThreadInCodex, scopedCommand } from './session-opener.mjs';
 import { AppSourceRegistry, appSourcesRevision, numberAppSources, sourceName, validateSourceLauncher } from './app-sources.mjs';
@@ -287,12 +288,19 @@ export function sessionMessageKeys(dashboard) {
   return dashboard?.[MESSAGE_KEYS] || { keysByRow: new Map(), ambiguous: [], unresolved: [] };
 }
 
+// The native session key -> row ID map of [key, row ID] pairs, in order. A key of two rows maps to null, and stays null.
+export function sessionKeyLookup(pairs) {
+  const lookup = new Map();
+  for (const [key, rowId] of pairs) if (key) lookup.set(key, lookup.has(key) && lookup.get(key) !== rowId ? null : rowId);
+  return lookup;
+}
+
 // Maps the native session IDs of the sources to row IDs, and returns only row ID pairs and times.
 export function resolveSessionMessages(threads, rows, { sinceMs, untilMs }) {
   const rowIds = new Set(rows.map((row) => row.id));
   const rowOf = (thread) => rowIds.has(thread.id) ? thread.id : rowIds.has(thread.hostThreadId) ? thread.hostThreadId : '';
-  const lookup = new Map();
-  const add = (key, rowId) => { if (key) lookup.set(key, lookup.has(key) && lookup.get(key) !== rowId ? null : rowId); };
+  const pairs = [];
+  const add = (key, rowId) => pairs.push([key, rowId]);
   const addBridge = (alias, rowId) => {
     const token = typeof alias === 'string' ? alias.match(BRIDGE_ALIAS)?.[1] : '';
     if (token) for (const prefix of ['session', 'cse']) add(`bridge:${prefix}_${token}`, rowId);
@@ -309,6 +317,7 @@ export function resolveSessionMessages(threads, rows, { sinceMs, untilMs }) {
     for (const id of Array.isArray(thread.priorCliSessionIds) ? thread.priorCliSessionIds : []) add(String(id || ''), rowId);
     for (const alias of Array.isArray(thread.bridgeSessionIds) ? thread.bridgeSessionIds : []) addBridge(alias, rowId);
   }
+  const lookup = sessionKeyLookup(pairs);
   const messages = new Map();
   const unresolved = new Map();
   for (const thread of threads) {
@@ -884,6 +893,13 @@ export function createSwitchboardServer(options = {}) {
       const identity = options.machineIdentity?.();
       return { machineId: identity?.machineId || '', name: identity?.machineName || localMachineName(), asbVersion: options.asbVersion || APP_VERSION };
     }, platform, group: options.machineGroup || null, relay: options.machineRelay || null }) : null;
+  // Contract 2.1, 2.2, and 4: the bridge databases of the registered sources, the cached rows (never a forced scan), and the group.
+  const activityMessages = createActivityMessages({ readSources: async () => registeredLoad ? registry.read() : [],
+    dashboard: () => server.dashboardForRequest(),
+    machine: () => {
+      const identity = options.machineIdentity?.();
+      return { machineId: identity?.machineId || '', name: identity?.machineName || localMachineName() };
+    }, group: options.machineGroup || null, activityUsage: options.activityUsage || null });
   const server = createAsbServer({
     dashboardWatchDebounceMs: 250,
     appVersion: APP_VERSION,
@@ -1003,10 +1019,13 @@ export function createSwitchboardServer(options = {}) {
     },
     sourceToken: options.sourceToken || '',
     bridgeCoverage,
+    activityMessages,
   });
   boardOpen = () => server.boardOpen();
   // The member route GET /peer/v1/bridge (src/phone-gateway.mjs).
   server.bridgeReport = () => bridgeCoverage ? bridgeCoverage.report() : Promise.resolve({ status: 404, body: { error: 'Route is not available.' } });
+  // The member route GET /peer/v1/activity (src/phone-gateway.mjs): local records only, no text.
+  server.activityMember = (period) => activityMessages.memberReply(period);
   // The receiving side of an exact member send (src/machine-relay.mjs): this engine's own binding, from the cached rows.
   server.bindMemberTarget = async (request) => bindMemberTarget(request, await referenceContext(await server.dashboardForRequest()), { ...boundIo, targetHomes });
   const close = server.close.bind(server);
