@@ -212,7 +212,7 @@ The package whitelist (`RUNTIME_FILES`) names 82 runtime files in ASB `1.12.0` a
 | `test/preferences-check.py` | Step 11 of the `alma-9` check: Preferences at 420 px, Profiles, and the Claude profile dialog with the installed board script, made-up profiles, and no engine. |
 | `test/asb_native_logic_test.py` | Native data, layout, theme, search/filter, scheduling, and row-reuse checks with no GTK display, the machine texts, join link summary, and group requests, and the renderer rule of `scripts/asb-board.py`. |
 | `test/asb_native_test.py` | Native GTK checks on a hidden display, including the Preferences pages, the Machines page flows and dialogs, and the narrow section list. |
-| `docs/status-mapping.html` | Status mapping worksheet; update it when a state, icon, or Pending rule changes. |
+| `docs/status-mapping.html` | App support table, rename notes, and status mapping worksheet; update it when app support, a state, an icon, or a Pending rule changes. |
 | `demo/` | Separate Remotion project with synthetic public demo data. |
 
 ## Sources and list scope

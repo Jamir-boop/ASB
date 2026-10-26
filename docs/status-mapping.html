@@ -3,122 +3,312 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ASB status mapping</title>
+<title>ASB status mapping and app support</title>
 <style>
-  :root { color-scheme: light dark; --bg: #fafafa; --fg: #1d1d1f; --dim: #666; --line: #d8d8dc; --card: #fff; --accent: #c77700; --changed: #fff4dc; }
+  :root { color-scheme: light dark; --bg: #fafafa; --fg: #1d1d1f; --dim: #666; --line: #d8d8dc; --card: #fff; --accent: #c77700; --changed: #fff4dc; --yes: #1a7f37; --no: #b42318; }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #17171a; --fg: #e8e8ea; --dim: #9a9aa2; --line: #34343a; --card: #1f1f23; --accent: #f0a93a; --changed: #33290f; }
+    :root { --bg: #17171a; --fg: #e8e8ea; --dim: #9a9aa2; --line: #34343a; --card: #1f1f23; --accent: #f0a93a; --changed: #33290f; --yes: #3fb950; --no: #ff7b72; }
   }
   body { margin: 0; padding: 24px 16px 48px; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, sans-serif; }
-  main { max-width: 1280px; min-width: min-content; margin: 0 auto; }
+  main { max-width: 1280px; margin: 0 auto; }
   h1 { font-size: 20px; margin: 0 0 4px; }
-  p { margin: 0 0 16px; color: var(--dim); }
+  p, ul { margin: 0 0 16px; color: var(--dim); }
+  ul { padding-left: 20px; }
+  .scroll + p { margin-top: 12px; }
   /* The header sticks to the window only if no box around it scrolls; separate borders keep its line under it. */
   .scroll { overflow: clip; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
-  table { border-collapse: separate; border-spacing: 0; width: 100%; min-width: 1280px; }
+  table { border-collapse: separate; border-spacing: 0; width: 100%; }
   th, td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
-  th { position: sticky; top: 0; background: var(--card); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); white-space: nowrap; }
-  tr:last-child td { border-bottom: 0; }
+  th { position: sticky; top: 0; background: var(--card); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); }
+  tr:last-child td, #rows tr:nth-last-child(2) td { border-bottom: 0; }
   td:first-child { font-weight: 600; min-width: 150px; border-left: 3px solid transparent; }
-  tr.changed td { background: var(--changed); }
-  tr.changed td:first-child { border-left-color: var(--accent); }
-  code { font: 12px ui-monospace, monospace; background: color-mix(in srgb, var(--fg) 9%, transparent); padding: 1px 4px; border-radius: 3px; }
+  td.yes, td.no { font-size: 16px; font-weight: 700; }
+  td.yes { color: var(--yes); }
+  td.no { color: var(--no); }
+  td.yes small, td.no small { font-size: 12px; }
+  .app { white-space: nowrap; }
+  .app-icon { width: 14px; height: 14px; vertical-align: -2px; margin-right: 4px; fill: currentColor; }
+  .cli-icon { width: 11px; height: 11px; vertical-align: -1px; }
+  .label { display: none; }
+  .mark { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); vertical-align: middle; }
+  .mark.question, .mark.alert { width: auto; height: auto; border-radius: 0; background: none; color: var(--accent); font-size: 11px; font-weight: 800; line-height: 1; }
+  .mark.stop { border-radius: 1px; background: color-mix(in srgb, var(--fg) 55%, transparent); }
+  .mark.hollow { box-sizing: border-box; width: 9px; height: 9px; border: 1.5px solid var(--fg); background: none; }
+  .slot { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; vertical-align: middle; margin-right: 6px; }
+  .slot.read { background: color-mix(in srgb, var(--fg) 8%, transparent); }
+  .state.working { color: var(--yes); }
+  .state.quiet { color: var(--dim); }
+  .fields .icons { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; flex-basis: 100%; }
+  .icons .name { font-size: 12px; color: var(--dim); margin-right: 2px; }
+  .fields .icons label { display: block; position: relative; color: var(--fg); }
+  .icons label > span { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); color: var(--fg); font-size: 13px; }
+  .fields .icons input { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); }
+  .icons input:checked + span { border-color: var(--fg); background: color-mix(in srgb, var(--fg) 10%, var(--bg)); font-weight: 600; }
+  .icons.diff input:checked + span { border-color: var(--accent); }
+  .icons input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .na { color: var(--dim); }
+  @media (min-width: 1200px) { td.card { white-space: nowrap; } }
+  /* Column lines show which apps a merged signal cell covers. */
+  @media (min-width: 1100px) { .status th + th, .status td + td { border-left: 1px solid var(--line); } }
+  /* Ten support columns fit down to 900px only with less side padding. */
+  @media (max-width: 1099px) { .support th, .support td { padding-left: 6px; padding-right: 6px; } }
+  code { font: 12px ui-monospace, monospace; background: color-mix(in srgb, var(--fg) 9%, transparent); padding: 1px 4px; border-radius: 3px; overflow-wrap: break-word; }
   small { display: block; color: var(--dim); font-weight: 400; }
-  .to { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; align-items: center; min-width: 250px; }
-  .to label { font-size: 12px; color: var(--dim); }
+  body:not(.edit) .edit-only { display: none; }
+  tr.editor { display: none; }
+  body.edit tr.editor.open { display: table-row; }
+  tr.editor td { font-weight: 400; }
+  body.edit tr.keep td:first-child { border-left-color: var(--yes); }
+  body.edit tr.change td, body.edit tr.editor.open td { background: var(--changed); }
+  body.edit tr.change td { border-bottom-color: transparent; }
+  body.edit tr.change td:first-child, body.edit tr.editor.open td { border-left-color: var(--accent); }
+  td.propose { white-space: nowrap; }
+  .fields { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+  .fields label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); }
+  .fields .note { flex: 1 1 220px; }
+  .fields .note input { flex: 1; min-width: 0; }
   select, input, textarea, button { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px; }
-  select, input { width: 100%; box-sizing: border-box; }
+  .fields select, .fields input { width: auto; font-size: 14px; color: var(--fg); }
   select.diff { border-color: var(--accent); font-weight: 600; }
+  .pick { padding: 2px 10px; font-size: 15px; font-weight: 700; line-height: 1.2; }
+  .pick + .pick { margin-left: 6px; }
+  .pick.yes { color: var(--yes); }
+  .pick.no { color: var(--no); }
+  .pick.yes[aria-pressed="true"] { background: var(--yes); border-color: var(--yes); color: var(--card); }
+  .pick.no[aria-pressed="true"] { background: var(--no); border-color: var(--no); color: var(--card); }
   h2 { font-size: 15px; margin: 24px 0 8px; }
   textarea { width: 100%; box-sizing: border-box; min-height: 160px; font: 12px/1.5 ui-monospace, monospace; }
   .bar { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
   button { cursor: pointer; padding: 5px 12px; }
   #copied { color: var(--dim); }
+  /* Narrow windows and high zoom: each table row becomes a card, with the column name before each value. */
+  td[data-label]::before, .label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); }
+  @media (max-width: 1099px) {
+    .status thead { display: none; }
+    .status, .status tbody, .status tr, .status td { display: block; }
+    .status tr.editor { display: none; }
+    body.edit .status tr.editor.open { display: block; }
+    .status tr { padding: 10px 12px; border-bottom: 1px solid var(--line); border-left: 3px solid transparent; }
+    .status tr:last-child, .status tr:nth-last-child(2) { border-bottom: 0; }
+    .status td, .status td:first-child { padding: 2px 0; border: 0; min-width: 0; }
+    .status td:first-child { font-size: 15px; margin-bottom: 4px; }
+    .status .label { display: block; }
+    body.edit .status tr.keep { border-left-color: var(--yes); }
+    body.edit .status tr.change, body.edit .status tr.editor.open { border-left-color: var(--accent); background: var(--changed); }
+    body.edit .status tr.change { border-bottom: 0; }
+  }
+  /* The label column fits the longest label, "Claude Desktop Code and CLI"; narrower cards put the label above the value. */
+  @media (min-width: 600px) and (max-width: 1099px) {
+    .status td[data-label] { position: relative; padding-left: 220px; }
+    .status .label { position: absolute; left: 0; top: 2px; line-height: 20px; }
+  }
+  @media (max-width: 899px) {
+    .support thead { display: none; }
+    .support, .support tbody, .support td { display: block; }
+    .support tr { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 2px 12px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+    .support tr:last-child { border-bottom: 0; }
+    .support td, .support td:first-child { padding: 2px 0; border: 0; min-width: 0; }
+    .support td:first-child { grid-column: 1 / -1; font-size: 15px; margin-bottom: 4px; }
+    .support td[data-label]::before { content: attr(data-label); margin-right: 6px; }
+    .support td:first-child::before { content: none; }
+  }
 </style>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<symbol id="i-openai" viewBox="0 0 24 24"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></symbol>
+<symbol id="i-claude" viewBox="0 0 24 24"><path d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"/></symbol>
+<symbol id="i-opencode" viewBox="128 96 256 320"><path fill-rule="evenodd" d="M384 416H128V96H384V416ZM320 160H192V352H320V160Z"/><path d="M320 224V352H192V224H320Z" opacity=".5"/></symbol>
+<symbol id="i-terminal" viewBox="0 0 12 12"><path fill-rule="evenodd" d="M2 1h8a1.5 1.5 0 0 1 1.5 1.5v7A1.5 1.5 0 0 1 10 11H2A1.5 1.5 0 0 1 .5 9.5v-7A1.5 1.5 0 0 1 2 1zm0 1.5v7h8v-7z"/><path d="M3.67 3.83 5.85 6 3.67 8.17 2.83 7.33 4.15 6 2.83 4.67z"/><path d="M6 7.4h2.6v1.1H6z"/></symbol>
+</svg>
 <main>
-  <h1>ASB status mapping</h1>
-  <p>Each row is one situation. The <b>Changes to</b> column starts with the current behaviour. Change a value and the row gets a highlight. Then copy the result and paste it into the chat.</p>
+  <h1>ASB status mapping and app support</h1>
+  <p>What ASB supports per app, what each gap waits on, and how app signals map to card states.</p>
+  <p>Parts: <a href="#support">Support by app</a> · <a href="#rename">Rename</a> · <a href="#status">Status by app and CLI</a></p>
+
+  <h2 id="support">Support by app</h2>
   <div class="scroll">
-    <table>
-      <thead><tr><th>Situation</th><th>Codex native signal</th><th>Claude Code native signal</th><th>OpenCode native signal</th><th>State now</th><th>Icon now</th><th>Pending now</th><th>Changes to</th></tr></thead>
+    <table class="support">
+      <thead><tr><th>App</th><th>Cards</th><th>Status</th><th>Questions</th><th>Approvals</th><th>Open</th><th>Messages</th><th>Rename</th><th>Archive</th><th>Windows</th></tr></thead>
+      <tbody id="support-rows"></tbody>
+    </table>
+  </div>
+  <p>✓ works. ✗ not yet: the note says what it waits on. "ASB work" means only ASB code is missing. Rename and Archive mean from the board.</p>
+  <p>All apps also have Read and Unread, pins, the drawer, Mute, Discard, sounds, and the phone. Cards of other machines do not open and have no Discard.</p>
+
+  <h2 id="rename">Rename from the board (not built)</h2>
+  <p>Checked on 2026-10-26: Codex 0.164.0, OpenCode 2.1.4, Claude Code 2.1.310.</p>
+  <ul>
+    <li><b>Codex app and CLI:</b> <code>thread/name/set</code>. An open Codex app may need a reload to show it (not tested).</li>
+    <li><b>OpenCode 2:</b> <code>session.update</code> with <code>title</code>, through <code>opencode api</code> or the ASB Bridge plugin. <code>opencode api</code> starts a stopped OpenCode service.</li>
+    <li><b>Claude Code CLI:</b> <code>claude -r &lt;id&gt; -p "/rename &lt;name&gt;"</code>, with no model call. Only while the session does not run; its hooks run, and its history gets the command.</li>
+    <li><b>Claude Desktop Code:</b> no entry point. A write while the app is closed works (tested); the running app writes the old title back.</li>
+    <li><b>Claude Code on the web:</b> needs a claude.ai login. Not planned.</li>
+    <li><b>All:</b> ASB would then change app data, so the README and the privacy page must change. Cards of other machines and the phone need the engine of that machine. The bridge send name follows the title.</li>
+  </ul>
+
+  <h2 id="status">Status by app and CLI</h2>
+  <p>Each row is one situation: the signal of each app and CLI, and the card that ASB shows.</p>
+  <p><label><input type="checkbox" id="edit" autocomplete="off"> Propose changes</label></p>
+  <div class="scroll">
+    <table id="status-table" class="status">
+      <thead><tr><th>Situation</th><th><span class="app"><svg class="app-icon" aria-hidden="true"><use href="#i-openai"/></svg>Codex</span> app</th><th><span class="app"><svg class="app-icon" aria-hidden="true"><use href="#i-openai"/></svg><svg class="app-icon cli-icon" aria-hidden="true"><use href="#i-terminal"/></svg>Codex</span> CLI</th><th><span class="app"><svg class="app-icon" aria-hidden="true"><use href="#i-claude"/></svg>Claude</span> Desktop Code</th><th><span class="app"><svg class="app-icon" aria-hidden="true"><use href="#i-claude"/></svg><svg class="app-icon cli-icon" aria-hidden="true"><use href="#i-terminal"/></svg>Claude</span> Code CLI</th><th><span class="app"><svg class="app-icon" aria-hidden="true"><use href="#i-opencode"/></svg>OpenCode</span> 2</th><th><span class="app"><svg class="app-icon" aria-hidden="true"><use href="#i-claude"/></svg>Claude</span> Code on the web</th><th>Card</th><th class="edit-only">Propose</th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
   </div>
-  <h2>Result (changed rows only)</h2>
-  <textarea id="out" readonly></textarea>
-  <div class="bar"><button id="copy">Copy result</button><button id="reset">Reset all</button><span id="copied"></span></div>
+  <h2 class="edit-only">Result</h2>
+  <textarea id="out" class="edit-only" readonly></textarea>
+  <div class="bar edit-only"><button id="copy">Copy result</button><button id="reset">Reset all</button><span id="copied"></span></div>
 </main>
 <script>
-const STATES = ['Working', 'Waiting', 'Idle', 'Unknown', 'Error (new)', 'Stopped (new)', 'Hidden', 'No change'];
-const ICONS = ['None', 'Dot', 'Hollow dot', '?', '!', 'Lock', '×', 'Stop square', 'Check'];
+const FEATURES = ['Cards', 'Status', 'Questions', 'Approvals', 'Open', 'Messages', 'Rename', 'Archive', 'Windows'];
+// A cell is the mark, then an optional note after one space.
+const SUPPORT = [
+  ['Codex app', '✓', '✓', '✓', '✗ Codex saves no approval wait', '✓', '✓', '✗ ASB work', '✗ ASB work', '✓'],
+  ['Codex CLI', '✓', '✓', '✓', '✗ Codex saves no approval wait', '✗ Codex saves no process ID', '✓ daemon tasks only', '✗ ASB work', '✗ ASB work', '✓'],
+  ['Claude Desktop Code', '✓', '✓', '✓', '✓', '✓', '✓', '✗ Anthropic: no entry point', '✗ Anthropic: no entry point', '✓'],
+  ['Claude Code CLI', '✓', '✓', '✓', '✓', '✗ ASB work: terminal tab', '✓', '✗ ASB work', '✗ Anthropic: no archive', '✓'],
+  ['OpenCode 2', '✓', '✓', '✗ OpenCode: memory only', '✗ OpenCode: memory only', '✗ OpenCode: no session link', '✓ no reference sends to it', '✗ ASB work', '✗ ASB work', '✓'],
+  ['Claude Code on the web', '✓ Claude app cache', '✓ fresh cache only', '✓ one signal', '✓ one signal', '✓', '✗ Anthropic: cloud only', '✗ Not planned: login', '✗ Not planned: login', '✗ ASB work: cache format'],
+];
+const STATES = ['Working', 'Waiting', 'Idle', 'Unknown', 'Error (new)', 'Stopped', 'Hidden', 'No change'];
+const ICONS = ['None', 'Dot', 'Hollow dot', '?', '!', 'Stop square', 'Lock', '×', 'Check'];
 const PENDING = ['No', 'Yes, until Read', 'Yes, until resolved'];
-// [id, situation, hint, codex, claude, opencode, state, icon, pending]
+// [id, situation, hint, codexApp, codexCli, claudeDesktop, claudeCli, opencode, web, state, icon, pending]; '=' is the cell to its left.
 const ROWS = [
-  ['run', 'Task runs', '', 'Thread `active`, turn `inProgress`, `task_started`', 'Worker `running`, `stop_reason: tool_use`', 'Execution claim (`time_suspended`) and a message in the last 6 hours', 'Working', 'None', 'No'],
-  ['discard-on', 'Discard is on', 'Current task only. Questions take priority. The ring is not attention; Compact keeps its timer.', 'ASB Discard mark and an open local task', 'ASB Discard mark and an open request', 'ASB Discard mark and an execution claim', 'Working', 'Hollow dot', 'No'],
-  ['discard-end', 'Task ended with Discard on', 'Verified successful end only. The arm clears. Questions, failures and manual Unread are preserved. Remote cache and first late unread limits apply.', '`task_complete` with no error, ASB Discard armed', 'Successful group end, ASB Discard armed', '`idle_outcome` `succeeded`, ASB Discard armed', 'Idle', 'None', 'No'],
-  ['seen', 'Task ended, you saw it', '', 'Thread `idle`, turn `completed`, `task_complete`', 'Worker `idle`, `stop_reason: end_turn`', '`idle_outcome` `succeeded`, `time_viewed` not before `time_idle`', 'Idle', 'None', 'No'],
-  ['cli-new', 'CLI session started, no prompt yet', 'Claude Code CLI cards only. The card is view only.', 'Not applicable', 'Live registry record with `entrypoint` `cli` and no transcript', 'Not applicable', 'Idle', 'None', 'No'],
-  ['unseen', 'Task ended, you did not see it', 'A task that ends after a Waiting scan (Working, Waiting, then Idle) also gets the dot.', 'Unread turn flag', 'No native flag. ASB observes Working to Idle', '`time_idle` later than `time_viewed`. No `time_idle` gives unknown read state', 'Idle', 'Dot', 'Yes, until Read'],
-  ['restart', 'Unread mark, then a new task starts', 'The mark is hidden, not deleted.', 'Unread turn flag and `task_started`', 'ASB mark and an open request', 'Native unread and a new execution claim', 'Working', 'None', 'No'],
-  ['ask-async', 'Question, task continues', '', '`request_user_input_async`, flag `waitingOnUserInput`', '`AskUserQuestion` while a linked subagent works', 'Not applicable. OpenCode keeps questions only in memory', 'Working', '?', 'Yes, until Read'],
-  ['ask-sync', 'Question, task stops', 'A Claude question wait expires six hours after the tool event.', '`request_user_input`, flag `waitingOnUserInput`', '`AskUserQuestion`', 'Not applicable. OpenCode keeps questions only in memory', 'Waiting', '?', 'Yes, until Read'],
-  ['approval-codex', 'Approval wait (Codex)', 'Unsupported. No reliable unanswered approval signal was found in local rollout or state schema. An open task keeps Working.', 'App-server flag `waitingOnApproval` is not read by ASB', 'Not applicable', 'Not applicable', 'Working', 'None', 'No'],
-  ['permission-claude', 'Permission wait (Claude)', 'Read cannot clear this wait: the row stays Waiting with its ?, and only its Pending ends. Resolve it in Claude. A new wait is Pending again. Remote state must be fresh. A local wait expires six hours after the tool event; then the usual rules apply.', 'Not applicable', 'Permission tool pending, worker `requires_action`', 'Not applicable. OpenCode keeps permission asks only in memory', 'Waiting', '?', 'Yes, until Read'],
-  ['plan-claude', 'Plan waits for approval (Claude)', 'A linked child cannot make this wait Working. Read cannot clear it: the row stays Waiting with its ?, and only its Pending ends. The wait expires six hours after the tool event; then the usual rules apply.', 'Not applicable', '`ExitPlanMode` pending', 'Not applicable', 'Waiting', '?', 'Yes, until Read'],
-  ['stopped', 'You stopped the task', 'Includes historical stops. Adds no unread mark. Existing question or unread attention has priority over the square.', '`turn_aborted`, `turn_cancelled`, `task_cancelled`, `cancelled`', 'User interruption or cancelled terminal result', '`idle_outcome` `interrupted`', 'Idle', 'Stop square', 'No'],
-  ['failed', 'Task failed', 'Dot requires an observed Working to Idle end with unknown native read state. A Waiting scan before the end keeps the observation. No new dot on first load. Native read marks keep their own rule.', '`task_complete.error` is non-null', '`result.is_error`, linked failed task notification; fresh remote session `failed`', '`idle_outcome` `failed`', 'Idle', 'Dot', 'Yes, until Read'],
-  ['child-run', 'Subagent works after the root ends', '', 'Subagent `running`, `pendingInit`', 'Open child transcript', 'Root execution claim. Subagent messages count as root activity', 'Working', 'None', 'No'],
-  ['child-failed', 'Subagent failed', 'Applies only when failure is the last group end. Active work keeps Working. A later completion or stop takes priority. Dot uses the same observed-end and native-read rule.', 'Linked child `task_complete.error` is non-null', 'Linked child `result.is_error` or failed task notification', 'Not applicable. Only the root `idle_outcome` counts', 'Idle', 'Dot', 'Yes, until Read'],
-  ['stale', 'No recent signal (6 hours)', '', 'Thread `notLoaded`, or an old open task', 'Old open request, or worker not connected', 'Execution claim with no message in 6 hours (with no message, the claim time counts)', 'Unknown', 'None', 'No'],
-  ['archived', 'Archived', '', 'Archive flag', '`isArchived`', '`time_archived` set', 'Hidden', 'None', 'No'],
-  ['manual', 'You marked it Unread in ASB', 'Hidden while Working.', 'None', 'None', 'None', 'No change', 'Dot', 'Yes, until Read'],
-  ['drawer', 'You put an unread chat in the drawer', 'Looks read in the normal list. The Drawer pill shows it as unread. A newer result or failure, or a question, brings it out. A native unread that is raised again with no new result does not. It leaves as read when no stored mark is left.', 'ASB drawer mark', 'ASB drawer mark', 'ASB drawer mark', 'No change', 'None', 'No'],
+  ['run', 'Task runs', '', '`task_started`, no end yet', '=', 'Open turn in the transcript', '=', 'Execution claim (`time_suspended`)', 'Worker `running`', 'Working', 'None', 'No'],
+  ['seen', 'Task ended, you saw it', '', '`task_complete`, no unread flag', '=', 'Turn end (`end_turn`)', '=', '`succeeded`, viewed after the end', 'Worker `idle`, or session `paused`', 'Idle', 'None', 'No'],
+  ['unseen', 'Task ended, you did not see it', '', 'Unread flag', '=', 'ASB saw Working, then Idle', '=', '`time_idle` after `time_viewed`', 'Cached unread mark', 'Idle', 'Dot', 'Yes, until Read'],
+  ['failed', 'Task failed', 'Codex and Claude: also a subagent failure that ends last.', '`task_complete` with an error', '=', '`is_error`, or a failed task notification', '=', '`idle_outcome` `failed`', 'Session `failed`', 'Stopped', '!', 'Yes, until Read'],
+  ['stopped', 'You stopped the task', '', '`turn_aborted` or cancelled', '=', 'Interrupted or cancelled', '=', '`idle_outcome` `interrupted`', 'Not applicable', 'Idle', 'Stop square', 'No'],
+  ['ask-sync', 'Question, the task waits', '', '`request_user_input`', '=', '`AskUserQuestion`', '=', 'Not saved', 'Worker `requires_action`', 'Waiting', '?', 'Yes, until Read'],
+  ['ask-async', 'Question, the task goes on', '', '`request_user_input_async`', '=', '`AskUserQuestion` while a subagent works', '=', 'Not saved', 'Not applicable', 'Working', '?', 'Yes, until Read'],
+  ['approval', 'Approval or plan wait', 'Permission waits show after 10 s. Read only moves the card down.', 'Not saved', '=', 'Live session `waiting`, app log, or `ExitPlanMode`', 'Live session `waiting`, or `ExitPlanMode`', 'Not saved', 'Worker `requires_action`', 'Waiting', '?', 'Yes, until Read'],
+  ['child-run', 'Subagent works after the root ends', '', 'Subagent running', '=', 'Open subagent log', '=', 'Execution claim', 'Not applicable', 'Working', 'None', 'No'],
+  ['cli-new', 'CLI session, no prompt yet', '', 'Not applicable', 'Not saved', 'Not applicable', 'Live record, no transcript', 'Not applicable', 'Not applicable', 'Idle', 'None', 'No'],
+  ['cli-ended', 'CLI process ended during a task', '', 'Not applicable', 'Not saved', 'Not applicable', 'Open task, no live record', 'Not applicable', 'Not applicable', 'Unknown', 'None', 'No'],
+  ['stale', 'No signal for 6 hours', '', 'Old open task', '=', 'Old open turn', '=', 'Old execution claim', 'Old or unknown cache state', 'Unknown', 'None', 'No'],
+  ['limit', 'Usage limit stopped the task', 'Grey card with "Resets in".', '`usage_limit_exceeded`', '=', '`rate_limit` with a reset time', '=', 'Not read', 'Not read', 'Stopped', '!', 'Yes, until Read'],
+  ['archived', 'Archived', '', 'Archive flag', '=', '`isArchived`', 'Not applicable', '`time_archived`', 'Session `archived`', 'Hidden', 'None', 'No'],
+  ['discard', 'Discard result is on', 'A successful end then adds no dot.', 'ASB mark', '=', 'ASB mark', '=', 'ASB mark', 'ASB mark', 'Working', 'Hollow dot', 'No'],
+  ['manual', 'You marked it Unread in ASB', 'Hidden while Working.', 'ASB mark', '=', 'ASB mark', '=', 'ASB mark', 'ASB mark', 'No change', 'Dot', 'Yes, until Read'],
+  ['drawer', 'Unread card in the drawer', 'A new result, failure, or question takes it out.', 'ASB mark', '=', 'ASB mark', '=', 'ASB mark', 'ASB mark', 'No change', 'None', 'No'],
+  ['mute', 'Mute is on', 'No Done dot, sound, or phone notice.', 'ASB mark', '=', 'ASB mark', '=', 'ASB mark', 'ASB mark', 'No change', 'None', 'No'],
 ];
 const KEY = 'asb-status-mapping';
 let saved = {};
 try { saved = JSON.parse(localStorage.getItem(KEY)) || {}; } catch { /* storage is optional */ }
 
-const code = (text) => text.replace(/`([^`]+)`/g, '<code>$1</code>');
-const select = (id, field, options, now) => `<label for="${id}-${field}">${field}</label><select id="${id}-${field}" data-field="${field}" data-now="${now}">`
-  + options.map((value) => `<option${value === (saved[id]?.[field] ?? now) ? ' selected' : ''}>${value}</option>`).join('') + '</select>';
+const supportCell = (text, label) => {
+  const [mark, ...note] = text.split(' ');
+  return `<td class="${mark === '✓' ? 'yes' : 'no'}" data-label="${label}">${mark}${note.length ? `<small>${note.join(' ')}</small>` : ''}</td>`;
+};
+document.getElementById('support-rows').innerHTML = SUPPORT.map(([app, ...cells]) =>
+  `<tr><td data-label="App">${app}</td>${cells.map((cell, i) => supportCell(cell, FEATURES[i])).join('')}</tr>`).join('');
 
-document.getElementById('rows').innerHTML = ROWS.map(([id, name, hint, codex, claude, opencode, state, icon, pending]) =>
-  `<tr data-id="${id}" data-name="${name}"><td>${name}${hint ? `<small>${hint}</small>` : ''}</td><td>${code(codex)}</td><td>${code(claude)}</td><td>${code(opencode)}</td>
-   <td>${state}</td><td>${icon}</td><td>${pending}</td>
-   <td><div class="to">${select(id, 'State', STATES, state)}${select(id, 'Icon', ICONS, icon)}${select(id, 'Pending', PENDING, pending)}
-   <label for="${id}-Note">Note</label><input id="${id}-Note" data-field="Note" placeholder="Optional"></div></td></tr>`).join('');
-for (const input of document.querySelectorAll('input[data-field]')) input.value = saved[input.closest('tr').dataset.id]?.Note || '';
+// Long names break only after an underscore.
+const code = (text) => text.replace(/`([^`]+)`/g, (_, name) => `<code>${name.replaceAll('_', '_<wbr>')}</code>`);
+const signal = (text) => (text === 'Not applicable' ? '<span class="na">n/a</span>' : code(text));
+const appIcon = (name) => `<svg class="app-icon${name === 'terminal' ? ' cli-icon' : ''}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+const label = (text) => {
+  const app = text.startsWith('Codex') ? 'openai' : text.startsWith('Claude') ? 'claude' : text === 'OpenCode 2' ? 'opencode' : '';
+  return `<span class="label">${app ? appIcon(app) : ''}${text === 'Codex CLI' || text === 'Claude Code CLI' ? appIcon('terminal') : ''}${text}</span>`;
+};
+const cell = (text, labelText, span = 1) => `<td${span > 1 ? ` colspan="${span}"` : ''} data-label="${labelText}">${label(labelText)}${signal(text)}</td>`;
+const pair = (left, right, both, leftLabel, rightLabel) => (left === right ? cell(left, both, 2) : cell(left, leftLabel) + cell(right, rightLabel));
+const signals = (apps) => {
+  const values = [];
+  for (const value of apps) values.push(value === '=' ? values.at(-1) : value);
+  const [codexApp, codexCli, claudeDesktop, claudeCli, opencode, web] = values;
+  if (values.every((value) => value === codexApp)) return cell(codexApp, 'All apps', 6);
+  return pair(codexApp, codexCli, 'Codex app and CLI', 'Codex app', 'Codex CLI')
+    + pair(claudeDesktop, claudeCli, 'Claude Desktop Code and CLI', 'Claude Desktop Code', 'Claude Code CLI')
+    + cell(opencode, 'OpenCode 2') + cell(web, 'Claude Code on the web');
+};
+const mark = (icon, accessible = false) => {
+  const shape = { Dot: 'dot', '?': 'question', '!': 'alert', 'Stop square': 'stop', 'Hollow dot': 'hollow' }[icon];
+  return shape ? `<span class="mark ${shape}"${accessible ? ` role="img" aria-label="${{ '?': 'Question mark', '!': 'Exclamation mark' }[icon] ?? icon}"` : ''}>${icon === '?' || icon === '!' ? icon : ''}</span>` : '';
+};
+const card = (state, icon, pending) => {
+  const slot = icon === 'None' ? '' : `<span class="slot${pending === 'Yes, until Read' ? ' read' : ''}">${mark(icon, true)}</span>`;
+  const color = state === 'Working' ? ' working' : state === 'Hidden' || state === 'No change' || pending === 'No' ? ' quiet' : '';
+  return `${slot}<span class="state${color}">${state}</span>${pending === 'No' ? '' : `<small>Pending until ${pending === 'Yes, until Read' ? 'Read' : 'resolved'}</small>`}`;
+};
+const chosen = (id, field, options, now) => (options.includes(saved[id]?.[field]) ? saved[id][field] : now);
+const icons = (id, now) => `<div class="icons" role="radiogroup" aria-label="Icon" data-field="Icon" data-now="${now}"><span class="name">Icon</span>`
+  + ICONS.map((value) => `<label><input type="radio" name="icon-${id}" value="${value}"${value === chosen(id, 'Icon', ICONS, now) ? ' checked' : ''}><span>${mark(value)}${{ '?': 'Question', '!': 'Alert' }[value] ?? (['Lock', '×', 'Check'].includes(value) ? value + ' (new)' : value)}</span></label>`).join('') + '</div>';
+const select = (id, field, options, now) => `<label>${field} <select data-field="${field}" data-now="${now}">`
+  + options.map((value) => `<option${value === chosen(id, field, options, now) ? ' selected' : ''}>${value}</option>`).join('') + '</select></label>';
+// An older save has no pick: a changed value or a note means a proposed change.
+const savedPick = (id, now) => {
+  const row = saved[id];
+  if (!row) return '';
+  if ('pick' in row) return row.pick || '';
+  return Object.entries(now).some(([field, value]) => row[field] !== undefined && row[field] !== value) || row.Note?.trim() ? 'change' : '';
+};
+
+document.getElementById('rows').innerHTML = ROWS.map(([id, name, hint, ...rest]) => {
+  const [state, icon, pending] = rest.slice(6);
+  return `<tr data-id="${id}" data-name="${name}"><td>${name}${hint ? `<small>${hint}</small>` : ''}</td>${signals(rest.slice(0, 6))}
+   <td class="card" data-label="Card">${label('Card')}${card(state, icon, pending)}</td>
+   <td class="propose edit-only" data-label="Propose">${label('Propose')}<button type="button" class="pick yes" data-pick="keep" aria-pressed="false" aria-label="Keep as is" title="Keep as is">✓</button><button type="button" class="pick no" data-pick="change" aria-pressed="false" aria-label="Change" title="Change">✗</button></td></tr>
+   <tr class="editor" data-for="${id}"><td colspan="9"><div class="fields">${select(id, 'State', STATES, state)}${icons(id, icon)}${select(id, 'Pending', PENDING, pending)}
+   <label class="note">Note <input data-field="Note" placeholder="What should change?"></label></div></td></tr>`;
+}).join('');
+
+const pickOf = (row) => row.querySelector('[data-pick][aria-pressed="true"]')?.dataset.pick || '';
+function setPick(row, pick) {
+  for (const button of row.querySelectorAll('[data-pick]')) button.setAttribute('aria-pressed', String(button.dataset.pick === pick));
+  row.classList.toggle('keep', pick === 'keep');
+  row.classList.toggle('change', pick === 'change');
+  row.nextElementSibling.classList.toggle('open', pick === 'change');
+}
+for (const [id, , , , , , , , , state, icon, pending] of ROWS) {
+  const row = document.querySelector(`#rows tr[data-id="${id}"]`);
+  row.nextElementSibling.querySelector('input[data-field]').value = saved[id]?.Note || '';
+  setPick(row, savedPick(id, { State: state, Icon: icon, Pending: pending }));
+}
 
 function update() {
   const lines = [];
+  const keep = [];
   saved = {};
-  for (const row of document.querySelectorAll('#rows tr')) {
+  for (const row of document.querySelectorAll('#rows tr[data-id]')) {
     const cells = [];
-    let changed = false;
-    const values = saved[row.dataset.id] = {};
-    for (const control of row.querySelectorAll('[data-field]')) {
-      values[control.dataset.field] = control.value;
+    const pick = pickOf(row);
+    const values = saved[row.dataset.id] = { pick };
+    for (const control of row.nextElementSibling.querySelectorAll('[data-field]')) {
+      const value = control.dataset.field === 'Icon' ? control.querySelector('input:checked').value : control.value;
+      values[control.dataset.field] = value;
       if (control.dataset.field === 'Note') {
-        if (control.value.trim()) changed = true;
         cells.push(control.value.trim().replaceAll('|', '/'));
         continue;
       }
-      const diff = control.value !== control.dataset.now;
+      const diff = value !== control.dataset.now;
       control.classList.toggle('diff', diff);
-      changed ||= diff;
-      cells.push(diff ? `${control.dataset.now} -> ${control.value}` : control.value);
+      cells.push(diff ? `${control.dataset.now} -> ${value}` : value);
     }
-    row.classList.toggle('changed', changed);
-    if (changed) lines.push(`| ${row.dataset.name} | ${cells.join(' | ')} |`);
+    if (pick === 'change') lines.push(`| ${row.dataset.name} | ${cells.join(' | ')} |`);
+    if (pick === 'keep') keep.push(row.dataset.name);
   }
-  document.getElementById('out').value = lines.length
-    ? ['| Situation | State | Icon | Pending | Note |', '| --- | --- | --- | --- | --- |', ...lines].join('\n') : 'No changes.';
+  const parts = [];
+  if (lines.length) parts.push(['| Situation | State | Icon | Pending | Note |', '| --- | --- | --- | --- | --- |', ...lines].join('\n'));
+  if (keep.length) parts.push(`Keep as is: ${keep.join(', ')}`);
+  document.getElementById('out').value = parts.length ? parts.join('\n\n') : 'No changes.';
   try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch { /* storage is optional */ }
 }
+const edit = document.getElementById('edit');
+const setEdit = () => document.body.classList.toggle('edit', edit.checked);
+edit.addEventListener('change', setEdit);
+setEdit();
 document.getElementById('rows').addEventListener('input', update);
+document.getElementById('rows').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-pick]');
+  if (!button) return;
+  const row = button.closest('tr');
+  setPick(row, pickOf(row) === button.dataset.pick ? '' : button.dataset.pick);
+  update();
+});
 document.getElementById('copy').addEventListener('click', async () => {
   const out = document.getElementById('out');
   try { await navigator.clipboard.writeText(out.value); } catch { out.select(); document.execCommand('copy'); }
@@ -126,7 +316,12 @@ document.getElementById('copy').addEventListener('click', async () => {
   setTimeout(() => { document.getElementById('copied').textContent = ''; }, 1500);
 });
 document.getElementById('reset').addEventListener('click', () => {
-  for (const control of document.querySelectorAll('[data-field]')) control.value = control.dataset.now || '';
+  for (const control of document.querySelectorAll('#rows [data-field]')) {
+    if (control.dataset.field === 'Icon') {
+      for (const radio of control.querySelectorAll('input')) radio.checked = radio.value === control.dataset.now;
+    } else control.value = control.dataset.now || '';
+  }
+  for (const row of document.querySelectorAll('#rows tr[data-id]')) setPick(row, '');
   update();
 });
 update();
