@@ -1,6 +1,25 @@
 package local.asb.companion
 
+import java.time.Instant
+import java.util.Locale
+import java.util.TimeZone
+import local.asb.companion.data.ActivityMachine
 import local.asb.companion.data.Thread
+import local.asb.companion.data.UsagePrices
+import local.asb.companion.data.UsageScan
+import local.asb.companion.ui.bucketLabel
+import local.asb.companion.ui.dayText
+import local.asb.companion.ui.formatCost
+import local.asb.companion.ui.formatCount
+import local.asb.companion.ui.formatDate
+import local.asb.companion.ui.formatShare
+import local.asb.companion.ui.formatTime
+import local.asb.companion.ui.formatTokens
+import local.asb.companion.ui.lastReportText
+import local.asb.companion.ui.machineStateLine
+import local.asb.companion.ui.machineStateText
+import local.asb.companion.ui.pricesText
+import local.asb.companion.ui.scanText
 import local.asb.companion.ui.cardStateLabel
 import local.asb.companion.ui.connectionText
 import local.asb.companion.ui.durationText
@@ -152,5 +171,79 @@ class FormatTest {
         assertEquals("homeLP: Offline", engineLine("homeLP", false, false))
         assertEquals("workLP: Checking…", engineLine("workLP", null, false))
         assertEquals("workLP: Checking… · In use", engineLine("workLP", null, true))
+    }
+
+    // Messages and Usage formats (activity contract 5), in UTC and with a non-English default locale.
+    private fun <T> utc(block: () -> T): T {
+        val zone = TimeZone.getDefault()
+        val locale = Locale.getDefault()
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
+        Locale.setDefault(Locale.GERMANY)
+        try { return block() } finally {
+            TimeZone.setDefault(zone)
+            Locale.setDefault(locale)
+        }
+    }
+
+    private fun at(text: String) = Instant.parse(text).toEpochMilli()
+
+    @Test fun activityNumbersUseUsGroupingAndDecimals() = utc {
+        assertEquals("0", formatCount(0))
+        assertEquals("1,234", formatCount(1234))
+        assertEquals("1,234,567", formatCount(1_234_567))
+        assertEquals("$2,148.62", formatCost(2148.62))
+        assertEquals("$0.00", formatCost(0.0))
+        assertEquals("$1,000,000.00", formatCost(1_000_000.0))
+        assertEquals("Unpriced", formatCost(null))
+        val tokens = listOf(0L to "0", 999L to "999", 1000L to "1.0K", 412_300L to "412.3K", 999_949L to "999.9K",
+            999_950L to "1.0M", 845_200_000L to "845.2M", 999_950_000L to "1.00B", 1_940_000_000L to "1.94B")
+        for ((value, text) in tokens) assertEquals("Tokens $value", text, formatTokens(value))
+        assertEquals("38.4%", formatShare(.384))
+        assertEquals("0.0%", formatShare(0.0))
+        assertEquals("100.0%", formatShare(1.0))
+    }
+
+    @Test fun activityTimesAreLocal24HourWithEnglishMonths() = utc {
+        val time = at("2026-10-24T16:38:00Z")
+        assertEquals("16:38", formatTime(time))
+        assertEquals("09:05", formatTime(at("2026-10-24T09:05:59Z")))
+        assertEquals("Oct 24", formatDate(time))
+        assertEquals("Today", dayText(time, at("2026-10-24T23:59:00Z")))
+        assertEquals("Yesterday", dayText(time, at("2026-10-25T00:01:00Z")))
+        assertEquals("Oct 24", dayText(time, at("2026-10-26T12:00:00Z")))
+        assertEquals("09:00", bucketLabel(at("2026-10-24T09:00:00Z"), hourly = true, last = false, short = true))
+        assertEquals("Now", bucketLabel(at("2026-10-24T09:00:00Z"), hourly = true, last = true, short = true))
+        assertEquals("09:00", bucketLabel(at("2026-10-24T09:00:00Z"), hourly = true, last = true, short = false))
+        assertEquals("Oct 24", bucketLabel(at("2026-10-24T00:00:00Z"), hourly = false, last = false, short = true))
+        assertEquals("Today", bucketLabel(at("2026-10-24T00:00:00Z"), hourly = false, last = true, short = true))
+        assertEquals("Oct 24", bucketLabel(at("2026-10-24T00:00:00Z"), hourly = false, last = true, short = false))
+    }
+
+    @Test fun machineStatesAndLastReport() = utc {
+        val report = at("2026-10-25T14:30:00Z")
+        assertEquals("Local", machineStateText(ActivityMachine(state = "local")))
+        assertEquals("Connected", machineStateText(ActivityMachine(state = "online", lastReportAtMs = report)))
+        assertEquals("Offline", machineStateText(ActivityMachine(state = "offline")))
+        assertEquals("", lastReportText(ActivityMachine(state = "offline")))
+        assertEquals("", lastReportText(ActivityMachine(state = "online", lastReportAtMs = report)))
+        assertEquals("Last report Oct 25, 14:30", lastReportText(ActivityMachine(state = "offline", lastReportAtMs = report)))
+        assertEquals("Offline · last report Oct 25, 14:30", machineStateLine(ActivityMachine(state = "offline", lastReportAtMs = report)))
+        assertEquals("Offline", machineStateLine(ActivityMachine(state = "offline")))
+        assertEquals("Connected", machineStateLine(ActivityMachine(state = "online")))
+    }
+
+    @Test fun scanLineHasNoNumbersBeforeTheFilesAreListed() {
+        assertEquals("", scanText(UsageScan(complete = true, files = 2707, scannedFiles = 2707)))
+        assertEquals("Reading usage", scanText(UsageScan(complete = false, files = 0, scannedFiles = 0)))
+        assertEquals("Reading usage: 120 of 2,707 files", scanText(UsageScan(complete = false, files = 2707, scannedFiles = 120)))
+    }
+
+    @Test fun pricesLineFollowsThePriceStatus() = utc {
+        val fetched = at("2026-10-26T08:00:00Z")
+        assertEquals("Prices: LiteLLM, Oct 26", pricesText(UsagePrices("LiteLLM", "fresh", fetched, 2131)))
+        assertEquals("Prices: LiteLLM, Oct 26", pricesText(UsagePrices("LiteLLM", "cached", fetched, 2131)))
+        assertEquals("Prices: loading", pricesText(UsagePrices("LiteLLM", "loading", null, 0)))
+        assertEquals("Prices: not available", pricesText(UsagePrices("LiteLLM", "unavailable", null, 0)))
+        assertEquals("", pricesText(UsagePrices()))
     }
 }

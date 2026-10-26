@@ -1,5 +1,15 @@
 package local.asb.companion.ui
 
+import java.math.BigDecimal
+import java.math.RoundingMode
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
+import java.util.Locale
+import local.asb.companion.data.ActivityMachine
+import local.asb.companion.data.UsagePrices
+import local.asb.companion.data.UsageScan
 import local.asb.companion.data.Thread
 
 // Port of duration_text.
@@ -80,3 +90,76 @@ fun connectionText(serverName: String, offline: Boolean, pathLabel: String?): St
 
 // Search mode stays open while a query is set, for example after a rotation or a return to the screen.
 fun searchOpen(opened: Boolean, query: String): Boolean = opened || query.isNotEmpty()
+
+// Messages and Usage formats, as the GTK windows (activity contract 5). Locale.US for grouping, decimals, and months.
+
+fun formatCount(value: Long): String = String.format(Locale.US, "%,d", value)
+
+fun formatCost(value: Double?): String = if (value == null) "Unpriced" else "$" + String.format(Locale.US, "%,.2f", value)
+
+// Half up on the shortest decimal form, as JavaScript toFixed shows these values.
+private fun fixed(value: Double, digits: Int): BigDecimal = BigDecimal.valueOf(value).setScale(digits, RoundingMode.HALF_UP)
+
+fun formatTokens(value: Long): String {
+    if (value < 1000) return value.toString()
+    val thousands = fixed(value / 1e3, 1)
+    if (thousands < BigDecimal(1000)) return thousands.toPlainString() + "K"
+    val millions = fixed(value / 1e6, 1)
+    if (millions < BigDecimal(1000)) return millions.toPlainString() + "M"
+    return fixed(value / 1e9, 2).toPlainString() + "B"
+}
+
+fun formatShare(fraction: Double): String = fixed(fraction * 100, 1).toPlainString() + "%"
+
+private val TIME = DateTimeFormatter.ofPattern("HH:mm", Locale.US)
+private val DATE = DateTimeFormatter.ofPattern("MMM d", Locale.US)
+
+private fun local(ms: Long) = Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault())
+
+fun formatTime(ms: Long): String = TIME.format(local(ms))
+
+fun formatDate(ms: Long): String = DATE.format(local(ms))
+
+/** Today, Yesterday, or the date, by local calendar day. */
+fun dayText(ms: Long, nowMs: Long): String = when (ChronoUnit.DAYS.between(local(ms).toLocalDate(), local(nowMs).toLocalDate())) {
+    0L -> "Today"
+    1L -> "Yesterday"
+    else -> formatDate(ms)
+}
+
+/** A bucket label: 09:00 or Now (hours), Oct 24 or Today (days); [short] axis labels name the last bucket Now or Today. */
+fun bucketLabel(startMs: Long, hourly: Boolean, last: Boolean, short: Boolean): String = when {
+    hourly -> if (short && last) "Now" else formatTime(startMs)
+    else -> if (short && last) "Today" else formatDate(startMs)
+}
+
+fun machineStateText(machine: ActivityMachine): String = when (machine.state) {
+    "local" -> "Local"
+    "online" -> "Connected"
+    else -> "Offline"
+}
+
+/** Last report Oct 25, 14:30; "" when the machine is not offline or never reported. */
+fun lastReportText(machine: ActivityMachine): String =
+    if (machineStateText(machine) == "Offline" && machine.lastReportAtMs > 0)
+        "Last report ${formatDate(machine.lastReportAtMs)}, ${formatTime(machine.lastReportAtMs)}" else ""
+
+/** The Usage toolbar price line: Prices: LiteLLM, Oct 26 (the day of the download), loading, or not available. */
+fun pricesText(prices: UsagePrices): String = when (prices.status) {
+    "fresh", "cached" -> prices.fetchedAtMs?.let { "Prices: ${prices.source.ifEmpty { "LiteLLM" }}, ${formatDate(it)}" }.orEmpty()
+    "loading" -> "Prices: loading"
+    "unavailable" -> "Prices: not available"
+    else -> ""
+}
+
+/** The Usage scan line: "" when complete, Reading usage before the engine lists the files, else the file counts. */
+fun scanText(scan: UsageScan): String = when {
+    scan.complete -> ""
+    scan.files <= 0 -> "Reading usage"
+    else -> "Reading usage: ${formatCount(scan.scannedFiles.toLong())} of ${formatCount(scan.files.toLong())} files"
+}
+
+/** The Usage machine row line: Local, Connected, Offline, or Offline · last report Oct 25, 14:30. */
+fun machineStateLine(machine: ActivityMachine): String = lastReportText(machine).let { report ->
+    if (report.isEmpty()) machineStateText(machine) else "Offline · last report" + report.removePrefix("Last report")
+}

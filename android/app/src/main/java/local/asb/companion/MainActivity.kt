@@ -55,6 +55,7 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
@@ -71,6 +72,8 @@ import local.asb.companion.notify.LiveUpdate
 import local.asb.companion.notify.Notifier
 import local.asb.companion.ui.AsbTheme
 import local.asb.companion.ui.EndpointList
+import local.asb.companion.ui.MessagesScreen
+import local.asb.companion.ui.UsageScreen
 import local.asb.companion.ui.PairScreen
 import local.asb.companion.ui.PairingViewModel
 import local.asb.companion.ui.SessionsScreen
@@ -174,7 +177,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { VERIFY, SESSIONS, CONNECTION }
+private enum class Screen { VERIFY, SESSIONS, CONNECTION, MESSAGES, USAGE }
 
 @Composable
 private fun PairedApp(
@@ -189,6 +192,8 @@ private fun PairedApp(
     val api = remember(deviceId, token) { app.api() }
     var screen by rememberSaveable(deviceId) { mutableStateOf(Screen.VERIFY) }
     var serverName by rememberSaveable(deviceId) { mutableStateOf(store.serverName) }
+    // The session that Show messages selected; it keeps its seat in Messages.
+    var messagesSeat by rememberSaveable(deviceId) { mutableStateOf<String?>(null) }
     if (screen == Screen.VERIFY) {
         ConnectionScreen(app, api, onUnpair = onUnpair, onVerified = {
             serverName = it.serverName
@@ -226,7 +231,13 @@ private fun PairedApp(
             sessionsModel.viewModelScope.cancel()
             onUnpair()
         }
-        if (screen == Screen.CONNECTION) {
+        // Messages and Usage ask the engine of the dashboard on screen, so their seat IDs are its row IDs.
+        val engine = sessionsModel.state.collectAsStateWithLifecycle().value.engine
+        if (screen == Screen.MESSAGES) {
+            MessagesScreen(api, engine, messagesSeat, onSelect = { messagesSeat = it }, onBack = { screen = Screen.SESSIONS })
+        } else if (screen == Screen.USAGE) {
+            UsageScreen(api, engine, onBack = { screen = Screen.SESSIONS })
+        } else if (screen == Screen.CONNECTION) {
             SettingsScreen(store, api, notificationsAllowed,
                 onBack = { screen = Screen.SESSIONS },
                 onUnpair = unpair,
@@ -242,7 +253,10 @@ private fun PairedApp(
             )
         } else {
             SessionsScreen(sessionsModel, serverName, cardTextScale = app.textScale,
-                onSettings = { screen = Screen.CONNECTION }, onPairAgain = unpair)
+                onSettings = { screen = Screen.CONNECTION },
+                onMessages = { messagesSeat = it; screen = Screen.MESSAGES },
+                onUsage = { screen = Screen.USAGE },
+                onPairAgain = unpair)
         }
     }
 }

@@ -13,14 +13,18 @@ import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import local.asb.companion.data.ActivityMessages
+import local.asb.companion.data.ActivityUsage
 import local.asb.companion.data.AsbJson
 import local.asb.companion.data.Dashboard
 import local.asb.companion.data.Endpoint
 import local.asb.companion.data.Engine
 import local.asb.companion.data.ErrorReply
 import local.asb.companion.data.Hello
+import local.asb.companion.data.MESSAGE_PERIODS
 import local.asb.companion.data.PairReply
 import local.asb.companion.data.PairingInfo
+import local.asb.companion.data.USAGE_PERIODS
 import local.asb.companion.data.endpointLabel
 import local.asb.companion.data.orderEndpoints
 import local.asb.companion.data.otherEngines
@@ -41,6 +45,9 @@ sealed class AsbError(message: String) : Exception(message) {
     data object PinMismatch : AsbError("The ASB certificate does not match the paired PC. Check the fingerprint in ASB Preferences.")
     class Server(message: String) : AsbError(message)
 }
+
+// An engine without the activity routes answers 404.
+const val OLDER_ENGINE = "This PC runs an older ASB. Update ASB on the PC to see messages and usage."
 
 fun offlineMessage(overlays: List<String>): String =
     if (overlays.isEmpty()) "Could not reach ASB. Check the PC and Wi-Fi, then try again."
@@ -172,6 +179,19 @@ class AsbApi(
         request("settings", "unread", body = body.toString(), only = engine)
     }
 
+    /** The Messages view of [engine], the engine of the dashboard on screen, so seat IDs equal its row IDs. */
+    suspend fun activityMessages(period: String, engine: String): ActivityMessages {
+        if (period !in MESSAGE_PERIODS) throw AsbError.Server("Invalid period.")
+        return decode(request("activity", "messages", query = mapOf("period" to period), only = engine,
+            notFound = OLDER_ENGINE).body)
+    }
+
+    suspend fun activityUsage(period: String, engine: String): ActivityUsage {
+        if (period !in USAGE_PERIODS) throw AsbError.Server("Invalid period.")
+        return decode(request("activity", "usage", query = mapOf("period" to period), only = engine,
+            notFound = OLDER_ENGINE).body)
+    }
+
     private data class Reply(val code: Int, val body: String, val etag: String?, val engine: String = "")
 
     /** One engine to try: "" is the paired PC; another engine has its own addresses, port, and pin. */
@@ -220,6 +240,8 @@ class AsbApi(
         secret: String = "",
         only: String? = null,
         probe: Boolean = false,
+        query: Map<String, String> = emptyMap(),
+        notFound: String? = null,
     ): Reply = withContext(Dispatchers.IO) {
         // A POST names its engine, because remote row IDs differ per engine.
         val targets = if (only != null || body != null) listOfNotNull(target(only.orEmpty())) else getOrder()
@@ -238,6 +260,7 @@ class AsbApi(
                 val url = HttpUrl.Builder().scheme("https").host(endpoint.host).port(target.port).addPathSegments("phone/v1").apply {
                     segments.forEach { addPathSegment(it) }
                     if (force) addQueryParameter("force", "1")
+                    query.forEach { (name, value) -> addQueryParameter(name, value) }
                 }.build()
                 val request = Request.Builder().url(url).apply {
                     if (authenticated) header("Authorization", "Bearer $token")
@@ -273,6 +296,7 @@ class AsbApi(
                 throw AsbError.NotPaired
             }
             response.code == 429 -> throw AsbError.Throttled
+            response.code == 404 && notFound != null -> throw AsbError.Server(notFound)
             response.code in 200..299 || (allowNotModified && response.code == 304) -> response
             else -> {
                 val error = try { AsbJson.decodeFromString<ErrorReply>(response.body) }

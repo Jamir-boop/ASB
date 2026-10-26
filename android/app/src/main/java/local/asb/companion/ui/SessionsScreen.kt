@@ -88,7 +88,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -191,6 +191,8 @@ fun SessionsScreen(
     serverName: String,
     cardTextScale: Float,
     onSettings: () -> Unit,
+    onMessages: (String?) -> Unit,
+    onUsage: () -> Unit,
     onPairAgain: () -> Unit,
 ) = BoxWithConstraints {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -579,7 +581,16 @@ fun SessionsScreen(
         val palette = LocalPalette.current
         val connection = connectionText(serverName, state.offline, state.path?.let(::endpointLabel))
         val settings: @Composable () -> Unit = {
-            IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, contentDescription = "Settings") }
+            var mainMenu by remember { mutableStateOf(false) }
+            Box {
+                IconButton(onClick = { mainMenu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "Main menu") }
+                DropdownMenu(expanded = mainMenu, onDismissRequest = { mainMenu = false }) {
+                    DropdownMenuItem(text = { Text("Messages") }, onClick = { mainMenu = false; onMessages(null) })
+                    DropdownMenuItem(text = { Text("Usage") }, onClick = { mainMenu = false; onUsage() })
+                    HorizontalDivider()
+                    DropdownMenuItem(text = { Text("Settings") }, onClick = { mainMenu = false; onSettings() })
+                }
+            }
         }
         Column(Modifier.fillMaxWidth().background(hexColor(palette.background))
             .windowInsetsPadding(SafeTopBarInsets)) {
@@ -723,6 +734,7 @@ fun SessionsScreen(
         viewModel = viewModel,
         windowSize = IntSize(constraints.maxWidth, constraints.maxHeight),
         onOpen = { inspector = null; viewModel.action(inspectorRow.id, "open") },
+        onShowMessages = { inspector = null; onMessages(inspectorRow.id) },
         onDismiss = { inspector = null },
     )
 }
@@ -1130,7 +1142,7 @@ private val INSPECTOR_MARGIN = 16.dp
 @Composable
 private fun SessionInspector(
     row: Thread, point: Offset, busy: Boolean, message: String?, error: String?, nowMs: Long, viewModel: SessionsViewModel,
-    windowSize: IntSize, onOpen: () -> Unit, onDismiss: () -> Unit,
+    windowSize: IntSize, onOpen: () -> Unit, onShowMessages: () -> Unit, onDismiss: () -> Unit,
 ) {
     val density = LocalDensity.current
     val direction = LocalLayoutDirection.current
@@ -1232,6 +1244,15 @@ private fun SessionInspector(
                         Text(label, fontSize = 13.sp,
                             fontWeight = FontWeight.Bold, color = text, maxLines = 1, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.padding(horizontal = 12.dp))
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Box(
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(8.dp)).background(hexColor(group))
+                            .clickable(role = Role.Button, onClick = onShowMessages),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("Show messages", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = text, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 12.dp))
                     }
                     Spacer(Modifier.height(12.dp))
                     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(hexColor(group))) {

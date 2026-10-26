@@ -22,6 +22,7 @@ import local.asb.companion.net.AsbError
 import local.asb.companion.net.DashboardResult
 import local.asb.companion.net.MemoryEngines
 import local.asb.companion.net.MemoryPaths
+import local.asb.companion.net.OLDER_ENGINE
 import local.asb.companion.net.offlineMessage
 import local.asb.companion.net.sha256Hex
 import kotlinx.serialization.encodeToString
@@ -541,5 +542,45 @@ class AsbApiTest {
         server.enqueue(MockResponse().setBody(hello))
         assertTrue(api.probe(""))
         assertEquals(listOf(null, listOf(b.engine, c.engine)), listOf(paths.current, engines.list))
+    }
+
+    @Test fun activityCallsSendOnlyThePeriodWithTheBearerToTheGivenEngine() = runBlocking {
+        server.enqueue(MockResponse().setBody("""{"period":"7d","nowMs":1793000000000,"messages":[""" +
+            """{"id":"00000000-0000-4000-8000-000000000001","from":"a","to":"b","atMs":1793000000000,"status":"accepted"}]}"""))
+        val messages = api().activityMessages("7d", "")
+        assertEquals("a", messages.messages.single().from)
+        val first = server.takeRequest()
+        assertEquals("/phone/v1/activity/messages?period=7d", first.path)
+        assertEquals("Bearer $token", first.getHeader("Authorization"))
+        server.enqueue(MockResponse().setBody("""{"period":"30d","scan":{"complete":false,"files":2,"scannedFiles":1}}"""))
+        assertFalse(api().activityUsage("30d", "").scan.complete)
+        val second = server.takeRequest()
+        assertEquals("/phone/v1/activity/usage?period=30d", second.path)
+        assertEquals("Bearer $token", second.getHeader("Authorization"))
+        // The engine of the dashboard on screen gets the request, and no other.
+        val b = peer("member")
+        b.server.enqueue(MockResponse().setBody("{}"))
+        api(up, MemoryEngines(listOf(b.engine))).activityUsage("90d", b.engine.machineId)
+        assertEquals("/phone/v1/activity/usage?period=90d", b.server.takeRequest().path)
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test fun anInvalidPeriodThrowsBeforeAnyRequest() = runBlocking {
+        for (call in listOf<suspend () -> Unit>({ api().activityMessages("90d", "") }, { api().activityMessages("", "") },
+            { api().activityUsage("1d", "") }, { api().activityUsage("30d&force=1", "") })) {
+            assertEquals("Invalid period.", failure(call).message)
+        }
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test fun anOlderEngineWithoutTheRoutesAsksForAnUpdate() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":"Not found."}"""))
+        assertEquals(OLDER_ENGINE, failure { api().activityMessages("24h", "") }.message)
+        assertEquals("This PC runs an older ASB. Update ASB on the PC to see messages and usage.", OLDER_ENGINE)
+        server.enqueue(MockResponse().setResponseCode(404).setBody("{}"))
+        assertEquals(OLDER_ENGINE, failure { api().activityUsage("7d", "") }.message)
+        // Other routes keep the server text for a 404.
+        server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":"Not found."}"""))
+        assertEquals("Not found.", failure { api().action("one", "open") }.message)
     }
 }
