@@ -6286,7 +6286,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual((window.get_title(), window.get_default_size(), window.KIND), ("Usage", (948, 760), "usage"))
         self.assertIs(asb.ACTIVITY_WINDOW_CLASSES["usage"], asb.UsageWindow)
         self.assertEqual(window.routes, ["/api/activity/usage?period=30d"])
-        self.assertEqual([button.get_label() for button in window.period_buttons.values()], ["24 hours", "7 days", "30 days", "90 days"])
+        self.assertEqual([button.get_label() for button in window.period_buttons.values()], ["24 hours", "7 days", "30 days", "90 days", "All time"])
         self.assertTrue(window.period_buttons["30d"].get_active())
         self.assertEqual([(button.get_label(), button.get_active()) for button in window.metric_buttons.values()], [("Cost", True), ("Tokens", False)])
         self.assertTrue(window.metric_buttons["cost"].get_parent().has_css_class("linked"))
@@ -6328,6 +6328,45 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertGreater(side.get_x(), round_bounds.get_x() + 320)
         self.assertEqual(self.figures(window), {"Processed tokens": "3.33B", "Cached input": "2.95B", "Uncached input": "310.1M",
                                                 "Output": "68.4M", "Cache savings": "$5,916.10"})
+        self.assert_no_new_warnings()
+
+    def test_all_time_month_chart_and_empty_state(self):
+        window = self.window()
+        window.period_buttons["all"].set_active(True)
+        self.drain(.1)
+        self.assertEqual(window.routes[-1], "/api/activity/usage?period=all")
+        self.assertEqual(window.chart_title.get_label(), "Monthly cost")
+        self.assertEqual((len(window.chart.bars), window.chart.buckets["unit"]), (4, "month"))
+        self.assertEqual(window.chart.full_label(3), "October 2026")
+        window.set_metric("tokens")
+        self.assertEqual(window.chart_title.get_label(), "Monthly tokens")
+        empty = {key: dict(reply, records=[]) for key, reply in self.REPLIES.items()}
+        window = self.window(empty)
+        window.period_buttons["all"].set_active(True)
+        self.drain(.1)
+        self.assertTrue(window.empty_label.get_visible())
+        self.assertFalse(window.scroll.get_visible())
+        self.assertEqual(window.empty_label.get_label(), "No usage yet.")
+        self.assert_no_new_warnings()
+
+    def test_five_period_buttons_fit_and_toolbar_wraps(self):
+        for size in ((948, 760), (600, 900), (480, 900)):
+            with self.subTest(size=size):
+                window = self.window(size=size)
+                for button in window.period_buttons.values():
+                    found, bounds = button.compute_bounds(window)
+                    self.assertTrue(found)
+                    self.assertGreater(bounds.get_width(), 0)
+                    self.assertGreaterEqual(bounds.get_x(), 0)
+                    self.assertLessEqual(bounds.get_x() + bounds.get_width(), size[0])
+                    self.assertFalse(button.get_child().get_layout().is_ellipsized())
+                self.assertEqual(window.get_width(), size[0])
+                wrap = window.metric_buttons["cost"].get_parent().get_parent()
+                if hasattr(asb.Adw, "WrapBox") and isinstance(wrap, asb.Adw.WrapBox) and size[0] < 948:
+                    wrapped = window.metric_buttons["cost"] if size[0] == 480 else window.chips
+                    found, metric = wrapped.compute_bounds(window)
+                    found, period = window.period_buttons["all"].compute_bounds(window)
+                    self.assertGreater(metric.get_y(), period.get_y())
         self.assert_no_new_warnings()
 
     def test_provider_heading_rows_and_unpriced_value(self):

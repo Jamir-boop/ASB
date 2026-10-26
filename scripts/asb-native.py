@@ -1263,6 +1263,7 @@ ACTIVITY_APPS = ("codex", "claude", "opencode")
 USAGE_APPS = ACTIVITY_APPS + ("antigravity", "grok", "pi")
 USAGE_MAKER_COLOR = "#8c929a"
 USAGE_OTHER_MAKER = "Other"
+ACTIVITY_MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
 ACTIVITY_APP_LABELS = {"codex": "Codex", "claude": "Claude Code", "opencode": "OpenCode", "": "Other", "antigravity": "Antigravity", "grok": "Grok", "pi": "Pi"}
 ACTIVITY_APP_ICONS = {"codex": "asb-openai-symbolic", "claude": "asb-claude-symbolic", "opencode": "asb-opencode-symbolic", "": "asb-machine-symbolic", "antigravity": "asb-terminal-symbolic", "grok": "asb-terminal-symbolic", "pi": "asb-terminal-symbolic"}
 ACTIVITY_APP_COLORS = {"codex": "#c9ccd1", "claude": "#d97757", "opencode": "#7d848c", "": "#5d6268", "antigravity": "#4f8fe0", "grok": "#e8e46a", "pi": "#c678dd"}
@@ -1274,7 +1275,7 @@ ACTIVITY_STATUS_ICONS = {"accepted": "object-select-symbolic", "written": "mail-
 ACTIVITY_TOKEN_COLORS = {"cacheRead": "#4b5058", "cacheWrite": "#6b7179", "uncached": "#959ba3", "output": "#e4e6e8"}
 MACHINE_HUES = ("#a28caa", "#7cc48a", "#5fb3b3", "#d6a15e", "#e38fb0", "#b4b86c")
 MESSAGE_PERIODS = (("24h", "24 hours"), ("7d", "7 days"), ("30d", "30 days"))
-USAGE_PERIODS = (("24h", "24 hours"), ("7d", "7 days"), ("30d", "30 days"), ("90d", "90 days"))
+USAGE_PERIODS = (("24h", "24 hours"), ("7d", "7 days"), ("30d", "30 days"), ("90d", "90 days"), ("all", "All time"))
 
 
 def format_count(n):
@@ -1305,9 +1306,8 @@ def format_clock(ms):
 
 def format_day(ms):
     day = datetime.fromtimestamp(ms / 1000)
-    # English month names: the %b format follows the locale.
-    months = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
-    return f"{months[day.month - 1]} {day.day}"
+    # English month names do not follow the locale.
+    return f"{ACTIVITY_MONTHS[day.month - 1][:3]} {day.day}"
 
 
 def day_line(ms, now_ms):
@@ -1330,6 +1330,12 @@ def machine_last_report(machine):
 
 def bucket_label(buckets, index):
     starts, hourly = buckets["startsMs"], buckets["unit"] == "hour"
+    if buckets["unit"] == "month":
+        if index == len(starts) - 1:
+            return "This month"
+        month = datetime.fromtimestamp(starts[index] / 1000)
+        label = ACTIVITY_MONTHS[month.month - 1][:3]
+        return f"{label} {month.year}" if index == 0 or month.month == 1 else label
     if index == len(starts) - 1:
         return "Now" if hourly else "Today"
     return format_clock(starts[index]) if hourly else format_day(starts[index])
@@ -9638,8 +9644,17 @@ class UsageChart(Gtk.Widget):
                 "total_text": self.format(self.sums[index]), "bounds": (left, top, box_width, box_height), "layouts": (title, names, values),
                 "colors": [color for _label, _text, color in rows]}
 
+    def label_step(self):
+        count = len(self.bars)
+        if self.buckets["unit"] == "month":
+            return 1 if count <= 12 else 3 if count <= 36 else 12
+        return 3 if self.buckets["unit"] == "hour" else {7: 1, 30: 5}.get(count, 15)
+
     def full_label(self, index):
         starts = self.buckets["startsMs"]
+        if self.buckets["unit"] == "month":
+            month = datetime.fromtimestamp(starts[index] / 1000)
+            return f"{ACTIVITY_MONTHS[month.month - 1]} {month.year}"
         return format_clock(starts[index]) if self.buckets["unit"] == "hour" else format_day(starts[index])
 
     def do_snapshot(self, snapshot):
@@ -9670,7 +9685,7 @@ class UsageChart(Gtk.Widget):
                 if low - high > 0:
                     top = key == shown[-1]
                     usage_rect(snapshot, x, high, width, low - high, colors[key], min(2, width / 2, low - high) if top else 0, True)
-        every = 3 if self.buckets["unit"] == "hour" else {7: 1, 30: 5}.get(len(self.bars), 15)
+        every = self.label_step()
         for index in range(len(self.bars)):
             if (len(self.bars) - 1 - index) % every == 0:
                 layout = activity_layout(self, bucket_label(self.buckets, index), 11)
@@ -9987,7 +10002,7 @@ class UsageWindow(ActivityWindow):
         empty = not data["records"]
         self.scroll.set_visible(not empty)
         self.empty_label.set_visible(empty)
-        self.empty_label.set_label(f"No usage in {dict(self.PERIODS)[self.period]}.")
+        self.empty_label.set_label("No usage yet." if self.period == "all" else f"No usage in {dict(self.PERIODS)[self.period]}.")
         view = usage_view(data, on, self.metric)
         cost = self.metric == "cost"
         show = format_cost if cost else format_tokens
@@ -9997,8 +10012,8 @@ class UsageWindow(ActivityWindow):
         note = usage_unpriced_note(view)
         self.note.set_label(note)
         self.note.set_visible(bool(note))
-        hourly = data["buckets"]["unit"] == "hour"
-        self.chart_title.set_label(f"{'Hourly' if hourly else 'Daily'} {'cost' if cost else 'tokens'}")
+        interval = {"hour": "Hourly", "day": "Daily", "month": "Monthly"}[data["buckets"]["unit"]]
+        self.chart_title.set_label(f"{interval} {'cost' if cost else 'tokens'}")
         if self.split == "app":
             other = [""] if any(row["id"] == "" for row in view["apps"]) else []
             apps = [app for app in USAGE_APPS if app in ACTIVITY_APPS or any(row["id"] == app for row in view["apps"])] + other

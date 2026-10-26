@@ -35,6 +35,8 @@ APPLICATION = copy.deepcopy(next(node for node in TREE.body if isinstance(node, 
 APPLICATION.bases = []
 STRIP = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "SessionStrip"))
 STRIP.bases = []
+USAGE_CHART = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "UsageChart"))
+USAGE_CHART.bases = []
 COLUMN = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "SessionColumn"))
 COLUMN.bases = []
 # The signal helper follows the GI import block, so it is not in NODES.
@@ -42,7 +44,7 @@ SIGNAL = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) an
 # The color helpers of the Board and the activity windows also follow the GI import block.
 COLORS = [node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name in ("rgba", "hex_color", "native_colors")]
 SCOPE = {"__file__": str(SOURCE)}
-exec(compile(ast.Module(body=NODES + [SIGNAL] + COLORS + [STRIP, COLUMN, MARKER, SOURCES, PHONE, MACHINES, PREFERENCES, WINDOW, APPLICATION],
+exec(compile(ast.Module(body=NODES + [SIGNAL] + COLORS + [USAGE_CHART, STRIP, COLUMN, MARKER, SOURCES, PHONE, MACHINES, PREFERENCES, WINDOW, APPLICATION],
                         type_ignores=[]), str(SOURCE), "exec"), SCOPE)
 Column = SCOPE["SessionColumn"]
 SCOPE["SessionColumn"] = lambda **kwargs: SCOPE["Gtk"].ListBox(**kwargs)
@@ -174,7 +176,8 @@ class ActivityHelperChecks(unittest.TestCase):
         self.assertEqual(asb.ACTIVITY_APP_COLORS["claude"], "#d97757")
         self.assertEqual(asb.ACTIVITY_TOKEN_COLORS, {"cacheRead": "#4b5058", "cacheWrite": "#6b7179", "uncached": "#959ba3", "output": "#e4e6e8"})
         self.assertEqual([key for key, _label in asb.MESSAGE_PERIODS], ["24h", "7d", "30d"])
-        self.assertEqual(asb.USAGE_PERIODS[-1], ("90d", "90 days"))
+        self.assertEqual(asb.USAGE_PERIODS[-2:], (("90d", "90 days"), ("all", "All time")))
+        self.assertEqual(asb.MESSAGE_PERIODS, (("24h", "24 hours"), ("7d", "7 days"), ("30d", "30 days")))
 
     def test_number_formats(self):
         self.assertEqual(asb.format_count(1234), "1,234")
@@ -786,11 +789,11 @@ class UsageLogicChecks(unittest.TestCase):
             self.assertAlmostEqual(sum(view["cost_parts"].values()), total, delta=.01)
 
     def test_every_period_and_metric_is_consistent(self):
-        for period in ("24h", "7d", "30d", "90d"):
+        for period in ("24h", "7d", "30d", "90d", "all"):
             for metric in ("cost", "tokens"):
                 with self.subTest(period=period, metric=metric):
                     view = self.view(period, metric=metric)
-                    self.assertEqual(len(view["bars"]), {"24h": 24, "7d": 7, "30d": 30, "90d": 90}[period])
+                    self.assertEqual(len(view["bars"]), {"24h": 24, "7d": 7, "30d": 30, "90d": 90, "all": 4}[period])
                     self.assert_consistent(view, metric)
                     records = self.REPLIES[period]["records"]
                     self.assertEqual(view["tokens"], sum(sum(record["tokens"].values()) for record in records))
@@ -815,6 +818,53 @@ class UsageLogicChecks(unittest.TestCase):
         self.assertEqual(tokens["models"][0]["model"], "gpt-6.1-sol")
         self.assertIsNotNone(tokens["models"][-1]["share"])
         self.assertEqual(asb.format_tokens(self.view("24h", metric="tokens")["total"]), "99.4M")
+
+    def test_month_bucket_labels_and_tooltip_titles_are_english(self):
+        starts = [int(datetime(year, month, 1, tzinfo=timezone.utc).timestamp() * 1000)
+                  for year, month in ((2026, 11), (2026, 12), (2027, 1), (2027, 2))]
+        buckets = {"unit": "month", "startsMs": starts}
+        self.assertEqual([asb.bucket_label(buckets, index) for index in range(4)],
+                         ["Nov 2026", "Dec", "Jan 2027", "This month"])
+        chart = SimpleNamespace(buckets=buckets)
+        self.assertEqual([asb.UsageChart.full_label(chart, index) for index in range(4)],
+                         ["November 2026", "December 2026", "January 2027", "February 2027"])
+        self.assertEqual(asb.bucket_label({"unit": "month", "startsMs": starts[:1]}, 0), "This month")
+        fixture = self.REPLIES["all"]["buckets"]
+        self.assertEqual([asb.bucket_label(fixture, index) for index in range(4)], ["Jul 2026", "Aug", "Sep", "This month"])
+        self.assertEqual(asb.UsageChart.full_label(SimpleNamespace(buckets=fixture), 3), "October 2026")
+
+    def test_month_label_steps_and_existing_hour_day_steps(self):
+        for unit, count, expected in (("month", 4, 1), ("month", 12, 1), ("month", 13, 3), ("month", 36, 3), ("month", 37, 12),
+                                      ("hour", 24, 3), ("day", 7, 1), ("day", 30, 5), ("day", 90, 15)):
+            with self.subTest(unit=unit, count=count):
+                chart = SimpleNamespace(buckets={"unit": unit}, bars=[{}] * count)
+                self.assertEqual(asb.UsageChart.label_step(chart), expected)
+
+    def test_all_fixture_keeps_the_90_day_totals_in_utc_months(self):
+        reply, days = self.REPLIES["all"], self.REPLIES["90d"]
+        self.assertEqual(reply["period"], "all")
+        self.assertEqual(reply["buckets"]["unit"], "month")
+        for key in ("machines", "prices", "scan"):
+            self.assertEqual(reply.get(key), days.get(key))
+        self.assertEqual([datetime.fromtimestamp(at / 1000, timezone.utc).strftime("%Y-%m-%d") for at in reply["buckets"]["startsMs"]],
+                         ["2026-07-01", "2026-08-01", "2026-09-01", "2026-10-01"])
+        expected = {}
+        for record in days["records"]:
+            month = datetime.fromtimestamp(days["buckets"]["startsMs"][record["bucket"]] / 1000, timezone.utc).month
+            key = tuple(record[field] for field in ("machineId", "app", "model", "maker")) + (month,)
+            row = expected.setdefault(key, {"tokens": dict.fromkeys(asb.USAGE_PARTS, 0),
+                                            "cost": None if record["cost"] is None else dict.fromkeys(record["cost"], 0)})
+            for part, value in record["tokens"].items():
+                row["tokens"][part] += value
+            if row["cost"] is not None:
+                for part, value in record["cost"].items():
+                    row["cost"][part] += value
+        self.assertEqual(len(reply["records"]), len(expected))
+        for record in reply["records"]:
+            month = datetime.fromtimestamp(reply["buckets"]["startsMs"][record["bucket"]] / 1000, timezone.utc).month
+            key = tuple(record[field] for field in ("machineId", "app", "model", "maker")) + (month,)
+            self.assertEqual(record["tokens"], expected[key]["tokens"])
+            self.assertEqual(record["cost"], expected[key]["cost"])
 
     def test_makers_have_priced_cost_or_tokens_and_shares(self):
         makers = self.view()["makers"]
