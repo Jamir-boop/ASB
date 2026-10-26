@@ -143,6 +143,6 @@ test('array parsers keep every record in order and both new formats survive the 
   const second = await scanFile(pi, await fs.stat(pi), undefined, 'pi');
   const cache = new Map([[pathKey(grok), first], [pathKey(pi), second]]);
   const encoded = encodeScanCache(cache);
-  assert.equal(encoded.version, 1);
+  assert.equal(encoded.version, 2);
   assert.deepEqual(decodeScanCache(JSON.parse(JSON.stringify(encoded))), cache);
 });

@@ -274,9 +274,13 @@ test('the group merge: one record per ID with the receiver status, offline membe
   const usage = [{ app: 'codex', model: 'gpt-5', hourMs: nowMs - 3_600_000, tokens: { uncached: 1, cacheRead: 2, cacheWrite: 3, output: 4 } }];
   const withUsage = service({ activityUsage: { localHourly: async (period) => ({ usage: period === '90d' ? usage : [], scan: { complete: false, files: 9, scannedFiles: 3 } }) } });
   assert.deepEqual(await withUsage.memberReply('90d'), { messages: (await withUsage.localRecords('90d')), usage, scan: { complete: false, files: 9, scannedFiles: 3 } });
+  assert.deepEqual(await withUsage.localRecords('all'), []);
+  assert.deepEqual(await withUsage.memberReply('all'), { messages: [], usage: [], scan: { complete: false, files: 9, scannedFiles: 3 } });
   assert.deepEqual(validActivity({ messages: [{ id: 'x', from: 'a', to: 'b', atMs: 1, status: 'held', reason: '', direction: 'in', text: 'T' }], usage: [] }).messages,
     [{ id: 'x', from: 'a', to: 'b', atMs: 1, status: 'held', reason: '', direction: 'in' }]);
   assert.equal(validActivity({ messages: {} }), null);
+  await machineGroup.activity('all');
+  assert.equal(calls.filter((item) => item.startsWith('/peer/v1/activity')).at(-1), '/peer/v1/activity?period=all');
 });
 
 async function listen(t, server) {
@@ -298,7 +302,7 @@ test('the activity routes check the period, the seats, and the read checks, and 
     assert.equal(response.headers.get('cache-control'), 'no-store');
   }
   assert.deepEqual(calls, [['report', '24h'], ['report', '7d'], ['thread', '30d', { seat: 'x' }], ['thread', '7d', { a: 'x', b: 'm:aaaa:y' }]]);
-  for (const route of ['/api/activity/messages?period=90d', '/api/activity/messages?period=1y', '/api/activity/thread?period=&seat=x']) {
+  for (const route of ['/api/activity/messages?period=90d', '/api/activity/messages?period=all', '/api/activity/messages?period=1y', '/api/activity/thread?period=&seat=x']) {
     const response = await get(route);
     assert.deepEqual([response.status, await response.json(), response.headers.get('cache-control')], [400, { error: 'Invalid period.' }, 'no-store'], route);
   }
@@ -319,9 +323,10 @@ test('the activity routes check the period, the seats, and the read checks, and 
     activityUsage: { report: async (period) => { periods.push(period); return { period }; } } }));
   const usage = await fetch(`${usageBase}/api/activity/usage?period=90d`);
   assert.deepEqual([usage.status, await usage.json(), usage.headers.get('cache-control')], [200, { period: '90d' }, 'no-store']);
+  assert.equal((await fetch(`${usageBase}/api/activity/usage?period=all`)).status, 200);
   assert.equal((await fetch(`${usageBase}/api/activity/usage`)).status, 200);
   assert.equal((await fetch(`${usageBase}/api/activity/usage?period=1y`)).status, 400);
-  assert.deepEqual(periods, ['90d', '30d']);
+  assert.deepEqual(periods, ['90d', 'all', '30d']);
   // Without the messages service the message routes do not exist.
   assert.equal((await fetch(`${usageBase}/api/activity/messages`)).status, 404);
   assert.equal((await fetch(`${usageBase}/api/activity/thread?seat=x`)).status, 404);

@@ -5,12 +5,19 @@ import { priceTokens } from './usage-pricing.mjs';
 
 const HOUR_MS = 60 * 60 * 1000;
 export const USAGE_PERIODS = { '24h': { unit: 'hour', count: 24 }, '7d': { unit: 'day', count: 7 },
-  '30d': { unit: 'day', count: 30 }, '90d': { unit: 'day', count: 90 } };
+  '30d': { unit: 'day', count: 30 }, '90d': { unit: 'day', count: 90 }, all: { unit: 'month' } };
 
 // Bucket starts, oldest first, and the end of the last bucket. Day starts use local date arithmetic, so they are DST safe.
-export function periodBuckets(period, nowMs) {
+export function periodBuckets(period, nowMs, firstMs = null) {
   const { unit, count } = USAGE_PERIODS[period];
   const now = new Date(nowMs);
+  if (unit === 'month') {
+    const first = new Date(firstMs !== null && firstMs <= nowMs ? firstMs : nowMs);
+    const year = first.getFullYear(), month = first.getMonth();
+    const months = (now.getFullYear() - year) * 12 + now.getMonth() - month + 1;
+    return { unit, startsMs: Array.from({ length: months }, (_, index) => new Date(year, month + index, 1).getTime()),
+      endMs: new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime() };
+  }
   if (unit === 'hour') {
     const hour = new Date(nowMs);
     hour.setMinutes(0, 0, 0);

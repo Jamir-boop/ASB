@@ -12,10 +12,9 @@ import { antigravityRoots, expandHome, readAntigravityUsage } from './usage-anti
 import { modelMaker } from './usage-pricing.mjs';
 import { openCodeDatabases, readOpenCodeUsage } from './usage-opencode.mjs';
 import { createRateLoader } from './usage-rates.mjs';
-import { createYielder, loadUsageCache, pathKey, pruneScanCache, QUARTER_HOUR_MS, saveUsageCache, scanFile } from './usage-scan-cache.mjs';
+import { createYielder, loadUsageCache, MAX_CACHE_FILES, pathKey, pruneScanCache, QUARTER_HOUR_MS, saveUsageCache, scanFile } from './usage-scan-cache.mjs';
 
 export { USAGE_PERIODS };
-export const USAGE_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 const REFRESH_MS = 10_000;
@@ -52,18 +51,18 @@ function usageRoots(sources, homeDir, env) {
   return { roots: [...roots.values()], databases };
 }
 
-async function listTranscripts(root, app, cutoffMs, files, pause, fileName) {
+async function listTranscripts(root, app, files, pause, fileName) {
   let entries;
   try { entries = await fs.readdir(root, { withFileTypes: true }); } catch { return; }
   const names = new Set(entries.filter((entry) => entry.isFile()).map((entry) => entry.name));
   for (const entry of entries) {
     const file = path.join(root, entry.name);
-    if (entry.isDirectory()) await listTranscripts(file, app, cutoffMs, files, pause, fileName);
+    if (entry.isDirectory()) await listTranscripts(file, app, files, pause, fileName);
     // shortcut: Node.js before 22.15 has no zstd, so compressed Codex rollouts are not read; upgrade Node.js to read them.
     else if (entry.isFile() && (fileName ? entry.name === fileName : entry.name.endsWith('.jsonl')
       || (typeof zlib.createZstdDecompress === 'function' && entry.name.endsWith('.jsonl.zst') && !names.has(entry.name.slice(0, -4))))) {
       const info = await fs.stat(file).catch(() => null);
-      if (info && info.mtimeMs >= cutoffMs) files.push({ file, app, info });
+      if (info) files.push({ file, app, info });
     }
     await pause();
   }
@@ -71,7 +70,7 @@ async function listTranscripts(root, app, cutoffMs, files, pause, fileName) {
 
 export function createActivityUsage({ readSources = async () => [], machine = {}, cacheDir = defaultCacheDir(), now = Date.now,
   fetch = globalThis.fetch, homeDir = os.homedir(), env = process.env, platform = process.platform, refreshMs = REFRESH_MS,
-  log = console.error } = {}) {
+  log = console.error, maxCacheFiles = MAX_CACHE_FILES } = {}) {
   const cacheFile = path.join(cacheDir, 'usage', 'usage-cache.json');
   const stats = { bytesRead: 0, scans: 0, saves: 0, openCodeQueries: 0, openCodePages: 0 };
   const progress = { complete: false, files: 0, scannedFiles: 0 };
@@ -92,10 +91,12 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     const pause = createYielder();
     cache ??= await loadUsageCache(cacheFile, { platform });
     version += 1;
-    const cutoffMs = now() - USAGE_RETENTION_MS;
     const { roots, databases } = usageRoots(await readSources(), homeDir, env);
     const files = [];
-    for (const { root, app, fileName } of roots) await listTranscripts(root, app, cutoffMs, files, pause, fileName);
+    for (const { root, app, fileName } of roots) await listTranscripts(root, app, files, pause, fileName);
+    // shortcut: only the 10,000 newest transcript files count, so the scan and the cache stay bounded; raise MAX_CACHE_FILES if All time needs more.
+    files.sort((a, b) => b.info.mtimeMs - a.info.mtimeMs || a.file.localeCompare(b.file));
+    files.splice(maxCacheFiles);
     // The first scan shows its progress; a refresh keeps the counts of the last full scan until it ends.
     if (!progress.complete) Object.assign(progress, { files: files.length, scannedFiles: 0 });
     const seen = new Set();
@@ -125,7 +126,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       let last = openCodeReads.get(dataDir);
       if (last?.signature !== signature) {
         let records = [];
-        try { records = await readOpenCodeUsage(dataDir, cutoffMs, { stats, pause }); } catch { /* No database or another schema: no usage. */ }
+        try { records = await readOpenCodeUsage(dataDir, 0, { stats, pause }); } catch { /* No database or another schema: no usage. */ }
         stats.openCodeQueries += 1;
         last = { signature, records };
       }
@@ -134,9 +135,9 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     }
     openCodeReads = queried;
     openCode = found;
-    antigravity = await readAntigravityUsage(await antigravityRoots(env, homeDir), cutoffMs, { cache: antigravityCache, pause });
+    antigravity = await readAntigravityUsage(await antigravityRoots(env, homeDir), 0, { cache: antigravityCache, pause });
     for (const key of cache.keys()) if (!seen.has(key)) { cache.delete(key); changed = true; }
-    pruneScanCache(cache, cutoffMs);
+    pruneScanCache(cache);
     version += 1;
     Object.assign(progress, { complete: true, files: files.length, scannedFiles: files.length });
     stats.scans += 1;
@@ -189,7 +190,15 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       checkPeriod(period);
       ensureScan();
       const nowMs = now();
-      const { unit, startsMs, endMs } = periodBuckets(period, nowMs);
+      let firstMs = null;
+      if (period === 'all') {
+        const include = (atMs) => { if (firstMs === null || atMs < firstMs) firstMs = atMs; };
+        for (const part of allParts()) include(part.atMs);
+        for (const member of members) {
+          for (const record of Array.isArray(member.usage) ? member.usage : []) if (validMemberRecord(record)) include(record.hourMs);
+        }
+      }
+      const { unit, startsMs, endMs } = periodBuckets(period, nowMs, firstMs);
       rates.ensure();
       const table = rates.table();
       const { machineId, name } = self();
@@ -222,7 +231,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       ensureScan();
       const nowMs = now();
       const days = USAGE_PERIODS[period].unit === 'hour' ? 1 : USAGE_PERIODS[period].count;
-      const sinceMs = Math.floor((nowMs - days * DAY_MS - HOUR_MS) / HOUR_MS) * HOUR_MS;
+      const sinceMs = period === 'all' ? 0 : Math.floor((nowMs - days * DAY_MS - HOUR_MS) / HOUR_MS) * HOUR_MS;
       return { usage: aggregateHourly(allParts(), sinceMs, nowMs + HOUR_MS).slice(-MAX_HOURLY_RECORDS), scan: { ...progress } };
     },
     // For tests and the engine: start a scan now (or join the running one) and wait for it.

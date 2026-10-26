@@ -73,3 +73,15 @@ test('hourly parts use UTC hour starts in the window', () => {
   assert.deepEqual(hourly.map(({ hourMs, tokens: { output } }) => [new Date(hourMs).toISOString(), output]),
     [['2026-11-01T05:00:00.000Z', 10], ['2026-11-01T06:00:00.000Z', 5]]);
 });
+
+test('All time months are local month starts across DST and the new year', { skip }, () => {
+  const nowMs = new Date(2027, 1, 10, 12).getTime();
+  const { unit, startsMs, endMs } = periodBuckets('all', nowMs, new Date(2026, 9, 20, 12).getTime());
+  assert.equal(unit, 'month');
+  assert.deepEqual(startsMs, [new Date(2026, 9, 1).getTime(), new Date(2026, 10, 1).getTime(), new Date(2026, 11, 1).getTime(),
+    new Date(2027, 0, 1).getTime(), new Date(2027, 1, 1).getTime()]);
+  assert.equal(endMs, new Date(2027, 2, 1).getTime());
+  assert.equal(startsMs[2] - startsMs[1], 30 * 24 * HOUR + HOUR);
+  assert.deepEqual(periodBuckets('all', nowMs, null).startsMs, [new Date(2027, 1, 1).getTime()]);
+  assert.deepEqual(periodBuckets('all', nowMs, nowMs + 1).startsMs, [new Date(2027, 1, 1).getTime()]);
+});

@@ -12,7 +12,8 @@ import { codexUsageFormat } from './usage-codex.mjs';
 import { grokUsageFormat } from './usage-grok.mjs';
 import { piUsageFormat } from './usage-pi.mjs';
 
-export const USAGE_CACHE_VERSION = 1;
+// Version 2 keeps all history; v1 caches pruned at 90 days must be read again once.
+export const USAGE_CACHE_VERSION = 2;
 export const MAX_CACHE_FILES = 10_000;
 export const GUARD_LENGTH = 64;
 export const QUARTER_HOUR_MS = 15 * 60 * 1000;
@@ -151,7 +152,7 @@ export async function scanFile(file, info, previous, app, { stats = {}, pause = 
 }
 
 // Drops records older than cutoffMs, and keeps the MAX_CACHE_FILES newest files.
-export function pruneScanCache(cache, cutoffMs) {
+export function pruneScanCache(cache, cutoffMs = -Infinity) {
   const cutoff = Math.floor(cutoffMs / QUARTER_HOUR_MS);
   for (const [key, entry] of cache) {
     if (entry.records.some((record) => record[0] < cutoff)) cache.set(key, { ...entry, records: entry.records.filter((record) => record[0] >= cutoff) });

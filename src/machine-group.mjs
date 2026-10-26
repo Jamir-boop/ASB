@@ -196,7 +196,7 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
   const peerStates = () => [...pollers.values()].map((poller) => poller.state);
   // The last activity reply of each member and period (contract 4), kept 30 s; an offline member keeps its last reply.
   const activityReplies = new Map();
-  const ACTIVITY_PERIODS = ['24h', '7d', '30d', '90d'];
+  const ACTIVITY_PERIODS = ['24h', '7d', '30d', '90d', 'all'];
   async function memberActivity(state, period) {
     const key = `${state.member.machineId}\0${period}`;
     const entry = activityReplies.get(key) || { checkedAtMs: -Infinity, online: false, reply: null, lastReportAtMs: 0, pending: null };

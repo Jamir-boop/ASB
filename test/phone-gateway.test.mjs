@@ -391,12 +391,13 @@ gatewayTest('the activity routes proxy only a valid period, gzip like the dashbo
   assert.deepEqual([zipped.status, zipped.headers['content-encoding'], zipped.headers.vary, zipped.headers['cache-control']], [200, 'gzip', 'Accept-Encoding', 'no-store']);
   assert.equal(gunzipSync(zipped.raw).toString(), body);
   assert.equal((await request('/phone/v1/activity/usage?period=90d&period=7d&x=1', { token })).text, body);
+  assert.equal((await request('/phone/v1/activity/usage?period=all', { token })).status, 200);
   assert.equal((await request('/phone/v1/activity/messages', { token })).status, 200);
   assert.equal((await request('/phone/v1/activity/usage', { token })).status, 200);
   assert.deepEqual(records.map((record) => [record.method, record.url]), [['GET', '/api/activity/messages?period=24h'],
-    ['GET', '/api/activity/usage?period=90d'], ['GET', '/api/activity/messages?period=7d'], ['GET', '/api/activity/usage?period=30d']]);
+    ['GET', '/api/activity/usage?period=90d'], ['GET', '/api/activity/usage?period=all'], ['GET', '/api/activity/messages?period=7d'], ['GET', '/api/activity/usage?period=30d']]);
   records.length = 0;
-  for (const route of ['/phone/v1/activity/messages?period=90d', '/phone/v1/activity/messages?period=1y', '/phone/v1/activity/usage?period=']) {
+  for (const route of ['/phone/v1/activity/messages?period=90d', '/phone/v1/activity/messages?period=all', '/phone/v1/activity/messages?period=1y', '/phone/v1/activity/usage?period=']) {
     const response = await request(route, { token });
     assert.deepEqual([response.status, response.json], [400, { error: 'Invalid period.' }], route);
   }
@@ -1001,10 +1002,11 @@ gatewayTest('the activity member route needs a member certificate and a valid pe
   assert.equal(plain.text.includes('"text"'), false);
   const zipped = await peer('/peer/v1/activity?period=24h', { as: joiner, headers: { 'accept-encoding': 'gzip' } });
   assert.deepEqual([zipped.headers['content-encoding'], JSON.parse(gunzipSync(zipped.raw))], ['gzip', reply]);
+  assert.equal((await peer('/peer/v1/activity?period=all', { as: joiner })).status, 200);
   assert.deepEqual((await peer('/peer/v1/activity?period=1y', { as: joiner })).json, { error: 'Invalid period.' });
   assert.equal((await peer('/peer/v1/activity?period=7d', { method: 'POST', as: joiner, body: {} })).status, 405);
   assert.equal((await peer('/peer/v1/activity/thread?a=x&b=y', { as: joiner })).status, 404);
-  assert.deepEqual(periods, ['90d', '24h']);
+  assert.deepEqual(periods, ['90d', '24h', 'all']);
   // An engine without the activity service answers 404.
   const old = await peerFixture(t, { address: '127.0.0.9' });
   assert.equal((await old.peer('/peer/v1/join', { method: 'POST', as: old.joiner, body: old.joinBody(await old.code()) })).status, 200);

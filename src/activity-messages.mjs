@@ -127,6 +127,7 @@ export function createActivityMessages({ readSources = async () => [], dashboard
 
   // Contract 4, the member reply: local records of the last min(period, 30 days), no text and no file.
   async function localRecords(period) {
+    if (period === 'all') return [];
     const span = Math.min(PERIODS[period].unit === 'hour' ? DAY_MS : PERIODS[period].count * DAY_MS, KEEP_MS);
     return (await localMessages(now() - span)).sort(byTime).slice(-MAX_ACTIVITY_MESSAGES)
       .map(({ id, from, to, atMs, status, reason, direction }) => ({ id, from, to, atMs, status, reason, direction }));
