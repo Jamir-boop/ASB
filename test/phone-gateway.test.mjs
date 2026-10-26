@@ -270,7 +270,7 @@ gatewayTest('the route allowlist blocks other APIs and checks methods before bea
     assert.equal(response.json.error, 'Route is not available.');
   }
   for (const route of ['/api/sources', '/api/phone', '/api/phone/settings', '/api/palette',
-    '/api/agent/status', '/api/agent/ui', '/phone/v1/agent/status', '/phone/v1/agent/ui', '/api/engine/stop', '/phone/v1/engine/stop',
+    '/api/agent/status', '/api/agent/ui', '/phone/v1/agent/status', '/phone/v1/agent/ui', '/api/engine/stop', '/phone/v1/engine/stop', '/api/engine/show-window', '/phone/v1/engine/show-window',
     '/api/agent/resolve-session', '/phone/v1/agent/resolve-session', '/api/agent/resolve-bound', '/phone/v1/agent/resolve-bound',
     '/api/agent/list-references', '/phone/v1/agent/list-references',
     '/api/relay/homes', '/api/relay/remote-peers', '/api/relay/send', '/phone/v1/relay/send',

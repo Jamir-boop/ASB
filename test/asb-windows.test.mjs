@@ -250,6 +250,31 @@ test('the -Open branch waits 30 s for the launcher and shows the text of the tra
   assert.ok(branch.trimEnd().endsWith('exit 0'));
 });
 
+// Messages and Usage ask an open board to show the window; without one, a new board opens it from ASB_OPEN_WINDOW.
+test('the tray menu has Messages and Usage, and Show-Window asks the engine before it starts a launcher with the window', async () => {
+  const script = await readFile(new URL('../scripts/asb-tray.ps1', import.meta.url), 'utf8');
+  const added = [...script.matchAll(/^\$\w+ = \$menu\.Items\.Add\('([^']*)'\)$|^\[void\]\$menu\.Items\.Add\(\(New-Object System\.Windows\.Forms\.(ToolStripSeparator)\)\)$/gm)]
+    .map(([, label, separator]) => label ?? separator);
+  assert.deepEqual(added, ['Open ASB', 'Messages', 'Usage', 'ToolStripSeparator', 'Copy phone pairing link', 'Quit ASB']);
+  assert.match(script, /^\$messagesItem\.add_Click\(\{ Show-Window 'messages' \}\)$/m);
+  assert.match(script, /^\$usageItem\.add_Click\(\{ Show-Window 'usage' \}\)$/m);
+  const body = (name) => {
+    const start = script.indexOf(`function ${name}`);
+    return script.slice(start, script.indexOf('\n}', start));
+  };
+  const show = body('Show-Window([string]$kind)');
+  assert.match(show, /Invoke-Engine '\/api\/engine\/show-window' \(@\{ window = \$kind \} \| ConvertTo-Json -Compress\)/);
+  assert.match(show, /if \(\$reply -and \$reply\.shown -eq \$true\) \{ return \}/);
+  assert.ok(show.indexOf('.shown') < show.indexOf('$script:board.HasExited') && show.indexOf('.HasExited') < show.indexOf('Start-Launcher $kind'));
+  const invoke = body('Invoke-Engine([string]$route, [string]$body = \'{}\')');
+  assert.match(invoke, /-Body \$body /);
+  const launcher = body("Start-Launcher([string]$Window = '')");
+  assert.match(launcher, /\n  if \(\$Window\) \{\n    \$info\.EnvironmentVariables\['ASB_OPEN_WINDOW'\] = \$Window\n  \}\n/);
+  assert.equal(script.split('ASB_OPEN_WINDOW').length, 2);
+  const start = script.indexOf('if ($Open) {');
+  assert.match(script.slice(start, script.indexOf('\n}', start)), /^  \$launcher = Start-Launcher$/m);
+});
+
 // The V8 flag makes the young generation of the engine smaller (src/memory-trim.mjs). Windows has no glibc, so it gets no MALLOC setting.
 // The launcher start is short, so it gets no flag. This test reads the script text: the real tray runs only on Windows.
 test('the tray script starts the engine with the V8 flag, keeps its other arguments, and gives the launcher no flag', async () => {

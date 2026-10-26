@@ -93,7 +93,8 @@ def menu_layout(board=True):
     # Without the board (ASB_BOARD=0), the menu has only Quit ASB. Quit keeps its item ID.
     if not board:
         return (0, {"children-display": "submenu"}, [(3, {"label": "Quit ASB"}, [])])
-    return (0, {"children-display": "submenu"}, [(1, {"label": "Open ASB"}, []), (2, {"type": "separator"}, []), (3, {"label": "Quit ASB"}, [])])
+    return (0, {"children-display": "submenu"}, [(1, {"label": "Open ASB"}, []), (4, {"label": "Messages"}, []), (5, {"label": "Usage"}, []),
+                                                (2, {"type": "separator"}, []), (3, {"label": "Quit ASB"}, [])])
 
 
 def layout_value(layout):
@@ -120,9 +121,9 @@ def launch_env(env):
 
 
 def menu_action(item_id, event_id, board=True):
-    if not board and item_id == 1:
+    if not board and item_id in (1, 4, 5):
         return None
-    return {(1, "clicked"): "open", (3, "clicked"): "quit"}.get((item_id, event_id))
+    return {(1, "clicked"): "open", (4, "clicked"): "messages", (5, "clicked"): "usage", (3, "clicked"): "quit"}.get((item_id, event_id))
 
 
 def engine_settings(env):
@@ -146,24 +147,40 @@ class Tray:
         self.board = env.get("ASB_BOARD") != "0"
         self.items = menu_items(menu_layout(self.board))
 
-    def request(self, method, route, timeout):
+    def request(self, method, route, timeout, body=None):
         headers = {"X-ASB-Source-Token": self.token, "Accept": "application/json"}
         data = None
         if method == "POST":
             headers.update({"Origin": self.url, "Content-Type": "application/json"})
-            data = b"{}"
+            data = json.dumps(body or {}).encode()
         with LOCAL_HTTP.open(Request(self.url + route, data=data, headers=headers, method=method), timeout=timeout) as response:
             return json.load(response)
 
     def in_background(self, work):
         threading.Thread(target=work, daemon=True).start()
 
-    def open_asb(self):
+    def open_asb(self, kind=None):
+        env = {key: value for key, value in launch_env(self.env).items() if key != "ASB_OPEN_WINDOW"}
+        if kind:
+            env["ASB_OPEN_WINDOW"] = kind
         try:
-            GLib.spawn_async(launch_argv(self.launcher, self.env), envp=[f"{k}={v}" for k, v in launch_env(self.env).items()],
+            GLib.spawn_async(launch_argv(self.launcher, self.env), envp=[f"{k}={v}" for k, v in env.items()],
                              flags=GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.STDOUT_TO_DEV_NULL | GLib.SpawnFlags.STDERR_TO_DEV_NULL)
         except GLib.Error as error:
             print(f"ASB tray cannot open ASB: {error.message}", file=sys.stderr)
+        # It is also an idle callback.
+        return False
+
+    def show_window(self, kind):
+        # An open board shows the window itself; without one, a new board opens with it.
+        def work():
+            try:
+                if self.request("POST", "/api/engine/show-window", 5, {"window": kind}).get("shown") is True:
+                    return
+            except Exception:
+                pass
+            GLib.idle_add(self.open_asb, kind)
+        self.in_background(work)
 
     def quit_engine(self):
         def work():
@@ -178,6 +195,8 @@ class Tray:
     def run_action(self, action):
         if action == "open":
             self.open_asb()
+        elif action in ("messages", "usage"):
+            self.show_window(action)
         elif action == "quit":
             self.quit_engine()
 

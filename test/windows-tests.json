@@ -26,5 +26,6 @@
   "test/usage-rates.test.mjs",
   "test/usage-aggregation.test.mjs",
   "test/usage-scan-cache.test.mjs",
-  "test/usage-service.test.mjs"
+  "test/usage-service.test.mjs",
+  "test/switchboard-usage.test.mjs"
 ]

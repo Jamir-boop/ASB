@@ -195,6 +195,71 @@ test('a final UI report removes only its client and ignores reports still in fli
   assert.deepEqual((await request('/api/agent/status')).json().ui.clients, [{ ...report, reportedAtMs: clock }]);
 });
 
+// An /api/events reader that keeps all the text it got.
+function readEvents(t, base) {
+  const reader = { text: '' };
+  const connected = new Promise((resolve, reject) => {
+    const client = http.get(`${base}/api/events`, { agent: false }, (response) => {
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => { reader.text += chunk; if (reader.text.includes('event: connected')) resolve(); });
+    });
+    client.on('error', (error) => { if (!reader.closed) reject(error); });
+    t.after(() => { reader.closed = true; client.destroy(); });
+  });
+  return { reader, connected };
+}
+
+test('show-window needs the token, a POST, and one known window, and it goes only to a reporting board', async (t) => {
+  let clock = 10_000;
+  const { request, base } = await serve(t, { now: () => clock });
+  const { reader, connected } = readEvents(t, base);
+  await connected;
+  const show = (body, extra = {}) => request('/api/engine/show-window', { method: 'POST', body, ...extra });
+  for (const token of ['', 'wrong']) {
+    const denied = await show({ window: 'usage' }, { token });
+    assert.equal(denied.status, 403);
+    assert.deepEqual(denied.json(), { error: 'Use the current ASB source token to open an ASB window.' });
+  }
+  const get = await request('/api/engine/show-window');
+  assert.equal(get.status, 405);
+  assert.equal(get.headers.get('allow'), 'POST');
+  for (const body of [{}, { window: 'x' }, { window: 'messages', x: 1 }, [], 'null', '"usage"', '{', ' '.repeat(1025)]) {
+    const invalid = await show(body);
+    assert.equal(invalid.status, 400, JSON.stringify(body));
+    assert.deepEqual(invalid.json(), { error: 'Invalid window request.' });
+  }
+  const none = await show({ window: 'usage' });
+  assert.equal(none.status, 200);
+  assert.equal(none.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(none.json(), { shown: false });
+
+  const A = clientId;
+  const B = '223e4567-e89b-12d3-a456-426614174000';
+  const post = (body) => request('/api/agent/ui', { method: 'POST', body });
+  await post({ ...report, clientId: A });
+  clock += 1;
+  await post({ ...report, clientId: B });
+  assert.deepEqual((await show({ window: 'usage' })).json(), { shown: true });
+  await post({ clientId: B, closed: true });
+  assert.deepEqual((await show({ window: 'messages' })).json(), { shown: true });
+  // A new report of A after B moves A last again.
+  await post({ ...report, clientId: B.replace('2', '3') });
+  await post({ ...report, clientId: A });
+  assert.deepEqual((await show({ window: 'usage' })).json(), { shown: true });
+  await post({ clientId: B.replace('2', '3'), closed: true });
+  await post({ clientId: A, closed: true });
+  assert.deepEqual((await show({ window: 'usage' })).json(), { shown: false });
+  // An expired report counts as no board.
+  const D = B.replace('2', '4');
+  await post({ ...report, clientId: D });
+  clock += 45_000;
+  assert.deepEqual((await show({ window: 'usage' })).json(), { shown: false });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const events = [...reader.text.matchAll(/^event: show-window\ndata: (.*)$/gm)].map(([, data]) => data);
+  assert.deepEqual(events, [`{"window":"usage","clientId":"${B}"}`, `{"window":"messages","clientId":"${A}"}`,
+    `{"window":"usage","clientId":"${A}"}`]);
+});
+
 test('agent status reports service mode and hides internal state errors', async (t) => {
   const { request } = await serve(t, { serviceMode: true, readSourcesRevision: async () => { throw new Error('private token'); } });
   const failed = await request('/api/agent/status');

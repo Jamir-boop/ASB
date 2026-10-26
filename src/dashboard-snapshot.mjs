@@ -474,6 +474,7 @@ export class DashboardSnapshot {
       dashboardForRequest, loadSharedDashboard, invalidateDashboard, performanceSnapshot, openThreadOnce,
       cachedDashboard: () => dashboardCache?.dashboard,
       revision: () => dashboardRevision,
+      broadcastEvent: (event, payload) => broadcastDashboardEvent(event, payload),
       serveEvents: (request, response) => {
         response.writeHead(200, {
           'content-type': 'text/event-stream; charset=utf-8',

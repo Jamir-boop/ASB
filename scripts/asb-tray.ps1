@@ -10,13 +10,16 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $Node -or -not (Test-Path -LiteralPath $Node -PathType Leaf)) { $Node = (Get-Command node.exe).Source }
 
-# Starts the launcher with no console; it opens the board.
-function Start-Launcher {
+# Starts the launcher with no console; it opens the board, and with $Window also the Messages or Usage window.
+function Start-Launcher([string]$Window = '') {
   $info = New-Object System.Diagnostics.ProcessStartInfo
   $info.FileName = $Node
   $info.Arguments = '--disable-warning=ExperimentalWarning "' + (Join-Path $root 'scripts\asb.mjs') + '"'
   $info.UseShellExecute = $false
   $info.CreateNoWindow = $true
+  if ($Window) {
+    $info.EnvironmentVariables['ASB_OPEN_WINDOW'] = $Window
+  }
   return [System.Diagnostics.Process]::Start($info)
 }
 
@@ -65,11 +68,21 @@ function Read-Runtime {
   return Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
 }
 
-function Invoke-Engine([string]$route) {
+function Invoke-Engine([string]$route, [string]$body = '{}') {
   $runtime = Read-Runtime
   $base = 'http://127.0.0.1:' + $runtime.port
   $headers = @{ 'X-ASB-Source-Token' = $runtime.sourceToken; 'Origin' = $base }
-  return Invoke-RestMethod -Method Post -Uri ($base + $route) -Headers $headers -ContentType 'application/json' -Body '{}' -TimeoutSec 10
+  return Invoke-RestMethod -Method Post -Uri ($base + $route) -Headers $headers -ContentType 'application/json' -Body $body -TimeoutSec 10
+}
+
+# An open board shows the window itself; without one, a new board opens with it.
+function Show-Window([string]$kind) {
+  try { $reply = Invoke-Engine '/api/engine/show-window' (@{ window = $kind } | ConvertTo-Json -Compress) } catch { $reply = $null }
+  if ($reply -and $reply.shown -eq $true) { return }
+  # A board that starts now reports soon.
+  if ($script:board -and -not $script:board.HasExited) { return }
+  try { $script:board = Start-Launcher $kind }
+  catch { $icon.ShowBalloonTip(5000, 'ASB', 'ASB cannot open its window.', [System.Windows.Forms.ToolTipIcon]::Warning) }
 }
 
 function Stop-Tray {
@@ -86,12 +99,16 @@ $icon.Text = 'ASB'
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 # Not $open: PowerShell names ignore case, and $Open is the switch parameter.
 $openItem = $menu.Items.Add('Open ASB')
+$messagesItem = $menu.Items.Add('Messages')
+$usageItem = $menu.Items.Add('Usage')
 [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $pair = $menu.Items.Add('Copy phone pairing link')
 $quit = $menu.Items.Add('Quit ASB')
 $icon.ContextMenuStrip = $menu
 
 $openItem.add_Click({ Open-Board })
+$messagesItem.add_Click({ Show-Window 'messages' })
+$usageItem.add_Click({ Show-Window 'usage' })
 $icon.add_MouseClick({
   if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Open-Board }
 })

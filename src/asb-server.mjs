@@ -113,12 +113,13 @@ export function createAsbServer({
     const eventRoute = url.pathname === '/api/events';
     const paletteRoute = url.pathname === '/api/palette';
     const engineStopRoute = Boolean(onStop) && url.pathname === '/api/engine/stop';
+    const showWindowRoute = url.pathname === '/api/engine/show-window';
     const resolveRoute = Boolean(resolveSession) && url.pathname === '/api/agent/resolve-session';
     const resolveBoundRoute = Boolean(resolveBound) && url.pathname === '/api/agent/resolve-bound';
     const sendMemberRoute = Boolean(sendMember) && url.pathname === '/api/agent/send-member';
     const listReferencesRoute = Boolean(listReferences) && url.pathname === '/api/agent/list-references';
     const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute
-      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute || resolveRoute || resolveBoundRoute || listReferencesRoute || sendMemberRoute
+      || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute || showWindowRoute || resolveRoute || resolveBoundRoute || listReferencesRoute || sendMemberRoute
       || Boolean(groupRoute?.[1]) || Boolean(bridgeRoute?.[1]) || ['send', 'receipt'].includes(relayRoute);
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
     const readApiRoute = url.pathname === '/api/dashboard' || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute
@@ -187,6 +188,28 @@ export function createAsbServer({
       // The reply goes out before the engine closes its connections.
       response.once('close', () => onStop());
       sendJson(response, 200, { stopping: true });
+      return;
+    }
+    if (showWindowRoute) {
+      response.setHeader('Cache-Control', 'no-store');
+      if (!expectedSourceToken.length || !sourceTokenAllowed(request)) {
+        sendJson(response, 403, { error: 'Use the current ASB source token to open an ASB window.' });
+        return;
+      }
+      let body;
+      try { body = await readBody(request, 1024); } catch { body = null; }
+      if (!exactKeys(body, ['window']) || !['messages', 'usage'].includes(body.window)) {
+        sendJson(response, 400, { error: 'Invalid window request.' });
+        return;
+      }
+      expireUiClients();
+      if (!uiClients.size) {
+        sendJson(response, 200, { shown: false });
+        return;
+      }
+      // Each report re-inserts its client, so the last key is the board that reported last.
+      snapshot.broadcastEvent('show-window', { window: body.window, clientId: [...uiClients.keys()].at(-1) });
+      sendJson(response, 200, { shown: true });
       return;
     }
     if (bridgeRoute) {

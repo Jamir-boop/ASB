@@ -11,6 +11,7 @@ import { loadOpenCodeDashboard, invalidateOpenCodeData, retainOpenCodeDataScopes
 import { createAsbServer } from './asb-server.mjs';
 import { createBridgeCoverage } from './bridge-coverage.mjs';
 import { createActivityMessages } from './activity-messages.mjs';
+import { createActivityUsage } from './activity-usage.mjs';
 import { createSoundPlayer, createSoundWatcher } from './asb-sounds.mjs';
 import { openThreadInCodex, scopedCommand } from './session-opener.mjs';
 import { AppSourceRegistry, appSourcesRevision, numberAppSources, sourceName, validateSourceLauncher } from './app-sources.mjs';
@@ -893,13 +894,23 @@ export function createSwitchboardServer(options = {}) {
       const identity = options.machineIdentity?.();
       return { machineId: identity?.machineId || '', name: identity?.machineName || localMachineName(), asbVersion: options.asbVersion || APP_VERSION };
     }, platform, group: options.machineGroup || null, relay: options.machineRelay || null }) : null;
+  const activityMachine = () => {
+    const identity = options.machineIdentity?.();
+    return { machineId: identity?.machineId || '', name: identity?.machineName || localMachineName() };
+  };
+  const group = options.machineGroup || null;
+  // Contract 2.3 and 4: the token usage of the registered sources and the group. It scans and downloads only when asked.
+  // The fetch and cache options are for tests only.
+  const usage = options.activityUsage ? null : createActivityUsage({ readSources: async () => registeredLoad ? registry.read() : [],
+    machine: activityMachine, ...(options.usageFetch ? { fetch: options.usageFetch } : {}),
+    ...(options.usageCacheDir ? { cacheDir: options.usageCacheDir } : {}) });
+  const activityUsage = options.activityUsage || {
+    report: async (period) => usage.report(period, group ? await group.activity(period).catch(() => []) : []),
+    localHourly: (period) => usage.localHourly(period),
+  };
   // Contract 2.1, 2.2, and 4: the bridge databases of the registered sources, the cached rows (never a forced scan), and the group.
   const activityMessages = createActivityMessages({ readSources: async () => registeredLoad ? registry.read() : [],
-    dashboard: () => server.dashboardForRequest(),
-    machine: () => {
-      const identity = options.machineIdentity?.();
-      return { machineId: identity?.machineId || '', name: identity?.machineName || localMachineName() };
-    }, group: options.machineGroup || null, activityUsage: options.activityUsage || null });
+    dashboard: () => server.dashboardForRequest(), machine: activityMachine, group, activityUsage });
   const server = createAsbServer({
     dashboardWatchDebounceMs: 250,
     appVersion: APP_VERSION,
@@ -1020,6 +1031,7 @@ export function createSwitchboardServer(options = {}) {
     sourceToken: options.sourceToken || '',
     bridgeCoverage,
     activityMessages,
+    activityUsage,
   });
   boardOpen = () => server.boardOpen();
   // The member route GET /peer/v1/bridge (src/phone-gateway.mjs).
