@@ -12,8 +12,17 @@ def prefer_cairo(environ, system=os.name):
         environ["GSK_RENDERER"] = "cairo"
 
 
-# GTK reads GSK_RENDERER when it opens its first window, so this call stays before the board code runs.
+def use_app_id(system=os.name):
+    """On Windows, python.exe runs the board, so Windows puts the board window under Python and shows the Python icon on the taskbar.
+    An own AppUserModelID gives the board its own taskbar button with the window icon. It is APP_ID of asb-native.py."""
+    if system == "nt":
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("local.asb.AgentSwitchBoard")
+
+
+# GTK reads GSK_RENDERER, and Windows reads the AppUserModelID, when the first window opens, so these calls stay before the board code runs.
 prefer_cairo(os.environ)
+use_app_id()
 source = Path(__file__).with_name("asb-native.py")
 spec = importlib.util.spec_from_file_location("asb_native", source)
 board = importlib.util.module_from_spec(spec)

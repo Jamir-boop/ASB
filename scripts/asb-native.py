@@ -1517,6 +1517,32 @@ def set_icon(image, name):
         image.set_from_icon_name(name)
 
 
+def set_windows_icon(window):
+    """GTK makes a window icon only from an icon theme folder, and the ASB icon is a single file, so on Windows the board window had no icon.
+    The board loads asb.ico (16, 32, 48, and 256 px) at the sizes of the Windows big and small icons."""
+    try:
+        gi.require_version("GdkWin32", "4.0")
+        from gi.repository import GdkWin32
+        hwnd = GdkWin32.Win32Surface.get_handle(window.get_surface())
+    except (ImportError, ValueError, TypeError):
+        return
+    import ctypes
+    from ctypes import wintypes
+    # An own library object: the argument types do not change ctypes.windll.user32 for other code.
+    user32 = ctypes.WinDLL("user32")
+    user32.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+    user32.LoadImageW.restype = wintypes.HANDLE
+    user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.SendMessageW.restype = wintypes.LPARAM
+    icon_file = str(Path(__file__).parents[1] / "assets" / "icons" / "asb.ico")
+    # WM_SETICON (0x80) with ICON_BIG (1) at SM_CXICON (11) and ICON_SMALL (0) at SM_CXSMICON (49); IMAGE_ICON 1, LR_LOADFROMFILE 0x10.
+    for kind, metric in ((1, 11), (0, 49)):
+        size = user32.GetSystemMetrics(metric)
+        icon = user32.LoadImageW(None, icon_file, 1, size, size, 0x10)
+        if icon:
+            user32.SendMessageW(hwnd, 0x80, kind, icon)
+
+
 def label(text, css=None):
     widget = Gtk.Label(label=text, xalign=0)
     if css:
@@ -3603,6 +3629,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         Gtk.StyleContext.add_provider_for_display(self.get_display(), self.badge_css, Gtk.STYLE_PROVIDER_PRIORITY_USER + 2)
         Gtk.IconTheme.get_for_display(self.get_display()).add_search_path(str(Path(__file__).parents[1] / "assets" / "icons"))
         self.set_icon_name(APP_ID)
+        if os.name == "nt":
+            self.connect("realize", set_windows_icon)
         self.set_palette(None)
         self.refresh_button = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Refresh sessions")
         self.refresh_button.connect("clicked", lambda *_: self.refresh(True))

@@ -5,6 +5,7 @@ import io
 import itertools
 import json
 import os
+import sys
 from pathlib import Path, PureWindowsPath
 from tempfile import TemporaryDirectory
 import threading
@@ -1119,7 +1120,8 @@ class DataChecks(unittest.TestCase):
         constructor = next(node for node in WINDOW.body if isinstance(node, ast.FunctionDef) and node.name == "__init__")
         hooks = [node for node in ast.walk(constructor) if isinstance(node, ast.Call)
                  and isinstance(node.func, ast.Attribute) and node.func.attr == "connect"
-                 and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == "realize"]
+                 and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == "realize"
+                 and isinstance(node.args[1], ast.Attribute)]
         self.assertEqual(len(hooks), 1)
         self.assertEqual(hooks[0].args[1].attr, "watch_layout")
         for has_api, composited in ((True, True), (True, False), (False, True)):
@@ -7399,6 +7401,98 @@ class BoardLauncherChecks(unittest.TestCase):
         self.assertEqual(names.count("prefer_cairo"), 1)
         self.assertLess(names.index("prefer_cairo"), names.index("exec"))
         self.assertEqual(ast.unparse(calls[names.index("prefer_cairo")].value), "prefer_cairo(os.environ)")
+
+    def test_app_id_is_set_only_on_windows(self):
+        function = next(node for node in ast.parse(self.SOURCE.read_text()).body
+                        if isinstance(node, ast.FunctionDef) and node.name == "use_app_id")
+        scope = {"os": SimpleNamespace(name="posix")}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), str(self.SOURCE), "exec"), scope)
+        for system in ("nt", "posix"):
+            ctypes = SimpleNamespace(windll=Mock())
+            with self.subTest(system=system), patch.dict(sys.modules, {"ctypes": ctypes}):
+                scope["use_app_id"](system)
+                self.assertEqual(ctypes.windll.mock_calls,
+                                 [call.shell32.SetCurrentProcessExplicitAppUserModelID("local.asb.AgentSwitchBoard")]
+                                 if system == "nt" else [])
+
+    def test_app_id_is_set_before_the_board_code(self):
+        calls = [node.value for node in ast.parse(self.SOURCE.read_text()).body
+                 if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)]
+        names = [getattr(node.func, "id", None) for node in calls]
+        self.assertEqual(names.count("use_app_id"), 1)
+        self.assertEqual(ast.unparse(calls[names.index("use_app_id")]), "use_app_id()")
+        self.assertEqual(names.index("use_app_id"), names.index("prefer_cairo") + 1)
+        self.assertLess(names.index("use_app_id"), names.index("exec"))
+
+
+class WindowsIconChecks(unittest.TestCase):
+    """The real icon helper runs with fake Windows and GI modules, without GTK or Windows."""
+
+    def setUp(self):
+        function = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "set_windows_icon")
+        self.gi = SimpleNamespace(require_version=Mock())
+        self.gdk = SimpleNamespace(Win32Surface=SimpleNamespace(get_handle=Mock(return_value=4321)))
+        self.user32 = Mock()
+        self.user32.GetSystemMetrics.side_effect = {11: 40, 49: 20}.__getitem__
+        self.user32.LoadImageW.side_effect = [111, 222]
+        self.wintypes = SimpleNamespace(**{name: object() for name in
+                                          ("HINSTANCE", "LPCWSTR", "UINT", "HANDLE", "HWND", "WPARAM", "LPARAM")})
+        self.ctypes = SimpleNamespace(WinDLL=Mock(return_value=self.user32), wintypes=self.wintypes, c_int=object())
+        self.modules = {"ctypes": self.ctypes, "gi": self.gi,
+                        "gi.repository": SimpleNamespace(GdkWin32=self.gdk)}
+        self.scope = {"gi": self.gi, "Path": Path, "__file__": str(SOURCE)}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), str(SOURCE), "exec"), self.scope)
+        self.window = Mock()
+
+    def run_icon(self):
+        with patch.dict(sys.modules, self.modules):
+            self.scope["set_windows_icon"](self.window)
+
+    def test_big_and_small_icons_use_system_sizes_and_pointer_safe_types(self):
+        self.run_icon()
+        self.gi.require_version.assert_called_once_with("GdkWin32", "4.0")
+        self.gdk.Win32Surface.get_handle.assert_called_once_with(self.window.get_surface.return_value)
+        self.ctypes.WinDLL.assert_called_once_with("user32")
+        self.assertEqual(self.user32.GetSystemMetrics.call_args_list, [call(11), call(49)])
+        icon_file = str(SOURCE.parents[1] / "assets" / "icons" / "asb.ico")
+        self.assertEqual(self.user32.LoadImageW.call_args_list,
+                         [call(None, icon_file, 1, 40, 40, 0x10), call(None, icon_file, 1, 20, 20, 0x10)])
+        self.assertEqual(self.user32.SendMessageW.call_args_list,
+                         [call(4321, 0x80, 1, 111), call(4321, 0x80, 0, 222)])
+        types = self.wintypes
+        self.assertEqual(self.user32.LoadImageW.argtypes,
+                         [types.HINSTANCE, types.LPCWSTR, types.UINT, self.ctypes.c_int, self.ctypes.c_int, types.UINT])
+        self.assertIs(self.user32.LoadImageW.restype, types.HANDLE)
+        self.assertEqual(self.user32.SendMessageW.argtypes, [types.HWND, types.UINT, types.WPARAM, types.LPARAM])
+        self.assertIs(self.user32.SendMessageW.restype, types.LPARAM)
+
+    def test_failed_small_icon_load_sends_only_the_big_icon(self):
+        self.user32.LoadImageW.side_effect = [111, 0]
+        self.run_icon()
+        self.assertEqual(self.user32.LoadImageW.call_count, 2)
+        self.user32.SendMessageW.assert_called_once_with(4321, 0x80, 1, 111)
+
+    def test_missing_gdk_win32_returns_before_ctypes_calls(self):
+        self.gi.require_version.side_effect = ValueError("Synthetic missing GdkWin32")
+        self.run_icon()
+        self.gi.require_version.assert_called_once_with("GdkWin32", "4.0")
+        self.gdk.Win32Surface.get_handle.assert_not_called()
+        self.ctypes.WinDLL.assert_not_called()
+        self.assertEqual(self.user32.mock_calls, [])
+
+    def test_realize_handler_is_connected_only_on_windows(self):
+        init = next(node for node in WINDOW.body if isinstance(node, ast.FunctionDef) and node.name == "__init__")
+        icon_index = next(index for index, node in enumerate(init.body)
+                          if isinstance(node, ast.Expr) and ast.unparse(node) == "self.set_icon_name(APP_ID)")
+        choice = init.body[icon_index + 1]
+        self.assertIsInstance(choice, ast.If)
+        self.assertEqual(ast.unparse(choice.test), "os.name == 'nt'")
+        code = compile(ast.Module(body=[choice], type_ignores=[]), str(SOURCE), "exec")
+        for system in ("nt", "posix"):
+            window, handler = Mock(), Mock()
+            with self.subTest(system=system):
+                exec(code, {"os": SimpleNamespace(name=system), "self": window, "set_windows_icon": handler})
+                self.assertEqual(window.mock_calls, [call.connect("realize", handler)] if system == "nt" else [])
 
 
 if __name__ == "__main__":
