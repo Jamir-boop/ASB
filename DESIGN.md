@@ -279,6 +279,22 @@ Surfaces and text follow the Board palette: GNOME colors, or the custom colors o
 
 Each status and token type also has a text label or an icon; meaning is never in color only. A new message flies an accent light, like the light of the Board cards, along its chord, from sender to receiver. The round table draws it with its own code. A Not sent light stops at 85% and fades. When animations are off, or on GTK 4.12, no light shows. The main menu (⋮) and **Show messages** in the row panel open the Messages window; see the toolbar paragraph in Layout and **Focus and row panel**.
 
+### Top bar (GNOME Shell extension)
+
+The user chose look B, Capsule, from a coded preview on 2026-10-27. The item sits left of the system menu. The panel button keeps the theme padding and border but draws no hover or open pill. Inside it, one capsule: 22 px high, radius 11 px, an inset 1 px ring of 16% white (40% on hover, focus, and open). Three segments (padding 0 8 px, 5 px between the mark and the number, tabular digits) are split by 1 px lines of 16% white:
+
+- Needs you: above 0, the accent background with a 6 px dot and the number in black or white (the ink with more contrast, as for pressed buttons on the Board). At 0, no background, a 6 px ring of 1.5 px and `0`, both 46% white.
+- Working: a 6% white background, the 270° arc (11 px, gap at the top right) and the number in 70% white (white on hover). At 0, the full circle and `0` in 46% white.
+- Total: the chat mark (13 px) and the number in 55% white (80% on hover).
+- Open: the Working and Total segments get a 12% white background.
+- Engine off: one round segment with the chat mark and `Off` in 46% white.
+
+The accent is the accent of the Board palette (the custom accent, or the GNOME accent that the Board reported). With no saved palette, it is the GNOME Shell accent with the GNOME accent text color (GNOME 47 and later), else `#3584e4`. The menu `?`, `!`, the done dot, and the Needs you count use the same accent.
+
+Motion: a number that changes rolls (the old one moves up 0.6 of its height and fades, the new one comes from below; 220 ms, ease-out expo). When Needs you goes up, its background fades to the accent mixed 30% with white and back (400 ms). Nothing moves while the numbers stay. With animations off, nothing moves.
+
+The menu is 352 px wide. In order: the Needs you heading and count, at most 6 rows and `<n> more`; Working the same; Machines (only in a group) with one inert row per machine (the machine hue dot, a ring when offline, `Offline`, the total); then Open ASB, Messages, Usage; then Quit ASB. A session row has the kind mark (`?` for a question or approval, `!` for failed, the accent dot for done, the arc for working) in a 14 px box, the provider mark at 55% opacity, the title (one line, ends with `…`), the machine dot (only in a group), and the time (`now`, `5m`, `2h`, `3d`) in 55% white, right-aligned in a column of at least 2.4 em. With the engine off: `ASB is not running.` and Start ASB. The button name is `ASB: 3 need you, 6 working, 758 sessions`, or `ASB is not running`.
+
 ## Do's and Don'ts
 
 ### Do:

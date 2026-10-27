@@ -226,6 +226,23 @@ Grok, Pi, and Antigravity need no profile: ASB reads their folders when they exi
 
 The other machines of the group send their message records and their hourly token usage, never message text. A machine shows `Local`, `Connected`, or `Offline`; a machine chip names only `Offline`, and its tooltip shows the state. An offline machine keeps its last data and shows the time of its last report, for example `Last report Oct 25, 14:30`. The windows need GTK 4.14 for the round table and the charts; with GTK 4.12 they show `Charts need GTK 4.14 or later.`
 
+## Top bar (GNOME)
+
+On GNOME Shell 45 to 49, the ASB extension shows ASB in the top bar, to the left of the system menu. One capsule has three numbers: the sessions that need you, the sessions that work, and all sessions on the machines of the group. Archived sessions do not count. When a session needs you, the first part has the accent color. When the engine does not run, the capsule shows `Off`. A number that changes rolls up, and a new session that needs you makes the first part flash one time. When animations are off, the numbers change at once.
+
+Select the capsule to open its menu:
+
+- **Needs you**: the 6 newest sessions that need you. `?` is a question or an approval, `!` is a failed task, and a dot is a finished task. More sessions show as `3 more`.
+- **Working**: the 6 sessions that started work last, with the time since they started.
+- **Machines** (only in a machine group): each machine with its number of sessions. An offline machine shows `Offline`.
+- **Open ASB**, **Messages**, **Usage**, and **Quit ASB**, as in the tray menu.
+
+Select a session to open it in its app. A session that ASB cannot open, for example a CLI session or a session of another machine, opens the board. When the engine does not run, the menu shows `ASB is not running.` and **Start ASB**.
+
+The capsule uses the accent of the board colors (**Appearance** in Preferences). When no board saved its colors yet, it uses the GNOME accent color. While the extension runs, the tray icon hides itself, so the top bar shows ASB one time.
+
+The per-user install (`install.sh`) adds the extension when GNOME Shell 45 or later is installed, and turns it on the first time. GNOME Shell loads a new extension only when it starts: on X11, press Alt+F2, type `r`, and press Enter; on Wayland, log out and log in again. The .deb, RPM, Arch, and Nix packages install the extension for all users: turn it on in the Extensions app. For an npm install, see [Top-bar extension](docs/INSTALL.md#top-bar-extension-gnome). The extension reads the engine port and token from `service.json` and gets its numbers from `GET /api/panel` on `127.0.0.1`. It sends nothing to other computers.
+
 ## Preferences and local settings
 
 Select the toolbar settings button to open **Preferences**. It is one separate native window. You can still use the main window. Selecting the button again raises the same Preferences window. Closing Preferences keeps ASB running and keeps form edits for the next open.
@@ -365,7 +382,7 @@ The initial window is about 420×900 pixels. The window is a view of the ASB eng
 | `asb engine status` | Show whether the engine runs, its PID and port, and whether it runs as the user service or detached. |
 | `asb engine run` | Run the engine in this terminal. |
 
-On Linux, the engine shows a tray icon when the desktop has a tray host, for example the GNOME AppIndicator extension. Its tooltip shows `Running.` or `Running. Phone access on.`. Its menu has **Open ASB**, **Messages**, **Usage**, and **Quit ASB**, and a left click opens ASB. When the window cannot run on the system, the menu has only **Quit ASB**, and a left click does nothing. Without a tray host, the engine runs with no icon. Set `ASB_TRAY=0` to start the engine without the tray icon. From a source checkout, use `scripts/asb engine` in place of `asb engine`.
+On Linux, the engine shows a tray icon when the desktop has a tray host, for example the GNOME AppIndicator extension. Its tooltip shows `Running.` or `Running. Phone access on.`. Its menu has **Open ASB**, **Messages**, **Usage**, and **Quit ASB**, and a left click opens ASB. When the window cannot run on the system, the menu has only **Quit ASB**, and a left click does nothing. Without a tray host, the engine runs with no icon. While the ASB top-bar extension runs, the icon hides itself (see [Top bar (GNOME)](#top-bar-gnome)). Set `ASB_TRAY=0` to start the engine without the tray icon. From a source checkout, use `scripts/asb engine` in place of `asb engine`.
 
 The engine gives free memory back to the system. After a scan, it runs a full garbage collection when its memory is 128 MiB or more above the level after the last one (at most once in 30 s). `asb.service`, `asb engine start`, and `asb engine run` start the engine with a smaller V8 young generation (the Node.js argument `--max-semi-space-size=16`) and with three glibc settings (`MALLOC_ARENA_MAX=2`, `MALLOC_MMAP_THRESHOLD_=131072`, and `MALLOC_TRIM_THRESHOLD_=131072`). The engine removes the glibc settings from its environment, so the message relay and the apps that it opens do not get them. A user service that an earlier ASB wrote gets these settings when you restart it (`systemctl --user restart asb.service`). This uses less memory and a little more CPU. Node.js 20 gets only the smaller young generation and the glibc settings, because its V8 cannot free the pages in a garbage collection.
 

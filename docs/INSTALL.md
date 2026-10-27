@@ -188,6 +188,21 @@ The window needs Python 3.9, PyGObject, GTK 4.12, and Libadwaita 1.4. When the s
 
 `asb service status` shows the mode. Without `XDG_RUNTIME_DIR`, the engine keeps its runtime file in `~/.local/state/asb/run`.
 
+### Top-bar extension (GNOME)
+
+On GNOME Shell 45 to 49, the ASB extension (`asb@jamir-boop.github.io`) shows ASB in the top bar: the sessions that need you, the sessions that work, and all sessions of your machines. See [Top bar (GNOME)](../ASB.md#top-bar-gnome).
+
+- The per-user install (`./install.sh`) adds it when GNOME Shell 45 or later is installed, and turns it on the first time. An update replaces it. An extension with this name that ASB did not install, or a link in its place, stays as it is. `./uninstall.sh` removes the files that the install wrote.
+- The .deb, RPM, and Arch packages install it in `/usr/share/gnome-shell/extensions`, and the Nix package in the `share/gnome-shell/extensions` folder of the profile. Turn it on in the Extensions app, or with `gnome-extensions enable asb@jamir-boop.github.io`.
+- With npm, link it one time, then turn it on as above:
+
+```bash
+mkdir -p ~/.local/share/gnome-shell/extensions
+ln -s "$(npm root -g)/agent-switch-board/gnome-shell" ~/.local/share/gnome-shell/extensions/asb@jamir-boop.github.io
+```
+
+GNOME Shell loads a new extension only when it starts: on X11, press Alt+F2, type `r`, and press Enter; on Wayland, log out and log in again.
+
 ### Firewall
 
 The main ASB server listens only on `127.0.0.1` and needs no rule. Phone access and machine links use TCP port `4630` (the default) on the addresses that you select. Fedora and openSUSE turn firewalld on by default. Ubuntu has `ufw`, turned off by default. When firewalld or ufw is active, `asb setup` and `asb doctor` print the exact rule for each selected address. ASB never runs it. `asb doctor` prints the rule only while the engine runs with phone access on.
@@ -234,7 +249,7 @@ Phone access is off by default. In ASB, open Preferences > Phone, select **Allow
 
 The ASB engine (the server and phone access) runs without the window. `asb` starts the engine when none runs, then opens the window. When the system cannot run the window (for example GTK older than 4.12), `asb` keeps the engine running, prints the reason, and exits with code 3; the phone and your other machines still show this machine's sessions. Closing the window keeps the engine and phone access running. To stop them, select **Quit ASB** in Preferences > Sessions or in the tray icon menu. `asb engine start`, `asb engine stop`, and `asb engine status` do the same from a terminal.
 
-On Linux, the engine shows a tray icon. Its menu has **Open ASB**, **Messages**, **Usage**, a separator, and **Quit ASB** (only **Quit ASB** when the window cannot run). **Messages** and **Usage** open that window on the open board, or start the board with that window when no board is open. The icon shows only when the desktop has a tray host, for example the GNOME AppIndicator extension. Without a tray host, the engine runs with no icon.
+On Linux, the engine shows a tray icon. Its menu has **Open ASB**, **Messages**, **Usage**, a separator, and **Quit ASB** (only **Quit ASB** when the window cannot run). **Messages** and **Usage** open that window on the open board, or start the board with that window when no board is open. The icon shows only when the desktop has a tray host, for example the GNOME AppIndicator extension. Without a tray host, the engine runs with no icon. While the [top-bar extension](#top-bar-extension-gnome) runs, the icon hides itself.
 
 `asb service install` installs and starts the `asb.service` systemd user service, so the engine also starts with your session. Without a systemd graphical session, it uses an XDG autostart entry instead, or it changes nothing when there is no desktop session. See [Start at login without systemd](#start-at-login-without-systemd). `asb service status` shows the service or entry state. `asb service uninstall` stops and removes it. When the service is installed, `asb` starts the engine through it. An ASB `1.8.1` or older window cannot attach and reports a port conflict.
 

@@ -25,6 +25,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Fixed the pins and marks of the other machines' cards, which stayed in ASB's saved state after this machine left its group. They now go at the next scan.
 - Fixed Claude Desktop Code chats that showed Working while a background subagent waited for an approval, for example to open a site in the Browser pane. ASB dropped the wait when the main chat ended a turn. Now a turn end of the main chat does not end the wait while a running subagent has written nothing since the request.
 - Changed the drawer: a card in the drawer now comes out when its chat starts to work, has a question, or waits for your permission. It shows with the Working cards, and when the task ends it is unread and Pending at the front. Before, a Working card stayed in the drawer until its task ended.
+- Added the ASB top-bar extension for GNOME Shell 45 to 49. One capsule in the top bar shows the sessions that need you, in the accent color of the board, the sessions that work, and all sessions of your machines. It shows `Off` when the engine does not run. Its menu lists the 6 newest sessions that need you and the 6 that work, the machines of the group, and **Open ASB**, **Messages**, **Usage**, and **Quit ASB**. Select a session to open it in its app. The per-user install adds the extension and turns it on the first time: restart GNOME Shell one time to show it. The .deb, RPM, Arch, and Nix packages install it for all users. The engine has a new read route for it, `GET /api/panel`, on `127.0.0.1` only.
+- Changed the tray icon on Linux: it hides itself (status `Passive`) while the ASB top-bar extension runs, so the top bar shows ASB one time.
 
 ## ASB 1.12.1 - 2026-10-25
 
