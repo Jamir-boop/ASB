@@ -374,7 +374,10 @@ test('the asb dispatcher reaches each command main, opens the board with no comm
   calls.length = 0;
   assert.equal(await run(['usage', 'import', 'usage.json'], 'win32', '22.13.0'), 0);
   assert.deepEqual(calls.map(([file, values]) => [file, values]), [['asb-usage.mjs', ['import', 'usage.json']]]);
-  for (const text of [WINDOWS_USAGE, LINUX_USAGE]) assert.match(text, /\|phone\|usage\|/);
+  for (const text of [WINDOWS_USAGE, LINUX_USAGE]) {
+    assert.match(text, /\|phone\|usage\|/);
+    assert.ok(text.includes('Usage: asb usage export <file> | import <file> | backup [now | on | off] [--time HH:MM] [--keep N] [--folder <path>|default]'));
+  }
 });
 
 test('Python candidates on Windows: an absolute ASB_PYTHON alone, else MSYS2 Python, then python on PATH, without duplicates', async (t) => {

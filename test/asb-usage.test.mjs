@@ -9,6 +9,7 @@ import { instanceRuntimePath } from '../scripts/asb-instance.mjs';
 
 // A fake engine on loopback with synthetic machines; the CLI finds it through a temp runtime record.
 const token = 'c'.repeat(64);
+const USAGE = 'Usage: asb usage export <file> | import <file> | backup [now | on | off] [--time HH:MM] [--keep N] [--folder <path>|default]';
 const HOUR = 3_600_000;
 const exported = { format: 'asb-usage-export', version: 1, exportedAtMs: 1_800_000_000_000, machines: [
   { machineId: 'a'.repeat(16), name: 'debian', records: Array.from({ length: 1200 }, (_, index) => [1_700_000_000_000 - (1_700_000_000_000 % HOUR) - index * HOUR, 'codex', 'gpt-test-1', 1, 0, 0, 1]) },
@@ -49,8 +50,10 @@ async function fixture(t, { engine = true } = {}) {
 
 test('asb usage checks its arguments', async (t) => {
   const { run, records } = await fixture(t);
-  for (const args of [[], ['export'], ['import'], ['list', 'x'], ['export', 'a', 'b'], ['import', 'a', '--yes']]) {
-    assert.deepEqual(await run(args), { code: 2, out: '', err: 'Usage: asb usage export <file> | import <file>' }, args.join(' '));
+  for (const args of [[], ['export'], ['import'], ['list', 'x'], ['export', 'a', 'b'], ['import', 'a', '--yes'],
+    ['backup', 'x'], ['backup', '--time', '02:00'], ['backup', 'now', '--keep', '3'], ['backup', 'now', 'x'], ['backup', 'on', 'x'],
+    ['backup', 'on', '--days', '3'], ['backup', 'on', '--keep', '3', '--keep', '4'], ['backup', 'on', '--time'], ['backup', 'off', '--folder']]) {
+    assert.deepEqual(await run(args), { code: 2, out: '', err: USAGE }, args.join(' '));
   }
   assert.deepEqual(records, []);
 });
@@ -107,4 +110,76 @@ test('asb usage says when ASB is not running', async (t) => {
   await assert.rejects(stat(file), { code: 'ENOENT' });
   await writeFile(file, JSON.stringify(exported));
   assert.deepEqual(await run(['import', file]), { code: 1, out: '', err: 'asb usage: ASB is not running. Start it: asb engine start.' });
+});
+
+const pad = (value) => String(value).padStart(2, '0');
+const stamp = (ms) => {
+  const date = new Date(ms);
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+const backupStatus = (extra = {}) => ({ enabled: true, time: '03:00', keep: 5, folder: '', path: '/home/u/.config/asb/usage/backups',
+  defaultPath: '/home/u/.config/asb/usage/backups', nextAtMs: Date.now() + 86_400_000, running: false, files: [], lastError: null, ...extra });
+
+test('asb usage backup prints the status lines', async (t) => {
+  const { run, records, replies } = await fixture(t);
+  const next = new Date(2030, 0, 2, 3, 0).getTime();
+  replies.set('GET /api/usage/backup', [200, backupStatus({ nextAtMs: next })]);
+  assert.deepEqual(await run(['backup']), { code: 0, err: '', out: ['Daily backup: on, at 03:00. Keeps the last 5 files.',
+    'Folder: /home/u/.config/asb/usage/backups (default)', `Next backup: ${stamp(next)}.`, 'Backups: none yet.'].join('\n') });
+  assert.deepEqual(records.map(({ route, token: value }) => [route, value]), [['GET /api/usage/backup', token]]);
+  const modified = new Date(2026, 9, 27, 3, 0).getTime();
+  const files = [512, 1003520, 1258291].map((bytes, index) => ({ name: `asb-usage-pc-5eed0c0d-2026-10-${27 - index}.json`, date: `2026-10-${27 - index}`, bytes, modifiedAtMs: modified }));
+  const failedAt = new Date(2026, 9, 26, 3, 0).getTime();
+  replies.set('GET /api/usage/backup', [200, backupStatus({ enabled: false, keep: 1, folder: '/data/backups', path: '/data/backups', nextAtMs: null,
+    running: true, files, lastError: { atMs: failedAt, message: 'ASB cannot write the backup to /data/backups: the disk is full.' } })]);
+  assert.deepEqual(await run(['backup']), { code: 0, err: '', out: ['Daily backup: off. Keeps 1 file.', 'Folder: /data/backups', 'A backup is running.', 'Backups:',
+    `  asb-usage-pc-5eed0c0d-2026-10-27.json  ${stamp(modified)}  512 bytes`, `  asb-usage-pc-5eed0c0d-2026-10-26.json  ${stamp(modified)}  980 KB`,
+    `  asb-usage-pc-5eed0c0d-2026-10-25.json  ${stamp(modified)}  1.2 MB`,
+    `Last backup failed (${stamp(failedAt)}): ASB cannot write the backup to /data/backups: the disk is full.`].join('\n') });
+  // A backup time that has passed: the next check makes it.
+  replies.set('GET /api/usage/backup', [200, backupStatus({ nextAtMs: Date.now() - 60_000 })]);
+  assert.match((await run(['backup'])).out, /\nNext backup: in a few minutes\.\n/);
+});
+
+test('asb usage backup now, on, and off', async (t) => {
+  const { run, records, replies } = await fixture(t);
+  replies.set('POST /api/usage/backup/now', [200, { ...backupStatus(), made: { name: 'a.json', path: '/home/u/.config/asb/usage/backups/a.json', machines: 2, hours: 3071 } }]);
+  assert.deepEqual(await run(['backup', 'now']), { code: 0, err: '', out: 'Saved the usage of 2 machines (3,071 hours) to /home/u/.config/asb/usage/backups/a.json.' });
+  replies.set('POST /api/usage/backup/now', [200, { ...backupStatus(), made: { name: 'a.json', path: '/b/a.json', machines: 1, hours: 1 } }]);
+  assert.equal((await run(['backup', 'now'])).out, 'Saved the usage of 1 machine (1 hour) to /b/a.json.');
+  assert.deepEqual(records.map(({ route, token: value, body }) => [route, value, body]), [['POST /api/usage/backup/now', token, {}], ['POST /api/usage/backup/now', token, {}]]);
+  replies.set('POST /api/usage/backup/now', [409, { error: 'ASB has no machine ID yet. Start ASB again.' }]);
+  assert.deepEqual(await run(['backup', 'now']), { code: 1, out: '', err: 'asb usage: ASB has no machine ID yet. Start ASB again.' });
+
+  records.length = 0;
+  replies.set('GET /api/usage/backup', [200, backupStatus({ folder: '/old', path: '/old' })]);
+  replies.set('POST /api/usage/backup/settings', [200, backupStatus({ enabled: false, keep: 3 })]);
+  const result = await run(['backup', 'on', '--time', '02:30', '--keep', '3', '--folder', 'rel']);
+  assert.equal(result.code, 0);
+  assert.equal(result.out.split('\n')[0], 'Daily backup: off. Keeps the last 3 files.');
+  assert.deepEqual(records.map(({ route, body }) => [route, body]), [['GET /api/usage/backup', undefined],
+    ['POST /api/usage/backup/settings', { enabled: true, time: '02:30', keep: 3, folder: path.resolve('rel') }]]);
+  records.length = 0;
+  await run(['backup', 'off', '--folder', 'default']);
+  assert.deepEqual(records[1].body, { enabled: false, time: '03:00', keep: 5, folder: '' });
+  records.length = 0;
+  await run(['backup', 'on']);
+  assert.deepEqual(records[1].body, { enabled: true, time: '03:00', keep: 5, folder: '/old' });
+  replies.set('POST /api/usage/backup/settings', [400, { error: 'This folder does not exist.' }]);
+  assert.deepEqual(await run(['backup', 'on', '--folder', '/missing']), { code: 1, out: '', err: 'asb usage: This folder does not exist.' });
+});
+
+test('asb usage backup checks its values and explains an engine without backups', async (t) => {
+  const { run, records } = await fixture(t);
+  for (const value of ['3:00', '24:00', '03:60', 'x']) {
+    assert.deepEqual(await run(['backup', 'on', '--time', value]), { code: 2, out: '', err: 'asb usage: Use --time as HH:MM, for example 03:00.' }, value);
+  }
+  for (const value of ['0', '31', '2.5', 'x', '-1']) {
+    assert.deepEqual(await run(['backup', 'off', '--keep', value]), { code: 2, out: '', err: 'asb usage: Use --keep with a number from 1 to 30.' }, value);
+  }
+  assert.deepEqual(records, []);
+  // The fake engine has no backup routes: 404.
+  for (const args of [['backup'], ['backup', 'now'], ['backup', 'on']]) {
+    assert.deepEqual(await run(args), { code: 1, out: '', err: 'asb usage: This ASB engine has no usage backups. Update ASB, then start it again.' }, args.join(' '));
+  }
 });
