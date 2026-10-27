@@ -185,7 +185,8 @@ test('the scan is lazy and does not block the event loop', async (t) => {
 
 test('report merges the group members into local buckets, machines, and the scan sum', async (t) => {
   const { projects, service } = await setup(t);
-  await fs.writeFile(path.join(projects, 'SECRETFOLDER', 'a.jsonl'), `${claudeLine(NOW - HOUR, 1, 7)}\n`);
+  // NOW is the middle of the current hour, so a minute before it is today at any time of day (an hour before can be yesterday).
+  await fs.writeFile(path.join(projects, 'SECRETFOLDER', 'a.jsonl'), `${claudeLine(NOW - 60_000, 1, 7)}\n`);
   const usage = service();
   usage.report('7d');
   await usage.idle();
