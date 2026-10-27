@@ -29,7 +29,9 @@ function stripVariantSuffix(key) {
   return bracket === -1 ? key : key.slice(0, bracket);
 }
 
-const FIRST_PARTY_PROVIDERS = new Set(['gemini', 'xai', 'xiaomi_mimo', 'moonshot', 'zai', 'dashscope', 'deepseek', 'minimax', 'mistral']);
+// The LiteLLM provider of each model maker that sells its own models.
+const MAKER_PROVIDERS = { Google: 'gemini', xAI: 'xai', 'Xiaomi MiMo': 'xiaomi_mimo', 'Moonshot AI': 'moonshot', 'Z.ai': 'zai',
+  Qwen: 'dashscope', DeepSeek: 'deepseek', MiniMax: 'minimax', 'Mistral AI': 'mistral' };
 
 function addBareAliases(table) {
   const candidates = new Map();
@@ -42,9 +44,10 @@ function addBareAliases(table) {
   for (const [alias, entries] of candidates) {
     if (entries.every(({ rate }) => sameTokenRates(rate, entries[0].rate))) table.set(alias, entries[0].rate);
     else {
-      // First-party rates resolve reseller cache-rate differences without guessing between resellers.
-      const firstParty = entries.filter(({ key }) => key.split('/').length === 2 && FIRST_PARTY_PROVIDERS.has(key.split('/')[0]));
-      if (firstParty.length === 1) table.set(alias, firstParty[0].rate);
+      // The rate of the model's own company resolves reseller differences without guessing between resellers.
+      const provider = MAKER_PROVIDERS[modelMaker(alias)];
+      const own = provider && entries.find(({ key }) => key === `${provider}/${alias}`);
+      if (own) table.set(alias, own.rate);
     }
   }
 }

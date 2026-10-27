@@ -95,3 +95,13 @@ test('first-party aliases resolve reseller differences, including old cached tab
   assert.equal(parseRateTable({ 'x/test': rate(1), 'y/test': rate(1) }).get('test').input, 1);
   assert.equal(parseRateTable({ test: rate(3), 'gemini/test': rate(1), 'y/test': rate(2) }).get('test').input, 3);
 });
+
+test('the entry of the model maker gives the rate when the qualified entries differ', () => {
+  const glm = parseRateTable({ 'dashscope/glm-5.2': rate(2), 'zai/glm-5.2': rate(1), 'y/glm-5.2': rate(3) });
+  assert.equal(glm.get('glm-5.2').input, 1);
+  const mimo = parseRateTable({ 'opencode_go/mimo-v2.6-pro': rate(1e-7, 3.625e-9), 'xiaomi_mimo/mimo-v2.6-pro': rate(1e-7, 3.6e-9) });
+  assert.equal(mimo.get('mimo-v2.6-pro').cacheRead, 3.6e-9);
+  // DashScope is not DeepSeek, so a DeepSeek model with only a DashScope first-party entry stays Unpriced.
+  assert.equal(parseRateTable({ 'dashscope/deepseek-test': rate(1), 'y/deepseek-test': rate(2) }).has('deepseek-test'), false);
+  assert.equal(parseRateTable({ 'dashscope/glm-test': rate(1), 'y/glm-test': rate(1) }).get('glm-test').input, 1);
+});
