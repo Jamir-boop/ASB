@@ -299,6 +299,21 @@ class FormatTest {
         assertGaps(axisLabels(days, "day", centers(30), 332f, 4f, measure), centers(30), 332f)
     }
 
+    @Test fun monthLabelsNameThePcMonthInAPhoneZoneWestOfThePc() {
+        val zone = TimeZone.getDefault()
+        TimeZone.setDefault(TimeZone.getTimeZone("America/New_York"))
+        try {
+            // November 1 2026, 00:00 in Berlin, is October 31 in New York.
+            val november = at("2026-10-31T23:00:00Z")
+            assertEquals("Nov", bucketLabel(november, "month", last = false, short = true))
+            assertEquals("November 2026", bucketLabel(november, "month", last = false, short = false))
+            assertEquals(listOf("Nov 2026", "This month"), axisLabels(listOf(november, at("2026-11-30T23:00:00Z")), "month",
+                centers(2, 1000f), 1000f, 4f, measure).map { it.text })
+        } finally {
+            TimeZone.setDefault(zone)
+        }
+    }
+
     @Test fun machineStatesAndLastReport() = utc {
         val report = at("2026-10-25T14:30:00Z")
         assertEquals("Local", machineStateText(ActivityMachine(state = "local")))

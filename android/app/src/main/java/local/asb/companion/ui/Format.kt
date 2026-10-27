@@ -117,7 +117,8 @@ private val DATE = DateTimeFormatter.ofPattern("MMM d", Locale.US)
 
 private fun local(ms: Long) = Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault())
 
-private fun monthOf(startMs: Long) = local(startMs)
+// A month start is the PC's local midnight; mid-month names the PC's month also in a phone time zone west of the PC.
+private fun monthOf(startMs: Long) = local(startMs + 14 * 86_400_000L)
 
 fun formatTime(ms: Long): String = TIME.format(local(ms))
 
