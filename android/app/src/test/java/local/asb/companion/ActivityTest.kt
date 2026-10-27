@@ -4,6 +4,7 @@ import local.asb.companion.data.APP_COLORS
 import local.asb.companion.data.APP_ORDER
 import local.asb.companion.data.USAGE_PERIODS
 import local.asb.companion.data.periodLabel
+import local.asb.companion.data.periodShortLabel
 import local.asb.companion.data.USAGE_APP_ORDER
 import local.asb.companion.data.ActivityMachine
 import local.asb.companion.data.CostParts
@@ -317,6 +318,11 @@ class ActivityTest {
         assertEquals(listOf(4, 9, 14, 19, 24, 29), (0..29).filter { chartLabelShown(30, "day", it) })
         assertEquals(listOf(14, 29, 44, 59, 74, 89), (0..89).filter { chartLabelShown(90, "day", it) })
         assertEquals(listOf(2, 5, 8, 11, 14, 17, 20, 23), (0..23).filter { chartLabelShown(24, "hour", it) })
+    }
+
+    @Test fun usagePeriodButtonsUseShortLabels() {
+        assertEquals(listOf("24h", "7d", "30d", "90d", "All"), USAGE_PERIODS.map { periodShortLabel(it) })
+        assertEquals("All time", periodLabel("all"))
     }
 
     @Test fun allTimeUsesMonthLabelsAtTheRequiredIntervals() {

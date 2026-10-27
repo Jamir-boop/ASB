@@ -96,6 +96,7 @@ import local.asb.companion.data.machineRows
 import local.asb.companion.data.modelRows
 import local.asb.companion.data.niceStep
 import local.asb.companion.data.periodLabel
+import local.asb.companion.data.periodShortLabel
 import local.asb.companion.data.roundArcs
 import local.asb.companion.data.toggleMachine
 import local.asb.companion.data.tokenShares
@@ -151,14 +152,8 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
                 val offSet = off.toSet().intersect(machineIds.toSet())
                 Column(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    BoxWithConstraints(Modifier.fillMaxWidth()) {
-                        val periodWidth = maxOf(maxWidth, 480.dp)
-                        Row(Modifier.horizontalScroll(rememberScrollState())) {
-                            Box(Modifier.width(periodWidth)) {
-                                ChoiceRow(USAGE_PERIODS.map { it to periodLabel(it) }, period) { period = it }
-                            }
-                        }
-                    }
+                    ChoiceRow(USAGE_PERIODS.map { it to periodShortLabel(it) }, period,
+                        descriptions = USAGE_PERIODS.associateWith { periodLabel(it) }) { period = it }
                     ChoiceRow(listOf(Metric.COST.name to "Cost", Metric.TOKENS.name to "Tokens"), metric.name) { metric = Metric.valueOf(it) }
                     if (current != null) {
                         val onCount = machineIds.count { it !in offSet }

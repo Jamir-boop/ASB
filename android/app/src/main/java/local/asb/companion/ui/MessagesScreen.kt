@@ -177,14 +177,16 @@ internal fun ActivityTopBar(title: String, onBack: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun ChoiceRow(choices: List<Pair<String, String>>, selected: String, onSelect: (String) -> Unit) {
-    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+internal fun ChoiceRow(choices: List<Pair<String, String>>, selected: String, modifier: Modifier = Modifier,
+    descriptions: Map<String, String> = emptyMap(), onSelect: (String) -> Unit) {
+    SingleChoiceSegmentedButtonRow(modifier.fillMaxWidth()) {
         choices.forEachIndexed { index, (value, label) ->
             SegmentedButton(
                 selected = selected == value,
                 onClick = { onSelect(value) },
                 shape = SegmentedButtonDefaults.itemShape(index, choices.size),
-                modifier = Modifier.heightIn(min = 48.dp),
+                modifier = Modifier.heightIn(min = 48.dp)
+                    .then(descriptions[value]?.let { Modifier.semantics { contentDescription = it } } ?: Modifier),
                 icon = {},
             ) { Text(label, maxLines = 1) }
         }

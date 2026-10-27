@@ -138,6 +138,9 @@ fun periodLabel(period: String): String = when (period) {
     else -> period
 }
 
+/** The short label of a Usage period button: 24h, 7d, 30d, 90d, All. */
+fun periodShortLabel(period: String): String = if (period == "all") "All" else period
+
 fun appLabel(app: String): String = when (app) {
     "codex" -> "Codex"
     "claude" -> "Claude Code"
