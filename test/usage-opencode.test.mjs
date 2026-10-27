@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { querySqliteJson } from '../src/codex-data.mjs';
-import { openCodeUsageSql, readOpenCodeUsage } from '../src/usage-opencode.mjs';
+import { OPENCODE_PAGE_ROWS, openCodeUsageSql, readOpenCodeUsage } from '../src/usage-opencode.mjs';
 
 const { DatabaseSync } = await import('node:sqlite').catch(() => ({}));
 const SINCE = Date.parse('2026-10-01T00:00:00Z');
@@ -103,7 +103,7 @@ test('both tables and named databases count each id once in priority order', { s
   assert.deepEqual(cli, records);
 });
 
-test('5000 rows use three pages and mid-scan appends wait for the next read', { skip: !DatabaseSync }, async (t) => {
+test('5000 rows use rowid pages and mid-scan appends wait for the next read', { skip: !DatabaseSync }, async (t) => {
   const dir = await folder(t);
   const writer = new DatabaseSync(path.join(dir, 'opencode.db'));
   writer.exec('pragma journal_mode = WAL; create table session_message (id text, type text, data text)');
@@ -123,7 +123,8 @@ test('5000 rows use three pages and mid-scan appends wait for the next read', { 
   } });
   writer.close();
   assert.equal(opens, 1);
-  assert.equal(pauses, 3);
+  assert.ok(pauses > 2);
+  assert.equal(pauses, Math.ceil(5000 / OPENCODE_PAGE_ROWS));
   assert.equal(records.length, 5000);
   assert.equal(records.reduce((sum, row) => sum + row.tokens.uncached, 0), 5000);
   assert.equal((await readOpenCodeUsage(dir, SINCE)).length, 5001);
