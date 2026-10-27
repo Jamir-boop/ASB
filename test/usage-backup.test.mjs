@@ -146,8 +146,8 @@ test('the timers: the first check, the next checks, the exact backup time, a sav
   const { make, clock, timeouts, active, exports } = await setup(t);
   clock.ms = at(1);
   const backup = make();
-  backup.start();
-  backup.start();
+  await backup.start();
+  await backup.start();
   assert.deepEqual(timeouts.map((timer) => timer.ms), [BACKUP_FIRST_MS]);
   clock.ms = at(1, 10);
   // The fired timer is done.
@@ -307,10 +307,80 @@ test('status: nextAtMs today or tomorrow, null when off, and at most 100 files, 
   assert.equal(status.nextAtMs, at(3, 0, 28));
   assert.equal(status.files.length, 100);
   assert.deepEqual(status.files[0], { name: fileName(), date: TODAY, bytes: 0, modifiedAtMs: status.files[0].modifiedAtMs });
-  assert.ok(Number.isSafeInteger(status.files[0].modifiedAtMs));
+  assert.equal(status.files[0].modifiedAtMs, (await fs.stat(path.join(defaultFolder, fileName()))).mtimeMs);
   assert.equal(status.files[99].date, dateOf(at(12, 0, 27 - 99)));
   await backup.saveSettings({ enabled: false, time: '03:00', keep: 5, folder: '' });
   assert.equal((await backup.status()).nextAtMs, null);
   // Without a machine ID, no files.
   assert.deepEqual((await make({ machineId: () => '' }).status()).files, []);
+});
+
+test('an unreadable settings path logs once and stays unchanged', async (t) => {
+  const { make, settingsFile, logs } = await setup(t);
+  await fs.mkdir(settingsFile, { recursive: true });
+  const backup = make();
+  assert.equal((await backup.status()).enabled, true);
+  await backup.status();
+  assert.deepEqual(logs, ['ASB cannot read its usage backup settings. It uses the defaults.']);
+  assert.equal((await fs.stat(settingsFile)).isDirectory(), true);
+});
+
+test('write errors use the exact user reason, and leave no temporary file', async (t) => {
+  const { make, defaultFolder, clock } = await setup(t);
+  const backup = make();
+  // Inject error codes, not modes: the test must also work as root.
+  for (const [code, why] of [['EACCES', 'no permission'], ['EPERM', 'no permission'], ['ENOSPC', 'the disk is full'],
+    ['EROFS', 'the disk is read-only'], ['EIO', 'error EIO'], [undefined, 'an error']]) {
+    const mock = t.mock.method(fs, 'writeFile', async () => { throw Object.assign(new Error('synthetic'), { code }); });
+    const message = `ASB cannot write the backup to ${defaultFolder}: ${why}.`;
+    await assert.rejects(backup.runNow(), (error) => error.statusCode === 500 && error.message === message);
+    assert.deepEqual((await backup.status()).lastError, { atMs: clock.ms, message });
+    mock.mock.restore();
+    assert.deepEqual(await fs.readdir(defaultFolder), []);
+  }
+  await backup.runNow();
+  assert.equal((await backup.status()).lastError, null);
+});
+
+test('rotation logs a delete failure once per file, ignores ENOENT, and never deletes the new file', async (t) => {
+  const { make, defaultFolder, logs } = await setup(t);
+  const backup = make();
+  await backup.saveSettings({ enabled: true, time: '03:00', keep: 1, folder: '' });
+  await backup.runNow();
+  const old = fileName(dateOf(at(12, 0, 26)));
+  const gone = fileName(dateOf(at(12, 0, 25)));
+  for (const name of [old, gone]) await fs.writeFile(path.join(defaultFolder, name), '{}');
+  const remove = fs.rm.bind(fs);
+  const mock = t.mock.method(fs, 'rm', async (file, options) => {
+    if (file === path.join(defaultFolder, old)) throw Object.assign(new Error('synthetic'), { code: 'EACCES' });
+    if (file === path.join(defaultFolder, gone)) throw Object.assign(new Error('synthetic'), { code: 'ENOENT' });
+    return remove(file, options);
+  });
+  await backup.runNow();
+  await backup.runNow();
+  assert.deepEqual(logs, [`ASB cannot delete an old usage backup: ${old}.`]);
+  assert.equal((await fs.stat(path.join(defaultFolder, fileName()))).isFile(), true);
+  mock.mock.restore();
+});
+
+test('stop waits for a write and rotation that already started', async (t) => {
+  const { make, defaultFolder } = await setup(t);
+  const backup = make();
+  let release;
+  const rename = fs.rename.bind(fs);
+  const mock = t.mock.method(fs, 'rename', async (...args) => {
+    await new Promise((resolve) => { release = resolve; });
+    return rename(...args);
+  });
+  const pending = backup.runNow();
+  await until(() => release);
+  let stopped = false;
+  const stopping = backup.stop().then(() => { stopped = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(stopped, false);
+  release();
+  await stopping;
+  await pending;
+  mock.mock.restore();
+  assert.equal((await fs.stat(path.join(defaultFolder, fileName()))).isFile(), true);
 });

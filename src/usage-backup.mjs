@@ -4,6 +4,8 @@ import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { configDir } from './platform-paths.mjs';
+import { validName } from './machine-group.mjs';
+import { MACHINE_ID } from './usage-ledger.mjs';
 import { writePrivateJson } from './usage-scan-cache.mjs';
 
 export const BACKUP_FIRST_MS = 10 * 60 * 1000;
@@ -42,7 +44,7 @@ const reason = (error) => ['EACCES', 'EPERM'].includes(error?.code) ? 'no permis
 const text = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 
 // The settings without the version, or null. The folder is '' (the default folder) or an absolute path.
-function validSettings(value, platform) {
+function validSettings(value) {
   if (!exact(value, KEYS) || typeof value.enabled !== 'boolean' || typeof value.time !== 'string' || !TIME.test(value.time)
     || !Number.isInteger(value.keep) || value.keep < 1 || value.keep > 30 || typeof value.folder !== 'string'
     || value.folder.length > 1024 || CONTROL.test(value.folder)) return null;
@@ -89,7 +91,7 @@ export function createUsageBackup({ settingsFile, exportAll, machineId = () => '
         if (error.code === 'ENOENT') return { ...DEFAULT_BACKUP_SETTINGS };
       }
       const loaded = exact(value, ['version', ...KEYS]) && value.version === SETTINGS_VERSION
-        ? validSettings(Object.fromEntries(KEYS.map((key) => [key, value[key]])), platform) : null;
+        ? validSettings(Object.fromEntries(KEYS.map((key) => [key, value[key]]))) : null;
       if (loaded && (loaded.folder === '' || p.isAbsolute(loaded.folder))) return loaded;
       log('ASB cannot read its usage backup settings. It uses the defaults.');
       return { ...DEFAULT_BACKUP_SETTINGS };
@@ -110,7 +112,7 @@ export function createUsageBackup({ settingsFile, exportAll, machineId = () => '
     // A stop during the export: nothing is written.
     if (stopped) return null;
     const first = document?.machines?.[0];
-    if (!/^[0-9a-f]{16}$/.test(first?.machineId) || typeof first.name !== 'string') throw fail(500, FAILED);
+    if (typeof first?.machineId !== 'string' || !MACHINE_ID.test(first.machineId) || !validName(first.name)) throw fail(500, FAILED);
     knownId = first.machineId;
     const name = `asb-usage-${first.name}-${knownId.slice(0, 8)}-${localDate(startMs)}.json`;
     const file = p.join(folder, name);
@@ -181,10 +183,9 @@ export function createUsageBackup({ settingsFile, exportAll, machineId = () => '
       if (stopped) return;
       const current = await loadSettings();
       if (!current.enabled || now() < backupTime(now(), current.time) || await hasToday(current) || stopped) return;
-      const joined = Boolean(running);
       try { await run(); } catch (error) {
         // A failed scheduled backup logs only a new message.
-        if (!joined && error.message !== lastLogged) {
+        if (error.message !== lastLogged) {
           lastLogged = error.message;
           log(error.message);
         }
@@ -202,7 +203,7 @@ export function createUsageBackup({ settingsFile, exportAll, machineId = () => '
     const files = [];
     for (const item of list.slice(0, MAX_FILES)) {
       const info = await fs.stat(p.join(folder, item.name)).catch(() => null);
-      if (info) files.push({ name: item.name, date: item.date, bytes: info.size, modifiedAtMs: Math.floor(info.mtimeMs) });
+      if (info) files.push({ name: item.name, date: item.date, bytes: info.size, modifiedAtMs: info.mtimeMs });
     }
     return { enabled: current.enabled, time: current.time, keep: current.keep, folder: current.folder, path: folder, defaultPath,
       nextAtMs: current.enabled ? backupTime(now(), current.time, list.some((item) => item.date === today) ? 1 : 0) : null,
@@ -210,11 +211,11 @@ export function createUsageBackup({ settingsFile, exportAll, machineId = () => '
   }
 
   return {
-    start() {
+    async start() {
       if (started) return;
       started = true;
-      loadSettings();
-      schedule(BACKUP_FIRST_MS);
+      await loadSettings();
+      if (!stopped) schedule(BACKUP_FIRST_MS);
     },
     // Waits only for a write and rotation that already started.
     async stop() {
@@ -225,7 +226,7 @@ export function createUsageBackup({ settingsFile, exportAll, machineId = () => '
     },
     status,
     async saveSettings(body) {
-      const next = validSettings(body, platform);
+      const next = validSettings(body);
       if (!next) throw fail(400, 'Invalid backup settings.');
       if (next.folder) {
         if (!p.isAbsolute(next.folder)) throw fail(400, 'Use a full folder path.');

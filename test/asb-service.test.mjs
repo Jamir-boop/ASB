@@ -1027,3 +1027,31 @@ test('the engine keeps a usage ledger in its config folder, starts it after the 
   child.kill('SIGTERM');
   assert.equal((await child.closed)[0], 0, child.errors);
 });
+
+test('the engine has daily usage backups in its config folder, and asb usage backup now writes one private file there', { timeout: 20_000 }, async (t) => {
+  const f = await fixture(t);
+  await mkdir(path.join(f.env.XDG_CONFIG_HOME, 'Claude'), { recursive: true });
+  const projects = path.join(f.home, '.claude/projects/project');
+  await mkdir(projects, { recursive: true });
+  await writeFile(path.join(projects, 'usage.jsonl'), `${JSON.stringify({ type: 'assistant', timestamp: new Date(Date.now() - 60 * 60_000).toISOString(), requestId: 'r-1',
+    message: { id: 'm-1', model: 'claude-test-5', content: [], usage: { input_tokens: 10, cache_read_input_tokens: 1000, cache_creation_input_tokens: 50, output_tokens: 7 } } })}\n`);
+  const child = f.launch([engineScript, 'run']);
+  await ready(child);
+  const runtime = await readServiceRuntime(f.env);
+  const folder = path.join(f.env.XDG_CONFIG_HOME, 'asb', 'usage', 'backups');
+  const response = await fetch(`http://127.0.0.1:${runtime.port}/api/usage/backup`, { headers: { 'X-ASB-Source-Token': runtime.sourceToken } });
+  assert.equal(response.status, 200);
+  const status = await response.json();
+  assert.deepEqual([status.path, status.defaultPath, status.enabled, status.files], [folder, folder, true, []]);
+  const out = [];
+  const err = [];
+  assert.equal(await usage(['backup', 'now'], { env: f.env, print: (line) => out.push(line), printError: (line) => err.push(line) }), 0, err.join('\n'));
+  const files = await readdir(folder);
+  assert.equal(files.length, 1);
+  assert.match(files[0], /^asb-usage-[A-Za-z0-9][A-Za-z0-9._-]{0,31}-[0-9a-f]{8}-\d{4}-\d{2}-\d{2}\.json$/);
+  assert.deepEqual(out, [`Saved the usage of 1 machine (1 hour) to ${path.join(folder, files[0])}.`]);
+  if (process.platform !== 'win32') assert.equal((await stat(path.join(folder, files[0]))).mode & 0o777, 0o600);
+  assert.match(await readFile(engineScript, 'utf8'), /usageBackupFile: usageBackupPath\(env, platform\)/);
+  child.kill('SIGTERM');
+  assert.equal((await child.closed)[0], 0, child.errors);
+});

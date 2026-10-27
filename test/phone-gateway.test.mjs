@@ -274,7 +274,8 @@ gatewayTest('the route allowlist blocks other APIs and checks methods before bea
     '/api/agent/resolve-session', '/phone/v1/agent/resolve-session', '/api/agent/resolve-bound', '/phone/v1/agent/resolve-bound',
     '/api/agent/list-references', '/phone/v1/agent/list-references',
     '/api/relay/homes', '/api/relay/remote-peers', '/api/relay/send', '/phone/v1/relay/send',
-    '/api/bridge', '/api/bridge/install', '/phone/v1/bridge', '/phone/v1/bridge/install', '/api/usage/export', '/api/usage/import']) {
+    '/api/bridge', '/api/bridge/install', '/phone/v1/bridge', '/phone/v1/bridge/install', '/api/usage/export', '/api/usage/import',
+    '/api/usage/backup', '/api/usage/backup/settings', '/api/usage/backup/now', '/phone/v1/usage/backup', '/phone/v1/usage/backup/now']) {
     for (const method of ['GET', 'POST']) {
       const response = await request(route, { method, token, ...(method === 'POST' ? { body: {} } : {}) });
       assert.equal(response.status, 404, `${method} ${route}`);

@@ -148,6 +148,9 @@ export function createAsbServer({
     const panelRoute = Boolean(panelMachines) && url.pathname === '/api/panel';
     const usageExportRoute = typeof activityUsage?.exportAll === 'function' && url.pathname === '/api/usage/export';
     const usageImportRoute = typeof activityUsage?.importAll === 'function' && url.pathname === '/api/usage/import';
+    const backupReady = typeof activityUsage?.backup?.status === 'function';
+    const usageBackupRoute = backupReady && url.pathname === '/api/usage/backup';
+    const usageBackupAction = backupReady ? url.pathname.match(/^\/api\/usage\/backup\/(settings|now)$/)?.[1] : undefined;
     const eventRoute = url.pathname === '/api/events';
     const paletteRoute = url.pathname === '/api/palette';
     const engineStopRoute = Boolean(onStop) && url.pathname === '/api/engine/stop';
@@ -158,11 +161,12 @@ export function createAsbServer({
     const listReferencesRoute = Boolean(listReferences) && url.pathname === '/api/agent/list-references';
     const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute
       || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute || showWindowRoute || resolveRoute || resolveBoundRoute || listReferencesRoute || sendMemberRoute
-      || Boolean(groupRoute?.[1]) || Boolean(bridgeRoute?.[1]) || ['send', 'receipt'].includes(relayRoute) || usageImportRoute;
+      || Boolean(groupRoute?.[1]) || Boolean(bridgeRoute?.[1]) || ['send', 'receipt'].includes(relayRoute) || usageImportRoute || Boolean(usageBackupAction);
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
     const readApiRoute = url.pathname === '/api/dashboard' || panelRoute || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute
-      || Boolean(groupRoute && !groupRoute[1]) || Boolean(bridgeRoute && !bridgeRoute[1]) || ['homes', 'remote-peers'].includes(relayRoute) || activityReady || usageExportRoute;
+      || Boolean(groupRoute && !groupRoute[1]) || Boolean(bridgeRoute && !bridgeRoute[1]) || ['homes', 'remote-peers'].includes(relayRoute) || activityReady || usageExportRoute || usageBackupRoute;
     const readRoute = readApiRoute || staticRoutes.includes(url.pathname);
+    if (usageBackupRoute || usageBackupAction) response.setHeader('Cache-Control', 'no-store');
     if (!readRoute && !actionRoute) {
       sendJson(response, 404, { error: 'Route is not available in ASB.' });
       return;
@@ -244,6 +248,51 @@ export function createAsbServer({
       }
       try { sendJson(response, 200, await activityUsage.importAll(body)); }
       catch (error) { sendJson(response, error.statusCode === 400 ? 400 : 500, { error: error.statusCode === 400 ? 'This file is not an ASB usage export.' : 'ASB cannot import the usage.' }); }
+      return;
+    }
+    // The daily usage backups (src/usage-backup.mjs).
+    if (usageBackupRoute) {
+      response.setHeader('Cache-Control', 'no-store');
+      if (!expectedSourceToken.length || !sourceTokenAllowed(request)) {
+        sendJson(response, 403, { error: 'Use the current ASB source token to read usage backups.' });
+        return;
+      }
+      try { sendJson(response, 200, await activityUsage.backup.status()); }
+      catch { sendJson(response, 500, { error: 'ASB cannot read the usage backups.' }); }
+      return;
+    }
+    if (usageBackupAction === 'settings') {
+      response.setHeader('Cache-Control', 'no-store');
+      if (!expectedSourceToken.length || !sourceTokenAllowed(request)) {
+        sendJson(response, 403, { error: 'Use the current ASB source token to change usage backups.' });
+        return;
+      }
+      let body;
+      try { body = await readBody(request, 8 * 1024); } catch {
+        sendJson(response, 400, { error: 'Invalid backup settings.' });
+        return;
+      }
+      try { sendJson(response, 200, await activityUsage.backup.saveSettings(body)); }
+      catch (error) { sendJson(response, error.statusCode === 400 ? 400 : 500, { error: error.statusCode === 400 ? error.message : 'ASB cannot save the backup settings.' }); }
+      return;
+    }
+    if (usageBackupAction === 'now') {
+      response.setHeader('Cache-Control', 'no-store');
+      if (!expectedSourceToken.length || !sourceTokenAllowed(request)) {
+        sendJson(response, 403, { error: 'Use the current ASB source token to back up usage.' });
+        return;
+      }
+      let body;
+      try { body = await readBody(request, 1024); } catch { body = null; }
+      if (!exactKeys(body, [])) {
+        sendJson(response, 400, { error: 'Invalid backup request.' });
+        return;
+      }
+      try { sendJson(response, 200, await activityUsage.backup.runNow()); }
+      catch (error) {
+        const known = [409, 500].includes(error.statusCode);
+        sendJson(response, known ? error.statusCode : 500, { error: known ? error.message : 'ASB cannot make the usage backup.' });
+      }
       return;
     }
     if (engineStopRoute) {

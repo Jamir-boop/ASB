@@ -14,6 +14,7 @@ import { createSoundPlayer } from '../src/asb-sounds.mjs';
 import { boardCheck } from '../src/linux-system.mjs';
 import { cacheDir, configDir, runtimeDir, stateDir } from '../src/platform-paths.mjs';
 import { createReaderPositions } from '../src/reader-positions.mjs';
+import { usageBackupPath } from '../src/usage-backup.mjs';
 import { usageLedgerPath } from '../src/usage-ledger.mjs';
 import { createMemoryTrim, ENGINE_NODE_FLAGS, forgetMallocEnv, MALLOC_ENV } from '../src/memory-trim.mjs';
 import { ASB_APP_ID } from './asb-icon.mjs';
@@ -128,7 +129,7 @@ export async function runEngine({ env = process.env, platform = process.platform
   let machineId = '';
   let referenceScopes = null;
   const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, machineGroup: group, machineRelay: relay, serviceMode: true, platform,
-    readerPositions: positions, onScanDone: trim.scanEnded, usageLedgerFile: usageLedgerPath(env, platform),
+    readerPositions: positions, onScanDone: trim.scanEnded, usageLedgerFile: usageLedgerPath(env, platform), usageBackupFile: usageBackupPath(env, platform),
     playSound: createSoundPlayer({ platform }),
     machineIdentity: () => ({ machineId, machineName: group.selfName() }), referenceScopes: () => referenceScopes,
     // ASB Bridge status uses blocking calls, so it runs in a child process.
