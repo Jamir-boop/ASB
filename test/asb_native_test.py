@@ -6571,6 +6571,32 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
                 window.stop_live()
         self.assert_no_new_warnings()
 
+    def tall_replies(self):
+        """The sample replies with 12 more providers, each with an unpriced model: a tall overview with a long note."""
+        replies = copy.deepcopy(self.REPLIES)
+        for reply in replies.values():
+            template = reply["records"][0]
+            reply["records"] += [dict(copy.deepcopy(template), maker=f"Provider {index:02}", model=f"provider-{index:02}-long-model-name-preview",
+                                      cost=None) for index in range(12)]
+        return replies
+
+    def test_the_round_chart_stays_at_the_top_of_the_wide_layout(self):
+        window = self.window(self.tall_replies())
+        self.drain(.1)
+        self.assertEqual(window.round_cell.get_valign(), asb.Gtk.Align.START)
+        self.assertGreaterEqual(len(self.children(window.maker_rows)), 12)
+        self.assertTrue(window.note.get_visible())
+        machines = window.machine_rows.get_prev_sibling()
+        self.assertEqual(machines.get_label(), "Machines")
+        found, title = machines.compute_bounds(window)
+        self.assertTrue(found)
+        found, ring = window.round.compute_bounds(window)
+        self.assertTrue(found)
+        self.assertLessEqual(abs(ring.get_y() - title.get_y()), 40)
+        narrow = self.window(self.tall_replies(), size=(860, 900))
+        self.assertEqual(narrow.round_cell.get_valign(), asb.Gtk.Align.CENTER)
+        self.assert_no_new_warnings()
+
     def test_narrow_layouts(self):
         window = self.window(size=(860, 900))
         self.assertTrue(window.narrow)

@@ -9695,7 +9695,7 @@ class UsageWindow(ActivityWindow):
 
         self.overview = Gtk.Box(spacing=36)
         self.round = UsageRound()
-        self.round_cell = Gtk.Box(width_request=340, valign=Gtk.Align.CENTER)
+        self.round_cell = Gtk.Box(width_request=340)
         self.round_cell.append(self.round)
         self.overview.append(self.round_cell)
         side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, valign=Gtk.Align.CENTER)
@@ -9868,6 +9868,7 @@ class UsageWindow(ActivityWindow):
             getattr(self.content, f"set_margin_{side}")(14 if self.small else 24)
         self.overview.set_orientation(Gtk.Orientation.VERTICAL if self.narrow else Gtk.Orientation.HORIZONTAL)
         self.round_cell.set_size_request(-1 if self.narrow else 340, -1)
+        self.round_cell.set_valign(Gtk.Align.CENTER if self.narrow else Gtk.Align.START)
         self.round.set_halign(Gtk.Align.CENTER if self.narrow else Gtk.Align.START)
         self.round.set_hexpand(self.narrow)
         self.blocks.set_orientation(Gtk.Orientation.VERTICAL if self.narrow else Gtk.Orientation.HORIZONTAL)
