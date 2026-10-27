@@ -453,9 +453,10 @@ class AsbButton extends PanelMenu.Button {
         item.add_child(title);
         if (this._state.machines.length > 1 && row.machine >= 0)
             item.add_child(new AsbMark('dot', 7, `color: ${machineHue(row.machine)};`));
-        const time = new St.Label({text: timeText(row.atMs, Date.now()), style_class: 'asb-secondary asb-time',
-            x_align: Clutter.ActorAlign.END, y_align: Clutter.ActorAlign.CENTER});
-        item.add_child(time);
+        // The bin keeps the minimum width, so the time inside it can align right.
+        item.add_child(new St.Bin({style_class: 'asb-time', y_align: Clutter.ActorAlign.CENTER,
+            child: new St.Label({text: timeText(row.atMs, Date.now()), style_class: 'asb-secondary',
+                x_align: Clutter.ActorAlign.END, y_align: Clutter.ActorAlign.CENTER})}));
         item.accessible_name = rowAccessibleName(row, this._state.machines, Date.now(), needs ? row.kind : 'working');
         if (action)
             item.connect('activate', () => this._action(action));
