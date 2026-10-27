@@ -6228,6 +6228,29 @@ class ActivityFixture:
         offset = int(y) * stride + int(x) * 4
         self.assertEqual("#" + data[offset:offset + 3].hex(), color)
 
+    def check_theme_header(self):
+        warnings = len(GTK_WARNINGS)
+        asb.THEME_PATH.write_text(json.dumps({"mode": "custom", "colors": self.THEME}))
+        # The rendering fixture accent is below the theme editor's contrast limit.
+        with patch.object(asb, "validate_theme", return_value=self.THEME):
+            window = self.window()
+        self.assertTrue(window.has_css_class("asb-custom"))
+        header = window.toolbar.get_prev_sibling()
+        found, bounds = header.compute_bounds(window)
+        self.assertTrue(found)
+        self.assert_pixel(window, bounds.get_x() + 120, bounds.get_y() + bounds.get_height() // 2, self.THEME["background"])
+        button = window.period_buttons[window.period]
+        found, bounds = button.compute_bounds(window)
+        self.assertTrue(found)
+        self.assert_pixel(window, bounds.get_x() + 7, bounds.get_y() + bounds.get_height() // 2, self.THEME["accent"])
+        window.set_palette(None)
+        self.drain(.2)
+        self.assertFalse(window.has_css_class("asb-custom"))
+        asb.THEME_PATH.unlink()
+        native = self.window()
+        self.assertFalse(native.has_css_class("asb-custom"))
+        self.assertEqual(GTK_WARNINGS[warnings:], [])
+
 
 @unittest.skipUnless(asb.Gtk.init_check(), "A GTK display is not available.")
 class UsageWindowCheck(ActivityFixture, unittest.TestCase):
@@ -6610,6 +6633,9 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertNotEqual(self.children(window.machine_rows), rows)
         self.assertEqual(window.round.center()[1], "processed tokens")
         self.assert_no_new_warnings()
+
+    def test_custom_header_and_buttons(self):
+        self.check_theme_header()
 
     def test_theme_surfaces_and_tracks(self):
         asb.THEME_PATH.write_text(json.dumps({"mode": "custom", "colors": self.THEME}))
@@ -7216,6 +7242,9 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
             window.refresh()
             self.drain(.4)
         return window
+
+    def test_custom_header_and_buttons(self):
+        self.check_theme_header()
 
     def test_theme_ledger_surface_and_divider(self):
         asb.THEME_PATH.write_text(json.dumps({"mode": "custom", "colors": self.THEME}))

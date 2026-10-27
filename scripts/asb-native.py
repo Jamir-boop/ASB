@@ -7852,6 +7852,7 @@ class ActivityWindow(Adw.Window):
 
     def set_palette(self, colors):
         self.palette = palette = activity_palette(colors or native_colors(self))
+        (self.add_css_class if colors else self.remove_css_class)("asb-custom")
         if not colors:
             # GNOME draws its dividers with the borders role, about 15 % text; the divider of native_colors is 30 %.
             palette["divider"] = palette["rule"]
@@ -7861,6 +7862,11 @@ class ActivityWindow(Adw.Window):
                        for index, hue in enumerate(MACHINE_HUES))
         self.css.load_from_string(hues + f"""
 {scope} {{ background: {palette['win']}; color: {palette['text']}; }}
+{scope}.asb-custom headerbar, {scope}.asb-custom .top-bar {{ background: {palette['win']}; color: {palette['text']}; box-shadow: none; }}
+{scope}.asb-custom .linked > button {{ background: alpha({palette['text']}, .08); color: {palette['text']}; }}
+{scope}.asb-custom .linked > button:hover {{ background: alpha({palette['text']}, .14); }}
+{scope}.asb-custom .linked > button:checked {{ background: {palette['accent']}; color: {palette['win']}; }}
+{scope}.asb-custom :focus-visible {{ outline-color: {palette['accent']}; }}
 {scope} .asb-activity-toolbar {{ background: {palette['win']}; padding: 6px 10px; border-bottom: 1px solid {palette['divider']}; }}
 {scope} .asb-dim {{ color: {palette['dim']}; }}
 {scope} .asb-rule {{ border-top: 1px solid {palette['rule']}; }}
