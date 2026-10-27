@@ -150,8 +150,8 @@ main menu of the sessions screen (**Messages**, **Usage**, **Settings**).
 **Show messages** in the session panel opens Messages with that session
 selected. Messages shows the round table of the 12 most recent sessions
 (TalkBack reaches each seat in circle order), the selected seat or pair, and
-the ledger. Usage shows the cost and the tokens by machine, app, and model,
-with the price line and `Reading usage` while the PC reads the transcripts.
+the ledger. Usage shows the cost and the tokens by machine, app, model, and provider,
+for periods up to `All time`, with the price line and `Reading usage` while the PC reads the transcripts.
 The screens read `/phone/v1/activity/messages` and `/phone/v1/activity/usage`
 every 10 seconds while they show. Usage reads every 2 seconds while the scan
 runs or the prices load. The phone gets counts, statuses, session titles, and

@@ -193,7 +193,7 @@ Claude Code sessions and Codex tasks on one machine can message the sessions on 
 
 ## Messages and Usage
 
-**Messages** shows the ASB Bridge messages between sessions. **Usage** shows the tokens and the API price of the Codex, Claude Code, and OpenCode agents. Both show all machines of the group. Each one opens in its own window, so the board keeps its width. Both only show data: they do not open sessions or change their marks.
+**Messages** shows the ASB Bridge messages between sessions. **Usage** shows the tokens and the API price of the Codex, Claude Code, OpenCode, Antigravity, Grok, and Pi agents. Both show all machines of the group. Each one opens in its own window, so the board keeps its width. Both only show data: they do not open sessions or change their marks.
 
 Open them in one of these ways:
 
@@ -206,7 +206,22 @@ Each window has one instance: open it again to bring it to the front. Ctrl+W clo
 
 **Messages** shows `24 hours`, `7 days` (the default), or `30 days`. Each machine is an arc of a round table, and each session is a seat. The table seats the 12 sessions with the most recent messages; the toolbar shows the count, for example `12 of 18 sessions`. A chord joins two seated sessions that sent messages in the period. A dashed chord in the error color means that no message of that pair was sent. When a new message arrives, a light flies along its chord, as on the board (not when animations are off). Next to the table, the ledger counts all messages of the period: the total and the status of each message (`Accepted`, `Socket written`, `Held`, `Not sent`, `Unknown`), `Between apps`, `Between machines`, and `Recent` (the 6 newest). Select a chord, a seat, or a recent message to see the thread: the newest 60 messages with the day, the time, the sender, the status, and the text. The text shows only for messages that this machine sent or received; the other messages show `Body not shared`. Escape or **Back to totals** shows the ledger again.
 
-**Usage** shows `24 hours`, `7 days`, `30 days` (the default), or `90 days`. Select **Cost** or **Tokens**. Select a machine chip to turn its machine on or off. The window shows the machines, the apps, a chart (`Daily cost`, or `Hourly cost` for 24 hours) by app or by machine, the totals of the token types, and the models. A model with no price shows `Unpriced` and is not in the cost; a note names it and its tokens. The price line in the toolbar shows `Prices: LiteLLM, Oct 26` (the day of the price list), `Prices: loading`, or `Prices: not available`. ASB downloads the LiteLLM price list from GitHub only while you use Usage (also on the phone), at most once in 24 hours when the download works. The first scan reads the Codex and Claude transcripts that changed in the last 90 days. While it runs, the window shows `Reading usage: 120 of 2,707 files` (or `Reading usage` before the file list is ready) and the usage found so far. While the scan runs or the prices load, the window updates every 2 seconds.
+**Usage** shows `24 hours`, `7 days`, `30 days` (the default), `90 days`, or `All time`. Select **Cost** or **Tokens**. Select a machine chip to turn its machine on or off. The window shows the machines, the apps, the providers, a chart by app or by machine, the totals of the token types, and the models. The chart is `Hourly cost` for 24 hours, `Daily cost` for 7 to 90 days, and `Monthly cost` for All time (with `Tokens`: `Hourly tokens`, `Daily tokens`, `Monthly tokens`). All time has one bar for each month, from the month of the oldest record to `This month`. **Providers** has one row for each company that makes a model, for example Anthropic, OpenAI, Google, or xAI. A model that ASB does not know counts as `Other`. A model with no price shows `Unpriced` and is not in the cost; a note names it and its tokens. In Cost, a provider with no priced model also shows `Unpriced`. The price line in the toolbar shows `Prices: LiteLLM, Oct 26` (the day of the price list), `Prices: loading`, or `Prices: not available`. ASB downloads the LiteLLM price list from GitHub only while you use Usage (also on the phone), at most once in 24 hours when the download works.
+
+The first scan reads all history of the newest 10,000 transcript files, by the time of their last change. It also reads the compressed Codex rollouts (`*.jsonl.zst`); this needs Node.js 22.15 or later. The first scan can take some time. While it runs, the window shows `Reading usage: 120 of 2,707 files` (or `Reading usage` before the file list is ready) and the usage found so far. While the scan runs or the prices load, the window updates every 2 seconds. Usage reads these folders:
+
+- Codex: `sessions` and `archived_sessions` of each enabled Codex profile.
+- Claude Code: the projects folder of each enabled Claude profile.
+- OpenCode: `opencode.db` and each `opencode-<name>.db` in the folder of each enabled OpenCode profile.
+- Grok: `$GROK_HOME/sessions`, else `~/.grok/sessions`.
+- Pi: `$PI_CODING_AGENT_SESSION_DIR`, else `sessions` in `$PI_CODING_AGENT_DIR`, else `~/.pi/agent/sessions`.
+- Antigravity: the folders of `$ANTIGRAVITY_DATA_DIR` (a comma list), else `~/.gemini/antigravity`, `~/.gemini/antigravity-cli`, `~/.gemini/antigravity-ide`, `~/.gemini/antigravity-backup`, and `~/.config/antigravity`. This needs Node.js 22.5 or later (`node:sqlite`).
+
+Grok, Pi, and Antigravity need no profile: ASB reads their folders when they exist. ASB does not read these apps:
+
+- Cursor: its usage is on cursor.com and needs your login.
+- Muse: its folder is known only from the running `muse` program.
+- The OpenCode `storage/message` JSON files: the storage of old OpenCode versions.
 
 The other machines of the group send their message records and their hourly token usage, never message text. A machine shows `Local`, `Connected`, or `Offline`. An offline machine keeps its last data and shows the time of its last report, for example `Last report Oct 25, 14:30`. The windows need GTK 4.14 for the round table and the charts; with GTK 4.12 they show `Charts need GTK 4.14 or later.`
 

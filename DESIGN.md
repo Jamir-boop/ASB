@@ -265,12 +265,13 @@ Offer **GNOME colors** and **Custom colors** in Preferences > Appearance. Give a
 
 ### Messages and Usage windows
 
-Messages and Usage are separate native windows, not Board pages, so the Board keeps its narrow width and gets no new toolbar button. Each window has one instance, is nonmodal, and opens at 968×760 (Messages) or 948×760 (Usage). It keeps only its size in `activity-windows.json`. The header shows only the window title; the toolbar under it holds the period buttons (a linked group of toggle buttons) and, in Usage, the Cost and Tokens buttons, the machine chips, and the price line. Use native controls (`Gtk.ToggleButton`, `Gtk.Button`, `Gtk.Label`, `Gtk.Spinner`) and draw the round table, the strip, the share bars, and the charts as custom `Gtk.Widget` subclasses that draw in `do_snapshot` with `Gsk` paths. Add no webview. GTK 4.12 has no `Gsk.PathBuilder`, so it shows **Charts need GTK 4.14 or later.** under the toolbar.
+Messages and Usage are separate native windows, not Board pages, so the Board keeps its narrow width and gets no new toolbar button. Each window has one instance, is nonmodal, and opens at 968×760 (Messages) or 948×760 (Usage). It keeps only its size in `activity-windows.json`. The header shows only the window title; the toolbar under it holds the period buttons (a linked group of toggle buttons) and, in Usage, the Cost and Tokens buttons, the machine chips, and the price line. Use native controls (`Gtk.ToggleButton`, `Gtk.Button`, `Gtk.Label`, `Gtk.Spinner`) and draw the round table, the share bars, and the charts as custom `Gtk.Widget` subclasses that draw in `do_snapshot` with `Gsk` paths. Add no webview. GTK 4.12 has no `Gsk.PathBuilder`, so it shows **Charts need GTK 4.14 or later.** under the toolbar.
 
 Surfaces and text follow the Board palette: GNOME colors, or the custom colors of `theme.json`. Data colors are fixed, so a color means the same thing on every machine and in the Android app:
 
 - Machine hues, in machine order (this machine first, then the members by name): `#a28caa`, `#7cc48a`, `#5fb3b3`, `#d6a15e`, `#e38fb0`, `#b4b86c`, then again from the first. An offline machine shows a ring in its hue in place of a filled dot.
-- Apps: Codex `#c9ccd1`, Claude Code `#d97757`, OpenCode `#7d848c`, Other `#5d6268`.
+- Apps: Codex `#c9ccd1`, Claude Code `#d97757`, OpenCode `#7d848c`, Antigravity `#4f8fe0`, Grok `#e8e46a`, Pi `#c678dd`, Other `#5d6268`. Messages shows only Codex, Claude Code, OpenCode, and Other.
+- Providers (Usage): one bar color, `#8c929a`, for each provider row.
 - Message statuses: Accepted `#c9ccd1`, Socket written `#8c929a`, Held `#e0b45a`, Not sent `#f5a090`, Unknown `#5d6268`.
 - Token types: cache read `#4b5058`, cache write `#6b7179`, uncached input `#959ba3`, output `#e4e6e8`.
 
