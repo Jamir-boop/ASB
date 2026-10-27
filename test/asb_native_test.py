@@ -6342,7 +6342,9 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
             self.assert_accessible_label(chip, expected)
         dot = chips["studio"].get_child().get_first_child()
         self.assertTrue(dot.has_css_class("asb-activity-hue-2") and dot.has_css_class("asb-activity-hollow"))
-        self.assertEqual(window.prices_label.get_label(), "Prices: LiteLLM, Oct 26")
+        self.assertEqual(window.title_widget.get_subtitle(), "Prices: LiteLLM, Oct 26")
+        self.assertFalse(hasattr(window, "prices_label"))
+        self.assertFalse(any(text.startswith("Prices:") for text in self.labels(window.toolbar)))
         self.assertFalse(window.scan_label.get_visible())
         self.assert_no_new_warnings()
 
@@ -6611,7 +6613,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
             replies["30d"] = dict(self.REPLIES["30d"], prices={"source": "LiteLLM", "status": "loading", "fetchedAtMs": None, "models": 0})
             with patch.object(asb.GLib, "source_remove"):
                 window.poll_tick()
-                self.assertEqual(window.prices_label.get_label(), "Prices: loading")
+                self.assertEqual(window.title_widget.get_subtitle(), "Prices: loading")
                 self.poll_calls.assert_called_once_with(2, window.poll_tick)
                 window.stop_live()
         self.assert_no_new_warnings()
@@ -7282,6 +7284,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
     def test_toolbar_chips_and_seat_count(self):
         window = self.window()
         self.assertEqual(window.get_title(), "Messages")
+        self.assertEqual((window.title_widget.get_title(), window.title_widget.get_subtitle()), ("Messages", ""))
         self.assertEqual(window.get_default_size(), (968, 760))
         self.assertIs(asb.ACTIVITY_WINDOW_CLASSES["messages"], asb.MessagesWindow)
         chips = []

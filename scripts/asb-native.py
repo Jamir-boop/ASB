@@ -7692,7 +7692,8 @@ class ActivityWindow(Adw.Window):
 
         view = Adw.ToolbarView()
         header = Adw.HeaderBar()
-        header.set_title_widget(Adw.WindowTitle(title=self.TITLE, subtitle=""))
+        self.title_widget = Adw.WindowTitle(title=self.TITLE, subtitle="")
+        header.set_title_widget(self.title_widget)
         view.add_top_bar(header)
         self.toolbar = Gtk.Box(spacing=8)
         self.toolbar.add_css_class("asb-activity-toolbar")
@@ -9684,10 +9685,6 @@ class UsageWindow(ActivityWindow):
         self.chips = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
         self.chip_buttons = {}
         wrap.append(self.chips)
-        self.prices_label = Gtk.Label(valign=Gtk.Align.CENTER, margin_start=4)
-        self.prices_label.add_css_class("asb-usage-small")
-        self.prices_label.add_css_class("asb-dim")
-        wrap.append(self.prices_label)
         self.toolbar.append(wrap)
         self.scan_label = Gtk.Label(xalign=0, visible=False)
         self.scan_label.add_css_class("asb-usage-small")
@@ -9891,7 +9888,7 @@ class UsageWindow(ActivityWindow):
         # A refresh comes after each dashboard event: the same numbers with a new reply time keep the shown view.
         if previous is not None and {**previous, "nowMs": None} == {**data, "nowMs": None}:
             return
-        self.prices_label.set_label(usage_prices_text(data.get("prices")))
+        self.title_widget.set_subtitle(usage_prices_text(data.get("prices")))
         scan = usage_scan_text(data.get("scan"))
         self.scan_label.set_label(scan)
         self.scan_label.set_visible(bool(scan))
