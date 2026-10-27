@@ -6624,6 +6624,18 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(len(self.children(window.models)), 6 * (len(rows) + 1))
         self.assert_no_new_warnings()
 
+    def test_a_split_switch_changes_only_the_chart(self):
+        window = self.window()
+        widgets = [self.children(box) for box in (window.machine_rows, window.app_rows, window.maker_rows, window.figures, window.models)]
+        window.split_buttons["machine"].set_active(True)
+        self.assertEqual([key for key, _label, _color in window.chart.series], ["desk", "laptop", "studio"])
+        self.assertEqual(window.chart.bars, [bar["machine"] for bar in asb.usage_view(self.REPLIES["30d"], self.ALL, "cost")["bars"]])
+        self.assertEqual([self.children(box) for box in (window.machine_rows, window.app_rows, window.maker_rows, window.figures, window.models)],
+                         widgets)
+        window.split_buttons["app"].set_active(True)
+        self.assertEqual([key for key, _label, _color in window.chart.series], ["codex", "claude", "opencode"])
+        self.assert_no_new_warnings()
+
     def tall_replies(self):
         """The sample replies with 12 more providers, each with an unpriced model: a tall overview with a long note."""
         replies = copy.deepcopy(self.REPLIES)

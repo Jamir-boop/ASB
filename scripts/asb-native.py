@@ -9658,7 +9658,7 @@ class UsageWindow(ActivityWindow):
     FAST_POLL_SECONDS = 2
 
     def __init__(self, application, base, fetch=None, clock=None):
-        self.metric, self.split, self.machines_off, self.chip_key, self.chart_key = "cost", "app", set(), None, None
+        self.metric, self.split, self.machines_off, self.chip_key, self.chart_key, self.view = "cost", "app", set(), None, None, None
         self.narrow = self.small = False
         super().__init__(application, base, fetch, clock)
         periods = self.toolbar.get_first_child()
@@ -9834,7 +9834,9 @@ class UsageWindow(ActivityWindow):
         if split != self.split:
             self.split = split
             self.split_buttons[split].set_active(True)
-            self.render_view()
+            # Only the chart series change.
+            if self.data is not None:
+                self.render_chart(self.view, format_cost if self.metric == "cost" else format_tokens)
 
     def machines_on(self):
         ids = {machine["machineId"] for machine in self.data["machines"]}
@@ -9938,18 +9940,22 @@ class UsageWindow(ActivityWindow):
         self.note.set_visible(bool(note))
         interval = {"hour": "Hourly", "day": "Daily", "month": "Monthly"}[data["buckets"]["unit"]]
         self.chart_title.set_label(f"{interval} {'cost' if cost else 'tokens'}")
+        self.view = view
+        self.render_chart(view, show)
+        self.render_totals(view)
+        self.render_models(view, show)
+
+    def render_chart(self, view, show):
         if self.split == "app":
             other = [""] if any(row["id"] == "" for row in view["apps"]) else []
             apps = [app for app in USAGE_APPS if app in ACTIVITY_APPS or any(row["id"] == app for row in view["apps"])] + other
             series = [(app, ACTIVITY_APP_LABELS[app], ACTIVITY_APP_COLORS[app]) for app in apps]
         else:
             series = [(machine["id"], machine["name"], machine["hue"]) for machine in view["machines"]]
-        key = (self.period, self.metric, self.split, frozenset(on))
-        self.chart.set_data(series, [bar[self.split] for bar in view["bars"]], data["buckets"], show, self.metric,
+        key = (self.period, self.metric, self.split, frozenset(self.machines_on()))
+        self.chart.set_data(series, [bar[self.split] for bar in view["bars"]], view["buckets"], show, self.metric,
                             self.chart_key is not None and key != self.chart_key)
         self.chart_key = key
-        self.render_totals(view)
-        self.render_models(view, show)
 
     def row_box(self):
         row = Gtk.Box(spacing=8 if self.small else 14)
