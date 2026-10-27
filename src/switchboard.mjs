@@ -904,10 +904,12 @@ export function createSwitchboardServer(options = {}) {
   const usage = options.activityUsage ? null : createActivityUsage({ readSources: async () => registeredLoad ? registry.read() : [],
     machine: activityMachine, ...(options.usageFetch ? { fetch: options.usageFetch } : {}),
     ...(options.usageCacheDir ? { cacheDir: options.usageCacheDir } : {}),
-    ...(options.usageHomeDir ? { homeDir: options.usageHomeDir, env: {} } : {}) });
+    ...(options.usageHomeDir ? { homeDir: options.usageHomeDir, env: {} } : {}), ledgerFile: options.usageLedgerFile || '' });
   const activityUsage = options.activityUsage || {
     report: async (period) => usage.report(period, group ? await group.activity(period).catch(() => []) : []),
     localHourly: (period) => usage.localHourly(period),
+    ...(usage.exportAll ? { exportAll: async () => usage.exportAll(group ? await group.activity('all').catch(() => []) : []),
+      importAll: (document) => usage.importAll(document) } : {}),
   };
   // Contract 2.1, 2.2, and 4: the bridge databases of the registered sources, the cached rows (never a forced scan), and the group.
   const activityMessages = createActivityMessages({ readSources: async () => registeredLoad ? registry.read() : [],
@@ -1049,6 +1051,8 @@ export function createSwitchboardServer(options = {}) {
   server.bridgeReport = () => bridgeCoverage ? bridgeCoverage.report() : Promise.resolve({ status: 404, body: { error: 'Route is not available.' } });
   // The member route GET /peer/v1/activity (src/phone-gateway.mjs): local records only, no text.
   server.activityMember = (period) => activityMessages.memberReply(period);
+  // The engine starts the background usage ledger after its group, and saves the ledger first when it stops.
+  server.usageLedger = { start: () => usage?.start(), stop: () => usage?.stop() ?? Promise.resolve() };
   // The receiving side of an exact member send (src/machine-relay.mjs): this engine's own binding, from the cached rows.
   server.bindMemberTarget = async (request) => bindMemberTarget(request, await referenceContext(await server.dashboardForRequest()), { ...boundIo, targetHomes });
   const close = server.close.bind(server);

@@ -14,6 +14,7 @@ import { createSoundPlayer } from '../src/asb-sounds.mjs';
 import { boardCheck } from '../src/linux-system.mjs';
 import { cacheDir, configDir, runtimeDir, stateDir } from '../src/platform-paths.mjs';
 import { createReaderPositions } from '../src/reader-positions.mjs';
+import { usageLedgerPath } from '../src/usage-ledger.mjs';
 import { createMemoryTrim, ENGINE_NODE_FLAGS, forgetMallocEnv, MALLOC_ENV } from '../src/memory-trim.mjs';
 import { ASB_APP_ID } from './asb-icon.mjs';
 import { findRunningService, prepareInstanceRuntime, protectWindowsFolder, publishInstanceRuntime,
@@ -127,7 +128,7 @@ export async function runEngine({ env = process.env, platform = process.platform
   let machineId = '';
   let referenceScopes = null;
   const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, machineGroup: group, machineRelay: relay, serviceMode: true, platform,
-    readerPositions: positions, onScanDone: trim.scanEnded,
+    readerPositions: positions, onScanDone: trim.scanEnded, usageLedgerFile: usageLedgerPath(env, platform),
     playSound: createSoundPlayer({ platform }),
     machineIdentity: () => ({ machineId, machineName: group.selfName() }), referenceScopes: () => referenceScopes,
     // ASB Bridge status uses blocking calls, so it runs in a child process.
@@ -152,6 +153,8 @@ export async function runEngine({ env = process.env, platform = process.platform
     return cleanup ||= (async () => {
       try {
         await startup.catch(() => {});
+        step = 'usage ledger save';
+        await server.usageLedger.stop();
         step = 'reader positions save';
         await positions.flush();
         step = 'tray stop';
@@ -206,6 +209,7 @@ export async function runEngine({ env = process.env, platform = process.platform
     if (stopping) return;
     try { await group.start(); } catch (error) { console.error(`Cannot start the ASB machine group: ${error.message}`); }
     if (stopping) return;
+    server.usageLedger.start();
     relay.start().catch(() => console.error('ASB cannot start the message relay.'));
     runtimeRecord = await publishInstanceRuntime(prepared, { schema: 1, pid: process.pid, port, sourceToken });
     // The tray needs only GLib, so a Python with PyGObject is enough. Without the board, the tray has no Open ASB (ASB_BOARD=0).

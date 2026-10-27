@@ -12,7 +12,8 @@ import { antigravityRoots, expandHome, readAntigravityUsage } from './usage-anti
 import { modelMaker } from './usage-pricing.mjs';
 import { openCodeDatabases, readOpenCodeUsage } from './usage-opencode.mjs';
 import { createRateLoader } from './usage-rates.mjs';
-import { createYielder, loadUsageCache, MAX_CACHE_FILES, pathKey, QUARTER_HOUR_MS, saveUsageCache, scanFile } from './usage-scan-cache.mjs';
+import { encodeLedger, exportDocument, loadLedger, mergeRecord, mergeRecords, readExport, recordKey, validRecord } from './usage-ledger.mjs';
+import { createYielder, loadUsageCache, MAX_CACHE_FILES, pathKey, QUARTER_HOUR_MS, saveUsageCache, scanFile, writePrivateJson } from './usage-scan-cache.mjs';
 
 export { USAGE_PERIODS };
 const HOUR_MS = 60 * 60 * 1000;
@@ -23,6 +24,10 @@ export const SAVE_INTERVAL_MS = 5 * 60 * 1000;
 // The newest hourly records of a member reply.
 export const MAX_HOURLY_RECORDS = 50_000;
 const TOKEN_TYPES = ['uncached', 'cacheRead', 'cacheWrite', 'output'];
+// The ledger: the first background scan, the next ones, and the idle time after which a background scan frees the scan cache.
+export const LEDGER_FIRST_MS = 10 * 60 * 1000;
+export const LEDGER_REFRESH_MS = 60 * 60 * 1000;
+export const RELEASE_AFTER_MS = 15 * 60 * 1000;
 // No coding agent has usage before 2020: an earlier time is a bad value, and it must not make thousands of month bars.
 const FIRST_USAGE_MS = Date.UTC(2020, 0, 1);
 
@@ -72,9 +77,9 @@ async function listTranscripts(root, app, files, pause, fileName) {
 
 export function createActivityUsage({ readSources = async () => [], machine = {}, cacheDir = defaultCacheDir(), now = Date.now,
   fetch = globalThis.fetch, homeDir = os.homedir(), env = process.env, platform = process.platform, refreshMs = REFRESH_MS,
-  log = console.error, maxCacheFiles = MAX_CACHE_FILES } = {}) {
+  log = console.error, maxCacheFiles = MAX_CACHE_FILES, ledgerFile = '', timers = { setTimeout, clearTimeout } } = {}) {
   const cacheFile = path.join(cacheDir, 'usage', 'usage-cache.json');
-  const stats = { bytesRead: 0, scans: 0, saves: 0, openCodeQueries: 0, openCodePages: 0, partBuilds: 0, parts: 0 };
+  const stats = { bytesRead: 0, scans: 0, saves: 0, openCodeQueries: 0, openCodePages: 0, partBuilds: 0, parts: 0, ledgerSaves: 0, releases: 0 };
   const progress = { complete: false, files: 0, scannedFiles: 0 };
   let cache = null;
   let openCode = [];
@@ -88,6 +93,20 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
   const rates = createRateLoader({ file: path.join(cacheDir, 'usage', 'usage-model-rates.json'), fetch, now, platform });
   let version = 0;
   let parts = null;
+  // The ledger state; ledgerVersion changes with each change of the ledger records.
+  let ledger = null;
+  let ledgerLoad = null;
+  let ledgerBlocked = false;
+  let ledgerDirty = false;
+  let ledgerSavedAtMs = null;
+  let ledgerWrite = Promise.resolve();
+  let ledgerVersion = 0;
+  let derived = null;
+  let lastAskMs = null;
+  let timer = null;
+  let started = false;
+  let stopped = false;
+  let ticking = null;
 
   async function runScan() {
     const pause = createYielder();
@@ -95,6 +114,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       cache = await loadUsageCache(cacheFile, { platform });
       version += 1;
     }
+    if (ledgerFile) await ensureLedger();
     const { roots, databases } = usageRoots(await readSources(), homeDir, env);
     const files = [];
     for (const { root, app, fileName } of roots) await listTranscripts(root, app, files, pause, fileName);
@@ -152,6 +172,55 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       dirty = false;
       try { await saveUsageCache(cacheFile, cache, { platform }); stats.saves += 1; } catch { log('ASB cannot save its usage cache. It keeps the old file.'); }
     }
+    if (ledgerFile) {
+      const nowMs = now();
+      if (mergeRecords(ledger.self.records, liveHourly().filter((record) => validRecord(record, nowMs)))) changeLedger();
+      adoptSelf();
+      if (ledgerDirty && (ledgerSavedAtMs === null || nowMs - ledgerSavedAtMs >= SAVE_INTERVAL_MS)) await saveLedger();
+    }
+  }
+
+  function ensureLedger() {
+    return ledgerLoad ||= loadLedger(ledgerFile, { platform, now, log }).then((loaded) => {
+      ({ ledger } = loaded);
+      ledgerBlocked = loaded.blocked;
+      changeLedger(false);
+      adoptSelf();
+    });
+  }
+  function changeLedger(dirty = true) {
+    ledgerVersion += 1;
+    ledgerDirty ||= dirty;
+  }
+  // The ledger keeps the current machine ID and name; an imported copy of this machine joins its own records.
+  function adoptSelf() {
+    const { machineId, name } = self();
+    if (!machineId) return;
+    if (ledger.self.machineId !== machineId || ledger.self.name !== name) {
+      Object.assign(ledger.self, { machineId, name });
+      changeLedger();
+    }
+    const copy = ledger.machines.get(machineId);
+    if (copy) {
+      mergeRecords(ledger.self.records, copy.records.values());
+      ledger.machines.delete(machineId);
+      changeLedger();
+    }
+  }
+  // Saves run one at a time. A failed save keeps the changes for the next one.
+  function saveLedger() {
+    return ledgerWrite = ledgerWrite.then(async () => {
+      if (!ledgerDirty || ledgerBlocked) return;
+      ledgerDirty = false;
+      ledgerSavedAtMs = now();
+      try {
+        await writePrivateJson(ledgerFile, encodeLedger(ledger), { platform });
+        stats.ledgerSaves += 1;
+      } catch {
+        ledgerDirty = true;
+        log('ASB cannot save its usage ledger. It keeps the old file.');
+      }
+    });
   }
 
   // Starts a scan when none runs and the last one ended at least refreshMs ago. Returns the running scan, if any.
@@ -200,6 +269,77 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     return list;
   }
 
+  // The hourly records of the transcripts that exist now, for all hours.
+  function liveHourly() {
+    const list = allParts();
+    if (derived?.list !== list) derived = { list, live: aggregateHourly(list, 0, Infinity), ledgerVersion: null };
+    return derived.live;
+  }
+  // With the ledger: the hourly parts that only the ledger still has, and per key the larger of the live and ledger records.
+  function ledgerViews() {
+    const live = liveHourly();
+    if (derived.ledgerVersion === ledgerVersion) return derived;
+    const extras = [];
+    const merged = new Map();
+    mergeRecords(merged, live);
+    if (ledger) {
+      const byKey = new Map(live.map((record) => [recordKey(record.hourMs, record.app, record.model), record.tokens]));
+      for (const [key, record] of ledger.self.records) {
+        const tokens = Object.fromEntries(TOKEN_TYPES.map((type) => [type, Math.max(0, record.tokens[type] - (byKey.get(key)?.[type] ?? 0))]));
+        if (TOKEN_TYPES.some((type) => tokens[type] > 0)) extras.push({ app: record.app, model: record.model, atMs: record.hourMs, tokens, key: null });
+        mergeRecord(merged, record);
+      }
+    }
+    const hourly = [...merged.values()].filter(({ tokens }) => TOKEN_TYPES.some((type) => tokens[type] > 0))
+      .sort((a, b) => a.hourMs - b.hourMs || a.app.localeCompare(b.app) || a.model.localeCompare(b.model));
+    return Object.assign(derived, { ledgerVersion, extras, hourly });
+  }
+  const localParts = () => ledgerFile ? [...allParts(), ...ledgerViews().extras] : allParts();
+  // A member's reply records, with the larger values of its imported records.
+  const memberUsage = (machineId, usage) => {
+    const imported = ledger?.machines.get(machineId);
+    if (!imported) return usage;
+    const merged = new Map();
+    mergeRecords(merged, imported.records.values());
+    mergeRecords(merged, usage);
+    return [...merged.values()];
+  };
+  // The imported machines that are neither this machine nor a member, by name.
+  const importedOnly = (members) => {
+    const skip = new Set([self().machineId, ...members.map((member) => member.machineId)]);
+    return [...(ledger?.machines.values() || [])].filter((machine) => !skip.has(machine.machineId))
+      .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || (a.machineId < b.machineId ? -1 : 1));
+  };
+  const ask = () => { lastAskMs = now(); };
+
+  async function tick() {
+    timer = null;
+    ticking = (async () => {
+      await ensureScan(true);
+      if ((lastAskMs === null || now() - lastAskMs >= RELEASE_AFTER_MS) && !running && cache) {
+        if (dirty) {
+          dirty = false;
+          lastSavedAtMs = now();
+          try { await saveUsageCache(cacheFile, cache, { platform }); stats.saves += 1; } catch { log('ASB cannot save its usage cache. It keeps the old file.'); }
+        }
+        // The ledger keeps the totals, so the next report shows them while a new scan reads the cache again.
+        if (!running) {
+          cache = null;
+          parts = null;
+          version += 1;
+          stats.releases += 1;
+        }
+      }
+    })();
+    await ticking;
+    ticking = null;
+    if (!stopped) schedule(LEDGER_REFRESH_MS);
+  }
+  function schedule(delayMs) {
+    timer = timers.setTimeout(tick, delayMs);
+    timer?.unref?.();
+  }
+
   const self = () => {
     const value = typeof machine === 'function' ? machine() : machine;
     return { machineId: value?.machineId || '', name: value?.name ?? value?.machineName ?? '' };
@@ -213,6 +353,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     // A member record goes into the local bucket whose start is the last one at or before its hour; earlier ones are dropped.
     report(period, members = []) {
       checkPeriod(period);
+      ask();
       ensureScan();
       const nowMs = now();
       let firstMs = null;
@@ -220,22 +361,23 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
         const include = (atMs, tokens) => {
           if (atMs >= FIRST_USAGE_MS && TOKEN_TYPES.some((type) => tokens[type] > 0) && (firstMs === null || atMs < firstMs)) firstMs = atMs;
         };
-        for (const part of allParts()) include(part.atMs, part.tokens);
+        for (const part of localParts()) include(part.atMs, part.tokens);
         for (const member of members) {
           for (const record of Array.isArray(member.usage) ? member.usage : []) if (validMemberRecord(record)) include(record.hourMs, record.tokens);
         }
+        for (const machine of ledger?.machines.values() || []) for (const record of machine.records.values()) include(record.hourMs, record.tokens);
       }
       const { unit, startsMs, endMs } = periodBuckets(period, nowMs, firstMs);
       rates.ensure();
       const table = rates.table();
       const { machineId, name } = self();
       const withMachine = (id) => ({ app, model, bucket, tokens, cost }) => ({ machineId: id, app, model, maker: modelMaker(model), bucket, tokens, cost });
-      const records = aggregateBuckets(allParts(), { startsMs, endMs, rates: table }).map(withMachine(machineId));
+      const records = aggregateBuckets(localParts(), { startsMs, endMs, rates: table }).map(withMachine(machineId));
       const scan = { ...progress };
+      const addMachine = (id, usage) => records.push(...aggregateBuckets(usage.map(({ app, model, hourMs, tokens }) => ({ app, model, atMs: hourMs, tokens, key: null })),
+        { startsMs, endMs: Infinity, rates: table }).map(withMachine(id)));
       for (const member of members) {
-        const usage = (Array.isArray(member.usage) ? member.usage : []).filter(validMemberRecord)
-          .map(({ app, model, hourMs, tokens }) => ({ app, model, atMs: hourMs, tokens, key: null }));
-        records.push(...aggregateBuckets(usage, { startsMs, endMs: Infinity, rates: table }).map(withMachine(member.machineId)));
+        addMachine(member.machineId, memberUsage(member.machineId, (Array.isArray(member.usage) ? member.usage : []).filter(validMemberRecord)));
         // A member that never answered has no scan and adds nothing.
         if (member.scan) {
           scan.complete &&= member.scan.complete === true;
@@ -243,10 +385,13 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
           scan.scannedFiles += Number(member.scan.scannedFiles) || 0;
         }
       }
+      const imported = importedOnly(members);
+      for (const machine of imported) addMachine(machine.machineId, [...machine.records.values()]);
       return {
         period, nowMs, buckets: { unit, startsMs },
         machines: [{ machineId, name, self: true, state: 'local', lastReportAtMs: 0 }, ...members.map((member) => ({
-          machineId: member.machineId, name: member.name, self: false, state: member.state, lastReportAtMs: member.lastReportAtMs || 0 }))],
+          machineId: member.machineId, name: member.name, self: false, state: member.state, lastReportAtMs: member.lastReportAtMs || 0 })),
+        ...imported.map((machine) => ({ machineId: machine.machineId, name: machine.name, self: false, state: 'offline', lastReportAtMs: machine.exportedAtMs }))],
         records,
         prices: rates.pricing(),
         scan,
@@ -255,12 +400,77 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     // The usage part of contract 4: UTC hours, tokens only. It starts early enough to fill the first local bucket of any time zone.
     localHourly(period) {
       checkPeriod(period);
+      ask();
       ensureScan();
       const nowMs = now();
       const days = USAGE_PERIODS[period].unit === 'hour' ? 1 : USAGE_PERIODS[period].count;
       const sinceMs = period === 'all' ? 0 : Math.floor((nowMs - days * DAY_MS - HOUR_MS) / HOUR_MS) * HOUR_MS;
-      return { usage: aggregateHourly(allParts(), sinceMs, nowMs + HOUR_MS).slice(-MAX_HOURLY_RECORDS), scan: { ...progress } };
+      const usage = ledgerFile ? ledgerViews().hourly.filter((record) => record.hourMs >= sinceMs && record.hourMs < nowMs + HOUR_MS)
+        : aggregateHourly(allParts(), sinceMs, nowMs + HOUR_MS);
+      return { usage: usage.slice(-MAX_HOURLY_RECORDS), scan: { ...progress } };
     },
+    ...(ledgerFile ? {
+      // This machine, the members with records, then the imported-only machines: every hour, in the export file form.
+      async exportAll(members = []) {
+        ask();
+        await ensureScan(true);
+        ask();
+        const { machineId, name } = self();
+        if (!machineId) throw Object.assign(new Error('ASB has no machine ID yet. Start ASB again.'), { statusCode: 409 });
+        const nowMs = now();
+        const valid = (list) => list.filter((record) => validRecord(record, nowMs));
+        const machines = [{ machineId, name, records: valid(ledgerViews().hourly) }];
+        const listed = new Set([machineId]);
+        for (const member of members) {
+          if (listed.has(member.machineId)) continue;
+          const records = valid(memberUsage(member.machineId, (Array.isArray(member.usage) ? member.usage : []).filter(validMemberRecord)));
+          if (!records.length) continue;
+          listed.add(member.machineId);
+          machines.push({ machineId: member.machineId, name: member.name, records });
+        }
+        for (const machine of importedOnly(members)) {
+          if (!listed.has(machine.machineId)) machines.push({ machineId: machine.machineId, name: machine.name, records: [...machine.records.values()] });
+        }
+        return exportDocument(nowMs, machines);
+      },
+      async importAll(document) {
+        ask();
+        const machines = readExport(document, now());
+        await ensureLedger();
+        const selfId = self().machineId;
+        for (const { machineId, name, records } of machines) {
+          if (machineId === selfId) {
+            if (mergeRecords(ledger.self.records, records.values())) changeLedger();
+            continue;
+          }
+          let target = ledger.machines.get(machineId);
+          if (!target) ledger.machines.set(machineId, target = { machineId, name, exportedAtMs: 0, records: new Map() });
+          const grew = mergeRecords(target.records, records.values());
+          if (grew || target.name !== name || target.exportedAtMs < document.exportedAtMs) {
+            Object.assign(target, { name, exportedAtMs: Math.max(target.exportedAtMs, document.exportedAtMs) });
+            changeLedger();
+          }
+        }
+        await saveLedger();
+        return { machines: machines.map(({ machineId, name, records }) => ({ machineId, name, hours: records.size })) };
+      },
+    } : {}),
+    // The background ledger refresh (engine only): a first scan after LEDGER_FIRST_MS, then one each LEDGER_REFRESH_MS.
+    start() {
+      if (!ledgerFile || started) return;
+      started = true;
+      schedule(LEDGER_FIRST_MS);
+    },
+    async stop() {
+      if (!ledgerFile) return;
+      stopped = true;
+      if (timer) timers.clearTimeout(timer);
+      timer = null;
+      await ticking;
+      await running;
+      await saveLedger();
+    },
+    flush: () => ledgerFile ? saveLedger() : Promise.resolve(),
     // For tests and the engine: start a scan now (or join the running one) and wait for it.
     refresh: () => ensureScan(true),
     idle: () => running || Promise.resolve(),

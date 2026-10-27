@@ -79,7 +79,7 @@ export function createAsbServer({
   markUnreadThread = null, markReadThread = null, setUnreadSettings = null, pinThread = null, discardThread = null, drawerThread = null, muteThread = null,
   listSources = null, updateSource = null, removeSource = null, sourceToken = '', phoneGateway = null, machineGroup = null, serviceMode = false, onStop = null,
   machineRelay = null, bridgeCoverage = null, activityMessages = null, activityUsage = null, panelMachines = null, readSources = async () => [], resolveSession = null, resolveBound = null, listReferences = null, sendMember = null,
-  appVersion = '', rootDir = '', sourcesPath = '', readSourcesRevision = async () => null,
+  appVersion = '', rootDir = '', sourcesPath = '', maxUsageImportBytes = 64 * 1024 * 1024, readSourcesRevision = async () => null,
   palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, now = Date.now, ...snapshotOptions
 } = {}) {
   const snapshot = new DashboardSnapshot({ serviceMode, now, ...snapshotOptions });
@@ -146,6 +146,8 @@ export function createAsbServer({
     const activityRoute = url.pathname.match(/^\/api\/activity\/(messages|thread|usage)$/)?.[1];
     const activityReady = activityRoute === 'usage' ? Boolean(activityUsage) : Boolean(activityRoute) && Boolean(activityMessages);
     const panelRoute = Boolean(panelMachines) && url.pathname === '/api/panel';
+    const usageExportRoute = typeof activityUsage?.exportAll === 'function' && url.pathname === '/api/usage/export';
+    const usageImportRoute = typeof activityUsage?.importAll === 'function' && url.pathname === '/api/usage/import';
     const eventRoute = url.pathname === '/api/events';
     const paletteRoute = url.pathname === '/api/palette';
     const engineStopRoute = Boolean(onStop) && url.pathname === '/api/engine/stop';
@@ -156,10 +158,10 @@ export function createAsbServer({
     const listReferencesRoute = Boolean(listReferences) && url.pathname === '/api/agent/list-references';
     const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute
       || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute || showWindowRoute || resolveRoute || resolveBoundRoute || listReferencesRoute || sendMemberRoute
-      || Boolean(groupRoute?.[1]) || Boolean(bridgeRoute?.[1]) || ['send', 'receipt'].includes(relayRoute);
+      || Boolean(groupRoute?.[1]) || Boolean(bridgeRoute?.[1]) || ['send', 'receipt'].includes(relayRoute) || usageImportRoute;
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
     const readApiRoute = url.pathname === '/api/dashboard' || panelRoute || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute
-      || Boolean(groupRoute && !groupRoute[1]) || Boolean(bridgeRoute && !bridgeRoute[1]) || ['homes', 'remote-peers'].includes(relayRoute) || activityReady;
+      || Boolean(groupRoute && !groupRoute[1]) || Boolean(bridgeRoute && !bridgeRoute[1]) || ['homes', 'remote-peers'].includes(relayRoute) || activityReady || usageExportRoute;
     const readRoute = readApiRoute || staticRoutes.includes(url.pathname);
     if (!readRoute && !actionRoute) {
       sendJson(response, 404, { error: 'Route is not available in ASB.' });
@@ -216,6 +218,32 @@ export function createAsbServer({
         sendJson(response, 200, activityRoute === 'usage' ? await activityUsage.report(period)
           : activityRoute === 'thread' ? await activityMessages.thread(period, query) : await activityMessages.report(period));
       } catch { sendJson(response, 500, { error: 'Cannot read the ASB activity.' }); }
+      return;
+    }
+    // The usage ledger file of `asb usage export` and `asb usage import`.
+    if (usageExportRoute) {
+      response.setHeader('Cache-Control', 'no-store');
+      if (!expectedSourceToken.length || !sourceTokenAllowed(request)) {
+        sendJson(response, 403, { error: 'Use the current ASB source token to export usage.' });
+        return;
+      }
+      try { sendJson(response, 200, await activityUsage.exportAll()); }
+      catch (error) { sendJson(response, error.statusCode === 409 ? 409 : 500, { error: error.statusCode === 409 ? error.message : 'ASB cannot export the usage.' }); }
+      return;
+    }
+    if (usageImportRoute) {
+      response.setHeader('Cache-Control', 'no-store');
+      if (!expectedSourceToken.length || !sourceTokenAllowed(request)) {
+        sendJson(response, 403, { error: 'Use the current ASB source token to import usage.' });
+        return;
+      }
+      let body;
+      try { body = await readBody(request, maxUsageImportBytes); } catch (error) {
+        sendJson(response, error.statusCode === 413 ? 413 : 400, { error: error.statusCode === 413 ? 'The file is too large for an ASB usage export.' : 'This file is not an ASB usage export.' });
+        return;
+      }
+      try { sendJson(response, 200, await activityUsage.importAll(body)); }
+      catch (error) { sendJson(response, error.statusCode === 400 ? 400 : 500, { error: error.statusCode === 400 ? 'This file is not an ASB usage export.' : 'ASB cannot import the usage.' }); }
       return;
     }
     if (engineStopRoute) {
