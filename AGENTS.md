@@ -20,7 +20,7 @@ The release target is a GitHub-friendly open-source version. Be conservative abo
 
 - Do not commit local Codex/Claude state, logs, screenshots with private text, cookies, tokens, API keys, or machine-specific secrets.
 - Prefer mock data for public screenshots and examples.
-- Keep the main server local-only. It always binds `127.0.0.1`; the code has no `HOST` setting. Do not remove the phone gateway to satisfy this rule. Keep the gateway off by default, bound only to selected private LAN or overlay (ZeroTier, Tailscale) addresses, and limited to its route allowlist. Never bind `0.0.0.0`, loopback, or public addresses. Never make `/api/sources`, `/api/palette`, `/api/panel`, the phone settings routes, `/api/group*`, `/api/engine/*`, or `/api/agent/*` reachable from the gateway.
+- Keep the main server local-only. It always binds `127.0.0.1`; the code has no `HOST` setting. Do not remove the phone gateway to satisfy this rule. Keep the gateway off by default, bound only to selected private LAN or overlay (ZeroTier, Tailscale) addresses, and limited to its route allowlist. Never bind `0.0.0.0`, loopback, or public addresses. Never make `/api/sources`, `/api/palette`, `/api/panel`, the phone settings routes, `/api/group*`, `/api/engine/*`, `/api/agent/*`, or `/api/usage/*` reachable from the gateway.
 
 ## Development Rules
 

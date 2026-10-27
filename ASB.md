@@ -226,6 +226,17 @@ Grok, Pi, and Antigravity need no profile: ASB reads their folders when they exi
 
 The other machines of the group send their message records and their hourly token usage, never message text. A machine shows `Local`, `Connected`, or `Offline`; a machine chip names only `Offline`, and its tooltip shows the state. An offline machine keeps its last data and shows the time of its last report, for example `Last report Oct 25, 14:30`. The windows need GTK 4.14 for the round table and the charts; with GTK 4.12 they show `Charts need GTK 4.14 or later.`
 
+ASB keeps the hourly token usage of this machine in its usage ledger (`~/.config/asb/usage/usage-ledger.json`; on Windows `%APPDATA%\asb\usage\usage-ledger.json`). So Usage keeps the usage of a transcript after its app deletes it (Claude Code deletes CLI transcripts after 30 days by default), the usage of the transcripts after the newest 10,000, and the usage of a profile that you disable or remove. The engine reads the usage 10 minutes after it starts and then every hour, also when the Usage window is closed. If you delete the ledger, Usage shows only the usage that the transcripts still have.
+
+To keep the usage of a machine that you will not use again, or to see the usage of all your machines on a new machine, export the usage on one machine and import it on the other. The engine must run.
+
+| Command | Effect |
+| --- | --- |
+| `asb usage export <file>` | Save the hourly usage of this machine, the other machines of the group, and the imported machines to a new file. The file has mode `0600`. |
+| `asb usage import <file>` | Add the usage of an export file to this machine. A machine that is not in the group shows as `Offline`, with the export time as its last report. When you import the same file again, nothing counts two times. |
+
+An export file has the machine IDs and names, and the token counts of each hour, app, and model. It has no message text, title, or folder.
+
 ## Top bar (GNOME)
 
 On GNOME Shell 45 to 49, the ASB extension shows ASB in the top bar, to the left of the system menu. One capsule has three numbers: the sessions that need you, the sessions that work, and all sessions on the machines of the group. Archived sessions do not count. When a session needs you, the first part has the accent color. When the engine does not run, the capsule shows `Off`. A number that changes rolls up, and a new session that needs you makes the first part flash one time. When animations are off, the numbers change at once.
