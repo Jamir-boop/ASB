@@ -903,6 +903,7 @@ export function createSwitchboardServer(options = {}) {
   // Contract 2.3 and 4: the token usage of the registered sources and the group. It scans and downloads only when asked.
   // The fetch, cache, and home options are for tests only.
   const usage = options.activityUsage ? null : createActivityUsage({ readSources: async () => registeredLoad ? registry.read() : [],
+    members: group ? () => group.activity('all') : null,
     machine: activityMachine, ...(options.usageFetch ? { fetch: options.usageFetch } : {}),
     ...(options.usageCacheDir ? { cacheDir: options.usageCacheDir } : {}),
     ...(options.usageHomeDir ? { homeDir: options.usageHomeDir, env: {} } : {}), ledgerFile: options.usageLedgerFile || '' });

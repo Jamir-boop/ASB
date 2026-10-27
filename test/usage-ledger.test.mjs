@@ -368,6 +368,58 @@ test('the background refresh scans after ten minutes, then each hour, frees the 
   assert.deepEqual(pending, []);
 });
 
+test('the background refresh keeps the usage of the online members each hour, and a failing group changes nothing', async (t) => {
+  const { service, clock, ledgerFile } = await setup(t);
+  const pending = [];
+  const timers = {
+    setTimeout: (callback, delayMs) => { const timer = { callback, delayMs }; pending.push(timer); return timer; },
+    clearTimeout: (timer) => { const index = pending.indexOf(timer); if (index !== -1) pending.splice(index, 1); },
+  };
+  // Runs the one pending timer; the clock moves by its delay, less the time that the test already moved it.
+  const fire = async (movedMs = 0) => {
+    assert.equal(pending.length, 1);
+    const [timer] = pending.splice(0, 1);
+    clock.ms += timer.delayMs - movedMs;
+    await timer.callback();
+    return timer.delayMs;
+  };
+  const hour = hourOf(BASE - 2 * HOUR);
+  let replies = [{ machineId: MEMBER, name: 'engine-b', state: 'online', lastReportAtMs: BASE - 1000,
+    usage: [{ hourMs: hour, app: 'codex', model: 'gpt-test-1', tokens: tokens(1, 2, 3, 4) }] }];
+  let calls = 0;
+  let fail = false;
+  const members = async () => { calls += 1; if (fail) throw new Error('offline'); return replies; };
+  const usage = service({ timers, members });
+  usage.start();
+  await fire();
+  assert.equal(calls, 1);
+  assert.deepEqual(JSON.parse(await fs.readFile(ledgerFile, 'utf8')).machines, [
+    { machineId: MEMBER, name: 'engine-b', exportedAtMs: BASE - 1000, records: [[hour, 'codex', 'gpt-test-1', 1, 2, 3, 4]] },
+  ]);
+  replies = [{ machineId: MEMBER, name: 'engine-b', state: 'online', lastReportAtMs: BASE + HOUR, usage: [
+    { hourMs: hour, app: 'codex', model: 'gpt-test-1', tokens: tokens(5, 2, 3, 4) },
+    { hourMs: hour + HOUR, app: 'codex', model: 'gpt-test-1', tokens: tokens(0, 0, 0, 9) },
+  ] }];
+  await fire();
+  assert.equal(calls, 2);
+  const saved = await fs.readFile(ledgerFile, 'utf8');
+  assert.deepEqual(JSON.parse(saved).machines, [
+    { machineId: MEMBER, name: 'engine-b', exportedAtMs: BASE + HOUR, records: [
+      [hour, 'codex', 'gpt-test-1', 5, 2, 3, 4], [hour + HOUR, 'codex', 'gpt-test-1', 0, 0, 0, 9],
+    ] },
+  ]);
+  fail = true;
+  await fire();
+  assert.equal(calls, 3);
+  assert.equal(await fs.readFile(ledgerFile, 'utf8'), saved);
+  assert.deepEqual(pending.map((timer) => timer.delayMs), [LEDGER_REFRESH_MS]);
+  await usage.stop();
+  const withoutLedger = service({ timers, members, ledgerFile: '' });
+  withoutLedger.start();
+  assert.deepEqual(pending, []);
+  assert.equal(calls, 3);
+});
+
 test('background scans and exports never download prices; only report does', async (t) => {
   const { write, service, fetches } = await setup(t);
   await write('a.jsonl', [claudeLine(BASE - HOUR, 1, 7)]);

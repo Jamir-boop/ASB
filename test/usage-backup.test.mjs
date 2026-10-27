@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { LEDGER_FIRST_MS } from '../src/activity-usage.mjs';
 import { BACKUP_CHECK_MS, BACKUP_FIRST_MS, createUsageBackup, DEFAULT_BACKUP_SETTINGS, usageBackupPath } from '../src/usage-backup.mjs';
 
 // Synthetic machines and temp folders only. Dates and times are local, built with the same local Date methods as the module.
@@ -143,6 +144,7 @@ test('the due rule: the time, a file of today under any name of this machine, th
 });
 
 test('the timers: the first check, the next checks, the exact backup time, a save, and stop', async (t) => {
+  assert.ok(BACKUP_FIRST_MS >= LEDGER_FIRST_MS + 5 * 60 * 1000);
   const { make, clock, timeouts, active, exports } = await setup(t);
   clock.ms = at(1);
   const backup = make();

@@ -78,7 +78,7 @@ async function listTranscripts(root, app, files, pause, fileName) {
 
 export function createActivityUsage({ readSources = async () => [], machine = {}, cacheDir = defaultCacheDir(), now = Date.now,
   fetch = globalThis.fetch, homeDir = os.homedir(), env = process.env, platform = process.platform, refreshMs = REFRESH_MS,
-  log = console.error, maxCacheFiles = MAX_CACHE_FILES, ledgerFile = '', timers = { setTimeout, clearTimeout } } = {}) {
+  log = console.error, maxCacheFiles = MAX_CACHE_FILES, ledgerFile = '', members = null, timers = { setTimeout, clearTimeout } } = {}) {
   const cacheFile = path.join(cacheDir, 'usage', 'usage-cache.json');
   const stats = { bytesRead: 0, scans: 0, saves: 0, openCodeQueries: 0, openCodePages: 0, partBuilds: 0, parts: 0, ledgerSaves: 0, releases: 0 };
   const progress = { complete: false, files: 0, scannedFiles: 0 };
@@ -344,6 +344,13 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     ticking = (async () => {
       await ensureScan(true);
       if (stopped) return;
+      // The newest usage of the online members, so the ledger and the backups keep it while a member is offline.
+      if (members) {
+        const replies = await members().catch(() => []);
+        if (stopped) return;
+        keepMembers(replies);
+        if (ledgerDirty) await saveLedger();
+      }
       if ((lastAskMs === null || now() - lastAskMs >= RELEASE_AFTER_MS) && !running && cache) {
         if (dirty) {
           dirty = false;

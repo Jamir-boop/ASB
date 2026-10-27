@@ -8,7 +8,8 @@ import { validName } from './machine-group.mjs';
 import { MACHINE_ID } from './usage-ledger.mjs';
 import { writePrivateJson } from './usage-scan-cache.mjs';
 
-export const BACKUP_FIRST_MS = 10 * 60 * 1000;
+// Five minutes after the first ledger read (LEDGER_FIRST_MS), so machines that restart together (an update) answer with their usage.
+export const BACKUP_FIRST_MS = 15 * 60 * 1000;
 export const BACKUP_CHECK_MS = 15 * 60 * 1000;
 export const DEFAULT_BACKUP_SETTINGS = Object.freeze({ enabled: true, time: '03:00', keep: 5, folder: '' });
 const SETTINGS_VERSION = 1;

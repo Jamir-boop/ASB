@@ -1052,6 +1052,7 @@ test('the engine has daily usage backups in its config folder, and asb usage bac
   assert.deepEqual(out, [`Saved the usage of 1 machine (1 hour) to ${path.join(folder, files[0])}.`]);
   if (process.platform !== 'win32') assert.equal((await stat(path.join(folder, files[0]))).mode & 0o777, 0o600);
   assert.match(await readFile(engineScript, 'utf8'), /usageBackupFile: usageBackupPath\(env, platform\)/);
+  assert.match(await readFile(new URL('../src/switchboard.mjs', import.meta.url), 'utf8'), /members: group \? \(\) => group\.activity\('all'\) : null/);
   child.kill('SIGTERM');
   assert.equal((await child.closed)[0], 0, child.errors);
 });
