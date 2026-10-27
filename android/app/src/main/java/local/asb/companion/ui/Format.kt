@@ -11,6 +11,7 @@ import local.asb.companion.data.ActivityMachine
 import local.asb.companion.data.UsagePrices
 import local.asb.companion.data.UsageScan
 import local.asb.companion.data.Thread
+import local.asb.companion.data.chartLabelShown
 
 // Port of duration_text.
 fun durationText(seconds: Long): String {
@@ -116,6 +117,8 @@ private val DATE = DateTimeFormatter.ofPattern("MMM d", Locale.US)
 
 private fun local(ms: Long) = Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault())
 
+private fun monthOf(startMs: Long) = local(startMs)
+
 fun formatTime(ms: Long): String = TIME.format(local(ms))
 
 fun formatDate(ms: Long): String = DATE.format(local(ms))
@@ -131,7 +134,7 @@ fun dayText(ms: Long, nowMs: Long): String = when (ChronoUnit.DAYS.between(local
 fun bucketLabel(startMs: Long, unit: String, last: Boolean, short: Boolean, first: Boolean = false): String = when (unit) {
     "hour" -> if (short && last) "Now" else formatTime(startMs)
     "month" -> {
-        val month = local(startMs)
+        val month = monthOf(startMs)
         when {
             !short -> DateTimeFormatter.ofPattern("MMMM yyyy", Locale.US).format(month)
             last -> "This month"
@@ -139,6 +142,39 @@ fun bucketLabel(startMs: Long, unit: String, last: Boolean, short: Boolean, firs
         }
     }
     else -> if (short && last) "Today" else formatDate(startMs)
+}
+
+data class AxisLabel(val index: Int, val text: String)
+
+/**
+ * The x labels of the Usage chart (contract 8, X labels): candidates from [chartLabelShown], each centered under its bar
+ * and kept inside [width]; from the last bar to the first, a label is shown only when it ends [gap] before the label to its
+ * right. Month labels are measured with the year, then show it on the leftmost label and where the year changes.
+ */
+fun axisLabels(starts: List<Long>, unit: String, centers: List<Float>, width: Float, gap: Float, measure: (String) -> Float): List<AxisLabel> {
+    val n = centers.size
+    val shown = mutableListOf<Int>()
+    var nextLeft = Float.POSITIVE_INFINITY
+    for (i in n - 1 downTo 0) {
+        if (!chartLabelShown(n, unit, i)) continue
+        val start = starts.getOrElse(i) { 0L }
+        val last = i == n - 1
+        val w = measure(if (unit == "month" && !last) bucketLabel(start, unit, last = false, short = true, first = true)
+            else bucketLabel(start, unit, last, short = true))
+        val cx = centers[i].coerceIn(w / 2, maxOf(w / 2, width - w / 2))
+        if (last || cx + w / 2 <= nextLeft - gap) {
+            shown += i
+            nextLeft = cx - w / 2
+        }
+    }
+    var year: Int? = null
+    return shown.reversed().map { i ->
+        val start = starts.getOrElse(i) { 0L }
+        val last = i == n - 1
+        if (unit != "month" || last) return@map AxisLabel(i, bucketLabel(start, unit, last, short = true))
+        val y = monthOf(start).year
+        AxisLabel(i, bucketLabel(start, unit, last = false, short = true, first = y != year)).also { year = y }
+    }
 }
 
 fun machineStateText(machine: ActivityMachine): String = when (machine.state) {

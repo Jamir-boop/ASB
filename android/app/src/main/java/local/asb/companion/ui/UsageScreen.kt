@@ -86,7 +86,6 @@ import local.asb.companion.data.UsageTotals
 import local.asb.companion.data.appLabel
 import local.asb.companion.data.appRows
 import local.asb.companion.data.chartBars
-import local.asb.companion.data.chartLabelShown
 import local.asb.companion.data.chartSeries
 import local.asb.companion.data.costShares
 import local.asb.companion.data.machineHue
@@ -393,11 +392,12 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
                     val top = y(sums[i])
                     drawRect(colors.text, Offset(x - .5f * dp, top - .5f * dp), Size(bw + dp, plotB - top + dp), style = Stroke(1 * dp))
                 }
-                if (chartLabelShown(n, unit, i)) {
-                    val layout = measurer.measure(bucketLabel(starts.getOrElse(i) { 0L }, unit, i == n - 1, short = true, first = i == 0), axis, maxLines = 1)
-                    val cx = (x + bw / 2).coerceIn(layout.size.width / 2f, size.width - layout.size.width / 2f)
-                    drawText(layout, topLeft = Offset(cx - layout.size.width / 2f, plotB + 15 * dp - layout.size.height / 2f))
-                }
+            }
+            val centers = List(n) { left + it * (bw + gap) + bw / 2 }
+            for (label in axisLabels(starts, unit, centers, size.width, 4 * dp) { measurer.measure(it, axis, maxLines = 1).size.width.toFloat() }) {
+                val layout = measurer.measure(label.text, axis, maxLines = 1)
+                val cx = centers[label.index].coerceIn(layout.size.width / 2f, size.width - layout.size.width / 2f)
+                drawText(layout, topLeft = Offset(cx - layout.size.width / 2f, plotB + 15 * dp - layout.size.height / 2f))
             }
         }
         tapped?.let { i ->

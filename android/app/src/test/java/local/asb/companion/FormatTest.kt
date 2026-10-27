@@ -7,6 +7,7 @@ import local.asb.companion.data.ActivityMachine
 import local.asb.companion.data.Thread
 import local.asb.companion.data.UsagePrices
 import local.asb.companion.data.UsageScan
+import local.asb.companion.ui.axisLabels
 import local.asb.companion.ui.bucketLabel
 import local.asb.companion.ui.dayText
 import local.asb.companion.ui.formatCost
@@ -231,6 +232,71 @@ class FormatTest {
         assertEquals("October 2026", bucketLabel(october, "month", last = true, short = false))
         assertEquals("July 2026", bucketLabel(july, "month", last = false, short = false))
         assertEquals("January 2027", bucketLabel(january, "month", last = true, short = false))
+    }
+
+    // The Usage chart geometry in dp: a 332 dp canvas (360 dp screen), 48 dp left, 2 dp bar gaps; 7 per character.
+    private fun centers(n: Int, width: Float = 332f): List<Float> {
+        val gap = if (n >= 90) 1f else 2f
+        val bw = (width - 48f - gap * (n - 1)) / n
+        return List(n) { 48f + it * (bw + gap) + bw / 2 }
+    }
+
+    private val measure = { text: String -> 7f * text.length }
+
+    private fun months(from: String, n: Int) = List(n) { at(java.time.YearMonth.parse(from).plusMonths(it.toLong()).atDay(1).toString() + "T00:00:00Z") }
+
+    private fun assertGaps(labels: List<local.asb.companion.ui.AxisLabel>, centers: List<Float>, width: Float) {
+        val spans = labels.map {
+            val w = measure(it.text)
+            val cx = centers[it.index].coerceIn(w / 2, width - w / 2)
+            cx - w / 2 to cx + w / 2
+        }
+        for ((a, b) in spans.zipWithNext()) assertTrue("${a} ${b}", a.second <= b.first - 4f)
+        for ((l, r) in spans) assertTrue(l >= 0f && r <= width)
+    }
+
+    @Test fun monthAxisLabelsDoNotOverlapAt360Dp() = utc {
+        val starts = months("2025-12", 12)
+        val labels = axisLabels(starts, "month", centers(12), 332f, 4f, measure)
+        assertGaps(labels, centers(12), 332f)
+        assertEquals("This month", labels.last().text)
+        assertEquals(11, labels.last().index)
+        assertTrue(labels.first().text, labels.first().text.matches(Regex("[A-Z][a-z]{2} 20[0-9]{2}")))
+    }
+
+    @Test fun monthAxisLabelsNameTheYearOncePerYear() = utc {
+        val starts = months("2025-04", 20)
+        val labels = axisLabels(starts, "month", centers(20), 332f, 4f, measure)
+        assertGaps(labels, centers(20), 332f)
+        assertEquals(listOf("Aug 2025", "Feb 2026", "This month"), labels.map { it.text })
+        val shown = labels.dropLast(1)
+        assertTrue(shown.first().text.endsWith(" 2025"))
+        val years = shown.map { java.time.Instant.ofEpochMilli(starts[it.index]).atZone(java.time.ZoneOffset.UTC).year }
+        for (k in shown.indices) {
+            val firstOfYear = k == 0 || years[k] != years[k - 1]
+            assertEquals(shown[k].text, firstOfYear, shown[k].text.contains(" "))
+        }
+        // No month name repeats without a year that tells the two apart.
+        assertEquals(labels.size, labels.map { it.text }.toSet().size)
+    }
+
+    @Test fun oneBarAndAWideMonthAxis() = utc {
+        assertEquals(listOf("This month"), axisLabels(months("2026-11", 1), "month", centers(1), 332f, 4f, measure).map { it.text })
+        val wide = axisLabels(months("2025-12", 12), "month", centers(12, 1000f), 1000f, 4f, measure)
+        assertEquals(listOf("Dec 2025", "Jan 2026", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "This month"),
+            wide.map { it.text })
+        assertGaps(wide, centers(12, 1000f), 1000f)
+    }
+
+    @Test fun dayAndHourAxisLabelsKeepTheirTexts() = utc {
+        val days = List(30) { at("2026-10-01T00:00:00Z") + it * 86_400_000L }
+        assertEquals(listOf("Oct 5", "Oct 10", "Oct 15", "Oct 20", "Oct 25", "Today"),
+            axisLabels(days, "day", centers(30, 1000f), 1000f, 4f, measure).map { it.text })
+        val hours = List(24) { at("2026-10-24T00:00:00Z") + it * 3_600_000L }
+        assertEquals(listOf("02:00", "05:00", "08:00", "11:00", "14:00", "17:00", "20:00", "Now"),
+            axisLabels(hours, "hour", centers(24, 1000f), 1000f, 4f, measure).map { it.text })
+        // The gap rule applies to them too on a narrow chart.
+        assertGaps(axisLabels(days, "day", centers(30), 332f, 4f, measure), centers(30), 332f)
     }
 
     @Test fun machineStatesAndLastReport() = utc {
