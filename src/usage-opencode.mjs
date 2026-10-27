@@ -6,8 +6,9 @@ import { querySqliteJson } from './codex-data.mjs';
 import { createYielder } from './usage-scan-cache.mjs';
 
 const nativeSqlite = import('node:sqlite').catch(() => null);
-// shortcut: node:sqlite is synchronous, so a page on a cold disk can still block the event loop for about 0.5 s; read in a worker thread if that matters.
-export const OPENCODE_PAGE_ROWS = 64;
+// shortcut: node:sqlite is synchronous, so a page on a cold disk can still block the event loop for about 0.1 s (the largest row alone
+// is 3.7 MB); read in a worker thread if that matters.
+export const OPENCODE_PAGE_ROWS = 8;
 const number = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? Math.trunc(Number(value)) : 0;
 
 export async function openCodeDatabases(dataDir) {
