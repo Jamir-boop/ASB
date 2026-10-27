@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.sp
 import local.asb.companion.R
 import local.asb.companion.data.Palette
 import local.asb.companion.data.contrast
+import local.asb.companion.data.edgeColor
 import local.asb.companion.data.mixColor
 
 val LocalPalette = staticCompositionLocalOf { Palette() }
@@ -58,6 +59,17 @@ val SafeTopBarInsets: WindowInsets
     @Composable get() = SafeContentInsets.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
 
 fun hexColor(value: String): Color = Color(0xff000000L or value.substring(1).toLong(16))
+
+internal fun activityColorsOf(palette: Palette): ActivityColors = ActivityColors(
+    background = hexColor(palette.background),
+    track = hexColor(mixColor(palette.background, palette.text, .17)),
+    edge = hexColor(edgeColor(palette.background, palette.text, .36, listOf(palette.background))),
+    rule = hexColor(mixColor(palette.background, palette.text, .13)),
+    text = hexColor(palette.text),
+    muted = hexColor(palette.muted),
+    accent = hexColor(palette.accent),
+    divider = hexColor(palette.divider),
+)
 
 // The desktop is dark only, so the app is too: one dark scheme from the PC palette, no dynamic color.
 internal fun asbColorScheme(palette: Palette): ColorScheme {

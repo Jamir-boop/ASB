@@ -149,7 +149,7 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
                 val current = reply
                 val machineIds = current?.machines?.map { it.machineId }.orEmpty()
                 val offSet = off.toSet().intersect(machineIds.toSet())
-                Column(Modifier.fillMaxWidth().background(colors.pane).padding(horizontal = 10.dp, vertical = 6.dp),
+                Column(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     BoxWithConstraints(Modifier.fillMaxWidth()) {
                         val periodWidth = maxOf(maxWidth, 480.dp)
@@ -176,7 +176,7 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
                         scanText(current.scan).takeIf { it.isNotEmpty() }?.let { Text(it, fontSize = 12.sp, color = colors.muted) }
                     }
                 }
-                HorizontalDivider(thickness = 1.dp, color = colors.rule)
+                HorizontalDivider(thickness = 1.dp, color = colors.divider)
                 when {
                     current == null && error != null -> ActivityError(error.orEmpty(), colors) { attempt++ }
                     current == null -> ActivityLoading()
@@ -275,7 +275,7 @@ private fun UsageRowView(row: UsageRow, metric: Metric, colors: ActivityColors, 
                 Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) { name() }
                 sub?.let { Text(it, fontSize = 11.sp, color = colors.muted, maxLines = 2, overflow = TextOverflow.Ellipsis) }
             }
-            Box(Modifier.weight(1f).height(10.dp).background(colors.pane2, RoundedCornerShape(2.dp))) { bar() }
+            Box(Modifier.weight(1f).height(10.dp).background(colors.track, RoundedCornerShape(2.dp))) { bar() }
             Text(if (row.unpriced) formatCost(null) else formatValue(row.value, metric), fontSize = 13.sp, fontFamily = Mono,
                 color = if (row.unpriced) colors.muted else colors.text, textAlign = TextAlign.End,
                 maxLines = 1, modifier = Modifier.width(84.dp))
@@ -415,7 +415,7 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
             val barTop = 220 * dp - (212 * dp) * (sums[i] / yMax).toFloat()
             val tipTop = (barTop - tipSize.height / 2f).coerceIn(0f, (242 * dp - tipSize.height).coerceAtLeast(0f))
             Column(Modifier.offset { IntOffset(tipLeft.roundToInt(), tipTop.roundToInt()) }.onSizeChanged { tipSize = it }
-                .widthIn(min = 150.dp).background(colors.pane2, RoundedCornerShape(4.dp)).border(1.dp, colors.divider, RoundedCornerShape(4.dp))
+                .widthIn(min = 150.dp).background(colors.background, RoundedCornerShape(4.dp)).border(1.dp, colors.edge, RoundedCornerShape(4.dp))
                 .padding(horizontal = 10.dp, vertical = 8.dp).semantics(mergeDescendants = true) {}) {
                 Text(bucketLabel(starts.getOrElse(i) { 0L }, unit, i == n - 1, short = false), fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold, color = colors.text, modifier = Modifier.padding(bottom = 4.dp))

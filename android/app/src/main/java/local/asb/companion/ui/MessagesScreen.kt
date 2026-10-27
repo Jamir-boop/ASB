@@ -133,7 +133,6 @@ import local.asb.companion.data.arrivals
 import local.asb.companion.data.chords
 import local.asb.companion.data.ledger
 import local.asb.companion.data.machineHue
-import local.asb.companion.data.mixColor
 import local.asb.companion.data.newestMessage
 import local.asb.companion.data.periodLabel
 import local.asb.companion.data.seatCounts
@@ -146,24 +145,13 @@ import local.asb.companion.net.AsbError
 // ---------- Shared by Messages and Usage ----------
 
 /** The surfaces of the Messages and Usage screens, from the Board palette. */
-internal class ActivityColors(val background: Color, val pane: Color, val pane2: Color, val rule: Color, val text: Color,
+internal class ActivityColors(val background: Color, val track: Color, val edge: Color, val rule: Color, val text: Color,
     val muted: Color, val accent: Color, val divider: Color)
 
 @Composable
 internal fun activityColors(): ActivityColors {
     val palette = LocalPalette.current
-    return remember(palette) {
-        ActivityColors(
-            background = hexColor(palette.background),
-            pane = hexColor(mixColor(palette.background, palette.text, .035)),
-            pane2 = hexColor(mixColor(palette.background, palette.text, .06)),
-            rule = hexColor(mixColor(palette.background, palette.text, .13)),
-            text = hexColor(palette.text),
-            muted = hexColor(palette.muted),
-            accent = hexColor(palette.accent),
-            divider = hexColor(palette.divider),
-        )
-    }
+    return remember(palette) { activityColorsOf(palette) }
 }
 
 /** The status text colors: accepted text, written #959ba3, held and not-sent their swatch, unknown muted. */
@@ -343,7 +331,7 @@ fun MessagesScreen(api: AsbApi, engine: String, selected: String?, onSelect: (St
         Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding), contentAlignment = Alignment.TopCenter) {
             Column(Modifier.widthIn(max = 840.dp).fillMaxWidth().verticalScroll(rememberScrollState())) {
                 val current = reply
-                Column(Modifier.fillMaxWidth().background(colors.pane).padding(horizontal = 10.dp, vertical = 6.dp),
+                Column(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     ChoiceRow(MESSAGE_PERIODS.map { it to periodLabel(it) }, period) { period = it; chordKey = null }
                     if (current != null) {
@@ -360,7 +348,7 @@ fun MessagesScreen(api: AsbApi, engine: String, selected: String?, onSelect: (St
                         }
                     }
                 }
-                HorizontalDivider(thickness = 1.dp, color = colors.rule)
+                HorizontalDivider(thickness = 1.dp, color = colors.divider)
                 when {
                     current == null && error != null -> ActivityError(error.orEmpty(), colors) { attempt++ }
                     current == null -> ActivityLoading()
@@ -563,7 +551,6 @@ private fun DrawScope.drawTable(
     if (seated.isEmpty()) return
     val c = geom.c
     val dash = PathEffect.dashPathEffect(floatArrayOf(4 * dp, 3 * dp))
-    drawCircle(colors.pane.copy(alpha = .35f), geom.ri, c)
     val r0 = if (geom.small) 0f else geom.rc
     for ((id, range) in geom.ranges) {
         val offline = machineOffline(machines[id])
@@ -593,7 +580,7 @@ private fun DrawScope.drawTable(
             drawText(layout, topLeft = Offset(x.coerceIn(0f, max(0f, size.width - layout.size.width)), y - layout.size.height / 2f))
         }
     }
-    if (!geom.small) drawCircle(colors.pane, geom.rc, c)
+    if (!geom.small) drawCircle(colors.background, geom.rc, c)
     if (!geom.small) drawCircle(colors.rule, geom.rc, c, style = Stroke(1 * dp))
     // Chords: a selection or a flight lights its chords and dims the others.
     val focus = selectedChord?.key
@@ -678,7 +665,7 @@ private fun DrawScope.drawTable(
         val offline = machineOffline(machines[seat.machineId])
         val hue = hues[seat.machineId] ?: colors.text
         val alpha = (if (offline) .75f else 1f) * (if (selected != null && seat.id != selected) .4f else 1f)
-        drawCircle(colors.pane2, 16 * dp, pin, alpha = alpha)
+        drawCircle(colors.background, 16 * dp, pin)
         drawCircle(hue, 16 * dp, pin, alpha = alpha,
             style = Stroke(1.5f * dp, pathEffect = if (offline) PathEffect.dashPathEffect(floatArrayOf(4 * dp, 3 * dp)) else null))
         val mark = marks[appKey(seat.app)] ?: continue
@@ -701,8 +688,8 @@ private fun CenterPanel(
     reply: ActivityMessages, seat: String?, chord: Chord?, counts: Map<String, SeatCount>,
     seats: Map<String, Seat>, machines: Map<String, ActivityMachine>, colors: ActivityColors, title: (String) -> String,
 ) {
-    HorizontalDivider(thickness = 1.dp, color = colors.rule)
-    Column(Modifier.fillMaxWidth().background(colors.pane).padding(horizontal = 16.dp, vertical = 10.dp)
+    HorizontalDivider(thickness = 1.dp, color = colors.divider)
+    Column(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 16.dp, vertical = 10.dp)
         .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
         verticalArrangement = Arrangement.spacedBy(3.dp)) {
         val route = TextStyle(fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = colors.text)
@@ -746,8 +733,8 @@ private fun LedgerView(
     ledger: Ledger, reply: ActivityMessages, hues: Map<String, Color>,
     machines: Map<String, ActivityMachine>, colors: ActivityColors, title: (String) -> String,
 ) {
-    HorizontalDivider(thickness = 1.dp, color = colors.rule)
-    Column(Modifier.fillMaxWidth().background(colors.pane2).padding(horizontal = 18.dp, vertical = 16.dp)) {
+    HorizontalDivider(thickness = 1.dp, color = colors.divider)
+    Column(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 18.dp, vertical = 16.dp)) {
         SectionTitle("Messages", colors)
         Text(formatCount(ledger.total.toLong()), fontSize = 30.sp, lineHeight = 42.sp, fontFamily = Mono,
             fontWeight = FontWeight.Bold, color = colors.text)
