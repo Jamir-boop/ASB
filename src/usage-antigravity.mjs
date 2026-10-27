@@ -177,6 +177,9 @@ async function readDatabase(database, fallbackTimestamp, pause) {
   } finally { if (!committed) database.exec('ROLLBACK'); }
 }
 
+// The last result of each file cache, given again (the same array) when no database changed.
+const lastResults = new WeakMap();
+
 export async function readAntigravityUsage(roots, sinceMs, { cache = new Map(), native = nativeSqlite,
   open, pause = createYielder() } = {}) {
   const sqlite = await native;
@@ -212,6 +215,8 @@ export async function readAntigravityUsage(roots, sinceMs, { cache = new Map(), 
     source.parent = a;
   };
   const visited = new Set();
+  const files = [];
+  let changed = false;
   const fingerprintOf = async (file) => {
     const info = await fs.stat(file);
     return { info, part: `${info.size}:${info.mtimeMs}:${info.ctimeMs}` };
@@ -234,20 +239,13 @@ export async function readAntigravityUsage(roots, sinceMs, { cache = new Map(), 
           const fingerprint = `${part}/${wal?.part ?? '-'}`;
           let cached = cache.get(canonical);
           if (cached?.fingerprint !== fingerprint) {
+            changed = true;
             database = open ? open(canonical) : new sqlite.DatabaseSync(canonical, { readOnly: true });
             const candidates = await readDatabase(database, stat.mtimeMs, pause);
             cached = { fingerprint, candidates };
             cache.set(canonical, cached);
           }
-          for (const candidate of cached.candidates) {
-            const index = groups.length;
-            groups.push({ ...candidate, parent: index, size: 1, owner: index });
-            for (const key of candidate.keys) {
-              if (identities.has(key)) merge(index, identities.get(key));
-              identities.set(key, index);
-            }
-            if (index % 256 === 255) await pause();
-          }
+          files.push(cached.candidates);
         } catch { /* A broken database gives no records; the other files are still read. */ }
         finally { database?.close(); }
       }
@@ -255,7 +253,23 @@ export async function readAntigravityUsage(roots, sinceMs, { cache = new Map(), 
     }
   };
   for (const root of roots) await walk(root);
-  for (const key of cache.keys()) if (!visited.has(key)) cache.delete(key);
-  return groups.flatMap((group, index) => group.parent === index && group.record.timestampMs >= sinceMs
+  for (const key of cache.keys()) if (!visited.has(key)) { cache.delete(key); changed = true; }
+  const signature = `${sinceMs}\0${[...visited].join('\0')}`;
+  const last = lastResults.get(cache);
+  if (!changed && last?.signature === signature) return last.result;
+  for (const candidates of files) {
+    for (const candidate of candidates) {
+      const index = groups.length;
+      groups.push({ ...candidate, parent: index, size: 1, owner: index });
+      for (const key of candidate.keys) {
+        if (identities.has(key)) merge(index, identities.get(key));
+        identities.set(key, index);
+      }
+      if (index % 256 === 255) await pause();
+    }
+  }
+  const result = groups.flatMap((group, index) => group.parent === index && group.record.timestampMs >= sinceMs
     ? [{ ...group.record, model: group.record.model.replace(/-(?:low|medium|high)$/, '') }] : []);
+  lastResults.set(cache, { signature, result });
+  return result;
 }

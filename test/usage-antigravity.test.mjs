@@ -87,7 +87,8 @@ test('union-find merges shared keys across roots and keeps max counts and the be
   assert.deepEqual(records, [{ app: 'antigravity', timestampMs: AT, model: 'first-model',
     tokens: { uncached: 40, cacheRead: 30, cacheWrite: 12, output: 50 }, dedupeKey: null }]);
   assert.equal(opens, 3);
-  assert.deepEqual(await readAntigravityUsage(roots, 0, { cache, open }), records);
+  // No database changed: the same result array, so the usage engine keeps its parts.
+  assert.equal(await readAntigravityUsage(roots, 0, { cache, open }), records);
   assert.equal(opens, 3);
   const file = path.join(dir, 'root-a', 'a.db');
   const writer = new sqlite.DatabaseSync(file);
@@ -96,10 +97,12 @@ test('union-find merges shared keys across roots and keeps max counts and the be
   // The file time can stay in the same clock tick as the seed, and the size can stay: move the time on, as a later write does.
   const later = new Date(Date.now() + 2000);
   await fs.utimes(file, later, later);
-  assert.equal((await readAntigravityUsage(roots, 0, { cache, open })).length, 2);
+  const changed = await readAntigravityUsage(roots, 0, { cache, open });
+  assert.equal(changed.length, 2);
+  assert.notEqual(changed, records);
   assert.equal(opens, 4);
   await fs.rm(file);
-  await readAntigravityUsage(roots, 0, { cache, open });
+  assert.notEqual(await readAntigravityUsage(roots, 0, { cache, open }), changed);
   assert.equal(cache.has(file), false);
 });
 

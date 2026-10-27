@@ -87,3 +87,33 @@ test('summed parts give the same report and localHourly records as the single pa
   assert.equal(usage.stats.partBuilds, 1);
   assert.ok(usage.stats.parts < parts.length);
 });
+
+test('a scan that changed nothing keeps the parts, and a changed file builds them again', { skip: !sqlite }, async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'asb-usage-parts-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const projects = path.join(root, 'projects');
+  const openCodeDir = path.join(root, 'opencode');
+  await fs.mkdir(projects);
+  await fs.mkdir(openCodeDir);
+  const file = path.join(projects, 'a.jsonl');
+  await fs.writeFile(file, `${claudeLine(NOW - HOUR, 'a1', 5)}\n`);
+  const db = new sqlite.DatabaseSync(path.join(openCodeDir, 'opencode.db'));
+  db.exec('create table session_message (id text, session_id text, type text, seq integer, time_created integer, time_updated integer, data text)');
+  db.prepare('insert into session_message values (?, ?, ?, ?, ?, ?, ?)').run('o', 's', 'assistant', 0, NOW - HOUR, NOW - HOUR,
+    JSON.stringify({ tokens: { input: 1, output: 2 }, model: { id: 'oc-test' } }));
+  db.close();
+  const usage = createActivityUsage({ homeDir: root, env: {}, cacheDir: path.join(root, 'cache'), now: () => NOW, refreshMs: Infinity,
+    log: () => {}, fetch: async () => { throw new Error('offline'); },
+    readSources: async () => [{ enabled: true, provider: 'claude-desktop-code', projectsDir: projects }, { enabled: true, provider: 'opencode', dataDir: openCodeDir }] });
+  t.after(() => Promise.all([usage.idle(), usage.pricesIdle()]));
+  await usage.refresh();
+  assert.equal(usage.report('24h').records.length, 2);
+  assert.equal(usage.stats.partBuilds, 1);
+  await usage.refresh();
+  assert.equal(usage.report('24h').records.length, 2);
+  assert.equal(usage.stats.partBuilds, 1);
+  await fs.appendFile(file, `${claudeLine(NOW - HOUR, 'a2', 5)}\n`);
+  await usage.refresh();
+  assert.equal(usage.report('24h').records[0].tokens.output, 10);
+  assert.equal(usage.stats.partBuilds, 2);
+});
