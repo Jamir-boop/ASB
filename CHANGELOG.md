@@ -22,6 +22,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Added a Claude Desktop Code source warning when ASB cannot read the approval request lines in the Claude app log.
 - Added Read for an approval card. Read (the menu, the `?` corner, or Open) moves the card down to the read cards. It stays Waiting with its `?` mark and the note "Waits for your permission.", and Unread marks it again. A new wait of the chat is unread again. Only an unread approval plays Needs input. The Android app has the same rule.
 - Fixed the pins and marks of the other machines' cards, which stayed in ASB's saved state after this machine left its group. They now go at the next scan.
+- Fixed Claude Desktop Code chats that showed Working while a background subagent waited for an approval, for example to open a site in the Browser pane. ASB dropped the wait when the main chat ended a turn. Now a turn end of the main chat does not end the wait while a running subagent has written nothing since the request.
 - Changed the drawer: a card in the drawer now comes out when its chat starts to work, has a question, or waits for your permission. It shows with the Working cards, and when the task ends it is unread and Pending at the front. Before, a Working card stayed in the drawer until its task ended.
 
 ## ASB 1.12.1 - 2026-10-25
