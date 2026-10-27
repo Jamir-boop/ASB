@@ -153,9 +153,12 @@ selected. Messages shows the round table of the 12 most recent sessions
 the ledger. Usage shows the cost and the tokens by machine, app, model, and provider,
 for periods up to `All time`, with the price line and `Reading usage` while the PC reads the transcripts.
 The screens read `/phone/v1/activity/messages` and `/phone/v1/activity/usage`
-every 10 seconds while they show. Usage reads every 2 seconds while the scan
-runs or the prices load. The phone gets counts, statuses, session titles, and
-token usage, never message text: the gateway has no thread route.
+every 10 seconds while they show (Usage `All time`: every 60 seconds). Usage
+reads every 2 seconds while the scan runs or the prices load. When the PC runs an
+older ASB, `All time` shows
+`This PC runs an older ASB. Update ASB on the PC to see All time.`
+The phone gets counts, statuses, session titles, and token usage, never message
+text: the gateway has no thread route.
 
 ## Themes, views, and motion
 
