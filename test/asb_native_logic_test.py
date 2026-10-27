@@ -946,6 +946,10 @@ class UsageLogicChecks(unittest.TestCase):
                 self.assertEqual((other["id"], other["tokens"]), ("Other", 100))
         reply["records"].append(dict(copy.deepcopy(template), maker="Off", machineId="studio"))
         self.assertNotIn("Off", [row["id"] for row in self.view(reply=reply, on={"desk", "laptop"})["makers"]])
+        # Equal cost: the label order wins over the tokens.
+        reply["records"] = [dict(copy.deepcopy(template), maker=maker, tokens={part: count if part == "output" else 0 for part in asb.USAGE_PARTS})
+                            for maker, count in (("Zhipu", 500), ("Alibaba", 10))]
+        self.assertEqual([row["id"] for row in self.view(reply=reply)["makers"]], ["Alibaba", "Zhipu"])
 
     def test_usage_apps_keep_order_unknown_apps_and_new_ring_colors(self):
         reply = copy.deepcopy(self.REPLIES["30d"])

@@ -1857,7 +1857,7 @@ def usage_view(reply, machines_on, metric):
             maker_value = None if metric == "cost" and not maker["priced"] else pick(maker)
             maker_rows.append({**maker, "value": maker_value, "share": None if maker_value is None else share(maker_value)})
     maker_rows.sort(key=lambda row: (row["id"] == USAGE_OTHER_MAKER, row["value"] is None,
-                                     -(row["value"] or 0), -row["tokens"], row["label"]))
+                                     -(row["tokens"] if row["value"] is None else row["value"]), row["label"]))
     order = list(machines)
     model_rows = []
     for model in models.values():
