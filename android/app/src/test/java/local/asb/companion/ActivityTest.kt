@@ -90,10 +90,11 @@ class ActivityTest {
     private val messages = AsbJson.decodeFromString<ActivityMessages>(messagesJson)
 
     @Test fun messagesReplyDecodes() {
+        // The engine still sends buckets (contract 9); the reply parses without the field.
+        assertTrue(messagesJson.contains("\"buckets\""))
         assertEquals(8, messages.messages.size)
         assertEquals("not-sent", messages.messages[3].status)
         assertEquals(base + day, messages.machines[2].lastReportAtMs)
-        assertEquals(7, messages.buckets.startsMs.size)
         assertEquals(ActivityMessages(), AsbJson.decodeFromString<ActivityMessages>("{}"))
     }
 

@@ -51,7 +51,6 @@ data class ActivityMessage(
 data class ActivityMessages(
     val period: String = "7d",
     @Serializable(with = MillisSerializer::class) val nowMs: Long = 0,
-    val buckets: ActivityBuckets = ActivityBuckets(),
     val machines: List<ActivityMachine> = emptyList(),
     val seats: List<Seat> = emptyList(),
     val messages: List<ActivityMessage> = emptyList(),

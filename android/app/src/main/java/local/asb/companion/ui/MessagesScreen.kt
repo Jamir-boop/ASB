@@ -116,7 +116,6 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlinx.coroutines.delay
-import local.asb.companion.R
 import local.asb.companion.data.ActivityMachine
 import local.asb.companion.data.ActivityMessage
 import local.asb.companion.data.ActivityMessages

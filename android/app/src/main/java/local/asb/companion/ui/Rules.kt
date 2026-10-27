@@ -5,16 +5,17 @@ import kotlinx.serialization.json.put
 import kotlin.math.abs
 import kotlin.math.hypot
 import local.asb.companion.R
-import local.asb.companion.data.appKey
 import local.asb.companion.data.Message
 import local.asb.companion.data.Palette
 import local.asb.companion.data.Thread
+import local.asb.companion.data.usageAppKey
 
-internal fun appMark(app: String): Int = if (app in listOf("antigravity", "grok", "pi")) R.drawable.ic_terminal else when (appKey(app)) {
+internal fun appMark(app: String): Int = when (usageAppKey(app)) {
     "codex" -> R.drawable.ic_provider_openai
     "claude" -> R.drawable.ic_provider_claude
     "opencode" -> R.drawable.ic_provider_opencode
-    else -> R.drawable.ic_machine
+    "" -> R.drawable.ic_machine
+    else -> R.drawable.ic_terminal
 }
 
 val STATES = listOf("working", "waiting", "idle", "unknown")
