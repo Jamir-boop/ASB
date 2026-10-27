@@ -17,6 +17,7 @@
     "scripts/asb-tray.ps1",
     "public/",
     "assets/",
+    "gnome-shell/",
     "bridge/dist/",
     "bridge/hooks/",
     "bridge/agent-skills/",

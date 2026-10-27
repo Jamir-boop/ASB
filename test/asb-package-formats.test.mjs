@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ASB_APP_ID } from '../scripts/asb-icon.mjs';
-import { build, pkgbuild, rpmSpec, RUNTIME_FILES, writePayload } from '../scripts/asb-package.mjs';
+import { build, PANEL_UUID, pkgbuild, rpmSpec, RUNTIME_FILES, writePayload } from '../scripts/asb-package.mjs';
 
 // The release formats other than the .deb: the RPM, the PKGBUILD, and the Nix flake. These tests need Linux tools, so the Windows CI list does not run them.
 const sourceRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -41,7 +41,7 @@ test('the RPM spec has the fields, the dependencies, and the file list of the pl
   assert.ok(spec.startsWith('%global debug_package %{nil}\n%global __os_install_post %{nil}\n%global _build_id_links none\nName:'));
   assert.ok(spec.includes('\n%install\ncp -a %{payload}/. %{buildroot}/\n'));
   assert.ok(spec.endsWith(`\n%files\n/usr/lib/asb\n/usr/bin/asb\n/usr/share/applications/${ASB_APP_ID}.desktop\n/usr/share/icons/hicolor/scalable/apps/${ASB_APP_ID}.svg\n`
-    + '%license /usr/share/licenses/asb/LICENSE\n'));
+    + `/usr/share/gnome-shell/extensions/${PANEL_UUID}\n%license /usr/share/licenses/asb/LICENSE\n`));
   assert.match(rpmSpec('2.10.3'), /^Version: {8}2\.10\.3$/m);
 });
 
@@ -62,6 +62,10 @@ test('the Debian and RPM payloads differ only in the license path, and both have
   for (const root of [deb, rpm]) {
     assert.equal(await readFile(path.join(root, 'usr/bin/asb'), 'utf8'), LAUNCHER);
     assert.equal((await lstat(path.join(root, 'usr/bin/asb'))).mode & 0o100, 0o100);
+    for (const file of RUNTIME_FILES.filter((file) => file.startsWith('gnome-shell/'))) {
+      assert.deepEqual(await readFile(path.join(root, 'usr/share/gnome-shell/extensions', PANEL_UUID, file.slice('gnome-shell/'.length))),
+        await readFile(path.join(sourceRoot, file)));
+    }
   }
   assert.equal(await readFile(path.join(deb, 'usr/share/applications', `${ASB_APP_ID}.desktop`), 'utf8'),
     await readFile(path.join(rpm, 'usr/share/applications', `${ASB_APP_ID}.desktop`), 'utf8'));
@@ -80,6 +84,7 @@ test('the stage command copies the runtime files to a new or an empty folder and
     assert.equal((await lstat(path.join(folder, 'scripts/asb'))).mode & 0o777, 0o755);
     assert.equal((await lstat(path.join(folder, 'package.json'))).mode & 0o777, 0o644);
     assert.deepEqual(await readFile(path.join(folder, 'scripts/asb-package.mjs')), await readFile(packageScript));
+    for (const file of RUNTIME_FILES.filter((file) => file.startsWith('gnome-shell/'))) assert.deepEqual(await readFile(path.join(folder, file)), await readFile(path.join(sourceRoot, file)));
   }
   for (const args of [['stage'], ['stage', ''], ['stage', path.join(temporary, 'extra'), 'more']]) {
     assert.throws(() => run(...args), (error) => error.status === 1 && /Use: asb-package\.mjs build\|install\|uninstall\|check\|stage <folder>/.test(String(error.stderr)));
@@ -93,6 +98,9 @@ test('the Nix package stages the runtime files and wraps the launcher like the D
     '--set ASB_NODE ${nodejs_24}/bin/node', '--set ASB_PYTHON ${python}/bin/python3', '--prefix PATH : ${tools}', '"\'\'${gappsWrapperArgs[@]}"',
     'dontWrapGApps = true;', 'makeWrapper $out/lib/asb/scripts/asb $out/bin/asb', 'ps.pygobject3', 'ps.pycairo', 'ps.qrcode', 'stdenvNoCC.mkDerivation',
     `install -Dm644 assets/icons/${ASB_APP_ID}.svg`]) assert.ok(nix.includes(word), word);
+  for (const line of ['mkdir -p $out/share/gnome-shell/extensions', `cp -r $out/lib/asb/gnome-shell $out/share/gnome-shell/extensions/${PANEL_UUID}`]) assert.ok(nix.includes(line), line);
+  const workflow = await readFile(path.join(sourceRoot, '.github/workflows/distros.yml'), 'utf8');
+  assert.ok(workflow.includes(`      - run: nix build\n      - run: test -f ./result/share/gnome-shell/extensions/${PANEL_UUID}/metadata.json`));
   const list = (head) => nix.match(new RegExp(`${head} \\[([^\\]]*)\\]`))[1].split(/\s+/).filter(Boolean);
   assert.deepEqual(list('nativeBuildInputs ='), ['nodejs_24', 'makeWrapper', 'wrapGAppsHook4', 'gobject-introspection']);
   assert.deepEqual(list('buildInputs ='), ['gtk4', 'libadwaita']);
@@ -211,6 +219,8 @@ test('the build makes the PKGBUILD from the archive hash, and the RPM when rpmbu
     for (const line of [`pkgver=${version}`, `sha256sums=('${archiveHash}')`, 'depends=(\'nodejs\' \'openssl\' \'xdg-utils\' \'python-gobject\' \'gtk4\' \'libadwaita\')',
       'source=("https://github.com/Jamir-boop/ASB/releases/download/v${pkgver}/asb-${pkgver}-linux.tar.gz")',
       '  printf \'%s\\n\' \'#!/bin/sh\' \'export ASB_SYSTEM_INSTALL=1\' \'export ASB_INSTALLED_LAUNCHER=/usr/bin/asb\' \'exec /usr/lib/asb/scripts/asb "$@"\' > asb.sh',
+      '  install -d "$pkgdir/usr/share/gnome-shell/extensions"',
+      `  cp -a "asb-$pkgver/gnome-shell" "$pkgdir/usr/share/gnome-shell/extensions/${PANEL_UUID}"`,
       '  install -Dm755 asb.sh "$pkgdir/usr/bin/asb"']) assert.ok(recipe.split('\n').includes(line), line);
   });
 
@@ -226,7 +236,7 @@ test('the build makes the PKGBUILD from the archive hash, and the RPM when rpmbu
     assert.equal(await readFile(path.join(pkgdir, 'usr/bin/asb'), 'utf8'), LAUNCHER);
     assert.equal(await readFile(path.join(pkgdir, 'usr/bin/asb'), 'utf8'), await readFile(path.join(debRoot, 'usr/bin/asb'), 'utf8'));
     assert.equal((await lstat(path.join(pkgdir, 'usr/bin/asb'))).mode & 0o777, 0o755);
-    for (const file of [`usr/share/applications/${ASB_APP_ID}.desktop`, `usr/share/icons/hicolor/scalable/apps/${ASB_APP_ID}.svg`]) {
+    for (const file of [...RUNTIME_FILES.filter((file) => file.startsWith('gnome-shell/')).map((file) => `usr/share/gnome-shell/extensions/${PANEL_UUID}/${file.slice('gnome-shell/'.length)}`), `usr/share/applications/${ASB_APP_ID}.desktop`, `usr/share/icons/hicolor/scalable/apps/${ASB_APP_ID}.svg`]) {
       assert.deepEqual(await readFile(path.join(pkgdir, file)), await readFile(path.join(debRoot, file)), file);
     }
     assert.deepEqual(await readFile(path.join(pkgdir, 'usr/share/licenses/asb/LICENSE')), await readFile(path.join(sourceRoot, 'LICENSE')));
@@ -243,7 +253,8 @@ test('the build makes the PKGBUILD from the archive hash, and the RPM when rpmbu
     assert.deepEqual(query('--qf', '%{NAME} %{VERSION} %{RELEASE} %{ARCH}\\n'), [`asb ${version} 1 noarch`]);
     const files = Object.fromEntries(query('--qf', '[%{FILENAMES} %{FILEMODES:octal}\\n]').map((line) => line.split(' ')).filter(([, mode]) => mode.startsWith('100')));
     assert.deepEqual(Object.keys(files).sort(), [...RUNTIME_FILES.map((file) => `/usr/lib/asb/${file}`), '/usr/bin/asb', `/usr/share/applications/${ASB_APP_ID}.desktop`,
-      `/usr/share/icons/hicolor/scalable/apps/${ASB_APP_ID}.svg`, '/usr/share/licenses/asb/LICENSE'].sort());
+      `/usr/share/icons/hicolor/scalable/apps/${ASB_APP_ID}.svg`, '/usr/share/licenses/asb/LICENSE',
+      ...RUNTIME_FILES.filter((file) => file.startsWith('gnome-shell/')).map((file) => `/usr/share/gnome-shell/extensions/${PANEL_UUID}/${file.slice('gnome-shell/'.length)}`)].sort());
     assert.equal(files['/usr/bin/asb'], '100755');
     assert.equal(files['/usr/lib/asb/scripts/asb'], '100755');
     assert.equal(files['/usr/share/licenses/asb/LICENSE'], '100644');

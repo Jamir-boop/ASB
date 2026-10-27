@@ -54,6 +54,8 @@ stdenvNoCC.mkDerivation {
     runHook preInstall
 
     node scripts/asb-package.mjs stage $out/lib/asb
+    mkdir -p $out/share/gnome-shell/extensions
+    cp -r $out/lib/asb/gnome-shell $out/share/gnome-shell/extensions/asb@jamir-boop.github.io
     install -Dm644 assets/icons/local.asb.AgentSwitchBoard.svg \
       $out/share/icons/hicolor/scalable/apps/local.asb.AgentSwitchBoard.svg
     # Exec is a store path: a desktop session outside NixOS can lack the profile bin folder in PATH.

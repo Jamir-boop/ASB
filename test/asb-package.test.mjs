@@ -6,9 +6,9 @@ import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeF
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ASB_APP_ID } from '../scripts/asb-icon.mjs';
-import { build, checkRuntime, install, RUNTIME_FILES, uninstall } from '../scripts/asb-package.mjs';
+import { build, checkRuntime, enablePanel, formatStringList, gnomeShellMajor, install, PANEL_UUID, parseStringList, RUNTIME_FILES, uninstall } from '../scripts/asb-package.mjs';
 
 test('release runtime includes the Claude remote reader imported by the switchboard', () => {
   assert.ok(RUNTIME_FILES.includes('src/claude-remote-data.mjs'));
@@ -283,6 +283,7 @@ test('the install check refuses without the engine tier and continues without th
   const env = { PATH: bin, ASB_PYTHON: '/opt/python3' };
   const node = { path: '/usr/bin/node', version: '20.19.2', sqlite: false };
   const probe = (values) => async (file, args) => {
+    if (file === 'gnome-shell') { assert.deepEqual(args, ['--version']); return { stdout: 'GNOME Shell 48.7\n' }; }
     assert.deepEqual([file, args[0]], ['/opt/python3', '-c']);
     return { stdout: JSON.stringify({ python: '3.11.2', gi: null, gtk: null, adw: null, glib: null, cairo: false, qrcode: false, trayHost: null, ...values }) };
   };
@@ -293,6 +294,7 @@ test('the install check refuses without the engine tier and continues without th
   };
   const board = await check({ gi: '3.42.2', gtk: [4, 18, 0], adw: [1, 7, 0] });
   assert.deepEqual([board.result.pythonExecutable, board.result.sqliteDirectory, board.result.boardOk, board.warnings], ['/opt/python3', bin, true, []]);
+  assert.equal(board.result.gnomeShell, 48);
   const old = await check({ gi: '3.42.2', gtk: [4, 8, 3], adw: [1, 2, 2] });
   // Old GTK with PyGObject keeps the Python for the tray.
   assert.deepEqual([old.result.pythonExecutable, old.result.boardOk], ['/opt/python3', false]);
@@ -454,4 +456,281 @@ test('the npm package has the runtime files, the asb command, and no tests, docu
   assert.deepEqual(files.filter((file) => /^(android|demo|docs|test|nix|dist|\.impeccable|bridge\/src|bridge\/test)\/|^flake\./.test(file)), []);
   // npm links bin files; the POSIX launcher needs the execute bit too.
   assert.ok(pkg.files.find((item) => item.path === 'scripts/asb.mjs').mode & 0o111);
+});
+
+
+const panelNames = ['metadata.json', 'extension.js', 'model.js', 'stylesheet.css', 'icons/asb-chat-symbolic.svg',
+  'icons/asb-claude-symbolic.svg', 'icons/asb-openai-symbolic.svg', 'icons/asb-opencode-symbolic.svg'].sort();
+const panelFolder = (options) => path.join(options.dataDir, 'gnome-shell/extensions', PANEL_UUID);
+const panelOptions = async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'asb-panel-package-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  return { sourceRoot, dataDir: path.join(temporary, 'data'), binDir: path.join(temporary, 'bin'),
+    check: async () => ({ boardOk: false, gnomeShell: 48 }) };
+};
+const copySource = async (folder) => {
+  for (const file of RUNTIME_FILES) {
+    await mkdir(path.dirname(path.join(folder, file)), { recursive: true });
+    await copyFile(path.join(sourceRoot, file), path.join(folder, file));
+  }
+  return folder;
+};
+const panelRecord = async (options) => JSON.parse(await readFile(path.join(options.dataDir, 'asb/install.json'), 'utf8'));
+
+test('the panel runtime has exactly the eight contract files and npm ships its folder', async () => {
+  assert.equal(PANEL_UUID, 'asb@jamir-boop.github.io');
+  assert.deepEqual(RUNTIME_FILES.filter((file) => file.startsWith('gnome-shell/')), panelNames.map((name) => `gnome-shell/${name}`));
+  const pkg = JSON.parse(await readFile(path.join(sourceRoot, 'package.json'), 'utf8'));
+  assert.equal(pkg.files[pkg.files.indexOf('assets/') + 1], 'gnome-shell/');
+});
+
+test('panel installs add, keep identical bytes, and update changed source bytes with owned digests and modes', async (t) => {
+  const options = await panelOptions(t);
+  assert.equal((await install(options)).panel, 'added');
+  const record = await panelRecord(options);
+  assert.deepEqual(Object.keys(record.files).filter((key) => key.startsWith('panel/')), panelNames.map((name) => `panel/${name}`));
+  for (const name of panelNames) {
+    const file = path.join(panelFolder(options), name);
+    const bytes = await readFile(path.join(sourceRoot, 'gnome-shell', name));
+    assert.deepEqual(await readFile(file), bytes);
+    assert.equal((await lstat(file)).mode & 0o777, 0o644);
+    assert.equal(record.files[`panel/${name}`], sha256(bytes));
+  }
+  assert.equal((await install(options)).panel, 'same');
+  const source = await copySource(path.join(path.dirname(options.dataDir), 'source'));
+  await writeFile(path.join(source, 'gnome-shell/model.js'), 'Changed source.\n');
+  assert.equal((await install({ ...options, sourceRoot: source })).panel, 'updated');
+  assert.equal(await readFile(path.join(panelFolder(options), 'model.js'), 'utf8'), 'Changed source.\n');
+  assert.equal((await panelRecord(options)).files['panel/model.js'], sha256('Changed source.\n'));
+});
+
+test('old or absent GNOME Shell does not install the panel and removes only owned previous files', async (t) => {
+  for (const runtime of [{ gnomeShell: 44 }, {}]) {
+    const options = await panelOptions(t);
+    const check = async () => ({ boardOk: false, ...runtime });
+    assert.equal((await install({ ...options, check })).panel, 'none');
+    await assert.rejects(lstat(panelFolder(options)), { code: 'ENOENT' });
+    assert.equal((await install(options)).panel, 'added');
+    assert.equal((await install({ ...options, check })).panel, 'none');
+    await assert.rejects(lstat(panelFolder(options)), { code: 'ENOENT' });
+    assert.equal((await install(options)).panel, 'added');
+    const foreign = path.join(panelFolder(options), 'foreign.txt');
+    await writeFile(foreign, 'Foreign.\n');
+    await install({ ...options, check });
+    assert.deepEqual(await readdir(panelFolder(options)), ['foreign.txt']);
+    assert.equal(await readFile(foreign, 'utf8'), 'Foreign.\n');
+    assert.ok(!Object.keys((await panelRecord(options)).files).some((key) => key.startsWith('panel/')));
+  }
+});
+
+test('an unowned panel file prevents all panel writes and prints one warning', async (t) => {
+  for (const edited of [false, true]) {
+    const options = await panelOptions(t);
+    if (edited) await install(options);
+    await mkdir(panelFolder(options), { recursive: true });
+    const file = path.join(panelFolder(options), 'metadata.json');
+    await writeFile(file, 'Foreign metadata.\n');
+    const before = await Promise.all(panelNames.map(async (name) => readFile(path.join(panelFolder(options), name)).catch(() => null)));
+    const warnings = [], warn = console.warn;
+    let result;
+    try { console.warn = (line) => warnings.push(line); result = await install(options); }
+    finally { console.warn = warn; }
+    assert.equal(result.panel, 'kept');
+    assert.deepEqual(warnings, [`ASB kept a GNOME Shell extension that it does not own: ${panelFolder(options)}`]);
+    for (const [i, name] of panelNames.entries()) assert.deepEqual(await readFile(path.join(panelFolder(options), name)).catch(() => null), before[i]);
+    assert.ok(!Object.keys((await panelRecord(options)).files).some((key) => key.startsWith('panel/')));
+  }
+});
+
+test('panel uninstall removes owned files and empty folders but keeps an edited file and manifest', async (t) => {
+  for (const edited of [false, true]) {
+    const options = await panelOptions(t);
+    await install(options);
+    const file = path.join(panelFolder(options), 'model.js');
+    if (edited) await writeFile(file, 'User edit.\n');
+    const result = await uninstall(options);
+    assert.deepEqual(result.kept, edited ? [file] : []);
+    for (const name of panelNames) {
+      const target = path.join(panelFolder(options), name);
+      if (edited && target === file) { assert.equal(await readFile(file, 'utf8'), 'User edit.\n'); continue; }
+      assert.ok(result.removed.includes(target));
+      await assert.rejects(lstat(target), { code: 'ENOENT' });
+    }
+    await assert.rejects(lstat(path.join(panelFolder(options), 'icons')), { code: 'ENOENT' });
+    if (edited) assert.ok(await panelRecord(options));
+    else {
+      await assert.rejects(lstat(panelFolder(options)), { code: 'ENOENT' });
+      await assert.rejects(lstat(path.join(options.dataDir, 'asb/install.json')), { code: 'ENOENT' });
+    }
+  }
+});
+
+test('a failure after panel writes removes new files or restores every previous byte', async (t) => {
+  for (const existing of [false, true]) {
+    const options = await panelOptions(t);
+    if (existing) await install(options);
+    const before = existing ? await Promise.all(panelNames.map((name) => readFile(path.join(panelFolder(options), name)))) : [];
+    const source = await copySource(path.join(path.dirname(options.dataDir), 'source'));
+    await writeFile(path.join(source, 'gnome-shell/model.js'), 'Update to roll back.\n');
+    const script = path.join(source, 'scripts/asb-package.mjs');
+    let code = await readFile(script, 'utf8');
+    code = code.replace('ASB_APP_ID, registerAppIcon }', 'ASB_APP_ID, registerAppIcon as realRegisterAppIcon }');
+    code += '\nconst registerAppIcon = (options) => { if (options.checkOnly) return realRegisterAppIcon(options); throw new Error("Failure after panel write."); };\n';
+    await writeFile(script, code);
+    const failing = await import(pathToFileURL(script).href);
+    await assert.rejects(failing.install({ ...options, sourceRoot: source, check: async () => ({ gnomeShell: 48 }) }), /Failure after panel write/);
+    for (const [i, name] of panelNames.entries()) {
+      const target = path.join(panelFolder(options), name);
+      if (existing) assert.deepEqual(await readFile(target), before[i]);
+      else await assert.rejects(lstat(target), { code: 'ENOENT' });
+    }
+    if (existing) assert.equal((await install(options)).panel, 'same');
+    else await assert.rejects(lstat(path.join(options.dataDir, 'asb/install.json')), { code: 'ENOENT' });
+  }
+});
+
+test('panel manifest paths and hashes reject traversal before removal', async (t) => {
+  const options = await panelOptions(t);
+  await install(options);
+  const record = await panelRecord(options);
+  for (const [key, hash] of [['panel/../outside', 'a'.repeat(64)], ['panel//outside', 'a'.repeat(64)], ['panel/model.js', 'invalid']]) {
+    await writeFile(path.join(options.dataDir, 'asb/install.json'), JSON.stringify({ ...record, files: { ...record.files, [key]: hash } }));
+    await assert.rejects(uninstall(options), /Invalid ASB install record/);
+    assert.deepEqual(await readFile(path.join(panelFolder(options), 'model.js')), await readFile(path.join(sourceRoot, 'gnome-shell/model.js')));
+  }
+});
+
+test('GNOME Shell major detection uses only its injected runner with a five-second timeout', async () => {
+  for (const [stdout, expected] of [['GNOME Shell 48.7\n', 48], ['GNOME Shell 45.0', 45], ['GNOME Shell 3.38.6', 3], ['nothing', 0]]) {
+    assert.equal(await gnomeShellMajor({ execFile: async (file, args, options) => {
+      assert.equal(file, 'gnome-shell');
+      assert.deepEqual(args, ['--version']);
+      assert.deepEqual(options, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
+      return { stdout };
+    } }), expected);
+  }
+  for (const error of [new Error('Unavailable.'), Object.assign(new Error('Timeout.'), { code: 'ETIMEDOUT' })]) {
+    assert.equal(await gnomeShellMajor({ execFile: async () => { throw error; } }), 0);
+  }
+});
+
+test('GVariant string arrays parse quotes and escapes and reject malformed text', () => {
+  for (const text of ['@as []', '[]']) assert.deepEqual(parseStringList(text), []);
+  assert.deepEqual(parseStringList("['a@b', 'c@d']"), ['a@b', 'c@d']);
+  assert.deepEqual(parseStringList('["a@b"]'), ['a@b']);
+  assert.deepEqual(parseStringList(String.raw`['it\'s']`), ["it's"]);
+  assert.deepEqual(parseStringList(String.raw`['a\\b']`), ['a\\b']);
+  assert.deepEqual(parseStringList(String.raw`["a\"b"]`), ['a"b']);
+  for (const text of ['a', "['a'", "['a' 'b']", '', "['a',]", '[] trailing', String.raw`['a\q']`]) assert.equal(parseStringList(text), null, text);
+  assert.equal(formatStringList(['a', 'b']), "['a', 'b']");
+  assert.equal(formatStringList([]), '[]');
+  for (const list of [[], ['a', 'b'], ["it's", 'a"b', 'a\\b', "\\'"]]) assert.deepEqual(parseStringList(formatStringList(list)), list);
+});
+
+test('enablePanel appends exactly one enabled UUID and never changes disabled extensions', async () => {
+  const base = ['org.gnome.shell', 'enabled-extensions'];
+  for (const [stdout, expected] of [["['other@extension']", [['get', ...base], ['set', ...base, `['other@extension', '${PANEL_UUID}']`]]],
+    [`['${PANEL_UUID}']`, [['get', ...base]]], ['invalid', [['get', ...base]]]]) {
+    const calls = [];
+    assert.equal(await enablePanel({ execFile: async (file, args, options) => {
+      assert.equal(file, 'gsettings');
+      assert.equal(options.timeout, 5000);
+      calls.push(args);
+      return { stdout };
+    } }), stdout !== 'invalid');
+    assert.deepEqual(calls, expected);
+    assert.ok(!JSON.stringify(calls).includes('disabled-extensions'));
+  }
+  for (const failure of ['get', 'set']) {
+    assert.equal(await enablePanel({ execFile: async (file, args) => {
+      if (args[0] === failure) throw new Error('Failed.');
+      return { stdout: '[]' };
+    } }), false);
+  }
+});
+
+
+test('main prints the exact panel hints and enables only a newly added install with an injected runner', async (t) => {
+  const options = await panelOptions(t);
+  const source = await copySource(path.join(path.dirname(options.dataDir), 'source'));
+  const script = path.join(source, 'scripts/asb-package.mjs');
+  let code = await readFile(script, 'utf8');
+  code = code.replace('const commands = { build, install, uninstall, check: checkRuntime, stage };',
+    "const result = async () => ({ panel: process.env.ASB_TEST_PANEL }); const commands = { install: result, uninstall: result, check: result };");
+  code = code.replace('await enablePanel()', `await enablePanel({ execFile: async (file, args) => {
+    await writeFile(process.env.ASB_TEST_LOG, JSON.stringify([file, args]) + '\\n', { flag: 'a' });
+    if (process.env.ASB_TEST_ENABLE === 'false') throw new Error('Synthetic failure.');
+    return { stdout: '[]' };
+  } })`);
+  await writeFile(script, code);
+  const success = 'ASB added its top-bar extension. Restart GNOME Shell to show it: on X11, press Alt+F2, type r, and press Enter. On Wayland, log out and log in again.';
+  const failure = 'ASB added its top-bar extension. Turn on ASB in the Extensions app, then restart GNOME Shell: on X11, press Alt+F2, type r, and press Enter. On Wayland, log out and log in again.';
+  const update = 'The ASB top-bar extension changed. GNOME Shell loads the new version when it starts again.';
+  for (const [command, panel, enable, hint] of [['install', 'added', true, success], ['install', 'added', false, failure],
+    ['install', 'updated', true, update], ...['same', 'kept', 'none'].map((panel) => ['install', panel, true, '']),
+    ['uninstall', 'added', true, ''], ['check', 'added', true, '']]) {
+    const log = path.join(path.dirname(options.dataDir), 'commands.log');
+    await rm(log, { force: true });
+    const stdout = execFileSync(process.execPath, [script, command], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ASB_TEST_PANEL: panel, ASB_TEST_ENABLE: String(enable), ASB_TEST_LOG: log } });
+    assert.equal(stdout, `${JSON.stringify({ panel }, null, 2)}\n${hint ? `${hint}\n` : ''}`);
+    if (command === 'install' && panel === 'added') {
+      const calls = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+      assert.deepEqual(calls, [['gsettings', ['get', 'org.gnome.shell', 'enabled-extensions']],
+        ...enable ? [['gsettings', ['set', 'org.gnome.shell', 'enabled-extensions', `['${PANEL_UUID}']`]]] : []]);
+    } else await assert.rejects(lstat(log), { code: 'ENOENT' });
+  }
+});
+
+
+for (const kind of ['extension', 'parent', 'file', 'old-shell']) {
+  test(`install keeps a linked panel ${kind} path and continues without panel ownership`, async (t) => {
+    const options = await panelOptions(t);
+    if (kind === 'old-shell') options.check = async () => ({ boardOk: false, gnomeShell: 44 });
+    const outside = path.join(path.dirname(options.dataDir), 'outside');
+    let linked;
+    if (kind === 'file') {
+      await writeFile(outside, 'Outside file.\n');
+      await mkdir(panelFolder(options), { recursive: true });
+      linked = path.join(panelFolder(options), 'metadata.json');
+    } else if (kind === 'parent') {
+      await mkdir(outside);
+      linked = path.dirname(panelFolder(options));
+      await mkdir(path.dirname(linked), { recursive: true });
+    } else {
+      await mkdir(path.join(outside, 'icons'), { recursive: true });
+      linked = panelFolder(options);
+      await mkdir(path.dirname(linked), { recursive: true });
+    }
+    await symlink(outside, linked);
+    const warnings = [], warn = console.warn;
+    let result;
+    try { console.warn = (line) => warnings.push(line); result = await install(options); }
+    finally { console.warn = warn; }
+    assert.equal(result.panel, kind === 'old-shell' ? 'none' : 'kept');
+    assert.deepEqual(warnings, [`ASB kept a GNOME Shell extension that it does not own: ${panelFolder(options)}`]);
+    assert.ok((await lstat(linked)).isSymbolicLink());
+    assert.ok(!Object.keys((await panelRecord(options)).files).some((key) => key.startsWith('panel/')));
+    if (kind === 'file') {
+      assert.equal(await readFile(outside, 'utf8'), 'Outside file.\n');
+      assert.deepEqual(await readdir(panelFolder(options)), ['metadata.json']);
+    } else {
+      assert.deepEqual(await readdir(outside), kind === 'parent' ? [] : ['icons']);
+      if (kind !== 'parent') assert.deepEqual(await readdir(path.join(outside, 'icons')), []);
+    }
+  });
+}
+
+test('panel uninstall keeps linked folders and their outside empty icons folder', async (t) => {
+  const options = await panelOptions(t);
+  const outside = path.join(path.dirname(options.dataDir), 'outside');
+  await mkdir(path.join(outside, 'icons'), { recursive: true });
+  await install(options);
+  await rm(panelFolder(options), { recursive: true });
+  await symlink(outside, panelFolder(options));
+  const result = await uninstall(options);
+  assert.deepEqual(result.kept, panelNames.map((name) => path.join(panelFolder(options), name)));
+  assert.ok((await lstat(path.join(outside, 'icons'))).isDirectory());
+  assert.ok((await lstat(panelFolder(options))).isSymbolicLink());
+  assert.ok(await panelRecord(options));
 });

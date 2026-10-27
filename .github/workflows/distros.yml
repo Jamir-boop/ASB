@@ -187,6 +187,7 @@ jobs:
       # flake.lock pins nixpkgs. When an input changes, nix writes a new lock, and the artifact below carries it out of the run.
       - run: nix flake check
       - run: nix build
+      - run: test -f ./result/share/gnome-shell/extensions/asb@jamir-boop.github.io/metadata.json
       - name: Check the board libraries and the engine
         run: |
           # The runner is a throwaway VM, but ASB still gets its own home and no runtime folder.
