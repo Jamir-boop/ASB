@@ -8680,11 +8680,13 @@ class MessagesWindow(ActivityWindow):
         self.narrow_scroll = Gtk.ScrolledWindow(child=self.narrow_box, hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True, visible=False)
         self.data_page.append(self.wide)
         self.data_page.append(self.narrow_scroll)
-        breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 899px"))
-        breakpoint.connect("apply", lambda *_: self.set_narrow(True))
-        breakpoint.connect("unapply", lambda *_: self.set_narrow(False))
-        self.add_breakpoint(breakpoint)
+        for name, condition in (("narrow", "max-width: 899px"), ("small", "max-width: 639px")):
+            breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(condition))
+            breakpoint.asb_name = name
+            self.add_breakpoint(breakpoint)
+        self.connect("notify::current-breakpoint", self.breakpoint_changed)
         self.set_narrow(False)
+        self.set_columns(False)
 
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self.window_key)
@@ -8746,6 +8748,11 @@ class MessagesWindow(ActivityWindow):
                 widget.queue_draw()
 
     # Layout.
+    def breakpoint_changed(self, *_args):
+        name = getattr(self.get_current_breakpoint(), "asb_name", None)
+        self.set_narrow(name in ("narrow", "small"))
+        self.set_columns(name == "narrow")
+
     def set_narrow(self, narrow):
         """Below 900px: one vertical scroll with the table, the reader, and the ledger."""
         self.table.narrow = narrow
@@ -8768,6 +8775,13 @@ class MessagesWindow(ActivityWindow):
         self.table.canvas.queue_resize()
         GLib.idle_add(self.table_size_changed)
 
+    def set_columns(self, two):
+        """From 640 to 899 px the ledger shows two columns; the right column starts without a rule."""
+        self.stats.set_orientation(Gtk.Orientation.HORIZONTAL if two else Gtk.Orientation.VERTICAL)
+        self.stats.set_homogeneous(two)
+        self.stats.set_spacing(32 if two else 0)
+        (self.machines_section.remove_css_class if two else self.machines_section.add_css_class)("asb-msg-section-rule")
+
     def table_size_changed(self):
         if not self.closed:
             self.render_center()
@@ -8777,15 +8791,18 @@ class MessagesWindow(ActivityWindow):
     def build_stats(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         box.add_css_class("asb-msg-stats")
+        first, second = Gtk.Box(orientation=Gtk.Orientation.VERTICAL), Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.append(first)
+        box.append(second)
 
-        def section(title, first=False):
+        def section(title, column, first=False):
             part = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
             if not first:
                 part.add_css_class("asb-msg-section-rule")
             part.append(label(title, "asb-msg-h2"))
-            box.append(part)
+            column.append(part)
             return part
-        messages = section("Messages", True)
+        messages = section("Messages", first, True)
         self.total = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=300, hhomogeneous=False)
         for name in ("a", "b"):
             value = label("", "asb-msg-total")
@@ -8795,17 +8812,18 @@ class MessagesWindow(ActivityWindow):
         messages.append(self.share)
         self.legend = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         messages.append(self.legend)
-        apps = section("Between apps")
+        apps = section("Between apps", first)
         self.matrix = Gtk.Grid(hexpand=True)
         apps.append(self.matrix)
         self.app_pairs = label("", "asb-msg-small")
         self.app_pairs.add_css_class("asb-dim")
         self.app_pairs.set_margin_top(8)
         apps.append(self.app_pairs)
-        machines = section("Between machines")
+        machines = section("Between machines", second)
+        self.machines_section = machines
         self.machine_rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         machines.append(self.machine_rows)
-        recent = section("Recent")
+        recent = section("Recent", second)
         self.recent = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         recent.append(self.recent)
         self.legend_counts, self.matrix_cells, self.machine_counts, self.recent_rows = {}, {}, {}, []

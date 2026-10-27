@@ -7642,6 +7642,42 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertFalse(window.reader.get_visible())
         self.assertEqual(window.table.get_height(), window.left.get_height())
 
+    def test_the_narrow_ledger_shows_two_columns_from_640_to_899_px(self):
+        window = self.window((860, 860))
+        horizontal, vertical = asb.Gtk.Orientation.HORIZONTAL, asb.Gtk.Orientation.VERTICAL
+        children = UsageWindowCheck.children
+        self.wait_for(lambda: window.narrow_scroll.get_visible() and window.stats.get_orientation() == horizontal)
+        self.assertTrue(window.narrow_scroll.get_visible())
+        self.assertEqual(window.stats.get_orientation(), horizontal)
+        self.assertTrue(window.stats.get_homogeneous())
+        first, second = children(window.stats)
+        self.assertIs(window.machines_section.get_parent(), second)
+        found, left = first.get_first_child().compute_bounds(window)
+        self.assertTrue(found)
+        found, right = second.get_first_child().compute_bounds(window)
+        self.assertTrue(found)
+        self.assertEqual(left.get_y(), right.get_y())
+        apps, recent = children(first)[1], children(second)[1]
+        self.assertEqual([self.labels(part)[0] for part in children(first) + children(second)],
+                         ["Messages", "Between apps", "Between machines", "Recent"])
+        self.assertFalse(window.machines_section.has_css_class("asb-msg-section-rule"))
+        self.assertTrue(apps.has_css_class("asb-msg-section-rule") and recent.has_css_class("asb-msg-section-rule"))
+        window.set_default_size(639, 860)
+        self.wait_for(lambda: window.stats.get_orientation() == vertical)
+        self.assertTrue(window.narrow_scroll.get_visible())
+        self.assertEqual(window.stats.get_orientation(), vertical)
+        self.assertFalse(window.stats.get_homogeneous())
+        self.assertTrue(window.machines_section.has_css_class("asb-msg-section-rule"))
+        window.set_default_size(640, 860)
+        self.wait_for(lambda: window.stats.get_orientation() == horizontal)
+        self.assertEqual(window.stats.get_orientation(), horizontal)
+        window.set_default_size(968, 760)
+        self.wait_for(lambda: window.wide.get_visible() and window.stats.get_orientation() == vertical)
+        self.assertTrue(window.wide.get_visible())
+        self.assertIs(window.ledger.get_parent(), window.wide)
+        self.assertEqual(window.stats.get_orientation(), vertical)
+        self.assertTrue(window.machines_section.has_css_class("asb-msg-section-rule"))
+
     def test_small_table_threshold_uses_the_real_table_size(self):
         window = self.window((968, 600))
         overhead = window.get_height() - window.left.get_height()
