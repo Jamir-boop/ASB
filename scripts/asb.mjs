@@ -5,8 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 export const NODE_HINT = 'ASB needs Node.js 20 or later and built-in SQLite or the sqlite3 command. Node.js 22.13 or later is recommended. '
   + 'Set ASB_NODE to its absolute executable path. Install help: https://github.com/Jamir-boop/ASB#nodejs';
-export const WINDOWS_USAGE = 'Usage: asb [engine|agent|bridge|group|network|phone|setup|doctor] ...';
-export const LINUX_USAGE = 'Usage: asb [engine|agent|bridge|group|network|phone|setup|service|doctor] ... With no command, asb opens the board.';
+export const WINDOWS_USAGE = 'Usage: asb [engine|agent|bridge|group|network|phone|usage|setup|doctor] ...';
+export const LINUX_USAGE = 'Usage: asb [engine|agent|bridge|group|network|phone|usage|setup|service|doctor] ... With no command, asb opens the board.';
 
 // The engine needs node:sqlite, and the sqlite3 command is rarely on Windows.
 export const windowsNodeOk = (version) => {
@@ -28,6 +28,7 @@ export async function main(argv = process.argv.slice(2), { platform = process.pl
   if (command === 'agent') return (await script('asb-agent.mjs')).main(rest);
   if (command === 'bridge') return caught('ASB Bridge failed: ', async () => (await script('asb-bridge.mjs')).main(rest));
   if (['group', 'network', 'phone'].includes(command)) return (await script('asb-group.mjs')).main(argv);
+  if (command === 'usage') return caught('ASB usage: ', async () => (await script('asb-usage.mjs')).main(rest));
   if (command === 'setup') return (await script('asb-setup.mjs')).main(rest);
   if (command === 'doctor') return caught('ASB doctor: ', async () => (await script('asb-doctor.mjs')).main(rest));
   if (platform === 'win32' && command !== undefined) { error(WINDOWS_USAGE); return 2; }

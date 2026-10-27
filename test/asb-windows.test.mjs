@@ -338,7 +338,8 @@ test('the asb dispatcher reaches each command main, opens the board with no comm
     [['agent', 'status', '--json'], 'asb-agent.mjs', ['status', '--json']], [['bridge', 'status'], 'asb-bridge.mjs', ['status']],
     [['group', 'status'], 'asb-group.mjs', ['group', 'status']], [['network', 'status'], 'asb-group.mjs', ['network', 'status']],
     [['phone', 'pair'], 'asb-group.mjs', ['phone', 'pair']], [['setup', '--yes'], 'asb-setup.mjs', ['--yes']],
-    [['--package', 'check'], 'asb-package.mjs', ['check']], [['doctor', '--json'], 'asb-doctor.mjs', ['--json']]]) {
+    [['--package', 'check'], 'asb-package.mjs', ['check']], [['doctor', '--json'], 'asb-doctor.mjs', ['--json']],
+    [['usage', 'export', 'usage.json'], 'asb-usage.mjs', ['export', 'usage.json']]]) {
     calls.length = 0;
     assert.equal(await run(argv), 0, argv.join(' '));
     assert.deepEqual(calls.map(([file, values]) => [file, values]), [[name, args]]);
@@ -369,6 +370,11 @@ test('the asb dispatcher reaches each command main, opens the board with no comm
   assert.equal(await run(['doctor'], 'win32', '22.12.0'), 1);
   assert.equal(calls.length, 1);
   assert.match(WINDOWS_USAGE, /\|setup\|doctor\]/);
+  // usage runs on both systems too, and both usage lines name it after phone.
+  calls.length = 0;
+  assert.equal(await run(['usage', 'import', 'usage.json'], 'win32', '22.13.0'), 0);
+  assert.deepEqual(calls.map(([file, values]) => [file, values]), [['asb-usage.mjs', ['import', 'usage.json']]]);
+  for (const text of [WINDOWS_USAGE, LINUX_USAGE]) assert.match(text, /\|phone\|usage\|/);
 });
 
 test('Python candidates on Windows: an absolute ASB_PYTHON alone, else MSYS2 Python, then python on PATH, without duplicates', async (t) => {

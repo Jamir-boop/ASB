@@ -34,5 +34,8 @@
   "test/usage-scan-cache.test.mjs",
   "test/usage-service.test.mjs",
   "test/usage-parts.test.mjs",
-  "test/switchboard-usage.test.mjs"
+  "test/switchboard-usage.test.mjs",
+  "test/usage-ledger.test.mjs",
+  "test/usage-ledger-routes.test.mjs",
+  "test/asb-usage.test.mjs"
 ]

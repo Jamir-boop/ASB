@@ -13,6 +13,7 @@ import { autostartEntry, autostartMode, findRunningService, main as serviceMain,
 import { engineLogPath, shouldStartTray, startEngine, trayLauncher } from '../scripts/asb-engine.mjs';
 import { createSwitchboardServer } from '../src/switchboard.mjs';
 import { RUNTIME_FILES } from '../scripts/asb-package.mjs';
+import { main as usage } from '../scripts/asb-usage.mjs';
 import { ENGINE_NODE_FLAGS, MALLOC_ENV } from '../src/memory-trim.mjs';
 
 const serviceScript = fileURLToPath(new URL('../scripts/asb-service.mjs', import.meta.url));
@@ -993,4 +994,36 @@ test('the engine stop request publishes its quit marker before runtime removal',
   assert.equal(await readFile(file, 'utf8'), JSON.stringify({ schema: 1, token: createHash('sha256').update(runtime.sourceToken).digest('hex') }) + '\n');
   assert.equal((await stat(file)).mode & 0o777, 0o600);
   await assert.rejects(stat(f.runtime), { code: 'ENOENT' });
+});
+
+test('the engine keeps a usage ledger in its config folder, starts it after the group, and saves it first when it stops', { timeout: 20_000 }, async (t) => {
+  const f = await fixture(t);
+  await mkdir(path.join(f.env.XDG_CONFIG_HOME, 'Claude'), { recursive: true });
+  const projects = path.join(f.home, '.claude/projects/project');
+  await mkdir(projects, { recursive: true });
+  const atMs = Date.now() - 60 * 60_000;
+  await writeFile(path.join(projects, 'usage.jsonl'), `${JSON.stringify({ type: 'assistant', timestamp: new Date(atMs).toISOString(), requestId: 'r-1',
+    message: { id: 'm-1', model: 'claude-test-5', content: [], usage: { input_tokens: 10, cache_read_input_tokens: 1000, cache_creation_input_tokens: 50, output_tokens: 7 } } })}\n`);
+  const child = f.launch([engineScript, 'run']);
+  await ready(child);
+  const file = path.join(f.home, 'usage-export.json');
+  const out = [];
+  const err = [];
+  assert.equal(await usage(['export', file], { env: f.env, print: (line) => out.push(line), printError: (line) => err.push(line) }), 0, err.join('\n'));
+  assert.deepEqual(out, [`Saved the usage of 1 machine (1 hour) to ${file}.`]);
+  const ledger = path.join(f.env.XDG_CONFIG_HOME, 'asb', 'usage', 'usage-ledger.json');
+  assert.equal((await stat(ledger)).mode & 0o777, 0o600);
+  const saved = JSON.parse(await readFile(ledger, 'utf8'));
+  assert.deepEqual(saved.self.records, [[Math.floor(atMs / 3_600_000) * 3_600_000, 'claude', 'claude-test-5', 10, 1000, 50, 7]]);
+  assert.equal(saved.self.machineId, JSON.parse(await readFile(file, 'utf8')).machines[0].machineId);
+  const source = await readFile(engineScript, 'utf8');
+  assert.match(source, /usageLedgerFile: usageLedgerPath\(env, platform\)/);
+  const startup = source.slice(source.indexOf('startup = (async'));
+  assert.ok(startup.indexOf('await group.start()') < startup.indexOf('server.usageLedger.start()'));
+  assert.ok(startup.indexOf('server.usageLedger.start()') < startup.indexOf('publishInstanceRuntime('));
+  const stopSteps = [...source.matchAll(/step = '([^']+)'/g)].map((match) => match[1]);
+  assert.deepEqual(stopSteps.slice(0, 3), ['startup', 'usage ledger save', 'reader positions save']);
+  assert.match(source, /step = 'usage ledger save';\n\s+await server\.usageLedger\.stop\(\);/);
+  child.kill('SIGTERM');
+  assert.equal((await child.closed)[0], 0, child.errors);
 });

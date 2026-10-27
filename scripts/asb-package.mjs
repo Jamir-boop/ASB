@@ -20,7 +20,7 @@ const DESKTOP_ENTRY = `[Desktop Entry]\nType=Application\nName=ASB\nGenericName=
 // Keep this list explicit. A source checkout can contain private local files.
 export const RUNTIME_FILES = [
   'LICENSE', 'package.json', 'install.sh', 'uninstall.sh',
-  'scripts/asb', 'scripts/asb.mjs', 'scripts/asb-setup.mjs', 'scripts/asb-package.mjs', 'scripts/asb-desktop.mjs', 'scripts/asb-service.mjs', 'scripts/asb-engine.mjs', 'scripts/asb-tray.py', 'scripts/asb-agent.mjs', 'scripts/asb-group.mjs', 'scripts/asb-instance.mjs', 'scripts/asb-icon.mjs', 'scripts/asb-board.py', 'scripts/asb-native.py',
+  'scripts/asb', 'scripts/asb.mjs', 'scripts/asb-setup.mjs', 'scripts/asb-package.mjs', 'scripts/asb-desktop.mjs', 'scripts/asb-service.mjs', 'scripts/asb-engine.mjs', 'scripts/asb-tray.py', 'scripts/asb-agent.mjs', 'scripts/asb-group.mjs', 'scripts/asb-usage.mjs', 'scripts/asb-instance.mjs', 'scripts/asb-icon.mjs', 'scripts/asb-board.py', 'scripts/asb-native.py',
   'public/switchboard.html', 'public/switchboard.css', 'public/switchboard.js', 'public/icon.svg',
   'assets/icons/local.asb.AgentSwitchBoard.svg', 'assets/icons/asb-claude-symbolic.svg', 'assets/icons/asb-openai-symbolic.svg', 'assets/icons/asb-opencode-symbolic.svg',
   'assets/icons/asb-machine-symbolic.svg', 'assets/icons/asb-terminal-symbolic.svg', 'assets/icons/asb-drawer-symbolic.svg',
@@ -41,7 +41,7 @@ export const RUNTIME_FILES = [
   'src/activity-messages.mjs',
   'src/activity-usage.mjs', 'src/usage-aggregation.mjs', 'src/usage-claude.mjs', 'src/usage-codex.mjs', 'src/usage-opencode.mjs',
   'src/usage-antigravity.mjs', 'src/usage-grok.mjs', 'src/usage-pi.mjs',
-  'src/usage-pricing.mjs', 'src/usage-rates.mjs', 'src/usage-scan-cache.mjs', 'THIRD_PARTY_NOTICES.md',
+  'src/usage-pricing.mjs', 'src/usage-rates.mjs', 'src/usage-scan-cache.mjs', 'src/usage-ledger.mjs', 'THIRD_PARTY_NOTICES.md',
   '.agents/plugins/marketplace.json',
   'bridge/.codex-plugin/plugin.json', 'bridge/.mcp.json', 'bridge/hooks/hooks.json',
   'bridge/dist/server.js', 'bridge/dist/hook.js', 'bridge/dist/relay.js', 'bridge/dist/opencode.js', 'bridge/LICENSE',
