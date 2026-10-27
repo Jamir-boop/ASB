@@ -209,6 +209,8 @@ export async function readPrivateJson(file, { platform = process.platform } = {}
 }
 
 export const loadUsageCache = async (file, options) => decodeScanCache(await readPrivateJson(file, options));
+// shortcut: the cache is one JSON document, so a save or a load blocks the event loop for about 35 ms now and about 150 ms at the
+// 10,000-file cap; write one JSON line per file with yields if that matters.
 export const saveUsageCache = (file, cache, options) => writePrivateJson(file, encodeScanCache(cache), options);
 
 // Mode 0600 in a 0700 folder, written atomically (a temporary file and a rename).
