@@ -230,6 +230,7 @@ export async function readAntigravityUsage(roots, sinceMs, { cache = new Map(), 
           visited.add(canonical);
           const { info: stat, part } = await fingerprintOf(canonical);
           const wal = await fingerprintOf(`${canonical}-wal`).catch(() => null);
+          // shortcut: a write with no size change in the same file-time tick as the last read is seen only at the next change of the file.
           const fingerprint = `${part}/${wal?.part ?? '-'}`;
           let cached = cache.get(canonical);
           if (cached?.fingerprint !== fingerprint) {

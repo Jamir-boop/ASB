@@ -29,7 +29,8 @@ const step = (counts, name = '', at = AT, timeField = 8) => [
 ];
 
 async function setup(t) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'asb-antigravity-'));
+  // The roots are real paths: on Windows CI the temp folder has a short 8.3 name (RUNNER~1).
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'asb-antigravity-')));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const seed = async (name, generations = [], steps = [], trajectory = null) => {
     const file = path.join(dir, name);
@@ -92,6 +93,9 @@ test('union-find merges shared keys across roots and keeps max counts and the be
   const writer = new sqlite.DatabaseSync(file);
   writer.prepare('insert into gen_metadata values (?, ?)').run(1, new Uint8Array(generation(usage('new-key'), 'New Model')));
   writer.close();
+  // The file time can stay in the same clock tick as the seed, and the size can stay: move the time on, as a later write does.
+  const later = new Date(Date.now() + 2000);
+  await fs.utimes(file, later, later);
   assert.equal((await readAntigravityUsage(roots, 0, { cache, open })).length, 2);
   assert.equal(opens, 4);
   await fs.rm(file);
