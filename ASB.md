@@ -239,7 +239,7 @@ Select the capsule to open its menu:
 
 Select a session to open it in its app. A session that ASB cannot open, for example a CLI session or a session of another machine, opens the board. When the engine does not run, the menu shows `ASB is not running.` and **Start ASB**.
 
-The capsule uses the accent of the board colors (**Appearance** in Preferences). When no board saved its colors yet, it uses the GNOME accent color. While the extension runs, the tray icon hides itself, so the top bar shows ASB one time.
+The capsule uses the accent of the board colors (**Appearance** in Preferences). When no board saved its colors yet, it uses the GNOME accent color. On a light top bar or a light menu, ASB uses dark text and makes the accent and the machine colors darker, so they stay readable. While the extension runs, the tray icon hides itself, so the top bar shows ASB one time.
 
 The per-user install (`install.sh`) adds the extension when GNOME Shell 45 or later is installed, and turns it on the first time. GNOME Shell loads a new extension only when it starts: on X11, press Alt+F2, type `r`, and press Enter; on Wayland, log out and log in again. The .deb, RPM, Arch, and Nix packages install the extension for all users: turn it on in the Extensions app. For an npm install, see [Top-bar extension](docs/INSTALL.md#top-bar-extension-gnome). The extension reads the engine port and token from `service.json` and gets its numbers from `GET /api/panel` on `127.0.0.1`. It sends nothing to other computers.
 
