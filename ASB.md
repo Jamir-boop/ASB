@@ -226,7 +226,7 @@ Grok, Pi, and Antigravity need no profile: ASB reads their folders when they exi
 
 The other machines of the group send their message records and their hourly token usage, never message text. A machine shows `Local`, `Connected`, or `Offline`; a machine chip names only `Offline`, and its tooltip shows the state. An offline machine keeps its last data and shows the time of its last report, for example `Last report Oct 25, 14:30`. The windows need GTK 4.14 for the round table and the charts; with GTK 4.12 they show `Charts need GTK 4.14 or later.`
 
-ASB keeps the hourly token usage of this machine in its usage ledger (`~/.config/asb/usage/usage-ledger.json`; on Windows `%APPDATA%\asb\usage\usage-ledger.json`). So Usage keeps the usage of a transcript after its app deletes it (Claude Code deletes CLI transcripts after 30 days by default), the usage of the transcripts after the newest 10,000, and the usage of a profile that you disable or remove. The engine reads the usage 10 minutes after it starts and then every hour, also when the Usage window is closed. If you delete the ledger, Usage shows only the usage that the transcripts still have.
+ASB keeps the hourly token usage of this machine in its usage ledger (`~/.config/asb/usage/usage-ledger.json`; on Windows `%APPDATA%\asb\usage\usage-ledger.json`). So Usage keeps the usage of a transcript after its app deletes it (Claude Code deletes CLI transcripts after 30 days by default), the usage of the transcripts after the newest 10,000, and the usage of a profile that you disable or remove. The engine reads the usage 10 minutes after it starts and then every hour, also when the Usage window is closed. The ledger also keeps the last usage that each machine of the group sent, so a machine that is offline, or that left the group, stays in Usage with the time of its last report. If you delete the ledger, Usage shows only the usage that the transcripts still have and that the online machines send.
 
 To keep the usage of a machine that you will not use again, or to see the usage of all your machines on a new machine, export the usage on one machine and import it on the other. The engine must run.
 
@@ -236,6 +236,26 @@ To keep the usage of a machine that you will not use again, or to see the usage 
 | `asb usage import <file>` | Add the usage of an export file to this machine. A machine that is not in the group shows as `Offline`, with the export time as its last report. When you import the same file again, nothing counts two times. |
 
 An export file has the machine IDs and names, and the token counts of each hour, app, and model. It has no message text, title, or folder.
+
+### Usage backups
+
+Each day at 03:00, the engine saves a backup file of the usage of every machine: this machine, the machines of the group (also the offline ones), and the imported machines. The file has the content of `asb usage export`, so `asb usage import` and **Import…** read it. Its name is `asb-usage-<name>-<id>-<date>.json`: the machine name, the first 8 characters of the machine ID, and the local date. The default folder is `~/.config/asb/usage/backups` (on Windows `%APPDATA%\asb\usage\backups`), and the file has mode `0600`. After the backup, ASB deletes the oldest backup files of this machine, so the folder keeps the last 5. A second backup on the same day replaces the file of that day. ASB never deletes other files in the folder. When the PC is off or asleep at the backup time, the backup runs at the first check after that on the same day: the engine checks 10 minutes after it starts and then every 15 minutes.
+
+Change the backups in Preferences > Usage:
+
+- **Daily backup** turns the daily backup on or off.
+- **Time** is the local time of the daily backup.
+- **Files to keep** is the number of backup files of this machine, from 1 to 30.
+- **Folder** is where the files go. Select **Change…** to choose another folder, the folder button to open it in the file manager, and **Use** in **Default folder** to go back to the default folder. ASB never makes or changes a folder that you choose, so the folder must exist. To keep the backups when the disk fails, choose a folder on another disk or a folder that a sync app copies.
+
+Select **Apply** to save the settings. **Back up now** saves a backup at once, also when the daily backup is off. The page lists the backup files of this machine and shows the time of the next backup. **Export…** saves an export file where you choose, and **Import…** adds the usage of an export file or a backup file.
+
+| Command | Effect |
+| --- | --- |
+| `asb usage backup` | Show the backup settings, the next backup, and the backup files of this machine. |
+| `asb usage backup now` | Save a backup now. |
+| `asb usage backup on [--time HH:MM] [--keep N] [--folder <path>\|default]` | Turn the daily backup on, and change its settings. `--folder default` goes back to the default folder. A relative path starts from the current folder. |
+| `asb usage backup off [--time HH:MM] [--keep N] [--folder <path>\|default]` | Turn the daily backup off. `asb usage backup now` still works. |
 
 ## Top bar (GNOME)
 
@@ -258,7 +278,7 @@ The per-user install (`install.sh`) adds the extension when GNOME Shell 45 or la
 
 Select the toolbar settings button to open **Preferences**. It is one separate native window. You can still use the main window. Selecting the button again raises the same Preferences window. Closing Preferences keeps ASB running and keeps form edits for the next open.
 
-Use **Sessions** for Cards on the board, Persistent unread, search, and narrow-window Refresh. The Filters popover is the one place for filters. Use **Appearance** for Compact or Comfortable, column width, and colors. Use **Profiles** to add or edit app sources. Use **Phone** for the optional Android companion. A wide window has navigation on the left. A narrow window (600 px wide or less) shows a list of the sections first: select a section to open it, and use **Back** or Escape to go back to the list.
+Use **Sessions** for Cards on the board, Persistent unread, search, and narrow-window Refresh. The Filters popover is the one place for filters. Use **Appearance** for Compact or Comfortable, column width, and colors. Use **Profiles** to add or edit app sources. Use **Phone** for the optional Android companion. Use **Machines** for the machine group. Use **Usage** for the daily usage backups and to export or import the usage. A wide window has navigation on the left. A narrow window (600 px wide or less) shows a list of the sections first: select a section to open it, and use **Back** or Escape to go back to the list.
 
 ASB uses dark mode in its main and Preferences windows. In **Appearance**, **GNOME colors** uses your current background, text, and accent colors. **Custom colors** lets you set background, text, accent, muted text, and divider colors. Divider color has no contrast limit. Changing a color selects **Custom colors**. Select **Apply theme** to check the dark background and text contrast, apply the colors to both windows, and save them for the next start. A validation or save error keeps the previous theme. **Reset to GNOME** removes the custom theme and resets the pickers. ASB does not change global GNOME settings.
 

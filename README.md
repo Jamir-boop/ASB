@@ -16,7 +16,7 @@ https://github.com/user-attachments/assets/c85742f4-d1b0-4ffc-9497-144069fec36b
 - Let sessions message each other through ASB Bridge, also by session reference; Claude Code uses resolved send names.
 - Show the bridge messages between sessions on all machines as a round table in the Messages window.
 - Show the tokens and the API price of the Codex, Claude Code, OpenCode, Antigravity, Grok, and Pi agents on all machines in the Usage window. Usage downloads the LiteLLM price list (prices only) while you use it, and keeps it for a day.
-- Keep the usage history of your machines, also after the apps delete old transcripts, and move it to another machine with `asb usage export` and `asb usage import`.
+- Keep the usage history of your machines, also after the apps delete old transcripts. ASB saves a backup file of the usage of every machine each day and keeps the last 5. Move the usage to another machine with **Export…** and **Import…** in Preferences > Usage, or with `asb usage export` and `asb usage import`.
 - Show in the GNOME top bar how many sessions need you, how many work, and how many your machines have, with an optional GNOME Shell extension.
 - Play Done, Needs input, and Failed sounds on the PC.
 - Read the app stores read-only and make no model calls.
