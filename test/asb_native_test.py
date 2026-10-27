@@ -6591,6 +6591,22 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(window.round.center()[1], "processed tokens")
         self.assert_no_new_warnings()
 
+    def test_a_theme_change_reaches_the_kept_model_share_bars(self):
+        replies = copy.deepcopy(self.REPLIES)
+        window = self.window(replies)
+        share = next(cells[4] for _key, cells in self.model_rows(window) if cells[4].get_first_child() is not None)
+        before = asb.alpha_color(window.palette["light"], .75).to_string()
+        window.set_palette(asb.validate_theme(CUSTOM))
+        expected = asb.alpha_color(window.palette["light"], .75).to_string()
+        self.assertNotEqual(expected, before)
+        # A reply with only a new time keeps the rows, so the theme change itself must give the bars the new color.
+        replies["30d"]["nowMs"] += 60_000
+        window.refresh()
+        self.drain(.1)
+        self.assertIn(share, [cells[4] for _key, cells in self.model_rows(window)])
+        self.assertEqual(share.get_first_child().segments[0][1].to_string(), expected)
+        self.assert_no_new_warnings()
+
     def test_model_rows_keep_their_widgets(self):
         window = self.window()
         before = dict(self.model_rows(window))

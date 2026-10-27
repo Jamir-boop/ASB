@@ -9790,6 +9790,9 @@ class UsageWindow(ActivityWindow):
         for name in ("round", "chart"):
             if hasattr(self, name):
                 getattr(self, name).queue_draw()
+        # The kept Models rows take their share bar color only when they render.
+        if self.data is not None:
+            self.render_view()
 
     def linked_toggles(self, box, items, active, callback):
         buttons = {}
