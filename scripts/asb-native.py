@@ -1341,6 +1341,37 @@ def bucket_label(buckets, index):
     return format_clock(starts[index]) if hourly else format_day(starts[index])
 
 
+def usage_axis_labels(buckets, centers, chart_width, step, measure):
+    """The x labels of the chart as (index, text, left x): every step-th bar from the last, centered and kept inside the chart,
+    skipped when it would end less than 4 px before the label to its right. Month labels name the year where it changes."""
+    starts, last, month = buckets["startsMs"], len(centers) - 1, buckets["unit"] == "month"
+
+    def text(index, year):
+        if not month or index == last:
+            return bucket_label(buckets, index)
+        at = datetime.fromtimestamp(starts[index] / 1000)
+        return f"{ACTIVITY_MONTHS[at.month - 1][:3]} {at.year}" if year else ACTIVITY_MONTHS[at.month - 1][:3]
+
+    def place(index, width):
+        return min(max(centers[index], width / 2), chart_width - width / 2) - width / 2
+
+    shown, limit = [], None
+    for index in range(last, -1, -step):
+        # A month label is measured with its year, so the year rule below never makes it wider than measured.
+        width = measure(text(index, True))
+        left = place(index, width)
+        if limit is None or left + width <= limit - 4:
+            shown.insert(0, index)
+            limit = left
+    labels, year = [], None
+    for index in shown:
+        at = datetime.fromtimestamp(starts[index] / 1000).year
+        label = text(index, at != year)
+        year = at
+        labels.append((index, label, place(index, measure(label))))
+    return labels
+
+
 def activity_palette(colors):
     background, text, accent = colors["background"], colors["text"], colors["accent"]
     return {"win": background, "pane": mix_color(background, text, .035), "pane2": mix_color(background, text, .06),
@@ -9572,13 +9603,15 @@ class UsageChart(Gtk.Widget):
                 if low - high > 0:
                     top = key == shown[-1]
                     usage_rect(snapshot, x, high, width, low - high, colors[key], min(2, width / 2, low - high) if top else 0, True)
-        every = self.label_step()
-        for index in range(len(self.bars)):
-            if (len(self.bars) - 1 - index) % every == 0:
-                layout = activity_layout(self, bucket_label(self.buckets, index), 11)
-                label_width = layout.get_pixel_extents()[1].width
-                middle = min(max(self.LEFT + index * (width + gap) + width / 2, label_width / 2), chart_width - label_width / 2)
-                snapshot_layout(snapshot, layout, middle - label_width / 2, self.BOTTOM + 15 - layout.get_baseline() / Pango.SCALE, dim)
+        layouts = {}
+
+        def measure(label):
+            layouts.setdefault(label, activity_layout(self, label, 11))
+            return layouts[label].get_pixel_extents()[1].width
+        centers = [self.LEFT + index * (width + gap) + width / 2 for index in range(len(self.bars))]
+        for _index, label, left in usage_axis_labels(self.buckets, centers, chart_width, self.label_step(), measure):
+            layout = layouts[label]
+            snapshot_layout(snapshot, layout, left, self.BOTTOM + 15 - layout.get_baseline() / Pango.SCALE, dim)
         if self.tip:
             self.snapshot_tip(snapshot, palette, width, gap, text, rule)
 

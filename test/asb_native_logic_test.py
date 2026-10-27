@@ -834,6 +834,65 @@ class UsageLogicChecks(unittest.TestCase):
                 chart = SimpleNamespace(buckets={"unit": unit}, bars=[{}] * count)
                 self.assertEqual(asb.UsageChart.label_step(chart), expected)
 
+    @staticmethod
+    def axis(unit, starts, chart_width):
+        """The axis labels as UsageChart.do_snapshot places them, with a fake font of 7 px per character."""
+        count = len(starts)
+        gap = 1 if count >= 90 else 2
+        width = (chart_width - asb.UsageChart.LEFT - gap * (count - 1)) / count
+        centers = [asb.UsageChart.LEFT + index * (width + gap) + width / 2 for index in range(count)]
+        buckets = {"unit": unit, "startsMs": starts}
+        step = asb.UsageChart.label_step(SimpleNamespace(buckets=buckets, bars=[{}] * count))
+        return asb.usage_axis_labels(buckets, centers, chart_width, step, lambda text: 7 * len(text))
+
+    @staticmethod
+    def months(year, month, count):
+        return [int(datetime(year + (month - 1 + index) // 12, (month - 1 + index) % 12 + 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
+                for index in range(count)]
+
+    def assert_axis_rules(self, labels, starts, chart_width):
+        for (_index, text, left), (_next, _text, right) in zip(labels, labels[1:]):
+            self.assertLessEqual(left + 7 * len(text), right - 4)
+        for _index, text, left in labels:
+            self.assertGreaterEqual(left, 0)
+            self.assertLessEqual(left + 7 * len(text), chart_width)
+        self.assertEqual(labels[-1][:2], (len(starts) - 1, "This month"))
+        year = None
+        for index, text, _left in labels[:-1]:
+            at = datetime.fromtimestamp(starts[index] / 1000, timezone.utc)
+            short = asb.ACTIVITY_MONTHS[at.month - 1][:3]
+            self.assertEqual(text, short if at.year == year else f"{short} {at.year}")
+            year = at.year
+
+    def test_month_axis_labels_do_not_overlap_and_name_the_year(self):
+        twelve = self.months(2025, 11, 12)
+        labels = self.axis("month", twelve, 452)
+        self.assert_axis_rules(labels, twelve, 452)
+        self.assertLess(len(labels), 12)
+        twenty = self.months(2025, 4, 20)
+        labels = self.axis("month", twenty, 452)
+        self.assert_axis_rules(labels, twenty, 452)
+        self.assertEqual([text for _index, text, _left in labels], ["May 2025", "Aug", "Nov", "Feb 2026", "May", "This month"])
+        self.assertEqual([index for index, _text, _left in labels], [1, 4, 7, 10, 13, 19])
+        self.assertEqual([text for _index, text, _left in self.axis("month", twenty[:1], 452)], ["This month"])
+        labels = self.axis("month", twelve, 1000)
+        self.assert_axis_rules(labels, twelve, 1000)
+        self.assertEqual([text for _index, text, _left in labels],
+                         ["Nov 2025", "Dec", "Jan 2026", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "This month"])
+        self.assertEqual([text for _index, text, _left in labels], [asb.bucket_label({"unit": "month", "startsMs": twelve}, index)
+                                                                    for index in range(12)])
+
+    def test_hour_and_day_axis_labels_do_not_change(self):
+        for unit, starts, every in (("hour", [int(datetime(2026, 10, 26, 0, tzinfo=timezone.utc).timestamp() * 1000) + hour * 3_600_000
+                                               for hour in range(24)], 3),
+                                    ("day", [int(datetime(2026, 9, 27, tzinfo=timezone.utc).timestamp() * 1000) + day * 86_400_000
+                                             for day in range(30)], 5)):
+            with self.subTest(unit=unit):
+                buckets = {"unit": unit, "startsMs": starts}
+                labels = self.axis(unit, starts, 852)
+                self.assertEqual([(index, text) for index, text, _left in labels],
+                                 [(index, asb.bucket_label(buckets, index)) for index in range(len(starts)) if (len(starts) - 1 - index) % every == 0])
+
     def test_all_fixture_keeps_the_90_day_totals_in_utc_months(self):
         reply, days = self.REPLIES["all"], self.REPLIES["90d"]
         self.assertEqual(reply["period"], "all")
