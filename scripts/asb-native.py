@@ -1943,7 +1943,9 @@ def usage_unpriced_note(view):
     models = view["unpriced_models"]
     if view["metric"] != "cost" or not view["unpriced_tokens"] > 0:
         return ""
-    return f"{', '.join(models)} {'are' if len(models) > 1 else 'is'} unpriced: {format_tokens(view['unpriced_tokens'])} tokens not in the cost."
+    if len(models) == 1:
+        return f"1 unpriced model: {format_tokens(view['unpriced_tokens'])} tokens not in the cost."
+    return f"{len(models)} unpriced models: {format_tokens(view['unpriced_tokens'])} tokens not in the cost."
 
 
 def usage_prices_text(prices):
@@ -8106,7 +8108,7 @@ ACTIVITY_WINDOW_CLASSES = {}   # "messages" / "usage" -> the window class; G1 an
 
 
 class ActivityWindow(Adw.Window):
-    """The shared base of the Messages and Usage windows: the period buttons, the loading and error pages, and the live refresh."""
+    """The shared base of the Messages and Usage windows: the period menu, the loading and error pages, and the live refresh."""
     KIND = ""              # "messages" or "usage"
     TITLE = ""             # "Messages" or "Usage"
     ROUTE = ""             # "/api/activity/messages" or "/api/activity/usage"
@@ -8145,25 +8147,31 @@ class ActivityWindow(Adw.Window):
         self.css = Gtk.CssProvider()
         Gtk.StyleContext.add_provider_for_display(self.get_display(), self.css, Gtk.STYLE_PROVIDER_PRIORITY_USER + 1)
 
-        view = Adw.ToolbarView()
-        header = Adw.HeaderBar()
-        self.title_widget = Adw.WindowTitle(title=self.TITLE, subtitle="")
-        header.set_title_widget(self.title_widget)
-        view.add_top_bar(header)
-        self.toolbar = Gtk.Box(spacing=8)
+        self.toolbar_view = view = Adw.ToolbarView()
+        self.toolbar = Gtk.Box(spacing=4, margin_start=4, margin_end=4, margin_top=2, margin_bottom=2)
         self.toolbar.add_css_class("asb-activity-toolbar")
-        periods = Gtk.Box()
-        periods.add_css_class("linked")
-        self.period_buttons = {}
-        for key, text in self.PERIODS:
-            button = Gtk.ToggleButton(label=text, active=key == self.DEFAULT_PERIOD)
-            if self.period_buttons:
-                button.set_group(next(iter(self.period_buttons.values())))
-            button.connect("toggled", self.period_toggled, key)
-            periods.append(button)
-            self.period_buttons[key] = button
-        self.toolbar.append(periods)
-        view.add_top_bar(self.toolbar)
+        self.app_mark = Gtk.Image(icon_name=APP_ID, pixel_size=16, valign=Gtk.Align.CENTER, tooltip_text="ASB")
+        self.app_mark.set_size_request(20, -1)
+        self.app_mark.update_property([Gtk.AccessibleProperty.LABEL], ["ASB app icon"])
+        self.toolbar.append(self.app_mark)
+        self.period_menu = Gtk.DropDown.new_from_strings([text for _key, text in self.PERIODS])
+        self.period_menu.set_selected([key for key, _text in self.PERIODS].index(self.DEFAULT_PERIOD))
+        self.period_menu.set_valign(Gtk.Align.CENTER)
+        self.period_menu.add_css_class("flat")
+        self.period_menu.add_css_class("asb-period-menu")
+        self.period_menu.set_tooltip_text("Period")
+        self.period_menu.update_property([Gtk.AccessibleProperty.LABEL], ["Period"])
+        self.period_menu.connect("notify::selected", self.period_selected)
+        self.toolbar.append(self.period_menu)
+        self.toolbar_start = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER)
+        self.toolbar.append(self.toolbar_start)
+        self.toolbar.append(Gtk.Box(hexpand=True))
+        self.toolbar_end = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER)
+        self.toolbar.append(self.toolbar_end)
+        self.window_controls = Gtk.WindowControls(side=Gtk.PackType.END, decoration_layout=":close")
+        self.toolbar.append(self.window_controls)
+        self.window_handle = Gtk.WindowHandle(child=self.toolbar)
+        view.add_top_bar(self.window_handle)
         self.paths_note = Gtk.Label(label="Charts need GTK 4.14 or later.", xalign=0, visible=not ACTIVITY_PATHS,
                                     margin_top=4, margin_bottom=4, margin_start=10, margin_end=10)
         self.paths_note.add_css_class("asb-dim")
@@ -8201,15 +8209,17 @@ class ActivityWindow(Adw.Window):
             saved = None
         self.set_palette(saved)
 
-    def period_toggled(self, button, key):
-        if button.get_active() and key != self.period:
+    def period_selected(self, menu, _param):
+        key = self.PERIODS[menu.get_selected()][0]
+        if key != self.period:
             self.set_period(key)
 
     def set_period(self, key):
-        if key not in self.period_buttons:
+        keys = [key for key, _text in self.PERIODS]
+        if key not in keys:
             raise ValueError(f"Unknown period: {key}")
         self.period = key
-        self.period_buttons[key].set_active(True)
+        self.period_menu.set_selected(keys.index(key))
         self.data = None
         self.stack.set_visible_child_name("loading")
         self.refresh()
@@ -8318,12 +8328,15 @@ class ActivityWindow(Adw.Window):
                        for index, hue in enumerate(MACHINE_HUES))
         self.css.load_from_string(hues + f"""
 {scope} {{ background: {palette['win']}; color: {palette['text']}; }}
-{scope}.asb-custom headerbar, {scope}.asb-custom .top-bar {{ background: {palette['win']}; color: {palette['text']}; box-shadow: none; }}
+{scope}.asb-custom .top-bar {{ background: {palette['win']}; color: {palette['text']}; box-shadow: none; }}
 {scope}.asb-custom .linked > button {{ background: alpha({palette['text']}, .08); color: {palette['text']}; }}
 {scope}.asb-custom .linked > button:hover {{ background: alpha({palette['text']}, .14); }}
 {scope}.asb-custom .linked > button:checked {{ background: {palette['accent']}; color: {palette['win']}; }}
 {scope}.asb-custom :focus-visible {{ outline-color: {palette['accent']}; }}
-{scope} .asb-activity-toolbar {{ background: {palette['win']}; padding: 6px 10px; border-bottom: 1px solid {palette['divider']}; }}
+{scope} .asb-activity-toolbar {{ background: {palette['win']}; }}
+{scope} .asb-activity-toolbar windowcontrols button {{ min-height: 24px; min-width: 22px; padding: 2px; }}
+{scope} .asb-activity-toolbar .asb-period-menu > button, {scope} .asb-activity-toolbar .linked > button,
+{scope} .asb-activity-toolbar menubutton > button {{ min-height: 24px; padding: 0 8px; font-size: 12px; }}
 {scope} .asb-dim {{ color: {palette['dim']}; }}
 {scope} .asb-rule {{ border-top: 1px solid {palette['rule']}; }}
 {scope} .asb-mono {{ font-family: monospace; font-feature-settings: "tnum"; }}
@@ -9092,26 +9105,6 @@ class MessagesWindow(ActivityWindow):
             theme.add_search_path(icons)
         self.set_size_request(480, 420)
 
-        # Toolbar, after the period group: the machine chips and the seat count, then the Live mark.
-        self.chips = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, column_spacing=6, row_spacing=6, hexpand=True, valign=Gtk.Align.CENTER,
-                                 max_children_per_line=24, focusable=False)
-        self.chips.add_css_class("asb-msg-chips")
-        # The period group keeps its height when the chips wrap to a second line.
-        self.toolbar.get_first_child().set_valign(Gtk.Align.CENTER)
-        self.toolbar.append(self.chips)
-        live = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
-        pulse = Gtk.Overlay(valign=Gtk.Align.CENTER)
-        dot = Gtk.Box(width_request=7, height_request=7)
-        dot.add_css_class("asb-msg-live-dot")
-        pulse.set_child(dot)
-        ring = Gtk.Box(width_request=7, height_request=7, can_target=False)
-        ring.add_css_class("asb-msg-live-ring")
-        pulse.add_overlay(ring)
-        live.append(pulse)
-        live.append(label("Live", "asb-msg-small"))
-        live.get_last_child().add_css_class("asb-dim")
-        self.toolbar.append(live)
-
         # The table, the reader for a small table, and the ledger column.
         self.table = RoundTable(self)
         self.reader = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, visible=False)
@@ -9156,12 +9149,6 @@ class MessagesWindow(ActivityWindow):
 {scope} asb-message-proxy {{ outline: none; }}
 {scope} .asb-msg-small {{ font-size: 12px; }}
 {scope} .asb-msg-tiny {{ font-size: 11px; }}
-{scope} .asb-msg-chips, {scope} .asb-msg-chips > flowboxchild {{ padding: 0; background: none; }}
-{scope} .asb-msg-chip {{ min-height: 20px; padding: 0 8px; border: 1px solid {palette['rule']}; border-radius: 4px; font-size: 12px; }}
-{scope} .asb-msg-live-dot {{ min-width: 7px; min-height: 7px; border-radius: 50%; background: {palette['light']}; }}
-{scope} .asb-msg-live-ring {{ min-width: 7px; min-height: 7px; border-radius: 50%; background: {palette['light']}; opacity: 0;
-    animation: asb-msg-pulse 2000ms ease-out infinite; }}
-@keyframes asb-msg-pulse {{ from {{ transform: scale(1); opacity: .6; }} to {{ transform: scale(2.2); opacity: 0; }} }}
 {scope} .asb-msg-ledger {{ background: {palette['win']}; }}
 {scope} .asb-msg-ledger.asb-msg-edge {{ border-left: 1px solid {palette['divider']}; }}
 {scope} .asb-msg-stats {{ padding: 16px 18px; }}
@@ -9289,25 +9276,6 @@ class MessagesWindow(ActivityWindow):
         offline = next((machine.get("state") == "offline" for machine in self.view["machines"] if machine["machineId"] == machine_id), False)
         return self.hue_dot(index, offline)
 
-    def render_toolbar(self):
-        self.chips.remove_all()
-        for machine in self.view["machines"]:
-            chip = Gtk.Box(spacing=6)
-            chip.add_css_class("asb-msg-chip")
-            chip.append(self.machine_dot(machine["machineId"]))
-            chip.append(Gtk.Label(label=machine.get("name", "")))
-            if machine.get("state") == "offline":
-                chip.append(label(machine_state_text(machine), "asb-dim"))
-            chip.set_tooltip_text(machine_last_report(machine) or machine_state_text(machine) or None)
-            chip.update_property([Gtk.AccessibleProperty.LABEL], [f"{machine.get('name', '')}, {machine_state_text(machine)}"])
-            self.chips.append(chip)
-            chip.get_parent().set_focusable(False)
-        self.seat_count = label(f"{len(self.view['seated'])} of {self.view['active']} sessions", "asb-msg-small")
-        self.seat_count.add_css_class("asb-dim")
-        self.seat_count.set_margin_start(2)
-        self.chips.append(self.seat_count)
-        self.seat_count.get_parent().set_focusable(False)
-
     def render_ledger(self, arrivals, live):
         view = self.view
         current = self.total.get_visible_child()
@@ -9427,7 +9395,6 @@ class MessagesWindow(ActivityWindow):
         ids = {record["id"] for record in data.get("messages") or []}
         self.bodies = {key: text for key, text in self.bodies.items() if key in ids}
         self.view = messages_view(data, self.selected_ids())
-        self.render_toolbar()
         self.render_ledger(arrivals, previous is not None)
         self.table.update(self.view, animate=previous is not None, after=[lambda: self.table.fly(arrivals)] if arrivals else [])
         if self.pending_session:
@@ -9446,12 +9413,11 @@ class MessagesWindow(ActivityWindow):
         return tuple(self.thread["key"]) if self.thread["kind"] == "pair" else (self.thread["key"],)
 
     def update_view(self):
-        """A new selection: seat it, and redraw the table, the count, and the center."""
+        """A new selection: seat it, and redraw the table and the center."""
         if self.data is None:
             return
         self.view = messages_view(self.data, self.selected_ids())
         self.table.update(self.view, animate=True)
-        self.seat_count.set_label(f"{len(self.view['seated'])} of {self.view['active']} sessions")
         self.render_center()
 
     def read(self, route, callback):
@@ -10173,25 +10139,32 @@ class UsageWindow(ActivityWindow):
         self.metric, self.split, self.machines_off, self.chip_key, self.chart_key, self.view = "cost", "app", set(), None, None, None
         self.narrow = self.small = False
         super().__init__(application, base, fetch, clock)
-        periods = self.toolbar.get_first_child()
-        self.toolbar.remove(periods)
-        self.toolbar.set_orientation(Gtk.Orientation.VERTICAL)
-        self.toolbar.set_spacing(4)
-        # Adw.WrapBox (libadwaita 1.7) moves items that do not fit to a second line. shortcut: older libadwaita keeps one line.
-        wrap = Adw.WrapBox(child_spacing=8, line_spacing=6) if hasattr(Adw, "WrapBox") else Gtk.Box(spacing=8)
-        wrap.append(periods)
+        theme = Gtk.IconTheme.get_for_display(self.get_display())
+        icons = str(Path(__file__).parents[1] / "assets" / "icons")
+        if icons not in theme.get_search_path():
+            theme.add_search_path(icons)
         metrics = Gtk.Box(valign=Gtk.Align.CENTER)
         metrics.add_css_class("linked")
         self.metric_buttons = self.linked_toggles(metrics, (("cost", "Cost"), ("tokens", "Tokens")), self.metric, self.set_metric)
-        wrap.append(metrics)
-        self.chips = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        self.toolbar_start.append(metrics)
+        self.machine_filter = Gtk.MenuButton(valign=Gtk.Align.CENTER, visible=False, tooltip_text="Machines")
+        image = Gtk.Image()
+        set_icon(image, "asb-filter-symbolic")
+        self.machine_filter.set_child(image)
+        self.machine_filter.add_css_class("flat")
+        self.machine_filter.add_css_class("asb-usage-filter")
+        self.machine_filter.update_property([Gtk.AccessibleProperty.LABEL], ["Machine filter"])
+        filters = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_start=8, margin_end=8, margin_top=8, margin_bottom=8)
+        filters.append(self.text("Machines", ("asb-usage-small", "asb-dim")))
+        self.chips = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.chip_buttons = {}
-        wrap.append(self.chips)
-        self.toolbar.append(wrap)
-        self.scan_label = Gtk.Label(xalign=0, visible=False)
+        filters.append(self.chips)
+        self.machine_filter.set_popover(Gtk.Popover(child=filters))
+        self.toolbar_end.append(self.machine_filter)
+        self.scan_label = Gtk.Label(xalign=0, visible=False, margin_start=10, margin_end=10, margin_bottom=4)
         self.scan_label.add_css_class("asb-usage-small")
         self.scan_label.add_css_class("asb-dim")
-        self.toolbar.append(self.scan_label)
+        self.toolbar_view.add_top_bar(self.scan_label)
 
         self.scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
         self.content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=28)
@@ -10207,19 +10180,15 @@ class UsageWindow(ActivityWindow):
         self.round_cell.append(self.round)
         self.overview.append(self.round_cell)
         side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, valign=Gtk.Align.CENTER)
-        side.append(self.heading("Machines"))
-        self.machine_rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        side.append(self.machine_rows)
-        apps = self.heading("Apps")
-        apps.set_margin_top(20)
-        side.append(apps)
-        self.app_rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        side.append(self.app_rows)
-        providers = self.heading("Providers")
-        providers.set_margin_top(20)
-        side.append(providers)
-        self.maker_rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        side.append(self.maker_rows)
+        for name, text in (("machine", "Machines"), ("app", "Apps"), ("maker", "Providers")):
+            heading = self.heading(text)
+            heading.set_margin_bottom(0)
+            rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, margin_top=8)
+            fold = Gtk.Expander(label_widget=heading, child=rows, expanded=name == "machine", margin_top=0 if name == "machine" else 10)
+            fold.add_css_class("asb-usage-fold")
+            setattr(self, f"{name}_fold", fold)
+            setattr(self, f"{name}_rows", rows)
+            side.append(fold)
         self.note = Gtk.Label(xalign=0, wrap=True, margin_top=10, visible=False)
         self.note.add_css_class("asb-usage-small")
         self.note.add_css_class("asb-dim")
@@ -10271,6 +10240,7 @@ class UsageWindow(ActivityWindow):
         scope, rule = self.css_scope, palette["rule"]
         swatches = "".join(f"{scope} .asb-usage-type-{part} {{ background: {color}; }}\n" for part, color in ACTIVITY_TOKEN_COLORS.items())
         return f"""
+{scope} .asb-usage-filtered image {{ color: {palette['accent']}; }}
 {scope} .asb-usage-heading {{ font-size: 13px; font-weight: 600; }}
 {scope} .asb-usage-small {{ font-size: 12px; }}
 {scope} .asb-usage-row {{ min-height: 34px; border-bottom: 1px solid {rule}; }}
@@ -10394,7 +10364,7 @@ class UsageWindow(ActivityWindow):
         # A refresh comes after each dashboard event: the same numbers with a new reply time keep the shown view.
         if previous is not None and {**previous, "nowMs": None} == {**data, "nowMs": None}:
             return
-        self.title_widget.set_subtitle(usage_prices_text(data.get("prices")))
+        self.round.set_tooltip_text(usage_prices_text(data.get("prices")))
         scan = usage_scan_text(data.get("scan"))
         self.scan_label.set_label(scan)
         self.scan_label.set_visible(bool(scan))
@@ -10403,13 +10373,18 @@ class UsageWindow(ActivityWindow):
         self.render_view()
 
     def render_chips(self, on):
+        total = len(self.data["machines"])
+        filtered = len(on) < total
+        self.machine_filter.set_visible(total >= 2)
+        (self.machine_filter.add_css_class if filtered else self.machine_filter.remove_css_class)("asb-usage-filtered")
+        self.machine_filter.set_tooltip_text(f"Machines: {len(on)} of {total} shown" if filtered else "Machines")
         key = [(machine["machineId"], machine["name"], machine.get("state"), machine.get("lastReportAtMs")) for machine in self.data["machines"]]
         if key != self.chip_key:
             self.chip_key = key
             remove_children(self.chips)
             self.chip_buttons = {}
             for index, machine in enumerate(self.data["machines"]):
-                button = Gtk.ToggleButton(valign=Gtk.Align.CENTER)
+                button = Gtk.ToggleButton(valign=Gtk.Align.CENTER, halign=Gtk.Align.FILL)
                 button.add_css_class("asb-usage-chip")
                 inner = Gtk.Box(spacing=6)
                 inner.append(self.dot({"hue": machine_hue(index), "offline": machine.get("state") == "offline"}))
@@ -10452,6 +10427,7 @@ class UsageWindow(ActivityWindow):
         self.render_rows(view, show)
         note = usage_unpriced_note(view)
         self.note.set_label(note)
+        self.note.set_tooltip_text(", ".join(view["unpriced_models"]) if note else None)
         self.note.set_visible(bool(note))
         interval = {"hour": "Hourly", "day": "Daily", "month": "Monthly"}[data["buckets"]["unit"]]
         self.chart_title.set_label(f"{interval} {'cost' if cost else 'tokens'}")

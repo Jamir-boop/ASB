@@ -6529,14 +6529,15 @@ class ActivityFixture:
         with patch.object(asb, "validate_theme", return_value=self.THEME):
             window = self.window()
         self.assertTrue(window.has_css_class("asb-custom"))
-        header = window.toolbar.get_prev_sibling()
-        found, bounds = header.compute_bounds(window)
+        spacer = window.toolbar_start.get_next_sibling()
+        found, bounds = spacer.compute_bounds(window)
         self.assertTrue(found)
-        self.assert_pixel(window, bounds.get_x() + 120, bounds.get_y() + bounds.get_height() // 2, self.THEME["background"])
-        button = window.period_buttons[window.period]
-        found, bounds = button.compute_bounds(window)
-        self.assertTrue(found)
-        self.assert_pixel(window, bounds.get_x() + 7, bounds.get_y() + bounds.get_height() // 2, self.THEME["accent"])
+        self.assert_pixel(window, bounds.get_x() + bounds.get_width() // 2, bounds.get_y() + bounds.get_height() // 2, self.THEME["background"])
+        # A checked linked toggle of the row shows the accent.
+        if hasattr(window, "metric_buttons"):
+            found, bounds = window.metric_buttons[window.metric].compute_bounds(window)
+            self.assertTrue(found)
+            self.assert_pixel(window, bounds.get_x() + 7, bounds.get_y() + bounds.get_height() // 2, self.THEME["accent"])
         window.set_palette(None)
         self.drain(.2)
         self.assertFalse(window.has_css_class("asb-custom"))
@@ -6623,10 +6624,18 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual((window.get_title(), window.get_default_size(), window.KIND), ("Usage", (948, 760), "usage"))
         self.assertIs(asb.ACTIVITY_WINDOW_CLASSES["usage"], asb.UsageWindow)
         self.assertEqual(window.routes, ["/api/activity/usage?period=30d"])
-        self.assertEqual([button.get_label() for button in window.period_buttons.values()], ["24 hours", "7 days", "30 days", "90 days", "All time"])
-        self.assertTrue(window.period_buttons["30d"].get_active())
+        menu = window.period_menu
+        self.assertEqual([menu.get_model().get_string(index) for index in range(menu.get_model().get_n_items())],
+                         ["24 hours", "7 days", "30 days", "90 days", "All time"])
+        self.assertEqual(menu.get_selected(), 2)
         self.assertEqual([(button.get_label(), button.get_active()) for button in window.metric_buttons.values()], [("Cost", True), ("Tokens", False)])
         self.assertTrue(window.metric_buttons["cost"].get_parent().has_css_class("linked"))
+        self.assertIs(window.metric_buttons["cost"].get_parent().get_parent(), window.toolbar_start)
+        self.assertIs(window.machine_filter.get_parent(), window.toolbar_end)
+        self.assertIs(window.chips.get_ancestor(asb.Gtk.Popover), window.machine_filter.get_popover())
+        self.assertEqual(window.chips.get_orientation(), asb.Gtk.Orientation.VERTICAL)
+        self.assertTrue(all(chip.get_halign() == asb.Gtk.Align.FILL for chip in window.chip_buttons.values()))
+        self.assert_accessible_label(window.machine_filter, "Machine filter")
         chips = window.chip_buttons
         self.assertEqual(list(chips), ["desk", "laptop", "studio"])
         self.assertEqual([self.labels(chip) for chip in chips.values()], [["Desk"], ["Laptop"], ["Studio", "Offline"]])
@@ -6636,10 +6645,60 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
             self.assert_accessible_label(chip, expected)
         dot = chips["studio"].get_child().get_first_child()
         self.assertTrue(dot.has_css_class("asb-activity-hue-2") and dot.has_css_class("asb-activity-hollow"))
-        self.assertEqual(window.title_widget.get_subtitle(), "Prices: LiteLLM, Oct 26")
+        self.assertEqual(window.round.get_tooltip_text(), "Prices: LiteLLM, Oct 26")
         self.assertFalse(hasattr(window, "prices_label"))
         self.assertFalse(any(text.startswith("Prices:") for text in self.labels(window.toolbar)))
         self.assertFalse(window.scan_label.get_visible())
+        self.assert_no_new_warnings()
+
+    def test_usage_folds_filter_popover_and_short_note(self):
+        replies = copy.deepcopy(self.REPLIES)
+        for record in replies["30d"]["records"]:
+            if record["model"] == "gpt-6.1-mini":
+                record["cost"] = None
+        window = self.window(replies)
+        folds = (window.machine_fold, window.app_fold, window.maker_fold)
+        self.assertEqual([fold.get_expanded() for fold in folds], [True, False, False])
+        self.assertEqual([fold.get_label_widget().get_label() for fold in folds], ["Machines", "Apps", "Providers"])
+        self.assertEqual([fold.get_child() for fold in folds], [window.machine_rows, window.app_rows, window.maker_rows])
+        self.assertEqual([fold.get_margin_top() for fold in folds], [0, 10, 10])
+        self.assertTrue(all(fold.has_css_class("asb-usage-fold") for fold in folds))
+        self.assertIs(window.maker_fold.get_next_sibling(), window.note)
+        window.app_fold.set_expanded(True)
+        replies["30d"]["records"][0]["tokens"]["output"] += 1000
+        window.refresh()
+        self.drain(.1)
+        self.assertEqual(window.routes, ["/api/activity/usage?period=30d"] * 2)
+        self.assertEqual([fold.get_expanded() for fold in folds], [True, True, False])
+        # The note: short, with the model names in its tooltip.
+        view = asb.usage_view(window.data, self.ALL, "cost")
+        self.assertEqual(window.note.get_label(), f"2 unpriced models: {asb.format_tokens(view['unpriced_tokens'])} tokens not in the cost.")
+        self.assertEqual(window.note.get_tooltip_text(), ", ".join(view["unpriced_models"]))
+        self.assertEqual(sorted(view["unpriced_models"]), ["gpt-6.1-mini", "mimo-v2.6-pro"])
+        self.assertEqual(window.round.get_tooltip_text(), "Prices: LiteLLM, Oct 26")
+        # The machine filter: a popover with one chip per machine.
+        button = window.machine_filter
+        self.assertTrue(button.get_visible())
+        self.assertEqual((button.get_tooltip_text(), button.has_css_class("asb-usage-filtered")), ("Machines", False))
+        self.assertTrue(button.has_css_class("flat") and button.has_css_class("asb-usage-filter"))
+        self.assertEqual(button.get_child().get_gicon().get_file().get_basename(), "asb-filter-symbolic.svg")
+        button.popup()
+        self.drain(.2)
+        self.assertTrue(button.get_popover().get_visible())
+        self.assertEqual(self.labels(button.get_popover())[0], "Machines")
+        window.chip_buttons["laptop"].set_active(False)
+        self.drain(.05)
+        self.assertEqual(window.machines_on(), {"desk", "studio"})
+        self.assertEqual((button.get_tooltip_text(), button.has_css_class("asb-usage-filtered")), ("Machines: 2 of 3 shown", True))
+        self.assertIn(".asb-usage-filtered image", window.css.to_string())
+        window.chip_buttons["laptop"].set_active(True)
+        self.drain(.05)
+        self.assertEqual((button.get_tooltip_text(), button.has_css_class("asb-usage-filtered")), ("Machines", False))
+        button.popdown()
+        one = {key: dict(reply, machines=reply["machines"][:1],
+                         records=[record for record in reply["records"] if record["machineId"] == reply["machines"][0]["machineId"]])
+               for key, reply in self.REPLIES.items()}
+        self.assertFalse(self.window(one).machine_filter.get_visible())
         self.assert_no_new_warnings()
 
     def test_overview_rows_and_note(self):
@@ -6661,7 +6720,8 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         # Desk's OpenCode model is unpriced: no OpenCode segment under Cost.
         self.assertEqual([color for _value, color in bar.segments], ["#c9ccd1", "#d97757"])
         self.assertTrue(window.note.get_visible())
-        self.assertEqual(window.note.get_label(), "mimo-v2.6-pro is unpriced: 144.2M tokens not in the cost.")
+        self.assertEqual(window.note.get_label(), "1 unpriced model: 144.2M tokens not in the cost.")
+        self.assertEqual(window.note.get_tooltip_text(), "mimo-v2.6-pro")
         found, round_bounds = window.round.compute_bounds(window)
         self.assertTrue(found)
         self.assertEqual((round_bounds.get_width(), round_bounds.get_height()), (320, 320))
@@ -6673,7 +6733,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
 
     def test_all_time_month_chart_and_empty_state(self):
         window = self.window()
-        window.period_buttons["all"].set_active(True)
+        window.set_period("all")
         self.drain(.1)
         self.assertEqual(window.routes[-1], "/api/activity/usage?period=all")
         self.assertEqual(window.chart_title.get_label(), "Monthly cost")
@@ -6683,40 +6743,37 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(window.chart_title.get_label(), "Monthly tokens")
         empty = {key: dict(reply, records=[]) for key, reply in self.REPLIES.items()}
         window = self.window(empty)
-        window.period_buttons["all"].set_active(True)
+        window.set_period("all")
         self.drain(.1)
         self.assertTrue(window.empty_label.get_visible())
         self.assertFalse(window.scroll.get_visible())
         self.assertEqual(window.empty_label.get_label(), "No usage yet.")
         self.assert_no_new_warnings()
 
-    def test_five_period_buttons_fit_and_toolbar_wraps(self):
-        for size in ((948, 760), (600, 900), (480, 900)):
+    def test_the_one_row_fits_at_every_width(self):
+        for size in ((948, 760), (600, 900), (420, 900)):
             with self.subTest(size=size):
                 window = self.window(size=size)
-                for button in window.period_buttons.values():
-                    found, bounds = button.compute_bounds(window)
+                self.assertEqual(window.get_width(), size[0])
+                _minimum, natural, _base, _natural_base = window.toolbar.measure(asb.Gtk.Orientation.HORIZONTAL, -1)
+                self.assertLessEqual(natural, size[0])
+                for widget in (window.period_menu, *window.metric_buttons.values(), window.machine_filter, window.window_controls):
+                    found, bounds = widget.compute_bounds(window)
                     self.assertTrue(found)
                     self.assertGreater(bounds.get_width(), 0)
                     self.assertGreaterEqual(bounds.get_x(), 0)
                     self.assertLessEqual(bounds.get_x() + bounds.get_width(), size[0])
+                for button in window.metric_buttons.values():
                     self.assertFalse(button.get_child().get_layout().is_ellipsized())
-                self.assertEqual(window.get_width(), size[0])
-                wrap = window.metric_buttons["cost"].get_parent().get_parent()
-                if hasattr(asb.Adw, "WrapBox") and isinstance(wrap, asb.Adw.WrapBox) and size[0] < 948:
-                    wrapped = window.metric_buttons["cost"] if size[0] == 480 else window.chips
-                    found, metric = wrapped.compute_bounds(window)
-                    found, period = window.period_buttons["all"].compute_bounds(window)
-                    self.assertGreater(metric.get_y(), period.get_y())
         self.assert_no_new_warnings()
 
     def test_provider_heading_rows_and_unpriced_value(self):
         window = self.window()
-        side = window.maker_rows.get_parent()
-        self.assertEqual([child.get_label() for child in self.children(side) if isinstance(child, asb.Gtk.Label)][:3],
+        side = window.maker_fold.get_parent()
+        self.assertEqual([child.get_label_widget().get_label() for child in self.children(side) if isinstance(child, asb.Gtk.Expander)],
                          ["Machines", "Apps", "Providers"])
-        heading = window.maker_rows.get_prev_sibling()
-        self.assertEqual(heading.get_margin_top(), 20)
+        heading = window.maker_fold.get_label_widget()
+        self.assertEqual((window.maker_fold.get_margin_top(), heading.get_margin_bottom()), (10, 0))
         self.assertTrue(heading.has_css_class("asb-usage-heading"))
         rows = self.children(window.maker_rows)
         self.assertEqual([row.asb_maker for row in rows], ["Anthropic", "OpenAI", "Xiaomi MiMo"])
@@ -6780,7 +6837,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(chart.progress, 0)
         self.drain(.4)
         self.assertEqual(chart.progress, 1)
-        window.period_buttons["24h"].set_active(True)
+        window.set_period("24h")
         self.drain(.1)
         self.assertEqual(window.routes[-1], "/api/activity/usage?period=24h")
         self.assertEqual((len(chart.bars), window.chart_title.get_label()), (24, "Hourly cost"))
@@ -6792,7 +6849,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertRegex(value, r"^[\d.]+[MB]$")
         self.assertFalse(window.note.get_visible())
         self.assertEqual(chart.axis, ["5M", "10M", "15M"])
-        window.period_buttons["90d"].set_active(True)
+        window.set_period("90d")
         self.drain(.1)
         self.assertRegex(window.round.center()[0], r"^[\d.]+[MB]$")
         self.assertEqual((len(chart.bars), window.chart_title.get_label()), (90, "Daily tokens"))
@@ -6886,7 +6943,11 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
             window = self.window(replies)
             self.assertTrue(window.scan_label.get_visible())
             self.assertEqual(window.scan_label.get_label(), "Reading usage: 120 of 2,707 files")
-            self.assertIs(window.scan_label.get_parent(), window.toolbar)
+            # Its own top bar under the row and the paths note.
+            self.assertIs(window.scan_label.get_ancestor(asb.Adw.ToolbarView), window.toolbar_view)
+            self.assertIs(window.scan_label.get_prev_sibling(), window.paths_note)
+            self.assertEqual((window.scan_label.get_margin_start(), window.scan_label.get_margin_end(), window.scan_label.get_margin_bottom()),
+                             (10, 10, 4))
             self.poll_calls.reset_mock()
             self.addCleanup(setattr, self.poll_calls, "return_value", 0)
             self.poll_calls.return_value = 41
@@ -6907,7 +6968,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
             replies["30d"] = dict(self.REPLIES["30d"], prices={"source": "LiteLLM", "status": "loading", "fetchedAtMs": None, "models": 0})
             with patch.object(asb.GLib, "source_remove"):
                 window.poll_tick()
-                self.assertEqual(window.title_widget.get_subtitle(), "Prices: loading")
+                self.assertEqual(window.round.get_tooltip_text(), "Prices: loading")
                 self.poll_calls.assert_called_once_with(2, window.poll_tick)
                 window.stop_live()
         self.assert_no_new_warnings()
@@ -6940,11 +7001,14 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         # The rendering fixture accent is below the theme editor's contrast limit.
         with patch.object(asb, "validate_theme", return_value=self.THEME):
             window = self.window()
-        toolbar = window.toolbar
-        self.assert_pixel(toolbar, toolbar.get_width() - 3, toolbar.get_height() // 2, self.THEME["background"])
-        found, bounds = toolbar.compute_bounds(window)
+        # The row has the window color and, as on the board, no line under it.
+        found, spacer = window.toolbar_start.get_next_sibling().compute_bounds(window)
         self.assertTrue(found)
-        self.assert_pixel(window, bounds.get_x() + bounds.get_width() - 3, bounds.get_y() + bounds.get_height() - 1, self.THEME["divider"])
+        found, bounds = window.window_handle.compute_bounds(window)
+        self.assertTrue(found)
+        middle = spacer.get_x() + spacer.get_width() // 2
+        self.assert_pixel(window, middle, bounds.get_y() + bounds.get_height() // 2, self.THEME["background"])
+        self.assert_pixel(window, middle, bounds.get_y() + bounds.get_height() - 1, self.THEME["background"])
         adjustment = window.scroll.get_vadjustment()
         adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
         self.drain(.2)
@@ -6953,7 +7017,9 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         asb.THEME_PATH.unlink()
         native = self.window()
         self.assertEqual(native.palette["divider"], native.palette["rule"])
-        self.assert_pixel(native.toolbar, native.toolbar.get_width() - 3, native.toolbar.get_height() // 2, native.palette["win"])
+        found, spacer = native.toolbar_start.get_next_sibling().compute_bounds(native.toolbar)
+        self.assertTrue(found)
+        self.assert_pixel(native.toolbar, spacer.get_x() + spacer.get_width() // 2, native.toolbar.get_height() // 2, native.palette["win"])
         self.assert_no_new_warnings()
 
     def test_a_theme_change_reaches_the_kept_model_share_bars(self):
@@ -7031,11 +7097,13 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
 
     def test_the_round_chart_stays_at_the_top_of_the_wide_layout(self):
         window = self.window(self.tall_replies())
+        # The open Providers fold makes the side column taller than the ring.
+        window.maker_fold.set_expanded(True)
         self.drain(.1)
         self.assertEqual(window.round_cell.get_valign(), asb.Gtk.Align.START)
         self.assertGreaterEqual(len(self.children(window.maker_rows)), 12)
         self.assertTrue(window.note.get_visible())
-        machines = window.machine_rows.get_prev_sibling()
+        machines = window.machine_fold.get_label_widget()
         self.assertEqual(machines.get_label(), "Machines")
         found, title = machines.compute_bounds(window)
         self.assertTrue(found)
@@ -7121,6 +7189,8 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         for size, cell_width in (((948, 760), 210), ((860, 900), 150), ((600, 900), 112)):
             with self.subTest(size=size):
                 window = self.window(size=size)
+                window.app_fold.set_expanded(True)
+                window.maker_fold.set_expanded(True)
                 self.drain(.1)
                 cells, heights = [], []
                 for box in (window.machine_rows, window.app_rows, window.maker_rows):
@@ -7157,7 +7227,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertFalse(window.scroll.get_visible())
         self.assertEqual(window.empty_label.get_label(), "No usage in 30 days.")
         self.assertEqual(list(window.chip_buttons), ["desk", "laptop", "studio"])
-        window.period_buttons["24h"].set_active(True)
+        window.set_period("24h")
         self.drain(.05)
         self.assertEqual(window.empty_label.get_label(), "No usage in 24 hours.")
         self.assert_no_new_warnings()
@@ -7229,16 +7299,13 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertFalse(window.get_modal())
         self.assertIsNone(window.get_transient_for())
         self.assertIs(window.get_application(), self.application)
-        group = window.toolbar.get_first_child()
-        self.assertTrue(group.has_css_class("linked"))
+        menu = window.period_menu
+        self.assertIs(window.app_mark.get_next_sibling(), menu)
+        self.assertTrue(menu.has_css_class("flat") and menu.has_css_class("asb-period-menu"))
         self.assertTrue(window.toolbar.has_css_class("asb-activity-toolbar"))
-        labels, button = [], group.get_first_child()
-        while button:
-            labels.append(button.get_label())
-            button = button.get_next_sibling()
-        self.assertEqual(labels, ["24 hours", "7 days", "30 days"])
-        self.assertEqual(list(window.period_buttons), ["24h", "7d", "30d"])
-        self.assertEqual({key: button.get_active() for key, button in window.period_buttons.items()}, {"24h": False, "7d": True, "30d": False})
+        self.assertEqual([menu.get_model().get_string(index) for index in range(menu.get_model().get_n_items())], ["24 hours", "7 days", "30 days"])
+        self.assertEqual((menu.get_selected(), menu.get_tooltip_text()), (1, "Period"))
+        self.assert_accessible_label(menu, "Period")
         self.assertEqual((window.period, window.data, window.routes), ("7d", None, []))
         self.assertEqual(window.stack.get_visible_child_name(), "loading")
         self.assertTrue(window.stack.get_visible_child().get_spinning())
@@ -7275,11 +7342,14 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(window.routes[-1], "/api/activity/messages?period=30d")
         self.assertEqual(window.pages[-1], "loading")
         self.assertIsNone(window.renders[-1][1])
-        self.assertEqual({key: button.get_active() for key, button in window.period_buttons.items()}, {"24h": False, "7d": False, "30d": True})
+        self.assertEqual(window.period_menu.get_selected(), 2)
         with self.assertRaises(ValueError):
             window.set_period("x")
         self.assertEqual(window.period, "30d")
-        window.period_buttons["24h"].emit("clicked")
+        reads = len(window.routes)
+        window.period_menu.set_selected(2)
+        self.assertEqual(len(window.routes), reads)
+        window.period_menu.set_selected(0)
         self.assertEqual((window.period, window.routes[-1], window.pages[-1]), ("24h", "/api/activity/messages?period=24h", "loading"))
         self.assertEqual(len(window.routes), 3)
         self.assertEqual(window.stack.get_visible_child_name(), "data")
@@ -7430,20 +7500,21 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
         window.present()
         self.drain(.2)
         self.assertEqual(window.get_width(), 640)
-        found, bounds = window.toolbar.compute_bounds(window)
+        found, bounds = window.window_handle.compute_bounds(window)
         self.assertTrue(found)
-        self.assertEqual((bounds.get_x(), bounds.get_width()), (0, 640))
+        self.assertEqual((bounds.get_x(), bounds.get_y(), bounds.get_width()), (0, 0, 640))
         middle = bounds.get_y() + bounds.get_height() / 2
         bar = window.palette["win"]
         self.assertEqual(self.window_pixels(window, (1, middle), (638, middle)), [bar, bar])
-        # The toolbar touches the header bar.
-        header = window.toolbar.get_prev_sibling()
-        found, above = header.compute_bounds(window)
+        # The row has the board's margins: 4px at the sides, 2px above.
+        found, mark = window.app_mark.compute_bounds(window)
         self.assertTrue(found)
-        self.assertEqual(above.get_y() + above.get_height(), bounds.get_y())
-        found, button = window.period_buttons["24h"].compute_bounds(window)
+        found, row = window.toolbar.compute_bounds(window)
         self.assertTrue(found)
-        self.assertEqual((button.get_x() - bounds.get_x(), button.get_y() - bounds.get_y()), (10, 6))
+        self.assertEqual((mark.get_x() - bounds.get_x(), row.get_y() - bounds.get_y()), (4, 2))
+        found, controls = window.window_controls.compute_bounds(window)
+        self.assertTrue(found)
+        self.assertEqual(controls.get_x() + controls.get_width(), 636)
 
     def test_the_paths_note_shows_only_without_gsk_paths(self):
         self.assertEqual(asb.ACTIVITY_PATHS, hasattr(asb.Gsk, "PathBuilder"))
@@ -7454,7 +7525,7 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
                 self.assertEqual(note.get_label(), "Charts need GTK 4.14 or later.")
                 self.assertTrue(note.has_css_class("asb-dim"))
                 self.assertEqual((note.get_margin_top(), note.get_margin_bottom(), note.get_margin_start(), note.get_margin_end()), (4, 4, 10, 10))
-                self.assertIs(window.toolbar.get_next_sibling(), note)
+                self.assertIs(window.window_handle.get_next_sibling(), note)
                 self.assertEqual(note.get_visible(), not paths)
         self.assertIn(f"{window.css_scope}.asb-activity .asb-paths-note {{\n  font-size: 12px;", window.css.to_string())
 
@@ -7622,31 +7693,77 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
             child = child.get_next_sibling()
         return found
 
-    def test_toolbar_chips_and_seat_count(self):
+    def tree(self, widget):
+        found, child = [widget], widget.get_first_child()
+        while child is not None:
+            found += self.tree(child)
+            child = child.get_next_sibling()
+        return found
+
+    def test_activity_windows_have_one_slim_row_like_the_board(self):
+        replies = UsageWindowCheck.REPLIES
+        usage = asb.UsageWindow(self.application, "http://127.0.0.1:1", fetch=lambda route: copy.deepcopy(replies[route.rsplit("=", 1)[1]]))
+        usage.set_default_size(948, 760)
+        usage.present()
+        self.drain(.2)
+        usage.refresh()
+        self.drain(.4)
+        messages = self.window()
+        for window, width, periods in ((messages, 480, asb.MESSAGE_PERIODS), (usage, 420, asb.USAGE_PERIODS)):
+            with self.subTest(window=window.KIND):
+                tree = self.tree(window)
+                self.assertFalse(any(isinstance(widget, (asb.Adw.HeaderBar, asb.Adw.WindowTitle)) for widget in tree))
+                self.assertFalse(hasattr(window, "title_widget") or hasattr(window, "period_buttons"))
+                # The first top bar: nothing before it in the top bars, and the paths note comes next.
+                self.assertIs(window.window_handle.get_ancestor(asb.Adw.ToolbarView), window.toolbar_view)
+                self.assertIsNone(window.window_handle.get_prev_sibling())
+                self.assertIs(window.window_handle.get_next_sibling(), window.paths_note)
+                self.assertIs(window.window_handle.get_child(), window.toolbar)
+                row = []
+                child = window.toolbar.get_first_child()
+                while child is not None:
+                    row.append(child)
+                    child = child.get_next_sibling()
+                self.assertEqual(len(row), 6)
+                self.assertEqual([row[0], row[1], row[2], row[4], row[5]],
+                                 [window.app_mark, window.period_menu, window.toolbar_start, window.toolbar_end, window.window_controls])
+                self.assertTrue(type(row[3]) is asb.Gtk.Box and row[3].get_hexpand())
+                self.assertEqual((window.app_mark.get_icon_name(), window.app_mark.get_pixel_size(), window.app_mark.get_tooltip_text()),
+                                 (asb.APP_ID, 16, "ASB"))
+                self.assert_accessible_label(window.app_mark, "ASB app icon")
+                self.assertEqual(window.window_controls.get_decoration_layout(), ":close")
+                self.assertLessEqual(window.window_handle.get_height(), 34)
+                model = window.period_menu.get_model()
+                self.assertEqual([model.get_string(index) for index in range(model.get_n_items())], [text for _key, text in periods])
+                if window is usage:
+                    window.set_period("all")
+                    self.drain(.1)
+                    self.assertEqual(window.period_menu.get_selected(), model.get_n_items() - 1)
+                window.period_menu.set_selected(0)
+                self.drain(.2)
+                self.assertEqual(window.period, "24h")
+                window.set_default_size(width, 760)
+                self.drain(.3)
+                self.assertEqual(window.get_width(), width)
+                _minimum, natural, _base, _natural_base = window.toolbar.measure(asb.Gtk.Orientation.HORIZONTAL, -1)
+                self.assertLessEqual(natural, width)
+        labels = [widget.get_label() for widget in self.tree(messages) if isinstance(widget, asb.Gtk.Label)]
+        self.assertNotIn("Live", labels)
+        self.assertFalse(any(text.endswith(" sessions") for text in labels))
+
+    def test_toolbar_has_only_the_period(self):
         window = self.window()
         self.assertEqual(window.get_title(), "Messages")
-        self.assertEqual((window.title_widget.get_title(), window.title_widget.get_subtitle()), ("Messages", ""))
         self.assertEqual(window.get_default_size(), (968, 760))
         self.assertIs(asb.ACTIVITY_WINDOW_CLASSES["messages"], asb.MessagesWindow)
-        chips = []
-        child = window.chips.get_first_child()
-        while child is not None:
-            chips.append(child.get_child())
-            child = child.get_next_sibling()
-        self.assertEqual([self.labels(chip) for chip in chips[:3]], [["Desk"], ["Laptop"], ["Studio", "Offline"]])
-        self.assertEqual([chip.get_tooltip_text() for chip in chips[:3]], ["Local", "Connected", "Last report Oct 25, 14:30"])
-        for chip, expected in zip(chips[:3], ("Desk, Local", "Laptop, Connected", "Studio, Offline")):
-            self.assert_accessible_label(chip, expected)
-        self.assertTrue(chips[2].get_first_child().has_css_class("asb-activity-hollow"))
-        view = window.view
-        self.assertEqual(chips[3].get_label(), f"{len(view['seated'])} of {view['active']} sessions")
-        self.assertEqual(chips[3].get_label(), "12 of 18 sessions")
-        self.assertFalse(any(child.get_parent().get_focusable() for child in chips))
-        self.assertEqual(self.labels(window.toolbar.get_last_child()), ["Live"])
+        self.assertFalse(any(hasattr(window, name) for name in ("chips", "seat_count", "render_toolbar", "title_widget")))
+        self.assertIsNone(window.toolbar_start.get_first_child())
+        self.assertIsNone(window.toolbar_end.get_first_child())
         rules = window.css.to_string()
-        self.assertIn("transform: scale(2.2", rules)
-        self.assertIn("animation-name: asb-msg-pulse;", rules)
-        self.assertIn("animation-duration: 2000ms;", rules)
+        for name in ("asb-msg-chip", "asb-msg-live", "asb-msg-pulse"):
+            self.assertNotIn(name, rules)
+        # The machine list of the ledger stays.
+        self.assertTrue(window.machine_counts)
 
     def test_ledger_numbers_equal_the_logic(self):
         window = self.window()

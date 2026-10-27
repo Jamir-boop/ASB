@@ -993,7 +993,7 @@ class UsageLogicChecks(unittest.TestCase):
         self.assertEqual(asb.format_cost(row["cost"]), "$923.90")
 
     def test_the_unpriced_note(self):
-        self.assertEqual(asb.usage_unpriced_note(self.view()), "mimo-v2.6-pro is unpriced: 144.2M tokens not in the cost.")
+        self.assertEqual(asb.usage_unpriced_note(self.view()), "1 unpriced model: 144.2M tokens not in the cost.")
         self.assertEqual(asb.usage_unpriced_note(self.view(metric="tokens")), "")
         self.assertEqual(asb.usage_unpriced_note(self.view(on={"laptop"})), "")
         reply = copy.deepcopy(self.REPLIES["30d"])
@@ -1004,7 +1004,8 @@ class UsageLogicChecks(unittest.TestCase):
         # The names keep the order of their first record.
         order = list(dict.fromkeys(record["model"] for record in reply["records"] if record["cost"] is None))
         self.assertEqual(sorted(order), ["gpt-6.1-mini", "mimo-v2.6-pro"])
-        self.assertEqual(asb.usage_unpriced_note(view), f"{', '.join(order)} are unpriced: 349.3M tokens not in the cost.")
+        self.assertEqual(view["unpriced_models"], order)
+        self.assertEqual(asb.usage_unpriced_note(view), "2 unpriced models: 349.3M tokens not in the cost.")
         self.assert_consistent(view, "cost")
 
     def test_prices_text(self):
