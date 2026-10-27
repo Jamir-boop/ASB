@@ -7,6 +7,7 @@ import gc
 import importlib.util
 import io
 import json
+import math
 import os
 import queue
 import random
@@ -6775,7 +6776,8 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assert_blocks_side_by_side(window)
         found, round_bounds = window.round.compute_bounds(window)
         self.assertTrue(found)
-        self.assertAlmostEqual(round_bounds.get_x() + 160, window.get_width() / 2, delta=8)
+        self.assertEqual((round_bounds.get_width(), round_bounds.get_height()), (240, 240))
+        self.assertAlmostEqual(round_bounds.get_x() + 120, window.get_width() / 2, delta=8)
         self.assertEqual(len(self.children(window.figures)), 5)
         self.assertIn("Machines", [child.get_label() for child in self.children(window.models) if child.has_css_class("asb-usage-head")])
         small = self.window(size=(600, 900))
@@ -6801,6 +6803,25 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(title.compute_bounds(wide)[1].get_x(), wide.figures.get_prev_sibling().compute_bounds(wide)[1].get_x())
         self.assertEqual(wide.overview.get_orientation(), asb.Gtk.Orientation.HORIZONTAL)
         self.assertEqual(wide.content.get_margin_start(), 24)
+        self.assert_no_new_warnings()
+
+    def test_the_narrow_ring_scales_its_drawing_and_hit_test(self):
+        window = self.window(size=(860, 900))
+        ring = window.round
+        self.assertTrue(ring.arcs)
+        for arc in ring.arcs:
+            radius, angle = (arc["r0"] + arc["r1"]) / 2, math.radians((arc["a0"] + arc["a1"]) / 2)
+            self.assertIs(ring.arc_at((160 + radius * math.cos(angle)) * .75, (160 + radius * math.sin(angle)) * .75), arc)
+        ring.total_text, ring.sub_text = "$123,456.78", "Claude Code on a-very-long-machine-name"
+        (value, *_), (sub, *_) = ring.center_layouts()
+        self.assertLessEqual(value.get_pixel_extents()[1].width, 2 * 92 * .75 - 16)
+        self.assertGreaterEqual(value.get_font_description().get_size() / asb.Pango.SCALE, 12)
+        self.assertTrue(sub.is_ellipsized())
+        self.assertLessEqual(sub.get_pixel_extents()[1].width, 2 * 92 * .75 - 16)
+        wide = self.window()
+        (value, *_), _sub = wide.round.center_layouts()
+        self.assertEqual(wide.round.total_text, "$2,343.50")
+        self.assertEqual(value.get_font_description().get_size() / asb.Pango.SCALE, 26)
         self.assert_no_new_warnings()
 
     def test_row_columns_keep_their_width(self):

@@ -9414,11 +9414,13 @@ class UsageBar(Gtk.Widget):
 
 class UsageRound(Gtk.Widget):
     """The round chart: machines on the inner ring, their apps on the outer ring, and the total or the hovered arc in the center."""
-    SIZE = 320
+    SIZE = 320  # The frame of usage_round_arcs.
+    HOLE = 92  # The inner radius of the rings in usage_round_arcs.
 
     def __init__(self):
-        super().__init__(accessible_role=Gtk.AccessibleRole.IMG, width_request=self.SIZE, height_request=self.SIZE,
-                         halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
+        super().__init__(accessible_role=Gtk.AccessibleRole.IMG, halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
+        self.size = self.SIZE
+        self.set_size_request(self.size, self.size)
         self.update_property([Gtk.AccessibleProperty.LABEL], ["Usage by machine and app"])
         self.arcs, self.total_text, self.sub_text, self.format = [], "", "", str
         self.hover, self.raised = None, 0
@@ -9434,6 +9436,12 @@ class UsageRound(Gtk.Widget):
         self.hover = None
         self.queue_draw()
 
+    def set_size(self, size):
+        if size != self.size:
+            self.size = size
+            self.set_size_request(size, size)
+            self.queue_draw()
+
     def center(self):
         """The center lines: the hovered arc, else the total."""
         if self.hover:
@@ -9441,6 +9449,8 @@ class UsageRound(Gtk.Widget):
         return self.total_text, self.sub_text
 
     def arc_at(self, x, y):
+        scale = self.SIZE / self.size
+        x, y = x * scale, y * scale
         half = self.SIZE / 2
         radius = math.hypot(x - half, y - half)
         angle = math.degrees(math.atan2(y - half, x - half))
@@ -9461,10 +9471,33 @@ class UsageRound(Gtk.Widget):
         self.raised = value
         self.queue_draw()
 
+    def center_layouts(self):
+        """The center lines as (layout, x, y, color). The value fits the hole by its font size; a long label ends with …."""
+        palette, half, scale = self.get_root().palette, self.size / 2, self.size / self.SIZE
+        room = 2 * self.HOLE * scale - 16
+        value, sub = self.center()
+        lines = []
+        # The preview places the text baselines 6 px above and 18 px below the center.
+        for text, size, weight, mono, color, baseline in ((value, round(26 * scale), Pango.Weight.SEMIBOLD, True, palette["text"], half - 6),
+                                                          (sub, 12, Pango.Weight.NORMAL, False, palette["dim"], half + 18)):
+            layout = activity_layout(self, text, size, weight, mono)
+            if mono:
+                width = layout.get_pixel_extents()[1].width
+                if width > room:
+                    layout = activity_layout(self, text, max(12, int(size * room / width)), weight, mono)
+            else:
+                layout.set_width(int(room * Pango.SCALE))
+                layout.set_ellipsize(Pango.EllipsizeMode.END)
+            width = layout.get_pixel_extents()[1].width
+            lines.append((layout, half - width / 2, baseline - layout.get_baseline() / Pango.SCALE, alpha_color(color)))
+        return lines
+
     def do_snapshot(self, snapshot):
         if not ACTIVITY_PATHS:
             return
-        palette, half = self.get_root().palette, self.SIZE / 2
+        half = self.SIZE / 2
+        snapshot.save()
+        snapshot.scale(self.size / self.SIZE, self.size / self.SIZE)
         for arc in self.arcs:
             raised = arc is self.hover and self.raised
             if raised:
@@ -9475,13 +9508,9 @@ class UsageRound(Gtk.Widget):
                                  alpha_color(arc["color"]))
             if raised:
                 snapshot.restore()
-        value, sub = self.center()
-        # The preview places the text baselines 6 px above and 18 px below the center.
-        for text, size, weight, mono, color, baseline in ((value, 26, Pango.Weight.SEMIBOLD, True, palette["text"], half - 6),
-                                                          (sub, 12, Pango.Weight.NORMAL, False, palette["dim"], half + 18)):
-            layout = activity_layout(self, text, size, weight, mono)
-            width = layout.get_pixel_extents()[1].width
-            snapshot_layout(snapshot, layout, half - width / 2, baseline - layout.get_baseline() / Pango.SCALE, alpha_color(color))
+        snapshot.restore()
+        for layout, x, y, color in self.center_layouts():
+            snapshot_layout(snapshot, layout, x, y, color)
 
 
 class UsageChart(Gtk.Widget):
@@ -9884,6 +9913,7 @@ class UsageWindow(ActivityWindow):
         self.round_cell.set_valign(Gtk.Align.CENTER if self.narrow else Gtk.Align.START)
         self.round.set_halign(Gtk.Align.CENTER if self.narrow else Gtk.Align.START)
         self.round.set_hexpand(self.narrow)
+        self.round.set_size(240 if self.narrow else UsageRound.SIZE)
         self.blocks.set_orientation(Gtk.Orientation.VERTICAL if self.small else Gtk.Orientation.HORIZONTAL)
         self.blocks.set_spacing(20 if self.small else 36)
 
