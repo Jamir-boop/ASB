@@ -240,6 +240,7 @@ export async function readAntigravityUsage(roots, sinceMs, { cache = new Map(), 
           let cached = cache.get(canonical);
           if (cached?.fingerprint !== fingerprint) {
             changed = true;
+            cache.delete(canonical);
             database = open ? open(canonical) : new sqlite.DatabaseSync(canonical, { readOnly: true });
             const candidates = await readDatabase(database, stat.mtimeMs, pause);
             cached = { fingerprint, candidates };

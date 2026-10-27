@@ -106,6 +106,27 @@ test('union-find merges shared keys across roots and keeps max counts and the be
   assert.equal(cache.has(file), false);
 });
 
+test('a failed read of a changed database is read again when the old fingerprint comes back', { skip: !sqlite }, async (t) => {
+  const { dir, seed } = await setup(t);
+  const a = await seed('a.db', [generation(usage('key-a', 10), 'Model A')]);
+  await seed('b.db', [generation(usage('key-b', 20), 'Model B')]);
+  const cache = new Map();
+  let fail = false;
+  const open = (file) => {
+    if (fail && file === a) { fail = false; throw new Error('SQLITE_BUSY (synthetic)'); }
+    return new sqlite.DatabaseSync(file, { readOnly: true });
+  };
+  const models = (records) => records.map((record) => record.model).sort();
+  assert.deepEqual(models(await readAntigravityUsage([dir], 0, { cache, open })), ['model-a', 'model-b']);
+  // Antigravity opens a.db: an empty WAL file changes the fingerprint, and this read fails.
+  await fs.writeFile(`${a}-wal`, '');
+  fail = true;
+  assert.deepEqual(models(await readAntigravityUsage([dir], 0, { cache, open })), ['model-b']);
+  // The WAL file goes with no write, so the fingerprint is the first one again.
+  await fs.rm(`${a}-wal`);
+  assert.deepEqual(models(await readAntigravityUsage([dir], 0, { cache, open })), ['model-a', 'model-b']);
+});
+
 test('broken files, missing tables, decode failures, and links do not hide other files', { skip: !sqlite }, async (t) => {
   const { dir, seed } = await setup(t);
   await fs.writeFile(path.join(dir, 'a.db'), 'not SQLite');
