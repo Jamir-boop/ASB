@@ -8611,7 +8611,7 @@ MESSAGE_STATUS_TEXT = {"accepted": "text", "written": "#959ba3", "held": "warn",
 
 
 class MessagesWindow(ActivityWindow):
-    """The Messages window: the Roundtable of the machine group, its time strip, and the ledger or a thread."""
+    """The Messages window: the Roundtable of the machine group, and the ledger or a thread."""
     KIND = "messages"
     TITLE = "Messages"
     ROUTE = "/api/activity/messages"
@@ -9947,9 +9947,8 @@ class UsageWindow(ActivityWindow):
 
     def render_chart(self, view, show):
         if self.split == "app":
-            other = [""] if any(row["id"] == "" for row in view["apps"]) else []
-            apps = [app for app in USAGE_APPS if app in ACTIVITY_APPS or any(row["id"] == app for row in view["apps"])] + other
-            series = [(app, ACTIVITY_APP_LABELS[app], ACTIVITY_APP_COLORS[app]) for app in apps]
+            shown = {row["id"] for row in view["apps"]}
+            series = [(app, ACTIVITY_APP_LABELS[app], ACTIVITY_APP_COLORS[app]) for app in USAGE_APPS + ("",) if app in ACTIVITY_APPS or app in shown]
         else:
             series = [(machine["id"], machine["name"], machine["hue"]) for machine in view["machines"]]
         key = (self.period, self.metric, self.split, frozenset(self.machines_on()))

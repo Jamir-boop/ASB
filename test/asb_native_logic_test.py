@@ -175,7 +175,6 @@ class ActivityHelperChecks(unittest.TestCase):
         self.assertEqual(set(asb.ACTIVITY_APP_ICONS), set(asb.ACTIVITY_APP_LABELS))
         self.assertEqual(asb.ACTIVITY_APP_COLORS["claude"], "#d97757")
         self.assertEqual(asb.ACTIVITY_TOKEN_COLORS, {"cacheRead": "#4b5058", "cacheWrite": "#6b7179", "uncached": "#959ba3", "output": "#e4e6e8"})
-        self.assertEqual([key for key, _label in asb.MESSAGE_PERIODS], ["24h", "7d", "30d"])
         self.assertEqual(asb.USAGE_PERIODS[-2:], (("90d", "90 days"), ("all", "All time")))
         self.assertEqual(asb.MESSAGE_PERIODS, (("24h", "24 hours"), ("7d", "7 days"), ("30d", "30 days")))
 
