@@ -903,9 +903,9 @@ const fs = await import('node:fs/promises');
 const { createHash } = await import('node:crypto');
 const config = JSON.parse(process.env.ASB_CONFIG);
 // Paths differ for each run and each platform, so a string with the test folder is left out. Rows go in ID order.
-// The old rows had no sideChat field; only its false value is left out of this comparison.
+// The old rows had no sideChat or childWaitAtMs field; sideChat false and every childWaitAtMs are left out of this comparison.
 const rows = async () => JSON.stringify((await claude.loadClaudeDesktopCodeThreads({ ...config.options, nowMs: config.nowMs })).threads
-  .sort((a, b) => a.id.localeCompare(b.id)), (key, value) => key === 'sideChat' && value === false ? undefined
+  .sort((a, b) => a.id.localeCompare(b.id)), (key, value) => key === 'sideChat' && value === false || key === 'childWaitAtMs' ? undefined
     : typeof value === 'string' && value.includes(config.home) ? '' : value);
 const times = async () => { for (const file of config.files) await fs.utimes(file, config.nowMs / 1000, config.nowMs / 1000); };
 await times();

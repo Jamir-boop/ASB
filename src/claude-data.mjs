@@ -792,6 +792,7 @@ export function baseClaudeThread({
     groupTaskEndKind: signals?.groupTaskEndKind || '',
     childWorkUnknown: Boolean(signals?.childWorkUnknown),
     childEndGraceAtMs: signals?.childEndGraceAtMs || 0,
+    childWaitAtMs: signals?.childWaitAtMs || 0,
     rolloutPath: '',
     gitBranch: signals?.gitBranch || '',
     gitSha: '',
@@ -837,10 +838,12 @@ export function applyClaudeAppApproval(thread, approvals, nowMs, liveSinceMs = 0
   // The transcript already shows AskUserQuestion, ExitPlanMode, and the permission-named tools.
   if (!request || isPermissionToolUse({ name: request.tool })) return thread;
   if (liveSinceMs >= request.atMs + 1_000) return thread;
-  // A turn end after the request means that it was answered; parallel tool results do not.
+  // A turn end after the request means that it was answered; parallel tool results do not. A running child that wrote nothing
+  // after the request can be the agent that waits: the turn end of the main chat does not answer it. Log times have whole seconds.
+  const childMayWait = thread.childWaitAtMs > 0 && thread.childWaitAtMs < request.atMs + 1_000;
   const turnEndAtMs = Math.max(Number(thread.latestAgentFinalAtMs || 0), Number(thread.latestUserMessageAtMs || 0),
     Number(thread.latestTaskEndedAtMs || 0));
-  if (turnEndAtMs >= request.atMs + 2_000) return thread;
+  if (turnEndAtMs >= request.atMs + 2_000 && !childMayWait) return thread;
   // Approvals that the user answers at once must not flash Waiting or play the Needs input sound.
   if (nowMs - request.atMs < CLAUDE_APPROVAL_GRACE_MS) return { ...thread, approvalCheckAtMs: request.atMs + CLAUDE_APPROVAL_GRACE_MS };
   // Only the log shows the answer, so check again every 5 s while the wait shows.
@@ -1133,6 +1136,8 @@ export async function readClaudeRootSignals(entry, subagents, options, agentLogs
   const work = [root];
   const nowMs = options.nowMs || Date.now();
   let unknown = false, childEndGraceAtMs = 0;
+  // The oldest last activity of a running child: a child that wrote nothing since can wait for an approval.
+  let childWaitAtMs = 0;
   // Only the turn records of a linked child give a time: the file time of a child log also moves with no turn (a copy, an open).
   let updatedAtMs = 0;
   for (const [agentId, link] of root.agents) {
@@ -1150,8 +1155,11 @@ export async function readClaudeRootSignals(entry, subagents, options, agentLogs
       const atMs = Math.max(-1, ...await Promise.all((own.length ? own : logs).map(async (log) => (
         (await claudeFileStat(log.filePath, options).catch(() => null))?.mtimeMs ?? -1))));
       if (atMs < link.startedAtMs) unknown = true;
-      else work.push({ running: true, kind: 'task_started', startedAtMs: link.requestStartedAtMs || link.startedAtMs,
-        activityAtMs: atMs, eventAtMs: atMs });
+      else {
+        work.push({ running: true, kind: 'task_started', startedAtMs: link.requestStartedAtMs || link.startedAtMs,
+          activityAtMs: atMs, eventAtMs: atMs });
+        childWaitAtMs = childWaitAtMs ? Math.min(childWaitAtMs, atMs) : atMs;
+      }
       continue;
     }
     let child = childrenById.get(`agent-${agentId}`);
@@ -1180,6 +1188,10 @@ export async function readClaudeRootSignals(entry, subagents, options, agentLogs
         activityAtMs: lifecycle.eventAtMs, eventAtMs: lifecycle.eventAtMs });
       continue;
     }
+    if (lifecycle.running === true) {
+      const atMs = coerceNumber(lifecycle.activityAtMs) || coerceNumber(lifecycle.eventAtMs);
+      childWaitAtMs = childWaitAtMs ? Math.min(childWaitAtMs, atMs) : atMs;
+    }
     work.push({ ...lifecycle, startedAtMs: link.requestStartedAtMs || lifecycle.startedAtMs || link.startedAtMs,
       taskStartedAtMs: lifecycle.endedAtMs && lifecycle.startedAtMs > lifecycle.endedAtMs
         ? lifecycle.startedAtMs : link.requestStartedAtMs || lifecycle.startedAtMs || link.startedAtMs });
@@ -1199,6 +1211,7 @@ export async function readClaudeRootSignals(entry, subagents, options, agentLogs
       lifecycleRunning: running,
       childWorkUnknown: unknown,
       childEndGraceAtMs,
+      childWaitAtMs,
       latestTaskStartedAtMs: root.promptStartedAtMs,
       latestTaskEndedAtMs: root.endedAtMs,
       latestTaskEndKind: root.endKind,

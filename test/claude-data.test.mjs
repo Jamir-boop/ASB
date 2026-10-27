@@ -1400,7 +1400,7 @@ test('the group time of a Claude row follows the turn records of a linked child,
   assert.deepEqual(await load(), [resumeNowMs - 48_000, resumeNowMs - 10_000, resumeNowMs - 10_000]);
 });
 
-test('app approval tool, process start, turn end, and grace rules', () => {
+test('app approval tool, process start, turn end, and grace rules', async (t) => {
   const atMs = new Date(2026, 9, 25, 7, 55, 48).getTime();
   const thread = { id: 'claude-desktop-code:local_approval', externalId: 'local_approval', provider: 'claude-desktop-code',
     transcriptActivityAtMs: atMs, pendingToolAtMs: atMs - 1000, lifecycleRunning: true };
@@ -1420,6 +1420,16 @@ test('app approval tool, process start, turn end, and grace rules', () => {
     const ended = { ...thread, [field]: atMs + 2000 };
     assert.equal(applyClaudeAppApproval(ended, approvals(), atMs + 20_000), ended, field);
     assert.equal(applyClaudeAppApproval({ ...thread, [field]: atMs + 1999 }, approvals(), atMs + 20_000).awaitingPermission, true, field);
+  }
+  for (const field of ['latestAgentFinalAtMs', 'latestUserMessageAtMs', 'latestTaskEndedAtMs']) {
+    for (const offset of [-10_000, 999, 1000, null]) {
+      await t.test(`${field}: child wait ${offset === null ? 'absent' : offset}`, () => {
+        const ended = { ...thread, [field]: atMs + 5000, childWaitAtMs: offset === null ? 0 : atMs + offset };
+        const actual = applyClaudeAppApproval(ended, approvals(), atMs + 20_000);
+        if (offset === -10_000 || offset === 999) assert.equal(actual.awaitingPermission, true);
+        else assert.equal(actual, ended);
+      });
+    }
   }
   assert.deepEqual(applyClaudeAppApproval(thread, approvals(), atMs + 9999), { ...thread, approvalCheckAtMs: atMs + 10_000 });
   const waiting = applyClaudeAppApproval(thread, approvals(), atMs + 10_000);
@@ -1505,6 +1515,64 @@ test('desktop Claude loads an app approval for an open browser tool', async (t) 
   await rename(path.join(appDir, 'logs', 'next.log'), path.join(appDir, 'logs', 'main.log'));
   const warned = (await result()).provider;
   assert.deepEqual([warned.status, warned.message], ['warning', 'ASB cannot read the approvals in the Claude app log. Update ASB.']);
+});
+
+test('an approval of a background child that waits stays after the main turn ends', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'asb-approval-child-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const appDir = path.join(dir, 'Claude');
+  const metadataDir = path.join(appDir, 'claude-code-sessions', 'account', 'organization');
+  const projectsDir = path.join(dir, 'projects');
+  const projectDir = path.join(projectsDir, 'synthetic-project');
+  const sessionId = 'local_cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa';
+  const cliSessionId = 'dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb';
+  const requestId = '44444444-5555-4666-8777-888888888888';
+  const atMs = resumeNowMs;
+  const nowMs = atMs + 20_000;
+  const logTime = (offset) => {
+    const date = new Date(atMs + offset);
+    const pad = (value) => String(value).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  };
+  const childDir = path.join(projectDir, cliSessionId, 'subagents');
+  await mkdir(metadataDir, { recursive: true });
+  await mkdir(childDir, { recursive: true });
+  await mkdir(path.join(appDir, 'logs'));
+  await writeFile(path.join(metadataDir, `${sessionId}.json`), JSON.stringify({ sessionId, cliSessionId }));
+  await writeFile(path.join(projectDir, `${cliSessionId}.jsonl`), jsonl([
+    ...resumeLaunch('kid'), resumeNotice(4000, 'other'), resumePrompt(5000), resumeEnd(6000),
+  ]));
+  const childFile = path.join(childDir, 'agent-kid.jsonl');
+  const childRecords = [resumeMessage(-47_000), resumeEvent('assistant', -10_000, { message: { role: 'assistant', content: [
+    { type: 'tool_use', id: 'synthetic_preview', name: 'mcp__Claude_Browser__preview_start', input: { url: 'https://synthetic.example' } },
+  ] } })];
+  await writeFile(childFile, jsonl(childRecords));
+  const logFile = path.join(appDir, 'logs', 'main.log');
+  await writeFile(logFile,
+    `${logTime(0)} [info] Emitted tool permission request ${requestId} for browser:open_site in session ${sessionId}\n`);
+  if (process.platform === 'linux') {
+    const registryDir = path.join(path.dirname(projectsDir), 'sessions');
+    await mkdir(registryDir);
+    await writeFile(path.join(registryDir, `${process.pid}.json`), JSON.stringify({ pid: process.pid,
+      procStart: await processStart(process.pid), name: 'synthetic-child-approval', sessionId: cliSessionId,
+      hostSessionId: sessionId, status: 'busy', startedAt: atMs - 60_000 }));
+  }
+  const load = async () => (await loadClaudeDesktopCodeThreads({ appDir, projectsDir, nowMs })).threads;
+  const threads = await load();
+  assert.equal(threads[0].awaitingPermission, true);
+  assert.equal(threads[0].childWaitAtMs, atMs - 10_000);
+  assert.equal(threads[0].liveWaitingFor, 'permission prompt');
+  assert.equal(buildSwitchboardDashboard(threads, [], nowMs).threads[0].state, 'waiting');
+  await appendFile(childFile, jsonl([
+    resumeEvent('user', 3000, { message: { content: [{ type: 'tool_result', tool_use_id: 'synthetic_preview', content: 'Opened.' }] } }),
+    resumeEnd(3000),
+  ]));
+  assert.notEqual((await load())[0].awaitingPermission, true, 'the child finished after the approval');
+  await writeFile(childFile, jsonl(childRecords));
+  assert.equal((await load())[0].awaitingPermission, true, 'the restored child still waits');
+  await appendFile(logFile,
+    `${logTime(3000)} [info] Received permission response for ${requestId}: once (tool: browser:open_site)\n`);
+  assert.notEqual((await load())[0].awaitingPermission, true, 'the app logged the approval response');
 });
 
 test('on Windows an app approval counts only with a live registry record, and the registry statuses apply as on Linux', async (t) => {
