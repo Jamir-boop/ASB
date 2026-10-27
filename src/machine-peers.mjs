@@ -168,7 +168,7 @@ export function validActivity(value) {
     && KEY(item.to) && NUMBER(item.atMs) && ACTIVITY_GROUPS.includes(item.status) && ACTIVITY_REASONS.includes(item.reason)
     && ['in', 'out', 'both'].includes(item.direction)).slice(-MAX_ACTIVITY_MESSAGES)
     .map(({ id, from, to, atMs, status, reason, direction }) => ({ id, from, to, atMs, status, reason, direction }));
-  const usage = value.usage.filter((item) => item && typeof item === 'object' && ['codex', 'claude', 'opencode'].includes(item.app)
+  const usage = value.usage.filter((item) => item && typeof item === 'object' && typeof item.app === 'string' && item.app.length <= 200
     && typeof item.model === 'string' && item.model.length <= 200 && NUMBER(item.hourMs) && item.tokens && typeof item.tokens === 'object'
     && ['uncached', 'cacheRead', 'cacheWrite', 'output'].every((key) => COUNT(item.tokens[key]))).slice(0, MAX_ACTIVITY_USAGE)
     .map(({ app, model, hourMs, tokens }) => ({ app, model, hourMs, tokens: { uncached: tokens.uncached, cacheRead: tokens.cacheRead,

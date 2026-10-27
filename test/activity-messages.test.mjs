@@ -279,6 +279,10 @@ test('the group merge: one record per ID with the receiver status, offline membe
   assert.deepEqual(validActivity({ messages: [{ id: 'x', from: 'a', to: 'b', atMs: 1, status: 'held', reason: '', direction: 'in', text: 'T' }], usage: [] }).messages,
     [{ id: 'x', from: 'a', to: 'b', atMs: 1, status: 'held', reason: '', direction: 'in' }]);
   assert.equal(validActivity({ messages: {} }), null);
+  // Contract section 1: every app string of a member shows (Other in the UIs for an unknown app); a long or non-string app is dropped.
+  const memberUsage = (app) => ({ app, model: 'm', hourMs: 3_600_000, tokens: { uncached: 1, cacheRead: 0, cacheWrite: 0, output: 1 } });
+  const apps = ['codex', 'claude', 'opencode', 'antigravity', 'grok', 'pi', 'cursor'];
+  assert.deepEqual(validActivity({ messages: [], usage: [...apps, 'x'.repeat(201), 7].map(memberUsage) }).usage.map((item) => item.app), apps);
   await machineGroup.activity('all');
   assert.equal(calls.filter((item) => item.startsWith('/peer/v1/activity')).at(-1), '/peer/v1/activity?period=all');
 });
