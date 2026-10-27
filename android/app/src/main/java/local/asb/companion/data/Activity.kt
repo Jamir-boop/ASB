@@ -425,8 +425,16 @@ fun usageTotals(reply: ActivityUsage, off: Set<String> = emptySet()): UsageTotal
 }
 
 /** Refetch every 2 s while the first scan runs or the prices load, else every 10 s. */
-fun usageRefreshMs(reply: ActivityUsage?): Long =
-    if (reply != null && (!reply.scan.complete || reply.prices.status == "loading")) 2_000L else 10_000L
+fun usageRefreshMs(reply: ActivityUsage?): Long = when {
+    reply != null && (!reply.scan.complete || reply.prices.status == "loading") -> 2_000L
+    // All time changes slowly, and its reply is the largest.
+    reply?.period == "all" -> 60_000L
+    else -> 10_000L
+}
+
+/** [old] when [next] differs from it only in nowMs, so the screen does not compute the totals again. */
+fun keptUsage(old: ActivityUsage?, next: ActivityUsage): ActivityUsage =
+    if (old != null && next.copy(nowMs = 0) == old.copy(nowMs = 0)) old else next
 
 /** Turn a machine on or off; the last machine that is on stays on. */
 fun toggleMachine(machineIds: List<String>, off: Set<String>, id: String): Set<String> = when {

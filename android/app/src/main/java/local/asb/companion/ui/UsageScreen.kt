@@ -87,6 +87,7 @@ import local.asb.companion.data.appLabel
 import local.asb.companion.data.appRows
 import local.asb.companion.data.chartBars
 import local.asb.companion.data.chartSeries
+import local.asb.companion.data.keptUsage
 import local.asb.companion.data.costShares
 import local.asb.companion.data.machineHue
 import local.asb.companion.data.makerRows
@@ -135,7 +136,7 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
     var attempt by remember { mutableIntStateOf(0) }
     PollWhileResumed(api, engine, period, attempt, intervalMs = { usageRefreshMs(reply) }) {
         try {
-            reply = api.activityUsage(period, engine)
+            reply = keptUsage(reply, api.activityUsage(period, engine))
             error = null
         } catch (cause: AsbError) {
             error = cause.message

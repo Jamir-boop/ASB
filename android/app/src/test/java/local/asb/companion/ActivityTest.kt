@@ -43,11 +43,13 @@ import local.asb.companion.data.tokenShares
 import local.asb.companion.data.unpricedNote
 import local.asb.companion.data.usageFigures
 import local.asb.companion.data.usageRefreshMs
+import local.asb.companion.data.keptUsage
 import local.asb.companion.data.usageTotals
 import local.asb.companion.ui.formatTokens
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -327,6 +329,22 @@ class ActivityTest {
             37 to listOf(0, 12, 24, 36),
         )
         for ((count, expected) in cases) assertEquals(expected, (0 until count).filter { chartLabelShown(count, "month", it) })
+    }
+
+    @Test fun allTimeRefetchesEveryMinuteButEveryTwoSecondsWhileScanning() {
+        val all = usage.copy(period = "all")
+        assertEquals(60_000L, usageRefreshMs(all))
+        assertEquals(2_000L, usageRefreshMs(all.copy(scan = all.scan.copy(complete = false))))
+        assertEquals(2_000L, usageRefreshMs(all.copy(prices = all.prices.copy(status = "loading", fetchedAtMs = null))))
+        assertEquals(10_000L, usageRefreshMs(usage.copy(period = "30d")))
+    }
+
+    @Test fun aPollThatChangesOnlyTheTimeKeepsTheOldReply() {
+        assertSame(usage, keptUsage(usage, usage.copy(nowMs = usage.nowMs + 10_000)))
+        val changed = usage.copy(nowMs = usage.nowMs + 10_000, records = usage.records.drop(1))
+        assertSame(changed, keptUsage(usage, changed))
+        val first = usage.copy()
+        assertSame(first, keptUsage(null, first))
     }
 
     @Test fun usageRefetchesEveryTwoSecondsWhileScanningOrLoadingPrices() {
