@@ -84,8 +84,9 @@ test('plain wins over its compressed copy; archived and valid files survive a co
 test('streaming yields between decompressed chunks and handles an input error', { skip: !supported }, async (t) => {
   const { root } = await setup(t);
   const file = path.join(root, 'many.jsonl.zst');
+  // About 4 MB of text: more than two decompressed chunks of 1 MiB.
   const filler = JSON.stringify({ type: 'user', text: 'synthetic '.repeat(1000) });
-  await fs.writeFile(file, zlib.zstdCompressSync(`${Array(100).fill(filler).join('\n')}\n${rollout(9)}`));
+  await fs.writeFile(file, zlib.zstdCompressSync(`${Array(400).fill(filler).join('\n')}\n${rollout(9)}`));
   let pauses = 0;
   const entry = await scanFile(file, await fs.stat(file), undefined, 'codex', { pause: async () => { pauses += 1; } });
   assert.ok(pauses > 2);

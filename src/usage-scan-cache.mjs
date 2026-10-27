@@ -91,7 +91,7 @@ async function scanCompressed(file, info, format, handle, stats, pause) {
   const seen = new Set();
   const input = createReadStream(file);
   input.on('data', (chunk) => { stats.bytesRead = (stats.bytesRead || 0) + chunk.length; });
-  await pipeline(input, zlib.createZstdDecompress(), async (stream) => {
+  await pipeline(input, zlib.createZstdDecompress({ chunkSize: CHUNK_BYTES }), async (stream) => {
     let pending = [];
     for await (const chunk of stream) {
       const newline = chunk.lastIndexOf(10);
