@@ -701,8 +701,8 @@ export class PendingTracker {
     }
     row.retainedUnread = Boolean(record?.retained);
     row.retainedUnreadSource = record?.retained || '';
-    // The drawer uses the stored marks, so a chat that is Working or has an unknown read state for a time keeps its place.
-    if (record?.drawer === 1 && (record.seen > record.drawerSeen || row.questionAttention
+    // A chat that works or waits for the user leaves the drawer; an unknown read state for a time keeps its place.
+    if (record?.drawer === 1 && (record.seen > record.drawerSeen || row.state === 'working' || row.questionAttention || row.actionAttention
       || !(record.manual === 1 || record.retained || record.pending > record.ack
         || row.nativeUnread !== false && record.nativeAt > record.nativeAck))) this.set(record, 'drawer', 0);
     row.drawer = record?.drawer === 1;

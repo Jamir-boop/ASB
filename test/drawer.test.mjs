@@ -112,7 +112,8 @@ test('new attention takes a card out of the drawer', async (t) => {
   for (const [name, end, attention] of [['completion', { completionAtMs: 20 }, 'completionAttention'],
     ['failure', { completionAtMs: 10, failedAtMs: 20 }, 'failedAttention']]) {
     const { tracker } = await drawn(new PendingTracker(path.join(dir, `${name}.json`)));
-    assert.deepEqual(view(await scan(tracker, 'working', { completionAtMs: 10 })), [true, false, false], name);
+    assert.deepEqual(view(await scan(tracker, 'working', { completionAtMs: 10 })), [false, false, false], name);
+    assert.equal(await flag(tracker), 0, name);
     const ended = await scan(tracker, 'idle', end);
     assert.deepEqual([view(ended), ended[attention], await flag(tracker)], [[false, true, true], true, 0], name);
   }
@@ -142,8 +143,53 @@ test('new attention takes a card out of the drawer', async (t) => {
     [false, true, true, 'user-question', 0]);
 });
 
+test('a card that starts to work or waits for the user leaves the drawer', async (t) => {
+  await t.test('working, then a new completion', async () => {
+    const { tracker } = await drawn();
+    const working = await scan(tracker, 'working', { completionAtMs: 10 });
+    assert.deepEqual([view(working), working.state, tracker.records[id].drawer], [[false, false, false], 'working', 0]);
+    const ended = await scan(tracker, 'idle', { completionAtMs: 20 });
+    assert.deepEqual([view(ended), ended.completionAttention, ended.pendingSource, tracker.records[id].drawer],
+      [[false, true, true], true, 'observed-completion', 0]);
+  });
+
+  await t.test('working, then no new result', async () => {
+    const { tracker } = await drawn();
+    await scan(tracker, 'working', { completionAtMs: 10 });
+    for (const round of [1, 2]) {
+      const ended = await scan(tracker, 'idle', { completionAtMs: 10 });
+      assert.deepEqual([view(ended), tracker.records[id].drawer], [[false, true, true], 0], String(round));
+    }
+  });
+
+  await t.test('a permission wait', async () => {
+    const { tracker } = await drawn();
+    const waiting = await scan(tracker, 'waiting', { completionAtMs: 10, questionPending: false });
+    assert.deepEqual([waiting.drawer, waiting.pending, waiting.actionAttention, waiting.pendingSource, tracker.records[id].drawer],
+      [false, true, true, 'user-action', 0]);
+  });
+
+  await t.test('a question while working', async () => {
+    const { tracker } = await drawn();
+    const asked = await scan(tracker, 'working', { completionAtMs: 10, questionPending: true });
+    assert.deepEqual([asked.drawer, asked.questionAttention, asked.pending, asked.pendingSource, tracker.records[id].drawer],
+      [false, true, true, 'user-question', 0]);
+  });
+
+  await t.test('the saved drawer flag stays clear after a restart', async () => {
+    const statePath = path.join(await temp(t), 'pending.json');
+    const { tracker } = await drawn(new PendingTracker(statePath));
+    await scan(tracker, 'working', { completionAtMs: 10 });
+    const flag = async (value) => JSON.parse(await readFile(value.statePath, 'utf8')).records[id].drawer ?? 0;
+    assert.equal(await flag(tracker), 0);
+    const restarted = new PendingTracker(statePath);
+    const ended = await scan(restarted, 'idle', { completionAtMs: 10 });
+    assert.deepEqual([view(ended), restarted.records[id].drawer, await flag(restarted)], [[false, true, true], 0, 0]);
+  });
+});
+
 test('a drawer card keeps its place through one scan that cannot show its mark', async () => {
-  for (const away of [{ state: 'working' }, { state: 'waiting' }, { state: 'unknown' }, { state: 'idle', archived: true }]) {
+  for (const away of [{ state: 'unknown' }, { state: 'idle', archived: true }]) {
     const { tracker } = await drawn();
     const name = JSON.stringify(away);
     const { state, ...extra } = away;
@@ -169,7 +215,7 @@ test('an unknown or raised native read state with no new result keeps a card in 
   assert.deepEqual([view(raised), raised.nativeAttention, tracker.records[id].drawer], [[true, false, false], true, 1]);
 });
 
-test('a discarded result is not new attention for a drawer card', async () => {
+test('a discarded result leaves no new attention after a drawer card starts to work', async () => {
   const marks = { manual: async (tracker) => { await scan(tracker, 'idle'); await tracker.markUnread(id); return {}; },
     completion: async (tracker) => { await scan(tracker, 'idle'); await scan(tracker, 'working'); return { completionAtMs: 10 }; },
     native: async () => ({ nativeUnread: true }) };
@@ -180,10 +226,10 @@ test('a discarded result is not new attention for a drawer card', async () => {
     assert.deepEqual(view(unread), [false, true, true], name);
     await tracker.setDrawer(unread, true);
     const working = await scan(tracker, 'working', extra);
-    assert.deepEqual([working.drawer, working.unread], [true, false], name);
+    assert.deepEqual([working.drawer, working.unread], [false, false], name);
     await tracker.setDiscard(working, true);
     const ended = await scan(tracker, 'idle', { ...extra, completionAtMs: 30 });
-    assert.deepEqual(view(ended), name === 'manual' ? [true, false, false] : [false, false, false], name);
+    assert.deepEqual(view(ended), name === 'manual' ? [false, true, true] : [false, false, false], name);
     assert.deepEqual(view(await scan(tracker, 'idle', { ...extra, completionAtMs: 30 })), view(ended), name);
   }
 });
