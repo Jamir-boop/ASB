@@ -1,0 +1,78 @@
+#panel .panel-button.asb-panel,
+#panel .panel-button.asb-panel:hover,
+#panel .panel-button.asb-panel:active,
+#panel .panel-button.asb-panel:focus,
+#panel .panel-button.asb-panel:checked,
+#panel .panel-button.asb-panel:overview {
+  background-color: transparent;
+  box-shadow: none;
+}
+.asb-capsule {
+  /* St draws an inset box-shadow only on a node with a border or a background. */
+  background-color: rgba(255, 255, 255, 0.01);
+  height: 22px;
+  border-radius: 11px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+  transition-duration: 150ms;
+}
+.asb-panel:hover .asb-capsule,
+.asb-panel:focus .asb-capsule,
+.asb-panel:active .asb-capsule {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
+}
+.asb-seg {
+  height: 22px;
+  padding: 0 8px;
+  spacing: 5px;
+  font-feature-settings: "tnum";
+}
+.asb-seg-first { border-radius: 11px 0 0 11px; }
+.asb-seg-last { border-radius: 0 11px 11px 0; }
+.asb-seg-first.asb-seg-last { border-radius: 11px; }
+.asb-sep { width: 1px; background-color: rgba(255, 255, 255, 0.16); }
+.asb-seg-needs { color: rgba(255, 255, 255, 0.46); transition-duration: 200ms; }
+.asb-seg-needs.asb-on { background-color: -st-accent-color; color: -st-accent-fg-color; }
+.asb-seg-needs.asb-on.asb-flash { background-color: st-lighten(-st-accent-color, 15%); }
+.asb-seg-working { background-color: rgba(255, 255, 255, 0.06); color: rgba(255, 255, 255, 0.46); }
+.asb-seg-working.asb-on { color: rgba(255, 255, 255, 0.7); }
+.asb-panel:hover .asb-seg-working.asb-on,
+.asb-panel:focus .asb-seg-working.asb-on,
+.asb-panel:active .asb-seg-working.asb-on { color: #ffffff; }
+.asb-seg-total { color: rgba(255, 255, 255, 0.55); }
+.asb-panel:hover .asb-seg-total,
+.asb-panel:focus .asb-seg-total,
+.asb-panel:active .asb-seg-total { color: rgba(255, 255, 255, 0.8); }
+.asb-panel:active .asb-seg-working,
+.asb-panel:active .asb-seg-total { background-color: rgba(255, 255, 255, 0.12); }
+.asb-seg-total.asb-off,
+.asb-panel:hover .asb-seg-total.asb-off,
+.asb-panel:focus .asb-seg-total.asb-off,
+.asb-panel:active .asb-seg-total.asb-off { color: rgba(255, 255, 255, 0.46); background-color: transparent; }
+
+.asb-num { font-weight: bold; }
+.asb-menu .popup-menu-content {
+  width: 338px;
+  padding: 6px;
+  font-feature-settings: "tnum";
+  color: rgba(255, 255, 255, 0.7);
+}
+.asb-menu .popup-menu-item {
+  padding: 6px 9px 6px 12px;
+  spacing: 6px;
+  border-radius: 6px;
+  min-height: 0;
+}
+.asb-menu .popup-menu-ornament { width: 0; }
+.asb-menu .asb-heading { padding: 6px 9px 4px 12px; font-weight: bold; }
+.asb-heading-name { color: rgba(255, 255, 255, 0.9); }
+.asb-heading-count { color: rgba(255, 255, 255, 0.7); }
+.asb-heading-count.asb-quiet { color: rgba(255, 255, 255, 0.46); }
+.asb-accent { color: -st-accent-color; }
+.asb-kind { font-weight: bold; font-size: 12px; }
+.asb-kind-box { width: 14px; height: 14px; }
+.asb-menu .asb-time { min-width: 2.4em; }
+.asb-menu .popup-menu-item.popup-inactive-menu-item:insensitive { color: rgba(255, 255, 255, 0.7) !important; }
+.asb-menu .asb-secondary { color: rgba(255, 255, 255, 0.55) !important; }
+.asb-menu .popup-menu-item.asb-secondary:insensitive { color: rgba(255, 255, 255, 0.55) !important; }
+.asb-menu .popup-separator-menu-item { padding: 6px 32px; }
+.asb-menu .popup-separator-menu-item-separator { height: 1px; margin: 0; background-color: rgba(255, 255, 255, 0.12); }
