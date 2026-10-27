@@ -152,20 +152,6 @@ export async function scanFile(file, info, previous, app, { stats = {}, pause = 
   } finally { await handle.close(); }
 }
 
-// Drops records older than cutoffMs, and keeps the MAX_CACHE_FILES newest files.
-export function pruneScanCache(cache, cutoffMs = -Infinity) {
-  const cutoff = Math.floor(cutoffMs / QUARTER_HOUR_MS);
-  for (const [key, entry] of cache) {
-    if (entry.records.some((record) => record[0] < cutoff)) cache.set(key, { ...entry, records: entry.records.filter((record) => record[0] >= cutoff) });
-  }
-  if (cache.size > MAX_CACHE_FILES) {
-    const newest = [...cache].sort((a, b) => b[1].mtimeMs - a[1].mtimeMs).slice(0, MAX_CACHE_FILES);
-    cache.clear();
-    for (const [key, entry] of newest) cache.set(key, entry);
-  }
-  return cache;
-}
-
 export function encodeScanCache(cache) {
   const models = [];
   const index = new Map();

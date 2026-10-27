@@ -3,8 +3,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { decodeScanCache, encodeScanCache, loadUsageCache, MAX_CACHE_FILES, pathKey, pruneScanCache, QUARTER_HOUR_MS,
-  saveUsageCache, scanFile } from '../src/usage-scan-cache.mjs';
+import { decodeScanCache, encodeScanCache, loadUsageCache, pathKey, saveUsageCache, scanFile } from '../src/usage-scan-cache.mjs';
 
 const posix = process.platform !== 'win32';
 const at = Date.parse('2026-10-20T10:00:00Z');
@@ -114,20 +113,6 @@ test('a broken or unsafe cache file is ignored and replaced', async (t) => {
     assert.equal((await loadUsageCache(file)).size, 0);
   }
 });
-
-test('limits: records older than the cutoff go, and only the newest files stay', () => {
-  const cutoffMs = 100 * QUARTER_HOUR_MS;
-  const entry = (mtimeMs, quarters) => ({ app: 'codex', mtimeMs, records: quarters.map((quarter) => [quarter, 'm', 1, 0, 0, 1, null]) });
-  const cache = new Map([['old', entry(1, [99, 100, 101])]]);
-  for (let index = 0; index < MAX_CACHE_FILES; index += 1) cache.set(`f${index}`, entry(10 + index, [200]));
-  pruneScanCache(cache, cutoffMs);
-  assert.equal(cache.size, MAX_CACHE_FILES);
-  assert.ok(!cache.has('old'));
-  const kept = new Map([['old', entry(1, [99, 100, 101])]]);
-  pruneScanCache(kept, cutoffMs);
-  assert.deepEqual(kept.get('old').records.map((record) => record[0]), [100, 101]);
-});
-
 
 test('array parsers keep every record in order and both new formats survive the disk encoding', async (t) => {
   const dir = await folder(t);

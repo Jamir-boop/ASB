@@ -12,7 +12,7 @@ import { antigravityRoots, expandHome, readAntigravityUsage } from './usage-anti
 import { modelMaker } from './usage-pricing.mjs';
 import { openCodeDatabases, readOpenCodeUsage } from './usage-opencode.mjs';
 import { createRateLoader } from './usage-rates.mjs';
-import { createYielder, loadUsageCache, MAX_CACHE_FILES, pathKey, pruneScanCache, QUARTER_HOUR_MS, saveUsageCache, scanFile } from './usage-scan-cache.mjs';
+import { createYielder, loadUsageCache, MAX_CACHE_FILES, pathKey, QUARTER_HOUR_MS, saveUsageCache, scanFile } from './usage-scan-cache.mjs';
 
 export { USAGE_PERIODS };
 const HOUR_MS = 60 * 60 * 1000;
@@ -144,7 +144,6 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     if (openCodeChanged) { openCode = found; version += 1; }
     antigravity = await readAntigravityUsage(await antigravityRoots(env, homeDir), 0, { cache: antigravityCache, pause });
     for (const key of cache.keys()) if (!seen.has(key)) { cache.delete(key); changed = true; version += 1; }
-    pruneScanCache(cache);
     Object.assign(progress, { complete: true, files: files.length, scannedFiles: files.length });
     stats.scans += 1;
     dirty ||= changed;
