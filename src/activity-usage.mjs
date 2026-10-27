@@ -74,7 +74,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
   fetch = globalThis.fetch, homeDir = os.homedir(), env = process.env, platform = process.platform, refreshMs = REFRESH_MS,
   log = console.error, maxCacheFiles = MAX_CACHE_FILES } = {}) {
   const cacheFile = path.join(cacheDir, 'usage', 'usage-cache.json');
-  const stats = { bytesRead: 0, scans: 0, saves: 0, openCodeQueries: 0, openCodePages: 0 };
+  const stats = { bytesRead: 0, scans: 0, saves: 0, openCodeQueries: 0, openCodePages: 0, partBuilds: 0, parts: 0 };
   const progress = { complete: false, files: 0, scannedFiles: 0 };
   let cache = null;
   let openCode = [];
@@ -91,8 +91,10 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
 
   async function runScan() {
     const pause = createYielder();
-    cache ??= await loadUsageCache(cacheFile, { platform });
-    version += 1;
+    if (!cache) {
+      cache = await loadUsageCache(cacheFile, { platform });
+      version += 1;
+    }
     const { roots, databases } = usageRoots(await readSources(), homeDir, env);
     const files = [];
     for (const { root, app, fileName } of roots) await listTranscripts(root, app, files, pause, fileName);
@@ -118,6 +120,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     }
     const found = [];
     const queried = new Map();
+    let openCodeChanged = databases.size !== openCodeReads.size;
     for (const dataDir of databases) {
       const databaseFiles = await openCodeDatabases(dataDir);
       const signature = (await Promise.all(databaseFiles.map(async (database) => {
@@ -131,16 +134,17 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
         try { records = await readOpenCodeUsage(dataDir, 0, { stats, pause }); } catch { /* No database or another schema: no usage. */ }
         stats.openCodeQueries += 1;
         last = { signature, records };
+        openCodeChanged = true;
       }
       queried.set(dataDir, last);
       found.push(...last.records);
     }
     openCodeReads = queried;
-    openCode = found;
+    // The same arrays when nothing changed, so the next report keeps its parts.
+    if (openCodeChanged) { openCode = found; version += 1; }
     antigravity = await readAntigravityUsage(await antigravityRoots(env, homeDir), 0, { cache: antigravityCache, pause });
-    for (const key of cache.keys()) if (!seen.has(key)) { cache.delete(key); changed = true; }
+    for (const key of cache.keys()) if (!seen.has(key)) { cache.delete(key); changed = true; version += 1; }
     pruneScanCache(cache);
-    version += 1;
     Object.assign(progress, { complete: true, files: files.length, scannedFiles: files.length });
     stats.scans += 1;
     dirty ||= changed;
@@ -162,18 +166,38 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     return running;
   }
 
-  // Every token part in a stable order (by file key), so the first copy of a Claude message is always the same one.
+  // The token sums per (app, model, quarter hour), built once per change. Repeated dedupe keys count once: the files go in a
+  // stable order (by file key), so the first copy of a Claude message is always the same one. Every bucket edge is on a
+  // quarter hour, so the reports give the same records as with the single parts.
   function allParts() {
     if (parts?.version === version && parts.openCode === openCode && parts.antigravity === antigravity) return parts.list;
-    const list = [];
+    const seen = new Set();
+    const sums = new Map();
+    const add = (app, model, quarter, uncached, cacheRead, cacheWrite, output) => {
+      const id = `${app}\0${model}\0${quarter}`;
+      const sum = sums.get(id);
+      if (!sum) sums.set(id, { app, model, atMs: quarter * QUARTER_HOUR_MS, tokens: { uncached, cacheRead, cacheWrite, output } });
+      else {
+        sum.tokens.uncached += uncached; sum.tokens.cacheRead += cacheRead; sum.tokens.cacheWrite += cacheWrite; sum.tokens.output += output;
+      }
+    };
     for (const key of [...(cache?.keys() || [])].sort()) {
       const { app, records } = cache.get(key);
       for (const [quarter, model, uncached, cacheRead, cacheWrite, output, dedupeKey] of records) {
-        list.push({ app, model, atMs: quarter * QUARTER_HOUR_MS, tokens: { uncached, cacheRead, cacheWrite, output }, key: dedupeKey });
+        if (dedupeKey !== null) {
+          if (seen.has(dedupeKey)) continue;
+          seen.add(dedupeKey);
+        }
+        add(app, model, quarter, uncached, cacheRead, cacheWrite, output);
       }
     }
-    for (const record of [...openCode, ...antigravity]) list.push({ ...record, atMs: record.timestampMs, key: null });
+    for (const { app, model, timestampMs, tokens } of [...openCode, ...antigravity]) {
+      add(app, model, Math.floor(timestampMs / QUARTER_HOUR_MS), tokens.uncached, tokens.cacheRead, tokens.cacheWrite, tokens.output);
+    }
+    const list = [...sums.values()];
     parts = { version, openCode, antigravity, list };
+    stats.partBuilds += 1;
+    stats.parts = list.length;
     return list;
   }
 
