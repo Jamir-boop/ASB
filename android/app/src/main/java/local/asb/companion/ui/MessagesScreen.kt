@@ -209,19 +209,20 @@ internal fun MachineDot(hue: Color, offline: Boolean) {
         if (offline) Modifier.border(1.5.dp, hue, CircleShape) else Modifier.background(hue, CircleShape)))
 }
 
-/** A machine chip: dot, name, and state, 22 dp high with a 1 dp divider border. */
+/** A machine chip: the dot, the name, and Offline for an offline machine; 22 dp high with a 1 dp divider border. */
 @Composable
 internal fun MachineChip(machine: ActivityMachine, hue: Color, colors: ActivityColors, modifier: Modifier = Modifier,
     strike: Boolean = false) {
     Row(
-        modifier.height(22.dp).border(1.dp, colors.divider, RoundedCornerShape(4.dp)).padding(horizontal = 8.dp),
+        modifier.height(22.dp).border(1.dp, colors.divider, RoundedCornerShape(4.dp)).padding(horizontal = 8.dp)
+            .clearAndSetSemantics { contentDescription = "${machine.name}, ${machineStateText(machine)}" },
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         MachineDot(hue, machineOffline(machine))
         Text(machine.name, fontSize = 12.sp, color = colors.text, maxLines = 1,
             style = TextStyle(textDecoration = if (strike) TextDecoration.LineThrough else null))
-        Text(machineStateText(machine), fontSize = 12.sp, color = colors.muted, maxLines = 1)
+        if (machineOffline(machine)) Text(machineStateText(machine), fontSize = 12.sp, color = colors.muted, maxLines = 1)
     }
 }
 
