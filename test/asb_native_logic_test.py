@@ -1063,6 +1063,217 @@ class UsageLogicChecks(unittest.TestCase):
         self.assertLess(asb.ease_bars(.05), asb.ease_bars(.1))
 
 
+class UsageBackupChecks(unittest.TestCase):
+    def status(self, **changes):
+        return {"enabled": True, "time": "03:00", "keep": 5, "folder": "", "path": "/example/home/.config/asb/usage/backups",
+                "defaultPath": "/example/home/.config/asb/usage/backups", "nextAtMs": 1793260800000, "running": False,
+                "files": [{"name": "asb-usage-atlas-5eed0c0d-2026-10-27.json", "date": "2026-10-27", "bytes": 1234567,
+                           "modifiedAtMs": 1793174400000}], "lastError": None, **changes}
+
+    @staticmethod
+    def local_ms(*parts):
+        return int(datetime(*parts).timestamp() * 1000)
+
+    def test_usage_routes_send_the_token_need_no_changed_and_use_their_timeouts_and_texts(self):
+        token = "9a" * 32
+        for route, method, timeout in (("/api/usage/backup", "GET", 15), ("/api/usage/backup/settings", "POST", 15),
+                                       ("/api/usage/backup/now", "POST", 120), ("/api/usage/export", "GET", 120),
+                                       ("/api/usage/import", "POST", 120), ("/api/usage/export", "POST", 15),
+                                       ("/api/usage/backup/now", "GET", 15)):
+            with self.subTest(route=route, method=method):
+                transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(b'{"enabled": false}')))
+                with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": token}):
+                    self.assertEqual(asb.request_json("http://127.0.0.1:1", route, method, {}), {"enabled": False})
+                request = transport.open.call_args.args[0]
+                self.assertEqual(request.get_header("X-asb-source-token"), token)
+                self.assertEqual(request.get_header("Origin"), "http://127.0.0.1:1" if method == "POST" else None)
+                self.assertEqual(transport.open.call_args.kwargs["timeout"], timeout)
+        transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(b'{}')))
+        with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": token}):
+            asb.request_json("http://127.0.0.1:1", "/api/usagex")
+        self.assertIsNone(transport.open.call_args.args[0].get_header("X-asb-source-token"))
+        def fail(code, payload):
+            failure = SCOPE["HTTPError"]("http://127.0.0.1:1/api/usage/backup/settings", code, "Error", {}, io.BytesIO(payload))
+            with patch.dict(SCOPE, {"LOCAL_HTTP": Mock(open=Mock(side_effect=failure)), "SOURCE_TOKEN": token}):
+                with self.assertRaises(RuntimeError) as caught:
+                    asb.request_json("http://127.0.0.1:1", "/api/usage/backup/settings", "POST", {})
+            return str(caught.exception)
+        self.assertEqual(fail(400, b'{"error":"This folder does not exist."}'), "This folder does not exist.")
+        self.assertEqual(fail(404, b'{"error":"Not found."}'), "This ASB engine has no usage backups. Update ASB, then try again.")
+        self.assertEqual(fail(500, b'not json'), "Cannot load or change usage backups. Check that ASB is running, then try again.")
+        with patch.dict(SCOPE, {"LOCAL_HTTP": Mock(open=Mock(side_effect=OSError())), "SOURCE_TOKEN": token}):
+            with self.assertRaisesRegex(RuntimeError, "^Cannot load or change usage backups\\. Check that ASB is running, then try again\\.$"):
+                asb.request_json("http://127.0.0.1:1", "/api/usage/backup")
+
+    def test_short_home_path_shortens_linux_and_windows_homes(self):
+        self.assertEqual(asb.short_home_path("/home/u", "/home/u"), "~")
+        self.assertEqual(asb.short_home_path("/home/u/.config/asb", "/home/u"), "~/.config/asb")
+        self.assertEqual(asb.short_home_path("/home/user2/x", "/home/u"), "/home/user2/x")
+        self.assertEqual(asb.short_home_path("/srv/backups", "/home/u"), "/srv/backups")
+        self.assertEqual(asb.short_home_path("C:\\Users\\u\\Backups", "C:\\Users\\u"), "~\\Backups")
+        self.assertEqual(asb.short_home_path("/home/u\\x", "/home/u"), "/home/u\\x")
+
+    def test_backup_status_valid_takes_only_the_exact_shape(self):
+        made = {"name": "asb-usage-atlas-5eed0c0d-2026-10-27.json", "path": "/example/b/x.json", "machines": 3, "hours": 3071}
+        for value in (self.status(), self.status(nextAtMs=None, files=[]), self.status(lastError={"atMs": 1, "message": "Disk full."}),
+                      self.status(made=made), self.status(keep=1, time="23:59"), self.status(keep=30, time="00:00")):
+            self.assertTrue(asb.backup_status_valid(value), value)
+        files = self.status()["files"][0]
+        for value in (None, [], {}, self.status(extra=1), {k: v for k, v in self.status().items() if k != "running"},
+                      self.status(enabled=1), self.status(running=None), self.status(time="3:00"), self.status(time="24:00"),
+                      self.status(time="12:60"), self.status(keep=0), self.status(keep=31), self.status(keep=True), self.status(keep=5.0),
+                      self.status(folder=None), self.status(path=1), self.status(defaultPath=None), self.status(nextAtMs="1"),
+                      self.status(nextAtMs=True), self.status(files={}), self.status(files=[{**files, "bytes": "1"}]),
+                      self.status(files=[{**files, "extra": 1}]), self.status(files=[["x"]]), self.status(lastError="failed"),
+                      self.status(lastError={"atMs": 1}), self.status(lastError={"atMs": True, "message": "x"}),
+                      self.status(made={**made, "hours": None}), self.status(made={**made, "extra": 1}), self.status(made=None)):
+            self.assertFalse(asb.backup_status_valid(value), value)
+
+    def test_backup_texts_sizes_counts_and_bodies(self):
+        now = self.local_ms(2026, 10, 27, 12, 0)
+        self.assertEqual(asb.backup_when(self.local_ms(2026, 10, 27, 3, 0), now), "Today at 03:00")
+        self.assertEqual(asb.backup_when(self.local_ms(2026, 10, 26, 23, 59), now), "Yesterday at 23:59")
+        self.assertEqual(asb.backup_when(self.local_ms(2026, 10, 25, 3, 0), now), "2026-10-25 03:00")
+        self.assertEqual(asb.backup_size(512), "512 bytes")
+        self.assertEqual(asb.backup_size(1023), "1023 bytes")
+        self.assertEqual(asb.backup_size(980 * 1024 + 300), "980 KB")
+        self.assertEqual(asb.backup_size(1234567), "1.2 MB")
+        self.assertEqual(asb.backup_next_text(self.status(enabled=False, nextAtMs=None), now), "Daily backup is off.")
+        self.assertEqual(asb.backup_next_text(self.status(running=True), now), "A backup is running…")
+        self.assertEqual(asb.backup_next_text(self.status(nextAtMs=now), now), "Next backup: in a few minutes.")
+        self.assertEqual(asb.backup_next_text(self.status(nextAtMs=now - 60_000), now), "Next backup: in a few minutes.")
+        self.assertEqual(asb.backup_next_text(self.status(nextAtMs=self.local_ms(2026, 10, 27, 15, 0)), now), "Next backup: today at 15:00.")
+        self.assertEqual(asb.backup_next_text(self.status(nextAtMs=self.local_ms(2026, 10, 28, 3, 0)), now), "Next backup: tomorrow at 03:00.")
+        self.assertEqual(asb.backup_next_text(self.status(nextAtMs=self.local_ms(2026, 10, 29, 3, 0)), now), "Next backup: 2026-10-29 03:00.")
+        self.assertEqual(asb.backup_error_text(self.status()), "")
+        self.assertEqual(asb.backup_error_text(self.status(lastError={"atMs": now, "message": "Disk full."})), "Last backup failed: Disk full.")
+        self.assertEqual((asb.count_text(1, "machine"), asb.count_text(2, "machine"), asb.count_text(3071, "hour")),
+                         ("1 machine", "2 machines", "3,071 hours"))
+        self.assertEqual(asb.backup_made_text({"machines": 3, "hours": 3071}, "asb-usage-2026-10-27.json"),
+                         "Saved the usage of 3 machines (3,071 hours) to asb-usage-2026-10-27.json.")
+        self.assertEqual(asb.backup_made_text({"machines": 1, "hours": 1}, "a.json"), "Saved the usage of 1 machine (1 hour) to a.json.")
+        self.assertEqual(asb.usage_import_text({"machines": [{"machineId": "a", "name": "homeLP", "hours": 1497},
+                                                             {"machineId": "b", "name": "workLP", "hours": 62}]}),
+                         "Imported the usage of 2 machines: homeLP (1,497 hours), workLP (62 hours).")
+        self.assertEqual(asb.usage_import_text({"machines": [{"machineId": "a", "name": "atlas", "hours": 1}]}),
+                         "Imported the usage of 1 machine: atlas (1 hour).")
+        self.assertEqual(asb.backup_settings_body(1, 4, 30, 3.0, ""), {"enabled": True, "time": "04:30", "keep": 3, "folder": ""})
+        self.assertEqual(asb.backup_settings_body(False, 0, 5, 30, "/x"), {"enabled": False, "time": "00:05", "keep": 30, "folder": "/x"})
+        self.assertEqual(asb.usage_export_name(self.local_ms(2026, 10, 27, 0, 30)), "asb-usage-2026-10-27.json")
+
+    def test_backup_days_follow_the_local_zone(self):
+        previous = os.environ.get("TZ")
+        try:
+            os.environ["TZ"] = "<-03>3"
+            time.tzset()
+            utc = lambda *parts: int(datetime(*parts, tzinfo=timezone.utc).timestamp() * 1000)
+            now = utc(2026, 10, 27, 2, 0)  # 23:00 on 26 October in UTC-3.
+            self.assertEqual(asb.backup_when(utc(2026, 10, 26, 6, 0), now), "Today at 03:00")
+            self.assertEqual(asb.backup_when(utc(2026, 10, 26, 2, 0), now), "Yesterday at 23:00")
+            self.assertEqual(asb.backup_next_text(self.status(nextAtMs=utc(2026, 10, 27, 6, 0)), now), "Next backup: tomorrow at 03:00.")
+            self.assertEqual(asb.usage_export_name(now), "asb-usage-2026-10-26.json")
+        finally:
+            if previous is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = previous
+            time.tzset()
+
+    def test_export_usage_file_writes_through_a_private_temporary_file(self):
+        document = {"format": "asb-usage-export", "version": 1, "exportedAtMs": 1,
+                    "machines": [{"machineId": "a", "name": "atlas", "records": [[1], [2], [3]]},
+                                 {"machineId": "b", "name": "homeLP", "records": [[4]]}]}
+        routes = []
+        def reply(value):
+            def request(base, route, *args):
+                routes.append((base, route) + args)
+                return json.loads(json.dumps(value))
+            return request
+        with TemporaryDirectory() as folder:
+            target = os.path.join(folder, "asb-usage-2026-10-27.json")
+            with patch.dict(SCOPE, {"request_json": reply(document)}):
+                self.assertEqual(asb.export_usage_file("http://127.0.0.1:1", target),
+                                 "Saved the usage of 2 machines (4 hours) to asb-usage-2026-10-27.json.")
+            self.assertEqual(routes, [("http://127.0.0.1:1", "/api/usage/export")])
+            self.assertEqual(Path(target).read_text(), json.dumps(document, separators=(",", ":")))
+            if os.name == "posix":
+                self.assertEqual(os.stat(target).st_mode & 0o777, 0o600)
+            self.assertEqual(os.listdir(folder), ["asb-usage-2026-10-27.json"])
+            # A folder in the place of the file: the replace fails, and the temporary file goes.
+            blocked = os.path.join(folder, "blocked.json")
+            os.mkdir(blocked)
+            with patch.dict(SCOPE, {"request_json": reply(document)}):
+                with self.assertRaises(RuntimeError) as caught:
+                    asb.export_usage_file("http://127.0.0.1:1", blocked)
+            self.assertRegex(str(caught.exception), r"^Cannot save blocked\.json: .+\.$")
+            self.assertEqual(sorted(os.listdir(folder)), ["asb-usage-2026-10-27.json", "blocked.json"])
+            with patch.dict(SCOPE, {"request_json": reply(document)}):
+                with self.assertRaisesRegex(RuntimeError, r"^Cannot save x\.json: No such file or directory\.$"):
+                    asb.export_usage_file("http://127.0.0.1:1", os.path.join(folder, "missing", "x.json"))
+            with patch.dict(SCOPE, {"request_json": reply(document)}), patch.object(os, "fdopen", side_effect=OSError()):
+                with self.assertRaisesRegex(RuntimeError, r"^Cannot save x\.json: an error\.$"):
+                    asb.export_usage_file("http://127.0.0.1:1", os.path.join(folder, "x.json"))
+            self.assertEqual(sorted(os.listdir(folder)), ["asb-usage-2026-10-27.json", "blocked.json"])
+            for value in ({**document, "format": "other"}, {**document, "machines": {}}, {**document, "machines": [{"records": {}}]},
+                          {"machines": []}, None, [], "not an object"):
+                with patch.dict(SCOPE, {"request_json": reply(value)}):
+                    with self.assertRaisesRegex(RuntimeError, r"^This ASB engine gave an invalid usage export\.$"):
+                        asb.export_usage_file("http://127.0.0.1:1", os.path.join(folder, "y.json"))
+            self.assertEqual(sorted(os.listdir(folder)), ["asb-usage-2026-10-27.json", "blocked.json"])
+            # O_EXCL must not overwrite or remove a file if the random temporary name collides.
+            temporary = Path(folder, "collision.json.abcdef123456.tmp")
+            temporary.write_text("keep this file")
+            with patch.dict(SCOPE, {"request_json": reply(document)}), \
+                    patch.object(SCOPE["uuid"], "uuid4", return_value=SimpleNamespace(hex="abcdef1234560000")):
+                with self.assertRaisesRegex(RuntimeError, r"^Cannot save collision\.json: File exists\.$"):
+                    asb.export_usage_file("http://127.0.0.1:1", str(Path(folder, "collision.json")))
+            self.assertEqual(temporary.read_text(), "keep this file")
+            with patch.dict(SCOPE, {"request_json": Mock(side_effect=RuntimeError("This ASB engine has no usage backups."))}):
+                with self.assertRaisesRegex(RuntimeError, "no usage backups"):
+                    asb.export_usage_file("http://127.0.0.1:1", os.path.join(folder, "y.json"))
+
+    def test_import_usage_file_checks_the_file_and_posts_the_document(self):
+        document = {"format": "asb-usage-export", "version": 1, "exportedAtMs": 1, "machines": []}
+        result = {"machines": [{"machineId": "a", "name": "homeLP", "hours": 1497}, {"machineId": "b", "name": "workLP", "hours": 62}]}
+        with TemporaryDirectory() as folder:
+            path = os.path.join(folder, "usage.json")
+            Path(path).write_text(json.dumps(document))
+            request = Mock(return_value=result)
+            with patch.dict(SCOPE, {"request_json": request}):
+                self.assertEqual(asb.import_usage_file("http://127.0.0.1:1", path),
+                                 "Imported the usage of 2 machines: homeLP (1,497 hours), workLP (62 hours).")
+            request.assert_called_once_with("http://127.0.0.1:1", "/api/usage/import", "POST", document)
+            for reply in (None, [], {}, {"machines": {}}, {"machines": [{"name": "x"}]}, {"machines": [{"name": 1, "hours": 1}]},
+                          {"machines": [{"machineId": 1, "name": "atlas", "hours": 1}]},
+                          {"machines": [{"machineId": "a", "name": "atlas", "hours": True}]}):
+                with patch.dict(SCOPE, {"request_json": Mock(return_value=reply)}):
+                    with self.assertRaisesRegex(RuntimeError, r"^The usage import response is not valid\.$"):
+                        asb.import_usage_file("http://127.0.0.1:1", path)
+            with patch.dict(SCOPE, {"request_json": Mock(side_effect=RuntimeError("This file is not an ASB usage export."))}):
+                with self.assertRaisesRegex(RuntimeError, r"^This file is not an ASB usage export\.$"):
+                    asb.import_usage_file("http://127.0.0.1:1", path)
+            request = Mock()
+            large = os.path.join(folder, "large.json")
+            with open(large, "wb"):
+                pass
+            os.truncate(large, 64 * 1024 * 1024 + 1)
+            for name, content in (("text.json", b"not json"), ("list.json", b"[1, 2]"), ("bytes.json", b"\xff\xfe")):
+                Path(folder, name).write_bytes(content)
+            with patch.dict(SCOPE, {"request_json": request}):
+                for name, text in (("large.json", "The file is too large for an ASB usage export."),
+                                   ("missing.json", "Cannot read missing.json."), ("text.json", "This file is not an ASB usage export."),
+                                   ("list.json", "This file is not an ASB usage export."), ("bytes.json", "This file is not an ASB usage export.")):
+                    with self.subTest(name=name):
+                        with self.assertRaises(RuntimeError) as caught:
+                            asb.import_usage_file("http://127.0.0.1:1", os.path.join(folder, name))
+                        self.assertEqual(str(caught.exception), text)
+                if os.name == "posix":
+                    with self.assertRaisesRegex(RuntimeError, r"^Cannot read sub\.$"):
+                        os.mkdir(os.path.join(folder, "sub"))
+                        asb.import_usage_file("http://127.0.0.1:1", os.path.join(folder, "sub"))
+            request.assert_not_called()
+
+
 class PhoneChecks(unittest.TestCase):
     def status(self, **changes):
         return {"enabled": True, "bindAddresses": ["192.168.50.4"], "port": 4630,
@@ -1493,14 +1704,15 @@ class PhoneChecks(unittest.TestCase):
     def test_preferences_loads_phone_once_and_stops_it_on_page_and_window_hide(self):
         preferences = object.__new__(Preferences)
         preferences.owner, preferences.closed = SimpleNamespace(closed=False, report_ui=Mock()), False
-        preferences.profiles_editor = preferences.phone_editor = preferences.machines_editor = None
-        preferences.phone, preferences.machines = Mock(), Mock()
+        preferences.profiles_editor = preferences.phone_editor = preferences.machines_editor = preferences.usage_editor = None
+        preferences.phone, preferences.machines, preferences.usage = Mock(), Mock(), Mock()
         preferences.pages = Mock(get_visible_child_name=Mock(return_value="section"))
         preferences.stack = Mock(get_visible_child_name=Mock(return_value="sessions"))
         preferences.get_visible = Mock(return_value=True)
         preferences.get_mapped = Mock(return_value=True)
-        editor, machines = Mock(), Mock()
-        with patch.dict(SCOPE, {"PhoneEditor": Mock(return_value=editor), "MachinesEditor": Mock(return_value=machines)}):
+        editor, machines, usage = Mock(), Mock(), Mock()
+        with patch.dict(SCOPE, {"PhoneEditor": Mock(return_value=editor), "MachinesEditor": Mock(return_value=machines),
+                                "UsageBackupEditor": Mock(return_value=usage)}):
             preferences.section_changed()
             SCOPE["PhoneEditor"].assert_not_called()
             preferences.stack.get_visible_child_name.return_value = "phone"
@@ -1536,6 +1748,28 @@ class PhoneChecks(unittest.TestCase):
             preferences.stack.get_visible_child_name.return_value = "phone"
             preferences.section_changed()
             machines.set_active.assert_called_with(False)
+            SCOPE["UsageBackupEditor"].assert_not_called()
+            preferences.stack.get_visible_child_name.return_value = "usage"
+            preferences.section_changed()
+            preferences.section_changed()
+            SCOPE["UsageBackupEditor"].assert_called_once_with(preferences.owner, preferences)
+            preferences.usage.append.assert_called_once_with(usage)
+            usage.set_active.assert_called_with(True)
+            editor.set_active.assert_called_with(False)
+            machines.set_active.assert_called_with(False)
+            preferences.get_mapped.return_value = False
+            preferences.section_changed()
+            usage.set_active.assert_called_with(False)
+            preferences.get_mapped.return_value = True
+            preferences.section_changed()
+            usage.set_active.assert_called_with(True)
+            preferences.stack.get_visible_child_name.return_value = "machines"
+            preferences.section_changed()
+            usage.set_active.assert_called_with(False)
+            SCOPE["UsageBackupEditor"].assert_called_once()
+            preferences.cancel_dialogs, preferences.destroy = Mock(), Mock()
+            preferences.dispose()
+            usage.close.assert_called_once_with()
 
 
 class DataChecks(unittest.TestCase):
@@ -3729,7 +3963,7 @@ class NativeLogicChecks(unittest.TestCase):
         owner.closed = False
         preferences = object.__new__(Preferences)
         preferences.owner, preferences.closed, preferences.profiles_editor, preferences.phone_editor = owner, False, None, None
-        preferences.machines_editor = None
+        preferences.machines_editor = preferences.usage_editor = None
         preferences.pages = Mock(get_visible_child_name=Mock(return_value="section"))
         preferences.get_visible = Mock(return_value=True)
         preferences.get_mapped = Mock(return_value=True)

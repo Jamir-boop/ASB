@@ -1019,16 +1019,20 @@ def card_title(title):
     return text if len(text) <= CARD_TITLE_CHARS else text[:CARD_TITLE_CHARS - 1].rstrip() + "…"
 
 
-def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
-    full_path = row.get("cwd") or row.get("projectName") or "No project folder"
-    path = full_path
+def short_home_path(path, home_dir):
     home = str(Path(home_dir))
     # A Windows home (a drive or UNC root) uses a backslash; in a Linux path a backslash is part of a file name.
     separator = "\\" if ntpath.splitdrive(home)[0] else "/"
     if path == home:
-        path = "~"
-    elif path.startswith(home.rstrip(separator) + separator):
-        path = "~" + path[len(home.rstrip(separator)):]
+        return "~"
+    if path.startswith(home.rstrip(separator) + separator):
+        return "~" + path[len(home.rstrip(separator)):]
+    return path
+
+
+def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
+    full_path = row.get("cwd") or row.get("projectName") or "No project folder"
+    path = short_home_path(full_path, home_dir)
     state = row.get("state", "unknown")
     state = state if state in STATES else "unknown"
     state_word = "Stopped" if state == "idle" and row.get("lastOutcome") in ("failed", "limit") else state.capitalize()
@@ -1391,10 +1395,12 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
     agent_route = path.startswith("/api/agent/")
     engine_route = path.startswith("/api/engine/")
     activity_route = path.startswith("/api/activity/")
+    usage_route = path.startswith("/api/usage/")
     data = None
     if etag and etag[0] and method == "GET" and route.split("?")[0] == "/api/dashboard":
         headers["If-None-Match"] = etag[0]
-    if SOURCE_TOKEN and (((source_route or bridge_route) and method == "POST") or phone_route or group_route or service_route or palette_route or agent_route or engine_route):
+    if SOURCE_TOKEN and (((source_route or bridge_route) and method == "POST") or phone_route or group_route or service_route or palette_route or agent_route or engine_route
+                         or usage_route):
         headers["X-ASB-Source-Token"] = SOURCE_TOKEN
     if method == "POST":
         headers.update({"Origin": base, "Content-Type": "application/json"})
@@ -1402,13 +1408,16 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
     request = Request(base + route, data=data, headers=headers, method=method)
     try:
         # Join and leave wait for the other machines.
-        timeout = 420 if method == "POST" and path == "/api/bridge/install" else 30 if method == "POST" and path in ("/api/group/join", "/api/group/leave") else 15
+        # Usage exports, imports, and backups read or write all the usage records.
+        timeout = 420 if method == "POST" and path == "/api/bridge/install" else 30 if method == "POST" and path in ("/api/group/join", "/api/group/leave") \
+            else 120 if (method, path) in (("GET", "/api/usage/export"), ("POST", "/api/usage/backup/now"), ("POST", "/api/usage/import")) else 15
         with LOCAL_HTTP.open(request, timeout=timeout) as response:
             result = json.load(response)
         if not isinstance(result, dict):
             raise ValueError("The ASB response is not an object.")
         success = "opened" if route.endswith("/open") else "marked" if route.endswith("/mark-unread") else "changed"
-        if method == "POST" and not (bridge_route or phone_route or group_route or service_route or palette_route or agent_route or engine_route) and not result.get(success):
+        if method == "POST" and not (bridge_route or phone_route or group_route or service_route or palette_route or agent_route or engine_route
+                                     or usage_route) and not result.get(success):
             raise ValueError("The session action did not succeed.")
         if etag is not None:
             etag[0] = response.headers.get("ETag")
@@ -1418,7 +1427,7 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
             error.close()
             return None
         if bridge_route or source_route or phone_route or group_route or service_route or palette_route or agent_route or engine_route \
-                or activity_route:
+                or activity_route or usage_route:
             detail = ""
             if isinstance(error, HTTPError):
                 try:
@@ -1435,8 +1444,12 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
                 if isinstance(error, HTTPError) and error.code == 404:
                     detail = "This ASB engine has no activity data. Update ASB, then try again."
                 raise RuntimeError(detail or "Cannot load the activity. Check that ASB is running, then try again.") from error
+            if usage_route and isinstance(error, HTTPError) and error.code == 404:
+                # An engine from before the usage backups answers 404.
+                detail = "This ASB engine has no usage backups. Update ASB, then try again."
             subject = "ASB Bridge" if bridge_route else "phone access" if phone_route else "the machine group" if group_route else "the ASB service" if service_route \
-                else "the phone palette" if palette_route else "the native UI status" if agent_route else "ASB" if engine_route else "profiles"
+                else "the phone palette" if palette_route else "the native UI status" if agent_route else "ASB" if engine_route \
+                else "usage backups" if usage_route else "profiles"
             raise RuntimeError(detail or f"Cannot load or change {subject}. Check that ASB is running, then try again.") from error
         action = "open this session" if route.endswith("/open") else "change the unread setting" if route == "/api/settings/unread" \
             else "change this session" if method == "POST" else "load sessions"
@@ -1946,6 +1959,135 @@ def usage_scan_text(scan):
         return ""
     files = scan.get("files") or 0
     return f"Reading usage: {format_count(scan.get('scannedFiles') or 0)} of {format_count(files)} files" if files else "Reading usage"
+
+
+BACKUP_STATUS_KEYS = {"enabled", "time", "keep", "folder", "path", "defaultPath", "nextAtMs", "running", "files", "lastError"}
+USAGE_IMPORT_LIMIT = 64 * 1024 * 1024
+
+
+def backup_status_valid(value):
+    """True only for the status of GET /api/usage/backup, also with the "made" of a backup."""
+    def typed(item, kinds):
+        return isinstance(item, dict) and set(item) == set(kinds) and all(type(item[key]) is kind for key, kind in kinds.items())
+    if not isinstance(value, dict) or set(value) - {"made"} != BACKUP_STATUS_KEYS:
+        return False
+    error = value["lastError"]
+    return (type(value["enabled"]) is bool and type(value["running"]) is bool
+            and isinstance(value["time"], str) and re.fullmatch(r"([01][0-9]|2[0-3]):[0-5][0-9]", value["time"]) is not None
+            and type(value["keep"]) is int and 1 <= value["keep"] <= 30
+            and all(isinstance(value[key], str) for key in ("folder", "path", "defaultPath"))
+            and (value["nextAtMs"] is None or type(value["nextAtMs"]) is int)
+            and isinstance(value["files"], list)
+            and all(typed(item, {"name": str, "date": str, "bytes": int, "modifiedAtMs": int}) for item in value["files"])
+            and (error is None or typed(error, {"atMs": int, "message": str}))
+            and ("made" not in value or typed(value["made"], {"name": str, "path": str, "machines": int, "hours": int})))
+
+
+def backup_when(ms, now_ms):
+    at, now = datetime.fromtimestamp(ms / 1000), datetime.fromtimestamp(now_ms / 1000)
+    days = (now.date() - at.date()).days
+    return f"Today at {at:%H:%M}" if days == 0 else f"Yesterday at {at:%H:%M}" if days == 1 else f"{at:%Y-%m-%d %H:%M}"
+
+
+def backup_size(n):
+    return f"{n} bytes" if n < 1024 else f"{round(n / 1024)} KB" if n < 1024 * 1024 else f"{n / (1024 * 1024):.1f} MB"
+
+
+def backup_next_text(status, now_ms):
+    if not status["enabled"]:
+        return "Daily backup is off."
+    if status["running"]:
+        return "A backup is running…"
+    if status["nextAtMs"] is None or status["nextAtMs"] <= now_ms:
+        return "Next backup: in a few minutes."
+    at, now = datetime.fromtimestamp(status["nextAtMs"] / 1000), datetime.fromtimestamp(now_ms / 1000)
+    days = (at.date() - now.date()).days
+    return f"Next backup: {'today at ' if days == 0 else 'tomorrow at ' if days == 1 else f'{at:%Y-%m-%d} '}{at:%H:%M}."
+
+
+def backup_error_text(status):
+    return f"Last backup failed: {status['lastError']['message']}" if status.get("lastError") else ""
+
+
+def count_text(n, word):
+    return f"{n:,} {word}{'' if n == 1 else 's'}"
+
+
+def backup_made_text(made, file_name):
+    return f"Saved the usage of {count_text(made['machines'], 'machine')} ({count_text(made['hours'], 'hour')}) to {file_name}."
+
+
+def usage_import_text(result):
+    machines = result["machines"]
+    if not machines:
+        return "Imported the usage of 0 machines."
+    names = ", ".join(f"{machine['name']} ({count_text(machine['hours'], 'hour')})" for machine in machines)
+    return f"Imported the usage of {count_text(len(machines), 'machine')}: {names}."
+
+
+def backup_settings_body(enabled, hour, minute, keep, folder):
+    return {"enabled": bool(enabled), "time": f"{int(hour):02d}:{int(minute):02d}", "keep": int(keep), "folder": folder}
+
+
+def usage_export_name(now_ms):
+    return time.strftime("asb-usage-%Y-%m-%d.json", time.localtime(now_ms / 1000))
+
+
+def export_usage_file(base, path):
+    """Save the usage export of the engine to path. Runs in a background thread; RuntimeError has the text for the user."""
+    document = request_json(base, "/api/usage/export")
+    machines = document.get("machines") if isinstance(document, dict) else None
+    if not isinstance(document, dict) or document.get("format") != "asb-usage-export" or not isinstance(machines, list) \
+            or not all(isinstance(machine, dict) and isinstance(machine.get("records"), list) for machine in machines):
+        raise RuntimeError("This ASB engine gave an invalid usage export.")
+    name = os.path.basename(path)
+    temporary = f"{path}.{uuid.uuid4().hex[:12]}.tmp"
+    created, descriptor = False, None
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        created = True
+        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+            descriptor = None  # The file object now owns it.
+            file.write(json.dumps(document, separators=(",", ":")))
+        os.replace(temporary, path)
+    except OSError as error:
+        raise RuntimeError(f"Cannot save {name}: {error.strerror or 'an error'}.") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if created:
+            try:
+                os.remove(temporary)
+            except FileNotFoundError:
+                pass
+    return backup_made_text({"machines": len(machines), "hours": sum(len(machine["records"]) for machine in machines)}, name)
+
+
+def import_usage_file(base, path):
+    """Send the usage export at path to the engine. Runs in a background thread; RuntimeError has the text for the user."""
+    name = os.path.basename(path)
+    try:
+        if os.stat(path).st_size > USAGE_IMPORT_LIMIT:
+            raise RuntimeError("The file is too large for an ASB usage export.")
+        with open(path, "rb") as file:
+            data = file.read(USAGE_IMPORT_LIMIT + 1)
+    except OSError as error:
+        raise RuntimeError(f"Cannot read {name}.") from error
+    if len(data) > USAGE_IMPORT_LIMIT:
+        raise RuntimeError("The file is too large for an ASB usage export.")
+    try:
+        document = json.loads(data)
+    except (ValueError, RecursionError):
+        document = None
+    if not isinstance(document, dict):
+        raise RuntimeError("This file is not an ASB usage export.")
+    result = request_json(base, "/api/usage/import", "POST", document)
+    machines = result.get("machines") if isinstance(result, dict) else None
+    if not isinstance(machines, list) or not all(isinstance(machine, dict) and isinstance(machine.get("machineId"), str)
+                                                 and isinstance(machine.get("name"), str) and type(machine.get("hours")) is int
+                                                 for machine in machines):
+        raise RuntimeError("The usage import response is not valid.")
+    return usage_import_text(result)
 
 
 class EventStream:
@@ -3903,11 +4045,313 @@ class MachinesEditor(Gtk.Box):
         self.closed = True
 
 
+class UsageBackupEditor(Gtk.Box):
+    def __init__(self, owner, preferences):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.owner, self.preferences, self.base = owner, preferences, owner.base
+        self.closed = self.active = self.loaded = self.loading = False
+        self.generation, self.status, self.folder = 0, {}, ""
+        self.cancellable = Gio.Cancellable()
+        self.settings = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.settings.add_css_class("boxed-list")
+        self.enabled = Adw.SwitchRow(title="Daily backup", subtitle="Saves the usage of every machine in the group to one file a day.")
+        self.enabled.set_subtitle_lines(0)
+        self.time_row = Adw.ActionRow(title="Time")
+        clock = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER)
+        self.hour = Gtk.SpinButton.new_with_range(0, 23, 1)
+        self.minute = Gtk.SpinButton.new_with_range(0, 59, 1)
+        for spin, name in ((self.hour, "Backup hour"), (self.minute, "Backup minute")):
+            spin.set_numeric(True)
+            spin.set_wrap(True)
+            spin.set_width_chars(2)
+            spin.set_valign(Gtk.Align.CENTER)
+            spin.connect("output", self.two_digits)
+            spin.update_property([Gtk.AccessibleProperty.LABEL], [name])
+        clock.append(self.hour)
+        clock.append(Gtk.Label(label=":"))
+        clock.append(self.minute)
+        self.time_row.add_suffix(clock)
+        self.time_row.set_activatable_widget(self.hour)
+        self.keep = Adw.SpinRow.new_with_range(1, 30, 1)
+        self.keep.set_title("Files to keep")
+        self.keep.set_subtitle("Older backup files of this machine are deleted.")
+        self.keep.set_subtitle_lines(0)
+        self.folder_row = Adw.ActionRow(title="Folder", use_markup=False)
+        self.open_folder = Gtk.Button(icon_name="folder-open-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Open the folder")
+        self.open_folder.add_css_class("flat")
+        self.open_folder.update_property([Gtk.AccessibleProperty.LABEL], ["Open the backup folder"])
+        self.open_folder.connect("clicked", self.open_backup_folder)
+        self.change_folder = Gtk.Button(label="Change…", valign=Gtk.Align.CENTER)
+        self.change_folder.connect("clicked", self.choose_folder)
+        self.folder_row.add_suffix(self.open_folder)
+        self.folder_row.add_suffix(self.change_folder)
+        self.default_row = Adw.ActionRow(title="Default folder", use_markup=False, visible=False)
+        self.use_default = Gtk.Button(label="Use", valign=Gtk.Align.CENTER)
+        self.use_default.update_property([Gtk.AccessibleProperty.LABEL], ["Use the default folder"])
+        self.use_default.connect("clicked", lambda *_args: self.set_folder(""))
+        self.default_row.add_suffix(self.use_default)
+        for row in (self.enabled, self.time_row, self.keep, self.folder_row, self.default_row):
+            self.settings.append(row)
+        self.append(self.settings)
+        actions = Gtk.Box(spacing=8)
+        self.apply = Gtk.Button(label="Apply")
+        self.apply.connect("clicked", self.apply_settings)
+        actions.append(self.apply)
+        self.retry = Gtk.Button(label="Retry", visible=False)
+        self.retry.connect("clicked", lambda *_args: self.request_backup())
+        actions.append(self.retry)
+        self.append(actions)
+        self.message = label("Loading usage backups…", "warning")
+        self.message.set_wrap(True)
+        self.message.set_selectable(True)
+        self.message.set_max_width_chars(64)
+        self.append(self.message)
+        self.append(label("Backups", "heading"))
+        self.next_label = label("", "caption")
+        self.next_label.set_wrap(True)
+        self.append(self.next_label)
+        self.error_label = label("", "warning")
+        self.error_label.set_wrap(True)
+        self.error_label.set_selectable(True)
+        self.error_label.set_visible(False)
+        self.append(self.error_label)
+        self.files = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, visible=False)
+        self.files.add_css_class("boxed-list")
+        self.append(self.files)
+        self.files_empty = label("No backups yet.", "caption")
+        self.append(self.files_empty)
+        buttons = Gtk.Box(spacing=8)
+        self.backup_now = Gtk.Button(label="Back up now")
+        self.backup_now.connect("clicked", lambda *_args: self.request_backup("/api/usage/backup/now", "POST", {}))
+        self.export_button = Gtk.Button(label="Export…")
+        self.export_button.connect("clicked", self.export_usage)
+        self.import_button = Gtk.Button(label="Import…")
+        self.import_button.connect("clicked", self.import_usage)
+        for button in (self.backup_now, self.export_button, self.import_button):
+            buttons.append(button)
+        self.append(buttons)
+        note = label("Each file holds the usage of every machine in the group. Import it on any PC with ASB to see that usage there.", "caption")
+        note.set_wrap(True)
+        note.set_max_width_chars(64)
+        self.append(note)
+        self.update_controls()
+
+    @staticmethod
+    def two_digits(spin):
+        spin.set_text(f"{spin.get_value_as_int():02d}")
+        return True
+
+    def set_active(self, active):
+        active = bool(active and not self.closed and not self.owner.closed and not self.preferences.closed)
+        if self.active == active:
+            return
+        self.active = active
+        if not active:
+            # Late replies, file jobs, and open dialogs of the hidden page do nothing.
+            self.generation += 1
+            self.loading = False
+            self.cancellable.cancel()
+            self.update_controls()
+        else:
+            self.loaded = False
+            self.request_backup()
+
+    def update_controls(self):
+        ready = self.loaded and not self.loading and not self.closed
+        idle = not self.loading and not self.closed
+        for widget in (self.settings, self.apply, self.backup_now):
+            widget.set_sensitive(ready)
+        for widget in (self.retry, self.export_button, self.import_button):
+            widget.set_sensitive(idle)
+
+    def form_path(self):
+        return self.folder or self.status.get("defaultPath", "")
+
+    def set_folder(self, folder):
+        self.folder = folder
+        path, default = self.form_path(), self.status.get("defaultPath", "")
+        self.folder_row.set_subtitle(short_home_path(path, Path.home()))
+        self.folder_row.set_tooltip_text(path or None)
+        self.default_row.set_subtitle(short_home_path(default, Path.home()))
+        self.default_row.set_tooltip_text(default or None)
+        self.default_row.set_visible(folder != "")
+
+    def render_status(self, status, sync_form):
+        self.status, self.loaded = status, True
+        if sync_form:
+            self.enabled.set_active(status["enabled"])
+            hour, minute = status["time"].split(":")
+            self.hour.set_value(int(hour))
+            self.minute.set_value(int(minute))
+            self.keep.set_value(status["keep"])
+            self.folder = status["folder"]
+        self.set_folder(self.folder)
+        now = time.time() * 1000
+        self.next_label.set_label(backup_next_text(status, now))
+        error = backup_error_text(status)
+        self.error_label.set_label(error)
+        self.error_label.set_visible(bool(error))
+        child = self.files.get_first_child()
+        while child:
+            self.files.remove(child)
+            child = self.files.get_first_child()
+        for item in status["files"]:
+            row = Adw.ActionRow(title=item["name"], subtitle=f"{backup_when(item['modifiedAtMs'], now)} · {backup_size(item['bytes'])}",
+                                use_markup=False)
+            row.set_title_lines(0)
+            self.files.append(row)
+        self.files.set_visible(bool(status["files"]))
+        self.files_empty.set_visible(not status["files"])
+
+    def request_backup(self, route="/api/usage/backup", method="GET", body=None):
+        if self.closed or self.owner.closed or not self.active or self.loading or (method == "POST" and not self.loaded):
+            return
+        self.generation += 1
+        self.loading = True
+        self.message.set_label({"/api/usage/backup/settings": "Saving…", "/api/usage/backup/now": "Backing up…"}.get(route, "Loading usage backups…"))
+        self.retry.set_visible(False)
+        self.update_controls()
+        generation = self.generation
+        def finished(result, error):
+            if self.closed or self.owner.closed or not self.active or generation != self.generation:
+                return False
+            self.loading = False
+            made = route == "/api/usage/backup/now"
+            if not error and (not backup_status_valid(result) or made and "made" not in result):
+                error = "The usage backup response is not valid. Try again."
+            if error:
+                self.message.set_label(error)
+                self.retry.set_visible(not self.loaded)
+            else:
+                saved = route == "/api/usage/backup/settings"
+                # Back up now keeps the form edits; a load or a save shows the saved settings.
+                self.render_status(result, not self.loaded or saved)
+                self.message.set_label("Saved." if saved else backup_made_text(result["made"], result["made"]["name"]) if made else "")
+            self.update_controls()
+            return False
+        request_async(self.base, route, finished, GLib.idle_add, method, body)
+
+    def apply_settings(self, *_args):
+        self.hour.update()
+        self.minute.update()
+        self.keep.update()
+        self.request_backup("/api/usage/backup/settings", "POST", backup_settings_body(
+            self.enabled.get_active(), self.hour.get_value_as_int(), self.minute.get_value_as_int(), int(self.keep.get_value()), self.folder))
+
+    def new_cancellable(self):
+        if self.cancellable.is_cancelled():
+            self.cancellable = Gio.Cancellable()
+        return self.cancellable
+
+    @staticmethod
+    def dismissed(error):
+        return error.matches(Gtk.dialog_error_quark(), Gtk.DialogError.DISMISSED) or error.matches(Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED)
+
+    def choose(self, start, finish, local_text, chosen):
+        """Run a file dialog as the job of the page: the controls stay off until it closes."""
+        if self.closed or not self.active or self.loading:
+            return
+        self.loading = True
+        self.update_controls()
+        cancellable = self.new_cancellable()
+        def finished(chooser, result):
+            if self.closed or not self.active or cancellable.is_cancelled():
+                return
+            self.loading = False
+            try:
+                path = getattr(chooser, finish)(result).get_path()
+                if not path:
+                    self.message.set_label(local_text)
+            except GLib.Error as error:
+                path = None
+                if not self.dismissed(error):
+                    self.message.set_label("Cannot use this choice. Try again.")
+            self.update_controls()
+            if path:
+                chosen(path)
+        start(self.preferences, cancellable, finished)
+
+    def choose_folder(self, *_args):
+        if not self.loaded:
+            return
+        dialog = Gtk.FileDialog(title="Choose the backup folder")
+        initial = self.form_path()
+        if initial and os.path.isdir(initial):
+            dialog.set_initial_folder(Gio.File.new_for_path(initial))
+        self.choose(dialog.select_folder, "select_folder_finish", "Choose a local folder.", self.set_folder)
+
+    def open_backup_folder(self, *_args):
+        if self.closed or not self.active or not self.loaded or self.loading:
+            return
+        self.loading = True
+        self.update_controls()
+        path = self.status["path"] if self.folder == self.status["folder"] else self.form_path()
+        cancellable = self.new_cancellable()
+        def finished(launcher, result):
+            if self.closed or cancellable.is_cancelled():
+                return
+            self.loading = False
+            try:
+                launcher.launch_finish(result)
+            except GLib.Error as error:
+                if not self.dismissed(error):
+                    self.message.set_label("Cannot open the folder.")
+            self.update_controls()
+        Gtk.FileLauncher.new(Gio.File.new_for_path(path)).launch(self.preferences, cancellable, finished)
+
+    def run_file_job(self, job, path, text):
+        if self.closed or not self.active or self.loading:
+            return
+        self.generation += 1
+        self.loading = True
+        self.message.set_label(text)
+        self.update_controls()
+        generation, base = self.generation, self.base
+        def finished(message, error):
+            if self.closed or self.owner.closed or not self.active or generation != self.generation:
+                return False
+            self.loading = False
+            self.message.set_label(error or message)
+            self.update_controls()
+            return False
+        def work():
+            try:
+                message, error = job(base, path), None
+            except RuntimeError as failure:
+                message, error = None, str(failure)
+            GLib.idle_add(finished, message, error)
+        threading.Thread(target=work, daemon=True).start()
+
+    def export_usage(self, *_args):
+        dialog = Gtk.FileDialog(title="Export usage", initial_name=usage_export_name(time.time() * 1000))
+        self.choose(dialog.save, "save_finish", "Choose a local file.",
+                    lambda path: self.run_file_job(export_usage_file, path, "Exporting…"))
+
+    def import_usage(self, *_args):
+        dialog = Gtk.FileDialog(title="Import usage")
+        usage_files = Gtk.FileFilter(name="ASB usage files")
+        usage_files.add_pattern("*.json")
+        all_files = Gtk.FileFilter(name="All files")
+        all_files.add_pattern("*")
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(usage_files)
+        filters.append(all_files)
+        dialog.set_filters(filters)
+        dialog.set_default_filter(usage_files)
+        self.choose(dialog.open, "open_finish", "Choose a local file.",
+                    lambda path: self.run_file_job(import_usage_file, path, "Importing…"))
+
+    def close(self):
+        self.set_active(False)
+        self.closed = True
+
+
 class PreferencesWindow(Adw.Window):
     def __init__(self, owner, sessions, appearance):
         super().__init__(application=owner.get_application(), transient_for=owner, destroy_with_parent=True,
                          title="Preferences", default_width=780, default_height=560)
         self.owner, self.closed, self.profiles_editor, self.phone_editor, self.machines_editor = owner, False, None, None, None
+        self.usage_editor = None
         self.set_size_request(420, 360)
         self.add_css_class("asb-column-flow")
         self.add_css_class("asb-preferences")
@@ -3932,7 +4376,7 @@ class PreferencesWindow(Adw.Window):
         layout = Gtk.Box()
         layout.append(self.sidebar)
         layout.append(self.stack)
-        # Five tabs do not fit in 420 px, so the narrow layout shows a section list first.
+        # Six tabs do not fit in 420 px, so the narrow layout shows a section list first.
         self.section_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, valign=Gtk.Align.START,
                                         margin_start=20, margin_end=20, margin_top=20, margin_bottom=20)
         self.section_list.add_css_class("boxed-list")
@@ -3947,8 +4391,9 @@ class PreferencesWindow(Adw.Window):
         self.profiles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.phone = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.machines = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.usage = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         for title, content in (("Sessions", sessions), ("Appearance", appearance), ("Profiles", self.profiles), ("Phone", self.phone),
-                               ("Machines", self.machines)):
+                               ("Machines", self.machines), ("Usage", self.usage)):
             page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16,
                            margin_top=20, margin_bottom=20, margin_start=20, margin_end=20)
             page.append(label(title, "title-2"))
@@ -3991,6 +4436,12 @@ class PreferencesWindow(Adw.Window):
             self.machines.append(self.machines_editor)
         if self.machines_editor:
             self.machines_editor.set_active(machines_visible)
+        usage_visible = shown and section == "usage"
+        if usage_visible and self.usage_editor is None:
+            self.usage_editor = UsageBackupEditor(self.owner, self)
+            self.usage.append(self.usage_editor)
+        if self.usage_editor:
+            self.usage_editor.set_active(usage_visible)
         self.owner.report_ui()
 
     def narrow(self):
@@ -4071,6 +4522,8 @@ class PreferencesWindow(Adw.Window):
     def on_close(self, *_args):
         if self.profiles_editor:
             self.profiles_editor.set_active(False)
+        if self.usage_editor:
+            self.usage_editor.set_active(False)
         self.cancel_dialogs()
         self.set_visible(False)
         return True
@@ -4083,6 +4536,8 @@ class PreferencesWindow(Adw.Window):
             self.phone_editor.close()
         if self.machines_editor:
             self.machines_editor.close()
+        if self.usage_editor:
+            self.usage_editor.close()
         self.cancel_dialogs()
         self.destroy()
 
@@ -4497,7 +4952,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.base = base
         self.engine_generation += 1
         if self.preferences_window:
-            for name in ("profiles_editor", "phone_editor", "machines_editor"):
+            for name in ("profiles_editor", "phone_editor", "machines_editor", "usage_editor"):
                 editor = getattr(self.preferences_window, name)
                 if editor:
                     editor.base = base

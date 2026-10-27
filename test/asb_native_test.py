@@ -1756,7 +1756,7 @@ class WidgetCheck(unittest.TestCase):
         preferences.set_default_size(420, 560); self.drain(.3)
         self.assertEqual(preferences.get_width(), 420)
         rows = board_listed(preferences.section_list)
-        self.assertEqual([row.get_title() for row in rows], ["Sessions", "Appearance", "Profiles", "Phone", "Machines"])
+        self.assertEqual([row.get_title() for row in rows], ["Sessions", "Appearance", "Profiles", "Phone", "Machines", "Usage"])
         pages = preferences.stack.get_pages()
         self.assertEqual([row.get_title() for row in rows], [pages.get_item(n).get_title() for n in range(pages.get_n_items())])
         self.assertTrue(rows[0].get_mapped())
@@ -2099,6 +2099,299 @@ class WidgetCheck(unittest.TestCase):
         remove.assert_called_once_with(78)
         self.assertFalse(editor.active)
         self.assertIsNone(editor.poll_timer)
+        window.close(); self.drain(.1)
+        self.assertTrue(editor.closed)
+
+    def test_preferences_usage_page_loads_applies_backs_up_and_runs_file_jobs(self):
+        requests = []
+        def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None, headers=None):
+            if route == "/api/bridge":
+                callback({"api": 1, "machines": []}, None)
+            elif route.startswith("/api/usage/"):
+                requests.append((route, callback, method, body))
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                   (asb, "request_async", request)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        default = str(Path.home() / ".config" / "asb-test" / "usage" / "backups")
+        old = int(asb.datetime(2025, 3, 4, 3, 0).timestamp() * 1000)
+        files = [{"name": "asb-usage-atlas-5eed0c0d-2025-03-04.json", "date": "2025-03-04", "bytes": 1234567, "modifiedAtMs": old},
+                 {"name": "asb-usage-atlas-5eed0c0d-2025-03-03.json", "date": "2025-03-03", "bytes": 512, "modifiedAtMs": old - 86_400_000}]
+        def status(**changes):
+            return {"enabled": True, "time": "03:00", "keep": 5, "folder": "", "path": default, "defaultPath": default,
+                    "nextAtMs": int(time.time() * 1000) + 10 * 86_400_000, "running": False, "files": files,
+                    "lastError": {"atMs": old, "message": "Disk full."}, **changes}
+        def reply(value, route="/api/usage/backup", method="GET", body=None, error=None):
+            self.assertEqual(requests[-1][0::2] + (requests[-1][3],), (route, method, body))
+            requests[-1][1](copy.deepcopy(value), error)
+            self.drain(.05)
+        def wait(done):
+            end = time.monotonic() + 6
+            while not done() and time.monotonic() < end:
+                self.drain(.02)
+            self.assertTrue(done())
+        def rows(listbox):
+            return [(row.get_title(), row.get_subtitle()) for row in board_listed(listbox)]
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", copy.deepcopy(FIXTURE),
+                                      theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.present(); self.drain(.2)
+        window.open_preferences(); self.drain(.2)
+        preferences = window.preferences_window
+        # 1. Six sections, in the same order in the narrow list and in the stack.
+        titles = ["Sessions", "Appearance", "Profiles", "Phone", "Machines", "Usage"]
+        pages = preferences.stack.get_pages()
+        self.assertEqual([row.get_title() for row in board_listed(preferences.section_list)], titles)
+        self.assertEqual([pages.get_item(n).get_title() for n in range(pages.get_n_items())], titles)
+        self.assertIsNone(preferences.usage_editor)
+        self.assertEqual(requests, [])
+
+        # 2. The first open loads the status once and fills the page.
+        preferences.stack.set_visible_child_name("usage"); self.drain(.1)
+        editor = preferences.usage_editor
+        self.assertEqual([item[0::2] for item in requests], [("/api/usage/backup", "GET")])
+        self.assertEqual(editor.message.get_label(), "Loading usage backups…")
+        self.assertFalse(editor.settings.get_sensitive() or editor.apply.get_sensitive() or editor.backup_now.get_sensitive())
+        reply(status())
+        self.assertEqual(len(requests), 1)
+        self.assertTrue(editor.enabled.get_active())
+        self.assertEqual((editor.hour.get_text(), editor.minute.get_text(), int(editor.keep.get_value())), ("03", "00", 5))
+        self.assertEqual(editor.folder_row.get_subtitle(), "~/.config/asb-test/usage/backups")
+        self.assertEqual(editor.folder_row.get_tooltip_text(), default)
+        self.assertFalse(editor.default_row.get_visible())
+        self.assertEqual(rows(editor.files), [(files[0]["name"], f"{asb.backup_when(old, time.time() * 1000)} · 1.2 MB"),
+                                              (files[1]["name"], f"{asb.backup_when(old - 86_400_000, time.time() * 1000)} · 512 bytes")])
+        self.assertTrue(editor.files.get_visible())
+        self.assertFalse(editor.files_empty.get_visible())
+        self.assertEqual(editor.next_label.get_label(), asb.backup_next_text(status(), time.time() * 1000))
+        self.assertTrue(editor.next_label.get_label().startswith("Next backup: 20"))
+        self.assertEqual((editor.error_label.get_label(), editor.error_label.get_visible()), ("Last backup failed: Disk full.", True))
+        self.assertEqual(editor.message.get_label(), "")
+        self.assertTrue(editor.settings.get_sensitive() and editor.apply.get_sensitive() and editor.backup_now.get_sensitive())
+        # The widget order, titles, and accessible labels.
+        order = []
+        child = editor.get_first_child()
+        while child:
+            order.append(child)
+            child = child.get_next_sibling()
+        self.assertEqual(order[0], editor.settings)
+        self.assertEqual([order[1].get_first_child(), order[1].get_last_child()], [editor.apply, editor.retry])
+        self.assertEqual(order[2:4], [editor.message, order[3]])
+        self.assertEqual(order[3].get_label(), "Backups")
+        self.assertEqual(order[4:8], [editor.next_label, editor.error_label, editor.files, editor.files_empty])
+        self.assertEqual(board_children(order[8]), [editor.backup_now, editor.export_button, editor.import_button])
+        self.assertEqual([button.get_label() for button in board_children(order[8])], ["Back up now", "Export…", "Import…"])
+        self.assertTrue(order[9].get_label().startswith("Each file holds the usage of every machine in the group."))
+        self.assertEqual(len(order), 10)
+        self.assertEqual(board_listed(editor.settings), [editor.enabled, editor.time_row, editor.keep, editor.folder_row, editor.default_row])
+        self.assertEqual([row.get_title() for row in board_listed(editor.settings)], ["Daily backup", "Time", "Files to keep", "Folder", "Default folder"])
+        self.assert_accessible_label(editor.hour, "Backup hour")
+        self.assert_accessible_label(editor.minute, "Backup minute")
+        self.assert_accessible_label(editor.open_folder, "Open the backup folder")
+        self.assert_accessible_label(editor.use_default, "Use the default folder")
+        self.assertEqual(editor.change_folder.get_label(), "Change…")
+
+        # 3. Apply sends the edited form; the reply fills it again.
+        editor.enabled.set_active(False)
+        editor.hour.set_value(4)
+        editor.minute.set_value(30)
+        editor.keep.set_value(3)
+        editor.apply.emit("clicked")
+        self.assertEqual(editor.message.get_label(), "Saving…")
+        self.assertFalse(editor.apply.get_sensitive() or editor.settings.get_sensitive() or editor.import_button.get_sensitive())
+        reply(status(enabled=False, time="04:30", keep=3, nextAtMs=None), "/api/usage/backup/settings", "POST",
+              {"enabled": False, "time": "04:30", "keep": 3, "folder": ""})
+        self.assertEqual(editor.message.get_label(), "Saved.")
+        self.assertEqual(editor.next_label.get_label(), "Daily backup is off.")
+        self.assertEqual((editor.hour.get_text(), editor.minute.get_text()), ("04", "30"))
+
+        # 4. A custom folder shows the default folder row; Use goes back to the default folder.
+        preferences.stack.set_visible_child_name("sessions"); self.drain(.05)
+        preferences.stack.set_visible_child_name("usage"); self.drain(.05)
+        reply(status(folder="/srv/asb-test/backups", path="/srv/asb-test/backups", lastError=None, files=[]))
+        self.assertEqual(editor.folder_row.get_subtitle(), "/srv/asb-test/backups")
+        self.assertTrue(editor.default_row.get_visible())
+        self.assertEqual(editor.default_row.get_subtitle(), "~/.config/asb-test/usage/backups")
+        self.assertFalse(editor.error_label.get_visible())
+        self.assertEqual((editor.files.get_visible(), editor.files_empty.get_visible()), (False, True))
+        self.assertEqual(editor.files_empty.get_label(), "No backups yet.")
+        editor.use_default.emit("clicked")
+        self.assertFalse(editor.default_row.get_visible())
+        self.assertEqual(editor.folder_row.get_subtitle(), "~/.config/asb-test/usage/backups")
+        editor.apply.emit("clicked")
+        reply(status(), "/api/usage/backup/settings", "POST", {"enabled": True, "time": "03:00", "keep": 5, "folder": ""})
+
+        # 5. Back up now keeps an unsaved edit and shows the new file.
+        editor.keep.set_value(7)
+        editor.backup_now.emit("clicked")
+        self.assertEqual(editor.message.get_label(), "Backing up…")
+        made = {"name": "asb-usage-atlas-5eed0c0d-2026-10-27.json", "path": default + "/x.json", "machines": 3, "hours": 3071}
+        reply({**status(files=files[:1], lastError=None), "made": made}, "/api/usage/backup/now", "POST", {})
+        self.assertEqual(editor.message.get_label(), "Saved the usage of 3 machines (3,071 hours) to asb-usage-atlas-5eed0c0d-2026-10-27.json.")
+        self.assertEqual(int(editor.keep.get_value()), 7)
+        self.assertEqual(len(board_listed(editor.files)), 1)
+        self.assertFalse(editor.error_label.get_visible())
+
+        # 6. Errors, a failed first load with Retry, and a late reply after the page hides.
+        editor.apply.emit("clicked")
+        reply(None, "/api/usage/backup/settings", "POST", {"enabled": True, "time": "03:00", "keep": 7, "folder": ""},
+              error="This folder does not exist.")
+        self.assertEqual(editor.message.get_label(), "This folder does not exist.")
+        self.assertEqual(int(editor.keep.get_value()), 7)
+        self.assertFalse(editor.retry.get_visible())
+        editor.backup_now.emit("clicked")
+        reply(status(), "/api/usage/backup/now", "POST", {})
+        self.assertEqual(editor.message.get_label(), "The usage backup response is not valid. Try again.")
+        preferences.stack.set_visible_child_name("sessions"); self.drain(.05)
+        preferences.stack.set_visible_child_name("usage"); self.drain(.05)
+        reply(None, error="Cannot load or change usage backups. Check that ASB is running, then try again.")
+        self.assertTrue(editor.retry.get_visible() and editor.retry.get_sensitive())
+        self.assertFalse(editor.settings.get_sensitive())
+        editor.retry.emit("clicked")
+        self.assertFalse(editor.retry.get_visible())
+        late = requests[-1][1]
+        preferences.stack.set_visible_child_name("sessions"); self.drain(.05)
+        self.assertFalse(editor.active)
+        late(status(keep=9), None)
+        self.assertNotEqual(int(editor.keep.get_value()), 9)
+        self.assertEqual(editor.message.get_label(), "Loading usage backups…")
+        count = len(requests)
+        editor.backup_now.emit("clicked")
+        self.assertEqual(len(requests), count)
+
+        # 8. Folder, Open, Export, and Import with patched dialogs and file jobs.
+        preferences.stack.set_visible_child_name("usage"); self.drain(.05)
+        reply(status())
+        with tempfile.TemporaryDirectory(prefix="asb-usage-board-") as temporary:
+            chosen, launched, jobs = [], [], []
+            def finish_with(value):
+                def finish(_dialog, _result):
+                    if isinstance(value, Exception):
+                        raise value
+                    return value
+                return finish
+            def start(dialog, parent, cancellable, callback):
+                chosen.append((dialog.get_title(), parent, cancellable))
+                callback(dialog, None)
+            dismissed = asb.GLib.Error.new_literal(asb.Gtk.dialog_error_quark(), "Dismissed by user", int(asb.Gtk.DialogError.DISMISSED))
+            folder = asb.Gio.File.new_for_path(temporary)
+            with patch.object(asb.Gtk.FileDialog, "select_folder", start), \
+                    patch.object(asb.Gtk.FileDialog, "select_folder_finish", finish_with(folder)):
+                editor.change_folder.emit("clicked")
+            self.assertEqual(chosen[-1][:2], ("Choose the backup folder", preferences))
+            self.assertTrue(editor.default_row.get_visible())
+            self.assertEqual(editor.folder_row.get_subtitle(), asb.short_home_path(temporary, Path.home()))
+            with patch.object(asb.Gtk.FileDialog, "select_folder", start), \
+                    patch.object(asb.Gtk.FileDialog, "select_folder_finish", finish_with(asb.Gio.File.new_for_uri("https://example.invalid/b"))):
+                editor.change_folder.emit("clicked")
+            self.assertEqual(editor.message.get_label(), "Choose a local folder.")
+            editor.message.set_label("")
+            with patch.object(asb.Gtk.FileDialog, "select_folder", start), \
+                    patch.object(asb.Gtk.FileDialog, "select_folder_finish", finish_with(dismissed)):
+                editor.change_folder.emit("clicked")
+            self.assertEqual(editor.message.get_label(), "")
+            self.assertFalse(editor.loading)
+            def launch(launcher, parent, cancellable, callback):
+                launched.append((launcher.get_file().get_path(), parent))
+                callback(launcher, None)
+            failure = asb.GLib.Error.new_literal(asb.Gio.io_error_quark(), "No handler", int(asb.Gio.IOErrorEnum.NOT_SUPPORTED))
+            with patch.object(asb.Gtk.FileLauncher, "launch", launch), \
+                    patch.object(asb.Gtk.FileLauncher, "launch_finish", finish_with(failure)):
+                editor.open_folder.emit("clicked")
+            self.assertEqual(launched, [(temporary, preferences)])
+            self.assertEqual(editor.message.get_label(), "Cannot open the folder.")
+            editor.use_default.emit("clicked")
+            with patch.object(asb.Gtk.FileLauncher, "launch", launch), \
+                    patch.object(asb.Gtk.FileLauncher, "launch_finish", finish_with(True)):
+                editor.open_folder.emit("clicked")
+            self.assertEqual(launched[-1], (default, preferences))
+            target = str(Path(temporary) / "asb-usage-2026-10-27.json")
+            names = []
+            def save(dialog, parent, cancellable, callback):
+                names.append(dialog.get_initial_name())
+                start(dialog, parent, cancellable, callback)
+            def export(base, path):
+                jobs.append(("export", base, path, threading.current_thread() is threading.main_thread()))
+                return "Saved the usage of 2 machines (4 hours) to asb-usage-2026-10-27.json."
+            with patch.object(asb.Gtk.FileDialog, "save", save), \
+                    patch.object(asb.Gtk.FileDialog, "save_finish", finish_with(asb.Gio.File.new_for_path(target))), \
+                    patch.object(asb, "export_usage_file", export):
+                editor.export_button.emit("clicked")
+                # The result comes back with GLib.idle_add, so the message shows until the main loop runs.
+                self.assertEqual((editor.message.get_label(), editor.loading), ("Exporting…", True))
+                wait(lambda: not editor.loading)
+            self.assertEqual(chosen[-1][0], "Export usage")
+            self.assertEqual(names, [asb.usage_export_name(time.time() * 1000)])
+            self.assertEqual(jobs, [("export", "http://127.0.0.1:1", target, False)])
+            self.assertEqual(editor.message.get_label(), "Saved the usage of 2 machines (4 hours) to asb-usage-2026-10-27.json.")
+            filters = []
+            def open_file(dialog, parent, cancellable, callback):
+                listed = dialog.get_filters()
+                filters.append(([listed.get_item(n).get_name() for n in range(listed.get_n_items())], dialog.get_default_filter().get_name()))
+                start(dialog, parent, cancellable, callback)
+            def import_file(base, path):
+                jobs.append(("import", base, path))
+                if len(jobs) > 2:
+                    raise RuntimeError("This file is not an ASB usage export.")
+                return "Imported the usage of 1 machine: homeLP (1,497 hours)."
+            with patch.object(asb.Gtk.FileDialog, "open", open_file), \
+                    patch.object(asb.Gtk.FileDialog, "open_finish", finish_with(asb.Gio.File.new_for_path(target))), \
+                    patch.object(asb, "import_usage_file", import_file):
+                editor.import_button.emit("clicked")
+                wait(lambda: not editor.loading)
+                self.assertEqual(editor.message.get_label(), "Imported the usage of 1 machine: homeLP (1,497 hours).")
+                editor.import_button.emit("clicked")
+                wait(lambda: not editor.loading)
+                self.assertEqual(editor.message.get_label(), "This file is not an ASB usage export.")
+            self.assertEqual(chosen[-1][0], "Import usage")
+            self.assertEqual(filters[0], (["ASB usage files", "All files"], "ASB usage files"))
+            self.assertEqual(jobs[1:], [("import", "http://127.0.0.1:1", target), ("import", "http://127.0.0.1:1", target)])
+            # A file job of a hidden page is dropped, and the dialog of a hidden page is cancelled.
+            release = threading.Event()
+            def slow(_base, _path):
+                release.wait(5)
+                return "late"
+            with patch.object(asb.Gtk.FileDialog, "open", open_file), \
+                    patch.object(asb.Gtk.FileDialog, "open_finish", finish_with(asb.Gio.File.new_for_path(target))), \
+                    patch.object(asb, "import_usage_file", slow):
+                editor.import_button.emit("clicked")
+                self.assertEqual(editor.message.get_label(), "Importing…")
+                self.assertTrue(editor.loading and not editor.export_button.get_sensitive())
+                preferences.stack.set_visible_child_name("sessions"); self.drain(.05)
+                release.set()
+                self.drain(.2)
+            self.assertEqual(editor.message.get_label(), "Importing…")
+            preferences.stack.set_visible_child_name("usage"); self.drain(.05)
+            reply(status())
+            pending = []
+            with patch.object(asb.Gtk.FileDialog, "save", lambda dialog, parent, cancellable, callback: pending.append(cancellable)):
+                editor.export_button.emit("clicked")
+            self.assertTrue(editor.loading)
+            preferences.stack.set_visible_child_name("sessions"); self.drain(.05)
+            self.assertTrue(pending[0].is_cancelled())
+            self.assertFalse(editor.loading)
+
+        # 7. The narrow page opens from the section list without GTK warnings.
+        GTK_WARNINGS.clear()
+        preferences.set_default_size(420, 560); self.drain(.3)
+        self.assertEqual(preferences.pages.get_visible_child_name(), "list")
+        row = board_listed(preferences.section_list)[5]
+        preferences.section_list.emit("row-activated", row); self.drain(.2)
+        self.assertEqual((preferences.stack.get_visible_child_name(), preferences.title.get_title()), ("usage", "Usage"))
+        reply(status())
+        self.drain(.2)
+        self.assertTrue(editor.active and editor.get_mapped())
+        self.assertEqual(preferences.get_width(), 420)
+        # The page margins are 20 px on each side.
+        self.assertLessEqual(editor.measure(asb.Gtk.Orientation.HORIZONTAL, -1)[0], 420 - 40)
+        self.assertEqual(GTK_WARNINGS, [])
+        output = os.environ.get("ASB_NATIVE_TEST_SNAPSHOTS")
+        if output:
+            self.capture(preferences, Path(output) / "native-preferences-usage-narrow.png")
+        preferences.close(); self.drain(.1)
+        self.assertFalse(editor.active)
         window.close(); self.drain(.1)
         self.assertTrue(editor.closed)
 
