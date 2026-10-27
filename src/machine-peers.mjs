@@ -167,7 +167,10 @@ export function validActivity(value) {
   const messages = value.messages.filter((item) => item && typeof item === 'object' && KEY(item.id) && item.id.length <= 128 && KEY(item.from)
     && KEY(item.to) && NUMBER(item.atMs) && ACTIVITY_GROUPS.includes(item.status) && ACTIVITY_REASONS.includes(item.reason)
     && ['in', 'out', 'both'].includes(item.direction)).slice(-MAX_ACTIVITY_MESSAGES)
-    .map(({ id, from, to, atMs, status, reason, direction }) => ({ id, from, to, atMs, status, reason, direction }));
+    .map(({ id, from, to, atMs, status, reason, direction, hash, label, text }) => ({ id, from, to, atMs, status, reason, direction,
+      ...(typeof hash === 'string' && /^[0-9a-f]{16}$/.test(hash) ? { hash } : {}),
+      label: typeof label === 'string' && label.length <= 120 ? label : '',
+      text: typeof text === 'string' && Array.from(text).length <= 2001 ? text : null }));
   const usage = value.usage.filter((item) => item && typeof item === 'object' && typeof item.app === 'string' && item.app.length <= 200
     && typeof item.model === 'string' && item.model.length <= 200 && NUMBER(item.hourMs) && item.tokens && typeof item.tokens === 'object'
     && ['uncached', 'cacheRead', 'cacheWrite', 'output'].every((key) => COUNT(item.tokens[key]))).slice(0, MAX_ACTIVITY_USAGE)

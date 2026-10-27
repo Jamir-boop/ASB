@@ -11,6 +11,7 @@ import { loadOpenCodeDashboard, invalidateOpenCodeData, retainOpenCodeDataScopes
 import { createAsbServer } from './asb-server.mjs';
 import { createBridgeCoverage } from './bridge-coverage.mjs';
 import { createActivityMessages } from './activity-messages.mjs';
+import { createClaudeMessages } from './claude-messages.mjs';
 import { createActivityUsage } from './activity-usage.mjs';
 import { createUsageBackup } from './usage-backup.mjs';
 import { createSoundPlayer, createSoundWatcher } from './asb-sounds.mjs';
@@ -918,7 +919,9 @@ export function createSwitchboardServer(options = {}) {
     exportAll: () => activityUsage.exportAll(), machineId: () => activityMachine().machineId, platform }) : null;
   if (backup) activityUsage.backup = backup;
   // Contract 2.1, 2.2, and 4: the bridge databases of the registered sources, the cached rows (never a forced scan), and the group.
-  const activityMessages = createActivityMessages({ readSources: async () => registeredLoad ? registry.read() : [],
+  const readMessageSources = async () => registeredLoad ? registry.read() : [];
+  const claudeMessages = createClaudeMessages({ readSources: readMessageSources });
+  const activityMessages = createActivityMessages({ readSources: readMessageSources, claudeMessages,
     dashboard: () => server.dashboardForRequest(), machine: activityMachine, group, activityUsage });
   const server = createAsbServer({
     dashboardWatchDebounceMs: 250,

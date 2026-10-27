@@ -213,18 +213,25 @@ function wrapUpResultId(lifecycle, event) {
   return '';
 }
 
-// Reads only the opening tag of a message from another session, and returns only its sender ID.
-function crossSessionSender(text, maxIndex) {
+// The lifecycle reader uses only the sender; message activity reads the body again on demand.
+export function parseCrossSessionEnvelope(text, maxIndex = 199) {
   const index = text.indexOf(CROSS_SESSION_TAG);
   // A tag after other markup is quoted text, for example in a task notification.
-  if (index < 0 || index > maxIndex || text.slice(0, index).includes('<')) return '';
+  if (index < 0 || index > maxIndex || text.slice(0, index).includes('<')) return null;
   const tag = text.slice(index, index + 4096).match(CROSS_SESSION_OPEN_TAG);
-  if (!tag) return '';
+  if (!tag) return null;
   const attributes = new Map([...tag[1].matchAll(/([\w-]+)="([^"]*)"/g)].map((match) => [match[1], match[2]]));
   const session = attributes.get('from-session') || '';
-  if (LOCAL_SESSION_PATTERN.test(session) || UUID_PATTERN.test(session)) return session;
   const from = attributes.get('from') || '';
-  return LOCAL_SESSION_PATTERN.test(from) || BRIDGE_SENDER_PATTERN.test(from) ? from : '';
+  const sender = LOCAL_SESSION_PATTERN.test(session) || UUID_PATTERN.test(session) ? session
+    : LOCAL_SESSION_PATTERN.test(from) || BRIDGE_SENDER_PATTERN.test(from) ? from : '';
+  const end = text.lastIndexOf('</cross-session-message>');
+  return { sender, name: (attributes.get('from-name') || attributes.get('name') || '').trim().slice(0, 120),
+    body: end >= index + tag[0].length ? text.slice(index + tag[0].length, end).trim() : '' };
+}
+
+function crossSessionSender(text, maxIndex) {
+  return parseCrossSessionEnvelope(text, maxIndex)?.sender || '';
 }
 
 function applyClaudeLifecycle(lifecycle, event, timestampMs) {

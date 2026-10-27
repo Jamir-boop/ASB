@@ -39,5 +39,6 @@
   "test/usage-ledger-routes.test.mjs",
   "test/usage-backup.test.mjs",
   "test/usage-backup-routes.test.mjs",
-  "test/asb-usage.test.mjs"
+  "test/asb-usage.test.mjs",
+  "test/claude-messages.test.mjs"
 ]

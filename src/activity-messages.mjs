@@ -1,5 +1,5 @@
-// Message activity (contract 2.1, 2.2, 4): one record per ASB Bridge message ID from the local bridge databases, merged over the machine group.
-// It reads the bridge databases read-only and never writes them; the message text is read only for a thread of this engine.
+// Read-only bridge and Claude message activity, merged over the machine group.
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { querySqliteJson } from './codex-data.mjs';
@@ -53,18 +53,24 @@ export function statusReason(status, text) {
   return 'Not sent';
 }
 
-// The bridge text without the cross-session envelope, at most 2,000 characters.
-export function messageText(text) {
+const bodyHash = (body) => createHash('sha256').update(body).digest('hex').slice(0, 16);
+
+// The bridge text without the cross-session envelope.
+export function messageBody(text) {
   const lines = String(text ?? '').split('\n');
   if (lines[0]?.startsWith('<cross-session-message')) lines.shift();
   if (lines.at(-1) === '' && lines.at(-2)?.trim() === '</cross-session-message>') lines.pop();
   if (lines.length && lines.at(-1).trim() === '</cross-session-message>') lines.pop();
-  const points = Array.from(lines.join('\n'));
+  return lines.join('\n');
+}
+
+export function messageText(text) {
+  const points = Array.from(messageBody(text));
   return points.length > TEXT_LIMIT ? `${points.slice(0, TEXT_LIMIT - 1).join('')}…` : points.join('');
 }
 
 export function createActivityMessages({ readSources = async () => [], dashboard = async () => ({ threads: [] }),
-  machine = () => ({ machineId: '', name: '' }), group = null, activityUsage = null, now = Date.now,
+  claudeMessages = null, machine = () => ({ machineId: '', name: '' }), group = null, activityUsage = null, now = Date.now,
   openCodeStateDir = defaultOpenCodeStateDir, query = querySqliteJson } = {}) {
   // Per bridge database: the size and change time of the file and its WAL, and its message rows of the last 30 days. Oldest entry goes first.
   const files = new Map();
@@ -80,12 +86,13 @@ export function createActivityMessages({ readSources = async () => [], dashboard
     let rows = [];
     if (['id', 'peer_id', 'direction', 'status', 'created_at'].every((name) => columns.has(name))) {
       // A file with no kind column has only messages.
-      rows = (await query(filePath, `select id, peer_id, direction, status, ${columns.has('status_reason') ? 'status_reason' : "'' as status_reason"}, created_at
+      rows = (await query(filePath, `select id, peer_id, direction, status, text, ${columns.has('status_reason') ? 'status_reason' : "'' as status_reason"}, created_at
         from messages where created_at >= ${since}${columns.has('kind') ? " and kind = 'message'" : ''};`))
         .filter((row) => typeof row.id === 'string' && MESSAGE_ID.test(row.id) && typeof row.peer_id === 'string' && UUID.test(row.peer_id)
           && ['in', 'out'].includes(row.direction) && Number.isFinite(Number(row.created_at)))
         .map((row) => ({ id: row.id, peer: row.peer_id, direction: row.direction, atMs: Number(row.created_at) * 1000,
-          status: statusGroup(row.status, row.direction), reason: statusReason(row.status, row.status_reason) }));
+          status: statusGroup(row.status, row.direction), reason: statusReason(row.status, row.status_reason),
+          hash: bodyHash(messageBody(row.text)), label: '' }));
     }
     files.delete(filePath);
     files.set(filePath, { signature, since, rows });
@@ -120,17 +127,41 @@ export function createActivityMessages({ readSources = async () => [], dashboard
     }
     return [...byId.values()].map(({ id, in: received, out: sent, files: paths }) => ({ id, from: (sent || received).from, to: (sent || received).to,
       atMs: (sent || received).atMs, status: (received || sent).status, reason: (received || sent).reason,
-      direction: received && sent ? 'both' : received ? 'in' : 'out', files: paths }));
+      direction: received && sent ? 'both' : received ? 'in' : 'out', hash: (sent || received).hash, label: '', files: paths }))
+      .concat((await claudeMessages?.records(sinceMs) || []).map((row) => ({ ...row, claudeRecord: row, files: [] })));
   }
 
   const byTime = (left, right) => left.atMs - right.atMs || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
 
-  // Contract 4, the member reply: local records of the last min(period, 30 days), no text and no file.
+  // Read only requested bodies. No body is kept in the scan cache.
+  async function textsFor(records) {
+    const texts = new Map();
+    const byFile = new Map();
+    await Promise.all(records.map(async (item) => {
+      if (item.text !== undefined) texts.set(item.id, item.text);
+      if (item.claudeRecord) {
+        const text = await claudeMessages.text(item.claudeRecord);
+        if (text !== null) texts.set(item.id, text);
+      }
+      for (const file of item.files || []) byFile.set(file, [...(byFile.get(file) || []), item.textId || item.id]);
+    }));
+    await Promise.all([...byFile].map(async ([file, ids]) => {
+      try {
+        const rows = await query(file, `select id, text from messages where id in (${ids.filter((id) => MESSAGE_ID.test(id)).map((id) => `'${id}'`).join(',')});`);
+        for (const row of rows) for (const item of records) if ((item.textId || item.id) === row.id && typeof row.text === 'string'
+          && (!item.hash || bodyHash(messageBody(row.text)) === item.hash)) texts.set(item.id, messageText(row.text));
+      } catch {}
+    }));
+    return texts;
+  }
+
   async function localRecords(period) {
     if (period === 'all') return [];
     const span = Math.min(PERIODS[period].unit === 'hour' ? DAY_MS : PERIODS[period].count * DAY_MS, KEEP_MS);
-    return (await localMessages(now() - span)).sort(byTime).slice(-MAX_ACTIVITY_MESSAGES)
-      .map(({ id, from, to, atMs, status, reason, direction }) => ({ id, from, to, atMs, status, reason, direction }));
+    const records = (await localMessages(now() - span)).sort(byTime).slice(-MAX_ACTIVITY_MESSAGES);
+    const texts = await textsFor(records.slice(-200));
+    return records.map(({ id, from, to, atMs, status, reason, direction, hash, label }) =>
+      ({ id, from, to, atMs, status, reason, direction, hash, label, text: texts.get(id) ?? null }));
   }
 
   // All records of the period over the group, mapped to seats, oldest first.
@@ -144,15 +175,36 @@ export function createActivityMessages({ readSources = async () => [], dashboard
     const records = new Map();
     const add = (item, origin, files) => {
       let record = records.get(item.id);
-      if (!record) records.set(item.id, record = { id: item.id, from: item.from, to: item.to, atMs: item.atMs, status: item.status,
-        reason: item.reason, origin, files: [], sender: false, receiver: false });
-      // The receiver row wins the status wherever it is; the sender row gives the time.
-      if (item.direction !== 'out' && !record.receiver) Object.assign(record, { status: item.status, reason: item.reason, receiver: true });
-      if (item.direction !== 'in' && !record.sender) Object.assign(record, { atMs: item.atMs, sender: true });
+      if (!record) records.set(item.id, record = { ...item, origin, fromOrigin: origin, toOrigin: origin,
+        fromLabel: '', toLabel: '', files: [], sender: false, receiver: false });
+      if (item.direction !== 'out' && !record.receiver) Object.assign(record, { to: item.to, toOrigin: origin,
+        fromLabel: item.label || '', status: item.status, reason: item.reason, receiver: true });
+      if (item.direction !== 'in' && !record.sender) Object.assign(record, { from: item.from, fromOrigin: origin,
+        toLabel: item.label || '', atMs: item.atMs, sender: true });
+      if (item.claudeRecord) record.claudeRecord = item.claudeRecord;
+      if (item.text != null && record.text == null) record.text = item.text;
       record.files.push(...files);
     };
     for (const item of local) add(item, self.machineId, item.files);
     for (const member of members) for (const item of member.messages) add(item, member.machineId, []);
+    const ordered = [...records.values()].sort(byTime);
+    const free = new Map();
+    for (const record of ordered) if (record.sender && !record.receiver && record.hash) {
+      if (!free.has(record.hash)) free.set(record.hash, []);
+      free.get(record.hash).push(record);
+    }
+    for (const received of ordered.filter((record) => record.receiver && !record.sender && record.hash)) {
+      const senders = free.get(received.hash);
+      const index = senders?.findLastIndex((record) => record.atMs <= received.atMs + 120_000 && received.atMs <= record.atMs + DAY_MS);
+      if (index === undefined || index < 0) continue;
+      const [sent] = senders.splice(index, 1);
+      Object.assign(sent, { to: received.to, toOrigin: received.toOrigin, fromLabel: received.fromLabel,
+        status: 'accepted', reason: '', receiver: true });
+      if (!sent.claudeRecord && received.claudeRecord) sent.claudeRecord = received.claudeRecord;
+      if (sent.text == null && received.text != null) sent.text = received.text;
+      if (!sent.files.length && received.files.length) { sent.files = received.files; sent.textId = received.id; }
+      records.delete(received.id);
+    }
     const lookup = rowKeyLookup(board);
     const rows = new Map((board.threads || []).map((row) => [row.id, row]));
     const seat = (key, origin) => {
@@ -160,8 +212,13 @@ export function createActivityMessages({ readSources = async () => [], dashboard
       return rowId && rows.has(rowId) ? rowId : `unknown:${origin}`;
     };
     const messages = [...records.values()].filter((record) => record.atMs >= startMs).sort(byTime)
-      .map((record) => ({ id: record.id, from: seat(record.from, record.origin), to: seat(record.to, record.origin), atMs: record.atMs,
-        status: record.status, reason: record.reason, local: record.files.length > 0, files: record.files }));
+      .map((record) => {
+        const from = seat(record.from, record.fromOrigin), to = seat(record.to, record.toOrigin);
+        return { id: record.id, from, to, atMs: record.atMs, status: record.status, reason: record.reason,
+          local: record.files.length > 0 || Boolean(record.claudeRecord), files: record.files, hash: record.hash,
+          claudeRecord: record.claudeRecord, textId: record.textId, text: record.text,
+          fromLabel: from.startsWith('unknown:') ? record.fromLabel : '', toLabel: to.startsWith('unknown:') ? record.toLabel : '' };
+      });
     const machines = [{ machineId: self.machineId, name: self.name, self: true, state: 'local', lastReportAtMs: 0 },
       ...members.map(({ machineId, name, state, lastReportAtMs }) => ({ machineId, name, self: false, state, lastReportAtMs }))];
     return { nowMs, buckets, machines, messages, rows, self };
@@ -193,9 +250,10 @@ export function createActivityMessages({ readSources = async () => [], dashboard
     async report(period) {
       const { nowMs, buckets, machines, messages, rows, self } = await merged(period);
       const kept = messages.slice(-MAX_ACTIVITY_MESSAGES);
+      const texts = await textsFor(kept.slice(-200));
       const ids = new Set(kept.flatMap((item) => [item.from, item.to]));
       return { period, nowMs, buckets, machines, seats: seatsOf(ids, rows, machines, self),
-        messages: kept.map(({ files: _, ...item }) => item), truncated: kept.length < messages.length };
+        messages: kept.map(({ files, hash, claudeRecord, textId, text, ...item }) => ({ ...item, text: texts.get(item.id) ?? null })), truncated: kept.length < messages.length };
     },
 
     async thread(period, { a, b, seat } = {}) {
@@ -203,16 +261,7 @@ export function createActivityMessages({ readSources = async () => [], dashboard
       const all = messages.filter((item) => seat !== undefined ? item.from === seat || item.to === seat
         : (item.from === a && item.to === b) || (item.from === b && item.to === a));
       const shown = all.slice(-THREAD_SIZE);
-      // The text of the shown local messages only, from the files that have their rows.
-      const texts = new Map();
-      const byFile = new Map();
-      for (const item of shown) for (const file of item.local ? item.files : []) byFile.set(file, [...(byFile.get(file) || []), item.id]);
-      await Promise.all([...byFile].map(async ([file, ids]) => {
-        try {
-          const rows = await query(file, `select id, text from messages where id in (${ids.map((id) => `'${id}'`).join(',')});`);
-          for (const row of rows) if (!texts.has(row.id) && typeof row.text === 'string') texts.set(row.id, messageText(row.text));
-        } catch {}
-      }));
+      const texts = await textsFor(shown);
       return { total: all.length, messages: shown.map(({ id, from, to, atMs, status, reason }) => ({ id, from, to, atMs, status, reason,
         text: texts.get(id) ?? null })) };
     },

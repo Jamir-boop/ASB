@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createActivityMessages, messageText, periodBuckets, statusGroup, statusReason } from '../src/activity-messages.mjs';
+import { createClaudeMessages } from '../src/claude-messages.mjs';
 import { createAsbServer } from '../src/asb-server.mjs';
 import { createMachineGroup, saveGroup } from '../src/machine-group.mjs';
 import { exportBody, exportLocalSessions, mergePeerRows, validActivity, validExport } from '../src/machine-peers.mjs';
@@ -15,6 +17,7 @@ import { buildSwitchboardDashboard, createSwitchboardServer, PendingTracker } fr
 const uuid = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const msg = (n) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const nowMs = Date.parse('2026-10-20T12:30:00.000Z');
+const digest = (body) => createHash('sha256').update(body).digest('hex').slice(0, 16);
 const seconds = (ms) => Math.floor(ms / 1000);
 const A = { machineId: 'a'.repeat(16), name: 'engine-a' };
 const B = { machineId: 'b'.repeat(16), name: 'engine-b' };
@@ -46,7 +49,7 @@ async function home(t) {
     const insert = database.prepare(kind ? 'insert into messages (id, peer_id, direction, text, status, created_at, kind, status_reason) values (?, ?, ?, ?, ?, ?, ?, ?)'
       : 'insert into messages (id, peer_id, direction, text, status, created_at) values (?, ?, ?, ?, ?, ?)');
     for (const row of rows) {
-      const values = [row.id, row.peer, row.direction, row.text ?? 'Synthetic text.', row.status, seconds(row.atMs ?? nowMs - 60_000)];
+      const values = [row.id, row.peer, row.direction, row.text ?? `Synthetic text ${row.id}.`, row.status, seconds(row.atMs ?? nowMs - 60_000)];
       insert.run(...(kind ? [...values, row.kind ?? 'message', row.reason ?? null] : values));
     }
     database.close();
@@ -61,9 +64,9 @@ test('a bridge to bridge message with an out row and an in row is one record, an
   await bridge('codex', X, [{ id: msg(1), peer: Y, direction: 'out', status: 'socket-written', atMs: nowMs - 60_000 }]);
   await bridge('codex', Y, [{ id: msg(1), peer: X, direction: 'in', status: 'steered', atMs: nowMs - 59_000 }]);
   const report = await service().report('7d');
-  assert.deepEqual(report.messages, [{ id: msg(1), from: X, to: Y, atMs: seconds(nowMs - 60_000) * 1000, status: 'accepted', reason: '', local: true }]);
+  assert.deepEqual(report.messages, [{ id: msg(1), from: X, to: Y, atMs: seconds(nowMs - 60_000) * 1000, status: 'accepted', reason: '', local: true, fromLabel: '', toLabel: '', text: `Synthetic text ${msg(1)}.` }]);
   assert.deepEqual(await service().localRecords('7d'), [{ id: msg(1), from: X, to: Y, atMs: seconds(nowMs - 60_000) * 1000, status: 'accepted',
-    reason: '', direction: 'both' }]);
+    reason: '', direction: 'both', hash: digest(`Synthetic text ${msg(1)}.`), label: '', text: `Synthetic text ${msg(1)}.` }]);
 });
 
 test('Claude endpoints count: a message from Claude has only the in row, a message to Claude only the out row', async (t) => {
@@ -205,7 +208,7 @@ test('a thread has the newest 60 messages oldest first, the total, local text wi
   assert.equal(messageText('Plain\n</cross-session-message>'), 'Plain');
 });
 
-test('the group merge: one record per ID with the receiver status, offline members keep their last records, and member replies have no text', async (t) => {
+test('the group merge: one record per ID with the receiver status, offline members keep their last records, and member replies include bounded text', async (t) => {
   const { dir, bridge, service } = await home(t);
   // Engine A (this one) sent message 400 from X to a session of engine B; B has the receiver row.
   await bridge('codex', X, [{ id: msg(400), peer: uuid(60), direction: 'out', status: 'socket-written', atMs: nowMs - 120_000, text: 'Secret fixture text.' }]);
@@ -246,8 +249,8 @@ test('the group merge: one record per ID with the receiver status, offline membe
   const activity = service({ group: machineGroup, dashboard: async () => dashboard, now: () => clock });
   const first = await activity.report('7d');
   assert.deepEqual(first.messages, [
-    { id: msg(400), from: X, to: remoteRow, atMs: seconds(nowMs - 120_000) * 1000, status: 'accepted', reason: '', local: true },
-    { id: msg(401), from: remoteRow, to: `unknown:${B.machineId}`, atMs: nowMs - 60_000, status: 'held', reason: '', local: false }]);
+    { id: msg(400), from: X, to: remoteRow, atMs: seconds(nowMs - 120_000) * 1000, status: 'accepted', reason: '', local: true, fromLabel: '', toLabel: '', text: 'Secret fixture text.' },
+    { id: msg(401), from: remoteRow, to: `unknown:${B.machineId}`, atMs: nowMs - 60_000, status: 'held', reason: '', local: false, fromLabel: '', toLabel: '', text: null }]);
   assert.deepEqual(first.machines[1], { machineId: B.machineId, name: B.name, self: false, state: 'online', lastReportAtMs: nowMs });
   assert.equal(first.seats.find((seat) => seat.id === remoteRow).machineId, B.machineId);
   assert.equal(JSON.stringify(first).includes('Leak'), false);
@@ -263,13 +266,13 @@ test('the group merge: one record per ID with the receiver status, offline membe
   assert.equal(calls.filter((item) => item.startsWith('/peer/v1/activity')).length, 2);
   assert.deepEqual(offline.machines[1], { machineId: B.machineId, name: B.name, self: false, state: 'offline', lastReportAtMs: nowMs });
   assert.deepEqual(offline.messages.map((item) => [item.id, item.status]), [[msg(400), 'accepted'], [msg(401), 'held']]);
-  // The member reply of this engine: local records only, no text key, no fixture text.
+  // The member reply has only local records and their bounded text.
   const reply = await activity.memberReply('7d');
-  assert.deepEqual(reply, { messages: [{ id: msg(400), from: X, to: uuid(60), atMs: seconds(nowMs - 120_000) * 1000, status: 'written', reason: '', direction: 'out' }],
+  assert.deepEqual(reply, { messages: [{ id: msg(400), from: X, to: uuid(60), atMs: seconds(nowMs - 120_000) * 1000, status: 'written', reason: '', direction: 'out', hash: digest('Secret fixture text.'), label: '', text: 'Secret fixture text.' }],
     usage: [], scan: { complete: true, files: 0, scannedFiles: 0 } });
   const text = JSON.stringify(reply);
-  assert.equal(text.includes('Secret fixture text'), false);
-  assert.equal(text.includes('"text"'), false);
+  assert.equal(text.includes('Secret fixture text'), true);
+  assert.equal(text.includes('"text"'), true);
   // The usage part comes from the usage service when it is there.
   const usage = [{ app: 'codex', model: 'gpt-5', hourMs: nowMs - 3_600_000, tokens: { uncached: 1, cacheRead: 2, cacheWrite: 3, output: 4 } }];
   const withUsage = service({ activityUsage: { localHourly: async (period) => ({ usage: period === '90d' ? usage : [], scan: { complete: false, files: 9, scannedFiles: 3 } }) } });
@@ -277,7 +280,7 @@ test('the group merge: one record per ID with the receiver status, offline membe
   assert.deepEqual(await withUsage.localRecords('all'), []);
   assert.deepEqual(await withUsage.memberReply('all'), { messages: [], usage: [], scan: { complete: false, files: 9, scannedFiles: 3 } });
   assert.deepEqual(validActivity({ messages: [{ id: 'x', from: 'a', to: 'b', atMs: 1, status: 'held', reason: '', direction: 'in', text: 'T' }], usage: [] }).messages,
-    [{ id: 'x', from: 'a', to: 'b', atMs: 1, status: 'held', reason: '', direction: 'in' }]);
+    [{ id: 'x', from: 'a', to: 'b', atMs: 1, status: 'held', reason: '', direction: 'in', label: '', text: 'T' }]);
   assert.equal(validActivity({ messages: {} }), null);
   // Contract section 1: every app string of a member shows (Other in the UIs for an unknown app); a long or non-string app is dropped.
   const memberUsage = (app) => ({ app, model: 'm', hourMs: 3_600_000, tokens: { uncached: 1, cacheRead: 0, cacheWrite: 0, output: 1 } });
@@ -350,7 +353,7 @@ test('the switchboard server reads the registered bridge folders and passes the 
   assert.deepEqual(report.messages.map(({ id, from, to }) => [id, from, to]), [[msg(500), X, Y]]);
   assert.deepEqual(report.machines, [{ machineId: A.machineId, name: A.name, self: true, state: 'local', lastReportAtMs: 0 }]);
   const thread = await (await fetch(`${base}/api/activity/thread?period=30d&a=${X}&b=${Y}`)).json();
-  assert.deepEqual(thread.messages.map((item) => item.text), ['Synthetic text.']);
+  assert.deepEqual(thread.messages.map((item) => item.text), [`Synthetic text ${msg(500)}.`]);
   assert.deepEqual(await (await fetch(`${base}/api/activity/usage?period=7d`)).json(), { period: '7d' });
   assert.deepEqual(periods, ['7d']);
   assert.deepEqual((await server.activityMember('24h')).messages.map((item) => item.direction), ['out']);
@@ -374,4 +377,103 @@ test('500 bridge databases read cold under 5 s and warm from the cache under 300
   assert.deepEqual(warm, cold);
   assert.ok(coldMs < 5000, `cold ${coldMs}`);
   assert.ok(warmMs < 300, `warm ${warmMs}`);
+});
+
+async function claudeFixture(t) {
+  const fixture = await home(t);
+  const projectsDir = path.join(fixture.dir, 'projects');
+  const folder = path.join(projectsDir, 'synthetic-project');
+  await mkdir(folder, { recursive: true });
+  fixture.sources.find((source) => source.provider === 'claude-desktop-code').projectsDir = projectsDir;
+  const claudeMessages = createClaudeMessages({ readSources: async () => fixture.sources, now: () => nowMs });
+  const send = (id, text, to = 'beta-helper', atMs = nowMs - 60_000) => ({ type: 'assistant', sessionId: X,
+    timestamp: new Date(atMs).toISOString(), message: { content: [{ type: 'tool_use', name: 'SendMessage', id, input: { to, message: text } }] } });
+  const receive = (id, text, atMs = nowMs - 59_000) => ({ type: 'user', isMeta: true, uuid: id, sessionId: Y,
+    timestamp: new Date(atMs).toISOString(), message: { content: `<cross-session-message from-session="${X}" from-name="alpha-main">\n${text}\n</cross-session-message>` } });
+  const write = (events) => writeFile(path.join(folder, `${X}.jsonl`), events.map((event) => JSON.stringify(event)).join('\n') + '\n');
+  return { ...fixture, send, receive, write, activity: (extra = {}) => fixture.service({ claudeMessages, ...extra }) };
+}
+
+test('Claude local sides pair with text and an unpaired named target keeps its label', async (t) => {
+  const { send, receive, write, activity } = await claudeFixture(t);
+  await write([send('local-pair', 'Pair body.'), receive(uuid(700), 'Pair body.'), send('named-target', 'Different body.', 'beta-helper', nowMs - 1000)]);
+  const report = await activity().report('7d');
+  assert.deepEqual(report.messages, [
+    { id: 'claude:local-pair', from: X, to: Y, atMs: nowMs - 60_000, status: 'accepted', reason: '', local: true,
+      fromLabel: '', toLabel: '', text: 'Pair body.' },
+    { id: 'claude:named-target', from: X, to: `unknown:${A.machineId}`, atMs: nowMs - 1000, status: 'accepted', reason: '', local: true,
+      fromLabel: '', toLabel: 'beta-helper', text: 'Different body.' },
+  ]);
+  assert.deepEqual((await activity().thread('7d', { a: X, b: Y })).messages.map((item) => item.text), ['Pair body.']);
+});
+
+test('local sends pair with member deliveries and each unknown endpoint keeps its machine', async (t) => {
+  const { send, write, activity } = await claudeFixture(t);
+  await write([send('member-pair', 'Member body.'), { ...send('unknown-pair', 'Unknown body.'), sessionId: uuid(880) }]);
+  const group = { activity: async () => [{ ...B, state: 'online', lastReportAtMs: nowMs, messages: [
+    { id: 'claude:member-in', from: X, to: uuid(881), atMs: nowMs - 59_000, direction: 'in', status: 'accepted', reason: '',
+      hash: digest('Member body.'), label: 'alpha-main', text: 'Member body.' },
+    { id: 'claude:unknown-in', from: uuid(880), to: uuid(882), atMs: nowMs - 58_000, direction: 'in', status: 'accepted', reason: '',
+      hash: digest('Unknown body.'), label: 'alpha-main', text: 'Unknown body.' },
+  ] }] };
+  const rows = (await activity({ group }).report('7d')).messages;
+  assert.deepEqual(rows.map(({ id, from, to, text, fromLabel, toLabel }) => ({ id, from, to, text, fromLabel, toLabel })), [
+    { id: 'claude:member-pair', from: X, to: `unknown:${B.machineId}`, text: 'Member body.', fromLabel: '', toLabel: 'beta-helper' },
+    { id: 'claude:unknown-pair', from: `unknown:${A.machineId}`, to: `unknown:${B.machineId}`, text: 'Unknown body.', fromLabel: 'alpha-main', toLabel: 'beta-helper' },
+  ]);
+});
+
+test('a bridge out row pairs with a Claude delivery using the envelope-free body', async (t) => {
+  const { bridge, receive, write, activity } = await claudeFixture(t);
+  await bridge('codex', X, [{ id: msg(710), peer: CLI, direction: 'out', status: 'socket-written',
+    text: '<cross-session-message from="Synthetic">\nMixed body.\n</cross-session-message>' }]);
+  await write([receive(uuid(711), 'Mixed body.')]);
+  const report = await activity().report('7d');
+  assert.equal(report.messages.length, 1);
+  assert.deepEqual(report.messages[0], { id: msg(710), from: X, to: Y, atMs: nowMs - 60_000, status: 'accepted', reason: '', local: true,
+    fromLabel: '', toLabel: '', text: 'Mixed body.' });
+});
+
+test('reports and member replies put text on only the newest 200 of 205 records', async (t) => {
+  const { send, write, activity } = await claudeFixture(t);
+  await write(Array.from({ length: 205 }, (_, i) => send(`limit-${String(i).padStart(3, '0')}`, `Body ${i}.`, 'beta-helper', nowMs - (205 - i) * 1000)));
+  const report = await activity().report('7d');
+  assert.equal(report.messages.length, 205);
+  assert.deepEqual(report.messages.slice(0, 5).map((item) => item.text), Array(5).fill(null));
+  assert.equal(report.messages.filter((item) => typeof item.text === 'string').length, 200);
+  const reply = await activity().memberReply('7d');
+  assert.equal(reply.messages.length, 205);
+  assert.deepEqual(reply.messages.slice(0, 5).map((item) => item.text), Array(5).fill(null));
+  assert.equal(reply.messages.filter((item) => typeof item.text === 'string').length, 200);
+  for (const item of reply.messages) {
+    assert.equal(item.label, 'beta-helper');
+    assert.equal(item.hash, digest(`Body ${Number(item.id.slice(-3))}.`));
+    assert.deepEqual(Object.keys(item), ['id', 'from', 'to', 'atMs', 'status', 'reason', 'direction', 'hash', 'label', 'text']);
+  }
+});
+
+test('pairing takes incoming rows oldest first and the newest free send within both time bounds', async (t) => {
+  const { send, receive, write, activity } = await claudeFixture(t);
+  await write([send('older-send', 'Same.', 'beta-helper', nowMs - 10_000), send('newer-send', 'Same.', 'beta-helper', nowMs - 5000),
+    receive(uuid(800), 'Same.', nowMs), receive(uuid(801), 'Same.', nowMs + 1000),
+    send('too-late', 'Skewed.', 'beta-helper', nowMs + 120_001), receive(uuid(802), 'Skewed.', nowMs),
+    send('too-early', 'Delayed.', 'beta-helper', nowMs - 86_400_001), receive(uuid(803), 'Delayed.', nowMs)]);
+  const report = await activity().report('7d');
+  assert.equal(report.messages.length, 6);
+  assert.equal(report.messages.find((item) => item.id === 'claude:newer-send').to, Y);
+  assert.equal(report.messages.find((item) => item.id === 'claude:older-send').to, Y);
+  assert.ok(report.messages.some((item) => item.id === `claude:${uuid(802)}`));
+  assert.ok(report.messages.some((item) => item.id === `claude:${uuid(803)}`));
+});
+
+test('validActivity keeps only valid hashes, labels, bounded code point text and explicit fields', () => {
+  const base = { id: 'claude:synthetic', from: 'alpha-main', to: 'beta-helper', atMs: nowMs, direction: 'out', status: 'accepted', reason: '' };
+  const valid = { ...base, hash: 'abcdef0123456789', label: 'beta-helper', text: '😀'.repeat(2001), privateField: 'discard' };
+  const read = (extra) => validActivity({ messages: [{ ...base, ...extra }], usage: [] }).messages[0];
+  const { privateField, ...expected } = valid;
+  assert.deepEqual(read(valid), expected);
+  for (const hash of ['', 'ABCDEF0123456789', 'z'.repeat(16), 'a'.repeat(17), null, 7]) assert.equal('hash' in read({ hash }), false);
+  for (const label of ['x'.repeat(121), null, 7]) assert.equal(read({ label }).label, '');
+  for (const text of ['😀'.repeat(2002), null, 7]) assert.equal(read({ text }).text, null);
+  assert.deepEqual(read({}), { ...base, label: '', text: null });
 });
