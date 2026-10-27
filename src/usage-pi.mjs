@@ -23,11 +23,13 @@ export function parsePiLine(line) {
   const usage = source.usage;
   if (!object(usage)) return [];
   if (Object.hasOwn(usage, 'cost') && !object(usage.cost)) return [];
-  const model = attributed ? `${source.provider}/${entry.type === 'message' ? source.responseModel ?? source.model : source.model}` : 'Tools/summaries';
+  // LiteLLM prices the bare model name, as T3 Code does; the provider stays in the dedupe key only.
+  const model = attributed ? (entry.type === 'message' ? source.responseModel ?? source.model : source.model) : 'Tools/summaries';
+  const keyModel = attributed ? `${source.provider}/${model}` : model;
   const tokens = { uncached: tokenCount(usage.input), cacheRead: tokenCount(usage.cacheRead),
     cacheWrite: tokenCount(usage.cacheWrite), output: tokenCount(usage.output) };
   if (!Object.values(tokens).some((count) => count > 0)) return [];
-  return [{ app: 'pi', timestampMs, model, tokens, dedupeKey: JSON.stringify(['pi', entry.id, entry.timestamp, model]) }];
+  return [{ app: 'pi', timestampMs, model, tokens, dedupeKey: JSON.stringify(['pi', entry.id, entry.timestamp, keyModel]) }];
 }
 
 export const piUsageFormat = {
