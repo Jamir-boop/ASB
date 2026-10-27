@@ -269,7 +269,7 @@ gatewayTest('the route allowlist blocks other APIs and checks methods before bea
     assert.equal(response.status, 404, route);
     assert.equal(response.json.error, 'Route is not available.');
   }
-  for (const route of ['/api/sources', '/api/phone', '/api/phone/settings', '/api/palette',
+  for (const route of ['/api/sources', '/api/phone', '/api/phone/settings', '/api/palette', '/api/panel', '/phone/v1/panel',
     '/api/agent/status', '/api/agent/ui', '/phone/v1/agent/status', '/phone/v1/agent/ui', '/api/engine/stop', '/phone/v1/engine/stop', '/api/engine/show-window', '/phone/v1/engine/show-window',
     '/api/agent/resolve-session', '/phone/v1/agent/resolve-session', '/api/agent/resolve-bound', '/phone/v1/agent/resolve-bound',
     '/api/agent/list-references', '/phone/v1/agent/list-references',

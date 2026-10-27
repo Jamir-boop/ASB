@@ -28,6 +28,7 @@ def unix_signal_add(priority, signum, callback):
 
 LOCAL_HTTP = build_opener(ProxyHandler({}))
 WATCHER = "org.kde.StatusNotifierWatcher"
+PANEL_NAME = "local.asb.AgentSwitchBoard.Panel"
 ENGINE_KEYS = ("ASB_SOURCE_TOKEN", "ASB_ENGINE_PID", "ASB_ENGINE_URL", "ASB_LAUNCHER")
 ICON_THEME_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "icons")
 ITEM_XML = """<node>
@@ -143,6 +144,7 @@ class Tray:
         self.loop = GLib.MainLoop()
         self.bus_name = f"org.kde.StatusNotifierItem-{os.getpid()}-1"
         self.tooltip = "Running."
+        self.status = "Active"
         self.registered = False
         self.board = env.get("ASB_BOARD") != "0"
         self.items = menu_items(menu_layout(self.board))
@@ -216,6 +218,14 @@ class Tray:
             self.connection.emit_signal(None, "/StatusNotifierItem", "org.kde.StatusNotifierItem", "NewToolTip", None)
         return False
 
+    def show_status(self, status):
+        # The ASB top-bar extension owns PANEL_NAME while it runs; the AppIndicator host hides a Passive item.
+        if status != self.status:
+            self.status = status
+            self.connection.emit_signal(None, "/StatusNotifierItem", "org.kde.StatusNotifierItem", "NewStatus",
+                                        GLib.Variant("(s)", (status,)))
+        return False
+
     def check_engine(self):
         try:
             os.kill(self.engine_pid, 0)
@@ -232,7 +242,7 @@ class Tray:
     def item_property(self, name):
         return {
             "Category": GLib.Variant("s", "ApplicationStatus"), "Id": GLib.Variant("s", "asb"), "Title": GLib.Variant("s", "ASB"),
-            "Status": GLib.Variant("s", "Active"), "IconName": GLib.Variant("s", "local.asb.AgentSwitchBoard"),
+            "Status": GLib.Variant("s", self.status), "IconName": GLib.Variant("s", "local.asb.AgentSwitchBoard"),
             "IconThemePath": GLib.Variant("s", ICON_THEME_PATH), "ToolTip": GLib.Variant("(sa(iiay)ss)", ("", [], "ASB", self.tooltip)),
             "ItemIsMenu": GLib.Variant("b", False), "Menu": GLib.Variant("o", "/MenuBar"),
         }.get(name)
@@ -305,6 +315,8 @@ class Tray:
             interface = Gio.DBusNodeInfo.new_for_xml(xml).interfaces[0]
             self.connection.register_object(path, interface, self.method_call, self.get_property, None)
         Gio.bus_watch_name_on_connection(self.connection, WATCHER, Gio.BusNameWatcherFlags.NONE, self.register_item, None)
+        Gio.bus_watch_name_on_connection(self.connection, PANEL_NAME, Gio.BusNameWatcherFlags.NONE,
+                                         lambda *_args: self.show_status("Passive"), lambda *_args: self.show_status("Active"))
         GLib.timeout_add_seconds(60, self.give_up)
         GLib.timeout_add_seconds(30, self.refresh_tooltip)
         GLib.timeout_add_seconds(5, self.check_engine)

@@ -13,6 +13,41 @@ SPEC.loader.exec_module(tray)
 
 
 class TrayLogicTest(unittest.TestCase):
+    def test_panel_status_changes_emit_once_and_update_the_item_property(self):
+        connection = Mock()
+        item = tray.Tray(connection, (42, "http://127.0.0.1:4731", "a" * 64, "/opt/asb/bin/asb"), {})
+        self.assertEqual(item.item_property("Status").unpack(), "Active")
+        for status in ("Passive", "Active"):
+            connection.reset_mock()
+            self.assertIs(item.show_status(status), False)
+            connection.emit_signal.assert_called_once()
+            args = connection.emit_signal.call_args.args
+            self.assertEqual(args[:4], (None, "/StatusNotifierItem", "org.kde.StatusNotifierItem", "NewStatus"))
+            self.assertEqual(args[4].unpack(), (status,))
+            self.assertEqual(item.item_property("Status").unpack(), status)
+            self.assertIs(item.show_status(status), False)
+            self.assertEqual(connection.emit_signal.call_count, 1)
+
+    def test_run_watches_the_panel_name_and_updates_status_from_its_callbacks(self):
+        connection = Mock()
+        connection.call_sync.return_value = tray.GLib.Variant("(u)", (1,))
+        with patch.object(tray.GLib, "MainLoop") as loop, patch.object(tray.GLib, "timeout_add_seconds"), \
+                patch.object(tray, "unix_signal_add"), patch.object(tray.Gio, "bus_watch_name_on_connection") as watch, \
+                patch.object(tray.Tray, "refresh_tooltip"):
+            item = tray.Tray(connection, (42, "http://127.0.0.1:4731", "a" * 64, "/opt/asb/bin/asb"), {})
+            self.assertEqual(item.run(), 0)
+        self.assertEqual(connection.register_object.call_count, 2)
+        loop.return_value.run.assert_called_once_with()
+        self.assertEqual(watch.call_count, 2)
+        self.assertEqual(watch.call_args_list[0].args[1], tray.WATCHER)
+        args = watch.call_args_list[1].args
+        self.assertEqual(args[:3], (connection, "local.asb.AgentSwitchBoard.Panel", tray.Gio.BusNameWatcherFlags.NONE))
+        self.assertEqual(tray.PANEL_NAME, "local.asb.AgentSwitchBoard.Panel")
+        args[3](connection, tray.PANEL_NAME, "alpha")
+        self.assertEqual(item.item_property("Status").unpack(), "Passive")
+        args[4](connection, tray.PANEL_NAME)
+        self.assertEqual(item.item_property("Status").unpack(), "Active")
+
     def test_tooltip_text_shows_phone_access_only_when_it_runs(self):
         self.assertEqual(tray.tooltip_text({"running": True}), "Running. Phone access on.")
         for phone in ({"running": False}, {"running": "yes"}, {}, None, []):

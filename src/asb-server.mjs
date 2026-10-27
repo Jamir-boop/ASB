@@ -40,10 +40,45 @@ function readPalette(palettePath) {
   return null;
 }
 
+export function panelSummary(dashboard, machines) {
+  const rows = (Array.isArray(dashboard.threads) ? dashboard.threads : []).filter((row) => row.archived !== true);
+  const summary = { needs: 0, working: 0, total: rows.length, needsRows: [], workingRows: [],
+    machines: machines.map((machine) => ({ name: String(machine.name || ''), self: machine.self === true,
+      online: machine.online === true, total: 0, needs: 0, working: 0 })) };
+  const text = (value) => typeof value === 'string' && value.length > 0;
+  const timestamp = (value) => Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+  for (const row of rows) {
+    const index = machines.findIndex((machine) => machine.machineId === row.machineId);
+    const machine = index >= 0 ? index : row.remote !== true ? 0 : -1;
+    const needs = row.pending === true, working = row.state === 'working';
+    if (needs) summary.needs += 1;
+    if (working) summary.working += 1;
+    if (summary.machines[machine]) {
+      summary.machines[machine].total += 1;
+      if (needs) summary.machines[machine].needs += 1;
+      if (working) summary.machines[machine].working += 1;
+    }
+    const item = { id: String(row.id), title: text(row.title) ? row.title : text(row.projectName) ? row.projectName : 'Untitled session',
+      app: text(row.sourceLabel) ? row.sourceLabel : text(row.providerLabel) ? row.providerLabel : '',
+      provider: text(row.provider) ? row.provider : 'codex' };
+    const atMs = timestamp(row.updatedAtMs);
+    if (needs) summary.needsRows.push({ ...item,
+      kind: row.pendingSource === 'user-action' ? 'approval' : row.pendingSource === 'user-question' ? 'question' : row.alert === true ? 'failed' : 'done',
+      machine, atMs, canOpen: row.canOpen === true });
+    if (working) summary.workingRows.push({ ...item, machine,
+      atMs: Number.isFinite(row.workingSinceMs) && row.workingSinceMs > 0 ? Math.floor(row.workingSinceMs) : atMs,
+      canOpen: row.canOpen === true });
+  }
+  const newest = (a, b) => b.atMs - a.atMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  summary.needsRows = summary.needsRows.sort(newest).slice(0, 6);
+  summary.workingRows = summary.workingRows.sort(newest).slice(0, 6);
+  return summary;
+}
+
 export function createAsbServer({
   markUnreadThread = null, markReadThread = null, setUnreadSettings = null, pinThread = null, discardThread = null, drawerThread = null, muteThread = null,
   listSources = null, updateSource = null, removeSource = null, sourceToken = '', phoneGateway = null, machineGroup = null, serviceMode = false, onStop = null,
-  machineRelay = null, bridgeCoverage = null, activityMessages = null, activityUsage = null, readSources = async () => [], resolveSession = null, resolveBound = null, listReferences = null, sendMember = null,
+  machineRelay = null, bridgeCoverage = null, activityMessages = null, activityUsage = null, panelMachines = null, readSources = async () => [], resolveSession = null, resolveBound = null, listReferences = null, sendMember = null,
   appVersion = '', rootDir = '', sourcesPath = '', readSourcesRevision = async () => null,
   palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, now = Date.now, ...snapshotOptions
 } = {}) {
@@ -110,6 +145,7 @@ export function createAsbServer({
     // The activity reads (contract 2); each exists only when the engine gives its service.
     const activityRoute = url.pathname.match(/^\/api\/activity\/(messages|thread|usage)$/)?.[1];
     const activityReady = activityRoute === 'usage' ? Boolean(activityUsage) : Boolean(activityRoute) && Boolean(activityMessages);
+    const panelRoute = Boolean(panelMachines) && url.pathname === '/api/panel';
     const eventRoute = url.pathname === '/api/events';
     const paletteRoute = url.pathname === '/api/palette';
     const engineStopRoute = Boolean(onStop) && url.pathname === '/api/engine/stop';
@@ -122,7 +158,7 @@ export function createAsbServer({
       || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute || showWindowRoute || resolveRoute || resolveBoundRoute || listReferencesRoute || sendMemberRoute
       || Boolean(groupRoute?.[1]) || Boolean(bridgeRoute?.[1]) || ['send', 'receipt'].includes(relayRoute);
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
-    const readApiRoute = url.pathname === '/api/dashboard' || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute
+    const readApiRoute = url.pathname === '/api/dashboard' || panelRoute || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute
       || Boolean(groupRoute && !groupRoute[1]) || Boolean(bridgeRoute && !bridgeRoute[1]) || ['homes', 'remote-peers'].includes(relayRoute) || activityReady;
     const readRoute = readApiRoute || staticRoutes.includes(url.pathname);
     if (!readRoute && !actionRoute) {
@@ -147,6 +183,15 @@ export function createAsbServer({
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
     response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    // The ASB top-bar extension (gnome-shell/): three counts, the newest rows, and the machines.
+    if (panelRoute) {
+      response.setHeader('Cache-Control', 'no-store');
+      try {
+        const [dashboard, machines] = await Promise.all([loadSharedDashboard(), panelMachines()]);
+        sendJson(response, 200, { ...panelSummary(dashboard, machines), accent: palette?.colors.accent || '' });
+      } catch { sendJson(response, 500, { error: 'ASB cannot read the sessions.' }); }
+      return;
+    }
     if (activityReady) {
       response.setHeader('Cache-Control', 'no-store');
       const params = url.searchParams;

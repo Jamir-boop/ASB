@@ -2,10 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createAsbServer } from '../src/asb-server.mjs';
+import { createAsbServer, panelSummary } from '../src/asb-server.mjs';
 import { DashboardSnapshot } from '../src/dashboard-snapshot.mjs';
 import { createSwitchboardServer, PendingTracker } from '../src/switchboard.mjs';
 
@@ -449,4 +450,94 @@ test('server.bridgeReport gives the member report with runBridgeCli, and 404 wit
     apps: [{ sourceId: 'opencode', label: 'OpenCode', provider: 'opencode', state: 'missing', version: null, live: 0, command: 'asb bridge install --opencode' }] } });
   const plain = await serve(t, options, createSwitchboardServer);
   assert.deepEqual(await plain.server.bridgeReport(), { status: 404, body: { error: 'Route is not available.' } });
+});
+
+test('the panel is a local GET route with a no-store summary of the shared dashboard', async (t) => {
+  const dashboard = { providers: [], threads: [{ id: 'alpha', title: 'Alpha', pending: true, state: 'working', updatedAtMs: 12 }] };
+  const machines = [{ machineId: 'alpha', name: 'Alpha', self: true, online: true }];
+  let loads = 0, machineReads = 0;
+  const { base, post } = await serve(t, { now: () => 100,
+    loadDashboard: async () => { loads += 1; return dashboard; },
+    panelMachines: async () => { machineReads += 1; return machines; } });
+  await fetch(`${base}/api/dashboard`);
+  for (const headers of [{}, { Origin: base, 'sec-fetch-site': 'same-origin' }, { 'sec-fetch-site': 'none' }]) {
+    const response = await fetch(`${base}/api/panel?force=1`, { headers });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.equal(response.headers.get('content-type'), 'application/json; charset=utf-8');
+    assert.equal(await response.text(), JSON.stringify({ ...panelSummary(dashboard, machines), accent: '' }));
+  }
+  assert.equal(loads, 1);
+  assert.equal(machineReads, 3);
+  const wrongMethod = await post('/api/panel');
+  assert.equal(wrongMethod.status, 405);
+  assert.equal(wrongMethod.headers.get('allow'), 'GET');
+  for (const headers of [{ Host: 'example.test' }, { Origin: 'http://example.test' }, { 'sec-fetch-site': 'cross-site' }]) {
+    const response = await new Promise((resolve, reject) => {
+      http.get(`${base}/api/panel`, { headers }, (response) => {
+        let body = '';
+        response.on('data', (chunk) => { body += chunk; });
+        response.on('end', () => resolve({ status: response.statusCode, body: JSON.parse(body) }));
+      }).on('error', reject);
+    });
+    assert.equal(response.status, 403);
+    assert.deepEqual(response.body, { error: headers.Host ? 'Use the local ASB address.' : 'Use the local ASB API.' });
+  }
+});
+
+test('the panel is unavailable without panelMachines and hides dashboard and machine read failures', async (t) => {
+  const plain = await serve(t, {});
+  const missing = await fetch(`${plain.base}/api/panel`);
+  assert.equal(missing.status, 404);
+  assert.deepEqual(await missing.json(), { error: 'Route is not available in ASB.' });
+  const fail = async () => { throw new Error('synthetic failure'); };
+  for (const options of [{ panelMachines: fail }, { panelMachines: async () => [], loadDashboard: fail }]) {
+    const { base } = await serve(t, options);
+    const response = await fetch(`${base}/api/panel`);
+    assert.equal(response.status, 500);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await response.json(), { error: 'ASB cannot read the sessions.' });
+  }
+});
+
+test('the switchboard panel lists this machine first and sorts members by lowercase name and machine ID', async (t) => {
+  const members = [
+    { machineId: 'bravo', name: 'bravo', online: true },
+    { machineId: 'charlie', name: 'Alpha', online: 1 },
+    { machineId: 'alpha', name: 'alpha', online: false },
+    { machineId: 'self', name: 'Self', isSelf: true, online: false },
+  ];
+  const group = { status: async () => ({ members }), merge: () => {} };
+  const unavailable = { status: async () => { throw new Error('synthetic failure'); }, merge: () => {} };
+  for (const machineGroup of [group, unavailable, null]) {
+    const { base } = await serve(t, { pendingTracker: new PendingTracker(false), palettePath: '', machineGroup,
+      activityUsage: {}, machineIdentity: () => ({ machineId: 'self', machineName: 'Self' }),
+      loadDashboard: async () => ({ providers: [], threads: [
+        { id: 'local', machineId: 'self', state: 'idle' },
+        { id: 'remote', machineId: 'charlie', state: 'idle', remote: true },
+      ] }) }, createSwitchboardServer);
+    const response = await fetch(`${base}/api/panel`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    const expected = [{ name: 'Self', self: true, online: true, total: 1, needs: 0, working: 0 }];
+    if (machineGroup === group) expected.push(
+      { name: 'alpha', self: false, online: false, total: 0, needs: 0, working: 0 },
+      { name: 'Alpha', self: false, online: false, total: 1, needs: 0, working: 0 },
+      { name: 'bravo', self: false, online: true, total: 0, needs: 0, working: 0 });
+    assert.deepEqual(body.machines, expected);
+  }
+});
+
+test('the panel appends the current saved accent on every read', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'asb-panel-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const palettePath = path.join(dir, 'palette.json');
+  await writeFile(palettePath, JSON.stringify(PALETTE));
+  const { base, post } = await serve(t, { palettePath, panelMachines: async () => [] });
+  const first = await (await fetch(`${base}/api/panel`)).text();
+  assert.equal(first, JSON.stringify({ ...panelSummary({ threads: [] }, []), accent: '#3584e4' }));
+  const changed = { ...PALETTE, colors: { ...PALETTE.colors, accent: '#ABCDEF' } };
+  assert.equal((await post('/api/palette', JSON.stringify(changed))).status, 200);
+  const second = await (await fetch(`${base}/api/panel`)).text();
+  assert.equal(second, JSON.stringify({ ...panelSummary({ threads: [] }, []), accent: '#abcdef' }));
 });

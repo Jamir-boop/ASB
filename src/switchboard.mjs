@@ -925,6 +925,16 @@ export function createSwitchboardServer(options = {}) {
       if (source === 'codex') invalidateCodexData(hint);
       else { invalidateClaudeData(hint); invalidateClaudeRemoteData(hint); }
     },
+    panelMachines: async () => {
+      const machine = activityMachine();
+      const members = group ? (await group.status().catch(() => ({ members: [] }))).members : [];
+      return [{ ...machine, self: true, online: true }, ...members.filter((member) => member.isSelf !== true)
+        .map((member) => ({ machineId: member.machineId, name: member.name, self: false, online: member.online === true }))
+        .sort((a, b) => {
+          const left = `${a.name.toLowerCase()}\0${a.machineId}`, right = `${b.name.toLowerCase()}\0${b.machineId}`;
+          return left < right ? -1 : left > right ? 1 : 0;
+        })];
+    },
     ...options,
     loadDashboard: async ({ sourceScans } = {}) => {
       const sources = registeredLoad ? await registry.read() : null;
