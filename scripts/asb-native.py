@@ -10045,43 +10045,76 @@ class UsageWindow(ActivityWindow):
             self.blocks.append(block)
 
     def render_models(self, view, show):
+        """The Models table. Each (model, app) row keeps its widgets: a refresh changes their texts and order in place."""
         grid = self.models
-        remove_children(grid)
         names = {machine["machineId"]: machine["name"] for machine in self.data["machines"]}
         rows = {machine["id"]: machine for machine in view["machines"]}
         columns = [("Model", 0), ("App", 0), ("Cost", 1), ("Tokens", 1)] if self.small else \
             [("Model", 0), ("App", 0), ("Machines", 0), ("Cost", 1), ("Share", 0), ("Tokens", 1)]
-        for column, (title, xalign) in enumerate(columns):
-            head = self.text(title, ("asb-usage-head",), xalign, hexpand=title in ("Model", "App", "Machines", "Tokens"))
-            grid.attach(head, column, 0, 1, 1)
+        if columns != getattr(self, "model_columns", None):
+            remove_children(grid)
+            self.model_columns, self.model_cells = columns, {}
+            for column, (title, xalign) in enumerate(columns):
+                self.model_head = self.text(title, ("asb-usage-head",), xalign, hexpand=title in ("Model", "App", "Machines", "Tokens"))
+                grid.attach(self.model_head, column, 0, 1, 1)
+        keys = {(model["model"], model["app"]) for model in view["models"]}
+        for key in [key for key in self.model_cells if key not in keys]:
+            for cell in self.model_cells.pop(key).values():
+                grid.remove(cell)
+        layout, previous = grid.get_layout_manager(), self.model_head
         for line, model in enumerate(view["models"], 1):
-            cells = {"Model": self.text(model["model"], ("asb-mono",)),
-                     "Cost": self.text(format_cost(model["cost"]), ("asb-dim",) if model["cost"] is None else ("asb-mono",), 1),
-                     "Tokens": self.text(format_tokens(model["tokens"]), ("asb-mono",), 1)}
-            app = Gtk.Box(spacing=6, tooltip_text=ACTIVITY_APP_LABELS[model["app"]])
-            app.append(self.mark(model["app"]))
-            if not self.small:
-                app.append(self.text(ACTIVITY_APP_LABELS[model["app"]]))
-            cells["App"] = app
-            dots = Gtk.Box(spacing=4, accessible_role=Gtk.AccessibleRole.IMG)
-            dots.update_property([Gtk.AccessibleProperty.LABEL], [", ".join(names[machine] for machine in model["machines"])])
-            for machine in model["machines"]:
-                dot = self.dot(rows[machine])
-                dot.set_tooltip_text(names[machine])
-                dots.append(dot)
-            cells["Machines"] = dots
-            share = Gtk.Box(spacing=8)
-            if model["share"] is not None:
-                bar = UsageBar(6, "#34373b", 60)
-                bar.set_segments([(1, alpha_color(self.palette["light"], .75))], model["share"])
-                share.append(bar)
-                share.append(self.text(format_share(model["share"]), ("asb-mono",)))
-            cells["Share"] = share
-            for column, (title, _xalign) in enumerate(columns):
+            key = (model["model"], model["app"])
+            cells = self.model_cells.get(key)
+            if cells is None:
+                cells = self.model_cells[key] = self.model_row(model)
+                for column, (title, _xalign) in enumerate(columns):
+                    grid.attach(cells[title], column, line, 1, 1)
+            cost = cells["Cost"]
+            cost.set_label(format_cost(model["cost"]))
+            cost.remove_css_class("asb-mono" if model["cost"] is None else "asb-dim")
+            cost.add_css_class("asb-dim" if model["cost"] is None else "asb-mono")
+            cells["Tokens"].set_label(format_tokens(model["tokens"]))
+            dots, machines = cells["Machines"], [(machine, names[machine], rows[machine]["hue"], rows[machine]["offline"]) for machine in model["machines"]]
+            if machines != getattr(dots, "asb_machines", None):
+                dots.asb_machines = machines
+                remove_children(dots)
+                dots.update_property([Gtk.AccessibleProperty.LABEL], [", ".join(names[machine] for machine in model["machines"])])
+                for machine in model["machines"]:
+                    dot = self.dot(rows[machine])
+                    dot.set_tooltip_text(names[machine])
+                    dots.append(dot)
+            share = cells["Share"]
+            if model["share"] is None:
+                remove_children(share)
+            else:
+                if share.get_first_child() is None:
+                    share.append(UsageBar(6, "#34373b", 60))
+                    share.append(self.text("", ("asb-mono",)))
+                share.get_first_child().set_segments([(1, alpha_color(self.palette["light"], .75))], model["share"])
+                share.get_last_child().set_label(format_share(model["share"]))
+            # Keep the child order in the row order too: the screen reader reads the children in that order.
+            for title, _xalign in columns:
                 cell = cells[title]
-                cell.add_css_class("asb-usage-cell")
-                cell.asb_model = (model["model"], model["app"])
-                grid.attach(cell, column, line, 1, 1)
+                if cell.get_prev_sibling() is not previous:
+                    cell.insert_after(grid, previous)
+                if layout.get_layout_child(cell).get_row() != line:
+                    layout.get_layout_child(cell).set_row(line)
+                previous = cell
+
+    def model_row(self, model):
+        """The cells of one Models row by column title. render_models fills the texts that change."""
+        cells = {"Model": self.text(model["model"], ("asb-mono",)), "Cost": self.text("", (), 1), "Tokens": self.text("", ("asb-mono",), 1)}
+        app = Gtk.Box(spacing=6, tooltip_text=ACTIVITY_APP_LABELS[model["app"]])
+        app.append(self.mark(model["app"]))
+        if not self.small:
+            app.append(self.text(ACTIVITY_APP_LABELS[model["app"]]))
+        cells["App"] = app
+        cells["Machines"] = Gtk.Box(spacing=4, accessible_role=Gtk.AccessibleRole.IMG)
+        cells["Share"] = Gtk.Box(spacing=8)
+        for cell in cells.values():
+            cell.add_css_class("asb-usage-cell")
+            cell.asb_model = (model["model"], model["app"])
+        return cells
 
 
 ACTIVITY_WINDOW_CLASSES["usage"] = UsageWindow

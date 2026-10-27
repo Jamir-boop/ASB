@@ -6591,6 +6591,39 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(window.round.center()[1], "processed tokens")
         self.assert_no_new_warnings()
 
+    def test_model_rows_keep_their_widgets(self):
+        window = self.window()
+        before = dict(self.model_rows(window))
+        window.set_metric("tokens")
+        rows = self.model_rows(window)
+        view = asb.usage_view(self.REPLIES["30d"], self.ALL, "tokens")
+        self.assertEqual([key for key, _cells in rows], [(model["model"], model["app"]) for model in view["models"]])
+        self.assertNotEqual([key for key, _cells in rows], list(before))
+        for (key, cells), model in zip(rows, view["models"]):
+            self.assertEqual(cells, before[key])
+            self.assertEqual({window.models.query_child(cell)[1] for cell in cells}, {rows.index((key, cells)) + 1})
+            self.assertEqual(self.labels(cells[5]), [asb.format_tokens(model["tokens"])])
+            self.assertEqual(self.labels(cells[4]), [asb.format_share(model["share"])])
+        self.drain(.1)
+        tops = [cells[0].compute_bounds(window)[1].get_y() for _key, cells in rows]
+        self.assertEqual(tops, sorted(tops))
+        self.assertEqual(len(set(tops)), len(tops))
+        mimo = before[("mimo-v2.6-pro", "opencode")]
+        self.assertEqual(self.labels(mimo[3]), ["Unpriced"])
+        self.assertTrue(mimo[3].has_css_class("asb-dim"))
+        window.data["records"] = [record for record in window.data["records"] if record["model"] != "gpt-6.1-mini"]
+        window.data["records"].append(dict(copy.deepcopy(window.data["records"][0]), model="new-model"))
+        window.render_view()
+        rows = dict(self.model_rows(window))
+        gone = before[("gpt-6.1-mini", "codex")]
+        self.assertTrue(all(cell.get_parent() is None for cell in gone))
+        self.assertNotIn(("gpt-6.1-mini", "codex"), rows)
+        added = rows[(("new-model", window.data["records"][0]["app"]))]
+        self.assertTrue(all(cell.get_parent() is window.models for cell in added))
+        self.assertEqual(self.labels(added[0]), ["new-model"])
+        self.assertEqual(len(self.children(window.models)), 6 * (len(rows) + 1))
+        self.assert_no_new_warnings()
+
     def tall_replies(self):
         """The sample replies with 12 more providers, each with an unpriced model: a tall overview with a long note."""
         replies = copy.deepcopy(self.REPLIES)
