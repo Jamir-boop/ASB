@@ -4,6 +4,8 @@ import path from 'node:path';
 import { createYielder } from './usage-scan-cache.mjs';
 
 const nativeSqlite = import('node:sqlite').catch(() => null);
+// One frozen empty result without node:sqlite: the same array at each scan lets the usage engine keep its summed parts.
+const NO_USAGE = Object.freeze([]);
 
 export function expandHome(value, homeDir) {
   if (value === '~') return homeDir;
@@ -184,7 +186,7 @@ export async function readAntigravityUsage(roots, sinceMs, { cache = new Map(), 
   open, pause = createYielder() } = {}) {
   const sqlite = await native;
   // shortcut: Antigravity needs node:sqlite (Node.js 22.13 or later); without it ASB reads no Antigravity usage.
-  if (!sqlite?.DatabaseSync) return [];
+  if (!sqlite?.DatabaseSync) return NO_USAGE;
   const identities = new Map();
   const groups = [];
   const find = (index) => {

@@ -179,4 +179,7 @@ test('configured and default roots use home expansion, conversations, and dedupe
   assert.equal(expandHome('~', dir), dir);
   assert.equal(expandHome('~\\one', dir), path.join(dir, 'one'));
   assert.deepEqual(await readAntigravityUsage([dir], 0, { native: null }), []);
+  // Without node:sqlite each scan gives the same empty array, so the usage engine keeps its summed parts.
+  const none = await readAntigravityUsage([dir], 0, { native: Promise.resolve(null) });
+  assert.equal(await readAntigravityUsage([dir], 0, { native: Promise.resolve(null) }), none);
 });
