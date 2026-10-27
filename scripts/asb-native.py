@@ -8822,8 +8822,10 @@ class MessagesWindow(ActivityWindow):
             chip.add_css_class("asb-msg-chip")
             chip.append(self.machine_dot(machine["machineId"]))
             chip.append(Gtk.Label(label=machine.get("name", "")))
-            chip.append(label(machine_state_text(machine), "asb-dim"))
-            chip.set_tooltip_text(machine_last_report(machine) or None)
+            if machine.get("state") == "offline":
+                chip.append(label(machine_state_text(machine), "asb-dim"))
+            chip.set_tooltip_text(machine_last_report(machine) or machine_state_text(machine) or None)
+            chip.update_property([Gtk.AccessibleProperty.LABEL], [f"{machine.get('name', '')}, {machine_state_text(machine)}"])
             self.chips.append(chip)
             chip.get_parent().set_focusable(False)
         self.seat_count = label(f"{len(self.view['seated'])} of {self.view['active']} sessions", "asb-msg-small")
@@ -9909,11 +9911,12 @@ class UsageWindow(ActivityWindow):
                 inner = Gtk.Box(spacing=6)
                 inner.append(self.dot({"hue": machine_hue(index), "offline": machine.get("state") == "offline"}))
                 inner.append(self.text(machine["name"], ("asb-usage-chip-name",)))
-                inner.append(self.text(machine_state_text(machine), ("asb-dim",)))
+                if machine.get("state") == "offline":
+                    inner.append(self.text(machine_state_text(machine), ("asb-dim",)))
                 button.set_child(inner)
                 button.update_property([Gtk.AccessibleProperty.LABEL], [f"{machine['name']}, {machine_state_text(machine)}"])
                 button.connect("toggled", lambda button, machine_id: button.asb_ready and self.toggle_machine(machine_id), machine["machineId"])
-                button.asb_report, button.asb_ready = machine_last_report(machine), False
+                button.asb_report, button.asb_ready = machine_last_report(machine) or machine_state_text(machine), False
                 self.chips.append(button)
                 self.chip_buttons[machine["machineId"]] = button
         for machine_id, button in self.chip_buttons.items():

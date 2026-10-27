@@ -6335,9 +6335,11 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertTrue(window.metric_buttons["cost"].get_parent().has_css_class("linked"))
         chips = window.chip_buttons
         self.assertEqual(list(chips), ["desk", "laptop", "studio"])
-        self.assertEqual([self.labels(chip) for chip in chips.values()], [["Desk", "Local"], ["Laptop", "Connected"], ["Studio", "Offline"]])
+        self.assertEqual([self.labels(chip) for chip in chips.values()], [["Desk"], ["Laptop"], ["Studio", "Offline"]])
         self.assertTrue(all(chip.get_active() and chip.get_sensitive() for chip in chips.values()))
-        self.assertEqual([chip.get_tooltip_text() for chip in chips.values()], [None, None, "Last report Oct 25, 14:30"])
+        self.assertEqual([chip.get_tooltip_text() for chip in chips.values()], ["Local", "Connected", "Last report Oct 25, 14:30"])
+        for chip, expected in zip(chips.values(), ("Desk, Local", "Laptop, Connected", "Studio, Offline")):
+            self.assert_accessible_label(chip, expected)
         dot = chips["studio"].get_child().get_first_child()
         self.assertTrue(dot.has_css_class("asb-activity-hue-2") and dot.has_css_class("asb-activity-hollow"))
         self.assertEqual(window.prices_label.get_label(), "Prices: LiteLLM, Oct 26")
@@ -6526,7 +6528,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual([row.asb_machine for row in self.children(window.machine_rows)], ["desk"])
         chips["studio"].set_active(True)
         self.assertTrue(chips["desk"].get_sensitive())
-        self.assertEqual(chips["desk"].get_tooltip_text(), None)
+        self.assertEqual(chips["desk"].get_tooltip_text(), "Local")
         self.assertFalse(chips["studio"].has_css_class("asb-usage-off"))
         self.assert_no_new_warnings()
 
@@ -7287,8 +7289,10 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         while child is not None:
             chips.append(child.get_child())
             child = child.get_next_sibling()
-        self.assertEqual([self.labels(chip) for chip in chips[:3]], [["Desk", "Local"], ["Laptop", "Connected"], ["Studio", "Offline"]])
-        self.assertEqual([chip.get_tooltip_text() for chip in chips[:3]], [None, None, "Last report Oct 25, 14:30"])
+        self.assertEqual([self.labels(chip) for chip in chips[:3]], [["Desk"], ["Laptop"], ["Studio", "Offline"]])
+        self.assertEqual([chip.get_tooltip_text() for chip in chips[:3]], ["Local", "Connected", "Last report Oct 25, 14:30"])
+        for chip, expected in zip(chips[:3], ("Desk, Local", "Laptop, Connected", "Studio, Offline")):
+            self.assert_accessible_label(chip, expected)
         self.assertTrue(chips[2].get_first_child().has_css_class("asb-activity-hollow"))
         view = window.view
         self.assertEqual(chips[3].get_label(), f"{len(view['seated'])} of {view['active']} sessions")
