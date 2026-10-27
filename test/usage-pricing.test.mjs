@@ -37,7 +37,8 @@ test('matches the model name case-insensitively, trimmed, and without a brackete
   const table = parseRateTable({ 'claude-test-5-1': rate(1e-5, 2.5e-7) });
   assert.deepEqual(lookupRate(table, 'claude-test-5-1[1m]'), lookupRate(table, 'claude-test-5-1'));
   assert.deepEqual(lookupRate(table, ' Claude-Test-5-1 '), lookupRate(table, 'claude-test-5-1'));
-  assert.equal(lookupRate(table, 'anthropic/Claude-Test-5-1[1m]'), null);
+  // ASB, not T3 Code: a prefix that LiteLLM does not know takes the rate of the bare name.
+  assert.deepEqual(lookupRate(table, 'anthropic/Claude-Test-5-1[1m]'), lookupRate(table, 'claude-test-5-1'));
 });
 
 test('keeps the canonical rate separate from a reseller in either order', () => {
@@ -47,7 +48,7 @@ test('keeps the canonical rate separate from a reseller in either order', () => 
     const table = parseRateTable(Object.fromEntries(entries));
     assert.equal(lookupRate(table, 'claude-test-5').cacheRead, 1e-6);
     assert.equal(lookupRate(table, 'deepinfra/anthropic/claude-test-5').cacheRead, null);
-    assert.equal(lookupRate(table, 'other/claude-test-5'), null);
+    assert.equal(lookupRate(table, 'other/claude-test-5').cacheRead, 1e-6);
   }
 });
 
@@ -104,4 +105,18 @@ test('the entry of the model maker gives the rate when the qualified entries dif
   // DashScope is not DeepSeek, so a DeepSeek model with only a DashScope first-party entry stays Unpriced.
   assert.equal(parseRateTable({ 'dashscope/deepseek-test': rate(1), 'y/deepseek-test': rate(2) }).has('deepseek-test'), false);
   assert.equal(parseRateTable({ 'dashscope/glm-test': rate(1), 'y/glm-test': rate(1) }).get('glm-test').input, 1);
+});
+
+test('a prefix that LiteLLM does not know takes the rate of the bare name, with the maker rule', () => {
+  const table = parseRateTable({ 'dashscope/glm-5.2': rate(2), 'zai/glm-5.2': rate(1), 'openrouter/z-ai/glm-5.2': rate(4),
+    'deepseek/deepseek-test': rate(1), 'together/deepseek-ai/deepseek-test': rate(1.5), 'a/x-test': rate(1), 'b/x-test': rate(2) });
+  assert.equal(lookupRate(table, 'z-ai/glm-5.2').input, 1);
+  assert.equal(lookupRate(table, 'Z-AI/GLM-5.2').input, 1);
+  // A key of the table wins over the bare name.
+  assert.equal(lookupRate(table, 'openrouter/z-ai/glm-5.2').input, 4);
+  assert.equal(lookupRate(table, 'deepseek-ai/deepseek-test').input, 1);
+  // Ambiguous, unknown, and bare family names stay Unpriced.
+  assert.equal(lookupRate(table, 'vendor/x-test'), null);
+  assert.equal(lookupRate(table, 'vendor/kimi-test'), null);
+  assert.equal(priceTokens(parseRateTable({ opus: rate(1) }), 'vendor/opus', tokens), null);
 });

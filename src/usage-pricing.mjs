@@ -112,7 +112,8 @@ export function lookupRate(table, model) {
   if (rate === undefined) {
     const key = stripVariantSuffix(normalizeRateKey(model));
     const bareName = bareModelName(key);
-    rate = bareName.length === 0 || UNPRICEABLE_MODELS.has(bareName) ? null : table.get(key) ?? null;
+    // A prefix that LiteLLM does not know (z-ai/glm-5.2) takes the rate of the bare name, which the maker rule chose.
+    rate = bareName.length === 0 || UNPRICEABLE_MODELS.has(bareName) ? null : table.get(key) ?? table.get(bareName) ?? null;
     resolved.set(model, rate);
   }
   return rate;
