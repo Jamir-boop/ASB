@@ -6777,9 +6777,10 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
             with self.subTest(size=size):
                 window = self.window(size=size)
                 self.drain(.1)
-                cells = []
+                cells, heights = [], []
                 for box in (window.machine_rows, window.app_rows, window.maker_rows):
                     for row in self.children(box):
+                        heights.append(row.get_height())
                         who, bar = self.children(row)[:2]
                         found, cell = who.compute_bounds(window)
                         self.assertTrue(found)
@@ -6792,12 +6793,16 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
                 self.assertEqual(len(cells), 9)
                 self.assertEqual(cells[0][0], cell_width)
                 self.assertEqual(set(cells), {cells[0]})
+                self.assertEqual(len(heights), 9)
+                self.assertEqual(set(heights), {heights[0]})
+                self.assertLessEqual(heights[0], 36)
                 if size == (600, 900):
                     states = {row.asb_machine: self.children(self.children(row)[0].get_child())[1] for row in self.children(window.machine_rows)}
                     studio, desk = states["studio"], states["desk"]
                     self.assertEqual(studio.get_label(), "Offline · last report Oct 25, 14:30")
-                    self.assertFalse(studio.get_layout().is_ellipsized())
-                    self.assertGreater(studio.get_height(), desk.get_height())
+                    self.assertTrue(studio.get_layout().is_ellipsized())
+                    self.assertEqual(studio.get_tooltip_text(), "Offline · last report Oct 25, 14:30")
+                    self.assertEqual(studio.get_height(), desk.get_height())
         self.assert_no_new_warnings()
 
     def test_empty_period(self):

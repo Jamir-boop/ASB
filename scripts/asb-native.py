@@ -9770,8 +9770,7 @@ class UsageWindow(ActivityWindow):
         return f"""
 {scope} .asb-usage-heading {{ font-size: 13px; font-weight: 600; }}
 {scope} .asb-usage-small {{ font-size: 12px; }}
-{scope} .asb-usage-row {{ min-height: 44px; border-bottom: 1px solid {rule}; }}
-{scope} .asb-usage-row.asb-usage-narrow {{ padding: 6px 0; }}
+{scope} .asb-usage-row {{ min-height: 34px; border-bottom: 1px solid {rule}; }}
 {scope} .asb-usage-name {{ font-size: 13px; font-weight: 600; }}
 {scope} .asb-usage-sub {{ font-size: 11px; color: {palette['dim']}; }}
 {scope} .asb-usage-value {{ font-size: 13px; }}
@@ -9969,14 +9968,12 @@ class UsageWindow(ActivityWindow):
     def row_box(self):
         row = Gtk.Box(spacing=8 if self.small else 14)
         row.add_css_class("asb-usage-row")
-        if self.narrow:
-            row.add_css_class("asb-usage-narrow")
         return row
 
     def row_cells(self, row, who, bar, value, share, show):
         widths = (112, 84, 44) if self.small else (150, 110, 56) if self.narrow else (210, 110, 56)
         who.set_size_request(widths[0], -1)
-        # A wrapped state label asks for its full text width; the clamp keeps the cell at its column width.
+        # The clamp keeps the cell at its column width.
         row.append(Adw.Clamp(maximum_size=widths[0], tightening_threshold=widths[0], child=who, hexpand=False))
         row.append(bar)
         row.append(self.text(format_cost(None) if value is None else show(value),
@@ -9995,10 +9992,8 @@ class UsageWindow(ActivityWindow):
             name.append(self.text(machine["name"], ("asb-usage-name",), ellipsize=Pango.EllipsizeMode.END, max_width_chars=1, hexpand=True))
             who.append(name)
             sub = self.text(machine["state"], ("asb-usage-sub",), max_width_chars=1, hexpand=True)
-            if self.narrow:
-                sub.set_wrap(True)
-            else:
-                sub.set_ellipsize(Pango.EllipsizeMode.END)
+            sub.set_ellipsize(Pango.EllipsizeMode.END)
+            sub.set_tooltip_text(machine["state"])
             who.append(sub)
             bar = UsageBar(10, self.palette["track"])
             bar.set_segments([(machine["apps"][app]["value"], ACTIVITY_APP_COLORS[app]) for app in USAGE_APPS + ("",)], machine["share"])
