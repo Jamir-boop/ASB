@@ -6571,6 +6571,26 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
                 window.stop_live()
         self.assert_no_new_warnings()
 
+    def test_a_reply_that_changes_only_the_time_does_not_render(self):
+        replies = copy.deepcopy(self.REPLIES)
+        window = self.window(replies)
+        cells = self.children(window.models)
+        rows = self.children(window.machine_rows)
+        replies["30d"]["nowMs"] += 60_000
+        window.refresh()
+        self.assertEqual(window.data["nowMs"], replies["30d"]["nowMs"])
+        self.assertEqual(self.children(window.models), cells)
+        self.assertEqual(self.children(window.machine_rows), rows)
+        replies["30d"]["records"][0]["tokens"]["output"] += 1
+        window.refresh()
+        self.assertNotEqual(self.children(window.machine_rows), rows)
+        # The view controls still render with the same reply.
+        rows = self.children(window.machine_rows)
+        window.set_metric("tokens")
+        self.assertNotEqual(self.children(window.machine_rows), rows)
+        self.assertEqual(window.round.center()[1], "processed tokens")
+        self.assert_no_new_warnings()
+
     def tall_replies(self):
         """The sample replies with 12 more providers, each with an unpriced model: a tall overview with a long note."""
         replies = copy.deepcopy(self.REPLIES)

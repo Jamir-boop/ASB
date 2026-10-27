@@ -9875,6 +9875,9 @@ class UsageWindow(ActivityWindow):
         self.blocks.set_spacing(20 if self.narrow else 36)
 
     def render(self, data, previous):
+        # A refresh comes after each dashboard event: the same numbers with a new reply time keep the shown view.
+        if previous is not None and {**previous, "nowMs": None} == {**data, "nowMs": None}:
+            return
         self.prices_label.set_label(usage_prices_text(data.get("prices")))
         scan = usage_scan_text(data.get("scan"))
         self.scan_label.set_label(scan)
