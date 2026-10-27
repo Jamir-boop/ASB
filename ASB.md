@@ -98,10 +98,11 @@ The drawer has no time limit. A chat leaves the drawer in these ways:
 - You take it out. Select **Take out of drawer** in the row panel. In Comfortable, the drawer button of a drawer card has a filled glyph in the accent color; select it. The chat is unread and Pending again.
 - You mark it read: select **Mark read** in the row panel. An Unread action through the local API also takes the chat out.
 - You open it. A successful open acknowledges the marks when **Persistent unread** is off. With **Persistent unread** on, an open keeps the marks and the chat stays in the drawer.
-- It gets new attention. The chat comes out as normal unread and Pending when ASB sees a result or failure time that is newer than `drawerSeen`, or when the chat has a question. This includes a task that ASB did not see in its Working phase, for example a short task between two scans. A native unread that is raised again in the original app with no new result does not take the chat out.
+- It starts to work or waits for you. When the chat goes Working, has a question, or waits for your permission in the original app, it leaves the drawer at once. A Working chat shows with the Working cards, at the front of them. When the task ends, the chat shows its marks again: unread and Pending with the new result, or with its old mark when the task stopped with no result.
+- It gets new attention. The chat comes out as normal unread and Pending when ASB sees a result or failure time that is newer than `drawerSeen`. This includes a task that ASB did not see in its Working phase, for example a short task between two scans. A native unread that is raised again in the original app with no new result does not take the chat out.
 - Its mark is gone. When no stored mark is left, for example the chat was read in the original app and ASB has no other mark for it, the chat leaves the drawer as a read chat. An unknown native read state for a time keeps the chat in the drawer.
 
-A drawer chat that goes Working stays in the drawer. A stopped task keeps the chat in the drawer. A task that ends with **Discard result** on acknowledges the completion and native marks, as in 1.5.0. A drawer chat whose only mark is of that kind is then read and leaves the drawer. A drawer chat with a manual Unread mark stays in the drawer and is not Pending.
+A task that ends with **Discard result** on acknowledges the completion and native marks, as in 1.5.0, so a chat whose only mark is of that kind is read. A manual Unread mark stays: the chat is unread, or, after a short task between two scans, it stays in the drawer and is not Pending.
 
 The browser view shows a drawer chat as read. It has no Drawer pill and no drawer actions.
 
