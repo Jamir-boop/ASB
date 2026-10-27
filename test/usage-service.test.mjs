@@ -57,7 +57,7 @@ async function setup(t) {
   ];
   const service = (extra = {}) => {
     const usage = createActivityUsage({ readSources: async () => sources, machine, cacheDir: path.join(root, 'cache'),
-      now: () => NOW, fetch, homeDir: root, log: () => {}, ...extra });
+      now: () => NOW, fetch, homeDir: root, env: {}, log: () => {}, ...extra });
     services.push(usage);
     return usage;
   };

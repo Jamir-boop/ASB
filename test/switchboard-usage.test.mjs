@@ -31,7 +31,7 @@ async function setup(t, extra = {}) {
   const cacheDir = path.join(home, '.cache', 'asb');
   const server = createSwitchboardServer({ pendingTracker: new PendingTracker(false), palettePath: '', dashboardWatchPaths: [],
     sourceRegistry: { read: async () => sources }, loadDashboard: async () => ({ providers: [], threads: [] }),
-    machineIdentity: () => self, usageFetch, usageCacheDir: cacheDir, ...extra });
+    machineIdentity: () => self, usageFetch, usageCacheDir: cacheDir, usageHomeDir: home, ...extra });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
   const base = `http://127.0.0.1:${server.address().port}`;

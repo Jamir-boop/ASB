@@ -900,10 +900,11 @@ export function createSwitchboardServer(options = {}) {
   };
   const group = options.machineGroup || null;
   // Contract 2.3 and 4: the token usage of the registered sources and the group. It scans and downloads only when asked.
-  // The fetch and cache options are for tests only.
+  // The fetch, cache, and home options are for tests only.
   const usage = options.activityUsage ? null : createActivityUsage({ readSources: async () => registeredLoad ? registry.read() : [],
     machine: activityMachine, ...(options.usageFetch ? { fetch: options.usageFetch } : {}),
-    ...(options.usageCacheDir ? { cacheDir: options.usageCacheDir } : {}) });
+    ...(options.usageCacheDir ? { cacheDir: options.usageCacheDir } : {}),
+    ...(options.usageHomeDir ? { homeDir: options.usageHomeDir, env: {} } : {}) });
   const activityUsage = options.activityUsage || {
     report: async (period) => usage.report(period, group ? await group.activity(period).catch(() => []) : []),
     localHourly: (period) => usage.localHourly(period),
