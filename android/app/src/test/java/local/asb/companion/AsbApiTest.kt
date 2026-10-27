@@ -586,6 +586,15 @@ class AsbApiTest {
         assertEquals("/phone/v1/activity/usage?period=all", server.takeRequest().path)
     }
 
+    @Test fun anOlderGatewayWithoutAllTimeAsksForAnUpdate() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(400).setBody("""{"error":"Invalid period."}"""))
+        assertEquals("This PC runs an older ASB. Update ASB on the PC to see All time.", failure { api().activityUsage("all", "") }.message)
+        server.enqueue(MockResponse().setResponseCode(400).setBody("""{"error":"Invalid period."}"""))
+        assertEquals("Invalid period.", failure { api().activityUsage("30d", "") }.message)
+        server.enqueue(MockResponse().setResponseCode(500).setBody("""{"error":"No access"}"""))
+        assertEquals("No access", failure { api().activityUsage("all", "") }.message)
+    }
+
     @Test fun anInvalidPeriodThrowsBeforeAnyRequest() = runBlocking {
         for (call in listOf<suspend () -> Unit>({ api().activityMessages("90d", "") }, { api().activityMessages("", "") },
             { api().activityMessages("all", "") },

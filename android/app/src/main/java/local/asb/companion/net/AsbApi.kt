@@ -188,8 +188,13 @@ class AsbApi(
 
     suspend fun activityUsage(period: String, engine: String): ActivityUsage {
         if (period !in USAGE_PERIODS) throw AsbError.Server("Invalid period.")
-        return decode(request("activity", "usage", query = mapOf("period" to period), only = engine,
-            notFound = OLDER_ENGINE).body)
+        return decode(try {
+            request("activity", "usage", query = mapOf("period" to period), only = engine, notFound = OLDER_ENGINE).body
+        } catch (cause: AsbError.Server) {
+            // An older gateway answers period=all with HTTP 400.
+            if (period == "all" && cause.message == "Invalid period.") throw AsbError.Server("This PC runs an older ASB. Update ASB on the PC to see All time.")
+            throw cause
+        })
     }
 
     private data class Reply(val code: Int, val body: String, val etag: String?, val engine: String = "")
