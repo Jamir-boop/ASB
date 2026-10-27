@@ -4,7 +4,6 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { configDir } from './platform-paths.mjs';
 import { validName } from './machine-group.mjs';
-import { readPrivateJson } from './usage-scan-cache.mjs';
 
 export const LEDGER_VERSION = 1;
 export const EXPORT_FORMAT = 'asb-usage-export';
@@ -71,7 +70,8 @@ const recordMap = (tuples) => {
   return records;
 };
 
-function decodeLedger(value, nowMs) {
+// Its own file has no upper time bound: a clock that is wrong at load time must not set the history aside.
+function decodeLedger(value, nowMs = Infinity) {
   if (!exact(value, ['version', 'self', 'machines']) || value.version !== LEDGER_VERSION) return null;
   const { self, machines } = value;
   if (!exact(self, ['machineId', 'name', 'records']) || typeof self.machineId !== 'string' || typeof self.name !== 'string'
@@ -91,12 +91,26 @@ function decodeLedger(value, nowMs) {
 }
 
 // A missing file gives an empty ledger. A broken file is never overwritten: it is set aside, or, if that fails, nothing is saved.
+// A file that cannot be read (or a link) is kept as it is, and nothing is saved. The mode alone never sets a file aside.
 export async function loadLedger(file, { platform = process.platform, now = Date.now, log = console.error } = {}) {
-  try { await fs.lstat(file); } catch (error) {
-    if (error.code === 'ENOENT') return { ledger: emptyLedger(), blocked: false };
+  const unreadable = () => {
+    log('ASB cannot read its usage ledger. It saves no usage history now.');
+    return { ledger: emptyLedger(), blocked: true };
+  };
+  let raw;
+  try {
+    if (!(await fs.lstat(file)).isFile()) return unreadable();
+    raw = await fs.readFile(file, 'utf8');
+  } catch (error) {
+    return error.code === 'ENOENT' ? { ledger: emptyLedger(), blocked: false } : unreadable();
   }
-  const ledger = decodeLedger(await readPrivateJson(file, { platform }), now());
-  if (ledger) return { ledger, blocked: false };
+  let value = null;
+  try { value = JSON.parse(raw); } catch { /* Set aside below. */ }
+  const ledger = decodeLedger(value);
+  if (ledger) {
+    if (platform !== 'win32') await fs.chmod(file, 0o600).catch(() => {});
+    return { ledger, blocked: false };
+  }
   const name = `usage-ledger.${now()}.bad.json`;
   try {
     await fs.rename(file, path.join(path.dirname(file), name));

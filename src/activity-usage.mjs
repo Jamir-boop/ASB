@@ -12,6 +12,7 @@ import { antigravityRoots, expandHome, readAntigravityUsage } from './usage-anti
 import { modelMaker } from './usage-pricing.mjs';
 import { openCodeDatabases, readOpenCodeUsage } from './usage-opencode.mjs';
 import { createRateLoader } from './usage-rates.mjs';
+import { suggestName, validName } from './machine-group.mjs';
 import { encodeLedger, exportDocument, loadLedger, mergeRecord, mergeRecords, readExport, recordKey, validRecord } from './usage-ledger.mjs';
 import { createYielder, loadUsageCache, MAX_CACHE_FILES, pathKey, QUARTER_HOUR_MS, saveUsageCache, scanFile, writePrivateJson } from './usage-scan-cache.mjs';
 
@@ -126,6 +127,8 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     const seen = new Set();
     let changed = false;
     for (const { file, app, info } of files) {
+      // A stop must not wait for a long first scan; the stopped scan merges and saves nothing.
+      if (stopped) return;
       const key = pathKey(file);
       seen.add(key);
       const previous = cache.get(key);
@@ -138,6 +141,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       }
       if (!progress.complete) progress.scannedFiles += 1;
     }
+    if (stopped) return;
     const found = [];
     const queried = new Map();
     let openCodeChanged = databases.size !== openCodeReads.size;
@@ -316,6 +320,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     timer = null;
     ticking = (async () => {
       await ensureScan(true);
+      if (stopped) return;
       if ((lastAskMs === null || now() - lastAskMs >= RELEASE_AFTER_MS) && !running && cache) {
         if (dirty) {
           dirty = false;
@@ -419,7 +424,8 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
         if (!machineId) throw Object.assign(new Error('ASB has no machine ID yet. Start ASB again.'), { statusCode: 409 });
         const nowMs = now();
         const valid = (list) => list.filter((record) => validRecord(record, nowMs));
-        const machines = [{ machineId, name, records: valid(ledgerViews().hourly) }];
+        // A host name that is not a group name (or `This PC`) would make this file fail its own import.
+        const machines = [{ machineId, name: validName(name) ? name : suggestName(name), records: valid(ledgerViews().hourly) }];
         const listed = new Set([machineId]);
         for (const member of members) {
           if (listed.has(member.machineId)) continue;
@@ -429,7 +435,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
           machines.push({ machineId: member.machineId, name: member.name, records });
         }
         for (const machine of importedOnly(members)) {
-          if (!listed.has(machine.machineId)) machines.push({ machineId: machine.machineId, name: machine.name, records: [...machine.records.values()] });
+          if (!listed.has(machine.machineId)) machines.push({ machineId: machine.machineId, name: machine.name, records: valid([...machine.records.values()]) });
         }
         return exportDocument(nowMs, machines);
       },

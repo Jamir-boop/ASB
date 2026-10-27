@@ -382,3 +382,77 @@ test('background scans and exports never download prices; only report does', asy
   await usage.pricesIdle();
   assert.equal(fetches.length, 1);
 });
+
+const ledgerText = (selfRecords, machines = []) => JSON.stringify({ version: 1, self: { machineId: SELF, name: 'engine-a', records: selfRecords }, machines });
+
+test('a ledger with open modes loads and becomes private; a linked ledger is kept as it is and never written', { skip: windows }, async (t) => {
+  const { root, write, service, ledgerFile, logs } = await setup(t);
+  await write('a.jsonl', [claudeLine(BASE - HOUR, 1, 7)]);
+  const folder = path.dirname(ledgerFile);
+  await fs.mkdir(folder, { recursive: true });
+  await fs.chmod(folder, 0o755);
+  await fs.writeFile(ledgerFile, ledgerText([[hourOf(BASE - 3 * DAY), 'claude', 'claude-test-5', 1, 2, 3, 4]]));
+  await fs.chmod(ledgerFile, 0o644);
+  const usage = service();
+  await usage.refresh();
+  assert.deepEqual(usage.localHourly('all').usage.map(({ hourMs }) => hourMs), [hourOf(BASE - 3 * DAY), hourOf(BASE - HOUR)]);
+  assert.deepEqual(await fs.readdir(folder), ['usage-ledger.json']);
+  assert.equal((await fs.stat(ledgerFile)).mode & 0o777, 0o600);
+  assert.equal(usage.stats.ledgerSaves, 1);
+  assert.equal((await fs.stat(folder)).mode & 0o777, 0o700);
+  assert.deepEqual(logs, []);
+  await usage.stop();
+
+  // A link at the ledger path: not read, not renamed, not replaced.
+  const target = path.join(root, 'elsewhere.json');
+  const text = ledgerText([[hourOf(BASE - 2 * DAY), 'claude', 'claude-test-5', 1, 2, 3, 4]]);
+  await fs.writeFile(target, text, { mode: 0o600 });
+  await fs.rm(ledgerFile);
+  await fs.symlink(target, ledgerFile);
+  const linked = service({ cacheDir: path.join(root, 'linked-cache') });
+  await linked.refresh();
+  await write('b.jsonl', [claudeLine(BASE - 2 * HOUR, 2, 3)]);
+  await linked.refresh();
+  await linked.importAll(exportFile([{ machineId: OTHER, name: 'retired', records: [] }]));
+  await linked.stop();
+  assert.ok(!linked.localHourly('all').usage.some(({ hourMs }) => hourMs === hourOf(BASE - 2 * DAY)));
+  assert.deepEqual(logs, ['ASB cannot read its usage ledger. It saves no usage history now.']);
+  assert.equal(linked.stats.ledgerSaves, 0);
+  assert.deepEqual(await fs.readdir(folder), ['usage-ledger.json']);
+  assert.equal(await fs.readlink(ledgerFile), target);
+  assert.equal(await fs.readFile(target, 'utf8'), text);
+});
+
+test('records after the clock in the ledger file load, and its export leaves them out and still imports', async (t) => {
+  const { service, ledgerFile } = await setup(t);
+  await fs.mkdir(path.dirname(ledgerFile), { recursive: true, mode: 0o700 });
+  const late = hourOf(BASE + 2 * DAY);
+  const early = hourOf(BASE - DAY);
+  await fs.writeFile(ledgerFile, ledgerText([[early, 'claude', 'claude-test-5', 1, 0, 0, 1], [late, 'claude', 'claude-test-5', 1, 0, 0, 1]],
+    [{ machineId: OTHER, name: 'retired', exportedAtMs: BASE, records: [[early, 'codex', 'gpt-test-1', 1, 0, 0, 1], [late, 'codex', 'gpt-test-1', 1, 0, 0, 1]] }]), { mode: 0o600 });
+  const usage = service();
+  const document = await usage.exportAll([]);
+  assert.deepEqual(await fs.readdir(path.dirname(ledgerFile)), ['usage-ledger.json']);
+  assert.deepEqual(document.machines.map(({ machineId, records }) => [machineId, records.map((record) => record[0])]), [[SELF, [early]], [OTHER, [early]]]);
+  assert.equal((await usage.importAll(document)).machines.length, 2);
+});
+
+test('the export gives this machine a group name, so it imports', async (t) => {
+  const { service } = await setup(t);
+  const usage = service({ machine: { machineId: SELF, name: 'This PC' } });
+  await usage.importAll(exportFile([{ machineId: OTHER, name: 'retired', records: [[hourOf(BASE - DAY), 'codex', 'gpt-test-1', 1, 0, 0, 1]] }]));
+  const document = await usage.exportAll([]);
+  assert.equal(document.machines[0].name, 'ThisPC');
+  assert.deepEqual((await usage.importAll(document)).machines.map(({ name }) => name), ['ThisPC', 'retired']);
+});
+
+test('stop does not wait for a scan that has not read its files', async (t) => {
+  const { write, service, ledgerFile } = await setup(t);
+  await write('a.jsonl', [claudeLine(BASE - HOUR, 1, 7)]);
+  const usage = service();
+  usage.refresh();
+  await usage.stop();
+  assert.equal(usage.stats.scans, 0);
+  const saved = await fs.readFile(ledgerFile, 'utf8').then(JSON.parse, () => null);
+  assert.deepEqual(saved?.self.records ?? [], []);
+});
