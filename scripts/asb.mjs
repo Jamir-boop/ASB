@@ -5,10 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 export const NODE_HINT = 'ASB needs Node.js 20 or later and built-in SQLite or the sqlite3 command. Node.js 22.13 or later is recommended. '
   + 'Set ASB_NODE to its absolute executable path. Install help: https://github.com/Jamir-boop/ASB#nodejs';
-export const WINDOWS_USAGE = 'Usage: asb [engine|agent|bridge|group|network|phone|usage|setup|doctor] ... '
-  + 'Usage: asb usage export <file> | import <file> | backup [now | on | off] [--time HH:MM] [--keep N] [--folder <path>|default]';
-export const LINUX_USAGE = 'Usage: asb [engine|agent|bridge|group|network|phone|usage|setup|service|doctor] ... With no command, asb opens the board. '
-  + 'Usage: asb usage export <file> | import <file> | backup [now | on | off] [--time HH:MM] [--keep N] [--folder <path>|default]';
+export const WINDOWS_USAGE = 'Usage: asb [engine|agent|bridge|group|network|phone|usage|setup|doctor] ...';
+export const LINUX_USAGE = 'Usage: asb [engine|agent|bridge|group|network|phone|usage|setup|service|doctor] ... With no command, asb opens the board.';
 
 // The engine needs node:sqlite, and the sqlite3 command is rarely on Windows.
 export const windowsNodeOk = (version) => {

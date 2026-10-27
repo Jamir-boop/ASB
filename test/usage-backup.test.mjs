@@ -307,7 +307,8 @@ test('status: nextAtMs today or tomorrow, null when off, and at most 100 files, 
   assert.equal(status.nextAtMs, at(3, 0, 28));
   assert.equal(status.files.length, 100);
   assert.deepEqual(status.files[0], { name: fileName(), date: TODAY, bytes: 0, modifiedAtMs: status.files[0].modifiedAtMs });
-  assert.equal(status.files[0].modifiedAtMs, (await fs.stat(path.join(defaultFolder, fileName()))).mtimeMs);
+  assert.equal(status.files[0].modifiedAtMs, Math.floor((await fs.stat(path.join(defaultFolder, fileName()))).mtimeMs));
+  assert.ok(status.files.every((file) => Number.isSafeInteger(file.modifiedAtMs)));
   assert.equal(status.files[99].date, dateOf(at(12, 0, 27 - 99)));
   await backup.saveSettings({ enabled: false, time: '03:00', keep: 5, folder: '' });
   assert.equal((await backup.status()).nextAtMs, null);

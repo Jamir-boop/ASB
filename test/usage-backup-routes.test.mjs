@@ -91,6 +91,7 @@ test('read the defaults, save settings, and back up now', async (t) => {
   assert.match(now.json.made.name, /^asb-usage-engine-a-aaaaaaaa-\d{4}-\d{2}-\d{2}\.json$/);
   assert.deepEqual(now.json.made, { name: now.json.made.name, path: path.join(folder, now.json.made.name), machines: 1, hours: 1 });
   assert.deepEqual(now.json.files.map((file) => file.name), [now.json.made.name]);
+  assert.ok(now.json.files.every((file) => Number.isSafeInteger(file.modifiedAtMs)));
   const document = JSON.parse(await readFile(now.json.made.path, 'utf8'));
   assert.deepEqual(document.machines, [{ machineId: self.machineId, name: 'engine-a', records: [[hourMs, 'claude', 'claude-test-5', 10, 1000, 50, 7]] }]);
   if (process.platform !== 'win32') assert.equal((await stat(now.json.made.path)).mode & 0o777, 0o600);

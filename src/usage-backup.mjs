@@ -203,7 +203,7 @@ export function createUsageBackup({ settingsFile, exportAll, machineId = () => '
     const files = [];
     for (const item of list.slice(0, MAX_FILES)) {
       const info = await fs.stat(p.join(folder, item.name)).catch(() => null);
-      if (info) files.push({ name: item.name, date: item.date, bytes: info.size, modifiedAtMs: info.mtimeMs });
+      if (info) files.push({ name: item.name, date: item.date, bytes: info.size, modifiedAtMs: Math.floor(info.mtimeMs) });
     }
     return { enabled: current.enabled, time: current.time, keep: current.keep, folder: current.folder, path: folder, defaultPath,
       nextAtMs: current.enabled ? backupTime(now(), current.time, list.some((item) => item.date === today) ? 1 : 0) : null,
