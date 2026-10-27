@@ -12,8 +12,9 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
-import {contrastInk, mixWhite, machineHue, providerIcon, runtimePath, parseRuntime, runtimeTrusted, panelState,
-    timeText, accessibleName, kindMark, rowAccessibleName, moreText, createEventParser, nextFetchDelay} from './model.js';
+import {colorHex, contrastInk, inkOn, mixWhite, machineHue, ST_ACCENTS, providerIcon, runtimePath, parseRuntime,
+    runtimeTrusted, panelState, timeText, accessibleName, kindMark, rowAccessibleName, moreText, createEventParser,
+    nextFetchDelay} from './model.js';
 
 const AsbMark = GObject.registerClass(
 class AsbMark extends St.DrawingArea {
@@ -316,6 +317,11 @@ class AsbButton extends PanelMenu.Button {
         this._capsule.add_child(this._sep2);
         this._total = this._segment('asb-seg-total asb-seg-last', this._icon('asb-chat-symbolic.svg', 13));
         this.menu.actor.add_style_class_name('asb-menu');
+        this._lightPanel = false;
+        this._lightMenu = false;
+        this._menuSurface = '#ffffff';
+        this.connect('style-changed', () => this._syncInk());
+        this.menu.actor.connect('style-changed', () => this._syncInk());
         this.menu.connect('open-state-changed', (_menu, open) => {
             if (open)
                 this._buildMenu();
@@ -408,15 +414,42 @@ class AsbButton extends PanelMenu.Button {
     _accentText(actor) {
         const accent = this._accent();
         actor.add_style_class_name('asb-accent');
+        // St CSS cannot darken a color to a contrast, so on a light menu the accent is mixed with black to 4.5:1.
+        const ink = this._lightMenu
+            ? inkOn(accent || ST_ACCENTS[St.Settings.get().accent_color] || '#3584e4', this._menuSurface, 4.5) : accent;
         // Append, so the CSS size of a mark stays.
-        if (accent)
-            actor.set_style(`${actor.style ?? ''} color: ${accent};`);
+        if (ink)
+            actor.set_style(`${actor.style ?? ''} color: ${ink};`);
     }
 
     _needsStyle(flash = false) {
         const accent = this._accent();
         this._needs.box.set_style(this._state?.needs > 0 && accent
             ? `background-color: ${flash ? mixWhite(accent, 0.3) : accent}; color: ${contrastInk(accent)};` : null);
+    }
+
+    _syncInk() {
+        if (!this.get_stage())
+            return;
+        // Read the ink the theme really uses: some themes (Colloid) ship one dark stylesheet for every style variant.
+        const darkInk = color => contrastInk(colorHex(color)) === '#ffffff';
+        // A highlighted button (hover, focus, open) can have another ink, so keep the last plain reading.
+        if (!['hover', 'focus', 'active', 'checked'].some(name => this.has_style_pseudo_class(name)))
+            this._lightPanel = darkInk(this.get_theme_node().get_foreground_color());
+        this._lightMenu = darkInk(this.menu.actor.get_theme_node().get_foreground_color());
+        const surface = this.menu.box.get_theme_node().get_background_color();
+        this._menuSurface = surface.alpha === 255 ? colorHex(surface) : '#ffffff';
+        for (const [actor, light] of [[this, this._lightPanel], [this.menu.actor, this._lightMenu]]) {
+            if (light)
+                actor.add_style_class_name('asb-light');
+            else
+                actor.remove_style_class_name('asb-light');
+        }
+    }
+
+    _hue(index) {
+        const hue = machineHue(index);
+        return this._lightMenu ? inkOn(hue, this._menuSurface, 3) : hue;
     }
 
     _heading(name, count, attention = false) {
@@ -452,7 +485,7 @@ class AsbButton extends PanelMenu.Button {
         title.clutter_text.ellipsize = Pango.EllipsizeMode.END;
         item.add_child(title);
         if (this._state.machines.length > 1 && row.machine >= 0)
-            item.add_child(new AsbMark('dot', 7, `color: ${machineHue(row.machine)};`));
+            item.add_child(new AsbMark('dot', 7, `color: ${this._hue(row.machine)};`));
         // The bin keeps the minimum width, so the time inside it can align right.
         item.add_child(new St.Bin({style_class: 'asb-time', y_align: Clutter.ActorAlign.CENTER,
             child: new St.Label({text: timeText(row.atMs, Date.now()), style_class: 'asb-secondary',
@@ -480,6 +513,7 @@ class AsbButton extends PanelMenu.Button {
     }
 
     _buildMenu() {
+        this._syncInk();
         const oldItems = this.menu._getMenuItems();
         const focus = global.stage.get_key_focus();
         const restoreFocus = focus && this.menu.actor.contains(focus);
@@ -509,7 +543,7 @@ class AsbButton extends PanelMenu.Button {
                 this._heading('Machines', state.total);
                 state.machines.forEach((machine, index) => {
                     const item = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
-                    item.add_child(new AsbMark(machine.online ? 'dot' : 'ring', 7, `color: ${machineHue(index)};`));
+                    item.add_child(new AsbMark(machine.online ? 'dot' : 'ring', 7, `color: ${this._hue(index)};`));
                     item.add_child(new St.Label({text: machine.name, y_align: Clutter.ActorAlign.CENTER}));
                     if (!machine.online)
                         item.add_child(new St.Label({text: 'Offline', style_class: 'asb-secondary', y_align: Clutter.ActorAlign.CENTER}));

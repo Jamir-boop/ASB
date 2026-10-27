@@ -1,10 +1,35 @@
 export const MACHINE_HUES = ['#a28caa', '#7cc48a', '#5fb3b3', '#d6a15e', '#e38fb0', '#b4b86c'];
 
-export function contrastInk(hex) {
+export const ST_ACCENTS = ['#3584e4', '#2190a4', '#3a944a', '#c88800', '#ed5b00', '#e62d42', '#d56199', '#9141ac', '#6f8396'];
+
+function luminance(hex) {
     const channels = hex.slice(1).match(/../g).map(c => parseInt(c, 16) / 255);
     const linear = channels.map(c => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
-    const luminance = linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
-    return (luminance + 0.05) / 0.05 >= 1.05 / (luminance + 0.05) ? '#000000' : '#ffffff';
+    return linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+}
+
+export function contrastInk(hex) {
+    const value = luminance(hex);
+    return (value + 0.05) / 0.05 >= 1.05 / (value + 0.05) ? '#000000' : '#ffffff';
+}
+
+export function colorHex({red, green, blue}) {
+    return `#${[red, green, blue].map(c => c.toString(16).padStart(2, '0')).join('')}`;
+}
+
+export function contrastRatio(a, b) {
+    const [high, low] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (high + 0.05) / (low + 0.05);
+}
+
+// The color mixed with black in 5% steps until it has the contrast on the surface.
+export function inkOn(hex, surface, ratio) {
+    for (let step = 0; step <= 20; step++) {
+        const ink = `#${hex.slice(1).match(/../g).map(c => Math.round(parseInt(c, 16) * (1 - step / 20)).toString(16).padStart(2, '0')).join('')}`;
+        if (contrastRatio(ink, surface) >= ratio)
+            return ink;
+    }
+    return '#000000';
 }
 
 export function mixWhite(hex, t) {

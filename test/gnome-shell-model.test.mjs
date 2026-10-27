@@ -14,7 +14,7 @@ const trust = () => ({dir: {type: 'directory', uid: 1000, mode: 0o700, size: 409
 test('the model has exactly the contract exports', () => {
   assert.deepEqual(Object.keys(model).sort(), ['MACHINE_HUES', 'machineHue', 'providerIcon', 'runtimePath', 'parseRuntime',
     'runtimeTrusted', 'panelState', 'timeText', 'accessibleName', 'kindMark', 'rowAccessibleName', 'moreText',
-    'createEventParser', 'nextFetchDelay', 'contrastInk', 'mixWhite'].sort());
+    'createEventParser', 'nextFetchDelay', 'contrastInk', 'mixWhite', 'ST_ACCENTS', 'colorHex', 'contrastRatio', 'inkOn'].sort());
 });
 
 test('machine hues repeat in board order and reject non-indices', () => {
@@ -162,4 +162,20 @@ test('accent ink follows WCAG and white mixing rounds each channel', () => {
   assert.equal(model.mixWhite('#123456', 1), '#ffffff');
   assert.equal(model.mixWhite('#000000', 0.5), '#808080');
   assert.equal(model.mixWhite('#ffffff', 0.3), '#ffffff');
+});
+
+test('light ink keeps accents and machine hues at the contrast on light menus', () => {
+  assert.equal(model.colorHex({red: 255, green: 185, blue: 0, alpha: 128}), '#ffb900');
+  assert.equal(model.colorHex({red: 0, green: 0, blue: 0, alpha: 255}), '#000000');
+  assert.equal(model.contrastRatio('#000000', '#ffffff'), 21);
+  assert.equal(model.contrastRatio('#ffffff', '#000000'), 21);
+  assert.equal(model.contrastRatio('#777777', '#ffffff').toFixed(3), '4.478');
+  assert.equal(model.inkOn('#ffb900', '#ffffff', 4.5), '#996f00');
+  assert.equal(model.inkOn('#ffb900', '#ebebeb', 4.5), '#805d00');
+  assert.equal(model.inkOn('#a28caa', '#ffffff', 3), '#a28caa');
+  assert.equal(model.inkOn('#7cc48a', '#ffffff', 3), '#639d6e');
+  assert.equal(model.inkOn('#ffffff', '#ffffff', 22), '#000000');
+  for (const ink of model.MACHINE_HUES.map(h => model.inkOn(h, '#ffffff', 3))) assert.ok(model.contrastRatio(ink, '#ffffff') >= 3, ink);
+  for (const ink of model.ST_ACCENTS.map(h => model.inkOn(h, '#ffffff', 4.5))) assert.ok(model.contrastRatio(ink, '#ffffff') >= 4.5, ink);
+  assert.deepEqual(model.ST_ACCENTS, ['#3584e4', '#2190a4', '#3a944a', '#c88800', '#ed5b00', '#e62d42', '#d56199', '#9141ac', '#6f8396']);
 });

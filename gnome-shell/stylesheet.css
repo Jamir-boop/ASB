@@ -76,3 +76,41 @@
 .asb-menu .popup-menu-item.asb-secondary:insensitive { color: rgba(255, 255, 255, 0.55) !important; }
 .asb-menu .popup-separator-menu-item { padding: 6px 32px; }
 .asb-menu .popup-separator-menu-item-separator { height: 1px; margin: 0; background-color: rgba(255, 255, 255, 0.12); }
+
+/* Light panels and menus: the extension adds asb-light when the theme ink is dark. */
+.asb-panel.asb-light .asb-capsule {
+  background-color: rgba(0, 0, 0, 0.01);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.16);
+}
+.asb-panel.asb-light:hover .asb-capsule,
+.asb-panel.asb-light:focus .asb-capsule,
+.asb-panel.asb-light:active .asb-capsule {
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.48);
+}
+.asb-panel.asb-light .asb-sep { background-color: rgba(0, 0, 0, 0.16); }
+.asb-panel.asb-light .asb-seg-needs { color: rgba(0, 0, 0, 0.56); }
+.asb-panel.asb-light .asb-seg-needs.asb-on { color: -st-accent-fg-color; }
+.asb-panel.asb-light .asb-seg-working { background-color: rgba(0, 0, 0, 0.06); color: rgba(0, 0, 0, 0.56); }
+.asb-panel.asb-light .asb-seg-working.asb-on { color: rgba(0, 0, 0, 0.77); }
+.asb-panel.asb-light:hover .asb-seg-working.asb-on,
+.asb-panel.asb-light:focus .asb-seg-working.asb-on,
+.asb-panel.asb-light:active .asb-seg-working.asb-on { color: #000000; }
+.asb-panel.asb-light .asb-seg-total { color: rgba(0, 0, 0, 0.64); }
+.asb-panel.asb-light:hover .asb-seg-total,
+.asb-panel.asb-light:focus .asb-seg-total,
+.asb-panel.asb-light:active .asb-seg-total { color: rgba(0, 0, 0, 0.85); }
+.asb-panel.asb-light:active .asb-seg-working,
+.asb-panel.asb-light:active .asb-seg-total { background-color: rgba(0, 0, 0, 0.12); }
+.asb-panel.asb-light .asb-seg-total.asb-off,
+.asb-panel.asb-light:hover .asb-seg-total.asb-off,
+.asb-panel.asb-light:focus .asb-seg-total.asb-off,
+.asb-panel.asb-light:active .asb-seg-total.asb-off { color: rgba(0, 0, 0, 0.56); background-color: transparent; }
+
+.asb-menu.asb-light .popup-menu-content { color: rgba(0, 0, 0, 0.77); }
+.asb-menu.asb-light .asb-heading-name { color: rgba(0, 0, 0, 0.9); }
+.asb-menu.asb-light .asb-heading-count { color: rgba(0, 0, 0, 0.77); }
+.asb-menu.asb-light .asb-heading-count.asb-quiet { color: rgba(0, 0, 0, 0.56); }
+.asb-menu.asb-light .popup-menu-item.popup-inactive-menu-item:insensitive { color: rgba(0, 0, 0, 0.77) !important; }
+.asb-menu.asb-light .asb-secondary { color: rgba(0, 0, 0, 0.64) !important; }
+.asb-menu.asb-light .popup-menu-item.asb-secondary:insensitive { color: rgba(0, 0, 0, 0.64) !important; }
+.asb-menu.asb-light .popup-separator-menu-item-separator { background-color: rgba(0, 0, 0, 0.12); }
