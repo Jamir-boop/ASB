@@ -55,6 +55,22 @@ test('All time uses local and member months, including a 120-day-old transcript 
   assert.deepEqual(usage.localHourly('90d').usage, []);
 });
 
+test('All time starts at the first real usage: bad member hours and zero-token parts add no month', async (t) => {
+  const { projects, service } = await setup(t);
+  const zero = JSON.stringify({ type: 'assistant', timestamp: new Date(2026, 0, 10).toISOString(), requestId: 'zero',
+    message: { id: 'zero', model: 'claude-test', usage: { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 } } });
+  await fs.writeFile(path.join(projects, 'a.jsonl'), `${zero}\n${line(new Date(2026, 2, 10).getTime(), 'march')}\n`);
+  const usage = service();
+  await usage.refresh();
+  const zeroTokens = { uncached: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
+  const report = usage.report('all', [{ machineId: 'member', usage: [0, -1e17, 8.64e15 + 1].map((hourMs) => ({ app: 'pi', model: 'm', hourMs, tokens }))
+    .concat({ app: 'pi', model: 'm', hourMs: new Date(2025, 5, 1).getTime(), tokens: zeroTokens }) }]);
+  assert.deepEqual(report.buckets.startsMs, Array.from({ length: 8 }, (_, index) => new Date(2026, 2 + index, 1).getTime()));
+  assert.deepEqual(report.records.filter((record) => record.machineId === '').map((record) => record.bucket), [0]);
+  // The member hours before 2020 fall before the first bucket and are dropped.
+  assert.equal(report.records.filter((record) => record.machineId === 'member' && record.bucket !== 7).length, 0);
+});
+
 test('All time with no records has one current month', async (t) => {
   const { service } = await setup(t);
   const usage = service();

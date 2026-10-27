@@ -23,6 +23,8 @@ export const SAVE_INTERVAL_MS = 5 * 60 * 1000;
 // The newest hourly records of a member reply.
 export const MAX_HOURLY_RECORDS = 50_000;
 const TOKEN_TYPES = ['uncached', 'cacheRead', 'cacheWrite', 'output'];
+// No coding agent has usage before 2020: an earlier time is a bad value, and it must not make thousands of month bars.
+const FIRST_USAGE_MS = Date.UTC(2020, 0, 1);
 
 // A member record comes from another machine: only plain names, an hour, and token counts are used.
 const validMemberRecord = (record) => typeof record?.app === 'string' && typeof record.model === 'string'
@@ -192,10 +194,12 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       const nowMs = now();
       let firstMs = null;
       if (period === 'all') {
-        const include = (atMs) => { if (firstMs === null || atMs < firstMs) firstMs = atMs; };
-        for (const part of allParts()) include(part.atMs);
+        const include = (atMs, tokens) => {
+          if (atMs >= FIRST_USAGE_MS && TOKEN_TYPES.some((type) => tokens[type] > 0) && (firstMs === null || atMs < firstMs)) firstMs = atMs;
+        };
+        for (const part of allParts()) include(part.atMs, part.tokens);
         for (const member of members) {
-          for (const record of Array.isArray(member.usage) ? member.usage : []) if (validMemberRecord(record)) include(record.hourMs);
+          for (const record of Array.isArray(member.usage) ? member.usage : []) if (validMemberRecord(record)) include(record.hourMs, record.tokens);
         }
       }
       const { unit, startsMs, endMs } = periodBuckets(period, nowMs, firstMs);
