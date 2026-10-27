@@ -180,7 +180,7 @@ async function readDatabase(database, fallbackTimestamp, pause) {
 export async function readAntigravityUsage(roots, sinceMs, { cache = new Map(), native = nativeSqlite,
   open, pause = createYielder() } = {}) {
   const sqlite = await native;
-  // shortcut: Antigravity needs node:sqlite (Node.js 22.5 or later); without it ASB reads no Antigravity usage.
+  // shortcut: Antigravity needs node:sqlite (Node.js 22.13 or later); without it ASB reads no Antigravity usage.
   if (!sqlite?.DatabaseSync) return [];
   const identities = new Map();
   const groups = [];

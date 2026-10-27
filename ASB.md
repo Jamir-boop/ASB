@@ -215,7 +215,7 @@ The first scan reads all history of the newest 10,000 transcript files, by the t
 - OpenCode: `opencode.db` and each `opencode-<name>.db` in the folder of each enabled OpenCode profile.
 - Grok: `$GROK_HOME/sessions`, else `~/.grok/sessions`.
 - Pi: `$PI_CODING_AGENT_SESSION_DIR`, else `sessions` in `$PI_CODING_AGENT_DIR`, else `~/.pi/agent/sessions`.
-- Antigravity: the folders of `$ANTIGRAVITY_DATA_DIR` (a comma list), else `~/.gemini/antigravity`, `~/.gemini/antigravity-cli`, `~/.gemini/antigravity-ide`, `~/.gemini/antigravity-backup`, and `~/.config/antigravity`. This needs Node.js 22.5 or later (`node:sqlite`).
+- Antigravity: the folders of `$ANTIGRAVITY_DATA_DIR` (a comma list), else `~/.gemini/antigravity`, `~/.gemini/antigravity-cli`, `~/.gemini/antigravity-ide`, `~/.gemini/antigravity-backup`, and `~/.config/antigravity`. This needs Node.js 22.13 or later (`node:sqlite`).
 
 Grok, Pi, and Antigravity need no profile: ASB reads their folders when they exist. ASB does not read these apps:
 

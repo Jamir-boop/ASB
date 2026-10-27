@@ -1,7 +1,8 @@
 // Ported from T3 Code (https://github.com/pingdotgg/t3code), apps/server/src/usage/usageScanCache.ts, commit 3cb16cf. MIT License, Copyright (c) 2026 T3 Tools Inc. See THIRD_PARTY_NOTICES.md.
 // ASB keeps the per-file cache by size and change time, and a refresh that reads only the new bytes of a grown file.
 // The file on disk is private: keys are SHA-256 digests of the paths, and values are numbers, model names, the reader
-// state, and digests of the Claude message and request IDs. No path, title, folder name, or message text.
+// state, and digests of the record IDs (Claude message and request IDs, Grok session and prompt IDs, Pi entry IDs).
+// No path, title, folder name, or message text.
 import { createHash, randomBytes } from 'node:crypto';
 import { constants, createReadStream, promises as fs } from 'node:fs';
 import path from 'node:path';
