@@ -148,7 +148,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     Object.assign(progress, { complete: true, files: files.length, scannedFiles: files.length });
     stats.scans += 1;
     dirty ||= changed;
-    if (lastSavedAtMs === null || (dirty && now() - lastSavedAtMs >= SAVE_INTERVAL_MS)) {
+    if (dirty && (lastSavedAtMs === null || now() - lastSavedAtMs >= SAVE_INTERVAL_MS)) {
       lastSavedAtMs = now();
       dirty = false;
       try { await saveUsageCache(cacheFile, cache, { platform }); stats.saves += 1; } catch { log('ASB cannot save its usage cache. It keeps the old file.'); }

@@ -252,6 +252,12 @@ test('the disk cache is saved after the first scan, then at most once in 5 minut
   await usage.refresh();
   assert.equal(usage.stats.saves, 2, 'a changed scan after 5 minutes writes');
   assert.equal(usage.report('7d').records[0].tokens.output, 14);
+  // A restart with an unchanged cache writes nothing.
+  const restart = service({ now: () => clock });
+  await restart.refresh();
+  assert.equal(restart.stats.bytesRead, 0);
+  assert.equal(restart.stats.saves, 0);
+  assert.equal(restart.report('7d').records[0].tokens.output, 14);
 });
 
 test('the OpenCode query runs again only when the database or its WAL changed', async (t) => {
