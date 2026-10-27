@@ -540,7 +540,8 @@ export default class AsbExtension extends Extension {
         this._button = new AsbButton(this);
         const siblings = Main.panel._rightBox.get_children();
         const index = siblings.indexOf(Main.panel.statusArea.quickSettings?.container);
-        Main.panel.addToStatusArea(this.uuid, this._button, index < 0 ? 0 : index, 'right');
+        // Panels such as dash-to-panel move the system menu out of the right box; its end is then next to that menu.
+        Main.panel.addToStatusArea(this.uuid, this._button, index < 0 ? siblings.length : index, 'right');
         this._bus = Gio.bus_own_name(Gio.BusType.SESSION, 'local.asb.AgentSwitchBoard.Panel',
             Gio.BusNameOwnerFlags.NONE, null, null, null);
         this._client = new EngineClient(state => this._button.setState(state));
