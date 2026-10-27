@@ -1374,8 +1374,8 @@ def usage_axis_labels(buckets, centers, chart_width, step, measure):
 
 def activity_palette(colors):
     background, text, accent = colors["background"], colors["text"], colors["accent"]
-    return {"win": background, "pane": mix_color(background, text, .035), "pane2": mix_color(background, text, .06),
-            "bar": mix_color(background, text, .094), "rule": mix_color(background, text, .13), "edge": mix_color(background, "#000000", .45),
+    return {"win": background, "rule": mix_color(background, text, .13), "track": mix_color(background, text, .17),
+            "divider": colors["divider"], "popup": edge_color(background, text, .36, (background,)),
             "text": text, "dim": colors["muted"], "accent": accent, "light": mix_color(accent, "#ffffff", .35), "warn": "#e0b45a", "bad": "#f5a090"}
 
 
@@ -7852,15 +7852,17 @@ class ActivityWindow(Adw.Window):
 
     def set_palette(self, colors):
         self.palette = palette = activity_palette(colors or native_colors(self))
+        if not colors:
+            # GNOME draws its dividers with the borders role, about 15 % text; the divider of native_colors is 30 %.
+            palette["divider"] = palette["rule"]
         scope = ".asb-activity" + self.css_scope
         hues = "".join(f"{scope} .asb-activity-hue-{index} {{ background: {hue}; }}\n"
                        f"{scope} .asb-activity-hue-{index}.asb-activity-hollow {{ background: none; border: 1.5px solid {hue}; min-width: 4px; min-height: 4px; }}\n"
                        for index, hue in enumerate(MACHINE_HUES))
         self.css.load_from_string(hues + f"""
 {scope} {{ background: {palette['win']}; color: {palette['text']}; }}
-{scope} .asb-activity-toolbar {{ background: {palette['bar']}; padding: 6px 10px; border-bottom: 1px solid {palette['edge']}; }}
+{scope} .asb-activity-toolbar {{ background: {palette['win']}; padding: 6px 10px; border-bottom: 1px solid {palette['divider']}; }}
 {scope} .asb-dim {{ color: {palette['dim']}; }}
-{scope} .asb-pane2 {{ background: {palette['pane2']}; }}
 {scope} .asb-rule {{ border-top: 1px solid {palette['rule']}; }}
 {scope} .asb-mono {{ font-family: monospace; font-feature-settings: "tnum"; }}
 {scope} .asb-paths-note {{ font-size: 12px; }}
@@ -8429,7 +8431,6 @@ class RoundTable(Gtk.Overlay):
         state = self.state()
         seats, arcs, items, chord_sets, leaving, enter = self.frame(now)
         cx, cy = geometry["cx"], geometry["cy"]
-        snapshot_circle(snapshot, cx, cy, geometry["Ri"], alpha_color(palette["pane"], .35))
         inner = geometry["Rc"] if geometry["S"] >= 480 else 0
         for machine, arc in arcs.items():
             pin = next(pin for pin in self.pins.values() if pin["machine"] == machine)
@@ -8454,7 +8455,7 @@ class RoundTable(Gtk.Overlay):
                 for chord in chords:
                     self.snapshot_chord(snapshot, chord, fade * self.chord_alpha(chord, state), chord["key"] == state[0], palette)
         if geometry["S"] >= 480:
-            snapshot_circle(snapshot, cx, cy, geometry["Rc"], rgba(palette["pane"]))
+            snapshot_circle(snapshot, cx, cy, geometry["Rc"], rgba(palette["win"]))
             snapshot_stroke(snapshot, circle_path(cx, cy, geometry["Rc"]), 1, rgba(palette["rule"]))
         self.snapshot_lights(snapshot, now, palette)
         shown = state[1]
@@ -8535,7 +8536,7 @@ class RoundTable(Gtk.Overlay):
         if state[4] and seat_id != state[4]:
             alpha *= .4
         snapshot.push_opacity(alpha)
-        snapshot_circle(snapshot, x, y, 16, rgba(palette["pane2"]))
+        snapshot_circle(snapshot, x, y, 16, rgba(palette["win"]))
         sending = seat_id is not None and self.send_until.get(seat_id, 0) > now >= self.send_until[seat_id] - 160_000
         snapshot_stroke(snapshot, circle_path(x, y, 16), 1.5, rgba(palette["light"] if sending else pin["hue"]), [4, 3] if pin["offline"] else None)
         proxy = self.proxies.get(("pin", seat_id))
@@ -8697,8 +8698,8 @@ class MessagesWindow(ActivityWindow):
 {scope} .asb-msg-live-ring {{ min-width: 7px; min-height: 7px; border-radius: 50%; background: {palette['light']}; opacity: 0;
     animation: asb-msg-pulse 2000ms ease-out infinite; }}
 @keyframes asb-msg-pulse {{ from {{ transform: scale(1); opacity: .6; }} to {{ transform: scale(2.2); opacity: 0; }} }}
-{scope} .asb-msg-ledger {{ background: {palette['pane2']}; }}
-{scope} .asb-msg-ledger.asb-msg-edge {{ border-left: 1px solid {palette['edge']}; }}
+{scope} .asb-msg-ledger {{ background: {palette['win']}; }}
+{scope} .asb-msg-ledger.asb-msg-edge {{ border-left: 1px solid {palette['divider']}; }}
 {scope} .asb-msg-stats {{ padding: 16px 18px; }}
 {scope} .asb-msg-section-rule {{ margin-top: 18px; padding-top: 18px; border-top: 1px solid {palette['rule']}; }}
 {scope} .asb-msg-h2 {{ font-size: 13px; font-weight: 600; margin-bottom: 6px; }}
@@ -8709,7 +8710,7 @@ class MessagesWindow(ActivityWindow):
 {scope} .asb-msg-recent {{ min-height: 24px; padding: 0; border-radius: 4px; font-size: 12px; }}
 {scope} .asb-msg-recent:hover {{ background: alpha({palette['text']}, .06); }}
 {scope} .asb-msg-recent label {{ font-weight: normal; font-size: 12px; }}
-{scope} .asb-msg-thead {{ background: {palette['pane2']}; border-bottom: 1px solid {palette['rule']}; padding: 16px 18px 10px; }}
+{scope} .asb-msg-thead {{ background: {palette['win']}; border-bottom: 1px solid {palette['divider']}; padding: 16px 18px 10px; }}
 {scope} .asb-msg-back {{ min-width: 28px; min-height: 28px; padding: 0; }}
 {scope} .asb-msg-route {{ font-size: 13px; font-weight: 600; min-height: 28px; }}
 {scope} .asb-msg-tlist {{ padding: 0 18px 4px; }}
@@ -8720,7 +8721,7 @@ class MessagesWindow(ActivityWindow):
 {scope} .asb-msg-block.asb-msg-hl {{ outline: 1px solid {palette['accent']}; outline-offset: 0; }}
 {scope} .asb-msg-who {{ font-size: 11px; font-weight: 600; color: {palette['text']}; }}
 {scope} .asb-msg-body {{ font-size: 13px; }}
-{scope} .asb-msg-reader {{ padding: 10px 16px; border-top: 1px solid {palette['rule']}; background: {palette['pane']}; }}
+{scope} .asb-msg-reader {{ padding: 10px 16px; border-top: 1px solid {palette['divider']}; background: {palette['win']}; }}
 {scope} .asb-msg-c-time {{ font-family: monospace; font-feature-settings: "tnum"; font-size: 12px; color: {palette['dim']}; }}
 {scope} .asb-msg-c-route {{ font-size: 13px; font-weight: 600; }}
 {scope} .asb-msg-c-body {{ font-size: 14px; }}
@@ -9627,9 +9628,9 @@ class UsageChart(Gtk.Widget):
         box.init_from_rect(Graphene.Rect().init(left, top, box_width, box_height), 4)
         snapshot.append_outset_shadow(box, alpha_color("#000000", .45), 0, 6, 0, 16)
         snapshot.push_rounded_clip(box)
-        snapshot.append_color(alpha_color("#2d3034"), box.bounds)
+        snapshot.append_color(alpha_color(palette["win"]), box.bounds)
         snapshot.pop()
-        snapshot.append_border(box, [1] * 4, [alpha_color(palette["edge"])] * 4)
+        snapshot.append_border(box, [1] * 4, [alpha_color(palette["popup"])] * 4)
         title, names, values = tip["layouts"]
         snapshot_layout(snapshot, title, left + 11, top + 9, text)
         y = top + 9 + title.get_pixel_extents()[1].height + 4
@@ -9993,7 +9994,7 @@ class UsageWindow(ActivityWindow):
             else:
                 sub.set_ellipsize(Pango.EllipsizeMode.END)
             who.append(sub)
-            bar = UsageBar(10, "#2a2c30")
+            bar = UsageBar(10, self.palette["track"])
             bar.set_segments([(machine["apps"][app]["value"], ACTIVITY_APP_COLORS[app]) for app in USAGE_APPS + ("",)], machine["share"])
             self.row_cells(row, who, bar, machine["value"], machine["share"], show)
             self.machine_rows.append(row)
@@ -10003,7 +10004,7 @@ class UsageWindow(ActivityWindow):
             who = Gtk.Box(spacing=7, valign=Gtk.Align.CENTER)
             who.append(self.mark(app["id"]))
             who.append(self.text(app["label"], ("asb-usage-name",), ellipsize=Pango.EllipsizeMode.END, max_width_chars=1, hexpand=True))
-            bar = UsageBar(10, "#2a2c30")
+            bar = UsageBar(10, self.palette["track"])
             bar.set_segments([(app["value"], ACTIVITY_APP_COLORS[app["id"]])], app["share"])
             self.row_cells(row, who, bar, app["value"], app["share"], show)
             self.app_rows.append(row)
@@ -10012,7 +10013,7 @@ class UsageWindow(ActivityWindow):
             row.asb_maker = maker["id"]
             who = Gtk.Box(spacing=7, valign=Gtk.Align.CENTER)
             who.append(self.text(maker["label"], ("asb-usage-name",), ellipsize=Pango.EllipsizeMode.END, max_width_chars=1, hexpand=True))
-            bar = UsageBar(10, "#2a2c30")
+            bar = UsageBar(10, self.palette["track"])
             bar.set_segments([(maker["value"] or 0, USAGE_MAKER_COLOR)], maker["share"] or 0)
             self.row_cells(row, who, bar, maker["value"], maker["share"], show)
             self.maker_rows.append(row)
@@ -10096,8 +10097,9 @@ class UsageWindow(ActivityWindow):
                 remove_children(share)
             else:
                 if share.get_first_child() is None:
-                    share.append(UsageBar(6, "#34373b", 60))
+                    share.append(UsageBar(6, self.palette["track"], 60))
                     share.append(self.text("", ("asb-mono",)))
+                share.get_first_child().track = self.palette["track"]
                 share.get_first_child().set_segments([(1, alpha_color(self.palette["light"], .75))], model["share"])
                 share.get_last_child().set_label(format_share(model["share"]))
             # Keep the child order in the row order too: the screen reader reads the children in that order.

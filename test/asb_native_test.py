@@ -6203,10 +6203,30 @@ class ActivityFixture:
     def setUpClass(cls):
         WidgetCheck.setUpClass.__func__(cls)
 
+    THEME = {"background": "#101820", "text": "#f0f0f0", "accent": "#3080c0", "muted": "#a0a0a0", "divider": "#405060"}
+
     drain = WidgetCheck.drain
     capture = WidgetCheck.capture
     assert_accessible_label = WidgetCheck.assert_accessible_label
     close_windows = WidgetCheck.close_windows
+
+    def pixels(self, widget):
+        """The unpremultiplied RGBA bytes of one widget, rendered with the Cairo renderer, and the row stride."""
+        snapshot = asb.Gtk.Snapshot()
+        asb.Gtk.WidgetPaintable.new(widget).snapshot(snapshot, widget.get_width(), widget.get_height())
+        renderer = asb.Gsk.CairoRenderer()
+        renderer.realize(None)
+        viewport = asb.Graphene.Rect().init(0, 0, widget.get_width(), widget.get_height())
+        downloader = asb.Gdk.TextureDownloader.new(renderer.render_texture(snapshot.to_node(), viewport))
+        downloader.set_format(asb.Gdk.MemoryFormat.R8G8B8A8)
+        data, stride = downloader.download_bytes()
+        renderer.unrealize()
+        return data.get_data(), stride
+
+    def assert_pixel(self, widget, x, y, color):
+        data, stride = self.pixels(widget)
+        offset = int(y) * stride + int(x) * 4
+        self.assertEqual("#" + data[offset:offset + 3].hex(), color)
 
 
 @unittest.skipUnless(asb.Gtk.init_check(), "A GTK display is not available.")
@@ -6591,10 +6611,32 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(window.round.center()[1], "processed tokens")
         self.assert_no_new_warnings()
 
+    def test_theme_surfaces_and_tracks(self):
+        asb.THEME_PATH.write_text(json.dumps({"mode": "custom", "colors": self.THEME}))
+        # The rendering fixture accent is below the theme editor's contrast limit.
+        with patch.object(asb, "validate_theme", return_value=self.THEME):
+            window = self.window()
+        toolbar = window.toolbar
+        self.assert_pixel(toolbar, toolbar.get_width() - 3, toolbar.get_height() // 2, self.THEME["background"])
+        found, bounds = toolbar.compute_bounds(window)
+        self.assertTrue(found)
+        self.assert_pixel(window, bounds.get_x() + bounds.get_width() - 3, bounds.get_y() + bounds.get_height() - 1, self.THEME["divider"])
+        adjustment = window.scroll.get_vadjustment()
+        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+        self.drain(.2)
+        share = next(cells[4].get_first_child() for _key, cells in self.model_rows(window) if cells[4].get_first_child() is not None)
+        self.assert_pixel(share, share.get_width() - 3, share.get_height() // 2, window.palette["track"])
+        asb.THEME_PATH.unlink()
+        native = self.window()
+        self.assertEqual(native.palette["divider"], native.palette["rule"])
+        self.assert_pixel(native.toolbar, native.toolbar.get_width() - 3, native.toolbar.get_height() // 2, native.palette["win"])
+        self.assert_no_new_warnings()
+
     def test_a_theme_change_reaches_the_kept_model_share_bars(self):
         replies = copy.deepcopy(self.REPLIES)
         window = self.window(replies)
         share = next(cells[4] for _key, cells in self.model_rows(window) if cells[4].get_first_child() is not None)
+        before_track = share.get_first_child().track
         before = asb.alpha_color(window.palette["light"], .75).to_string()
         window.set_palette(asb.validate_theme(CUSTOM))
         expected = asb.alpha_color(window.palette["light"], .75).to_string()
@@ -6605,6 +6647,8 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.drain(.1)
         self.assertIn(share, [cells[4] for _key, cells in self.model_rows(window)])
         self.assertEqual(share.get_first_child().segments[0][1].to_string(), expected)
+        self.assertNotEqual(share.get_first_child().track, before_track)
+        self.assertEqual(share.get_first_child().track, window.palette["track"])
         self.assert_no_new_warnings()
 
     def test_model_rows_keep_their_widgets(self):
@@ -6980,6 +7024,7 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertIn("background-color:rgb(23,28,34);", rules.replace(" ", ""))
         self.assertNotIn(second.scope_class, rules)
         native = asb.activity_palette(asb.native_colors(second))
+        native["divider"] = native["rule"]
         self.assertEqual(second.palette, native)
         self.assertNotIn("rgb(23,28,34)", second.css.to_string().replace(" ", ""))
         first.present()
@@ -7013,7 +7058,7 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertTrue(found)
         self.assertEqual((bounds.get_x(), bounds.get_width()), (0, 640))
         middle = bounds.get_y() + bounds.get_height() / 2
-        bar = window.palette["bar"]
+        bar = window.palette["win"]
         self.assertEqual(self.window_pixels(window, (1, middle), (638, middle)), [bar, bar])
         # The toolbar touches the header bar.
         header = window.toolbar.get_prev_sibling()
@@ -7060,7 +7105,9 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
         board.set_palette(custom)
         self.assertEqual(window.palette, asb.activity_palette(custom))
         board.set_palette(None)
-        self.assertEqual(window.palette, asb.activity_palette(asb.native_colors(window)))
+        native = asb.activity_palette(asb.native_colors(window))
+        native["divider"] = native["rule"]
+        self.assertEqual(window.palette, native)
 
     def test_activity_routes_report_their_errors(self):
         headers = []
@@ -7169,6 +7216,16 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
             window.refresh()
             self.drain(.4)
         return window
+
+    def test_theme_ledger_surface_and_divider(self):
+        asb.THEME_PATH.write_text(json.dumps({"mode": "custom", "colors": self.THEME}))
+        # The rendering fixture accent is below the theme editor's contrast limit.
+        with patch.object(asb, "validate_theme", return_value=self.THEME):
+            window = self.window()
+        ledger = window.ledger
+        self.assertTrue(ledger.has_css_class("asb-msg-edge"))
+        self.assert_pixel(ledger, ledger.get_width() - 3, ledger.get_height() - 3, self.THEME["background"])
+        self.assert_pixel(ledger, 0, ledger.get_height() // 2, self.THEME["divider"])
 
     def records(self, period="7d"):
         now = self.sample["nowMs"]
@@ -7598,19 +7655,6 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
         if self.output:
             self.drain(.15)
             self.capture(widget, Path(self.output) / name)
-
-    def pixels(self, widget):
-        """The unpremultiplied RGBA bytes of one widget, rendered with the Cairo renderer, and the row stride."""
-        snapshot = asb.Gtk.Snapshot()
-        asb.Gtk.WidgetPaintable.new(widget).snapshot(snapshot, widget.get_width(), widget.get_height())
-        renderer = asb.Gsk.CairoRenderer()
-        renderer.realize(None)
-        viewport = asb.Graphene.Rect().init(0, 0, widget.get_width(), widget.get_height())
-        downloader = asb.Gdk.TextureDownloader.new(renderer.render_texture(snapshot.to_node(), viewport))
-        downloader.set_format(asb.Gdk.MemoryFormat.R8G8B8A8)
-        data, stride = downloader.download_bytes()
-        renderer.unrealize()
-        return data.get_data(), stride
 
     def test_toolbar_is_icon_only_and_search_uses_its_popover_at_every_width(self):
         window = self.board()

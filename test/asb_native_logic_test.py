@@ -233,7 +233,7 @@ class ActivityHelperChecks(unittest.TestCase):
     def test_activity_palette(self):
         colors = {"background": "#101010", "text": "#f0f0f0", "accent": "#3080c0", "muted": "#a0a0a0", "divider": "#404040"}
         self.assertEqual(asb.activity_palette(colors), {
-            "win": "#101010", "pane": "#181818", "pane2": "#1d1d1d", "bar": "#252525", "rule": "#2d2d2d", "edge": "#090909",
+            "win": "#101010", "rule": "#2d2d2d", "track": "#363636", "divider": "#404040", "popup": "#616161",
             "text": "#f0f0f0", "dim": "#a0a0a0", "accent": "#3080c0", "light": "#78acd6", "warn": "#e0b45a", "bad": "#f5a090"})
 
 
