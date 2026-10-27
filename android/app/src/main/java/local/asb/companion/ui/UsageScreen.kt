@@ -144,7 +144,9 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
             error = cause.message
         }
     }
-    Scaffold(contentWindowInsets = SafeContentInsets, topBar = { ActivityTopBar("Usage", onBack) }) { padding ->
+    Scaffold(contentWindowInsets = SafeContentInsets, topBar = {
+        ActivityTopBar("Usage", onBack, subtitle = reply?.let { pricesText(it.prices) }.orEmpty())
+    }) { padding ->
         Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding), contentAlignment = Alignment.TopCenter) {
             Column(Modifier.widthIn(max = 840.dp).fillMaxWidth().verticalScroll(rememberScrollState())) {
                 val current = reply
@@ -154,20 +156,26 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
                     verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     ChoiceRow(USAGE_PERIODS.map { it to periodShortLabel(it) }, period,
                         descriptions = USAGE_PERIODS.associateWith { periodLabel(it) }) { period = it }
-                    ChoiceRow(listOf(Metric.COST.name to "Cost", Metric.TOKENS.name to "Tokens"), metric.name) { metric = Metric.valueOf(it) }
-                    if (current != null) {
-                        val onCount = machineIds.count { it !in offSet }
-                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            current.machines.forEachIndexed { index, machine ->
-                                val on = machine.machineId !in offSet
-                                Box(Modifier.heightIn(min = 48.dp).toggleable(value = on, enabled = !(on && onCount == 1),
-                                    role = Role.Switch) { off = toggleMachine(machineIds, offSet, machine.machineId).toList() },
-                                    contentAlignment = Alignment.Center) {
-                                    MachineChip(machine, hexColor(machineHue(index)), colors, Modifier.alpha(if (on) 1f else .5f), strike = !on)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ChoiceRow(listOf(Metric.COST.name to "Cost", Metric.TOKENS.name to "Tokens"), metric.name,
+                            Modifier.width(168.dp)) { metric = Metric.valueOf(it) }
+                        if (current != null) {
+                            val onCount = machineIds.count { it !in offSet }
+                            Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                current.machines.forEachIndexed { index, machine ->
+                                    val on = machine.machineId !in offSet
+                                    Box(Modifier.heightIn(min = 48.dp).toggleable(value = on, enabled = !(on && onCount == 1),
+                                        role = Role.Switch) { off = toggleMachine(machineIds, offSet, machine.machineId).toList() },
+                                        contentAlignment = Alignment.Center) {
+                                        MachineChip(machine, hexColor(machineHue(index)), colors, Modifier.alpha(if (on) 1f else .5f),
+                                            strike = !on)
+                                    }
                                 }
                             }
                         }
-                        pricesText(current.prices).takeIf { it.isNotEmpty() }?.let { Text(it, fontSize = 12.sp, color = colors.muted) }
+                    }
+                    if (current != null) {
                         scanText(current.scan).takeIf { it.isNotEmpty() }?.let { Text(it, fontSize = 12.sp, color = colors.muted) }
                     }
                 }

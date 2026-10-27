@@ -43,6 +43,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -169,8 +170,16 @@ internal fun animatorsEnabled(): Boolean = ValueAnimator.areAnimatorsEnabled()
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun ActivityTopBar(title: String, onBack: () -> Unit) {
-    TopAppBar(windowInsets = SafeTopBarInsets, title = { Text(title) }, navigationIcon = {
+internal fun ActivityTopBar(title: String, onBack: () -> Unit, subtitle: String = "") {
+    TopAppBar(windowInsets = SafeTopBarInsets, title = {
+        Column {
+            Text(title)
+            if (subtitle.isNotEmpty()) {
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = activityColors().muted, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }, navigationIcon = {
         IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
     })
 }
