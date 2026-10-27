@@ -294,7 +294,8 @@ test('export lists this machine, the members, then the imported-only machines, o
   assert.deepEqual([document.format, document.version, document.exportedAtMs], ['asb-usage-export', 1, BASE]);
   assert.deepEqual(document.machines, [
     { machineId: SELF, name: 'engine-a', records: [[hourOf(BASE - 3 * DAY), 'claude', 'claude-test-5', 10, 1000, 50, 9], [hourOf(BASE - HOUR), 'claude', 'claude-test-5', 10, 1000, 50, 7]] },
-    { machineId: MEMBER, name: 'engine-b', records: [[hourOf(BASE - DAY), 'codex', 'gpt-a', 5, 0, 0, 9]] },
+    // Both replies of the member went into the ledger: the larger value of each.
+    { machineId: MEMBER, name: 'engine-b', records: [[hourOf(BASE - DAY), 'codex', 'gpt-a', 7, 0, 0, 9]] },
     { machineId: OTHER, name: 'alpha', records: [[hourOf(BASE - 2 * DAY), 'pi', 'a', 3, 0, 0, 0], [hourOf(BASE - DAY), 'codex', 'z', 2, 0, 0, 0], [hourOf(BASE - DAY), 'pi', 'b', 1, 0, 0, 0]] },
     { machineId: 'e'.repeat(16), name: 'Zulu', records: [[hourOf(BASE - DAY), 'codex', 'gpt-b', 1, 1, 1, 1]] }]);
   // The export is a valid import file.
@@ -455,4 +456,58 @@ test('stop does not wait for a scan that has not read its files', async (t) => {
   assert.equal(usage.stats.scans, 0);
   const saved = await fs.readFile(ledgerFile, 'utf8').then(JSON.parse, () => null);
   assert.deepEqual(saved?.self.records ?? [], []);
+});
+
+test('member replies go into the ledger once, so an offline member stays in report and export after a restart', async (t) => {
+  const { root, ledgerFile, service } = await setup(t);
+  const usage = service();
+  await settle(usage);
+  const hour = hourOf(BASE - 2 * HOUR);
+  const reply = [{ app: 'codex', model: 'gpt-test-1', hourMs: hour, tokens: tokens(1, 2, 3, 4) }];
+  const online = { machineId: MEMBER, name: 'engine-b', state: 'online', lastReportAtMs: BASE - 1000, usage: reply, scan: { complete: true, files: 1, scannedFiles: 1 } };
+  usage.report('30d', [online]);
+  await usage.flush();
+  const saves = usage.stats.ledgerSaves;
+  const saved = JSON.parse(await fs.readFile(ledgerFile, 'utf8'));
+  assert.deepEqual(saved.machines, [{ machineId: MEMBER, name: 'engine-b', exportedAtMs: BASE - 1000, records: [[hour, 'codex', 'gpt-test-1', 1, 2, 3, 4]] }]);
+  // The same reply array merges once: even a record added to it is not read again, and the next flush saves nothing (stats.ledgerSaves stays).
+  reply.push({ app: 'codex', model: 'gpt-test-2', hourMs: hour, tokens: tokens(1, 1, 1, 1) });
+  usage.report('30d', [online]);
+  await usage.exportAll([online]);
+  await usage.flush();
+  assert.equal(usage.stats.ledgerSaves, saves);
+  reply.pop();
+
+  const restarted = service({ cacheDir: path.join(root, 'cache-2') });
+  await settle(restarted);
+  const offline = { machineId: MEMBER, name: 'engine-b', state: 'offline', lastReportAtMs: 0, usage: [], scan: { complete: true, files: 0, scannedFiles: 0 } };
+  const report = restarted.report('all', [offline]);
+  assert.deepEqual(report.machines.find((item) => item.machineId === MEMBER), { machineId: MEMBER, name: 'engine-b', self: false, state: 'offline', lastReportAtMs: 0 });
+  assert.deepEqual(sums(report, MEMBER).map(([app, model, , value]) => [app, model, value]), [['codex', 'gpt-test-1', tokens(1, 2, 3, 4)]]);
+  assert.deepEqual((await restarted.exportAll([offline])).machines.find((item) => item.machineId === MEMBER),
+    { machineId: MEMBER, name: 'engine-b', records: [[hour, 'codex', 'gpt-test-1', 1, 2, 3, 4]] });
+});
+
+test('only valid members and records go into the ledger, and the saved file loads without being set aside', async (t) => {
+  const { ledgerFile, service, root } = await setup(t);
+  const usage = service();
+  await settle(usage);
+  const hour = hourOf(BASE - 2 * HOUR);
+  const good = { app: 'codex', model: 'gpt-test-1', hourMs: hour, tokens: tokens(1, 2, 3, 4) };
+  const member = (extra) => ({ machineId: MEMBER, name: 'engine-b', state: 'online', lastReportAtMs: BASE, usage: [good], ...extra });
+  usage.report('30d', [
+    member({ usage: [good, { ...good, tokens: tokens(1.5, 0, 0, 0) }, { ...good, hourMs: hour + 60_000 }, { ...good, app: 'Bad App' }] }),
+    member({ machineId: OTHER, name: '-bad' }),
+    member({ machineId: 'C'.repeat(16), name: 'upper' }),
+    member({ machineId: 'd'.repeat(15), name: 'short' }),
+    member({ machineId: SELF, name: 'engine-a', usage: [{ ...good, model: 'self-copy' }] }),
+  ]);
+  await usage.flush();
+  const saved = JSON.parse(await fs.readFile(ledgerFile, 'utf8'));
+  assert.deepEqual(saved.machines, [{ machineId: MEMBER, name: 'engine-b', exportedAtMs: BASE, records: [[hour, 'codex', 'gpt-test-1', 1, 2, 3, 4]] }]);
+  assert.equal(saved.self.records.some((record) => record[2] === 'self-copy'), false);
+  const again = service({ cacheDir: path.join(root, 'cache-2') });
+  await settle(again);
+  assert.deepEqual((await again.exportAll([])).machines.map((item) => item.machineId), [SELF, MEMBER]);
+  assert.deepEqual((await fs.readdir(path.dirname(ledgerFile))).filter((name) => name.endsWith('.bad.json')), []);
 });

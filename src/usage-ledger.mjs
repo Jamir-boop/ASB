@@ -15,7 +15,7 @@ const MAX_EXPORT_RECORDS = 500_000;
 const TOKEN_TYPES = ['uncached', 'cacheRead', 'cacheWrite', 'output'];
 const APP = /^[a-z][a-z0-9-]{0,63}$/;
 const MODEL = /^[^\x00-\x1f]{1,200}$/u;
-const MACHINE_ID = /^[0-9a-f]{16}$/;
+export const MACHINE_ID = /^[0-9a-f]{16}$/;
 
 export function usageLedgerPath(env = process.env, platform = process.platform) {
   const join = platform === 'win32' ? path.win32.join : path.posix.join;

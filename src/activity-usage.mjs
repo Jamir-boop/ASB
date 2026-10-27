@@ -13,7 +13,7 @@ import { modelMaker } from './usage-pricing.mjs';
 import { openCodeDatabases, readOpenCodeUsage } from './usage-opencode.mjs';
 import { createRateLoader } from './usage-rates.mjs';
 import { suggestName, validName } from './machine-group.mjs';
-import { encodeLedger, exportDocument, loadLedger, mergeRecord, mergeRecords, readExport, recordKey, validRecord } from './usage-ledger.mjs';
+import { encodeLedger, exportDocument, loadLedger, MACHINE_ID, mergeRecord, mergeRecords, readExport, recordKey, validRecord } from './usage-ledger.mjs';
 import { createYielder, loadUsageCache, MAX_CACHE_FILES, pathKey, QUARTER_HOUR_MS, saveUsageCache, scanFile, writePrivateJson } from './usage-scan-cache.mjs';
 
 export { USAGE_PERIODS };
@@ -108,6 +108,8 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
   let started = false;
   let stopped = false;
   let ticking = null;
+  // The member reply arrays already in the ledger: the group returns the same array until a new reply comes.
+  const keptReplies = new WeakSet();
 
   async function runScan() {
     const pause = createYielder();
@@ -308,6 +310,27 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     mergeRecords(merged, usage);
     return [...merged.values()];
   };
+  // The member replies go into the ledger, so a member that is offline after a restart stays in the report and the export.
+  // Only valid records: one bad tuple would make the next load set the whole file aside.
+  function keepMembers(members) {
+    if (!ledger) return;
+    const nowMs = now();
+    const selfId = self().machineId;
+    for (const member of members) {
+      const usage = Array.isArray(member.usage) ? member.usage : [];
+      if (!usage.length || keptReplies.has(usage) || typeof member.machineId !== 'string' || !MACHINE_ID.test(member.machineId)
+        || !validName(member.name) || member.machineId === selfId) continue;
+      keptReplies.add(usage);
+      let target = ledger.machines.get(member.machineId);
+      if (!target) ledger.machines.set(member.machineId, target = { machineId: member.machineId, name: member.name, exportedAtMs: 0, records: new Map() });
+      const grew = mergeRecords(target.records, usage.filter((record) => validMemberRecord(record) && validRecord(record, nowMs)));
+      const at = Number.isSafeInteger(member.lastReportAtMs) && member.lastReportAtMs > 0 ? member.lastReportAtMs : 0;
+      if (grew || target.name !== member.name || at > target.exportedAtMs) {
+        Object.assign(target, { name: member.name, exportedAtMs: Math.max(target.exportedAtMs, at) });
+        changeLedger();
+      }
+    }
+  }
   // The imported machines that are neither this machine nor a member, by name.
   const importedOnly = (members) => {
     const skip = new Set([self().machineId, ...members.map((member) => member.machineId)]);
@@ -360,6 +383,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       checkPeriod(period);
       ask();
       ensureScan();
+      keepMembers(members);
       const nowMs = now();
       let firstMs = null;
       if (period === 'all') {
@@ -422,6 +446,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
         ask();
         const { machineId, name } = self();
         if (!machineId) throw Object.assign(new Error('ASB has no machine ID yet. Start ASB again.'), { statusCode: 409 });
+        keepMembers(members);
         const nowMs = now();
         const valid = (list) => list.filter((record) => validRecord(record, nowMs));
         // A host name that is not a group name (or `This PC`) would make this file fail its own import.
