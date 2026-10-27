@@ -9743,7 +9743,9 @@ class UsageWindow(ActivityWindow):
 
         totals = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         totals.append(self.heading("Totals"))
-        self.figures = Gtk.Grid(column_homogeneous=True, column_spacing=16, row_spacing=16)
+        self.figures = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True, min_children_per_line=2, max_children_per_line=5,
+                                   column_spacing=16, row_spacing=16)
+        self.figures.add_css_class("asb-usage-figures")
         totals.append(self.figures)
         self.blocks = Gtk.Box(homogeneous=True, spacing=36, margin_top=20)
         totals.append(self.blocks)
@@ -9787,6 +9789,7 @@ class UsageWindow(ActivityWindow):
 {scope} .asb-usage-chip.asb-usage-off {{ opacity: .5; }}
 {scope} .asb-usage-chip.asb-usage-off .asb-usage-chip-name {{ text-decoration-line: line-through; }}
 {scope} .asb-usage-split button {{ min-height: 24px; padding: 0 10px; font-size: 12px; }}
+{scope} .asb-usage-figures, {scope} .asb-usage-figures > flowboxchild {{ padding: 0; background: none; }}
 """ + swatches
 
     def set_palette(self, colors):
@@ -9881,8 +9884,8 @@ class UsageWindow(ActivityWindow):
         self.round_cell.set_valign(Gtk.Align.CENTER if self.narrow else Gtk.Align.START)
         self.round.set_halign(Gtk.Align.CENTER if self.narrow else Gtk.Align.START)
         self.round.set_hexpand(self.narrow)
-        self.blocks.set_orientation(Gtk.Orientation.VERTICAL if self.narrow else Gtk.Orientation.HORIZONTAL)
-        self.blocks.set_spacing(20 if self.narrow else 36)
+        self.blocks.set_orientation(Gtk.Orientation.VERTICAL if self.small else Gtk.Orientation.HORIZONTAL)
+        self.blocks.set_spacing(20 if self.small else 36)
 
     def render(self, data, previous):
         # A refresh comes after each dashboard event: the same numbers with a new reply time keep the shown view.
@@ -10025,12 +10028,12 @@ class UsageWindow(ActivityWindow):
         figures = (("Processed tokens", format_tokens(view["tokens"])), ("Cached input", format_tokens(parts["cacheRead"] + parts["cacheWrite"])),
                    ("Uncached input", format_tokens(parts["uncached"])), ("Output", format_tokens(parts["output"])),
                    ("Cache savings", format_cost(view["savings"])))
-        columns = 2 if self.small else 5
-        for index, (title, value) in enumerate(figures):
+        for title, value in figures:
             figure = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
             figure.append(self.text(title, ("asb-usage-small", "asb-dim")))
             figure.append(self.text(value, ("asb-mono", "asb-usage-figure")))
-            self.figures.attach(figure, index % columns, index // columns, 1, 1)
+            self.figures.append(figure)
+            figure.get_parent().set_focusable(False)
         remove_children(self.blocks)
         for title, values, show in (("Tokens by type", parts, format_tokens), ("Cost by type", view["cost_parts"], format_cost)):
             block = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)

@@ -6752,12 +6752,27 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(narrow.round_cell.get_valign(), asb.Gtk.Align.CENTER)
         self.assert_no_new_warnings()
 
+    def figure_lines(self, window):
+        lines = set()
+        for figure in self.children(window.figures):
+            found, bounds = figure.compute_bounds(window)
+            self.assertTrue(found)
+            lines.add(bounds.get_y())
+        return lines
+
+    def assert_blocks_side_by_side(self, window):
+        bounds = [block.compute_bounds(window)[1] for block in self.children(window.blocks)]
+        self.assertEqual(len(bounds), 2)
+        self.assertEqual(bounds[0].get_y(), bounds[1].get_y())
+        self.assertNotEqual(bounds[0].get_x(), bounds[1].get_x())
+
     def test_narrow_layouts(self):
         window = self.window(size=(860, 900))
         self.assertTrue(window.narrow)
         self.assertFalse(window.small)
         self.assertEqual(window.overview.get_orientation(), asb.Gtk.Orientation.VERTICAL)
-        self.assertEqual(window.blocks.get_orientation(), asb.Gtk.Orientation.VERTICAL)
+        self.assertEqual(window.blocks.get_orientation(), asb.Gtk.Orientation.HORIZONTAL)
+        self.assert_blocks_side_by_side(window)
         found, round_bounds = window.round.compute_bounds(window)
         self.assertTrue(found)
         self.assertAlmostEqual(round_bounds.get_x() + 160, window.get_width() / 2, delta=8)
@@ -6768,10 +6783,22 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         heads = [child.get_label() for child in self.children(small.models) if child.has_css_class("asb-usage-head")]
         self.assertEqual(heads, ["Model", "App", "Cost", "Tokens"])
         self.assertEqual(self.labels(self.model_rows(small)[0][1][1]), [])
-        self.assertEqual({small.figures.query_child(figure)[0] for figure in self.children(small.figures)}, {0, 1})
+        self.assertEqual(small.blocks.get_orientation(), asb.Gtk.Orientation.VERTICAL)
+        self.assertLessEqual(len(self.figure_lines(small)), 2)
         self.assertEqual(small.content.get_margin_start(), 14)
+        middle = self.window(size=(640, 900))
+        self.assertTrue(middle.narrow)
+        self.assertFalse(middle.small)
+        self.assertEqual(middle.get_width(), 640)
+        self.assertEqual(middle.blocks.get_orientation(), asb.Gtk.Orientation.HORIZONTAL)
+        self.assert_blocks_side_by_side(middle)
+        self.assertLessEqual(len(self.figure_lines(middle)), 2)
         wide = self.window()
         self.assertFalse(wide.narrow)
+        self.assertEqual(len(self.figure_lines(wide)), 1)
+        # The figures line up with their heading: a FlowBox child has no padding of its own.
+        title = wide.figures.get_first_child().get_child().get_first_child()
+        self.assertEqual(title.compute_bounds(wide)[1].get_x(), wide.figures.get_prev_sibling().compute_bounds(wide)[1].get_x())
         self.assertEqual(wide.overview.get_orientation(), asb.Gtk.Orientation.HORIZONTAL)
         self.assertEqual(wide.content.get_margin_start(), 24)
         self.assert_no_new_warnings()
