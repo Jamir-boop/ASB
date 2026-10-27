@@ -32,6 +32,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -472,19 +473,21 @@ private fun ModelsTable(totals: UsageTotals, metric: Metric, colors: ActivityCol
     }
     HorizontalDivider(thickness = 1.dp, color = colors.rule)
     for (row in modelRows(totals, metric)) {
-        Row(Modifier.fillMaxWidth().height(34.dp).semantics(mergeDescendants = true) {},
-            horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(row.model, fontSize = 12.sp, fontFamily = Mono, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f))
-            Box(Modifier.width(32.dp)) {
-                Icon(painterResource(appMark(row.app)), contentDescription = appLabel(row.app), tint = colors.text, modifier = Modifier.size(14.dp))
+        key(row.model, row.app) {
+            Row(Modifier.fillMaxWidth().height(34.dp).semantics(mergeDescendants = true) {},
+                horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(row.model, fontSize = 12.sp, fontFamily = Mono, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f))
+                Box(Modifier.width(32.dp)) {
+                    Icon(painterResource(appMark(row.app)), contentDescription = appLabel(row.app), tint = colors.text, modifier = Modifier.size(14.dp))
+                }
+                Text(formatCost(row.cost), fontSize = 12.sp, fontFamily = if (row.cost == null) null else Mono,
+                    color = if (row.cost == null) colors.muted else colors.text, textAlign = TextAlign.End, maxLines = 1,
+                    modifier = Modifier.width(80.dp))
+                Text(formatTokens(row.tokens), fontSize = 12.sp, fontFamily = Mono, color = colors.text, textAlign = TextAlign.End,
+                    maxLines = 1, modifier = Modifier.width(64.dp))
             }
-            Text(formatCost(row.cost), fontSize = 12.sp, fontFamily = if (row.cost == null) null else Mono,
-                color = if (row.cost == null) colors.muted else colors.text, textAlign = TextAlign.End, maxLines = 1,
-                modifier = Modifier.width(80.dp))
-            Text(formatTokens(row.tokens), fontSize = 12.sp, fontFamily = Mono, color = colors.text, textAlign = TextAlign.End,
-                maxLines = 1, modifier = Modifier.width(64.dp))
+            HorizontalDivider(thickness = 1.dp, color = colors.rule)
         }
-        HorizontalDivider(thickness = 1.dp, color = colors.rule)
     }
 }
