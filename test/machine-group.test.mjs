@@ -274,3 +274,30 @@ test('status gives the ASB version of each member, and fetchMember asks only an 
   assert.equal(JSON.stringify(homeLP), before);
   await machine.stop();
 });
+
+test('a member that was offline at an activity check is asked again 30 s later', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'asb-group-activity-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const file = path.join(home, 'group.json');
+  const gateway = { credentials: async () => ({ key: '', cert: '', fingerprint: 'a'.repeat(64) }), identity: async () => id('a'),
+    status: async () => ({ running: true, listening: [{ kind: 'lan', address: '192.168.1.10' }], port: 4630 }), devices: async () => [] };
+  const asked = [];
+  const request = async (options) => {
+    if (!options.path.startsWith('/peer/v1/activity')) return { status: 503, body: null };
+    asked.push(options.path);
+    return { status: 200, body: { messages: [], usage: [], scan: { complete: true, files: 3, scannedFiles: 3 } } };
+  };
+  let clock = 1_000_000;
+  const timers = { setTimeout: () => ({ unref() {} }), clearTimeout: () => {} };
+  await saveGroup(file, group({ members: [member('a', 'debian'), member('b', 'homeLP')] }));
+  const machine = createMachineGroup({ file, gateway: () => gateway, request, timers, now: () => clock, hostName: 'pc', log: () => {} });
+  await machine.start();
+  const homeLP = machine.peerStates().find((state) => state.member.machineId === id('b'));
+  assert.deepEqual((await machine.activity('all')).map((item) => item.state), ['offline']);
+  // The offline check ends before any await; the period must not stay blocked after it.
+  homeLP.online = true;
+  clock += 30_000;
+  assert.deepEqual((await machine.activity('all')).map((item) => [item.state, item.scan.files]), [['online', 3]]);
+  assert.deepEqual(asked, ['/peer/v1/activity?period=all']);
+  await machine.stop();
+});

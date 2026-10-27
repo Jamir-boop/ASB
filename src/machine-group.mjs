@@ -212,8 +212,7 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
           Object.assign(entry, { online: true, reply, lastReportAtMs: now() });
         } catch { entry.online = false; }
         entry.checkedAtMs = now();
-        entry.pending = null;
-      })();
+      })().finally(() => { entry.pending = null; });
     }
     await entry.pending;
     return { machineId: state.member.machineId, name: state.member.name, state: entry.online ? 'online' : 'offline',
