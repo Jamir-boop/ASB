@@ -146,6 +146,22 @@ test('Working start time uses the current Codex task or Claude request and stays
     byId.codex.workingSinceMs);
 });
 
+test('working rows round the last event time to 10 s while other states keep it exact', () => {
+  const updatedAtMs = 1_700_000_012_345;
+  const threads = [
+    { id: 'working', lifecycleRunning: true, agentActivityAtMs: updatedAtMs, agentStartedAtMs: updatedAtMs - 1000 },
+    { id: 'idle', lifecycleRunning: false },
+    { id: 'waiting', awaitingPermission: true },
+    { id: 'unknown' },
+  ].map((thread) => ({ provider: 'codex', updatedAtMs, ...thread }));
+  const rows = Object.fromEntries(buildSwitchboardDashboard(threads, [], updatedAtMs).threads.map((row) => [row.id, row]));
+  assert.equal(rows.working.state, 'working');
+  assert.equal(rows.working.updatedAtMs, 1_700_000_010_000);
+  assert.equal(rows.working.workingSinceMs, updatedAtMs - 1000);
+  assert.equal(rows.idle.state, 'idle');
+  for (const id of ['idle', 'waiting', 'unknown']) assert.equal(rows[id].updatedAtMs, updatedAtMs);
+});
+
 test('the ASB scan sets its own reader limits over caller options', async () => {
   let codexOptions;
   let claudeOptions;

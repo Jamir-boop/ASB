@@ -211,6 +211,7 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
       const lastOutcome = status.state !== 'idle' ? '' : STOPPED_KINDS.includes(thread.latestLifecycleKind) ? 'stopped'
         : Number(thread.limitStoppedAtMs) > 0 || Number(thread.limitResetsAtMs) > 0 ? 'limit'
           : thread.latestLifecycleKind === 'failed' ? 'failed' : '';
+      const updatedAtMs = Number(thread.groupUpdatedAtMs || thread.updatedAtMs || 0);
       const row = {
         id: thread.id,
         externalId,
@@ -231,7 +232,8 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
         projectName: thread.cwd ? path.basename(thread.cwd) || thread.cwd
           : thread.source === 'claude-remote-cache' ? thread.projectName || 'No project' : 'No project',
         archived: Boolean(thread.archived),
-        updatedAtMs: Number(thread.groupUpdatedAtMs || thread.updatedAtMs || 0),
+        // A working row changes its last event time each scan; 10 s steps keep the list tag.
+        updatedAtMs: status.state === 'working' ? updatedAtMs - (updatedAtMs % 10_000) : updatedAtMs,
         subagentCount: Number(thread.subagentCount || 0),
         ...status,
         workingSinceMs: status.state === 'working' && Number.isFinite(startedAtMs) ? Math.max(0, startedAtMs) : 0,
