@@ -22,25 +22,28 @@ const engine = { pid: 12, port: 23456, sourceToken: 'service-token' };
 const cachedBoardCheck = async ({ env }) => ({ ok: true, python: env.ASB_PYTHON || '/opt/python3' });
 // The cache itself is tested in test/linux-system.test.mjs; here it is a stand-in, and a test replaces forgetBoardCheck to see the calls.
 const boardFakes = { cachedBoardCheck, forgetBoardCheck() {} };
-const pick = (watch) => ({ setInterval: watch.setInterval, clearInterval: watch.clearInterval, setTimeout, clearTimeout,
-  readFileSync, createHash, path, readQuitMarker: async () => ({ schema: 1, token: createHash('sha256').update(engine.sourceToken).digest('hex') }) });
-// The engine watch timer is captured; tests run its callback by hand.
+// The launcher runs no engine watch: an interval fails the test.
+const pick = (watch) => ({ setTimeout: watch.setTimeout, clearTimeout: watch.clearTimeout, setInterval: () => assert.fail('The launcher runs no engine watch.'),
+  readFileSync, createHash, path });
+// The 30 s timer after the address line is captured; tests run its callback by hand.
 const timers = () => {
   const watch = { callbacks: [], cleared: [] };
-  watch.setInterval = (callback, delay) => { assert.equal(delay, 2000); watch.callbacks.push(callback); return `timer-${watch.callbacks.length}`; };
-  watch.clearInterval = (timer) => watch.cleared.push(timer);
+  watch.setTimeout = (callback, delay) => { assert.equal(delay, 30_000); watch.callbacks.push(callback); return `timer-${watch.callbacks.length}`; };
+  watch.clearTimeout = (timer) => { if (timer !== undefined) watch.cleared.push(timer); };
   return watch;
 };
+// The launcher process stand-in; execPath is the Node path in the address line.
+const launcherProcess = () => Object.assign(new EventEmitter(), { execPath: '/opt/node' });
 
 // The window stand-in: stdin keeps what the launcher writes (a real child process has a pipe there).
 const fakeWindow = (exitCode = 0) => Object.assign(new EventEmitter(), {
-  exitCode, kills: [], kill(signal) { this.kills.push(signal); },
+  exitCode, kills: [], unrefs: 0, kill(signal) { this.kills.push(signal); }, unref() { this.unrefs += 1; },
   stdin: { handlers: [], written: [], ended: false, on(name, handler) { this.handlers.push(name); }, write(text) { this.written.push(text); }, end() { this.ended = true; } },
 });
-const addressLine = `${JSON.stringify({ url: 'http://127.0.0.1:23456', token: 'service-token' })}\n`;
+const addressLine = `${JSON.stringify({ url: 'http://127.0.0.1:23456', token: 'service-token', pid: 12, node: '/opt/node' })}\n`;
 
 test('the window gets the engine URL and token on stdin, never in its arguments or environment, and its exit code without stopping the engine', async () => {
-  const owner = new EventEmitter();
+  const owner = launcherProcess();
   owner.platform = 'linux';
   owner.env = {};
   let registered = 0;
@@ -63,7 +66,8 @@ test('the window gets the engine URL and token on stdin, never in its arguments 
     },
   });
   assert.equal(registered, 1);
-  // The first JSON line leaves the pipe open for a reconnect. No part of the address is in the arguments or the options.
+  // The first JSON line has the engine PID and the Node path for the follow mode of the board. No part of the address is in the
+  // arguments or the options (the options have no env, so the board gets the environment of the launcher, which has no token).
   assert.deepEqual(native.stdin.written, [addressLine]);
   assert.deepEqual(native.stdin.handlers, ['error']);
   assert.doesNotMatch(JSON.stringify(spawnCalls), /service-token|23456/);
@@ -73,7 +77,7 @@ test('the window gets the engine URL and token on stdin, never in its arguments 
 });
 
 test('a failed board check keeps the engine, registers nothing, opens no window, and exits 3', async () => {
-  const owner = new EventEmitter();
+  const owner = launcherProcess();
   owner.platform = 'linux';
   owner.env = { ASB_PYTHON: '/bin/false' };
   const steps = [];
@@ -93,7 +97,7 @@ test('a failed board check keeps the engine, registers nothing, opens no window,
 
 for (const platform of ['linux', 'win32']) test(`on ${platform} the launcher picks its engine start, the icon rule, and the window spawn options`, async () => {
   const windows = platform === 'win32';
-  const owner = new EventEmitter();
+  const owner = launcherProcess();
   owner.platform = platform;
   owner.env = {};
   const calls = [];
@@ -120,7 +124,7 @@ for (const platform of ['linux', 'win32']) test(`on ${platform} the launcher pic
 });
 
 test('a failed board check on Windows keeps the engine, opens no window, and exits 3', async () => {
-  const owner = new EventEmitter();
+  const owner = launcherProcess();
   owner.platform = 'win32';
   owner.env = {};
   const errors = [];
@@ -138,7 +142,7 @@ test('a failed board check on Windows keeps the engine, opens no window, and exi
 });
 
 test('another system gets the launcher error and exit 1', () => {
-  const owner = new EventEmitter();
+  const owner = launcherProcess();
   owner.platform = 'darwin';
   owner.exit = (code) => { throw new Error(`exit ${code}`); };
   const errors = [];
@@ -151,7 +155,7 @@ test('another system gets the launcher error and exit 1', () => {
 });
 
 test('an engine that cannot start after the window started stops the window, prints its log path once, exits 1, and sends no address', async () => {
-  const owner = new EventEmitter();
+  const owner = launcherProcess();
   owner.platform = 'linux';
   owner.env = { ASB_SYSTEM_INSTALL: '1' };
   const errors = [];
@@ -180,7 +184,7 @@ test('an engine that cannot start after the window started stops the window, pri
 });
 
 test('the window starts before the engine is ready and gets the address when the engine is ready', async () => {
-  const owner = new EventEmitter();
+  const owner = launcherProcess();
   owner.platform = 'linux';
   owner.env = { ASB_SYSTEM_INSTALL: '1' };
   const engineStart = Promise.withResolvers();
@@ -218,7 +222,7 @@ test('the window starts before the engine is ready and gets the address when the
 });
 
 test('a window that ends before the engine is ready keeps its exit code, clears the saved board check, and gets no address', async () => {
-  const owner = new EventEmitter();
+  const owner = launcherProcess();
   owner.platform = 'linux';
   owner.env = { ASB_SYSTEM_INSTALL: '1' };
   const engineStart = Promise.withResolvers();
@@ -247,7 +251,7 @@ test('a window that ends before the engine is ready keeps its exit code, clears 
 });
 
 test('an engine that cannot start before the board check ends opens no window', async () => {
-  const owner = new EventEmitter();
+  const owner = launcherProcess();
   owner.platform = 'linux';
   owner.env = { ASB_SYSTEM_INSTALL: '1' };
   const errors = [];
@@ -263,7 +267,7 @@ test('an engine that cannot start before the board check ends opens no window', 
 });
 
 test('an engine that cannot start while the board check runs prints one message, and the late board failure is not unhandled', async (t) => {
-  const owner = new EventEmitter();
+  const owner = launcherProcess();
   owner.platform = 'linux';
   owner.env = {};
   const board = Promise.withResolvers();
@@ -287,7 +291,7 @@ test('an engine that cannot start while the board check runs prints one message,
 });
 
 for (const exitCode of [0, 1]) test(`launcher exit ${exitCode} stops its synthetic native process`, { timeout: 5_000 }, async (t) => {
-  const owner = new EventEmitter();
+  const owner = launcherProcess();
   owner.platform = 'linux';
   owner.env = { ASB_SYSTEM_INSTALL: '1' };
   let native;
@@ -316,7 +320,7 @@ for (const exitCode of [0, 1]) test(`launcher exit ${exitCode} stops its synthet
 });
 
 test('icon registration failure keeps its message and still launches the window', { timeout: 5_000 }, async (t) => {
-  const owner = new EventEmitter();
+  const owner = launcherProcess();
   owner.platform = 'linux';
   owner.env = { ASB_PYTHON: '/bin/true' };
   let native;
@@ -345,7 +349,7 @@ test('icon registration failure keeps its message and still launches the window'
 });
 
 test('a stop during the board check cannot launch a window later', async () => {
-  const owner = new EventEmitter();
+  const owner = launcherProcess();
   owner.platform = 'linux';
   owner.env = { ASB_SYSTEM_INSTALL: '1' };
   const starting = Promise.withResolvers();
@@ -365,7 +369,7 @@ test('a stop during the board check cannot launch a window later', async () => {
 });
 
 test('a stop during engine startup stops the window that already started, and the engine address is never sent', async () => {
-  const owner = new EventEmitter();
+  const owner = launcherProcess();
   owner.platform = 'linux';
   owner.env = { ASB_SYSTEM_INSTALL: '1' };
   const starting = Promise.withResolvers();
@@ -389,42 +393,38 @@ test('a stop during engine startup stops the window that already started, and th
   assert.equal(owner.exitCode, 0);
 });
 
-for (const failure of ['', 'ESRCH', 'EPERM']) test(`the engine watch ${failure === 'ESRCH' ? 'closes the window for an explicit engine quit' : `keeps the window while the engine lives (${failure || 'alive'})`}`, async () => {
-  const owner = new EventEmitter();
+test('30 s after the address line the launcher ends stdin, lets the board run, and exits 0', async () => {
+  const owner = launcherProcess();
   owner.platform = 'linux';
   owner.env = { ASB_SYSTEM_INSTALL: '1' };
-  const checked = [];
-  owner.kill = (pid, signal) => {
-    checked.push([pid, signal]);
-    if (failure) throw Object.assign(new Error(failure), { code: failure });
-  };
   const watch = timers();
-  const signals = [];
+  const forgotten = [];
   const native = fakeWindow(null);
-  native.kill = (signal) => signals.push(signal);
   await vm.runInNewContext(launcher, { ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
+    forgetBoardCheck: () => forgotten.push('forgotten'),
     startEngine: async () => engine, registerAppIcon: async () => {}, console: { log() {}, error() {}, warn() {} },
     spawn: () => native,
   });
+  assert.deepEqual(native.stdin.written, [addressLine]);
+  assert.equal(native.stdin.ended, false);
   assert.equal(watch.callbacks.length, 1);
-  await watch.callbacks[0]();
-  assert.deepEqual(checked, [[12, 0]]);
-  if (failure === 'ESRCH') {
-    assert.deepEqual(signals, ['SIGTERM']);
-    assert.equal(owner.exitCode, 0);
-    assert.deepEqual(watch.cleared, ['timer-1']);
-  } else {
-    assert.deepEqual(signals, []);
-    assert.equal(owner.exitCode, undefined);
-    assert.deepEqual(watch.cleared, []);
-  }
+  watch.callbacks[0]();
+  assert.equal(native.stdin.ended, true);
+  assert.equal(native.unrefs, 1);
+  assert.equal(native.listenerCount('exit'), 0);
+  assert.equal(owner.exitCode, 0);
+  // The exit of the launcher and a later board exit do not stop or touch the board.
+  owner.emit('exit', 0);
+  native.emit('exit', 3, null);
+  assert.deepEqual(native.kills, []);
+  assert.deepEqual(forgotten, []);
+  assert.equal(owner.exitCode, 0);
 });
 
-test('a window that exits by itself clears the engine watch', async () => {
-  const owner = new EventEmitter();
+test('a window that exits by itself clears the 30 s timer, so that the launcher exits at once', async () => {
+  const owner = launcherProcess();
   owner.platform = 'linux';
   owner.env = { ASB_SYSTEM_INSTALL: '1' };
-  owner.kill = () => assert.fail('The window exited first.');
   const watch = timers();
   const native = fakeWindow(null);
   native.kill = () => assert.fail('The window exited first.');
@@ -440,7 +440,7 @@ test('a window that exits by itself clears the engine watch', async () => {
 
 // The launcher clears the saved board check when the board fails, so that the next start probes again (the cache itself is tested in test/linux-system.test.mjs).
 async function openBoard({ forgetBoardCheck, warnings = [], windowEvent }) {
-  const owner = new EventEmitter();
+  const owner = launcherProcess();
   owner.platform = 'linux';
   owner.env = { ASB_SYSTEM_INSTALL: '1', ASB_PYTHON: '/opt/python3' };
   const native = fakeWindow(null);
@@ -465,21 +465,28 @@ for (const [name, event, failed, exitCode] of [
   ['a start error', ['error', new Error('spawn ENOENT')], true, 1],
 ]) test(`${name} of the board ${failed ? 'clears' : 'keeps'} the saved board check and the launcher exit code is ${exitCode}`, async () => {
   const forgotten = [];
-  let launcherProcess;
-  const owner = await openBoard({ forgetBoardCheck: (options) => forgotten.push([options.env === launcherProcess.env, launcherProcess.exitCode]),
-    windowEvent: ({ native, owner: current }) => { launcherProcess = current; native.emit(...event); } });
+  let boardLauncher;
+  let cleared;
+  const owner = await openBoard({ forgetBoardCheck: (options) => forgotten.push([options.env === boardLauncher.env, boardLauncher.exitCode]),
+    windowEvent: ({ native, owner: current, watch }) => { boardLauncher = current; native.emit(...event); ({ cleared } = watch); } });
+  // The board ended within its first 30 s: the timer stops, so that the launcher exits with the code of the board at once.
+  assert.deepEqual(cleared, ['timer-1']);
   // The call comes before the launcher sets its exit code, with the environment of the launcher.
   assert.deepEqual(forgotten, failed ? [[true, undefined]] : []);
   assert.equal(owner.exitCode, exitCode);
 });
 
-test('a stop that the launcher asked for keeps the saved board check', async () => {
+for (const signal of ['SIGTERM', 'SIGINT']) test(`a ${signal} in the first 30 s stops the board and keeps the saved board check`, async () => {
   const forgotten = [];
+  let kills, cleared;
   const owner = await openBoard({ forgetBoardCheck: (options) => forgotten.push(options), windowEvent: async ({ native, owner: current, watch }) => {
-    current.kill = () => { throw Object.assign(new Error('gone'), { code: 'ESRCH' }); };
-    await watch.callbacks[0]();
+    current.emit(signal);
+    ({ kills } = native);
+    ({ cleared } = watch);
     native.emit('exit', null, 'SIGTERM');
   } });
+  assert.deepEqual(kills, ['SIGTERM']);
+  assert.deepEqual(cleared, ['timer-1']);
   assert.deepEqual(forgotten, []);
   assert.equal(owner.exitCode, 0);
 });
@@ -508,7 +515,7 @@ test('with the real saved check, a good start skips the probe and a board error 
   const probes = async () => (await readFile(log, 'utf8').catch(() => '')).split('\n').filter(Boolean).length;
   const saved = async () => (await readdir(path.join(cache, 'asb')).catch(() => [])).join();
   const start = async (exit) => {
-    const owner = new EventEmitter();
+    const owner = launcherProcess();
     owner.platform = 'linux';
     owner.env = { ASB_SYSTEM_INSTALL: '1', ASB_PYTHON: python, XDG_CACHE_HOME: cache };
     const native = fakeWindow(null);
@@ -536,58 +543,91 @@ const hash = (token) => createHash('sha256').update(token).digest('hex');
 const a = { pid: 10, port: 10001, sourceToken: 'a'.repeat(64) };
 const b = { pid: 20, port: 10002, sourceToken: 'b'.repeat(64) };
 const c = { pid: 30, port: 10003, sourceToken: 'c'.repeat(64) };
-function fixture(options = {}) {
-  const intervals = new Map(), timeouts = new Map(), lines = [], kills = [];
-  let sequence = 0, finds = 0, ended = false;
-  const window = { stdin: { write: (line) => lines.push(JSON.parse(line)), end: () => { ended = true; } }, kill: (signal) => kills.push(signal) };
-  let cancel;
-  const stop = () => { cancel(); window.stdin.end(); window.kill('SIGTERM'); };
-  cancel = desktop.watchEngine(a, { window, stop, version: '1.10.0', root: '/example/asb',
-    find: async () => { finds++; return b; }, status: async () => ({ appVersion: '1.10.0', rootDir: '/example/asb' }),
+// The follow mode of the board, with fakes: a is the old engine, b the new one. Each sleep moves the fake clock by its delay.
+async function followed(options = {}) {
+  let clock = 0, finds = 0;
+  const sleeps = [];
+  const { find = async () => b, ...rest } = options;
+  const result = await desktop.followEngine({ pid: a.pid, token: a.sourceToken }, { version: '1.10.0', root: '/example/asb',
+    status: async () => ({ appVersion: '1.10.0', rootDir: '/example/asb' }),
     marker: async () => null, alive: () => { throw Object.assign(new Error('gone'), { code: 'ESRCH' }); },
-    every: (callback, delay) => { const id = ++sequence; intervals.set(id, { callback, delay }); return id; },
-    clearEvery: (id) => intervals.delete(id), later: (callback, delay) => { const id = ++sequence; timeouts.set(id, { callback, delay }); return id; },
-    clearLater: (id) => timeouts.delete(id), ...options });
-  return { lines, kills, cancel, get finds() { return finds; }, get ended() { return ended; }, intervals, timeouts,
-    tick: async (delay) => { const task = [...intervals.values()].find((task) => task.delay === delay); assert.ok(task, `timer ${delay}`); await task.callback(); } };
+    sleep: async (delay) => { sleeps.push(delay); clock += delay; }, now: () => clock, ...rest, find: () => { finds++; return find(); } });
+  return { result, finds, sleeps };
 }
-test('reconnect watch sends B and C without ending stdin or closing the window', async () => {
-  let next = b;
-  const f = fixture({ find: async () => next });
-  await f.tick(2000); await f.tick(500);
-  next = c;
-  await f.tick(2000); await f.tick(500);
-  assert.deepEqual(f.lines, [b, c].map((runtime) => ({ url: `http://127.0.0.1:${runtime.port}`, token: runtime.sourceToken })));
-  assert.deepEqual(f.kills, []); assert.equal(f.ended, false); f.cancel();
+const moved = { state: 'moved', url: `http://127.0.0.1:${b.port}`, token: b.sourceToken, pid: b.pid };
+for (const code of ['', 'EPERM']) test(`follow mode says alive while the old engine PID runs (${code || 'alive'})`, async () => {
+  const checked = [];
+  const { result, finds } = await followed({ alive: (pid) => { checked.push(pid); if (code) throw Object.assign(new Error(code), { code }); },
+    marker: async () => assert.fail('A live engine needs no quit marker.') });
+  assert.deepEqual(result, { state: 'alive' });
+  assert.deepEqual(checked, [a.pid]);
+  assert.equal(finds, 0);
 });
 // Only the token names the engine run: a PID in the marker does not change the result.
 for (const marker of [{ schema: 1, token: hash(a.sourceToken) }, { schema: 1, pid: 99, token: hash(a.sourceToken) }]) {
-  test(`reconnect watch closes at once for the quit marker of its engine ${marker.pid ?? 'no PID'}/${marker.token.slice(0, 4)}`, async () => {
-    const f = fixture({ marker: async () => marker });
-    await f.tick(2000);
-    assert.deepEqual(f.kills, ['SIGTERM']); assert.equal(f.finds, 0); assert.deepEqual(f.lines, []);
+  test(`follow mode says quit at once for the quit marker of its engine ${marker.pid ?? 'no PID'}/${marker.token.slice(0, 4)}`, async () => {
+    const { result, finds } = await followed({ marker: async () => marker });
+    assert.deepEqual(result, { state: 'quit' }); assert.equal(finds, 0);
   });
 }
-test('reconnect watch ignores the quit marker of another engine', async () => {
-  const f = fixture({ marker: async () => ({ schema: 1, pid: a.pid, token: hash(b.sourceToken) }) }); await f.tick(2000); await f.tick(500);
-  assert.equal(f.lines.length, 1); assert.deepEqual(f.kills, []); f.cancel();
+test('follow mode ignores the quit marker of another engine and finds the new engine', async () => {
+  const { result } = await followed({ marker: async () => ({ schema: 1, pid: a.pid, token: hash(b.sourceToken) }) });
+  assert.deepEqual(result, moved);
 });
-for (const status of [async () => ({ appVersion: '2.0.0', rootDir: '/example/asb' }),
-  async () => ({ appVersion: '1.10.0', rootDir: '/another/asb' }), async () => { throw new Error('status failed'); }]) {
-  test(`reconnect watch rejects incompatible status ${status}`, async () => {
-    const f = fixture({ status }); await f.tick(2000); await f.tick(500);
-    assert.deepEqual(f.kills, ['SIGTERM']); assert.deepEqual(f.lines, []);
+test('follow mode waits 500 ms between searches and gives the new engine of the same version and root', async () => {
+  const found = [null, a, b];
+  const { result, finds, sleeps } = await followed({ find: async () => found.shift(),
+    status: async (runtime) => { assert.equal(runtime, b); return { appVersion: '1.10.0', rootDir: '/example/asb/' }; } });
+  assert.deepEqual(result, moved);
+  assert.equal(finds, 3);
+  assert.deepEqual(sleeps, [500, 500]);
+});
+for (const [name, status] of [['another version', async () => ({ appVersion: '2.0.0', rootDir: '/example/asb' })],
+  ['another root', async () => ({ appVersion: '1.10.0', rootDir: '/another/asb' })], ['no root', async () => ({ appVersion: '1.10.0' })],
+  ['a failed status read', async () => { throw new Error('status failed'); }]]) {
+  test(`follow mode says quit for ${name}`, async () => {
+    assert.deepEqual((await followed({ status })).result, { state: 'quit' });
   });
 }
-test('reconnect watch ends after 20 seconds with no engine', async () => {
-  const f = fixture({ find: async () => null }); await f.tick(2000); await f.tick(500);
-  const deadline = [...f.timeouts.values()][0]; assert.equal(deadline.delay, 20000); deadline.callback();
-  assert.deepEqual(f.kills, ['SIGTERM']); assert.equal(f.intervals.size, 0);
+test('follow mode says quit after 20 seconds with no engine', async () => {
+  const { result, finds, sleeps } = await followed({ find: async () => null });
+  assert.deepEqual(result, { state: 'quit' });
+  assert.equal(sleeps.reduce((sum, delay) => sum + delay, 0), 20_000);
+  assert.equal(finds, 41);
 });
-test('reconnect watch cancels pending discovery when the window ends', async () => {
-  const found = Promise.withResolvers(); const f = fixture({ find: () => found.promise });
-  await f.tick(2000); const pending = f.tick(500); f.cancel(); found.resolve(b); await pending;
-  assert.deepEqual(f.lines, []); assert.equal(f.intervals.size, 0); assert.equal(f.timeouts.size, 0);
+test('the follow command prints one JSON line for a good input line and exits 0', async () => {
+  const written = [];
+  const code = await desktop.follow({ input: [Buffer.from(`${JSON.stringify({ pid: a.pid, token: a.sourceToken })}\n`)],
+    output: { write: (text) => written.push(text) }, errors: () => assert.fail('A good line has no error.'),
+    options: { alive: () => {} } });
+  assert.equal(code, 0);
+  assert.deepEqual(written, ['{"state":"alive"}\n']);
+});
+for (const input of ['', '\n', 'not json\n', '[]\n', '{"pid":10}\n', '{"token":"t"}\n', '{"pid":0,"token":"t"}\n', '{"pid":1.5,"token":"t"}\n',
+  '{"pid":"10","token":"t"}\n', '{"pid":2147483648,"token":"t"}\n', '{"pid":10,"token":""}\n', '{"pid":10,"token":5}\n',
+  `{"pid":10,"token":"${'t'.repeat(5000)}"}\n`]) {
+  test(`the follow command exits 2 with one message and no output line for the input ${JSON.stringify(input.slice(0, 30))}`, async () => {
+    const written = [], errors = [];
+    const code = await desktop.follow({ input: [Buffer.from(input)], output: { write: (text) => written.push(text) },
+      errors: (message) => errors.push(message), options: { alive: () => assert.fail('No check runs.') } });
+    assert.equal(code, 2);
+    assert.deepEqual(written, []);
+    assert.deepEqual(errors, ['ASB follow mode needs one JSON line with the engine pid and token on stdin.']);
+  });
+}
+test('the follow command runs as its own process and says alive for a live PID', { timeout: 10_000 }, async (t) => {
+  // A temp HOME, no display or session bus, and a port that cannot bind: a launcher without the follow mode cannot reach a real engine or display.
+  const home = await mkdtemp(path.join(os.tmpdir(), 'asb-follow-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const child = spawn(process.execPath, [fileURLToPath(launcherUrl), '--follow'], { stdio: ['pipe', 'pipe', 'pipe'],
+    env: { PATH: process.env.PATH, HOME: home, XDG_RUNTIME_DIR: home, PORT: '1', ASB_TRAY: '0', ASB_SYSTEM_INSTALL: '1' } });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
+  child.stdin.end(`${JSON.stringify({ pid: process.pid, token: a.sourceToken })}\n`);
+  let output = '';
+  child.stdout.on('data', (chunk) => { output += chunk; });
+  const [code] = await once(child, 'exit');
+  assert.equal(code, 0);
+  assert.equal(output, '{"state":"alive"}\n');
 });
 test('quit markers are private, atomic runtime records and reject unsafe or malformed files', async (t) => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'asb-quit-marker-'));

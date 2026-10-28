@@ -622,6 +622,51 @@ class WidgetCheck(unittest.TestCase):
             self.application.reconnect(bases[0], "ignored")
             self.assertEqual(window.base, bases[1])
 
+    def test_a_lost_board_stream_follows_a_moved_engine_and_closes_the_board_on_a_quit(self):
+        # The launcher start reads a line of a launcher that exits after the start; the follow helper is a fake process.
+        token = "ab" * 32
+        read, write = os.pipe()
+        os.write(write, json.dumps({"url": "http://127.0.0.1:1", "token": token, "pid": 4242, "node": "/opt/node"}).encode() + b"\n")
+        os.close(write)
+        self.addCleanup(os.close, read)
+        replies, inputs = [], []
+        def helper(args, **_kwargs):
+            written = io.BytesIO()
+            return SimpleNamespace(stdin=SimpleNamespace(write=written.write, close=lambda: inputs.append(json.loads(written.getvalue()))),
+                                   stdout=io.BytesIO(replies.pop(0)), wait=lambda: None, returncode=0, kill=lambda: None)
+        streams = []
+        def stream(base, *_args, **kwargs):
+            streams.append((base, kwargs.get("on_lost")))
+            return SimpleNamespace(close=lambda: None, connected=False)
+        close = Mock(return_value=False)
+        with patch.object(asb, "SOURCE_TOKEN", ""), patch.object(asb, "EventStream", stream), patch("subprocess.Popen", helper), \
+                patch.object(asb, "request_async", lambda *_args, **_kwargs: SimpleNamespace(join=lambda _timeout: None)), \
+                patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None):
+            start = asb.LauncherStart(read, Mock(return_value={"threads": []}))
+            start.worker.join(5)
+            self.assertEqual(start.address(), "http://127.0.0.1:1")
+            start.reconnect(self.application.reconnect, asb.GLib.idle_add, close)
+            with patch.object(self.application, "launcher", start):
+                window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", theme_path=False, layout_path=False)
+            self.addCleanup(window.close)
+            self.assertEqual(streams, [("http://127.0.0.1:1", start.lost)])
+            def follow(reply):
+                replies.append(reply)
+                streams[-1][1]()
+                end = time.monotonic() + 5
+                while (replies or start.following) and time.monotonic() < end:
+                    self.drain(.02)
+                self.drain(.05)
+            follow(b'{"state":"moved","url":"http://127.0.0.1:2","token":"token-b","pid":5151}\n')
+            self.assertEqual(inputs, [{"pid": 4242, "token": token}])
+            self.assertEqual((window.base, asb.SOURCE_TOKEN), ("http://127.0.0.1:2", "token-b"))
+            # The new stream reports its loss too, and the next helper gets the new engine.
+            self.assertEqual(streams[-1], ("http://127.0.0.1:2", start.lost))
+            follow(b'{"state":"quit"}\n')
+            self.assertEqual(inputs[1], {"pid": 5151, "token": "token-b"})
+            close.assert_called_once_with()
+            self.assertEqual(window.base, "http://127.0.0.1:2")
+
     def test_close_reports_once_and_stops_ticks_and_inflight_callbacks(self):
         reports, callbacks, waits = [], [], []
         def request(_base, route, callback, _dispatch, method="GET", body=None, **_kwargs):

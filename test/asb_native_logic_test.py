@@ -8240,6 +8240,160 @@ class BoardStartChecks(unittest.TestCase):
         dispatch.assert_called_once_with(callback, "http://127.0.0.1:4631", "new")
         callback.assert_not_called()
 
+    def test_the_address_line_gives_the_engine_pid_and_the_node_path_only_when_they_are_valid(self):
+        address = SCOPE["launcher_address"]
+        self.assertEqual(address(self.line(pid=4242, node="/opt/node")), (self.BASE, self.TOKEN, 4242, "/opt/node"))
+        # A line of an older launcher has neither: the board then reads later address lines as before.
+        self.assertEqual(address(self.line()), (self.BASE, self.TOKEN, None, None))
+        for pid, node in ((0, "/opt/node"), (-3, "/opt/node"), (1.5, "/opt/node"), ("4242", "/opt/node"), (True, "/opt/node"),
+                          (None, "/opt/node"), (4242, ""), (4242, 7), (4242, None), (4242, ["/opt/node"])):
+            with self.subTest(pid=pid, node=node):
+                values = address(self.line(pid=pid, node=node))
+                self.assertEqual(values[:2], (self.BASE, self.TOKEN))
+                self.assertEqual(values[2], pid if type(pid) is int and pid > 0 else None)
+                self.assertEqual(values[3], node if isinstance(node, str) and node else None)
+
+    class Helper:
+        """A fake subprocess.Popen for the follow helper: it keeps each call and its stdin, and gives output as its stdout.
+        A release event holds the stdout read until it is set or the process is killed."""
+        def __init__(self, output=b'{"state":"alive"}\n', code=0, release=None):
+            self.output, self.code, self.release = output, code, release
+            self.calls, self.inputs, self.kills = [], [], 0
+
+        def __call__(self, args, **kwargs):
+            helper, written = self, io.BytesIO()
+            self.calls.append((args, kwargs))
+            class Output(io.BytesIO):
+                def read(self, size=-1):
+                    if helper.release:
+                        helper.release.wait(5)
+                    return super().read(size)
+            class Process:
+                returncode = None
+                stdin = SimpleNamespace(write=written.write, close=lambda: self.inputs.append(json.loads(written.getvalue())))
+                stdout = Output(self.output)
+                def wait(process):
+                    process.returncode = helper.code
+                def kill(process):
+                    helper.kills += 1
+                    helper.release.set()
+            return Process()
+
+    def follow(self, helper, line=None, close=None):
+        """A LauncherStart of a new launcher line whose follow helper is the fake; reconnects and closes land in got."""
+        start = self.start(line or self.line(pid=4242, node="/opt/node"))
+        start.worker.join(5)
+        got = []
+        start.reconnect(lambda *args: got.append(("reconnect", *args)), lambda callback, *args: callback(*args),
+                        close or (lambda: got.append(("close",))))
+        patcher = patch("subprocess.Popen", helper)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return start, got
+
+    def wait_follow(self, start, helper, calls):
+        deadline = time.monotonic() + 5
+        while (len(helper.calls) < calls or start.following) and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertEqual(len(helper.calls), calls)
+        self.assertFalse(start.following)
+
+    def test_a_lost_stream_runs_the_follow_helper_once_and_a_moved_engine_reconnects_with_its_pid_for_the_next_loss(self):
+        helper = self.Helper(b'{"state":"moved","url":"http://127.0.0.1:4631","token":"new-token","pid":5151}\n')
+        with patch.dict(SCOPE, {"SOURCE_TOKEN": ""}):
+            start, got = self.follow(helper)
+            start.lost()
+            self.wait_follow(start, helper, 1)
+            args, kwargs = helper.calls[0]
+            self.assertEqual(args, ["/opt/node", str(SOURCE.with_name("asb-desktop.mjs")), "--follow"])
+            self.assertEqual(kwargs.get("creationflags"), None)
+            self.assertEqual(helper.inputs, [{"pid": 4242, "token": self.TOKEN}])
+            self.assertEqual(got, [("reconnect", "http://127.0.0.1:4631", "new-token")])
+            start.lost()
+            self.wait_follow(start, helper, 2)
+            self.assertEqual(helper.inputs[1], {"pid": 5151, "token": "new-token"})
+
+    def test_the_follow_helper_on_windows_has_no_console_window(self):
+        helper = self.Helper()
+        start, _got = self.follow(helper)
+        with patch.object(SCOPE["os"], "name", "nt"), patch("subprocess.CREATE_NO_WINDOW", 0x08000000, create=True):
+            start.lost()
+            self.wait_follow(start, helper, 1)
+        self.assertEqual(helper.calls[0][1]["creationflags"], 0x08000000)
+
+    def test_a_quit_from_the_follow_helper_closes_the_board(self):
+        helper = self.Helper(b'{"state":"quit"}\n')
+        start, got = self.follow(helper)
+        start.lost()
+        self.wait_follow(start, helper, 1)
+        self.assertEqual(got, [("close",)])
+
+    def test_an_alive_engine_keeps_the_stream_and_the_next_helper_waits_30_seconds(self):
+        helper = self.Helper()
+        start, got = self.follow(helper)
+        start.lost()
+        self.wait_follow(start, helper, 1)
+        self.assertEqual(got, [])
+        self.assertAlmostEqual(start.follow_after - time.monotonic(), 30, delta=2)
+        start.lost()
+        time.sleep(.05)
+        self.assertEqual(len(helper.calls), 1)
+        start.follow_after -= 31
+        start.lost()
+        self.wait_follow(start, helper, 2)
+
+    def test_a_helper_failure_writes_one_stderr_line_and_keeps_the_stream(self):
+        for name, helper in (("no line", self.Helper(b"")), ("bad line", self.Helper(b'{"state":"moved","url":"http://example.com:1","token":"t","pid":5}')),
+                             ("two lines", self.Helper(b'{"state":"quit"}\n{"state":"quit"}\n')),
+                             ("too long", self.Helper(b'{"state":"quit"}' + b" " * 5000)), ("exit code", self.Helper(b'{"state":"quit"}\n', 1)),
+                             ("no node", Mock(side_effect=FileNotFoundError(2, "No such file or directory")))):
+            with self.subTest(name=name), patch("sys.stderr", io.StringIO()) as errors:
+                start, got = self.follow(helper)
+                start.lost()
+                deadline = time.monotonic() + 5
+                while not errors.getvalue() and time.monotonic() < deadline:
+                    time.sleep(.01)
+                time.sleep(.02)
+                self.assertFalse(start.following)
+                self.assertEqual(got, [])
+                self.assertEqual(len(errors.getvalue().splitlines()), 1)
+                self.assertTrue(errors.getvalue().startswith("ASB cannot follow its engine: "))
+                self.assertNotIn(self.TOKEN, errors.getvalue())
+
+    def test_a_helper_that_does_not_answer_is_killed_after_the_timeout(self):
+        helper = self.Helper(b'{"state":"quit"}\n', release=threading.Event())
+        with patch("subprocess.Popen", helper), self.assertRaisesRegex(ValueError, "did not answer"):
+            SCOPE["follow_engine"]("/opt/node", "{}", timeout=.05)
+        self.assertEqual(helper.kills, 1)
+
+    def test_a_second_loss_while_the_helper_runs_starts_no_second_helper(self):
+        helper = self.Helper(b'{"state":"quit"}\n', release=threading.Event())
+        start, got = self.follow(helper)
+        start.lost()
+        start.lost()
+        time.sleep(.05)
+        self.assertTrue(start.following)
+        self.assertEqual(len(helper.calls), 1)
+        helper.release.set()
+        self.wait_follow(start, helper, 1)
+        self.assertEqual(got, [("close",)])
+
+    def test_a_line_of_an_older_launcher_runs_no_follow_helper(self):
+        helper = self.Helper()
+        start, _got = self.follow(helper, self.line())
+        start.lost()
+        time.sleep(.05)
+        self.assertEqual(helper.calls, [])
+        self.assertFalse(start.following)
+
+    def test_the_event_stream_reports_a_failed_connect_as_a_lost_engine(self):
+        lost = threading.Event()
+        stream = SCOPE["EventStream"]("http://127.0.0.1:1", Mock(), Mock(), on_lost=lost.set)
+        self.assertTrue(lost.wait(5))
+        stream.close()
+        stream.worker.join(6)
+        self.assertFalse(stream.worker.is_alive())
+
     def test_a_late_dashboard_from_the_previous_engine_cannot_set_the_new_etag(self):
         window = object.__new__(Window)
         window.base, window.engine_generation = self.BASE, 0

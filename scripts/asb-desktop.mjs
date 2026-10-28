@@ -9,12 +9,12 @@ import { startEngine, startWindowsEngine } from './asb-engine.mjs';
 import { registerAppIcon } from './asb-icon.mjs';
 
 let window;
-let engineWatch;
+let detach;
 let stopping = false;
 function stop(code = 0) {
   if (stopping) return;
   stopping = true;
-  engineWatch?.();
+  clearTimeout(detach);
   window?.stdin?.end();
   process.exitCode = code;
   if (window && window.exitCode === null) window.kill('SIGTERM');
@@ -71,71 +71,71 @@ async function start() {
   // A failed engine start stops the window through main().
   const service = await engine;
   const url = `http://127.0.0.1:${service.port}`;
-  // A launcher that already stops (the window ended first) sends no address and starts no watch, but the line still names the engine.
+  // A launcher that already stops (the window ended first) sends no address, but the line still names the engine.
+  // The engine PID and the Node path let the board run the follow mode below when its engine goes away.
   if (!stopping) {
-    window.stdin.write(`${JSON.stringify({ url, token: service.sourceToken })}\n`);
-    engineWatch = watchEngine(service, { window, stop });
+    window.stdin.write(`${JSON.stringify({ url, token: service.sourceToken, pid: service.pid, node: process.execPath })}\n`);
+    // A board that fails in its first 30 s still clears the saved board check and gives its exit code. After that the launcher ends.
+    detach = setTimeout(() => {
+      if (stopping) return;
+      window.stdin.end();
+      window.removeAllListeners('exit');
+      window.unref();
+      window = undefined;
+      process.exitCode = 0;
+    }, 30_000);
   }
   console.log(`ASB: ${url}`);
 }
-// Discovery never starts an engine: an update must be able to stop and replace the installed engine.
-export function watchEngine(service, { window, stop, env = process.env, platform = process.platform,
+
+// The follow mode of the board: after its engine went away, it says whether that engine still runs ("alive"), quit ("quit"), or another
+// engine of this package answers ("moved"). Discovery never starts an engine: an update must be able to stop and replace the installed engine.
+export async function followEngine(service, { env = process.env, platform = process.platform,
   find = () => findRunningService(env, platform), marker = () => readQuitMarker(env, platform),
   status = async (runtime) => {
     const reply = await requestInstance(runtime, '/api/agent/status');
     if (reply.statusCode !== 200) throw new Error('Cannot read ASB engine status.');
     return reply.body;
-  }, alive = (pid) => process.kill(pid, 0), every = setInterval, clearEvery = clearInterval,
-  later = setTimeout, clearLater = clearTimeout,
+  }, alive = (pid) => process.kill(pid, 0), sleep = (delay) => new Promise((resolve) => setTimeout(resolve, delay)), now = Date.now,
   version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version,
   root = fileURLToPath(new URL('..', import.meta.url)) } = {}) {
-  let interval, deadline, cancelled = false, busy = false;
-  const cancel = () => {
-    if (cancelled) return;
-    cancelled = true;
-    if (interval !== undefined) clearEvery(interval);
-    if (deadline !== undefined) clearLater(deadline);
-  };
-  const finish = () => { if (!cancelled) { cancel(); stop(0); } };
-  const watch = () => {
-    interval = every(async () => {
-      if (cancelled) return;
-      try { alive(service.pid); return; }
-      catch (error) { if (error.code !== 'ESRCH') return; }
-      clearEvery(interval);
-      interval = undefined;
-      deadline = later(finish, 20_000);
-      const quit = await marker();
-      if (cancelled) return;
-      if (quit?.token === createHash('sha256').update(service.sourceToken).digest('hex')) {
-        finish();
-        return;
+  try { alive(service.pid); return { state: 'alive' }; }
+  catch (error) { if (error.code !== 'ESRCH') return { state: 'alive' }; }
+  const quit = await marker();
+  if (quit?.token === createHash('sha256').update(service.token).digest('hex')) return { state: 'quit' };
+  const deadline = now() + 20_000;
+  try {
+    for (;;) {
+      const next = await find();
+      if (next && next.pid !== service.pid) {
+        const info = await status(next);
+        if (info?.appVersion !== version || typeof info.rootDir !== 'string' || path.resolve(info.rootDir) !== path.resolve(root)) return { state: 'quit' };
+        return { state: 'moved', url: `http://127.0.0.1:${next.port}`, token: next.sourceToken, pid: next.pid };
       }
-      interval = every(async () => {
-        if (cancelled || busy) return;
-        busy = true;
-        try {
-          const next = await find();
-          if (cancelled || !next || next.pid === service.pid) return;
-          const info = await status(next);
-          if (cancelled) return;
-          if (info?.appVersion !== version || typeof info.rootDir !== 'string' || path.resolve(info.rootDir) !== path.resolve(root)) {
-            finish();
-            return;
-          }
-          window.stdin.write(`${JSON.stringify({ url: `http://127.0.0.1:${next.port}`, token: next.sourceToken })}\n`);
-          service = next;
-          clearEvery(interval);
-          clearLater(deadline);
-          deadline = undefined;
-          watch();
-        } catch { if (!cancelled) finish(); }
-        finally { busy = false; }
-      }, 500);
-    }, 2000);
-  };
-  watch();
-  return cancel;
+      if (now() >= deadline) return { state: 'quit' };
+      await sleep(500);
+    }
+  } catch { return { state: 'quit' }; }
+}
+
+// Reads the line {"pid","token"} of the board (at most 4096 bytes), prints the follow result as one JSON line, and exits 0; a bad line exits 2.
+export async function follow({ input = process.stdin, output = process.stdout, errors = console.error, options } = {}) {
+  let bytes = Buffer.alloc(0);
+  for await (const chunk of input) {
+    bytes = Buffer.concat([bytes, chunk]);
+    if (bytes.includes(10) || bytes.length > 4097) break;
+  }
+  const end = bytes.indexOf(10);
+  const line = end < 0 ? bytes : bytes.subarray(0, end);
+  let value;
+  try { value = line.length <= 4096 ? JSON.parse(line.toString('utf8')) : undefined; } catch {}
+  if (!value || typeof value !== 'object' || !Number.isInteger(value.pid) || value.pid <= 0 || value.pid > 2147483647
+    || typeof value.token !== 'string' || !value.token) {
+    errors('ASB follow mode needs one JSON line with the engine pid and token on stdin.');
+    return 2;
+  }
+  output.write(`${JSON.stringify(await followEngine(value, options))}\n`);
+  return 0;
 }
 
 // Opens the board: starts the engine when it is not running, then the native window as its client.
@@ -153,4 +153,4 @@ export function main() {
   });
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) process.argv[2] === '--follow' ? follow().then((code) => { process.exitCode = code; }) : main();

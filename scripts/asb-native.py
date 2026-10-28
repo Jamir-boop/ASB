@@ -1576,14 +1576,64 @@ def request_async(base, route, callback, dispatch, method="GET", body=None, etag
 
 
 def launcher_address(line):
-    """The local engine URL and the token from a JSON line of the launcher. ValueError when the line is not an address."""
+    """The local engine URL, the token, the engine PID, and the Node path from a JSON line of the launcher. ValueError when the line
+    is not an address. The PID and the Node path are None when the line has no valid ones (an older launcher)."""
     try:
         value = json.loads(line)
     except ValueError:
         value = None
     if not isinstance(value, dict) or not isinstance(value.get("url"), str) or not isinstance(value.get("token"), str):
         raise ValueError("ASB did not get the engine address from its launcher.")
-    return local_base_url(value["url"]), value["token"]
+    pid, node = value.get("pid"), value.get("node")
+    return (local_base_url(value["url"]), value["token"], pid if type(pid) is int and pid > 0 else None,
+            node if isinstance(node, str) and node else None)
+
+
+def follow_reply(output):
+    """The state of the line of the launcher follow mode: ("alive" or "quit", None, None, None), or ("moved", base, token, pid).
+    ValueError for anything else."""
+    try:
+        value = json.loads(output) if len(output) <= 4096 else None
+    except ValueError:
+        value = None
+    state = value.get("state") if isinstance(value, dict) else None
+    if state in ("alive", "quit"):
+        return state, None, None, None
+    if state == "moved" and isinstance(value.get("url"), str) and isinstance(value.get("token"), str) \
+            and type(value.get("pid")) is int and value["pid"] > 0:
+        return state, local_base_url(value["url"]), value["token"], value["pid"]
+    raise ValueError("The follow helper sent no valid line.")
+
+
+FOLLOW_SCRIPT = str(Path(__file__).with_name("asb-desktop.mjs"))
+
+
+def follow_engine(node, request, timeout=30):
+    """Runs the follow mode of the Node launcher once with the old engine PID and token, and gives at most 4097 bytes of its stdout.
+    The launcher has ended by now, so the engine discovery and its checks run in this short Node process."""
+    import subprocess
+    flags = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+    process = subprocess.Popen([node, FOLLOW_SCRIPT, "--follow"],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, **flags)
+    expired = threading.Event()
+    timer = threading.Timer(timeout, lambda: (expired.set(), process.kill()))
+    timer.start()
+    try:
+        try:
+            process.stdin.write(request.encode() + b"\n")
+            process.stdin.close()
+        except OSError:
+            pass
+        with process.stdout:
+            output = process.stdout.read(4097)
+        process.wait()
+    finally:
+        timer.cancel()
+    if expired.is_set():
+        raise ValueError(f"The follow helper did not answer in {timeout} s.")
+    if process.returncode:
+        raise ValueError(f"The follow helper ended with code {process.returncode}.")
+    return output
 
 
 # Messages window: pure logic.
@@ -1837,6 +1887,9 @@ class LauncherStart:
         self.lock = threading.Lock()
         self.buffer = b""
         self.reconnect_target, self.reconnect_pending = None, []
+        # The engine PID and the Node path of a launcher that exits after the start; the board then follows a restarted engine itself.
+        self.pid = self.node = self.token = self.close_target = None
+        self.following, self.follow_after = False, 0.0
         self.worker = threading.Thread(target=self.run, daemon=True)
         self.worker.start()
 
@@ -1858,17 +1911,55 @@ class LauncherStart:
                 return line if initial and not oversized and 0 < len(line) <= 4096 else None
             self.buffer += chunk
 
-    def reconnect(self, callback, dispatch):
+    def reconnect(self, callback, dispatch, close=None):
         with self.lock:
             self.reconnect_target = (callback, dispatch)
+            self.close_target = close and (close, dispatch)
             for base, token in self.reconnect_pending:
                 dispatch(callback, base, token)
             self.reconnect_pending.clear()
 
+    def moved(self, base, token):
+        """Sends a new engine address to the application; the caller holds the lock."""
+        if self.reconnect_target:
+            callback, dispatch = self.reconnect_target
+            dispatch(callback, base, token)
+        else:
+            self.reconnect_pending.append((base, token))
+
+    def lost(self):
+        """The event stream of the board lost the engine. With a launcher that has ended, a short Node helper says whether the engine
+        still runs, moved, or quit. One helper runs at a time, and after an answer without a change the next one waits 30 s."""
+        with self.lock:
+            if not self.pid or not self.node or self.following or time.monotonic() < self.follow_after:
+                return
+            self.following = True
+            request = json.dumps({"pid": self.pid, "token": self.token})
+        threading.Thread(target=self.follow, args=(request,), daemon=True).start()
+
+    def follow(self, request):
+        try:
+            state, base, token, pid = follow_reply(follow_engine(self.node, request))
+        except (OSError, ValueError) as error:
+            print(f"ASB cannot follow its engine: {error}", file=sys.stderr)
+            state = None
+        with self.lock:
+            self.following = False
+            if state == "moved":
+                self.pid, self.token = pid, token
+                self.moved(base, token)
+            elif state == "quit" and self.close_target:
+                close, dispatch = self.close_target
+                dispatch(close)
+            elif state != "quit":
+                # The stream tries again each 5 s by itself.
+                self.follow_after = time.monotonic() + 30
+
     def run(self):
         global SOURCE_TOKEN
         try:
-            self.base, SOURCE_TOKEN = launcher_address(self.read_line(initial=True) or b"")
+            self.base, self.token, self.pid, self.node = launcher_address(self.read_line(initial=True) or b"")
+            SOURCE_TOKEN = self.token
         except ValueError as error:
             self.problem = str(error)
         finally:
@@ -1896,15 +1987,11 @@ class LauncherStart:
             if line is None:
                 return
             try:
-                base, token = launcher_address(line)
+                base, token, _pid, _node = launcher_address(line)
             except ValueError:
                 continue
             with self.lock:
-                if self.reconnect_target:
-                    callback, dispatch = self.reconnect_target
-                    dispatch(callback, base, token)
-                else:
-                    self.reconnect_pending.append((base, token))
+                self.moved(base, token)
 
     def address(self):
         """The engine URL, as soon as the launcher has written it. ValueError when it never does."""
@@ -2230,9 +2317,11 @@ def import_usage_file(base, path):
 
 
 class EventStream:
-    def __init__(self, base, callback, dispatch, on_show_window=None, on_connected=None, ui_client=None):
+    def __init__(self, base, callback, dispatch, on_show_window=None, on_connected=None, ui_client=None, on_lost=None):
         self.address = urlsplit(base)
         self.callback, self.dispatch, self.on_show_window, self.on_connected = callback, dispatch, on_show_window, on_connected
+        # Called in the stream thread when the stream cannot connect or ends.
+        self.on_lost = on_lost
         # The engine keeps this UI client while the stream is open.
         self.path = "/api/events" + (f"?ui={quote(ui_client)}" if ui_client else "")
         # True from the `connected` event of the engine to the end of the stream: each list change then comes as an event.
@@ -2308,6 +2397,8 @@ class EventStream:
                 with self.lock:
                     self.socket = None
                 connection.close()
+            if self.on_lost and not self.stopped.is_set():
+                self.on_lost()
             self.stopped.wait(5)
 
     def close(self):
@@ -5155,8 +5246,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 style.connect("notify::" + name, lambda *_args: GLib.idle_add(self.follow_system_style))
         self.connect("realize", self.watch_layout)
         self.timer = GLib.timeout_add(self.refresh_interval_ms, self.tick)
+        # The board stream tells the launcher start when the engine goes away.
+        self.engine_lost = application.launcher.lost if application.launcher else None
         self.events = EventStream(self.base, self.source_changed, GLib.idle_add, self.show_window_event,
-                                  on_connected=self.source_changed, ui_client=self.ui_client_id)
+                                  on_connected=self.source_changed, ui_client=self.ui_client_id, on_lost=self.engine_lost)
         if initial_dashboard is not None:
             self.apply_dashboard(initial_dashboard, None)
         elif first_load:
@@ -5180,7 +5273,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     editor.base = base
         self.events.close()
         self.events = EventStream(base, self.source_changed, GLib.idle_add, self.show_window_event,
-                                  on_connected=self.source_changed, ui_client=self.ui_client_id)
+                                  on_connected=self.source_changed, ui_client=self.ui_client_id, on_lost=self.engine_lost)
         self.dashboard_etag = None
         self.ui_report_last = None
         self.ui_report_sending = False
@@ -10489,7 +10582,7 @@ class SwitchboardApplication(Adw.Application):
         GLib.set_prgname(APP_ID)
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.NON_UNIQUE)
         self.get_style_manager().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
-        self.base, self.first_load = base, first_load
+        self.base, self.first_load, self.launcher = base, first_load, first_load
         self.activity_windows = {}
         # A window destroyed without a close request (no "destroy" signal reaches Python) still stops its stream and is forgotten.
         self.connect("window-removed", lambda _application, window: isinstance(window, ActivityWindow) and window.finish())
@@ -10502,7 +10595,7 @@ class SwitchboardApplication(Adw.Application):
         for action, key in (("app.messages", "<Control>m"), ("app.usage", "<Control>u"), ("win.preferences", "<Control>comma")):
             self.set_accels_for_action(action, [key])
         if first_load:
-            first_load.reconnect(self.reconnect, GLib.idle_add)
+            first_load.reconnect(self.reconnect, GLib.idle_add, self.close_windows)
 
     def reconnect(self, base, token):
         global SOURCE_TOKEN
