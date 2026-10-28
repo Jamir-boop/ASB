@@ -8616,24 +8616,24 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
 
 @unittest.skipUnless(asb.Gtk.init_check(), "A GTK display is not available.")
 class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
-    @staticmethod
-    def sample_reply():
-        at = lambda day, hour: int(asb.datetime(2026, 10, day, hour).timestamp() * 1000)
-        records = [{"id": f"note-{i}", "from": ("docs", "release-plan", "parser-review")[i % 3], "to": ("docs", "release-plan", "parser-review")[(i + 1) % 3],
-                    "atMs": at(25 + i // 4, 9 + i % 4), "status": "accepted", "text": f"Message {i}: Check the release guide."}
-                   for i in range(12)]
-        records[3]["text"] = ("Check the guide and keep the release steps in order. " * 12 + "\n\n") * 2
-        records[8].update(status="not-sent", reason="Machine offline")
-        records[9].update({"from": "unknown:m2", "fromLabel": "beta-helper"})
-        records[10]["text"] = None
-        records[11]["status"] = "held"
-        return {"period": "7d", "nowMs": at(27, 18), "truncated": False,
-                "machines": [{"machineId": "m1", "name": "alpha", "self": True},
-                             {"machineId": "m2", "name": "bravo"}, {"machineId": "m3", "name": "charlie"}],
-                "seats": [{"id": "docs", "title": "docs", "machineId": "m1"},
-                          {"id": "release-plan", "title": "release-plan", "machineId": "m2"},
-                          {"id": "parser-review", "title": "parser-review", "machineId": "m3"},
-                          {"id": "unknown:m2", "title": "Other sessions", "machineId": "m2"}], "messages": records}
+    SAMPLE = Path(__file__).with_name("fixtures") / "activity" / "messages-sample.json"
+
+    @classmethod
+    def setUpClass(cls):
+        ActivityFixture.setUpClass.__func__(cls)
+        cls.sample = json.loads(cls.SAMPLE.read_text())
+        # The sample times are UTC: the buckets, clocks, and day lines are checked in UTC.
+        saved = os.environ.get("TZ")
+        os.environ["TZ"] = "UTC"
+        time.tzset()
+
+        def restore():
+            if saved is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = saved
+            time.tzset()
+        cls.addClassCleanup(restore)
 
     def setUp(self):
         directory = tempfile.TemporaryDirectory(prefix="asb-messages-test-")
@@ -8644,218 +8644,95 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         settings = asb.Gtk.Settings.get_default()
         self.addCleanup(settings.set_property, "gtk-font-name", settings.get_property("gtk-font-name"))
         settings.set_property("gtk-font-name", "Cantarell 11")
+        self.addCleanup(settings.set_property, "gtk-enable-animations", settings.get_property("gtk-enable-animations"))
+        settings.set_property("gtk-enable-animations", True)
         self.addCleanup(self.close_windows)
-        self.sample, self.routes = self.sample_reply(), []
+        self.extra, self.routes = [], []
         self.warnings = len(GTK_WARNINGS)
         self.addCleanup(lambda: self.assertEqual(GTK_WARNINGS[self.warnings:], []))
 
     def fetch(self, route):
+        """The engine replies of the sample data: buckets in UTC, the seats of the period, and text only for local messages,
+        in the report only for the newest 200; an unknown end has the name from the message (record[7], record[8])."""
+        from urllib.parse import parse_qs
         self.routes.append(route)
-        self.assertTrue(route.startswith("/api/activity/messages?period="), route)
-        return copy.deepcopy(self.sample)
+        path, _mark, query = route.partition("?")
+        args = {key: values[0] for key, values in parse_qs(query).items()}
+        sample, now = self.sample, self.sample["nowMs"]
+        count, size = {"24h": (24, 3_600_000), "7d": (7, 86_400_000), "30d": (30, 86_400_000)}[args["period"]]
+        starts = [now // size * size - (count - 1 - index) * size for index in range(count)]
+        records = sorted((record for record in sample["messages"] + self.extra if record[3] >= starts[0]), key=lambda record: record[3])
+        seats = sample["seats"] + [{"id": seat_id, "title": "Other sessions", "app": "", "machineId": seat_id[len("unknown:"):]}
+                                   for seat_id in sorted({end for record in records for end in record[1:3] if end.startswith("unknown:")})]
+        machine = {seat["id"]: seat["machineId"] for seat in seats}
+        local = lambda record: "desk" in (machine[record[1]], machine[record[2]])
+
+        def message(record, text):
+            return {"id": record[0], "from": record[1], "to": record[2], "atMs": record[3], "status": record[4], "reason": record[5],
+                    "fromLabel": record[7] if len(record) > 7 else "", "toLabel": record[8] if len(record) > 8 else "",
+                    "text": record[6] if text and local(record) else None}
+        if path == "/api/activity/messages":
+            ends = {record[1] for record in records} | {record[2] for record in records}
+            return {"period": args["period"], "nowMs": now, "buckets": {"unit": "hour" if count == 24 else "day", "startsMs": starts},
+                    "machines": sample["machines"], "truncated": False,
+                    "seats": [dict(seat, order=index) for index, seat in enumerate(seats) if seat["id"] in ends],
+                    "messages": [dict(message(record, index >= len(records) - 200), local=local(record)) for index, record in enumerate(records)]}
+        self.assertEqual(path, "/api/activity/thread")
+        if "seat" in args:
+            mine = [record for record in records if args["seat"] in record[1:3]]
+        else:
+            mine = [record for record in records if {record[1], record[2]} == {args["a"], args["b"]}]
+        return {"total": len(mine), "messages": [message(record, True) for record in mine[-60:]]}
 
     def window(self, size=(968, 760), refresh=True):
-        window = asb.MessagesWindow(self.application, "http://example.invalid", fetch=self.fetch, clock=lambda: self.sample["nowMs"])
+        window = asb.MessagesWindow(self.application, "http://127.0.0.1:1", fetch=self.fetch)
         window.set_default_size(*size)
         window.present()
         self.drain(.2)
         if refresh:
             window.refresh()
-            self.drain(.3)
+            self.drain(.4)
         return window
-
-    @staticmethod
-    def labels(widget):
-        return [child.get_label() for child in descendants(widget) if isinstance(child, asb.Gtk.Label) and child.get_visible()]
-
-    def tree(self, widget):
-        return [widget, *descendants(widget)]
-
-    def rows(self, window):
-        rows, child = [], window.feed.get_first_child()
-        while child is not None:
-            rows.append(child)
-            child = child.get_next_sibling()
-        return rows
 
     def test_custom_header_and_buttons(self):
         self.check_theme_header()
 
-    def test_rows_in_order_and_full_text_without_thread_requests(self):
-        window = self.window()
-        expected, _more = asb.message_feed(self.sample, self.sample["nowMs"])
-        for row, (kind, item) in zip(self.rows(window), expected):
-            self.assertFalse(row.get_activatable() or row.get_selectable())
-            if kind == "day":
-                self.assertEqual(self.labels(row), [item])
-                continue
-            texts = [item["time"], item["sender"]]
-            if item["sender_machine"]:
-                texts.append(" · " + item["sender_machine"])
-            texts += ["→", item["receiver"]]
-            if item["receiver_machine"]:
-                texts.append(" · " + item["receiver_machine"])
-            if item["status"]:
-                texts.append(item["status"])
-            texts.append(item["text"] if item["text"] is not None else "No text")
-            self.assertEqual(self.labels(row), texts)
-            body = row.get_child().get_last_child()
-            self.assertTrue(body.get_wrap() and body.get_selectable())
-            self.assertEqual(body.get_wrap_mode(), asb.Pango.WrapMode.WORD_CHAR)
-        self.assertEqual(len(self.rows(window)), len(expected))
-        self.assertIn("No text", self.labels(window.feed))
-        self.assertEqual(self.routes, ["/api/activity/messages?period=7d"])
-        self.assertEqual(window.feed.get_selection_mode(), asb.Gtk.SelectionMode.NONE)
-        self.assertEqual((window.clamp.get_maximum_size(), window.clamp.get_tightening_threshold()), (760, 600))
-        self.assertFalse(window.paths_note.get_visible())
-        self.assertEqual(window.get_size_request(), (480, 420))
-        self.assertIs(asb.ACTIVITY_WINDOW_CLASSES["messages"], asb.MessagesWindow)
-        for name in ("table", "reader", "ledger", "stats", "thread"):
-            self.assertFalse(hasattr(window, name))
+    def test_theme_ledger_surface_and_divider(self):
+        asb.THEME_PATH.write_text(json.dumps({"mode": "custom", "colors": self.THEME}))
+        # The rendering fixture accent is below the theme editor's contrast limit.
+        with patch.object(asb, "validate_theme", return_value=self.THEME):
+            window = self.window()
+        ledger = window.ledger
+        self.assertTrue(ledger.has_css_class("asb-msg-edge"))
+        self.assert_pixel(ledger, ledger.get_width() - 3, ledger.get_height() - 3, self.THEME["background"])
+        self.assert_pixel(ledger, 0, ledger.get_height() // 2, self.THEME["divider"])
 
-    def test_empty_and_left_out_footer(self):
-        self.sample["messages"] = []
-        window = self.window()
-        self.assertEqual(self.labels(window.feed), ["No messages in this period."])
-        self.sample = self.sample_reply()
-        record = self.sample["messages"][-1]
-        self.sample["messages"] = [dict(record, id=str(i), atMs=record["atMs"] + i) for i in range(201)]
-        window.refresh(); self.drain(.2)
-        self.assertEqual(self.labels(self.rows(window)[-1]), ["Showing the newest 200 messages."])
-        self.assertEqual(len(self.rows(window)), 202)
-        self.sample = self.sample_reply()
-        self.sample["truncated"] = True
-        window.refresh(); self.drain(.2)
-        self.assertEqual(self.labels(self.rows(window)[-1]), ["Showing the newest 200 messages."])
+    def records(self, period="7d"):
+        now = self.sample["nowMs"]
+        count, size = {"24h": (24, 3_600_000), "7d": (7, 86_400_000), "30d": (30, 86_400_000)}[period]
+        start = now // size * size - (count - 1) * size
+        return [record for record in self.sample["messages"] + self.extra if record[3] >= start]
 
-    def test_session_chip_before_and_after_reply_and_clear_by_click_and_escape(self):
-        window = self.window(refresh=False)
-        window.show_session("release-plan", "release-plan")
-        self.assertEqual(window.pending_session, ("release-plan", "release-plan"))
-        self.assertTrue(window.session_chip.get_visible())
-        self.assertEqual(self.labels(window.session_chip), ["release-plan"])
-        self.assertTrue(window.session_chip.has_css_class("asb-filter-pill"))
-        self.assert_accessible_label(window.session_chip, "Show all sessions")
-        window.refresh(); self.drain(.2)
-        self.assertIsNone(window.pending_session)
-        expected, _more = asb.message_feed(self.sample, self.sample["nowMs"], "release-plan")
-        self.assertEqual(len(self.rows(window)), len(expected))
-        self.assertNotIn("Message 11: Check the release guide.", self.labels(window.feed))
-        window.session_chip.emit("clicked"); self.drain(.2)
-        self.assertIsNone(window.session)
-        self.assertFalse(window.session_chip.get_visible())
-        window.show_session("docs", "docs"); self.drain(.2)
-        self.assertEqual(window.session, "docs")
-        self.assertTrue(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0))
-        self.assertIsNone(window.session)
-        self.assertFalse(window.session_chip.get_visible())
-        self.assertFalse(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0))
+    @staticmethod
+    def labels(widget):
+        found, child = [], widget.get_first_child()
+        while child is not None:
+            if isinstance(child, asb.Gtk.Label) and child.get_visible():
+                found.append(child.get_label())
+            found.extend(MessagesWindowCheck.labels(child))
+            child = child.get_next_sibling()
+        return found
 
-    def test_same_refresh_keeps_widgets_but_text_title_status_and_day_changes_rebuild(self):
-        window = self.window()
-        rows = self.rows(window)
-        window.refresh(); self.drain(.2)
-        self.assertEqual(self.rows(window), rows)
-        for change in (lambda: self.sample["messages"][-1].update(text="Updated guide."),
-                       lambda: self.sample["seats"][0].update(title="install-guide"),
-                       lambda: self.sample["messages"][-1].update(status="written"),
-                       lambda: self.sample.update(nowMs=self.sample["nowMs"] + 86_400_000)):
-            change()
-            window.refresh(); self.drain(.2)
-            self.assertIsNot(self.rows(window)[0], rows[0])
-            rows = self.rows(window)
-
-    def test_a_long_reply_shows_its_first_rows_at_once_and_the_rest_in_idle_steps(self):
-        at = lambda i: int(asb.datetime(2026, 10, 20 + i // 40, 8, i % 40).timestamp() * 1000)
-        words = "Check the parser notes and keep the release steps in order before the next build. "
-        self.sample["messages"] = [{"id": f"long-{i}", "from": ("docs", "release-plan")[i % 2], "to": ("docs", "release-plan")[(i + 1) % 2],
-                                    "atMs": at(i), "status": "accepted", "text": (f"Message {i}. " + words * 30)[:2000]} for i in range(200)]
-        self.sample["nowMs"] = at(199) + 60_000
-        window = self.window(refresh=False)
-        expected, _more = asb.message_feed(self.sample, self.sample["nowMs"])
-        self.assertEqual(len(expected), 205)
-        window.refresh()
-        self.assertEqual(len(self.rows(window)), 40)
-        for _turn in range(100):
-            if window.feed_idle is None:
-                break
-            self.drain(.05)
-        self.assertIsNone(window.feed_idle)
-        rows = self.rows(window)
-        self.assertEqual(len(rows), len(expected))
-        for row, (kind, item) in zip(rows, expected):
-            self.assertIn(item if kind == "day" else item["text"], self.labels(row))
-        # A second identical reply changes no widget.
-        window.refresh(); self.drain(.2)
-        self.assertEqual(self.rows(window), rows)
-        self.assertIsNone(window.feed_idle)
-        # A new reply during the steps cancels the old steps.
-        self.sample["messages"][-1]["text"] = "Changed text."
-        window.refresh()
-        first = window.feed_idle
-        self.sample["messages"][-1]["text"] = "Changed again."
-        window.refresh()
-        self.assertIsNotNone(window.feed_idle)
-        self.assertNotEqual(window.feed_idle, first)
-        for _turn in range(100):
-            if window.feed_idle is None:
-                break
-            self.drain(.05)
-        self.assertEqual(len(self.rows(window)), len(expected))
-        self.assertIn("Changed again.", self.labels(self.rows(window)[1]))
-
-    def test_new_messages_preserve_visible_position_and_top_stays_top(self):
-        for size in ((968, 760), (480, 760)):
-            with self.subTest(size=size):
-                self.sample = self.sample_reply()
-                window = self.window(size=size)
-                adjustment = window.feed_scroll.get_vadjustment()
-                adjustment.set_value(240)
-                self.drain(.2)
-                target = next(row for row in self.rows(window) if "Message 7: Check the release guide." in self.labels(row))
-                found, before = target.compute_bounds(window.feed_scroll)
-                self.assertTrue(found)
-                self.assertGreater(adjustment.get_value(), 0)
-                self.assertGreaterEqual(before.origin.y, 0)
-                self.assertLess(before.origin.y + before.size.height, adjustment.get_page_size())
-                record = self.sample["messages"][-1]
-                self.sample["messages"] += [dict(record, id=f"new-{i}", atMs=record["atMs"] + (i + 1) * 60_000,
-                                                 text=f"New message {i}.") for i in range(2)]
-                window.refresh(); self.drain(.4)
-                target = next(row for row in self.rows(window) if "Message 7: Check the release guide." in self.labels(row))
-                found, after = target.compute_bounds(window.feed_scroll)
-                self.assertTrue(found)
-                self.assertLessEqual(abs(before.origin.y - after.origin.y), 2)
-                adjustment.set_value(0)
-                self.sample["messages"].append(dict(record, id="top", atMs=record["atMs"] + 180_000))
-                window.refresh(); self.drain(.3)
-                self.assertEqual(adjustment.get_value(), 0)
-                window.close(); self.drain(.1)
-
-    def test_palette_rows_and_review_snapshots(self):
-        window = self.window()
-        window.set_palette(self.THEME)
-        self.drain(.2)
-        held = next(child for child in descendants(window.feed) if child.has_css_class("asb-msg-held"))
-        failed = next(child for child in descendants(window.feed) if child.has_css_class("asb-msg-failed"))
-        self.assertEqual(held.get_label(), "Held")
-        self.assertEqual(failed.get_label(), "Machine offline")
-        window.set_palette(None)
-        output = os.environ.get("ASB_MESSAGES_REVIEW_SHOTS")
-        if output:
-            path = Path(output)
-            path.mkdir(parents=True, exist_ok=True)
-            for width in (968, 480):
-                window.set_default_size(width, 760); self.drain(.3)
-                self.assertEqual((window.get_width(), window.get_height()), (width, 760))
-                self.capture(window, path / f"messages-{width}.png")
-            window.set_default_size(968, 760)
-            window.show_session("release-plan", "release-plan"); self.drain(.3)
-            self.capture(window, path / "messages-session.png")
+    def tree(self, widget):
+        found, child = [widget], widget.get_first_child()
+        while child is not None:
+            found += self.tree(child)
+            child = child.get_next_sibling()
+        return found
 
     def test_activity_windows_have_one_slim_row_like_the_board(self):
         replies = UsageWindowCheck.REPLIES
-        usage = asb.UsageWindow(self.application, "http://example.invalid", fetch=lambda route: copy.deepcopy(replies[route.rsplit("=", 1)[1]]))
+        usage = asb.UsageWindow(self.application, "http://127.0.0.1:1", fetch=lambda route: copy.deepcopy(replies[route.rsplit("=", 1)[1]]))
         usage.set_default_size(948, 760)
         usage.present()
         self.drain(.2)
@@ -8904,6 +8781,562 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertNotIn("Live", labels)
         self.assertFalse(any(text.endswith(" sessions") for text in labels))
 
+    def test_toolbar_has_only_the_period(self):
+        window = self.window()
+        self.assertEqual(window.get_title(), "Messages")
+        self.assertEqual(window.get_default_size(), (968, 760))
+        self.assertIs(asb.ACTIVITY_WINDOW_CLASSES["messages"], asb.MessagesWindow)
+        self.assertFalse(any(hasattr(window, name) for name in ("chips", "seat_count", "render_toolbar", "title_widget", "session_chip", "feed", "session")))
+        self.assertIsNone(window.toolbar_start.get_first_child())
+        self.assertIsNone(window.toolbar_end.get_first_child())
+        rules = window.css.to_string()
+        for name in ("asb-msg-chip", "asb-msg-live", "asb-msg-pulse"):
+            self.assertNotIn(name, rules)
+        # The machine list of the ledger stays.
+        self.assertTrue(window.machine_counts)
+
+    def test_ledger_numbers_equal_the_logic(self):
+        window = self.window()
+        view = asb.messages_view(window.data)
+        self.assertEqual(window.total.get_visible_child().get_label(), asb.format_count(view["total"]))
+        self.assertEqual(window.total.get_visible_child().get_label(), "479")
+        self.assertEqual({status: label.get_label() for status, label in window.legend_counts.items()},
+                         {status: asb.format_count(count) for status, count in view["by_status"].items() if count})
+        self.assertEqual(window.share.counts, {status: count for status, count in view["by_status"].items() if count})
+        self.assert_accessible_label(window.share, "Accepted 434, Socket written 22, Held 10, Not sent 5, Unknown 8")
+        for (source, target), cell in window.matrix_cells.items():
+            value = view["matrix"][view["apps"].index(source)][view["apps"].index(target)]
+            self.assertEqual(cell.get_label(), asb.format_count(value) if value else "–")
+            if not value:
+                self.assert_accessible_label(cell, "none")
+        self.assertEqual(window.app_pairs.get_label(), "7 app pairs")
+        self.assertEqual({ids: label.get_label() for ids, label in window.machine_counts.items()},
+                         {row["ids"]: asb.format_count(row["count"]) for row in view["machine_rows"]})
+        self.assertEqual([self.labels(row)[:2] for row in window.recent_rows],
+                         [[asb.format_clock(record["atMs"]), f"{record['from']} → {record['to']}"] for record in view["recent"]])
+        self.assert_accessible_label(window.table, "Machines, sessions and messages")
+        self.assertFalse(hasattr(asb, "MessageStrip"))
+        self.assertFalse(hasattr(window, "strip"))
+        self.assertIs(window.left.get_first_child(), window.table)
+        self.assertIs(window.table.get_next_sibling(), window.reader)
+        self.assertIsNone(window.reader.get_next_sibling())
+
+    def test_pins_and_chords_have_named_proxies_in_order(self):
+        window = self.window()
+        view, table = window.view, window.table
+        pins = [key for key in table.proxies if key[0] == "pin"]
+        chords = [key for key in table.proxies if key[0] == "chord"]
+        self.assertEqual([proxy.key for proxy in table.proxy_order], [("pin", seat_id) for seat_id in view["seated"]] + chords)
+        self.assertEqual(len(pins), 12)
+        seated = set(view["seated"])
+        self.assertEqual({key[1] for key in chords}, {key for key, pair in view["pairs"].items() if pair["a"] in seated and pair["b"] in seated})
+        names = {machine["machineId"]: machine["name"] for machine in view["machines"]}
+        for _kind, seat_id in pins:
+            seat, counts = view["seats"][seat_id], view["counts"][seat_id]
+            self.assert_accessible_label(table.proxies[("pin", seat_id)], f"{seat_id}, {asb.ACTIVITY_APP_LABELS[seat['app']]}, {names[seat['machineId']]}: "
+                                                                          f"{counts['sent']} sent, {counts['received']} received")
+        parser = view["counts"]["parser-review"]
+        self.assert_accessible_label(table.proxies[("pin", "parser-review")], f"parser-review, Claude Code, Laptop: {parser['sent']} sent, {parser['received']} received")
+        pair = view["pairs"][("release-plan", "parser-review")]
+        self.assert_accessible_label(table.proxies[("chord", ("release-plan", "parser-review"))], f"release-plan and parser-review: {pair['n']} messages")
+        self.assertEqual(pair["n"], 139)
+        for proxy in table.proxy_order:
+            self.assertTrue(proxy.get_focusable())
+            self.assertEqual(proxy.get_accessible_role(), asb.Gtk.AccessibleRole.BUTTON)
+        # Tab goes through the pins in circle order, then the chords.
+        table.proxy_order[0].grab_focus()
+        for proxy in table.proxy_order[1:4]:
+            self.assertTrue(table.child_focus(asb.Gtk.DirectionType.TAB_FORWARD))
+            self.assertTrue(proxy.has_focus())
+        table.proxy_order[11].grab_focus()
+        self.assertTrue(table.child_focus(asb.Gtk.DirectionType.TAB_FORWARD))
+        self.assertIs(window.get_focus(), table.proxy_order[12])
+        self.assertEqual(table.proxy_order[12].key[0], "chord")
+        # A chord takes the pointer only near its curve.
+        chord = table.proxies[("chord", ("release-plan", "parser-review"))]
+        points = chord.curve[0]
+        middle = points[32]
+        self.assertTrue(chord.contains(middle[0] - chord.origin[0], middle[1] - chord.origin[1]))
+        self.assertEqual(table.hit(*middle), (None, ("release-plan", "parser-review")))
+        x, y = asb.table_point(table.geometry, table.geometry["Rp"], table.geometry["seat"]["docs"])
+        self.assertEqual(table.hit(x + 15, y), ("docs", None))
+        self.assertEqual(table.hit(table.geometry["cx"], table.geometry["cy"]), (None, None))
+
+    def test_a_focused_pin_shows_its_center(self):
+        window = self.window()
+        self.assertEqual(self.labels(window.table.center)[:2], ["16:28", "docs → release-plan"])
+        self.assertIn("Changelog draft is in place.", self.labels(window.table.center))
+        window.table.proxies[("pin", "parser-review")].grab_focus()
+        self.drain(.05)
+        counts = window.view["counts"]["parser-review"]
+        self.assertEqual(self.labels(window.table.center),
+                         ["parser-review", "Claude Code · Laptop", "Sent", asb.format_count(counts["sent"]), "Received", asb.format_count(counts["received"])])
+        self.assertEqual((counts["sent"], counts["received"]), (81, 109))
+        self.assertTrue(window.table.labels["parser-review"]["shown"])
+        window.table.pointer_moved(None, *window.table.chords[0]["table"][0][32])
+        pair = window.view["pairs"][window.table.chords[0]["key"]]
+        self.assertEqual(self.labels(window.table.center)[1:3], [f"→ {pair['ab']}", f"← {pair['ba']}"])
+
+    def test_a_pair_thread_and_escape(self):
+        window = self.window()
+        key = ("release-plan", "parser-review")
+        proxy = window.table.proxies[("chord", key)]
+        self.assertTrue(proxy.key_pressed(None, asb.Gdk.KEY_Return, 0, 0))
+        self.drain(.3)
+        self.assertEqual(window.ledger.get_visible_child_name(), "thread")
+        self.assertEqual(window.thread_route.get_label(), "release-plan ⇄ parser-review")
+        mine = [record for record in self.records() if {record[1], record[2]} == set(key)]
+        forward = sum(record[1] == "release-plan" for record in mine)
+        self.assertEqual(window.thread_counts.get_label(), f"→ {forward}  ← {len(mine) - forward}")
+        self.assertEqual(len(mine), 139)
+        self.assertEqual(self.labels(window.thread_list)[0], "Latest 60 of 139")
+        self.assertEqual(list(window.thread_blocks), [record[0] for record in mine[-60:]])
+        last = window.thread_blocks[mine[-1][0]]
+        self.assertEqual(self.labels(last)[-1], mine[-1][6])
+        self.assertEqual(last.get_halign(), asb.Gtk.Align.START if mine[-1][1] == "release-plan" else asb.Gtk.Align.END)
+        self.assertIn("/api/activity/thread?period=7d&a=release-plan&b=parser-review", self.routes)
+        self.assertIn(asb.day_line(mine[-1][3], self.sample["nowMs"]), self.labels(window.thread_list))
+        # A pair with no local endpoint shows no text.
+        window.open_thread("pair", ("parser-review", "render-farm"))
+        self.assertTrue(window.thread_blocks)
+        self.assertTrue(all(self.labels(block)[-1] == "No text" for block in window.thread_blocks.values()))
+        self.assertTrue(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0))
+        self.drain(.3)
+        self.assertEqual(window.ledger.get_visible_child_name(), "stats")
+        self.assertIsNone(window.thread)
+        self.assertFalse(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0))
+        # A click on an empty part of the table closes a thread too.
+        window.open_thread("pair", key)
+        window.table.clicked(None, 1, window.table.geometry["cx"], window.table.geometry["cy"])
+        self.assertIsNone(window.thread)
+
+    def test_show_session_opens_and_seats_the_session(self):
+        window = self.window()
+        outside = next(seat_id for seat_id in window.view["circle"] if seat_id not in window.view["seated"])
+        window.show_session(outside)
+        self.drain(.6)
+        self.assertEqual(window.ledger.get_visible_child_name(), "thread")
+        self.assertIn(outside, window.view["seated"])
+        self.assertEqual(len(window.view["seated"]), 12)
+        self.assertIn(("pin", outside), window.table.proxies)
+        self.assertIn(f"/api/activity/thread?period=7d&seat={outside}", self.routes)
+        window.show_session("parser-review")
+        self.drain(.6)
+        self.assertEqual(window.thread_route.get_label(), "parser-review")
+        self.assertEqual(window.thread_counts.get_label(), "Sent 81  Received 109")
+        self.assertTrue(window.table.proxies[("pin", "parser-review")].has_focus())
+        first = next(iter(window.thread_blocks))
+        record = next(record for record in self.records() if record[0] == first)
+        self.assertEqual(self.labels(window.thread_blocks[first])[0], ("→ " + record[2]) if record[1] == "parser-review" else ("← " + record[1]))
+        # A card with no message in the period.
+        window.show_session("not-in-reply", "Write the API examples")
+        self.assertEqual(window.thread_route.get_label(), "Write the API examples")
+        self.assertEqual(window.thread_counts.get_label(), "Sent 0  Received 0")
+        self.assertEqual(self.labels(window.thread_list), ["No messages in 7 days."])
+        window.show_session("not-in-reply")
+        self.assertEqual(window.thread_route.get_label(), "This session")
+        # Before the first reply, the window waits.
+        later = self.window(refresh=False)
+        later.show_session("docs")
+        self.assertIsNone(later.thread)
+        later.refresh()
+        self.assertEqual(later.thread["key"], "docs")
+        self.assertEqual(later.thread_route.get_label(), "docs")
+
+    def test_a_recent_row_opens_its_message(self):
+        window = self.window()
+        record = window.view["recent"][2]
+        window.recent_rows[2].emit("clicked")
+        self.drain(.3)
+        self.assertEqual(set(window.thread["key"]), {record["from"], record["to"]})
+        block = window.thread_blocks[record["id"]]
+        self.assertTrue(block.has_css_class("asb-msg-hl"))
+        self.assertIn("outline", window.css.to_string())
+        self.drain(1.3)
+        self.assertFalse(block.has_css_class("asb-msg-hl"))
+
+    def test_a_removed_scroll_target_ends_the_scroll_tick(self):
+        window = self.window()
+        window.recent_rows[2].emit("clicked")
+        self.assertIsNotNone(window.scroll_tick)
+        # A refresh before the next frame rebuilds the list, so the target block has no parent.
+        window.thread_stick = False
+        window.render_thread_list()
+        self.drain(.2)
+        self.assertIsNone(window.scroll_tick)
+        self.assertIsNone(window.scroll_target)
+
+    def thread_page_back(self, window):
+        head = window.ledger.get_child_by_name("thread").get_first_child()
+        return head.get_first_child()
+
+    def all_labels(self, window):
+        return [widget.get_label() for widget in self.tree(window) if isinstance(widget, asb.Gtk.Label) and widget.get_mapped()]
+
+    def test_the_window_opens_on_the_totals_and_reads_no_thread_before_a_click(self):
+        window = self.window()
+        self.assertEqual(window.ledger.get_visible_child_name(), "stats")
+        self.assertIsNone(window.thread)
+        self.assertIsNone(window.thread_list.get_first_child())
+        self.assertEqual(self.routes, ["/api/activity/messages?period=7d"])
+        # Only the newest message shows its text: in the center, in two lines at most.
+        texts = {record[6] for record in self.records() if record[6]} - {"Changelog draft is in place."}
+        self.assertFalse(texts & set(self.all_labels(window)))
+        center = [widget for widget in self.tree(window.table.center) if isinstance(widget, asb.Gtk.Label)]
+        self.assertEqual([widget.get_label() for widget in center], ["16:28", "docs \u2192\u00a0release-plan", "Accepted", "Changelog draft is in place."])
+        self.assertEqual(center[-1].get_lines(), 2)
+        # Focus, hover, a period change, and a new message open nothing.
+        window.table.proxies[("pin", "docs")].grab_focus()
+        window.table.pointer_moved(None, *window.table.chords[0]["table"][0][32])
+        window.table.pointer_left()
+        window.set_period("24h"); self.drain(.2)
+        self.extra = [["m-quiet", "docs", "release-plan", self.sample["nowMs"] - 1000, "accepted", "", "Quiet text."]]
+        window.refresh(); self.drain(.2)
+        self.assertIsNone(window.thread)
+        self.assertEqual(window.ledger.get_visible_child_name(), "stats")
+        self.assertFalse([route for route in self.routes if route.startswith("/api/activity/thread")])
+
+    def test_each_opener_shows_the_thread_and_escape_or_back_shows_the_totals(self):
+        window = self.window()
+        table = window.table
+        pair = ("release-plan", "parser-review")
+        middle = next(chord for chord in table.chords if chord["key"] == pair)["table"][0][32]
+        pin = asb.table_point(table.geometry, table.geometry["Rp"], table.geometry["seat"]["docs"])
+        label = next(seat_id for seat_id, item in table.labels.items() if item["shown"])
+        box = table.labels[label]["box"]
+        recent = window.view["recent"][0]
+        circle = window.view["circle"]
+        openers = (("chord click", lambda: table.clicked(None, 1, *middle), ("pair", pair)),
+                   ("pin click", lambda: table.clicked(None, 1, *pin), ("session", "docs")),
+                   ("seat label click", lambda: table.clicked(None, 1, (box[0] + box[2]) / 2, (box[1] + box[3]) / 2), ("session", label)),
+                   ("Recent row", lambda: window.recent_rows[0].emit("clicked"), ("pair", tuple(sorted((recent["from"], recent["to"]), key=circle.index)))),
+                   ("Enter on a pin", lambda: table.proxies[("pin", "parser-review")].key_pressed(None, asb.Gdk.KEY_Return, 0, 0), ("session", "parser-review")),
+                   ("Space on a chord", lambda: table.proxies[("chord", pair)].key_pressed(None, asb.Gdk.KEY_space, 0, 0), ("pair", pair)))
+        for index, (name, opener, (kind, key)) in enumerate(openers):
+            with self.subTest(opener=name):
+                self.routes.clear()
+                opener(); self.drain(.3)
+                self.assertEqual((window.thread["kind"], window.thread["key"]), (kind, key))
+                self.assertEqual(window.ledger.get_visible_child_name(), "thread")
+                query = f"a={key[0]}&b={key[1]}" if kind == "pair" else f"seat={key}"
+                self.assertEqual(self.routes, [f"/api/activity/thread?period=7d&{query}"])
+                texts = [self.labels(block)[-1] for block in window.thread_blocks.values()]
+                reply = self.fetch(self.routes[0])
+                self.assertTrue(texts)
+                self.assertEqual(texts, [record["text"] if record["text"] is not None else "No text" for record in reply["messages"]])
+                if index % 2:
+                    self.thread_page_back(window).emit("clicked")
+                else:
+                    self.assertTrue(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0))
+                self.drain(.3)
+                self.assertIsNone(window.thread)
+                self.assertEqual(window.ledger.get_visible_child_name(), "stats")
+        back = self.thread_page_back(window)
+        self.assertEqual(back.get_tooltip_text(), "Back to totals")
+        self.assert_accessible_label(back, "Back to totals")
+
+    def test_names_texts_and_reasons_come_from_the_reply(self):
+        now = self.sample["nowMs"]
+        long_text = ("Check the guide and keep the release steps in order. " * 11 + "\n\n") * 2
+        self.extra = [["m-long", "docs", "release-plan", now - 4000, "accepted", "", long_text],
+                      ["m-in", "unknown:laptop", "docs", now - 3000, "held", "", "From a helper.", "beta-helper", ""],
+                      ["m-out", "docs", "unknown:laptop", now - 2000, "written", "", "To a helper.", "", "gamma-helper"],
+                      ["m-off", "unknown:laptop", "docs", now - 1000, "not-sent", "Machine offline", None, "beta-helper", ""]]
+        window = self.window()
+        # The center: the name from the message, the reason, and No text in dim text, with no thread read.
+        center = [widget for widget in self.tree(window.table.center) if isinstance(widget, asb.Gtk.Label)]
+        self.assertEqual([widget.get_label() for widget in center][1:], ["beta-helper \u2192\u00a0docs", "Machine offline", "No text"])
+        self.assertTrue(center[-1].has_css_class("asb-dim"))
+        self.assertEqual(self.routes, ["/api/activity/messages?period=7d"])
+        self.assertEqual([self.labels(row)[1] for row in window.recent_rows[:4]],
+                         ["beta-helper \u2192 docs", "docs \u2192 gamma-helper", "beta-helper \u2192 docs", "docs \u2192 release-plan"])
+        self.assertEqual(window.recent_rows[0].get_child().get_last_child().get_tooltip_text(), "Machine offline")
+        # The thread of the session: sender lines, status marks, and texts.
+        window.show_session("docs"); self.drain(.3)
+        blocks = window.thread_blocks
+        self.assertEqual(self.labels(blocks["m-off"]), ["\u2190 beta-helper", asb.format_clock(now - 1000), "Machine offline", "No text"])
+        self.assertTrue(blocks["m-off"].get_last_child().has_css_class("asb-dim"))
+        self.assertEqual(self.labels(blocks["m-out"]), ["\u2192 gamma-helper", asb.format_clock(now - 2000), "Socket written", "To a helper."])
+        self.assertEqual(self.labels(blocks["m-in"]), ["\u2190 beta-helper", asb.format_clock(now - 3000), "Held", "From a helper."])
+        # Accepted shows no mark; the text keeps its line breaks, wraps, and can be selected.
+        self.assertEqual(self.labels(blocks["m-long"]), ["\u2192 release-plan", asb.format_clock(now - 4000), long_text])
+        text = blocks["m-long"].get_last_child()
+        self.assertFalse(text.has_css_class("asb-dim"))
+        self.assertEqual((text.get_wrap(), text.get_wrap_mode(), text.get_selectable(), text.get_width_chars()),
+                         (True, asb.Pango.WrapMode.WORD_CHAR, True, 20))
+        self.assertLessEqual(blocks["m-long"].get_width(), window.thread_list.get_width())
+        self.assertNotIn("Body not shared", self.all_labels(window))
+
+    def test_the_thread_reads_with_the_default_priority(self):
+        window = self.window()
+        window.fetch = None
+        with patch.object(asb, "request_async") as request:
+            window.open_thread("pair", ("release-plan", "parser-review"))
+        self.assertEqual(request.call_args.args[1], "/api/activity/thread?period=7d&a=release-plan&b=parser-review")
+        callback = Mock(return_value=False)
+        with patch.object(asb.GLib, "idle_add") as idle:
+            request.call_args.args[3](callback, {"total": 0, "messages": []}, None)
+        idle.assert_called_once_with(callback, {"total": 0, "messages": []}, None, priority=asb.GLib.PRIORITY_DEFAULT)
+
+    def test_a_hidden_window_closes_the_thread_and_stops_the_motion_and_finish_stops_it_too(self):
+        window = self.window()
+        window.set_period("30d"); self.drain(.3)
+        window.open_thread("pair", ("release-plan", "parser-review")); self.drain(.3)
+        self.extra = [["m-live", "release-plan", "parser-review", self.sample["nowMs"] - 1000, "accepted", "", "Live text."]]
+        window.refresh()
+        self.assertTrue(window.table.flights)
+        self.assertIsNotNone(window.table.tick_id)
+        window.close_to_hidden(); self.drain(.2)
+        self.assertFalse(window.get_visible())
+        self.assertEqual((window.thread, window.table.flights, window.table.rings, window.table.tick_id, window.table.move), (None, [], [], None, None))
+        self.assertEqual(window.ledger.get_visible_child_name(), "stats")
+        window.present(); self.drain(.3)
+        self.assertEqual((window.period, window.period_menu.get_selected()), ("30d", 2))
+        self.assertIsNone(window.thread)
+        self.assertEqual(window.ledger.get_visible_child_name(), "stats")
+        self.extra.append(["m-live-2", "release-plan", "parser-review", self.sample["nowMs"] - 500, "accepted", "", "Live text."])
+        window.refresh()
+        self.assertIsNotNone(window.table.tick_id)
+        window.finish()
+        self.assertEqual((window.table.flights, window.table.tick_id), ([], None))
+        self.assertTrue(window.closed)
+
+    def test_at_rest_no_tick_runs_and_a_tick_ends_with_its_motion(self):
+        window = self.window()
+        self.drain(.6)
+        self.assertEqual((window.table.tick_id, window.scroll_tick, window.event_timer, window.poll_timer), (None, None, None, None))
+        # A new seat moves, its light flies, and then the tick ends.
+        outside = next(seat_id for seat_id in window.view["circle"] if seat_id not in window.view["seated"])
+        self.extra = [["m-seat", outside, window.view["seated"][0], self.sample["nowMs"] - 1000, "accepted", "", None]]
+        window.refresh()
+        self.assertIsNotNone(window.table.tick_id)
+        self.wait_for(lambda: window.table.tick_id is None, 4)
+        self.assertEqual((window.table.tick_id, window.table.move, window.table.flights, window.table.rings), (None, None, [], []))
+
+    def test_lights_play_only_for_new_recent_messages_and_at_most_six(self):
+        now = self.sample["nowMs"]
+        # The first reply plays nothing, also with a message of one second ago.
+        self.extra = [["m-first", "release-plan", "parser-review", now - 1000, "accepted", "", None]]
+        window = self.window()
+        self.assertEqual(window.table.flights, [])
+        # A new message older than 120 s plays nothing.
+        self.extra.append(["m-old", "release-plan", "parser-review", now - 121_000, "accepted", "", None])
+        window.refresh()
+        self.assertEqual(window.table.flights, [])
+        self.extra += [[f"m-burst-{index}", "release-plan", "parser-review", now - 900 + index, "accepted", "", None] for index in range(8)]
+        window.refresh()
+        self.assertEqual(asb.MESSAGE_FLIGHT_LIMIT, 6)
+        self.assertEqual(len(window.table.flights), 6)
+        self.extra.append(["m-more", "release-plan", "parser-review", now - 800, "accepted", "", None])
+        window.refresh()
+        self.assertEqual(len(window.table.flights), 6)
+        window.table.stop_motion()
+        with patch.object(asb, "ACTIVITY_PATHS", False):
+            self.extra.append(["m-flat", "release-plan", "parser-review", now - 700, "accepted", "", None])
+            window.refresh()
+            self.assertEqual(window.table.flights, [])
+
+    def test_the_same_view_changes_no_widget_and_queues_no_draw(self):
+        window = self.window()
+        window.open_thread("pair", ("release-plan", "parser-review")); self.drain(.3)
+        fetch = window.fetch
+
+        def later(route):
+            reply = fetch(route)
+            if route.startswith("/api/activity/messages"):
+                reply["nowMs"] += 30_000
+                reply["machines"] = [dict(machine, lastReportAtMs=machine.get("lastReportAtMs", 0) + 30_000) for machine in reply["machines"]]
+            return reply
+        window.fetch = later
+
+        def widgets():
+            return [self.tree(part) for part in (window.stats, window.thread_list, window.table.center, window.reader)]
+        before, routes = widgets(), len(self.routes)
+        with patch.object(window.table.canvas, "queue_draw") as canvas, patch.object(window.table, "queue_draw") as table, \
+                patch.object(window.share, "queue_draw") as share, patch.object(window.table, "queue_allocate") as allocate:
+            window.refresh(); self.drain(.2)
+            self.assertEqual(widgets(), before)
+            self.assertEqual((canvas.call_count, table.call_count, share.call_count, allocate.call_count), (0, 0, 0, 0))
+            self.assertEqual(len(self.routes), routes + 1)
+            # A changed status changes the view.
+            self.sample = copy.deepcopy(self.sample)
+            self.sample["messages"][-1][4] = "held"
+            window.refresh(); self.drain(.2)
+            self.assertGreater(canvas.call_count, 0)
+        self.assertNotEqual(widgets(), before)
+
+    def test_a_live_message_flies_only_with_animations(self):
+        for animations in (True, False):
+            with self.subTest(animations=animations):
+                asb.Gtk.Settings.get_default().set_property("gtk-enable-animations", animations)
+                self.extra = []
+                window = self.window()
+                total = window.view["total"]
+                self.extra = [["m-live", "release-plan", "parser-review", self.sample["nowMs"] - 1000, "accepted", "", "Check parser edge cases."]]
+                window.refresh()
+                self.assertEqual(window.total.get_visible_child().get_label(), asb.format_count(total + 1))
+                self.assertEqual(window.total.get_transition_type(), asb.Gtk.StackTransitionType.CROSSFADE)
+                self.assertEqual(len(window.table.flights), 1 if animations else 0)
+                self.assertEqual(self.labels(window.recent_rows[0])[1], "release-plan → parser-review")
+                if animations:
+                    self.assertEqual(window.table.flights[0]["key"], ("release-plan", "parser-review"))
+                    self.drain(1.5)
+                    self.assertEqual((window.table.flights, window.table.rings, window.table.tick_id), ([], [], None))
+                window.close()
+                self.drain(.05)
+
+    def test_a_new_session_takes_a_seat_before_its_light_flies(self):
+        window = self.window()
+        outside = next(seat_id for seat_id in window.view["circle"] if seat_id not in window.view["seated"])
+        partner = window.view["seated"][0]
+        self.extra = [["m-seat", outside, partner, self.sample["nowMs"] - 1000, "accepted", "", None]]
+        window.refresh()
+        self.assertIn(outside, window.view["seated"])
+        self.assertEqual(len(window.view["seated"]), 12)
+        self.assertIsNotNone(window.table.move)
+        self.assertEqual(window.table.flights, [])
+        self.drain(.45)
+        self.assertEqual([flight["from"] for flight in window.table.flights], [outside])
+        self.drain(1.5)
+        self.assertIsNone(window.table.move)
+        asb.Gtk.Settings.get_default().set_property("gtk-enable-animations", False)
+        self.extra.append(["m-seat-2", window.view["circle"][-1], partner, self.sample["nowMs"] - 500, "accepted", "", None])
+        window.refresh()
+        self.assertIsNone(window.table.move)
+        self.assertEqual(window.table.flights, [])
+
+    def test_a_not_sent_light_stops_short(self):
+        window = self.window()
+        self.extra = [["m-fail", "release-plan", "sync-check", self.sample["nowMs"] - 1000, "not-sent", "Machine offline", None]]
+        window.refresh()
+        self.assertEqual([flight["end"] for flight in window.table.flights], [.85])
+
+    def test_seat_labels_do_not_overlap(self):
+        def overlap(a, b):
+            return a[0] < b[2] - .5 and b[0] < a[2] - .5 and a[1] < b[3] - .5 and b[1] < a[3] - .5
+        for size in ((968, 760), (1440, 900)):
+            with self.subTest(size=size):
+                window = self.window(size)
+                table = window.table
+                self.assertEqual(window.get_width(), size[0])
+                shown = [label["box"] for label in table.labels.values() if label["shown"]]
+                self.assertGreaterEqual(len(shown), 10)
+                pins = []
+                for seat_id in table.pins:
+                    x, y = asb.table_point(table.geometry, table.geometry["Rp"], table.geometry["seat"][seat_id])
+                    pins.append((x - 16, y - 16, x + 16, y + 16))
+                machines = [(item["x"], item["y"], item["x"] + item["w"], item["y"] + item["h"]) for entries in table.machine_items.values() for item in entries]
+                for index, box in enumerate(shown):
+                    self.assertFalse(any(overlap(box, other) for other in shown[index + 1:] + pins + machines))
+                window.close()
+                self.drain(.05)
+
+    def wait_for(self, condition, timeout=3):
+        """Drain until the window reaches a state: a resize on a busy display can take more than one frame."""
+        end = time.monotonic() + timeout
+        while not condition() and time.monotonic() < end:
+            self.drain(.05)
+
+    def test_the_narrow_layout_shows_the_reader(self):
+        window = self.window((490, 800))
+        self.wait_for(lambda: window.narrow_scroll.get_visible() and window.reader.get_visible())
+        self.assertTrue(window.narrow_scroll.get_visible())
+        self.assertFalse(window.wide.get_visible())
+        self.assertIs(window.ledger.get_parent(), window.narrow_box)
+        self.assertFalse(window.ledger.has_css_class("asb-msg-edge"))
+        self.assertEqual(window.table.get_height(), min(window.table.get_width(), 560))
+        self.assertTrue(window.table.small)
+        self.assertTrue(window.reader.get_visible())
+        self.assertFalse(window.table.center.get_visible())
+        self.assertEqual(self.labels(window.reader)[:2], ["16:28", "docs →\u00a0release-plan"])
+        window.set_default_size(968, 760)
+        # The layout after the reader hides gives the table the whole column: wait for it, not only for the shown center.
+        self.wait_for(lambda: window.wide.get_visible() and window.table.center.get_visible()
+                      and window.table.get_height() == window.left.get_height())
+        self.assertTrue(window.wide.get_visible())
+        self.assertTrue(window.ledger.has_css_class("asb-msg-edge"))
+        self.assertFalse(window.reader.get_visible())
+        self.assertTrue(window.table.center.get_visible())
+        # The wide layout has no reader, so the table keeps the whole column.
+        self.assertFalse(window.table.small)
+        self.assertEqual(window.table.get_height(), window.left.get_height())
+        window.set_default_size(968, 520)
+        self.wait_for(lambda: window.table.small and not window.table.center.get_visible()
+                      and window.table.get_height() == window.left.get_height())
+        self.assertTrue(window.wide.get_visible())
+        self.assertTrue(window.table.small)
+        self.assertFalse(window.table.center.get_visible())
+        self.assertFalse(window.reader.get_visible())
+        self.assertEqual(window.table.get_height(), window.left.get_height())
+
+    def test_the_narrow_ledger_shows_two_columns_from_640_to_899_px(self):
+        window = self.window((860, 860))
+        horizontal, vertical = asb.Gtk.Orientation.HORIZONTAL, asb.Gtk.Orientation.VERTICAL
+        children = UsageWindowCheck.children
+        self.wait_for(lambda: window.narrow_scroll.get_visible() and window.stats.get_orientation() == horizontal)
+        self.assertTrue(window.narrow_scroll.get_visible())
+        self.assertEqual(window.stats.get_orientation(), horizontal)
+        self.assertTrue(window.stats.get_homogeneous())
+        first, second = children(window.stats)
+        self.assertIs(window.machines_section.get_parent(), second)
+        found, left = first.get_first_child().compute_bounds(window)
+        self.assertTrue(found)
+        found, right = second.get_first_child().compute_bounds(window)
+        self.assertTrue(found)
+        self.assertEqual(left.get_y(), right.get_y())
+        apps, recent = children(first)[1], children(second)[1]
+        self.assertEqual([self.labels(part)[0] for part in children(first) + children(second)],
+                         ["Messages", "Between apps", "Between machines", "Recent"])
+        self.assertFalse(window.machines_section.has_css_class("asb-msg-section-rule"))
+        self.assertTrue(apps.has_css_class("asb-msg-section-rule") and recent.has_css_class("asb-msg-section-rule"))
+        window.set_default_size(639, 860)
+        self.wait_for(lambda: window.stats.get_orientation() == vertical)
+        self.assertTrue(window.narrow_scroll.get_visible())
+        self.assertEqual(window.stats.get_orientation(), vertical)
+        self.assertFalse(window.stats.get_homogeneous())
+        self.assertTrue(window.machines_section.has_css_class("asb-msg-section-rule"))
+        window.set_default_size(640, 860)
+        self.wait_for(lambda: window.stats.get_orientation() == horizontal)
+        self.assertEqual(window.stats.get_orientation(), horizontal)
+        window.set_default_size(968, 760)
+        self.wait_for(lambda: window.wide.get_visible() and window.stats.get_orientation() == vertical)
+        self.assertTrue(window.wide.get_visible())
+        self.assertIs(window.ledger.get_parent(), window.wide)
+        self.assertEqual(window.stats.get_orientation(), vertical)
+        self.assertTrue(window.machines_section.has_css_class("asb-msg-section-rule"))
+
+    def test_small_table_threshold_uses_the_real_table_size(self):
+        window = self.window((968, 600))
+        overhead = window.get_height() - window.left.get_height()
+        for height, small in ((495, True), (496, False)):
+            with self.subTest(height=height):
+                window.set_default_size(968, overhead + height)
+                self.wait_for(lambda: window.left.get_height() == height and window.table.small == small)
+                self.assertEqual(window.table.get_height(), height)
+                self.assertEqual(window.table.small, small)
+                self.assertEqual(window.table.center.get_visible(), not small)
+                self.assertFalse(window.reader.get_visible())
+        for width in (495, 496):
+            with self.subTest(width=width):
+                window.set_default_size(width, 800)
+                self.wait_for(lambda: window.table.get_width() == width and window.narrow_scroll.get_visible())
+                self.drain(.05)
+                self.assertEqual(window.table.get_height(), width)
+                self.assertEqual(window.table.small, width < 496)
+                self.assertEqual(window.reader.get_visible(), width < 496)
+                self.assertEqual(window.table.center.get_visible(), width >= 496)
+
+    def test_without_gsk_paths_nothing_is_drawn(self):
+        with patch.object(asb, "ACTIVITY_PATHS", False):
+            window = self.window()
+            self.assertTrue(window.paths_note.get_visible())
+            self.assertEqual(window.table.proxies, {})
+            self.assertFalse(window.table.center.get_visible())
+            self.assertEqual(window.total.get_visible_child().get_label(), "479")
+            snapshot = asb.Gtk.Snapshot()
+            asb.Gtk.WidgetPaintable.new(window.table).snapshot(snapshot, window.table.get_width(), window.table.get_height())
+            self.assertIsNone(snapshot.to_node())
+
 
 def descendants(widget):
     child = widget.get_first_child()
@@ -8933,7 +9366,7 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
         settings.set_property("gtk-font-name", "Cantarell 11")
         self.addCleanup(settings.set_property, "gtk-enable-animations", settings.get_property("gtk-enable-animations"))
         settings.set_property("gtk-enable-animations", False)
-        self.sample = MessagesWindowCheck.sample_reply()
+        self.sample = json.loads(MessagesWindowCheck.SAMPLE.read_text())
         self.extra, self.routes = [], []
         # The activity windows read the synthetic sample replies, never the network.
         classes = {"messages": lambda application, base: asb.MessagesWindow(application, base, fetch=self.fetch),
@@ -9284,12 +9717,15 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
             self.poll_calls.return_value = 0
             window = self.application.show_activity("messages", seat="docs", title="Update the install guide"); self.drain(.2)
             self.assertEqual((len(streams), request.call_count), (1, 1))
-            request.call_args.args[2](copy.deepcopy(self.sample), None); self.drain(.1)
+            request.call_args.args[2](self.fetch("/api/activity/messages?period=7d"), None); self.drain(.1)
             self.assertEqual(window.stack.get_visible_child_name(), "data")
-            self.assertTrue(window.session_chip.get_visible())
+            # The thread read goes through request_async too: Show messages opened the session thread.
+            self.assertEqual(request.call_args.args[1], "/api/activity/thread?period=7d&seat=docs")
+            self.assertEqual(window.ledger.get_visible_child_name(), "thread")
+            self.assertEqual(window.thread["key"], "docs")
             css = window.css
             window.close(); self.drain(.2)
-            # Hidden, not closed: no stream, no timers, and the session filter is gone.
+            # Hidden, not closed: no stream, no timers, and the thread is closed.
             self.assertFalse(window.get_visible() or window.closed)
             self.assertIs(self.application.activity_windows["messages"], window)
             self.assertIn(window, self.application.get_windows())
@@ -9297,17 +9733,18 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
             self.assertIsNone(window.events)
             self.assertIsNone(window.poll_timer)
             self.assertIsNone(window.event_timer)
-            self.assertIsNone(window.session)
-            self.assertFalse(window.session_chip.get_visible())
+            self.assertIsNone(window.thread)
+            self.assertIsNone(window.table.tick_id)
             # The menu opens the same window: live again, one read, and its last data until the reply.
             self.application.activate_action("messages", None); self.drain(.2)
             self.assertIs(self.application.activity_windows["messages"], window)
             self.assertTrue(window.get_visible())
-            self.assertEqual((len(streams), request.call_count), (2, 2))
+            self.assertEqual((len(streams), request.call_count), (2, 3))
             self.assertIsNotNone(window.poll_timer)
             self.assertEqual(self.poll_calls.call_count, 2)
             self.assertEqual(window.stack.get_visible_child_name(), "data")
-            self.assertFalse(window.session_chip.get_visible())
+            self.assertEqual(window.ledger.get_visible_child_name(), "stats")
+            self.assertIsNone(window.thread)
             self.assertIs(window.css, css)
             # The board close destroys a hidden window; no request runs after it.
             window.close(); self.drain(.2)
@@ -9316,7 +9753,7 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
             self.assertNotIn("messages", self.application.activity_windows)
             self.assertNotIn(window, self.application.get_windows())
             window.refresh(); window.poll_tick(); self.drain(.1)
-            self.assertEqual(request.call_count, 2)
+            self.assertEqual(request.call_count, 3)
             self.assertEqual(len(streams), 2)
 
     def test_a_window_without_a_board_closes_for_good(self):
@@ -9329,7 +9766,7 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
         self.assertTrue(usage.closed)
         self.assertNotIn("usage", self.application.activity_windows)
 
-    def test_row_panel_show_messages_filters_that_session(self):
+    def test_row_panel_show_messages_opens_the_thread_of_that_session(self):
         rows = [{"id": "docs", "provider": "claude-desktop-code", "providerLabel": "Claude Desktop Code", "title": "Update the install guide",
                  "cwd": "/example/docs", "projectName": "docs", "state": "idle", "canOpen": True, "updatedAtMs": NOW - 360_000, "unread": True},
                 {"id": "parser-review", "provider": "codex", "providerLabel": "Codex", "title": "Review   the parser changes",
@@ -9386,16 +9823,9 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
                 self.assertIsNone(window.context_menu)
                 thread = self.application.activity_windows["messages"]
                 thread.refresh(); self.drain(.4)
-                self.assertEqual(thread.session, "parser-review")
-                self.assertEqual(thread.session_title.get_label(), title)
-                self.assertTrue(thread.session_chip.get_visible())
-                expected, _more = asb.message_feed(self.sample, thread.clock(), "parser-review")
-                labels = MessagesWindowCheck.labels(thread.feed)
-                self.assertEqual(len(MessagesWindowCheck.rows(self, thread)), len(expected))
-                for kind, item in expected:
-                    if kind == "message":
-                        self.assertIn(item["text"] if item["text"] is not None else "No text", labels)
-                self.assertTrue(all(route.startswith("/api/activity/messages?period=") for route in self.routes))
+                self.assertEqual((thread.thread["kind"], thread.thread["key"], thread.thread["title"]), ("session", "parser-review", title))
+                self.assertEqual(thread.ledger.get_visible_child_name(), "thread")
+                self.assertIn("/api/activity/thread?period=7d&seat=parser-review", self.routes)
 
     def test_tray_event_opens_the_window_only_on_the_board_that_reported_last(self):
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer

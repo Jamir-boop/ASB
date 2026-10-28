@@ -197,6 +197,11 @@ class ActivityHelperChecks(unittest.TestCase):
         self.assertEqual(asb.USAGE_MAKER_COLOR, "#8c929a")
         self.assertEqual(asb.USAGE_OTHER_MAKER, "Other")
         self.assertEqual([asb.ACTIVITY_APP_ICONS[app] for app in ("antigravity", "grok", "pi")], ["asb-terminal-symbolic"] * 3)
+        self.assertEqual(asb.ACTIVITY_STATUSES, ("accepted", "written", "held", "not-sent", "unknown"))
+        self.assertEqual([asb.ACTIVITY_STATUS_LABELS[key] for key in asb.ACTIVITY_STATUSES],
+                         ["Accepted", "Socket written", "Held", "Not sent", "Unknown"])
+        self.assertEqual(set(asb.ACTIVITY_STATUS_COLORS), set(asb.ACTIVITY_STATUSES))
+        self.assertEqual(set(asb.ACTIVITY_STATUS_ICONS), set(asb.ACTIVITY_STATUSES))
         self.assertEqual(set(asb.ACTIVITY_APP_ICONS), set(asb.ACTIVITY_APP_LABELS))
         self.assertEqual(asb.ACTIVITY_APP_COLORS["claude"], "#d97757")
         self.assertEqual(asb.ACTIVITY_TOKEN_COLORS, {"cacheRead": "#4b5058", "cacheWrite": "#6b7179", "uncached": "#959ba3", "output": "#e4e6e8"})
@@ -8617,107 +8622,266 @@ class WindowsIconChecks(unittest.TestCase):
                 self.assertEqual(window.mock_calls, [call.connect("realize", handler)] if system == "nt" else [])
 
 
+MESSAGE_SAMPLE = Path(__file__).with_name("fixtures") / "activity" / "messages-sample.json"
+
+
+def sample_messages(sample, period, extra=()):
+    """The contract 2.1 reply of the preview's sample data for a period (buckets in UTC)."""
+    now = sample["nowMs"]
+    count, size = {"24h": (24, 3_600_000), "7d": (7, 86_400_000), "30d": (30, 86_400_000)}[period]
+    starts = [now // size * size - (count - 1 - index) * size for index in range(count)]
+    records = [record for record in sample["messages"] + list(extra) if record[3] >= starts[0]]
+    machine = {seat["id"]: seat["machineId"] for seat in sample["seats"]}
+    ends = {record[1] for record in records} | {record[2] for record in records}
+    return {"period": period, "nowMs": now, "buckets": {"unit": "hour" if period == "24h" else "day", "startsMs": starts},
+            "machines": sample["machines"], "seats": [dict(seat, order=index) for index, seat in enumerate(sample["seats"]) if seat["id"] in ends],
+            "messages": [{"id": record[0], "from": record[1], "to": record[2], "atMs": record[3], "status": record[4], "reason": record[5],
+                          "local": "desk" in (machine[record[1]], machine[record[2]])} for record in records], "truncated": False}
+
+
 class MessagesLogicChecks(unittest.TestCase):
-    def reply(self):
-        at = lambda day: int(datetime(2026, 10, day, 12).timestamp() * 1000)
-        return {"machines": [{"machineId": "m1", "name": "alpha", "self": True},
-                             {"machineId": "m2", "name": "bravo"}, {"machineId": "m3", "name": "charlie"}],
-                "seats": [{"id": "s1", "title": "docs", "machineId": "m1"},
-                          {"id": "s2", "title": "release-plan", "machineId": "m2"},
-                          {"id": "unknown:m3", "title": "Other sessions", "machineId": "m3"}],
-                "messages": [{"id": str(day), "from": "s1", "to": "s2", "atMs": at(day),
-                              "status": "accepted", "text": "Check the guide."} for day in (25, 26, 27)]}
+    @classmethod
+    def setUpClass(cls):
+        cls.sample = json.loads(MESSAGE_SAMPLE.read_text())
 
-    def feed(self, reply=None, **kwargs):
-        now = int(datetime(2026, 10, 27, 18).timestamp() * 1000)
-        return asb.message_feed(self.reply() if reply is None else reply, now, **kwargs)
+    def reply(self, period="7d", extra=()):
+        return sample_messages(self.sample, period, extra)
 
-    def test_newest_first_and_local_day_headers(self):
-        rows, more = self.feed()
-        self.assertEqual([item for kind, item in rows if kind == "day"], ["Today", "Yesterday", "Oct 25"])
-        self.assertEqual([item["id"] for kind, item in rows if kind == "message"], ["27", "26", "25"])
-        self.assertEqual(rows[1][1], {"id": "27", "time": "12:00", "sender": "docs", "receiver": "release-plan",
-                                      "sender_machine": "", "receiver_machine": "bravo", "status": "", "text": "Check the guide."})
-        self.assertFalse(more)
+    def test_the_ledger_follows_the_consistency_rules(self):
+        for period in ("24h", "7d", "30d"):
+            with self.subTest(period=period):
+                reply = self.reply(period)
+                view = asb.messages_view(reply)
+                records = reply["messages"]
+                self.assertGreater(len(records), 0)
+                self.assertEqual(view["total"], len(records))
+                self.assertEqual(sum(view["by_status"].values()), len(records))
+                self.assertEqual(sum(sum(row) for row in view["matrix"]), len(records))
+                self.assertEqual(sum(row["count"] for row in view["machine_rows"]), len(records))
+                for seat in reply["seats"]:
+                    self.assertEqual(view["counts"][seat["id"]], {"sent": sum(record["from"] == seat["id"] for record in records),
+                                                                 "received": sum(record["to"] == seat["id"] for record in records)})
+                self.assertEqual(view["recent"], sorted(records, key=lambda record: record["atMs"])[-6:][::-1])
 
-    @unittest.skipUnless(hasattr(time, "tzset"), "tzset is not available.")
-    def test_day_headers_and_clocks_use_local_time_not_utc(self):
-        saved = os.environ.get("TZ")
-        os.environ["TZ"] = "<-08>8"  # The POSIX form of UTC-8 needs no tzdata files.
-        time.tzset()
-        try:
-            reply = self.reply()
-            reply["messages"] = [dict(reply["messages"][0], id=str(hour),
-                                      atMs=int(datetime(2026, 10, 26, hour, tzinfo=timezone.utc).timestamp() * 1000))
-                                 for hour in (3, 12)]
-            now = int(datetime(2026, 10, 27, 1, tzinfo=timezone.utc).timestamp() * 1000)
-            rows, _more = asb.message_feed(reply, now)
-            self.assertEqual([item for kind, item in rows if kind == "day"], ["Today", "Yesterday"])
-            self.assertEqual([item["time"] for kind, item in rows if kind == "message"], ["04:00", "19:00"])
-        finally:
-            if saved is None:
-                os.environ.pop("TZ", None)
-            else:
-                os.environ["TZ"] = saved
-            time.tzset()
-
-    def test_unknown_seats_labels_fallback_and_remote_machines(self):
+    def test_messages_ignore_time_buckets(self):
         reply = self.reply()
-        record = reply["messages"][-1]
-        record.update({"from": "unknown:m3", "fromLabel": "beta-helper", "to": "unknown:m2", "toLabel": ""})
-        item = self.feed(reply)[0][1][1]
-        self.assertEqual((item["sender"], item["receiver"], item["sender_machine"], item["receiver_machine"]),
-                         ("beta-helper", "Other session", "charlie", ""))
-        record.update({"fromLabel": "", "toLabel": "release-helper"})
-        item = self.feed(reply)[0][1][1]
-        self.assertEqual((item["sender"], item["receiver"]), ("Other session", "release-helper"))
-        record["to"] = "s2"
-        self.assertEqual(self.feed(reply)[0][1][1]["receiver_machine"], "bravo")
+        view = asb.messages_view(reply)
+        self.assertNotIn("bars", view)
+        del reply["buckets"]
+        self.assertEqual(asb.messages_view(reply), view)
 
-    def test_each_status_nullable_text_and_older_engines(self):
+    def test_usage_only_apps_still_count_as_other_in_messages(self):
+        self.assertEqual(asb.ACTIVITY_APPS, ("codex", "claude", "opencode"))
+        self.assertEqual(asb.message_app({"app": "pi"}), "")
         reply = self.reply()
-        record = reply["messages"][-1]
-        for status, reason, expected in (("accepted", "", ""), ("written", "", "Socket written"),
-                                         ("held", "", "Held"), ("not-sent", "Machine offline", "Machine offline"),
-                                         ("not-sent", "", "Not sent"), ("unknown", "", "Unknown"), ("future", "", "Unknown")):
-            with self.subTest(status=status, reason=reason):
-                record.update(status=status, reason=reason, text=None)
-                item = self.feed(reply)[0][1][1]
-                self.assertEqual((item["status"], item["text"]), (expected, None))
-        record.pop("text")
-        record.update({"from": "unknown:m3", "to": "unknown:m2"})
-        item = self.feed(reply)[0][1][1]
-        self.assertEqual((item["text"], item["sender"], item["receiver"]), (None, "Other session", "Other session"))
-        record["text"] = ""
-        self.assertEqual(self.feed(reply)[0][1][1]["text"], "")
+        self.assertEqual(asb.messages_view(reply)["apps"], ["codex", "claude", "opencode"])
+        reply["seats"][0]["app"] = "pi"
+        self.assertEqual(asb.messages_view(reply)["apps"], ["codex", "claude", "opencode", ""])
 
-    def test_session_filter_in_both_directions_and_empty(self):
-        reply = self.reply()
-        reply["messages"][1].update({"from": "s2", "to": "s1"})
-        reply["messages"][2].update({"from": "s2", "to": "unknown:m3"})
-        self.assertEqual([item["id"] for kind, item in self.feed(reply, session="s1")[0] if kind == "message"], ["26", "25"])
-        self.assertEqual(self.feed(reply, session="missing"), ([], False))
+    def test_the_sample_numbers_match_the_preview(self):
+        view = asb.messages_view(self.reply())
+        self.assertEqual(view["total"], 479)
+        self.assertEqual(view["by_status"], {"accepted": 434, "written": 22, "held": 10, "not-sent": 5, "unknown": 8})
+        self.assertEqual(view["apps"], ["codex", "claude", "opencode"])
+        self.assertEqual(view["matrix"], [[19, 203, 0], [194, 12, 0], [15, 4, 32]])
+        self.assertEqual(view["app_pairs"], 7)
+        self.assertEqual([(row["label"], row["count"]) for row in view["machine_rows"]],
+                         [("Desk ⇄ Laptop", 248), ("Desk ⇄ Studio", 31), ("Laptop ⇄ Studio", 18), ("Desk", 149), ("Laptop", 29), ("Studio", 4)])
+        self.assertEqual((len(view["seated"]), view["active"]), (12, 18))
 
-    def test_newest_200_limit_and_left_out_flag_after_filter(self):
+    def test_seats_go_to_the_most_recent_sessions(self):
         reply = self.reply()
-        record = reply["messages"][-1]
-        reply["messages"] = [dict(record, id=str(i), atMs=record["atMs"] + i) for i in range(201)]
-        rows, more = self.feed(reply)
-        self.assertEqual([item["id"] for kind, item in rows if kind == "message"], [str(i) for i in range(200, 0, -1)])
-        self.assertTrue(more)
-        self.assertFalse(self.feed(reply, session="missing")[1])
-        self.assertEqual(self.feed(reply, limit=0), ([], True))
-        self.assertEqual(len(self.feed(reply, limit=2)[0]), 3)
-        reply["messages"].pop()
-        self.assertFalse(self.feed(reply)[1])
-        reply["truncated"] = True
-        self.assertTrue(self.feed(reply)[1])
-        self.assertEqual(self.feed({"truncated": True}), ([], True))
-        # The engine orders equal timestamps too: the last record is still the newest.
-        reply["truncated"] = False
+        view = asb.messages_view(reply)
+        newest = {}
         for record in reply["messages"]:
-            record["atMs"] = reply["messages"][0]["atMs"]
-        self.assertEqual(self.feed(reply, limit=1)[0][1][1]["id"], "199")
+            for seat_id in (record["from"], record["to"]):
+                newest[seat_id] = max(newest.get(seat_id, 0), record["atMs"])
+        circle = [seat["id"] for seat in sorted(reply["seats"], key=lambda seat: (["desk", "laptop", "studio"].index(seat["machineId"]), seat["order"]))]
+        self.assertEqual(view["circle"], circle)
+        recent = sorted(newest, key=lambda seat_id: (-newest[seat_id], circle.index(seat_id)))[:12]
+        self.assertEqual(view["seated"], [seat_id for seat_id in circle if seat_id in recent])
+        # A selected seat outside the 12 gets a seat, and the seat count stays 12.
+        outside = next(seat_id for seat_id in circle if seat_id not in view["seated"])
+        chosen = asb.messages_view(reply, (outside,))
+        self.assertIn(outside, chosen["seated"])
+        self.assertEqual(len(chosen["seated"]), 12)
+        self.assertEqual(set(view["seated"]) - set(chosen["seated"]), {recent[-1]})
+        # A seat with no message in the period never sits, also when it is selected.
+        quiet = dict(reply, seats=reply["seats"] + [{"id": "quiet", "title": "quiet", "app": "codex", "machineId": "desk", "order": 99}])
+        self.assertNotIn("quiet", asb.messages_view(quiet, ("quiet",))["seated"])
+        self.assertEqual(asb.messages_view(quiet)["active"], 18)
+        self.assertEqual(len(asb.messages_view(reply, limit=8)["seated"]), 8)
+
+    def test_equal_times_take_the_circle_order(self):
+        seats = [{"id": f"s{index}", "title": f"s{index}", "app": "codex", "machineId": "m", "order": index} for index in range(4)]
+        reply = {"nowMs": 10_000, "buckets": {"unit": "day", "startsMs": [0]}, "machines": [{"machineId": "m", "name": "M", "state": "local"}],
+                 "seats": list(reversed(seats)),
+                 "messages": [{"id": "x", "from": "s3", "to": "s2", "atMs": 5000, "status": "accepted"},
+                              {"id": "y", "from": "s1", "to": "s0", "atMs": 5000, "status": "accepted"}]}
+        self.assertEqual(asb.messages_view(reply, limit=2)["seated"], ["s0", "s1"])
+        self.assertEqual(asb.messages_view(reply, ("s3",), limit=2)["seated"], ["s0", "s3"])
+
+    def test_chords_join_seated_pairs(self):
+        for period in ("24h", "7d", "30d"):
+            with self.subTest(period=period):
+                reply = self.reply(period)
+                view = asb.messages_view(reply)
+                seated = set(view["seated"])
+                expected = {frozenset((record["from"], record["to"])) for record in reply["messages"] if record["from"] in seated and record["to"] in seated}
+                chords = {frozenset(key) for key, pair in view["pairs"].items() if pair["a"] in seated and pair["b"] in seated}
+                self.assertEqual(chords, expected)
+                for key, pair in view["pairs"].items():
+                    mine = [record for record in reply["messages"] if {record["from"], record["to"]} == set(key)]
+                    self.assertEqual((pair["n"], pair["ab"], pair["ba"]), (len(mine), sum(record["from"] == pair["a"] for record in mine),
+                                                                           sum(record["from"] == pair["b"] for record in mine)))
+                    self.assertLess(view["circle"].index(pair["a"]), view["circle"].index(pair["b"]))
+
+    def test_the_all_not_sent_pair(self):
+        view = asb.messages_view(self.reply("24h"))
+        pair = view["pairs"][("release-plan", "sync-check")]
+        self.assertGreater(pair["n"], 0)
+        self.assertEqual((pair["bad"], pair["badAB"], pair["badBA"]), (pair["n"], pair["n"], 0))
+        for key, item in view["pairs"].items():
+            mine = [record for record in self.reply("24h")["messages"] if {record["from"], record["to"]} == set(key)]
+            self.assertEqual(item["bad"] == item["n"], all(record["status"] == "not-sent" for record in mine))
+        mixed = asb.messages_view(self.reply("7d"))["pairs"][("release-plan", "sync-check")]
+        self.assertTrue(0 < mixed["bad"] < mixed["n"])
+
+    def test_the_other_row_and_column_only_when_needed(self):
+        reply = self.reply()
+        self.assertNotIn("", asb.messages_view(reply)["apps"])
+        other = dict(reply, seats=reply["seats"] + [{"id": "unknown:laptop", "title": "Other sessions", "app": "", "machineId": "laptop", "order": 0}],
+                     messages=reply["messages"] + [{"id": "z", "from": "unknown:laptop", "to": "docs", "atMs": reply["nowMs"] - 5000, "status": "accepted"}])
+        view = asb.messages_view(other)
+        self.assertEqual(view["apps"], ["codex", "claude", "opencode", ""])
+        self.assertEqual(view["matrix"][3], [0, 1, 0, 0])
+        self.assertEqual(sum(sum(row) for row in view["matrix"]), view["total"])
+        self.assertEqual(view["app_pairs"], 8)
+
+    def test_chord_curves_follow_the_preview_formula(self):
+        def geometry(size, center, pin, angles):
+            return {"S": size, "cx": center, "cy": center, "Rp": pin, "Rc": 100, "seat": angles}
+        cases = (
+            # Opposite seats: the midpoint is the center, so the curve bends to the side of the first seat, 124px out.
+            (geometry(600, 300, 200, {"a": -90, "b": 90}), False, ((300, 100), (548, 300), (300, 500))),
+            # One machine: the midpoint W is at least Rc + 24 = 124 from the center.
+            (geometry(600, 300, 200, {"a": -90, "b": 0}), True, ((300, 100), (2 * (300 + 124 / 2 ** .5) - 400, 2 * (300 - 124 / 2 ** .5) - 200), (500, 300))),
+            # Below 480px the disc does not count: W = C + 0.625 * |M - C|.
+            (geometry(400, 200, 100, {"a": -90, "b": 0}), False, ((200, 100), (212.5, 187.5), (300, 200))),
+        )
+        for index, (shape, same, (p1, control, p2)) in enumerate(cases):
+            with self.subTest(case=index):
+                got = asb.chord_curve(shape, "a", "b", same)
+                for found, wanted in zip(got, (p1, control, p2)):
+                    self.assertAlmostEqual(found[0], wanted[0], places=6)
+                    self.assertAlmostEqual(found[1], wanted[1], places=6)
+
+    def test_table_geometry_and_labels(self):
+        reply = self.reply()
+        view = asb.messages_view(reply)
+        shape = asb.table_geometry(628, 583, view["seated"], view["seats"], view["machines"])
+        self.assertEqual((shape["S"], shape["Ro"], shape["Ri"], shape["Rp"], shape["Rc"]), (567, 227.5, 217.5, 181.5, 87.0))
+        self.assertEqual(shape["slot"], (360 - 18) / 12)
+        desk = [seat_id for seat_id in view["seated"] if view["seats"][seat_id]["machineId"] == "desk"]
+        self.assertAlmostEqual(shape["mach"]["desk"]["mid"], -90)
+        self.assertAlmostEqual(shape["seat"][desk[0]], -90 - len(desk) * shape["slot"] / 2 + shape["slot"] / 2)
+        self.assertAlmostEqual(shape["mach"]["laptop"]["start"], shape["mach"]["desk"]["end"] + 6)
+        self.assertEqual(asb.seat_label_offset(-90, 40), 30)
+        self.assertAlmostEqual(asb.seat_label_offset(0, 40), 60)
+        self.assertEqual(asb.seat_label_text("x" * 24), "x" * 24)
+        self.assertEqual(asb.seat_label_text("x" * 25), "x" * 24 + "…")
+
+    def test_thread_headers_count_the_records(self):
+        reply = self.reply()
+        seats = {seat["id"]: seat for seat in reply["seats"]}
+        records = reply["messages"]
+        pair = [record for record in records if {record["from"], record["to"]} == {"release-plan", "parser-review"}]
+        forward = sum(record["from"] == "release-plan" for record in pair)
+        header = asb.message_thread(records, seats, "pair", ("release-plan", "parser-review"))
+        self.assertEqual((header["route"], header["counts"], header["total"]),
+                         ("release-plan ⇄ parser-review", f"→ {forward}  ← {len(pair) - forward}", len(pair)))
+        self.assertEqual(header["counts"], "→ 75  ← 64")
+        mine = [record for record in records if "parser-review" in (record["from"], record["to"])]
+        sent = sum(record["from"] == "parser-review" for record in mine)
+        header = asb.message_thread(records, seats, "session", "parser-review")
+        self.assertEqual((header["route"], header["counts"]), ("parser-review", f"Sent {sent}  Received {len(mine) - sent}"))
+        self.assertEqual(header["counts"], "Sent 81  Received 109")
+        self.assertEqual(asb.message_thread(records, {}, "session", "gone")["counts"], "Sent 0  Received 0")
+        self.assertEqual(asb.message_thread(records, {}, "session", "gone")["route"], "This session")
+        out, back = next(record for record in mine if record["from"] == "parser-review"), next(record for record in mine if record["to"] == "parser-review")
+        self.assertEqual(asb.message_block(header, out, seats), (False, "→ " + out["to"]))
+        self.assertEqual(asb.message_block(header, back, seats), (True, "← " + back["from"]))
+        pair_header = asb.message_thread(records, seats, "pair", ("release-plan", "parser-review"))
+        self.assertEqual(asb.message_block(pair_header, pair[0], seats), (pair[0]["from"] == "release-plan", pair[0]["from"]))
+
+    def test_unknown_ends_show_the_name_from_the_message(self):
+        seats = {"docs": {"id": "docs", "title": "docs"}, "unknown:m2": {"id": "unknown:m2", "title": "Other sessions"}}
+        record = {"id": "x", "from": "unknown:m2", "to": "docs", "fromLabel": "beta-helper", "toLabel": ""}
+        self.assertEqual(asb.message_end_title(record, "from", seats), "beta-helper")
+        self.assertEqual(asb.message_end_title(record, "to", seats), "docs")
+        # Without a name, or with a name on a known end, the session title or Other sessions shows.
+        self.assertEqual(asb.message_end_title(dict(record, fromLabel=""), "from", seats), "Other sessions")
+        self.assertEqual(asb.message_end_title({"from": "unknown:m9", "to": "docs"}, "from", {}), "Other sessions")
+        self.assertEqual(asb.message_end_title(dict(record, toLabel="not-this"), "to", seats), "docs")
+        self.assertEqual(asb.message_end_title({"from": "gone", "to": "docs"}, "from", seats), "Other sessions")
+        session = {"kind": "session", "key": "docs"}
+        self.assertEqual(asb.message_block(session, record, seats), (True, "← beta-helper"))
+        self.assertEqual(asb.message_block(session, {"from": "docs", "to": "unknown:m2", "toLabel": "gamma-helper"}, seats), (False, "→ gamma-helper"))
+        self.assertEqual(asb.message_block({"kind": "pair", "key": ("unknown:m2", "docs")}, record, seats), (True, "beta-helper"))
+
+    def test_a_not_sent_message_shows_its_reason_and_text_may_be_missing(self):
+        for reason in ("Machine offline", "Too large", "Rate limited", "Refused"):
+            self.assertEqual(asb.message_status_label({"status": "not-sent", "reason": reason}), reason)
+        self.assertEqual(asb.message_status_label({"status": "not-sent", "reason": ""}), "Not sent")
+        self.assertEqual(asb.message_status_label({"status": "not-sent"}), "Not sent")
+        self.assertEqual([asb.message_status_label({"status": status, "reason": "Refused"}) for status in ("accepted", "written", "held", "unknown", "odd")],
+                         ["Accepted", "Socket written", "Held", "Unknown", "Unknown"])
+        self.assertEqual(asb.message_text({"text": "One\nTwo"}), "One\nTwo")
+        self.assertEqual(asb.message_text({"text": ""}), "")
+        self.assertIsNone(asb.message_text({"text": None}))
+        self.assertIsNone(asb.message_text({}))
+        self.assertIsNone(asb.message_text({"text": 3}))
+        self.assertFalse(hasattr(asb, "message_feed") or hasattr(asb, "MESSAGE_ROWS_STEP"))
+        source = Path(asb.__file__).read_text()
+        self.assertNotIn("Body not shared", source)
+
+    def test_the_reply_key_ignores_only_what_the_window_does_not_show(self):
+        reply = self.reply()
+        key = asb.message_reply_key(reply)
+        same = copy.deepcopy(reply)
+        same["nowMs"] += 60_000
+        same["buckets"] = {"unit": "day", "startsMs": [1]}
+        for machine in same["machines"]:
+            machine["lastReportAtMs"] = 5
+        self.assertEqual(asb.message_reply_key(same), key)
+        for change in (lambda data: data["messages"][-1].update(text="Other text."), lambda data: data["messages"][-1].update(status="held"),
+                       lambda data: data["seats"][0].update(title="renamed"), lambda data: data["machines"][1].update(state="offline"),
+                       lambda data: data.update(nowMs=data["nowMs"] + 86_400_000), lambda data: data["messages"].pop(0),
+                       lambda data: data.update(truncated=True), lambda data: data["messages"][-1].update(fromLabel="beta-helper")):
+            other = copy.deepcopy(reply)
+            change(other)
+            self.assertNotEqual(asb.message_reply_key(other), key)
+
+    def test_arrivals_are_new_and_recent(self):
+        reply = self.reply()
+        now = reply["nowMs"]
+        fresh = ["m-new", "release-plan", "parser-review", now - 1000, "accepted", "", None]
+        stale = ["m-old", "docs", "release-plan", now - 121_000, "accepted", "", None]
+        later = self.reply(extra=[fresh, stale])
+        self.assertEqual([record["id"] for record in asb.message_arrivals(reply, later)], ["m-new"])
+        self.assertEqual(asb.message_arrivals(later, later), [])
+        self.assertEqual(asb.message_arrivals(None, later), [])
+        edge = self.reply(extra=[["m-edge", "docs", "release-plan", now - 120_000, "accepted", "", None]])
+        self.assertEqual([record["id"] for record in asb.message_arrivals(reply, edge)], ["m-edge"])
+
+    def test_curve_positions_use_the_arc_length(self):
+        table = asb.curve_table((0, 0), (50, 0), (100, 0))
+        self.assertAlmostEqual(table[1][-1], 100)
+        self.assertEqual(asb.curve_point(table, .85), (85.0, 0.0))
+        self.assertAlmostEqual(asb.curve_distance(table, 30, 6), 6)
+        self.assertEqual((asb.ease_flight(0), asb.ease_flight(1)), (0, 1))
+        self.assertGreater(asb.ease_bars(.5), .85)
+        self.assertLess(asb.ease_flight(.25), .25)
 
 
 class BoardWindowsLogicChecks(unittest.TestCase):

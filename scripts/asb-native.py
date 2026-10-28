@@ -638,7 +638,6 @@ def motion_offsets(old, new):
 MESSAGE_MAX_AGE_MS = 30_000
 MESSAGE_FLIGHT_LIMIT = 6
 MESSAGE_LIGHT_MS = 2000
-MESSAGE_ROWS_STEP = 40
 
 
 def new_messages(messages, seen, visible, now_ms, room):
@@ -1289,6 +1288,11 @@ ACTIVITY_MONTHS = ("January", "February", "March", "April", "May", "June", "July
 ACTIVITY_APP_LABELS = {"codex": "Codex", "claude": "Claude Code", "opencode": "OpenCode", "": "Other", "antigravity": "Antigravity", "grok": "Grok", "pi": "Pi"}
 ACTIVITY_APP_ICONS = {"codex": "asb-openai-symbolic", "claude": "asb-claude-symbolic", "opencode": "asb-opencode-symbolic", "": "asb-machine-symbolic", "antigravity": "asb-terminal-symbolic", "grok": "asb-terminal-symbolic", "pi": "asb-terminal-symbolic"}
 ACTIVITY_APP_COLORS = {"codex": "#c9ccd1", "claude": "#d97757", "opencode": "#7d848c", "": "#5d6268", "antigravity": "#4f8fe0", "grok": "#e8e46a", "pi": "#c678dd"}
+ACTIVITY_STATUSES = ("accepted", "written", "held", "not-sent", "unknown")
+ACTIVITY_STATUS_LABELS = {"accepted": "Accepted", "written": "Socket written", "held": "Held", "not-sent": "Not sent", "unknown": "Unknown"}
+ACTIVITY_STATUS_COLORS = {"accepted": "#c9ccd1", "written": "#8c929a", "held": "#e0b45a", "not-sent": "#f5a090", "unknown": "#5d6268"}
+ACTIVITY_STATUS_ICONS = {"accepted": "object-select-symbolic", "written": "mail-send-symbolic", "held": "media-playback-pause-symbolic",
+                         "not-sent": "action-unavailable-symbolic", "unknown": "dialog-question-symbolic"}
 ACTIVITY_TOKEN_COLORS = {"cacheRead": "#4b5058", "cacheWrite": "#6b7179", "uncached": "#959ba3", "output": "#e4e6e8"}
 MACHINE_HUES = ("#a28caa", "#7cc48a", "#5fb3b3", "#d6a15e", "#e38fb0", "#b4b86c")
 MESSAGE_PERIODS = (("24h", "24 hours"), ("7d", "7 days"), ("30d", "30 days"))
@@ -1517,32 +1521,156 @@ def launcher_address(line):
 
 
 # Messages window: pure logic.
-def message_feed(reply, now_ms, session=None, limit=200):
-    """The newest messages and local day headings, plus whether some messages were left out."""
+MESSAGE_SEATS = 12
+MESSAGE_ARRIVAL_MS = 120_000
+MESSAGE_THREAD_LIMIT = 60
+
+
+def message_app(seat):
+    app = (seat or {}).get("app", "")
+    return app if app in ACTIVITY_APPS else ""
+
+
+def message_status(record):
+    status = record.get("status")
+    return status if status in ACTIVITY_STATUSES else "unknown"
+
+
+def messages_view(reply, selected=(), limit=MESSAGE_SEATS):
+    """The preview's mstats, activity, and seatedIds over a messages reply (activity contract 2.1 and 5)."""
+    machines = reply.get("machines") or []
+    machine_index = {machine["machineId"]: index for index, machine in enumerate(machines)}
     seats = {seat["id"]: seat for seat in reply.get("seats") or []}
-    machines = {machine["machineId"]: machine for machine in reply.get("machines") or []}
-    records = [record for record in reply.get("messages") or []
-               if session is None or session in (record["from"], record["to"])]
-    newest = records[::-1][:limit]
-    rows, last_day = [], None
-    for record in newest:
-        day = datetime.fromtimestamp(record["atMs"] / 1000).date()
-        if day != last_day:
-            rows.append(("day", day_line(record["atMs"], now_ms)))
-            last_day = day
-        status = record.get("status")
-        item = {"id": record["id"], "time": format_clock(record["atMs"]),
-                "status": {"accepted": "", "written": "Socket written", "held": "Held",
-                           "not-sent": record.get("reason") or "Not sent"}.get(status, "Unknown"),
-                "text": record.get("text") if isinstance(record.get("text"), str) else None}
-        for end, name in (("from", "sender"), ("to", "receiver")):
-            seat_id = record[end]
-            seat = seats.get(seat_id) or {}
-            item[name] = (record.get(end + "Label") or "Other session") if seat_id.startswith("unknown:") else seat.get("title") or "Other session"
-            machine = machines.get(seat.get("machineId")) or {}
-            item[name + "_machine"] = "" if machine.get("self") else machine.get("name", "")
-        rows.append(("message", item))
-    return rows, len(records) > limit or bool(reply.get("truncated"))
+    circle = [seat["id"] for _index, seat in sorted(enumerate(seats.values()), key=lambda item: (
+        machine_index.get(item[1].get("machineId"), len(machines)), item[1].get("order", 0), item[0]))]
+    position = {seat_id: index for index, seat_id in enumerate(circle)}
+    records = reply.get("messages") or []
+    other = any(message_app(seats.get(record[end])) == "" for record in records for end in ("from", "to"))
+    apps = list(ACTIVITY_APPS) + ([""] if other else [])
+    matrix = [[0] * len(apps) for _app in apps]
+    by_status = dict.fromkeys(ACTIVITY_STATUSES, 0)
+    counts = {seat_id: {"sent": 0, "received": 0} for seat_id in circle}
+    pairs, machine_counts, activity = {}, {}, {}
+    for record in records:
+        source, target, at = record["from"], record["to"], record["atMs"]
+        status = message_status(record)
+        by_status[status] += 1
+        counts.setdefault(source, {"sent": 0, "received": 0})["sent"] += 1
+        counts.setdefault(target, {"sent": 0, "received": 0})["received"] += 1
+        a, b = sorted((source, target), key=lambda seat_id: (position.get(seat_id, len(position)), seat_id))
+        pair = pairs.get((a, b))
+        if pair is None:
+            pair = pairs[(a, b)] = {"key": (a, b), "a": a, "b": b, "ab": 0, "ba": 0, "n": 0, "bad": 0, "badAB": 0, "badBA": 0}
+        forward = source == a
+        pair["n"] += 1
+        pair["ab" if forward else "ba"] += 1
+        if status == "not-sent":
+            pair["bad"] += 1
+            pair["badAB" if forward else "badBA"] += 1
+        matrix[apps.index(message_app(seats.get(source)))][apps.index(message_app(seats.get(target)))] += 1
+        ends = [(seats.get(seat_id) or {}).get("machineId") for seat_id in (source, target)]
+        if None not in ends:
+            key = tuple(sorted(set(ends), key=lambda machine: (machine_index.get(machine, len(machines)), machine)))
+            machine_counts[key] = machine_counts.get(key, 0) + 1
+        for seat_id in (source, target):
+            if activity.get(seat_id, at - 1) < at:
+                activity[seat_id] = at
+    rank = lambda key: [machine_index.get(machine, len(machines)) for machine in key]
+    names = {machine["machineId"]: machine.get("name", "") for machine in machines}
+    keys = sorted((key for key in machine_counts if len(key) == 2), key=rank) + sorted((key for key in machine_counts if len(key) == 1), key=rank)
+    # The selected sessions plus the most recent others, up to the limit; ties by circle order.
+    keep = [seat_id for seat_id in dict.fromkeys(selected) if seat_id in activity and seat_id in position]
+    others = sorted((seat_id for seat_id in circle if seat_id in activity and seat_id not in keep), key=lambda seat_id: (-activity[seat_id], position[seat_id]))
+    chosen = set(keep + others[:max(0, limit - len(keep))])
+    return {"total": len(records), "by_status": by_status, "seats": seats, "machines": machines, "circle": circle, "counts": counts,
+            "pairs": pairs, "apps": apps, "matrix": matrix, "app_pairs": sum(1 for row in matrix for cell in row if cell),
+            "machine_rows": [{"ids": key, "label": " ⇄ ".join(names.get(machine, machine) for machine in key), "count": machine_counts[key]} for key in keys],
+            "activity": activity, "seated": [seat_id for seat_id in circle if seat_id in chosen],
+            "active": sum(1 for seat_id in circle if seat_id in activity), "recent": sorted(records, key=lambda record: record["atMs"])[-6:][::-1]}
+
+
+def table_point(geometry, radius, degrees):
+    angle = math.radians(degrees)
+    return geometry["cx"] + radius * math.cos(angle), geometry["cy"] + radius * math.sin(angle)
+
+
+def table_geometry(width, height, seated, seats, machines):
+    """The preview's tableGeom: the ring radii and the angle of each machine arc and seat."""
+    size = min(width, height) - 16
+    outer = size / 2 - 56
+    inner = outer - 10
+    geometry = {"W": width, "H": height, "S": size, "cx": width / 2, "cy": height / 2, "Ro": outer, "Ri": inner, "Rp": inner - 36,
+                "Rc": min(120, inner * .4), "ids": list(seated), "mach": {}, "seat": {}, "slot": 0}
+    machine_index = {machine["machineId"]: index for index, machine in enumerate(machines)}
+    groups = {}
+    for seat_id in seated:
+        groups.setdefault(seats[seat_id].get("machineId", ""), []).append(seat_id)
+    groups = sorted(groups.items(), key=lambda item: machine_index.get(item[0], len(machines)))
+    if not seated:
+        return geometry
+    slot = geometry["slot"] = (360 - 6 * len(groups)) / len(seated)
+    # The first machine with seats is centered at the top.
+    start = -90 - len(groups[0][1]) * slot / 2
+    for machine, ids in groups:
+        geometry["mach"][machine] = {"start": start, "end": start + len(ids) * slot, "mid": start + len(ids) * slot / 2}
+        for index, seat_id in enumerate(ids):
+            geometry["seat"][seat_id] = start + (index + .5) * slot
+        start += len(ids) * slot + 6
+    return geometry
+
+
+def chord_curve(geometry, seat_a, seat_b, same_machine):
+    """The preview's chordD: (p1, control, p2) of the quadratic curve; its midpoint keeps clear of the center disc."""
+    p1 = table_point(geometry, geometry["Rp"], geometry["seat"][seat_a])
+    p2 = table_point(geometry, geometry["Rp"], geometry["seat"][seat_b])
+    cx, cy = geometry["cx"], geometry["cy"]
+    mx, my = (p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2
+    distance = math.hypot(mx - cx, my - cy)
+    if distance > 1:
+        ux, uy = (mx - cx) / distance, (my - cy) / distance
+    else:
+        angle = math.radians(geometry["seat"][seat_a] + 90)
+        ux, uy = math.cos(angle), math.sin(angle)
+    factor = .775 if same_machine else .625
+    reach = max(geometry["Rc"] + 24, factor * distance) if geometry["S"] >= 480 else factor * distance
+    wx, wy = cx + ux * reach, cy + uy * reach
+    return p1, (2 * wx - mx, 2 * wy - my), p2
+
+
+def seat_label_offset(angle, half_width):
+    """How far a seat label sits inward from its pin: 30px, or more where a wide label would touch its own pin."""
+    radians = math.radians(angle)
+    ux, uy = abs(math.cos(radians)), abs(math.sin(radians))
+    return max(30, min((20 + half_width) / ux if ux > .01 else math.inf, 27 / uy if uy > .01 else math.inf))
+
+
+def curve_table(start, control, end, steps=64):
+    """A polyline of a quadratic curve with the length at each point, for positions by arc length."""
+    points = [bezier_point(start, control, end, index / steps) for index in range(steps + 1)]
+    lengths = [0]
+    for first, last in zip(points, points[1:]):
+        lengths.append(lengths[-1] + math.dist(first, last))
+    return points, lengths
+
+
+def curve_point(table, fraction):
+    points, lengths = table
+    goal = max(0, min(1, fraction)) * lengths[-1]
+    for index in range(1, len(points)):
+        if lengths[index] >= goal:
+            part = lengths[index] - lengths[index - 1]
+            k = (goal - lengths[index - 1]) / part if part > 0 else 0
+            return tuple(a + (b - a) * k for a, b in zip(points[index - 1], points[index]))
+    return points[-1]
+
+
+def curve_distance(table, x, y):
+    best = math.inf
+    for (ax, ay), (bx, by) in zip(table[0], table[0][1:]):
+        dx, dy = bx - ax, by - ay
+        k = max(0, min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy))) if dx or dy else 0
+        best = min(best, math.hypot(x - ax - dx * k, y - ay - dy * k))
+    return best
 
 
 def cubic_bezier(x1, y1, x2, y2):
@@ -1563,7 +1691,71 @@ def cubic_bezier(x1, y1, x2, y2):
     return ease
 
 
+ease_flight = cubic_bezier(.45, 0, .2, 1)
 ease_bars = cubic_bezier(.16, 1, .3, 1)
+
+
+def message_thread(records, seats, kind, key):
+    """The thread header of a pair (key = (a, b), a first on the circle) or a session (key = seat id), counted from the report's records."""
+    def title(seat_id):
+        return (seats.get(seat_id) or {}).get("title") or "This session"
+    if kind == "pair":
+        a, b = key
+        mine = [record for record in records if {record["from"], record["to"]} == {a, b}]
+        forward = sum(1 for record in mine if record["from"] == a)
+        return {"kind": kind, "key": (a, b), "route": f"{title(a)} ⇄ {title(b)}", "counts": f"→ {forward}  ← {len(mine) - forward}",
+                "total": len(mine), "forward": forward}
+    mine = [record for record in records if key in (record["from"], record["to"])]
+    sent = sum(1 for record in mine if record["from"] == key)
+    return {"kind": kind, "key": key, "route": title(key), "counts": f"Sent {sent}  Received {len(mine) - sent}", "total": len(mine), "forward": sent}
+
+
+def message_end_title(record, end, seats):
+    """The name of the from or to end: the name from the message for an unknown end, else the session title."""
+    seat_id = record[end]
+    name = record.get(end + "Label") if seat_id.startswith("unknown:") else ""
+    return name or (seats.get(seat_id) or {}).get("title") or "Other sessions"
+
+
+def message_status_label(record):
+    """The status text; a not-sent message shows its reason."""
+    status = message_status(record)
+    return (record.get("reason") or "Not sent") if status == "not-sent" else ACTIVITY_STATUS_LABELS[status]
+
+
+def message_text(record):
+    text = record.get("text")
+    return text if isinstance(text, str) else None
+
+
+def message_block(thread, record, seats):
+    """The side and the sender line of one thread message: the first-named session or incoming messages at the left."""
+    if thread["kind"] == "pair":
+        return record["from"] == thread["key"][0], message_end_title(record, "from", seats)
+    if record["from"] == thread["key"]:
+        return False, "→ " + message_end_title(record, "to", seats)
+    return True, "← " + message_end_title(record, "from", seats)
+
+
+def message_reply_key(reply):
+    """What the window shows of a messages reply: a refresh with the same key changes nothing.
+    The day of nowMs names the day lines; the report time of a machine shows nowhere in this window."""
+    day = datetime.fromtimestamp(reply.get("nowMs", 0) / 1000).date()
+    machines = [(machine.get("machineId"), machine.get("name"), machine.get("state")) for machine in reply.get("machines") or []]
+    return reply.get("period"), day, machines, reply.get("seats"), reply.get("messages"), reply.get("truncated")
+
+
+def message_arrivals(previous, reply):
+    """Records of reply that previous did not have and that are at most 120 s old; none for the first reply."""
+    if previous is None:
+        return []
+    seen = {record["id"] for record in previous.get("messages") or []}
+    since = reply.get("nowMs", 0) - MESSAGE_ARRIVAL_MS
+    return [record for record in reply.get("messages") or [] if record["id"] not in seen and record["atMs"] >= since]
+
+
+def seat_label_text(title):
+    return title if len(title) <= 24 else title[:24] + "…"
 
 
 class LauncherStart:
@@ -8680,6 +8872,58 @@ def remove_children(widget):
         child = widget.get_first_child()
 
 
+class MessageProxy(Gtk.Widget):
+    """An invisible focusable stand-in for a pin or a chord of the round table: keyboard focus, activation, and the screen reader name."""
+    __gtype_name__ = "AsbMessageProxy"
+
+    def __init__(self, table, key):
+        super().__init__(accessible_role=Gtk.AccessibleRole.BUTTON, focusable=True)
+        self.table, self.key = table, key
+        self.curve, self.origin = None, (0, 0)
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self.key_pressed)
+        self.add_controller(keys)
+        focus = Gtk.EventControllerFocus()
+        focus.connect("enter", lambda *_: table.proxy_focus(self, True))
+        focus.connect("leave", lambda *_: table.proxy_focus(self, False))
+        self.add_controller(focus)
+
+    def key_pressed(self, _controller, keyval, _code, _state):
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_space, Gdk.KEY_KP_Space):
+            self.table.activate_item(self.key)
+            return True
+        return False
+
+    def do_contains(self, x, y):
+        if self.curve is None:
+            return Gtk.Widget.do_contains(self, x, y)
+        # A chord takes only points within 7px of its curve.
+        return curve_distance(self.curve, x + self.origin[0], y + self.origin[1]) <= 7
+
+
+MessageProxy.set_css_name("asb-message-proxy")
+
+
+def snapshot_circle(snapshot, x, y, radius, color):
+    builder = Gsk.PathBuilder.new()
+    builder.add_circle(Graphene.Point().init(x, y), radius)
+    snapshot.append_fill(builder.to_path(), Gsk.FillRule.WINDING, color)
+
+
+def snapshot_stroke(snapshot, path, width, color, dash=None):
+    line = Gsk.Stroke.new(width)
+    line.set_line_cap(Gsk.LineCap.ROUND)
+    if dash:
+        line.set_dash(dash)
+    snapshot.append_stroke(path, line, color)
+
+
+def circle_path(x, y, radius):
+    builder = Gsk.PathBuilder.new()
+    builder.add_circle(Graphene.Point().init(x, y), radius)
+    return builder.to_path()
+
+
 def sector_path(cx, cy, inner, outer, start, end):
     def point(radius, degrees):
         angle = math.radians(degrees)
@@ -8721,8 +8965,636 @@ def snapshot_layout(snapshot, layout, x, y, color):
     snapshot.restore()
 
 
+def animations_enabled(widget):
+    return bool(widget.get_settings().get_property("gtk-enable-animations"))
+
+
+class TableCanvas(Gtk.Widget):
+    """The drawn layer of the round table; a Gtk.Overlay measures and allocates with its layout manager, so the table draws here."""
+    __gtype_name__ = "AsbTableCanvas"
+
+    def __init__(self, table):
+        super().__init__(hexpand=True, vexpand=True)
+        self.table = table
+
+    def do_get_request_mode(self):
+        return Gtk.SizeRequestMode.HEIGHT_FOR_WIDTH if self.table.narrow else Gtk.SizeRequestMode.CONSTANT_SIZE
+
+    def do_measure(self, orientation, for_size):
+        # The narrow layout gives the table a square of up to 560px; the wide layout gives it the free space.
+        if orientation == Gtk.Orientation.VERTICAL and self.table.narrow and for_size > 0:
+            height = min(for_size, 560)
+            return height, height, -1, -1
+        return 0, 0, -1, -1
+
+    def do_size_allocate(self, width, height, _baseline):
+        self.table.allocated(width, height)
+
+    def do_snapshot(self, snapshot):
+        self.table.draw(snapshot)
+
+
+class RoundTable(Gtk.Overlay):
+    """The Messages round table (the preview's renderTable): machine arcs, seats, chords and the live light, drawn with Gsk paths.
+    Pins and chords have invisible focusable proxies; the center content is a box of real labels."""
+    __gtype_name__ = "AsbRoundTable"
+
+    def __init__(self, window):
+        super().__init__(hexpand=True, vexpand=True, overflow=Gtk.Overflow.HIDDEN)
+        self.window = window
+        self.view = self.geometry = self.move = self.tick_id = None
+        self.narrow = False
+        self.small = False
+        self.size = (0, 0)
+        self.chords, self.chord_keys, self.pins, self.labels, self.machine_items = [], [], {}, {}, {}
+        # The pin and the chord under the pointer, and the pin and the chord with keyboard focus.
+        self.hover = {"seat": None, "chord": None, "focus": None, "chord_focus": None}
+        self.proxies, self.proxy_order = {}, []
+        self.flights, self.rings, self.send_until = [], [], {}
+        self.icons = {}
+        self.update_property([Gtk.AccessibleProperty.LABEL], ["Machines, sessions and messages"])
+        self.canvas = TableCanvas(self)
+        self.set_child(self.canvas)
+        self.center = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, can_target=False, visible=False)
+        self.center.add_css_class("asb-msg-center")
+        self.add_overlay(self.center)
+        self.connect("get-child-position", self.child_position)
+        motion = Gtk.EventControllerMotion()
+        motion.connect("motion", self.pointer_moved)
+        motion.connect("leave", self.pointer_left)
+        self.add_controller(motion)
+        click = Gtk.GestureClick()
+        click.connect("released", self.clicked)
+        self.add_controller(click)
+        self.connect("unmap", lambda *_: self.stop_motion())
+
+    # Data and layout.
+    def update(self, view, animate=False, after=()):
+        """Show a new view; with animate, seats that change move along the circle first. after runs once the seats are in place."""
+        previous = None
+        if self.geometry is not None:
+            previous = {"geometry": self.geometry, "pins": self.pins, "chords": self.chords, "labels": self.labels, "items": self.machine_items}
+        after = self.finish_move() + list(after)
+        self.view = view
+        seated = view["seated"]
+        self.pins = {seat_id: self.pin_info(seat_id) for seat_id in seated} if ACTIVITY_PATHS else {}
+        placed = set(self.pins)
+        self.chord_keys = [key for key, pair in view["pairs"].items() if pair["a"] in placed and pair["b"] in placed and pair["a"] != pair["b"]]
+        if self.hover["seat"] not in placed:
+            self.hover["seat"] = None
+        if self.hover["chord"] not in self.chord_keys:
+            self.hover["chord"] = None
+        self.sync_proxies()
+        self.layout_table()
+        moving = (animate and previous is not None and self.geometry is not None and previous["geometry"]["ids"] != self.geometry["ids"]
+                  and (previous["geometry"]["W"], previous["geometry"]["H"]) == (self.geometry["W"], self.geometry["H"])
+                  and animations_enabled(self) and self.get_mapped())
+        if moving:
+            self.move = {"start": GLib.get_monotonic_time(), "previous": previous, "after": after, "rebuilt": False}
+            self.ensure_tick()
+        else:
+            for callback in after:
+                callback()
+        self.queue_allocate()
+        self.canvas.queue_draw()
+
+    def pin_info(self, seat_id):
+        view = self.view
+        seat = view["seats"][seat_id]
+        index = next((index for index, machine in enumerate(view["machines"]) if machine["machineId"] == seat.get("machineId")), None)
+        machine = view["machines"][index] if index is not None else {}
+        counts = view["counts"].get(seat_id, {"sent": 0, "received": 0})
+        title = seat.get("title") or "Other sessions"
+        layout = activity_layout(self, seat_label_text(title), 12)
+        _ink, logical = layout.get_pixel_extents()
+        return {"title": title, "app": message_app(seat), "machine": seat.get("machineId", ""), "hue": machine_hue(index if index is not None else 0),
+                "offline": machine.get("state") == "offline", "layout": layout, "w": logical.width, "h": logical.height,
+                "label": f"{title}, {ACTIVITY_APP_LABELS[message_app(seat)]}, {machine.get('name', '')}: {counts['sent']} sent, {counts['received']} received"}
+
+    def sync_proxies(self):
+        wanted = [("pin", seat_id) for seat_id in self.pins] + [("chord", key) for key in self.chord_keys]
+        for key in [key for key in self.proxies if key not in wanted]:
+            self.remove_overlay(self.proxies.pop(key))
+        for key in wanted:
+            if key not in self.proxies:
+                self.proxies[key] = MessageProxy(self, key)
+                self.add_overlay(self.proxies[key])
+            proxy = self.proxies[key]
+            if key[0] == "pin":
+                text = self.pins[key[1]]["label"]
+            else:
+                pair = self.view["pairs"][key[1]]
+                text = f"{self.title(pair['a'])} and {self.title(pair['b'])}: {format_count(pair['n'])} message{'' if pair['n'] == 1 else 's'}"
+            proxy.update_property([Gtk.AccessibleProperty.LABEL], [text])
+        self.proxy_order = [self.proxies[key] for key in wanted]
+
+    def title(self, seat_id):
+        return (self.view["seats"].get(seat_id) or {}).get("title") or "Other sessions"
+
+    def layout_table(self):
+        width, height = self.canvas.get_width(), self.canvas.get_height()
+        if not width or not height or self.view is None or not ACTIVITY_PATHS:
+            self.geometry, self.chords = None, []
+            return
+        view = self.view
+        geometry = self.geometry = table_geometry(width, height, list(self.pins), view["seats"], view["machines"])
+        small = geometry["S"] < 480
+        if small != self.small:
+            self.small = small
+            # The center or the reader shows the same content; the window swaps them after this layout.
+            GLib.idle_add(self.window.table_size_changed)
+        pairs = [view["pairs"][key] for key in self.chord_keys]
+        largest = max([1] + [pair["n"] for pair in pairs])
+        self.chords = []
+        for pair in pairs:
+            a, b = pair["a"], pair["b"]
+            same = self.pins[a]["machine"] == self.pins[b]["machine"]
+            start, control, end = chord_curve(geometry, a, b, same)
+            table = curve_table(start, control, end)
+            bad = pair["bad"] == pair["n"]
+            fails = []
+            if not bad:
+                # The receiver end (85% to 100% from the sender) of each direction with not-sent messages.
+                length = table[1][-1]
+                for count, forward in ((pair["badAB"], True), (pair["badBA"], False)):
+                    if count:
+                        steps = max(1, math.ceil(.15 * length / 4))
+                        fails.append([curve_point(table, (.85 + .15 * index / steps) if forward else 1 - (.85 + .15 * index / steps)) for index in range(steps + 1)])
+            more_a = pair["ab"] >= pair["ba"]
+            colors = None if bad else (self.pins[a]["hue"], self.pins[b]["hue"]) if more_a else (self.pins[b]["hue"], self.pins[a]["hue"])
+            self.chords.append({"key": pair["key"], "a": a, "b": b, "points": (start, control, end), "table": table, "bad": bad, "same": same,
+                                "width": 2 if bad else 1.5 + 7 * math.sqrt(pair["n"] / largest), "colors": colors,
+                                "from": start if more_a else end, "to": end if more_a else start, "fails": fails})
+        self.machine_items = self.machine_labels(geometry["mach"])
+        self.place_labels()
+        for key, proxy in self.proxies.items():
+            if key[0] == "pin":
+                proxy.curve = None
+            else:
+                chord = next(chord for chord in self.chords if chord["key"] == key[1])
+                xs, ys = [point[0] for point in chord["table"][0]], [point[1] for point in chord["table"][0]]
+                proxy.origin = (math.floor(min(xs) - 7), math.floor(min(ys) - 7))
+                proxy.curve = chord["table"]
+                proxy.bounds = (proxy.origin[0], proxy.origin[1], math.ceil(max(xs) - min(xs) + 15), math.ceil(max(ys) - min(ys) + 15))
+
+    def machine_labels(self, arcs):
+        """Machine names and states outside the band, at the arc centers (the preview's drawRing labels)."""
+        items = {}
+        geometry = self.geometry
+        for machine in self.view["machines"]:
+            arc = arcs.get(machine["machineId"])
+            if arc is None:
+                continue
+            x, y = table_point(geometry, geometry["Ro"] + 26, arc["mid"])
+            cos, sin = math.cos(math.radians(arc["mid"])), math.sin(math.radians(arc["mid"]))
+            dy = -8 if sin < -.25 else 8 if sin > .25 else 0
+            entries = []
+            for text, size, weight, offset, role in ((machine.get("name", ""), 13, Pango.Weight.SEMIBOLD, -7, "text"),
+                                                     (machine_state_text(machine), 11, Pango.Weight.NORMAL, 9, "dim")):
+                layout = activity_layout(self, text, size, weight)
+                _ink, logical = layout.get_pixel_extents()
+                left = x if cos > .25 else x - logical.width if cos < -.25 else x - logical.width / 2
+                entries.append({"layout": layout, "x": left, "y": y + dy + offset - logical.height / 2, "w": logical.width, "h": logical.height, "role": role})
+            items[machine["machineId"]] = entries
+        return items
+
+    def label_place(self, seat_id, angle):
+        return self.label_place_with(self.pins[seat_id], angle, self.geometry)
+
+    def place_labels(self):
+        """A seat label shows only when it overlaps no placed label and no pin; newest first, the focused or selected session first of all."""
+        geometry = self.geometry
+        small = geometry["S"] < 480
+
+        def hit(a, b):
+            return a[0] < b[2] - .5 and b[0] < a[2] - .5 and a[1] < b[3] - .5 and b[1] < a[3] - .5
+        pins = []
+        for seat_id in self.pins:
+            x, y = table_point(geometry, geometry["Rp"], geometry["seat"][seat_id])
+            pins.append((x - 16, y - 16, x + 16, y + 16))
+        placed = [] if small else [(item["x"] - 1, item["y"], item["x"] + item["w"] + 1, item["y"] + item["h"])
+                                   for entries in self.machine_items.values() for item in entries]
+        first = [seat_id for seat_id in (self.hover["focus"], *self.window.selected_ids()) if seat_id]
+        activity, circle = self.view["activity"], {seat_id: index for index, seat_id in enumerate(self.pins)}
+        order = sorted(self.pins, key=lambda seat_id: (first.index(seat_id) if seat_id in first else len(first), -activity.get(seat_id, 0), circle[seat_id]))
+        self.labels = {}
+        for seat_id in order:
+            x, y = self.label_place(seat_id, geometry["seat"][seat_id])
+            pin = self.pins[seat_id]
+            box = (x - 1, y, x + pin["w"] + 1, y + pin["h"])
+            shown = not small and not any(hit(other, box) for other in placed + pins)
+            if shown:
+                placed.append(box)
+            self.labels[seat_id] = {"box": box, "shown": shown}
+            proxy = self.proxies.get(("pin", seat_id))
+            if proxy:
+                proxy.set_tooltip_text(None if shown else pin["title"])
+
+    def child_position(self, _overlay, widget, rectangle):
+        geometry = self.geometry
+        rectangle.x = rectangle.y = rectangle.width = rectangle.height = 0
+        if widget is self.center:
+            minimum = widget.measure(Gtk.Orientation.HORIZONTAL, -1)[0]
+            width = max(minimum, round(geometry["Rc"] * 1.6)) if geometry else minimum
+            height = widget.measure(Gtk.Orientation.VERTICAL, width)[1]
+            if geometry:
+                rectangle.x, rectangle.y = round(geometry["cx"] - width / 2), round(geometry["cy"] - height / 2)
+            rectangle.width, rectangle.height = width, height
+        elif geometry is None:
+            pass
+        elif widget.key[0] == "pin" and widget.key[1] in geometry["seat"]:
+            x, y = table_point(geometry, geometry["Rp"], geometry["seat"][widget.key[1]])
+            rectangle.x, rectangle.y, rectangle.width, rectangle.height = round(x - 20), round(y - 20), 40, 40
+        elif widget.key[0] == "chord" and getattr(widget, "curve", None) is not None:
+            rectangle.x, rectangle.y, rectangle.width, rectangle.height = widget.bounds
+        return True
+
+    def allocated(self, width, height):
+        if (width, height) != self.size:
+            self.size = (width, height)
+            for callback in self.finish_move():
+                callback()
+            self.layout_table()
+
+    def do_focus(self, direction):
+        # Pins in circle order, then chords; GTK would sort the proxies by their places.
+        order = [proxy for proxy in self.proxy_order if proxy.get_child_visible() and proxy.get_mapped()]
+        if direction not in (Gtk.DirectionType.TAB_FORWARD, Gtk.DirectionType.TAB_BACKWARD) or not order:
+            return Gtk.Overlay.do_focus(self, direction)
+        step = 1 if direction == Gtk.DirectionType.TAB_FORWARD else -1
+        current = self.get_focus_child()
+        index = order.index(current) + step if current in order else 0 if step == 1 else len(order) - 1
+        if 0 <= index < len(order):
+            order[index].grab_focus()
+            return True
+        return False
+
+    # Pointer, keyboard, and focus.
+    def hit(self, x, y):
+        geometry = self.geometry
+        if geometry is None:
+            return None, None
+        for seat_id in self.pins:
+            px, py = table_point(geometry, geometry["Rp"], geometry["seat"][seat_id])
+            if math.hypot(x - px, y - py) <= 16:
+                return seat_id, None
+        # A shown seat label stands for its pin.
+        for seat_id, label in self.labels.items():
+            left, top, right, bottom = label["box"]
+            if label["shown"] and left <= x <= right and top <= y <= bottom:
+                return seat_id, None
+        best, found = 7, None
+        for chord in self.chords:
+            distance = curve_distance(chord["table"], x, y)
+            if distance <= best:
+                best, found = distance, chord["key"]
+        return None, found
+
+    def pointer_moved(self, _controller, x, y):
+        seat, chord = self.hit(x, y)
+        if (seat, chord) != (self.hover["seat"], self.hover["chord"]):
+            self.hover["seat"], self.hover["chord"] = seat, chord
+            self.changed()
+
+    def pointer_left(self, *_args):
+        if self.hover["seat"] or self.hover["chord"]:
+            self.hover["seat"] = self.hover["chord"] = None
+            self.changed()
+
+    def clicked(self, _gesture, _count, x, y):
+        seat, chord = self.hit(x, y)
+        if seat:
+            self.proxies[("pin", seat)].grab_focus()
+            self.window.open_thread("session", seat)
+        elif chord:
+            self.window.open_thread("pair", chord)
+        else:
+            # A click on an empty part of the table closes the thread.
+            self.window.close_thread()
+
+    def activate_item(self, key):
+        self.window.open_thread("session" if key[0] == "pin" else "pair", key[1])
+
+    def proxy_focus(self, proxy, entered):
+        slot = "focus" if proxy.key[0] == "pin" else "chord_focus"
+        if entered:
+            self.hover[slot] = proxy.key[1]
+        elif self.hover[slot] == proxy.key[1]:
+            self.hover[slot] = None
+        if slot == "focus" and self.geometry is not None:
+            self.place_labels()
+        self.changed()
+
+    def changed(self):
+        self.canvas.queue_draw()
+        self.window.render_center()
+
+    def state(self):
+        """The preview's applyHighlight: (chord, seat, thread, flying, pin) for the drawing and the center."""
+        chord = self.hover["chord"] or self.hover["chord_focus"]
+        seat = None if chord else self.hover["seat"] or self.hover["focus"]
+        thread = self.window.thread if not chord and not seat else None
+        flying = set() if chord or seat or thread else {flight["key"] for flight in self.flights if flight["start"] <= GLib.get_monotonic_time()}
+        pin = seat or (thread["key"] if thread and thread["kind"] == "session" else None)
+        return chord, seat, thread, flying, pin
+
+    def chord_alpha(self, chord, state):
+        hover_chord, seat, thread, flying, _pin = state
+        key = chord["key"]
+        if hover_chord:
+            return 1 if key == hover_chord else .12
+        if seat:
+            return 1 if seat in key else .12
+        if thread:
+            on = key == thread["key"] if thread["kind"] == "pair" else thread["key"] in key
+            return 1 if on else .2
+        if flying:
+            return 1 if key in flying else .25
+        return .8 if chord["bad"] else .55
+
+    # Motion.
+    def ensure_tick(self):
+        if self.tick_id is None:
+            self.tick_id = self.add_tick_callback(self.tick)
+
+    def tick(self, _widget, _clock):
+        now = GLib.get_monotonic_time()
+        move = self.move
+        if move is not None:
+            elapsed = (now - move["start"]) / 1000
+            if elapsed >= 300 and not move["rebuilt"]:
+                move["rebuilt"] = True
+                after, move["after"] = move["after"], []
+                for callback in after:
+                    callback()
+            if elapsed >= 500 and self.move is move:
+                self.move = None
+        for flight in list(self.flights):
+            elapsed = (now - flight["start"]) / 1000
+            if elapsed >= 900 and flight["end"] == 1 and not flight["ringed"]:
+                flight["ringed"] = True
+                self.rings.append({"seat": flight["to"], "start": flight["start"] + 900_000})
+            if elapsed >= (1200 if flight["end"] < 1 else 900):
+                self.flights.remove(flight)
+        self.rings = [ring for ring in self.rings if now - ring["start"] < 420_000]
+        self.canvas.queue_draw()
+        if self.move or self.flights or self.rings or any(until > now for until in self.send_until.values()):
+            return True
+        self.tick_id = None
+        return False
+
+    def finish_move(self):
+        """End a seat move at once; returns its callbacks that did not run yet."""
+        move, self.move = self.move, None
+        return move["after"] if move else []
+
+    def stop_motion(self):
+        self.finish_move()
+        self.flights, self.rings, self.send_until = [], [], {}
+        if self.tick_id is not None:
+            self.remove_tick_callback(self.tick_id)
+            self.tick_id = None
+        self.canvas.queue_draw()
+
+    def fly(self, records):
+        """The preview's fly: one light per arrival along its chord, 150ms apart; a not-sent light stops at 85% and fades."""
+        if not ACTIVITY_PATHS or not animations_enabled(self) or not self.get_mapped():
+            return
+        start = GLib.get_monotonic_time()
+        for record in records:
+            if len(self.flights) >= MESSAGE_FLIGHT_LIMIT:
+                break
+            key = next((key for key in self.chord_keys if {record["from"], record["to"]} == set(key)), None)
+            if key is None:
+                continue
+            self.flights.append({"key": key, "from": record["from"], "to": record["to"], "end": .85 if message_status(record) == "not-sent" else 1,
+                                 "start": start, "ringed": False})
+            self.send_until[record["from"]] = max(self.send_until.get(record["from"], 0), start + 160_000)
+            start += 150_000
+        self.ensure_tick()
+        self.canvas.queue_draw()
+
+    def frame(self, now):
+        """The seat and arc angles to draw now, the chords with their fade, and the leaving seats (the preview's startTrans)."""
+        geometry, move = self.geometry, self.move
+        if move is None:
+            return geometry["seat"], geometry["mach"], self.machine_items, [(self.chords, 1)], [], {}
+        previous = move["previous"]
+        elapsed = (now - move["start"]) / 1000
+        enter = {seat_id: min(1, max(0, elapsed) / 200) for seat_id in geometry["ids"] if seat_id not in previous["geometry"]["seat"]}
+        leaving = [(seat_id, max(0, 1 - elapsed / 150)) for seat_id in previous["geometry"]["ids"] if seat_id not in geometry["seat"]]
+        if elapsed >= 300:
+            return geometry["seat"], geometry["mach"], self.machine_items, [(self.chords, min(1, (elapsed - 300) / 200))], leaving, enter
+        k = ease_bars(max(0, elapsed) / 300)
+        old_seat, old_mach = previous["geometry"]["seat"], previous["geometry"]["mach"]
+        seats = {seat_id: old_seat[seat_id] + (angle - old_seat[seat_id]) * k if seat_id in old_seat else angle for seat_id, angle in geometry["seat"].items()}
+        arcs = {}
+        for machine, arc in geometry["mach"].items():
+            old = old_mach.get(machine)
+            arcs[machine] = {name: old[name] + (arc[name] - old[name]) * k for name in arc} if old else arc
+        fade = max(0, 1 - elapsed / 100) if previous["chords"] else 0
+        return seats, arcs, self.machine_labels(arcs), [(previous["chords"], fade)], leaving, enter
+
+    # Drawing.
+    def draw(self, snapshot):
+        geometry = self.geometry
+        if not ACTIVITY_PATHS or geometry is None or not geometry["ids"]:
+            return
+        palette, now = self.window.palette, GLib.get_monotonic_time()
+        state = self.state()
+        seats, arcs, items, chord_sets, leaving, enter = self.frame(now)
+        cx, cy = geometry["cx"], geometry["cy"]
+        inner = geometry["Rc"] if geometry["S"] >= 480 else 0
+        for machine, arc in arcs.items():
+            pin = next(pin for pin in self.pins.values() if pin["machine"] == machine)
+            snapshot.append_fill(sector_path(cx, cy, inner, geometry["Ri"], arc["start"], arc["end"]), Gsk.FillRule.WINDING,
+                                 alpha_color(pin["hue"], .03 if pin["offline"] else .05))
+            if pin["offline"]:
+                for angle in (arc["start"], arc["end"]):
+                    builder = Gsk.PathBuilder.new()
+                    builder.move_to(*table_point(geometry, inner, angle))
+                    builder.line_to(*table_point(geometry, geometry["Ri"], angle))
+                    snapshot_stroke(snapshot, builder.to_path(), 1, rgba(pin["hue"]), [4, 3])
+        for machine, arc in arcs.items():
+            pin = next(pin for pin in self.pins.values() if pin["machine"] == machine)
+            band = sector_path(cx, cy, geometry["Ri"], geometry["Ro"], arc["start"], arc["end"])
+            snapshot.append_fill(band, Gsk.FillRule.WINDING, alpha_color(pin["hue"], .45 if pin["offline"] else .85))
+            if pin["offline"]:
+                line = Gsk.Stroke.new(1)
+                line.set_dash([4, 3])
+                snapshot.append_stroke(band, line, rgba(pin["hue"]))
+        for chords, fade in chord_sets:
+            if fade > 0:
+                for chord in chords:
+                    self.snapshot_chord(snapshot, chord, fade * self.chord_alpha(chord, state), chord["key"] == state[0], palette)
+        if geometry["S"] >= 480:
+            snapshot_circle(snapshot, cx, cy, geometry["Rc"], rgba(palette["win"]))
+            snapshot_stroke(snapshot, circle_path(cx, cy, geometry["Rc"]), 1, rgba(palette["rule"]))
+        self.snapshot_lights(snapshot, now, palette)
+        shown = state[1]
+        for seat_id, angle in seats.items():
+            label = self.labels.get(seat_id)
+            if label and (label["shown"] or seat_id == shown):
+                self.snapshot_label(snapshot, self.pins[seat_id], *self.label_place(seat_id, angle), enter.get(seat_id, 1), palette)
+        for seat_id, angle in seats.items():
+            self.snapshot_pin(snapshot, self.pins[seat_id], *table_point(geometry, geometry["Rp"], angle), seat_id, state, enter.get(seat_id, 1), now, palette)
+        if self.move:
+            previous = self.move["previous"]
+            for seat_id, alpha in leaving:
+                if alpha <= 0:
+                    continue
+                angle, pin = previous["geometry"]["seat"][seat_id], previous["pins"][seat_id]
+                if previous["labels"].get(seat_id, {}).get("shown"):
+                    self.snapshot_label(snapshot, pin, *self.label_place_with(pin, angle, previous["geometry"]), alpha, palette)
+                self.snapshot_pin(snapshot, pin, *table_point(previous["geometry"], previous["geometry"]["Rp"], angle), None, (None,) * 5, alpha, now, palette)
+        for ring in self.rings:
+            angle = geometry["seat"].get(ring["seat"])
+            if angle is None:
+                continue
+            value = ease_bars(min(1, (now - ring["start"]) / 420_000))
+            snapshot_stroke(snapshot, circle_path(*table_point(geometry, geometry["Rp"], angle), 16 + 10 * value), 1.5, alpha_color(palette["light"], 1 - value))
+        for entries in items.values():
+            for item in entries:
+                snapshot_layout(snapshot, item["layout"], item["x"], item["y"], rgba(palette[item["role"]]))
+
+    @staticmethod
+    def label_place_with(pin, angle, geometry):
+        x, y = table_point(geometry, geometry["Rp"] - seat_label_offset(angle, pin["w"] / 2), angle)
+        return x - pin["w"] / 2, y - pin["h"] / 2
+
+    def snapshot_chord(self, snapshot, chord, alpha, outline, palette):
+        start, control, end = chord["points"]
+        builder = Gsk.PathBuilder.new()
+        builder.move_to(*start)
+        builder.quad_to(*control, *end)
+        path = builder.to_path()
+        if outline:
+            snapshot_stroke(snapshot, path, chord["width"] + 2, rgba(palette["text"]))
+        snapshot.push_opacity(alpha)
+        line = Gsk.Stroke.new(chord["width"])
+        line.set_line_cap(Gsk.LineCap.ROUND)
+        if chord["bad"]:
+            line.set_dash([5, 5])
+            snapshot.append_stroke(path, line, rgba(palette["bad"]))
+        elif chord["same"]:
+            snapshot.append_stroke(path, line, rgba(chord["colors"][0]))
+        else:
+            _found, bounds = path.get_stroke_bounds(line)
+            stops = []
+            for offset, value in ((0, chord["colors"][0]), (1, chord["colors"][1])):
+                stop = Gsk.ColorStop()
+                stop.offset, stop.color = offset, rgba(value)
+                stops.append(stop)
+            snapshot.push_stroke(path, line)
+            snapshot.append_linear_gradient(bounds, Graphene.Point().init(*chord["from"]), Graphene.Point().init(*chord["to"]), stops)
+            snapshot.pop()
+        snapshot.pop()
+        for points in chord["fails"]:
+            builder = Gsk.PathBuilder.new()
+            builder.move_to(*points[0])
+            for point in points[1:]:
+                builder.line_to(*point)
+            snapshot_stroke(snapshot, builder.to_path(), 2, rgba(palette["bad"]), [5, 5])
+
+    def snapshot_label(self, snapshot, pin, x, y, alpha, palette):
+        halo, text = alpha_color(palette["win"], alpha), alpha_color(palette["text"], alpha)
+        for step in range(8):
+            angle = math.pi * step / 4
+            snapshot_layout(snapshot, pin["layout"], x + 2 * math.cos(angle), y + 2 * math.sin(angle), halo)
+        snapshot_layout(snapshot, pin["layout"], x, y, text)
+
+    def snapshot_pin(self, snapshot, pin, x, y, seat_id, state, alpha, now, palette):
+        if pin["offline"]:
+            alpha *= .75
+        if state[4] and seat_id != state[4]:
+            alpha *= .4
+        snapshot.push_opacity(alpha)
+        snapshot_circle(snapshot, x, y, 16, rgba(palette["win"]))
+        sending = seat_id is not None and self.send_until.get(seat_id, 0) > now >= self.send_until[seat_id] - 160_000
+        snapshot_stroke(snapshot, circle_path(x, y, 16), 1.5, rgba(palette["light"] if sending else pin["hue"]), [4, 3] if pin["offline"] else None)
+        proxy = self.proxies.get(("pin", seat_id))
+        if proxy is not None and proxy.has_focus():
+            snapshot_stroke(snapshot, circle_path(x, y, 20), 2, rgba(palette["accent"]))
+        icon = self.icons.get(pin["app"])
+        if icon is None:
+            theme = Gtk.IconTheme.get_for_display(self.get_display())
+            icon = self.icons[pin["app"]] = theme.lookup_icon(ACTIVITY_APP_ICONS[pin["app"]], None, 14, self.get_scale_factor(),
+                                                            Gtk.TextDirection.NONE, 0)
+        snapshot.save()
+        snapshot.translate(Graphene.Point().init(x - 7, y - 7))
+        icon.snapshot_symbolic(snapshot, 14, 14, [alpha_color(palette["text"], .85)])
+        snapshot.restore()
+        snapshot.pop()
+
+    def snapshot_lights(self, snapshot, now, palette):
+        for flight in self.flights:
+            elapsed = (now - flight["start"]) / 1000
+            chord = next((chord for chord in self.chords if chord["key"] == flight["key"]), None)
+            if elapsed < 0 or chord is None:
+                continue
+            forward = flight["from"] == chord["a"]
+
+            def place(ms):
+                distance = ease_flight(min(900, ms) / 900) * flight["end"]
+                return curve_point(chord["table"], distance if forward else 1 - distance)
+            alpha = 1 if elapsed <= 900 else max(0, 1 - (elapsed - 900) / 300)
+            moment = min(900, elapsed)
+            snapshot.push_opacity(alpha)
+            head = place(moment)
+            snapshot_circle(snapshot, *head, 6, alpha_color(palette["accent"], .25))
+            for index in reversed(range(8)):
+                point = place(max(0, moment - (index + 1) / 8 * .2 * moment))
+                snapshot_circle(snapshot, *point, 2.6 - 2 * index / 7, alpha_color(palette["light"], .5 - .45 * index / 7))
+            snapshot_circle(snapshot, *head, 3, rgba(palette["light"]))
+            snapshot.pop()
+
+
+class StatusShare(Gtk.Widget):
+    """The ledger's status share bar: one segment per status with messages, 1px apart."""
+    __gtype_name__ = "AsbStatusShare"
+
+    def __init__(self, window):
+        super().__init__(accessible_role=Gtk.AccessibleRole.IMG, height_request=8, hexpand=True, margin_top=8, margin_bottom=10)
+        self.window, self.counts = window, {}
+
+    def update(self, counts):
+        self.counts = {status: counts[status] for status in ACTIVITY_STATUSES if counts.get(status)}
+        self.update_property([Gtk.AccessibleProperty.LABEL], [", ".join(f"{ACTIVITY_STATUS_LABELS[status]} {count}" for status, count in self.counts.items())])
+        self.queue_draw()
+
+    def do_snapshot(self, snapshot):
+        total, width = sum(self.counts.values()), self.get_width()
+        if not total or not width:
+            return
+        free = width - (len(self.counts) - 1)
+        # Each segment keeps at least 2px, as the preview's min-width.
+        sizes = [max(2, free * count / total) for count in self.counts.values()]
+        scale = free / sum(sizes)
+        x = 0
+        for status, size in zip(self.counts, sizes):
+            rectangle = Graphene.Rect().init(x, 0, size * scale, self.get_height())
+            rounded = Gsk.RoundedRect()
+            rounded.init_from_rect(rectangle, 2)
+            snapshot.push_rounded_clip(rounded)
+            snapshot.append_color(rgba(ACTIVITY_STATUS_COLORS[status]), rectangle)
+            snapshot.pop()
+            x += size * scale + 1
+
+
+class ThreadBlockLayout(Gtk.BoxLayout):
+    """The layout of a thread message block: at any height its width is its natural width.
+    The grid asks a start or end aligned block for its width at a height, and a wrapped label finds that width by a slow search."""
+    __gtype_name__ = "AsbThreadBlockLayout"
+
+    def do_measure(self, widget, orientation, for_size):
+        return Gtk.BoxLayout.do_measure(self, widget, orientation, -1 if orientation == Gtk.Orientation.HORIZONTAL else for_size)
+
+
+MESSAGE_STATUS_TEXT = {"accepted": "text", "written": "#959ba3", "held": "warn", "not-sent": "bad", "unknown": "dim"}
+
+
 class MessagesWindow(ActivityWindow):
-    """The latest messages, with their full text and an optional session filter."""
+    """The Messages window: the Roundtable of the machine group, and the ledger or a thread."""
     KIND = "messages"
     TITLE = "Messages"
     ROUTE = "/api/activity/messages"
@@ -8732,167 +9604,644 @@ class MessagesWindow(ActivityWindow):
 
     def __init__(self, application, base, fetch=None, clock=None):
         super().__init__(application, base, fetch=fetch, clock=clock)
-        self.session = self.pending_session = self.feed_key = self.scroll_tick = self.feed_idle = None
+        self.view = self.thread = self.thread_reply = self.thread_error = self.pending_session = self.scroll_target = self.scroll_tick = None
+        self.reply_key, self.thread_blocks = None, {}
+        theme = Gtk.IconTheme.get_for_display(self.get_display())
+        icons = str(Path(__file__).parents[1] / "assets" / "icons")
+        if icons not in theme.get_search_path():
+            theme.add_search_path(icons)
         self.set_size_request(480, 420)
-        self.paths_note.set_visible(False)
-        self.feed = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
-        self.feed.add_css_class("asb-msg-feed")
-        self.clamp = Adw.Clamp(maximum_size=760, tightening_threshold=600, child=self.feed)
-        self.feed_scroll = Gtk.ScrolledWindow(child=self.clamp, hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
-        self.data_page.append(self.feed_scroll)
-        self.session_chip = Gtk.Button(tooltip_text="Show all sessions", visible=False)
-        self.session_chip.add_css_class("asb-filter-pill")
-        self.session_chip.update_property([Gtk.AccessibleProperty.LABEL], ["Show all sessions"])
-        content = Gtk.Box(spacing=6)
-        self.session_title = Gtk.Label(ellipsize=Pango.EllipsizeMode.END, max_width_chars=18)
-        content.append(self.session_title)
-        content.append(Gtk.Image(icon_name="window-close-symbolic", pixel_size=12))
-        self.session_chip.set_child(content)
-        self.session_chip.connect("clicked", lambda *_: self.clear_session())
-        self.toolbar_start.append(self.session_chip)
+
+        # The table, the reader for a small table, and the ledger column.
+        self.table = RoundTable(self)
+        self.reader = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, visible=False)
+        self.reader.add_css_class("asb-msg-reader")
+        self.left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
+        for widget in (self.table, self.reader):
+            self.left.append(widget)
+        self.ledger = Gtk.Stack(transition_type=Gtk.StackTransitionType.SLIDE_LEFT_RIGHT, transition_duration=200, vhomogeneous=False,
+                                hhomogeneous=True, interpolate_size=False)
+        self.ledger.add_css_class("asb-msg-ledger")
+        self.ledger.set_size_request(340, -1)
+        self.ledger.update_property([Gtk.AccessibleProperty.LABEL], ["Message statistics"])
+        self.stats = self.build_stats()
+        self.stats_scroll = Gtk.ScrolledWindow(child=self.stats, hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
+        self.ledger.add_named(self.stats_scroll, "stats")
+        self.ledger.add_named(self.build_thread(), "thread")
+        self.wide = Gtk.Box(vexpand=True)
+        self.wide.append(self.left)
+        self.wide.append(self.ledger)
+        self.narrow_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.narrow_scroll = Gtk.ScrolledWindow(child=self.narrow_box, hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True, visible=False)
+        self.data_page.append(self.wide)
+        self.data_page.append(self.narrow_scroll)
+        for name, condition in (("narrow", "max-width: 899px"), ("small", "max-width: 639px")):
+            breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(condition))
+            breakpoint.asb_name = name
+            self.add_breakpoint(breakpoint)
+        self.connect("notify::current-breakpoint", self.breakpoint_changed)
+        self.set_narrow(False)
+        self.set_columns(False)
+
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self.window_key)
         self.add_controller(keys)
 
     def palette_css(self, palette):
         scope = self.css_scope
-        return f"""
-{scope} .asb-msg-feed, {scope} .asb-msg-feed > row {{ background: {palette['win']}; padding: 0; }}
+        hues = "".join(f"{scope} .asb-msg-bg-{index} {{ background: alpha({hue}, .14); }}\n" for index, hue in enumerate(MACHINE_HUES))
+        statuses = "".join(f"{scope} .asb-msg-sw-{status} {{ background: {ACTIVITY_STATUS_COLORS[status]}; }}\n"
+                           f"{scope} .asb-msg-stt-{status} {{ color: {palette.get(color, color)}; }}\n" for status, color in MESSAGE_STATUS_TEXT.items())
+        return hues + statuses + f"""
+{scope} asb-message-proxy {{ outline: none; }}
 {scope} .asb-msg-small {{ font-size: 12px; }}
-{scope} .asb-msg-title, {scope} .asb-msg-body {{ font-size: 13px; }}
-{scope} .asb-msg-sender {{ font-weight: 600; }}
-{scope} .asb-msg-message {{ border-bottom: 1px solid {palette['rule']}; padding-bottom: 8px; }}
-{scope} .asb-msg-held {{ color: {palette['warn']}; }}
-{scope} .asb-msg-failed {{ color: {palette['bad']}; }}
-{scope} .asb-filter-pill {{ min-height: 24px; border-radius: 99px; padding: 2px 8px; font-size: 11px; }}
+{scope} .asb-msg-tiny {{ font-size: 11px; }}
+{scope} .asb-msg-ledger {{ background: {palette['win']}; }}
+{scope} .asb-msg-ledger.asb-msg-edge {{ border-left: 1px solid {palette['divider']}; }}
+{scope} .asb-msg-stats {{ padding: 16px 18px; }}
+{scope} .asb-msg-section-rule {{ margin-top: 18px; padding-top: 18px; border-top: 1px solid {palette['rule']}; }}
+{scope} .asb-msg-h2 {{ font-size: 13px; font-weight: 600; margin-bottom: 6px; }}
+{scope} .asb-msg-total {{ font-family: monospace; font-feature-settings: "tnum"; font-size: 30px; font-weight: 600; min-height: 42px; }}
+{scope} .asb-msg-swatch {{ min-width: 8px; min-height: 8px; border-radius: 2px; }}
+{scope} .asb-msg-cell {{ min-height: 24px; padding: 0 4px; border-top: 1px solid {palette['rule']}; font-family: monospace; font-feature-settings: "tnum"; font-size: 12px; }}
+{scope} .asb-msg-head {{ min-height: 24px; padding: 0 4px; }}
+{scope} .asb-msg-recent {{ min-height: 24px; padding: 0; border-radius: 4px; font-size: 12px; }}
+{scope} .asb-msg-recent:hover {{ background: alpha({palette['text']}, .06); }}
+{scope} .asb-msg-recent label {{ font-weight: normal; font-size: 12px; }}
+{scope} .asb-msg-thead {{ background: {palette['win']}; border-bottom: 1px solid {palette['divider']}; padding: 16px 18px 10px; }}
+{scope} .asb-msg-back {{ min-width: 28px; min-height: 28px; padding: 0; }}
+{scope} .asb-msg-route {{ font-size: 13px; font-weight: 600; min-height: 28px; }}
+{scope} .asb-msg-tlist {{ padding: 0 18px 4px; }}
+{scope} .asb-msg-tmore {{ font-size: 11px; margin-top: 10px; }}
+{scope} .asb-msg-tday {{ font-size: 11px; margin: 10px 0 6px; }}
+{scope} .asb-msg-block {{ padding: 6px 9px; border-radius: 6px; margin-top: 6px; }}
+{scope} .asb-msg-block.asb-msg-first {{ margin-top: 0; }}
+{scope} .asb-msg-block.asb-msg-hl {{ outline: 1px solid {palette['accent']}; outline-offset: 0; }}
+{scope} .asb-msg-who {{ font-size: 11px; font-weight: 600; color: {palette['text']}; }}
+{scope} .asb-msg-body {{ font-size: 13px; }}
+{scope} .asb-msg-reader {{ padding: 10px 16px; border-top: 1px solid {palette['divider']}; background: {palette['win']}; }}
+{scope} .asb-msg-c-time {{ font-family: monospace; font-feature-settings: "tnum"; font-size: 12px; color: {palette['dim']}; }}
+{scope} .asb-msg-c-route {{ font-size: 13px; font-weight: 600; }}
+{scope} .asb-msg-c-body {{ font-size: 14px; }}
+{scope} .asb-msg-c-name {{ font-size: 15px; font-weight: 600; }}
+{scope} .asb-msg-c-num {{ font-family: monospace; font-feature-settings: "tnum"; font-size: 18px; }}
+{scope} .asb-msg-c-dir {{ font-family: monospace; font-feature-settings: "tnum"; font-size: 14px; }}
+{scope} .asb-msg-c-fail {{ font-size: 12px; color: {palette['bad']}; }}
 """
 
-    def show_session(self, seat_id, title):
-        self.session = seat_id
-        self.pending_session = (seat_id, title) if self.data is None else None
-        self.session_title.set_label(title)
-        self.session_chip.set_visible(True)
-        if self.data is not None:
-            self.render(self.data, self.data)
+    def set_palette(self, colors):
+        super().set_palette(colors)
+        # The base class sets the first palette before this window has its drawn widgets.
+        if hasattr(self, "share"):
+            for widget in (self.table.canvas, self.share):
+                widget.queue_draw()
 
-    def clear_session(self):
-        self.session = self.pending_session = None
-        self.session_chip.set_visible(False)
-        if self.data is not None:
-            self.render(self.data, self.data)
-        self.period_menu.grab_focus()
+    # Layout.
+    def breakpoint_changed(self, *_args):
+        name = getattr(self.get_current_breakpoint(), "asb_name", None)
+        self.set_narrow(name in ("narrow", "small"))
+        self.set_columns(name == "narrow")
+
+    def set_narrow(self, narrow):
+        """Below 900px: one vertical scroll with the table, the reader, and the ledger."""
+        self.table.narrow = narrow
+        target, source = (self.narrow_box, self.wide) if narrow else (self.wide, self.narrow_box)
+        for widget in (self.left, self.ledger):
+            if widget.get_parent() is source:
+                source.remove(widget)
+            if widget.get_parent() is None:
+                target.append(widget)
+        self.left.set_vexpand(not narrow)
+        self.ledger.set_hexpand(narrow)
+        self.ledger.set_size_request(-1 if narrow else 340, -1)
+        (self.ledger.remove_css_class if narrow else self.ledger.add_css_class)("asb-msg-edge")
+        never, automatic = Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC
+        for scroll in (self.stats_scroll, self.thread_scroll):
+            scroll.set_policy(never, never if narrow else automatic)
+            scroll.set_propagate_natural_height(narrow)
+        self.wide.set_visible(not narrow)
+        self.narrow_scroll.set_visible(narrow)
+        self.table.canvas.queue_resize()
+        GLib.idle_add(self.table_size_changed)
+
+    def set_columns(self, two):
+        """From 640 to 899 px the ledger shows two columns; the right column starts without a rule."""
+        self.stats.set_orientation(Gtk.Orientation.HORIZONTAL if two else Gtk.Orientation.VERTICAL)
+        self.stats.set_homogeneous(two)
+        self.stats.set_spacing(32 if two else 0)
+        (self.machines_section.remove_css_class if two else self.machines_section.add_css_class)("asb-msg-section-rule")
+
+    def table_size_changed(self):
+        if not self.closed:
+            self.render_center()
+        return False
+
+    # Toolbar and ledger.
+    def build_stats(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.add_css_class("asb-msg-stats")
+        first, second = Gtk.Box(orientation=Gtk.Orientation.VERTICAL), Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.append(first)
+        box.append(second)
+
+        def section(title, column, first=False):
+            part = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            if not first:
+                part.add_css_class("asb-msg-section-rule")
+            part.append(label(title, "asb-msg-h2"))
+            column.append(part)
+            return part
+        messages = section("Messages", first, True)
+        self.total = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=300, hhomogeneous=False)
+        for name in ("a", "b"):
+            value = label("", "asb-msg-total")
+            self.total.add_named(value, name)
+        messages.append(self.total)
+        self.share = StatusShare(self)
+        messages.append(self.share)
+        self.legend = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        messages.append(self.legend)
+        apps = section("Between apps", first)
+        self.matrix = Gtk.Grid(hexpand=True)
+        apps.append(self.matrix)
+        self.app_pairs = label("", "asb-msg-small")
+        self.app_pairs.add_css_class("asb-dim")
+        self.app_pairs.set_margin_top(8)
+        apps.append(self.app_pairs)
+        machines = section("Between machines", second)
+        self.machines_section = machines
+        self.machine_rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        machines.append(self.machine_rows)
+        recent = section("Recent", second)
+        self.recent = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        recent.append(self.recent)
+        self.legend_counts, self.matrix_cells, self.machine_counts, self.recent_rows = {}, {}, {}, []
+        return box
+
+    def machine_dot(self, machine_id):
+        index = next((index for index, machine in enumerate(self.view["machines"]) if machine["machineId"] == machine_id), 0)
+        offline = next((machine.get("state") == "offline" for machine in self.view["machines"] if machine["machineId"] == machine_id), False)
+        return self.hue_dot(index, offline)
+
+    def render_ledger(self, arrivals, live):
+        view = self.view
+        current = self.total.get_visible_child()
+        if current.get_label() != format_count(view["total"]):
+            other = "b" if self.total.get_visible_child_name() == "a" else "a"
+            self.total.get_child_by_name(other).set_label(format_count(view["total"]))
+            self.total.set_visible_child_full(other, Gtk.StackTransitionType.CROSSFADE if live and current.get_label()
+                                              else Gtk.StackTransitionType.NONE)
+        self.share.update(view["by_status"])
+        remove_children(self.legend)
+        self.legend_counts = {}
+        for status in ACTIVITY_STATUSES:
+            count = view["by_status"][status]
+            if not count:
+                continue
+            row = Gtk.Box(spacing=8)
+            swatch = Gtk.Box(width_request=8, height_request=8, valign=Gtk.Align.CENTER)
+            swatch.add_css_class("asb-msg-swatch")
+            swatch.add_css_class(f"asb-msg-sw-{status}")
+            row.append(swatch)
+            row.append(label(ACTIVITY_STATUS_LABELS[status], "asb-msg-small"))
+            value = label(format_count(count), "asb-msg-small")
+            value.add_css_class("asb-mono")
+            value.set_hexpand(True)
+            value.set_xalign(1)
+            row.append(value)
+            self.legend.append(row)
+            self.legend_counts[status] = value
+        remove_children(self.matrix)
+        self.matrix_cells = {}
+        corner = label("From \\ To", "asb-msg-tiny")
+        corner.add_css_class("asb-dim")
+        corner.add_css_class("asb-msg-head")
+        corner.set_size_request(118, -1)
+        self.matrix.attach(corner, 0, 0, 1, 1)
+        apps = view["apps"]
+        for column, app in enumerate(apps):
+            head = Gtk.Image(icon_name=ACTIVITY_APP_ICONS[app], pixel_size=14, halign=Gtk.Align.END, hexpand=True, tooltip_text=ACTIVITY_APP_LABELS[app])
+            head.add_css_class("asb-msg-head")
+            head.update_property([Gtk.AccessibleProperty.LABEL], [ACTIVITY_APP_LABELS[app]])
+            self.matrix.attach(head, column + 1, 0, 1, 1)
+        for row, app in enumerate(apps):
+            name = Gtk.Box(spacing=6)
+            name.add_css_class("asb-msg-head")
+            name.append(Gtk.Image(icon_name=ACTIVITY_APP_ICONS[app], pixel_size=14))
+            name.append(label(ACTIVITY_APP_LABELS[app], "asb-msg-small"))
+            self.matrix.attach(name, 0, row + 1, 1, 1)
+            for column, _target in enumerate(apps):
+                value = view["matrix"][row][column]
+                cell = Gtk.Label(label=format_count(value) if value else "–", xalign=1, hexpand=True)
+                cell.add_css_class("asb-msg-cell")
+                if not value:
+                    cell.add_css_class("asb-dim")
+                    cell.update_property([Gtk.AccessibleProperty.LABEL], ["none"])
+                self.matrix.attach(cell, column + 1, row + 1, 1, 1)
+                self.matrix_cells[(apps[row], apps[column])] = cell
+        self.app_pairs.set_label(f"{view['app_pairs']} app pair{'' if view['app_pairs'] == 1 else 's'}")
+        remove_children(self.machine_rows)
+        self.machine_counts = {}
+        for item in view["machine_rows"]:
+            row = Gtk.Box(spacing=6)
+            dots = Gtk.Box(spacing=3)
+            for machine_id in item["ids"]:
+                dots.append(self.machine_dot(machine_id))
+            row.append(dots)
+            name = label(item["label"], "asb-msg-small")
+            name.set_ellipsize(Pango.EllipsizeMode.END)
+            row.append(name)
+            value = label(format_count(item["count"]), "asb-msg-small")
+            value.add_css_class("asb-mono")
+            value.set_hexpand(True)
+            value.set_xalign(1)
+            row.append(value)
+            self.machine_rows.append(row)
+            self.machine_counts[item["ids"]] = value
+        new = {record["id"] for record in arrivals}
+        remove_children(self.recent)
+        self.recent_rows = []
+        for record in view["recent"]:
+            row = Gtk.Button(has_frame=False)
+            row.add_css_class("asb-msg-recent")
+            content = Gtk.Box(spacing=8)
+            when = label(format_clock(record["atMs"]), "asb-mono")
+            when.add_css_class("asb-dim")
+            when.set_size_request(44, -1)
+            content.append(when)
+            seats = view["seats"]
+            route = Gtk.Label(label=f"{message_end_title(record, 'from', seats)} → {message_end_title(record, 'to', seats)}", xalign=0, hexpand=True,
+                              ellipsize=Pango.EllipsizeMode.END)
+            content.append(route)
+            status, status_text = message_status(record), message_status_label(record)
+            icon = Gtk.Image(icon_name=ACTIVITY_STATUS_ICONS[status], pixel_size=14, tooltip_text=status_text)
+            icon.add_css_class(f"asb-msg-stt-{status}")
+            icon.update_property([Gtk.AccessibleProperty.LABEL], [status_text])
+            content.append(icon)
+            row.set_child(content)
+            row.update_property([Gtk.AccessibleProperty.LABEL], [f"{when.get_label()}, {route.get_label()}, {status_text}"])
+            row.connect("clicked", self.recent_clicked, record)
+            if record["id"] in new and live:
+                slide = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN, transition_duration=200, child=row)
+                self.recent.append(slide)
+                slide.set_reveal_child(True)
+            else:
+                self.recent.append(row)
+            self.recent_rows.append(row)
+
+    def seat_title(self, seat_id):
+        return (self.view["seats"].get(seat_id) or {}).get("title") or "Other sessions"
+
+    def recent_clicked(self, _button, record):
+        a, b = sorted((record["from"], record["to"]), key=lambda seat_id: (self.view["circle"].index(seat_id) if seat_id in self.view["circle"] else len(self.view["circle"]), seat_id))
+        self.open_thread("pair", (a, b), message_id=record["id"])
+
+    # Rendering.
+    def render(self, data, previous):
+        key = message_reply_key(data)
+        if key == self.reply_key and self.view is not None and not self.pending_session:
+            # The same view: no widget changes and no draw.
+            return
+        self.reply_key = key
+        arrivals = message_arrivals(previous, data)
+        self.view = messages_view(data, self.selected_ids())
+        self.render_ledger(arrivals, previous is not None)
+        self.table.update(self.view, animate=previous is not None, after=[lambda: self.table.fly(arrivals)] if arrivals else [])
+        if self.pending_session:
+            seat_id, title = self.pending_session
+            self.pending_session = None
+            self.show_session(seat_id, title)
+        elif self.thread:
+            self.render_thread()
+            self.fetch_thread()
+        self.render_center()
+
+    def selected_ids(self):
+        if not self.thread:
+            return ()
+        return tuple(self.thread["key"]) if self.thread["kind"] == "pair" else (self.thread["key"],)
+
+    def update_view(self):
+        """A new selection: seat it, and redraw the table and the center."""
+        if self.data is None:
+            return
+        self.view = messages_view(self.data, self.selected_ids())
+        self.table.update(self.view, animate=True)
+        self.render_center()
+
+    def read(self, route, callback):
+        if self.fetch is None:
+            # The default priority, as the reply of the window.
+            request_async(self.base, route, callback, lambda function, *args: GLib.idle_add(function, *args, priority=GLib.PRIORITY_DEFAULT))
+            return
+        try:
+            data, error = self.fetch(route), None
+        except RuntimeError as failure:
+            data, error = None, str(failure)
+        callback(data, error)
+
+    def render_center(self):
+        """The preview's renderCenter, in the center of the table or, in the narrow layout, in the reader under a small table."""
+        if self.view is None:
+            return
+        # Only the narrow layout has the reader: there the table height does not depend on it. In the wide layout a shown reader
+        # would make the table smaller, and the small table would keep the reader.
+        reader = self.table.small and self.table.narrow
+        box = self.reader if reader else self.table.center
+        remove_children(self.table.center)
+        remove_children(self.reader)
+        self.table.center.set_visible(ACTIVITY_PATHS and not self.table.small and bool(self.view["seated"]))
+        self.reader.set_visible(ACTIVITY_PATHS and reader and self.table.geometry is not None)
+        align = Gtk.Align.START if reader else Gtk.Align.CENTER
+
+        def text(value, css, wrap=False, mono=False):
+            widget = Gtk.Label(label=value, halign=align, xalign=0 if reader else .5, justify=Gtk.Justification.LEFT if reader else Gtk.Justification.CENTER)
+            widget.add_css_class(css)
+            if wrap:
+                widget.set_wrap(True)
+                widget.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            else:
+                widget.set_ellipsize(Pango.EllipsizeMode.END)
+            box.append(widget)
+            return widget
+        hover_chord, seat, thread, _flying, _pin = self.table.state()
+        pair_key = hover_chord or (thread["key"] if thread and thread["kind"] == "pair" else None)
+        session = seat or (thread["key"] if thread and thread["kind"] == "session" else None)
+        if pair_key and pair_key in self.view["pairs"]:
+            pair = self.view["pairs"][pair_key]
+            # A route that does not fit breaks only before its arrow.
+            text(f"{self.seat_title(pair['a'])} ⇄\u00a0{self.seat_title(pair['b'])}", "asb-msg-c-route", wrap=True)
+            for arrow, count in (("→", pair["ab"]), ("←", pair["ba"])):
+                text(f"{arrow} {count}", "asb-msg-c-dir")
+            if pair["bad"]:
+                text(f"Not sent {pair['bad']}", "asb-msg-c-fail")
+        elif session and session in self.view["seats"]:
+            seat_info = self.view["seats"][session]
+            counts = self.view["counts"].get(session, {"sent": 0, "received": 0})
+            machine = next((item.get("name", "") for item in self.view["machines"] if item["machineId"] == seat_info.get("machineId")), "")
+            text(self.seat_title(session), "asb-msg-c-name")
+            sub = text(f"{ACTIVITY_APP_LABELS[message_app(seat_info)]} · {machine}", "asb-msg-small")
+            sub.add_css_class("asb-dim")
+            figures = Gtk.Box(spacing=18, halign=align, margin_top=4)
+            for name, value in (("Sent", counts["sent"]), ("Received", counts["received"])):
+                column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, halign=align)
+                caption = Gtk.Label(label=name, halign=align)
+                caption.add_css_class("asb-msg-tiny")
+                caption.add_css_class("asb-dim")
+                column.append(caption)
+                number = Gtk.Label(label=format_count(value), halign=align)
+                number.add_css_class("asb-msg-c-num")
+                column.append(number)
+                figures.append(column)
+            box.append(figures)
+        elif self.view["recent"]:
+            record = self.view["recent"][0]
+            text(format_clock(record["atMs"]), "asb-msg-c-time")
+            seats = self.view["seats"]
+            text(f"{message_end_title(record, 'from', seats)} →\u00a0{message_end_title(record, 'to', seats)}", "asb-msg-c-route", wrap=True)
+            status = message_status(record)
+            line = Gtk.Box(spacing=5, halign=align)
+            line.add_css_class(f"asb-msg-stt-{status}")
+            line.append(Gtk.Image(icon_name=ACTIVITY_STATUS_ICONS[status], pixel_size=14))
+            line.append(label(message_status_label(record), "asb-msg-small"))
+            box.append(line)
+            # The text of the newest message comes with the reply.
+            body = message_text(record)
+            widget = text(body if body is not None else "No text", "asb-msg-c-body", wrap=not reader)
+            if body is None:
+                widget.add_css_class("asb-dim")
+            elif not reader:
+                widget.set_lines(2)
+                widget.set_ellipsize(Pango.EllipsizeMode.END)
+
+    # The thread.
+    def build_thread(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        head = Gtk.Box(spacing=10)
+        head.add_css_class("asb-msg-thead")
+        back = Gtk.Button(icon_name="go-previous-symbolic", tooltip_text="Back to totals", valign=Gtk.Align.START)
+        back.add_css_class("asb-msg-back")
+        back.update_property([Gtk.AccessibleProperty.LABEL], ["Back to totals"])
+        back.connect("clicked", lambda *_: self.close_thread())
+        head.append(back)
+        titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
+        self.thread_route = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.thread_route.add_css_class("asb-msg-route")
+        titles.append(self.thread_route)
+        self.thread_counts = label("", "asb-msg-small")
+        self.thread_counts.add_css_class("asb-mono")
+        self.thread_counts.add_css_class("asb-dim")
+        titles.append(self.thread_counts)
+        head.append(titles)
+        page.append(head)
+        self.thread_list = Gtk.Grid(column_homogeneous=True)
+        self.thread_list.add_css_class("asb-msg-tlist")
+        self.thread_scroll = Gtk.ScrolledWindow(child=self.thread_list, hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
+        self.thread_scroll.get_vadjustment().connect("value-changed", self.thread_scrolled)
+        self.thread_stick = True
+        page.append(self.thread_scroll)
+        return page
+
+    def open_thread(self, kind, key, message_id=None, title=""):
+        if self.data is None:
+            return
+        opened = self.thread is not None
+        self.thread = {"kind": kind, "key": tuple(key) if kind == "pair" else key, "title": title, "target": message_id}
+        self.thread_reply = None
+        self.update_view()
+        self.render_thread()
+        self.thread_stick = True
+        self.fetch_thread()
+        if not opened:
+            self.ledger.set_visible_child_name("thread")
+
+    def close_thread(self):
+        if self.thread is None:
+            return
+        self.thread = self.thread_reply = None
+        self.update_view()
+        self.ledger.set_visible_child_name("stats")
+
+    def show_session(self, seat_id, title=""):
+        """Show messages of a Board card: the session thread of that seat; before the first reply, after it."""
+        if self.data is None:
+            self.pending_session = (seat_id, title)
+            return
+        self.open_thread("session", seat_id, title=title)
+        proxy = self.table.proxies.get(("pin", seat_id))
+        if proxy is not None:
+            proxy.grab_focus()
 
     def window_key(self, _controller, keyval, _code, _state):
-        if keyval == Gdk.KEY_Escape and self.session is not None:
-            self.clear_session()
+        if keyval == Gdk.KEY_Escape and self.thread is not None:
+            self.close_thread()
             return True
         return False
 
-    def render(self, data, previous):
-        self.pending_session = None
-        rows, more = message_feed(data, self.clock(), self.session)
-        statuses = {record["id"]: {"held": "asb-msg-held", "not-sent": "asb-msg-failed"}.get(record.get("status"), "asb-dim")
-                    for record in data.get("messages") or []}
-        key = (rows, more, [statuses[item["id"]] for kind, item in rows if kind == "message"])
-        if key == self.feed_key:
+    def thread_missing(self):
+        thread = self.thread
+        return thread["kind"] == "session" and thread["key"] not in self.view["seats"]
+
+    def render_thread(self):
+        thread = self.thread
+        records = self.data.get("messages") or []
+        seats = dict(self.view["seats"])
+        if self.thread_missing():
+            seats[thread["key"]] = {"title": thread["title"] or "This session"}
+        header = message_thread(records, seats, thread["kind"], thread["key"])
+        self.thread_route.set_label(header["route"])
+        self.thread_route.set_tooltip_text(header["route"])
+        self.thread_counts.set_label(header["counts"])
+        self.render_thread_list()
+
+    def fetch_thread(self):
+        thread, period = self.thread, self.period
+        if self.thread_missing():
+            self.thread_reply = {"total": 0, "messages": []}
+            self.render_thread_list()
             return
-        self.feed_key = key
-        if self.scroll_tick is not None:
-            self.feed_scroll.remove_tick_callback(self.scroll_tick)
-            self.scroll_tick = None
-        adjustment = self.feed_scroll.get_vadjustment()
-        upper, value = adjustment.get_upper(), adjustment.get_value()
-        if self.feed_idle is not None:
-            GLib.source_remove(self.feed_idle)
-            self.feed_idle = None
-        remove_children(self.feed)
+        if thread["kind"] == "pair":
+            query = f"a={quote(thread['key'][0], safe='')}&b={quote(thread['key'][1], safe='')}"
+        else:
+            query = f"seat={quote(thread['key'], safe='')}"
 
-        def caption(text, centered=False):
-            widget = Gtk.Label(label=text, xalign=.5 if centered else 0, margin_top=14, margin_bottom=4, margin_start=16)
+        def finished(data, error):
+            if self.closed or self.thread is not thread or period != self.period:
+                return False
+            if error or not isinstance(data, dict):
+                if self.thread_reply is None:
+                    self.thread_error = error or "Cannot load the messages."
+                    self.render_thread_list()
+                return False
+            if data == self.thread_reply:
+                return False
+            self.thread_reply = data
+            self.render_thread_list()
+            return False
+        self.thread_error = None
+        self.read(f"/api/activity/thread?period={quote(period)}&{query}", finished)
+
+    def thread_scrolled(self, adjustment):
+        self.thread_stick = adjustment.get_value() + adjustment.get_page_size() >= adjustment.get_upper() - 4
+
+    def render_thread_list(self):
+        thread, reply = self.thread, self.thread_reply
+        remove_children(self.thread_list)
+        self.thread_blocks = {}
+        row = 0
+
+        def line(text, css):
+            nonlocal row
+            widget = Gtk.Label(label=text, justify=Gtk.Justification.CENTER, wrap=True)
+            widget.add_css_class(css)
             widget.add_css_class("asb-dim")
-            widget.add_css_class("asb-msg-small")
+            self.thread_list.attach(widget, 0, row, 50, 1)
+            row += 1
             return widget
-
-        def message(item):
-            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, margin_top=8, margin_bottom=8, margin_start=16, margin_end=16)
-            box.add_css_class("asb-msg-message")
-            route = Gtk.Box(spacing=6)
-            route.add_css_class("asb-msg-title")
-            when = label(item["time"], "asb-msg-small")
+        if self.thread_missing():
+            period = dict(self.PERIODS)[self.period]
+            line(f"No messages in {period}.", "asb-msg-tday")
+            return
+        if reply is None:
+            if self.thread_error:
+                line(self.thread_error, "asb-msg-tday")
+            return
+        total = reply.get("total", 0)
+        if total > MESSAGE_THREAD_LIMIT:
+            line(f"Latest {MESSAGE_THREAD_LIMIT} of {format_count(total)}", "asb-msg-tmore")
+        day = None
+        seats = self.view["seats"]
+        machine_index = {machine["machineId"]: index for index, machine in enumerate(self.view["machines"])}
+        for record in reply.get("messages") or []:
+            name = day_line(record["atMs"], self.data.get("nowMs") or self.clock())
+            first = name != day
+            if first:
+                day = name
+                line(name, "asb-msg-tday")
+            left, who = message_block(thread, record, seats)
+            block = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, halign=Gtk.Align.START if left else Gtk.Align.END)
+            block.set_layout_manager(ThreadBlockLayout(orientation=Gtk.Orientation.VERTICAL))
+            block.add_css_class("asb-msg-block")
+            if first:
+                block.add_css_class("asb-msg-first")
+            sender = (seats.get(record["from"]) or {}).get("machineId")
+            block.add_css_class(f"asb-msg-bg-{machine_index.get(sender, 0) % len(MACHINE_HUES)}")
+            top = Gtk.Box(spacing=6)
+            name_label = Gtk.Label(label=who, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+            name_label.add_css_class("asb-msg-who")
+            top.append(name_label)
+            when = label(format_clock(record["atMs"]), "asb-msg-tiny")
             when.add_css_class("asb-mono")
             when.add_css_class("asb-dim")
-            route.append(when)
-            for end in ("sender", "receiver"):
-                if end == "receiver":
-                    route.append(label("→", "asb-dim"))
-                name = Gtk.Label(label=item[end], ellipsize=Pango.EllipsizeMode.END, xalign=0)
-                name.add_css_class("asb-msg-title")
-                if end == "sender":
-                    name.add_css_class("asb-msg-sender")
-                route.append(name)
-                if item[end + "_machine"]:
-                    machine = Gtk.Label(label=" · " + item[end + "_machine"], ellipsize=Pango.EllipsizeMode.END, xalign=0)
-                    machine.add_css_class("asb-dim")
-                    route.append(machine)
-            if item["status"]:
-                route.append(Gtk.Box(hexpand=True))
-                status = label(item["status"], "asb-msg-small")
-                status.add_css_class(statuses[item["id"]])
-                route.append(status)
-            box.append(route)
+            top.append(when)
+            status = message_status(record)
+            if status != "accepted":
+                mark = Gtk.Box(spacing=3)
+                mark.add_css_class(f"asb-msg-stt-{status}")
+                mark.append(Gtk.Image(icon_name=ACTIVITY_STATUS_ICONS[status], pixel_size=12))
+                mark.append(label(message_status_label(record), "asb-msg-tiny"))
+                top.append(mark)
+            block.append(top)
+            body = message_text(record)
             # A small width_chars gives GTK a cheap minimum width; without it GTK lays out each long text at its narrowest.
-            text = Gtk.Label(label=item["text"] if item["text"] is not None else "No text", wrap=True, width_chars=20,
-                             wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True, margin_top=2)
+            text = Gtk.Label(label=body if body is not None else "No text", xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR,
+                             width_chars=20, selectable=True)
             text.add_css_class("asb-msg-body")
-            if item["text"] is None:
+            if body is None:
                 text.add_css_class("asb-dim")
-            box.append(text)
-            return box
+            block.append(text)
+            # Grid columns of 2%: a block spans 86% at the left or the right.
+            self.thread_list.attach(block, 0 if left else 7, row, 43, 1)
+            row += 1
+            self.thread_blocks[record["id"]] = block
+        target = self.thread_blocks.get(thread.get("target"))
+        if target is not None:
+            thread["target"] = None
+            target.add_css_class("asb-msg-hl")
+            GLib.timeout_add(1200, lambda: target.remove_css_class("asb-msg-hl") or False)
+            self.scroll_thread(target)
+        elif self.thread_stick:
+            self.scroll_thread("bottom")
 
-        builds = [lambda kind=kind, item=item: caption(item) if kind == "day" else message(item) for kind, item in rows] if rows \
-            else [lambda: caption("No messages in this period.", centered=True)]
-        if more:
-            builds.append(lambda: caption("Showing the newest 200 messages.", centered=True))
-        built = [0]
+    def scroll_thread(self, target):
+        """Scroll once the new list has its layout: to the bottom, or with a message in the middle."""
+        self.scroll_target = target
+        if self.scroll_tick is None:
+            self.scroll_tick = self.thread_scroll.add_tick_callback(self.scroll_step)
 
-        def keep_position(_widget, _clock):
-            if self.feed.get_last_child().get_height() == 0:
-                return True
-            adjustment.set_value(value + adjustment.get_upper() - upper if value > 0 else 0)
-            self.scroll_tick = None
-            return False
-
-        def step():
-            # The first rows show at once; the rest follow in idle steps, so a long reply does not hold the first frame.
-            for build in builds[built[0]:built[0] + MESSAGE_ROWS_STEP]:
-                self.feed.append(Gtk.ListBoxRow(child=build(), activatable=False, selectable=False))
-            built[0] += MESSAGE_ROWS_STEP
-            if built[0] < len(builds):
-                return True
-            self.feed_idle = None
-            if self.feed_scroll.get_mapped():
-                self.scroll_tick = self.feed_scroll.add_tick_callback(keep_position)
-            return False
-
-        if step():
-            self.feed_idle = GLib.idle_add(step)
+    def scroll_step(self, _widget, _clock):
+        target, adjustment = self.scroll_target, self.thread_scroll.get_vadjustment()
+        last = self.thread_list.get_last_child()
+        ready = last is None or last.get_height() > 0
+        if target != "bottom":
+            if target.get_parent() is None:
+                # A later list replaced the block: nothing to scroll to.
+                self.scroll_tick = self.scroll_target = None
+                return False
+            ready = target.get_height() > 0
+        if not ready and self.thread_list.get_mapped():
+            return True
+        if target == "bottom":
+            adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+        else:
+            found, point = target.compute_point(self.thread_list, Graphene.Point().init(0, 0))
+            if found:
+                adjustment.set_value(max(0, point.y - adjustment.get_page_size() / 2))
+        self.scroll_tick = self.scroll_target = None
+        return False
 
     def close_to_hidden(self):
-        # An open from the menu shows all sessions; Show messages sets the session again.
-        if self.session is not None or self.pending_session is not None:
-            self.session = self.pending_session = None
-            self.session_chip.set_visible(False)
-            if self.data is not None:
-                self.render(self.data, self.data)
         super().close_to_hidden()
+        # The next open shows the totals with the same period; Show messages opens a thread again.
+        self.pending_session = None
+        self.close_thread()
+        self.table.stop_motion()
 
     def finish(self):
-        if self.feed_idle is not None:
-            GLib.source_remove(self.feed_idle)
-            self.feed_idle = None
+        self.table.stop_motion()
         if self.scroll_tick is not None:
-            self.feed_scroll.remove_tick_callback(self.scroll_tick)
-            self.scroll_tick = None
+            self.thread_scroll.remove_tick_callback(self.scroll_tick)
+            self.scroll_tick = self.scroll_target = None
         return super().finish()
 
 
