@@ -100,8 +100,10 @@ export function createAsbServer({
   let savedList = null;
   const uiClients = new Map();
   const closedUiClients = new Map();
+  // Client ID -> its open event streams (`/api/events?ui=<clientId>`): the engine keeps such a client with no repeated report.
+  const uiStreams = new Map();
   const expireUiClients = () => {
-    for (const [id, client] of uiClients) if (now() - client.reportedAtMs >= 45_000) uiClients.delete(id);
+    for (const [id, client] of uiClients) if (!uiStreams.has(id) && now() - client.reportedAtMs >= 45_000) uiClients.delete(id);
     for (const [id, closedAtMs] of closedUiClients) if (now() - closedAtMs >= 45_000) closedUiClients.delete(id);
   };
   let palette = readPalette(palettePath);
@@ -448,7 +450,8 @@ export function createAsbServer({
           sendJson(response, 200, { apiVersion: 1, pid: process.pid, mode: serviceMode ? 'service' : 'desktop',
             appVersion, rootDir, sourcesPath, sourcesRevision: await readSourcesRevision(),
             backendRevision: snapshot.cachedDashboard()?.sourcesRevision ?? null,
-            ui: { clients: [...uiClients.values()] } });
+            // An open event stream keeps the last report of its client current: the window reports each change.
+            ui: { clients: [...uiClients.values()].map((client) => uiStreams.has(client.clientId) ? { ...client, reportedAtMs: now() } : client) } });
         } else {
           const body = await readBody(request);
           const revision = (value) => value === null || typeof value === 'string' && SOURCE_REVISION.test(value);
@@ -690,7 +693,23 @@ export function createAsbServer({
       return;
     }
     if (url.pathname === '/') request.url = '/switchboard.html';
-    if (url.pathname === '/api/events') { snapshot.serveEvents(request, response); return; }
+    if (url.pathname === '/api/events') {
+      const uiClient = url.searchParams.get('ui');
+      const holds = typeof uiClient === 'string' && UUID.test(uiClient);
+      if (holds) {
+        uiStreams.set(uiClient, (uiStreams.get(uiClient) || 0) + 1);
+        request.on('close', () => {
+          const left = uiStreams.get(uiClient) - 1;
+          if (left > 0) { uiStreams.set(uiClient, left); return; }
+          uiStreams.delete(uiClient);
+          // The 45 s rule applies from the end of the stream.
+          const client = uiClients.get(uiClient);
+          if (client) client.reportedAtMs = now();
+        });
+      }
+      snapshot.serveEvents(request, response, holds ? { uiClient: true } : {});
+      return;
+    }
 
     if (url.pathname === '/api/dashboard') {
       try {

@@ -288,7 +288,7 @@ export class DashboardSnapshot {
       if (hard) {
         dashboardWatchEpoch += 1;
         dashboardFullScans.clear();
-        dashboardCache = null;
+        dashboardCache = listState = null;
         serverMetrics.dashboardHardInvalidations += 1;
       } else {
         serverMetrics.dashboardSoftInvalidations += 1;
@@ -522,7 +522,7 @@ export class DashboardSnapshot {
       listText,
       revision: () => dashboardRevision,
       broadcastEvent: (event, payload) => broadcastDashboardEvent(event, payload),
-      serveEvents: (request, response) => {
+      serveEvents: (request, response, connected = {}) => {
         response.writeHead(200, {
           'content-type': 'text/event-stream; charset=utf-8',
           'cache-control': 'no-cache, no-transform',
@@ -531,7 +531,7 @@ export class DashboardSnapshot {
         response.write('\n');
         dashboardEventClients.add(response);
         sendDashboardEvent(response, 'connected', {
-          version: dashboardEventVersion, reason: 'connected', sources: { codex: false, claude: false },
+          version: dashboardEventVersion, reason: 'connected', sources: { codex: false, claude: false }, ...connected,
         });
         request.on('close', () => {
           dashboardEventClients.delete(response);

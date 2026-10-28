@@ -492,11 +492,11 @@ class WidgetCheck(unittest.TestCase):
         for index in range(2):
             class Handler(BaseHTTPRequestHandler):
                 def do_GET(handler, index=index):
-                    received[index].append((handler.path, handler.headers.get("X-ASB-Source-Token")))
+                    received[index].append((handler.path.split("?", 1)[0], handler.headers.get("X-ASB-Source-Token")))
                     handler.send_response(200)
-                    handler.send_header("Content-Type", "text/event-stream" if handler.path == "/api/events" else "application/json")
+                    handler.send_header("Content-Type", "text/event-stream" if handler.path.split("?", 1)[0] == "/api/events" else "application/json")
                     handler.end_headers()
-                    if handler.path == "/api/events":
+                    if handler.path.split("?", 1)[0] == "/api/events":
                         handler.wfile.write(b": connected\n\n")
                     else:
                         body = mock_dashboard() if handler.path.startswith("/api/dashboard") else {"sources": [], "revision": "r1"}
@@ -504,7 +504,7 @@ class WidgetCheck(unittest.TestCase):
                             body = {"devices": [], "addresses": [], "enabled": False, "port": 4630}
                         handler.wfile.write(json.dumps(body).encode())
                 def do_POST(handler, index=index):
-                    received[index].append((handler.path, handler.headers.get("X-ASB-Source-Token")))
+                    received[index].append((handler.path.split("?", 1)[0], handler.headers.get("X-ASB-Source-Token")))
                     handler.rfile.read(int(handler.headers.get("Content-Length", 0)))
                     handler.send_response(200)
                     handler.end_headers()
@@ -564,7 +564,7 @@ class WidgetCheck(unittest.TestCase):
             return SimpleNamespace(join=waits.append)
         with patch.object(asb, "SOURCE_TOKEN", "fake-token"), \
                 patch.object(asb, "request_async", request), \
-                patch.object(asb, "EventStream", lambda *_args: SimpleNamespace(close=lambda: None, connected=False)), \
+                patch.object(asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)), \
                 patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None):
             window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", theme_path=False, layout_path=False)
             window.present()

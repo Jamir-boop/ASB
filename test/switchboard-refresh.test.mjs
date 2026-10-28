@@ -371,7 +371,8 @@ async function serviceSnapshot(t, load) {
   snapshot.attach(server);
   t.after(() => server.close());
   server.emit('listening');
-  await until(() => loads === 1 && snapshot.performanceSnapshot().dashboard.watchCoverage);
+  await until(() => loads === 1 && snapshot.performanceSnapshot().dashboard.watchCoverage
+    && [...clock.timers].some((timer) => timer.callback.name === 'pollServiceDashboard'));
   return { snapshot, clock, loads: () => loads, events: () => written.filter((text) => text === 'event: dashboard\n').length,
     change: () => watches.at(-1)('change', 'state_9.sqlite-wal') };
 }
@@ -412,6 +413,19 @@ test('a scan sends the dashboard event and moves the revision only when the list
   await s.clock.advance(3_000);
   assert.equal(s.loads(), 6);
   assert.deepEqual([s.events(), s.snapshot.revision()], [4, 4]);
+});
+
+test('a status expiry with no file event sends one dashboard event for the changed state', async (t) => {
+  const activity = epoch - 6 * 3_600_000 + 3_000;
+  const s = await serviceSnapshot(t, (clock) => buildSwitchboardDashboard([{ id: 'one', provider: 'codex',
+    lifecycleRunning: true, agentActivityAtMs: activity, updatedAtMs: activity }], [], clock.now(),
+  { machineId: '', machineName: 'Made-up' }));
+  assert.equal(s.snapshot.cachedDashboard().threads[0].state, 'working');
+  assert.equal(s.events(), 1);
+  // The initial poll can run before coverage is ready: it checks at 2 s, then the status check has the 2 s minimum.
+  await s.clock.advance(4_000);
+  assert.equal(s.snapshot.cachedDashboard().threads[0].state, 'unknown');
+  assert.deepEqual([s.loads(), s.events(), s.snapshot.revision()], [2, 2, 2]);
 });
 
 test('the service safety scan runs every 5 minutes at rest and every 30 s while a local row works', async (t) => {

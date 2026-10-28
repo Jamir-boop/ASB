@@ -156,7 +156,7 @@ test('a Working row sends its turn start, the first scan time without one, and o
     { id: 'unknown' },
   ].map((thread) => ({ provider: 'codex', updatedAtMs, ...thread }));
   const starts = new Map();
-  const rows = Object.fromEntries(buildSwitchboardDashboard(threads, [], updatedAtMs, undefined, starts).threads.map((row) => [row.id, row]));
+  const rows = Object.fromEntries(buildSwitchboardDashboard(threads, [], updatedAtMs, { machineId: '', machineName: 'Made-up' }, starts).threads.map((row) => [row.id, row]));
   assert.equal(rows.working.state, 'working');
   assert.equal(rows.working.updatedAtMs, updatedAtMs - 1000);
   assert.equal(rows.working.workingSinceMs, updatedAtMs - 1000);
@@ -165,13 +165,15 @@ test('a Working row sends its turn start, the first scan time without one, and o
   for (const id of ['idle', 'waiting', 'unknown']) assert.equal(rows[id].updatedAtMs, updatedAtMs);
   // A later scan keeps the first time; a row that stops working gets its real time, and the map forgets it.
   const later = (patch) => threads.map((thread) => ({ ...thread, updatedAtMs: updatedAtMs + 25_000, ...patch[thread.id] }));
-  const next = buildSwitchboardDashboard(later({}), [], updatedAtMs + 25_000, undefined, starts).threads;
+  const next = buildSwitchboardDashboard(later({}), [], updatedAtMs + 25_000, { machineId: '', machineName: 'Made-up' }, starts).threads;
   assert.equal(next.find((row) => row.id === 'no-start').updatedAtMs, updatedAtMs);
-  const stopped = buildSwitchboardDashboard(later({ 'no-start': { lifecycleRunning: false } }), [], updatedAtMs + 25_000, undefined, starts).threads;
+  const stopped = buildSwitchboardDashboard(later({ 'no-start': { lifecycleRunning: false } }), [], updatedAtMs + 25_000, { machineId: '', machineName: 'Made-up' }, starts).threads;
   assert.deepEqual(stopped.filter((row) => row.id === 'no-start').map((row) => [row.state, row.updatedAtMs]), [['idle', updatedAtMs + 25_000]]);
   assert.deepEqual([...starts.keys()], ['working']);
-  const again = buildSwitchboardDashboard(later({ 'no-start': { updatedAtMs: updatedAtMs + 40_000 } }), [], updatedAtMs + 40_000, undefined, starts).threads;
+  const again = buildSwitchboardDashboard(later({ 'no-start': { updatedAtMs: updatedAtMs + 40_000 } }), [], updatedAtMs + 40_000, { machineId: '', machineName: 'Made-up' }, starts).threads;
   assert.equal(again.find((row) => row.id === 'no-start').updatedAtMs, updatedAtMs + 40_000);
+  buildSwitchboardDashboard([], [], updatedAtMs + 40_000, { machineId: '', machineName: 'Made-up' }, starts);
+  assert.equal(starts.size, 0);
 });
 
 test('the session list keeps its bytes and tag while only the last event times of Working rows change', async (t) => {
@@ -185,8 +187,8 @@ test('the session list keeps its bytes and tag while only the last event times o
     { id: 'gamma', provider: 'codex', lifecycleRunning: true },
     { id: 'delta', provider: 'codex', lifecycleRunning: false },
   ].map((thread, row) => ({ ...thread, updatedAtMs: times[index][row], agentActivityAtMs: times[index][row] }));
-  const server = createSwitchboardServer({ now: () => clock, pendingStatePath: false, dashboardWatchPaths: [],
-    loadDashboard: async ({ workingStarts }) => buildSwitchboardDashboard(threads(Math.min(scan++, 1)), [], clock, undefined, workingStarts) });
+  const server = createSwitchboardServer({ now: () => clock, pendingStatePath: false, palettePath: '', dashboardWatchPaths: [],
+    loadDashboard: async ({ workingStarts }) => buildSwitchboardDashboard(threads(Math.min(scan++, 1)), [], clock, { machineId: '', machineName: 'Made-up' }, workingStarts) });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
   const read = async () => {
@@ -204,7 +206,7 @@ test('the session list keeps its bytes and tag while only the last event times o
   assert.deepEqual(second.rows.map((row) => [row.id, row.updatedAtMs]),
     [['gamma', now - 15_000], ['beta', now - 50_000], ['alpha', now - 60_000], ['delta', now - 600_000]]);
   const tie = buildSwitchboardDashboard([{ id: 'b', provider: 'codex', updatedAtMs: 5 }, { id: 'a', provider: 'codex', updatedAtMs: 5 },
-    { id: 'c', provider: 'codex', updatedAtMs: 6 }], [], now).threads;
+    { id: 'c', provider: 'codex', updatedAtMs: 6 }], [], now, { machineId: '', machineName: 'Made-up' }).threads;
   assert.deepEqual(tie.map((row) => row.id), ['c', 'a', 'b']);
 });
 

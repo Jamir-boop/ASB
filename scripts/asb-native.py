@@ -1972,11 +1972,15 @@ def import_usage_file(base, path):
 
 
 class EventStream:
-    def __init__(self, base, callback, dispatch, on_show_window=None, on_connected=None):
+    def __init__(self, base, callback, dispatch, on_show_window=None, on_connected=None, ui_client=None):
         self.address = urlsplit(base)
         self.callback, self.dispatch, self.on_show_window, self.on_connected = callback, dispatch, on_show_window, on_connected
+        # The engine keeps this UI client while the stream is open.
+        self.path = "/api/events" + (f"?ui={quote(ui_client)}" if ui_client else "")
         # True from the `connected` event of the engine to the end of the stream: each list change then comes as an event.
         self.connected = False
+        # The engine of this connection said that the stream holds the UI client; `connections` counts the connected events.
+        self.holds_ui, self.connections = False, 0
         self.stopped = threading.Event()
         self.lock, self.socket = threading.Lock(), None
         self.worker = threading.Thread(target=self.run, daemon=True)
@@ -1986,7 +1990,7 @@ class EventStream:
         while not self.stopped.is_set():
             connection = HTTPConnection(self.address.hostname, self.address.port, timeout=30)
             try:
-                connection.request("GET", "/api/events", headers={"Accept": "text/event-stream"})
+                connection.request("GET", self.path, headers={"Accept": "text/event-stream"})
                 with self.lock:
                     if self.stopped.is_set():
                         break
@@ -2008,6 +2012,12 @@ class EventStream:
                         line = line.decode("utf-8").rstrip("\r\n")
                         if not line:
                             if event == "connected":
+                                try:
+                                    value = json.loads("\n".join(data))
+                                except ValueError:
+                                    value = None
+                                self.holds_ui = isinstance(value, dict) and value.get("uiClient") is True
+                                self.connections += 1
                                 self.connected = True
                                 if self.on_connected:
                                     self.dispatch(self.on_connected)
@@ -2033,7 +2043,7 @@ class EventStream:
             except (HTTPException, OSError, ValueError):
                 pass
             finally:
-                self.connected = False
+                self.connected = self.holds_ui = False
                 with self.lock:
                     self.socket = None
                 connection.close()
@@ -4877,8 +4887,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 style.connect("notify::" + name, lambda *_args: GLib.idle_add(self.follow_system_style))
         self.connect("realize", self.watch_layout)
         self.timer = GLib.timeout_add(self.refresh_interval_ms, self.tick)
-        # Each new stream connection also reads the list: changes can come while the stream is down.
-        self.events = EventStream(self.base, self.source_changed, GLib.idle_add, self.show_window_event, self.source_changed)
+        self.events = EventStream(self.base, self.source_changed, GLib.idle_add, self.show_window_event,
+                                  on_connected=self.source_changed, ui_client=self.ui_client_id)
         if initial_dashboard is not None:
             self.apply_dashboard(initial_dashboard, None)
         elif first_load:
@@ -4901,7 +4911,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 if editor:
                     editor.base = base
         self.events.close()
-        self.events = EventStream(base, self.source_changed, GLib.idle_add, self.show_window_event, self.source_changed)
+        self.events = EventStream(base, self.source_changed, GLib.idle_add, self.show_window_event,
+                                  on_connected=self.source_changed, ui_client=self.ui_client_id)
         self.dashboard_etag = None
         self.ui_report_last = None
         self.ui_report_sending = False
@@ -5316,15 +5327,22 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         payload = {"clientId": self.ui_client_id, "sourcesRevision": self.sources_revision,
                    "profilesRevision": editor.revision if editor and editor.loaded else None,
                    "profilesVisible": visible, "dirty": editor.is_dirty() if editor else False}
-        if self.ui_report_sending or payload == self.ui_report_last and time.monotonic() - self.ui_report_at < 25:
+        # While the event stream holds the client, the engine keeps it: one report for each change and each new connection; else every 25 s.
+        stream = (self.events, self.events.connections) if self.events.connected else None
+        due = stream is not None and stream != getattr(self, "ui_report_stream", None) \
+            or not (self.events.connected and self.events.holds_ui) and time.monotonic() - self.ui_report_at >= 25
+        if self.ui_report_sending or payload == self.ui_report_last and not due:
             return
-        self.ui_report_last, self.ui_report_at, self.ui_report_sending = payload, time.monotonic(), True
+        self.ui_report_last, self.ui_report_at, self.ui_report_sending, self.ui_report_stream = payload, time.monotonic(), True, stream
         base, generation = self.base, self.engine_generation
-        def finished(_result, _error):
+        def finished(_result, error):
             if generation != self.engine_generation:
                 return False
             self.ui_report_sending = False
-            if not self.closed:
+            if error:
+                # With a connected stream, the next tick sends it again.
+                self.ui_report_stream = None
+            elif not self.closed:
                 self.report_ui()
             return False
         request_async(base, "/api/agent/ui", finished, GLib.idle_add, "POST", payload)

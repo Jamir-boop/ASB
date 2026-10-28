@@ -165,6 +165,35 @@ test('UI reports replace each client, retain at most 16 recent clients, and expi
   assert.deepEqual((await request('/api/agent/status')).json().ui.clients, []);
 });
 
+test('an open event stream keeps its UI client with no repeated report; the 45 s rule starts when the stream closes', async (t) => {
+  let clock = 10_000;
+  const { request, base } = await serve(t, { now: () => clock });
+  const clients = async () => (await request('/api/agent/status')).json().ui.clients;
+  assert.equal((await request('/api/agent/ui', { method: 'POST', body: report })).status, 200);
+  let text = '';
+  let response;
+  const stream = http.get(`${base}/api/events?ui=${clientId}`, (reply) => { response = reply; reply.on('data', (chunk) => { text += chunk; }); });
+  stream.on('error', () => {});
+  t.after(() => stream.destroy());
+  while (!text.includes('event: connected')) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(JSON.parse(text.match(/event: connected\ndata: (.+)\n/)[1]).uiClient, true);
+  // Another stream without a client ID holds nothing.
+  const plain = await new Promise((resolve) => http.get(`${base}/api/events?ui=not-a-uuid`, (reply) => {
+    reply.once('data', (chunk) => { resolve(String(chunk) + reply.read()); reply.destroy(); });
+  }));
+  assert.ok(!plain.includes('uiClient'));
+  clock += 600_000;
+  // The status shows the held report as current.
+  assert.deepEqual(await clients(), [{ ...report, reportedAtMs: clock }]);
+  stream.destroy();
+  response.destroy();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  clock += 44_999;
+  assert.deepEqual(await clients(), [{ ...report, reportedAtMs: clock - 44_999 }]);
+  clock += 1;
+  assert.deepEqual(await clients(), []);
+});
+
 test('a final UI report removes only its client and ignores reports still in flight', async (t) => {
   let clock = 10_000;
   const { request } = await serve(t, { now: () => clock });

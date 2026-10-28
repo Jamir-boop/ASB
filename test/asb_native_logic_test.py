@@ -617,6 +617,7 @@ class ProfileSyncChecks(unittest.TestCase):
         window.ui_client_id = str(SCOPE["uuid"].uuid4())
         window.sources_revision = self.REV_B
         window.ui_report_last, window.ui_report_at, window.ui_report_sending = None, 0, False
+        window.events = SimpleNamespace(connected=False, holds_ui=False, connections=0)
         window.refresh_queued = window.refresh_force_queued = False
         clock = Mock(return_value=0)
         with patch.dict(SCOPE, {"SOURCE_TOKEN": "ab" * 32, "time": SimpleNamespace(monotonic=clock)}):
@@ -660,6 +661,59 @@ class ProfileSyncChecks(unittest.TestCase):
             with patch.dict(SCOPE, {"SOURCE_TOKEN": ""}):
                 window.report_ui()
             self.assertEqual(self.request.call_count, 5)
+
+    def test_ui_report_has_no_repeat_while_the_event_stream_holds_the_client(self):
+        window = object.__new__(Window)
+        editor = self.editor()
+        window.closed, window.base, window.preferences_window = False, editor.base, None
+        window.ui_client_id = str(SCOPE["uuid"].uuid4())
+        window.sources_revision = self.REV_B
+        window.ui_report_last, window.ui_report_at, window.ui_report_sending = None, 0, False
+        window.events = SimpleNamespace(connected=True, holds_ui=True, connections=1)
+        clock = Mock(return_value=100)
+        with patch.dict(SCOPE, {"SOURCE_TOKEN": "ab" * 32, "time": SimpleNamespace(monotonic=clock)}):
+            window.report_ui()
+            self.assertEqual(self.request.call_count, 1)
+            self.request.call_args.args[2]({}, None)
+            # No repeat of the same report on the same connection.
+            for seconds in (110, 200, 1000):
+                clock.return_value = seconds
+                window.report_ui()
+            self.assertEqual(self.request.call_count, 1)
+            # A change, and a new connection, each send one report.
+            window.sources_revision = self.REV_A
+            window.report_ui()
+            self.assertEqual(self.request.call_count, 2)
+            self.request.call_args.args[2]({}, None)
+            window.events.connections = 2
+            window.report_ui()
+            self.assertEqual(self.request.call_count, 3)
+            self.request.call_args.args[2]({}, None)
+            window.report_ui()
+            self.assertEqual(self.request.call_count, 3)
+            # A failed report goes again at the next call; no stream, or an engine that does not hold the client: every 25 s.
+            clock.return_value = 1010
+            window.sources_revision = self.REV_B
+            window.report_ui()
+            self.request.call_args.args[2](None, "Cannot load or change the native UI status.")
+            self.assertEqual(self.request.call_count, 4)
+            window.report_ui()
+            self.assertEqual(self.request.call_count, 5)
+            self.request.call_args.args[2]({}, None)
+            for events in (SimpleNamespace(connected=False, holds_ui=False, connections=2),
+                           SimpleNamespace(connected=True, holds_ui=False, connections=3)):
+                window.events = events
+                if events.connected:
+                    window.report_ui()
+                    self.request.call_args.args[2]({}, None)
+                count = self.request.call_count
+                clock.return_value += 24
+                window.report_ui()
+                self.assertEqual(self.request.call_count, count)
+                clock.return_value += 1
+                window.report_ui()
+                self.assertEqual(self.request.call_count, count + 1)
+                self.request.call_args.args[2]({}, None)
 
     def test_final_ui_report_has_a_bounded_wait_and_uses_the_shared_request_path(self):
         window = object.__new__(Window)
@@ -3116,6 +3170,55 @@ class DataChecks(unittest.TestCase):
         sidebar.closed = True
         self.assertFalse(asb.SwitchboardWindow.tick(sidebar))
         self.assertEqual(calls, [True])
+
+    def test_the_event_stream_names_its_ui_client_and_reads_whether_the_engine_holds_it(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        paths, end = [], threading.Event()
+
+        class Engine(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                paths.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b'\nevent: connected\ndata: {"version":0,"reason":"connected","sources":{},"uiClient":true}\n\n')
+                self.wfile.flush()
+                end.wait(5)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Engine)
+        worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .01}, daemon=True)
+        worker.start()
+        self.addCleanup(worker.join, 1)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.addCleanup(end.set)
+        client = "123e4567-e89b-12d3-a456-426614174000"
+        class Board:
+            ui_client_id = client
+            connections = 0
+
+            def source_changed(self):
+                self.connections += 1
+        board = Board()
+        stream = SCOPE["EventStream"](f"http://127.0.0.1:{server.server_port}", board.source_changed, lambda callback, *args: callback(*args),
+                                      on_connected=board.source_changed, ui_client=client)
+        self.addCleanup(stream.close)
+        deadline = time.monotonic() + 5
+        while not stream.connected and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertEqual((paths, stream.connected, stream.holds_ui, stream.connections, board.connections),
+                         ([f"/api/events?ui={client}"], True, True, 1, 1))
+        end.set()
+        deadline = time.monotonic() + 5
+        while stream.connected and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertEqual((stream.connected, stream.holds_ui), (False, False))
+        plain = SCOPE["EventStream"]("http://127.0.0.1:1", Mock(), Mock())
+        plain.close()
+        self.assertEqual(plain.path, "/api/events")
 
     def test_tick_reads_the_list_only_while_the_event_stream_is_down(self):
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -8231,7 +8334,7 @@ class BoardStartChecks(unittest.TestCase):
         window = object.__new__(Window)
         window.closed, window.preferences_window, window.ui_client_id = False, None, "client"
         window.sources_revision, window.ui_report_last, window.ui_report_at, window.ui_report_sending = 3, None, 0, False
-        window.base = self.BASE
+        window.base, window.events = self.BASE, SimpleNamespace(connected=False, holds_ui=False, connections=0)
         with patch.dict(SCOPE, {"SOURCE_TOKEN": self.TOKEN, "request_async": Mock(), "GLib": Mock()}):
             window.report_ui()
             arguments = SCOPE["request_async"].call_args.args
