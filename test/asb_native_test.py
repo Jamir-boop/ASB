@@ -7592,6 +7592,28 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
         native["divider"] = native["rule"]
         self.assertEqual(window.palette, native)
 
+    def test_a_new_gnome_accent_reaches_the_activity_windows_only_with_gnome_colors(self):
+        with patch.dict(asb.ACTIVITY_WINDOW_CLASSES, {"test": lambda application, base: self.probe()}):
+            window = self.application.show_activity("test")
+        board = self.snapshot_window()
+        board.set_palette(None)
+        native = asb.activity_palette(asb.native_colors(window))
+        native["divider"] = native["rule"]
+        # The window still has the colors of the old accent; the style change gives it the colors of now.
+        window.set_palette(asb.validate_theme(CUSTOM))
+        self.assertNotEqual(window.palette, native)
+        with patch.object(board, "publish_palette", Mock(return_value=False)) as publish:
+            self.assertIs(board.follow_system_style(), False)
+        publish.assert_called_once_with()
+        self.assertEqual(window.palette, native)
+        # With custom colors, only the phone palette is published.
+        board.set_palette(asb.validate_theme(CUSTOM))
+        with patch.object(board, "publish_palette", Mock(return_value=False)) as publish, \
+                patch.object(board, "set_palette", Mock()) as set_palette:
+            board.follow_system_style()
+        set_palette.assert_not_called()
+        publish.assert_called_once_with()
+
     def test_activity_routes_report_their_errors(self):
         headers = []
 

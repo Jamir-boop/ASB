@@ -4791,7 +4791,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         for name in ("dark", "accent-color"):
             if style.find_property(name):
                 # GNOME colors follow the system style; the phone gets them after GTK loads the new style.
-                style.connect("notify::" + name, lambda *_args: GLib.idle_add(self.publish_palette))
+                style.connect("notify::" + name, lambda *_args: GLib.idle_add(self.follow_system_style))
         self.connect("realize", self.watch_layout)
         self.timer = GLib.timeout_add(self.refresh_interval_ms, self.tick)
         self.events = EventStream(self.base, self.source_changed, GLib.idle_add, self.show_window_event)
@@ -5106,6 +5106,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 .asb-chip-dot.{key} {{ background: {color}; }}
 """ for key, color in self.badge_colors.items()))
         return name
+
+    def follow_system_style(self):
+        # With GNOME colors, the Messages and Usage windows wrote the old accent into their CSS: give them the new one.
+        if not self.closed and not self.hover_colors:
+            self.set_palette(None)
+        return self.publish_palette()
 
     def publish_palette(self):
         if self.closed:
