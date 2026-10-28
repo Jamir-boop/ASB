@@ -5064,6 +5064,31 @@ class WidgetCheck(unittest.TestCase):
         self.assertLessEqual(len(window.row_cache), 2 * window.card_limit + 1)
         self.assertTrue(window.row_columns.keys() <= window.row_cache.keys())
 
+    def test_search_row_slide_renders_the_board_once(self):
+        window, _dashboard = self.lazy_board(120, 420, 900)
+        self.assertTrue(window.get_settings().get_property("gtk-enable-animations"))
+        self.assertEqual(window.search_row.get_transition_type(), asb.Gtk.RevealerTransitionType.SLIDE_DOWN)
+        height = window.geometry[1]
+        renders = []
+        original = window.render_board
+        def counted(*args, **kwargs):
+            renders.append(window.search_row.get_child_revealed())
+            return original(*args, **kwargs)
+        with patch.object(window, "render_board", side_effect=counted):
+            # The first search key opens the search row.
+            window.window_key(None, asb.Gdk.KEY_s, 0, 0); self.drain(.6)
+            self.assertEqual(window.search.get_text(), "s")
+            self.assertTrue(window.search_row.get_child_revealed())
+            self.assertLessEqual(len(renders), 2)
+            self.assertLess(window.geometry[1], height)
+            self.assertEqual(window.geometry[1], window.scroll.get_child().get_height())
+            renders.clear()
+            self.assertTrue(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0)); self.drain(.6)
+            self.assertFalse(window.search_row.get_child_revealed())
+            self.assertLessEqual(len(renders), 2)
+            self.assertEqual(window.geometry[1], height)
+        self.assert_columns_filled(window)
+
     def test_set_icon_reuses_one_file_icon_per_glyph_name(self):
         first, second, other = asb.Gtk.Image(), asb.Gtk.Image(), asb.Gtk.Image()
         asb.set_icon(first, "asb-chat-symbolic")

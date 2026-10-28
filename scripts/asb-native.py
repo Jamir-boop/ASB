@@ -4573,6 +4573,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                                       transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN
                                       if self.get_settings().get_property("gtk-enable-animations") else Gtk.RevealerTransitionType.NONE)
         self.search_row.connect("notify::reveal-child", lambda row, _param: setattr(self, "search_expanded", row.get_reveal_child()))
+        # The board lays out once when the search row has slid in or out (see check_geometry).
+        self.search_row.connect("notify::child-revealed", self.queue_geometry)
         self.search_focus = Gtk.EventControllerFocus()
         self.search_focus.connect("notify::contains-focus", self.sync_search_visibility)
         self.search.add_controller(self.search_focus)
@@ -5486,6 +5488,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         geometry = (viewport.get_width(), viewport.get_height())
         row_height = max((widget.get_height() for widget in self.focus_widgets.values()), default=0) or self.row_height
         if geometry[0] > 0 and geometry[1] > 0 and (geometry, row_height) != (self.geometry, self.row_height):
+            if self.search_row.get_child_revealed() != self.search_row.get_reveal_child():
+                # The 150 ms slide changes the viewport height on each frame; one render follows when the slide ends.
+                return False
             self.cancel_scroll()
             self.list_body.clear_hover()
             self.geometry, self.row_height = geometry, row_height
