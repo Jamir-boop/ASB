@@ -3188,7 +3188,7 @@ class PhoneEditor(Gtk.Box):
         self.owner, self.preferences, self.base = owner, preferences, owner.base
         self.closed = self.active = self.loaded = self.loading = self.poll_loading = False
         self.generation, self.poll_timer, self.form_loaded = 0, None, None
-        self.status, self.address_checks, self.remove_buttons = {}, {}, []
+        self.status, self.address_checks, self.remove_buttons, self.devices_shown = {}, {}, [], None
         self.pairing_uri, self.expires_at, self.pair_device_ids, self.matrix = "", 0, set(), None
         self.settings = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
         self.settings.add_css_class("boxed-list")
@@ -3310,12 +3310,21 @@ class PhoneEditor(Gtk.Box):
             self.address_note.set_label(note)
             self.address_note.set_visible(bool(note))
             self.port.set_value(port)
+        # The pairing poll every 3 s must not make the same rows again: that drops the keyboard focus of a Remove button.
+        shown = tuple((device["id"], device["name"], device.get("createdAtMs"), device.get("lastSeenAtMs")) for device in status["devices"])
+        if shown != self.devices_shown:
+            self.devices_shown = shown
+            self.render_devices(status["devices"])
+        self.empty.set_visible(not status["devices"])
+        self.devices.set_visible(bool(status["devices"]))
+
+    def render_devices(self, devices):
         child = self.devices.get_first_child()
         while child:
             self.devices.remove(child)
             child = self.devices.get_first_child()
         self.remove_buttons = []
-        for device in status["devices"]:
+        for device in devices:
             created = device.get("createdAtMs", 0)
             date = time.strftime("%Y-%m-%d", time.localtime(created / 1000)) if created else "Unknown"
             last_seen = row_meta({"updatedAtMs": device.get("lastSeenAtMs", 0)}).split(" · ", 1)[1]
@@ -3327,8 +3336,6 @@ class PhoneEditor(Gtk.Box):
             row.add_suffix(remove)
             self.remove_buttons.append(remove)
             self.devices.append(row)
-        self.empty.set_visible(not status["devices"])
-        self.devices.set_visible(bool(status["devices"]))
 
     def request_phone(self, route="/api/phone", method="GET", body=None, poll=False):
         if self.closed or self.owner.closed or not self.active or self.loading or (poll and self.poll_loading):

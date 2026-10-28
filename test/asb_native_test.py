@@ -450,6 +450,32 @@ class WidgetCheck(unittest.TestCase):
         self.assertGreaterEqual(bounds.origin.x, adjustment.get_value() - 1)
         self.assertLessEqual(bounds.origin.x + bounds.size.width, adjustment.get_value() + adjustment.get_page_size() + 1)
 
+    def test_phone_pairing_status_keeps_device_rows_remove_buttons_and_focus(self):
+        preferences = asb.Adw.Window(application=self.application)
+        preferences.closed = False
+        self.addCleanup(preferences.destroy)
+        owner = SimpleNamespace(closed=False, base="http://127.0.0.1:1")
+        editor = asb.PhoneEditor(owner, preferences)
+        preferences.set_content(editor)
+        editor.active = True
+        device = {"id": "test-phone-a", "name": "Test phone", "createdAtMs": 1000, "lastSeenAtMs": 2000}
+        status = {"enabled": False, "running": False, "devices": [device]}
+        editor.render_status(status)
+        editor.update_controls()
+        preferences.present()
+        self.drain(.1)
+        row, button = editor.devices.get_row_at_index(0), editor.remove_buttons[0]
+        self.assertTrue(button.grab_focus())
+        editor.render_status(copy.deepcopy(status))
+        self.assertIs(editor.devices.get_row_at_index(0), row)
+        self.assertIs(editor.remove_buttons[0], button)
+        self.assertIs(preferences.get_focus(), button)
+        for changed in ({**device, "lastSeenAtMs": 3000}, {**device, "name": "Test tablet"}):
+            editor.render_status({**status, "devices": [changed]})
+            self.assertIsNot(editor.devices.get_row_at_index(0), row)
+            self.assertIsNot(editor.remove_buttons[0], button)
+            row, button = editor.devices.get_row_at_index(0), editor.remove_buttons[0]
+
     def test_reconnect_keeps_the_board_and_preferences_and_uses_the_new_engine(self):
         received = [[], []]
         servers = []

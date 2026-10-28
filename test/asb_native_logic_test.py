@@ -1330,6 +1330,7 @@ class PhoneChecks(unittest.TestCase):
         editor.loading = editor.poll_loading = False
         editor.generation, editor.poll_timer, editor.form_loaded = 0, None, None
         editor.status, editor.address_checks, editor.remove_buttons = self.status(), {"192.168.50.4": Mock()}, []
+        editor.devices_shown = None
         editor.pairing_uri, editor.expires_at, editor.pair_device_ids, editor.matrix = "", 0, set(), None
         for name in ("settings", "apply", "pair", "retry", "message", "status_label", "fingerprint", "enabled",
                      "address_list", "address_note", "port", "devices", "empty", "pairing", "qr", "link", "copy", "qr_help"):
@@ -1552,6 +1553,35 @@ class PhoneChecks(unittest.TestCase):
             editor.address_note.set_label.assert_called_with(asb.phone_address_note([]))
             editor.address_note.set_visible.assert_called_with(True)
             editor.empty.set_visible.assert_called_with(True)
+
+    def test_status_with_the_same_devices_keeps_the_rows_and_the_remove_buttons(self):
+        editor = self.editor()
+        devices = [{"id": "a", "name": "Test phone", "createdAtMs": NOW - 86_400_000, "lastSeenAtMs": NOW - 60_000},
+                   {"id": "b", "name": "Test tablet", "createdAtMs": NOW - 172_800_000, "lastSeenAtMs": NOW - 120_000}]
+        gtk = SimpleNamespace(Button=Mock(side_effect=lambda **_kwargs: Mock()), Align=SimpleNamespace(CENTER=0),
+                              AccessibleProperty=SimpleNamespace(LABEL=0))
+        rows = Mock(side_effect=lambda **kwargs: Mock(title=kwargs["title"]))
+        appended = lambda: [call.args[0] for call in editor.devices.append.call_args_list]
+        with patch.dict(SCOPE, {"Gtk": gtk, "Adw": SimpleNamespace(ActionRow=rows)}):
+            editor.render_status(self.status(devices=devices))
+            shown, buttons = appended(), list(editor.remove_buttons)
+            self.assertEqual([row.title for row in shown], ["Test phone", "Test tablet"])
+            self.assertEqual(len(buttons), 2)
+            # The pairing poll gives the same devices: no row and no Remove button is made again.
+            editor.render_status(self.status(devices=copy.deepcopy(devices)))
+            self.assertEqual(appended(), shown)
+            self.assertEqual(editor.remove_buttons, buttons)
+            self.assertTrue(all(new is old for new, old in zip(editor.remove_buttons, buttons)))
+            editor.devices.remove.assert_not_called()
+            editor.empty.set_visible.assert_called_with(False)
+            editor.devices.set_visible.assert_called_with(True)
+            # A new last-seen time or a new name makes the rows again.
+            for changed in ({**devices[0], "lastSeenAtMs": NOW}, {**devices[0], "name": "Test phone 2"}):
+                count = rows.call_count
+                editor.render_status(self.status(devices=[changed, devices[1]]))
+                self.assertEqual(rows.call_count, count + 2)
+                self.assertTrue(all(new is not old for new, old in zip(editor.remove_buttons, buttons)))
+                buttons = list(editor.remove_buttons)
 
     def test_phone_form_values_keep_unsaved_edits_and_else_follow_the_server(self):
         status = self.status(port=4631, bindAddresses=["192.168.50.4", "10.147.17.4"])
