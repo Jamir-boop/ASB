@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createActivityUsage, LEDGER_FIRST_MS, LEDGER_REFRESH_MS, SAVE_INTERVAL_MS } from '../src/activity-usage.mjs';
+import { createActivityUsage, LEDGER_FIRST_MS, LEDGER_REFRESH_MS, RELEASE_AFTER_MS, SAVE_INTERVAL_MS } from '../src/activity-usage.mjs';
 import { usageLedgerPath } from '../src/usage-ledger.mjs';
 
 // Synthetic transcripts, models, and machines only. Tests never use the network: the price download is a fake fetch.
@@ -313,10 +313,12 @@ test('the background refresh scans after ten minutes, then each hour, frees the 
     setTimeout: (callback, delayMs) => { const timer = { callback, delayMs }; pending.push(timer); return timer; },
     clearTimeout: (timer) => { const index = pending.indexOf(timer); if (index !== -1) pending.splice(index, 1); },
   };
-  // Runs the one pending timer; the clock moves by its delay, less the time that the test already moved it.
+  // Runs the one pending ledger timer; the clock moves by its delay, less the time that the test already moved it.
+  // The release timers of the usage requests stay pending (a separate test fires them).
   const fire = async (movedMs = 0) => {
-    assert.equal(pending.length, 1);
-    const [timer] = pending.splice(0, 1);
+    const ticks = pending.filter((timer) => timer.delayMs !== RELEASE_AFTER_MS);
+    assert.equal(ticks.length, 1);
+    const [timer] = pending.splice(pending.indexOf(ticks[0]), 1);
     clock.ms += timer.delayMs - movedMs;
     await timer.callback();
     return timer.delayMs;
@@ -345,7 +347,7 @@ test('the background refresh scans after ten minutes, then each hour, frees the 
   await usage.idle();
   assert.equal(usage.stats.scans, 2);
   assert.deepEqual(sums(usage.report('all')), reference);
-  // An ask in the last 15 minutes keeps the cache.
+  // An ask in the last 2 minutes keeps the cache.
   clock.ms += LEDGER_REFRESH_MS - 60_000;
   usage.localHourly('24h');
   await usage.idle();
@@ -365,6 +367,69 @@ test('the background refresh scans after ten minutes, then each hour, frees the 
   assert.deepEqual(pending, []);
   assert.equal(usage.stats.ledgerSaves, saves + 1);
   usage.start();
+  assert.deepEqual(pending, []);
+});
+
+test('the scan cache goes 2 minutes after the last usage request, saved when it changed, never during a scan', async (t) => {
+  const { write, service, clock } = await setup(t);
+  await write('a.jsonl', [claudeLine(BASE - HOUR, 1, 7)]);
+  const pending = [];
+  const timers = {
+    setTimeout: (callback, delayMs) => { const timer = { callback, delayMs, atMs: clock.ms }; pending.push(timer); return timer; },
+    clearTimeout: (timer) => { const index = pending.indexOf(timer); if (index !== -1) pending.splice(index, 1); },
+  };
+  // Runs the one pending release timer at its time.
+  const fire = async () => {
+    assert.equal(pending.length, 1);
+    const [timer] = pending.splice(0, 1);
+    assert.equal(timer.delayMs, RELEASE_AFTER_MS);
+    clock.ms = timer.atMs + timer.delayMs;
+    await timer.callback();
+    return timer;
+  };
+  const until = async (check) => { for (let i = 0; i < 200 && !check(); i += 1) await new Promise((resolve) => setTimeout(resolve, 5)); };
+  assert.equal(RELEASE_AFTER_MS, 2 * 60 * 1000);
+  const usage = service({ timers });
+  usage.localHourly('all');
+  await usage.idle();
+  assert.equal(pending.length, 1);
+  // A grown file within the save interval leaves the cache changed and not saved.
+  await write('a.jsonl', [claudeLine(BASE - HOUR, 1, 7), claudeLine(BASE - 2 * HOUR, 2, 5)]);
+  clock.ms += 10_000;
+  await usage.refresh();
+  const saves = usage.stats.saves;
+  const before = usage.localHourly('all').usage;
+  assert.equal(before.length, 2);
+  await usage.idle();
+  // An ask 1 minute later moves the release to 3 minutes after the first ask; there is one timer at most.
+  clock.ms += 60_000;
+  usage.localHourly('all');
+  await usage.idle();
+  assert.equal(pending.length, 1);
+  assert.equal((await fire()).atMs + RELEASE_AFTER_MS, BASE + 70_000 + RELEASE_AFTER_MS);
+  assert.equal(usage.stats.releases, 1);
+  assert.equal(usage.stats.saves, saves + 1);
+  assert.deepEqual(pending, []);
+  // The ledger shows the same totals at once; a new scan reads the cache file again, not the transcripts.
+  const read = usage.stats.bytesRead;
+  assert.deepEqual(usage.localHourly('all').usage, before);
+  await usage.idle();
+  assert.equal(usage.stats.bytesRead, read);
+  assert.deepEqual(usage.localHourly('all').usage, before);
+  // A release time during a scan waits for the scan to end.
+  clock.ms += 10_000;
+  usage.localHourly('all');
+  const [during] = pending.splice(0, 1);
+  clock.ms = during.atMs + during.delayMs;
+  await during.callback();
+  assert.equal(usage.stats.releases, 1);
+  await usage.idle();
+  await until(() => usage.stats.releases === 2);
+  assert.equal(usage.stats.releases, 2);
+  // stop() leaves no release timer.
+  usage.localHourly('all');
+  assert.equal(pending.length, 1);
+  await usage.stop();
   assert.deepEqual(pending, []);
 });
 

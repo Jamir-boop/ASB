@@ -25,10 +25,10 @@ export const SAVE_INTERVAL_MS = 5 * 60 * 1000;
 // The newest hourly records of a member reply.
 export const MAX_HOURLY_RECORDS = 50_000;
 const TOKEN_TYPES = ['uncached', 'cacheRead', 'cacheWrite', 'output'];
-// The ledger: the first background scan, the next ones, and the idle time after which a background scan frees the scan cache.
+// The ledger: the first background scan, the next ones, and the idle time after the last usage request that frees the scan cache.
 export const LEDGER_FIRST_MS = 10 * 60 * 1000;
 export const LEDGER_REFRESH_MS = 60 * 60 * 1000;
-export const RELEASE_AFTER_MS = 15 * 60 * 1000;
+export const RELEASE_AFTER_MS = 2 * 60 * 1000;
 // No coding agent has usage before 2020: an earlier time is a bad value, and it must not make thousands of month bars.
 const FIRST_USAGE_MS = Date.UTC(2020, 0, 1);
 
@@ -105,6 +105,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
   let derived = null;
   let lastAskMs = null;
   let timer = null;
+  let releaseTimer = null;
   let started = false;
   let stopped = false;
   let ticking = null;
@@ -364,7 +365,42 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     }
     return [...grouped.values()].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || (a.machineId < b.machineId ? -1 : 1));
   };
-  const ask = () => { lastAskMs = now(); };
+  // With a ledger, each usage request (re)starts one release timer; it fires when no request came for RELEASE_AFTER_MS.
+  const ask = () => {
+    lastAskMs = now();
+    if (ledgerFile && !stopped) armRelease();
+  };
+  function armRelease() {
+    if (releaseTimer) timers.clearTimeout(releaseTimer);
+    releaseTimer = timers.setTimeout(releaseIdle, RELEASE_AFTER_MS);
+    releaseTimer?.unref?.();
+  }
+  // A running scan keeps the cache; the check runs again when the scan ends, unless a new request restarted the timer.
+  async function releaseIdle() {
+    releaseTimer = null;
+    if (stopped) return;
+    if (running) {
+      running.then(() => { if (!releaseTimer) return releaseIdle(); });
+      return;
+    }
+    await release();
+  }
+  // Saves the scan cache when it changed and drops it from memory. The ledger keeps the totals, so the next report shows
+  // them while a new scan reads the cache again.
+  async function release() {
+    if (running || !cache) return;
+    if (dirty) {
+      dirty = false;
+      lastSavedAtMs = now();
+      try { await saveUsageCache(cacheFile, cache, { platform }); stats.saves += 1; } catch { log('ASB cannot save its usage cache. It keeps the old file.'); }
+    }
+    if (!running && cache && (lastAskMs === null || now() - lastAskMs >= RELEASE_AFTER_MS)) {
+      cache = null;
+      parts = null;
+      version += 1;
+      stats.releases += 1;
+    }
+  }
 
   async function tick() {
     timer = null;
@@ -378,20 +414,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
         keepMembers(replies);
         if (ledgerDirty) await saveLedger();
       }
-      if ((lastAskMs === null || now() - lastAskMs >= RELEASE_AFTER_MS) && !running && cache) {
-        if (dirty) {
-          dirty = false;
-          lastSavedAtMs = now();
-          try { await saveUsageCache(cacheFile, cache, { platform }); stats.saves += 1; } catch { log('ASB cannot save its usage cache. It keeps the old file.'); }
-        }
-        // The ledger keeps the totals, so the next report shows them while a new scan reads the cache again.
-        if (!running) {
-          cache = null;
-          parts = null;
-          version += 1;
-          stats.releases += 1;
-        }
-      }
+      if (lastAskMs === null || now() - lastAskMs >= RELEASE_AFTER_MS) await release();
     })();
     await ticking;
     ticking = null;
@@ -531,7 +554,8 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       if (!ledgerFile) return;
       stopped = true;
       if (timer) timers.clearTimeout(timer);
-      timer = null;
+      if (releaseTimer) timers.clearTimeout(releaseTimer);
+      timer = releaseTimer = null;
       await ticking;
       await running;
       await saveLedger();
