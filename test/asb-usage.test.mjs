@@ -90,6 +90,15 @@ test('asb usage import posts the file and prints the machines', async (t) => {
   assert.deepEqual(await run(['import', file]), { code: 1, out: '', err: 'asb usage: This file is not an ASB usage export.' });
 });
 
+test('asb usage import prints an unsaved ledger error and exits nonzero', async (t) => {
+  const { home, run, replies } = await fixture(t);
+  const file = path.join(home, 'usage.json');
+  await writeFile(file, JSON.stringify({ format: 'asb-usage-export', version: 1, exportedAtMs: 1_800_000_000_000, machines: [] }));
+  const message = 'ASB could not save the usage ledger. Keep the export file and try again.';
+  replies.set('POST /api/usage/import', [500, { error: message }]);
+  assert.deepEqual(await run(['import', file]), { code: 1, out: '', err: `asb usage: ${message}` });
+});
+
 test('asb usage import refuses a large file and a file that is not JSON before it asks the engine', async (t) => {
   const { home, run, records } = await fixture(t);
   const large = path.join(home, 'large.json');

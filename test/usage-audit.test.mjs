@@ -98,3 +98,28 @@ test('a Codex archive race counts a rollout once in each scan and the saved ledg
   const saved = JSON.parse(await fs.readFile(ledgerFile, 'utf8'));
   assert.deepEqual(saved.self.records, [row(1000, 0, 0, 100)]);
 });
+
+const SAVE_ERROR = { statusCode: 500, message: 'ASB could not save the usage ledger. Keep the export file and try again.' };
+
+test('an import rejects when the ledger write fails and a retry saves the data', async (t) => {
+  const { usage, ledgerFile } = await setup(t, { log: () => {} });
+  const writeFile = fs.writeFile;
+  const mock = t.mock.method(fs, 'writeFile', async (file, ...args) => {
+    if (file.startsWith(`${ledgerFile}.`)) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    return writeFile(file, ...args);
+  });
+  const input = document([{ machineId: OLD, name: 'retired', records: [row(1000)] }]);
+  try {
+    await assert.rejects(usage.importAll(input), SAVE_ERROR);
+    await assert.rejects(fs.access(ledgerFile), { code: 'ENOENT' });
+  } finally { mock.mock.restore(); }
+  await usage.importAll(input);
+  assert.deepEqual(JSON.parse(await fs.readFile(ledgerFile, 'utf8')).machines[0].records, [row(1000)]);
+});
+
+test('an import rejects when the ledger is blocked', async (t) => {
+  const { usage, ledgerFile } = await setup(t, { log: () => {} });
+  await fs.mkdir(ledgerFile, { recursive: true });
+  await assert.rejects(usage.importAll(document([{ machineId: OLD, name: 'retired', records: [row(1000)] }])), SAVE_ERROR);
+  assert.equal((await fs.lstat(ledgerFile)).isDirectory(), true);
+});

@@ -199,7 +199,7 @@ test('a corrupt ledger is set aside unchanged and replaced; when that fails, no 
   await blocked.refresh();
   await write('b.jsonl', [claudeLine(BASE - 2 * HOUR, 2, 3)]);
   await blocked.refresh();
-  await blocked.importAll({ format: 'asb-usage-export', version: 1, exportedAtMs: BASE, machines: [{ machineId: OTHER, name: 'retired', records: [] }] });
+  await assert.rejects(blocked.importAll({ format: 'asb-usage-export', version: 1, exportedAtMs: BASE, machines: [{ machineId: OTHER, name: 'retired', records: [] }] }), { statusCode: 500, message: 'ASB could not save the usage ledger. Keep the export file and try again.' });
   await blocked.stop();
   assert.deepEqual(logs, ['ASB cannot set aside its unreadable usage ledger. It saves no usage history now.']);
   assert.equal(blocked.stats.ledgerSaves, 0);
@@ -466,7 +466,7 @@ test('a ledger with open modes loads and becomes private; a linked ledger is kep
   await linked.refresh();
   await write('b.jsonl', [claudeLine(BASE - 2 * HOUR, 2, 3)]);
   await linked.refresh();
-  await linked.importAll(exportFile([{ machineId: OTHER, name: 'retired', records: [] }]));
+  await assert.rejects(linked.importAll(exportFile([{ machineId: OTHER, name: 'retired', records: [] }])), { statusCode: 500, message: 'ASB could not save the usage ledger. Keep the export file and try again.' });
   await linked.stop();
   assert.ok(!linked.localHourly('all').usage.some(({ hourMs }) => hourMs === hourOf(BASE - 2 * DAY)));
   assert.deepEqual(logs, ['ASB cannot read its usage ledger. It saves no usage history now.']);
