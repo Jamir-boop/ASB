@@ -5167,8 +5167,9 @@ class WidgetCheck(unittest.TestCase):
         window, _dashboard = self.lazy_board()
         parts = window.column_parts
         self.assertGreater(len(parts), 10)
-        first, last = window.column_range()
-        self.assertEqual(window.filled_columns, set(range(first, last)))
+        page = window.scroll.get_hadjustment().get_page_size()
+        first, last = window.column_range(-page, 3 * page, sides=False)
+        self.assertEqual(window.filled_columns, set(range(first, min(last, len(parts)))))
         self.assertLess(len(window.focus_widgets), 6 * window.capacity)
         self.assert_columns_filled(window)
         self.assertEqual(len(window.row_order), 300)
@@ -5350,13 +5351,89 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(fills.count(2), 1)
         self.assert_columns_filled(window)
 
+    def test_idle_fill_stops_at_one_view_width_with_show_all(self):
+        window, _dashboard = self.lazy_board(800, width=1400, height=900)
+        window.view_filter.set_selected(1); self.drain()
+        window.show_all_cards = True
+        window.render()
+        def wait_for_fill():
+            end = time.monotonic() + 6
+            while (window.side_fill_tick or window.side_fill_frame) and time.monotonic() < end:
+                self.drain(.02)
+        wait_for_fill()
+        adjustment = window.scroll.get_hadjustment()
+        adjustment.set_value(6 * (window.column_pixel_width + 12))
+        wait_for_fill()
+        page = adjustment.get_page_size()
+        start, end = window.column_range(adjustment.get_value() - page, 3 * page, sides=False)
+        expected = set(range(start, min(end, len(window.column_parts))))
+        self.assertTrue(expected <= window.filled_columns)
+        self.assertLess(len(window.focus_widgets), 800)
+        # A new render restarts the idle window and does not fill the rest of Show all.
+        window.layout_signature = None
+        window.render()
+        paints, fills = [], []
+        clock = window.get_frame_clock()
+        handler = clock.connect("after-paint", lambda clock: paints.append(clock.get_frame_counter()))
+        self.addCleanup(clock.disconnect, handler)
+        fill = window.fill_columns
+        def record(numbers):
+            self.assertTrue(paints)
+            fills.append((clock.get_frame_counter(), tuple(numbers)))
+            return fill(numbers)
+        with patch.object(window, "fill_columns", record):
+            wait_for_fill()
+        self.assertEqual(window.filled_columns, expected)
+        self.assertEqual(len({frame for frame, _numbers in fills}), len(fills))
+        self.assertTrue(all(len(numbers) == 1 for _frame, numbers in fills))
+        self.assertIsNone(window.side_fill_tick)
+        self.assertIsNone(window.side_fill_frame)
+        self.assertEqual(window.side_columns, ())
+        self.assert_columns_filled(window)
+
+
+    def test_idle_fill_waits_while_a_wheel_glide_runs(self):
+        window, _dashboard = self.lazy_board(800, width=1400, height=900)
+        settings = window.get_settings()
+        self.addCleanup(settings.set_property, "gtk-enable-animations", settings.get_property("gtk-enable-animations"))
+        settings.set_property("gtk-enable-animations", True)
+        window.view_filter.set_selected(1); self.drain(.3); window.check_geometry(); self.drain()
+        def wait_for_fill():
+            end = time.monotonic() + 6
+            while (window.scroll_target is not None or window.side_fill_tick or window.side_fill_frame) and time.monotonic() < end:
+                self.drain(.02)
+        wait_for_fill()
+        fills, fill = [], window.fill_columns
+        def record(numbers):
+            # The view at this moment: a fill past its side columns is idle work.
+            first, last = window.column_range(sides=False)
+            outer = [number for number in numbers if number not in window.filled_columns and not first - 1 <= number <= last]
+            fills.append((outer, window.scroll_target is not None))
+            return fill(numbers)
+        adjustment = window.scroll.get_hadjustment()
+        with patch.object(window, "fill_columns", record):
+            adjustment.set_value(8 * (window.column_pixel_width + 12))
+            window.scroll_horizontal(None, 0, 1)
+            self.assertIsNotNone(window.scroll_target)
+            for _notch in range(2):
+                self.drain(.03); window.scroll_horizontal(None, 0, 1)
+            wait_for_fill()
+        self.assertTrue(any(gliding for _outer, gliding in fills))
+        self.assertEqual([outer for outer, gliding in fills if gliding and outer], [])
+        self.assertTrue(any(outer for outer, gliding in fills if not gliding))
+        page = adjustment.get_page_size()
+        start, stop = window.column_range(adjustment.get_value() - page, 3 * page, sides=False)
+        self.assertTrue(set(range(start, min(stop, len(window.column_parts)))) <= window.filled_columns)
+        self.assert_columns_filled(window)
+
     def test_side_columns_fill_one_at_a_time_after_the_first_paint(self):
         window, _dashboard = self.lazy_board(300, width=1400, height=900)
         window.set_focus(None)
         window.layout_signature = None
         window.render()
         touching = set(range(*window.column_range(sides=False)))
-        nearby = set(range(*window.column_range()))
+        page = window.scroll.get_hadjustment().get_page_size()
+        nearby = set(range(*window.column_range(-page, 3 * page, sides=False))) & set(range(len(window.column_parts)))
         # The board of lazy_board is Compact, which starts with one column.
         initial = set(sorted(touching)[:1])
         self.assertEqual(window.filled_columns, initial)
@@ -5371,11 +5448,12 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(first_paint)
             return fill(numbers)
         with patch.object(window, "fill_columns", record):
-            self.drain(.4)
+            end = time.monotonic() + 6
+            while (window.side_fill_tick or window.side_fill_frame) and time.monotonic() < end:
+                self.drain(.02)
         self.assertEqual(first_paint[0], initial)
         self.assertEqual(window.filled_columns, nearby)
-        queued = [number for number in (*sorted(touching), min(touching) - 1, max(touching) + 1)
-                  if number in nearby - initial]
+        queued = sorted(nearby - initial, key=lambda number: max(min(touching) - number, number - max(touching), 0))
         self.assertEqual(fills, [(number,) for number in queued])
         self.assertIsNone(window.side_fill_frame)
         self.assertIsNone(window.side_fill_tick)

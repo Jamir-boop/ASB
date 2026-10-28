@@ -7271,9 +7271,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def queue_column_fill(self, value=None, page=None):
         self.cancel_side_fill()
+        adjustment = self.scroll.get_hadjustment()
+        value = adjustment.get_value() if value is None else value
+        page = (adjustment.get_page_size() or (self.geometry or (0, 0))[0]) if page is None else page
         first, last = self.fill_view = self.column_range(value, page, sides=False)
-        sides = (first - 1, last)
-        self.side_columns = tuple(number for number in (*range(first, last), *sides)
+        start, end = self.column_range(value - page, 3 * page, sides=False)
+        # Input and render callbacks precede the frame clock and replace this queue before it fills another column.
+        numbers = sorted(range(start, end), key=lambda number: max(first - number, number - last + 1, 0))
+        self.side_columns = tuple(number for number in numbers
                                   if 0 <= number < len(self.column_parts) and number not in self.filled_columns)
         if self.side_columns:
             self.side_fill_tick = self.list_body.add_tick_callback(self.side_fill_after_frame)
@@ -7283,6 +7288,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if self.closed or not self.side_columns:
             return False
         number, *remaining = self.side_columns
+        if getattr(self, "scroll_target", None) is not None and not self.fill_view[0] - 1 <= number <= self.fill_view[1]:
+            # A wheel glide is input: the columns past the side columns wait until it settles.
+            self.side_fill_tick = self.list_body.add_tick_callback(self.side_fill_after_frame)
+            return False
         self.side_columns = tuple(remaining)
         self.fill_columns((number,))
         if self.side_columns:
