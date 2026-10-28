@@ -91,7 +91,7 @@ def probe(args, result):
 
     # The native tests use the same patched requests and stream, with an initial dashboard.
     with patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None), \
-            patch.object(asb, "EventStream", lambda *_args: SimpleNamespace(close=lambda: None)), \
+            patch.object(asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)), \
             patch.object(asb, "request_async", request):
         application = asb.SwitchboardApplication("http://127.0.0.1:1")
         application.register(None)
