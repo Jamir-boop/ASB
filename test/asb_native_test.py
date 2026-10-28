@@ -5356,10 +5356,12 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual((one.get_height(), one.asb_title_label.get_height()), (68, 32))
         self.assertEqual((self.ink(one.asb_dot), self.ink(cue), self.ink(drawer), self.ink(one.asb_state_label)), (255, 0, 0, 255))
         self.assertEqual(self.ink(copy_button), 0)
-        self.hover_card(window, one, True); self.hover_card(window, question, True); settle()
-        self.assertEqual((self.ink(one.asb_dot), self.ink(drawer), self.ink(copy_button), self.ink(question.asb_copy_button)), (0, 255, 255, 255))
+        self.hover_card(window, one, True); settle()
+        self.assertEqual((self.ink(one.asb_dot), self.ink(drawer), self.ink(copy_button)), (0, 255, 255))
         self.assertGreater(self.ink(cue), 0)
         self.assertLess(self.ink(one.asb_state_label), 255)  # The read tone.
+        self.hover_card(window, question, True); settle()
+        self.assertEqual(self.ink(question.asb_copy_button), 255)
         self.assertGreater(self.ink(question.asb_dot), 0)  # A ? does not change.
         self.hover_card(window, one, False); self.hover_card(window, question, False); settle()
         self.assertEqual((self.ink(one.asb_dot), self.ink(cue), self.ink(drawer), self.ink(copy_button)), (255, 0, 0, 0))
@@ -5428,12 +5430,15 @@ class WidgetCheck(unittest.TestCase):
                     rest = cards["s3"].asb_copy_button
                     self.assertTrue(rest.has_css_class("asb-copy-confirmed"))
                     self.assertEqual((self.ink(rest), self.ink(rest.get_parent()), self.ink(two.asb_copy_button)), (0, 0, 0))
-                    self.hover_card(window, cards["s3"], True); self.hover_card(window, two, True)
-                    two.asb_copy_button.set_state_flags(hover, False); settle()
+                    self.hover_card(window, cards["s3"], True); settle()
                     self.assertEqual(self.ink(rest), 255)
                     if palette:  # Only the check uses the accent; the copy icon keeps the text color.
-                        self.assertEqual((window.hex_color(rest.get_color()), window.hex_color(two.asb_copy_button.get_color())),
-                                         (palette["accent"], palette["text"]))
+                        self.assertEqual(window.hex_color(rest.get_color()), palette["accent"])
+                    self.hover_card(window, two, True)
+                    two.asb_copy_button.set_state_flags(hover, False); settle()
+                    self.assertEqual(self.ink(rest), 0)
+                    if palette:
+                        self.assertEqual(window.hex_color(two.asb_copy_button.get_color()), palette["text"])
                     self.hover_card(window, cards["s3"], False); self.hover_card(window, two, False); two.asb_copy_button.unset_state_flags(hover); settle()
                 colors = lambda card: [getattr(card, name).get_color().to_string() for name in
                                        ("asb_title_label", "asb_folder", "asb_state_label", "asb_age_label") if hasattr(card, name)]
@@ -5618,10 +5623,11 @@ class WidgetCheck(unittest.TestCase):
             beside(cards[identity], cards[identity].asb_folder)
         # A muted Working card has no Discard ring, also on hover; an unmuted one keeps it.
         busy, plain = cards["busy"], cards["plain"]
-        self.hover_card(window, busy, True); self.hover_card(window, plain, True); settle()
+        self.hover_card(window, busy, True); settle()
         self.assertFalse(busy.asb_read_button.get_visible())
         self.assertFalse(busy.asb_read_button.has_css_class("asb-discard-offer"))
         self.assertEqual(self.ink(busy.asb_dot), 0)
+        self.hover_card(window, plain, True); settle()
         self.assertTrue(plain.asb_read_button.get_visible() and plain.asb_read_button.has_css_class("asb-discard-offer"))
         self.assertGreater(self.ink(plain.asb_dot), 0)
         self.hover_card(window, busy, False); self.hover_card(window, plain, False); settle()
@@ -6305,6 +6311,63 @@ class WidgetCheck(unittest.TestCase):
         del requests[:]
         xdo("click", 1); self.drain(.4)
         self.assertEqual([request[1] for request in requests if request[1] != "/api/palette"], ["/api/threads/r0/open"])
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real pointer movement needs xdotool and DISPLAY=:9 or :10.")
+    def test_static_hover_follows_a_still_pointer_after_cards_move(self):
+        from gi.repository import GdkX11
+
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-enable-animations", settings.get_property("gtk-enable-animations"))
+        def xdo(*args):
+            return subprocess.run(["xdotool", *map(str, args)], check=True, capture_output=True, text=True).stdout
+        x, y = (line.split("=")[1] for line in xdo("getmouselocation", "--shell").splitlines()[:2])
+        self.addCleanup(xdo, "mousemove", x, y)
+        for view in (0, 1):
+            for animated in (False, True):
+                with self.subTest(view=view, animated=animated):
+                    settings.set_property("gtk-enable-animations", animated)
+                    xdo("mousemove", 1500, 950)
+                    dashboard = {"generatedAtMs": NOW, "providers": [], "threads": [
+                        {"id": f"s{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Review sample {n}",
+                         "state": "idle", "canOpen": True, "updatedAtMs": NOW - n * 60_000} for n in range(1, 5)]}
+                    window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard,
+                                                  theme_path=False, layout_path=False)
+                    window.set_default_size(700, 600)
+                    window.present(); self.drain(.3)
+                    window.view_filter.set_selected(view); self.drain(.3)
+                    cards = window.focus_widgets.copy()
+                    def move(card=None):
+                        left, top = window.get_surface_transform()
+                        px, py = 10, 10
+                        if card:
+                            found, bounds = card.asb_title_label.compute_bounds(window)
+                            self.assertTrue(found)
+                            px, py = bounds.origin.x + bounds.size.width / 2, bounds.origin.y + bounds.size.height / 2
+                        xdo("mousemove", "--window", GdkX11.X11Surface.get_xid(window.get_surface()), int(px + left), int(py + top))
+                        self.drain(.1)
+                    hovered = lambda: [identity for identity, card in cards.items() if card.has_css_class("asb-hovered")]
+                    move(cards["s1"])
+                    self.assertEqual(hovered(), ["s1"])
+                    dashboard["threads"][-1]["pinned"] = True
+                    window.render(); self.drain(.08)
+                    self.assertTrue(window.pointer_on(cards["s4"]))
+                    self.assertEqual(hovered(), ["s4"])
+                    # An enter must clear the layout hover even when GTK sends no leave for that card.
+                    self.hover_card(window, cards["s2"], True)
+                    self.assertEqual(hovered(), ["s2"])
+                    move(cards["s2"])
+                    self.assertEqual(hovered(), ["s2"])
+                    # Filtering repacks the board with no glide and clears a card that is no longer under the pointer.
+                    move()
+                    window.search.set_text("sample 3"); self.drain(.4)
+                    self.assertEqual(hovered(), [])
+                    window.close(); self.drain(.03)
 
     def test_real_pointer_sets_one_hover_class_on_each_card(self):
         asb.gi.require_version("GdkX11", "4.0")

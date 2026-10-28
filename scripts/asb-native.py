@@ -5657,6 +5657,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return places
 
     def after_layout(self):
+        if getattr(self, "hover_after_layout", False):
+            self.hover_after_layout = False
+            self.sync_row_hover()
         self.start_motion()
         self.queue_number_keys()
 
@@ -6544,6 +6547,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             and set(layout_signature[0]) == set(self.layout_signature[0])
         repack = repack and not reorder
         if repack or reorder:
+            self.hover_after_layout = True
             if getattr(self, "motion_animation", None) and motion_allowed(
                     self.layout_signature, layout_signature, self.get_settings().get_property("gtk-enable-animations"), self.get_mapped()):
                 # A second change before the next layout keeps the places that are on the screen.
@@ -6784,12 +6788,33 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def row_hover(self, controller, *_args):
         # A class on the card in place of the hover pseudo-class, so a hover change on the strip or a column does not restyle every card.
-        hovered = controller.contains_pointer()
-        widget = controller.get_widget()
+        self.set_row_hover(controller.get_widget(), controller.contains_pointer())
+
+    def set_row_hover(self, widget, hovered):
+        previous = getattr(self, "hovered_card", None)
+        if hovered:
+            if previous is not None and previous is not widget:
+                self.set_row_hover(previous, False)
+            self.hovered_card = widget
+        elif previous is widget:
+            self.hovered_card = None
         widget.add_css_class("asb-hovered" if hovered else "asb-unhovered")
         widget.remove_css_class("asb-unhovered" if hovered else "asb-hovered")
         if not hovered:
             self.hide_copy_tag(getattr(widget, "asb_copy_button", None), keep_focused=True)
+
+    def sync_row_hover(self):
+        surface = self.get_surface()
+        picked = None
+        if surface is not None:
+            found, x, y, _mask = surface.get_device_position(self.get_display().get_default_seat().get_pointer())
+            left, top = self.get_surface_transform()
+            picked = self.pick(x - left, y - top, Gtk.PickFlags.DEFAULT) if found else None
+        row = picked.get_ancestor(Gtk.ListBoxRow) if picked else None
+        if row is not None and row.is_ancestor(self.list_body) and row in self.focus_widgets.values():
+            self.set_row_hover(row, True)
+        elif getattr(self, "hovered_card", None) is not None:
+            self.set_row_hover(self.hovered_card, False)
 
     def release_row(self, widget):
         self.clear_read_feedback(widget)
