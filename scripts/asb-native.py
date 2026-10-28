@@ -6891,6 +6891,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 # The repack moved the row with its open panel; the focus goes back to the panel control.
                 self.set_focus(panel_focus)
             elif (row := self.card_for(focused)) is not None:
+                if focused_action in ("copy", "drawer"):
+                    self.ensure_card_controls(row)
                 control = getattr(row, "asb_" + str(focused_action) + "_button", None)
                 self.set_focus(control if control and control.get_visible() and control.get_sensitive() else row)
             adjustment = self.scroll.get_hadjustment()
@@ -7009,6 +7011,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def set_row_hover(self, widget, hovered):
         previous = getattr(self, "hovered_card", None)
         if hovered:
+            self.ensure_card_controls(widget)
             if previous is not None and previous is not widget:
                 self.set_row_hover(previous, False)
             self.hovered_card = widget
@@ -7146,8 +7149,58 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             root.append(notes)
         return root
 
+    def ensure_card_controls(self, widget):
+        """Build the hover controls once; the read and pin slots already have their final places."""
+        if widget.asb_view != "comfortable" or widget.asb_thread["id"] == MORE_ID or getattr(widget, "asb_copy_button", None):
+            return
+        row, actions = widget.asb_thread, widget.asb_actions
+        drawer = Gtk.Button(child=self.drawer_glyph())
+        copy = Gtk.Button(child=Gtk.Image(icon_name="edit-copy-symbolic", pixel_size=12))
+        # The kind tag slides out to the left of the copy button, over the folder line.
+        tag_words = Gtk.Stack(transition_type=Gtk.StackTransitionType.SLIDE_UP, transition_duration=200)
+        for name in COPY_KINDS:
+            word = label(COPY_KIND_WORDS[name], "asb-copy-tag-word")
+            tag_words.add_named(word, name)
+        tag_dots = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, valign=Gtk.Align.CENTER)
+        tag_dot_relative = Gtk.Box()
+        tag_dot_relative.add_css_class("asb-copy-tag-dot")
+        tag_dot_absolute = Gtk.Box()
+        tag_dot_absolute.add_css_class("asb-copy-tag-dot")
+        tag_dots.append(tag_dot_relative)
+        tag_dots.append(tag_dot_absolute)
+        tag_box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        tag_box.add_css_class("asb-copy-tag")
+        tag_box.append(tag_words)
+        tag_box.append(tag_dots)
+        tag = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.SLIDE_RIGHT, transition_duration=200,
+                           reveal_child=False, child=tag_box)
+        for button, name in ((copy, "copy"), (drawer, "drawer")):
+            button.add_css_class("flat")
+            button.add_css_class("asb-card-action")
+            button.add_css_class("asb-" + name + "-button")
+            button.asb_card_action = name
+            button.asb_identity, button.asb_action = row["id"], None
+            button.connect("clicked", self.card_action_clicked)
+        copy.asb_card, copy.asb_tag, copy.asb_tag_shown, copy.asb_rest_at = widget, tag, False, None
+        copy_motion = Gtk.EventControllerMotion()
+        copy_motion.connect("enter", self.copy_button_enter)
+        copy_motion.connect("leave", self.copy_button_leave)
+        copy.add_controller(copy_motion)
+        copy.connect("unmap", self.copy_button_unmap)
+        widget.asb_drawer_button = drawer
+        widget.asb_copy_button = copy
+        widget.asb_copy_tag, widget.asb_copy_words = tag, tag_words
+        widget.asb_copy_dot_relative, widget.asb_copy_dot_absolute = tag_dot_relative, tag_dot_absolute
+        actions.prepend(drawer)
+        actions.prepend(copy)
+        actions.prepend(tag)
+        widget.asb_action_signature = None
+        self.update_card_actions(widget)
+
     def row_focus(self, _controller, identity):
         self.focused_id = identity
+        widget = _controller.get_widget()
+        self.ensure_card_controls(widget)
 
     def row_context(self, gesture, _count, x, y, identity):
         widget = self.focus_widgets.get(identity)
@@ -7179,7 +7232,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.asb_view = self.view
             widget.asb_action_signature = None
             self.cancel_card_copy(widget)
-            for name in ("asb_folder", "asb_pin_button", "asb_read_button", "asb_drawer_button", "asb_copy_button", "asb_age_label", "asb_limited",
+            copy = getattr(widget, "asb_copy_button", None)
+            if copy is not None:
+                self.hide_copy_tag(copy)
+                copy.asb_card = None
+            for name in ("asb_actions", "asb_folder", "asb_pin_button", "asb_read_button", "asb_drawer_button", "asb_copy_button", "asb_age_label", "asb_limited",
                          "asb_mute_glyph", "asb_where_icon", "asb_where_label", "asb_more_glyph", "asb_copy_tag", "asb_copy_words",
                          "asb_copy_dot_relative", "asb_copy_dot_absolute", "asb_feedback", "asb_feedback_label", "asb_footer_stack"):
                 if hasattr(widget, name):
@@ -7302,46 +7359,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 read_icon.add_overlay(check)
                 read = Gtk.Button(child=read_icon)
                 pin = Gtk.Button(child=Gtk.Image(icon_name="view-pin-symbolic", pixel_size=12))
-                drawer = Gtk.Button(child=self.drawer_glyph())
-                copy = Gtk.Button(child=Gtk.Image(icon_name="edit-copy-symbolic", pixel_size=12))
-                # The kind tag slides out to the left of the copy button, over the folder line.
-                tag_words = Gtk.Stack(transition_type=Gtk.StackTransitionType.SLIDE_UP, transition_duration=200)
-                for name in COPY_KINDS:
-                    word = label(COPY_KIND_WORDS[name], "asb-copy-tag-word")
-                    tag_words.add_named(word, name)
-                tag_dots = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, valign=Gtk.Align.CENTER)
-                tag_dot_relative = Gtk.Box()
-                tag_dot_relative.add_css_class("asb-copy-tag-dot")
-                tag_dot_absolute = Gtk.Box()
-                tag_dot_absolute.add_css_class("asb-copy-tag-dot")
-                tag_dots.append(tag_dot_relative)
-                tag_dots.append(tag_dot_absolute)
-                tag_box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
-                tag_box.add_css_class("asb-copy-tag")
-                tag_box.append(tag_words)
-                tag_box.append(tag_dots)
-                tag = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.SLIDE_RIGHT, transition_duration=200,
-                                   reveal_child=False, child=tag_box)
-                actions.append(tag)
-                for button, name in ((copy, "copy"), (drawer, "drawer"), (read, "read"), (pin, "pin")):
+                for button, name in ((read, "read"), (pin, "pin")):
                     button.add_css_class("flat")
                     button.add_css_class("asb-card-action")
                     button.add_css_class("asb-" + name + "-button")
                     button.asb_card_action = name
                     button.asb_identity, button.asb_action = row["id"], None
                     button.connect("clicked", self.card_action_clicked)
-                copy.asb_card, copy.asb_tag, copy.asb_tag_shown, copy.asb_rest_at = widget, tag, False, None
-                copy_motion = Gtk.EventControllerMotion()
-                copy_motion.connect("enter", self.copy_button_enter)
-                copy_motion.connect("leave", self.copy_button_leave)
-                copy.add_controller(copy_motion)
-                copy.connect("unmap", self.copy_button_unmap)
-                widget.asb_drawer_button, widget.asb_read_button, widget.asb_pin_button = drawer, read, pin
-                widget.asb_copy_button = copy
-                widget.asb_copy_tag, widget.asb_copy_words = tag, tag_words
-                widget.asb_copy_dot_relative, widget.asb_copy_dot_absolute = tag_dot_relative, tag_dot_absolute
-                actions.append(copy)
-                actions.append(drawer)
+                widget.asb_actions = actions
+                widget.asb_read_button, widget.asb_pin_button = read, pin
                 read_slot.append(read)
                 actions.append(read_slot)
                 actions.append(pin)
@@ -7361,6 +7387,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             # Tooltips set before the card is rooted cause no tooltip query.
             self.update_card_actions(widget)
             widget.set_child(content)
+            if widget.has_css_class("asb-hovered") or widget.has_focus() or widget.is_focus():
+                self.ensure_card_controls(widget)
         set_icon(widget.asb_mark, provider_icon(row.get("provider")))
         widget.asb_source_badge.set_color(source_marker_color(row))
         where_icon, where = row_where(row)
@@ -7497,7 +7525,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return
         if widget.asb_thread.get("id") == MORE_ID:
             # No card actions: the whole corner goes, so its title fade does not paint on hover.
-            widget.asb_copy_button.get_parent().set_visible(False)
+            widget.asb_actions.set_visible(False)
             return
         row, read, pin = widget.asb_thread, widget.asb_read_button, widget.asb_pin_button
         drawer = getattr(widget, "asb_drawer_button", None)
@@ -7621,6 +7649,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         value, _reason, kind = card_copy(widget.asb_thread, self.copy_kind) if widget else (None, None, "")
         if not value or self.closed:
             return
+        self.ensure_card_controls(widget)
         # The check of an earlier copy must not stay on after this one fails.
         self.cancel_card_copy(widget)
         try:

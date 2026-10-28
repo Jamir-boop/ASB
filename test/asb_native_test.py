@@ -1141,6 +1141,9 @@ class WidgetCheck(unittest.TestCase):
         hidden = ["sample-40", "sample-41"]
         # A card of a column far outside the view gets its Comfortable content when its column fills.
         cards = [window.card_for(identity) for identity in gone + hidden]
+        for card in cards:
+            window.ensure_card_controls(card)
+        del card
         self.assertTrue(all(getattr(card, "asb_copy_button", None) is not None for card in cards))
         references = [weakref.ref(card) for card in cards]
         del cards
@@ -3466,6 +3469,9 @@ class WidgetCheck(unittest.TestCase):
         window.set_default_size(680, 420)
         window.present(); window.set_focus(None); self.drain(.4)
         window.view_filter.set_selected(1); self.drain(.5); window.check_geometry(); self.drain()
+        for card in window.focus_widgets.values():
+            window.ensure_card_controls(card)
+        self.drain()
         one = window.focus_widgets["one"].asb_copy_button
         two = window.focus_widgets["two"].asb_copy_button
 
@@ -3537,6 +3543,9 @@ class WidgetCheck(unittest.TestCase):
         window.set_default_size(680, 420)
         window.present(); window.set_focus(None); self.drain(.4)
         window.view_filter.set_selected(1); self.drain(.5); window.check_geometry(); self.drain()
+        for card in window.focus_widgets.values():
+            window.ensure_card_controls(card)
+        self.drain()
         strip, adjustment = window.list_body, window.scroll.get_hadjustment()
         self.assertGreater(adjustment.get_upper() - adjustment.get_page_size(), adjustment.get_value())  # The wheel can scroll the board.
         button = window.focus_widgets["s1"].asb_copy_button
@@ -4380,6 +4389,9 @@ class WidgetCheck(unittest.TestCase):
         panel.popdown(); self.drain(.2)
         # The Comfortable card button stays, with no action and the reason as its tooltip.
         window.view_filter.set_selected(1); self.drain(1)
+        for card in window.focus_widgets.values():
+            window.ensure_card_controls(card)
+        self.drain()
         card = window.focus_widgets[invalid_row["id"]].asb_copy_button
         self.assertEqual((card.get_visible(), card.asb_action, card.get_tooltip_text()), (True, None, reason))
         self.assertTrue(card.has_css_class("asb-copy-off"))
@@ -4412,6 +4424,9 @@ class WidgetCheck(unittest.TestCase):
         window.set_default_size(680, 600)
         window.present(); window.set_focus(None); self.drain(.4)
         window.view_filter.set_selected(1); self.drain(.5); window.check_geometry(); self.drain()
+        for card in window.focus_widgets.values():
+            window.ensure_card_controls(card)
+        self.drain()
         card = lambda identity: window.focus_widgets[identity].asb_copy_button
         remote, nofull = "m:0123456789abcdef:remote", "m:0123456789abcdef:nofull"
         # A local row, also a view-only CLI row, keeps the relative reference.
@@ -4498,6 +4513,9 @@ class WidgetCheck(unittest.TestCase):
             window.set_default_size(680, 420)
             window.present(); window.set_focus(None); self.drain(.4)
             window.view_filter.set_selected(1); self.drain(.5); window.check_geometry(); self.drain()
+            for card in window.focus_widgets.values():
+                window.ensure_card_controls(card)
+            self.drain()
             cards = {row["id"]: window.focus_widgets[row["id"]] for row in dashboard["threads"]}
             copy_of = lambda identity: cards[identity].asb_copy_button
             tag_of = lambda identity: copy_of(identity).asb_tag
@@ -4691,6 +4709,9 @@ class WidgetCheck(unittest.TestCase):
         window.set_default_size(520, 320)
         window.present(); window.set_focus(None); self.drain(.3)
         window.view_filter.set_selected(1); self.drain(.4)
+        for card in window.focus_widgets.values():
+            window.ensure_card_controls(card)
+        self.drain()
         limited = window.focus_widgets["limited"]
         self.assertTrue(limited.asb_limit_clock.get_visible())
         self.assertEqual(limited.asb_state_label.get_text(), "Resets in")
@@ -4966,6 +4987,78 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(len(window.focus_widgets), 300)
         self.assert_columns_filled(window)
         self.assertEqual((window.list_body.get_width(), adjustment.get_upper()), (width, upper))
+
+    def test_hover_controls_build_on_first_hover_with_current_action_state(self):
+        window, _dashboard = self.lazy_board(20)
+        window.view_filter.set_selected(1); self.drain()
+        for extra in ({"unread": True}, {"drawer": True}, {"externalId": "invalid id"}, {"unread": True, "busy": True}):
+            with self.subTest(extra=extra):
+                row = {**board_rows(1)[0], **extra}
+                card = window.session_row(row)
+                self.addCleanup(window.release_row, card)
+                self.assertFalse(any(hasattr(card, name) for name in ("asb_copy_button", "asb_copy_tag", "asb_drawer_button")))
+                self.assertIsNotNone(card.asb_read_button)
+                self.assertIsNotNone(card.asb_pin_button)
+                if extra.get("busy"):
+                    window.session_actions.add(row["id"])
+                # An already-built card gets the same update as the first-use card.
+                eager = window.session_row(board_rows(1)[0])
+                self.addCleanup(window.release_row, eager)
+                window.ensure_card_controls(eager)
+                window.update_session_row(eager, row)
+                window.set_row_hover(card, True)
+                for name in ("copy", "drawer", "read", "pin"):
+                    button, expected = (getattr(item, "asb_" + name + "_button") for item in (card, eager))
+                    self.assertEqual(set(button.get_css_classes()), set(expected.get_css_classes()))
+                    self.assertEqual((button.get_visible(), button.asb_action, button.get_tooltip_text()),
+                                     (expected.get_visible(), expected.asb_action, expected.get_tooltip_text()))
+                controls = card.asb_copy_button, card.asb_drawer_button, card.asb_copy_tag
+                window.set_row_hover(card, False); window.set_row_hover(card, True)
+                self.assertEqual(controls, (card.asb_copy_button, card.asb_drawer_button, card.asb_copy_tag))
+                window.set_row_hover(card, False)
+                window.session_actions.discard(row["id"])
+
+    def test_keyboard_focus_builds_hover_controls_before_tab_enters_them(self):
+        window, _dashboard = self.lazy_board(20)
+        window.view_filter.set_selected(1); self.drain()
+        card = window.session_row({**board_rows(1)[0], "id": "focus-first", "unread": True})
+        self.addCleanup(window.release_row, card)
+        window.list_columns[0].insert(card, 0)
+        self.assertFalse(hasattr(card, "asb_copy_button"))
+        card.grab_focus(); window.set_focus_visible(True); self.drain()
+        self.assertIs(window.get_focus(), card)
+        self.assertTrue(card.has_css_class("asb-key-focus"))
+        self.assertIsNotNone(card.asb_copy_tag)
+        for name in ("copy", "drawer", "read", "pin"):
+            self.assertTrue(window.child_focus(asb.Gtk.DirectionType.TAB_FORWARD))
+            self.drain(.03)
+            self.assertIs(window.get_focus(), getattr(card, "asb_" + name + "_button"))
+
+    def test_a_card_released_before_hover_controls_exist_is_freed(self):
+        window, _dashboard = self.lazy_board(20)
+        window.view_filter.set_selected(1); self.drain()
+        card = window.session_row({**board_rows(1)[0], "id": "never-hovered"})
+        self.assertFalse(hasattr(card, "asb_copy_button"))
+        reference = weakref.ref(card)
+        window.release_row(card)
+        del card
+        gc.collect(); self.drain(.03); gc.collect()
+        self.assertIsNone(reference())
+
+    def test_copy_action_and_focus_restore_build_controls_before_any_hover(self):
+        window, _dashboard = self.lazy_board(20)
+        window.view_filter.set_selected(1); self.drain()
+        cards = [card for card in window.focus_widgets.values() if not hasattr(card, "asb_copy_button")]
+        self.assertGreaterEqual(len(cards), 2)
+        first, second = cards[-2:]
+        clipboard = Mock()
+        window.get_clipboard = lambda: clipboard
+        window.copy_reference(None, asb.GLib.Variant("s", first.asb_focus_key))
+        clipboard.set.assert_called_once()
+        self.assertIsNotNone(first.asb_copy_button)
+        self.assertEqual(first.asb_footer_stack.get_visible_child_name(), "copied")
+        window.restore_position(second.asb_focus_key, 0, focused_action="copy")
+        self.assertIs(window.get_focus(), second.asb_copy_button)
 
     def test_column_range_uses_the_allocated_edges_and_one_side_column(self):
         window, _dashboard = self.lazy_board()
@@ -5845,6 +5938,9 @@ class WidgetCheck(unittest.TestCase):
         window.set_default_size(520, 400)
         window.present(); window.set_focus(None); self.drain(.3)
         window.view_filter.set_selected(1); self.drain(.3); window.check_geometry(); self.drain()
+        for card in window.focus_widgets.values():
+            window.ensure_card_controls(card)
+        self.drain()
         settle = lambda: self.settle(window)
         pill, bubble, cards, hover = window.drawer_only, window.drawer_dot, window.focus_widgets, asb.Gtk.StateFlags.PRELIGHT
         put, out = "Put in drawer: look read here, keep it under Drawer", "Take out of drawer: show as unread again"
@@ -5975,6 +6071,9 @@ class WidgetCheck(unittest.TestCase):
             window.set_palette(palette)
             for view in (0, 1):
                 window.view_filter.set_selected(view); settle(); window.set_focus(None); settle()
+                for card in cards.values():
+                    window.ensure_card_controls(card)
+                settle()
                 one, two = cards["s1"], cards["s2"]
                 if view:  # Copy and its corner have no ink at rest, also with the check of a copy.
                     window.activate_action("win.copy-reference", asb.GLib.Variant("s", "s3")); settle()
@@ -6704,6 +6803,9 @@ class WidgetCheck(unittest.TestCase):
         window.set_default_size(700, 420)
         window.present(); window.set_focus(None); self.drain(.4)
         window.view_filter.set_selected(1); self.drain(.4); window.check_geometry(); self.drain(.3)
+        for card in window.focus_widgets.values():
+            window.ensure_card_controls(card)
+        self.drain()
         cards = window.focus_widgets
         def click(widget):
             found, bounds = widget.compute_bounds(window)
@@ -6797,6 +6899,9 @@ class WidgetCheck(unittest.TestCase):
         window.set_default_size(700, 420)
         window.present(); window.set_focus(None); self.drain(.3)
         window.view_filter.set_selected(1); self.drain(.4)
+        for card in window.focus_widgets.values():
+            window.ensure_card_controls(card)
+        self.drain()
         for card in window.focus_widgets.values():
             buttons = (card.asb_copy_button, card.asb_drawer_button, card.asb_read_button, card.asb_pin_button)
             self.assertEqual([button.get_action_name() for button in buttons], [None] * 4)
@@ -6957,7 +7062,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(move(cards["s1"].asb_title_label), ["s1"])
         self.assertTrue(one_class())
         self.assertEqual(self.ink(cards["s1"].asb_copy_button), 255)
-        self.assertEqual(self.ink(cards["s2"].asb_copy_button), 0)
+        self.assertFalse(hasattr(cards["s2"], "asb_copy_button"))
         self.assertEqual(move(cards["s2"].asb_title_label), ["s2"])
         self.assertTrue(cards["s1"].has_css_class("asb-unhovered") and one_class())
         self.assertEqual(self.ink(cards["s1"].asb_copy_button), 0)
@@ -7069,7 +7174,7 @@ class WidgetCheck(unittest.TestCase):
         glyph = more.asb_more_glyph
         self.assertEqual((glyph.get_icon_name(), glyph.get_pixel_size(), glyph.has_css_class("dim-label")), ("go-next-symbolic", 11, True))
         self.assertIs(more.asb_state_label.get_next_sibling(), glyph)
-        self.assertFalse(more.asb_copy_button.get_parent().get_visible())
+        self.assertFalse(more.asb_actions.get_visible())
         self.assert_accessible_label(more, "More sessions. 30 sessions after the first 100. Activate to show all cards.")
         self.assertEqual(asb.read_layout(layout_path)["cardLimit"], 100)
         self.assertNotIn("cardLimit", json.loads(layout_path.read_text()))

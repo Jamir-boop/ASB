@@ -81,6 +81,12 @@ class Box:
         self.children, self.parent = [], None
         self.label = ""
 
+    def get_margin_start(self):
+        return 4
+
+    def get_spacing(self):
+        return 12
+
     def append(self, child):
         self.children.append(child)
         child.parent = self
@@ -112,6 +118,15 @@ class Box:
         siblings = self.parent.children
         index = siblings.index(self) + 1
         return siblings[index] if index < len(siblings) else None
+
+    def has_css_class(self, _value):
+        return False
+
+    def has_focus(self):
+        return False
+
+    def is_focus(self):
+        return False
 
     def add_css_class(self, _value):
         pass
@@ -2073,6 +2088,8 @@ class DataChecks(unittest.TestCase):
         window = object.__new__(Window)
         window.closed, window.scroll_updating, window.motion_from = False, True, None
         window.list_body, window.queue_number_keys = Mock(), Mock()
+        window.list_body.get_margin_start.return_value = 4
+        window.list_body.get_spacing.return_value = 12
         position, width = [1500], [500]
         viewport = SimpleNamespace(get_width=lambda: width[0])
         adjustment = SimpleNamespace(get_value=lambda: position[0], get_page_size=lambda: width[0])
@@ -5485,7 +5502,7 @@ class NativeLogicChecks(unittest.TestCase):
     def test_row_hover_sets_exactly_one_hover_class(self):
         window = object.__new__(Window)
         classes = {"asb-session", "asb-unhovered"}
-        card = SimpleNamespace(add_css_class=classes.add, remove_css_class=classes.discard)
+        card = SimpleNamespace(asb_view="compact", add_css_class=classes.add, remove_css_class=classes.discard)
         for inside, expected in ((True, "asb-hovered"), (True, "asb-hovered"), (False, "asb-unhovered"), (True, "asb-hovered")):
             window.row_hover(SimpleNamespace(contains_pointer=lambda: inside, get_widget=lambda: card), None, "s1")
             self.assertEqual(classes, {"asb-session", expected})
@@ -5499,6 +5516,8 @@ class NativeLogicChecks(unittest.TestCase):
         window.view, window.closed, window.dragging = "comfortable", False, False
         window.scroll_target, window.scroll_updating = None, False
         window.list_body, window.queue_number_keys = Mock(), Mock()
+        window.list_body.get_margin_start.return_value = 4
+        window.list_body.get_spacing.return_value = 12
         window.list_body.pick.return_value = None
         window.cancel_scroll = Mock()
         position = [True, 100, 200]
