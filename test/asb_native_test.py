@@ -4245,8 +4245,8 @@ class WidgetCheck(unittest.TestCase):
                         footer = window.focus_widgets["sample-15"].get_child().get_child().get_last_child()
                         self.assertIsInstance(footer, asb.Gtk.Stack)
                         line = footer.get_child_by_name("line")
-                        self.assertFalse(line.get_first_child().get_visible())  # The usage-limit clock.
-                        self.assertEqual(line.get_first_child().get_next_sibling().get_text(), "Working")
+                        self.assertIsNone(card.asb_limit_clock)
+                        self.assertEqual(line.get_first_child().get_text(), "Working")
                         self.assertIs(card.asb_dot.get_ancestor(asb.Gtk.Button), card.asb_read_button)
                         alert, alert_row = window.focus_widgets["sample-4"], dict(window.focus_widgets["sample-4"].asb_thread)
                         window.update_session_row(alert, {**alert_row, "lastOutcome": "limit", "unread": True, "alert": True})
@@ -4258,10 +4258,9 @@ class WidgetCheck(unittest.TestCase):
                         window.update_session_row(alert, alert_row)
                         # The right part: the where glyph and label (hidden for a desktop row), then the age.
                         right, sample = line.get_last_child(), window.focus_widgets["sample-15"]
-                        self.assertIs(right.get_first_child(), sample.asb_where_icon)
-                        self.assertIs(sample.asb_where_icon.get_next_sibling(), sample.asb_where_label)
-                        self.assertIs(sample.asb_where_label.get_next_sibling(), sample.asb_age_label)
-                        self.assertFalse(sample.asb_where_icon.get_visible() or sample.asb_where_label.get_visible())
+                        self.assertIs(right.get_first_child(), sample.asb_age_label)
+                        self.assertIsNone(sample.asb_where_icon)
+                        self.assertIsNone(sample.asb_where_label)
                         self.assertEqual(right.get_last_child().get_ellipsize(), asb.Pango.EllipsizeMode.END)
                     else:
                         self.assertEqual(card.get_child().get_orientation(), asb.Gtk.Orientation.HORIZONTAL)
@@ -5212,6 +5211,44 @@ class WidgetCheck(unittest.TestCase):
                 self.assertEqual(controls, (card.asb_copy_button, card.asb_drawer_button, card.asb_copy_tag))
                 window.set_row_hover(card, False)
                 window.session_actions.discard(row["id"])
+
+    def test_comfortable_hidden_parts_are_built_only_when_first_needed(self):
+        window, _dashboard = self.lazy_board(20)
+        window.view_filter.set_selected(1); self.drain()
+        row = {**board_rows(1)[0], "id": "lazy-parts", "muted": False, "remote": False,
+               "surface": "desktop", "limitResetsAtMs": 0, "sourceId": "codex", "externalId": "made-up-session"}
+        card = window.session_row(row)
+        self.addCleanup(window.release_row, card)
+        names = ("asb_limit_clock", "asb_mute_glyph", "asb_where_icon", "asb_where_label", "asb_feedback", "asb_feedback_label")
+        for name in names:
+            self.assertIsNone(getattr(card, name, None), name)
+        self.assertIsNone(card.asb_footer_stack.get_child_by_name("copied"))
+        window.update_session_row(card, {**row, "limitResetsAtMs": time.time() * 1000 + 60_000})
+        self.assertTrue(card.asb_limit_clock.get_visible())
+        self.assertIs(card.asb_limit_clock.get_next_sibling(), card.asb_state_label)
+        window.update_session_row(card, {**row, "muted": True})
+        self.assertTrue(card.asb_mute_glyph.get_visible())
+        self.assertIs(card.asb_mute_glyph.get_prev_sibling(), card.asb_folder)
+        window.update_session_row(card, {**row, "remote": True, "machineName": "Example PC"})
+        self.assertEqual(card.asb_where_label.get_text(), "Example PC ·")
+        self.assertTrue(card.asb_where_icon.get_visible())
+        self.assertIs(card.asb_where_label.get_next_sibling(), card.asb_age_label)
+        window.update_copy_feedback(card, "Absolute session copied")
+        self.assertEqual(card.asb_feedback_label.get_text(), "Absolute session copied")
+        self.assertEqual(card.asb_footer_stack.get_visible_child_name(), "copied")
+        parts = [getattr(card, name) for name in names]
+        window.update_session_row(card, row)
+        window.update_copy_feedback(card, "")
+        for name in names[:4]:
+            self.assertFalse(getattr(card, name).get_visible())
+        window.update_copy_feedback(card, "Relative session copied")
+        self.assertEqual(parts, [getattr(card, name) for name in names])
+        # A row that needs every optional part at build has it before its first frame.
+        ready = window.session_row({**row, "id": "ready-parts", "muted": True, "remote": True,
+                                    "machineName": "Example PC", "limitResetsAtMs": time.time() * 1000 + 60_000})
+        self.addCleanup(window.release_row, ready)
+        self.assertTrue(all(getattr(ready, name).get_visible() for name in names[:4]))
+        self.assertIsNone(getattr(ready, "asb_feedback", None))
 
     def test_keyboard_focus_builds_hover_controls_before_tab_enters_them(self):
         window, _dashboard = self.lazy_board(20)
@@ -6228,7 +6265,7 @@ class WidgetCheck(unittest.TestCase):
             self.assertFalse(normal.has_css_class("asb-limited"))
             self.assertTrue(limited.asb_limit_clock.get_visible())
             self.assertEqual(limited.asb_limit_clock.get_icon_name(), "preferences-system-time-symbolic")
-            self.assertFalse(normal.asb_limit_clock.get_visible())
+            self.assertFalse(normal.asb_limit_clock and normal.asb_limit_clock.get_visible())
             if view:
                 # Comfortable keeps the Discard offer of an Idle card in the Read slot, with no ink before hover or focus.
                 self.assertTrue(limited.asb_dot.get_visible() and limited.asb_read_button.has_css_class("asb-discard-offer"))
@@ -6262,14 +6299,14 @@ class WidgetCheck(unittest.TestCase):
             render.assert_not_called()
         limited = window.focus_widgets["limited"]
         self.assertFalse(limited.has_css_class("asb-limited"))
-        self.assertFalse(limited.asb_limit_clock.get_visible())
+        self.assertFalse(limited.asb_limit_clock and limited.asb_limit_clock.get_visible())
         self.assertEqual(limited.asb_state_label.get_text(), "Idle")
         self.assertEqual(limited.asb_accessible_label, "Open Plan the alarm export in Codex. Idle.")
         self.assertEqual(window.clock_interval, 60)
         window.view_filter.set_selected(1); self.settle(window)
         limited, normal = window.focus_widgets["limited"], window.focus_widgets["normal"]
         self.assertEqual((limited.asb_state_label.get_text(), limited.asb_age_label.get_text()), ("Idle", "10m ago"))
-        self.assertFalse(limited.asb_limit_clock.get_visible())
+        self.assertFalse(limited.asb_limit_clock and limited.asb_limit_clock.get_visible())
         self.assertEqual(hex_color(limited.asb_title_label), hex_color(normal.asb_title_label))
 
     def test_view_only_cards_show_where_they_run_in_the_grey_tone_and_do_not_open(self):
@@ -6314,7 +6351,7 @@ class WidgetCheck(unittest.TestCase):
                 else:
                     self.assertIsNone(card.asb_where_icon)
                     self.assertIs(card.asb_state_label.get_next_sibling(), card.asb_where_label)
-            self.assertFalse(cards["desktop"].asb_where_label.get_visible())
+            self.assertFalse(cards["desktop"].asb_where_label and cards["desktop"].asb_where_label.get_visible())
             self.assertTrue(cards["desktop"].get_activatable())
             # The Grey tone: a resting view-only row dims its title and state, a Working one keeps the state color.
             self.assertEqual((cards["cli"].has_css_class("asb-view-only-quiet"), cards["cli"].has_css_class("asb-view-only-rest")), (True, True))
@@ -6694,7 +6731,7 @@ class WidgetCheck(unittest.TestCase):
             return x
 
         # Comfortable: the icon follows the folder name on the top line, only for a muted row.
-        self.assertEqual({identity: card.asb_mute_glyph.get_visible() for identity, card in cards.items()},
+        self.assertEqual({identity: bool(card.asb_mute_glyph and card.asb_mute_glyph.get_visible()) for identity, card in cards.items()},
                          {"read": True, "busy": True, "plain": False, "asked": True, "other": False})
         for identity in ("read", "busy", "asked"):
             beside(cards[identity], cards[identity].asb_folder)
@@ -6720,11 +6757,11 @@ class WidgetCheck(unittest.TestCase):
 
         # Compact: the icon follows the state and the where label, which is hidden on these app rows.
         window.view_filter.set_selected(0); self.drain(.3); settle()
-        self.assertEqual({identity: card.asb_mute_glyph.get_visible() for identity, card in cards.items()},
+        self.assertEqual({identity: bool(card.asb_mute_glyph and card.asb_mute_glyph.get_visible()) for identity, card in cards.items()},
                          {"read": True, "busy": True, "plain": False, "asked": True, "other": False})
         for identity in ("read", "busy", "asked"):
             self.assertIs(cards[identity].asb_where_label.get_prev_sibling(), cards[identity].asb_state_label)
-            self.assertFalse(cards[identity].asb_where_label.get_visible())
+            self.assertFalse(cards[identity].asb_where_label and cards[identity].asb_where_label.get_visible())
             beside(cards[identity], cards[identity].asb_state_label, cards[identity].asb_where_label)
         window.view_filter.set_selected(1); self.drain(.3); settle()
 
@@ -6756,7 +6793,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(requests[-1][1], "/api/threads/other/unmute")
         self.assertIsNone(window.context_menu)
         requests[-1][2]({"changed": True, "threadId": "other", "thread": dict(other.asb_thread, muted=False)}, None); settle()
-        self.assertFalse(other.asb_mute_glyph.get_visible())
+        self.assertFalse(other.asb_mute_glyph and other.asb_mute_glyph.get_visible())
         self.assertEqual([request[1] for request in requests if request[1].startswith("/api/threads/")],
                          ["/api/threads/other/mute", "/api/threads/other/unmute"])
         # Another action keeps the panel open.
@@ -7596,7 +7633,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertIs(window.card_for(asb.MORE_ID), more)
         check_limited()
         self.assertEqual((more.asb_folder.get_label(), more.asb_age_label.get_label(), more.asb_state_label.get_label(),
-                          more.asb_title_label.get_label(), more.asb_where_label.get_visible()),
+                          more.asb_title_label.get_label(), bool(more.asb_where_label and more.asb_where_label.get_visible())),
                          ("After the first 100", "from " + age, "Show all", "More sessions", False))
         glyph = more.asb_more_glyph
         self.assertEqual((glyph.get_icon_name(), glyph.get_pixel_size(), glyph.has_css_class("dim-label")), ("go-next-symbolic", 11, True))

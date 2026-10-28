@@ -7639,6 +7639,44 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget.asb_action_signature = None
         self.update_card_actions(widget)
 
+    def ensure_card_part(self, widget, name):
+        """Build a rarely shown Comfortable part in its fixed place; Compact builds them with the card."""
+        if name == "clock" and widget.asb_limit_clock is None:
+            clock = Gtk.Image(icon_name="preferences-system-time-symbolic", pixel_size=12, visible=False)
+            clock.add_css_class("asb-limit-clock")
+            widget.asb_footer_line.prepend(clock)
+            widget.asb_limit_clock = clock
+        elif name == "mute" and widget.asb_mute_glyph is None:
+            mute = Gtk.Image(pixel_size=12, visible=False, valign=Gtk.Align.CENTER)
+            set_icon(mute, "asb-muted-symbolic")
+            mute.add_css_class("asb-mute-glyph")
+            mute.add_css_class("dim-label")
+            widget.asb_folder.get_parent().insert_child_after(mute, widget.asb_folder)
+            widget.asb_mute_glyph = mute
+        elif name == "where" and widget.asb_where_label is None:
+            where_icon = Gtk.Image(pixel_size=11, visible=False)
+            where_icon.add_css_class("asb-where-icon")
+            where_icon.add_css_class("dim-label")
+            where = label("", "caption")
+            where.add_css_class("asb-where")
+            where.add_css_class("dim-label")
+            where.set_ellipsize(Pango.EllipsizeMode.END)
+            where.set_max_width_chars(12)
+            where.set_visible(False)
+            widget.asb_where_box.prepend(where)
+            widget.asb_where_box.prepend(where_icon)
+            widget.asb_where_icon, widget.asb_where_label = where_icon, where
+        elif name == "feedback" and widget.asb_feedback is None:
+            feedback = Gtk.Box(spacing=6)
+            feedback.add_css_class("asb-copy-feedback")
+            feedback_icon = Gtk.Image(icon_name="object-select-symbolic", pixel_size=12)
+            feedback_label = label("", "caption")
+            feedback_label.add_css_class("asb-copy-feedback")
+            feedback.append(feedback_icon)
+            feedback.append(feedback_label)
+            widget.asb_footer_stack.add_named(feedback, "copied")
+            widget.asb_feedback, widget.asb_feedback_label = feedback, feedback_label
+
     def row_focus(self, _controller, identity):
         self.focused_id = identity
         widget = _controller.get_widget()
@@ -7680,7 +7718,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 copy.asb_card = None
             for name in ("asb_actions", "asb_folder", "asb_pin_button", "asb_read_button", "asb_drawer_button", "asb_copy_button", "asb_age_label", "asb_limited",
                          "asb_mute_glyph", "asb_where_icon", "asb_where_label", "asb_more_glyph", "asb_copy_tag", "asb_copy_words",
-                         "asb_copy_dot_relative", "asb_copy_dot_absolute", "asb_feedback", "asb_feedback_label", "asb_footer_stack"):
+                         "asb_copy_dot_relative", "asb_copy_dot_absolute", "asb_feedback", "asb_feedback_label", "asb_footer_stack",
+                         "asb_footer_line", "asb_where_box"):
                 if hasattr(widget, name):
                     delattr(widget, name)
             content = Gtk.Box(spacing=6, margin_start=5, margin_end=5, valign=Gtk.Align.CENTER)
@@ -7717,15 +7756,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.asb_dot = dot
             state = label("", "asb-state")
             widget.asb_state_label = state
-            clock = Gtk.Image(icon_name="preferences-system-time-symbolic", pixel_size=12, visible=False)
-            clock.add_css_class("asb-limit-clock")
-            widget.asb_limit_clock = clock
-            mute = Gtk.Image(pixel_size=12, visible=False, valign=Gtk.Align.CENTER)
-            set_icon(mute, "asb-muted-symbolic")
-            mute.add_css_class("asb-mute-glyph")
-            mute.add_css_class("dim-label")
-            widget.asb_mute_glyph = mute
             if self.view == "comfortable":
+                # These rarely shown parts are built by ensure_card_part when the row first needs them.
+                widget.asb_limit_clock = widget.asb_mute_glyph = widget.asb_where_icon = widget.asb_where_label = None
                 content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_start=8,
                                   margin_end=8, margin_top=2, margin_bottom=2, valign=Gtk.Align.CENTER)
                 workspace = Gtk.Box(spacing=7)
@@ -7739,7 +7772,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 folder.set_hexpand(False)
                 widget.asb_folder = folder
                 workspace.append(folder)
-                workspace.append(mute)
                 content.append(workspace)
                 title.set_single_line_mode(False)
                 title.set_wrap(True)
@@ -7750,8 +7782,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 title.set_margin_end(54)
                 content.append(title)
                 line = Gtk.Box(spacing=6)
-                line.append(clock)
                 line.append(state)
+                widget.asb_footer_line = line
                 age = label("", "caption")
                 age.add_css_class("asb-age")
                 age.add_css_class("dim-label")
@@ -7760,33 +7792,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 widget.asb_age_label = age
                 # Where a view-only session runs, before the age; the machine name ellipsizes first.
                 right = Gtk.Box(spacing=4, hexpand=True, halign=Gtk.Align.END)
-                where_icon = Gtk.Image(pixel_size=11, visible=False)
-                where_icon.add_css_class("asb-where-icon")
-                where_icon.add_css_class("dim-label")
-                where = label("", "caption")
-                where.add_css_class("asb-where")
-                where.add_css_class("dim-label")
-                where.set_ellipsize(Pango.EllipsizeMode.END)
-                where.set_max_width_chars(12)
-                where.set_visible(False)
-                right.append(where_icon)
-                right.append(where)
                 right.append(age)
-                widget.asb_where_icon, widget.asb_where_label = where_icon, where
+                widget.asb_where_box = right
                 line.append(right)
-                feedback = Gtk.Box(spacing=6)
-                feedback.add_css_class("asb-copy-feedback")
-                feedback_icon = Gtk.Image(icon_name="object-select-symbolic", pixel_size=12)
-                feedback_label = label("", "caption")
-                feedback_label.add_css_class("asb-copy-feedback")
-                feedback.append(feedback_icon)
-                feedback.append(feedback_label)
                 # The done text replaces the footer line for 1.6 s; the limit clock keeps its own rule on the line.
                 footer = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=100,
                                    hhomogeneous=True, vhomogeneous=True, margin_start=21)
                 footer.add_named(line, "line")
-                footer.add_named(feedback, "copied")
-                widget.asb_feedback, widget.asb_feedback_label = feedback, feedback_label
+                widget.asb_feedback = widget.asb_feedback_label = None
                 widget.asb_footer_stack = footer
                 content.append(footer)
                 overlay = Gtk.Overlay(child=content)
@@ -7817,6 +7830,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 overlay.set_measure_overlay(actions, False)
                 content = overlay
             else:
+                clock = Gtk.Image(icon_name="preferences-system-time-symbolic", pixel_size=12, visible=False)
+                clock.add_css_class("asb-limit-clock")
+                widget.asb_limit_clock = clock
+                mute = Gtk.Image(pixel_size=12, visible=False, valign=Gtk.Align.CENTER)
+                set_icon(mute, "asb-muted-symbolic")
+                mute.add_css_class("asb-mute-glyph")
+                mute.add_css_class("dim-label")
+                widget.asb_mute_glyph = mute
                 where = label("", "caption")
                 where.add_css_class("asb-where")
                 where.add_css_class("dim-label")
@@ -7834,12 +7855,16 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         set_icon(widget.asb_mark, provider_icon(row.get("provider")))
         widget.asb_source_badge.set_color(source_marker_color(row))
         where_icon, where = row_where(row)
+        comfortable = self.view == "comfortable"
+        if comfortable and where:
+            self.ensure_card_part(widget, "where")
         if widget.asb_where_icon:
             if where_icon:
                 set_icon(widget.asb_where_icon, where_icon)
             widget.asb_where_icon.set_visible(bool(where))
-        widget.asb_where_label.set_label((where + " ·" if widget.asb_where_icon else "· " + where) if where else "")
-        widget.asb_where_label.set_visible(bool(where))
+        if widget.asb_where_label:
+            widget.asb_where_label.set_label((where + " ·" if comfortable else "· " + where) if where else "")
+            widget.asb_where_label.set_visible(bool(where))
         tone = view_only_tone(row)
         (widget.add_css_class if tone else widget.remove_css_class)("asb-view-only-quiet")
         (widget.add_css_class if tone == "rest" else widget.remove_css_class)("asb-view-only-rest")
@@ -7848,6 +7873,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         (widget.add_css_class if indicator == "dot" and not row.get("unread") else widget.remove_css_class)("asb-drawer")
         discard_offer = self.view == "comfortable" and row.get("state") in ("working", "idle") and not indicator and not row.get("muted") \
             and not row.get("remote")
+        if row.get("muted") and widget.asb_view == "comfortable":
+            self.ensure_card_part(widget, "mute")
         if getattr(widget, "asb_mute_glyph", None):
             widget.asb_mute_glyph.set_visible(bool(row.get("muted")))
         widget.asb_dot.set_visible(bool(indicator) or discard_offer)
@@ -8078,6 +8105,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             (dot.add_css_class if remote and name == "relative" else dot.remove_css_class)("asb-copy-tag-off")
 
     def update_copy_feedback(self, widget, done):
+        if done and getattr(widget, "asb_footer_stack", None) is not None:
+            self.ensure_card_part(widget, "feedback")
         footer, label = getattr(widget, "asb_footer_stack", None), getattr(widget, "asb_feedback_label", None)
         if footer is None or label is None:
             return
@@ -8173,10 +8202,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         state_text = "Stopped" if row.get("state") == "idle" and row.get("lastOutcome") in ("failed", "limit") \
             else row.get("state", "unknown").capitalize()
         # The row class keeps the grey look across a view change; at the reset the next tick lifts it.
+        if countdown and widget.asb_limit_clock is None:
+            self.ensure_card_part(widget, "clock")
         if bool(countdown) != getattr(widget, "asb_limited", False):
             widget.asb_limited = bool(countdown)
             (widget.add_css_class if countdown else widget.remove_css_class)("asb-limited")
-            widget.asb_limit_clock.set_visible(bool(countdown))
+            if widget.asb_limit_clock:
+                widget.asb_limit_clock.set_visible(bool(countdown))
         if countdown:
             widget.asb_state_label.set_label("Resets in" if self.view == "comfortable" else "Resets " + countdown)
         else:
