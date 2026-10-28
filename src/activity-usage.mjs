@@ -80,7 +80,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
   fetch = globalThis.fetch, homeDir = os.homedir(), env = process.env, platform = process.platform, refreshMs = REFRESH_MS,
   log = console.error, maxCacheFiles = MAX_CACHE_FILES, ledgerFile = '', members = null, timers = { setTimeout, clearTimeout } } = {}) {
   const cacheFile = path.join(cacheDir, 'usage', 'usage-cache.json');
-  const stats = { bytesRead: 0, scans: 0, saves: 0, openCodeQueries: 0, openCodePages: 0, partBuilds: 0, parts: 0, ledgerSaves: 0, releases: 0 };
+  const stats = { bytesRead: 0, scans: 0, saves: 0, openCodeQueries: 0, openCodePages: 0, partBuilds: 0, parts: 0, ledgerSaves: 0, releases: 0, memberBuilds: 0 };
   const progress = { complete: false, files: 0, scannedFiles: 0 };
   let cache = null;
   let openCode = [];
@@ -110,6 +110,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
   let ticking = null;
   // The member reply arrays already in the ledger: the group returns the same array until a new reply comes.
   const keptReplies = new WeakSet();
+  const memberReplies = new WeakMap();
 
   async function runScan() {
     const pause = createYielder();
@@ -302,13 +303,20 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
   }
   const localParts = () => ledgerFile ? [...allParts(), ...ledgerViews().extras] : allParts();
   // A member's reply records, with the larger values of its imported records.
-  const memberUsage = (machineId, usage) => {
-    const imported = ledger?.machines.get(machineId);
-    if (!imported) return usage;
+  const memberUsage = (member) => {
+    const usage = Array.isArray(member.usage) ? member.usage : [];
+    const name = typeof member.name === 'string' ? member.name.toLowerCase() : '';
+    const cached = memberReplies.get(usage);
+    if (cached?.ledgerVersion === ledgerVersion && cached.machineId === member.machineId && cached.name === name) return cached.records;
     const merged = new Map();
-    mergeRecords(merged, imported.records.values());
-    mergeRecords(merged, usage);
-    return [...merged.values()];
+    for (const imported of ledger?.machines.values() || []) {
+      if (imported.machineId === member.machineId || (name && imported.name.toLowerCase() === name)) mergeRecords(merged, imported.records.values());
+    }
+    mergeRecords(merged, usage.filter(validMemberRecord));
+    const records = [...merged.values()];
+    memberReplies.set(usage, { ledgerVersion, machineId: member.machineId, name, records });
+    stats.memberBuilds += 1;
+    return records;
   };
   // The member replies go into the ledger, so a member that is offline after a restart stays in the report and the export.
   // Only valid records: one bad tuple would make the next load set the whole file aside.
@@ -334,8 +342,19 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
   // The imported machines that are neither this machine nor a member, by name.
   const importedOnly = (members) => {
     const skip = new Set([self().machineId, ...members.map((member) => member.machineId)]);
-    return [...(ledger?.machines.values() || [])].filter((machine) => !skip.has(machine.machineId))
-      .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || (a.machineId < b.machineId ? -1 : 1));
+    const names = new Set(members.filter((member) => typeof member.name === 'string').map((member) => member.name.toLowerCase()));
+    const grouped = new Map();
+    for (const machine of ledger?.machines.values() || []) {
+      const name = machine.name.toLowerCase();
+      if (skip.has(machine.machineId) || names.has(name)) continue;
+      let target = grouped.get(name);
+      if (!target) grouped.set(name, target = { ...machine, records: new Map() });
+      mergeRecords(target.records, machine.records.values());
+      if (machine.exportedAtMs > target.exportedAtMs || (machine.exportedAtMs === target.exportedAtMs && machine.machineId > target.machineId)) {
+        Object.assign(target, { machineId: machine.machineId, name: machine.name, exportedAtMs: machine.exportedAtMs });
+      }
+    }
+    return [...grouped.values()].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || (a.machineId < b.machineId ? -1 : 1));
   };
   const ask = () => { lastAskMs = now(); };
 
@@ -413,7 +432,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       const addMachine = (id, usage) => records.push(...aggregateBuckets(usage.map(({ app, model, hourMs, tokens }) => ({ app, model, atMs: hourMs, tokens, key: null })),
         { startsMs, endMs: Infinity, rates: table }).map(withMachine(id)));
       for (const member of members) {
-        addMachine(member.machineId, memberUsage(member.machineId, (Array.isArray(member.usage) ? member.usage : []).filter(validMemberRecord)));
+        addMachine(member.machineId, memberUsage(member));
         // A member that never answered has no scan and adds nothing.
         if (member.scan) {
           scan.complete &&= member.scan.complete === true;
@@ -461,7 +480,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
         const listed = new Set([machineId]);
         for (const member of members) {
           if (listed.has(member.machineId)) continue;
-          const records = valid(memberUsage(member.machineId, (Array.isArray(member.usage) ? member.usage : []).filter(validMemberRecord)));
+          const records = valid(memberUsage(member));
           if (!records.length) continue;
           listed.add(member.machineId);
           machines.push({ machineId: member.machineId, name: member.name, records });
