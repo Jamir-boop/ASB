@@ -8339,8 +8339,14 @@ class ActivityWindow(Adw.Window):
             setattr(self, name, None)
 
     def poll_tick(self):
-        self.refresh()
+        # The event stream reads after each change, so the slow poll reads only while the stream is down.
+        if self.POLL_SECONDS < ActivityWindow.POLL_SECONDS or not self.stream_connected():
+            self.refresh()
         return True
+
+    def stream_connected(self):
+        # EventStream has no public state; its socket is set while its connection is open.
+        return self.events is not None and getattr(self.events, "socket", None) is not None
 
     def on_dashboard_event(self):
         # Several events in one second make one refresh.
