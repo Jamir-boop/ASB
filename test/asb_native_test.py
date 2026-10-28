@@ -7999,6 +7999,16 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(window.renders, [({"read": 2}, None)])
         self.assertEqual(window.period, "24h")
 
+    def test_the_reply_dispatch_has_the_default_priority(self):
+        window = self.Probe(self.application, "http://127.0.0.1:1")
+        with patch.object(asb, "request_async") as request:
+            window.refresh()
+        dispatch = request.call_args.args[3]
+        callback = Mock(return_value=False)
+        with patch.object(asb.GLib, "idle_add") as idle:
+            dispatch(callback, {"read": 1}, None)
+        idle.assert_called_once_with(callback, {"read": 1}, None, priority=asb.GLib.PRIORITY_DEFAULT)
+
     def test_dashboard_events_coalesce_into_one_refresh(self):
         window = self.probe()
         for _event in range(3):

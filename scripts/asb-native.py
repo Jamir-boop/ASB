@@ -8305,7 +8305,8 @@ class ActivityWindow(Adw.Window):
             return False
 
         if self.fetch is None:
-            request_async(self.base, route, finished, GLib.idle_add)
+            # The default priority: the reply does not wait behind the frames of the board.
+            request_async(self.base, route, finished, lambda callback, *args: GLib.idle_add(callback, *args, priority=GLib.PRIORITY_DEFAULT))
             return
         try:
             data, error = self.fetch(route), None
