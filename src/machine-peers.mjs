@@ -4,7 +4,7 @@ import https from 'node:https';
 import { createSecureContext } from 'node:tls';
 import { promisify } from 'node:util';
 import { gunzip } from 'node:zlib';
-import { OFFLINE_MEMBER, sessionKeyLookup, sessionMessageKeys, sortSessionMessages, switchboardRefreshInterval } from './switchboard.mjs';
+import { OFFLINE_MEMBER, byRowTime, sessionKeyLookup, sessionMessageKeys, sortSessionMessages, switchboardRefreshInterval } from './switchboard.mjs';
 import { SESSION_MESSAGE_WINDOW_MS } from './codex-data.mjs';
 import { rowReference, shortReference, validScopeTag } from './session-references.mjs';
 
@@ -49,8 +49,11 @@ export function exportLocalSessions(dashboard, self, nowMs = Date.now()) {
   const rows = (dashboard.threads || []).filter((row) => !row.remote && !row.remoteCache && !row.archived).map(pick);
   const ids = new Set(rows.map((row) => row.id));
   const { keysByRow, unresolved } = sessionMessageKeys(dashboard);
-  const keys = Object.fromEntries([...keysByRow].filter(([id]) => ids.has(id)));
-  const incoming = unresolved.filter((message) => ids.has(message.to)).map(({ to, from, atMs }) => ({ to, from, atMs }));
+  // In row order with sorted keys and messages, so the scan order of the source threads does not move the export tag.
+  const keys = Object.fromEntries(rows.filter((row) => keysByRow.has(row.id)).map((row) => [row.id, [...keysByRow.get(row.id)].sort()]));
+  const text = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  const incoming = unresolved.filter((message) => ids.has(message.to)).map(({ to, from, atMs }) => ({ to, from, atMs }))
+    .sort((a, b) => a.atMs - b.atMs || text(a.to, b.to) || text(a.from, b.from));
   return { api: 1, machineId: self.machineId, name: self.name, generatedAtMs: nowMs,
     refreshIntervalMs: switchboardRefreshInterval({ threads: rows }), rows, keys, incoming };
 }
@@ -125,7 +128,7 @@ export function mergePeerRows(dashboard, peerStates, self, nowMs = Date.now()) {
     const key = row.remoteCache ? (local.keysByRow.get(row.id) || []).find((item) => peerBridge.has(item)) : undefined;
     if (key) replaced.set(row.id, peerBridge.get(key));
   }
-  dashboard.threads = [...dashboard.threads.filter((row) => !replaced.has(row.id)), ...peerRows];
+  dashboard.threads = [...dashboard.threads.filter((row) => !replaced.has(row.id)), ...peerRows].sort(byRowTime);
   const rowIds = new Set(dashboard.threads.map((row) => row.id));
   Object.defineProperty(dashboard, MEMBER_MESSAGE_KEYS, { value: new Map(peerKeys), configurable: true });
   const lookup = sessionKeyLookup([...local.ambiguous.map((key) => [key, null]),

@@ -56,6 +56,14 @@ test('the export has only local rows with whitelisted fields, their keys, and th
   assert.equal(exportBody(exported).etag, exportBody({ ...exported, generatedAtMs: nowMs + 5 }).etag);
   assert.notEqual(exportBody(exported).etag, exportBody({ ...exported, rows: [] }).etag);
   assert.equal(JSON.stringify(exportLocalSessions({ threads: [], messages: [] }, B, nowMs).keys), '{}');
+  // Only the last event times of Working rows change: the scan order of the source threads moves, the export tag does not.
+  const threads = (child, other) => [
+    claude(7, { cliSessionId: uuid(970), lifecycleRunning: true, agentStartedAtMs: nowMs - 9000, agentActivityAtMs: nowMs - 1000, incomingMessages: [{ from: 'elsewhere-1', atMs: nowMs - 3000 }] }),
+    claude(8, { parentThreadId: `claude-desktop-code:${local(7)}`, isSubagent: true, cliSessionId: uuid(980), updatedAtMs: child }),
+    claude(9, { lifecycleRunning: true, agentStartedAtMs: nowMs - 8000, agentActivityAtMs: nowMs - 1000, updatedAtMs: other, incomingMessages: [{ from: 'elsewhere-2', atMs: nowMs - 3000 }] }),
+  ];
+  const tag = (list) => exportBody(exportLocalSessions(board(list, B), B, nowMs)).etag;
+  assert.equal(tag(threads(nowMs - 2000, nowMs - 4000)), tag(threads(nowMs - 500, nowMs - 200)));
 });
 
 test('the export interval counts only the exported rows, and archived rows stay out with their keys and messages', () => {
@@ -591,7 +599,7 @@ test('a bad member port rejects at once and leaves no timer that throws later', 
 test('a member OpenCode bridge key resolves a message to a local Claude row', () => {
   const id = 'ses_asbTestOpenCode01', bridgeId = '18284f68-b2c6-5cca-8fb7-12d5973743f9';
   const exported = exportLocalSessions(board([{ id, externalId: id, provider: 'opencode', title: 'Synthetic OpenCode', updatedAtMs: nowMs }], B), B, nowMs);
-  assert.deepEqual(exported.keys[id], [id, bridgeId]);
+  assert.deepEqual(exported.keys[id], [bridgeId, id]);
   const dashboard = board([claude(1, { incomingMessages: [{ from: bridgeId, atMs: nowMs - 1000 }] })], A);
   assert.deepEqual(dashboard.messages, []);
   mergePeerRows(dashboard, [peerState(exported)], A, nowMs);

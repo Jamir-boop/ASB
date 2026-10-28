@@ -1390,14 +1390,16 @@ test('the group time of a Claude row follows the turn records of a linked child,
   await writeFile(path.join(childDir, 'agent-other.jsonl'), jsonl([resumeMessage(-45_000), resumeEnd(-44_000)]));
   const load = async () => {
     const { threads } = await loadClaudeDesktopCodeThreads({ appDir, projectsDir, nowMs: resumeNowMs });
-    return [threads[0].updatedAtMs, threads[0].embeddedSubagentUpdatedAtMs, buildSwitchboardDashboard(threads, [], resumeNowMs).threads[0].updatedAtMs];
+    const row = buildSwitchboardDashboard(threads, [], resumeNowMs).threads[0];
+    return [threads[0].updatedAtMs, threads[0].embeddedSubagentUpdatedAtMs, row.state, row.updatedAtMs];
   };
   // The app copies or opens the logs: all file times are now.
   for (const name of ['agent-kid.jsonl', 'agent-other.jsonl']) await utimes(path.join(childDir, name), resumeNowMs / 1000, resumeNowMs / 1000);
-  assert.deepEqual(await load(), [resumeNowMs - 48_000, resumeNowMs - 30_000, resumeNowMs - 30_000]);
+  // A Working row sends its turn start as its time.
+  assert.deepEqual(await load(), [resumeNowMs - 48_000, resumeNowMs - 30_000, 'working', resumeNowMs - 50_000]);
   // A turn record of the child moves the time.
   await appendFile(path.join(childDir, 'agent-kid.jsonl'), jsonl([resumeEnd(-10_000)]));
-  assert.deepEqual(await load(), [resumeNowMs - 48_000, resumeNowMs - 10_000, resumeNowMs - 10_000]);
+  assert.deepEqual(await load(), [resumeNowMs - 48_000, resumeNowMs - 10_000, 'working', resumeNowMs - 50_000]);
 });
 
 test('app approval tool, process start, turn end, and grace rules', async (t) => {

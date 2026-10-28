@@ -146,20 +146,66 @@ test('Working start time uses the current Codex task or Claude request and stays
     byId.codex.workingSinceMs);
 });
 
-test('working rows round the last event time to 10 s while other states keep it exact', () => {
+test('a Working row sends its turn start, the first scan time without one, and other states keep the exact time', () => {
   const updatedAtMs = 1_700_000_012_345;
   const threads = [
     { id: 'working', lifecycleRunning: true, agentActivityAtMs: updatedAtMs, agentStartedAtMs: updatedAtMs - 1000 },
+    { id: 'no-start', lifecycleRunning: true, agentActivityAtMs: updatedAtMs },
     { id: 'idle', lifecycleRunning: false },
     { id: 'waiting', awaitingPermission: true },
     { id: 'unknown' },
   ].map((thread) => ({ provider: 'codex', updatedAtMs, ...thread }));
-  const rows = Object.fromEntries(buildSwitchboardDashboard(threads, [], updatedAtMs).threads.map((row) => [row.id, row]));
+  const starts = new Map();
+  const rows = Object.fromEntries(buildSwitchboardDashboard(threads, [], updatedAtMs, undefined, starts).threads.map((row) => [row.id, row]));
   assert.equal(rows.working.state, 'working');
-  assert.equal(rows.working.updatedAtMs, 1_700_000_010_000);
+  assert.equal(rows.working.updatedAtMs, updatedAtMs - 1000);
   assert.equal(rows.working.workingSinceMs, updatedAtMs - 1000);
+  assert.deepEqual([rows['no-start'].state, rows['no-start'].workingSinceMs, rows['no-start'].updatedAtMs], ['working', 0, updatedAtMs]);
   assert.equal(rows.idle.state, 'idle');
   for (const id of ['idle', 'waiting', 'unknown']) assert.equal(rows[id].updatedAtMs, updatedAtMs);
+  // A later scan keeps the first time; a row that stops working gets its real time, and the map forgets it.
+  const later = (patch) => threads.map((thread) => ({ ...thread, updatedAtMs: updatedAtMs + 25_000, ...patch[thread.id] }));
+  const next = buildSwitchboardDashboard(later({}), [], updatedAtMs + 25_000, undefined, starts).threads;
+  assert.equal(next.find((row) => row.id === 'no-start').updatedAtMs, updatedAtMs);
+  const stopped = buildSwitchboardDashboard(later({ 'no-start': { lifecycleRunning: false } }), [], updatedAtMs + 25_000, undefined, starts).threads;
+  assert.deepEqual(stopped.filter((row) => row.id === 'no-start').map((row) => [row.state, row.updatedAtMs]), [['idle', updatedAtMs + 25_000]]);
+  assert.deepEqual([...starts.keys()], ['working']);
+  const again = buildSwitchboardDashboard(later({ 'no-start': { updatedAtMs: updatedAtMs + 40_000 } }), [], updatedAtMs + 40_000, undefined, starts).threads;
+  assert.equal(again.find((row) => row.id === 'no-start').updatedAtMs, updatedAtMs + 40_000);
+});
+
+test('the session list keeps its bytes and tag while only the last event times of Working rows change', async (t) => {
+  let clock = now;
+  let scan = 0;
+  // Three Working rows (one with no turn start) write at their own times and cross 10 s steps at different scans.
+  const times = [[now - 1_000, now - 9_000, now - 15_000, now - 600_000], [now + 12_000, now + 21_000, now + 33_000, now - 600_000]];
+  const threads = (index) => [
+    { id: 'alpha', provider: 'codex', lifecycleRunning: true, agentStartedAtMs: now - 60_000 },
+    { id: 'beta', provider: 'codex', lifecycleRunning: true, agentStartedAtMs: now - 50_000 },
+    { id: 'gamma', provider: 'codex', lifecycleRunning: true },
+    { id: 'delta', provider: 'codex', lifecycleRunning: false },
+  ].map((thread, row) => ({ ...thread, updatedAtMs: times[index][row], agentActivityAtMs: times[index][row] }));
+  const server = createSwitchboardServer({ now: () => clock, pendingStatePath: false, dashboardWatchPaths: [],
+    loadDashboard: async ({ workingStarts }) => buildSwitchboardDashboard(threads(Math.min(scan++, 1)), [], clock, undefined, workingStarts) });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const read = async () => {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/dashboard?force=1`);
+    const { generatedAtMs: _, performance: __, ...list } = await response.json();
+    return { etag: response.headers.get('etag'), list: JSON.stringify(list), rows: list.threads };
+  };
+  const first = await read();
+  clock += 33_000;
+  const second = await read();
+  assert.equal(scan, 2);
+  assert.equal(second.list, first.list);
+  assert.equal(second.etag, first.etag);
+  // Newest sent time first, then the ID: gamma has no turn start, so it sends the time of its first Working scan.
+  assert.deepEqual(second.rows.map((row) => [row.id, row.updatedAtMs]),
+    [['gamma', now - 15_000], ['beta', now - 50_000], ['alpha', now - 60_000], ['delta', now - 600_000]]);
+  const tie = buildSwitchboardDashboard([{ id: 'b', provider: 'codex', updatedAtMs: 5 }, { id: 'a', provider: 'codex', updatedAtMs: 5 },
+    { id: 'c', provider: 'codex', updatedAtMs: 6 }], [], now).threads;
+  assert.deepEqual(tie.map((row) => row.id), ['c', 'a', 'b']);
 });
 
 test('the ASB scan sets its own reader limits over caller options', async () => {
@@ -967,12 +1013,13 @@ test('persistent native attention keeps its source through a question and promot
 test('Read clears persistent attention without changing execution, and only new source events add it again', async () => {
   const tracker = new PendingTracker(false);
   const board = (native = true, completion = 0, questionAt = now) => buildSwitchboardDashboard([
+    // The row times keep this order in the list.
     { id: 'native', provider: 'codex', nativeUnread: native, lifecycleRunning: true, agentActivityAtMs: now,
-      latestAgentFinalAtMs: completion },
+      latestAgentFinalAtMs: completion, updatedAtMs: now - 1 },
     { id: 'question', provider: 'codex', nativeUnread: false, lifecycleRunning: true, agentActivityAtMs: now,
-      awaitingUserInput: true, latestUserQuestionAtMs: questionAt, userQuestionBlocking: true, latestBlockingQuestionAtMs: questionAt },
+      awaitingUserInput: true, latestUserQuestionAtMs: questionAt, userQuestionBlocking: true, latestBlockingQuestionAtMs: questionAt, updatedAtMs: now - 2 },
     { id: 'completion', provider: 'codex', nativeUnread: false, lifecycleRunning: !completion, agentActivityAtMs: now,
-      latestAgentFinalAtMs: completion },
+      latestAgentFinalAtMs: completion, updatedAtMs: now - 3 },
   ], [], now + 10);
   const existing = await tracker.observe(board());
   await tracker.setPersistentUnread(true, existing);

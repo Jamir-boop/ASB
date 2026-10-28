@@ -183,8 +183,12 @@ function codexGroupLifecycle(thread, byId, nowMs) {
   };
 }
 
+// Newest sent row time first, then the row ID: two scans with the same sent values give the same order.
+export const byRowTime = (a, b) => b.updatedAtMs - a.updatedAtMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+// `workingStarts` is the engine's map of row ID -> the row time of the first scan in which the row was Working.
 export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.now(),
-  machine = { machineId: '', machineName: localMachineName() }) {
+  machine = { machineId: '', machineName: localMachineName() }, workingStarts = new Map()) {
   const normalizedThreads = normalizeDashboardThreads(threads, nowMs);
   const byId = new Map(normalizedThreads.map((thread) => [thread.id, thread]));
   const roots = normalizedThreads.filter(isSwitchboardRoot).map((thread) => codexGroupLifecycle(thread, byId, nowMs));
@@ -212,6 +216,8 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
         : Number(thread.limitStoppedAtMs) > 0 || Number(thread.limitResetsAtMs) > 0 ? 'limit'
           : thread.latestLifecycleKind === 'failed' ? 'failed' : '';
       const updatedAtMs = Number(thread.groupUpdatedAtMs || thread.updatedAtMs || 0);
+      const workingSinceMs = status.state === 'working' && Number.isFinite(startedAtMs) ? Math.max(0, startedAtMs) : 0;
+      if (status.state === 'working' && !workingStarts.has(thread.id)) workingStarts.set(thread.id, updatedAtMs);
       const row = {
         id: thread.id,
         externalId,
@@ -232,11 +238,11 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
         projectName: thread.cwd ? path.basename(thread.cwd) || thread.cwd
           : thread.source === 'claude-remote-cache' ? thread.projectName || 'No project' : 'No project',
         archived: Boolean(thread.archived),
-        // A working row changes its last event time each scan; 10 s steps keep the list tag.
-        updatedAtMs: status.state === 'working' ? updatedAtMs - (updatedAtMs % 10_000) : updatedAtMs,
+        // A working row changes its last event time each scan; its turn start keeps the list tag.
+        updatedAtMs: status.state !== 'working' ? updatedAtMs : workingSinceMs > 0 ? workingSinceMs : workingStarts.get(thread.id),
         subagentCount: Number(thread.subagentCount || 0),
         ...status,
-        workingSinceMs: status.state === 'working' && Number.isFinite(startedAtMs) ? Math.max(0, startedAtMs) : 0,
+        workingSinceMs,
         nativeUnread: thread.source === 'claude-remote-cache' && status.state === 'unknown' ? null : thread.nativeUnread ?? null,
         readStatus: thread.source === 'claude-remote-cache' && status.state === 'unknown' ? 'unknown' : thread.readStatus || 'unknown',
         questionPending: Boolean(thread.awaitingUserInput) && !pendingToolStale(thread, nowMs),
@@ -270,8 +276,10 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
       if (thread.provider === 'claude-desktop-code' && thread.source !== 'claude-remote-cache') Object.defineProperty(row, CLI_SESSION_IDS,
         { value: [thread.cliSessionId, ...(thread.priorCliSessionIds || [])].filter((id) => typeof id === 'string' && id) });
       return row;
-    }),
+    }).sort(byRowTime),
   };
+  const working = new Set(board.threads.filter((row) => row.state === 'working').map((row) => row.id));
+  for (const id of workingStarts.keys()) if (!working.has(id)) workingStarts.delete(id);
   const expiries = roots.flatMap((thread) => [thread.latestBlockingQuestionAtMs, thread.groupStatusActivityAtMs, thread.pendingToolAtMs,
     thread.source === 'claude-remote-cache' ? thread.remoteObservedAtMs : 0,
     thread.lifecycleRunning === true ? thread.agentActivityAtMs ?? thread.latestLifecycleAtMs : 0,
@@ -379,6 +387,7 @@ export async function loadSwitchboardDashboard({
   sources = null,
   sourceScans = {},
   machine,
+  workingStarts,
 } = {}) {
   const inputs = sources ? numberAppSources(sources) : [
     { id: 'codex', provider: 'codex', label: 'Codex', enabled: true },
@@ -457,7 +466,7 @@ export async function loadSwitchboardDashboard({
     const [listings, transcripts] = thread.source === 'claude-cli' ? cliCounts.get(thread.externalId) : [];
     return listings > 1 && transcripts !== 1 ? { ...thread, cliSharedSource: true } : thread;
   });
-  return buildSwitchboardDashboard(unique, providers, nowMs, machine);
+  return buildSwitchboardDashboard(unique, providers, nowMs, machine, workingStarts);
 }
 
 export async function openSwitchboardThread(thread, options = {}) {
@@ -834,6 +843,8 @@ export class PendingTracker {
 export function createSwitchboardServer(options = {}) {
   const tracker = options.pendingTracker || new PendingTracker(options.pendingStatePath);
   const load = options.loadDashboard || loadSwitchboardDashboard;
+  // Row ID -> the row time of the first scan in which the row was Working (buildSwitchboardDashboard keeps it).
+  const workingStarts = new Map();
   const open = options.openThread || openSwitchboardThread;
   const registry = options.sourceRegistry || new AppSourceRegistry();
   const registeredLoad = !options.loadDashboard || Boolean(options.sourceRegistry);
@@ -956,7 +967,7 @@ export function createSwitchboardServer(options = {}) {
       const machine = options.machineIdentity?.() || { machineId: '', machineName: localMachineName() };
       // Only the engine passes reader positions: the first scan waits for their load, and each scan can save them.
       await options.readerPositions?.ready();
-      const loaded = await load({ ...(sources ? { sources } : {}), machine, sourceScans });
+      const loaded = await load({ ...(sources ? { sources } : {}), machine, sourceScans, workingStarts });
       options.readerPositions?.scanDone();
       options.onScanDone?.();
       // The npm start server has no machine identity, so its rows get no full reference.

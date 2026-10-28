@@ -499,12 +499,13 @@ test('source launchers receive one validated app URL and default sources retain 
     assert.equal((await openSwitchboardThread(row, { launcher, runCommand })).opened, true);
     assert.deepEqual(calls.at(-1), [launcher, [row.appDeepLink], { detached: true, stdio: 'ignore', windowsHide: true }]);
   }
-  assert.equal((await openSwitchboardThread(rows[0], { platform: 'linux', runCommand })).opened, true);
+  const codex = rows.find((row) => row.provider === 'codex');
+  assert.equal((await openSwitchboardThread(codex, { platform: 'linux', runCommand })).opened, true);
   assert.deepEqual(calls.at(-1), ['xdg-open', [`codex://threads/${uuid}`], { timeout: 5000 }]);
   const count = calls.length;
-  await assert.rejects(openSwitchboardThread({ ...rows[0], externalId: `${uuid};echo bad` }, { launcher, runCommand }));
-  await assert.rejects(openSwitchboardThread({ ...rows[0], appDeepLink: 'file:///tmp/private' }, { launcher, runCommand }));
-  await assert.rejects(openSwitchboardThread(rows[0], { launcher: '/bin/sh', runCommand }));
+  await assert.rejects(openSwitchboardThread({ ...codex, externalId: `${uuid};echo bad` }, { launcher, runCommand }));
+  await assert.rejects(openSwitchboardThread({ ...codex, appDeepLink: 'file:///tmp/private' }, { launcher, runCommand }));
+  await assert.rejects(openSwitchboardThread(codex, { launcher: '/bin/sh', runCommand }));
   assert.equal(calls.length, count);
 });
 
