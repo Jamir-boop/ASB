@@ -2566,7 +2566,7 @@ class AppSourcesEditor(Gtk.Box):
             choose = Gtk.Button(icon_name=icon, tooltip_text=title, valign=Gtk.Align.CENTER)
             choose.add_css_class("flat")
             choose.update_property([Gtk.AccessibleProperty.LABEL], [title])
-            choose.connect("clicked", lambda _button, entry=entry, folder=folder: self.choose_path(entry, folder))
+            choose.connect("clicked", lambda _button, entry=entry, folder=folder, title=title: self.choose_path(entry, folder, title))
             entry.add_suffix(choose)
             if entry is not self.projects_dir:
                 self.choose_buttons.append(choose)
@@ -3129,12 +3129,12 @@ class AppSourcesEditor(Gtk.Box):
         if current and not current.get("builtin"):
             self.request_sources("/api/sources/" + quote(self.editing_id, safe="") + "/remove", "POST", {})
 
-    def choose_path(self, entry, folder):
+    def choose_path(self, entry, folder, title):
         if self.closed or self.loading or self.choosing:
             return
         self.choosing = True
         self.update_controls()
-        dialog = Gtk.FileDialog(title="Choose session folder" if folder else "Choose app launcher")
+        dialog = Gtk.FileDialog(title=title)
         value = Path(os.path.expanduser(entry.get_text().strip())) if entry.get_text().strip() else Path.home()
         initial = value if folder else value.parent
         if initial.is_dir():

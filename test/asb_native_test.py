@@ -1191,6 +1191,25 @@ class WidgetCheck(unittest.TestCase):
         dialog = editor.dialog
         self.assertEqual((editor.dialog_title.get_title(), editor.dialog_title.get_subtitle()),
                          ("Studio", "Claude Desktop Code · 1 chat"))
+        # Each folder button opens a file dialog with its own title.
+        def buttons(widget):
+            child = widget.get_first_child()
+            while child:
+                if isinstance(child, asb.Gtk.Button):
+                    yield child
+                yield from buttons(child)
+                child = child.get_next_sibling()
+        titles = []
+        def start(chooser, _parent, _cancellable, callback):
+            titles.append(chooser.get_title())
+            callback(chooser, None)
+        def dismissed(_chooser, _result):
+            raise asb.GLib.Error.new_literal(asb.Gtk.dialog_error_quark(), "Dismissed by user", int(asb.Gtk.DialogError.DISMISSED))
+        with patch.object(asb.Gtk.FileDialog, "select_folder", start), patch.object(asb.Gtk.FileDialog, "select_folder_finish", dismissed):
+            for entry in (editor.projects_dir, editor.data_dir):
+                next(button for button in buttons(entry) if button.get_tooltip_text() and button.get_tooltip_text().startswith("Choose ")).emit("clicked")
+        self.assertEqual(titles, ["Choose transcript folder", "Choose session folder"])
+        self.assertFalse(editor.choosing)
         self.assertEqual(editor.name.get_delegate().get_max_length(), 80)
         self.assertTrue(all(isinstance(widget, asb.Adw.EntryRow) for widget in
                             (editor.name, editor.data_dir, editor.launcher, editor.projects_dir)))

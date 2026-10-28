@@ -4084,7 +4084,8 @@ class NativeLogicChecks(unittest.TestCase):
         entry = Mock(get_text=Mock(return_value="/example/profile"))
         dialog = Mock()
         with patch.dict(SCOPE, {"Gtk": SimpleNamespace(FileDialog=Mock(return_value=dialog))}):
-            source.choose_path(entry, True)
+            source.choose_path(entry, True, "Choose transcript folder")
+            SCOPE["Gtk"].FileDialog.assert_called_once_with(title="Choose transcript folder")
             dialog.select_folder.assert_called_once()
             parent, cancellable, callback = dialog.select_folder.call_args.args
             self.assertIs(parent, source.preferences)
