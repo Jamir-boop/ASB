@@ -8652,8 +8652,8 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.addCleanup(lambda: self.assertEqual(GTK_WARNINGS[self.warnings:], []))
 
     def fetch(self, route):
-        """The engine replies of the sample data: buckets in UTC, the seats of the period, and text only for local messages,
-        in the report only for the newest 200; an unknown end has the name from the message (record[7], record[8])."""
+        """The engine replies of the sample data: buckets in UTC, the seats of the period, no text in the report, and in a thread
+        text only for local messages; an unknown end has the name from the message (record[7], record[8])."""
         from urllib.parse import parse_qs
         self.routes.append(route)
         path, _mark, query = route.partition("?")
@@ -8676,7 +8676,8 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
             return {"period": args["period"], "nowMs": now, "buckets": {"unit": "hour" if count == 24 else "day", "startsMs": starts},
                     "machines": sample["machines"], "truncated": False,
                     "seats": [dict(seat, order=index) for index, seat in enumerate(seats) if seat["id"] in ends],
-                    "messages": [dict(message(record, index >= len(records) - 200), local=local(record)) for index, record in enumerate(records)]}
+                    "messages": [{key: value for key, value in dict(message(record, False), local=local(record)).items() if key != "text"}
+                                 for record in records]}
         self.assertEqual(path, "/api/activity/thread")
         if "seat" in args:
             mine = [record for record in records if args["seat"] in record[1:3]]
@@ -9223,6 +9224,8 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertIsNone(window.thread)
         self.assertIsNone(window.thread_list.get_first_child())
         self.assertEqual(self.routes, ["/api/activity/messages?period=7d"])
+        # The report has no text, as from the engine: the reply key, the lights, and the center work without it.
+        self.assertFalse(any("text" in record for record in window.data["messages"]))
         # No message text shows before a thread opens: the center has only the route of the newest message.
         texts = {record[6] for record in self.records() if record[6]}
         self.assertFalse(texts & set(self.all_labels(window)))

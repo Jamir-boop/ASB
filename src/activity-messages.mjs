@@ -236,15 +236,15 @@ export function createActivityMessages({ readSources = async () => [], dashboard
   }
 
   return {
-    // With text: false (the phone gateway), no body is read and no message has text or labels.
+    // No body is read and no message has text: the texts show only in a thread.
+    // With text: false (the phone gateway), no message has labels either.
     async report(period, { text = true } = {}) {
       const { nowMs, buckets, machines, messages, rows, self } = await merged(period);
       const kept = messages.slice(-MAX_ACTIVITY_MESSAGES);
-      const texts = text ? await textsFor(kept.slice(-200)) : null;
       const ids = new Set(kept.flatMap((item) => [item.from, item.to]));
       return { period, nowMs, buckets, machines, seats: seatsOf(ids, rows, machines, self),
-        messages: kept.map(({ files, hash, claudeRecord, textId, text: _text, fromLabel, toLabel, ...item }) => (texts
-          ? { ...item, fromLabel, toLabel, text: texts.get(item.id) ?? null } : item)), truncated: kept.length < messages.length };
+        messages: kept.map(({ files, hash, claudeRecord, textId, text: _text, fromLabel, toLabel, ...item }) => (text
+          ? { ...item, fromLabel, toLabel } : item)), truncated: kept.length < messages.length };
     },
 
     // One pair or one session: the newest 60 messages oldest first, the total, and the text of each.

@@ -65,7 +65,7 @@ test('a bridge to bridge message with an out row and an in row is one record, an
   await bridge('codex', X, [{ id: msg(1), peer: Y, direction: 'out', status: 'socket-written', atMs: nowMs - 60_000 }]);
   await bridge('codex', Y, [{ id: msg(1), peer: X, direction: 'in', status: 'steered', atMs: nowMs - 59_000 }]);
   const report = await service().report('7d');
-  assert.deepEqual(report.messages, [{ id: msg(1), from: X, to: Y, atMs: seconds(nowMs - 60_000) * 1000, status: 'accepted', reason: '', local: true, fromLabel: '', toLabel: '', text: `Synthetic text ${msg(1)}.` }]);
+  assert.deepEqual(report.messages, [{ id: msg(1), from: X, to: Y, atMs: seconds(nowMs - 60_000) * 1000, status: 'accepted', reason: '', local: true, fromLabel: '', toLabel: '' }]);
   assert.deepEqual(await service().localRecords('7d'), [{ id: msg(1), from: X, to: Y, atMs: seconds(nowMs - 60_000) * 1000, status: 'accepted',
     reason: '', direction: 'both', hash: digest(`Synthetic text ${msg(1)}.`), label: '', text: `Synthetic text ${msg(1)}.` }]);
 });
@@ -183,12 +183,12 @@ test('seats: row IDs for known endpoints, unknown:<machine> for others, by title
   assert.deepEqual([report.period, report.nowMs, report.truncated, report.buckets.startsMs.length], ['7d', nowMs, false, 7]);
 });
 
-test('report text has no cross-session envelope and a long body is cut to 1,999 characters and an ellipsis', async (t) => {
+test('thread text has no cross-session envelope and a long body is cut to 1,999 characters and an ellipsis', async (t) => {
   const { bridge, service } = await home(t);
   await bridge('codex', X, [{ id: msg(100), peer: Y, direction: 'out', status: 'delivered', atMs: nowMs - 2 * 60_000,
     text: '<cross-session-message from="Synthetic">\nMessage 0.\n</cross-session-message>' },
   { id: msg(101), peer: Y, direction: 'out', status: 'delivered', atMs: nowMs - 60_000, text: 'z'.repeat(2500) }]);
-  const { messages } = await service().report('7d');
+  const { messages } = await service().thread('7d', { a: X, b: Y });
   assert.deepEqual(messages.map((item) => item.text), ['Message 0.', `${'z'.repeat(1999)}…`]);
   assert.equal(Array.from(messages.at(-1).text).length, 2000);
   assert.equal(messageText('<cross-session-message from="x">\nHello\n</cross-session-message>\n'), 'Hello');
@@ -260,8 +260,8 @@ test('the group merge: one record per ID with the receiver status, offline membe
   const activity = service({ group: machineGroup, dashboard: async () => dashboard, now: () => clock });
   const first = await activity.report('7d');
   assert.deepEqual(first.messages, [
-    { id: msg(400), from: X, to: remoteRow, atMs: seconds(nowMs - 120_000) * 1000, status: 'accepted', reason: '', local: true, fromLabel: '', toLabel: '', text: 'Secret fixture text.' },
-    { id: msg(401), from: remoteRow, to: `unknown:${B.machineId}`, atMs: nowMs - 60_000, status: 'held', reason: '', local: false, fromLabel: '', toLabel: '', text: null }]);
+    { id: msg(400), from: X, to: remoteRow, atMs: seconds(nowMs - 120_000) * 1000, status: 'accepted', reason: '', local: true, fromLabel: '', toLabel: '' },
+    { id: msg(401), from: remoteRow, to: `unknown:${B.machineId}`, atMs: nowMs - 60_000, status: 'held', reason: '', local: false, fromLabel: '', toLabel: '' }]);
   assert.deepEqual(first.machines[1], { machineId: B.machineId, name: B.name, self: false, state: 'online', lastReportAtMs: nowMs });
   assert.equal(first.seats.find((seat) => seat.id === remoteRow).machineId, B.machineId);
   assert.equal(JSON.stringify(first).includes('Leak'), false);
@@ -375,7 +375,7 @@ test('the switchboard server reads the registered bridge folders and passes the 
   const report = await (await fetch(`${base}/api/activity/messages?period=30d`)).json();
   assert.deepEqual(report.messages.map(({ id, from, to }) => [id, from, to]), [[msg(500), X, Y]]);
   assert.deepEqual(report.machines, [{ machineId: A.machineId, name: A.name, self: true, state: 'local', lastReportAtMs: 0 }]);
-  assert.deepEqual(report.messages.map((item) => item.text), [`Synthetic text ${msg(500)}.`]);
+  assert.ok(report.messages.every((item) => !('text' in item)));
   const thread = await (await fetch(`${base}/api/activity/thread?period=30d&a=${X}&b=${Y}`)).json();
   assert.deepEqual(thread.messages.map((item) => item.text), [`Synthetic text ${msg(500)}.`]);
   assert.deepEqual(await (await fetch(`${base}/api/activity/usage?period=7d`)).json(), { period: '7d' });
@@ -424,9 +424,9 @@ test('Claude local sides pair with text and an unpaired named target keeps its l
   const report = await activity().report('7d');
   assert.deepEqual(report.messages, [
     { id: 'claude:local-pair', from: X, to: Y, atMs: nowMs - 60_000, status: 'accepted', reason: '', local: true,
-      fromLabel: '', toLabel: '', text: 'Pair body.' },
+      fromLabel: '', toLabel: '' },
     { id: 'claude:named-target', from: X, to: `unknown:${A.machineId}`, atMs: nowMs - 1000, status: 'accepted', reason: '', local: true,
-      fromLabel: '', toLabel: 'beta-helper', text: 'Different body.' },
+      fromLabel: '', toLabel: 'beta-helper' },
   ]);
   assert.deepEqual((await activity().thread('7d', { a: X, b: Y })).messages.map((item) => item.text), ['Pair body.']);
   // The thread of an unknown end keeps the name from the message.
@@ -440,7 +440,7 @@ test('a thread reads the text of Claude transcript messages older than the newes
   await bridge('codex', Y, Array.from({ length: 205 }, (_, index) => ({ id: msg(1000 + index), peer: CLI, direction: 'out', status: 'delivered',
     atMs: nowMs - (205 - index) * 60_000 })));
   const report = await activity().report('7d');
-  assert.deepEqual([report.messages.length, report.messages[0].id, report.messages[0].text], [206, 'claude:old-pair', null]);
+  assert.deepEqual([report.messages.length, report.messages[0].id, 'text' in report.messages[0]], [206, 'claude:old-pair', false]);
   const thread = await activity().thread('7d', { a: Y, b: X });
   assert.deepEqual(thread.messages.map(({ id, from, to, text }) => [id, from, to, text]), [['claude:old-pair', X, Y, 'Old pair body.']]);
   assert.equal(thread.total, 1);
@@ -456,10 +456,13 @@ test('local sends pair with member deliveries and each unknown endpoint keeps it
       hash: digest('Unknown body.'), label: 'alpha-main', text: 'Unknown body.' },
   ] }] };
   const rows = (await activity({ group }).report('7d')).messages;
-  assert.deepEqual(rows.map(({ id, from, to, text, fromLabel, toLabel }) => ({ id, from, to, text, fromLabel, toLabel })), [
-    { id: 'claude:member-pair', from: X, to: `unknown:${B.machineId}`, text: 'Member body.', fromLabel: '', toLabel: 'beta-helper' },
-    { id: 'claude:unknown-pair', from: `unknown:${A.machineId}`, to: `unknown:${B.machineId}`, text: 'Unknown body.', fromLabel: 'alpha-main', toLabel: 'beta-helper' },
+  assert.deepEqual(rows.map(({ id, from, to, fromLabel, toLabel }) => ({ id, from, to, fromLabel, toLabel })), [
+    { id: 'claude:member-pair', from: X, to: `unknown:${B.machineId}`, fromLabel: '', toLabel: 'beta-helper' },
+    { id: 'claude:unknown-pair', from: `unknown:${A.machineId}`, to: `unknown:${B.machineId}`, fromLabel: 'alpha-main', toLabel: 'beta-helper' },
   ]);
+  // The texts show in the thread.
+  assert.deepEqual((await activity({ group }).thread('7d', { seat: `unknown:${B.machineId}` })).messages.map(({ id, text }) => [id, text]),
+    [['claude:member-pair', 'Member body.'], ['claude:unknown-pair', 'Unknown body.']]);
 });
 
 test('a bridge out row pairs with a Claude delivery using the envelope-free body', async (t) => {
@@ -470,16 +473,16 @@ test('a bridge out row pairs with a Claude delivery using the envelope-free body
   const report = await activity().report('7d');
   assert.equal(report.messages.length, 1);
   assert.deepEqual(report.messages[0], { id: msg(710), from: X, to: Y, atMs: nowMs - 60_000, status: 'accepted', reason: '', local: true,
-    fromLabel: '', toLabel: '', text: 'Mixed body.' });
+    fromLabel: '', toLabel: '' });
+  assert.deepEqual((await activity().thread('7d', { a: X, b: Y })).messages.map((item) => item.text), ['Mixed body.']);
 });
 
-test('reports and member replies put text on only the newest 200 of 205 records', async (t) => {
+test('reports have no text and member replies put text on only the newest 200 of 205 records', async (t) => {
   const { send, write, activity } = await claudeFixture(t);
   await write(Array.from({ length: 205 }, (_, i) => send(`limit-${String(i).padStart(3, '0')}`, `Body ${i}.`, 'beta-helper', nowMs - (205 - i) * 1000)));
   const report = await activity().report('7d');
   assert.equal(report.messages.length, 205);
-  assert.deepEqual(report.messages.slice(0, 5).map((item) => item.text), Array(5).fill(null));
-  assert.equal(report.messages.filter((item) => typeof item.text === 'string').length, 200);
+  assert.ok(report.messages.every((item) => !('text' in item)));
   const reply = await activity().memberReply('7d');
   assert.equal(reply.messages.length, 205);
   assert.deepEqual(reply.messages.slice(0, 5).map((item) => item.text), Array(5).fill(null));
@@ -491,7 +494,7 @@ test('reports and member replies put text on only the newest 200 of 205 records'
   }
 });
 
-test('a report with text: false reads no body and has no text or labels, and the same report without it has the text', async (t) => {
+test('a report with text: false reads no body and has no text or labels', async (t) => {
   const { sources, bridge, send, write, service } = await claudeFixture(t);
   await bridge('codex', X, [{ id: msg(720), peer: Y, direction: 'out', status: 'delivered' }]);
   await write([send('textless', 'Hidden body.')]);
@@ -506,9 +509,27 @@ test('a report with text: false reads no body and has no text or labels, and the
   }
   assert.equal(JSON.stringify(textless).includes('Hidden body.'), false);
   assert.deepEqual([reads, selects], [0, 0]);
-  const full = await service({ claudeMessages, query }).report('7d');
-  assert.deepEqual(full.messages.map((item) => item.text).sort(), ['Hidden body.', `Synthetic text ${msg(720)}.`]);
-  assert.ok(full.messages.every((item) => 'fromLabel' in item && 'toLabel' in item));
+});
+
+test('a report reads no body and has no text, but keeps the labels; the thread still reads the text', async (t) => {
+  const { sources, bridge, send, write, service } = await claudeFixture(t);
+  await bridge('codex', X, [{ id: msg(721), peer: Y, direction: 'out', status: 'delivered', text: 'Bridge body.' }]);
+  await write([send('report-only', 'Transcript body.', 'beta-helper')]);
+  const reader = createClaudeMessages({ readSources: async () => sources, now: () => nowMs });
+  let reads = 0, selects = 0;
+  const claudeMessages = { records: (sinceMs) => reader.records(sinceMs), text: (record) => { reads += 1; return reader.text(record); } };
+  const query = (file, sql) => { if (sql.includes('select id, text')) selects += 1; return querySqliteJson(file, sql); };
+  const report = await service({ claudeMessages, query }).report('7d');
+  assert.deepEqual(report.messages.map(({ id, fromLabel, toLabel }) => [id, fromLabel, toLabel]).sort(),
+    [['claude:report-only', '', 'beta-helper'], [msg(721), '', '']].sort());
+  for (const item of report.messages) {
+    assert.deepEqual(Object.keys(item), ['id', 'from', 'to', 'atMs', 'status', 'reason', 'local', 'fromLabel', 'toLabel']);
+  }
+  assert.equal(JSON.stringify(report).includes('Transcript body.'), false);
+  assert.equal(JSON.stringify(report).includes('Bridge body.'), false);
+  assert.deepEqual([reads, selects], [0, 0]);
+  const thread = await service({ claudeMessages, query }).thread('7d', { seat: X });
+  assert.deepEqual(thread.messages.map((item) => item.text).sort(), ['Bridge body.', 'Transcript body.']);
   assert.deepEqual([reads, selects], [1, 1]);
 });
 
