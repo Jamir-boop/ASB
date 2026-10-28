@@ -264,6 +264,10 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
       return;
     }
     if (JSON.stringify(merged) === JSON.stringify(group)) return;
+    if (!validateGroup(merged, { addressOk })) {
+      log('ASB did not apply a group update from another machine: the merged group is not valid.');
+      return;
+    }
     await saveGroup(file, merged);
     group = merged;
     syncPollers();
