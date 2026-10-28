@@ -7180,6 +7180,65 @@ class WidgetCheck(unittest.TestCase):
             ys.append(end[1])
             self.assertTrue(all(before > after for before, after in zip(ys, ys[1:])), ys)
 
+    def test_ended_and_dropped_flights_free_their_animations_and_cards(self):
+        threads = [{"id": f"m{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Sample session {n}",
+                    "cwd": "/example/notes", "projectName": "notes", "state": "idle", "canOpen": True,
+                    "updatedAtMs": NOW - n * 60_000} for n in (1, 2, 3, 4)]
+        at = time.time() * 1000
+        def board(messages, gone=()):
+            return {"generatedAtMs": NOW, "providers": [], "threads": [row for row in threads if row["id"] not in gone],
+                    "messages": [{"from": source, "to": target, "atMs": at + index} for index, (source, target) in enumerate(messages)]}
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", board([]), theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(700, 420)
+        window.present()
+        self.settle(window)
+        strip = window.list_body
+        def wait(done, limit=6):
+            end = time.monotonic() + limit
+            while not done() and time.monotonic() < end:
+                self.drain(.02)
+            self.assertTrue(done())
+        def assert_free(flight):
+            self.assertEqual((flight["animations"], flight["ring_animation"], flight["edge_animation"], flight["rows"]),
+                             ([], None, None, ()))
+        # A flight that ends.
+        window.apply_dashboard(board([("m1", "m2")]), None)
+        wait(lambda: strip.flights)
+        ended = strip.flights[0]
+        self.assertEqual(len(ended["animations"]), 3)
+        references = [weakref.ref(item) for item in ended["animations"]] + [weakref.ref(ended["rows"][1])]
+        wait(lambda: not strip.flights)
+        assert_free(ended)
+        # A flight that the board drops while it plays.
+        window.apply_dashboard(board([("m1", "m2"), ("m3", "m4")]), None)
+        wait(lambda: strip.flights)
+        dropped = strip.flights[0]
+        self.assertEqual(dropped["rows"], (window.focus_widgets["m3"], window.focus_widgets["m4"]))
+        references += [weakref.ref(item) for item in dropped["animations"]] + [weakref.ref(dropped["rows"][1])]
+        strip.drop_flights([dropped])
+        self.assertEqual(strip.flights, [])
+        assert_free(dropped)
+        # Late callbacks of a dropped flight do nothing.
+        before = dict(dropped)
+        strip.advance_flight(dropped, "flight", .5)
+        for key in ("flight", "ring", "edge"):
+            strip.flight_done(None, dropped, key)
+        self.assertEqual((dropped, strip.flights), (before, []))
+        # The rows of the two target cards leave the list, so the board releases the cards.
+        window.apply_dashboard(board([("m1", "m2"), ("m3", "m4")], gone=("m2", "m4")), None)
+        self.drain(.3)
+        self.assertFalse({"m2", "m4"} & set(window.row_cache))
+        gc.collect()
+        self.drain(.2)
+        gc.collect()
+        self.assertEqual([reference() for reference in references], [None] * 8)
+
     def test_message_courier_out_of_view_edges(self):
         threads = [{"id": f"e{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Sample row {n}", "cwd": "/example/notes",
                     "projectName": "notes", "state": "idle", "canOpen": True, "updatedAtMs": NOW - n * 60_000} for n in range(80)]

@@ -2716,7 +2716,7 @@ class SessionStrip(Gtk.Box):
             else:
                 flight["ring_animation"].play()
         elif flight["flight"] is None and flight["ring"] is None and flight["edge"] is None:
-            self.flights.remove(flight)
+            self.drop_flights([flight])
             self.queue_draw()
 
     def drop_flights(self, flights):
@@ -2725,6 +2725,9 @@ class SessionStrip(Gtk.Box):
                 self.flights.remove(flight)
             for item in flight["animations"]:
                 item.pause()
+            # The animation callbacks hold the flight through libadwaita, where Python cannot free the loop.
+            # So the flight lets go of its animations and cards; a late callback finds it outside self.flights.
+            flight["animations"], flight["ring_animation"], flight["edge_animation"], flight["rows"] = [], None, None, ()
 
     def clear_flights(self, *_args):
         if self.flights:
