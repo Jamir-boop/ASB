@@ -7,6 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { buildSwitchboardDashboard, createSwitchboardServer, switchboardWatchPaths } from '../src/switchboard.mjs';
+import { DashboardSnapshot } from '../src/dashboard-snapshot.mjs';
 
 const epoch = Date.parse('2026-10-07T14:00:00Z');
 const settle = () => new Promise(setImmediate);
@@ -168,7 +169,8 @@ test('a PC without the Claude app folder keeps full watch coverage and watches t
 });
 
 test('source bursts coalesce, cap busy scans, and emit only metadata', async (t) => {
-  const f = await fixture(t);
+  const f = await fixture(t, { load: (loads, clock) => ({ generatedAtMs: clock.now(), providers: [],
+    threads: [{ id: 'one', state: 'working', nativeUnread: null, title: `Made-up ${loads}` }] }) });
   await f.scan();
   const stream = await events(t, f);
   f.change('auth.json');
@@ -342,4 +344,71 @@ test('ASB event streams enforce Host, Origin, method, and no CORS permissions', 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('access-control-allow-origin'), null);
   controller.abort();
+});
+
+// A service snapshot with one watched made-up folder, fake timers, and one event client.
+async function serviceSnapshot(t, load) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'asb-snapshot-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const clock = fakeClock();
+  const watches = [];
+  let loads = 0;
+  const snapshot = new DashboardSnapshot({ serviceMode: true, now: clock.now, dashboardWatchDebounceMs: 250,
+    dashboardSetTimeout: clock.setTimeout, dashboardClearTimeout: clock.clearTimeout,
+    dashboardWatchPaths: [{ path: dir, source: 'codex' }],
+    watchDashboardPath(_target, _options, callback) {
+      const watcher = new EventEmitter();
+      watcher.close = () => {};
+      watches.push(callback);
+      return watcher;
+    },
+    loadDashboard: async () => { loads += 1; return load(clock); } });
+  const written = [];
+  snapshot.serveEvents(new EventEmitter(), { writeHead() {}, write: (text) => written.push(text), end() {} });
+  const server = new EventEmitter();
+  server.close = () => {};
+  snapshot.attach(server);
+  t.after(() => server.close());
+  server.emit('listening');
+  await until(() => loads === 1 && snapshot.performanceSnapshot().dashboard.watchCoverage);
+  return { snapshot, clock, loads: () => loads, events: () => written.filter((text) => text === 'event: dashboard\n').length,
+    change: () => watches.at(-1)('change', 'state_9.sqlite-wal') };
+}
+
+test('a scan sends the dashboard event and moves the revision only when the list changed, also a timer scan', async (t) => {
+  let title = 'A';
+  let expiry = Infinity;
+  const s = await serviceSnapshot(t, (clock) => {
+    const dashboard = { generatedAtMs: clock.now(), providers: [], threads: [{ id: 'one', state: 'idle', title }] };
+    Object.defineProperty(dashboard, 'nextStatusCheckAtMs', { value: expiry });
+    return dashboard;
+  });
+  assert.deepEqual([s.events(), s.snapshot.revision()], [1, 1]);
+  // A file event scan that finds the same list: no event, the same revision.
+  s.change();
+  await s.clock.advance(250);
+  await until(() => s.loads() === 2);
+  await settle();
+  assert.deepEqual([s.events(), s.snapshot.revision()], [1, 1]);
+  // A changed list: one event.
+  title = 'B';
+  s.change();
+  await s.clock.advance(250);
+  await until(() => s.loads() === 3);
+  await settle();
+  assert.deepEqual([s.events(), s.snapshot.revision()], [2, 2]);
+  // A safety scan that finds the same list sends nothing; a timer scan that changed the list sends one event.
+  await s.clock.advance(30_000);
+  assert.equal(s.loads(), 4);
+  assert.deepEqual([s.events(), s.snapshot.revision()], [2, 2]);
+  expiry = s.clock.now() + 33_000;
+  title = 'C';
+  await s.clock.advance(30_000);
+  assert.equal(s.loads(), 5);
+  assert.deepEqual([s.events(), s.snapshot.revision()], [3, 3]);
+  // The status expiry scan, 3 s later, changed the list: one event.
+  title = 'D';
+  await s.clock.advance(3_000);
+  assert.equal(s.loads(), 6);
+  assert.deepEqual([s.events(), s.snapshot.revision()], [4, 4]);
 });

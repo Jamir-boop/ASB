@@ -10,6 +10,11 @@ const DEFAULT_DASHBOARD_WATCH_DEBOUNCE_MS = 500;
 const SERVICE_SAFETY_SCAN_MS = 30_000;
 // The scan interval comes from the local rows; the JSON interval also counts member rows, for the board and the phone.
 const scanIntervalMs = (dashboard) => (dashboard?.localRefreshIntervalMs ?? dashboard?.refreshIntervalMs) === 2_000 ? 2_000 : 5_000;
+// The list content of a dashboard: all of it but the time and the counters. `summary` keeps the list from being empty.
+const contentText = (dashboard) => {
+  const { generatedAtMs: _, performance: __, ...rows } = dashboard;
+  return JSON.stringify({ ...rows, summary: { ...(rows.summary || {}) } });
+};
 
 export class DashboardSnapshot {
   constructor({
@@ -38,8 +43,16 @@ export class DashboardSnapshot {
     let dashboardInvalidationReason = 'file-change';
     let dashboardDirty = false;
     let dashboardGeneration = 0;
-    // Moves with each new dashboard and with each invalidation. Each in-place change of a cached row ends in an invalidation, so the revision shows it.
+    // Moves with each scan that changed the list and with each invalidation. Each in-place change of a cached row ends in an invalidation, so the revision shows it.
     let dashboardRevision = 0;
+    // The list content of the cached dashboard at one revision; an in-place change moves the revision, so the text is made again.
+    let listState = null;
+    const listText = (dashboard) => {
+      if (listState?.dashboard === dashboard && listState.revision === dashboardRevision) return listState.text;
+      const text = contentText(dashboard);
+      if (dashboard === dashboardCache?.dashboard) listState = { dashboard, revision: dashboardRevision, text };
+      return text;
+    };
     let dashboardLastScanStartedAtMs = -Infinity;
     let dashboardRetryAfterMs = 0;
     let dashboardClosed = false;
@@ -151,6 +164,7 @@ export class DashboardSnapshot {
         dashboardLastScanStartedAtMs = now();
         const generation = dashboardGeneration;
         const hints = [...dashboardSourceHints];
+        let reason = 'status-check';
         dashboardSourceHints.clear();
         dashboardLoadPromise = Promise.resolve()
           .then(async () => {
@@ -162,6 +176,7 @@ export class DashboardSnapshot {
             for (const [source, files] of hints) {
               for (const [filePath, index] of files) await dashboardSourceChanged(source, { filePath, index });
             }
+            reason = dashboardDirty ? dashboardInvalidationReason : 'status-check';
             const scanEpoch = dashboardWatchEpoch;
             const scanAtMs = now();
             const sourceScans = {};
@@ -194,13 +209,21 @@ export class DashboardSnapshot {
             serverMetrics.dashboardLoadCount += 1;
             serverMetrics.dashboardLastLoadMs = durationSince(startedAtMs);
             serverMetrics.dashboardLastLoadedAtMs = now();
+            // Only a scan that changed the list moves the revision and tells the clients, also a timer scan.
+            const text = contentText(dashboard);
+            const changed = !dashboardCache || text !== listText(dashboardCache.dashboard);
             dashboardCache = {
               dashboard,
               cachedAtMs: now(),
             };
-            dashboardRevision += 1;
+            if (changed) dashboardRevision += 1;
+            listState = { dashboard, revision: dashboardRevision, text };
             dashboardRetryAfterMs = 0;
             if (generation === dashboardGeneration) dashboardDirty = false;
+            if (changed) {
+              serverMetrics.dashboardSoftInvalidations += 1;
+              announceDashboard(reason);
+            } else dashboardSources.codex = dashboardSources.claude = false;
             return dashboard;
           })
           .catch((error) => {
@@ -232,9 +255,20 @@ export class DashboardSnapshot {
       }
     };
 
+    const announceDashboard = (reason) => {
+      serverMetrics.dashboardLastInvalidatedAtMs = now();
+      dashboardEventVersion += 1;
+      broadcastDashboardEvent('dashboard', { version: dashboardEventVersion, reason, sources: { ...dashboardSources } });
+      dashboardSources.codex = false;
+      dashboardSources.claude = false;
+    };
+
     const invalidateDashboard = (reason = 'dashboard-change', { hard = true, dirty = true } = {}) => {
+      // A soft dirty change leaves the cached rows as they are (the next scan shows it), so their list text stays.
+      const keepText = !hard && dirty && listState?.revision === dashboardRevision;
       // First, so a client that gets the event below reads the new revision.
       dashboardRevision += 1;
+      if (keepText) listState.revision = dashboardRevision;
       if (dirty) dashboardDirty = true;
       // A scan in flight predates this change and must not clear the dirty mark.
       if (hard || dirty) dashboardGeneration += 1;
@@ -246,11 +280,7 @@ export class DashboardSnapshot {
       } else {
         serverMetrics.dashboardSoftInvalidations += 1;
       }
-      serverMetrics.dashboardLastInvalidatedAtMs = now();
-      dashboardEventVersion += 1;
-      broadcastDashboardEvent('dashboard', { version: dashboardEventVersion, reason, sources: { ...dashboardSources } });
-      dashboardSources.codex = false;
-      dashboardSources.claude = false;
+      announceDashboard(reason);
       // No file event follows a peer change: the service gets the follow-up scan of a source event, also with no reader.
       if (serviceMode && dirty && !hard && !dashboardClosed) scheduleDashboardInvalidation(reason);
     };
@@ -268,10 +298,9 @@ export class DashboardSnapshot {
         if (dashboardClosed) return;
         if (dashboardLoadPromise) return;
         // One shared follow-up scan covers the burst before clients read the snapshot.
+        // The scan sends the event itself, only when the list changed.
         if (dashboardCache && dashboardDirty && (dashboardEventClients.size || serviceMode)) {
-          loadSharedDashboard().then(() => {
-            if (!dashboardClosed) invalidateDashboard(dashboardInvalidationReason, { hard: false, dirty: false });
-          }).catch(() => {
+          loadSharedDashboard().catch(() => {
             if (!dashboardClosed) invalidateDashboard('source-unavailable', { hard: false });
           });
         } else invalidateDashboard(dashboardInvalidationReason, { hard: false, dirty: false });
@@ -473,6 +502,7 @@ export class DashboardSnapshot {
     Object.assign(this, {
       dashboardForRequest, loadSharedDashboard, invalidateDashboard, performanceSnapshot, openThreadOnce,
       cachedDashboard: () => dashboardCache?.dashboard,
+      listText,
       revision: () => dashboardRevision,
       broadcastEvent: (event, payload) => broadcastDashboardEvent(event, payload),
       serveEvents: (request, response) => {

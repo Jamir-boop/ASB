@@ -686,17 +686,13 @@ export function createAsbServer({
     if (url.pathname === '/api/dashboard') {
       try {
         const dashboard = await loadSharedDashboard({ force: parseBooleanSearchParam(url.searchParams.get('force')) });
-        // The rows can change in place between scans, and each such change moves the snapshot revision. The saved list and its tag are for
-        // one dashboard object, one revision, and one palette. The key is read in the same step as the list is made, so a later change
-        // always moves it. The weak reference keeps an old dashboard object from living on in the saved list.
+        // The rows can change in place between scans, and each such change moves the snapshot revision, so the snapshot makes the list
+        // text again. The saved list and its tag are for one list text and one palette: a scan with the same content keeps them.
         const { generatedAtMs } = dashboard;
-        const revision = snapshot.revision();
-        if (savedList?.revision !== revision || savedList.palette !== palette || savedList.dashboard.deref() !== dashboard) {
-          const { generatedAtMs: _, performance: __, ...rows } = dashboard;
-          // `summary` keeps the list from being empty.
-          const list = JSON.stringify({ ...rows, summary: { ...(rows.summary || {}) }, palette });
-          savedList = { revision, palette, dashboard: new WeakRef(dashboard), list,
-            etag: `"${createHash('sha256').update(list).digest('base64url')}"` };
+        const text = snapshot.listText(dashboard);
+        if (savedList?.text !== text || savedList.palette !== palette) {
+          const list = `${text.slice(0, -1)},"palette":${JSON.stringify(palette)}}`;
+          savedList = { text, palette, list, etag: `"${createHash('sha256').update(list).digest('base64url')}"` };
         }
         const { list, etag } = savedList;
         const headers = { etag, 'cache-control': 'no-store' };
