@@ -3074,6 +3074,82 @@ class WidgetCheck(unittest.TestCase):
         self.assertIsNone(window.context_menu)
         self.assertFalse(window.opening or window.session_actions)
 
+    def test_pointer_row_panel_motion_has_a_24px_margin_and_keyboard_has_no_motion_rule(self):
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "request_async", lambda *_args: None)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", copy.deepcopy(FIXTURE),
+                                      theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(900, 800)
+        window.present(); self.drain(.3)
+        card = window.focus_widgets[window.row_order[0]]
+        for pointer in (True, False):
+            with self.subTest(pointer=pointer):
+                window.show_context(card, gesture=Mock() if pointer else None); self.drain(.2)
+                panel = window.context_menu
+                self.assertTrue(panel.get_mapped())
+                controllers = panel.observe_controllers()
+                motions = [controller for controller in controllers if isinstance(controller, asb.Gtk.EventControllerMotion)]
+                self.assertEqual(len(motions), int(pointer))
+                found, bounds = panel.get_child().get_parent().compute_bounds(panel)
+                self.assertTrue(found)
+                x, y, width, height = bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height
+                if pointer:
+                    motion = motions[0]
+                    for px, py in ((x + width / 2, y - 10), (x - 24, y), (x + width + 24, y),
+                                   (x, y - 24), (x, y + height + 24), (x + width / 2, y + height / 2)):
+                        motion.emit("motion", px, py); self.drain(.03)
+                        self.assertTrue(panel.get_visible())
+                    motion.emit("motion", x + width / 2, y - 30); self.drain(.2)
+                    self.assertFalse(panel.get_visible())
+                    self.assertIsNone(window.context_menu)
+                else:
+                    # Keyboard panels have no distance handler on their popover; outside motion cannot close them.
+                    motion = asb.Gtk.EventControllerMotion()
+                    panel.add_controller(motion)
+                    motion.emit("motion", x - 100, y - 100); self.drain(.1)
+                    self.assertTrue(panel.get_visible())
+                    panel.popdown(); self.drain(.2)
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real pointer movement needs xdotool and DISPLAY=:9 or :10.")
+    def test_a_held_right_click_row_panel_closes_when_the_pointer_moves_away(self):
+        from gi.repository import GdkX11
+
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "request_async", lambda *_args: None)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        def xdo(*args):
+            return subprocess.run(["xdotool", *map(str, args)], check=True, capture_output=True, text=True).stdout
+        x, y = (line.split("=")[1] for line in xdo("getmouselocation", "--shell").splitlines()[:2])
+        self.addCleanup(xdo, "mousemove", x, y)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", copy.deepcopy(FIXTURE),
+                                      theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(900, 800)
+        window.present(); self.drain(.3)
+        card = window.focus_widgets[window.row_order[0]]
+        found, bounds = card.asb_title_label.compute_bounds(window)
+        self.assertTrue(found)
+        left, top = window.get_surface_transform()
+        xdo("mousemove", "--window", GdkX11.X11Surface.get_xid(window.get_surface()),
+            int(bounds.origin.x + bounds.size.width / 2 + left), int(bounds.origin.y + bounds.size.height / 2 + top))
+        self.drain(.1)
+        xdo("mousedown", 3); self.drain(.25)
+        xdo("mouseup", 3); self.drain(.2)
+        panel = window.context_menu
+        self.assertTrue(panel is not None and panel.get_mapped())
+        xdo("mousemove_relative", "--", -40, -60); self.drain(.3)
+        self.assertFalse(panel.get_visible())
+        self.assertIsNone(window.context_menu)
+
     @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
                          "Real pointer movement needs xdotool and a nested test display (DISPLAY=:9 or :10).")
     def test_a_held_right_click_opens_a_row_panel_that_takes_the_next_click(self):

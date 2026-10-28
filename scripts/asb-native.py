@@ -7619,6 +7619,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         motion.connect("leave", lambda controller: controller.get_widget().get_ancestor(Gtk.Popover).popdown())
         # The popup surface also gets grab crossings outside the visible panel.
         panel.get_child().get_parent().add_controller(motion)
+        if gesture:
+            motion = Gtk.EventControllerMotion()
+            motion.connect("motion", self.panel_pointer_motion)
+            panel.add_controller(motion)
         panel.set_parent(widget)
         def closed(popup):
             # A repack moves the row, which unmaps its panel; GTK maps the panel again with the row.
@@ -7639,6 +7643,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         panel.popup()
         if gesture:
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+
+    def panel_pointer_motion(self, controller, x, y):
+        panel = controller.get_widget()
+        found, bounds = panel.get_child().get_parent().compute_bounds(panel)
+        if found and (x < bounds.origin.x - 24 or x > bounds.origin.x + bounds.size.width + 24
+                      or y < bounds.origin.y - 24 or y > bounds.origin.y + bounds.size.height + 24):
+            panel.popdown()
 
     def place_row_panel(self, panel, widget, x, y):
         """GTK keeps a popover inside the monitor only; this keeps the centered panel inside the window."""
