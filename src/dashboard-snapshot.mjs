@@ -8,7 +8,7 @@ import { durationSince, hitRatePercent, positiveInteger } from './local-http.mjs
 const DEFAULT_DASHBOARD_WATCH_DEBOUNCE_MS = 500;
 // Service mode with full watch coverage: watch events, peer changes, and status expiries start scans; this is the safety scan.
 const SERVICE_SAFETY_SCAN_MS = 30_000;
-// The safety scan at rest: full watch coverage and no local Working row.
+// The safety scan with full watch coverage, also while a local row works.
 const SERVICE_REST_SCAN_MS = 300_000;
 // The scan interval comes from the local rows; the JSON interval also counts member rows, for the board and the phone.
 const scanIntervalMs = (dashboard) => (dashboard?.localRefreshIntervalMs ?? dashboard?.refreshIntervalMs) === 2_000 ? 2_000 : 5_000;
@@ -90,6 +90,7 @@ export class DashboardSnapshot {
     let dashboardWatchRetryTimer = null;
     let dashboardServiceTimer = null;
     let dashboardServiceDueAtMs = Infinity;
+    let dashboardStatusTimer = null;
     let dashboardWatchReconcilePromise = null;
     let dashboardWatchWalkedAtMs = -Infinity;
     let dashboardWatchWalkedPaths = '';
@@ -102,7 +103,7 @@ export class DashboardSnapshot {
     let dashboardWatchEpoch = 0;
     // The last scan decides between rest and work, so a change takes effect at the next scan.
     const fullScanIntervalMs = () => !serviceMode ? 5_000
-      : dashboardWatchCoverage && dashboardCache && scanIntervalMs(dashboardCache.dashboard) !== 2_000 ? SERVICE_REST_SCAN_MS : SERVICE_SAFETY_SCAN_MS;
+      : dashboardWatchCoverage ? SERVICE_REST_SCAN_MS : SERVICE_SAFETY_SCAN_MS;
     const fullScanDue = () => ['codex', 'claude'].some((source) => {
       const age = now() - (dashboardFullScans.get(source)?.atMs ?? -Infinity);
       return age < 0 || age >= fullScanIntervalMs();
@@ -220,7 +221,7 @@ export class DashboardSnapshot {
               const trusted = !force && dashboardWatchCoverage && previous?.epoch === scanEpoch
                 && age >= 0 && age < fullScanIntervalMs() && !files.has('');
               const watched = [...adaptiveWatchers].filter(([, entry]) => entry.spec.source === source);
-              // shortcut: a lost watch event leaves a card late until the next full scan (30 s in service mode while a row works, 5 min at rest), go back to full scans if watch events prove unreliable
+              // shortcut: a lost event on an inactive or new file waits for the 5 min safety scan; active source files are checked every 30 s, go back to full scans if watch events prove unreliable
               sourceScans[source] = trusted ? { canReuse: reuseCheck({ platform: dashboardPlatform, changed: [...files.keys()],
                 directories: watched.map(([root]) => root),
                 recursive: watched.filter(([, entry]) => entry.spec.recursive && !entry.spec.manualRecursive).map(([root]) => root) }) } : null;
@@ -245,6 +246,7 @@ export class DashboardSnapshot {
             if (changed) dashboardRevision += 1;
             listState = { dashboard, revision: dashboardRevision, text };
             dashboardRetryAfterMs = 0;
+            armStatusTimer(dashboard);
             if (generation === dashboardGeneration) dashboardDirty = false;
             if (changed) {
               serverMetrics.dashboardSoftInvalidations += 1;
@@ -491,6 +493,38 @@ export class DashboardSnapshot {
       dashboardWatchRetryTimer.unref?.();
     };
 
+    const armStatusTimer = (dashboard) => {
+      const active = serviceMode && dashboard.threads?.some((row) => !row.remote && !row.archived && ['working', 'waiting'].includes(row.state));
+      if (!active) {
+        if (dashboardStatusTimer) dashboardClearTimeout(dashboardStatusTimer);
+        dashboardStatusTimer = null;
+        return;
+      }
+      if (dashboardStatusTimer || dashboardClosed) return;
+      dashboardStatusTimer = dashboardSetTimeout(async () => {
+        dashboardStatusTimer = null;
+        if (dashboardClosed) return;
+        try {
+          const hints = await dashboardCache?.dashboard.checkSourceStatus?.() || [];
+          for (const { source, filePath, index } of hints) {
+            let files = dashboardSourceHints.get(source);
+            if (!files) dashboardSourceHints.set(source, files = new Map());
+            files.set(filePath, index);
+            dashboardSources[source] = true;
+          }
+          if (hints.length) {
+            dashboardDirty = true;
+            dashboardGeneration += 1;
+            await loadSharedDashboard();
+          }
+        } catch {
+          invalidateDashboard('source-unavailable', { hard: false });
+        }
+        armStatusTimer(dashboardCache?.dashboard || {});
+      }, SERVICE_SAFETY_SCAN_MS);
+      dashboardStatusTimer.unref?.();
+    };
+
     const serviceDelay = (dashboard) => !dashboardWatchCoverage ? scanIntervalMs(dashboard)
       : Math.max(0, dashboardRetryAfterMs - now(), Math.min(...[...dashboardFullScans.values()].map((scan) => scan.atMs + fullScanIntervalMs() - now()),
         Math.max(2_000, Number(dashboard.nextStatusCheckAtMs || Infinity) - now())));
@@ -565,6 +599,7 @@ export class DashboardSnapshot {
           if (dashboardInvalidationTimer) dashboardClearTimeout(dashboardInvalidationTimer);
           if (dashboardWatchRetryTimer) dashboardClearTimeout(dashboardWatchRetryTimer);
           if (dashboardServiceTimer) dashboardClearTimeout(dashboardServiceTimer);
+          if (dashboardStatusTimer) dashboardClearTimeout(dashboardStatusTimer);
           for (const entry of adaptiveWatchers.values()) entry.watcher.close?.();
           adaptiveWatchers.clear();
           for (const client of dashboardEventClients) client.end();

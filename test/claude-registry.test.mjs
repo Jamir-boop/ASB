@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
-import { processStart, readClaudeAppApprovals, readLiveClaudeRegistry } from '../src/claude-registry.mjs';
+import { liveClaudeProcessesChanged, processStart, readClaudeAppApprovals, readLiveClaudeRegistry } from '../src/claude-registry.mjs';
 
 // The Windows registry rules, asked for with the windows option: synthetic records and an injected isAlive, on any OS
 // (test/windows-tests.json).
@@ -14,6 +14,17 @@ const SESSION = '11111111-1111-4111-8111-111111111111';
 const PIPE = `\\\\.\\pipe\\LOCAL\\cc-msg-${'ab'.repeat(16)}`;
 const LIVE = new Set([101, 102, 103, 104, 105, 106, 107, 108, 109]);
 const isAlive = (pid) => LIVE.has(pid);
+
+test('the process-only check detects a dead or reused Linux PID and a removed Windows pipe', async () => {
+  const record = { pid: 101, procStart: '123', messagingSocketPath: PIPE };
+  assert.equal(await liveClaudeProcessesChanged([record], { processStarted: async () => '123' }), false);
+  for (const start of [null, '124']) assert.equal(await liveClaudeProcessesChanged([record], { processStarted: async () => start }), true);
+  const options = { windows: true, isAlive, listPipes: async () => [PIPE.slice(9)] };
+  assert.equal(await liveClaudeProcessesChanged([record], options), false);
+  assert.equal(await liveClaudeProcessesChanged([record], { ...options, listPipes: async () => [] }), true);
+  assert.equal(await liveClaudeProcessesChanged([record], { ...options, isAlive: () => false }), true);
+  assert.equal(await liveClaudeProcessesChanged([record], { ...options, listPipes: async () => { throw new Error('Unavailable'); } }), false);
+});
 
 test('the Windows rules keep a live pipe record with its recorded start and drop everything else', async (t) => {
   const root = mkdtempSync(path.join(tmpdir(), 'asb-registry-'));

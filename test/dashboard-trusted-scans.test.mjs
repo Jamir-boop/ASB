@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
+import { spawn } from 'node:child_process';
+import { processStart } from '../src/claude-registry.mjs';
+import { loadSwitchboardClaudeThreads } from '../src/claude-remote-data.mjs';
 import { promises as fs } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
@@ -35,7 +38,7 @@ async function until(predicate) {
   assert.fail('Expected the snapshot to finish loading.');
 }
 
-async function fixture(t, { codexCount = 3, claudeCount = 3, serviceMode = true, covered = true, statusAfterMs = Infinity, setup = async () => {} } = {}) {
+async function fixture(t, { codexCount = 3, claudeCount = 3, serviceMode = true, covered = true, statusAfterMs = Infinity, loadClaude = loadClaudeDesktopCodeThreads, setup = async () => {} } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'asb-trusted-scans-'));
   const codexDir = path.join(dir, 'codex');
   const appDir = path.join(dir, 'app');
@@ -94,7 +97,7 @@ async function fixture(t, { codexCount = 3, claudeCount = 3, serviceMode = true,
     async loadDashboard({ sourceScans } = {}) {
       if (failLoad) { failLoad = false; throw new Error('Made-up scan failure'); }
       scans.push({ at: clock - start, sourceScans });
-      const dashboard = await loadSwitchboardDashboard({ sources, nowMs: clock, sourceScans, loadClaude: loadClaudeDesktopCodeThreads });
+      const dashboard = await loadSwitchboardDashboard({ sources, nowMs: clock, sourceScans, loadClaude });
       return Number.isFinite(statusAfterMs) ? { ...dashboard, nextStatusCheckAtMs: clock < start + statusAfterMs ? start + statusAfterMs : Infinity } : dashboard;
     },
   });
@@ -198,6 +201,59 @@ test('trusted no-file scans miss an unreported edit only until the service full-
   assert.equal(sessionStats(expiring).length, 9);
 });
 
+test('a lost append of an active rollout is found by the 30 s source check without a full scan', async (t) => {
+  const f = await fixture(t);
+  f.advance(3_000);
+  await f.codexEdit(0);
+  f.emit(f.rollouts[0]);
+  assert.equal((await f.snapshot.loadSharedDashboard()).threads.find((row) => row.id === 'codex-0').state, 'working');
+  await f.codexEdit(0, 'task_complete');
+  f.advance(30_000);
+  f.reset();
+  await f.timers.findLast((timer) => timer.milliseconds === 30_000).callback();
+  assert.equal(f.snapshot.cachedDashboard().threads.find((row) => row.id === 'codex-0').state, 'idle');
+  assert.ok(lastScan(f).codex);
+  assert.deepEqual(stats.filter((file) => f.rollouts.includes(file)), [f.rollouts[0], f.rollouts[0]]);
+});
+
+test('a Waiting rollout with a lost append is checked without a Working row', async (t) => {
+  const f = await fixture(t);
+  f.advance(3_000);
+  await f.codexEdit(0);
+  await fs.appendFile(f.rollouts[0], jsonl({ type: 'response_item', timestamp: '2026-10-25T10:00:03Z', payload: {
+    type: 'function_call', name: 'request_user_input', call_id: 'question', arguments: JSON.stringify({ questions: [{ id: 'one' }] }) } }));
+  f.emit(f.rollouts[0]);
+  assert.equal((await f.snapshot.loadSharedDashboard()).threads.find((row) => row.id === 'codex-0').state, 'waiting');
+  f.advance(1_000);
+  await f.codexEdit(0, 'task_complete');
+  f.advance(29_000);
+  await f.timers.findLast((timer) => timer.milliseconds === 30_000).callback();
+  assert.equal(f.snapshot.cachedDashboard().threads.find((row) => row.id === 'codex-0').state, 'idle');
+});
+
+test('an ended registry process with no file event makes its CLI card leave Working within 30 s', async (t) => {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  t.after(() => child.kill());
+  const start = await processStart(child.pid);
+  const f = await fixture(t, { codexCount: 0, claudeCount: 1, loadClaude: loadSwitchboardClaudeThreads,
+    async setup({ projectsDir, transcripts, metadataFiles, clock }) {
+      await fs.unlink(metadataFiles[0]);
+      await fs.writeFile(transcripts[0], jsonl({ type: 'user', entrypoint: 'cli', timestamp: new Date(clock - 60_000).toISOString(),
+        message: { role: 'user', content: 'Made-up open task' } }));
+      const root = path.join(path.dirname(projectsDir), 'sessions');
+      await fs.mkdir(root, { mode: 0o700 });
+      await fs.writeFile(path.join(root, `${child.pid}.json`), JSON.stringify({ pid: child.pid, procStart: start, name: 'Made-up CLI', sessionId: uuid(0), entrypoint: 'cli' }), { mode: 0o600 });
+    } });
+  assert.equal(f.snapshot.cachedDashboard().threads[0].state, 'working');
+  const ended = once(child, 'exit');
+  child.kill();
+  await ended;
+  f.advance(30_000);
+  await f.timers.findLast((timer) => timer.milliseconds === 30_000).callback();
+  assert.equal(f.snapshot.cachedDashboard().threads[0].state, 'unknown');
+  assert.equal(f.snapshot.cachedDashboard().threads[0].reason, 'The CLI process ended during a task.');
+});
+
 test('unknown hints, coverage loss, hard invalidation, force, and desktop deadlines give full scans', async (t) => {
   const f = await fixture(t);
   f.advance(3_000);
@@ -256,7 +312,7 @@ test('events each second cannot move the full-scan deadline, and rename hints re
     await f.snapshot.loadSharedDashboard();
   }
   const full = f.scans.filter((scan) => scan.at > 0 && scan.sourceScans.codex === null);
-  assert.ok(full.some((scan) => scan.at <= 30_000 && scan.at >= 29_000), 'The full scan must run by 30 seconds despite events.');
+  assert.equal(full.length, 0, 'Working rows keep the 5 minute full-scan deadline.');
   const file = path.join(f.sessions, 'rollout-new.jsonl');
   await fs.writeFile(file, jsonl({ type: 'event_msg', timestamp: '2026-10-25T10:00:40Z', payload: { type: 'task_started' } }));
   const db = new DatabaseSync(f.databasePath);

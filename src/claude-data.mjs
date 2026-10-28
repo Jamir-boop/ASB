@@ -560,10 +560,14 @@ export async function readClaudeSessionFile(filePath, fileStat = null, cacheScop
 
 export async function claudeFileStat(filePath, { fileScan = null, cacheScope = '' } = {}) {
   const cached = claudeFileStatCache.get(filePath, cacheScope);
-  if (cached && fileScan?.canReuse(filePath)) return cached;
+  if (cached && fileScan?.canReuse(filePath)) {
+    fileScan.statusFiles?.set(filePath, cached);
+    return cached;
+  }
   try {
     const stat = await fs.stat(filePath);
     claudeFileStatCache.remember(filePath, stat, cacheScope);
+    fileScan?.statusFiles?.set(filePath, stat);
     return stat;
   } catch (error) {
     claudeFileStatCache.delete(filePath);
@@ -1368,7 +1372,7 @@ export async function loadClaudeDesktopCodeThreads({
   const windows = platform === 'win32';
   // The registry is best effort: a read failure keeps the transcript state.
   const live = await readLiveClaudeRegistryFolder(path.join(path.dirname(projectsDir), 'sessions'), { windows, registryReads }).catch(() => []);
-  const approvals = await readClaudeAppApprovals(appDir, { windows }).catch(() => new Map());
+  const approvals = await readClaudeAppApprovals(appDir, { windows, fileScan }).catch(() => new Map());
   const threads = dedupeClaudeDesktopCodeThreads(parsed
     .filter(Boolean)
     .map((entry) => normalizeClaudeDesktopCodeSession(entry.session, entry, nowMs))

@@ -21,7 +21,7 @@ import { cacheDir, stateDir } from './platform-paths.mjs';
 import { rowReference, shortReference } from './session-references.mjs';
 import { MEMBER_MESSAGE_KEYS } from './machine-peers.mjs';
 import { CLI_SESSION_IDS, bindLocalTarget, bindMemberTarget, memberTarget, notSentMessage, referencesForList, resolveSessionReference } from './session-targets.mjs';
-import { readLiveClaudeRegistry } from './claude-registry.mjs';
+import { readLiveClaudeRegistry, liveClaudeProcessesChanged } from './claude-registry.mjs';
 import { spawn } from 'node:child_process';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -80,11 +80,15 @@ export function switchboardWatchPaths({ homeDir = os.homedir(), appDir = default
       || /^(state_\d+\.sqlite(?:-wal)?|session_index\.jsonl|\.codex-global-state\.json|sessions)$/.test(filename) },
     { path: path.join(codexDir, 'sessions'), source: 'codex', recursive: true,
       acceptEvent: directoryOrFile(/^rollout-.*\.jsonl$/) },
+    { path: path.join(codexDir, 'plugin-state', 'asb-bridge'), source: 'codex', recursive: true, optional: true,
+      acceptEvent: directoryOrFile(/\.sqlite(?:-wal)?$/) },
     // A PC with only Claude Code CLI has no Claude app folder.
     { path: path.join(appDir, 'claude-code-sessions'), source: 'claude', recursive: true, optional: true,
       acceptEvent: directoryOrFile(/^local_.*\.json$/) },
     { path: path.join(appDir, 'Cache', 'Cache_Data'), source: 'claude', optional: true,
       acceptEvent: (filename, event) => isClaudeRemoteCacheEvent(path.join(appDir, 'Cache', 'Cache_Data'), filename, event) },
+    { path: path.join(appDir, 'logs'), source: 'claude', optional: true,
+      acceptEvent: (filename) => !filename || filename === 'main.log' },
     { path: projectsDir, source: 'claude', recursive: true, acceptEvent: directoryOrFile(/\.jsonl$/) },
     { path: path.join(path.dirname(projectsDir), 'sessions'), source: 'claude', optional: true,
       acceptEvent: directoryOrFile(/^[1-9][0-9]*\.json$/) },
@@ -219,7 +223,7 @@ function rowStatusTimes(thread, row) {
     thread.lifecycleRunning === true ? thread.agentActivityAtMs ?? thread.latestLifecycleAtMs : 0,
     thread.provider === 'claude-desktop-code' && thread.lifecycleRunning == null ? thread.transcriptActivityAtMs : 0]
     .map((value) => Number(value || 0) + ACTIVITY_WINDOW_MS + 1)
-    .concat(Number(thread.childEndGraceAtMs || 0) + 1, Number(thread.approvalCheckAtMs || 0) + 1, row.limitResetsAtMs);
+    .concat(Number(thread.childEndGraceAtMs || 0) + 1, Number(thread.approvalCheckAtMs || 0) + 1, Number(thread.cliProcessCheckAtMs || 0) + 1, row.limitResetsAtMs);
 }
 
 // `workingStarts` is the engine's map of row ID -> the row time of the first scan in which the row was Working.
@@ -341,7 +345,14 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
   for (const id of workingStarts.keys()) if (!working.has(id)) workingStarts.delete(id);
   let nextStatusCheckAtMs = Infinity;
   for (const times of statusTimes.values()) for (const value of times) if (value > nowMs && value < nextStatusCheckAtMs) nextStatusCheckAtMs = value;
-  Object.defineProperty(board, 'nextStatusCheckAtMs', { value: nextStatusCheckAtMs });
+  for (const thread of normalizedThreads) {
+    const recentUntil = thread.source === 'claude-cli' ? Number(thread.transcriptActivityAtMs || thread.updatedAtMs || 0) + 7 * 24 * 60 * 60 * 1000 + 1 : 0;
+    if (recentUntil > nowMs) nextStatusCheckAtMs = Math.min(nextStatusCheckAtMs, recentUntil);
+    for (const message of thread.incomingMessages || []) for (const deadline of [message.atMs - 5_000, message.atMs + SESSION_MESSAGE_WINDOW_MS + 1]) {
+      if (deadline > nowMs) nextStatusCheckAtMs = Math.min(nextStatusCheckAtMs, deadline);
+    }
+  }
+  Object.defineProperty(board, 'nextStatusCheckAtMs', { value: nextStatusCheckAtMs, configurable: true });
   board.refreshIntervalMs = switchboardRefreshInterval(board);
   board.messages = resolveSessionMessages(normalizedThreads, board.threads,
     { sinceMs: nowMs - SESSION_MESSAGE_WINDOW_MS, untilMs: nowMs + 5_000 });
@@ -450,6 +461,8 @@ export async function loadSwitchboardDashboard({
   if (sources) retainSourceCaches(inputs);
   // The reads that the loaders of one scan share: the registry folders and the Claude project indexes.
   const registryReads = new Map();
+  const statusFiles = { codex: new Map(), claude: new Map() };
+  const fileScan = (source) => ({ canReuse: () => false, ...sourceScans[source], statusFiles: statusFiles[source] });
   const results = await Promise.allSettled(inputs.map(async (source) => {
     if (!source.enabled) return null;
     let sourceOptions = {};
@@ -471,13 +484,13 @@ export async function loadSwitchboardDashboard({
     }
     if (source.provider === 'opencode') return loadOpenCode({ ...sourceOptions, nowMs, maxCount: 5000 });
     return source.provider === 'codex' ? loadCodex({
-      ...codexOptions, ...sourceOptions, nowMs, fileScan: sourceScans.codex,
+      ...codexOptions, ...sourceOptions, nowMs, fileScan: fileScan('codex'),
       codexNativeReadEnabled: true,
       maxRollouts: 5000,
       rolloutThreadFilter: isSwitchboardRoot,
       initialRolloutBytes: 64 * 1024,
       maxRolloutBytes: 256 * 1024,
-    }) : loadClaude({ ...claudeOptions, ...sourceOptions, nowMs, fileScan: sourceScans.claude, registryReads, maxCount: 5000, strictMetadataRead: true });
+    }) : loadClaude({ ...claudeOptions, ...sourceOptions, nowMs, fileScan: fileScan('claude'), registryReads, maxCount: 5000, strictMetadataRead: true });
   }));
   const providers = results.map((result, index) => {
     const source = inputs[index];
@@ -521,7 +534,27 @@ export async function loadSwitchboardDashboard({
     const [listings, transcripts] = thread.source === 'claude-cli' ? cliCounts.get(thread.externalId) : [];
     return listings > 1 && transcripts !== 1 ? { ...thread, cliSharedSource: true } : thread;
   });
-  return buildSwitchboardDashboard(unique, providers, nowMs, machine, workingStarts, rowCache);
+  const board = buildSwitchboardDashboard(unique, providers, nowMs, machine, workingStarts, rowCache);
+  const active = new Set(board.threads.filter((row) => ['working', 'waiting'].includes(row.state) && !row.archived).map((row) => row.id));
+  const claudeIds = new Set(unique.filter((thread) => active.has(thread.id)).flatMap((thread) =>
+    [thread.cliSessionId, ...(thread.priorCliSessionIds || [])]).filter(Boolean));
+  const rollouts = new Set(unique.filter((thread) => active.has(thread.id)
+    || thread.isSubagent && ['working', 'waiting'].includes(switchboardStatus(thread, nowMs).state)).map((thread) => thread.rolloutPath).filter(Boolean));
+  const files = [...statusFiles.codex].filter(([file]) => rollouts.has(file)).map(([file, info]) => ['codex', file, info])
+    .concat([...statusFiles.claude].filter(([file]) => path.basename(file) === 'main.log' || [...claudeIds].some((id) => path.basename(file, '.jsonl') === id
+      || file.includes(`${path.sep}${id}${path.sep}`))).map(([file, info]) => ['claude', file, info]));
+  Object.defineProperty(board, 'checkSourceStatus', { value: async () => {
+    const hints = [];
+    for (const [source, filePath, previous] of files) {
+      const current = await fs.stat(filePath).catch(() => null);
+      if (!current || current.size !== previous.size || current.mtimeMs !== previous.mtimeMs) hints.push({ source, filePath, index: !current });
+    }
+    for (const { records, windows } of registryReads.liveRecords?.values() || []) {
+      if (await liveClaudeProcessesChanged(records, { windows })) { hints.push({ source: 'claude', filePath: '', index: true }); break; }
+    }
+    return hints;
+  } });
+  return board;
 }
 
 export async function openSwitchboardThread(thread, options = {}) {
@@ -1044,6 +1077,8 @@ export function createSwitchboardServer(options = {}) {
       // Before the merge, the rows are local only: they set the scan interval of this engine.
       const localRefreshIntervalMs = switchboardRefreshInterval(loaded);
       options.machineGroup?.merge(loaded);
+      if (loaded.threads.some((row) => row[OFFLINE_MEMBER])) Object.defineProperty(loaded, 'nextStatusCheckAtMs',
+        { value: Math.min(loaded.nextStatusCheckAtMs || Infinity, Date.now() + 30_000), configurable: true });
       const dashboard = await tracker.observe(loaded, options.machineGroup?.memberIds?.());
       dashboard.sourcesRevision = sources ? appSourcesRevision(sources) : null;
       // The sound baseline keeps the bits of an offline member's rows, so its return plays only what is new.

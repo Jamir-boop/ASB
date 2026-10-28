@@ -384,22 +384,44 @@ async function serviceFixture(t, { covered = true, dashboard = () => ({ threads:
 
 const workingDashboard = () => ({ threads: [{ id: 'local', state: 'working' }], refreshIntervalMs: 2_000 });
 
-test('service mode with full watch coverage scans on a change, a status expiry, or the 30 s safety scan', async (t) => {
+test('service mode with full watch coverage scans on a change, a status expiry, or the 5 min safety scan', async (t) => {
   const quiet = await serviceFixture(t, { dashboard: workingDashboard });
+  await quiet.run(240_000);
+  assert.deepEqual(quiet.scans, [0]);
   await quiet.run(60_000);
-  assert.deepEqual(quiet.scans, [0, 30_000, 60_000]);
+  assert.deepEqual(quiet.scans, [0, 300_000]);
   // A watch event gives one follow-up scan.
   quiet.watches.at(-1)('change', 'state_5.sqlite-wal');
   await quiet.run(5_000);
-  assert.deepEqual(quiet.scans, [0, 30_000, 60_000, 62_000]);
+  assert.deepEqual(quiet.scans, [0, 300_000, 302_000]);
   // A peer change writes no file: it gets the same one follow-up scan, also with no reader.
   quiet.snapshot.invalidateDashboard('peer-sessions', { hard: false });
   await quiet.run(5_000);
-  assert.deepEqual(quiet.scans, [0, 30_000, 60_000, 62_000, 65_250]);
+  assert.deepEqual(quiet.scans, [0, 300_000, 302_000, 305_250]);
 
   const expiring = await serviceFixture(t, { dashboard: (now) => Object.defineProperty(workingDashboard(), 'nextStatusCheckAtMs', { value: now + 7_000 }) });
   await expiring.run(8_000);
   assert.deepEqual(expiring.scans, [0, 7_000]);
+});
+
+test('the 30 s active check starts a scan only for changed local Working or Waiting sources', async (t) => {
+  for (const state of ['working', 'waiting']) {
+    let changed = false, checks = 0;
+    const f = await serviceFixture(t, { dashboard: () => Object.defineProperty({ threads: [{ id: 'local', state }], refreshIntervalMs: 2_000 },
+      'checkSourceStatus', { value: async () => { checks += 1; return changed ? [{ source: 'codex', filePath: '/made-up/rollout.jsonl', index: false }] : []; } }) });
+    await f.run(29_999);
+    assert.equal(checks, 0);
+    changed = true;
+    await f.run(1);
+    assert.equal(checks, 1);
+    assert.deepEqual(f.scans, [0, 30_000]);
+  }
+  let checks = 0;
+  const idle = await serviceFixture(t, { dashboard: () => Object.defineProperty({ threads: [{ state: 'idle' }, { state: 'working', remote: true }], refreshIntervalMs: 5_000 },
+    'checkSourceStatus', { value: async () => { checks += 1; return []; } }) });
+  await idle.run(240_000);
+  assert.equal(checks, 0);
+  assert.deepEqual(idle.scans, [0]);
 });
 
 test('service mode without full watch coverage keeps the 2 s scans of a Working row', async (t) => {

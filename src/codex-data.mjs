@@ -962,6 +962,7 @@ export async function readRolloutSignals(
     const reuse = cached && !cached.invalidated && fileScan?.canReuse(rolloutPath);
     if (cached && !reuse) cached.invalidated = true;
     const stat = reuse ? cached.signature : await fs.stat(rolloutPath);
+    fileScan?.statusFiles?.set(rolloutPath, stat);
     const signature = statSignature(stat);
     if (cached && sameFileSignature(cached.signature, signature)) {
       cached.invalidated = false;

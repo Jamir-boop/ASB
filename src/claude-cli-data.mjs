@@ -80,8 +80,9 @@ export async function loadClaudeCliThreads({ projectsDir = DEFAULT_CLAUDE_PROJEC
     }, nowMs);
     const row = applyLiveClaudeStatus(thread, live, nowMs);
     // An open task with no live process of the session (of any entrypoint) means that the process ended during the task.
-    return registry && row.lifecycleRunning === true && !liveClaudeRecord(row, registry)
-      && nowMs - Number(row.transcriptActivityAtMs || 0) > PROCESS_START_GRACE_MS ? { ...row, cliProcessEnded: true } : row;
+    if (!registry || row.lifecycleRunning !== true || liveClaudeRecord(row, registry)) return row;
+    const deadline = Number(row.transcriptActivityAtMs || 0) + PROCESS_START_GRACE_MS;
+    return nowMs > deadline ? { ...row, cliProcessEnded: true } : { ...row, cliProcessCheckAtMs: deadline };
   });
   return { threads };
 }

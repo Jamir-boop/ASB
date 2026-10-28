@@ -54,7 +54,22 @@ export async function readLiveClaudeRegistryFolder(root, { windows = false, regi
   const real = await fs.realpath(root);
   const key = JSON.stringify([real, windows]);
   if (!registryReads.has(key)) registryReads.set(key, readLiveClaudeRegistry([real], { windows }));
-  return registryReads.get(key);
+  const records = await registryReads.get(key);
+  (registryReads.liveRecords ||= new Map()).set(key, { records, windows });
+  return records;
+}
+
+// The same PID and pipe rules as the registry reader, without reading its files.
+export async function liveClaudeProcessesChanged(records, { windows = false, isAlive = pidAlive,
+  processStarted = processStart, listPipes = () => fs.readdir('\\\\.\\pipe\\') } = {}) {
+  const pipes = windows ? await listPipes().then((names) => new Set(names.map((name) => name.toLowerCase())), () => null) : null;
+  for (const record of records) {
+    if (!windows) {
+      if (await processStarted(record.pid) !== record.procStart) return true;
+    } else if (!isAlive(record.pid) || (pipes && PEER_PIPE.test(record.messagingSocketPath || '')
+      && !pipes.has(record.messagingSocketPath.slice('\\\\.\\pipe\\'.length).toLowerCase()))) return true;
+  }
+  return false;
 }
 
 // Returns verified live records only: owned files whose process is alive with the recorded start time.
@@ -130,13 +145,14 @@ const abortedApproval = new RegExp(`^${LOG_TIME}Permission request (${UUID}) for
 const quitApprovals = new RegExp(`^${LOG_TIME}willQuit: handler fired`);
 
 // shortcut: Requests older than the read window or open across a log rotation are not seen; upgrade when the app writes open approvals to a state file.
-export async function readClaudeAppApprovals(appDir, { windows = process.platform === 'win32' } = {}) {
+export async function readClaudeAppApprovals(appDir, { windows = process.platform === 'win32', fileScan = null } = {}) {
   const file = path.join(appDir, 'logs', 'main.log');
   let handle;
   try {
     handle = await fs.open(file, windows ? 'r' : constants.O_RDONLY | constants.O_NONBLOCK);
     const info = await handle.stat();
     if (!info.isFile()) return new Map();
+    fileScan?.statusFiles?.set(file, info);
     let state = approvalLogs.get(file);
     if (!state || state.dev !== info.dev || state.ino !== info.ino || info.size < state.offset
       || info.size - state.offset > 4 * APPROVAL_WINDOW_BYTES) {

@@ -428,7 +428,7 @@ test('a status expiry with no file event sends one dashboard event for the chang
   assert.deepEqual([s.loads(), s.events(), s.snapshot.revision()], [2, 2, 2]);
 });
 
-test('the service safety scan runs every 5 minutes at rest and every 30 s while a local row works', async (t) => {
+test('the service safety scan runs every 5 minutes at rest and while a local row works', async (t) => {
   let working = false;
   const s = await serviceSnapshot(t, (clock) => ({ generatedAtMs: clock.now(), providers: [],
     threads: [{ id: 'one', state: working ? 'working' : 'idle' }], refreshIntervalMs: working ? 2_000 : 5_000 }));
@@ -436,24 +436,14 @@ test('the service safety scan runs every 5 minutes at rest and every 30 s while 
   assert.equal(s.loads(), 1);
   await s.clock.advance(1);
   assert.equal(s.loads(), 2);
-  // A file event scan sees the work: the next safety scan is due 30 s after the last full scan, not at the 5 min timer.
+  // A file event scan sees the work; the safety scan stays 5 minutes after the last full scan.
   working = true;
   s.change();
   await s.clock.advance(250);
   await until(() => s.loads() === 3);
   await settle();
-  await s.clock.advance(29_749);
+  await s.clock.advance(299_749);
   assert.equal(s.loads(), 3);
   await s.clock.advance(1);
   assert.equal(s.loads(), 4);
-  await s.clock.advance(30_000);
-  assert.equal(s.loads(), 5);
-  // Back at rest: 5 minutes again.
-  working = false;
-  await s.clock.advance(30_000);
-  assert.equal(s.loads(), 6);
-  await s.clock.advance(299_999);
-  assert.equal(s.loads(), 6);
-  await s.clock.advance(1);
-  assert.equal(s.loads(), 7);
 });
