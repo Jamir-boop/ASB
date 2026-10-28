@@ -99,8 +99,13 @@ export async function followEngine(service, { env = process.env, platform = proc
   }, alive = (pid) => process.kill(pid, 0), sleep = (delay) => new Promise((resolve) => setTimeout(resolve, delay)), now = Date.now,
   version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version,
   root = fileURLToPath(new URL('..', import.meta.url)) } = {}) {
-  try { alive(service.pid); return { state: 'alive' }; }
-  catch (error) { if (error.code !== 'ESRCH') return { state: 'alive' }; }
+  // A stopping engine closes its streams first and saves its state after that: its PID can live on for a second or more.
+  for (const end = now() + 5_000; ;) {
+    try { alive(service.pid); }
+    catch (error) { if (error.code === 'ESRCH') break; }
+    if (now() >= end) return { state: 'alive' };
+    await sleep(100);
+  }
   const quit = await marker();
   if (quit?.token === createHash('sha256').update(service.token).digest('hex')) return { state: 'quit' };
   const deadline = now() + 20_000;

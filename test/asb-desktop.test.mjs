@@ -555,12 +555,38 @@ async function followed(options = {}) {
   return { result, finds, sleeps };
 }
 const moved = { state: 'moved', url: `http://127.0.0.1:${b.port}`, token: b.sourceToken, pid: b.pid };
-for (const code of ['', 'EPERM']) test(`follow mode says alive while the old engine PID runs (${code || 'alive'})`, async () => {
+// A PID that ends at a time of a fake clock; the clock moves only in the sleeps of follow mode.
+let clockOf;
+const endsAfter = (ms) => () => { if (clockOf() >= ms) throw Object.assign(new Error('gone'), { code: 'ESRCH' }); };
+async function followedWithClock(options) {
+  let clock = 0;
+  clockOf = () => clock;
+  const sleeps = [];
+  return followed({ sleep: async (delay) => { sleeps.push(delay); clock += delay; }, now: () => clock, ...options });
+}
+for (const code of ['', 'EPERM']) test(`follow mode says alive while the old engine PID runs for 5 s (${code || 'alive'})`, async () => {
   const checked = [];
-  const { result, finds } = await followed({ alive: (pid) => { checked.push(pid); if (code) throw Object.assign(new Error(code), { code }); },
+  const { result, finds, sleeps } = await followed({ alive: (pid) => { checked.push(pid); if (code) throw Object.assign(new Error(code), { code }); },
     marker: async () => assert.fail('A live engine needs no quit marker.') });
   assert.deepEqual(result, { state: 'alive' });
-  assert.deepEqual(checked, [a.pid]);
+  // A check each 100 ms from 0 to 5 s.
+  assert.equal(checked.length, 51);
+  assert.ok(checked.every((pid) => pid === a.pid));
+  assert.ok(sleeps.every((delay) => delay === 100));
+  assert.equal(finds, 0);
+});
+test('follow mode follows an engine whose old PID ends 300 ms after its stream', async () => {
+  const { result } = await followedWithClock({ alive: endsAfter(300) });
+  assert.deepEqual(result, moved);
+});
+test('follow mode says quit for the quit marker of an engine whose old PID ends 300 ms after its stream', async () => {
+  const { result, finds } = await followedWithClock({ alive: endsAfter(300), marker: async () => ({ schema: 1, token: hash(a.sourceToken) }) });
+  assert.deepEqual(result, { state: 'quit' });
+  assert.equal(finds, 0);
+});
+test('follow mode says alive for a PID that ends only after 5 s', async () => {
+  const { result, finds } = await followedWithClock({ alive: endsAfter(5_100) });
+  assert.deepEqual(result, { state: 'alive' });
   assert.equal(finds, 0);
 });
 // Only the token names the engine run: a PID in the marker does not change the result.

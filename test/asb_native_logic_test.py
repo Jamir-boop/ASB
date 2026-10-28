@@ -8254,8 +8254,8 @@ class BoardStartChecks(unittest.TestCase):
                 self.assertEqual(values[3], node if isinstance(node, str) and node else None)
 
     class Helper:
-        """A fake subprocess.Popen for the follow helper: it keeps each call and its stdin, and gives output as its stdout.
-        A release event holds the stdout read until it is set or the process is killed."""
+        """A fake subprocess.Popen for the follow helper: it keeps each call and its stdin, and gives output as its stdout (a list
+        gives one item per call). A release event holds the stdout read until it is set or the process is killed."""
         def __init__(self, output=b'{"state":"alive"}\n', code=0, release=None):
             self.output, self.code, self.release = output, code, release
             self.calls, self.inputs, self.kills = [], [], 0
@@ -8263,6 +8263,7 @@ class BoardStartChecks(unittest.TestCase):
         def __call__(self, args, **kwargs):
             helper, written = self, io.BytesIO()
             self.calls.append((args, kwargs))
+            output = self.output.pop(0) if isinstance(self.output, list) else self.output
             class Output(io.BytesIO):
                 def read(self, size=-1):
                     if helper.release:
@@ -8271,7 +8272,7 @@ class BoardStartChecks(unittest.TestCase):
             class Process:
                 returncode = None
                 stdin = SimpleNamespace(write=written.write, close=lambda: self.inputs.append(json.loads(written.getvalue())))
-                stdout = Output(self.output)
+                stdout = Output(output)
                 def wait(process):
                     process.returncode = helper.code
                 def kill(process):
@@ -8342,6 +8343,53 @@ class BoardStartChecks(unittest.TestCase):
         start.lost()
         self.wait_follow(start, helper, 2)
 
+    def test_after_an_alive_answer_the_next_connected_stream_runs_the_helper_again_and_follows_the_new_engine(self):
+        # A stopping engine can live on after it closed its streams; the stream then finds the new engine on the same port.
+        helper = self.Helper([b'{"state":"alive"}\n', b'{"state":"moved","url":"http://127.0.0.1:4629","token":"new-token","pid":5151}\n'])
+        start, got = self.follow(helper)
+        start.connected()
+        start.lost()
+        self.wait_follow(start, helper, 1)
+        self.assertEqual(got, [])
+        start.connected()
+        self.wait_follow(start, helper, 2)
+        self.assertEqual(helper.inputs, [{"pid": 4242, "token": self.TOKEN}] * 2)
+        self.assertEqual(got, [("reconnect", "http://127.0.0.1:4629", "new-token")])
+        self.assertEqual((start.pid, start.token), (5151, "new-token"))
+        start.connected()
+        time.sleep(.05)
+        self.assertEqual(len(helper.calls), 2)
+
+    def test_an_alive_answer_after_the_connected_stream_runs_no_further_helper_until_the_next_loss(self):
+        helper = self.Helper([b'{"state":"alive"}\n'] * 3)
+        start, got = self.follow(helper)
+        start.lost()
+        self.wait_follow(start, helper, 1)
+        start.connected()
+        self.wait_follow(start, helper, 2)
+        start.connected()
+        start.lost()
+        time.sleep(.05)
+        self.assertEqual(len(helper.calls), 2)
+        self.assertEqual(got, [])
+        # The next loss after the 30 s wait runs it again.
+        start.follow_after -= 31
+        start.lost()
+        self.wait_follow(start, helper, 3)
+
+    def test_a_stream_that_connects_while_the_helper_runs_gets_a_second_run_after_an_alive_answer(self):
+        release = threading.Event()
+        helper = self.Helper([b'{"state":"alive"}\n', b'{"state":"quit"}\n'], release=release)
+        start, got = self.follow(helper)
+        start.lost()
+        deadline = time.monotonic() + 5
+        while not helper.calls and time.monotonic() < deadline:
+            time.sleep(.01)
+        start.connected()
+        release.set()
+        self.wait_follow(start, helper, 2)
+        self.assertEqual(got, [("close",)])
+
     def test_a_helper_failure_writes_one_stderr_line_and_keeps_the_stream(self):
         for name, helper in (("no line", self.Helper(b"")), ("bad line", self.Helper(b'{"state":"moved","url":"http://example.com:1","token":"t","pid":5}')),
                              ("two lines", self.Helper(b'{"state":"quit"}\n{"state":"quit"}\n')),
@@ -8385,6 +8433,32 @@ class BoardStartChecks(unittest.TestCase):
         time.sleep(.05)
         self.assertEqual(helper.calls, [])
         self.assertFalse(start.following)
+
+    def test_the_event_stream_reports_each_connected_event_and_the_end_of_the_stream(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        class Engine(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(b'event: connected\ndata: {}\n\n')
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Engine)
+        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .01}, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        events, done = [], threading.Event()
+        def lost():
+            events.append("lost")
+            done.set()
+        stream = SCOPE["EventStream"](f"http://127.0.0.1:{server.server_port}", Mock(), lambda callback, *args: callback(*args),
+                                      on_lost=lost, on_found=lambda: events.append("found"))
+        self.assertTrue(done.wait(5))
+        stream.close()
+        stream.worker.join(6)
+        self.assertEqual(events[:2], ["found", "lost"])
 
     def test_the_event_stream_reports_a_failed_connect_as_a_lost_engine(self):
         lost = threading.Event()

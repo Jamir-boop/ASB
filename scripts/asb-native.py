@@ -1890,6 +1890,8 @@ class LauncherStart:
         # The engine PID and the Node path of a launcher that exits after the start; the board then follows a restarted engine itself.
         self.pid = self.node = self.token = self.close_target = None
         self.following, self.follow_after = False, 0.0
+        # After an "alive" answer, the next connected stream asks again: a stopping engine can live on after it closed its streams.
+        self.recheck = self.connected_during_follow = False
         self.worker = threading.Thread(target=self.run, daemon=True)
         self.worker.start()
 
@@ -1933,11 +1935,26 @@ class LauncherStart:
         with self.lock:
             if not self.pid or not self.node or self.following or time.monotonic() < self.follow_after:
                 return
-            self.following = True
-            request = json.dumps({"pid": self.pid, "token": self.token})
-        threading.Thread(target=self.follow, args=(request,), daemon=True).start()
+            self.recheck = False
+            self.start_follow(False)
 
-    def follow(self, request):
+    def connected(self):
+        """The event stream of the board connected. After an "alive" answer, the stream may have found a new engine on the same port:
+        the helper runs once more, with no 30 s wait."""
+        with self.lock:
+            if self.following:
+                self.connected_during_follow = True
+            elif self.recheck:
+                self.recheck = False
+                self.start_follow(True)
+
+    def start_follow(self, recheck):
+        """Starts one helper run; the caller holds the lock."""
+        self.following, self.connected_during_follow = True, False
+        request = json.dumps({"pid": self.pid, "token": self.token})
+        threading.Thread(target=self.follow, args=(request, recheck), daemon=True).start()
+
+    def follow(self, request, recheck=False):
         try:
             state, base, token, pid = follow_reply(follow_engine(self.node, request))
         except (OSError, ValueError) as error:
@@ -1951,9 +1968,13 @@ class LauncherStart:
             elif state == "quit" and self.close_target:
                 close, dispatch = self.close_target
                 dispatch(close)
-            elif state != "quit":
+            elif state != "quit" and not recheck:
                 # The stream tries again each 5 s by itself.
                 self.follow_after = time.monotonic() + 30
+                if state == "alive" and self.connected_during_follow:
+                    self.start_follow(True)
+                elif state == "alive":
+                    self.recheck = True
 
     def run(self):
         global SOURCE_TOKEN
@@ -2317,11 +2338,11 @@ def import_usage_file(base, path):
 
 
 class EventStream:
-    def __init__(self, base, callback, dispatch, on_show_window=None, on_connected=None, ui_client=None, on_lost=None):
+    def __init__(self, base, callback, dispatch, on_show_window=None, on_connected=None, ui_client=None, on_lost=None, on_found=None):
         self.address = urlsplit(base)
         self.callback, self.dispatch, self.on_show_window, self.on_connected = callback, dispatch, on_show_window, on_connected
-        # Called in the stream thread when the stream cannot connect or ends.
-        self.on_lost = on_lost
+        # Called in the stream thread when the stream cannot connect or ends, and at each `connected` event of the engine.
+        self.on_lost, self.on_found = on_lost, on_found
         # The engine keeps this UI client while the stream is open.
         self.path = "/api/events" + (f"?ui={quote(ui_client)}" if ui_client else "")
         # True from the `connected` event of the engine to the end of the stream: each list change then comes as an event.
@@ -2371,6 +2392,8 @@ class EventStream:
                                 self.connected = True
                                 if self.on_connected:
                                     self.dispatch(self.on_connected)
+                                if self.on_found:
+                                    self.on_found()
                             elif event == "dashboard" and data:
                                 value = json.loads("\n".join(data))
                                 if isinstance(value, dict) and value.get("reason") != "connected":
@@ -5246,10 +5269,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 style.connect("notify::" + name, lambda *_args: GLib.idle_add(self.follow_system_style))
         self.connect("realize", self.watch_layout)
         self.timer = GLib.timeout_add(self.refresh_interval_ms, self.tick)
-        # The board stream tells the launcher start when the engine goes away.
-        self.engine_lost = application.launcher.lost if application.launcher else None
+        # The board stream tells the launcher start when the engine goes away and when the stream connects.
+        launcher = application.launcher
+        self.engine_lost, self.engine_found = (launcher.lost, launcher.connected) if launcher else (None, None)
         self.events = EventStream(self.base, self.source_changed, GLib.idle_add, self.show_window_event,
-                                  on_connected=self.source_changed, ui_client=self.ui_client_id, on_lost=self.engine_lost)
+                                  on_connected=self.source_changed, ui_client=self.ui_client_id, on_lost=self.engine_lost,
+                                  on_found=self.engine_found)
         if initial_dashboard is not None:
             self.apply_dashboard(initial_dashboard, None)
         elif first_load:
@@ -5273,7 +5298,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     editor.base = base
         self.events.close()
         self.events = EventStream(base, self.source_changed, GLib.idle_add, self.show_window_event,
-                                  on_connected=self.source_changed, ui_client=self.ui_client_id, on_lost=self.engine_lost)
+                                  on_connected=self.source_changed, ui_client=self.ui_client_id, on_lost=self.engine_lost,
+                                  on_found=self.engine_found)
         self.dashboard_etag = None
         self.ui_report_last = None
         self.ui_report_sending = False
