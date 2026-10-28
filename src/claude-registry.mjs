@@ -43,6 +43,14 @@ async function readRecord(file, windows = false) {
   } catch { return null; } finally { await handle.close(); }
 }
 
+export async function readLiveClaudeRegistryFolder(root, { windows = false, registryReads = null } = {}) {
+  if (!registryReads) return readLiveClaudeRegistry([root], { windows });
+  const real = await fs.realpath(root);
+  const key = JSON.stringify([real, windows]);
+  if (!registryReads.has(key)) registryReads.set(key, readLiveClaudeRegistry([real], { windows }));
+  return registryReads.get(key);
+}
+
 // Returns verified live records only: owned files whose process is alive with the recorded start time.
 // The Windows rules run only for a caller that asks for them.
 // The engine runs on Node with no FFI, so on Windows it checks the PID and, for a record with a message pipe, that the pipe exists.

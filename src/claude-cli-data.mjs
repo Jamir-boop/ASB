@@ -4,18 +4,18 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { applyLiveClaudeStatus, baseClaudeThread, claudeTitle, currentClaudeRoot, DEFAULT_CLAUDE_PROJECTS_DIR, DEFAULT_MAX_JSONL_BYTES,
   indexClaudeProjectFiles, liveClaudeRecord, mapWithConcurrency, projectNameFromCwd, readClaudeRootSignals, SIGNAL_CONCURRENCY } from './claude-data.mjs';
-import { readLiveClaudeRegistry } from './claude-registry.mjs';
+import { readLiveClaudeRegistryFolder } from './claude-registry.mjs';
 
 const RECENT_MS = 7 * 24 * 60 * 60 * 1000;
 // A new or switched session writes its transcript a moment before its registry record names it, so a turn this recent does not show that the process ended.
 const PROCESS_START_GRACE_MS = 10_000;
 
 export async function loadClaudeCliThreads({ projectsDir = DEFAULT_CLAUDE_PROJECTS_DIR, desktopSessionIds = new Set(), nowMs = Date.now(),
-  maxCount = 500, maxBytes = DEFAULT_MAX_JSONL_BYTES, cacheScope = '', platform = process.platform } = {}) {
+  maxCount = 500, maxBytes = DEFAULT_MAX_JSONL_BYTES, cacheScope = '', platform = process.platform, registryReads = null } = {}) {
   const registryDir = path.join(path.dirname(projectsDir), 'sessions');
   // `registry` is null when no registry shows which processes live: an old CLI has no folder, macOS has no reader, and a read can fail.
   const registry = (platform === 'linux' || platform === 'win32') && await fs.stat(registryDir).then((info) => info.isDirectory(), () => false)
-    ? await readLiveClaudeRegistry([registryDir], { windows: platform === 'win32' }).catch(() => null) : null;
+    ? await readLiveClaudeRegistryFolder(registryDir, { windows: platform === 'win32', registryReads }).catch(() => null) : null;
   const live = (registry || []).filter((record) => record.entrypoint === 'cli');
   const liveById = new Map(live.map((record) => [record.sessionId, record]));
   const projectIndex = await indexClaudeProjectFiles(projectsDir)

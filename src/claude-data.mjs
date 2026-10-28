@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { rememberBounded, sameFileSignature, SourceCache, statSignature } from './data-cache.mjs';
 import { enrichThreadRuntime } from './insights.mjs';
-import { readClaudeAppApprovals, readLiveClaudeRegistry } from './claude-registry.mjs';
+import { readClaudeAppApprovals, readLiveClaudeRegistryFolder } from './claude-registry.mjs';
 import { openCommandForUrl, runOpener } from './session-opener.mjs';
 
 export const DEFAULT_CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
@@ -1333,6 +1333,7 @@ export async function loadClaudeDesktopCodeThreads({
   cacheScope = '',
   fileScan = null,
   platform = process.platform,
+  registryReads = null,
 } = {}) {
   const root = path.join(appDir, 'claude-code-sessions');
   if (strictMetadataRead) await fs.stat(root);
@@ -1359,7 +1360,7 @@ export async function loadClaudeDesktopCodeThreads({
   });
   const windows = platform === 'win32';
   // The registry is best effort: a read failure keeps the transcript state.
-  const live = await readLiveClaudeRegistry([path.join(path.dirname(projectsDir), 'sessions')], { windows }).catch(() => []);
+  const live = await readLiveClaudeRegistryFolder(path.join(path.dirname(projectsDir), 'sessions'), { windows, registryReads }).catch(() => []);
   const approvals = await readClaudeAppApprovals(appDir, { windows }).catch(() => new Map());
   const threads = dedupeClaudeDesktopCodeThreads(parsed
     .filter(Boolean)

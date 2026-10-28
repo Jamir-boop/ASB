@@ -385,6 +385,7 @@ export async function loadSwitchboardDashboard({
     { id: 'claude-desktop-code', provider: 'claude-desktop-code', label: 'Claude Desktop Code', enabled: true },
   ];
   if (sources) retainSourceCaches(inputs);
+  const registryReads = new Map();
   const results = await Promise.allSettled(inputs.map(async (source) => {
     if (!source.enabled) return null;
     let sourceOptions = {};
@@ -412,7 +413,7 @@ export async function loadSwitchboardDashboard({
       rolloutThreadFilter: isSwitchboardRoot,
       initialRolloutBytes: 64 * 1024,
       maxRolloutBytes: 256 * 1024,
-    }) : loadClaude({ ...claudeOptions, ...sourceOptions, nowMs, fileScan: sourceScans.claude, maxCount: 5000, strictMetadataRead: true });
+    }) : loadClaude({ ...claudeOptions, ...sourceOptions, nowMs, fileScan: sourceScans.claude, registryReads, maxCount: 5000, strictMetadataRead: true });
   }));
   const providers = results.map((result, index) => {
     const source = inputs[index];

@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { promises as fsPromises } from 'node:fs';
-import { appendFile, chmod, mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdtemp, mkdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { loadClaudeCliThreads } from '../src/claude-cli-data.mjs';
 import { loadClaudeDesktopCodeThreads } from '../src/claude-data.mjs';
 import { loadSwitchboardClaudeThreads } from '../src/claude-remote-data.mjs';
 import { processStart } from '../src/claude-registry.mjs';
-import { buildSwitchboardDashboard } from '../src/switchboard.mjs';
+import { buildSwitchboardDashboard, loadSwitchboardDashboard } from '../src/switchboard.mjs';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const jsonl = (records) => `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
@@ -306,4 +306,36 @@ test('a Claude CLI registry that cannot be read does not end the open tasks', { 
     const [row] = (await loadClaudeCliThreads({ projectsDir, nowMs })).threads;
     assert.deepEqual([row.externalId, buildSwitchboardDashboard([row], [], nowMs).threads[0].state], ['open', 'working']);
   } finally { await chmod(path.join(home, 'sessions'), 0o700); }
+});
+
+
+test('a dashboard scan shares each real live registry folder across Claude sources and loaders', { skip: process.platform !== 'linux' }, async (t) => {
+  const nowMs = Date.now();
+  const first = await configHome(t);
+  const second = await configHome(t);
+  const registryDir = path.join(first.home, 'sessions');
+  await rm(path.join(second.home, 'sessions'), { recursive: true });
+  await symlink(registryDir, path.join(second.home, 'sessions'));
+  await record(first.home, process.pid, { sessionId: 'shared-cli', name: 'Shared CLI' });
+  const sources = await Promise.all([first, second].map(async ({ home, projectsDir }, index) => {
+    const appDir = path.join(home, 'app');
+    await mkdir(path.join(appDir, 'claude-code-sessions'), { recursive: true });
+    return { id: `synthetic-${index}`, provider: 'claude-desktop-code', label: `Synthetic ${index}`, enabled: true,
+      dataDir: appDir, projectsDir, builtin: true };
+  }));
+  const readdir = fsPromises.readdir;
+  let reads = 0;
+  t.mock.method(fsPromises, 'readdir', async (directory, ...args) => {
+    if (directory === registryDir) {
+      reads += 1;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    return readdir(directory, ...args);
+  });
+  for (const expected of [1, 2]) {
+    const dashboard = await loadSwitchboardDashboard({ sources, nowMs });
+    assert.equal(reads, expected);
+    assert.deepEqual(dashboard.threads.map((row) => [row.externalId, row.title, row.surface, row.state]),
+      [['shared-cli', 'Shared CLI', 'cli', 'idle']]);
+  }
 });
