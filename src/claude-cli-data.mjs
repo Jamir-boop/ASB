@@ -1,6 +1,5 @@
 // Claude Code CLI sessions: running sessions from the live registry, plus CLI transcripts with activity in the last 7 days.
 // They are view-only cards. Titles come from the registry name or the title records, never from prompt text.
-import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { applyLiveClaudeStatus, baseClaudeThread, claudeFileStat, claudeTitle, currentClaudeRoot, DEFAULT_CLAUDE_PROJECTS_DIR, DEFAULT_MAX_JSONL_BYTES,
   indexClaudeProjectFiles, liveClaudeRecord, mapWithConcurrency, projectNameFromCwd, readClaudeRootSignals, SIGNAL_CONCURRENCY } from './claude-data.mjs';
@@ -14,8 +13,8 @@ export async function loadClaudeCliThreads({ projectsDir = DEFAULT_CLAUDE_PROJEC
   maxCount = 500, maxBytes = DEFAULT_MAX_JSONL_BYTES, cacheScope = '', platform = process.platform, registryReads = null, fileScan = null } = {}) {
   const registryDir = path.join(path.dirname(projectsDir), 'sessions');
   // `registry` is null when no registry shows which processes live: an old CLI has no folder, macOS has no reader, and a read can fail.
-  const registry = (platform === 'linux' || platform === 'win32') && await fs.stat(registryDir).then((info) => info.isDirectory(), () => false)
-    ? await readLiveClaudeRegistryFolder(registryDir, { windows: platform === 'win32', registryReads }).catch(() => null) : null;
+  const registry = platform === 'linux' || platform === 'win32'
+    ? await readLiveClaudeRegistryFolder(registryDir, { windows: platform === 'win32', registryReads, fileScan }).catch(() => null) : null;
   const live = (registry || []).filter((record) => record.entrypoint === 'cli');
   const liveById = new Map(live.map((record) => [record.sessionId, record]));
   const projectIndex = await indexClaudeProjectFiles(projectsDir, { fileScan, cacheScope, scanReads: registryReads })

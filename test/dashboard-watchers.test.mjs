@@ -339,6 +339,33 @@ test('real linux watches follow a new directory, a file written into it at once,
   await until(dirty);
 });
 
+test('60 scans reuse list text only for equal ordered list fields', async (t) => {
+  let value = { generatedAtMs: 1, threads: [{ id: 'a', state: 'working' }, { id: 'b', state: 'idle' }],
+    providers: [{ id: 'codex', status: 'ready' }], summary: { total: 2 }, refreshIntervalMs: 2_000 };
+  const stringify = JSON.stringify;
+  let texts = 0;
+  t.mock.method(JSON, 'stringify', (input, ...args) => { if (input?.threads && input?.summary) texts += 1; return stringify(input, ...args); });
+  const snapshot = new DashboardSnapshot({ loadDashboard: async () => value });
+  for (let scan = 0; scan < 60; scan += 1) {
+    const before = texts;
+    const same = scan % 6 === 1;
+    // Each scan builds new row objects, as the engine's row cache does.
+    value = structuredClone(value);
+    if (!same) {
+      if (scan % 6 === 2) value = { ...value, threads: [...value.threads].reverse() };
+      if (scan % 6 === 3) value = { ...value, summary: { total: scan } };
+      if (scan % 6 === 4) value = { ...value, providers: [{ id: 'codex', status: scan % 12 ? 'ready' : 'warning' }] };
+      if (scan % 6 === 5) value = { ...value, refreshIntervalMs: scan % 12 ? 5_000 : 2_000 };
+      if (scan % 6 === 0) value = { ...value, threads: value.threads.map((row, index) => index ? row : { ...row, title: `Made-up ${scan}` }) };
+    }
+    value = { ...value, generatedAtMs: scan + 1, performance: { scan } };
+    const dashboard = await snapshot.loadSharedDashboard({ force: true });
+    const { generatedAtMs, performance, ...fields } = dashboard;
+    assert.equal(snapshot.listText(dashboard), stringify({ ...fields, summary: { ...fields.summary } }));
+    if (same) assert.equal(texts, before, 'An unchanged scan must not stringify the list.');
+  }
+});
+
 // A service-mode snapshot with fake timers on a fake clock; run(ms) fires the due timers in time order.
 async function serviceFixture(t, { covered = true, dashboard = () => ({ threads: [], refreshIntervalMs: 2_000 }) } = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'asb-service-scan-'));

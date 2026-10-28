@@ -18,7 +18,8 @@ import { loadSwitchboardDashboard, switchboardWatchPaths } from '../src/switchbo
 let countedRoot = '\0';
 const stats = [];
 const reads = [];
-for (const [name, calls] of [['stat', stats], ['open', reads], ['readFile', reads]]) {
+const listings = [];
+for (const [name, calls] of [['stat', stats], ['open', reads], ['readFile', reads], ['readdir', listings]]) {
   const original = fs[name];
   fs[name] = (target, ...args) => {
     if (String(target).startsWith(countedRoot)) calls.push(String(target));
@@ -109,7 +110,7 @@ async function fixture(t, { codexCount = 3, claudeCount = 3, serviceMode = true,
   if (covered) await until(() => snapshot.performanceSnapshot().dashboard.watchCoverage);
   await snapshot.loadSharedDashboard({ force: true });
   countedRoot = dir;
-  const reset = () => { stats.length = 0; reads.length = 0; };
+  const reset = () => { stats.length = 0; reads.length = 0; listings.length = 0; };
   const emit = (file, event = 'change') => {
     const root = path.dirname(file);
     const watcher = watches.findLast((entry) => entry.target === root && !entry.watcher.closed);
@@ -165,6 +166,27 @@ test('trusted scans stat only the hinted rollout in 700 Codex and 100 Claude ses
     const rows = await f.snapshot.loadSharedDashboard();
     assert.deepEqual(rows, await f.snapshot.loadSharedDashboard({ force: true }));
   }
+});
+
+test('follow-up scans reuse the registry until a watched record is added', async (t) => {
+  let registryDir;
+  const f = await fixture(t, { async setup({ projectsDir }) {
+    registryDir = path.join(path.dirname(projectsDir), 'sessions');
+    await fs.mkdir(registryDir, { mode: 0o700 });
+  } });
+  f.reset();
+  await f.snapshot.loadSharedDashboard({ force: true });
+  for (let scan = 0; scan < 2; scan += 1) { f.advance(3_000); await f.scan(); }
+  assert.equal(listings.filter((file) => file === registryDir).length, 1);
+  assert.equal(stats.filter((file) => file === registryDir).length, 0);
+  const file = path.join(registryDir, `${process.pid}.json`);
+  await fs.writeFile(file, JSON.stringify({ pid: process.pid, procStart: await processStart(process.pid), name: 'Made-up live task',
+    sessionId: uuid(0), hostSessionId: `local_${uuid(0)}`, status: 'waiting', waitingFor: 'input needed' }), { mode: 0o600 });
+  f.emit(file, 'rename');
+  f.advance(3_000);
+  const changed = await f.snapshot.loadSharedDashboard();
+  assert.equal(changed.threads.find((row) => row.externalId === `local_${uuid(0)}`).state, 'waiting');
+  assert.equal(listings.filter((file) => file === registryDir).length, 2);
 });
 
 test('trusted no-file scans miss an unreported edit only until the service full-scan deadline', async (t) => {

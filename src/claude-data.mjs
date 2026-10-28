@@ -1371,7 +1371,7 @@ export async function loadClaudeDesktopCodeThreads({
   });
   const windows = platform === 'win32';
   // The registry is best effort: a read failure keeps the transcript state.
-  const live = await readLiveClaudeRegistryFolder(path.join(path.dirname(projectsDir), 'sessions'), { windows, registryReads }).catch(() => []);
+  const live = await readLiveClaudeRegistryFolder(path.join(path.dirname(projectsDir), 'sessions'), { windows, registryReads, fileScan }).catch(() => []);
   const approvals = await readClaudeAppApprovals(appDir, { windows, fileScan }).catch(() => new Map());
   const threads = dedupeClaudeDesktopCodeThreads(parsed
     .filter(Boolean)

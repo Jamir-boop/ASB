@@ -49,13 +49,25 @@ const parsedRecords = new Map();
 const RECORD_SETTLE_MS = 2_000;
 const sameRecordFile = (a, b) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
 
-export async function readLiveClaudeRegistryFolder(root, { windows = false, registryReads = null } = {}) {
-  if (!registryReads) return readLiveClaudeRegistry([root], { windows });
-  const real = await fs.realpath(root);
-  const key = JSON.stringify([real, windows]);
-  if (!registryReads.has(key)) registryReads.set(key, readLiveClaudeRegistry([real], { windows }));
-  const records = await registryReads.get(key);
-  (registryReads.liveRecords ||= new Map()).set(key, { records, windows });
+const liveFolders = new Map();
+
+export async function readLiveClaudeRegistryFolder(root, { windows = false, registryReads = null, fileScan = null } = {}) {
+  const cachedKey = JSON.stringify([root, windows]);
+  const cached = liveFolders.get(cachedKey);
+  let key, records;
+  if (cached && fileScan?.unchanged?.(root)) {
+    ({ key, records } = cached);
+  } else {
+    try {
+      const real = await fs.realpath(root);
+      key = JSON.stringify([real, windows]);
+      if (registryReads && !registryReads.has(key)) registryReads.set(key, readLiveClaudeRegistry([real], { windows }));
+      records = await (registryReads ? registryReads.get(key) : readLiveClaudeRegistry([real], { windows }));
+      if (liveFolders.size >= 32) liveFolders.delete(liveFolders.keys().next().value);
+      liveFolders.set(cachedKey, { key, records });
+    } catch (error) { liveFolders.delete(cachedKey); throw error; }
+  }
+  if (registryReads) (registryReads.liveRecords ||= new Map()).set(key, { records, windows });
   return records;
 }
 

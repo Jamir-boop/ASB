@@ -18,6 +18,20 @@ const contentText = (dashboard) => {
   return JSON.stringify({ ...rows, summary: { ...(rows.summary || {}) } });
 };
 
+// Equal ordered JSON fields let a scan keep the text. A shared object can have changed in place, so it does not count as equal.
+const sameListValue = (a, b) => {
+  if (a === b) return !a || typeof a !== 'object';
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
+  const keys = Object.keys(a), other = Object.keys(b);
+  return keys.length === other.length && keys.every((key, index) => key === other[index] && sameListValue(a[key], b[key]));
+};
+const sameList = (a, b) => {
+  if (!a || !b || a === b) return false;
+  const fields = (value) => Object.keys(value).filter((key) => !['generatedAtMs', 'performance'].includes(key));
+  const keys = fields(a), other = fields(b);
+  return keys.length === other.length && keys.every((key, index) => key === other[index] && sameListValue(a[key], b[key]));
+};
+
 // An absolute POSIX path with no `.` or `..` part, no double separator, and no separator at the end: `path.resolve` keeps it as it is.
 const NOT_NORMAL_POSIX = /\/\/|\/\.\.?(?:\/|$)|.\/$/;
 
@@ -77,6 +91,7 @@ export class DashboardSnapshot {
     let dashboardRevision = 0;
     // The list content of the cached dashboard at one revision; an in-place change moves the revision, so the text is made again.
     let listState = null;
+    let dashboardListReusable = true;
     const listText = (dashboard) => {
       if (listState?.dashboard === dashboard && listState.revision === dashboardRevision) return listState.text;
       const text = contentText(dashboard);
@@ -222,9 +237,11 @@ export class DashboardSnapshot {
                 && age >= 0 && age < fullScanIntervalMs() && !files.has('');
               const watched = [...adaptiveWatchers].filter(([, entry]) => entry.spec.source === source);
               // shortcut: a lost event on an inactive or new file waits for the 5 min safety scan; active source files are checked every 30 s, go back to full scans if watch events prove unreliable
-              sourceScans[source] = trusted ? { canReuse: reuseCheck({ platform: dashboardPlatform, changed: [...files.keys()],
+              const canReuse = reuseCheck({ platform: dashboardPlatform, changed: [...files.keys()],
                 directories: watched.map(([root]) => root),
-                recursive: watched.filter(([, entry]) => entry.spec.recursive && !entry.spec.manualRecursive).map(([root]) => root) }) } : null;
+                recursive: watched.filter(([, entry]) => entry.spec.recursive && !entry.spec.manualRecursive).map(([root]) => root) });
+              sourceScans[source] = trusted ? { canReuse, unchanged: (root) => canReuse(root)
+                && ![...files.keys()].some((file) => file.startsWith(`${root}${path.sep}`)) } : null;
             }
             const dashboard = await loadDashboard({ sourceScans });
             for (const source of ['codex', 'claude']) if (!sourceScans[source]) {
@@ -237,7 +254,7 @@ export class DashboardSnapshot {
             serverMetrics.dashboardLastLoadMs = durationSince(startedAtMs);
             serverMetrics.dashboardLastLoadedAtMs = now();
             // Only a scan that changed the list moves the revision and tells the clients, also a timer scan.
-            const text = contentText(dashboard);
+            const text = dashboardListReusable && sameList(dashboard, dashboardCache?.dashboard) ? listText(dashboardCache.dashboard) : contentText(dashboard);
             const changed = !dashboardCache || text !== listText(dashboardCache.dashboard);
             dashboardCache = {
               dashboard,
@@ -245,6 +262,7 @@ export class DashboardSnapshot {
             };
             if (changed) dashboardRevision += 1;
             listState = { dashboard, revision: dashboardRevision, text };
+            dashboardListReusable = true;
             dashboardRetryAfterMs = 0;
             armStatusTimer(dashboard);
             if (generation === dashboardGeneration) dashboardDirty = false;
@@ -298,6 +316,7 @@ export class DashboardSnapshot {
     };
 
     const invalidateDashboard = (reason = 'dashboard-change', { hard = true, dirty = true } = {}) => {
+      dashboardListReusable = false;
       // A soft dirty change leaves the cached rows as they are (the next scan shows it), so their list text stays.
       const keepText = !hard && dirty && listState?.revision === dashboardRevision;
       // First, so a client that gets the event below reads the new revision.
