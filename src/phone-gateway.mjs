@@ -341,6 +341,8 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
 
   function proxy(request, response, target, body, dashboard) {
     const headers = { host: `127.0.0.1:${localPort}` };
+    const gzipAccepted = dashboard && acceptsGzip(request.headers['accept-encoding']);
+    if (gzipAccepted) headers['accept-encoding'] = 'gzip';
     if (request.method === 'POST') Object.assign(headers, { origin: `http://127.0.0.1:${localPort}`, 'content-type': 'application/json' });
     if (request.headers['if-none-match']) headers['if-none-match'] = request.headers['if-none-match'];
     const unavailable = () => {
@@ -354,8 +356,9 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
       response.statusCode = reply.statusCode;
       reply.on('error', unavailable);
       if (dashboard) response.setHeader('vary', 'Accept-Encoding');
-      if (dashboard && reply.statusCode === 200 && acceptsGzip(request.headers['accept-encoding'])) {
+      if (gzipAccepted && reply.statusCode === 200) {
         response.setHeader('content-encoding', 'gzip');
+        if (reply.headers['content-encoding'] === 'gzip') { reply.pipe(response); return; }
         const gzip = createGzip();
         gzip.on('error', unavailable);
         response.on('close', () => gzip.destroy());

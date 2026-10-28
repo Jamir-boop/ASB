@@ -8,7 +8,7 @@ import https from 'node:https';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { gunzipSync } from 'node:zlib';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { createPhoneGateway, DEFAULT_PHONE_PORT, PHONE_API_VERSION, phoneSettingsPath, phoneTlsDir,
   listPhoneAddresses, isAllowedRemote, acceptsGzip } from '../src/phone-gateway.mjs';
 import { RUNTIME_FILES } from '../scripts/asb-package.mjs';
@@ -336,6 +336,35 @@ test('Accept-Encoding allows gzip only with a positive q-value for gzip, or for 
   }
   for (const header of [undefined, '', 'identity', 'br, deflate', 'gzip;q=0', 'gzip;q=0.0', 'gzip; q=0', '*;q=0', 'gzip;q=0, *', 'gzip;q=abc']) {
     assert.equal(acceptsGzip(header), false, String(header));
+  }
+});
+
+gatewayTest('the list and activity proxy pass engine gzip bytes unchanged and request plain for a plain phone', async (t) => {
+  const body = JSON.stringify({ rows: Array.from({ length: 80 }, (_, id) => ({ id, status: 'idle' })) });
+  // Level 1 makes a second compression observable even when the JSON is the same.
+  const compressed = gzipSync(body, { level: 1 });
+  const { request, pair, records } = await fixture(t, { reply: (request, response) => {
+    const cached = request.headers['if-none-match'] === '"engine"';
+    const gzip = request.headers['accept-encoding'] === 'gzip';
+    response.writeHead(cached ? 304 : 200, { etag: '"engine"', 'content-type': 'application/json',
+      ...(!cached && gzip ? { 'content-encoding': 'gzip' } : {}) });
+    response.end(cached ? undefined : gzip ? compressed : body);
+  } });
+  const token = (await pair()).json.token;
+  for (const route of ['/phone/v1/dashboard', '/phone/v1/activity/messages', '/phone/v1/activity/usage']) {
+    const zipped = await request(route, { token, headers: { 'accept-encoding': 'gzip' } });
+    assert.equal(records.at(-1).headers['accept-encoding'], 'gzip');
+    assert.deepEqual([zipped.status, zipped.headers['content-encoding'], zipped.headers.vary], [200, 'gzip', 'Accept-Encoding']);
+    assert.deepEqual(zipped.raw, compressed);
+    assert.equal(gunzipSync(zipped.raw).toString(), body);
+    for (const headers of [{}, { 'accept-encoding': 'gzip;q=0' }]) {
+      const plain = await request(route, { token, headers });
+      assert.equal(records.at(-1).headers['accept-encoding'], undefined);
+      assert.equal(plain.headers['content-encoding'], undefined);
+      assert.equal(plain.text, body);
+    }
+    const cached = await request(route, { token, headers: { 'accept-encoding': 'gzip', 'if-none-match': '"engine"' } });
+    assert.deepEqual([cached.status, cached.headers.etag, cached.raw.length, cached.headers['content-encoding']], [304, '"engine"', 0, undefined]);
   }
 });
 
