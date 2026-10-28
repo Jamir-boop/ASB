@@ -8392,6 +8392,45 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
             self.assertIsNot(self.rows(window)[0], rows[0])
             rows = self.rows(window)
 
+    def test_a_long_reply_shows_its_first_rows_at_once_and_the_rest_in_idle_steps(self):
+        at = lambda i: int(asb.datetime(2026, 10, 20 + i // 40, 8, i % 40).timestamp() * 1000)
+        words = "Check the parser notes and keep the release steps in order before the next build. "
+        self.sample["messages"] = [{"id": f"long-{i}", "from": ("docs", "release-plan")[i % 2], "to": ("docs", "release-plan")[(i + 1) % 2],
+                                    "atMs": at(i), "status": "accepted", "text": (f"Message {i}. " + words * 30)[:2000]} for i in range(200)]
+        self.sample["nowMs"] = at(199) + 60_000
+        window = self.window(refresh=False)
+        expected, _more = asb.message_feed(self.sample, self.sample["nowMs"])
+        self.assertEqual(len(expected), 205)
+        window.refresh()
+        self.assertEqual(len(self.rows(window)), 40)
+        for _turn in range(100):
+            if window.feed_idle is None:
+                break
+            self.drain(.05)
+        self.assertIsNone(window.feed_idle)
+        rows = self.rows(window)
+        self.assertEqual(len(rows), len(expected))
+        for row, (kind, item) in zip(rows, expected):
+            self.assertIn(item if kind == "day" else item["text"], self.labels(row))
+        # A second identical reply changes no widget.
+        window.refresh(); self.drain(.2)
+        self.assertEqual(self.rows(window), rows)
+        self.assertIsNone(window.feed_idle)
+        # A new reply during the steps cancels the old steps.
+        self.sample["messages"][-1]["text"] = "Changed text."
+        window.refresh()
+        first = window.feed_idle
+        self.sample["messages"][-1]["text"] = "Changed again."
+        window.refresh()
+        self.assertIsNotNone(window.feed_idle)
+        self.assertNotEqual(window.feed_idle, first)
+        for _turn in range(100):
+            if window.feed_idle is None:
+                break
+            self.drain(.05)
+        self.assertEqual(len(self.rows(window)), len(expected))
+        self.assertIn("Changed again.", self.labels(self.rows(window)[1]))
+
     def test_new_messages_preserve_visible_position_and_top_stays_top(self):
         for size in ((968, 760), (480, 760)):
             with self.subTest(size=size):

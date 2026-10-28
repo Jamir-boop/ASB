@@ -636,6 +636,7 @@ def motion_offsets(old, new):
 MESSAGE_MAX_AGE_MS = 30_000
 MESSAGE_FLIGHT_LIMIT = 6
 MESSAGE_LIGHT_MS = 2000
+MESSAGE_ROWS_STEP = 40
 
 
 def new_messages(messages, seen, visible, now_ms, room):
@@ -8512,7 +8513,7 @@ class MessagesWindow(ActivityWindow):
 
     def __init__(self, application, base, fetch=None, clock=None):
         super().__init__(application, base, fetch=fetch, clock=clock)
-        self.session = self.pending_session = self.feed_key = self.scroll_tick = None
+        self.session = self.pending_session = self.feed_key = self.scroll_tick = self.feed_idle = None
         self.set_size_request(480, 420)
         self.paths_note.set_visible(False)
         self.feed = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
@@ -8582,10 +8583,10 @@ class MessagesWindow(ActivityWindow):
             self.scroll_tick = None
         adjustment = self.feed_scroll.get_vadjustment()
         upper, value = adjustment.get_upper(), adjustment.get_value()
+        if self.feed_idle is not None:
+            GLib.source_remove(self.feed_idle)
+            self.feed_idle = None
         remove_children(self.feed)
-
-        def append(child):
-            self.feed.append(Gtk.ListBoxRow(child=child, activatable=False, selectable=False))
 
         def caption(text, centered=False):
             widget = Gtk.Label(label=text, xalign=.5 if centered else 0, margin_top=14, margin_bottom=4, margin_start=16)
@@ -8593,12 +8594,7 @@ class MessagesWindow(ActivityWindow):
             widget.add_css_class("asb-msg-small")
             return widget
 
-        if not rows:
-            append(caption("No messages in this period.", centered=True))
-        for kind, item in rows:
-            if kind == "day":
-                append(caption(item))
-                continue
+        def message(item):
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, margin_top=8, margin_bottom=8, margin_start=16, margin_end=16)
             box.add_css_class("asb-msg-message")
             route = Gtk.Box(spacing=6)
@@ -8625,24 +8621,42 @@ class MessagesWindow(ActivityWindow):
                 status.add_css_class(statuses[item["id"]])
                 route.append(status)
             box.append(route)
-            text = Gtk.Label(label=item["text"] if item["text"] is not None else "No text", wrap=True,
+            # A small width_chars gives GTK a cheap minimum width; without it GTK lays out each long text at its narrowest.
+            text = Gtk.Label(label=item["text"] if item["text"] is not None else "No text", wrap=True, width_chars=20,
                              wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True, margin_top=2)
             text.add_css_class("asb-msg-body")
             if item["text"] is None:
                 text.add_css_class("asb-dim")
             box.append(text)
-            append(box)
-        if more:
-            append(caption("Showing the newest 200 messages.", centered=True))
+            return box
 
-        if self.feed_scroll.get_mapped():
-            def keep_position(_widget, _clock):
-                if self.feed.get_last_child().get_height() == 0:
-                    return True
-                adjustment.set_value(value + adjustment.get_upper() - upper if value > 0 else 0)
-                self.scroll_tick = None
-                return False
-            self.scroll_tick = self.feed_scroll.add_tick_callback(keep_position)
+        builds = [lambda kind=kind, item=item: caption(item) if kind == "day" else message(item) for kind, item in rows] if rows \
+            else [lambda: caption("No messages in this period.", centered=True)]
+        if more:
+            builds.append(lambda: caption("Showing the newest 200 messages.", centered=True))
+        built = [0]
+
+        def keep_position(_widget, _clock):
+            if self.feed.get_last_child().get_height() == 0:
+                return True
+            adjustment.set_value(value + adjustment.get_upper() - upper if value > 0 else 0)
+            self.scroll_tick = None
+            return False
+
+        def step():
+            # The first rows show at once; the rest follow in idle steps, so a long reply does not hold the first frame.
+            for build in builds[built[0]:built[0] + MESSAGE_ROWS_STEP]:
+                self.feed.append(Gtk.ListBoxRow(child=build(), activatable=False, selectable=False))
+            built[0] += MESSAGE_ROWS_STEP
+            if built[0] < len(builds):
+                return True
+            self.feed_idle = None
+            if self.feed_scroll.get_mapped():
+                self.scroll_tick = self.feed_scroll.add_tick_callback(keep_position)
+            return False
+
+        if step():
+            self.feed_idle = GLib.idle_add(step)
 
     def close_to_hidden(self):
         # An open from the menu shows all sessions; Show messages sets the session again.
@@ -8654,6 +8668,9 @@ class MessagesWindow(ActivityWindow):
         super().close_to_hidden()
 
     def finish(self):
+        if self.feed_idle is not None:
+            GLib.source_remove(self.feed_idle)
+            self.feed_idle = None
         if self.scroll_tick is not None:
             self.feed_scroll.remove_tick_callback(self.scroll_tick)
             self.scroll_tick = None
