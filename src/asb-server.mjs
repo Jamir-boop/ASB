@@ -4,7 +4,8 @@ import { mkdir, rename, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { DashboardSnapshot } from './dashboard-snapshot.mjs';
-import { DEFAULT_PUBLIC_DIR, exactKeys, parseBooleanSearchParam, readJsonBody, sendJson, serveStatic, threadNotFound } from './local-http.mjs';
+import { acceptsGzip, DEFAULT_PUBLIC_DIR, exactKeys, gzipHead, gzipWithTail, parseBooleanSearchParam, readJsonBody, sendJson, serveStatic,
+  threadNotFound } from './local-http.mjs';
 import { USAGE_PERIODS } from './usage-aggregation.mjs';
 
 const PALETTE_KEYS = ['background', 'text', 'accent', 'muted', 'divider', 'success', 'warning'];
@@ -88,6 +89,7 @@ export function createAsbServer({
     return !expectedSourceToken.length || (given.length === expectedSourceToken.length && timingSafeEqual(given, expectedSourceToken));
   };
   let dashboardNotModified = 0;
+  let compressedLists = 0;
   let savedList = null;
   const uiClients = new Map();
   const closedUiClients = new Map();
@@ -696,17 +698,23 @@ export function createAsbServer({
         }
         const { list, etag } = savedList;
         const headers = { etag, 'cache-control': 'no-store' };
+        const gzip = acceptsGzip(request.headers['accept-encoding']);
         if (request.headers['if-none-match'] === etag) {
           dashboardNotModified += 1;
           response.writeHead(304, headers);
           response.end();
           return;
         }
+        // The list compresses once; the time and the counters go after it as the short tail of each reply.
+        if (gzip && !savedList.gzip) { compressedLists += 1; savedList.gzip = gzipHead(`${list.slice(0, -1)},`); }
         const performance = performanceSnapshot();
         performance.dashboard.notModified = dashboardNotModified;
+        performance.dashboard.compressedLists = compressedLists;
         const rest = JSON.stringify({ generatedAtMs, performance });
-        response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', ...headers });
-        response.end(`${rest.slice(0, -1)},${list.slice(1)}`);
+        response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', ...headers,
+          ...(gzip ? { 'content-encoding': 'gzip', vary: 'Accept-Encoding' } : {}) });
+        if (!gzip) { response.end(`${rest.slice(0, -1)},${list.slice(1)}`); return; }
+        response.end(gzipWithTail(savedList.gzip, rest.slice(1)));
       } catch (error) {
         sendJson(response, 500, {
           error: 'Failed to load dashboard data',

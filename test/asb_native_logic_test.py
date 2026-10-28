@@ -69,6 +69,13 @@ FIXTURE_NODES = [node for node in FIXTURE_TREE.body
 exec(compile(ast.Module(body=FIXTURE_NODES, type_ignores=[]), str(FIXTURE_PATH), "exec"), globals())
 
 
+class Reply(io.BytesIO):
+    """A urllib reply: the body and its headers."""
+    def __init__(self, body, headers=None):
+        super().__init__(body)
+        self.headers = headers or {}
+
+
 class Box:
     def __init__(self, **_kwargs):
         self.children, self.parent = [], None
@@ -678,7 +685,7 @@ class ProfileSyncChecks(unittest.TestCase):
     def test_engine_stop_sends_the_token_and_keeps_the_server_error(self):
         import io
         token = "ef" * 32
-        transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(b'{"stopping": true}')))
+        transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: Reply(b'{"stopping": true}')))
         with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": token}):
             self.assertEqual(asb.request_json("http://127.0.0.1:1", "/api/engine/stop", "POST", {}), {"stopping": True})
         request = transport.open.call_args.args[0]
@@ -740,6 +747,45 @@ class ProfileSyncChecks(unittest.TestCase):
                     asb.request_json(base, route, "POST")
                 self.assertEqual(str(caught.exception), text)
 
+    def test_requests_ask_for_gzip_and_read_a_gzip_reply(self):
+        import gzip as gzip_module
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        body = json.dumps({"threads": [{"id": "made-up", "title": "Made-up session"}]}).encode()
+        asked = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                asked.append(self.headers.get("Accept-Encoding"))
+                zipped = self.path.startswith("/api/dashboard")
+                data = gzip_module.compress(body) if zipped else body
+                if self.path.endswith("?broken=1"):
+                    data = data[:-12]
+                self.send_response(200)
+                if zipped:
+                    self.send_header("Content-Encoding", "gzip")
+                self.send_header("ETag", '"made-up"')
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .01}, daemon=True)
+        worker.start()
+        self.addCleanup(worker.join, 1)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        base = f"http://127.0.0.1:{server.server_port}"
+        etag = [None]
+        self.assertEqual(asb.request_json(base, "/api/dashboard", etag=etag), json.loads(body))
+        self.assertEqual(etag, ['"made-up"'])
+        self.assertEqual(asb.request_json(base, "/api/sources"), json.loads(body))
+        with self.assertRaisesRegex(RuntimeError, "^Cannot load sessions\\."):
+            asb.request_json(base, "/api/dashboard?broken=1")
+        self.assertEqual(asked, ["gzip", "gzip", "gzip"])
+
     def test_quit_engine_posts_the_stop_and_closes_only_on_success(self):
         window = object.__new__(Window)
         window.base, window.closed = "http://127.0.0.1:1", False
@@ -770,13 +816,13 @@ class ProfileSyncChecks(unittest.TestCase):
         token = "ab" * 32
         for route, method in (("/api/agent/status", "GET"), ("/api/agent/ui", "POST"),
                               ("/api/agent/status?fresh=1", "GET"), ("/api/agentx/status", "GET")):
-            transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(b'{}')))
+            transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: Reply(b'{}')))
             with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": token}):
                 asb.request_json("http://127.0.0.1:1", route, method, {})
             request = transport.open.call_args.args[0]
             self.assertEqual(request.get_header("X-asb-source-token"), token if "/agent/" in route else None)
             self.assertEqual(request.get_header("Origin"), "http://127.0.0.1:1" if method == "POST" else None)
-        transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(b'{"changed": true}')))
+        transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: Reply(b'{"changed": true}')))
         with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": token}):
             received = []
             REQUEST_ASYNC("http://127.0.0.1:1", "/api/sources", None, lambda *args: received.append(args),
@@ -1188,14 +1234,14 @@ class UsageBackupChecks(unittest.TestCase):
                                        ("/api/usage/import", "POST", 120), ("/api/usage/export", "POST", 15),
                                        ("/api/usage/backup/now", "GET", 15)):
             with self.subTest(route=route, method=method):
-                transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(b'{"enabled": false}')))
+                transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: Reply(b'{"enabled": false}')))
                 with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": token}):
                     self.assertEqual(asb.request_json("http://127.0.0.1:1", route, method, {}), {"enabled": False})
                 request = transport.open.call_args.args[0]
                 self.assertEqual(request.get_header("X-asb-source-token"), token)
                 self.assertEqual(request.get_header("Origin"), "http://127.0.0.1:1" if method == "POST" else None)
                 self.assertEqual(transport.open.call_args.kwargs["timeout"], timeout)
-        transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(b'{}')))
+        transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: Reply(b'{}')))
         with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": token}):
             asb.request_json("http://127.0.0.1:1", "/api/usagex")
         self.assertIsNone(transport.open.call_args.args[0].get_header("X-asb-source-token"))
@@ -1469,7 +1515,7 @@ class PhoneChecks(unittest.TestCase):
                   ("/api/phone/devices/a/revoke", "POST"), ("/api/service", "GET"))
         for route, method in routes:
             with self.subTest(route=route):
-                transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(b'{"enabled": false}')))
+                transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: Reply(b'{"enabled": false}')))
                 with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": token}):
                     self.assertEqual(asb.request_json("http://127.0.0.1:1", route, method, {}), {"enabled": False})
                 request = transport.open.call_args.args[0]
@@ -1487,7 +1533,7 @@ class PhoneChecks(unittest.TestCase):
             with patch.dict(SCOPE, {"LOCAL_HTTP": Mock(open=Mock(side_effect=failure))}):
                 with self.assertRaisesRegex(RuntimeError, "Choose a private address"):
                     asb.request_json("http://127.0.0.1:1", route, "POST", {})
-        with patch.dict(SCOPE, {"LOCAL_HTTP": Mock(open=Mock(return_value=io.BytesIO(b'{}')))}):
+        with patch.dict(SCOPE, {"LOCAL_HTTP": Mock(open=Mock(return_value=Reply(b'{}')))}):
             with self.assertRaisesRegex(RuntimeError, "Cannot change this session"):
                 asb.request_json("http://127.0.0.1:1", "/api/threads/a/pin", "POST", {})
 
@@ -1551,13 +1597,13 @@ class PhoneChecks(unittest.TestCase):
         for route, method, timeout in (("/api/group", "GET", 15), ("/api/group/invite", "POST", 15), ("/api/group/remove", "POST", 15),
                                        ("/api/group/join", "POST", 30), ("/api/group/leave", "POST", 30)):
             with self.subTest(route=route):
-                transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(b'{"groupId": ""}')))
+                transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: Reply(b'{"groupId": ""}')))
                 with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": token}):
                     self.assertEqual(asb.request_json("http://127.0.0.1:1", route, method, {}), {"groupId": ""})
                 request = transport.open.call_args.args[0]
                 self.assertEqual(request.get_header("X-asb-source-token"), token)
                 self.assertEqual(transport.open.call_args.kwargs["timeout"], timeout)
-        transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(b'{}')))
+        transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: Reply(b'{}')))
         with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": token}):
             asb.request_json("http://127.0.0.1:1", "/api/groupx")
             self.assertIsNone(transport.open.call_args.args[0].get_header("X-asb-source-token"))
@@ -3050,7 +3096,7 @@ class DataChecks(unittest.TestCase):
             window.publish_palette()
             self.assertEqual(len(sends), 2)
         token = "cd" * 32
-        transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(b'{"changed": false}')))
+        transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: Reply(b'{"changed": false}')))
         with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": token}):
             self.assertEqual(asb.request_json("http://127.0.0.1:1", "/api/palette", "POST", sends[1][2]), {"changed": False})
         request = transport.open.call_args.args[0]
@@ -3469,7 +3515,7 @@ class BridgeHelperChecks(unittest.TestCase):
         for route, method, timeout, token in (("/api/bridge", "GET", 15, None),
                 ("/api/bridge?refresh=1", "GET", 15, None), ("/api/bridge/install", "POST", 420, "fake-token"),
                 ("/api/bridge/other", "POST", 15, "fake-token")):
-            transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: io.BytesIO(b'{"ok": false, "output": "text"}')))
+            transport = Mock(open=Mock(side_effect=lambda *_args, **_kwargs: Reply(b'{"ok": false, "output": "text"}')))
             with patch.dict(SCOPE, {"LOCAL_HTTP": transport, "SOURCE_TOKEN": "fake-token"}):
                 self.assertEqual(asb.request_json("http://127.0.0.1:1", route, method, {"sourceId": "main"})["ok"], False)
             request = transport.open.call_args.args[0]

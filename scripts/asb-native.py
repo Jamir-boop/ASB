@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Native GNOME view for the local ASB session API."""
 from datetime import datetime, timedelta
+import gzip
 import json
 import math
 import ntpath
@@ -15,6 +16,7 @@ import threading
 import tempfile
 import time
 import uuid
+import zlib
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote, urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
@@ -1395,7 +1397,7 @@ def activity_palette(colors):
 
 
 def request_json(base, route, method="GET", body=None, etag=None, headers=None):
-    headers = {"Accept": "application/json", **(headers or {})}
+    headers = {"Accept": "application/json", "Accept-Encoding": "gzip", **(headers or {})}
     path = route.split("?", 1)[0]
     source_route = path == "/api/sources" or path.startswith("/api/sources/")
     bridge_route = path == "/api/bridge" or path.startswith("/api/bridge/")
@@ -1423,7 +1425,14 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
         timeout = 420 if method == "POST" and path == "/api/bridge/install" else 30 if method == "POST" and path in ("/api/group/join", "/api/group/leave") \
             else 120 if (method, path) in (("GET", "/api/usage/export"), ("POST", "/api/usage/backup/now"), ("POST", "/api/usage/import")) else 15
         with LOCAL_HTTP.open(request, timeout=timeout) as response:
-            result = json.load(response)
+            data = response.read()
+            # The engine compresses the session list for a client that asks.
+            if response.headers.get("Content-Encoding") == "gzip":
+                try:
+                    data = gzip.decompress(data)
+                except (EOFError, zlib.error) as error:
+                    raise ValueError("The ASB response is not valid gzip.") from error
+            result = json.loads(data)
         if not isinstance(result, dict):
             raise ValueError("The ASB response is not an object.")
         success = "opened" if route.endswith("/open") else "marked" if route.endswith("/mark-unread") else "changed"

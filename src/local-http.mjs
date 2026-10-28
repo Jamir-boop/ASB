@@ -3,6 +3,7 @@ import { stat } from 'node:fs/promises';
 import { pipeline } from 'node:stream';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import zlib from 'node:zlib';
 
 export const DEFAULT_PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -16,6 +17,46 @@ const MIME_TYPES = new Map([
 export function sendJson(response, statusCode, body) {
   response.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8' });
   response.end(JSON.stringify(body));
+}
+
+// A missing header means identity; gzip (or *) with q=0 refuses gzip.
+export function acceptsGzip(header) {
+  if (typeof header !== 'string') return false;
+  const weights = new Map();
+  for (const part of header.split(',')) {
+    const [coding, ...params] = part.split(';').map((item) => item.trim().toLowerCase());
+    const q = params.find((item) => item.startsWith('q='));
+    weights.set(coding, q === undefined ? 1 : Number(q.slice(2)));
+  }
+  return (weights.get('gzip') ?? weights.get('*') ?? 0) > 0;
+}
+
+const CRC_TABLE = Int32Array.from({ length: 256 }, (_, value) => {
+  for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+  return value;
+});
+export const jsCrc32 = (data, value = 0) => {
+  let crc = ~value;
+  for (const byte of data) crc = CRC_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return ~crc >>> 0;
+};
+// zlib.crc32 came in Node.js 20.15 and 22.2.
+const crc32 = zlib.crc32 || jsCrc32;
+const GZIP_HEADER = Buffer.from([0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff]);
+
+// One gzip member of a long head that compresses once and a short tail for each reply. Browsers read only the first member of a
+// gzip body, so the head is a raw deflate stream that ends on a byte boundary with no final block, and the tail ends the stream.
+export function gzipHead(text) {
+  const head = Buffer.from(text);
+  return { deflated: zlib.deflateRawSync(head, { level: 1, finishFlush: zlib.constants.Z_SYNC_FLUSH }), crc: crc32(head), length: head.length };
+}
+
+export function gzipWithTail({ deflated, crc, length }, text) {
+  const tail = Buffer.from(text);
+  const trailer = Buffer.alloc(8);
+  trailer.writeUInt32LE(crc32(tail, crc), 0);
+  trailer.writeUInt32LE((length + tail.length) % 2 ** 32, 4);
+  return Buffer.concat([GZIP_HEADER, deflated, zlib.deflateRawSync(tail, { level: 1 }), trailer]);
 }
 
 export function positiveInteger(value, fallback) {

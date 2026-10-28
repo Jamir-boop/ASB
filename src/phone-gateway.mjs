@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { createGzip } from 'node:zlib';
-import { sendJson } from './local-http.mjs';
+import { acceptsGzip, sendJson } from './local-http.mjs';
 import { configDir } from './platform-paths.mjs';
 import { scopeInput } from './session-references.mjs';
 import { USAGE_PERIODS } from './usage-aggregation.mjs';
@@ -116,17 +116,7 @@ function validSettings(value) {
     && new Set(value.devices.map((device) => device.tokenSha256)).size === value.devices.length;
 }
 
-// A missing header means identity; gzip (or *) with q=0 refuses gzip.
-export function acceptsGzip(header) {
-  if (typeof header !== 'string') return false;
-  const weights = new Map();
-  for (const part of header.split(',')) {
-    const [coding, ...params] = part.split(';').map((item) => item.trim().toLowerCase());
-    const q = params.find((item) => item.startsWith('q='));
-    weights.set(coding, q === undefined ? 1 : Number(q.slice(2)));
-  }
-  return (weights.get('gzip') ?? weights.get('*') ?? 0) > 0;
-}
+export { acceptsGzip };
 
 function readBody(request, limit = 64 * 1024) {
   return new Promise((resolve, reject) => {

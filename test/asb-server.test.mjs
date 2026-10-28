@@ -6,6 +6,8 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { crc32, gunzipSync } from 'node:zlib';
+import { jsCrc32 } from '../src/local-http.mjs';
 import { createAsbServer, panelSummary } from '../src/asb-server.mjs';
 import { DashboardSnapshot } from '../src/dashboard-snapshot.mjs';
 import { createSwitchboardServer, PendingTracker } from '../src/switchboard.mjs';
@@ -284,6 +286,45 @@ test('a repeated dashboard request serializes the list and hashes it one time, a
   assert.notEqual(peer.etag, retitled.etag);
   assert.equal((await get()).etag, peer.etag);
   assert.equal(serialized.count, count + 1);
+});
+
+test('the session list goes gzip to a client that asks, compresses once per list, and stays the same for other clients', async (t) => {
+  let title = 'Made-up 1';
+  const rows = () => Array.from({ length: 200 }, (_, index) => ({ id: `row-${index}`, title: `${title} ${index}`, cwd: `/made-up/${index}` }));
+  const { base } = await serve(t, { now: () => 1_760_000_000_000, loadDashboard: async () => ({ generatedAtMs: 7, providers: [], threads: rows() }) });
+  const get = (headers = {}, query = '') => new Promise((resolve, reject) => {
+    http.get(`${base}/api/dashboard${query}`, { headers }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, body: Buffer.concat(chunks) }));
+    }).on('error', reject);
+  });
+  const strip = ({ performance: _, ...list }) => list;
+  const plain = await get();
+  assert.equal(plain.headers['content-encoding'], undefined);
+  assert.equal(plain.headers.vary, undefined);
+  const zipped = await get({ 'Accept-Encoding': 'gzip, deflate' });
+  assert.deepEqual([zipped.status, zipped.headers['content-encoding'], zipped.headers.vary, zipped.headers.etag],
+    [200, 'gzip', 'Accept-Encoding', plain.headers.etag]);
+  assert.ok(zipped.body.length * 5 < plain.body.length);
+  const unzipped = JSON.parse(gunzipSync(zipped.body));
+  assert.deepEqual(strip(unzipped), strip(JSON.parse(plain.body)));
+  // One gzip member: a browser and DecompressionStream read only the first member of a body.
+  const streamed = await new Response(new Blob([zipped.body]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
+  assert.deepEqual(JSON.parse(streamed).threads, unzipped.threads);
+  assert.equal(unzipped.performance.dashboard.compressedLists, 1);
+  // The same list compresses no second time; a 304 and a refused gzip stay as they were.
+  assert.equal(JSON.parse(gunzipSync((await get({ 'Accept-Encoding': 'gzip' })).body)).performance.dashboard.compressedLists, 1);
+  const notModified = await get({ 'Accept-Encoding': 'gzip', 'If-None-Match': plain.headers.etag });
+  assert.deepEqual([notModified.status, notModified.body.length, notModified.headers['content-encoding']], [304, 0, undefined]);
+  assert.equal((await get({ 'Accept-Encoding': 'gzip;q=0, identity' })).headers['content-encoding'], undefined);
+  title = 'Made-up 2';
+  const changed = JSON.parse(gunzipSync((await get({ 'Accept-Encoding': 'gzip' }, '?force=1')).body));
+  assert.equal(changed.threads[0].title, 'Made-up 2 0');
+  assert.equal(changed.performance.dashboard.compressedLists, 2);
+  // The CRC for Node.js before 20.15, as zlib computes it, also when it goes on from an earlier value.
+  const [head, tail] = [Buffer.from('{"made":"up",'), Buffer.from('"tail":[1,2,3]}')];
+  assert.equal(jsCrc32(tail, jsCrc32(head)), crc32(tail, crc32(head)));
 });
 
 test('a scan that returns the same object makes the list again', async (t) => {
