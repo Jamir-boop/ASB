@@ -7287,6 +7287,36 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertIsNone(chart.tip)
         self.assert_no_new_warnings()
 
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real keys need xdotool and DISPLAY=:9 or :10")
+    def test_usage_escape_closes_only_after_the_open_menu(self):
+        window = self.window()
+        subprocess.run(["xdotool", "windowfocus", str(window.get_surface().get_xid())], check=True)
+        def key(text):
+            subprocess.run(["xdotool", "key", text], check=True)
+            self.drain(.2)
+        def popovers(widget):
+            return ([widget] if isinstance(widget, asb.Gtk.Popover) else []) + [
+                pop for child in self.children(widget) for pop in popovers(child)]
+        window.period_menu.grab_focus()
+        key("space")
+        menus = popovers(window.period_menu)
+        self.assertTrue(any(menu.get_visible() for menu in menus))
+        key("Escape")
+        self.assertFalse(any(menu.get_visible() for menu in menus))
+        self.assertTrue(window.get_visible())
+        window.machine_filter.popup(); self.drain(.2)
+        self.assertTrue(window.machine_filter.get_popover().get_visible())
+        key("Escape")
+        self.assertFalse(window.machine_filter.get_popover().get_visible())
+        self.assertTrue(window.get_visible())
+        key("ctrl+Escape")
+        self.assertTrue(window.get_visible())
+        key("Escape")
+        self.assertFalse(window.get_visible())
+        self.assertTrue(window.closed)
+        self.assert_no_new_warnings()
+
     def test_usage_hover_survives_changed_numbers_and_clears_on_leave(self):
         window = self.window()
         chart, ring = window.chart, window.round

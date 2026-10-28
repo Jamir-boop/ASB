@@ -8997,6 +8997,10 @@ class UsageWindow(ActivityWindow):
         self.metric, self.split, self.machines_off, self.chip_key, self.chart_key, self.view = "cost", "app", set(), None, None, None
         self.narrow = self.small = False
         super().__init__(application, base, fetch, clock)
+        shortcuts = Gtk.ShortcutController()
+        shortcuts.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("Escape"),
+                                                Gtk.CallbackAction.new(lambda *_: self.close() or True)))
+        self.add_controller(shortcuts)
         theme = Gtk.IconTheme.get_for_display(self.get_display())
         icons = str(Path(__file__).parents[1] / "assets" / "icons")
         if icons not in theme.get_search_path():
