@@ -1006,9 +1006,8 @@ class UsageLogicChecks(unittest.TestCase):
     def axis(unit, starts, chart_width):
         """The axis labels as UsageChart.do_snapshot places them, with a fake font of 7 px per character."""
         count = len(starts)
-        gap = 1 if count >= 90 else 2
-        width = (chart_width - asb.UsageChart.LEFT - gap * (count - 1)) / count
-        centers = [asb.UsageChart.LEFT + index * (width + gap) + width / 2 for index in range(count)]
+        slot = (chart_width - asb.UsageChart.LEFT) / count
+        centers = [asb.UsageChart.LEFT + (index + .5) * slot for index in range(count)]
         buckets = {"unit": unit, "startsMs": starts}
         step = asb.UsageChart.label_step(SimpleNamespace(buckets=buckets, bars=[{}] * count))
         return asb.usage_axis_labels(buckets, centers, chart_width, step, lambda text: 7 * len(text))

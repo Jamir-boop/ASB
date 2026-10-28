@@ -10454,12 +10454,12 @@ class SwitchboardApplication(Adw.Application):
         return False
 
 
-def usage_rect(snapshot, x, y, width, height, color, radius=0, top_only=False):
+def usage_rect(snapshot, x, y, width, height, color, radius=0):
     bounds = Graphene.Rect().init(x, y, width, height)
     if radius:
-        corner, flat = Graphene.Size().init(radius, radius), Graphene.Size().init(0, 0)
+        corner = Graphene.Size().init(radius, radius)
         rounded = Gsk.RoundedRect()
-        rounded.init(bounds, corner, corner, flat if top_only else corner, flat if top_only else corner)
+        rounded.init(bounds, corner, corner, corner, corner)
         snapshot.push_rounded_clip(rounded)
         snapshot.append_color(color, bounds)
         snapshot.pop()
@@ -10611,18 +10611,61 @@ class UsageRound(Gtk.Widget):
             snapshot_layout(snapshot, layout, x, y, color)
 
 
+def monotone_tangents(points):
+    """The tangent at each point of a monotone cubic curve (T3 Code UsageProviderChart, MIT): no overshoot between points."""
+    count = len(points)
+    if count < 2:
+        return [0]
+    slopes = []
+    for index in range(count - 1):
+        dx = points[index + 1][0] - points[index][0]
+        dy = points[index + 1][1] - points[index][1]
+        slopes.append(0 if dx == 0 else dy / dx)
+    tangents = [0] * count
+    tangents[0], tangents[-1] = slopes[0], slopes[-1]
+    for index in range(1, count - 1):
+        previous, following = slopes[index - 1], slopes[index]
+        tangents[index] = 0 if previous * following <= 0 else (previous + following) / 2
+    for index in range(count - 1):
+        slope = slopes[index]
+        if slope == 0:
+            tangents[index] = tangents[index + 1] = 0
+            continue
+        a, b = tangents[index] / slope, tangents[index + 1] / slope
+        magnitude = a * a + b * b
+        if magnitude > 9:
+            scale = 3 / math.sqrt(magnitude)
+            tangents[index], tangents[index + 1] = scale * a * slope, scale * b * slope
+    return tangents
+
+
+def smooth_curve(points):
+    """Cubic segments (from, c1, c2, to) through the points, with the control points at one third of each step (T3 Code)."""
+    if len(points) < 2:
+        return []
+    tangents, segments = monotone_tangents(points), []
+    for index in range(len(points) - 1):
+        (from_x, from_y), (to_x, to_y) = points[index], points[index + 1]
+        dx = to_x - from_x
+        segments.append(((from_x, from_y), (from_x + dx / 3, from_y + tangents[index] * dx / 3),
+                         (to_x - dx / 3, to_y - tangents[index + 1] * dx / 3), (to_x, to_y)))
+    return segments
+
+
 class UsageChart(Gtk.Widget):
-    """The chart: stacked bars per bucket over three dashed gridlines, with a tooltip box for the hovered bar."""
+    """The chart: layered curves, one point per bucket at its center, over three gridlines and the baseline, with a hover line and a tooltip box.
+    Each series starts at zero, so the y maximum is the largest single value, not the sum (as in T3 Code)."""
     TOP, BOTTOM, LEFT, HEIGHT = 8, 220, 48, 242
 
     def __init__(self):
         super().__init__(accessible_role=Gtk.AccessibleRole.IMG, height_request=self.HEIGHT, hexpand=True)
         self.update_property([Gtk.AccessibleProperty.LABEL], ["Usage over time"])
-        self.series, self.bars, self.buckets, self.sums = [], [], {"unit": "day", "startsMs": []}, []
+        self.series, self.bars, self.buckets, self.sums, self.peaks = [], [], {"unit": "day", "startsMs": []}, [], []
         self.step, self.axis, self.format = 1, [], str
         self.targets, self.starts, self.progress = {}, {}, 1
         self.hover = self.tip = None
         self.pointer = None
+        self.order, self.paths, self.paths_key, self.path_builds = [], [], None, 0
         motion = Gtk.EventControllerMotion()
         motion.connect("motion", self.pointer_motion)
         motion.connect("leave", self.pointer_leave)
@@ -10642,19 +10685,21 @@ class UsageChart(Gtk.Widget):
         return self.BOTTOM - (self.BOTTOM - self.TOP) * value / (self.step * 3)
 
     def set_data(self, series, bars, buckets, format_value, metric, animate):
-        """series: (id, label, color) in stack order; bars: per bucket, the value of each series id."""
+        """series: (id, label, color); bars: per bucket, the value of each series id."""
+        shown = {(index, key): self.value_y(index, key) for index, key in self.targets} \
+            if buckets["startsMs"] == self.buckets["startsMs"] else None
         self.series, self.bars, self.buckets, self.format = series, bars, buckets, format_value
         self.sums = [sum(bar.get(key, 0) for key, _label, _color in series) for bar in bars]
-        self.step, self.axis = usage_axis(max(self.sums, default=0), metric)
-        targets = {}
-        for index, bar in enumerate(bars):
-            stacked = 0
-            for key, _label, _color in series:
-                if bar.get(key, 0) > 0:
-                    targets[(index, key)] = (self.y(stacked), self.y(stacked + bar[key]))
-                    stacked += bar[key]
-        self.starts = {key: self.targets.get(key, (self.BOTTOM, self.BOTTOM)) for key in targets}
-        self.targets, self.hover, self.tip = targets, None, None
+        self.peaks = [max((bar.get(key, 0) for key, _label, _color in series), default=0) for bar in bars]
+        self.step, self.axis = usage_axis(max(self.peaks, default=0), metric)
+        totals = {key: sum(bar.get(key, 0) for bar in bars) for key, _label, _color in series}
+        # The y of each point; a series with only zeros has no curve.
+        self.targets = {(index, key): self.y(bar.get(key, 0)) for index, bar in enumerate(bars) for key in totals if totals[key] > 0}
+        # Each point moves from its shown y, and a new series rises from the baseline; other buckets draw at once.
+        animate = animate and shown is not None
+        self.starts = {point: shown.get(point, self.BOTTOM) for point in self.targets} if animate else dict(self.targets)
+        self.order = sorted((key for key in totals if totals[key] > 0), key=lambda key: -totals[key])
+        self.paths_key, self.hover, self.tip = None, None, None
         self.animation.reset()
         self.progress = 0 if animate else 1
         if animate:
@@ -10663,21 +10708,24 @@ class UsageChart(Gtk.Widget):
             self.set_hover(self.bar_at(*self.pointer))
         self.queue_draw()
 
+    def value_y(self, index, key):
+        start, target = self.starts[(index, key)], self.targets[(index, key)]
+        return start + (target - start) * self.progress
+
     def advance(self, value):
         self.progress = ease_bars(value)
         self.queue_draw()
 
-    def geometry(self):
-        count = len(self.bars)
-        gap = 1 if count >= 90 else 2
-        return gap, (self.get_width() - self.LEFT - gap * (count - 1)) / count if count else 0
+    def centers(self):
+        slot = (self.get_width() - self.LEFT) / len(self.bars) if self.bars else 0
+        return [self.LEFT + (index + .5) * slot for index in range(len(self.bars))]
 
     def bar_at(self, x, y):
-        gap, width = self.geometry()
-        if not self.bars or not self.TOP <= y <= self.BOTTOM or x < self.LEFT:
+        """The nearest point by x, for any pointer over the plot."""
+        if not self.bars or not self.TOP <= y <= self.BOTTOM or not self.LEFT <= x <= self.get_width():
             return None
-        index = int((x - self.LEFT) // (width + gap))
-        return index if index < len(self.bars) and x - self.LEFT - index * (width + gap) <= max(width, 1) else None
+        centers = self.centers()
+        return min(range(len(centers)), key=lambda index: abs(centers[index] - x))
 
     def set_hover(self, index):
         if index == self.hover:
@@ -10687,8 +10735,7 @@ class UsageChart(Gtk.Widget):
         self.queue_draw()
 
     def tip_box(self, index):
-        """The tooltip lines and its box inside the chart: right of the bar, or left when it would leave the chart."""
-        gap, width = self.geometry()
+        """The tooltip lines and its box inside the chart: 12 px right of the point, or 12 px left when it would leave the chart."""
         bar = self.bars[index]
         rows = [(label, self.format(bar.get(key, 0)), color) for key, label, color in self.series]
         title = activity_layout(self, self.full_label(index), 12, Pango.Weight.SEMIBOLD)
@@ -10699,13 +10746,10 @@ class UsageChart(Gtk.Widget):
                    for position, (name, value) in enumerate(zip(names, values)))
         box_width = max(150, 22 + max(line, size(title).width))
         box_height = 2 + 16 + size(title).height + 4 + 18 * len(rows) + 9 + 18
-        x = self.LEFT + index * (width + gap)
-        top_y = self.y(self.sums[index])
-        left = x + width + 8
-        if left + box_width > self.get_width():
-            left = x - box_width - 8
+        x = self.centers()[index]
+        left = x + 12 if x + 12 + box_width <= self.get_width() else x - 12 - box_width
         left = max(0, min(left, self.get_width() - box_width))
-        top = max(0, min(top_y - box_height / 2, self.HEIGHT - box_height))
+        top = max(0, min(self.y(self.peaks[index]) - box_height / 2, self.HEIGHT - box_height))
         return {"index": index, "title": self.full_label(index), "rows": [(label, text) for label, text, _color in rows], "total": self.sums[index],
                 "total_text": self.format(self.sums[index]), "bounds": (left, top, box_width, box_height), "layouts": (title, names, values),
                 "colors": [color for _label, _text, color in rows]}
@@ -10723,53 +10767,73 @@ class UsageChart(Gtk.Widget):
             return f"{ACTIVITY_MONTHS[month.month - 1]} {month.year}"
         return format_clock(starts[index]) if self.buckets["unit"] == "hour" else format_day(starts[index])
 
+    def series_paths(self):
+        """(color, line, area) per series with a value, the largest total first, so smaller series draw over it.
+        Built again only when the data, the width, or the animation progress changes: a hover uses these paths."""
+        key = (self.get_width(), self.progress)
+        if key == self.paths_key:
+            return self.paths
+        self.paths_key, self.paths, self.path_builds = key, [], self.path_builds + 1
+        colors, centers = {key: color for key, _label, color in self.series}, self.centers()
+        for series in self.order:
+            points = [(x, self.value_y(index, series)) for index, x in enumerate(centers)]
+            line, area = Gsk.PathBuilder.new(), Gsk.PathBuilder.new()
+            if len(points) == 1:
+                line.add_circle(Graphene.Point().init(*points[0]), 3)
+                self.paths.append((alpha_color(colors[series]), None, line.to_path()))
+                continue
+            segments = smooth_curve(points)
+            for builder in (line, area):
+                builder.move_to(*points[0])
+                for _from, first, second, to in segments:
+                    builder.cubic_to(*first, *second, *to)
+            area.line_to(points[-1][0], self.BOTTOM)
+            area.line_to(points[0][0], self.BOTTOM)
+            area.close()
+            self.paths.append((alpha_color(colors[series]), line.to_path(), area.to_path()))
+        return self.paths
+
     def do_snapshot(self, snapshot):
         if not ACTIVITY_PATHS or not self.bars:
             return
         palette, chart_width = self.get_root().palette, self.get_width()
         dim, rule, text = alpha_color(palette["dim"]), alpha_color(palette["rule"]), alpha_color(palette["text"])
-        dash = Gsk.Stroke.new(1)
-        dash.set_dash([3, 3])
-        for line, label in enumerate(self.axis, 1):
+        for line in range(4):
             y = self.y(self.step * line)
-            builder = Gsk.PathBuilder.new()
-            builder.move_to(self.LEFT, y)
-            builder.line_to(chart_width, y)
-            snapshot.append_stroke(builder.to_path(), dash, rule)
-            layout = activity_layout(self, label, 11)
-            extents = layout.get_pixel_extents()[1]
-            snapshot_layout(snapshot, layout, self.LEFT - 8 - extents.width, y - extents.height / 2, dim)
-        gap, width = self.geometry()
-        colors = {key: alpha_color(color) for key, _label, color in self.series}
-        for index, bar in enumerate(self.bars):
-            x = self.LEFT + index * (width + gap)
-            shown = [key for key, _label, _color in self.series if (index, key) in self.targets]
-            for key in shown:
-                (from_low, from_high), (to_low, to_high) = self.starts[(index, key)], self.targets[(index, key)]
-                low = from_low + (to_low - from_low) * self.progress
-                high = from_high + (to_high - from_high) * self.progress
-                if low - high > 0:
-                    top = key == shown[-1]
-                    usage_rect(snapshot, x, high, width, low - high, colors[key], min(2, width / 2, low - high) if top else 0, True)
+            usage_rect(snapshot, self.LEFT, math.floor(y), chart_width - self.LEFT, 1, rule)
+            if line:
+                layout = activity_layout(self, self.axis[line - 1], 11)
+                extents = layout.get_pixel_extents()[1]
+                snapshot_layout(snapshot, layout, self.LEFT - 8 - extents.width, y - extents.height / 2, dim)
+        paths = self.series_paths()
+        for color, line, area in paths:
+            if line is None:
+                snapshot.append_fill(area, Gsk.FillRule.WINDING, color)
+                continue
+            area_color = color.copy()
+            area_color.alpha *= .12
+            snapshot.append_fill(area, Gsk.FillRule.WINDING, area_color)
+        stroke = Gsk.Stroke.new(2)
+        stroke.set_line_join(Gsk.LineJoin.ROUND)
+        stroke.set_line_cap(Gsk.LineCap.ROUND)
+        for color, line, _area in paths:
+            if line is not None:
+                snapshot.append_stroke(line, stroke, color)
         layouts = {}
 
         def measure(label):
             layouts.setdefault(label, activity_layout(self, label, 11))
             return layouts[label].get_pixel_extents()[1].width
-        centers = [self.LEFT + index * (width + gap) + width / 2 for index in range(len(self.bars))]
+        centers = self.centers()
         for _index, label, left in usage_axis_labels(self.buckets, centers, chart_width, self.label_step(), measure):
             layout = layouts[label]
             snapshot_layout(snapshot, layout, left, self.BOTTOM + 15 - layout.get_baseline() / Pango.SCALE, dim)
         if self.tip:
-            self.snapshot_tip(snapshot, palette, width, gap, text, rule)
+            usage_rect(snapshot, math.floor(centers[self.tip["index"]]), self.TOP, 1, self.BOTTOM - self.TOP, dim)
+            self.snapshot_tip(snapshot, palette, text, rule)
 
-    def snapshot_tip(self, snapshot, palette, width, gap, text, rule):
-        index, tip = self.tip["index"], self.tip
-        x, top_y = self.LEFT + index * (width + gap), self.y(self.sums[index])
-        if self.sums[index] > 0:
-            outline = Gsk.RoundedRect()
-            outline.init_from_rect(Graphene.Rect().init(x - 1, top_y - 1, width + 2, self.BOTTOM - top_y + 2), 0)
-            snapshot.append_border(outline, [1] * 4, [text] * 4)
+    def snapshot_tip(self, snapshot, palette, text, rule):
+        tip = self.tip
         left, top, box_width, box_height = tip["bounds"]
         box = Gsk.RoundedRect()
         box.init_from_rect(Graphene.Rect().init(left, top, box_width, box_height), 4)

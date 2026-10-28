@@ -7678,7 +7678,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(pi.get_first_child().get_gicon().get_file().get_basename(), "asb-terminal-symbolic.svg")
         self.assert_no_new_warnings()
 
-    def test_chart_bars_period_and_metric(self):
+    def test_chart_period_and_metric(self):
         window = self.window()
         chart = window.chart
         self.assert_accessible_label(chart, "Usage over time")
@@ -7703,7 +7703,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual((value, sub), ("99.4M", "processed tokens"))
         self.assertRegex(value, r"^[\d.]+[MB]$")
         self.assertFalse(window.note.get_visible())
-        self.assertEqual(chart.axis, ["5M", "10M", "15M"])
+        self.assertEqual(chart.axis, ["2.5M", "5M", "7.5M"])
         window.set_period("90d")
         self.drain(.1)
         self.assertRegex(window.round.center()[0], r"^[\d.]+[MB]$")
@@ -7740,14 +7740,14 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertFalse(chips["studio"].has_css_class("asb-usage-off"))
         self.assert_no_new_warnings()
 
-    def test_the_tooltip_of_a_hovered_bar(self):
+    def test_the_tooltip_of_a_hovered_point(self):
         window = self.window()
         chart = window.chart
-        gap, width = chart.geometry()
+        centers = chart.centers()
         controller = next(item for item in chart.observe_controllers() if isinstance(item, asb.Gtk.EventControllerMotion))
         for index, title in ((20, "Oct 17"), (29, "Oct 26"), (0, "Sep 27")):
             with self.subTest(index=index):
-                controller.emit("motion", chart.LEFT + index * (width + gap) + width / 2, 150)
+                controller.emit("motion", centers[index], 150)
                 tip = chart.tip
                 self.assertEqual((tip["index"], tip["title"]), (index, title))
                 self.assertAlmostEqual(tip["total"], sum(chart.bars[index].values()))
@@ -7758,13 +7758,206 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
                 self.assertLessEqual(left + box_width, chart.get_width())
                 self.assertLessEqual(top + box_height, chart.HEIGHT)
                 self.assertGreaterEqual(box_width, 150)
-        controller.emit("motion", chart.LEFT + 20 * (width + gap) + width / 2, 150)
+        controller.emit("motion", centers[20], 150)
+        self.assertEqual(chart.tip["bounds"][0], centers[20] + 12)
         self.assertEqual((chart.tip["total_text"], chart.tip["rows"]), ("$34.32", [("Codex", "$10.11"), ("Claude Code", "$22.88"), ("OpenCode", "$1.33")]))
-        # The last bar puts the box left of the bar.
-        controller.emit("motion", chart.LEFT + 29 * (width + gap) + width / 2, 150)
-        self.assertLess(chart.tip["bounds"][0] + chart.tip["bounds"][2], chart.LEFT + 29 * (width + gap))
+        # The last point puts the box 12 px left of the point.
+        controller.emit("motion", centers[29], 150)
+        self.assertEqual(chart.tip["bounds"][0] + chart.tip["bounds"][2], centers[29] - 12)
         controller.emit("leave")
         self.assertIsNone(chart.tip)
+        self.assert_no_new_warnings()
+
+    CURVE_SERIES = [("a", "Alpha", "#e07a5f"), ("b", "Beta", "#5b8def"), ("c", "Gamma", "#8c929a")]
+
+    def curve_chart(self, bars, unit="day"):
+        """The chart of a shown Usage window with made-up bars, one bucket per day (or month) from Oct 1, 2026."""
+        window = self.window()
+        start = int(asb.datetime(2026, 10, 1).timestamp() * 1000)
+        step = 86_400_000 if unit == "day" else 31 * 86_400_000
+        buckets = {"unit": unit, "startsMs": [start + index * step for index in range(len(bars))]}
+        window.chart.set_data(self.CURVE_SERIES, bars, buckets, asb.format_cost, "cost", False)
+        return window, window.chart
+
+    @staticmethod
+    def motion(chart):
+        return next(item for item in chart.observe_controllers() if isinstance(item, asb.Gtk.EventControllerMotion))
+
+    def test_curve_points_sit_at_the_bucket_centers_over_their_labels(self):
+        window = self.window()
+        chart = window.chart
+        slot = (chart.get_width() - chart.LEFT) / 30
+        centers = chart.centers()
+        self.assertEqual(len(centers), 30)
+        for index, x in enumerate(centers):
+            self.assertAlmostEqual(x, chart.LEFT + (index + .5) * slot)
+        measure = lambda text: asb.activity_layout(chart, text, 11).get_pixel_extents()[1].width
+        labels = asb.usage_axis_labels(chart.buckets, centers, chart.get_width(), chart.label_step(), measure)
+        self.assertEqual(labels[-1][1], "Today")
+        for index, text, left in labels:
+            self.assertLessEqual(left, centers[index])
+            self.assertGreaterEqual(left + measure(text), centers[index])
+        self.assert_no_new_warnings()
+
+    def test_the_y_maximum_follows_the_largest_single_series(self):
+        # Each bucket sums to 3 times its largest series.
+        _window, chart = self.curve_chart([{"a": 100, "b": 100, "c": 100}, {"a": 40, "b": 40, "c": 40}])
+        self.assertEqual(chart.peaks, [100, 40])
+        self.assertEqual(chart.sums, [300, 120])
+        self.assertEqual((chart.step, chart.axis), asb.usage_axis(100, "cost"))
+        self.assertEqual(chart.axis, ["$50", "$100", "$150"])
+        self.assertAlmostEqual(chart.targets[(0, "a")], chart.y(100))
+        self.assertGreater(chart.targets[(0, "a")], chart.TOP)
+        self.assert_no_new_warnings()
+
+    def test_the_largest_series_draws_first(self):
+        _window, chart = self.curve_chart([{"a": 5, "b": 30, "c": 10}, {"a": 5, "b": 20, "c": 12}])
+        self.assertEqual(chart.order, ["b", "c", "a"])
+        colors = {key: asb.alpha_color(color) for key, _label, color in self.CURVE_SERIES}
+        self.assertEqual([color.to_string() for color, _line, _area in chart.series_paths()],
+                         [colors[key].to_string() for key in ("b", "c", "a")])
+        self.assert_no_new_warnings()
+
+    def test_the_curves_stay_between_their_points(self):
+        values = [0, 0, 100, 0, 5, 5, 80, 79, 81, 0, 60, 2]
+        _window, chart = self.curve_chart([{"a": value, "b": value / 2} for value in values])
+        centers = chart.centers()
+        for key in ("a", "b"):
+            points = [(x, chart.targets[(index, key)]) for index, x in enumerate(centers)]
+            for (start, first, second, end) in asb.smooth_curve(points):
+                # The control points sit at one third and two thirds of the step.
+                self.assertAlmostEqual(first[0] - start[0], (end[0] - start[0]) / 3)
+                self.assertAlmostEqual(end[0] - second[0], (end[0] - start[0]) / 3)
+                low, high = min(start[1], end[1]), max(start[1], end[1])
+                for step in range(1, 40):
+                    t = step / 40
+                    y = (1 - t) ** 3 * start[1] + 3 * (1 - t) ** 2 * t * first[1] + 3 * (1 - t) * t * t * second[1] + t ** 3 * end[1]
+                    self.assertGreaterEqual(y, low - 1e-6)
+                    self.assertLessEqual(y, high + 1e-6)
+                    self.assertTrue(chart.TOP - 1e-6 <= y <= chart.BOTTOM + 1e-6)
+        for _color, line, area in chart.series_paths():
+            for path in (line, area):
+                found, bounds = path.get_bounds()
+                self.assertTrue(found)
+                self.assertGreaterEqual(bounds.get_y(), chart.TOP - .01)
+                self.assertLessEqual(bounds.get_y() + bounds.get_height(), chart.BOTTOM + .01)
+        self.assert_no_new_warnings()
+
+    def test_the_hover_finds_the_nearest_point_with_its_line_and_tooltip(self):
+        window = self.window()
+        chart, motion = window.chart, self.motion(window.chart)
+        centers = chart.centers()
+        slot = centers[1] - centers[0]
+        self.drain(.4)
+        before = self.pixels(chart)
+        # Any pointer y over the plot finds the point nearest by x.
+        for x, y, index in ((centers[7] + .4 * slot, chart.TOP, 7), (centers[8] - .4 * slot, chart.BOTTOM, 8), (chart.get_width() - 1, 100, 29)):
+            with self.subTest(x=x, y=y):
+                motion.emit("motion", x, y)
+                self.assertEqual((chart.hover, chart.tip["index"]), (index, index))
+        motion.emit("motion", chart.LEFT - 1, 100)
+        self.assertIsNone(chart.tip)
+        motion.emit("motion", centers[7] + .4 * slot, chart.BOTTOM + 1)
+        self.assertIsNone(chart.tip)
+        motion.emit("motion", centers[7] + .4 * slot, 120)
+        self.drain(.1)
+        bar = chart.bars[7]
+        self.assertEqual(chart.tip["rows"], [(label, asb.format_cost(bar.get(key, 0))) for key, label, _color in chart.series])
+        self.assertEqual(chart.tip["total_text"], asb.format_cost(sum(bar.values())))
+        # The hover line: 1 px in the dim color from TOP to BOTTOM at the point x.
+        data, stride = self.pixels(chart)
+        dim = asb.rgba(window.palette["dim"])
+        hex_dim = "#" + "".join(f"{round(channel * 255):02x}" for channel in (dim.red, dim.green, dim.blue))
+        x = math.floor(centers[7])
+        pixel = lambda pixels, x, y: pixels[y * stride + x * 4:y * stride + x * 4 + 4]
+        self.assertEqual("#" + pixel(data, x, chart.TOP + 1)[:3].hex(), hex_dim)
+        # The line covers the whole plot height and is 1 px wide (away from the shadow of the tooltip box).
+        _left, top, _width, height = chart.tip["bounds"]
+        for y in range(chart.TOP, chart.BOTTOM, 4):
+            self.assertNotEqual(pixel(data, x, y), pixel(before[0], x, y))
+            if not top - 24 <= y <= top + height + 30:
+                self.assertEqual((pixel(data, x - 2, y), pixel(data, x + 2, y)), (pixel(before[0], x - 2, y), pixel(before[0], x + 2, y)))
+        motion.emit("leave")
+        self.assertIsNone(chart.tip)
+        self.drain(.1)
+        self.assertEqual(self.pixels(chart), before)
+        self.assert_no_new_warnings()
+
+    def test_the_tooltip_stays_on_its_point_after_a_refresh(self):
+        window = self.window()
+        chart = window.chart
+        self.motion(chart).emit("motion", chart.centers()[5], 150.)
+        old = chart.tip["total"]
+        for record in window.data["records"]:
+            if record["cost"]:
+                record["cost"]["total"] *= 2
+        window.render_view()
+        self.assertEqual((chart.hover, chart.tip["index"]), (5, 5))
+        self.assertAlmostEqual(chart.tip["total"], 2 * old, delta=.02)
+        self.assertEqual(chart.tip["total_text"], asb.format_cost(chart.sums[5]))
+        self.assert_no_new_warnings()
+
+    def test_one_bucket_shows_dots_with_a_tooltip(self):
+        _window, chart = self.curve_chart([{"a": 12, "b": 30, "c": 0}], "month")
+        x = chart.centers()[0]
+        self.assertAlmostEqual(x, chart.LEFT + (chart.get_width() - chart.LEFT) / 2)
+        paths = chart.series_paths()
+        self.assertEqual(len(paths), 2)
+        for (_color, line, dot), value in zip(paths, (30, 12)):
+            self.assertIsNone(line)
+            found, bounds = dot.get_bounds()
+            self.assertTrue(found)
+            self.assertAlmostEqual(bounds.get_width(), 6, delta=.01)
+            self.assertAlmostEqual(bounds.get_x() + 3, x, delta=.01)
+            self.assertAlmostEqual(bounds.get_y() + 3, chart.y(value), delta=.01)
+        self.drain(.1)
+        self.pixels(chart)
+        self.motion(chart).emit("motion", chart.LEFT + 5, 100)
+        self.assertEqual((chart.tip["index"], chart.tip["title"], chart.tip["total_text"]), (0, "October 2026", "$42.00"))
+        self.assert_no_new_warnings()
+
+    def test_a_series_with_only_zeros_has_no_curve(self):
+        _window, chart = self.curve_chart([{"a": 3, "b": 0, "c": 1}, {"a": 4, "b": 0, "c": 0}])
+        self.assertEqual(chart.order, ["a", "c"])
+        self.assertEqual(len(chart.series_paths()), 2)
+        self.assertNotIn((0, "b"), chart.targets)
+        self.assert_no_new_warnings()
+
+    def test_a_hover_does_not_build_the_curves_again(self):
+        window = self.window()
+        chart = window.chart
+        self.drain(.4)
+        draw = lambda: chart.do_snapshot(asb.Gtk.Snapshot())
+        draw()
+        builds = chart.path_builds
+        motion = self.motion(chart)
+        for x in chart.centers():
+            motion.emit("motion", x, 150.)
+            draw()
+        motion.emit("leave")
+        draw()
+        self.assertEqual(chart.path_builds, builds)
+        chart.set_data(chart.series, chart.bars, chart.buckets, chart.format, "cost", False)
+        draw()
+        draw()
+        self.assertEqual(chart.path_builds, builds + 1)
+        self.assert_no_new_warnings()
+
+    def test_the_curves_move_only_between_the_same_buckets(self):
+        window = self.window()
+        chart = window.chart
+        shown = dict(chart.targets)
+        window.set_metric("tokens")
+        # The same buckets: each point starts at its shown y.
+        self.assertEqual(chart.progress, 0)
+        self.assertEqual(chart.starts, {point: shown.get(point, chart.BOTTOM) for point in chart.targets})
+        self.drain(.4)
+        self.assertEqual(chart.progress, 1)
+        # Other buckets: the new curves draw at once.
+        window.set_period("24h")
+        self.drain(.05)
+        self.assertEqual(chart.progress, 1)
+        self.assertEqual(chart.starts, chart.targets)
         self.assert_no_new_warnings()
 
     @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
@@ -7801,8 +7994,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         window = self.window()
         chart, ring = window.chart, window.round
         chart_motion = next(c for c in chart.observe_controllers() if isinstance(c, asb.Gtk.EventControllerMotion))
-        gap, width = chart.geometry()
-        chart_motion.emit("motion", chart.LEFT + 2 * (width + gap) + width / 2, 150.)
+        chart_motion.emit("motion", chart.centers()[2], 150.)
         self.assertEqual(chart.hover, 2)
         bars = [{key: value * 2 for key, value in bar.items()} for bar in chart.bars]
         chart.set_data(chart.series, bars, chart.buckets, chart.format, "cost", False)
