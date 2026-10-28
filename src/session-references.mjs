@@ -83,7 +83,6 @@ export function rowReference(row, { machineId, sourceId, scopeTag }, noScope = '
 
 export const validScopeTag = (value) => matches(SCOPE, value);
 export const validMachineId = (value) => matches(MACHINE, value);
-export const validSourceId = (value) => matches(SOURCE, value);
 
 // The keyed input of a source scope tag: the provider and its configured folders, as the registry stores them.
 // A JSON array of strings is unambiguous, and the first item separates this use from all others.
