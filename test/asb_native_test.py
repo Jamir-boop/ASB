@@ -9097,6 +9097,69 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         blocks = [child for child in self.tree(window.thread_list) if isinstance(child, asb.Gtk.Box) and child.has_css_class("asb-msg-block")]
         self.assertEqual(blocks, list(window.thread_blocks.values()))
 
+    def open_long_thread(self):
+        window = self.window()
+        ids = self.long_thread()
+        window.refresh(); self.drain(.3)
+        window.open_thread("pair", ("icons", "lint"))
+        self.wait_for(lambda: self.steps_done(window) and len(window.thread_blocks) == 60, 6)
+        self.assertEqual(list(window.thread_blocks), ids)
+        return window
+
+    def test_a_refresh_with_the_same_thread_look_keeps_every_thread_widget(self):
+        window = self.open_long_thread()
+        children = self.tree(window.thread_list)
+        blocks = dict(window.thread_blocks)
+        self.extra.append(["m-other", "docs", "release-plan", self.sample["nowMs"] - 500, "accepted", "", "Another pair."])
+        window.refresh()
+        self.assertIsNone(window.thread_idle)
+        self.drain(.3)
+        self.assertEqual(window.view["recent"][0]["id"], "m-other")
+        self.assertEqual(self.tree(window.thread_list), children)
+        self.assertEqual(window.thread_blocks, blocks)
+        self.assertTrue(all(window.thread_blocks[key] is block for key, block in blocks.items()))
+        self.assertEqual((window.thread_idle, window.scroll_tick), (None, None))
+        self.assertEqual(window.thread_route.get_label(), "icons ⇄ lint")
+        self.assertEqual(window.thread_counts.get_label(), f"→ {sum(record[1] == 'icons' for record in self.extra[:70])}  "
+                                                           f"← {sum(record[1] == 'lint' for record in self.extra[:70])}")
+
+    def test_a_new_thread_reply_keeps_the_block_at_the_view_top(self):
+        window = self.open_long_thread()
+        adjustment = window.thread_scroll.get_vadjustment()
+        adjustment.set_value(adjustment.get_upper() / 2)
+        self.next_frame(window)
+        self.assertFalse(window.thread_stick)
+        kept, top = next((key, self.view_top(window, block)[0]) for key, block in window.thread_blocks.items()
+                         if self.view_top(window, block)[0] + block.get_height() > 0)
+        self.assertGreater(list(window.thread_blocks).index(kept), 10)
+        self.extra.append(["m-long-new", "icons", "lint", self.sample["nowMs"] - 500, "accepted", "", "One more message."])
+        tops = []
+        clock = window.get_frame_clock()
+        handler = clock.connect("after-paint", lambda *_args: tops.append(self.view_top(window, window.thread_blocks[kept])[0]))
+        old = window.thread_blocks[kept]
+        window.refresh()
+        self.assertIsNot(window.thread_blocks[kept], old)
+        self.assertLess(len(window.thread_blocks), 60)
+        self.wait_for(lambda: self.steps_done(window) and len(window.thread_blocks) == 60, 6)
+        clock.disconnect(handler)
+        self.assertEqual(list(window.thread_blocks)[-1], "m-long-new")
+        self.assertGreater(len(tops), 2)
+        self.assertTrue(all(abs(value - top) <= 1 for value in tops), (top, tops))
+        self.assertFalse(any(block.has_css_class("asb-msg-hl") for block in window.thread_blocks.values()))
+
+    def test_a_new_message_at_the_bottom_shows_at_the_bottom(self):
+        window = self.open_long_thread()
+        self.assertTrue(window.thread_stick)
+        self.extra.append(["m-long-new", "lint", "icons", self.sample["nowMs"] - 500, "accepted", "", "One more message."])
+        window.refresh()
+        self.next_frame(window)
+        newest = window.thread_blocks["m-long-new"]
+        adjustment = window.thread_scroll.get_vadjustment()
+        _x, y, _width, height = self.place(window, newest)
+        # The newest block ends at the view bottom, over the 4 px bottom padding of the list.
+        self.assertTrue(adjustment.get_page_size() - 12 <= y + height <= adjustment.get_page_size(), (y, height))
+        self.assertEqual(adjustment.get_value(), adjustment.get_upper() - adjustment.get_page_size())
+
     def thread_page_back(self, window):
         head = window.ledger.get_child_by_name("thread").get_first_child()
         return head.get_first_child()

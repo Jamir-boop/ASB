@@ -9606,7 +9606,7 @@ class MessagesWindow(ActivityWindow):
         super().__init__(application, base, fetch=fetch, clock=clock)
         self.view = self.thread = self.thread_reply = self.thread_error = self.pending_session = self.scroll_target = self.scroll_tick = None
         self.reply_key, self.thread_blocks, self.thread_top = None, {}, None
-        self.thread_idle = self.thread_anchor = self.thread_anchor_y = None
+        self.thread_idle = self.thread_anchor = self.thread_anchor_y = self.thread_shown = self.scroll_top = None
         self.thread_entries, self.thread_lo, self.thread_hi = [], 0, -1
         theme = Gtk.IconTheme.get_for_display(self.get_display())
         icons = str(Path(__file__).parents[1] / "assets" / "icons")
@@ -10127,8 +10127,38 @@ class MessagesWindow(ActivityWindow):
     def thread_scrolled(self, adjustment):
         self.thread_stick = adjustment.get_value() + adjustment.get_page_size() >= adjustment.get_upper() - 4
 
+    def thread_look(self):
+        """What the thread list shows of the reply: a reply with the same look needs no new list."""
+        thread, reply, seats = self.thread, self.thread_reply, self.view["seats"]
+        if reply is None or self.thread_missing():
+            return None
+        machine_index = {machine["machineId"]: number for number, machine in enumerate(self.view["machines"])}
+        now = self.data.get("nowMs") or self.clock()
+        return (reply.get("total", 0), tuple(
+            (record["id"], message_block(thread, record, seats), machine_index.get((seats.get(record["from"]) or {}).get("machineId"), 0),
+             day_line(record["atMs"], now), message_status(record), message_status_label(record), message_text(record))
+            for record in reply.get("messages") or []))
+
+    def thread_view_place(self):
+        """The first block whose bottom is below the view top: its message id, the ids after it, and its y in the view."""
+        value = self.thread_scroll.get_vadjustment().get_value()
+        ids = list(self.thread_blocks)
+        for number, (message_id, block) in enumerate(self.thread_blocks.items()):
+            found, point = block.compute_point(self.thread_list, Graphene.Point().init(0, 0))
+            if found and point.y + block.get_height() > value:
+                return ids[number:], point.y - value
+        return None
+
     def render_thread_list(self):
         thread, reply = self.thread, self.thread_reply
+        look = self.thread_look()
+        if look is not None and look == self.thread_shown and not thread.get("target"):
+            # A refresh with the same thread look: keep every widget and the reading place.
+            return
+        self.thread_shown = look
+        place = None
+        if not self.thread_stick and not thread.get("target") and self.thread_blocks and self.thread_list.get_mapped():
+            place = self.thread_view_place()
         self.stop_thread_steps()
         remove_children(self.thread_list)
         self.thread_blocks, self.thread_top = {}, None
@@ -10171,13 +10201,21 @@ class MessagesWindow(ActivityWindow):
         height = self.thread_scroll.get_height() or self.ledger.get_height() - self.thread_head.measure(Gtk.Orientation.VERTICAL, -1)[1]
         last = len(entries) - 1
         index = next((index for index, entry in enumerate(entries) if entry[0]["id"] == thread.get("target")), None)
-        middle = last if index is None else index
+        kept = None
+        if index is None and place is not None:
+            # The view was not at the bottom: build around the block at the view top, or the nearest newer one that is left.
+            numbers = {entry[0]["id"]: number for number, entry in enumerate(entries)}
+            kept = next((numbers[message_id] for message_id in place[0] if message_id in numbers), None)
+        middle = last if index is None and kept is None else index if kept is None else kept
         self.thread_lo = self.thread_hi = middle
         filled = self.add_thread_block(middle, True, max(width, 0))
         if self.get_frame_clock() is None or width <= 0:
             # No frames to wait for, or no size yet: build the whole list.
             self.fill_thread(-1, math.inf, 0)
             self.fill_thread(1, math.inf, 0)
+        elif kept is not None:
+            self.fill_thread(1, height - place[1] - filled, width)
+            self.fill_thread(-1, place[1], width)
         elif index is None:
             self.fill_thread(-1, height - filled, width)
         else:
@@ -10192,6 +10230,8 @@ class MessagesWindow(ActivityWindow):
             target.add_css_class("asb-msg-hl")
             GLib.timeout_add(1200, lambda: target.remove_css_class("asb-msg-hl") or False)
             self.scroll_thread(target)
+        elif kept is not None:
+            self.scroll_thread(self.thread_anchor, place[1])
         elif self.thread_stick:
             self.scroll_thread("bottom")
         elif self.thread_steps_left():
@@ -10305,9 +10345,9 @@ class MessagesWindow(ActivityWindow):
         self.thread_idle = self.scroll_tick = self.scroll_target = self.thread_anchor = self.thread_anchor_y = None
         self.thread_entries, self.thread_lo, self.thread_hi = [], 0, -1
 
-    def scroll_thread(self, target):
-        """Scroll once the new list has its layout: to the bottom, or with a message in the middle."""
-        self.scroll_target = target
+    def scroll_thread(self, target, top=None):
+        """Scroll once the new list has its layout: to the bottom, or with a message in the middle or at a y in the view."""
+        self.scroll_target, self.scroll_top = target, top
         self.watch_thread_layout()
 
     def watch_thread_layout(self):
@@ -10331,7 +10371,7 @@ class MessagesWindow(ActivityWindow):
             else:
                 found, point = target.compute_point(self.thread_list, Graphene.Point().init(0, 0))
                 if found:
-                    adjustment.set_value(max(0, point.y - adjustment.get_page_size() / 2))
+                    adjustment.set_value(max(0, point.y - (adjustment.get_page_size() / 2 if self.scroll_top is None else self.scroll_top)))
             self.scroll_target = None
         elif self.thread_anchor_y is not None:
             # Blocks went in above the anchor: move the view by their height.
