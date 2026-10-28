@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
-import { DashboardSnapshot } from '../src/dashboard-snapshot.mjs';
+import { DashboardSnapshot, reuseCheck } from '../src/dashboard-snapshot.mjs';
 import { loadClaudeDesktopCodeThreads, invalidateClaudeData } from '../src/claude-data.mjs';
 import { invalidateCodexData } from '../src/codex-data.mjs';
 import { loadSwitchboardDashboard, switchboardWatchPaths } from '../src/switchboard.mjs';
@@ -377,4 +377,45 @@ test('a failed due full scan makes the service poll wait for the retry window, t
   assert.equal(f.scans.length, scans + 1);
   assert.deepEqual(lastScan(f), { codex: null, claude: null });
   assert.equal(sessionStats(f).length, 9);
+});
+
+// The reuse check before its precomputed keys: each call resolved the path and made the hint and root prefixes again.
+function resolvingReuseCheck({ platform, changed, directories, recursive }) {
+  const watchKey = (filePath) => platform === 'win32' ? path.resolve(filePath).toLowerCase() : path.resolve(filePath);
+  const directoryKeys = new Set(directories.map(watchKey));
+  const recursiveKeys = recursive.map(watchKey);
+  const changedKeys = changed.map(watchKey);
+  return (filePath) => {
+    const target = watchKey(filePath);
+    return !changedKeys.some((hint) => target === hint || target.startsWith(`${hint}${path.sep}`))
+      && (directoryKeys.has(target) || directoryKeys.has(path.dirname(target))
+        || recursiveKeys.some((root) => target.startsWith(`${root}${path.sep}`)));
+  };
+}
+
+test('the reuse check gives the answers of a check that resolves each path, and resolves no normal POSIX path', (t) => {
+  const watch = {
+    changed: ['/made-up/projects/p1/changed.jsonl', '/made-up/projects/p2/', '/made-up/Projects/p3'],
+    directories: ['/made-up/projects', '/made-up/projects/p1', '/made-up/projects/p2', '/made-up/Projects/p3', '/made-up/app/sessions/'],
+    recursive: ['/made-up/codex/sessions'],
+  };
+  const paths = ['/made-up/projects/p1/changed.jsonl', '/made-up/projects/p1/changed.jsonl/inner', '/made-up/projects/p1/changed.jsonlx',
+    '/made-up/projects/p1/other.jsonl', '/made-up/projects/p1', '/made-up/projects/p2/a.jsonl', '/made-up/projects/p2',
+    '/made-up/projects/p1/deep/file.jsonl', '/made-up/codex/sessions/2026/10/27/rollout.jsonl', '/made-up/codex/sessions',
+    '/made-up/codex/sessionsx/a.jsonl', '/made-up/outside/a.jsonl', '/', '/made-up/projects/p1/../p1/other.jsonl',
+    '/made-up/projects/p1/./other.jsonl', '/made-up/projects/p1/other.jsonl/', '/made-up//projects/p1/other.jsonl',
+    '/made-up/projects/p1/../p2/a.jsonl', '/made-up/projects/p1/.hidden.jsonl', '/made-up/projects/p1/..b.jsonl',
+    '/MADE-UP/PROJECTS/P1/OTHER.JSONL', '/made-up/projects/P3/a.jsonl', '/made-up/Projects/p3/a.jsonl', '/made-up/app/sessions/x.json',
+    'relative/a.jsonl'];
+  for (const platform of ['linux', 'win32']) {
+    const expected = resolvingReuseCheck({ platform, ...watch });
+    const actual = reuseCheck({ platform, ...watch });
+    for (const target of [...paths, ...paths]) assert.equal(actual(target), expected(target), `${platform} ${target}`);
+  }
+  const check = reuseCheck({ platform: 'linux', ...watch });
+  const resolve = t.mock.method(path, 'resolve');
+  for (const target of ['/made-up/projects/p1/other.jsonl', '/made-up/projects/p1', '/made-up/codex/sessions/2026/10/27/rollout.jsonl']) check(target);
+  assert.equal(resolve.mock.callCount(), 0);
+  check('/made-up/projects/p1/../p1/other.jsonl');
+  assert.equal(resolve.mock.callCount(), 1);
 });

@@ -18,7 +18,7 @@ export async function loadClaudeCliThreads({ projectsDir = DEFAULT_CLAUDE_PROJEC
     ? await readLiveClaudeRegistryFolder(registryDir, { windows: platform === 'win32', registryReads }).catch(() => null) : null;
   const live = (registry || []).filter((record) => record.entrypoint === 'cli');
   const liveById = new Map(live.map((record) => [record.sessionId, record]));
-  const projectIndex = await indexClaudeProjectFiles(projectsDir, { fileScan, cacheScope })
+  const projectIndex = await indexClaudeProjectFiles(projectsDir, { fileScan, cacheScope, scanReads: registryReads })
     .catch(() => ({ files: new Map(), subagentsBySession: new Map(), agentLogs: new Map() }));
   const { files, rootCopies, subagentsBySession, agentLogs } = projectIndex;
   // Root transcripts only: subagent and workflow logs are deeper in the project folder.

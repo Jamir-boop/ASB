@@ -394,6 +394,7 @@ export async function loadSwitchboardDashboard({
     { id: 'claude-desktop-code', provider: 'claude-desktop-code', label: 'Claude Desktop Code', enabled: true },
   ];
   if (sources) retainSourceCaches(inputs);
+  // The reads that the loaders of one scan share: the registry folders and the Claude project indexes.
   const registryReads = new Map();
   const results = await Promise.allSettled(inputs.map(async (source) => {
     if (!source.enabled) return null;

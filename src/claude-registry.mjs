@@ -20,11 +20,11 @@ export async function processStart(pid) {
 }
 
 // Windows has no uid and no O_NOFOLLOW: lstat first, as ownedJson in bridge/src/platform.ts does.
-async function readRecord(file, windows = false) {
+async function readRecord(file, windows = false, linkInfo = null) {
   let handle;
   try {
     if (windows) {
-      const info = await fs.lstat(file);
+      const info = linkInfo || await fs.lstat(file);
       if (!info.isFile() || info.size > MAX_RECORD_BYTES) return null;
     }
     handle = await fs.open(file, windows ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -42,6 +42,12 @@ async function readRecord(file, windows = false) {
     return size > info.size ? null : JSON.parse(buffer.subarray(0, size));
   } catch { return null; } finally { await handle.close(); }
 }
+
+// The parsed records of each registry folder by file name, with the lstat of the file before its read. A file with the same lstat
+// is not opened again; the process check of its record runs at each read, because a process can end with no file change.
+const parsedRecords = new Map();
+const RECORD_SETTLE_MS = 2_000;
+const sameRecordFile = (a, b) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
 
 export async function readLiveClaudeRegistryFolder(root, { windows = false, registryReads = null } = {}) {
   if (!registryReads) return readLiveClaudeRegistry([root], { windows });
@@ -70,9 +76,25 @@ export async function readLiveClaudeRegistry(roots, { windows = false, isAlive =
   const records = new Map();
   for (const root of realRoots) {
     let files;
-    try { files = await fs.readdir(root); } catch (error) { if (['ENOENT', 'ENOTDIR'].includes(error.code)) continue; throw error; }
+    const cacheKey = `${windows}\0${root}`;
+    try { files = await fs.readdir(root); } catch (error) {
+      parsedRecords.delete(cacheKey);
+      if (['ENOENT', 'ENOTDIR'].includes(error.code)) continue;
+      throw error;
+    }
+    const previous = parsedRecords.get(cacheKey);
+    const parsed = new Map();
+    parsedRecords.set(cacheKey, parsed);
     for (const file of files.filter((name) => /^[1-9][0-9]*\.json$/.test(name))) {
-      const record = await readRecord(path.join(root, file), windows);
+      const filePath = path.join(root, file);
+      const readAtMs = Date.now();
+      const info = await fs.lstat(filePath).catch(() => null);
+      if (!info) continue;
+      const cached = previous?.get(file);
+      const record = cached && sameRecordFile(cached.info, info) ? cached.record : await readRecord(filePath, windows, info);
+      // File times are coarse, so a second write of the same size soon after the first can keep the stat: a file changed in the last
+      // 2 s is read again. A failed read (for example, no free file handle) is also tried again at the next read.
+      if (record && Math.max(info.mtimeMs, info.ctimeMs) < readAtMs - RECORD_SETTLE_MS) parsed.set(file, { info, record });
       if (!record || typeof record !== 'object' || Array.isArray(record) || record.pid !== Number(file.slice(0, -5))
         || typeof record.name !== 'string' || typeof record.sessionId !== 'string'
         || record.procStart === undefined || record.procStart === null) continue;

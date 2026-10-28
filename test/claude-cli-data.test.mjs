@@ -364,3 +364,35 @@ for (const reuse of [true, false]) {
     }
   });
 }
+
+test('one scan checks each Claude project folder once for the desktop and the CLI loaders, and a new scan checks again', async (t) => {
+  const nowMs = Date.now();
+  const { home, projectsDir } = await configHome(t);
+  const appDir = path.join(home, 'app');
+  const localId = 'local_00000000-0000-4000-8000-000000000001';
+  await mkdir(path.join(appDir, 'claude-code-sessions'), { recursive: true });
+  await writeFile(path.join(appDir, 'claude-code-sessions', `${localId}.json`), JSON.stringify({ sessionId: localId,
+    cliSessionId: 'desktop-made-up', title: 'Made-up desktop task', cwd: '/work/desktop', createdAt: nowMs - 60_000, lastActivityAt: nowMs - 50_000 }));
+  await transcript(projectsDir, 'desktop-made-up', { nowMs, entrypoint: 'claude-desktop' });
+  await transcript(projectsDir, 'cli-made-up', { nowMs });
+  const subagents = path.join(projectsDir, 'project', 'cli-made-up', 'subagents');
+  await mkdir(subagents, { recursive: true });
+  await writeFile(path.join(subagents, 'agent-child.jsonl'), jsonl([{ type: 'user', timestamp: new Date(nowMs - 1000).toISOString(),
+    sessionId: 'agent-child', entrypoint: 'cli', isSidechain: true, message: { role: 'user', content: 'Made-up child prompt' } }]));
+  const folders = [projectsDir, path.join(projectsDir, 'project'), path.dirname(subagents), subagents].sort();
+  const checks = [];
+  const stat = fsPromises.stat;
+  t.mock.method(fsPromises, 'stat', (target, ...args) => {
+    if (folders.includes(String(target))) checks.push(String(target));
+    return stat(target, ...args);
+  });
+  const scan = async () => {
+    checks.length = 0;
+    const { threads } = await loadSwitchboardClaudeThreads({ appDir, projectsDir, nowMs, platform: 'linux', registryReads: new Map() });
+    assert.deepEqual(threads.map((thread) => thread.externalId).sort(), ['cli-made-up', localId]);
+    return checks.sort();
+  };
+  // The first scan walks the folders; the next scan checks the folders of the index that it keeps.
+  assert.deepEqual(await scan(), folders);
+  assert.deepEqual(await scan(), folders);
+});

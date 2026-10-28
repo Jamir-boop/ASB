@@ -18,6 +18,32 @@ const contentText = (dashboard) => {
   return JSON.stringify({ ...rows, summary: { ...(rows.summary || {}) } });
 };
 
+// An absolute POSIX path with no `.` or `..` part, no double separator, and no separator at the end: `path.resolve` keeps it as it is.
+const NOT_NORMAL_POSIX = /\/\/|\/\.\.?(?:\/|$)|.\/$/;
+
+// The reuse check of one trusted scan: true for a path that is inside no changed hint and is a watched folder, a file in one,
+// or a path below a recursive watch root. The loaders build their paths with `path.join` from resolved roots, so on POSIX a normal
+// absolute path is its own key; Windows keys are in lower case. Each path gets its answer once per scan.
+export function reuseCheck({ platform = process.platform, changed = [], directories = [], recursive = [] } = {}) {
+  const watchKey = platform === 'win32' ? (filePath) => path.resolve(filePath).toLowerCase()
+    : (filePath) => filePath.startsWith('/') && !NOT_NORMAL_POSIX.test(filePath) ? filePath : path.resolve(filePath);
+  const changedKeys = new Set(changed.map(watchKey));
+  const changedPrefixes = [...changedKeys].map((hint) => `${hint}${path.sep}`);
+  const directoryKeys = new Set(directories.map(watchKey));
+  const recursivePrefixes = recursive.map((root) => `${watchKey(root)}${path.sep}`);
+  const answers = new Map();
+  return (filePath) => {
+    let answer = answers.get(filePath);
+    if (answer !== undefined) return answer;
+    const target = watchKey(filePath);
+    answer = !changedKeys.has(target) && !changedPrefixes.some((prefix) => target.startsWith(prefix))
+      && (directoryKeys.has(target) || directoryKeys.has(path.dirname(target))
+        || recursivePrefixes.some((prefix) => target.startsWith(prefix)));
+    answers.set(filePath, answer);
+    return answer;
+  };
+}
+
 export class DashboardSnapshot {
   constructor({
     dashboardWatchPaths = [],
@@ -193,18 +219,11 @@ export class DashboardSnapshot {
               const age = scanAtMs - (previous?.atMs ?? -Infinity);
               const trusted = !force && dashboardWatchCoverage && previous?.epoch === scanEpoch
                 && age >= 0 && age < fullScanIntervalMs() && !files.has('');
-              const watchKey = (filePath) => dashboardPlatform === 'win32' ? path.resolve(filePath).toLowerCase() : path.resolve(filePath);
               const watched = [...adaptiveWatchers].filter(([, entry]) => entry.spec.source === source);
-              const directories = new Set(watched.map(([root]) => watchKey(root)));
-              const recursive = watched.filter(([, entry]) => entry.spec.recursive && !entry.spec.manualRecursive).map(([root]) => watchKey(root));
-              const changed = [...files.keys()].map(watchKey);
               // shortcut: a lost watch event leaves a card late until the next full scan (30 s in service mode while a row works, 5 min at rest), go back to full scans if watch events prove unreliable
-              sourceScans[source] = trusted ? { canReuse: (filePath) => {
-                const target = watchKey(filePath);
-                return !changed.some((hint) => target === hint || target.startsWith(`${hint}${path.sep}`))
-                  && (directories.has(target) || directories.has(path.dirname(target))
-                    || recursive.some((root) => target.startsWith(`${root}${path.sep}`)));
-              } } : null;
+              sourceScans[source] = trusted ? { canReuse: reuseCheck({ platform: dashboardPlatform, changed: [...files.keys()],
+                directories: watched.map(([root]) => root),
+                recursive: watched.filter(([, entry]) => entry.spec.recursive && !entry.spec.manualRecursive).map(([root]) => root) }) } : null;
             }
             const dashboard = await loadDashboard({ sourceScans });
             for (const source of ['codex', 'claude']) if (!sourceScans[source]) {

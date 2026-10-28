@@ -1235,7 +1235,14 @@ export async function readClaudeRootSignals(entry, subagents, options, agentLogs
   };
 }
 
-export async function indexClaudeProjectFiles(projectsDir = DEFAULT_CLAUDE_PROJECTS_DIR, options = {}) {
+// `scanReads` is the map of the reads that the loaders of one scan share (`registryReads`): the desktop loader and the CLI loader
+// check the folders of one project root once per scan.
+export async function indexClaudeProjectFiles(projectsDir = DEFAULT_CLAUDE_PROJECTS_DIR, { scanReads = null, ...options } = {}) {
+  if (scanReads) {
+    const key = `index\0${projectsDir}\0${options.cacheScope || ''}`;
+    if (!scanReads.has(key)) scanReads.set(key, indexClaudeProjectFiles(projectsDir, options));
+    return scanReads.get(key);
+  }
   const pending = claudeProjectIndexReads.get(projectsDir);
   if (pending) {
     claudeCacheMetrics.projectIndexHits += 1;
@@ -1342,7 +1349,7 @@ export async function loadClaudeDesktopCodeThreads({
   const files = await recentFiles(root, (filePath, name) => /^local_.*\.json$/.test(name)
     && path.basename(path.dirname(filePath)) !== 'waiting-input', maxCount,
     strictMetadataRead ? () => { metadataReadErrors += 1; } : null, { fileScan, cacheScope });
-  const projectIndex = await indexClaudeProjectFiles(projectsDir, { fileScan, cacheScope })
+  const projectIndex = await indexClaudeProjectFiles(projectsDir, { fileScan, cacheScope, scanReads: registryReads })
     .catch(() => ({ files: new Map(), subagentsBySession: new Map(), agentLogs: new Map() }));
   const { subagentsBySession, agentLogs } = projectIndex;
   const parsed = await mapWithConcurrency(files, SIGNAL_CONCURRENCY, async (entry) => {

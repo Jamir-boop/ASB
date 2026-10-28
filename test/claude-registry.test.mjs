@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import { promises as fs, appendFileSync, renameSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { readClaudeAppApprovals, readLiveClaudeRegistry } from '../src/claude-registry.mjs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
+import { processStart, readClaudeAppApprovals, readLiveClaudeRegistry } from '../src/claude-registry.mjs';
 
 // The Windows registry rules, asked for with the windows option: synthetic records and an injected isAlive, on any OS
 // (test/windows-tests.json).
@@ -80,6 +83,36 @@ test('on Windows a record with a message pipe counts only while its pipe is list
   // The names come without `\\.\pipe\`, in other letter case than the record.
   assert.deepEqual(await pids(async () => ['other', `local\\CC-MSG-${'CD'.repeat(16)}`]), [301, 303]);
   assert.deepEqual(await pids(async () => { throw Object.assign(new Error('synthetic'), { code: 'EACCES' }); }), [301, 302, 303]);
+});
+
+test('a registry record with the same file stat is parsed once, and its process check runs at each read', {
+  skip: process.platform !== 'linux',
+}, async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'asb-registry-reuse-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { env: {}, stdio: 'ignore' });
+  t.after(async () => { if (child.exitCode === null && child.signalCode === null) { child.kill(); await once(child, 'exit'); } });
+  await once(child, 'spawn');
+  const file = path.join(root, `${child.pid}.json`);
+  const write = async (name) => writeFileSync(file, JSON.stringify({ pid: child.pid, sessionId: SESSION, name,
+    procStart: await processStart(child.pid), entrypoint: 'cli' }));
+  await write('made-up-a');
+  // A record that changed in the last 2 s is read again (coarse file times).
+  await delay(2_100);
+  const opens = [];
+  const open = fs.open;
+  t.mock.method(fs, 'open', (target, ...args) => { if (target === file) opens.push(target); return open(target, ...args); });
+  const names = async () => (await readLiveClaudeRegistry([root])).map((record) => record.name);
+  assert.deepEqual(await names(), ['made-up-a']);
+  assert.deepEqual(await names(), ['made-up-a']);
+  assert.equal(opens.length, 1);
+  await write('made-up-b');
+  assert.deepEqual(await names(), ['made-up-b']);
+  assert.equal(opens.length, 2);
+  // The process ends with no change of its record file.
+  child.kill();
+  await once(child, 'exit');
+  assert.deepEqual(await names(), []);
 });
 
 const APP_SESSION = 'local_aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
