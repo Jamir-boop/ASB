@@ -3109,12 +3109,56 @@ class DataChecks(unittest.TestCase):
             with self.assertRaises(ValueError):
                 asb.local_base_url(value)
         calls = []
-        sidebar = SimpleNamespace(closed=False, is_active=lambda: False, refresh=lambda: calls.append(True), report_ui=Mock())
+        sidebar = SimpleNamespace(closed=False, is_active=lambda: False, refresh=lambda: calls.append(True), report_ui=Mock(),
+                                  events=SimpleNamespace(connected=False))
         self.assertTrue(asb.SwitchboardWindow.tick(sidebar))
         self.assertEqual(calls, [True])
         sidebar.closed = True
         self.assertFalse(asb.SwitchboardWindow.tick(sidebar))
         self.assertEqual(calls, [True])
+
+    def test_tick_reads_the_list_only_while_the_event_stream_is_down(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        end = threading.Event()
+
+        class Engine(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b'\nevent: connected\ndata: {"version":0,"reason":"connected","sources":{}}\n\n')
+                self.wfile.flush()
+                end.wait(5)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Engine)
+        worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .01}, daemon=True)
+        worker.start()
+        self.addCleanup(worker.join, 1)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.addCleanup(end.set)
+        connects = []
+        stream = SCOPE["EventStream"](f"http://127.0.0.1:{server.server_port}", Mock(), lambda callback, *args: callback(*args),
+                                      None, lambda: connects.append(True))
+        self.addCleanup(stream.close)
+        window = SimpleNamespace(closed=False, events=stream, refresh=Mock(), report_ui=Mock())
+        deadline = time.monotonic() + 5
+        while not stream.connected and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertEqual((stream.connected, connects), (True, [True]))
+        self.assertTrue(asb.SwitchboardWindow.tick(window))
+        window.refresh.assert_not_called()
+        window.report_ui.assert_called_once_with()
+        end.set()
+        deadline = time.monotonic() + 5
+        while stream.connected and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertFalse(stream.connected)
+        self.assertTrue(asb.SwitchboardWindow.tick(window))
+        window.refresh.assert_called_once_with()
 
 
 class MessageChecks(unittest.TestCase):
@@ -7831,6 +7875,7 @@ class NativeIOAuditChecks(unittest.TestCase):
         window.base, window.dashboard, window.signature, window.dashboard_etag = "http://127.0.0.1:1", None, None, None
         window.closed = window.loading = window.refresh_queued = window.refresh_force_queued = window.snapshot_pending = False
         window.refresh_interval_ms, window.clock_interval = 5000, 60
+        window.events = SimpleNamespace(connected=False)
         window.refresh_button, window.sync_unread_setting, window.set_notice, window.update_clock, window.render, window.count = \
             (Mock() for _ in range(6))
         return window

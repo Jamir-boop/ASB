@@ -1972,9 +1972,11 @@ def import_usage_file(base, path):
 
 
 class EventStream:
-    def __init__(self, base, callback, dispatch, on_show_window=None):
+    def __init__(self, base, callback, dispatch, on_show_window=None, on_connected=None):
         self.address = urlsplit(base)
-        self.callback, self.dispatch, self.on_show_window = callback, dispatch, on_show_window
+        self.callback, self.dispatch, self.on_show_window, self.on_connected = callback, dispatch, on_show_window, on_connected
+        # True from the `connected` event of the engine to the end of the stream: each list change then comes as an event.
+        self.connected = False
         self.stopped = threading.Event()
         self.lock, self.socket = threading.Lock(), None
         self.worker = threading.Thread(target=self.run, daemon=True)
@@ -2005,7 +2007,11 @@ class EventStream:
                             raise ValueError("The ASB event is too large.")
                         line = line.decode("utf-8").rstrip("\r\n")
                         if not line:
-                            if event == "dashboard" and data:
+                            if event == "connected":
+                                self.connected = True
+                                if self.on_connected:
+                                    self.dispatch(self.on_connected)
+                            elif event == "dashboard" and data:
                                 value = json.loads("\n".join(data))
                                 if isinstance(value, dict) and value.get("reason") != "connected":
                                     self.dispatch(self.callback)
@@ -2027,6 +2033,7 @@ class EventStream:
             except (HTTPException, OSError, ValueError):
                 pass
             finally:
+                self.connected = False
                 with self.lock:
                     self.socket = None
                 connection.close()
@@ -4870,7 +4877,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 style.connect("notify::" + name, lambda *_args: GLib.idle_add(self.follow_system_style))
         self.connect("realize", self.watch_layout)
         self.timer = GLib.timeout_add(self.refresh_interval_ms, self.tick)
-        self.events = EventStream(self.base, self.source_changed, GLib.idle_add, self.show_window_event)
+        # Each new stream connection also reads the list: changes can come while the stream is down.
+        self.events = EventStream(self.base, self.source_changed, GLib.idle_add, self.show_window_event, self.source_changed)
         if initial_dashboard is not None:
             self.apply_dashboard(initial_dashboard, None)
         elif first_load:
@@ -4893,7 +4901,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 if editor:
                     editor.base = base
         self.events.close()
-        self.events = EventStream(base, self.source_changed, GLib.idle_add, self.show_window_event)
+        self.events = EventStream(base, self.source_changed, GLib.idle_add, self.show_window_event, self.source_changed)
         self.dashboard_etag = None
         self.ui_report_last = None
         self.ui_report_sending = False
@@ -5292,7 +5300,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def tick(self):
         if not self.closed:
             self.report_ui()
-            self.refresh()
+            # While the event stream works, the engine sends an event for each list change, also after its timer scans.
+            if not self.events.connected:
+                self.refresh()
         return not self.closed
 
     def report_ui(self):

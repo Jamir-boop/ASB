@@ -564,7 +564,7 @@ class WidgetCheck(unittest.TestCase):
             return SimpleNamespace(join=waits.append)
         with patch.object(asb, "SOURCE_TOKEN", "fake-token"), \
                 patch.object(asb, "request_async", request), \
-                patch.object(asb, "EventStream", lambda *_args: SimpleNamespace(close=lambda: None)), \
+                patch.object(asb, "EventStream", lambda *_args: SimpleNamespace(close=lambda: None, connected=False)), \
                 patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None):
             window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", theme_path=False, layout_path=False)
             window.present()
@@ -586,7 +586,7 @@ class WidgetCheck(unittest.TestCase):
 
     def test_toolbar_c_one_row_corners_search_filters_and_no_counters(self):
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -696,7 +696,7 @@ class WidgetCheck(unittest.TestCase):
 
     def test_chip_trail_order_matches_filter_chips_after_each_step(self):
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -761,7 +761,7 @@ class WidgetCheck(unittest.TestCase):
 
     def test_six_chips_at_420_keep_drawer_and_filters_pills_visible(self):
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -798,7 +798,7 @@ class WidgetCheck(unittest.TestCase):
 
     def test_chip_and_popover_dots_are_8px_circles(self):
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -837,7 +837,7 @@ class WidgetCheck(unittest.TestCase):
 
     def test_popover_check_rows_are_real_checkbuttons_with_inconsistent_mixed(self):
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -880,7 +880,7 @@ class WidgetCheck(unittest.TestCase):
 
     def test_include_archived_is_a_focusable_switch_with_label_click(self):
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -1259,7 +1259,7 @@ class WidgetCheck(unittest.TestCase):
             if route != "/api/palette":
                 requests.append((route, callback, method, body, headers))
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                    (asb, "request_async", request)):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -1484,7 +1484,7 @@ class WidgetCheck(unittest.TestCase):
             if route != "/api/palette":
                 requests.append((route, callback))
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                    (asb, "request_async", request)):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -1526,7 +1526,7 @@ class WidgetCheck(unittest.TestCase):
             if route != "/api/palette":
                 requests.append((route, callback, method, body))
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                    (asb, "request_async", request)):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -1628,7 +1628,7 @@ class WidgetCheck(unittest.TestCase):
         def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None, headers=None):
             if route != "/api/palette":
                 requests.append((route, callback, method, body, etag))
-        for target, name, value in ((asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+        for target, name, value in ((asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                    (asb, "request_async", request)):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -1679,7 +1679,7 @@ class WidgetCheck(unittest.TestCase):
     def snapshot_window(self):
         """A window that has its first dashboard at once, as when the early request of the launcher start ends first. It is not mapped."""
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -1722,7 +1722,7 @@ class WidgetCheck(unittest.TestCase):
 
     def test_the_preferences_window_exists_only_after_the_first_open_and_takes_a_custom_theme_set_before(self):
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                    (asb, "request_async", lambda *_args, **_kwargs: None)):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -1761,7 +1761,7 @@ class WidgetCheck(unittest.TestCase):
             elif route != "/api/palette":  # The window shares its palette at start; this test checks the other requests.
                 requests.append((route, callback, method, body))
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                    (asb, "request_async", request)):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -1900,7 +1900,7 @@ class WidgetCheck(unittest.TestCase):
             if route != "/api/palette":
                 requests.append((route, callback, method, body))
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                    (asb, "request_async", request)):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -1951,7 +1951,7 @@ class WidgetCheck(unittest.TestCase):
                 callback({}, None)
             return SimpleNamespace(join=lambda *_args: None)
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                    (asb, "request_async", request), (asb, "SOURCE_TOKEN", "fake-token")):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -2080,7 +2080,7 @@ class WidgetCheck(unittest.TestCase):
             elif route != "/api/palette":
                 requests.append((route, callback, method, body))
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                    (asb, "request_async", request)):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -2321,7 +2321,7 @@ class WidgetCheck(unittest.TestCase):
             elif route.startswith("/api/usage/"):
                 requests.append((route, callback, method, body))
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                   (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                    (asb, "request_async", request)):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -3062,7 +3062,7 @@ class WidgetCheck(unittest.TestCase):
 
     def test_a_card_that_leaves_the_board_drops_its_row_panel_first(self):
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                     (asb, "request_async", lambda *_args, **_kwargs: None)):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -3097,7 +3097,7 @@ class WidgetCheck(unittest.TestCase):
 
         requests = []
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                     (asb, "request_async", lambda *args: requests.append(args))):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -3142,7 +3142,7 @@ class WidgetCheck(unittest.TestCase):
     def test_row_panel_open_follows_the_open_request_start_and_end(self):
         callbacks = []
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                     (asb, "request_async", lambda *args: callbacks.append(args))):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -3178,7 +3178,7 @@ class WidgetCheck(unittest.TestCase):
         from gi.repository import GdkX11
 
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                     (asb, "request_async", lambda *_args, **_kwargs: None)):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -3241,7 +3241,7 @@ class WidgetCheck(unittest.TestCase):
 
     def test_pointer_row_panel_motion_has_a_24px_margin_and_keyboard_has_no_motion_rule(self):
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                     (asb, "request_async", lambda *_args: None)):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -3286,7 +3286,7 @@ class WidgetCheck(unittest.TestCase):
         from gi.repository import GdkX11
 
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                     (asb, "request_async", lambda *_args: None)):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -3323,7 +3323,7 @@ class WidgetCheck(unittest.TestCase):
 
         requests = []
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                     (asb, "request_async", lambda *args, **_kwargs: requests.append(args))):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -3373,7 +3373,7 @@ class WidgetCheck(unittest.TestCase):
 
         requests = []
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                     (asb, "request_async", lambda *args, **_kwargs: requests.append(args))):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -3433,7 +3433,7 @@ class WidgetCheck(unittest.TestCase):
         from gi.repository import GdkX11
 
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                     (asb, "request_async", lambda *args, **_kwargs: None)):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -3508,7 +3508,7 @@ class WidgetCheck(unittest.TestCase):
         from gi.repository import GdkX11
 
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                     (asb, "request_async", lambda *args, **_kwargs: None)):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -4678,7 +4678,7 @@ class WidgetCheck(unittest.TestCase):
              "updatedAtMs": now - 60_000},
         ]
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -5254,7 +5254,7 @@ class WidgetCheck(unittest.TestCase):
     def board_window(self, count, limit=0):
         # No server: a failed refresh shows a notice, and the notice changes the list height.
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -5474,7 +5474,7 @@ class WidgetCheck(unittest.TestCase):
         dashboard = {"generatedAtMs": NOW, "providers": [], "threads": threads}
         # No server: a failed refresh shows a notice, and the notice changes the list height.
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -5676,7 +5676,7 @@ class WidgetCheck(unittest.TestCase):
                 {"id": "normal", "provider": "codex", "providerLabel": "Codex", "title": "Test the offline mode",
                  "cwd": "/example/mobile", "projectName": "mobile", "state": "idle", "canOpen": True, "updatedAtMs": now - 60_000}]
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -5752,7 +5752,7 @@ class WidgetCheck(unittest.TestCase):
                     appDeepLink="claude://code/continue?session=local_x"),
                 row("unread", surface="cli", unread=True, pendingSource="observed-completion", completionAttention=True)]
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -5824,7 +5824,7 @@ class WidgetCheck(unittest.TestCase):
             row(1, **unread), row(2, **unread), row(3), row(4, state="working"), row(5, pending=True, questionAttention=True)]}
         requests = []
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                     (asb, "request_async", lambda *args: requests.append(args))):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -6121,7 +6121,7 @@ class WidgetCheck(unittest.TestCase):
             row("other", updatedAtMs=NOW - 60_000)]}
         requests = []
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                     (asb, "request_async", lambda *args: requests.append(args))):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -6245,7 +6245,7 @@ class WidgetCheck(unittest.TestCase):
         rows = [row("read"), row("busy", state="working"), row("remote", remote=True, machineName="homeLP", surface="app", canOpen=False),
                 row("limited", limitResetsAtMs=now + 3_600_000)]
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -6285,7 +6285,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertNotEqual(asb.attention_signature(dashboard["threads"][0]), asb.attention_signature(changed))
         requests = []
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                     (asb, "request_async", lambda *args: requests.append(args))):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -6335,7 +6335,7 @@ class WidgetCheck(unittest.TestCase):
             row("muted", 5, muted=True), row("work", 6, state="working", workingSinceMs=NOW - 5000)]}
         requests = []
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                     (asb, "request_async", lambda *args: requests.append(args))):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -6449,7 +6449,7 @@ class WidgetCheck(unittest.TestCase):
                     "messages": [{"from": source, "to": target, "atMs": at + int(source[1:]) * 10 + int(target[1:])}
                                  for source, target in messages]}
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -6545,7 +6545,7 @@ class WidgetCheck(unittest.TestCase):
                    for n in (1, 2, 3)]
         dashboard = {"generatedAtMs": NOW, "providers": [], "threads": threads, "messages": []}
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -6614,7 +6614,7 @@ class WidgetCheck(unittest.TestCase):
             return {"generatedAtMs": NOW, "providers": [], "threads": threads,
                     "messages": [{"from": source, "to": target, "atMs": at + index} for index, (source, target) in enumerate(messages)]}
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -6679,7 +6679,7 @@ class WidgetCheck(unittest.TestCase):
         dashboard = {"generatedAtMs": NOW, "providers": [], "threads": [row(1, **unread), row(2, **unread), row(3, state="working"), row(4)]}
         requests = []
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                     (asb, "request_async", lambda *args: requests.append(args))):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -6771,7 +6771,7 @@ class WidgetCheck(unittest.TestCase):
     def test_card_buttons_have_no_action_names(self):
         requests = []
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                     (asb, "request_async", lambda *args: requests.append(args))):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -6799,7 +6799,7 @@ class WidgetCheck(unittest.TestCase):
         from gi.repository import GdkX11
         requests = []
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                     (asb, "request_async", lambda *args: requests.append(args))):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -6858,7 +6858,7 @@ class WidgetCheck(unittest.TestCase):
         from gi.repository import GdkX11
 
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -6962,7 +6962,7 @@ class WidgetCheck(unittest.TestCase):
             self.addCleanup(patcher.stop)
         requests = []
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
                                     (asb, "request_async", lambda *args: requests.append(args))):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -9279,7 +9279,7 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
     def test_open_window_variable_opens_the_board_then_the_window(self):
         original = asb.SwitchboardWindow
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
-                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))):
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
