@@ -6036,6 +6036,7 @@ class WidgetCheck(unittest.TestCase):
         window.render()
         window.set_default_size(700, 600)
         window.present(); self.drain(.5)
+        self.foreground(window)
         strip, frames = window.list_body, []
         window.get_frame_clock().connect("after-paint", lambda *_args: frames.append((strip.motion_progress, dict(strip.motion))))
         def glide(pinned):
@@ -7284,6 +7285,7 @@ class WidgetCheck(unittest.TestCase):
         window.set_default_size(700, 420)
         window.present()
         self.settle(window)
+        self.foreground(window)
         strip = window.list_body
         def wait(done, limit=6):
             end = time.monotonic() + limit
