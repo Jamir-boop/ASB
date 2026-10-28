@@ -219,7 +219,7 @@ test('saved scans reread a rewritten, shrunk, or replaced file, and ignore broke
   }
 });
 
-test('the message state saves changes at most once a minute, and a failed save keeps the changes for a retry', async (t) => {
+test('the message state saves changes at most once in 5 minutes, and a failed save keeps the changes for a retry', async (t) => {
   const { dir, root, file } = await fixture(t);
   const stateFile = path.join(dir, 'private', 'claude-message-cache.json');
   const clock = { ms: nowMs };
@@ -234,6 +234,9 @@ test('the message state saves changes at most once a minute, and a failed save k
   await reader.records(0);
   const first = await readFile(stateFile, 'utf8');
   await appendFile(file, lines([sent('appended')]));
+  await reader.records(0);
+  assert.equal(await readFile(stateFile, 'utf8'), first);
+  clock.ms += 4 * 60_000;
   await reader.records(0);
   assert.equal(await readFile(stateFile, 'utf8'), first);
   clock.ms += 60_000;

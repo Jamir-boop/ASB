@@ -6,6 +6,8 @@ import { parseCrossSessionEnvelope } from './claude-data.mjs';
 import { createYielder, pathKey, readPrivateJson, writePrivateJson } from './usage-scan-cache.mjs';
 
 const CHUNK_BYTES = 1024 * 1024;
+// A saved state that is a few minutes old still spares the full read after a restart; the appended bytes are small.
+const SAVE_EVERY_MS = 5 * 60 * 1000;
 const MARKERS = ['SendMessage', 'send_message', '<cross-session-message', 'success'].map((text) => Buffer.from(text));
 const SESSION = /^(?:local_)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const hash = (text) => createHash('sha256').update(text).digest('hex').slice(0, 16);
@@ -74,7 +76,7 @@ export function createClaudeMessages({ readSources = async () => [], homeDir = o
     }
   }
   async function save() {
-    if (!stateFile || !dirty || (savedAtMs !== null && now() - savedAtMs < 60_000)) return;
+    if (!stateFile || !dirty || (savedAtMs !== null && now() - savedAtMs < SAVE_EVERY_MS)) return;
     const files = Object.fromEntries([...cache].map(([key, entry]) => [key, { ...entry, failed: [...entry.failed], rows: entry.rows.map((row) =>
       [row.id, row.direction, row.atMs, row.status, row.reason, row.hash, row.offset, row.length]) }]));
     try { await writePrivateJson(stateFile, { version: 1, files }, { platform }); dirty = false; savedAtMs = now(); }
