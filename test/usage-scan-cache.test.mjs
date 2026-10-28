@@ -208,13 +208,14 @@ test('array parsers keep every record in order and both new formats survive the 
   assert.deepEqual(decodeScanCache(JSON.parse(JSON.stringify(encoded))), cache);
 });
 
-test('the scan yielder rests 3 times the CPU time of its work, at most 200 ms; without a rest ratio it only gives a turn', async () => {
+test('the scan yielder rests 3 times the CPU time of its work, at most 200 ms, on a timer that keeps the event loop alive; without a rest ratio it only gives a turn', async () => {
   assert.equal(SCAN_REST_RATIO, 3);
   assert.equal(MAX_REST_MS, 200);
   const clock = { ms: 0, cpu: 0 };
   const work = (ms, cpu = ms) => { clock.ms += ms; clock.cpu += cpu; };
   const waits = [];
-  const timers = { setTimeout: (resolve, delayMs) => { waits.push(delayMs); clock.ms += delayMs; resolve(); return { unref() {} }; } };
+  let unrefs = 0;
+  const timers = { setTimeout: (resolve, delayMs) => { waits.push(delayMs); clock.ms += delayMs; resolve(); return { unref() { unrefs += 1; } }; } };
   const pause = createYielder(() => clock.ms, { restRatio: SCAN_REST_RATIO, timers, cpuMs: () => clock.cpu });
   work(10);
   await pause();
@@ -234,4 +235,6 @@ test('the scan yielder rests 3 times the CPU time of its work, at most 200 ms; w
   work(100);
   await fast();
   assert.deepEqual(waits, [75, 150, 200]);
+  // A test or a command that waits for a scan may have nothing else running.
+  assert.equal(unrefs, 0);
 });

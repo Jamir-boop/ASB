@@ -35,9 +35,10 @@ const guardHash = (bytes) => createHash('sha256').update(bytes).digest('hex').sl
 
 const processCpuMs = () => { const { user, system } = process.cpuUsage(); return (user + system) / 1000; };
 
-// Gives the event loop a turn at least every YIELD_AFTER_MS of work. With a restRatio, the turn is a wait (unref) of
+// Gives the event loop a turn at least every YIELD_AFTER_MS of work. With a restRatio, the turn is a wait of
 // restRatio times the CPU time of the process since the last wait, at most MAX_REST_MS. The CPU time counts all threads:
-// the thread pool reads, hashes, and unzips files at the same time as the main thread.
+// the thread pool reads, hashes, and unzips files at the same time as the main thread. The wait keeps the event loop
+// alive, because a caller that waits for the scan can have nothing else running (Node 22 then ends with the scan pending).
 export function createYielder(now = Date.now, { restRatio = 0, timers = { setTimeout }, cpuMs = processCpuMs } = {}) {
   let last = now();
   let lastCpu = restRatio ? cpuMs() : 0;
@@ -45,7 +46,7 @@ export function createYielder(now = Date.now, { restRatio = 0, timers = { setTim
     if (now() - last < YIELD_AFTER_MS) return;
     const restMs = restRatio ? Math.min(MAX_REST_MS, Math.round((cpuMs() - lastCpu) * restRatio)) : 0;
     await new Promise((resolve) => {
-      if (restMs > 0) timers.setTimeout(resolve, restMs)?.unref?.();
+      if (restMs > 0) timers.setTimeout(resolve, restMs);
       else setImmediate(resolve);
     });
     last = now();
