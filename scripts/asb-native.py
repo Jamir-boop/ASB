@@ -7914,7 +7914,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget.asb_open_signature = (opening, error)
         # One paragraph: the line limit of the label is for each paragraph, so a title with line breaks made a card many lines high.
         widget.asb_title_label.set_label("Opening…" if opening else card_title(row.get("title", "")))
-        widget.set_sensitive(not opening)
         duration = widget.asb_duration
         name = "Opening " + widget.asb_accessible_label.removeprefix("Open ") if opening else widget.asb_accessible_label
         if duration:

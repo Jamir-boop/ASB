@@ -2925,6 +2925,55 @@ class WidgetCheck(unittest.TestCase):
                 self.assertTrue(focus is None or focus.get_root() is window)
                 window.close(); self.drain()
 
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real keys need xdotool and DISPLAY=:9 or :10.")
+    def test_open_keeps_card_focus_during_and_after_the_request(self):
+        from gi.repository import GdkX11
+
+        requests = []
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None)),
+                                    (asb, "request_async", lambda *args: requests.append(args))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", copy.deepcopy(FIXTURE),
+                                      theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.present(); self.drain(.3)
+        subprocess.run(["xdotool", "windowfocus", str(GdkX11.X11Surface.get_xid(window.get_surface()))], check=True)
+        self.drain(.1)
+        identity = window.row_order[0]
+        card = window.focus_widgets[identity]
+        self.assertTrue(card.asb_thread["canOpen"])
+        following = window.focus_widgets[window.row_order[1]]
+        for error in (None, "The sample app could not open the session."):
+            with self.subTest(error=error):
+                card.grab_focus(); self.drain(.1)
+                requests.clear()
+                subprocess.run(["xdotool", "key", "Return"], check=True); self.drain(.1)
+                self.assertIn(identity, window.opening)
+                self.assertIs(window.get_focus(), card)
+                self.assertEqual(card.asb_title_label.get_label(), "Opening…")
+                self.assert_accessible_busy(card, True)
+                self.assert_accessible_label(card, "Opening " + card.asb_accessible_label.removeprefix("Open "))
+                # Card activation and the number shortcut share the same pending-open guard.
+                window.open_row(None, card)
+                window.update_number_keys()
+                self.assertIn(identity, window.number_keys)
+                window.open_number(window.number_keys.index(identity) + 1)
+                opens = [request for request in requests if request[1].endswith("/open")]
+                self.assertEqual(len(opens), 1)
+                window.restore_position(identity, 0)
+                self.assertIs(window.get_focus(), card)
+                opens[0][2](None if error else {"opened": True}, error); self.drain(.1)
+                self.assertIs(window.get_focus(), card)
+                self.assertNotIn(identity, window.opening)
+                self.assert_accessible_busy(card, False)
+                self.assertEqual(card.asb_title_label.get_label(), card.asb_thread["title"])
+                subprocess.run(["xdotool", "key", "Down"], check=True); self.drain(.1)
+                self.assertIs(window.get_focus(), following)
+
     def test_row_panel_open_follows_the_open_request_start_and_end(self):
         callbacks = []
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
