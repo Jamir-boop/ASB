@@ -6261,14 +6261,21 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if not self.is_active():
             self.close_filters_popover()
 
-    def filters_outside_press(self, _gesture, _count, x, y):
+    def filters_outside_press(self, gesture, _count, x, y):
         if not self.filter_popover.get_visible():
             return
         point = Graphene.Point().init(x, y)
-        for widget in (self.filter_popover, self.filters_pill):
-            found, bounds = widget.compute_bounds(self)
-            if found and bounds.contains_point(point):
-                return
+        found, bounds = self.filters_pill.compute_bounds(self)
+        if found and bounds.contains_point(point):
+            return
+        found, bounds = self.filter_popover.compute_bounds(self)
+        # Until its first layout the popover has no size, and it is not on the screen yet.
+        if not self.filter_popover.get_width() or found and bounds.contains_point(point):
+            event = gesture.get_current_event()
+            # Before the popover shows on the X server, a press in its place reaches the board: no card gets it.
+            if event is not None and event.get_surface() == self.get_surface():
+                gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            return
         self.close_filters_popover()
 
     def filters_popover_closed(self, *_args):

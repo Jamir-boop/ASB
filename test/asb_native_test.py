@@ -1025,6 +1025,52 @@ class WidgetCheck(unittest.TestCase):
         self.assertIsNot(window.get_focus(), window.filters_pill)
 
     @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real keys and clicks need xdotool and DISPLAY=:9 or :10")
+    def test_click_into_a_just_opened_filters_popover_opens_no_card(self):
+        window = self.snapshot_window()
+        window.set_default_size(700, 600)
+        window.present(); self.drain(.4)
+        xid = str(window.get_surface().get_xid())
+        subprocess.run(["xdotool", "windowfocus", xid], check=True)
+        window.open_filters_popover(); self.drain(.3)
+        found, bounds = window.filter_popover.compute_bounds(window)
+        self.assertTrue(found)
+        x, y = bounds.origin.x + bounds.size.width / 2, bounds.origin.y + bounds.size.height / 2
+        window.close_filters_popover(); self.drain(.3)
+        picked = window.pick(x, y, asb.Gtk.PickFlags.DEFAULT)
+        self.assertIsNotNone(picked.get_ancestor(asb.Gtk.ListBoxRow) if picked else None)
+        found, pill = window.filters_pill.compute_point(window, asb.Graphene.Point().init(
+            window.filters_pill.get_width() / 2, window.filters_pill.get_height() / 2))
+        self.assertTrue(found)
+        with patch.object(asb, "request_async") as request:
+            # One xdotool call: the press into the popover's place reaches the X server before the popover maps.
+            subprocess.run(["xdotool", "mousemove", "--window", xid, str(round(pill.x)), str(round(pill.y)), "click", "1",
+                            "mousemove", "--window", xid, str(round(x)), str(round(y)), "mousedown", "1"], check=True)
+            self.drain(.1)
+            subprocess.run(["xdotool", "mouseup", "1"], check=True)
+            self.drain(.3)
+            self.assertTrue(window.filter_popover.get_visible())
+            self.assertFalse([call for call in request.call_args_list if call.args[1].endswith("/open")])
+
+    def test_filters_press_on_the_board_in_the_popover_place_is_claimed(self):
+        window = self.snapshot_window()
+        window.set_default_size(700, 600)
+        window.present(); self.drain(.4)
+        window.open_filters_popover(); self.drain(.3)
+        found, bounds = window.filter_popover.compute_bounds(window)
+        self.assertTrue(found)
+        x, y = bounds.origin.x + bounds.size.width / 2, bounds.origin.y + bounds.size.height / 2
+        for surface, claimed in ((window.get_surface(), True), (window.filter_popover.get_surface(), False)):
+            gesture = Mock()
+            gesture.get_current_event.return_value = SimpleNamespace(get_surface=lambda surface=surface: surface)
+            window.filters_outside_press(gesture, 1, x, y)
+            if claimed:
+                gesture.set_state.assert_called_once_with(asb.Gtk.EventSequenceState.CLAIMED)
+            else:
+                gesture.set_state.assert_not_called()
+            self.assertTrue(window.filter_popover.get_visible())
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
                          "Real keys need xdotool and DISPLAY=:9 or :10")
     def test_filters_escape_tab_inactive_and_unmap_close(self):
         window = self.snapshot_window()
