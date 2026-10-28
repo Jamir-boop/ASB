@@ -6270,6 +6270,13 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(frames)
         self.drain(.05)
 
+    def foreground(self, window, active=True):
+        """Set the active state: the board plays the card glide and the message lights, and shows seconds, only while it is active."""
+        patcher = patch.object(window, "is_active", return_value=active)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        window.notify("is-active")
+
     def test_usage_limit_card_greys_counts_down_and_lifts_at_the_reset(self):
         now = time.time() * 1000
         rows = [{"id": "limited", "provider": "codex", "providerLabel": "Codex", "sourceLabel": "Codex Personal",
@@ -6342,6 +6349,46 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual((limited.asb_state_label.get_text(), limited.asb_age_label.get_text()), ("Idle", "10m ago"))
         self.assertFalse(limited.asb_limit_clock and limited.asb_limit_clock.get_visible())
         self.assertEqual(hex_color(limited.asb_title_label), hex_color(normal.asb_title_label))
+
+    def test_a_board_in_the_background_shows_whole_minutes_and_its_clock_wakes_at_the_minute(self):
+        now = [NOW + 252_000]
+        rows = [{"id": "w", "provider": "codex", "providerLabel": "Codex", "title": "Sample working session", "cwd": "/example/w",
+                 "projectName": "w", "state": "working", "workingSinceMs": NOW, "canOpen": True, "updatedAtMs": NOW}]
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
+                                    (asb.time, "time", lambda: now[0] / 1000)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", {"generatedAtMs": NOW, "providers": [], "threads": rows},
+                                       theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(520, 400)
+        window.present(); self.drain(.3)
+        card = window.focus_widgets["w"]
+        def assert_time(text):
+            self.assertEqual(card.asb_state_label.get_text(), "Working ·" + text)
+            self.assertEqual(card.asb_tooltip.split("\n")[2], "Working · " + text)
+            self.assert_accessible_label(card, card.asb_accessible_label + " Working time " + text + ".")
+            self.assert_accessible_label(card, card.asb_tooltip, asb.Gtk.AccessibleProperty.DESCRIPTION)
+        self.foreground(window, False)
+        assert_time("4m")
+        self.assertIsNone(window.clock_interval)
+        source = asb.GLib.MainContext.default().find_source_by_id(window.clock_timer)
+        self.assertAlmostEqual((source.get_ready_time() - asb.GLib.get_monotonic_time()) / 1e6, 48, delta=1)
+        now[0] += 48_000
+        window.update_clock()
+        assert_time("5m")
+        # A tooltip reads the clock when it shows.
+        window.query_row_tooltip(card, 0, 0, False, SimpleNamespace(set_custom=lambda _content: None))
+        self.assertEqual(card.asb_tooltip_key[0]["state_text"], "Working · 5m0s")
+        self.poll_calls.reset_mock()
+        self.foreground(window)
+        assert_time("5m0s")
+        self.assertEqual(window.clock_interval, 2)
+        self.poll_calls.assert_called_once_with(2, window.update_clock)
+        self.foreground(window, False)
+        assert_time("5m")
 
     def test_view_only_cards_show_where_they_run_in_the_grey_tone_and_do_not_open(self):
         now = time.time() * 1000

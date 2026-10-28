@@ -51,6 +51,8 @@ exec(compile(ast.Module(body=NODES + [SIGNAL] + COLORS + [USAGE_CHART, STRIP, CO
 Column = SCOPE["SessionColumn"]
 SCOPE["SessionColumn"] = lambda **kwargs: SCOPE["Gtk"].ListBox(**kwargs)
 Window = SCOPE["SwitchboardWindow"]
+# The Gtk.Window base is not in this scope: a window here is in the foreground, as a board that is active.
+Window.is_active = lambda _self: True
 Strip = SCOPE["SessionStrip"]
 SourcesEditor = SCOPE["AppSourcesEditor"]
 Preferences = SCOPE["PreferencesWindow"]
@@ -2144,6 +2146,29 @@ class DataChecks(unittest.TestCase):
             self.assertEqual(asb.working_duration({**row, "workingSinceMs": start}, NOW), "")
         for state in ("waiting", "idle", "unknown"):
             self.assertEqual(asb.working_duration({**row, "state": state}, NOW), "")
+
+    def test_a_board_in_the_background_shows_whole_minutes_and_wakes_at_the_next_minute(self):
+        row = {"state": "working", "workingSinceMs": NOW - 252_000}
+        for seconds, expected in ((59, "59s"), (60, "1m"), (252, "4m"), (3599, "59m"), (3600, "1h0m")):
+            self.assertEqual(asb.working_duration({**row, "workingSinceMs": NOW - seconds * 1000}, NOW, True), expected)
+        self.assertEqual(asb.spoken_duration(252, True), "4 minutes")
+        self.assertEqual(asb.spoken_duration(252), "4 minutes 12 seconds")
+        self.assertEqual(asb.working_duration(row, NOW), "4m12s")
+        self.assertEqual(asb.tooltip_model(row, NOW, "/home/test")["state_text"], "Working · 4m12s")
+        self.assertEqual(asb.tooltip_model(row, NOW, "/home/test", whole_minutes=True)["state_text"], "Working · 4m")
+        wait = asb.clock_wait
+        countdown = {"state": "idle", "limitResetsAtMs": NOW + 1_800_000}
+        cases = ([row], [{**row, "workingSinceMs": NOW - 30_000}], [countdown], [row, {**row, "workingSinceMs": NOW - 470_000}],
+                 [{**row, "workingSinceMs": NOW - 1_000, "archived": True}], [{**row, "workingSinceMs": 0}], [{"state": "idle"}], [])
+        # The foreground keeps the 2 s and 60 s rule.
+        for threads in cases:
+            self.assertEqual(wait(threads, NOW), asb.clock_interval(threads, NOW))
+        self.assertGreaterEqual(wait([row], NOW, True), 48)
+        self.assertLessEqual(wait([row], NOW, True), 49)
+        for threads, expected in zip(cases[1:], (2, 2, 10, 60, 60, 60, 60)):
+            self.assertEqual(wait(threads, NOW, True), expected)
+        # A Working time near its first minute wakes at the minute, not 2 s later.
+        self.assertEqual(wait([{**row, "workingSinceMs": NOW - 59_500}], NOW, True), .5)
 
     def test_limited_drawer_row_has_no_dot_until_the_reset(self):
         at = SCOPE["time"].time() * 1000
@@ -7802,7 +7827,7 @@ class NativeLogicChecks(unittest.TestCase):
         other_popup = popover()
         active, focus = [True], [None]
         window.is_active, window.get_focus = lambda: active[0], lambda: focus[0]
-        window.list_body, window.open_row = Mock(), Mock()
+        window.list_body, window.open_row, window.update_clock = Mock(), Mock(), Mock()
         viewport = SimpleNamespace(get_width=lambda: 500, get_height=lambda: 66)
         window.scroll = SimpleNamespace(get_child=lambda: viewport)
         places = {f"r{index}": (4 + 252 * (index // 3), 22 * (index % 3)) for index in range(6)}

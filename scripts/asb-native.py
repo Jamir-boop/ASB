@@ -1026,23 +1026,26 @@ def filter_chips(pending, states, profiles, profile_model, archived, show_all=Fa
     return tuple(chips)
 
 
-def working_duration(row, now_ms=None):
+def working_duration(row, now_ms=None, whole_minutes=False):
     now_ms = time.time() * 1000 if now_ms is None else now_ms
     start = row.get("workingSinceMs", 0)
     if row.get("state") != "working" or isinstance(start, bool) or not isinstance(start, (int, float)) or not 0 < start <= now_ms:
         return ""
-    return duration_text(int((now_ms - start) / 1000))
+    return duration_text(int((now_ms - start) / 1000), whole_minutes)
 
 
-def duration_text(seconds):
+def duration_text(seconds, whole_minutes=False):
+    """The Working time; with whole_minutes (a board in the background) no seconds from one minute on."""
     hours, remainder = divmod(seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
-    return f"{hours}h{minutes}m" if hours else f"{minutes}m{seconds}s" if minutes else f"{seconds}s"
+    return f"{hours}h{minutes}m" if hours else f"{minutes}m" + ("" if whole_minutes else f"{seconds}s") if minutes else f"{seconds}s"
 
 
-def spoken_duration(seconds):
+def spoken_duration(seconds, whole_minutes=False):
     hours, remainder = divmod(seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
+    if whole_minutes and minutes:
+        seconds = 0
     unit = lambda count, word: f"{count} {word}" + ("" if count == 1 else "s")
     if hours:
         return unit(hours, "hour") + (" " + unit(minutes, "minute") if minutes else "")
@@ -1077,6 +1080,22 @@ def clock_interval(threads, now_ms=None):
     """Seconds between local clock ticks: 2 for a Working timer or a reset countdown under one hour, else 60."""
     return 2 if any(row.get("state") == "working" and not row.get("archived") or 0 < limit_left(row, now_ms) <= 3600
                     for row in threads) else 60
+
+
+def clock_wait(threads, now_ms=None, background=False):
+    """Seconds to the next local clock tick. In the background a Working time past one minute shows whole minutes,
+    so the clock wakes at its next whole minute, else as clock_interval."""
+    if not background:
+        return clock_interval(threads, now_ms)
+    now_ms = time.time() * 1000 if now_ms is None else now_ms
+    wait = 60
+    for row in threads:
+        if 0 < limit_left(row, now_ms) <= 3600:
+            return 2
+        if not row.get("archived") and working_duration(row, now_ms):
+            elapsed = now_ms - row["workingSinceMs"]
+            wait = min(wait, (60_000 - elapsed % 60_000) / 1000, 2 if elapsed < 60_000 else 60)
+    return wait
 
 
 def row_meta(row, now_ms=None):
@@ -1144,13 +1163,13 @@ def short_home_path(path, home_dir):
     return path
 
 
-def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
+def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False, whole_minutes=False):
     full_path = row.get("cwd") or row.get("projectName") or "No project folder"
     path = short_home_path(full_path, home_dir)
     state = row.get("state", "unknown")
     state = state if state in STATES else "unknown"
     state_word = "Stopped" if state == "idle" and row.get("lastOutcome") in ("failed", "limit") else state.capitalize()
-    state_text = state_word + " · " + (working_duration(row, now_ms) or row_meta(row, now_ms).split(" · ")[1])
+    state_text = state_word + " · " + (working_duration(row, now_ms, whole_minutes) or row_meta(row, now_ms).split(" · ")[1])
     provider = row.get("providerLabel") or APP_NAMES.get(row.get("provider"), "Unknown app")
     source_label, source_id = row.get("sourceLabel", ""), row.get("sourceId", "")
     app = provider + (" · " + source_label if source_label and source_label != provider else "")
@@ -6392,6 +6411,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if not self.is_active():
             self.hide_numbers()
             close_popovers_when_inactive(self, self.close_window_popovers)
+        # Seconds in the foreground, whole minutes in the background, at once.
+        self.update_clock()
 
     def close_window_popovers(self):
         if self.context_menu:
@@ -8208,7 +8229,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.update_row_text(widget, now_ms)
         self.sync_row_panel()
         # All rows, not only the shown ones: a filter change can show a countdown before the next tick.
-        interval = clock_interval((self.dashboard or {}).get("threads", []), now_ms)
+        threads = (self.dashboard or {}).get("threads", [])
+        if not self.is_active():
+            # In the background the wait changes at each tick: a new timer each time.
+            if self.clock_timer:
+                GLib.source_remove(self.clock_timer)
+            self.clock_interval = None
+            self.clock_timer = GLib.timeout_add(math.ceil(clock_wait(threads, now_ms, True) * 1000), self.update_clock)
+            return True
+        interval = clock_interval(threads, now_ms)
         if interval != self.clock_interval:
             if self.clock_timer:
                 GLib.source_remove(self.clock_timer)
@@ -8218,7 +8247,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def update_row_text(self, widget, now_ms=None):
         row = widget.asb_thread
-        duration = working_duration(row, now_ms)
+        # In the background a Working card shows whole minutes, so the clock wakes at most once a minute for it.
+        duration = working_duration(row, now_ms, not self.is_active())
         meta = row_meta(row, now_ms)
         left = limit_left(row, now_ms)
         countdown = limit_text(left) if left else ""
@@ -8711,7 +8741,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         name = "Opening " + widget.asb_accessible_label.removeprefix("Open ") if opening else widget.asb_accessible_label
         if duration:
             name += " Working time " + duration + "."
-        model = tooltip_model(row, time.time() * 1000 if now_ms is None else now_ms, Path.home(), error)
+        model = tooltip_model(row, time.time() * 1000 if now_ms is None else now_ms, Path.home(), error, whole_minutes=not self.is_active())
         widget.asb_tooltip = tooltip_description(model)
         description = widget.asb_tooltip
         widget.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION], [name, description])
