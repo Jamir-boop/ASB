@@ -82,7 +82,14 @@ export function createAsbServer({
   appVersion = '', rootDir = '', sourcesPath = '', maxUsageImportBytes = 64 * 1024 * 1024, readSourcesRevision = async () => null,
   palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, now = Date.now, ...snapshotOptions
 } = {}) {
-  const snapshot = new DashboardSnapshot({ serviceMode, now, ...snapshotOptions });
+  // The top-bar reply, and its short tag in each `dashboard` event: the tag changes exactly when the reply would change.
+  const panelReply = (dashboard, machines) => ({ ...panelSummary(dashboard, machines), accent: palette?.colors.accent || '' });
+  const dashboardEventFields = panelMachines ? async () => {
+    const dashboard = snapshot.cachedDashboard();
+    if (!dashboard) return {};
+    return { panel: createHash('sha256').update(JSON.stringify(panelReply(dashboard, await panelMachines()))).digest('base64url').slice(0, 16) };
+  } : null;
+  const snapshot = new DashboardSnapshot({ serviceMode, now, ...snapshotOptions, dashboardEventFields });
   const expectedSourceToken = Buffer.from(String(sourceToken || ''));
   const sourceTokenAllowed = (request) => {
     const given = Buffer.from(String(request.headers['x-asb-source-token'] || ''));
@@ -195,7 +202,7 @@ export function createAsbServer({
       response.setHeader('Cache-Control', 'no-store');
       try {
         const [dashboard, machines] = await Promise.all([loadSharedDashboard(), panelMachines()]);
-        sendJson(response, 200, { ...panelSummary(dashboard, machines), accent: palette?.colors.accent || '' });
+        sendJson(response, 200, panelReply(dashboard, machines));
       } catch { sendJson(response, 500, { error: 'ASB cannot read the sessions.' }); }
       return;
     }

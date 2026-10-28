@@ -14,7 +14,8 @@ const trust = () => ({dir: {type: 'directory', uid: 1000, mode: 0o700, size: 409
 test('the model has exactly the contract exports', () => {
   assert.deepEqual(Object.keys(model).sort(), ['MACHINE_HUES', 'machineHue', 'providerIcon', 'runtimePath', 'parseRuntime',
     'runtimeTrusted', 'panelState', 'timeText', 'accessibleName', 'kindMark', 'rowAccessibleName', 'moreText',
-    'createEventParser', 'nextFetchDelay', 'contrastInk', 'mixWhite', 'ST_ACCENTS', 'colorHex', 'contrastRatio', 'inkOn'].sort());
+    'createEventParser', 'nextFetchDelay', 'contrastInk', 'mixWhite', 'ST_ACCENTS', 'colorHex', 'contrastRatio', 'inkOn',
+    'panelRead'].sort());
 });
 
 test('machine hues repeat in board order and reject non-indices', () => {
@@ -144,6 +145,18 @@ test('event parser handles fields, comments, multiline data, resets, and line li
   assert.deepEqual(parser.push(''), {event: 'dashboard', data: '{}'});
   assert.equal(parser.push('x'.repeat(4096)), null);
   assert.throws(() => parser.push('x'.repeat(4097)), {message: 'The ASB event is too large.'});
+});
+
+test('the panel is read after connected and after a dashboard event only with a new or missing panel tag', () => {
+  const dashboard = (value) => ({event: 'dashboard', data: JSON.stringify({version: 2, reason: 'file-change', sources: {}, ...value})});
+  assert.deepEqual(model.panelRead({event: 'connected', data: '{}'}, 'AAAAAAAAAAAAAAAA'), {read: true, tag: null});
+  assert.deepEqual(model.panelRead(dashboard({panel: 'AAAAAAAAAAAAAAAA'}), null), {read: true, tag: 'AAAAAAAAAAAAAAAA'});
+  assert.deepEqual(model.panelRead(dashboard({panel: 'AAAAAAAAAAAAAAAA'}), 'AAAAAAAAAAAAAAAA'), {read: false, tag: 'AAAAAAAAAAAAAAAA'});
+  assert.deepEqual(model.panelRead(dashboard({panel: 'BBBBBBBBBBBBBBBB'}), 'AAAAAAAAAAAAAAAA'), {read: true, tag: 'BBBBBBBBBBBBBBBB'});
+  // An older engine sends no tag; a bad tag or bad data also reads.
+  for (const event of [dashboard({}), dashboard({panel: ''}), dashboard({panel: 7}), {event: 'dashboard', data: '{'}])
+    assert.deepEqual(model.panelRead(event, 'AAAAAAAAAAAAAAAA'), {read: true, tag: null});
+  assert.deepEqual(model.panelRead({event: 'show-window', data: '{}'}, 'AAAAAAAAAAAAAAAA'), {read: false, tag: 'AAAAAAAAAAAAAAAA'});
 });
 
 test('fetch delay enforces default and explicit minimum gaps', () => {

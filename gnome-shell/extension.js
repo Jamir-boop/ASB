@@ -14,7 +14,7 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {colorHex, contrastInk, inkOn, mixWhite, machineHue, ST_ACCENTS, providerIcon, runtimePath, parseRuntime,
     runtimeTrusted, panelState, timeText, accessibleName, kindMark, rowAccessibleName, moreText, createEventParser,
-    nextFetchDelay} from './model.js';
+    nextFetchDelay, panelRead} from './model.js';
 
 const AsbMark = GObject.registerClass(
 class AsbMark extends St.DrawingArea {
@@ -93,6 +93,8 @@ class EngineClient {
         this._fetching = false;
         this._dirty = false;
         this._fetchTimer = 0;
+        // The panel tag of the last event that started a read.
+        this._panelTag = null;
     }
 
     _later(ms, callback) {
@@ -217,8 +219,12 @@ class EngineClient {
                 if (line === null)
                     break;
                 const event = parser.push(line);
-                if (event && (event.event === 'connected' || event.event === 'dashboard'))
-                    this._queueFetch();
+                if (event) {
+                    const next = panelRead(event, this._panelTag);
+                    this._panelTag = next.tag;
+                    if (next.read)
+                        this._queueFetch();
+                }
             }
         } catch {
             // A missing or restarted engine is a normal Off state.
@@ -273,6 +279,8 @@ class EngineClient {
             this._fetching = false;
             // A reply from an older connection is not a failure of the current one.
             const failed = !applied && generation === this._generation;
+            if (failed)
+                this._panelTag = null;
             if (this._runtime && (this._dirty || failed))
                 this._queueFetch(failed ? 3000 : 0);
         }

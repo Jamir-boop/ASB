@@ -156,6 +156,24 @@ export function createEventParser() {
     }};
 }
 
+// The /api/panel read after a stream event: `connected` always reads; a `dashboard` event reads only when its `panel` tag differs
+// from the tag of the last read, or when it has none (an older engine). `tag` is the one to keep for the next event.
+export function panelRead(event, lastTag) {
+    if (event?.event === 'connected')
+        return {read: true, tag: null};
+    if (event?.event !== 'dashboard')
+        return {read: false, tag: lastTag};
+    let tag = null;
+    try {
+        const value = JSON.parse(event.data);
+        if (typeof value?.panel === 'string' && value.panel)
+            tag = value.panel;
+    } catch {
+        // No tag: read.
+    }
+    return {read: tag === null || tag !== lastTag, tag};
+}
+
 export function nextFetchDelay(lastStartMs, nowMs, gapMs = 1000) {
     return Math.max(0, lastStartMs + gapMs - nowMs);
 }

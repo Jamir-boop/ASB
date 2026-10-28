@@ -509,7 +509,8 @@ test('the panel is a local GET route with a no-store summary of the shared dashb
     assert.equal(await response.text(), JSON.stringify({ ...panelSummary(dashboard, machines), accent: '' }));
   }
   assert.equal(loads, 1);
-  assert.equal(machineReads, 3);
+  // Three reads and the panel tag of the first scan's event.
+  assert.equal(machineReads, 4);
   const wrongMethod = await post('/api/panel');
   assert.equal(wrongMethod.status, 405);
   assert.equal(wrongMethod.headers.get('allow'), 'GET');
@@ -524,6 +525,42 @@ test('the panel is a local GET route with a no-store summary of the shared dashb
     assert.equal(response.status, 403);
     assert.deepEqual(response.body, { error: headers.Host ? 'Use the local ASB address.' : 'Use the local ASB API.' });
   }
+});
+
+test('each dashboard event carries the panel tag, which changes exactly when the panel reply changes', async (t) => {
+  const paletteDir = await mkdtemp(path.join(os.tmpdir(), 'asb-panel-tag-'));
+  t.after(() => rm(paletteDir, { recursive: true, force: true }));
+  const machines = [{ machineId: 'alpha', name: 'Alpha', self: true, online: true }];
+  const { server, base, post } = await serve(t, { now: () => 100, sourceToken: 'window-token', palettePath: path.join(paletteDir, 'palette.json'),
+    loadDashboard: async () => ({ providers: [], threads: [{ id: 'alpha', title: 'Alpha', pending: true, state: 'working', updatedAtMs: 12 }] }),
+    panelMachines: async () => machines });
+  let text = '';
+  const stream = http.get(`${base}/api/events`, (response) => response.on('data', (chunk) => { text += chunk; }));
+  stream.on('error', () => {});
+  t.after(() => stream.destroy());
+  const tags = () => [...text.matchAll(/event: dashboard\ndata: (.+)\n/g)].map((match) => JSON.parse(match[1]).panel);
+  const next = async (change) => {
+    const count = tags().length;
+    await change();
+    for (let attempt = 0; attempt < 500 && tags().length === count; attempt += 1) await delay(2);
+    assert.equal(tags().length, count + 1);
+    const panel = await (await fetch(`${base}/api/panel`)).text();
+    assert.equal(tags().at(-1), createHash('sha256').update(panel).digest('base64url').slice(0, 16));
+    return tags().at(-1);
+  };
+  await fetch(`${base}/api/dashboard`);
+  const first = await next(() => server.invalidateDashboard('made-up', { hard: false, dirty: false }));
+  assert.match(first, /^[A-Za-z0-9_-]{16}$/);
+  assert.equal(await next(() => server.invalidateDashboard('made-up', { hard: false, dirty: false })), first);
+  // A count changes.
+  const counted = await next(async () => {
+    (await server.dashboardForRequest()).threads[0].pending = false;
+    server.invalidateDashboard('made-up', { hard: false, dirty: false });
+  });
+  assert.notEqual(counted, first);
+  // The accent changes.
+  const accented = await next(() => post('/api/palette', JSON.stringify(PALETTE), { 'X-ASB-Source-Token': 'window-token' }));
+  assert.notEqual(accented, counted);
 });
 
 test('the panel is unavailable without panelMachines and hides dashboard and machine read failures', async (t) => {

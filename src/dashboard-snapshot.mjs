@@ -34,6 +34,8 @@ export class DashboardSnapshot {
     serviceMode = false,
     loadDashboard,
     openThread,
+    // Extra fields of each `dashboard` event (the panel tag); the events keep their order.
+    dashboardEventFields = null,
   } = {}) {
     const getWatchPaths = async () => typeof dashboardWatchPaths === 'function' ? await dashboardWatchPaths() : dashboardWatchPaths || [];
     let dashboardLoadPromise = null;
@@ -262,12 +264,16 @@ export class DashboardSnapshot {
       }
     };
 
+    let dashboardEvents = Promise.resolve();
     const announceDashboard = (reason) => {
       serverMetrics.dashboardLastInvalidatedAtMs = now();
       dashboardEventVersion += 1;
-      broadcastDashboardEvent('dashboard', { version: dashboardEventVersion, reason, sources: { ...dashboardSources } });
+      const payload = { version: dashboardEventVersion, reason, sources: { ...dashboardSources } };
       dashboardSources.codex = false;
       dashboardSources.claude = false;
+      if (!dashboardEventFields) { broadcastDashboardEvent('dashboard', payload); return; }
+      dashboardEvents = dashboardEvents.then(dashboardEventFields).catch(() => ({}))
+        .then((fields) => broadcastDashboardEvent('dashboard', { ...payload, ...fields }));
     };
 
     const invalidateDashboard = (reason = 'dashboard-change', { hard = true, dirty = true } = {}) => {

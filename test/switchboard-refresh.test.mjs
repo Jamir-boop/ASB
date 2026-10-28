@@ -187,7 +187,8 @@ test('source bursts coalesce, cap busy scans, and emit only metadata', async (t)
   await until(() => f.loads() === 2);
   await until(() => stream.text().includes('event: dashboard'));
   const payload = JSON.parse(stream.text().match(/event: dashboard\ndata: (.+)\n/)[1]);
-  assert.deepEqual(Object.keys(payload).sort(), ['reason', 'sources', 'version']);
+  assert.deepEqual(Object.keys(payload).sort(), ['panel', 'reason', 'sources', 'version']);
+  assert.match(payload.panel, /^[A-Za-z0-9_-]{16}$/);
   assert.deepEqual(payload.sources, { codex: true, claude: false });
   assert.equal(stream.text().includes(f.dir), false);
   assert.equal(stream.text().includes('state_9'), false);
