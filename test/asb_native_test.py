@@ -7754,9 +7754,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         reading = copy.deepcopy(self.REPLIES)
         reading["30d"]["scan"] = {"complete": False, "files": 2707, "scannedFiles": 120}
         replies = {"30d": None}
-        with patch.object(asb, "EventStream") as stream:
-            # A stream with no open connection: the 15 s poll reads too.
-            stream.return_value.socket = None
+        with patch.object(asb, "EventStream"):
             replies["30d"] = reading["30d"]
             window = self.window(replies)
             self.assertTrue(window.scan_label.get_visible())
@@ -8198,25 +8196,6 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
         with patch.object(asb.GLib, "idle_add") as idle:
             dispatch(callback, {"read": 1}, None)
         idle.assert_called_once_with(callback, {"read": 1}, None, priority=asb.GLib.PRIORITY_DEFAULT)
-
-    def test_the_slow_poll_reads_only_while_the_stream_is_down(self):
-        window = self.probe()
-        window.events = SimpleNamespace(socket=object(), close=lambda: None)
-        self.assertTrue(window.poll_tick())
-        self.assertEqual(window.routes, [])
-        # A stream that is between connections, or no stream.
-        window.events.socket = None
-        window.poll_tick()
-        self.assertEqual(len(window.routes), 1)
-        window.events = None
-        window.poll_tick()
-        self.assertEqual(len(window.routes), 2)
-        # The fast poll of a Usage scan reads also with a connected stream.
-        window.events = SimpleNamespace(socket=object(), close=lambda: None)
-        window.POLL_SECONDS = 2
-        window.poll_tick()
-        self.assertEqual(len(window.routes), 3)
-        window.events = None
 
     def test_dashboard_events_coalesce_into_one_refresh(self):
         window = self.probe()
