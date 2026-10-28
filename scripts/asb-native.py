@@ -1041,11 +1041,9 @@ def duration_text(seconds, whole_minutes=False):
     return f"{hours}h{minutes}m" if hours else f"{minutes}m" + ("" if whole_minutes else f"{seconds}s") if minutes else f"{seconds}s"
 
 
-def spoken_duration(seconds, whole_minutes=False):
+def spoken_duration(seconds):
     hours, remainder = divmod(seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
-    if whole_minutes and minutes:
-        seconds = 0
     unit = lambda count, word: f"{count} {word}" + ("" if count == 1 else "s")
     if hours:
         return unit(hours, "hour") + (" " + unit(minutes, "minute") if minutes else "")

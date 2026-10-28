@@ -2151,7 +2151,6 @@ class DataChecks(unittest.TestCase):
         row = {"state": "working", "workingSinceMs": NOW - 252_000}
         for seconds, expected in ((59, "59s"), (60, "1m"), (252, "4m"), (3599, "59m"), (3600, "1h0m")):
             self.assertEqual(asb.working_duration({**row, "workingSinceMs": NOW - seconds * 1000}, NOW, True), expected)
-        self.assertEqual(asb.spoken_duration(252, True), "4 minutes")
         self.assertEqual(asb.spoken_duration(252), "4 minutes 12 seconds")
         self.assertEqual(asb.working_duration(row, NOW), "4m12s")
         self.assertEqual(asb.tooltip_model(row, NOW, "/home/test")["state_text"], "Working · 4m12s")
