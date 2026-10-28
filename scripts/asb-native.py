@@ -9324,79 +9324,119 @@ class UsageWindow(ActivityWindow):
                              ("asb-dim" if value is None else "asb-mono", "asb-usage-value"), 1, width_request=widths[1]))
         row.append(self.text("" if value is None else format_share(share), ("asb-usage-small", "asb-dim"), 1, width_request=widths[2]))
 
-    def render_rows(self, view, show):
-        for box in (self.machine_rows, self.app_rows, self.maker_rows):
-            remove_children(box)
-        for machine in view["machines"]:
-            row = self.row_box()
-            row.asb_machine = machine["id"]
-            who = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
-            name = Gtk.Box(spacing=7)
-            name.append(self.dot(machine))
-            name.append(self.text(machine["name"], ("asb-usage-name",), ellipsize=Pango.EllipsizeMode.END, max_width_chars=1, hexpand=True))
+    def usage_row(self, kind, item, show):
+        row = self.row_box()
+        setattr(row, "asb_" + kind, item["id"])
+        row.asb_name = self.text("", ("asb-usage-name",), ellipsize=Pango.EllipsizeMode.END, max_width_chars=1, hexpand=True)
+        who = Gtk.Box(spacing=7)
+        if kind != "machine":
+            who.set_valign(Gtk.Align.CENTER)
+        if kind == "machine":
+            row.asb_dot = self.dot(item)
+            who.append(row.asb_dot)
+        elif kind == "app":
+            who.append(self.mark(item["id"]))
+        who.append(row.asb_name)
+        if kind == "machine":
+            name, who = who, Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
             who.append(name)
-            sub = self.text(machine["state"], ("asb-usage-sub",), max_width_chars=1, hexpand=True)
-            sub.set_ellipsize(Pango.EllipsizeMode.END)
-            sub.set_tooltip_text(machine["state"])
-            who.append(sub)
-            bar = UsageBar(10, self.palette["track"])
-            bar.set_segments([(machine["apps"][app]["value"], ACTIVITY_APP_COLORS[app]) for app in USAGE_APPS + ("",)], machine["share"])
-            self.row_cells(row, who, bar, machine["value"], machine["share"], show)
-            self.machine_rows.append(row)
-        for app in view["apps"]:
-            row = self.row_box()
-            row.asb_app = app["id"]
-            who = Gtk.Box(spacing=7, valign=Gtk.Align.CENTER)
-            who.append(self.mark(app["id"]))
-            who.append(self.text(app["label"], ("asb-usage-name",), ellipsize=Pango.EllipsizeMode.END, max_width_chars=1, hexpand=True))
-            bar = UsageBar(10, self.palette["track"])
-            bar.set_segments([(app["value"], ACTIVITY_APP_COLORS[app["id"]])], app["share"])
-            self.row_cells(row, who, bar, app["value"], app["share"], show)
-            self.app_rows.append(row)
-        for maker in view["makers"]:
-            row = self.row_box()
-            row.asb_maker = maker["id"]
-            who = Gtk.Box(spacing=7, valign=Gtk.Align.CENTER)
-            who.append(self.text(maker["label"], ("asb-usage-name",), ellipsize=Pango.EllipsizeMode.END, max_width_chars=1, hexpand=True))
-            bar = UsageBar(10, self.palette["track"])
-            bar.set_segments([(maker["value"] or 0, USAGE_MAKER_COLOR)], maker["share"] or 0)
-            self.row_cells(row, who, bar, maker["value"], maker["share"], show)
-            self.maker_rows.append(row)
+            row.asb_state = self.text("", ("asb-usage-sub",), ellipsize=Pango.EllipsizeMode.END, max_width_chars=1, hexpand=True)
+            who.append(row.asb_state)
+        bar = UsageBar(10, self.palette["track"])
+        self.row_cells(row, who, bar, item["value"], item["share"], show)
+        row.asb_bar, row.asb_share = bar, row.get_last_child()
+        row.asb_value = row.asb_share.get_prev_sibling()
+        return row
+
+    def render_rows(self, view, show):
+        size = (self.small, self.narrow)
+        if size != getattr(self, "row_size", None):
+            for box in (self.machine_rows, self.app_rows, self.maker_rows):
+                remove_children(box)
+            self.row_size = size
+        for kind, box, items in (("machine", self.machine_rows, view["machines"]),
+                                 ("app", self.app_rows, view["apps"]), ("maker", self.maker_rows, view["makers"])):
+            rows, child = {}, box.get_first_child()
+            while child:
+                rows[getattr(child, "asb_" + kind)] = child
+                child = child.get_next_sibling()
+            keys = {item["id"] for item in items}
+            for key in rows.keys() - keys:
+                box.remove(rows.pop(key))
+            previous = None
+            for item in items:
+                row = rows.get(item["id"])
+                if row is None:
+                    row = self.usage_row(kind, item, show)
+                    box.append(row)
+                row.asb_name.set_label(item["name"] if kind == "machine" else item["label"])
+                if kind == "machine":
+                    row.asb_state.set_label(item["state"])
+                    row.asb_state.set_tooltip_text(item["state"])
+                    for index in range(len(MACHINE_HUES)):
+                        row.asb_dot.remove_css_class(f"asb-activity-hue-{index}")
+                    row.asb_dot.add_css_class(f"asb-activity-hue-{MACHINE_HUES.index(item['hue'])}")
+                    (row.asb_dot.add_css_class if item["offline"] else row.asb_dot.remove_css_class)("asb-activity-hollow")
+                    segments = [(item["apps"][app]["value"], ACTIVITY_APP_COLORS[app]) for app in USAGE_APPS + ("",)]
+                else:
+                    segments = [(item["value"] or 0, ACTIVITY_APP_COLORS[item["id"]] if kind == "app" else USAGE_MAKER_COLOR)]
+                row.asb_bar.track = self.palette["track"]
+                row.asb_bar.set_segments(segments, item["share"] or 0)
+                row.asb_value.set_label(format_cost(None) if item["value"] is None else show(item["value"]))
+                row.asb_value.remove_css_class("asb-mono" if item["value"] is None else "asb-dim")
+                row.asb_value.add_css_class("asb-dim" if item["value"] is None else "asb-mono")
+                row.asb_share.set_label("" if item["value"] is None else format_share(item["share"]))
+                if row.get_prev_sibling() is not previous:
+                    box.reorder_child_after(row, previous)
+                previous = row
 
     def render_totals(self, view):
-        remove_children(self.figures)
         parts = view["parts"]
         figures = (("Processed tokens", format_tokens(view["tokens"])), ("Cached input", format_tokens(parts["cacheRead"] + parts["cacheWrite"])),
                    ("Uncached input", format_tokens(parts["uncached"])), ("Output", format_tokens(parts["output"])),
                    ("Cache savings", format_cost(view["savings"])))
-        for title, value in figures:
-            figure = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-            figure.append(self.text(title, ("asb-usage-small", "asb-dim")))
-            figure.append(self.text(value, ("asb-mono", "asb-usage-figure")))
-            self.figures.append(figure)
-            figure.get_parent().set_focusable(False)
-        remove_children(self.blocks)
-        for title, values, show in (("Tokens by type", parts, format_tokens), ("Cost by type", view["cost_parts"], format_cost)):
-            block = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-            block.append(self.text(title, ("asb-usage-small", "asb-dim"), margin_bottom=8))
-            bar = UsageBar(10)
-            bar.set_margin_bottom(10)
+        if not hasattr(self, "total_figures"):
+            self.total_figures = []
+            for title, _value in figures:
+                figure = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+                figure.append(self.text(title, ("asb-usage-small", "asb-dim")))
+                figure.append(self.text("", ("asb-mono", "asb-usage-figure")))
+                self.figures.append(figure)
+                figure.get_parent().set_focusable(False)
+                self.total_figures.append(figure)
+        for figure, (_title, value) in zip(self.total_figures, figures):
+            figure.get_last_child().set_label(value)
+        if not hasattr(self, "type_blocks"):
+            self.type_blocks = []
+            for title in ("Tokens by type", "Cost by type"):
+                block = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+                block.append(self.text(title, ("asb-usage-small", "asb-dim"), margin_bottom=8))
+                bar = UsageBar(10)
+                bar.set_margin_bottom(10)
+                block.append(bar)
+                for part in USAGE_PARTS:
+                    line = Gtk.Box(spacing=8)
+                    line.add_css_class("asb-usage-legend")
+                    line.asb_part = part
+                    swatch = Gtk.Box(valign=Gtk.Align.CENTER)
+                    swatch.add_css_class("asb-usage-swatch")
+                    swatch.add_css_class(f"asb-usage-type-{part}")
+                    line.append(swatch)
+                    line.append(self.text(USAGE_PART_LABELS[part], (), ellipsize=Pango.EllipsizeMode.END, hexpand=True))
+                    line.append(self.text("", ("asb-mono",), 1))
+                    line.append(self.text("", ("asb-mono", "asb-dim"), 1, width_request=52))
+                    block.append(line)
+                self.blocks.append(block)
+                self.type_blocks.append(block)
+        for block, values, show in zip(self.type_blocks, (parts, view["cost_parts"]), (format_tokens, format_cost)):
+            bar = block.get_first_child().get_next_sibling()
             bar.set_segments([(values[part], ACTIVITY_TOKEN_COLORS[part]) for part in USAGE_PARTS])
-            block.append(bar)
-            total = sum(values.values())
+            total, line = sum(values.values()), bar.get_next_sibling()
             for part in USAGE_PARTS:
-                line = Gtk.Box(spacing=8)
-                line.add_css_class("asb-usage-legend")
-                line.asb_part = part
-                swatch = Gtk.Box(valign=Gtk.Align.CENTER)
-                swatch.add_css_class("asb-usage-swatch")
-                swatch.add_css_class(f"asb-usage-type-{part}")
-                line.append(swatch)
-                line.append(self.text(USAGE_PART_LABELS[part], (), ellipsize=Pango.EllipsizeMode.END, hexpand=True))
-                line.append(self.text(show(values[part]), ("asb-mono",), 1))
-                line.append(self.text(format_share(values[part] / total if total else 0), ("asb-mono", "asb-dim"), 1, width_request=52))
-                block.append(line)
-            self.blocks.append(block)
+                share = line.get_last_child()
+                share.get_prev_sibling().set_label(show(values[part]))
+                share.set_label(format_share(values[part] / total if total else 0))
+                line = line.get_next_sibling()
 
     def render_models(self, view, show):
         """The Models table. Each (model, app) row keeps its widgets: a refresh changes their texts and order in place."""

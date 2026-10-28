@@ -7348,6 +7348,81 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(ring.center(), ("new total", "new subtitle"))
         self.assert_no_new_warnings()
 
+    def test_usage_rows_and_totals_keep_widgets_and_update_in_place(self):
+        window = self.window()
+        def descendants(widget):
+            return [widget] + [item for child in self.children(widget) for item in descendants(child)]
+        boxes = ((window.machine_rows, "asb_machine", "machines"),
+                 (window.app_rows, "asb_app", "apps"), (window.maker_rows, "asb_maker", "makers"))
+        saved = {(attr, getattr(row, attr)): descendants(row) for box, attr, _key in boxes for row in self.children(box)}
+        figures, blocks = descendants(window.figures), descendants(window.blocks)
+        before = self.labels(window.figures)
+        view = copy.deepcopy(window.view)
+        for key in ("machines", "apps", "makers"):
+            view[key].reverse()
+            for item in view[key]:
+                if item["value"] is not None:
+                    item["value"] *= 2
+                    item["share"] /= 2
+        for machine in view["machines"]:
+            machine.update(name=machine["name"] + " changed", state="Connected recently", offline=not machine["offline"], hue=asb.MACHINE_HUES[-1])
+            for app in machine["apps"].values():
+                app["value"] *= 2
+        view["tokens"] *= 2
+        view["savings"] *= 2
+        for key in ("parts", "cost_parts"):
+            view[key] = {part: value * 2 for part, value in view[key].items()}
+        window.render_rows(view, asb.format_cost)
+        window.render_totals(view)
+        for box, attr, key in boxes:
+            self.assertEqual([getattr(row, attr) for row in self.children(box)], [item["id"] for item in view[key]])
+            for row, item in zip(self.children(box), view[key]):
+                self.assertTrue(all(old is new for old, new in zip(saved[(attr, item["id"])], descendants(row))))
+                self.assertEqual(len(saved[(attr, item["id"])]), len(descendants(row)))
+                self.assertEqual(self.labels(row)[-2:], [asb.format_cost(item["value"]), "" if item["value"] is None else asb.format_share(item["share"])])
+                if key == "machines":
+                    self.assertEqual(self.labels(row)[:2], [item["name"], item["state"]])
+                    state = next(w for w in descendants(row) if isinstance(w, asb.Gtk.Label) and w.get_label() == item["state"])
+                    self.assertEqual(state.get_tooltip_text(), item["state"])
+                    dot = next(w for w in descendants(row) if w.has_css_class("asb-activity-dot"))
+                    self.assertEqual(dot.has_css_class("asb-activity-hollow"), item["offline"])
+                    self.assertTrue(dot.has_css_class("horizontal"))
+                    self.assertTrue(dot.has_css_class(f"asb-activity-hue-{len(asb.MACHINE_HUES) - 1}"))
+        self.assertTrue(all(old is new for old, new in zip(figures, descendants(window.figures))))
+        self.assertTrue(all(old is new for old, new in zip(blocks, descendants(window.blocks))))
+        self.assertEqual(len(figures), len(descendants(window.figures)))
+        self.assertEqual(len(blocks), len(descendants(window.blocks)))
+        self.assertNotEqual(before, self.labels(window.figures))
+        self.assertEqual(self.figures(window)["Processed tokens"], asb.format_tokens(view["tokens"]))
+        for block, values, show in zip(self.children(window.blocks), (view["parts"], view["cost_parts"]), (asb.format_tokens, asb.format_cost)):
+            total = sum(values.values())
+            lines = [line for line in self.children(block) if hasattr(line, "asb_part")]
+            for line in lines:
+                self.assertEqual(self.labels(line)[-2:], [show(values[line.asb_part]), asb.format_share(values[line.asb_part] / total)])
+        removed = self.children(window.machine_rows)[0]
+        departed = view["machines"].pop(0)
+        window.render_rows(view, asb.format_cost)
+        self.assertIsNone(removed.get_parent())
+        view["machines"].append(departed)
+        window.render_rows(view, asb.format_cost)
+        self.assertEqual([row.asb_machine for row in self.children(window.machine_rows)], [item["id"] for item in view["machines"]])
+        self.assertIsNot(self.children(window.machine_rows)[-1], removed)
+        # The same data keeps exactly the same label text, including an unpriced value.
+        labels = [self.labels(box) for box, _attr, _key in boxes] + [self.labels(window.figures), self.labels(window.blocks)]
+        window.render_rows(view, asb.format_cost); window.render_totals(view)
+        self.assertEqual(labels, [self.labels(box) for box, _attr, _key in boxes] + [self.labels(window.figures), self.labels(window.blocks)])
+        old = self.children(window.app_rows)[0]
+        window.small = not window.small
+        window.render_rows(view, asb.format_cost)
+        self.assertIsNone(old.get_parent())
+        again = self.children(window.app_rows)[0]
+        window.render_rows(view, asb.format_cost)
+        self.assertIs(again, self.children(window.app_rows)[0])
+        window.narrow = not window.narrow
+        window.render_rows(view, asb.format_cost)
+        self.assertIsNone(again.get_parent())
+        self.assert_no_new_warnings()
+
     def test_the_models_table(self):
         window = self.window()
         rows = self.model_rows(window)
@@ -7421,11 +7496,12 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(self.children(window.machine_rows), rows)
         replies["30d"]["records"][0]["tokens"]["output"] += 1
         window.refresh()
-        self.assertNotEqual(self.children(window.machine_rows), rows)
-        # The view controls still render with the same reply.
-        rows = self.children(window.machine_rows)
+        self.assertEqual(self.children(window.machine_rows), rows)
+        # The view controls change the values without replacing the rows.
+        before = self.labels(window.machine_rows)
         window.set_metric("tokens")
-        self.assertNotEqual(self.children(window.machine_rows), rows)
+        self.assertEqual(self.children(window.machine_rows), rows)
+        self.assertNotEqual(self.labels(window.machine_rows), before)
         self.assertEqual(window.round.center()[1], "processed tokens")
         self.assert_no_new_warnings()
 
