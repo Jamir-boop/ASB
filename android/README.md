@@ -144,11 +144,12 @@ the one in use.
 
 ## Messages and Usage
 
-The **Messages** and **Usage** screens show the same views as the Messages and
-Usage windows on the PC, for all machines of the group. Open them from the ⋮
+The **Messages** and **Usage** screens show the agent messages and the token
+usage of all machines of the group. Open them from the ⋮
 main menu of the sessions screen (**Messages**, **Usage**, **Settings**).
 **Show messages** in the session panel opens Messages with that session
-selected. Messages shows the round table of the 12 most recent sessions
+selected. Messages counts the Claude Code and ASB Bridge messages and gets no
+text. It shows the round table of the 12 most recent sessions
 (TalkBack reaches each seat in circle order), the selected seat or pair, and
 the ledger. Usage shows the cost and the tokens by machine, app, model, and provider,
 for periods up to `All time`, with the price line in the top bar and `Reading usage` while the PC reads the transcripts.
@@ -158,7 +159,8 @@ reads every 2 seconds while the scan runs or the prices load. When the PC runs a
 older ASB, `All time` shows
 `This PC runs an older ASB. Update ASB on the PC to see All time.`
 The phone gets counts, statuses, session titles, and token usage, never message
-text: the gateway has no thread route.
+text: the gateway asks the PC for the messages with `text=0`, and there is no
+thread route.
 
 ## Themes, views, and motion
 
