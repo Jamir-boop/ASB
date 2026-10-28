@@ -6899,6 +6899,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 controller.disconnect(handler)
             widget.remove_controller(controller)
         widget.asb_handlers.clear()
+        # GTK owns the copy button, so Python cannot collect the cycle between it and its card.
+        copy = getattr(widget, "asb_copy_button", None)
+        if copy is not None:
+            copy.asb_card = None
+            widget.asb_copy_button = None
         # Free the panel first, or GTK frees its card and leaves the panel pointing to freed memory.
         child = widget.get_first_child()
         while child:

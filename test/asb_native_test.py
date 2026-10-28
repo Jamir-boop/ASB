@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 import unittest
+import weakref
 from unittest.mock import Mock, patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1123,6 +1124,35 @@ class WidgetCheck(unittest.TestCase):
                     window.notify("is-active")
                     self.drain(.2)
                 self.assertFalse(shown.get_visible())
+
+    def test_cards_that_leave_the_board_are_freed(self):
+        window = self.snapshot_window()
+        window.set_default_size(700, 600)
+        window.present(); self.drain(.4)
+        # The Comfortable cards have the copy button.
+        window.view_filter.set_selected(1); self.drain(.4)
+        gone = ["sample-1", "sample-2", "sample-3"]
+        hidden = ["sample-40", "sample-41"]
+        cards = [window.row_cache[identity] for identity in gone + hidden]
+        self.assertTrue(all(getattr(card, "asb_copy_button", None) is not None for card in cards))
+        references = [weakref.ref(card) for card in cards]
+        del cards
+        # Rows that leave the session list.
+        dashboard = mock_dashboard()
+        dashboard["threads"] = [row for row in dashboard["threads"] if row["id"] not in gone]
+        window.apply_dashboard(dashboard, None)
+        self.drain(.3)
+        self.assertFalse(set(gone) & set(window.row_cache))
+        # A cache trim after a search releases the hidden cards.
+        window.card_limit = 2
+        window.search.set_text("Build pipeline"); self.drain(.6)
+        window.trim_row_cache()
+        self.assertFalse(set(hidden) & set(window.row_cache))
+        window.search.set_text(""); self.drain(.3)
+        gc.collect()
+        self.drain(.2)
+        gc.collect()
+        self.assertEqual([reference() for reference in references], [None] * len(references))
 
     def test_filter_chips_wait_for_popover_close(self):
         window = self.snapshot_window()
