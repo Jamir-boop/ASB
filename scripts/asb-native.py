@@ -10392,7 +10392,9 @@ class MessagesWindow(ActivityWindow):
         self.table.stop_motion()
 
     def set_period(self, key):
+        # The steps end with part of the list: the next reply builds the whole list again, also with the same look.
         self.stop_thread_steps()
+        self.thread_shown = None
         super().set_period(key)
 
     def finish(self):

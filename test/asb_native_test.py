@@ -9160,6 +9160,26 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertTrue(adjustment.get_page_size() - 12 <= y + height <= adjustment.get_page_size(), (y, height))
         self.assertEqual(adjustment.get_value(), adjustment.get_upper() - adjustment.get_page_size())
 
+    def test_a_period_change_during_the_steps_still_builds_the_whole_thread(self):
+        window = self.window()
+        ids = self.long_thread()
+        window.refresh(); self.drain(.3)
+        window.open_thread("pair", ("icons", "lint"))
+        self.next_frame(window)
+        self.assertLess(len(window.thread_blocks), 60)
+        window.set_period("30d")
+        # The 30d thread reply is the same as the 7d one.
+        self.assertEqual(self.fetch("/api/activity/thread?period=30d&a=icons&b=lint"), window.thread_reply)
+        self.wait_for(lambda: self.steps_done(window) and len(window.thread_blocks) == 60, 6)
+        self.assertEqual(window.period, "30d")
+        self.assertEqual(list(window.thread_blocks), ids)
+        days = []
+        for record in self.extra[-60:]:
+            name = asb.day_line(record[3], self.sample["nowMs"])
+            if name not in days:
+                days.append(name)
+        self.assertEqual([text for text in self.labels(window.thread_list) if text in days], days)
+
     def thread_page_back(self, window):
         head = window.ledger.get_child_by_name("thread").get_first_child()
         return head.get_first_child()
