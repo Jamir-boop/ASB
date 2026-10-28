@@ -420,6 +420,46 @@ class WidgetCheck(unittest.TestCase):
                 context.iteration(False)
             time.sleep(0.005)
 
+    def held_popover_click(self, window, widget):
+        found, point = widget.compute_point(window, asb.Graphene.Point().init(widget.get_width() / 2, widget.get_height() / 2))
+        self.assertTrue(found)
+        left, top = window.get_surface_transform()
+        subprocess.run(["xdotool", "mousemove", "--window", str(window.get_surface().get_xid()),
+                        str(round(point.x + left)), str(round(point.y + top)), "mousedown", "1"], check=True)
+        self.drain(.15)
+        subprocess.run(["xdotool", "mouseup", "1"], check=True)
+        self.drain(.3)
+
+    def check_popover_lifetime(self, window, open_popover, anchor, outside):
+        subprocess.run(["xdotool", "windowfocus", str(window.get_surface().get_xid())], check=True)
+        def opened():
+            popup = open_popover()
+            self.drain(.3)
+            self.assertTrue(popup.get_mapped())
+            self.assertFalse(popup.get_autohide())
+            self.assertIs(window.get_focus().get_ancestor(asb.Gtk.Popover), popup)
+            return popup
+        popup = opened()
+        subprocess.run(["xdotool", "key", "Escape"], check=True); self.drain(.3)
+        self.assertFalse(popup.get_visible())
+        self.assertTrue(window.get_focus() is anchor or window.get_focus().is_ancestor(anchor))
+        popup = opened()
+        outside.grab_focus(); self.drain(.3)
+        self.assertFalse(popup.get_visible())
+        self.assertTrue(window.get_focus() is outside or window.get_focus().is_ancestor(outside))
+        popup = opened()
+        with patch.object(window, "is_active", return_value=False):
+            window.notify("is-active")
+            self.drain(.3)
+        self.assertFalse(popup.get_visible())
+        popup = opened()
+        window.set_visible(False); self.drain(.3)
+        self.assertFalse(popup.get_visible())
+        window.present(); self.drain(.3)
+        popup = opened()
+        window.close(); self.drain(.3)
+        self.assertFalse(popup.get_visible())
+
     def capture(self, window, path):
         for attempt in range(3):
             try:
@@ -2988,6 +3028,11 @@ class WidgetCheck(unittest.TestCase):
             self.assertIs(window.get_focus(), panel.asb_copy_full)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_open)
+            panel.asb_copy_full.grab_focus()
+            self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Tab, 0, 0))
+            self.assertIs(window.get_focus(), panel.asb_open)
+            self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_ISO_Left_Tab, 0, asb.Gdk.ModifierType.SHIFT_MASK))
+            self.assertIs(window.get_focus(), panel.asb_copy_full)
             # Escape (the native popover key handler) closes the panel and gives the focus back to the card.
             panel.asb_actions["pin"].grab_focus()
             self.assertTrue(window.get_focus().is_ancestor(panel))
@@ -3174,6 +3219,50 @@ class WidgetCheck(unittest.TestCase):
             window.update_clock()
         self.assertIs(panel.asb_signature, shown)
         self.assertEqual([args[1] for args in callbacks if args[1].endswith("/open")], ["/api/threads/second/open"] * 2)
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real keys and clicks need xdotool and DISPLAY=:9 or :10")
+    def test_row_panel_no_grab_escape_focus_inactive_unmap_and_close(self):
+        window = self.snapshot_window()
+        window.set_default_size(1000, 700)
+        window.present(); self.drain(.4)
+        card = window.focus_widgets[window.row_order[0]]
+        def opened():
+            window.show_context(card)
+            return window.context_menu
+        self.check_popover_lifetime(window, opened, card, window.menu_button)
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real keys and clicks need xdotool and DISPLAY=:9 or :10")
+    def test_row_panel_outside_held_click_opens_another_card_once(self):
+        window = self.snapshot_window()
+        window.set_default_size(1000, 700)
+        window.present(); self.drain(.4)
+        subprocess.run(["xdotool", "windowfocus", str(window.get_surface().get_xid())], check=True)
+        window.show_context(window.focus_widgets[window.row_order[0]]); self.drain(.3)
+        popup = window.context_menu
+        card = window.focus_widgets[window.row_order[window.capacity * 2]]
+        with patch.object(asb, "request_async") as request:
+            self.held_popover_click(window, card)
+            self.assertFalse(popup.get_visible())
+            request.assert_called_once()
+            self.assertTrue(request.call_args.args[1].endswith("/open"))
+        self.assertIs(window.get_focus(), card)
+
+    def test_row_panel_board_press_in_the_panel_place_is_claimed(self):
+        window = self.snapshot_window()
+        window.present(); self.drain(.4)
+        window.show_context(window.focus_widgets[window.row_order[0]]); self.drain(.3)
+        popup = window.context_menu
+        found, bounds = popup.compute_bounds(window)
+        self.assertTrue(found)
+        x, y = bounds.origin.x + bounds.size.width / 2, bounds.origin.y + bounds.size.height / 2
+        for surface, claimed in ((window.get_surface(), True), (popup.get_surface(), False)):
+            gesture = Mock()
+            gesture.get_current_event.return_value = SimpleNamespace(get_surface=lambda surface=surface: surface)
+            asb.popover_outside_press(gesture, 1, x, y, window, popup, popup.get_parent())
+            self.assertEqual(gesture.set_state.called, claimed)
+            self.assertTrue(popup.get_visible())
 
     @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
                          "Real pointer movement needs xdotool and a nested test display (DISPLAY=:9 or :10).")
@@ -7335,6 +7424,8 @@ class ActivityFixture:
     THEME = {"background": "#101820", "text": "#f0f0f0", "accent": "#3080c0", "muted": "#a0a0a0", "divider": "#405060"}
 
     drain = WidgetCheck.drain
+    held_popover_click = WidgetCheck.held_popover_click
+    check_popover_lifetime = WidgetCheck.check_popover_lifetime
     capture = WidgetCheck.capture
     assert_accessible_label = WidgetCheck.assert_accessible_label
     close_windows = WidgetCheck.close_windows
@@ -7521,6 +7612,27 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
                     window.notify("is-active")
                     self.drain(.2)
                 self.assertFalse(shown[0].get_visible())
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real keys and clicks need xdotool and DISPLAY=:9 or :10")
+    def test_machine_filter_no_grab_escape_focus_inactive_unmap_and_close(self):
+        window = self.window()
+        def opened():
+            window.machine_filter.popup()
+            return window.machine_filter.get_popover()
+        self.check_popover_lifetime(window, opened, window.machine_filter, window.metric_buttons["tokens"])
+        self.assert_no_new_warnings()
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real keys and clicks need xdotool and DISPLAY=:9 or :10")
+    def test_machine_filter_outside_held_click_changes_metric(self):
+        window = self.window()
+        subprocess.run(["xdotool", "windowfocus", str(window.get_surface().get_xid())], check=True)
+        window.machine_filter.popup(); self.drain(.3)
+        self.held_popover_click(window, window.metric_buttons["tokens"])
+        self.assertFalse(window.machine_filter.get_popover().get_visible())
+        self.assertEqual(window.metric, "tokens")
+        self.assert_no_new_warnings()
 
     def test_usage_folds_filter_popover_and_short_note(self):
         replies = copy.deepcopy(self.REPLIES)
@@ -10129,6 +10241,82 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
         settings.set_property("gtk-enable-animations", True)
         animated = self.board()
         self.assertEqual(animated.search_row.get_transition_type(), asb.Gtk.RevealerTransitionType.SLIDE_DOWN)
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real keys and clicks need xdotool and DISPLAY=:9 or :10")
+    def test_main_menu_no_grab_escape_focus_inactive_unmap_and_close(self):
+        window = self.snapshot_window()
+        window.present(); self.drain(.4)
+        def opened():
+            window.menu_button.popup()
+            return window.menu_button.get_popover()
+        self.check_popover_lifetime(window, opened, window.menu_button, window.search_button)
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real keys and clicks need xdotool and DISPLAY=:9 or :10")
+    def test_main_menu_outside_held_click_opens_card_once(self):
+        window = self.snapshot_window()
+        window.set_default_size(1000, 700)
+        window.present(); self.drain(.4)
+        subprocess.run(["xdotool", "windowfocus", str(window.get_surface().get_xid())], check=True)
+        window.menu_button.popup(); self.drain(.3)
+        with patch.object(asb, "request_async") as request:
+            self.held_popover_click(window, window.focus_widgets[window.row_order[0]])
+            self.assertFalse(window.menu_button.get_popover().get_visible())
+            request.assert_called_once()
+            self.assertTrue(request.call_args.args[1].endswith("/open"))
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real keys and clicks need xdotool and DISPLAY=:9 or :10")
+    def test_main_menu_items_accept_one_held_click(self):
+        preferences = self.enterContext(patch.object(asb.SwitchboardWindow, "open_preferences"))
+        window = self.snapshot_window()
+        window.present(); self.drain(.4)
+        subprocess.run(["xdotool", "windowfocus", str(window.get_surface().get_xid())], check=True)
+        def descendants(widget):
+            child = widget.get_first_child()
+            while child:
+                yield child
+                yield from descendants(child)
+                child = child.get_next_sibling()
+        with patch.object(self.application, "show_activity") as show:
+            for name in ("Messages", "Usage", "Preferences"):
+                window.menu_button.popup(); self.drain(.3)
+                popup = window.menu_button.get_popover()
+                item = next(child for child in descendants(popup) if isinstance(child, asb.Gtk.Label) and child.get_text() == name)
+                self.held_popover_click(window, item)
+                self.assertFalse(popup.get_visible())
+                if name == "Preferences":
+                    preferences.assert_called_once()
+                else:
+                    self.assertEqual(show.call_args.args[0], name.lower())
+
+    @unittest.skipUnless(REAL_KEYS, "Real keys need xdotool and DISPLAY=:9 or :10")
+    def test_main_menu_up_down_enter_and_escape(self):
+        preferences = self.enterContext(patch.object(asb.SwitchboardWindow, "open_preferences"))
+        window = self.board()
+        self.focus(window)
+        window.menu_button.grab_focus()
+        self.keys("key", "space", wait=.3)
+        popup = window.menu_button.get_popover()
+        self.assertTrue(popup.get_mapped())
+        def focused_item():
+            return next(widget.get_text() for widget in descendants(window.get_focus())
+                        if isinstance(widget, asb.Gtk.Label) and widget.get_text() in ("Messages", "Usage", "Preferences"))
+        self.assertEqual(focused_item(), "Messages")
+        self.keys("key", "Down")
+        self.assertEqual(focused_item(), "Usage")
+        self.keys("key", "Up")
+        self.assertEqual(focused_item(), "Messages")
+        self.keys("key", "Down", "Down")
+        self.assertEqual(focused_item(), "Preferences")
+        self.keys("key", "Return", wait=.3)
+        preferences.assert_called_once()
+        self.assertFalse(popup.get_visible())
+        window.menu_button.popup(); self.drain(.3)
+        self.keys("key", "Escape")
+        self.assertFalse(popup.get_visible())
+        self.assertTrue(window.get_focus().is_ancestor(window.menu_button))
 
     def test_main_menu_has_messages_usage_and_preferences_with_their_keys(self):
         window = self.board()

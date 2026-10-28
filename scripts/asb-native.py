@@ -354,6 +354,59 @@ def popover_shift(anchor_x, anchor_width, popover_width, window_width, margin=8)
     return round(min(max(left, margin), window_width - margin - popover_width) - left)
 
 
+def popover_outside_press(gesture, _count, x, y, window, popover, anchor):
+    if not popover.get_visible():
+        return
+    point = Graphene.Point().init(x, y)
+    if isinstance(anchor, Gtk.MenuButton):
+        found, bounds = anchor.compute_bounds(window)
+        if found and bounds.contains_point(point):
+            return
+    found, bounds = popover.compute_bounds(window)
+    # Before the popup surface maps, a press in its place must not reach a card.
+    if not popover.get_width() or found and bounds.contains_point(point):
+        event = gesture.get_current_event()
+        if event is not None and event.get_surface() == window.get_surface():
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        return
+    popover.popdown()
+
+
+def non_autohide_popover(window, popover, anchor):
+    """Close without an X11 grab, so another app gets its focus and keys."""
+    popover.set_autohide(False)
+    popover.connect("map", lambda popup: popup.child_focus(Gtk.DirectionType.TAB_FORWARD))
+    if isinstance(anchor, Gtk.MenuButton):
+        anchor.set_focus_on_click(False)
+    def focus_left(controller):
+        popup = controller.get_widget()
+        def check():
+            focus = window.get_focus()
+            if popup.get_visible() and (focus is None or not focus.is_ancestor(popup)):
+                popup.popdown()
+            return False
+        # Arrow-key wrapping can leave and re-enter the panel in the same event.
+        GLib.idle_add(check)
+    focus = Gtk.EventControllerFocus()
+    focus.connect("leave", focus_left)
+    popover.add_controller(focus)
+    press = Gtk.GestureClick(button=0, propagation_phase=Gtk.PropagationPhase.CAPTURE)
+    press_handler = press.connect("pressed", popover_outside_press, window, popover, anchor)
+    window.add_controller(press)
+    handlers = [window.connect("notify::is-active", lambda owner, _param: popover.popdown() if not owner.is_active() else None),
+                window.connect("unmap", lambda *_: popover.popdown()),
+                window.connect("close-request", lambda *_: popover.popdown() or False)]
+
+    def unparented(popup, _param):
+        if popup.get_parent() is None:
+            for handler in handlers:
+                window.disconnect(handler)
+            window.remove_controller(press)
+            press.disconnect(press_handler)
+    # Row panels are short lived; do not keep them through the window's handlers.
+    popover.connect("notify::parent", unparented)
+
+
 def close_popovers_when_inactive(window, close):
     """Run close when window stays inactive. On X11 a popover is its own window: it would stay over the app that the user switched to."""
     if window.is_active() or getattr(window, "inactive_timer", None):
@@ -4836,6 +4889,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         menu.add_css_class("asb-toolbar-button")
         menu.get_popover().add_css_class("asb-main-menu")
         self.menu_button = menu
+        non_autohide_popover(self, menu.get_popover(), menu)
         sessions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         appearance = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         sessions.append(label("Show sessions", "heading"))
@@ -8032,9 +8086,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.context_menu.popdown()
         widget.grab_focus()
         row = widget.asb_thread
-        panel = Gtk.Popover(has_arrow=False)
+        panel = Gtk.Popover(has_arrow=False, autohide=False)
         panel.add_css_class("asb-row-panel")
         panel.asb_identity, panel.asb_signature = row["id"], None
+        panel.asb_pointer = gesture is not None
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, width_request=260)
         panel.asb_title = label("", "asb-panel-title")
         panel.asb_title.set_ellipsize(Pango.EllipsizeMode.END)
@@ -8101,13 +8156,18 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         panel.add_controller(keys)
         motion = Gtk.EventControllerMotion()
         motion.connect("leave", lambda controller: controller.get_widget().get_ancestor(Gtk.Popover).popdown())
-        # The popup surface also gets grab crossings outside the visible panel.
+        # The content edge ignores motion between controls inside the panel.
         panel.get_child().get_parent().add_controller(motion)
         if gesture:
             motion = Gtk.EventControllerMotion()
             motion.connect("motion", self.panel_pointer_motion)
             panel.add_controller(motion)
+            if not getattr(self, "panel_window_motion", None):
+                self.panel_window_motion = Gtk.EventControllerMotion(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+                self.panel_window_motion.connect("motion", self.panel_pointer_motion)
+                self.add_controller(self.panel_window_motion)
         panel.set_parent(widget)
+        non_autohide_popover(self, panel, widget)
         def closed(popup):
             # A repack moves the row, which unmaps its panel; GTK maps the panel again with the row.
             if popup.get_visible() and not self.closed:
@@ -8130,6 +8190,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def panel_pointer_motion(self, controller, x, y):
         panel = controller.get_widget()
+        if panel is self:
+            panel = self.context_menu
+            if panel is None or not panel.asb_pointer:
+                return
+            found, point = self.compute_point(panel, Graphene.Point().init(x, y))
+            if not found:
+                return
+            x, y = point.x, point.y
         found, bounds = panel.get_child().get_parent().compute_bounds(panel)
         if found and (x < bounds.origin.x - 24 or x > bounds.origin.x + bounds.size.width + 24
                       or y < bounds.origin.y - 24 or y > bounds.origin.y + bounds.size.height + 24):
@@ -8305,12 +8373,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def panel_key(self, controller, key, _code, state):
         panel = controller.get_widget()
-        if key in (Gdk.KEY_Up, Gdk.KEY_Down) and not state & SHORTCUT_MASK:
-            direction = Gtk.DirectionType.TAB_FORWARD if key == Gdk.KEY_Down else Gtk.DirectionType.TAB_BACKWARD
-            if not panel.child_focus(direction):
-                # At the last control, start again at the first one.
-                panel.get_child().set_focus_child(None)
-                panel.child_focus(direction)
+        if key in (Gdk.KEY_Up, Gdk.KEY_Down, Gdk.KEY_Tab, Gdk.KEY_ISO_Left_Tab) and not state & SHORTCUT_MASK:
+            forward = key == Gdk.KEY_Down or key == Gdk.KEY_Tab and not state & Gdk.ModifierType.SHIFT_MASK
+            controls = [button for button in (panel.asb_open, panel.asb_messages, *panel.asb_actions.values(),
+                                             panel.asb_copy, panel.asb_copy_full)
+                        if button.get_visible() and button.get_sensitive()]
+            focus = self.get_focus()
+            index = controls.index(focus) if focus in controls else (-1 if forward else 0)
+            controls[(index + (1 if forward else -1)) % len(controls)].grab_focus()
             return True
         return False
 
@@ -10904,7 +10974,8 @@ class UsageWindow(ActivityWindow):
         self.chips = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.chip_buttons = {}
         filters.append(self.chips)
-        self.machine_filter.set_popover(Gtk.Popover(child=filters))
+        self.machine_filter.set_popover(Gtk.Popover(child=filters, autohide=False))
+        non_autohide_popover(self, self.machine_filter.get_popover(), self.machine_filter)
         self.toolbar_end.append(self.machine_filter)
         self.scan_label = Gtk.Label(xalign=0, visible=False, margin_start=10, margin_end=10, margin_bottom=4)
         self.scan_label.add_css_class("asb-usage-small")
