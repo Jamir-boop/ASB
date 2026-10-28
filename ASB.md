@@ -263,7 +263,7 @@ Select **Apply** to save the settings. **Back up now** saves a backup at once, a
 | --- | --- |
 | `asb usage backup` | Show the backup settings, the next backup, and the backup files of this machine. |
 | `asb usage backup now` | Save a backup now. |
-| `asb usage backup on [--time HH:MM] [--keep N] [--folder <path>\|default]` | Turn the daily backup on, and change its settings. `--folder default` goes back to the default folder. A relative path starts from the current folder. |
+| `asb usage backup on [--time HH:MM] [--keep N] [--folder <path>\|default]` | Turn the daily backup on, and change its settings. `--folder default` goes back to the default folder. A relative path starts from the current folder. An empty value is an error. |
 | `asb usage backup off [--time HH:MM] [--keep N] [--folder <path>\|default]` | Turn the daily backup off. `asb usage backup now` still works. |
 
 ## Top bar (GNOME)
