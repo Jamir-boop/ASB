@@ -20,6 +20,9 @@ export const GUARD_LENGTH = 64;
 export const QUARTER_HOUR_MS = 15 * 60 * 1000;
 const CHUNK_BYTES = 1024 * 1024;
 const YIELD_AFTER_MS = 25;
+// The usage scan rests 3 times the CPU time of its work, so it uses at most about a third of one core; one rest is at most MAX_REST_MS.
+export const SCAN_REST_RATIO = 3;
+export const MAX_REST_MS = 200;
 const FORMATS = { codex: codexUsageFormat, claude: claudeUsageFormat, grok: grokUsageFormat, pi: piUsageFormat };
 const HEX32 = /^[0-9a-f]{32}$/;
 
@@ -27,13 +30,23 @@ export const pathKey = (file) => createHash('sha256').update(file).digest('hex')
 const digest = (value) => createHash('sha256').update(value).digest('base64url').slice(0, 22);
 const guardHash = (bytes) => createHash('sha256').update(bytes).digest('hex').slice(0, 32);
 
-// Gives the event loop a turn at least every YIELD_AFTER_MS of work.
-export function createYielder(now = Date.now) {
+const processCpuMs = () => { const { user, system } = process.cpuUsage(); return (user + system) / 1000; };
+
+// Gives the event loop a turn at least every YIELD_AFTER_MS of work. With a restRatio, the turn is a wait (unref) of
+// restRatio times the CPU time of the process since the last wait, at most MAX_REST_MS. The CPU time counts all threads:
+// the thread pool reads, hashes, and unzips files at the same time as the main thread.
+export function createYielder(now = Date.now, { restRatio = 0, timers = { setTimeout }, cpuMs = processCpuMs } = {}) {
   let last = now();
+  let lastCpu = restRatio ? cpuMs() : 0;
   return async () => {
     if (now() - last < YIELD_AFTER_MS) return;
-    await new Promise((resolve) => setImmediate(resolve));
+    const restMs = restRatio ? Math.min(MAX_REST_MS, Math.round((cpuMs() - lastCpu) * restRatio)) : 0;
+    await new Promise((resolve) => {
+      if (restMs > 0) timers.setTimeout(resolve, restMs)?.unref?.();
+      else setImmediate(resolve);
+    });
     last = now();
+    if (restRatio) lastCpu = cpuMs();
   };
 }
 

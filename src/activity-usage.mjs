@@ -14,7 +14,7 @@ import { openCodeDatabases, readOpenCodeUsage } from './usage-opencode.mjs';
 import { createRateLoader } from './usage-rates.mjs';
 import { suggestName, validName } from './machine-group.mjs';
 import { encodeLedger, exportDocument, loadLedger, MACHINE_ID, mergeRecord, mergeRecords, readExport, recordKey, validRecord } from './usage-ledger.mjs';
-import { createYielder, loadUsageCache, MAX_CACHE_FILES, pathKey, QUARTER_HOUR_MS, saveUsageCache, scanFile, writePrivateJson } from './usage-scan-cache.mjs';
+import { createYielder, loadUsageCache, MAX_CACHE_FILES, pathKey, QUARTER_HOUR_MS, saveUsageCache, scanFile, SCAN_REST_RATIO, writePrivateJson } from './usage-scan-cache.mjs';
 
 export { USAGE_PERIODS };
 const HOUR_MS = 60 * 60 * 1000;
@@ -114,7 +114,8 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
   const memberReplies = new WeakMap();
 
   async function runScan() {
-    const pause = createYielder();
+    // The scan runs in the background (nobody waits for it), so it rests between its steps and leaves the CPU to other apps.
+    const pause = createYielder(Date.now, { restRatio: SCAN_REST_RATIO });
     if (!cache) {
       cache = await loadUsageCache(cacheFile, { platform });
       version += 1;

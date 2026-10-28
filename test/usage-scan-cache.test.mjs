@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { decodeScanCache, encodeScanCache, loadUsageCache, pathKey, saveUsageCache, scanFile } from '../src/usage-scan-cache.mjs';
+import { createYielder, decodeScanCache, encodeScanCache, loadUsageCache, MAX_REST_MS, pathKey, saveUsageCache, scanFile, SCAN_REST_RATIO } from '../src/usage-scan-cache.mjs';
 
 const posix = process.platform !== 'win32';
 const at = Date.parse('2026-10-20T10:00:00Z');
@@ -130,4 +130,32 @@ test('array parsers keep every record in order and both new formats survive the 
   const encoded = encodeScanCache(cache);
   assert.equal(encoded.version, 2);
   assert.deepEqual(decodeScanCache(JSON.parse(JSON.stringify(encoded))), cache);
+});
+
+test('the scan yielder rests 3 times the CPU time of its work, at most 200 ms; without a rest ratio it only gives a turn', async () => {
+  assert.equal(SCAN_REST_RATIO, 3);
+  assert.equal(MAX_REST_MS, 200);
+  const clock = { ms: 0, cpu: 0 };
+  const work = (ms, cpu = ms) => { clock.ms += ms; clock.cpu += cpu; };
+  const waits = [];
+  const timers = { setTimeout: (resolve, delayMs) => { waits.push(delayMs); clock.ms += delayMs; resolve(); return { unref() {} }; } };
+  const pause = createYielder(() => clock.ms, { restRatio: SCAN_REST_RATIO, timers, cpuMs: () => clock.cpu });
+  work(10);
+  await pause();
+  assert.deepEqual(waits, []);
+  work(15);
+  await pause();
+  assert.deepEqual(waits, [75]);
+  // The work counts from the end of the last wait, with the CPU time of all threads.
+  work(30, 50);
+  await pause();
+  assert.deepEqual(waits, [75, 150]);
+  // A long blocking step adds one short rest only.
+  work(5_000);
+  await pause();
+  assert.deepEqual(waits, [75, 150, 200]);
+  const fast = createYielder(() => clock.ms, { timers, cpuMs: () => clock.cpu });
+  work(100);
+  await fast();
+  assert.deepEqual(waits, [75, 150, 200]);
 });
