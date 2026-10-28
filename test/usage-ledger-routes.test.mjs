@@ -87,6 +87,17 @@ test('a bad import file gives 400, a large one 413, and a server without the led
   }
 });
 
+test('an import that cannot save the ledger gives 500 with its message', async (t) => {
+  const blocked = await mkdtemp(path.join(os.tmpdir(), 'asb-usage-blocked-'));
+  t.after(() => rm(blocked, { recursive: true, force: true }));
+  // A file where the ledger folder must be: the ledger cannot be read or saved.
+  await writeFile(path.join(blocked, 'usage'), 'not a folder');
+  const { call } = await setup(t, { usageLedgerFile: path.join(blocked, 'usage', 'usage-ledger.json') });
+  const reply = await call('/api/usage/import', { method: 'POST', body: document([{ machineId: 'c'.repeat(16), name: 'retired',
+    records: [[hourMs, 'codex', 'gpt-test-1', 1, 2, 3, 4]] }]) });
+  assert.deepEqual([reply.status, reply.json], [500, { error: 'ASB could not save the usage ledger. Keep the export file and try again.' }]);
+});
+
 test('export without a machine ID gives 409 with its message', async (t) => {
   const { call } = await setup(t, { machineIdentity: () => ({ machineId: '', machineName: 'engine-a' }) });
   const reply = await call('/api/usage/export');

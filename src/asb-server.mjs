@@ -241,7 +241,10 @@ export function createAsbServer({
         return;
       }
       try { sendJson(response, 200, await activityUsage.importAll(body)); }
-      catch (error) { sendJson(response, error.statusCode === 400 ? 400 : 500, { error: error.statusCode === 400 ? 'This file is not an ASB usage export.' : 'ASB cannot import the usage.' }); }
+      catch (error) {
+        sendJson(response, error.statusCode === 400 ? 400 : 500, { error: error.statusCode === 400 ? 'This file is not an ASB usage export.'
+          : error.expose ? error.message : 'ASB cannot import the usage.' });
+      }
       return;
     }
     // The daily usage backups (src/usage-backup.mjs).

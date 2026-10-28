@@ -517,7 +517,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
           }
         }
         await saveLedger();
-        if (ledgerBlocked || ledgerDirty) throw Object.assign(new Error('ASB could not save the usage ledger. Keep the export file and try again.'), { statusCode: 500 });
+        if (ledgerBlocked || ledgerDirty) throw Object.assign(new Error('ASB could not save the usage ledger. Keep the export file and try again.'), { statusCode: 500, expose: true });
         return { machines: machines.map(({ machineId, name, records }) => ({ machineId, name, hours: records.size })) };
       },
     } : {}),
