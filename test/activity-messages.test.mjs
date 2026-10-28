@@ -196,6 +196,29 @@ test('report text has no cross-session envelope and a long body is cut to 1,999 
   assert.equal(messageText('Plain\n</cross-session-message>'), 'Plain');
 });
 
+test('a thread has the newest 60 messages oldest first, the total, local text without the envelope, and a 2,000 character cap', async (t) => {
+  const { bridge, service } = await home(t);
+  const rows = Array.from({ length: 65 }, (_, index) => ({ id: msg(100 + index), peer: Y, direction: 'out', status: 'delivered',
+    atMs: nowMs - (65 - index) * 60_000, text: `<cross-session-message from="Synthetic">\nMessage ${index}.\n</cross-session-message>` }));
+  rows[64].text = 'z'.repeat(2500);
+  await bridge('codex', X, rows);
+  await bridge('codex', Y, [{ id: msg(200), peer: CLI, direction: 'out', status: 'delivered', atMs: nowMs - 10_000, text: 'To Claude.' }]);
+  const group = { activity: async () => [{ machineId: B.machineId, name: 'engine-b', state: 'online', lastReportAtMs: nowMs,
+    messages: [{ id: msg(300), from: uuid(50), to: Y, atMs: nowMs - 5000, status: 'accepted', reason: '', direction: 'out' }], usage: [], scan: {} }] };
+  const pair = await service({ group }).thread('7d', { a: Y, b: X });
+  assert.equal(pair.total, 65);
+  assert.equal(pair.messages.length, 60);
+  assert.deepEqual(pair.messages[0], { id: msg(105), from: X, to: Y, atMs: seconds(nowMs - 60 * 60_000) * 1000, status: 'accepted', reason: '',
+    fromLabel: '', toLabel: '', text: 'Message 5.' });
+  assert.equal(pair.messages.at(-1).text, `${'z'.repeat(1999)}…`);
+  assert.equal(Array.from(pair.messages.at(-1).text).length, 2000);
+  const seat = await service({ group }).thread('7d', { seat: Y });
+  assert.equal(seat.total, 67);
+  assert.deepEqual(seat.messages.slice(-2).map(({ from, to, text }) => [from, to, text]),
+    [[Y, CLAUDE_ROW, 'To Claude.'], [`unknown:${B.machineId}`, Y, null]]);
+  assert.deepEqual(await service({ group }).thread('7d', { seat: `unknown:${'f'.repeat(16)}` }), { total: 0, messages: [] });
+});
+
 test('the group merge: one record per ID with the receiver status, offline members keep their last records, and member replies include bounded text', async (t) => {
   const { dir, bridge, service } = await home(t);
   // Engine A (this one) sent message 400 from X to a session of engine B; B has the receiver row.
@@ -284,28 +307,32 @@ async function listen(t, server) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
-test('the activity routes check the period, the text query, and the read checks, send no-store, and have no thread route', async (t) => {
+test('the activity routes check the period, the seats, the text query, and the read checks, and send no-store', async (t) => {
   const calls = [];
   const activityMessages = { report: async (...args) => { calls.push(['report', ...args]); return { period: args[0] }; },
-    thread: async (...args) => { calls.push(['thread', ...args]); return { total: 0, messages: [] }; } };
+    thread: async (period, query) => { calls.push(['thread', period, query]); return { total: 0, messages: [] }; } };
   const base = await listen(t, createAsbServer({ dashboardWatchPaths: [], loadDashboard: async () => ({ providers: [], threads: [] }), activityMessages }));
   const get = (route, headers = {}) => fetch(base + route, { headers });
-  for (const route of ['/api/activity/messages?period=24h', '/api/activity/messages']) {
+  for (const route of ['/api/activity/messages?period=24h', '/api/activity/messages', '/api/activity/thread?period=30d&seat=x',
+    '/api/activity/thread?a=x&b=unknown%3Aaaaa']) {
     const response = await get(route);
     assert.equal(response.status, 200, route);
     assert.equal(response.headers.get('cache-control'), 'no-store');
   }
-  assert.deepEqual(calls, [['report', '24h'], ['report', '7d']]);
-  for (const route of ['/api/activity/messages?period=90d', '/api/activity/messages?period=all', '/api/activity/messages?period=1y']) {
+  assert.deepEqual(calls, [['report', '24h'], ['report', '7d'], ['thread', '30d', { seat: 'x' }], ['thread', '7d', { a: 'x', b: 'unknown:aaaa' }]]);
+  for (const route of ['/api/activity/messages?period=90d', '/api/activity/messages?period=all', '/api/activity/messages?period=1y', '/api/activity/thread?period=&seat=x',
+    '/api/activity/thread?period=90d&seat=x']) {
     const response = await get(route);
     assert.deepEqual([response.status, await response.json(), response.headers.get('cache-control')], [400, { error: 'Invalid period.' }, 'no-store'], route);
   }
-  // The thread route is gone: it gets the reply of any unknown /api/ path.
-  for (const route of ['/api/activity/thread', '/api/activity/thread?period=30d&seat=x', '/api/activity/thread?a=x&b=y', '/api/activity/unknown']) {
+  for (const route of ['/api/activity/thread', '/api/activity/thread?seat=', '/api/activity/thread?a=x', '/api/activity/thread?seat=x&a=y&b=z',
+    '/api/activity/thread?seat=x&seat=y', '/api/activity/thread?seat=x%0Ay', `/api/activity/thread?seat=${'x'.repeat(513)}`, '/api/activity/thread?seat=x&extra=1',
+    '/api/activity/thread?seat=x&text=0']) {
     const response = await get(route);
-    assert.deepEqual([response.status, await response.json()], [404, { error: 'Route is not available in ASB.' }], route);
+    assert.deepEqual([response.status, await response.json(), response.headers.get('cache-control')], [400, { error: 'Invalid session.' }, 'no-store'], route);
   }
-  assert.equal(calls.length, 2);
+  assert.deepEqual([(await get('/api/activity/unknown')).status], [404]);
+  assert.equal(calls.length, 4);
   // The phone gateway asks with text=0; any other text query is refused.
   assert.equal((await get('/api/activity/messages?period=7d&text=0')).status, 200);
   assert.deepEqual(calls.at(-1), ['report', '7d', { text: false }]);
@@ -313,13 +340,14 @@ test('the activity routes check the period, the text query, and the read checks,
     const response = await get(route);
     assert.deepEqual([response.status, await response.json()], [400, { error: 'Invalid query.' }], route);
   }
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 5);
+  assert.equal((await get('/api/activity/thread?seat=x', { Origin: 'https://example.com' })).status, 403);
   assert.equal((await get('/api/activity/messages', { Origin: 'https://example.com' })).status, 403);
   assert.equal((await get('/api/activity/messages', { 'Sec-Fetch-Site': 'cross-site' })).status, 403);
   assert.equal((await fetch(`${base}/api/activity/messages`, { method: 'POST', headers: { Origin: base } })).status, 405);
   // No usage service: the usage route does not exist.
   assert.equal((await get('/api/activity/usage?period=30d')).status, 404);
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 5);
   const periods = [];
   const usageBase = await listen(t, createAsbServer({ dashboardWatchPaths: [], loadDashboard: async () => ({ providers: [], threads: [] }),
     activityUsage: { report: async (period) => { periods.push(period); return { period }; } } }));
@@ -331,6 +359,7 @@ test('the activity routes check the period, the text query, and the read checks,
   assert.deepEqual(periods, ['90d', 'all', '30d']);
   // Without the messages service the message routes do not exist.
   assert.equal((await fetch(`${usageBase}/api/activity/messages`)).status, 404);
+  assert.equal((await fetch(`${usageBase}/api/activity/thread?seat=x`)).status, 404);
 });
 
 test('the switchboard server reads the registered bridge folders and passes the usage service on', async (t) => {
@@ -347,6 +376,8 @@ test('the switchboard server reads the registered bridge folders and passes the 
   assert.deepEqual(report.messages.map(({ id, from, to }) => [id, from, to]), [[msg(500), X, Y]]);
   assert.deepEqual(report.machines, [{ machineId: A.machineId, name: A.name, self: true, state: 'local', lastReportAtMs: 0 }]);
   assert.deepEqual(report.messages.map((item) => item.text), [`Synthetic text ${msg(500)}.`]);
+  const thread = await (await fetch(`${base}/api/activity/thread?period=30d&a=${X}&b=${Y}`)).json();
+  assert.deepEqual(thread.messages.map((item) => item.text), [`Synthetic text ${msg(500)}.`]);
   assert.deepEqual(await (await fetch(`${base}/api/activity/usage?period=7d`)).json(), { period: '7d' });
   assert.deepEqual(periods, ['7d']);
   assert.deepEqual((await server.activityMember('24h')).messages.map((item) => item.direction), ['out']);
@@ -397,6 +428,22 @@ test('Claude local sides pair with text and an unpaired named target keeps its l
     { id: 'claude:named-target', from: X, to: `unknown:${A.machineId}`, atMs: nowMs - 1000, status: 'accepted', reason: '', local: true,
       fromLabel: '', toLabel: 'beta-helper', text: 'Different body.' },
   ]);
+  assert.deepEqual((await activity().thread('7d', { a: X, b: Y })).messages.map((item) => item.text), ['Pair body.']);
+  // The thread of an unknown end keeps the name from the message.
+  assert.deepEqual((await activity().thread('7d', { seat: `unknown:${A.machineId}` })).messages.map(({ id, fromLabel, toLabel, text }) =>
+    [id, fromLabel, toLabel, text]), [['claude:named-target', '', 'beta-helper', 'Different body.']]);
+});
+
+test('a thread reads the text of Claude transcript messages older than the newest 200 of the period', async (t) => {
+  const { send, receive, write, bridge, activity } = await claudeFixture(t);
+  await write([send('old-pair', 'Old pair body.', 'beta-helper', nowMs - 3 * 86_400_000), receive(uuid(701), 'Old pair body.', nowMs - 3 * 86_400_000 + 1000)]);
+  await bridge('codex', Y, Array.from({ length: 205 }, (_, index) => ({ id: msg(1000 + index), peer: CLI, direction: 'out', status: 'delivered',
+    atMs: nowMs - (205 - index) * 60_000 })));
+  const report = await activity().report('7d');
+  assert.deepEqual([report.messages.length, report.messages[0].id, report.messages[0].text], [206, 'claude:old-pair', null]);
+  const thread = await activity().thread('7d', { a: Y, b: X });
+  assert.deepEqual(thread.messages.map(({ id, from, to, text }) => [id, from, to, text]), [['claude:old-pair', X, Y, 'Old pair body.']]);
+  assert.equal(thread.total, 1);
 });
 
 test('local sends pair with member deliveries and each unknown endpoint keeps its machine', async (t) => {
