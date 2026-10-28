@@ -176,7 +176,8 @@ test('trusted no-file scans miss an unreported edit only until the service full-
   const late = await f.scan();
   assert.notEqual(late.threads.find((row) => row.id === 'codex-0').state, 'working');
   assert.notEqual(late.threads.find((row) => row.externalId === `local_${uuid(0)}`).state, 'working');
-  f.advance(24_000);
+  // At rest the deadline is 5 min.
+  f.advance(294_000);
   f.reset();
   const recovered = await f.snapshot.loadSharedDashboard();
   assert.equal(recovered.threads.find((row) => row.id === 'codex-0').state, 'working');
@@ -185,10 +186,10 @@ test('trusted no-file scans miss an unreported edit only until the service full-
   assert.equal(lastScan(f).codex, null);
   assert.equal(lastScan(f).claude, null);
 
-  const expiring = await fixture(t, { statusAfterMs: 29_000 });
-  expiring.advance(29_000);
+  const expiring = await fixture(t, { statusAfterMs: 299_000 });
+  expiring.advance(299_000);
   expiring.reset();
-  await expiring.timers.find((timer) => timer.milliseconds === 29_000).callback();
+  await expiring.timers.find((timer) => timer.milliseconds === 299_000).callback();
   assert.equal(sessionStats(expiring).length, 0);
   assert.equal(expiring.timers.at(-1).milliseconds, 1_000, 'A status scan must not delay the safety scan.');
   expiring.advance(1_000);
@@ -362,7 +363,7 @@ test('trusted Claude scans preserve copied-root, workflow, child-log, and metada
 test('a failed due full scan makes the service poll wait for the retry window, then scan in full', async (t) => {
   const f = await fixture(t);
   const pollTimer = () => f.timers.findLast((timer) => timer.callback.name === 'pollServiceDashboard');
-  f.advance(30_000);
+  f.advance(300_000);
   f.failNextLoad();
   await assert.rejects(f.snapshot.loadSharedDashboard(), /Made-up scan failure/);
   const scans = f.scans.length;

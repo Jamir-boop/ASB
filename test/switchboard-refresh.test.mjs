@@ -397,13 +397,13 @@ test('a scan sends the dashboard event and moves the revision only when the list
   await until(() => s.loads() === 3);
   await settle();
   assert.deepEqual([s.events(), s.snapshot.revision()], [2, 2]);
-  // A safety scan that finds the same list sends nothing; a timer scan that changed the list sends one event.
-  await s.clock.advance(30_000);
+  // A safety scan (5 min at rest) that finds the same list sends nothing; a timer scan that changed the list sends one event.
+  await s.clock.advance(300_000);
   assert.equal(s.loads(), 4);
   assert.deepEqual([s.events(), s.snapshot.revision()], [2, 2]);
-  expiry = s.clock.now() + 33_000;
+  expiry = s.clock.now() + 303_000;
   title = 'C';
-  await s.clock.advance(30_000);
+  await s.clock.advance(300_000);
   assert.equal(s.loads(), 5);
   assert.deepEqual([s.events(), s.snapshot.revision()], [3, 3]);
   // The status expiry scan, 3 s later, changed the list: one event.
@@ -411,4 +411,34 @@ test('a scan sends the dashboard event and moves the revision only when the list
   await s.clock.advance(3_000);
   assert.equal(s.loads(), 6);
   assert.deepEqual([s.events(), s.snapshot.revision()], [4, 4]);
+});
+
+test('the service safety scan runs every 5 minutes at rest and every 30 s while a local row works', async (t) => {
+  let working = false;
+  const s = await serviceSnapshot(t, (clock) => ({ generatedAtMs: clock.now(), providers: [],
+    threads: [{ id: 'one', state: working ? 'working' : 'idle' }], refreshIntervalMs: working ? 2_000 : 5_000 }));
+  await s.clock.advance(299_999);
+  assert.equal(s.loads(), 1);
+  await s.clock.advance(1);
+  assert.equal(s.loads(), 2);
+  // A file event scan sees the work: the next safety scan is due 30 s after the last full scan, not at the 5 min timer.
+  working = true;
+  s.change();
+  await s.clock.advance(250);
+  await until(() => s.loads() === 3);
+  await settle();
+  await s.clock.advance(29_749);
+  assert.equal(s.loads(), 3);
+  await s.clock.advance(1);
+  assert.equal(s.loads(), 4);
+  await s.clock.advance(30_000);
+  assert.equal(s.loads(), 5);
+  // Back at rest: 5 minutes again.
+  working = false;
+  await s.clock.advance(30_000);
+  assert.equal(s.loads(), 6);
+  await s.clock.advance(299_999);
+  assert.equal(s.loads(), 6);
+  await s.clock.advance(1);
+  assert.equal(s.loads(), 7);
 });

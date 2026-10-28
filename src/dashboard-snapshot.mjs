@@ -8,6 +8,8 @@ import { durationSince, hitRatePercent, positiveInteger } from './local-http.mjs
 const DEFAULT_DASHBOARD_WATCH_DEBOUNCE_MS = 500;
 // Service mode with full watch coverage: watch events, peer changes, and status expiries start scans; this is the safety scan.
 const SERVICE_SAFETY_SCAN_MS = 30_000;
+// The safety scan at rest: full watch coverage and no local Working row.
+const SERVICE_REST_SCAN_MS = 300_000;
 // The scan interval comes from the local rows; the JSON interval also counts member rows, for the board and the phone.
 const scanIntervalMs = (dashboard) => (dashboard?.localRefreshIntervalMs ?? dashboard?.refreshIntervalMs) === 2_000 ? 2_000 : 5_000;
 // The list content of a dashboard: all of it but the time and the counters. `summary` keeps the list from being empty.
@@ -59,6 +61,7 @@ export class DashboardSnapshot {
     let dashboardWatchCoverage = false;
     let dashboardWatchRetryTimer = null;
     let dashboardServiceTimer = null;
+    let dashboardServiceDueAtMs = Infinity;
     let dashboardWatchReconcilePromise = null;
     let dashboardWatchWalkedAtMs = -Infinity;
     let dashboardWatchWalkedPaths = '';
@@ -69,10 +72,12 @@ export class DashboardSnapshot {
     const dashboardSourceHints = new Map();
     const dashboardFullScans = new Map();
     let dashboardWatchEpoch = 0;
-    const fullScanIntervalMs = serviceMode ? SERVICE_SAFETY_SCAN_MS : 5_000;
+    // The last scan decides between rest and work, so a change takes effect at the next scan.
+    const fullScanIntervalMs = () => !serviceMode ? 5_000
+      : dashboardWatchCoverage && dashboardCache && scanIntervalMs(dashboardCache.dashboard) !== 2_000 ? SERVICE_REST_SCAN_MS : SERVICE_SAFETY_SCAN_MS;
     const fullScanDue = () => ['codex', 'claude'].some((source) => {
       const age = now() - (dashboardFullScans.get(source)?.atMs ?? -Infinity);
-      return age < 0 || age >= fullScanIntervalMs;
+      return age < 0 || age >= fullScanIntervalMs();
     });
     const dashboardSources = { codex: false, claude: false };
     const threadOpenPromises = new Map();
@@ -94,7 +99,7 @@ export class DashboardSnapshot {
       const memory = process.memoryUsage();
       const dashboardCacheAgeMs = dashboardCache?.cachedAtMs ? Math.max(0, now() - dashboardCache.cachedAtMs) : null;
       const cacheTtlMs = !dashboardWatchCoverage ? scanIntervalMs(dashboardCache?.dashboard)
-        : serviceMode ? SERVICE_SAFETY_SCAN_MS : 5_000;
+        : fullScanIntervalMs();
 
       return {
         generatedAtMs: now(),
@@ -139,7 +144,7 @@ export class DashboardSnapshot {
       const cachedAtMs = Number(dashboardCache?.cachedAtMs || 0);
       const cacheAgeMs = now() - cachedAtMs;
       const refreshIntervalMs = scanIntervalMs(dashboardCache?.dashboard);
-      const cacheTtlMs = !dashboardWatchCoverage ? refreshIntervalMs : serviceMode ? SERVICE_SAFETY_SCAN_MS : 5_000;
+      const cacheTtlMs = !dashboardWatchCoverage ? refreshIntervalMs : fullScanIntervalMs();
       const clockExpired = now() >= Number(dashboardCache?.dashboard?.nextStatusCheckAtMs || Infinity);
       const busyThrottled = dashboardDirty && refreshIntervalMs === 2_000
         && now() - dashboardLastScanStartedAtMs < 2_000;
@@ -185,13 +190,13 @@ export class DashboardSnapshot {
               const files = new Map(hints).get(source) || new Map();
               const age = scanAtMs - (previous?.atMs ?? -Infinity);
               const trusted = !force && dashboardWatchCoverage && previous?.epoch === scanEpoch
-                && age >= 0 && age < fullScanIntervalMs && !files.has('');
+                && age >= 0 && age < fullScanIntervalMs() && !files.has('');
               const watchKey = (filePath) => dashboardPlatform === 'win32' ? path.resolve(filePath).toLowerCase() : path.resolve(filePath);
               const watched = [...adaptiveWatchers].filter(([, entry]) => entry.spec.source === source);
               const directories = new Set(watched.map(([root]) => watchKey(root)));
               const recursive = watched.filter(([, entry]) => entry.spec.recursive && !entry.spec.manualRecursive).map(([root]) => watchKey(root));
               const changed = [...files.keys()].map(watchKey);
-              // shortcut: a lost watch event leaves a card late until the next full scan (30 s in service mode), go back to full scans if watch events prove unreliable
+              // shortcut: a lost watch event leaves a card late until the next full scan (30 s in service mode while a row works, 5 min at rest), go back to full scans if watch events prove unreliable
               sourceScans[source] = trusted ? { canReuse: (filePath) => {
                 const target = watchKey(filePath);
                 return !changed.some((hint) => target === hint || target.startsWith(`${hint}${path.sep}`))
@@ -224,6 +229,8 @@ export class DashboardSnapshot {
               serverMetrics.dashboardSoftInvalidations += 1;
               announceDashboard(reason);
             } else dashboardSources.codex = dashboardSources.claude = false;
+            // A scan that starts the work brings a 5 min timer of the rest forward; the poll's own scan sets its timer itself.
+            if (dashboardServiceTimer && !dashboardClosed && now() + serviceDelay(dashboard) < dashboardServiceDueAtMs) armServiceTimer(serviceDelay(dashboard));
             return dashboard;
           })
           .catch((error) => {
@@ -459,18 +466,22 @@ export class DashboardSnapshot {
       dashboardWatchRetryTimer.unref?.();
     };
 
-    const pollServiceDashboard = async () => {
-      if (dashboardClosed) return;
-      let delay = 5_000;
-      try {
-        const dashboard = await loadSharedDashboard();
-        delay = !dashboardWatchCoverage ? scanIntervalMs(dashboard)
-          : Math.max(0, dashboardRetryAfterMs - now(), Math.min(...[...dashboardFullScans.values()].map((scan) => scan.atMs + SERVICE_SAFETY_SCAN_MS - now()),
-            Math.max(2_000, Number(dashboard.nextStatusCheckAtMs || Infinity) - now())));
-      } catch {}
-      if (dashboardClosed) return;
+    const serviceDelay = (dashboard) => !dashboardWatchCoverage ? scanIntervalMs(dashboard)
+      : Math.max(0, dashboardRetryAfterMs - now(), Math.min(...[...dashboardFullScans.values()].map((scan) => scan.atMs + fullScanIntervalMs() - now()),
+        Math.max(2_000, Number(dashboard.nextStatusCheckAtMs || Infinity) - now())));
+    const armServiceTimer = (delay) => {
+      if (dashboardServiceTimer) dashboardClearTimeout(dashboardServiceTimer);
+      dashboardServiceDueAtMs = now() + delay;
       dashboardServiceTimer = dashboardSetTimeout(pollServiceDashboard, delay);
       dashboardServiceTimer.unref?.();
+    };
+    const pollServiceDashboard = async () => {
+      if (dashboardClosed) return;
+      dashboardServiceTimer = null;
+      let delay = 5_000;
+      try { delay = serviceDelay(await loadSharedDashboard()); } catch {}
+      if (dashboardClosed) return;
+      armServiceTimer(delay);
     };
 
     const dashboardForRequest = async (options = {}) => {
