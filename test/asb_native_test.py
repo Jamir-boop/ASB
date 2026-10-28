@@ -375,6 +375,9 @@ class WidgetCheck(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.addCleanup(self.close_windows)
+        if shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"):
+            # A pointer that an earlier test left where a later popover maps makes GTK log a Gdk-CRITICAL at a popover grab.
+            subprocess.run(["xdotool", "mousemove", "9999", "9999"], check=True)
 
     def close_windows(self):
         # GTK does not close a window that was never shown, so its refresh timer would send requests in later tests.
