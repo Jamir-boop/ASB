@@ -8,6 +8,8 @@ Needs Node.js `>=20` (`sqlite3` below `22.13`), Python 3 with PyGObject, GTK `>=
 
 Install Codex and Claude Desktop first, with working `codex:` and `claude:` URL handlers.
 
+On X11, the window uses the Cairo renderer, which uses less memory; to use another renderer, set `GSK_RENDERER` (for example to `gl`) or `GDK_DISABLE`, while Wayland keeps GTK's default.
+
 ### Install with npm
 
 ASB `1.12.1` installs as an npm package. It needs the same packages as the other routes. [Windows](#install-on-windows) uses the same commands.

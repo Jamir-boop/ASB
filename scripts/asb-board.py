@@ -6,10 +6,16 @@ import sys
 from pathlib import Path
 
 def prefer_cairo(environ, system=os.name):
-    """On Windows, GTK tries GL first and falls back to Cairo after an error; Cairo shows the first rows sooner and uses less memory.
-    A renderer that the user chose stays, and so does a request for DirectComposition."""
+    """Use Cairo on Windows for a faster start and on X11 for less memory and faster repaint.
+    Keep user settings and Windows DirectComposition requests; Wayland keeps GTK's default."""
     if system == "nt" and not environ.get("GSK_RENDERER") and "dcomp" not in environ.get("GDK_DEBUG", "").lower():
         environ["GSK_RENDERER"] = "cairo"
+    elif system != "nt":
+        backend = environ.get("GDK_BACKEND", "").split(",", 1)[0].strip()
+        x11 = backend == "x11" or (backend in ("", "*") and not environ.get("WAYLAND_DISPLAY") and environ.get("DISPLAY"))
+        if x11 and not environ.get("GSK_RENDERER") and not environ.get("GDK_DISABLE"):
+            environ["GSK_RENDERER"] = "cairo"
+            environ["GDK_DISABLE"] = "gl,vulkan"
 
 
 def use_app_id(system=os.name):
@@ -20,7 +26,8 @@ def use_app_id(system=os.name):
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("local.asb.AgentSwitchBoard")
 
 
-# GTK reads GSK_RENDERER, and Windows reads the AppUserModelID, when the first window opens, so these calls stay before the board code runs.
+# Set renderer defaults before GTK starts: Cairo avoids a failed GL start on Windows and reduces memory and repaint work on X11.
+# Windows also reads the AppUserModelID before the first window opens.
 prefer_cairo(os.environ)
 use_app_id()
 source = Path(__file__).with_name("asb-native.py")

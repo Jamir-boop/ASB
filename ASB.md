@@ -571,4 +571,6 @@ See [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md) for source modules and [Privacy](do
 
 ## X11 scrolling limit
 
+On X11, the window uses the Cairo renderer, which uses less memory; to use another renderer, set `GSK_RENDERER` (for example to `gl`) or `GDK_DISABLE`, while Wayland keeps GTK's default.
+
 On the tested Debian 13 GNOME X11 stack, ASB has no proven safe 240 Hz scrolling fix. Keep the current Python workaround. The [investigation report](docs/benchmarks/x11-frame-timing-2026-10-13.md) records the measured results. See [the measured limitation and retest checks](SYSTEM_OVERVIEW.md#known-x11-frame-rate-limitation) before changing the distro or desktop stack. Resize lag remains unresolved.

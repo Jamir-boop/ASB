@@ -8208,6 +8208,34 @@ class BoardLauncherChecks(unittest.TestCase):
                 self.assertEqual({key: value for key, value in changed.items() if key != "GSK_RENDERER"},
                                  {key: value for key, value in environ.items() if key != "GSK_RENDERER"})
 
+    def test_x11_uses_cairo_unless_the_user_chose_a_renderer_or_gdk_disable(self):
+        for environ, use_cairo in (
+            ({"DISPLAY": ":0"}, True),
+            ({"GDK_BACKEND": "x11", "WAYLAND_DISPLAY": "wayland-0"}, True),
+            ({"GDK_BACKEND": "x11,wayland"}, True),
+            ({"GDK_BACKEND": " x11 ,wayland"}, True),
+            ({"GDK_BACKEND": "wayland", "DISPLAY": ":0"}, False),
+            ({"GDK_BACKEND": "wayland,x11", "DISPLAY": ":0"}, False),
+            ({"GDK_BACKEND": "*", "WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0"}, False),
+            ({"GDK_BACKEND": "*", "DISPLAY": ":0"}, True),
+            ({"GDK_BACKEND": "", "DISPLAY": ":0"}, True),
+            ({"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0"}, False),
+            ({"WAYLAND_DISPLAY": "", "DISPLAY": ":0"}, True),
+            ({}, False),
+            ({"DISPLAY": ""}, False),
+            ({"DISPLAY": ":0", "GSK_RENDERER": "gl"}, False),
+            ({"DISPLAY": ":0", "GSK_RENDERER": ""}, True),
+            ({"DISPLAY": ":0", "GDK_DISABLE": "vulkan"}, False),
+            ({"DISPLAY": ":0", "GDK_DISABLE": ""}, True),
+        ):
+            with self.subTest(environ=environ):
+                changed = {"UNRELATED": "kept", **environ}
+                expected = dict(changed)
+                if use_cairo:
+                    expected.update(GSK_RENDERER="cairo", GDK_DISABLE="gl,vulkan")
+                self.rule("nt")(changed, system="posix")
+                self.assertEqual(changed, expected)
+
     def test_other_systems_keep_their_environment(self):
         for environ in ({}, {"GSK_RENDERER": ""}, {"GDK_DEBUG": "events"}, {"GSK_RENDERER": "gl"}):
             with self.subTest(environ=environ):
