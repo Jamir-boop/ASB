@@ -14,8 +14,8 @@ https://github.com/user-attachments/assets/c85742f4-d1b0-4ffc-9497-144069fec36b
 - Show sessions from your other computers in an optional machine group.
 - Show sessions and notifications on Android, with an Android 16 Live update chip and Pending counts first.
 - Let sessions message each other through ASB Bridge, also by session reference; Claude Code uses resolved send names.
-- Show the messages that your agents send each other on all machines in the Messages window: a round table of the machines and sessions, the totals, and the thread of a pair or a session with the text (Claude Code messages and ASB Bridge messages).
-- Show the tokens and the API price of the Codex, Claude Code, OpenCode, Antigravity, Grok, and Pi agents on all machines in the Usage window. Usage downloads the LiteLLM price list (prices only) while you use it, and keeps it for a day.
+- Show the messages that your agents send each other on all machines in the Messages window (first opens on `24 hours`): a round table of the machines and sessions, the totals, and the thread of a pair or a session with the text (Claude Code messages and ASB Bridge messages).
+- Show the tokens and the API price of the Codex, Claude Code, OpenCode, Antigravity, Grok, and Pi agents on all machines in the Usage window (first opens on `All time`). Usage downloads the LiteLLM price list (prices only) while you use it, and keeps it for a day.
 - Keep the usage history of your machines, also after the apps delete old transcripts. ASB saves a backup file of the usage of every machine each day and keeps the last 5. Move the usage to another machine with **Export…** and **Import…** in Preferences > Usage, or with `asb usage export` and `asb usage import`.
 - Show in the GNOME top bar how many sessions need you, how many work, and how many your machines have, with an optional GNOME Shell extension.
 - Play Done, Needs input, and Failed sounds on the PC.

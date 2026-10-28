@@ -7408,8 +7408,8 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.addCleanup(self.close_windows)
         self.warnings = len(GTK_WARNINGS)
 
-    def window(self, replies=None, size=(948, 760)):
-        """A shown Usage window that reads the sample replies (or replies[period]) and records its routes."""
+    def window(self, replies=None, size=(948, 760), period="30d"):
+        """A shown Usage window that explicitly reads 30d sample replies (or replies[period]) and records its routes."""
         replies, routes = replies or self.REPLIES, []
 
         def fetch(route):
@@ -7420,7 +7420,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         window.set_default_size(*size)
         window.present()
         self.drain(.1)
-        window.refresh()
+        window.set_period(period)
         self.drain(.25)
         return window
 
@@ -7453,6 +7453,22 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
 
     def assert_no_new_warnings(self):
         self.assertEqual(GTK_WARNINGS[self.warnings:], [])
+
+    def test_a_new_usage_window_reads_all_time_first(self):
+        routes = []
+        def fetch(route):
+            routes.append(route)
+            return copy.deepcopy(self.REPLIES[route.rsplit("=", 1)[1]])
+        window = asb.UsageWindow(self.application, "http://127.0.0.1:1", fetch=fetch)
+        window.present(); self.drain(.1)
+        window.refresh(); self.drain(.2)
+        self.assertEqual(routes, ["/api/activity/usage?period=all"])
+        self.assertEqual(window.period, "all")
+        self.assertEqual(window.period_menu.get_selected(), 4)
+        window.set_period("7d")
+        window.close_to_hidden(); window.present(); window.refresh(); self.drain(.2)
+        self.assertEqual(window.period, "7d")
+        self.assertEqual(window.period_menu.get_selected(), 1)
 
     def test_toolbar(self):
         window = self.window()
@@ -7741,7 +7757,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assert_no_new_warnings()
 
     def test_the_tooltip_of_a_hovered_point(self):
-        window = self.window()
+        window = self.window(period="30d")
         chart = window.chart
         centers = chart.centers()
         controller = next(item for item in chart.observe_controllers() if isinstance(item, asb.Gtk.EventControllerMotion))
@@ -7772,7 +7788,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
 
     def curve_chart(self, bars, unit="day"):
         """The chart of a shown Usage window with made-up bars, one bucket per day (or month) from Oct 1, 2026."""
-        window = self.window()
+        window = self.window(period="30d")
         start = int(asb.datetime(2026, 10, 1).timestamp() * 1000)
         step = 86_400_000 if unit == "day" else 31 * 86_400_000
         buckets = {"unit": unit, "startsMs": [start + index * step for index in range(len(bars))]}
@@ -7784,7 +7800,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         return next(item for item in chart.observe_controllers() if isinstance(item, asb.Gtk.EventControllerMotion))
 
     def test_curve_points_sit_at_the_bucket_centers_over_their_labels(self):
-        window = self.window()
+        window = self.window(period="30d")
         chart = window.chart
         slot = (chart.get_width() - chart.LEFT) / 30
         centers = chart.centers()
@@ -7844,7 +7860,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assert_no_new_warnings()
 
     def test_the_hover_finds_the_nearest_point_with_its_line_and_tooltip(self):
-        window = self.window()
+        window = self.window(period="30d")
         chart, motion = window.chart, self.motion(window.chart)
         centers = chart.centers()
         slot = centers[1] - centers[0]
@@ -7884,7 +7900,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assert_no_new_warnings()
 
     def test_the_tooltip_stays_on_its_point_after_a_refresh(self):
-        window = self.window()
+        window = self.window(period="30d")
         chart = window.chart
         self.motion(chart).emit("motion", chart.centers()[5], 150.)
         old = chart.tip["total"]
@@ -7924,7 +7940,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assert_no_new_warnings()
 
     def test_a_hover_does_not_build_the_curves_again(self):
-        window = self.window()
+        window = self.window(period="30d")
         chart = window.chart
         self.drain(.4)
         draw = lambda: chart.do_snapshot(asb.Gtk.Snapshot())
@@ -7944,7 +7960,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assert_no_new_warnings()
 
     def test_the_curves_move_only_between_the_same_buckets(self):
-        window = self.window()
+        window = self.window(period="30d")
         chart = window.chart
         shown = dict(chart.targets)
         window.set_metric("tokens")
@@ -7963,7 +7979,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
     @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
                          "Real keys need xdotool and DISPLAY=:9 or :10")
     def test_usage_escape_closes_only_after_the_open_menu(self):
-        window = self.window()
+        window = self.window(period="30d")
         subprocess.run(["xdotool", "windowfocus", str(window.get_surface().get_xid())], check=True)
         def key(text):
             subprocess.run(["xdotool", "key", text], check=True)
@@ -8877,15 +8893,29 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
             mine = [record for record in records if {record[1], record[2]} == {args["a"], args["b"]}]
         return {"total": len(mine), "messages": [message(record, True) for record in mine[-60:]]}
 
-    def window(self, size=(968, 760), refresh=True):
+    def window(self, size=(968, 760), refresh=True, period="7d"):
         window = asb.MessagesWindow(self.application, "http://127.0.0.1:1", fetch=self.fetch)
         window.set_default_size(*size)
         window.present()
         self.drain(.2)
         if refresh:
-            window.refresh()
+            window.set_period(period)
             self.drain(.4)
         return window
+
+    def test_a_new_messages_window_reads_24_hours_first(self):
+        window = asb.MessagesWindow(self.application, "http://127.0.0.1:1", fetch=self.fetch)
+        window.present(); self.drain(.1)
+        window.show_session("docs", "docs")
+        window.refresh(); self.drain(.2)
+        self.assertEqual(self.routes[0], "/api/activity/messages?period=24h")
+        self.assertIn("/api/activity/thread?period=24h&seat=docs", self.routes)
+        self.assertEqual(window.period, "24h")
+        self.assertEqual(window.period_menu.get_selected(), 0)
+        window.set_period("7d")
+        window.close_to_hidden(); window.present(); window.refresh(); self.drain(.2)
+        self.assertEqual(window.period, "7d")
+        self.assertEqual(window.period_menu.get_selected(), 1)
 
     def test_custom_header_and_buttons(self):
         self.check_theme_header()
@@ -10152,10 +10182,10 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
             self.poll_calls.return_value = 0
             window = self.application.show_activity("messages", seat="docs", title="Update the install guide"); self.drain(.2)
             self.assertEqual((len(streams), request.call_count), (1, 1))
-            request.call_args.args[2](self.fetch("/api/activity/messages?period=7d"), None); self.drain(.1)
+            request.call_args.args[2](self.fetch("/api/activity/messages?period=24h"), None); self.drain(.1)
             self.assertEqual(window.stack.get_visible_child_name(), "data")
             # The thread read goes through request_async too: Show messages opened the session thread.
-            self.assertEqual(request.call_args.args[1], "/api/activity/thread?period=7d&seat=docs")
+            self.assertEqual(request.call_args.args[1], "/api/activity/thread?period=24h&seat=docs")
             self.assertEqual(window.ledger.get_visible_child_name(), "thread")
             self.assertEqual(window.thread["key"], "docs")
             css = window.css
@@ -10260,7 +10290,7 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
                 thread.refresh(); self.drain(.4)
                 self.assertEqual((thread.thread["kind"], thread.thread["key"], thread.thread["title"]), ("session", "parser-review", title))
                 self.assertEqual(thread.ledger.get_visible_child_name(), "thread")
-                self.assertIn("/api/activity/thread?period=7d&seat=parser-review", self.routes)
+                self.assertIn("/api/activity/thread?period=24h&seat=parser-review", self.routes)
 
     def test_tray_event_opens_the_window_only_on_the_board_that_reported_last(self):
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer

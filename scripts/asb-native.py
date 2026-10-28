@@ -8566,7 +8566,7 @@ class ActivityWindow(Adw.Window):
     TITLE = ""             # "Messages" or "Usage"
     ROUTE = ""             # "/api/activity/messages" or "/api/activity/usage"
     PERIODS = ()           # MESSAGE_PERIODS or USAGE_PERIODS
-    DEFAULT_PERIOD = ""    # "7d" or "30d"
+    DEFAULT_PERIOD = ""    # "24h" or "all"
     DEFAULT_SIZE = (0, 0)  # (968, 760) or (948, 760)
     POLL_SECONDS = 15
     serial = 0
@@ -9599,7 +9599,7 @@ class MessagesWindow(ActivityWindow):
     TITLE = "Messages"
     ROUTE = "/api/activity/messages"
     PERIODS = MESSAGE_PERIODS
-    DEFAULT_PERIOD = "7d"
+    DEFAULT_PERIOD = "24h"
     DEFAULT_SIZE = (968, 760)
 
     def __init__(self, application, base, fetch=None, clock=None):
@@ -10865,7 +10865,7 @@ class UsageWindow(ActivityWindow):
     TITLE = "Usage"
     ROUTE = "/api/activity/usage"
     PERIODS = USAGE_PERIODS
-    DEFAULT_PERIOD = "30d"
+    DEFAULT_PERIOD = "all"
     DEFAULT_SIZE = (948, 760)
     FAST_POLL_SECONDS = 2
 
