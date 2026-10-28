@@ -8788,6 +8788,8 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
     def test_menu_actions_and_keys_open_the_windows_in_every_asb_window(self):
         window = self.board()
         application = self.application
+        # Closing hides a window; the next open shows the same window.
+        shown_kind = lambda kind: kind in application.activity_windows and application.activity_windows[kind].get_visible()
         application.activate_action("messages", None); self.drain(.3)
         messages = application.activity_windows["messages"]
         self.assertIsInstance(messages, asb.MessagesWindow)
@@ -8796,7 +8798,7 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
         self.assertIs(application.activity_windows["messages"], messages)
         self.assertEqual(sum(isinstance(item, asb.MessagesWindow) for item in application.get_windows()), 1)
         messages.close(); self.drain(.3)
-        self.assertNotIn("messages", application.activity_windows)
+        self.assertFalse(shown_kind("messages"))
         window.activate_action("win.preferences", None); self.drain(.3)
         self.assertTrue(window.preferences_window.get_visible())
         window.preferences_window.set_visible(False); self.drain(.2)
@@ -8808,7 +8810,7 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
         def opens(kind, key, target):
             self.focus(target)
             self.keys("key", key, wait=.4)
-            self.assertIn(kind, application.activity_windows, (kind, key, target))
+            self.assertTrue(shown_kind(kind), (kind, key, target))
             shown = application.activity_windows[kind]
             self.assertTrue(shown.get_visible())
             return shown
@@ -8817,18 +8819,18 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
         opens("messages", "ctrl+m", usage).close(); self.drain(.3)
         self.focus(usage)
         self.keys("key", "ctrl+w", wait=.4)
-        self.assertNotIn("usage", application.activity_windows)
+        self.assertFalse(shown_kind("usage"))
         # In the search field the keys open the windows too and type nothing; Ctrl+Shift+U stays the Unicode input.
         self.focus(window)
         window.open_search(); self.drain(.3)
         self.keys("key", "ctrl+m", wait=.4)
-        self.assertIn("messages", application.activity_windows)
+        self.assertTrue(shown_kind("messages"))
         self.assertEqual(window.search.get_text(), "")
         application.activity_windows["messages"].close(); self.drain(.3)
         self.focus(window)
         window.open_search(); self.drain(.3)
         self.keys("key", "ctrl+u", wait=.4)
-        self.assertIn("usage", application.activity_windows)
+        self.assertTrue(shown_kind("usage"))
         application.activity_windows["usage"].close(); self.drain(.3)
         self.focus(window)
         window.open_search(); self.drain(.2)
@@ -8839,7 +8841,7 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
         window.open_search(); self.drain(.2)
         self.keys("key", "ctrl+shift+u", wait=.3)
         self.keys("key", "Escape", "Escape", wait=.3)
-        self.assertNotIn("usage", application.activity_windows)
+        self.assertFalse(shown_kind("usage"))
         window.clear_search(); self.drain(.2)
         # Ctrl+, opens Preferences, where Ctrl+U works too; Ctrl+W leaves the Board open.
         self.focus(window)
@@ -8859,6 +8861,61 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
         self.keys("keyup", "Control_L", wait=.2)
         self.assertEqual(opened, [window.number_keys[0]])
         self.assertFalse(window.numbers_shown)
+
+    def test_closing_a_window_hides_it_and_the_next_open_shows_it_again(self):
+        board = self.board()
+        streams = []
+        stream = lambda *_args: streams.append(Mock()) or streams[-1]
+        with patch.object(asb, "EventStream", side_effect=stream), patch.object(asb, "request_async") as request, \
+                patch.dict(asb.ACTIVITY_WINDOW_CLASSES, {"messages": asb.MessagesWindow}):
+            self.poll_calls.reset_mock()
+            self.poll_calls.return_value = 0
+            window = self.application.show_activity("messages", seat="docs", title="Update the install guide"); self.drain(.2)
+            self.assertEqual((len(streams), request.call_count), (1, 1))
+            request.call_args.args[2](copy.deepcopy(self.sample), None); self.drain(.1)
+            self.assertEqual(window.stack.get_visible_child_name(), "data")
+            self.assertTrue(window.session_chip.get_visible())
+            css = window.css
+            window.close(); self.drain(.2)
+            # Hidden, not closed: no stream, no timers, and the session filter is gone.
+            self.assertFalse(window.get_visible() or window.closed)
+            self.assertIs(self.application.activity_windows["messages"], window)
+            self.assertIn(window, self.application.get_windows())
+            streams[0].close.assert_called_once()
+            self.assertIsNone(window.events)
+            self.assertIsNone(window.poll_timer)
+            self.assertIsNone(window.event_timer)
+            self.assertIsNone(window.session)
+            self.assertFalse(window.session_chip.get_visible())
+            # The menu opens the same window: live again, one read, and its last data until the reply.
+            self.application.activate_action("messages", None); self.drain(.2)
+            self.assertIs(self.application.activity_windows["messages"], window)
+            self.assertTrue(window.get_visible())
+            self.assertEqual((len(streams), request.call_count), (2, 2))
+            self.assertIsNotNone(window.poll_timer)
+            self.assertEqual(self.poll_calls.call_count, 2)
+            self.assertEqual(window.stack.get_visible_child_name(), "data")
+            self.assertFalse(window.session_chip.get_visible())
+            self.assertIs(window.css, css)
+            # The board close destroys a hidden window; no request runs after it.
+            window.close(); self.drain(.2)
+            board.close(); self.drain(.2)
+            self.assertTrue(window.closed)
+            self.assertNotIn("messages", self.application.activity_windows)
+            self.assertNotIn(window, self.application.get_windows())
+            window.refresh(); window.poll_tick(); self.drain(.1)
+            self.assertEqual(request.call_count, 2)
+            self.assertEqual(len(streams), 2)
+
+    def test_a_window_without_a_board_closes_for_good(self):
+        board = self.board()
+        usage = self.application.show_activity("usage"); self.drain(.2)
+        board.close(); self.drain(.2)
+        # A shown window stays when the board closes; its own close then destroys it.
+        self.assertTrue(usage.get_visible() and not usage.closed)
+        usage.close(); self.drain(.2)
+        self.assertTrue(usage.closed)
+        self.assertNotIn("usage", self.application.activity_windows)
 
     def test_row_panel_show_messages_filters_that_session(self):
         rows = [{"id": "docs", "provider": "claude-desktop-code", "providerLabel": "Claude Desktop Code", "title": "Update the install guide",

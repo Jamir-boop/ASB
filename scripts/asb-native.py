@@ -8103,6 +8103,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.list_columns = []
         Gtk.StyleContext.remove_provider_for_display(self.get_display(), self.css)
         Gtk.StyleContext.remove_provider_for_display(self.get_display(), self.badge_css)
+        # The hidden Messages and Usage windows go with the board; a shown one stays until it closes.
+        application = self.get_application() if hasattr(self, "get_application") else None
+        for window in list(getattr(application, "activity_windows", {}).values()):
+            if not window.get_visible():
+                window.destroy()
         return False
 
 
@@ -8404,13 +8409,32 @@ class ActivityWindow(Adw.Window):
     def on_close(self, *_args):
         if self.closed:
             return False
-        self.closed = True
+        if not any(isinstance(window, SwitchboardWindow) and not window.closed for window in self.application.get_windows()):
+            # Without a board nothing opens this window again, and a hidden window would keep the application running.
+            return self.finish()
+        # Closing hides the window, as Preferences does: the next open shows it with its period, filters, and place.
+        self.save_size()
+        self.close_to_hidden()
+        return True
+
+    def close_to_hidden(self):
         self.stop_live()
+        self.set_visible(False)
+
+    def save_size(self):
         try:
             write_window_size(THEME_PATH.with_name("activity-windows.json"), self.KIND, *self.get_default_size(), self.is_maximized())
         except OSError:
             # The size is a comfort; a read-only configuration folder does not stop the close.
             pass
+
+    def finish(self):
+        """The end of the window: it is destroyed or will be. A hidden window is not closed."""
+        if self.closed:
+            return False
+        self.closed = True
+        self.stop_live()
+        self.save_size()
         windows = getattr(self.application, "activity_windows", {})
         if windows.get(self.KIND) is self:
             del windows[self.KIND]
@@ -8620,11 +8644,20 @@ class MessagesWindow(ActivityWindow):
                 return False
             self.scroll_tick = self.feed_scroll.add_tick_callback(keep_position)
 
-    def on_close(self, *_args):
+    def close_to_hidden(self):
+        # An open from the menu shows all sessions; Show messages sets the session again.
+        if self.session is not None or self.pending_session is not None:
+            self.session = self.pending_session = None
+            self.session_chip.set_visible(False)
+            if self.data is not None:
+                self.render(self.data, self.data)
+        super().close_to_hidden()
+
+    def finish(self):
         if self.scroll_tick is not None:
             self.feed_scroll.remove_tick_callback(self.scroll_tick)
             self.scroll_tick = None
-        return super().on_close(*_args)
+        return super().finish()
 
 
 ACTIVITY_WINDOW_CLASSES["messages"] = MessagesWindow
@@ -8638,7 +8671,7 @@ class SwitchboardApplication(Adw.Application):
         self.base, self.first_load = base, first_load
         self.activity_windows = {}
         # A window destroyed without a close request (no "destroy" signal reaches Python) still stops its stream and is forgotten.
-        self.connect("window-removed", lambda _application, window: isinstance(window, ActivityWindow) and window.on_close())
+        self.connect("window-removed", lambda _application, window: isinstance(window, ActivityWindow) and window.finish())
         self.connect("activate", self.on_activate)
         for kind in ("messages", "usage"):
             action = Gio.SimpleAction.new(kind, None)
@@ -8688,7 +8721,9 @@ class SwitchboardApplication(Adw.Application):
 
     def close_windows(self):
         for window in self.get_windows():
-            window.close()
+            # The board close destroys the hidden Messages and Usage windows.
+            if window in self.get_windows():
+                window.close()
         self.quit()
         return False
 
