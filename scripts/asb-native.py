@@ -6213,14 +6213,29 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return False
 
     def open_filters_popover(self, *_args):
+        if self.filter_popover is not None and self.filter_popover.get_visible():
+            self.filter_popover.popdown()
+            self.filters_pill.grab_focus()
+            return
         if self.filter_popover is None:
-            self.filter_popover = Gtk.Popover(position=Gtk.PositionType.BOTTOM, has_arrow=True)
+            self.filter_popover = Gtk.Popover(position=Gtk.PositionType.BOTTOM, has_arrow=True, autohide=False)
             self.filter_popover.set_parent(self.filters_pill)
             self.filter_popover.set_size_request(280, -1)
             self.filter_popover.connect("closed", self.filters_popover_closed)
             keys = Gtk.EventControllerKey()
             keys.connect("key-pressed", self.filter_popover_key)
             self.filter_popover.add_controller(keys)
+            focus = Gtk.EventControllerFocus()
+            focus.connect("leave", self.close_filters_popover)
+            self.filter_popover.add_controller(focus)
+            # Keep focus inside until the pill toggles the popover.
+            self.filters_pill.set_focus_on_click(False)
+            press = Gtk.GestureClick(button=0, propagation_phase=Gtk.PropagationPhase.CAPTURE)
+            press.connect("pressed", self.filters_outside_press)
+            self.add_controller(press)
+            self.connect("notify::is-active", self.filters_active_changed)
+            self.connect("unmap", self.close_filters_popover)
+            self.connect("close-request", self.close_filters_popover)
         self.rebuild_filters_popover()
         self.filters_pill.set_has_tooltip(False)
         # GTK measures a hidden popover as zero; show it before measuring and opening it.
@@ -6230,11 +6245,30 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         shift = popover_shift(bounds.origin.x, bounds.size.width, width, self.get_width()) if found else 0
         self.filter_popover.set_offset(shift, 0)
         self.filter_popover.popup()
+        self.filter_popover.child_focus(Gtk.DirectionType.TAB_FORWARD)
+
+    def close_filters_popover(self, *_args):
+        if self.filter_popover is not None:
+            self.filter_popover.popdown()
+        return False
+
+    def filters_active_changed(self, *_args):
+        if not self.is_active():
+            self.close_filters_popover()
+
+    def filters_outside_press(self, _gesture, _count, x, y):
+        if not self.filter_popover.get_visible():
+            return
+        point = Graphene.Point().init(x, y)
+        for widget in (self.filter_popover, self.filters_pill):
+            found, bounds = widget.compute_bounds(self)
+            if found and bounds.contains_point(point):
+                return
+        self.close_filters_popover()
 
     def filters_popover_closed(self, *_args):
         self.filters_pill.set_has_tooltip(True)
         self.sync_filter_chips()
-        self.filters_pill.grab_focus()
 
     def rebuild_filters_popover(self):
         model = self.filter_model

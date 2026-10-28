@@ -997,6 +997,66 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual(switch.get_active(), expected)
             self.assertEqual(window.archived, expected)
 
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real keys and clicks need xdotool and DISPLAY=:9 or :10")
+    def test_filters_outside_held_click_opens_card_once(self):
+        window = self.snapshot_window()
+        window.set_default_size(700, 600)
+        window.present(); self.drain(.4)
+        subprocess.run(["xdotool", "windowfocus", str(window.get_surface().get_xid())], check=True)
+        window.open_filters_popover(); self.drain(.2)
+        window.filter_popover_rows["state:working"].set_active(True)
+        self.drain(.5)
+        card = list(window.focus_widgets.values())[-1]
+        found, point = card.compute_point(window, asb.Graphene.Point().init(card.get_width() / 2, card.get_height() / 2))
+        self.assertTrue(found)
+        with patch.object(asb, "request_async") as request:
+            subprocess.run(["xdotool", "mousemove", "--window", str(window.get_surface().get_xid()),
+                            str(round(point.x)), str(round(point.y)), "mousedown", "1"], check=True)
+            self.drain(.12)
+            subprocess.run(["xdotool", "mouseup", "1"], check=True)
+            self.drain(.3)
+            self.assertFalse(window.filter_popover.get_visible())
+            request.assert_called_once()
+            self.assertTrue(request.call_args.args[1].endswith("/open"))
+        self.assertIsNot(window.get_focus(), window.filters_pill)
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real keys need xdotool and DISPLAY=:9 or :10")
+    def test_filters_escape_tab_inactive_and_unmap_close(self):
+        window = self.snapshot_window()
+        window.present(); self.drain(.3)
+        subprocess.run(["xdotool", "windowfocus", str(window.get_surface().get_xid())], check=True)
+        window.open_filters_popover(); self.drain(.2)
+        self.assertIs(window.get_focus().get_ancestor(asb.Gtk.Popover), window.filter_popover)
+        subprocess.run(["xdotool", "key", "Escape"], check=True); self.drain(.2)
+        self.assertFalse(window.filter_popover.get_visible())
+        self.assertIs(window.get_focus(), window.filters_pill)
+        window.open_filters_popover(); self.drain(.2)
+        window.filter_popover_rows["state:working"].set_active(True)
+        self.assertTrue(window.filter_popover_rows["clear"].grab_focus())
+        subprocess.run(["xdotool", "key", "Tab"], check=True); self.drain(.2)
+        self.assertFalse(window.filter_popover.get_visible())
+        self.assertIsNot(window.get_focus(), window.filters_pill)
+        window.open_filters_popover(); self.drain(.2)
+        with patch.object(window, "is_active", return_value=False):
+            window.notify("is-active")
+        self.drain(.2)
+        self.assertFalse(window.filter_popover.get_visible())
+        window.open_filters_popover(); self.drain(.2)
+        found, point = window.filters_pill.compute_point(window, asb.Graphene.Point().init(
+            window.filters_pill.get_width() / 2, window.filters_pill.get_height() / 2))
+        self.assertTrue(found)
+        subprocess.run(["xdotool", "mousemove", "--window", str(window.get_surface().get_xid()),
+                        str(round(point.x)), str(round(point.y)), "mousedown", "1"], check=True)
+        self.drain(.12)
+        subprocess.run(["xdotool", "mouseup", "1"], check=True); self.drain(.2)
+        self.assertFalse(window.filter_popover.get_visible())
+        self.assertIs(window.get_focus(), window.filters_pill)
+        window.open_filters_popover(); self.drain(.2)
+        window.set_visible(False); self.drain(.2)
+        self.assertFalse(window.filter_popover.get_visible())
+
     def test_filter_chips_wait_for_popover_close(self):
         window = self.snapshot_window()
         dashboard = mock_dashboard()
@@ -1025,7 +1085,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(window.visible_rows())
         self.assertTrue(all(row["state"] == "working" and row["provider"] == "codex" for row in window.visible_rows()))
         self.assertEqual(window.row_order, [row["id"] for row in window.visible_rows()])
-        window.filter_popover.popdown(); self.drain(.3)
+        window.filter_popover_key(None, asb.Gdk.KEY_Escape, 0, 0); self.drain(.3)
         self.assertEqual(list(window.filter_chip_widgets), ["state:working", "profile:|codex"])
         self.assertEqual(list(window.filter_chip_widgets), [key for key, *_rest in window.active_filter_chips()])
         self.assertIs(window.get_focus(), window.filters_pill)
