@@ -179,6 +179,7 @@ test('a Working row sends its turn start, the first scan time without one, and o
 test('the session list keeps its bytes and tag while only the last event times of Working rows change', async (t) => {
   let clock = now;
   let scan = 0;
+  let cache = null;
   // Three Working rows (one with no turn start) write at their own times and cross 10 s steps at different scans.
   const times = [[now - 1_000, now - 9_000, now - 15_000, now - 600_000], [now + 12_000, now + 21_000, now + 33_000, now - 600_000]];
   const threads = (index) => [
@@ -188,7 +189,10 @@ test('the session list keeps its bytes and tag while only the last event times o
     { id: 'delta', provider: 'codex', lifecycleRunning: false },
   ].map((thread, row) => ({ ...thread, updatedAtMs: times[index][row], agentActivityAtMs: times[index][row] }));
   const server = createSwitchboardServer({ now: () => clock, pendingStatePath: false, palettePath: '', dashboardWatchPaths: [],
-    loadDashboard: async ({ workingStarts }) => buildSwitchboardDashboard(threads(Math.min(scan++, 1)), [], clock, { machineId: '', machineName: 'Made-up' }, workingStarts) });
+    loadDashboard: async ({ workingStarts, rowCache }) => {
+      cache = rowCache;
+      return buildSwitchboardDashboard(threads(Math.min(scan++, 1)), [], clock, { machineId: '', machineName: 'Made-up' }, workingStarts, rowCache);
+    } });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
   const read = async () => {
@@ -200,6 +204,8 @@ test('the session list keeps its bytes and tag while only the last event times o
   clock += 33_000;
   const second = await read();
   assert.equal(scan, 2);
+  // The engine keeps the built rows for its next scan.
+  assert.deepEqual([...cache.keys()].sort(), ['alpha', 'beta', 'delta', 'gamma']);
   assert.equal(second.list, first.list);
   assert.equal(second.etag, first.etag);
   // Newest sent time first, then the ID: gamma has no turn start, so it sends the time of its first Working scan.
@@ -2595,4 +2601,115 @@ test('manual unread stays a dot while native failed and limit outcomes use alert
     const native = (await new PendingTracker(false).observe(buildSwitchboardDashboard([{ ...end, nativeUnread: true, ...extra }], [], now))).threads[0];
     assert.deepEqual([native.unread, native.alert], [true, extra.latestLifecycleKind !== 'task_complete']);
   }
+});
+
+// Made-up threads as the loaders give them: new objects at each scan.
+function keptRowWorld(startMs) {
+  const HOUR = 3_600_000;
+  const uuid = (index) => `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+  const source = { sourceId: 'claude-made-up', sourceLabel: 'Claude made-up', sourceName: 'claude-made-up', sourceNumber: 2, sourceCount: 2,
+    sourceColor: '#336699', sourceShowMarker: true, sourceCanOpen: true, sourceDataDir: '/made-up/claude' };
+  const desktop = (index, fields) => ({ id: `claude-desktop-code:local_${uuid(index)}`, externalId: `local_${uuid(index)}`,
+    provider: 'claude-desktop-code', source: 'claude-desktop-code', title: `Made-up desktop ${index}`, cwd: `/made-up/p${index}`,
+    cliSessionId: uuid(100 + index), priorCliSessionIds: [], bridgeSessionIds: [], incomingMessages: [], pendingTools: [],
+    createdAtMs: startMs - 2 * HOUR, ...source, ...fields });
+  const threads = new Map();
+  const put = (thread) => threads.set(thread.id, thread);
+  for (let index = 0; index < 3; index += 1) {
+    put(desktop(index, { lifecycleRunning: true, agentStartedAtMs: startMs - 60_000 * (index + 1), agentActivityAtMs: startMs - 1_000,
+      latestLifecycleAtMs: startMs - 60_000 * (index + 1), latestLifecycleKind: 'task_started', updatedAtMs: startMs - 1_000 }));
+  }
+  for (let index = 3; index < 12; index += 1) {
+    put(desktop(index, { lifecycleRunning: false, latestLifecycleKind: 'task_complete', latestLifecycleAtMs: startMs - index * 600_000,
+      latestAgentFinalAtMs: startMs - index * 600_000, latestTaskEndedAtMs: startMs - index * 600_000, updatedAtMs: startMs - index * 600_000,
+      incomingMessages: [{ from: uuid(100), atMs: startMs - 30_000 }] }));
+  }
+  // A blocking question and a desktop request with no lifecycle: both near the end of their six-hour windows.
+  put(desktop(12, { userQuestionBlocking: true, latestBlockingQuestionAtMs: startMs - 6 * HOUR + 1_800_000, awaitingUserInput: true,
+    latestUserQuestionAtMs: startMs - 6 * HOUR + 1_800_000, pendingTools: [{ tool: 'AskUserQuestion', signalAtMs: startMs - 6 * HOUR + 1_800_000 }],
+    pendingToolCount: 1, pendingToolAtMs: startMs - 6 * HOUR + 1_800_000, lifecycleRunning: true, agentActivityAtMs: startMs - 1_000,
+    agentStartedAtMs: startMs - 6 * HOUR, latestLifecycleAtMs: startMs - 6 * HOUR, updatedAtMs: startMs - 1_000 }));
+  put(desktop(13, { latestUserMessageAtMs: startMs - 5 * HOUR, latestAgentFinalAtMs: startMs - 5.5 * HOUR, transcriptActivityAtMs: startMs - 5 * HOUR,
+    updatedAtMs: startMs - 5 * HOUR }));
+  // Usage limits that reset in 30 min and in 8 h 52 min (the clock goes back over this one), and an approval that waits its grace.
+  // Their rows change only with the time.
+  for (const [index, resetMs] of [[14, 1_800_000], [16, 8 * HOUR + 52 * 60_000]]) {
+    put(desktop(index, { lifecycleRunning: false, latestLifecycleKind: 'task_complete', latestLifecycleAtMs: startMs - 2 * HOUR,
+      limitResetsAtMs: startMs + resetMs, updatedAtMs: startMs - 2 * HOUR }));
+  }
+  put(desktop(15, { lifecycleRunning: true, agentActivityAtMs: startMs - 3_000, agentStartedAtMs: startMs - 9_000, latestLifecycleAtMs: startMs - 9_000,
+    approvalCheckAtMs: startMs + 5_000, childEndGraceAtMs: startMs + 7_000, updatedAtMs: startMs - 3_000 }));
+  for (let index = 0; index < 3; index += 1) {
+    put({ id: `cli:${uuid(200 + index)}`, externalId: uuid(200 + index), provider: 'claude-desktop-code', source: 'claude-cli', surface: 'cli',
+      title: `Made-up CLI ${index}`, cwd: '/made-up/cli', cliSessionId: uuid(200 + index), priorCliSessionIds: [], incomingMessages: [],
+      lifecycleRunning: false, latestLifecycleKind: 'task_complete', latestLifecycleAtMs: startMs - HOUR, updatedAtMs: startMs - HOUR,
+      cliSharedSource: index === 2, ...source });
+  }
+  // A remote cache observation 45 min ahead of the clock: it counts once it is less than 5 min ahead (at scan 10).
+  put({ id: 'claude-desktop-code:session_made-up', externalId: 'session_made-up', provider: 'claude-desktop-code', source: 'claude-remote-cache',
+    title: 'Made-up remote', projectName: 'remote', remoteObservedAtMs: startMs + 45 * 60_000, remoteEnvironmentKind: 'anthropic_cloud',
+    remoteSessionStatus: 'active', remoteWorkerStatus: 'idle', remoteConnectionStatus: 'connected', updatedAtMs: startMs - 2 * HOUR });
+  // A Codex task with two running children, and idle Codex tasks.
+  put({ id: uuid(300), provider: 'codex', source: 'vscode', title: 'Made-up Codex parent', cwd: '/made-up/codex', lifecycleRunning: false,
+    latestLifecycleKind: 'task_complete', latestLifecycleAtMs: startMs - 120_000, updatedAtMs: startMs - 120_000, createdAtMs: startMs - HOUR });
+  for (const child of [301, 302]) {
+    put({ id: uuid(child), provider: 'codex', source: 'vscode', isSubagent: true, parentThreadId: uuid(300), title: `Made-up child ${child}`,
+      lifecycleRunning: true, agentStartedAtMs: startMs - 100_000, agentActivityAtMs: startMs - 2_000, latestLifecycleAtMs: startMs - 100_000,
+      latestTaskStartedAtMs: startMs - 100_000, updatedAtMs: startMs - 2_000, createdAtMs: startMs - 100_000 });
+  }
+  for (let index = 0; index < 20; index += 1) {
+    put({ id: uuid(400 + index), provider: 'codex', source: index % 4 ? 'vscode' : 'cli', title: `Made-up Codex ${index}`, cwd: '/made-up/codex',
+      lifecycleRunning: false, latestLifecycleKind: index % 5 ? 'task_complete' : 'turn_aborted', latestLifecycleAtMs: startMs - index * 900_000,
+      updatedAtMs: startMs - index * 900_000, createdAtMs: startMs - 2 * HOUR });
+  }
+  return { threads, uuid, desktop, HOUR };
+}
+
+test('a scan with kept rows gives the JSON and the hidden fields of a full build, over 60 follow-up scans', () => {
+  const startMs = Date.parse('2026-10-27T10:00:00Z');
+  const { threads, uuid, desktop, HOUR } = keptRowWorld(startMs);
+  const kept = { workingStarts: new Map(), rowCache: new Map() };
+  const full = { workingStarts: new Map() };
+  const hidden = (board) => ({ next: board.nextStatusCheckAtMs, keys: board[Object.getOwnPropertySymbols(board)[0]],
+    rows: board.threads.map((row) => Object.getOwnPropertySymbols(row).map((symbol) => [String(symbol), row[symbol]])) });
+  let nowMs = startMs;
+  let machine = { machineId: '0123456789abcdef', machineName: 'made-up' };
+  let keptRows = 0;
+  const states = [];
+  for (let scan = 0; scan < 60; scan += 1) {
+    const step = { 10: 50 * 60_000, 25: 61 * 60_000, 45: 7 * HOUR, 55: -HOUR }[scan] ?? 2_000;
+    nowMs += step;
+    // One working session writes a line at each scan.
+    const writer = threads.get(`claude-desktop-code:local_${uuid(scan % 3)}`);
+    if (writer?.lifecycleRunning) Object.assign(writer, { agentActivityAtMs: nowMs - 500, updatedAtMs: nowMs - 500 });
+    if (scan === 20) threads.set('claude-desktop-code:local_new', desktop(50, { id: 'claude-desktop-code:local_new', lifecycleRunning: true,
+      agentStartedAtMs: nowMs - 1_000, agentActivityAtMs: nowMs - 500, latestLifecycleAtMs: nowMs - 1_000, updatedAtMs: nowMs - 500 }));
+    if (scan === 30) Object.assign(threads.get(`claude-desktop-code:local_${uuid(0)}`), { lifecycleRunning: false, latestLifecycleKind: 'task_complete',
+      latestLifecycleAtMs: nowMs - 100, latestTaskEndedAtMs: nowMs - 100, latestAgentFinalAtMs: nowMs - 100, updatedAtMs: nowMs - 100 });
+    if (scan === 35) Object.assign(threads.get(uuid(301)), { lifecycleRunning: false, latestLifecycleKind: 'task_complete',
+      latestLifecycleAtMs: nowMs - 100, latestTaskEndedAtMs: nowMs - 100, updatedAtMs: nowMs - 100 });
+    if (scan === 40) threads.delete(`cli:${uuid(200)}`);
+    if (scan === 50) machine = { ...machine, machineName: 'made-up-renamed' };
+    const input = () => [...threads.values()].map((thread) => structuredClone(thread));
+    const previous = new Map(kept.rowCache);
+    const fast = buildSwitchboardDashboard(input(), [], nowMs, machine, kept.workingStarts, kept.rowCache);
+    const slow = buildSwitchboardDashboard(input(), [], nowMs, machine, full.workingStarts);
+    assert.equal(JSON.stringify(fast), JSON.stringify(slow), `scan ${scan}`);
+    assert.deepEqual(hidden(fast), hidden(slow), `scan ${scan}`);
+    keptRows += [...kept.rowCache].filter(([rowId, entry]) => previous.get(rowId) === entry).length;
+    const rowOf = (rowId) => slow.threads.find((row) => row.id === rowId);
+    states.push([rowOf(`claude-desktop-code:local_${uuid(12)}`).state, rowOf(`claude-desktop-code:local_${uuid(13)}`).state,
+      rowOf(`claude-desktop-code:local_${uuid(14)}`).limitResetsAtMs > 0, rowOf(`claude-desktop-code:local_${uuid(16)}`).limitResetsAtMs > 0,
+      rowOf(uuid(300)).state, rowOf('claude-desktop-code:session_made-up').state]);
+    // The engine changes its rows in place; the kept rows must not get these changes.
+    for (const row of fast.threads) Object.assign(row, { pinned: true, reference: 'asb:1/made-up', title: `${row.title} (changed)` });
+  }
+  // The time moves cross the six-hour windows and the limit reset; the Codex parent works until its children end.
+  assert.deepEqual(states[0], ['waiting', 'working', true, true, 'working', 'unknown']);
+  assert.deepEqual(states[10], ['working', 'working', false, true, 'working', 'idle']);
+  assert.deepEqual(states[30], ['working', 'unknown', false, true, 'working', 'idle']);
+  assert.deepEqual(states[54], ['unknown', 'unknown', false, false, 'unknown', 'unknown']);
+  assert.deepEqual(states[55], ['unknown', 'unknown', false, true, 'unknown', 'unknown']);
+  // Most rows do not change from scan to scan.
+  assert.ok(keptRows > 60 * 30, `kept ${keptRows} rows`);
 });
