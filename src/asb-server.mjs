@@ -207,6 +207,12 @@ export function createAsbServer({
         sendJson(response, 400, { error: 'Invalid period.' });
         return;
       }
+      // The phone gateway asks with text=0: the reply then has no message text.
+      const textless = activityRoute === 'messages' && params.has('text');
+      if (textless && (params.getAll('text').length !== 1 || params.get('text') !== '0')) {
+        sendJson(response, 400, { error: 'Invalid query.' });
+        return;
+      }
       let query = null;
       if (activityRoute === 'thread') {
         const names = [...new Set(params.keys())].filter((name) => name !== 'period').sort().join(',');
@@ -221,7 +227,8 @@ export function createAsbServer({
       // Read-only: the bridge databases, the cached rows, and the member replies.
       try {
         sendJson(response, 200, activityRoute === 'usage' ? await activityUsage.report(period)
-          : activityRoute === 'thread' ? await activityMessages.thread(period, query) : await activityMessages.report(period));
+          : activityRoute === 'thread' ? await activityMessages.thread(period, query)
+          : textless ? await activityMessages.report(period, { text: false }) : await activityMessages.report(period));
       } catch { sendJson(response, 500, { error: 'Cannot read the ASB activity.' }); }
       return;
     }

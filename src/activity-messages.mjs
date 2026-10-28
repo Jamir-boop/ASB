@@ -236,13 +236,15 @@ export function createActivityMessages({ readSources = async () => [], dashboard
   }
 
   return {
-    async report(period) {
+    // With text: false (the phone gateway), no body is read and no message has text or labels.
+    async report(period, { text = true } = {}) {
       const { nowMs, buckets, machines, messages, rows, self } = await merged(period);
       const kept = messages.slice(-MAX_ACTIVITY_MESSAGES);
-      const texts = await textsFor(kept.slice(-200));
+      const texts = text ? await textsFor(kept.slice(-200)) : null;
       const ids = new Set(kept.flatMap((item) => [item.from, item.to]));
       return { period, nowMs, buckets, machines, seats: seatsOf(ids, rows, machines, self),
-        messages: kept.map(({ files, hash, claudeRecord, textId, text, ...item }) => ({ ...item, text: texts.get(item.id) ?? null })), truncated: kept.length < messages.length };
+        messages: kept.map(({ files, hash, claudeRecord, textId, text: _text, fromLabel, toLabel, ...item }) => (texts
+          ? { ...item, fromLabel, toLabel, text: texts.get(item.id) ?? null } : item)), truncated: kept.length < messages.length };
     },
 
     async thread(period, { a, b, seat } = {}) {

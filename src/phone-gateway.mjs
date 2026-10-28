@@ -534,7 +534,7 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
         // Only a valid period goes on; every other query value stays here.
         const period = url.searchParams.get('period') ?? (activity === 'usage' ? '30d' : '7d');
         if (!(activity === 'usage' ? ACTIVITY_PERIODS : ACTIVITY_PERIODS.slice(0, 3)).includes(period)) { reject(400, 'Invalid period.'); return; }
-        proxy(request, response, `/api/activity/${activity}?period=${period}`, body, true);
+        proxy(request, response, `/api/activity/${activity}?period=${period}${activity === 'messages' ? '&text=0' : ''}`, body, true);
       } else {
         const target = dashboard ? `/api/dashboard${url.searchParams.get('force') === '1' ? '?force=1' : ''}`
           : unread ? '/api/settings/unread' : `/api/threads/${match[1]}/${match[2]}`;

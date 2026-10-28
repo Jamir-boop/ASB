@@ -381,22 +381,22 @@ gatewayTest('the dashboard reply is gzip only when the phone accepts it and has 
   assert.deepEqual(failed.json, { error: 'ASB is not answering.' });
 });
 
-gatewayTest('the activity routes proxy only a valid period, gzip like the dashboard, and the thread is never reachable', async (t) => {
+gatewayTest('the activity routes proxy only a valid period, ask for messages with no text, gzip like the dashboard, and the thread is never reachable', async (t) => {
   const body = JSON.stringify({ messages: Array.from({ length: 100 }, (_, i) => ({ id: `m-${i}`, status: 'accepted' })) });
   const { request, pair, records } = await fixture(t, { reply: (request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(body);
   } });
   const token = (await pair()).json.token;
-  const zipped = await request('/phone/v1/activity/messages?period=24h&a=x&b=y&seat=z&force=1', { token, headers: { 'accept-encoding': 'gzip' } });
+  const zipped = await request('/phone/v1/activity/messages?period=24h&a=x&b=y&seat=z&force=1&text=1', { token, headers: { 'accept-encoding': 'gzip' } });
   assert.deepEqual([zipped.status, zipped.headers['content-encoding'], zipped.headers.vary, zipped.headers['cache-control']], [200, 'gzip', 'Accept-Encoding', 'no-store']);
   assert.equal(gunzipSync(zipped.raw).toString(), body);
   assert.equal((await request('/phone/v1/activity/usage?period=90d&period=7d&x=1', { token })).text, body);
   assert.equal((await request('/phone/v1/activity/usage?period=all', { token })).status, 200);
   assert.equal((await request('/phone/v1/activity/messages', { token })).status, 200);
   assert.equal((await request('/phone/v1/activity/usage', { token })).status, 200);
-  assert.deepEqual(records.map((record) => [record.method, record.url]), [['GET', '/api/activity/messages?period=24h'],
-    ['GET', '/api/activity/usage?period=90d'], ['GET', '/api/activity/usage?period=all'], ['GET', '/api/activity/messages?period=7d'], ['GET', '/api/activity/usage?period=30d']]);
+  assert.deepEqual(records.map((record) => [record.method, record.url]), [['GET', '/api/activity/messages?period=24h&text=0'],
+    ['GET', '/api/activity/usage?period=90d'], ['GET', '/api/activity/usage?period=all'], ['GET', '/api/activity/messages?period=7d&text=0'], ['GET', '/api/activity/usage?period=30d']]);
   records.length = 0;
   for (const route of ['/phone/v1/activity/messages?period=90d', '/phone/v1/activity/messages?period=all', '/phone/v1/activity/messages?period=1y', '/phone/v1/activity/usage?period=']) {
     const response = await request(route, { token });

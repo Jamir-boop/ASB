@@ -8,6 +8,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createActivityMessages, messageText, periodBuckets, statusGroup, statusReason } from '../src/activity-messages.mjs';
 import { createClaudeMessages } from '../src/claude-messages.mjs';
+import { querySqliteJson } from '../src/codex-data.mjs';
 import { createAsbServer } from '../src/asb-server.mjs';
 import { createMachineGroup, saveGroup } from '../src/machine-group.mjs';
 import { exportBody, exportLocalSessions, mergePeerRows, validActivity, validExport } from '../src/machine-peers.mjs';
@@ -298,7 +299,7 @@ async function listen(t, server) {
 
 test('the activity routes check the period, the seats, and the read checks, and send no-store', async (t) => {
   const calls = [];
-  const activityMessages = { report: async (period) => { calls.push(['report', period]); return { period }; },
+  const activityMessages = { report: async (...args) => { calls.push(['report', ...args]); return { period: args[0] }; },
     thread: async (period, query) => { calls.push(['thread', period, query]); return { total: 0, messages: [] }; } };
   const base = await listen(t, createAsbServer({ dashboardWatchPaths: [], loadDashboard: async () => ({ providers: [], threads: [] }), activityMessages }));
   const get = (route, headers = {}) => fetch(base + route, { headers });
@@ -319,12 +320,20 @@ test('the activity routes check the period, the seats, and the read checks, and 
     assert.deepEqual([response.status, await response.json()], [400, { error: 'Invalid session.' }], route);
   }
   assert.equal(calls.length, 4);
+  // The phone gateway asks with text=0; any other text query is refused.
+  assert.equal((await get('/api/activity/messages?period=7d&text=0')).status, 200);
+  assert.deepEqual(calls.at(-1), ['report', '7d', { text: false }]);
+  for (const route of ['/api/activity/messages?text=1', '/api/activity/messages?text=', '/api/activity/messages?text=0&text=0']) {
+    const response = await get(route);
+    assert.deepEqual([response.status, await response.json()], [400, { error: 'Invalid query.' }], route);
+  }
+  assert.equal(calls.length, 5);
   assert.equal((await get('/api/activity/messages', { Origin: 'https://example.com' })).status, 403);
   assert.equal((await get('/api/activity/messages', { 'Sec-Fetch-Site': 'cross-site' })).status, 403);
   assert.equal((await fetch(`${base}/api/activity/messages`, { method: 'POST', headers: { Origin: base } })).status, 405);
   // No usage service: the usage route does not exist.
   assert.equal((await get('/api/activity/usage?period=30d')).status, 404);
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 5);
   const periods = [];
   const usageBase = await listen(t, createAsbServer({ dashboardWatchPaths: [], loadDashboard: async () => ({ providers: [], threads: [] }),
     activityUsage: { report: async (period) => { periods.push(period); return { period }; } } }));
@@ -450,6 +459,27 @@ test('reports and member replies put text on only the newest 200 of 205 records'
     assert.equal(item.hash, digest(`Body ${Number(item.id.slice(-3))}.`));
     assert.deepEqual(Object.keys(item), ['id', 'from', 'to', 'atMs', 'status', 'reason', 'direction', 'hash', 'label', 'text']);
   }
+});
+
+test('a report with text: false reads no body and has no text or labels, and the same report without it has the text', async (t) => {
+  const { sources, bridge, send, write, service } = await claudeFixture(t);
+  await bridge('codex', X, [{ id: msg(720), peer: Y, direction: 'out', status: 'delivered' }]);
+  await write([send('textless', 'Hidden body.')]);
+  const reader = createClaudeMessages({ readSources: async () => sources, now: () => nowMs });
+  let reads = 0, selects = 0;
+  const claudeMessages = { records: (sinceMs) => reader.records(sinceMs), text: (record) => { reads += 1; return reader.text(record); } };
+  const query = (file, sql) => { if (sql.includes('select id, text')) selects += 1; return querySqliteJson(file, sql); };
+  const textless = await service({ claudeMessages, query }).report('7d', { text: false });
+  assert.deepEqual(textless.messages.map((item) => item.id).sort(), ['claude:textless', msg(720)].sort());
+  for (const item of textless.messages) {
+    assert.deepEqual(Object.keys(item), ['id', 'from', 'to', 'atMs', 'status', 'reason', 'local']);
+  }
+  assert.equal(JSON.stringify(textless).includes('Hidden body.'), false);
+  assert.deepEqual([reads, selects], [0, 0]);
+  const full = await service({ claudeMessages, query }).report('7d');
+  assert.deepEqual(full.messages.map((item) => item.text).sort(), ['Hidden body.', `Synthetic text ${msg(720)}.`]);
+  assert.ok(full.messages.every((item) => 'fromLabel' in item && 'toLabel' in item));
+  assert.deepEqual([reads, selects], [1, 1]);
 });
 
 test('pairing takes incoming rows oldest first and the newest free send within both time bounds', async (t) => {
