@@ -4894,7 +4894,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-filter-head {{ font-size: 11px; color: alpha(@window_fg_color, .72); }}
 {base} .asb-filter-head-top {{ margin-top: 8px; }}
 {base} .asb-filter-footer {{ min-height: 30px; border-radius: 0 0 5px 5px; font-size: 13px; }}
-{base}.asb-preferences stackswitcher > button.text-button {{ min-width: 0; }}
 {base} .asb-toolbar-button,
 {base} menubutton.asb-toolbar-button > button,
 {base} .asb-toolbar windowcontrols button {{ min-height: 24px; min-width: 22px; padding: 2px; }}
@@ -6838,7 +6837,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         root.add_css_class("asb-tooltip")
         if self.hover_colors:
             root.add_css_class("asb-custom")
-        def text(value, css, indent=0):
+        def text(value, css=None, indent=0):
             widget = label(value, css)
             widget.set_wrap(True)
             widget.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
@@ -6875,7 +6874,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             notes = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_start=21)
             notes.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL, margin_top=4, margin_bottom=4))
             if model["limit"]:
-                notes.append(text(model["limit"], "asb-tooltip-note"))
+                notes.append(text(model["limit"]))
             if model["note"]:
                 line = Gtk.Box(spacing=7)
                 if model["indicator"]:
@@ -6887,7 +6886,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     elif model["indicator"] in ("stop", "discard"):
                         mark.add_css_class("asb-" + model["indicator"])
                     line.append(mark)
-                note = text(model["note"], "asb-tooltip-note")
+                note = text(model["note"])
                 if not model["indicator"]:
                     note.add_css_class("asb-tooltip-muted")
                 line.append(note)
@@ -6897,7 +6896,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 flags.add_css_class("asb-tooltip-muted")
                 notes.append(flags)
             if model["error"]:
-                notes.append(text(model["error"], "asb-tooltip-note"))
+                notes.append(text(model["error"]))
             root.append(notes)
         return root
 
@@ -8248,7 +8247,6 @@ class ActivityWindow(Adw.Window):
 {scope} .asb-activity-toolbar .asb-period-menu > button, {scope} .asb-activity-toolbar .linked > button,
 {scope} .asb-activity-toolbar menubutton > button {{ min-height: 24px; padding: 0 8px; font-size: 12px; }}
 {scope} .asb-dim {{ color: {palette['dim']}; }}
-{scope} .asb-rule {{ border-top: 1px solid {palette['rule']}; }}
 {scope} .asb-mono {{ font-family: monospace; font-feature-settings: "tnum"; }}
 {scope} .asb-paths-note {{ font-size: 12px; }}
 {scope} .asb-activity-dot {{ min-width: 7px; min-height: 7px; border-radius: 50%; }}

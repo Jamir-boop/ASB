@@ -4594,6 +4594,12 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertIn(".asb-dot.asb-stop {{ background: {colors['muted']};", css)
         self.assertIn(":hover:not(.asb-passive-indicator):not(.asb-discard-button) .asb-read-cue", css)
 
+    def test_no_css_for_widgets_and_classes_that_do_not_exist(self):
+        # Preferences has no Gtk.StackSwitcher, no code adds asb-rule, and no rule styles asb-tooltip-note.
+        source = SOURCE.read_text()
+        for unused in ("stackswitcher", "StackSwitcher", "asb-rule", "asb-tooltip-note"):
+            self.assertNotIn(unused, source)
+
     def test_row_text_names_failed_stopped_and_current_permission_waits(self):
         window = object.__new__(Window)
         window.view, window.opening, window.open_errors = "compact", set(), {}
