@@ -29,6 +29,7 @@ DEFAULT_CARD_LIMIT = 100
 # shortcut: a row ID "asb:more" (a source ID "asb" that a person typed into the source settings, with a thread "more") would show as the More card; app-made source IDs are "codex-<uuid>" or "claude-<uuid>", so change this ID only if a source can make it.
 MORE_ID = "asb:more"
 NUMBER_HOLD_MS = 400
+INACTIVE_POPOVER_MS = 100
 APP_ID = "local.asb.AgentSwitchBoard"
 STATES = ("working", "waiting", "idle", "unknown")
 SOURCE_PROVIDERS = ("codex", "claude-desktop-code")
@@ -349,6 +350,20 @@ def popover_shift(anchor_x, anchor_width, popover_width, window_width, margin=8)
     if popover_width > window_width - 2 * margin:
         return round(margin - left)
     return round(min(max(left, margin), window_width - margin - popover_width) - left)
+
+
+def close_popovers_when_inactive(window, close):
+    """Run close when window stays inactive. On X11 a popover is its own window: it would stay over the app that the user switched to."""
+    if window.is_active() or getattr(window, "inactive_timer", None):
+        return
+
+    def check():
+        window.inactive_timer = None
+        # A popover that takes the grab makes its window inactive for a moment.
+        if not window.closed and not window.is_active():
+            close()
+        return False
+    window.inactive_timer = GLib.timeout_add(INACTIVE_POPOVER_MS, check)
 
 
 def panel_place(x, y, width, height, window_width, window_height, margin=6):
@@ -5881,6 +5896,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def active_changed(self, *_args):
         if not self.is_active():
             self.hide_numbers()
+            close_popovers_when_inactive(self, self.close_window_popovers)
+
+    def close_window_popovers(self):
+        if self.context_menu:
+            self.context_menu.popdown()
+        self.menu_button.popdown()
+        for popover in list(self.open_popovers):
+            popover.popdown()
 
     def show_numbers(self):
         self.number_hold = None
@@ -8211,12 +8234,17 @@ class ActivityWindow(Adw.Window):
             self.connect("map", self.on_map)
         self.connect("unmap", lambda *_: self.stop_live())
         self.connect("close-request", self.on_close)
+        self.connect("notify::is-active", self.active_changed)
         try:
             saved = read_theme(THEME_PATH)
         except (OSError, ValueError):
             # The Board shows the theme error; this window keeps the GNOME colors.
             saved = None
         self.set_palette(saved)
+
+    def active_changed(self, *_args):
+        if not self.is_active():
+            close_popovers_when_inactive(self, lambda: [popover.popdown() for popover in mapped_popovers(self)])
 
     def period_selected(self, menu, _param):
         key = self.PERIODS[menu.get_selected()][0]
@@ -8383,6 +8411,17 @@ class ActivityWindow(Adw.Window):
             del windows[self.KIND]
         Gtk.StyleContext.remove_provider_for_display(self.get_display(), self.css)
         return False
+
+
+def mapped_popovers(widget):
+    """The mapped popovers under widget, for a small window."""
+    found, child = [], widget.get_first_child()
+    while child is not None:
+        if isinstance(child, Gtk.Popover) and child.get_mapped():
+            found.append(child)
+        found += mapped_popovers(child)
+        child = child.get_next_sibling()
+    return found
 
 
 def remove_children(widget):

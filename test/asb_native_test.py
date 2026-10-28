@@ -1106,6 +1106,24 @@ class WidgetCheck(unittest.TestCase):
         window.set_visible(False); self.drain(.2)
         self.assertFalse(window.filter_popover.get_visible())
 
+    def test_board_popovers_close_when_the_window_stops_being_active(self):
+        window = self.snapshot_window()
+        window.set_default_size(700, 600)
+        window.present(); self.drain(.4)
+        card = list(window.focus_widgets.values())[0]
+        for name, popup, popover in (
+                ("row panel", lambda: window.show_context(card, 10, 10), lambda: window.context_menu),
+                ("main menu", window.menu_button.popup, window.menu_button.get_popover),
+                ("filters", window.open_filters_popover, lambda: window.filter_popover)):
+            with self.subTest(name):
+                popup(); self.drain(.2)
+                shown = popover()
+                self.assertTrue(shown.get_visible())
+                with patch.object(window, "is_active", return_value=False):
+                    window.notify("is-active")
+                    self.drain(.2)
+                self.assertFalse(shown.get_visible())
+
     def test_filter_chips_wait_for_popover_close(self):
         window = self.snapshot_window()
         dashboard = mock_dashboard()
@@ -7074,6 +7092,26 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertFalse(any(text.startswith("Prices:") for text in self.labels(window.toolbar)))
         self.assertFalse(window.scan_label.get_visible())
         self.assert_no_new_warnings()
+
+    def test_usage_popovers_close_when_the_window_stops_being_active(self):
+        window = self.window()
+        self.assertTrue(window.machine_filter.get_visible())
+
+        def popovers(widget):
+            child, found = widget.get_first_child(), []
+            while child:
+                found += ([child] if isinstance(child, asb.Gtk.Popover) else []) + popovers(child)
+                child = child.get_next_sibling()
+            return found
+        for name, popup in (("period", lambda: window.period_menu.activate()), ("machines", window.machine_filter.popup)):
+            with self.subTest(name):
+                popup(); self.drain(.4)
+                shown = [popover for popover in popovers(window) if popover.get_visible()]
+                self.assertEqual(len(shown), 1)
+                with patch.object(window, "is_active", return_value=False):
+                    window.notify("is-active")
+                    self.drain(.2)
+                self.assertFalse(shown[0].get_visible())
 
     def test_usage_folds_filter_popover_and_short_note(self):
         replies = copy.deepcopy(self.REPLIES)
