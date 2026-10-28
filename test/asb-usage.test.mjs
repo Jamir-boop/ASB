@@ -52,7 +52,7 @@ test('asb usage checks its arguments', async (t) => {
   const { run, records } = await fixture(t);
   for (const args of [[], ['export'], ['import'], ['list', 'x'], ['export', 'a', 'b'], ['import', 'a', '--yes'],
     ['backup', 'x'], ['backup', '--time', '02:00'], ['backup', 'now', '--keep', '3'], ['backup', 'now', 'x'], ['backup', 'on', 'x'],
-    ['backup', 'on', '--days', '3'], ['backup', 'on', '--keep', '3', '--keep', '4'], ['backup', 'on', '--time'], ['backup', 'off', '--folder']]) {
+    ['backup', 'on', '--days', '3'], ['backup', 'on', '--keep', '3', '--keep', '4'], ['backup', 'on', '--time'], ['backup', 'off', '--folder'], ['backup', 'on', '--folder', '']]) {
     assert.deepEqual(await run(args), { code: 2, out: '', err: USAGE }, args.join(' '));
   }
   assert.deepEqual(records, []);

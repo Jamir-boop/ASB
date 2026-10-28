@@ -67,7 +67,7 @@ function backupOptions(rest) {
   const options = {};
   for (let index = 0; index < rest.length; index += 2) {
     const name = rest[index];
-    if (!['--time', '--keep', '--folder'].includes(name) || Object.hasOwn(options, name) || index + 1 >= rest.length || rest[index + 1].startsWith('--')) return null;
+    if (!['--time', '--keep', '--folder'].includes(name) || Object.hasOwn(options, name) || index + 1 >= rest.length || rest[index + 1] === '' || rest[index + 1].startsWith('--')) return null;
     options[name] = rest[index + 1];
   }
   return options;
