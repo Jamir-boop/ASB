@@ -3,10 +3,14 @@ import { readFileSync } from 'node:fs';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
+import { promisify } from 'node:util';
+import { gzip } from 'node:zlib';
 import { DashboardSnapshot } from './dashboard-snapshot.mjs';
 import { acceptsGzip, DEFAULT_PUBLIC_DIR, exactKeys, gzipHead, gzipWithTail, parseBooleanSearchParam, readJsonBody, sendJson, serveStatic,
   threadNotFound } from './local-http.mjs';
 import { USAGE_PERIODS } from './usage-aggregation.mjs';
+
+const gzipAsync = promisify(gzip);
 
 const PALETTE_KEYS = ['background', 'text', 'accent', 'muted', 'divider', 'success', 'warning'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -237,9 +241,20 @@ export function createAsbServer({
       }
       // Read-only: the bridge databases, the cached rows, and the member replies.
       try {
-        sendJson(response, 200, activityRoute === 'usage' ? await activityUsage.report(period)
+        const report = activityRoute === 'usage' ? await activityUsage.report(period)
           : activityRoute === 'thread' ? await activityMessages.thread(period, query)
-          : textless ? await activityMessages.report(period, { text: false }) : await activityMessages.report(period));
+          : textless ? await activityMessages.report(period, { text: false }) : await activityMessages.report(period);
+        if (activityRoute === 'thread') { sendJson(response, 200, report); return; }
+        const { nowMs: _, ...content } = report;
+        const etag = `"${createHash('sha256').update(JSON.stringify(content)).digest('base64url')}"`;
+        const headers = { etag, 'cache-control': 'no-store' };
+        if (request.headers['if-none-match'] === etag) { response.writeHead(304, headers); response.end(); return; }
+        const gzip = acceptsGzip(request.headers['accept-encoding']);
+        const text = JSON.stringify(report);
+        const body = gzip ? await gzipAsync(text) : text;
+        response.writeHead(200, { ...headers, 'content-type': 'application/json; charset=utf-8',
+          ...(gzip ? { 'content-encoding': 'gzip', vary: 'Accept-Encoding' } : {}) });
+        response.end(body);
       } catch { sendJson(response, 500, { error: 'Cannot read the ASB activity.' }); }
       return;
     }

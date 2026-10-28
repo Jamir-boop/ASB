@@ -34,6 +34,57 @@ const dashboardReader = (base) => async (headers = {}, query = '') => {
   return { status: response.status, etag, body };
 };
 
+for (const kind of ['messages', 'usage']) {
+  test(`the ${kind} activity report has a stable tag, 304, changed tags, and optional gzip`, async (t) => {
+    let nowMs = 100, revision = 1;
+    const report = async (period, options) => ({ period, nowMs, revision, ...(options?.text === false ? {} : { fromLabel: 'Other seat' }) });
+    const { base } = await serve(t, { activityMessages: { report, thread: async () => ({ nowMs }) }, activityUsage: { report } });
+    const route = `/api/activity/${kind}`;
+    const get = (headers = {}, suffix = '') => new Promise((resolve, reject) => {
+      http.get(base + route + suffix, { headers }, (response) => {
+        const chunks = [];
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, body: Buffer.concat(chunks) }));
+        response.on('error', reject);
+      }).on('error', reject);
+    });
+    const first = await get();
+    const { nowMs: _, ...content } = JSON.parse(first.body);
+    const tag = `"${createHash('sha256').update(JSON.stringify(content)).digest('base64url')}"`;
+    assert.equal(first.headers.etag, tag);
+    assert.equal(first.headers['cache-control'], 'no-store');
+    assert.equal(first.headers['content-encoding'], undefined);
+    nowMs += 1;
+    const later = await get();
+    assert.equal(later.headers.etag, tag);
+    assert.notEqual(later.body.toString(), first.body.toString());
+    const cached = await get({ 'If-None-Match': tag, 'Accept-Encoding': 'gzip' });
+    assert.deepEqual([cached.status, cached.headers.etag, cached.headers['cache-control'], cached.body.length,
+      cached.headers['content-encoding']], [304, tag, 'no-store', 0, undefined]);
+    const zipped = await get({ 'Accept-Encoding': 'gzip' });
+    assert.deepEqual([zipped.status, zipped.headers.etag, zipped.headers['content-encoding'], zipped.headers.vary],
+      [200, tag, 'gzip', 'Accept-Encoding']);
+    assert.deepEqual(gunzipSync(zipped.body), later.body);
+    assert.deepEqual((await get({ 'Accept-Encoding': 'gzip;q=0' })).body, later.body);
+    revision += 1;
+    const changed = await get({ 'If-None-Match': tag });
+    assert.equal(changed.status, 200);
+    assert.notEqual(changed.headers.etag, tag);
+    if (kind === 'messages') {
+      const textless = await get({}, '?text=0');
+      assert.notEqual(textless.headers.etag, changed.headers.etag);
+      const thread = await fetch(base + '/api/activity/thread?seat=made-up', { headers: { 'If-None-Match': tag } });
+      assert.equal(thread.status, 200);
+      assert.equal(thread.headers.get('etag'), null);
+    }
+    const invalid = await get({ 'Accept-Encoding': 'gzip' }, '?period=bad');
+    assert.deepEqual([invalid.status, invalid.headers.etag, invalid.headers['content-encoding']], [400, undefined, undefined]);
+    revision = { toJSON() { throw new Error('made-up failure'); } };
+    const failed = await get({ 'Accept-Encoding': 'gzip' });
+    assert.deepEqual([failed.status, failed.headers.etag, failed.headers['content-encoding']], [500, undefined, undefined]);
+  });
+}
+
 test('app source changes need the window token when the launcher sets one', async (t) => {
   for (const sourceToken of ['window-token', '']) {
     const calls = [];

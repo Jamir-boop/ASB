@@ -1414,7 +1414,7 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
     activity_route = path.startswith("/api/activity/")
     usage_route = path.startswith("/api/usage/")
     data = None
-    if etag and etag[0] and method == "GET" and route.split("?")[0] == "/api/dashboard":
+    if etag and etag[0] and method == "GET" and path in ("/api/dashboard", "/api/activity/messages", "/api/activity/usage"):
         headers["If-None-Match"] = etag[0]
     if SOURCE_TOKEN and (((source_route or bridge_route) and method == "POST") or phone_route or group_route or service_route or palette_route or agent_route or engine_route
                          or usage_route):
@@ -8586,6 +8586,7 @@ class ActivityWindow(Adw.Window):
         self.base, self.fetch = base, fetch
         self.clock = clock or (lambda: int(time.time() * 1000))
         self.period, self.data = self.DEFAULT_PERIOD, None
+        self.etags = {}
         self.closed = self.loading = self.refresh_queued = False
         self.events = self.poll_timer = self.event_timer = None
         self.set_icon_name(APP_ID)
@@ -8691,6 +8692,7 @@ class ActivityWindow(Adw.Window):
         self.loading = True
         period, base = self.period, self.base
         route = f"{self.ROUTE}?period={period}"
+        etag = [self.etags.get(route) if self.data is not None else None]
 
         def finished(data, error):
             self.loading = False
@@ -8702,10 +8704,14 @@ class ActivityWindow(Adw.Window):
                 self.refresh()
                 return False
             if error:
+                self.etags.pop(route, None)
                 if self.data is None:
                     self.error_label.set_label(error)
                     self.stack.set_visible_child_name("error")
+            elif self.fetch is None and data is None:
+                self.data["nowMs"] = self.clock()
             else:
+                self.etags[route] = etag[0]
                 previous, self.data = self.data, data
                 self.stack.set_visible_child_name("data")
                 self.render(data, previous)
@@ -8716,7 +8722,7 @@ class ActivityWindow(Adw.Window):
 
         if self.fetch is None:
             # The default priority: the reply does not wait behind the frames of the board.
-            request_async(self.base, route, finished, lambda callback, *args: GLib.idle_add(callback, *args, priority=GLib.PRIORITY_DEFAULT))
+            request_async(self.base, route, finished, lambda callback, *args: GLib.idle_add(callback, *args, priority=GLib.PRIORITY_DEFAULT), etag=etag)
             return
         try:
             data, error = self.fetch(route), None
@@ -8771,6 +8777,7 @@ class ActivityWindow(Adw.Window):
             self.events.close()
             self.events = None
         self.base = base
+        self.etags.clear()
         if streaming and self.get_mapped():
             self.events = EventStream(base, self.on_dashboard_event, GLib.idle_add)
         self.refresh()

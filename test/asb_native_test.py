@@ -8521,6 +8521,46 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(window.renders, [({"n": 1}, None), ({"n": 2}, {"n": 1})])
         self.assertEqual(window.data, {"n": 2})
 
+    def test_http_304_keeps_data_skips_render_and_advances_clock(self):
+        requests = []
+
+        def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None, headers=None):
+            requests.append((route, etag, callback))
+
+        window = self.Probe(self.application, "http://127.0.0.1:1", clock=lambda: 1234)
+        with patch.object(asb, "request_async", request):
+            window.refresh()
+            route, tag, callback = requests[-1]
+            self.assertEqual(tag, [None])
+            tag[0] = '"first"'
+            data = {"nowMs": 100, "messages": []}
+            callback(data, None)
+            window.refresh()
+            self.assertEqual(requests[-1][1], ['"first"'])
+            requests[-1][2](None, None)
+        self.assertIs(window.data, data)
+        self.assertEqual(window.renders, [(data, None)])
+        self.assertEqual(window.data["nowMs"], 1234)
+
+    def test_http_period_change_never_reuses_another_period_tag(self):
+        requests = []
+
+        def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None, headers=None):
+            requests.append((route, etag))
+            if etag is not None:
+                self.assertIsNone(etag[0])
+                etag[0] = '"' + route + '"'
+            callback({"nowMs": 100}, None)
+
+        window = self.Probe(self.application, "http://127.0.0.1:1")
+        with patch.object(asb, "request_async", request):
+            window.refresh()
+            window.set_period("30d")
+            window.set_period("7d")
+        self.assertTrue(all(tag is not None for _route, tag in requests))
+        self.assertEqual([route for route, _tag in requests], ["/api/activity/messages?period=7d",
+                         "/api/activity/messages?period=30d", "/api/activity/messages?period=7d"])
+
     def test_errors_before_and_after_data(self):
         window = self.probe([RuntimeError("Cannot load the activity. Check that ASB is running, then try again."), {"n": 1},
                              RuntimeError("Later failure.")])
@@ -8787,6 +8827,34 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
             board.follow_system_style()
         set_palette.assert_not_called()
         publish.assert_called_once_with()
+
+    def test_activity_report_http_tags_and_304(self):
+        seen = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                seen.append(self.headers.get("If-None-Match"))
+                self.send_response(304 if seen[-1] else 200)
+                self.send_header("ETag", '"report"')
+                self.end_headers()
+                if not seen[-1]:
+                    self.wfile.write(b'{"nowMs":100}')
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        self.addCleanup(worker.join, 1)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        base = f"http://127.0.0.1:{server.server_port}"
+        for route in ("/api/activity/messages?period=7d", "/api/activity/usage?period=30d"):
+            tag = [None]
+            self.assertEqual(asb.request_json(base, route, etag=tag), {"nowMs": 100})
+            self.assertEqual(tag, ['"report"'])
+            self.assertIsNone(asb.request_json(base, route, etag=tag))
+        self.assertEqual(seen, [None, '"report"', None, '"report"'])
 
     def test_activity_routes_report_their_errors(self):
         headers = []
