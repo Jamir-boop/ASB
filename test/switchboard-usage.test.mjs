@@ -4,7 +4,7 @@ import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createSwitchboardServer, PendingTracker } from '../src/switchboard.mjs';
+import { buildSwitchboardDashboard, createSwitchboardServer, PendingTracker } from '../src/switchboard.mjs';
 
 // Synthetic sources, models, and machines only. Tests never use the network: the price download is a fake fetch.
 const HOUR = 3_600_000;
@@ -31,7 +31,8 @@ async function setup(t, extra = {}) {
   const cacheDir = path.join(home, '.cache', 'asb');
   const server = createSwitchboardServer({ pendingTracker: new PendingTracker(false), palettePath: '', dashboardWatchPaths: [],
     sourceRegistry: { read: async () => sources }, loadDashboard: async () => ({ providers: [], threads: [] }),
-    machineIdentity: () => self, usageFetch, usageCacheDir: cacheDir, usageHomeDir: home, ...extra });
+    machineIdentity: () => self, usageFetch, usageCacheDir: cacheDir, usageHomeDir: home, ...extra,
+    ...(extra.usageLedgerFile === true ? { usageLedgerFile: path.join(home, 'config', 'usage', 'usage-ledger.json') } : {}) });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -46,7 +47,7 @@ async function setup(t, extra = {}) {
     }
     throw new Error('The usage scan did not end.');
   };
-  return { usage, fetches, cacheDir };
+  return { usage, fetches, cacheDir, server };
 }
 
 test('the switchboard usage route reads the registered Claude source and prices it with the fake download', async (t) => {
@@ -81,6 +82,46 @@ test('the usage reply adds the group members, and a failed member read gives the
   const local = await failed.usage();
   assert.deepEqual(local.machines.map((machine) => machine.machineId), [self.machineId]);
   assert.deepEqual(local.records.map((item) => item.machineId), [self.machineId]);
+});
+
+test('the ledger waits for the cached local Working rows without loading the dashboard', async (t) => {
+  const pending = [];
+  const original = globalThis.setTimeout;
+  t.mock.method(globalThis, 'setTimeout', (callback, delayMs, ...args) => {
+    if (delayMs === 600_000 || delayMs === 60_000 || delayMs === 3_600_000) {
+      const timer = { callback, delayMs, unref() {} };
+      pending.push(timer);
+      return timer;
+    }
+    return original(callback, delayMs, ...args);
+  });
+  let archived = false, loads = 0;
+  const { server, cacheDir } = await setup(t, { usageLedgerFile: true,
+    machineGroup: { activity: async () => [], merge: (board) => board.threads.push({ id: 'remote', remote: true, state: 'working' }) },
+    loadDashboard: async ({ rowCache }) => {
+      loads += 1;
+      return buildSwitchboardDashboard([{ id: 'made-up', provider: 'codex', archived, lifecycleRunning: true,
+        latestLifecycleAtMs: Date.now(), agentActivityAtMs: Date.now() }], [], Date.now(), self, new Map(), rowCache);
+    } });
+  t.after(() => server.usageLedger.stop());
+  const first = await server.dashboardForRequest();
+  assert.equal(first.threads[0].state, 'working');
+  server.usageLedger.start();
+  const due = pending.shift();
+  assert.equal(due.delayMs, 600_000);
+  await due.callback();
+  await assert.rejects(access(path.join(cacheDir, 'usage', 'usage-cache.json')), { code: 'ENOENT' });
+  assert.equal(loads, 1);
+  assert.equal(pending[0].delayMs, 60_000);
+  // Archived local rows and Working member rows do not keep the tick waiting.
+  archived = true;
+  server.invalidateDashboard('test', { hard: true });
+  await server.dashboardForRequest();
+  assert.equal(loads, 2);
+  await pending.shift().callback();
+  await access(path.join(cacheDir, 'usage', 'usage-cache.json'));
+  assert.equal(loads, 2);
+  await server.usageLedger.stop();
 });
 
 test('creating the switchboard server starts no usage scan and no price download', async (t) => {

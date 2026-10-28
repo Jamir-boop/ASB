@@ -976,6 +976,7 @@ export function createSwitchboardServer(options = {}) {
   // The fetch, cache, and home options are for tests only.
   const usage = options.activityUsage ? null : createActivityUsage({ readSources: async () => registeredLoad ? registry.read() : [],
     members: group ? () => group.activity('all') : null,
+    busy: () => [...rowCache.values()].some(({ row }) => !row.archived && row.state === 'working'),
     machine: activityMachine, ...(options.usageFetch ? { fetch: options.usageFetch } : {}),
     ...(options.usageCacheDir ? { cacheDir: options.usageCacheDir } : {}),
     ...(options.usageHomeDir ? { homeDir: options.usageHomeDir, env: {} } : {}), ledgerFile: options.usageLedgerFile || '' });

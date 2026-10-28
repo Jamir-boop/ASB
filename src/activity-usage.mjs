@@ -78,7 +78,7 @@ async function listTranscripts(root, app, files, pause, fileName) {
 
 export function createActivityUsage({ readSources = async () => [], machine = {}, cacheDir = defaultCacheDir(), now = Date.now,
   fetch = globalThis.fetch, homeDir = os.homedir(), env = process.env, platform = process.platform, refreshMs = REFRESH_MS,
-  log = console.error, maxCacheFiles = MAX_CACHE_FILES, ledgerFile = '', members = null, timers = { setTimeout, clearTimeout } } = {}) {
+  log = console.error, maxCacheFiles = MAX_CACHE_FILES, ledgerFile = '', members = null, busy = () => false, timers = { setTimeout, clearTimeout } } = {}) {
   const cacheFile = path.join(cacheDir, 'usage', 'usage-cache.json');
   const stats = { bytesRead: 0, scans: 0, saves: 0, openCodeQueries: 0, openCodePages: 0, partBuilds: 0, parts: 0, ledgerSaves: 0, releases: 0, memberBuilds: 0 };
   const progress = { complete: false, files: 0, scannedFiles: 0 };
@@ -109,6 +109,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
   let started = false;
   let stopped = false;
   let ticking = null;
+  let waitingSinceMs = null;
   // The member reply arrays already in the ledger: the group returns the same array until a new reply comes.
   const keptReplies = new WeakSet();
   const memberReplies = new WeakMap();
@@ -405,6 +406,13 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
 
   async function tick() {
     timer = null;
+    if (stopped) return;
+    if (busy() && (waitingSinceMs === null || now() - waitingSinceMs < 60 * 60 * 1000)) {
+      waitingSinceMs ??= now();
+      schedule(60 * 1000);
+      return;
+    }
+    waitingSinceMs = null;
     ticking = (async () => {
       await ensureScan(true);
       if (stopped) return;
@@ -545,7 +553,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
         return { machines: machines.map(({ machineId, name, records }) => ({ machineId, name, hours: records.size })) };
       },
     } : {}),
-    // The background ledger refresh (engine only): a first scan after LEDGER_FIRST_MS, then one each LEDGER_REFRESH_MS.
+    // The background ledger refresh waits for idle, at most an hour after it is due.
     start() {
       if (!ledgerFile || started) return;
       started = true;

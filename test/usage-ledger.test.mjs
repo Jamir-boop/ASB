@@ -370,6 +370,73 @@ test('the background refresh scans after ten minutes, then each hour, frees the 
   assert.deepEqual(pending, []);
 });
 
+for (const scenario of ['idle', 'maximum wait', 'stop', 'report', 'localHourly', 'exportAll', 'importAll']) {
+  test(`a busy ledger tick waits: ${scenario}`, async (t) => {
+    const { write, service, clock, fetches } = await setup(t);
+    await write('a.jsonl', [claudeLine(BASE - HOUR, 1, 7)]);
+    const pending = [];
+    const timers = {
+      setTimeout: (callback, delayMs) => { const timer = { callback, delayMs }; pending.push(timer); return timer; },
+      clearTimeout: (timer) => { const index = pending.indexOf(timer); if (index !== -1) pending.splice(index, 1); },
+    };
+    const fire = async (delayMs) => {
+      const index = pending.findIndex((timer) => timer.delayMs === delayMs);
+      assert.notEqual(index, -1);
+      const [timer] = pending.splice(index, 1);
+      clock.ms += delayMs;
+      await timer.callback();
+    };
+    let busy = true;
+    const usage = service({ timers, busy: () => busy });
+    usage.start();
+    await fire(LEDGER_FIRST_MS);
+    assert.equal(usage.stats.scans, 0);
+    assert.deepEqual(pending.map((timer) => timer.delayMs), [60_000]);
+    if (scenario === 'stop') {
+      const waiting = pending[0];
+      await usage.stop();
+      assert.deepEqual(pending, []);
+      await waiting.callback();
+      assert.equal(usage.stats.scans, 0);
+      return;
+    }
+    if (scenario === 'maximum wait') {
+      for (let minute = 1; minute < 60; minute += 1) {
+        await fire(60_000);
+        assert.equal(usage.stats.scans, 0);
+      }
+    } else if (scenario === 'idle') {
+      await fire(60_000);
+      assert.equal(usage.stats.scans, 0);
+      busy = false;
+    } else {
+      if (scenario === 'report') usage.report('all');
+      if (scenario === 'localHourly') usage.localHourly('all');
+      if (scenario === 'exportAll') await usage.exportAll();
+      if (scenario === 'importAll') {
+        // Imports merge the ledger at once, without starting a transcript scan.
+        await usage.importAll(exportFile([{ machineId: OTHER, name: 'retired', records: [] }], clock.ms));
+        assert.equal(usage.stats.scans, 0);
+        assert.equal(usage.stats.ledgerSaves, 1);
+      } else {
+        await usage.idle();
+        assert.equal(usage.stats.scans, 1);
+      }
+      assert.ok(pending.some((timer) => timer.delayMs === 60_000));
+      return;
+    }
+    await fire(60_000);
+    assert.equal(usage.stats.scans, 1);
+    assert.equal(fetches.length, 0);
+    assert.deepEqual(pending.map((timer) => timer.delayMs), [LEDGER_REFRESH_MS]);
+    // The next due tick has its own full waiting limit.
+    busy = true;
+    await fire(LEDGER_REFRESH_MS);
+    assert.equal(usage.stats.scans, 1);
+    assert.deepEqual(pending.map((timer) => timer.delayMs), [60_000]);
+  });
+}
+
 test('the scan cache goes 2 minutes after the last usage request, saved when it changed, never during a scan', async (t) => {
   const { write, service, clock } = await setup(t);
   await write('a.jsonl', [claudeLine(BASE - HOUR, 1, 7)]);
