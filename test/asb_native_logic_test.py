@@ -692,6 +692,52 @@ class ProfileSyncChecks(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "^Cannot load or change ASB\\. Check that ASB is running, then try again\\.$"):
                 asb.request_json("http://127.0.0.1:1", "/api/engine/stop", "POST", {})
 
+    def test_session_routes_show_the_reason_of_the_engine(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        replies = {
+            "/api/threads/a/open": (500, b'{"error":"Failed to open thread","detail":"The app launcher must be an existing executable app file."}'),
+            "/api/threads/b/open": (404, b'{"error":"Thread not found"}'),
+            "/api/threads/c/discard": (400, b'{"error":"Discard does not work on a session on another machine."}'),
+            "/api/threads/d/open": (500, b""),
+            "/api/threads/e/open": (500, b'{"error":"Failed to open thread","detail":7}'),
+            "/api/threads/f/discard": (400, b'{"detail":"x"}'),
+            "/api/threads/g/open": (500, b'{"detail":""}'),
+            "/api/threads/h/discard": (500, b'{"error":"Not this text."}'),
+        }
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                code, body = replies[self.path]
+                self.send_response(code)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .01}, daemon=True)
+        worker.start()
+        self.addCleanup(worker.join, 1)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        base = f"http://127.0.0.1:{server.server_port}"
+        for route, text in (
+                ("/api/threads/a/open", "Cannot open this session: The app launcher must be an existing executable app file."),
+                ("/api/threads/b/open", "Cannot open this session. Refresh the session list, then try again."),
+                ("/api/threads/c/discard", "Discard does not work on a session on another machine."),
+                ("/api/threads/d/open", "Cannot open this session. Check the app link handler, then try again."),
+                ("/api/threads/e/open", "Cannot open this session. Check the app link handler, then try again."),
+                ("/api/threads/f/discard", "Cannot change this session. Refresh the session list, then try again."),
+                ("/api/threads/g/open", "Cannot open this session. Check the app link handler, then try again."),
+                ("/api/threads/h/discard", "Cannot change this session. Refresh the session list, then try again.")):
+            with self.subTest(route=route):
+                with self.assertRaises(RuntimeError) as caught:
+                    asb.request_json(base, route, "POST")
+                self.assertEqual(str(caught.exception), text)
+
     def test_quit_engine_posts_the_stop_and_closes_only_on_success(self):
         window = object.__new__(Window)
         window.base, window.closed = "http://127.0.0.1:1", False

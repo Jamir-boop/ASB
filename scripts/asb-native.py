@@ -1446,6 +1446,20 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
                 else "the phone palette" if palette_route else "the native UI status" if agent_route else "ASB" if engine_route \
                 else "usage backups" if usage_route else "profiles"
             raise RuntimeError(detail or f"Cannot load or change {subject}. Check that ASB is running, then try again.") from error
+        if isinstance(error, HTTPError) and method == "POST" and path.startswith("/api/threads/"):
+            # The engine tells why a session does not open or change; the fixed texts below can point to the wrong cause.
+            try:
+                payload = json.loads(error.read(8192))
+            except (HTTPException, OSError, ValueError):
+                payload = None
+            payload = payload if isinstance(payload, dict) else {}
+            if path.endswith("/open"):
+                if error.code == 500 and isinstance(payload.get("detail"), str) and payload["detail"]:
+                    raise RuntimeError(f"Cannot open this session: {payload['detail']}") from error
+                if error.code == 404:
+                    raise RuntimeError("Cannot open this session. Refresh the session list, then try again.") from error
+            elif error.code == 400 and isinstance(payload.get("error"), str) and payload["error"]:
+                raise RuntimeError(payload["error"]) from error
         action = "open this session" if route.endswith("/open") else "change the unread setting" if route == "/api/settings/unread" \
             else "change this session" if method == "POST" else "load sessions"
         recovery = "Check the app link handler, then try again." if route.endswith("/open") \
