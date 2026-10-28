@@ -339,3 +339,28 @@ test('a dashboard scan shares each real live registry folder across Claude sourc
       [['shared-cli', 'Shared CLI', 'cli', 'idle']]);
   }
 });
+
+for (const reuse of [true, false]) {
+  test(`Claude CLI file scans ${reuse ? 'reuse unchanged' : 'refresh changed'} project and root stats`, async (t) => {
+    const nowMs = Date.now();
+    const { projectsDir } = await configHome(t);
+    const root = await transcript(projectsDir, 'synthetic-root', { nowMs });
+    const duplicate = await transcript(projectsDir, 'synthetic-copy', { nowMs });
+    const otherProject = path.join(projectsDir, 'other-project');
+    await mkdir(otherProject);
+    const copy = path.join(otherProject, 'synthetic-copy.jsonl');
+    await writeFile(copy, await fsPromises.readFile(duplicate));
+    await utimes(copy, (nowMs - 1000) / 1000, (nowMs - 1000) / 1000);
+    const options = { projectsDir, nowMs, cacheScope: '', fileScan: { canReuse: () => reuse } };
+    const first = await loadClaudeCliThreads(options);
+    assert.equal(first.threads.length, 2);
+    const calls = [];
+    const stat = fsPromises.stat;
+    t.mock.method(fsPromises, 'stat', async (file, ...args) => { calls.push(file); return stat(file, ...args); });
+    const second = await loadClaudeCliThreads(options);
+    assert.deepEqual(second, first);
+    for (const file of [projectsDir, path.dirname(root), otherProject, root, duplicate, copy]) {
+      assert.equal(calls.includes(file), !reuse, file);
+    }
+  });
+}

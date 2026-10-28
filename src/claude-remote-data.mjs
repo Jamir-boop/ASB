@@ -564,7 +564,7 @@ export async function loadSwitchboardClaudeThreads(options = {}) {
   const desktopSessionIds = new Set((local?.threads || []).flatMap((thread) => [thread.cliSessionId, ...(thread.priorCliSessionIds || [])])
     .filter(Boolean));
   const cli = await loadClaudeCliThreads({ projectsDir: options.projectsDir, nowMs: options.nowMs, cacheScope: options.cacheScope,
-    desktopSessionIds, registryReads: options.registryReads }).catch(() => null);
+    desktopSessionIds, registryReads: options.registryReads, fileScan: options.fileScan }).catch(() => null);
   if (!local && !remote?.threads.length && !cli?.threads.length) throw results[0].reason;
   if (local?.provider?.status === 'error' && !remote?.threads.length && !cli?.threads.length) return local;
   const localThreads = local?.threads || [];

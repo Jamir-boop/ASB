@@ -558,7 +558,7 @@ export async function readClaudeSessionFile(filePath, fileStat = null, cacheScop
   return value;
 }
 
-async function claudeFileStat(filePath, { fileScan = null, cacheScope = '' } = {}) {
+export async function claudeFileStat(filePath, { fileScan = null, cacheScope = '' } = {}) {
   const cached = claudeFileStatCache.get(filePath, cacheScope);
   if (cached && fileScan?.canReuse(filePath)) return cached;
   try {

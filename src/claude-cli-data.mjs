@@ -2,7 +2,7 @@
 // They are view-only cards. Titles come from the registry name or the title records, never from prompt text.
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { applyLiveClaudeStatus, baseClaudeThread, claudeTitle, currentClaudeRoot, DEFAULT_CLAUDE_PROJECTS_DIR, DEFAULT_MAX_JSONL_BYTES,
+import { applyLiveClaudeStatus, baseClaudeThread, claudeFileStat, claudeTitle, currentClaudeRoot, DEFAULT_CLAUDE_PROJECTS_DIR, DEFAULT_MAX_JSONL_BYTES,
   indexClaudeProjectFiles, liveClaudeRecord, mapWithConcurrency, projectNameFromCwd, readClaudeRootSignals, SIGNAL_CONCURRENCY } from './claude-data.mjs';
 import { readLiveClaudeRegistryFolder } from './claude-registry.mjs';
 
@@ -11,31 +11,31 @@ const RECENT_MS = 7 * 24 * 60 * 60 * 1000;
 const PROCESS_START_GRACE_MS = 10_000;
 
 export async function loadClaudeCliThreads({ projectsDir = DEFAULT_CLAUDE_PROJECTS_DIR, desktopSessionIds = new Set(), nowMs = Date.now(),
-  maxCount = 500, maxBytes = DEFAULT_MAX_JSONL_BYTES, cacheScope = '', platform = process.platform, registryReads = null } = {}) {
+  maxCount = 500, maxBytes = DEFAULT_MAX_JSONL_BYTES, cacheScope = '', platform = process.platform, registryReads = null, fileScan = null } = {}) {
   const registryDir = path.join(path.dirname(projectsDir), 'sessions');
   // `registry` is null when no registry shows which processes live: an old CLI has no folder, macOS has no reader, and a read can fail.
   const registry = (platform === 'linux' || platform === 'win32') && await fs.stat(registryDir).then((info) => info.isDirectory(), () => false)
     ? await readLiveClaudeRegistryFolder(registryDir, { windows: platform === 'win32', registryReads }).catch(() => null) : null;
   const live = (registry || []).filter((record) => record.entrypoint === 'cli');
   const liveById = new Map(live.map((record) => [record.sessionId, record]));
-  const projectIndex = await indexClaudeProjectFiles(projectsDir)
+  const projectIndex = await indexClaudeProjectFiles(projectsDir, { fileScan, cacheScope })
     .catch(() => ({ files: new Map(), subagentsBySession: new Map(), agentLogs: new Map() }));
   const { files, rootCopies, subagentsBySession, agentLogs } = projectIndex;
   // Root transcripts only: subagent and workflow logs are deeper in the project folder.
   const roots = [...files.values()].filter((entry) => path.dirname(path.dirname(entry.filePath)) === projectsDir)
     .map((entry) => ({ entry, sessionId: path.basename(entry.filePath, '.jsonl') }));
   const transcriptIds = new Set(roots.map((root) => root.sessionId));
-  // The index does not refresh stats, so each candidate gets a current one.
+  // Each candidate gets a current stat, or the cached one when the watchers saw no change.
   const candidates = (await Promise.all(roots.filter((root) => !desktopSessionIds.has(root.sessionId)).map(async (root) => {
     // A session with a copy in more than one project folder uses the newest copy, which has a current stat.
-    const copy = rootCopies?.has(root.sessionId) ? await currentClaudeRoot(projectIndex, root.sessionId) : null;
+    const copy = rootCopies?.has(root.sessionId) ? await currentClaudeRoot(projectIndex, root.sessionId, { fileScan, cacheScope }) : null;
     return { ...root, entry: copy || root.entry,
-      mtimeMs: (copy?.stat || await fs.stat(root.entry.filePath).catch(() => null))?.mtimeMs ?? -1 };
+      mtimeMs: (copy?.stat || await claudeFileStat(root.entry.filePath, { fileScan, cacheScope }).catch(() => null))?.mtimeMs ?? -1 };
   })))
     .filter((root) => root.mtimeMs >= 0 && (nowMs - root.mtimeMs <= RECENT_MS || liveById.has(root.sessionId)))
     .sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, maxCount);
   const read = await mapWithConcurrency(candidates, SIGNAL_CONCURRENCY, async (root) => ({ ...root,
-    ...await readClaudeRootSignals(root.entry, subagentsBySession.get(root.entry.filePath), { maxBytes, nowMs, cacheScope }, agentLogs) }));
+    ...await readClaudeRootSignals(root.entry, subagentsBySession.get(root.entry.filePath), { maxBytes, nowMs, cacheScope, fileScan }, agentLogs) }));
   // A resume or copy can refresh the file time without a turn in the last 7 days.
   const rows = read.filter((root) => root.signals.entrypoint === 'cli'
     && (liveById.has(root.sessionId) || nowMs - (root.signals.latestEventAtMs || root.mtimeMs) <= RECENT_MS));
