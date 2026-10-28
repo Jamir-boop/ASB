@@ -78,7 +78,7 @@ async function listTranscripts(root, app, files, pause, fileName) {
 
 export function createActivityUsage({ readSources = async () => [], machine = {}, cacheDir = defaultCacheDir(), now = Date.now,
   fetch = globalThis.fetch, homeDir = os.homedir(), env = process.env, platform = process.platform, refreshMs = REFRESH_MS,
-  log = console.error, maxCacheFiles = MAX_CACHE_FILES, ledgerFile = '', members = null, busy = () => false, timers = { setTimeout, clearTimeout } } = {}) {
+  log = console.error, maxCacheFiles = MAX_CACHE_FILES, ledgerFile = '', members = null, busy = () => false, changes = null, timers = { setTimeout, clearTimeout } } = {}) {
   const cacheFile = path.join(cacheDir, 'usage', 'usage-cache.json.gz');
   const stats = { bytesRead: 0, scans: 0, saves: 0, openCodeQueries: 0, openCodePages: 0, partBuilds: 0, parts: 0, ledgerSaves: 0, releases: 0, memberBuilds: 0 };
   const progress = { complete: false, files: 0, scannedFiles: 0 };
@@ -91,6 +91,8 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
   let lastSavedAtMs = null;
   let running = null;
   let lastScanEndMs = null;
+  let lastScanStartMs = null;
+  let scanChanges = null;
   const rates = createRateLoader({ file: path.join(cacheDir, 'usage', 'usage-model-rates.json'), fetch, now, platform });
   let version = 0;
   let parts = null;
@@ -244,6 +246,8 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
   // Starts a scan when none runs and the last one ended at least refreshMs ago. Returns the running scan, if any.
   function ensureScan(force = false) {
     if (!running && (force || lastScanEndMs === null || now() - lastScanEndMs >= refreshMs)) {
+      lastScanStartMs = now();
+      scanChanges = changes?.();
       running = runScan().catch(() => log('ASB cannot read the token usage.')).finally(() => {
         running = null;
         lastScanEndMs = now();
@@ -251,6 +255,17 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     }
     return running;
   }
+
+  // Requests use the ledger until local rows change or the hourly refresh is due.
+  function requestScan() {
+    if (ledgerFile && typeof changes === 'function') {
+      if (busy()) {
+        if (stats.scans > 0 || ledger?.self.records.size) return;
+      } else if (stats.scans > 0 && changes() === scanChanges && now() - lastScanStartMs < LEDGER_REFRESH_MS) return;
+    }
+    ensureScan();
+  }
+  const scanState = () => ({ ...progress, complete: !running || progress.complete });
 
   // The token sums per (app, model, quarter hour), built once per change. Repeated dedupe keys count once: the files go in a
   // stable order (by file key), so the first copy of a Claude message is always the same one. Every bucket edge is on a
@@ -448,7 +463,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     report(period, members = []) {
       checkPeriod(period);
       ask();
-      ensureScan();
+      requestScan();
       keepMembers(members);
       const nowMs = now();
       let firstMs = null;
@@ -468,7 +483,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       const { machineId, name } = self();
       const withMachine = (id) => ({ app, model, bucket, tokens, cost }) => ({ machineId: id, app, model, maker: modelMaker(model), bucket, tokens, cost });
       const records = aggregateBuckets(localParts(), { startsMs, endMs, rates: table }).map(withMachine(machineId));
-      const scan = { ...progress };
+      const scan = scanState();
       const addMachine = (id, usage) => records.push(...aggregateBuckets(usage.map(({ app, model, hourMs, tokens }) => ({ app, model, atMs: hourMs, tokens, key: null })),
         { startsMs, endMs: Infinity, rates: table }).map(withMachine(id)));
       for (const member of members) {
@@ -496,13 +511,13 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     localHourly(period) {
       checkPeriod(period);
       ask();
-      ensureScan();
+      requestScan();
       const nowMs = now();
       const days = USAGE_PERIODS[period].unit === 'hour' ? 1 : USAGE_PERIODS[period].count;
       const sinceMs = period === 'all' ? 0 : Math.floor((nowMs - days * DAY_MS - HOUR_MS) / HOUR_MS) * HOUR_MS;
       const usage = ledgerFile ? ledgerViews().hourly.filter((record) => record.hourMs >= sinceMs && record.hourMs < nowMs + HOUR_MS)
         : aggregateHourly(allParts(), sinceMs, nowMs + HOUR_MS);
-      return { usage: usage.slice(-MAX_HOURLY_RECORDS), scan: { ...progress } };
+      return { usage: usage.slice(-MAX_HOURLY_RECORDS), scan: scanState() };
     },
     ...(ledgerFile ? {
       // This machine, the members with records, then the imported-only machines: every hour, in the export file form.
@@ -569,6 +584,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       await running;
       await saveLedger();
     },
+    ready: () => ledgerFile ? ensureLedger() : Promise.resolve(),
     flush: () => ledgerFile ? saveLedger() : Promise.resolve(),
     // For tests and the engine: start a scan now (or join the running one) and wait for it.
     refresh: () => ensureScan(true),

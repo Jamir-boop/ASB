@@ -1018,17 +1018,24 @@ export function createSwitchboardServer(options = {}) {
     return { machineId: identity?.machineId || '', name: identity?.machineName || localMachineName() };
   };
   const group = options.machineGroup || null;
+  let localChanges = 0;
+  let localRows = new Map();
+  const busy = () => [...rowCache.values()].some(({ row }) => !row.archived && row.state === 'working');
+  const changes = options.usageLedgerFile ? () => localChanges : null;
   // Contract 2.3 and 4: the token usage of the registered sources and the group. It scans and downloads only when asked.
   // The fetch, cache, and home options are for tests only.
   const usage = options.activityUsage ? null : createActivityUsage({ readSources: async () => registeredLoad ? registry.read() : [],
     members: group ? () => group.activity('all') : null,
-    busy: () => [...rowCache.values()].some(({ row }) => !row.archived && row.state === 'working'),
+    busy, changes,
     machine: activityMachine, ...(options.usageFetch ? { fetch: options.usageFetch } : {}),
     ...(options.usageCacheDir ? { cacheDir: options.usageCacheDir } : {}),
     ...(options.usageHomeDir ? { homeDir: options.usageHomeDir, env: {} } : {}), ledgerFile: options.usageLedgerFile || '' });
   const activityUsage = options.activityUsage || {
-    report: async (period) => usage.report(period, group ? await group.activity(period).catch(() => []) : []),
-    localHourly: (period) => usage.localHourly(period),
+    report: async (period) => {
+      await usage.ready();
+      return usage.report(period, group ? await group.activity(period).catch(() => []) : []);
+    },
+    localHourly: async (period) => { await usage.ready(); return usage.localHourly(period); },
     ...(usage.exportAll ? { exportAll: async () => usage.exportAll(group ? await group.activity('all').catch(() => []) : []),
       importAll: (document) => usage.importAll(document) } : {}),
   };
@@ -1041,7 +1048,7 @@ export function createSwitchboardServer(options = {}) {
   const claudeMessages = createClaudeMessages({ readSources: readMessageSources,
     stateFile: options.usageLedgerFile ? path.join(options.usageCacheDir || cacheDir(), 'usage', 'claude-message-cache.json') : '' });
   const activityMessages = createActivityMessages({ readSources: readMessageSources, claudeMessages,
-    dashboard: () => server.dashboardForRequest(), machine: activityMachine, group, activityUsage });
+    dashboard: () => server.dashboardForRequest(), machine: activityMachine, group, activityUsage, busy, changes });
   const server = createAsbServer({
     dashboardWatchDebounceMs: 250,
     appVersion: APP_VERSION,
@@ -1072,6 +1079,11 @@ export function createSwitchboardServer(options = {}) {
       // Only the engine passes reader positions: the first scan waits for their load, and each scan can save them.
       await options.readerPositions?.ready();
       const loaded = await load({ ...(sources ? { sources } : {}), machine, sourceScans, workingStarts, rowCache, loaderCache });
+      const nextRows = new Map((loaded.threads || []).filter((row) => !row.remote)
+        .map(({ id, state, updatedAtMs, archived }) => [id, [state, updatedAtMs, archived]]));
+      if (nextRows.size !== localRows.size || [...nextRows].some(([id, values]) =>
+        !localRows.has(id) || values.some((value, index) => value !== localRows.get(id)?.[index]))) localChanges += 1;
+      localRows = nextRows;
       options.readerPositions?.scanDone();
       options.onScanDone?.();
       // The npm start server has no machine identity, so its rows get no full reference.

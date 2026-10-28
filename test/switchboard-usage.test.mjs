@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { buildSwitchboardDashboard, createSwitchboardServer, PendingTracker } from '../src/switchboard.mjs';
@@ -130,4 +131,42 @@ test('creating the switchboard server starts no usage scan and no price download
   assert.equal(fetches.length, 0);
   await assert.rejects(access(path.join(cacheDir, 'usage', 'usage-cache.json.gz')), { code: 'ENOENT' });
   await assert.rejects(access(path.join(cacheDir, 'usage')), { code: 'ENOENT' });
+});
+
+test('only changes in local row identity, state, time, or archive cause a usage request scan', async (t) => {
+  let scans = 0;
+  const readdir = fs.readdir;
+  t.mock.method(fs, 'readdir', (...args) => {
+    if (String(args[0]).endsWith(path.join('.claude', 'projects'))) scans += 1;
+    return readdir(...args);
+  });
+  let atMs = Date.now();
+  t.mock.method(Date, 'now', () => atMs);
+  let rows = [{ id: 'local-a', state: 'working', updatedAtMs: atMs, archived: false }];
+  let remoteTime = atMs;
+  const { server, usage } = await setup(t, { usageLedgerFile: true,
+    machineGroup: { activity: async () => [], merge: (board) => board.threads.push({ id: 'remote', remote: true, updatedAtMs: remoteTime }) },
+    loadDashboard: async () => ({ threads: rows.map((row) => ({ ...row })), providers: [] }) });
+  const scan = async () => {
+    server.invalidateDashboard('test', { hard: true });
+    await server.dashboardForRequest();
+    await usage();
+    await delay(30);
+    atMs += 10_000;
+    return scans;
+  };
+  assert.equal(await scan(), 1);
+  assert.equal(await scan(), 1);
+  remoteTime += 1000;
+  assert.equal(await scan(), 1);
+  rows[0].state = 'idle';
+  assert.equal(await scan(), 2);
+  rows.push({ id: 'local-b', state: 'idle', updatedAtMs: atMs, archived: false });
+  assert.equal(await scan(), 3);
+  rows.pop();
+  assert.equal(await scan(), 4);
+  rows[0].archived = true;
+  assert.equal(await scan(), 5);
+  rows[0].updatedAtMs += 1000;
+  assert.equal(await scan(), 6);
 });

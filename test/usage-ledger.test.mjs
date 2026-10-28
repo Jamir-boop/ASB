@@ -695,3 +695,112 @@ test('only valid members and records go into the ledger, and the saved file load
   assert.deepEqual((await again.exportAll([])).machines.map((item) => item.machineId), [SELF, MEMBER]);
   assert.deepEqual((await fs.readdir(path.dirname(ledgerFile))).filter((name) => name.endsWith('.bad.json')), []);
 });
+
+for (const method of ['report', 'localHourly']) {
+  test(`ledger requests use saved totals while busy: ${method}`, async (t) => {
+    const { service, write, clock, projects } = await setup(t);
+    let busy = false, changes = 0;
+    const options = { busy: () => busy, changes: () => changes };
+    await write('a.jsonl', [claudeLine(BASE - HOUR, 1, 7)]);
+    const usage = service(options);
+    await usage.ready();
+    await settle(usage);
+    busy = true;
+    changes += 1;
+    clock.ms += LEDGER_REFRESH_MS;
+    await fs.rm(path.join(projects, 'a.jsonl'));
+    const check = (reply) => {
+      assert.equal(reply.scan.complete, true);
+      const records = method === 'report' ? reply.records : reply.usage;
+      assert.equal(records.reduce((sum, row) => sum + row.tokens.output, 0), 7);
+    };
+    check(usage[method]('all'));
+    await usage.idle();
+    assert.equal(usage.stats.scans, 1);
+    await usage.stop();
+    const restarted = service(options);
+    await restarted.ready();
+    check(restarted[method]('all'));
+    await restarted.idle();
+    assert.equal(restarted.stats.scans, 0);
+    assert.equal(restarted.stats.bytesRead, 0);
+  });
+}
+
+test('a busy new install scans on its first ledger request', async (t) => {
+  const { service, write } = await setup(t);
+  await write('a.jsonl', [claudeLine(BASE - HOUR, 1, 7)]);
+  const usage = service({ busy: () => true, changes: () => 0 });
+  await usage.ready();
+  assert.equal(usage.report('all').scan.complete, false);
+  await usage.idle();
+  assert.equal(usage.stats.scans, 1);
+  assert.equal(usage.localHourly('all').usage[0].tokens.output, 7);
+});
+
+test('idle ledger requests scan only for local changes or an hour since scan start, with the 10 second limit', async (t) => {
+  const { service, write, clock } = await setup(t);
+  await write('a.jsonl', [claudeLine(BASE - HOUR, 1, 7)]);
+  let changes = 0;
+  const usage = service({ changes: () => changes });
+  await usage.ready();
+  usage.report('all');
+  await usage.idle();
+  clock.ms += 10_000;
+  usage.report('all');
+  usage.localHourly('all');
+  await usage.idle();
+  assert.equal(usage.stats.scans, 1);
+  changes += 1;
+  usage.localHourly('all');
+  await usage.idle();
+  assert.equal(usage.stats.scans, 2);
+  changes += 1;
+  usage.report('all');
+  await usage.idle();
+  assert.equal(usage.stats.scans, 2);
+  clock.ms += 10_000;
+  usage.report('all');
+  await usage.idle();
+  assert.equal(usage.stats.scans, 3);
+  clock.ms += LEDGER_REFRESH_MS - 1;
+  usage.report('all');
+  await usage.idle();
+  assert.equal(usage.stats.scans, 3);
+  clock.ms += 1;
+  usage.localHourly('all');
+  await usage.idle();
+  assert.equal(usage.stats.scans, 4);
+});
+
+test('ledger requests without changes keep the 10 second refresh rule', async (t) => {
+  const { service, clock } = await setup(t);
+  const usage = service({ busy: () => true });
+  await usage.refresh();
+  clock.ms += 10_000;
+  usage.report('all');
+  await usage.idle();
+  assert.equal(usage.stats.scans, 2);
+  clock.ms += 10_000;
+  usage.localHourly('all');
+  await usage.idle();
+  assert.equal(usage.stats.scans, 3);
+});
+
+test('the ledger tick and export still scan while request scans are gated', async (t) => {
+  const { service, clock } = await setup(t);
+  const pending = [];
+  const usage = service({ changes: () => 0, timers: {
+    setTimeout: (callback, delayMs) => { const timer = { callback, delayMs }; pending.push(timer); return timer; },
+    clearTimeout: (timer) => { const index = pending.indexOf(timer); if (index !== -1) pending.splice(index, 1); },
+  } });
+  await usage.ready();
+  await usage.refresh();
+  usage.start();
+  const timer = pending.find((item) => item.delayMs === LEDGER_FIRST_MS);
+  clock.ms += LEDGER_FIRST_MS;
+  await timer.callback();
+  assert.equal(usage.stats.scans, 2);
+  await usage.exportAll();
+  assert.equal(usage.stats.scans, 3);
+});
