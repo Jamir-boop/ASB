@@ -715,6 +715,23 @@ def motion_offsets(old, new):
     return offsets
 
 
+def glide_epsilon(distance):
+    """The largest spring epsilon from .0001 to .001 for which a card that moves DISTANCE px jumps at most half a pixel
+    when the glide ends. libadwaita ends this critically damped spring (stiffness 400) at -ln(epsilon) / 20 s, where
+    epsilon * (1 - ln epsilon) of the move is left. The jump grows with epsilon, so a bisection finds the bound."""
+    def jump(epsilon):
+        return distance * epsilon * (1 - math.log(epsilon))
+    low, high = .0001, .001
+    if jump(high) <= .5:
+        return high
+    if jump(low) > .5:
+        return low
+    for _ in range(40):
+        middle = (low + high) / 2
+        low, high = (middle, high) if jump(middle) <= .5 else (low, middle)
+    return low
+
+
 MESSAGE_MAX_AGE_MS = 30_000
 MESSAGE_FLIGHT_LIMIT = 6
 MESSAGE_LIGHT_MS = 2000
@@ -5234,7 +5251,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.motion_from, self.motion_columns = None, []
         target = Adw.CallbackAnimationTarget.new(self.advance_motion)
         self.motion_animation = Adw.SpringAnimation.new(self.scroll, 1, 0, Adw.SpringParams.new(1, 1, 400), target)
-        self.motion_animation.set_epsilon(.0001)
         self.scroll.after_layout = self.after_layout
         self.scroll.connect("unmap", self.cancel_motion)
         self.scroll.get_hadjustment().connect("value-changed", self.scroll_position_changed)
@@ -6190,6 +6206,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.motion_bounds[column] = (min(previous[0], bounds[0]), max(previous[1], bounds[1]),
                                               min(previous[2], bounds[2]), max(previous[3], bounds[3]))
             self.advance_motion(1)
+            self.motion_animation.set_epsilon(glide_epsilon(max(max(abs(x), abs(y)) for x, y, _fade in strip.motion.values())))
             self.motion_animation.play()
 
     def advance_motion(self, value):

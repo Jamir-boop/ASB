@@ -5739,6 +5739,18 @@ class NativeLogicChecks(unittest.TestCase):
         window.cancel_motion()
         self.assertIsNone(window.motion_from)
 
+    def test_the_glide_ends_when_no_card_is_half_a_pixel_from_its_place(self):
+        epsilon = asb.glide_epsilon
+        def jump(distance, value):
+            return distance * value * (1 - asb.math.log(value))
+        self.assertEqual(epsilon(0), .001)  # Only fades.
+        value = epsilon(70)
+        self.assertLess(.0001, value)
+        self.assertLess(value, .001)
+        self.assertLessEqual(jump(70, value), .5)
+        self.assertGreater(jump(70, value * 1.01), .5)
+        self.assertEqual(epsilon(2000), .0001)  # A long move keeps the old spring length.
+
     def test_a_side_card_filled_during_a_glide_appears_at_its_place(self):
         window = object.__new__(Window)
         window.closed, window.motion_from, window.late_cards = False, {}, {"side"}
@@ -5752,6 +5764,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.scroll = SimpleNamespace(get_hadjustment=lambda: adjustment)
         window.start_motion()
         self.assertEqual(window.list_body.motion, {"visible": (0, 0, 1)})
+        window.motion_animation.set_epsilon.assert_called_once_with(.001)
         window.motion_animation.play.assert_called_once_with()
 
     def test_row_actions_keep_the_target_and_post_to_the_session_route(self):

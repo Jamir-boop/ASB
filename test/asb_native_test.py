@@ -6027,6 +6027,40 @@ class WidgetCheck(unittest.TestCase):
             self.drain(.01)
             self.assertIsNone(window.card_pointer)
 
+    def test_a_short_glide_ends_sooner_with_every_card_at_its_place(self):
+        window = self.snapshot_window()
+        # One column holds all cards, so only the pinned card (the sixth) and the five cards above it move.
+        window.dashboard = {"generatedAtMs": NOW, "providers": [], "threads": board_rows(12)}
+        window.render()
+        window.set_default_size(700, 600)
+        window.present(); self.drain(.5)
+        strip, frames = window.list_body, []
+        window.get_frame_clock().connect("after-paint", lambda *_args: frames.append((strip.motion_progress, dict(strip.motion))))
+        def glide(pinned):
+            frames.clear()
+            next(row for row in window.dashboard["threads"] if row["id"] == "s11").update(pinned=pinned, pinOrder=-1)
+            window.render()
+            deadline = time.monotonic() + 6
+            while not (any(frame[1] for frame in frames) and not strip.motion) and time.monotonic() < deadline:
+                self.drain(.01)
+            self.assertFalse(strip.motion)
+            self.drain(.1)
+            moving = [frame for frame in frames if frame[1]]
+            # The pinned card moves five places: 110 px.
+            self.assertEqual(max(abs(offset[1]) for offset in moving[0][1].values()), 110)
+            self.assertEqual(frames[-1][0], 0)
+            for identity, card in window.focus_widgets.items():
+                found, bounds = card.compute_bounds(window.scroll)
+                self.assertTrue(found)
+                self.assertEqual(window.painted_places()[identity][:2], (bounds.origin.x, bounds.origin.y))
+            return len(moving), window.motion_animation.get_epsilon()
+        short, epsilon = glide(True)
+        self.assertAlmostEqual(epsilon, asb.glide_epsilon(110))
+        with patch.object(asb, "glide_epsilon", return_value=.0001):
+            long, epsilon = glide(False)
+        self.assertEqual(epsilon, .0001)
+        self.assertLess(short, long)
+
     def test_card_motion_wheel_spring_and_column_width(self):
         threads = [{"id": f"s{n}", "provider": "codex", "providerLabel": "Codex",
                     "title": f"Sample session {n} " + ("needle " if n % 2 else "") + "with a long synthetic title " * 7,
