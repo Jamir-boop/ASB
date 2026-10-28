@@ -29,6 +29,8 @@ PHONE = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.Cl
 PHONE.bases = []
 MACHINES = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "MachinesEditor"))
 MACHINES.bases = []
+BACKUPS = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "UsageBackupEditor"))
+BACKUPS.bases = []
 MARKER = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "SourceMarker"))
 MARKER.bases = []
 APPLICATION = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "SwitchboardApplication"))
@@ -44,7 +46,7 @@ SIGNAL = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) an
 # The color helpers of the Board and the activity windows also follow the GI import block.
 COLORS = [node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name in ("rgba", "hex_color", "native_colors")]
 SCOPE = {"__file__": str(SOURCE)}
-exec(compile(ast.Module(body=NODES + [SIGNAL] + COLORS + [USAGE_CHART, STRIP, COLUMN, MARKER, SOURCES, PHONE, MACHINES, PREFERENCES, WINDOW, APPLICATION],
+exec(compile(ast.Module(body=NODES + [SIGNAL] + COLORS + [USAGE_CHART, STRIP, COLUMN, MARKER, SOURCES, PHONE, MACHINES, BACKUPS, PREFERENCES, WINDOW, APPLICATION],
                         type_ignores=[]), str(SOURCE), "exec"), SCOPE)
 Column = SCOPE["SessionColumn"]
 SCOPE["SessionColumn"] = lambda **kwargs: SCOPE["Gtk"].ListBox(**kwargs)
@@ -1115,6 +1117,69 @@ class UsageBackupChecks(unittest.TestCase):
     @staticmethod
     def local_ms(*parts):
         return int(datetime(*parts).timestamp() * 1000)
+
+    def test_backup_refresh_runs_after_midnight_and_after_the_next_backup(self):
+        evening, next_at = self.local_ms(2026, 10, 27, 23, 50), self.local_ms(2026, 10, 28, 3, 0)
+        self.assertEqual(asb.backup_refresh_delay(next_at, evening), self.local_ms(2026, 10, 28, 0, 0) + 1000 - evening)
+        after_midnight = self.local_ms(2026, 10, 28, 0, 0) + 1000
+        self.assertEqual(asb.backup_refresh_delay(next_at, after_midnight), next_at + 5000 - after_midnight)
+        # A due backup still reads the status 5 s after its time, at least 1 s from now.
+        self.assertEqual(asb.backup_refresh_delay(next_at, next_at - 1000), 6000)
+        self.assertEqual(asb.backup_refresh_delay(next_at, next_at + 4500), 1000)
+        # A late backup (no file today after its time) is read again every 60 s, and at midnight at the latest.
+        self.assertEqual(asb.backup_refresh_delay(next_at, next_at + 5000), 60_000)
+        noon = self.local_ms(2026, 10, 28, 12, 0)
+        self.assertEqual(asb.backup_refresh_delay(next_at, noon), 60_000)
+        late_evening = self.local_ms(2026, 10, 28, 23, 59, 30)
+        self.assertEqual(asb.backup_refresh_delay(next_at, late_evening), self.local_ms(2026, 10, 29, 0, 0) + 1000 - late_evening)
+
+    def test_backup_page_keeps_one_refresh_timer_only_while_active(self):
+        editor = object.__new__(SCOPE["UsageBackupEditor"])
+        editor.owner, editor.preferences = SimpleNamespace(closed=False), SimpleNamespace(closed=False)
+        editor.closed, editor.active, editor.loaded, editor.loading = False, True, True, False
+        editor.generation, editor.folder, editor.refresh_timer = 0, "", None
+        editor.cancellable = Mock()
+        for name in ("next_label", "error_label", "files", "files_empty", "folder_row", "default_row", "message", "retry",
+                     "settings", "apply", "backup_now", "export_button", "import_button"):
+            setattr(editor, name, Mock())
+        editor.files.get_first_child.return_value = None
+        evening, next_at = self.local_ms(2026, 10, 27, 23, 50), self.local_ms(2026, 10, 28, 3, 0)
+        sources = iter(range(41, 50))
+        glib = SimpleNamespace(timeout_add=Mock(side_effect=lambda *_args: next(sources)), source_remove=Mock())
+        with patch.dict(SCOPE, {"GLib": glib, "Adw": SimpleNamespace(ActionRow=Mock()), "time": SimpleNamespace(time=lambda: evening / 1000)}):
+            editor.render_status(self.status(nextAtMs=next_at), False)
+            glib.timeout_add.assert_called_once_with(self.local_ms(2026, 10, 28, 0, 0) + 1000 - evening, editor.refresh_due)
+            self.assertEqual(editor.refresh_timer, 41)
+            # Each new status sets the timer again: the old one goes first.
+            editor.render_status(self.status(nextAtMs=next_at), False)
+            glib.source_remove.assert_called_once_with(41)
+            self.assertEqual(editor.refresh_timer, 42)
+            editor.request_backup = Mock()
+            self.assertIs(editor.refresh_due(), False)
+            editor.request_backup.assert_called_once_with()
+            self.assertIsNone(editor.refresh_timer)
+            del editor.request_backup
+            # Off backups or no next time: no timer.
+            for status in (self.status(enabled=False, nextAtMs=None), self.status(nextAtMs=None)):
+                glib.timeout_add.reset_mock()
+                editor.render_status(status, False)
+                glib.timeout_add.assert_not_called()
+            editor.render_status(self.status(nextAtMs=next_at), False)
+            self.assertEqual(editor.refresh_timer, 43)
+            glib.source_remove.reset_mock()
+            editor.set_active(False)
+            glib.source_remove.assert_called_once_with(43)
+            self.assertIsNone(editor.refresh_timer)
+            glib.timeout_add.reset_mock()
+            editor.render_status(self.status(nextAtMs=next_at), False)
+            glib.timeout_add.assert_not_called()
+            # close removes a timer too.
+            editor.active, editor.refresh_timer = True, None
+            editor.render_status(self.status(nextAtMs=next_at), False)
+            glib.source_remove.reset_mock()
+            editor.close()
+            glib.source_remove.assert_called_once_with(44)
+            self.assertIsNone(editor.refresh_timer)
 
     def test_usage_routes_send_the_token_need_no_changed_and_use_their_timeouts_and_texts(self):
         token = "9a" * 32

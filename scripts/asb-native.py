@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Native GNOME view for the local ASB session API."""
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import math
 import ntpath
@@ -1850,6 +1850,15 @@ def backup_next_text(status, now_ms):
     at, now = datetime.fromtimestamp(status["nextAtMs"] / 1000), datetime.fromtimestamp(now_ms / 1000)
     days = (at.date() - now.date()).days
     return f"Next backup: {'today at ' if days == 0 else 'tomorrow at ' if days == 1 else f'{at:%Y-%m-%d} '}{at:%H:%M}."
+
+
+def backup_refresh_delay(next_at_ms, now_ms):
+    """Milliseconds until the Usage page reads the backup status again: 5 s after the next backup, or 1 s after local midnight.
+    A late backup (the engine was off, or the backup failed) is read again every 60 s, not every second."""
+    today = datetime.fromtimestamp(now_ms / 1000).date()
+    midnight_ms = datetime.combine(today + timedelta(days=1), datetime.min.time()).timestamp() * 1000
+    after = next_at_ms + 5000 if next_at_ms + 5000 > now_ms else now_ms + 60_000
+    return max(1000, int(min(midnight_ms + 1000, after) - now_ms))
 
 
 def backup_error_text(status):
@@ -3904,7 +3913,7 @@ class UsageBackupEditor(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.owner, self.preferences, self.base = owner, preferences, owner.base
         self.closed = self.active = self.loaded = self.loading = False
-        self.generation, self.status, self.folder = 0, {}, ""
+        self.generation, self.status, self.folder, self.refresh_timer = 0, {}, "", None
         self.cancellable = Gio.Cancellable()
         self.settings = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
         self.settings.add_css_class("boxed-list")
@@ -4005,6 +4014,7 @@ class UsageBackupEditor(Gtk.Box):
             self.generation += 1
             self.loading = False
             self.cancellable.cancel()
+            self.stop_refresh()
             self.update_controls()
         else:
             self.loaded = False
@@ -4056,6 +4066,20 @@ class UsageBackupEditor(Gtk.Box):
             self.files.append(row)
         self.files.set_visible(bool(status["files"]))
         self.files_empty.set_visible(not status["files"])
+        # The next backup text says today or tomorrow, and a new backup adds a file: read the status again at midnight and after the backup.
+        self.stop_refresh()
+        if self.active and not self.closed and status["enabled"] and status["nextAtMs"] is not None:
+            self.refresh_timer = GLib.timeout_add(backup_refresh_delay(status["nextAtMs"], now), self.refresh_due)
+
+    def stop_refresh(self):
+        if self.refresh_timer is not None:
+            GLib.source_remove(self.refresh_timer)
+            self.refresh_timer = None
+
+    def refresh_due(self):
+        self.refresh_timer = None
+        self.request_backup()
+        return False
 
     def request_backup(self, route="/api/usage/backup", method="GET", body=None):
         if self.closed or self.owner.closed or not self.active or self.loading or (method == "POST" and not self.loaded):
@@ -4197,6 +4221,7 @@ class UsageBackupEditor(Gtk.Box):
 
     def close(self):
         self.set_active(False)
+        self.stop_refresh()
         self.closed = True
 
 
