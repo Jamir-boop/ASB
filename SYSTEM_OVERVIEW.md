@@ -316,7 +316,7 @@ Remote execution requires a response observation within six hours plus explicit 
 
 ### Session messages
 
-The dashboard has the top-level list `messages`: `[{ from, to, atMs }]`. Each entry is one message that one chat row sent to another in the last two minutes. `from` and `to` are row IDs, and `atMs` is a time in milliseconds. The native window animates these entries: a light flies between the two rows when GNOME animations are on and `Gsk.PathBuilder` (GTK 4.14) exists; else both rows show the accent color for 2 s. A light that comes during a card motion starts when the motion ends, between the final card places. The list is always present. It holds at most the newest 50 entries, sorted by `atMs`, then `from`, then `to`. Exact duplicates are removed.
+The dashboard has the top-level list `messages`: `[{ from, to, atMs }]`. Each entry is one message that one chat row sent to another in the last two minutes. `from` and `to` are row IDs, and `atMs` is a time in milliseconds. The native window animates these entries: a light flies between the two rows when GNOME animations are on and `Gsk.PathBuilder` (GTK 4.14) exists; else both rows show the accent color for 2 s. A light that comes during a card motion starts when the motion ends, between the final card places. While the board window is not active, a refresh moves the cards with no glide, and a new message plays no light, lights no card, and counts as seen; a glide or light that already runs finishes. The list is always present. It holds at most the newest 50 entries, sorted by `atMs`, then `from`, then `to`. Exact duplicates are removed.
 
 ASB uses receiver-side records only, so each message counts once. There are three sources:
 

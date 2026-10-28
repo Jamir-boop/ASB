@@ -5879,7 +5879,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return False
 
     def play_messages(self, messages):
-        if self.message_seen is None or not messages:
+        # A board in the background plays no message and counts it as seen.
+        if self.message_seen is None or not messages or not self.is_active():
             self.message_seen = new_messages(messages, None, {}, 0, 0)[1]
             return
         room = MESSAGE_FLIGHT_LIMIT - len(self.list_body.flights)
@@ -5897,7 +5898,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return False
 
     def start_messages(self, play):
-        if self.closed:
+        if self.closed or not self.is_active():
             self.pending_messages = []
             return False
         if getattr(self.list_body, "motion", None):
@@ -7136,8 +7137,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         repack = repack and not reorder
         if repack or reorder:
             self.hover_after_layout = True
+            # A board in the background shows the new places at once, as with animations off.
             if getattr(self, "motion_animation", None) and motion_allowed(
-                    self.layout_signature, layout_signature, self.get_settings().get_property("gtk-enable-animations"), self.get_mapped()):
+                    self.layout_signature, layout_signature, self.get_settings().get_property("gtk-enable-animations"),
+                    self.get_mapped() and self.is_active()):
                 # A second change before the next layout keeps the places that are on the screen.
                 if self.motion_from is None:
                     self.motion_from = self.painted_places()

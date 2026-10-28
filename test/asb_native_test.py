@@ -3736,6 +3736,7 @@ class WidgetCheck(unittest.TestCase):
         self.addCleanup(window.close)
         window.set_default_size(680, 420)
         window.present(); window.set_focus(None); self.drain(.4)
+        self.foreground(window)
         window.view_filter.set_selected(1); self.drain(.5); window.check_geometry(); self.drain()
         for card in window.focus_widgets.values():
             window.ensure_card_controls(card)
@@ -5988,6 +5989,7 @@ class WidgetCheck(unittest.TestCase):
         window.render()
         window.set_default_size(700, 600)
         window.present(); self.drain(.5)
+        self.foreground(window)
         window.dashboard["threads"][-1].update(pinned=True, pinOrder=-1)
         window.render()
         deadline = time.monotonic() + 2
@@ -6081,6 +6083,7 @@ class WidgetCheck(unittest.TestCase):
         search_height = window.search.measure(asb.Gtk.Orientation.VERTICAL, -1)[1]
         window.set_default_size(1000, 500 + search_height)
         window.present()
+        self.foreground(window)
         strip, motion, spring = window.list_body, window.motion_animation, window.scroll_animation
         playing = asb.Adw.AnimationState.PLAYING
         frames = []
@@ -7112,6 +7115,7 @@ class WidgetCheck(unittest.TestCase):
         self.addCleanup(window.close)
         window.set_default_size(700, 420)
         window.present()
+        self.foreground(window)
         self.settle(window)
         strip, rows = window.list_body, window.focus_widgets
         def wait(done, limit=6):
@@ -7208,6 +7212,7 @@ class WidgetCheck(unittest.TestCase):
         self.addCleanup(window.close)
         window.set_default_size(700, 420)
         window.present()
+        self.foreground(window)
         self.settle(window)
         strip = window.list_body
         self.assertEqual(window.row_order[:2], ["m1", "m2"])
@@ -7320,6 +7325,61 @@ class WidgetCheck(unittest.TestCase):
         gc.collect()
         self.assertEqual([reference() for reference in references], [None] * 8)
 
+    def test_a_board_in_the_background_plays_no_glide_and_no_message_light(self):
+        threads = [{"id": f"m{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Sample session {n}",
+                    "cwd": "/example/notes", "projectName": "notes", "state": "idle", "canOpen": True,
+                    "updatedAtMs": NOW - n * 60_000} for n in (1, 2, 3)]
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", {"generatedAtMs": NOW, "providers": [], "threads": threads,
+                                       "messages": []}, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(700, 420)
+        window.present()
+        self.settle(window)
+        strip, rows, playing = window.list_body, window.focus_widgets, asb.Adw.AnimationState.PLAYING
+        frames, flights = [], []
+        window.get_frame_clock().connect("after-paint", lambda *_args: frames.append(bool(strip.motion)))
+        start_flight = strip.start_flight
+        def observed_flight(*args):
+            flights.append(args[:2])
+            start_flight(*args)
+        def wait(done, limit=6):
+            end = time.monotonic() + limit
+            while not done() and time.monotonic() < end:
+                self.drain(.02)
+            self.assertTrue(done())
+        def change(first, message):
+            board = copy.deepcopy(window.dashboard)
+            for row in board["threads"]:
+                row.update(pinned=row["id"] == first, pinOrder=-1 if row["id"] == first else 0)
+            board["messages"] = [*board["messages"], {"from": message[0], "to": message[1], "atMs": time.time() * 1000}]
+            frames.clear()
+            window.apply_dashboard(board, None)
+        lit = lambda: [identity for identity, row in rows.items() if row.has_css_class("asb-message-lit")]
+        with patch.object(strip, "start_flight", observed_flight):
+            self.foreground(window, False)
+            change("m3", ("m1", "m2"))
+            self.settle(window); self.drain(.5)
+            self.assertEqual(window.row_order[0], "m3")
+            self.assertTrue(frames)
+            self.assertFalse(any(frames))
+            self.assertNotEqual(window.motion_animation.get_state(), playing)
+            self.assertEqual((flights, strip.flights, lit()), ([], [], []))
+            # The message counts as seen: it does not play in the foreground.
+            self.foreground(window)
+            window.apply_dashboard(copy.deepcopy(window.dashboard), None)
+            self.drain(.5)
+            self.assertEqual((flights, lit()), ([], []))
+            # In the foreground both play.
+            change("m2", ("m3", "m1"))
+            wait(lambda: any(frames))
+            wait(lambda: flights)
+            self.assertEqual(flights, [(rows["m3"], rows["m1"])])
+
     def test_message_courier_out_of_view_edges(self):
         threads = [{"id": f"e{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Sample row {n}", "cwd": "/example/notes",
                     "projectName": "notes", "state": "idle", "canOpen": True, "updatedAtMs": NOW - n * 60_000} for n in range(80)]
@@ -7336,6 +7396,7 @@ class WidgetCheck(unittest.TestCase):
         self.addCleanup(window.close)
         window.set_default_size(500, 300)
         window.present()
+        self.foreground(window)
         self.settle(window)
         strip, adjustment = window.list_body, window.scroll.get_hadjustment()
         playing = asb.Adw.AnimationState.PLAYING
