@@ -40,6 +40,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Fixed the reason that a card shows when it does not open or when the engine refuses a card action. The card tooltip and the row panel now show the reason of the engine, for example `Cannot open this session: The app launcher must be an existing executable app file.` A session that is gone shows `Cannot open this session. Refresh the session list, then try again.`
 - Fixed Preferences > Phone, which made the rows of the paired phones again every 3 s while a pairing code showed, so the keyboard focus left a **Remove** button.
 - Fixed the title of the transcript folder picker in Preferences, which was `Choose session folder`.
+- Changed the engine scan to use less CPU: it reads the Claude Code live session registry once per scan, reads each registry file into a buffer of its size, and lists the Claude Code CLI sessions with the file watch data, as the Claude Desktop Code sessions.
+- Changed the time of a Working session in the session list to 10 s steps. The board, the machines of the group, and the phone now download the full list about 4 times less often while sessions work (before, about every 2 s). No view shows this time for a Working session.
 
 ## ASB 1.12.1 - 2026-10-25
 
