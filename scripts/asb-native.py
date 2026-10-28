@@ -4437,6 +4437,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     row_cache_trim = None
     numbers_shown = False
     number_keys = open_popovers = ()
+    card_pointer = None
 
     def __init__(self, application, base, initial_dashboard=None, theme_path=THEME_PATH, layout_path=LAYOUT_PATH, first_load=None):
         super().__init__(application=application, title="ASB · Agent Switch Board",
@@ -4761,6 +4762,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.scroll = ColumnScroll(vexpand=True, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
                                         vscrollbar_policy=Gtk.PolicyType.NEVER,
                                         child=self.list_body)
+        card_press = Gtk.GestureClick(button=1, propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        card_press.connect("pressed", self.card_pointer_event)
+        card_press.connect("released", self.card_pointer_event)
+        self.list_body.add_controller(card_press)
         self.scroll_target = None
         self.scroll_direction, self.scroll_updating = 0, False
         target = Adw.CallbackAnimationTarget.new(self.advance_scroll)
@@ -7969,6 +7974,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION], [name, description])
         widget.update_state([Gtk.AccessibleState.BUSY], [opening])
 
+    def card_pointer_event(self, _gesture, _count, x, y):
+        self.card_pointer = (x, y)
+        GLib.idle_add(self.clear_card_pointer)
+
+    def clear_card_pointer(self):
+        self.card_pointer = None
+        return False
+
     def open_row(self, _listing, widget):
         row = widget.asb_thread
         if row.get("id") == MORE_ID:
@@ -7978,6 +7991,17 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.sync_filter_chips()
             self.render(preserve_focus=first, reveal_focus=bool(first) and self.get_focus_visible())
             return
+        if self.card_pointer is not None and self.list_body.motion:
+            found, point = self.list_body.compute_point(self.scroll, Graphene.Point().init(*self.card_pointer))
+            painted = None
+            if found:
+                for identity, (x, y, _fade) in self.painted_places().items():
+                    card = self.focus_widgets[identity]
+                    if x <= point.x < x + card.get_width() and y <= point.y < y + card.get_height():
+                        painted = card
+                        break
+            if painted is not widget:
+                return
         # A real click on a card button does not reach the row (the button has no action name to lose, so GTK keeps its claim).
         # A click on the card body while a card action is in flight does, so the busy guard stays.
         if not row.get("canOpen") or row["id"] in self.opening or row["id"] in self.session_actions:

@@ -5140,6 +5140,51 @@ class WidgetCheck(unittest.TestCase):
             self.drain(.5)
         self.assertEqual(repacks, [asb.ROW_HEIGHT])
 
+    def test_glide_opens_only_the_card_painted_under_the_pointer(self):
+        window = self.snapshot_window()
+        window.dashboard = {"generatedAtMs": NOW, "providers": [], "threads": board_rows(48)}
+        window.render()
+        window.set_default_size(700, 600)
+        window.present(); self.drain(.5)
+        window.dashboard["threads"][-1].update(pinned=True, pinOrder=-1)
+        window.render()
+        deadline = time.monotonic() + 2
+        while not window.list_body.motion and time.monotonic() < deadline:
+            self.drain(.01)
+        self.assertTrue(window.list_body.motion)
+        window.motion_animation.pause()
+        window.advance_motion(1)
+        cards = window.focus_widgets
+        a, b = cards["s47"], cards["s0"]
+        places = window.painted_places()
+        def point(card):
+            x, y, _fade = places[card.asb_thread["id"]]
+            found, point = window.scroll.compute_point(window.list_body, asb.Graphene.Point().init(
+                x + card.get_width() / 2, y + card.get_height() / 2))
+            self.assertTrue(found)
+            return point.x, point.y
+        with patch.object(asb, "request_async") as request:
+            window.card_pointer = point(b)
+            window.open_row(None, a)
+            request.assert_not_called()
+            window.card_pointer = point(a)
+            window.open_row(None, a)
+            request.assert_called_once()
+            window.opening.clear()
+            window.card_pointer = None
+            window.open_row(None, a)
+            self.assertEqual(request.call_count, 2)
+        controllers = window.list_body.observe_controllers()
+        clicks = [controllers.get_item(i) for i in range(controllers.get_n_items())
+                  if isinstance(controllers.get_item(i), asb.Gtk.GestureClick)]
+        click = next(c for c in clicks if c.get_button() == 1)
+        self.assertEqual(click.get_propagation_phase(), asb.Gtk.PropagationPhase.CAPTURE)
+        for signal in ("pressed", "released"):
+            click.emit(signal, 1, 12., 34.)
+            self.assertEqual(window.card_pointer, (12., 34.))
+            self.drain(.01)
+            self.assertIsNone(window.card_pointer)
+
     def test_card_motion_wheel_spring_and_column_width(self):
         threads = [{"id": f"s{n}", "provider": "codex", "providerLabel": "Codex",
                     "title": f"Sample session {n} " + ("needle " if n % 2 else "") + "with a long synthetic title " * 7,
