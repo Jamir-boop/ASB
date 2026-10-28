@@ -738,7 +738,7 @@ test('a busy new install scans on its first ledger request', async (t) => {
   assert.equal(usage.localHourly('all').usage[0].tokens.output, 7);
 });
 
-test('idle ledger requests scan only for local changes or an hour since scan start, with the 10 second limit', async (t) => {
+test('idle ledger requests scan only for local changes or 5 minutes since scan start, with the 10 second limit', async (t) => {
   const { service, write, clock } = await setup(t);
   await write('a.jsonl', [claudeLine(BASE - HOUR, 1, 7)]);
   let changes = 0;
@@ -763,7 +763,7 @@ test('idle ledger requests scan only for local changes or an hour since scan sta
   usage.report('all');
   await usage.idle();
   assert.equal(usage.stats.scans, 3);
-  clock.ms += LEDGER_REFRESH_MS - 1;
+  clock.ms += 5 * 60_000 - 1;
   usage.report('all');
   await usage.idle();
   assert.equal(usage.stats.scans, 3);

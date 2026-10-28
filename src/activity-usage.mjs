@@ -256,12 +256,13 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     return running;
   }
 
-  // Requests use the ledger until local rows change or the hourly refresh is due.
+  // Requests use the ledger while a local session works. Else they scan when local rows changed, or after 5 minutes,
+  // because Grok, Pi, and Antigravity have usage but no rows.
   function requestScan() {
     if (ledgerFile && typeof changes === 'function') {
       if (busy()) {
         if (stats.scans > 0 || ledger?.self.records.size) return;
-      } else if (stats.scans > 0 && changes() === scanChanges && now() - lastScanStartMs < LEDGER_REFRESH_MS) return;
+      } else if (stats.scans > 0 && changes() === scanChanges && now() - lastScanStartMs < 5 * 60_000) return;
     }
     ensureScan();
   }
