@@ -203,6 +203,10 @@ class Tray:
             self.quit_engine()
 
     def refresh_tooltip(self):
+        # A Passive item is hidden; the change to Active reads the tooltip again.
+        if self.status == "Passive":
+            return True
+
         def work():
             try:
                 text = tooltip_text(self.request("GET", "/api/phone", 2))
@@ -224,6 +228,8 @@ class Tray:
             self.status = status
             self.connection.emit_signal(None, "/StatusNotifierItem", "org.kde.StatusNotifierItem", "NewStatus",
                                         GLib.Variant("(s)", (status,)))
+            if status == "Active":
+                self.refresh_tooltip()
         return False
 
     def check_engine(self):

@@ -16,6 +16,7 @@ class TrayLogicTest(unittest.TestCase):
     def test_panel_status_changes_emit_once_and_update_the_item_property(self):
         connection = Mock()
         item = tray.Tray(connection, (42, "http://127.0.0.1:4731", "a" * 64, "/opt/asb/bin/asb"), {})
+        item.refresh_tooltip = Mock()
         self.assertEqual(item.item_property("Status").unpack(), "Active")
         for status in ("Passive", "Active"):
             connection.reset_mock()
@@ -47,6 +48,18 @@ class TrayLogicTest(unittest.TestCase):
         self.assertEqual(item.item_property("Status").unpack(), "Passive")
         args[4](connection, tray.PANEL_NAME)
         self.assertEqual(item.item_property("Status").unpack(), "Active")
+
+    def test_a_passive_item_reads_no_tooltip_and_the_change_to_active_reads_once(self):
+        item = tray.Tray(Mock(), (42, "http://127.0.0.1:4731", "a" * 64, "/opt/asb/bin/asb"), {})
+        item.request = Mock(return_value={"running": True})
+        item.in_background = lambda work: work()
+        with patch.object(tray.GLib, "idle_add") as idle:
+            item.show_status("Passive")
+            self.assertIs(item.refresh_tooltip(), True)
+            item.request.assert_not_called()
+            item.show_status("Active")
+            item.request.assert_called_once_with("GET", "/api/phone", 2)
+            idle.assert_called_once_with(item.show_tooltip, "Running. Phone access on.")
 
     def test_tooltip_text_shows_phone_access_only_when_it_runs(self):
         self.assertEqual(tray.tooltip_text({"running": True}), "Running. Phone access on.")
