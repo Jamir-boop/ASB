@@ -460,6 +460,33 @@ class WidgetCheck(unittest.TestCase):
         window.close(); self.drain(.3)
         self.assertFalse(popup.get_visible())
 
+    def check_choice_popover(self, window, choice, outside, effect):
+        subprocess.run(["xdotool", "windowfocus", str(window.get_surface().get_xid())], check=True)
+        popup = next(widget for widget in descendants(choice) if isinstance(widget, asb.Gtk.Popover))
+        def opened():
+            self.held_popover_click(window, choice)
+            self.assertTrue(popup.get_mapped())
+            self.assertFalse(popup.get_autohide())
+        opened()
+        self.held_popover_click(window, outside)
+        self.assertFalse(popup.get_visible())
+        effect()
+        opened()
+        with patch.object(window, "is_active", return_value=False):
+            window.notify("is-active")
+            self.drain(.3)
+        self.assertFalse(popup.get_visible())
+        opened()
+        subprocess.run(["xdotool", "key", "Escape"], check=True); self.drain(.3)
+        self.assertFalse(popup.get_visible())
+        self.assertTrue(window.get_focus() is choice or window.get_focus().is_ancestor(choice))
+        opened()
+        outside.grab_focus(); self.drain(.3)
+        self.assertFalse(popup.get_visible())
+        opened()
+        window.set_visible(False); self.drain(.3)
+        self.assertFalse(popup.get_visible())
+
     def capture(self, window, path):
         for attempt in range(3):
             try:
@@ -1762,6 +1789,39 @@ class WidgetCheck(unittest.TestCase):
                 window = self.snapshot_window()
                 window.apply_dashboard(copy.deepcopy(FIXTURE), None)
             watch.assert_called_once()
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real keys and clicks need xdotool and DISPLAY=:9 or :10")
+    def test_preferences_dropdown_held_click_inactive_escape_focus_and_unmap(self):
+        window = self.snapshot_window()
+        window.present(); self.drain(.3)
+        window.open_preferences(); self.drain(.3)
+        preferences = window.preferences_window
+        outside = asb.Gtk.Button(label="Outside")
+        preferences.get_content().get_first_child().pack_end(outside)
+        clicked = Mock()
+        outside.connect("clicked", clicked)
+        self.check_choice_popover(preferences, window.card_limit_setting, outside, clicked.assert_called_once)
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real keys and clicks need xdotool and DISPLAY=:9 or :10")
+    def test_profile_combo_held_click_inactive_escape_focus_and_unmap(self):
+        window = self.snapshot_window()
+        window.present(); self.drain(.3)
+        window.open_preferences(); self.drain(.3)
+        preferences = window.preferences_window
+        with patch.object(asb, "request_async"):
+            preferences.show_section("profiles"); self.drain(.3)
+            editor = preferences.profiles_editor
+            editor.set_form({"provider": "claude-desktop-code", "label": "Made-up profile"})
+            editor.loading, editor.loaded = False, True
+            editor.update_controls()
+            editor.present_dialog(); self.drain(.3)
+            outside = asb.Gtk.Button(label="Outside")
+            editor.provider.add_prefix(outside)
+            clicked = Mock()
+            outside.connect("clicked", clicked)
+            self.check_choice_popover(preferences, editor.remote_claude, outside, clicked.assert_called_once)
 
     def test_the_preferences_window_exists_only_after_the_first_open_and_takes_a_custom_theme_set_before(self):
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
@@ -7426,6 +7486,7 @@ class ActivityFixture:
     drain = WidgetCheck.drain
     held_popover_click = WidgetCheck.held_popover_click
     check_popover_lifetime = WidgetCheck.check_popover_lifetime
+    check_choice_popover = WidgetCheck.check_choice_popover
     capture = WidgetCheck.capture
     assert_accessible_label = WidgetCheck.assert_accessible_label
     close_windows = WidgetCheck.close_windows
@@ -8086,6 +8147,14 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.drain(.05)
         self.assertEqual(chart.progress, 1)
         self.assertEqual(chart.starts, chart.targets)
+        self.assert_no_new_warnings()
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real keys and clicks need xdotool and DISPLAY=:9 or :10")
+    def test_period_dropdown_held_click_inactive_escape_focus_and_unmap(self):
+        window = self.window()
+        self.check_choice_popover(window, window.period_menu, window.metric_buttons["tokens"],
+                                  lambda: self.assertEqual(window.metric, "tokens"))
         self.assert_no_new_warnings()
 
     @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
@@ -10317,6 +10386,30 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
         self.keys("key", "Escape")
         self.assertFalse(popup.get_visible())
         self.assertTrue(window.get_focus().is_ancestor(window.menu_button))
+
+    def test_every_dropdown_and_profile_combo_has_no_grab(self):
+        board = self.board()
+        board.open_preferences(); self.drain(.3)
+        preferences = board.preferences_window
+        with patch.object(asb, "request_async"):
+            preferences.show_section("profiles"); self.drain(.3)
+            editor = preferences.profiles_editor
+            editor.set_form()
+            editor.loading, editor.loaded = False, True
+            # Adw.Dialog holds its content outside the tree until it is presented.
+            editor.present_dialog(); self.drain(.3)
+        messages = self.application.show_activity("messages")
+        usage = self.application.show_activity("usage")
+        self.drain(.4)
+        roots = (board, preferences, editor.provider.get_ancestor(asb.Adw.PreferencesPage), messages, usage)
+        choices = {widget for root in roots
+                   for widget in descendants(root) if isinstance(widget, (asb.Gtk.DropDown, asb.Adw.ComboRow))}
+        self.assertEqual(len(choices), 7)
+        for choice in choices:
+            with self.subTest(choice=choice):
+                popups = [widget for widget in descendants(choice) if isinstance(widget, asb.Gtk.Popover)]
+                self.assertTrue(popups)
+                self.assertTrue(all(not popup.get_autohide() for popup in popups))
 
     def test_main_menu_has_messages_usage_and_preferences_with_their_keys(self):
         window = self.board()

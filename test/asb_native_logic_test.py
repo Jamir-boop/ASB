@@ -4018,10 +4018,14 @@ class ProfileDialogChecks(unittest.TestCase):
                         Align=SimpleNamespace(CENTER=0, START=1), NaturalWrapMode=SimpleNamespace(NONE=0),
                         AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0))
                     editor.preferences.has_css_class.return_value = True
+                    choice = Mock()
                     with patch.dict(SCOPE, {"Adw": adw, "Gtk": gtk, "SourceMarker": Mock(), "label": Mock(),
-                                            "Pango": SimpleNamespace(WrapMode=SimpleNamespace(WORD=0))}):
+                                            "Pango": SimpleNamespace(WrapMode=SimpleNamespace(WORD=0)), "non_autohide_choice": choice}):
                         editor.ensure_dialog()
                         dialog = editor.dialog
+                        # The App and Remote Claude sessions rows close with the window that shows the dialog.
+                        owner = editor.preferences if modern else dialog
+                        self.assertEqual(choice.call_args_list, [call(owner, editor.provider), call(owner, editor.remote_claude)])
                         if modern:
                             adw.Dialog.assert_called_once_with(content_width=560)
                             dialog.set_child.assert_called_once()

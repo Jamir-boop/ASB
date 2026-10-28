@@ -358,7 +358,7 @@ def popover_outside_press(gesture, _count, x, y, window, popover, anchor):
     if not popover.get_visible():
         return
     point = Graphene.Point().init(x, y)
-    if isinstance(anchor, Gtk.MenuButton):
+    if isinstance(anchor, (Gtk.MenuButton, Gtk.DropDown, Adw.ComboRow)):
         found, bounds = anchor.compute_bounds(window)
         if found and bounds.contains_point(point):
             return
@@ -405,6 +405,19 @@ def non_autohide_popover(window, popover, anchor):
             press.disconnect(press_handler)
     # Row panels are short lived; do not keep them through the window's handlers.
     popover.connect("notify::parent", unparented)
+
+
+def non_autohide_choice(window, choice):
+    """Keep the native choice widget and configure its internal popover."""
+    def configure(widget):
+        child = widget.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.Popover):
+                non_autohide_popover(window, child, choice)
+            else:
+                configure(child)
+            child = child.get_next_sibling()
+    configure(choice)
 
 
 def close_popovers_when_inactive(window, close):
@@ -2932,6 +2945,8 @@ class AppSourcesEditor(Gtk.Box):
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self.dialog_key)
         self.dialog.add_controller(keys)
+        for choice in (self.provider, self.remote_claude):
+            non_autohide_choice(self.preferences if modern else self.dialog, choice)
 
     def present_dialog(self):
         if hasattr(Adw, "Dialog"):
@@ -4589,6 +4604,8 @@ class PreferencesWindow(Adw.Window):
             self.section_list.append(row)
         self.stack.connect("notify::visible-child-name", self.section_changed)
         self.set_content(body)
+        for choice in (owner.card_limit_setting, owner.view_filter, owner.theme_mode):
+            non_autohide_choice(self, choice)
         self.breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 600px"))
         self.breakpoint.add_setter(self.sidebar, "visible", False)
         self.add_breakpoint(self.breakpoint)
@@ -8686,6 +8703,7 @@ class ActivityWindow(Adw.Window):
         self.period_menu.set_tooltip_text("Period")
         self.period_menu.update_property([Gtk.AccessibleProperty.LABEL], ["Period"])
         self.period_menu.connect("notify::selected", self.period_selected)
+        non_autohide_choice(self, self.period_menu)
         self.toolbar.append(self.period_menu)
         self.toolbar_start = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER)
         self.toolbar.append(self.toolbar_start)
