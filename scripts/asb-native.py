@@ -1979,6 +1979,8 @@ class EventStream:
         self.path = "/api/events" + (f"?ui={quote(ui_client)}" if ui_client else "")
         # True from the `connected` event of the engine to the end of the stream: each list change then comes as an event.
         self.connected = False
+        # Only an engine with timer scans sends an event for every list change (also status expiry).
+        self.list_events = False
         # The engine of this connection said that the stream holds the UI client; `connections` counts the connected events.
         self.holds_ui, self.connections = False, 0
         self.stopped = threading.Event()
@@ -2017,6 +2019,7 @@ class EventStream:
                                 except ValueError:
                                     value = None
                                 self.holds_ui = isinstance(value, dict) and value.get("uiClient") is True
+                                self.list_events = isinstance(value, dict) and value.get("listEvents") is True
                                 self.connections += 1
                                 self.connected = True
                                 if self.on_connected:
@@ -2043,7 +2046,7 @@ class EventStream:
             except (HTTPException, OSError, ValueError):
                 pass
             finally:
-                self.connected = self.holds_ui = False
+                self.connected = self.holds_ui = self.list_events = False
                 with self.lock:
                     self.socket = None
                 connection.close()
@@ -5311,8 +5314,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def tick(self):
         if not self.closed:
             self.report_ui()
-            # While the event stream works, the engine sends an event for each list change, also after its timer scans.
-            if not self.events.connected:
+            # Only a service engine that advertises list events sends each change, also after its timer scans.
+            if not (self.events.connected and self.events.list_events):
                 self.refresh()
         return not self.closed
 

@@ -493,6 +493,26 @@ test('server.bridgeReport gives the member report with runBridgeCli, and 404 wit
   assert.deepEqual(await plain.server.bridgeReport(), { status: 404, body: { error: 'Route is not available.' } });
 });
 
+test('only a service engine advertises events for every list change in the connected event', async (t) => {
+  for (const serviceMode of [true, false]) {
+    const { base } = await serve(t, { serviceMode });
+    const connected = await new Promise((resolve, reject) => {
+      const stream = http.get(`${base}/api/events`, (response) => {
+        let text = '';
+        response.on('data', (chunk) => {
+          text += chunk;
+          const match = text.match(/event: connected\ndata: (.+)\n\n/);
+          if (match) { resolve(JSON.parse(match[1])); stream.destroy(); }
+        });
+        response.on('error', (error) => { if (error.code !== 'ECONNRESET') reject(error); });
+      });
+      stream.on('error', reject);
+      t.after(() => stream.destroy());
+    });
+    assert.equal(connected.listEvents, serviceMode);
+  }
+});
+
 test('the panel is a local GET route with a no-store summary of the shared dashboard', async (t) => {
   const dashboard = { providers: [], threads: [{ id: 'alpha', title: 'Alpha', pending: true, state: 'working', updatedAtMs: 12 }] };
   const machines = [{ machineId: 'alpha', name: 'Alpha', self: true, online: true }];

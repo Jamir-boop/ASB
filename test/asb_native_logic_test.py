@@ -3209,8 +3209,8 @@ class DataChecks(unittest.TestCase):
         deadline = time.monotonic() + 5
         while not stream.connected and time.monotonic() < deadline:
             time.sleep(.01)
-        self.assertEqual((paths, stream.connected, stream.holds_ui, stream.connections, board.connections),
-                         ([f"/api/events?ui={client}"], True, True, 1, 1))
+        self.assertEqual((paths, stream.connected, stream.holds_ui, stream.connections, board.connections, stream.list_events),
+                         ([f"/api/events?ui={client}"], True, True, 1, 1, False))
         end.set()
         deadline = time.monotonic() + 5
         while stream.connected and time.monotonic() < deadline:
@@ -3220,7 +3220,7 @@ class DataChecks(unittest.TestCase):
         plain.close()
         self.assertEqual(plain.path, "/api/events")
 
-    def test_tick_reads_the_list_only_while_the_event_stream_is_down(self):
+    def test_tick_reads_the_list_unless_the_connected_stream_sends_every_list_change(self):
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
         end = threading.Event()
@@ -3233,7 +3233,7 @@ class DataChecks(unittest.TestCase):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream; charset=utf-8")
                 self.end_headers()
-                self.wfile.write(b'\nevent: connected\ndata: {"version":0,"reason":"connected","sources":{}}\n\n')
+                self.wfile.write(b'\nevent: connected\ndata: {"version":0,"reason":"connected","sources":{},"listEvents":true}\n\n')
                 self.wfile.flush()
                 end.wait(5)
         server = ThreadingHTTPServer(("127.0.0.1", 0), Engine)
@@ -3251,7 +3251,7 @@ class DataChecks(unittest.TestCase):
         deadline = time.monotonic() + 5
         while not stream.connected and time.monotonic() < deadline:
             time.sleep(.01)
-        self.assertEqual((stream.connected, connects), (True, [True]))
+        self.assertEqual((stream.connected, stream.list_events, connects), (True, True, [True]))
         self.assertTrue(asb.SwitchboardWindow.tick(window))
         window.refresh.assert_not_called()
         window.report_ui.assert_called_once_with()
@@ -3259,9 +3259,13 @@ class DataChecks(unittest.TestCase):
         deadline = time.monotonic() + 5
         while stream.connected and time.monotonic() < deadline:
             time.sleep(.01)
-        self.assertFalse(stream.connected)
+        self.assertEqual((stream.connected, stream.list_events), (False, False))
         self.assertTrue(asb.SwitchboardWindow.tick(window))
         window.refresh.assert_called_once_with()
+        # A desktop server or an older engine can have a connected stream but no timer-scan events: keep the poll.
+        window.events = SimpleNamespace(connected=True, list_events=False)
+        self.assertTrue(asb.SwitchboardWindow.tick(window))
+        self.assertEqual(window.refresh.call_count, 2)
 
 
 class MessageChecks(unittest.TestCase):

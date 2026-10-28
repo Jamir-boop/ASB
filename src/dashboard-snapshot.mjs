@@ -531,7 +531,7 @@ export class DashboardSnapshot {
         response.write('\n');
         dashboardEventClients.add(response);
         sendDashboardEvent(response, 'connected', {
-          version: dashboardEventVersion, reason: 'connected', sources: { codex: false, claude: false }, ...connected,
+          version: dashboardEventVersion, reason: 'connected', sources: { codex: false, claude: false }, listEvents: serviceMode, ...connected,
         });
         request.on('close', () => {
           dashboardEventClients.delete(response);
