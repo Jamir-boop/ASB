@@ -2070,10 +2070,17 @@ def set_panel_label(button, text):
     button.update_property([Gtk.AccessibleProperty.LABEL], [text])
 
 
+ICON_FILES = {}
+
+
 def set_icon(image, name):
     """Show a symbolic icon. GTK 4.18 does not recolor symbolic icons from the icon search path, so ASB glyphs load as files."""
     if name and name.startswith("asb-"):
-        image.set_from_gicon(Gio.FileIcon.new(Gio.File.new_for_path(str(Path(__file__).parents[1] / "assets" / "icons" / f"{name}.svg"))))
+        # One icon per glyph name: each card shows several glyphs, and a new icon for each call costs time on every new card.
+        icon = ICON_FILES.get(name)
+        if icon is None:
+            icon = ICON_FILES[name] = Gio.FileIcon.new(Gio.File.new_for_path(str(Path(__file__).parents[1] / "assets" / "icons" / f"{name}.svg")))
+        image.set_from_gicon(icon)
     else:
         image.set_from_icon_name(name)
 

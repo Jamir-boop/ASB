@@ -5064,6 +5064,16 @@ class WidgetCheck(unittest.TestCase):
         self.assertLessEqual(len(window.row_cache), 2 * window.card_limit + 1)
         self.assertTrue(window.row_columns.keys() <= window.row_cache.keys())
 
+    def test_set_icon_reuses_one_file_icon_per_glyph_name(self):
+        first, second, other = asb.Gtk.Image(), asb.Gtk.Image(), asb.Gtk.Image()
+        asb.set_icon(first, "asb-chat-symbolic")
+        asb.set_icon(second, "asb-chat-symbolic")
+        asb.set_icon(other, "asb-drawer-symbolic")
+        self.assertIsInstance(first.get_gicon(), asb.Gio.FileIcon)
+        self.assertIs(first.get_gicon(), second.get_gicon())
+        self.assertIsNot(other.get_gicon(), first.get_gicon())
+        self.assertEqual(Path(first.get_gicon().get_file().get_path()).name, "asb-chat-symbolic.svg")
+
     def test_scrollbar_below_viewport_sets_capacity(self):
         settings = asb.Gtk.Settings.get_default()
         self.addCleanup(settings.reset_property, "gtk-overlay-scrolling")
