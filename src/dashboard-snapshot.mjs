@@ -334,7 +334,8 @@ export class DashboardSnapshot {
       } else {
         serverMetrics.dashboardSoftInvalidations += 1;
       }
-      announceDashboard(reason);
+      // A service sends a soft dirty change after its follow-up scan, only when the list changed.
+      if (!serviceMode || hard || !dirty) announceDashboard(reason);
       // No file event follows a peer change: the service gets the follow-up scan of a source event, also with no reader.
       if (serviceMode && dirty && !hard && !dashboardClosed) scheduleDashboardInvalidation(reason);
     };
@@ -352,12 +353,12 @@ export class DashboardSnapshot {
         if (dashboardClosed) return;
         if (dashboardLoadPromise) return;
         // One shared follow-up scan covers the burst before clients read the snapshot.
-        // The scan sends the event itself, only when the list changed.
+        // The scan sends the event itself, only when the list changed. A read that already scanned leaves no dirty mark.
         if (dashboardCache && dashboardDirty && (dashboardEventClients.size || serviceMode)) {
           loadSharedDashboard().catch(() => {
             if (!dashboardClosed) invalidateDashboard('source-unavailable', { hard: false });
           });
-        } else invalidateDashboard(dashboardInvalidationReason, { hard: false, dirty: false });
+        } else if (!dashboardCache || dashboardDirty) invalidateDashboard(dashboardInvalidationReason, { hard: false, dirty: false });
       }, Math.max(0, delayMs));
       dashboardInvalidationTimer.unref?.();
     };

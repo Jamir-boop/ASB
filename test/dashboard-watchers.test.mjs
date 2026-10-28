@@ -451,6 +451,30 @@ test('the 30 s active check starts a scan only for changed local Working or Wait
   assert.deepEqual(idle.scans, [0]);
 });
 
+test('service list events follow only list changes, also with a reader before the follow-up timer', async (t) => {
+  let title = 'Made-up';
+  const f = await serviceFixture(t, { dashboard: () => ({ threads: [{ id: 'local', title, state: 'idle' }], refreshIntervalMs: 5_000 }) });
+  const events = [];
+  const request = new EventEmitter();
+  f.snapshot.serveEvents(request, { writeHead() {}, end() {}, write(text) { if (text.startsWith('data:')) events.push(JSON.parse(text.slice(6))); } });
+  events.length = 0;
+  for (let change = 0; change < 10; change += 1) {
+    f.watches.at(-1)('change', `rollout-${change}.jsonl`);
+    for (let read = 0; read < 5; read += 1) { await f.snapshot.loadSharedDashboard(); await f.run(200); }
+  }
+  assert.equal(events.length, 0);
+  title = 'Changed';
+  f.snapshot.invalidateDashboard('peer-sessions', { hard: false });
+  assert.equal(events.length, 0);
+  const revision = f.snapshot.revision();
+  await f.run(250);
+  assert.deepEqual(events.map((event) => event.reason), ['peer-sessions']);
+  assert.notEqual(f.snapshot.revision(), revision);
+  assert.equal((await f.snapshot.loadSharedDashboard()).threads[0].title, 'Changed');
+  f.snapshot.invalidateDashboard('sources-change');
+  assert.deepEqual(events.map((event) => event.reason), ['peer-sessions', 'sources-change']);
+});
+
 test('service mode without full watch coverage keeps the 2 s scans of a Working row', async (t) => {
   const f = await serviceFixture(t, { covered: false, dashboard: workingDashboard });
   await f.run(60_000);
