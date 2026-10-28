@@ -9682,9 +9682,7 @@ class MessagesWindow(ActivityWindow):
 {scope} .asb-msg-who {{ font-size: 11px; font-weight: 600; color: {palette['text']}; }}
 {scope} .asb-msg-body {{ font-size: 13px; }}
 {scope} .asb-msg-reader {{ padding: 10px 16px; border-top: 1px solid {palette['divider']}; background: {palette['win']}; }}
-{scope} .asb-msg-c-time {{ font-family: monospace; font-feature-settings: "tnum"; font-size: 12px; color: {palette['dim']}; }}
 {scope} .asb-msg-c-route {{ font-size: 13px; font-weight: 600; }}
-{scope} .asb-msg-c-body {{ font-size: 14px; }}
 {scope} .asb-msg-c-name {{ font-size: 15px; font-weight: 600; }}
 {scope} .asb-msg-c-num {{ font-family: monospace; font-feature-settings: "tnum"; font-size: 18px; }}
 {scope} .asb-msg-c-dir {{ font-family: monospace; font-feature-settings: "tnum"; font-size: 14px; }}
@@ -9997,24 +9995,9 @@ class MessagesWindow(ActivityWindow):
                 figures.append(column)
             box.append(figures)
         elif self.view["recent"]:
-            record = self.view["recent"][0]
-            text(format_clock(record["atMs"]), "asb-msg-c-time")
-            seats = self.view["seats"]
+            # Only who wrote to whom: the texts show in a thread.
+            record, seats = self.view["recent"][0], self.view["seats"]
             text(f"{message_end_title(record, 'from', seats)} →\u00a0{message_end_title(record, 'to', seats)}", "asb-msg-c-route", wrap=True)
-            status = message_status(record)
-            line = Gtk.Box(spacing=5, halign=align)
-            line.add_css_class(f"asb-msg-stt-{status}")
-            line.append(Gtk.Image(icon_name=ACTIVITY_STATUS_ICONS[status], pixel_size=14))
-            line.append(label(message_status_label(record), "asb-msg-small"))
-            box.append(line)
-            # The text of the newest message comes with the reply.
-            body = message_text(record)
-            widget = text(body if body is not None else "No text", "asb-msg-c-body", wrap=not reader)
-            if body is None:
-                widget.add_css_class("asb-dim")
-            elif not reader:
-                widget.set_lines(2)
-                widget.set_ellipsize(Pango.EllipsizeMode.END)
 
     # The thread.
     def build_thread(self):

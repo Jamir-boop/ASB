@@ -8864,8 +8864,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
 
     def test_a_focused_pin_shows_its_center(self):
         window = self.window()
-        self.assertEqual(self.labels(window.table.center)[:2], ["16:28", "docs → release-plan"])
-        self.assertIn("Changelog draft is in place.", self.labels(window.table.center))
+        self.assertEqual(self.labels(window.table.center), ["docs \u2192\u00a0release-plan"])
         window.table.proxies[("pin", "parser-review")].grab_focus()
         self.drain(.05)
         counts = window.view["counts"]["parser-review"]
@@ -9001,6 +9000,37 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         found, point = widget.compute_point(window.thread_list, asb.Graphene.Point().init(0, 0))
         self.assertTrue(found)
         return point.y - adjustment.get_value(), adjustment.get_page_size()
+
+    def assert_only_route(self, box, route):
+        """The center or the reader has one widget: the route label."""
+        widgets = self.tree(box)[1:]
+        self.assertEqual(len(widgets), 1, [type(widget).__name__ for widget in widgets])
+        self.assertIsInstance(widgets[0], asb.Gtk.Label)
+        self.assertTrue(widgets[0].has_css_class("asb-msg-c-route"))
+        self.assertEqual(widgets[0].get_label(), route)
+        self.assertNotIn("No text", self.all_labels(box.get_root()))
+
+    def test_the_center_shows_only_the_route_of_the_newest_message(self):
+        window = self.window()
+        self.assert_only_route(window.table.center, "docs \u2192\u00a0release-plan")
+        # A newest message with no text shows its route too.
+        self.extra = [["m-none", "release-plan", "parser-review", self.sample["nowMs"] - 1000, "accepted", "", None]]
+        window.refresh(); self.drain(.3)
+        self.assert_only_route(window.table.center, "release-plan \u2192\u00a0parser-review")
+
+    def test_the_narrow_reader_shows_only_the_route_of_the_newest_message(self):
+        window = self.window((490, 800))
+        self.wait_for(lambda: window.narrow_scroll.get_visible() and window.reader.get_visible())
+        self.assertTrue(window.reader.get_visible())
+        self.assert_only_route(window.reader, "docs \u2192\u00a0release-plan")
+
+    def test_an_unknown_end_shows_the_name_from_the_message_in_the_center(self):
+        self.extra = [["m-in", "unknown:laptop", "docs", self.sample["nowMs"] - 1000, "held", "", "From a helper.", "beta-helper", ""]]
+        window = self.window()
+        self.assert_only_route(window.table.center, "beta-helper \u2192\u00a0docs")
+        self.extra = [["m-out", "docs", "unknown:laptop", self.sample["nowMs"] - 500, "accepted", "", "To a helper.", "", ""]]
+        window.refresh(); self.drain(.3)
+        self.assert_only_route(window.table.center, "docs \u2192\u00a0Other sessions")
 
     def test_a_long_thread_shows_the_newest_blocks_first_and_builds_the_others_in_steps(self):
         window = self.window()
@@ -9193,12 +9223,10 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertIsNone(window.thread)
         self.assertIsNone(window.thread_list.get_first_child())
         self.assertEqual(self.routes, ["/api/activity/messages?period=7d"])
-        # Only the newest message shows its text: in the center, in two lines at most.
-        texts = {record[6] for record in self.records() if record[6]} - {"Changelog draft is in place."}
+        # No message text shows before a thread opens: the center has only the route of the newest message.
+        texts = {record[6] for record in self.records() if record[6]}
         self.assertFalse(texts & set(self.all_labels(window)))
-        center = [widget for widget in self.tree(window.table.center) if isinstance(widget, asb.Gtk.Label)]
-        self.assertEqual([widget.get_label() for widget in center], ["16:28", "docs \u2192\u00a0release-plan", "Accepted", "Changelog draft is in place."])
-        self.assertEqual(center[-1].get_lines(), 2)
+        self.assertEqual(self.labels(window.table.center), ["docs \u2192\u00a0release-plan"])
         # Focus, hover, a period change, and a new message open nothing.
         window.table.proxies[("pin", "docs")].grab_focus()
         window.table.pointer_moved(None, *window.table.chords[0]["table"][0][32])
@@ -9257,10 +9285,8 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                       ["m-out", "docs", "unknown:laptop", now - 2000, "written", "", "To a helper.", "", "gamma-helper"],
                       ["m-off", "unknown:laptop", "docs", now - 1000, "not-sent", "Machine offline", None, "beta-helper", ""]]
         window = self.window()
-        # The center: the name from the message, the reason, and No text in dim text, with no thread read.
-        center = [widget for widget in self.tree(window.table.center) if isinstance(widget, asb.Gtk.Label)]
-        self.assertEqual([widget.get_label() for widget in center][1:], ["beta-helper \u2192\u00a0docs", "Machine offline", "No text"])
-        self.assertTrue(center[-1].has_css_class("asb-dim"))
+        # The center: the route with the name from the message, with no thread read.
+        self.assertEqual(self.labels(window.table.center), ["beta-helper \u2192\u00a0docs"])
         self.assertEqual(self.routes, ["/api/activity/messages?period=7d"])
         self.assertEqual([self.labels(row)[1] for row in window.recent_rows[:4]],
                          ["beta-helper \u2192 docs", "docs \u2192 gamma-helper", "beta-helper \u2192 docs", "docs \u2192 release-plan"])
@@ -9462,7 +9488,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertTrue(window.table.small)
         self.assertTrue(window.reader.get_visible())
         self.assertFalse(window.table.center.get_visible())
-        self.assertEqual(self.labels(window.reader)[:2], ["16:28", "docs →\u00a0release-plan"])
+        self.assertEqual(self.labels(window.reader), ["docs →\u00a0release-plan"])
         window.set_default_size(968, 760)
         # The layout after the reader hides gives the table the whole column: wait for it, not only for the shown center.
         self.wait_for(lambda: window.wide.get_visible() and window.table.center.get_visible()
