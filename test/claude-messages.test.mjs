@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFile, mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createClaudeMessages } from '../src/claude-messages.mjs';
@@ -156,4 +156,87 @@ test('byte marker scans handle split markers and candidate lines larger than thr
   assert.equal(texts.get('claude:split-marker'), 'Synthetic body.');
   assert.equal(texts.get('claude:long-candidate'), `${'x'.repeat(1999)}…`);
   assert.equal(texts.get(`claude:${uuid(30)}`), 'After the long line.');
+});
+
+test('a saved scan resumes after a restart, reads only appended bytes and saved message lines, and keeps no names or bodies', async (t) => {
+  const { dir, root, file } = await fixture(t);
+  const stateFile = path.join(dir, 'private', 'claude-message-cache.json');
+  const sources = [{ enabled: true, provider: 'claude-desktop-code', projectsDir: root }];
+  const create = (extra = {}) => createClaudeMessages({ readSources: async () => sources, now: () => nowMs, stateFile, ...extra });
+  const first = lines([sent('persisted', 'SendMessage', 'private-target-name', 'Private message text.'), received(uuid(3), 'Private incoming text.')]);
+  await writeFile(file, first);
+  const expected = await create().records(0);
+  const document = await readFile(stateFile, 'utf8');
+  for (const text of ['Private message text.', 'Private incoming text.', 'private-target-name', 'alpha-main', dir]) assert.ok(!document.includes(text), text);
+  if (process.platform !== 'win32') {
+    assert.equal((await stat(stateFile)).mode & 0o777, 0o600);
+    assert.equal((await stat(path.dirname(stateFile))).mode & 0o777, 0o700);
+  }
+  const stats = {};
+  const reader = create({ stats });
+  const appended = lines([sent('new-call')]);
+  await appendFile(file, appended);
+  const rows = await reader.records(0);
+  assert.deepEqual(rows, await create({ stateFile: '' }).records(0));
+  assert.deepEqual(rows.filter((row) => row.id !== 'claude:new-call'), expected);
+  assert.equal(stats.linesRead, 2);
+  assert.equal(stats.readBytes - stats.lineBytesRead, 64 + Buffer.byteLength(appended));
+  const bytes = stats.readBytes;
+  assert.deepEqual(await reader.records(0), rows);
+  assert.equal(stats.readBytes, bytes);
+  assert.equal(await reader.text(rows.find((row) => row.id === 'claude:persisted')), 'Private message text.');
+});
+
+test('saved scans reread a rewritten, shrunk, or replaced file, and ignore broken or old-version state', async (t) => {
+  const { dir, root, file } = await fixture(t);
+  const stateFile = path.join(dir, 'private', 'claude-message-cache.json');
+  const sources = [{ enabled: true, provider: 'claude-desktop-code', projectsDir: root }];
+  const create = (extra = {}) => createClaudeMessages({ readSources: async () => sources, now: () => nowMs, stateFile, ...extra });
+  const original = lines([sent('first-call'), sent('other-call')]);
+  for (const change of ['rewrite', 'shrink', 'replace', 'broken', 'version', 'invalid-row']) {
+    await writeFile(file, original);
+    await create().records(0);
+    let body = original;
+    if (change === 'rewrite') body = original.replaceAll('Synthetic body.', 'Different body.');
+    if (change === 'shrink') body = lines([sent('short-call')]);
+    if (change === 'replace') {
+      body = original + lines([sent('replacement-call')]);
+      await writeFile(`${file}.new`, body);
+      await rename(`${file}.new`, file);
+    } else if (change === 'broken') await writeFile(stateFile, 'broken');
+    else if (change === 'version') await writeFile(stateFile, '{"version":0,"files":{}}');
+    else if (change === 'invalid-row') {
+      const document = JSON.parse(await readFile(stateFile, 'utf8'));
+      Object.values(document.files)[0].rows[0][6] = -1;
+      await writeFile(stateFile, JSON.stringify(document));
+    } else await writeFile(file, body);
+    if (['rewrite', 'shrink', 'replace'].includes(change)) await utimes(file, new Date(nowMs), new Date(nowMs));
+    const stats = {};
+    const rows = await create({ stats }).records(0);
+    assert.deepEqual(rows, await create({ stateFile: '' }).records(0), change + JSON.stringify(stats));
+    assert.equal(stats.readBytes, Buffer.byteLength(body) + 64, change);
+    assert.equal(stats.linesRead || 0, 0, change);
+  }
+});
+
+test('the message state saves changes at most once a minute, and a failed save keeps the changes for a retry', async (t) => {
+  const { dir, root, file } = await fixture(t);
+  const stateFile = path.join(dir, 'private', 'claude-message-cache.json');
+  const clock = { ms: nowMs };
+  const logs = [];
+  const reader = createClaudeMessages({ readSources: async () => [{ enabled: true, provider: 'claude-desktop-code', projectsDir: root }],
+    stateFile, now: () => clock.ms, log: (line) => logs.push(line) });
+  await mkdir(stateFile, { recursive: true });
+  await writeFile(file, lines([sent('initial')]));
+  await reader.records(0);
+  assert.equal(logs.length, 1);
+  await rm(stateFile, { recursive: true });
+  await reader.records(0);
+  const first = await readFile(stateFile, 'utf8');
+  await appendFile(file, lines([sent('appended')]));
+  await reader.records(0);
+  assert.equal(await readFile(stateFile, 'utf8'), first);
+  clock.ms += 60_000;
+  await reader.records(0);
+  assert.notEqual(await readFile(stateFile, 'utf8'), first);
 });

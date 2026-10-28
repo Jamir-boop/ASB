@@ -17,7 +17,7 @@ import { createUsageBackup } from './usage-backup.mjs';
 import { createSoundPlayer, createSoundWatcher } from './asb-sounds.mjs';
 import { openThreadInCodex, scopedCommand } from './session-opener.mjs';
 import { AppSourceRegistry, appSourcesRevision, numberAppSources, sourceName, validateSourceLauncher } from './app-sources.mjs';
-import { stateDir } from './platform-paths.mjs';
+import { cacheDir, stateDir } from './platform-paths.mjs';
 import { rowReference, shortReference } from './session-references.mjs';
 import { MEMBER_MESSAGE_KEYS } from './machine-peers.mjs';
 import { CLI_SESSION_IDS, bindLocalTarget, bindMemberTarget, memberTarget, notSentMessage, referencesForList, resolveSessionReference } from './session-targets.mjs';
@@ -923,7 +923,8 @@ export function createSwitchboardServer(options = {}) {
   if (backup) activityUsage.backup = backup;
   // Contract 2.1, 2.2, and 4: the bridge databases of the registered sources, the cached rows (never a forced scan), and the group.
   const readMessageSources = async () => registeredLoad ? registry.read() : [];
-  const claudeMessages = createClaudeMessages({ readSources: readMessageSources });
+  const claudeMessages = createClaudeMessages({ readSources: readMessageSources,
+    stateFile: options.usageLedgerFile ? path.join(options.usageCacheDir || cacheDir(), 'usage', 'claude-message-cache.json') : '' });
   const activityMessages = createActivityMessages({ readSources: readMessageSources, claudeMessages,
     dashboard: () => server.dashboardForRequest(), machine: activityMachine, group, activityUsage });
   const server = createAsbServer({

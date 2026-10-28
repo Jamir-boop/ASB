@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parseCrossSessionEnvelope } from './claude-data.mjs';
-import { createYielder } from './usage-scan-cache.mjs';
+import { createYielder, pathKey, readPrivateJson, writePrivateJson } from './usage-scan-cache.mjs';
 
 const CHUNK_BYTES = 1024 * 1024;
 const MARKERS = ['SendMessage', 'send_message', '<cross-session-message', 'success'].map((text) => Buffer.from(text));
@@ -41,20 +41,56 @@ function messages(event, owner) {
 }
 
 export function createClaudeMessages({ readSources = async () => [], homeDir = os.homedir(), now = Date.now,
-  keepMs = 30 * 86_400_000, stats = {} } = {}) {
+  keepMs = 30 * 86_400_000, stats = {}, stateFile = '', platform = process.platform, log = console.error } = {}) {
   const cache = new Map();
   const locations = new WeakMap();
   let scanning = Promise.resolve();
+  let loaded = false;
+  let dirty = false;
+  let savedAtMs = null;
+
+  // Paths and message bodies never go to disk. A live listing supplies the path for each saved file key.
+  async function load() {
+    if (loaded || !stateFile) return;
+    loaded = true;
+    const document = await readPrivateJson(stateFile, { platform });
+    if (document?.version !== 1 || !document.files || typeof document.files !== 'object' || Array.isArray(document.files)) return;
+    for (const [key, entry] of Object.entries(document.files)) {
+      if (!/^[a-f0-9]{64}$/.test(key) || !entry || !['size', 'offset', 'guardLength', 'ino', 'dev'].every((n) => Number.isSafeInteger(entry[n]) && entry[n] >= 0)
+        || entry.offset > entry.size || entry.guardLength > 64 || entry.guardLength > entry.size
+        || !['mtimeMs', 'ctimeMs'].every((n) => Number.isFinite(entry[n])) || !/^[a-f0-9]{16}$/.test(entry.first)
+        || !Array.isArray(entry.failed) || !entry.failed.every((id) => typeof id === 'string') || !Array.isArray(entry.rows)) continue;
+      const rows = [];
+      for (const row of entry.rows) {
+        if (!Array.isArray(row) || row.length !== 8) break;
+        const [id, direction, atMs, status, reason, hash, offset, length] = row;
+        if (typeof id !== 'string' || !['in', 'out'].includes(direction)
+          || !Number.isFinite(atMs) || !['accepted', 'not-sent'].includes(status) || !['', 'Not sent'].includes(reason) || !/^[a-f0-9]{16}$/.test(hash)
+          || ![offset, length].every((v) => Number.isSafeInteger(v) && v >= 0) || offset + length > entry.offset) break;
+        rows.push({ id, direction, atMs, status, reason, hash, offset, length });
+      }
+      if (rows.length === entry.rows.length) cache.set(key, { size: entry.size, offset: entry.offset, guardLength: entry.guardLength,
+        ino: entry.ino, dev: entry.dev, mtimeMs: entry.mtimeMs, ctimeMs: entry.ctimeMs, first: entry.first, rows, failed: new Set(entry.failed) });
+    }
+  }
+  async function save() {
+    if (!stateFile || !dirty || (savedAtMs !== null && now() - savedAtMs < 60_000)) return;
+    const files = Object.fromEntries([...cache].map(([key, entry]) => [key, { ...entry, failed: [...entry.failed], rows: entry.rows.map((row) =>
+      [row.id, row.direction, row.atMs, row.status, row.reason, row.hash, row.offset, row.length]) }]));
+    try { await writePrivateJson(stateFile, { version: 1, files }, { platform }); dirty = false; savedAtMs = now(); }
+    catch { log('ASB cannot save its Claude message cache. It keeps the old file.'); }
+  }
 
   async function scan(file, stat, sinceMs, yieldNow) {
-    let entry = cache.get(file);
-    if (entry?.size === stat.size && entry.mtimeMs === stat.mtimeMs && entry.ctimeMs === stat.ctimeMs) return entry;
+    const key = pathKey(file);
+    let entry = cache.get(key);
+    if (entry?.ino === stat.ino && entry.dev === stat.dev && entry.size === stat.size && entry.mtimeMs === stat.mtimeMs && entry.ctimeMs === stat.ctimeMs) return entry;
     const handle = await fs.open(file, 'r');
     try {
       const guard = Buffer.alloc(Math.min(64, stat.size));
       if (guard.length) { await handle.read(guard, 0, guard.length, 0); stats.readBytes = (stats.readBytes || 0) + guard.length; }
       const first = hash(guard);
-      if (!entry || stat.size <= entry.size || hash(guard.subarray(0, entry.guardLength)) !== entry.first) entry = { offset: 0, rows: [], failed: new Set() };
+      if (!entry || entry.ino !== stat.ino || entry.dev !== stat.dev || stat.size <= entry.size || hash(guard.subarray(0, entry.guardLength)) !== entry.first) entry = { offset: 0, rows: [], failed: new Set() };
       async function readLines(data) {
         const starts = new Set();
         for (const marker of MARKERS) {
@@ -72,7 +108,7 @@ export function createClaudeMessages({ readSources = async () => [], homeDir = o
             try { event = JSON.parse(line); } catch {}
             if (event) {
               for (const { body, ...row } of messages(event, path.basename(file, '.jsonl'))) {
-                if (row.atMs >= sinceMs) entry.rows.push({ ...row, hash: hash(body), file, offset: entry.offset + offset, length: end - offset });
+                if (row.atMs >= sinceMs) entry.rows.push({ ...row, hash: hash(body), offset: entry.offset + offset, length: end - offset });
               }
               if (event.type === 'user' && Array.isArray(event.message?.content)) {
                 for (const item of event.message.content) if (item?.type === 'tool_result' && (event.toolUseResult?.success === false
@@ -113,14 +149,16 @@ export function createClaudeMessages({ readSources = async () => [], homeDir = o
         if (start < chunk.length) pending.push(chunk.subarray(start));
         await yieldNow();
       }
-      Object.assign(entry, { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, first, guardLength: guard.length });
-      cache.set(file, entry);
+      Object.assign(entry, { ino: stat.ino, dev: stat.dev, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, first, guardLength: guard.length });
+      cache.set(key, entry);
+      dirty = true;
       return entry;
     } finally { await handle.close(); }
   }
 
   async function records(sinceMs) {
     const read = async () => {
+      await load();
       const roots = new Set((await readSources()).filter((source) => source.enabled && source.provider === 'claude-desktop-code')
         .map((source) => path.resolve(source.projectsDir || path.join(homeDir, '.claude', 'projects'))));
       const seen = new Set();
@@ -137,19 +175,29 @@ export function createClaudeMessages({ readSources = async () => [], homeDir = o
           const file = path.join(folder, item.name);
           const stat = await fs.stat(file).catch(() => null);
           if (!stat || stat.mtimeMs < keepSinceMs) continue;
-          seen.add(file);
+          seen.add(pathKey(file));
           if (stat.mtimeMs < cutoff) continue;
           try {
             // Cache the retention window, so a later request for a longer period does not miss records.
             const entry = await scan(file, stat, keepSinceMs, yieldNow);
-            entry.rows = entry.rows.filter((row) => row.atMs >= keepSinceMs);
+            const kept = entry.rows.filter((row) => row.atMs >= keepSinceMs);
+            if (kept.length !== entry.rows.length) dirty = true;
+            entry.rows = kept;
             for (const id of entry.failed) failed.add(id);
-            for (const row of entry.rows) if (row.atMs >= cutoff && !result.has(row.id)) result.set(row.id, row);
+            for (const row of entry.rows) if (row.atMs >= cutoff && !result.has(row.id)) {
+              if (row.label === undefined) {
+                const found = await readMessage({ file, ...row });
+                if (!found) continue;
+                Object.assign(row, { from: found.from, to: found.to, label: found.label });
+              }
+              result.set(row.id, { ...row, file });
+            }
           } catch {}
           await yieldNow();
         }
       }
-      for (const file of cache.keys()) if (!seen.has(file)) cache.delete(file);
+      for (const key of cache.keys()) if (!seen.has(key)) { cache.delete(key); dirty = true; }
+      await save();
       return [...result.values()].sort((a, b) => a.atMs - b.atMs || a.id.localeCompare(b.id)).map(({ file, offset, length, ...row }) => {
         if (failed.has(row.id)) Object.assign(row, { status: 'not-sent', reason: 'Not sent' });
         locations.set(row, { file, offset, length });
@@ -161,19 +209,27 @@ export function createClaudeMessages({ readSources = async () => [], homeDir = o
     return result;
   }
 
-  async function text(record) {
-    const location = locations.get(record);
-    if (!location) return null;
+  // A loaded record has no session names. Read its one line to restore them; bodies stay out of both caches.
+  async function readMessage(location) {
     let handle;
     try {
       handle = await fs.open(location.file, 'r');
       const buffer = Buffer.alloc(location.length);
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, location.offset);
+      stats.readBytes = (stats.readBytes || 0) + bytesRead;
+      stats.lineBytesRead = (stats.lineBytesRead || 0) + bytesRead;
+      stats.linesRead = (stats.linesRead || 0) + 1;
       if (bytesRead !== buffer.length) return null;
       const event = JSON.parse(buffer.toString('utf8'));
-      const row = messages(event, path.basename(location.file, '.jsonl')).find((item) => item.id === record.id);
-      return row && hash(row.body) === record.hash ? cut(row.body) : null;
+      const row = messages(event, path.basename(location.file, '.jsonl')).find((item) => item.id === location.id);
+      return row && hash(row.body) === location.hash ? row : null;
     } catch { return null; } finally { await handle?.close(); }
+  }
+  async function text(record) {
+    const location = locations.get(record);
+    if (!location) return null;
+    const row = await readMessage({ ...location, id: record.id, hash: record.hash });
+    return row ? cut(row.body) : null;
   }
   return { records, text };
 }
