@@ -2401,6 +2401,13 @@ class SessionColumn(Gtk.ListBox):
                 self.snapshot_child(child, snapshot)
             child = child.get_next_sibling()
 
+    def do_focus(self, direction):
+        # Tab can move into a column that has no cards yet, so the column gets its cards first.
+        window = self.get_root()
+        if self.get_first_child() is None and self in getattr(window, "list_columns", ()):
+            window.fill_columns((window.list_columns.index(self),))
+        return Gtk.ListBox.do_focus(self, direction)
+
 
 class ColumnScroll(Gtk.ScrolledWindow):
     after_layout = None
@@ -4451,6 +4458,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     engine_generation = 0
     number_hold = number_idle = number_scroll = number_pressed = None
     row_cache_trim = None
+    # The rows of each column, the column of each visible row, and the columns that have their cards (all replaced, never changed in place).
+    column_parts, row_columns, filled_columns = (), {}, frozenset()
+    # Cards whose column filled after the last render: a glide that starts now does not fade them in.
+    late_cards = frozenset()
     numbers_shown = False
     number_keys = open_popovers = ()
     card_pointer = None
@@ -4793,6 +4804,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.scroll.after_layout = self.after_layout
         self.scroll.connect("unmap", self.cancel_motion)
         self.scroll.get_hadjustment().connect("value-changed", self.scroll_position_changed)
+        self.scroll.get_hadjustment().connect("notify::page-size", self.fill_visible_columns)
         self.scroll.get_hadjustment().connect("changed", self.cancel_scroll)
         self.scroll.connect("unmap", self.cancel_scroll)
         # A press on the scrollbar is a board scroll, as the wheel is; programmatic scrolls keep the numbers.
@@ -5378,7 +5390,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.message_seen = new_messages(messages, None, {}, 0, 0)[1]
             return
         room = MESSAGE_FLIGHT_LIMIT - len(self.list_body.flights)
-        play, self.message_seen = new_messages(messages, self.message_seen, self.focus_widgets, time.time() * 1000, room)
+        play, self.message_seen = new_messages(messages, self.message_seen, self.row_columns, time.time() * 1000, room)
+        # A message from or to a card far outside the view still shows its edge mark, so both cards must exist.
+        for source, target, _at in play:
+            self.card_for(source)
+            self.card_for(target)
         if play:
             # New rows have their places only after the next layout.
             self.list_body.add_tick_callback(self.messages_after_layout, play)
@@ -5646,6 +5662,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             animation.reset()
 
     def scroll_position_changed(self, *_args):
+        # The columns that come into view get their cards before the next frame paints them.
+        self.fill_visible_columns()
         self.queue_number_keys(scrolled=True)
         self.scroll_hover_blocked = True
         self.list_body.clear_hover()
@@ -5657,10 +5675,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         listings = getattr(self, "list_columns", [])
         if not listings or self.closed:
             return
-        adjustment = self.scroll.get_hadjustment()
-        step = self.column_pixel_width + 12
-        first = max(0, int(adjustment.get_value() // step) - 1)
-        last = int((adjustment.get_value() + adjustment.get_page_size()) // step) + 2
+        first, last = self.column_range(page=self.scroll.get_hadjustment().get_page_size())
         # Scroll signals precede viewport allocation, so bounds still describe the previous position.
         for listing in listings[first:last]:
             if getattr(listing, "asb_snapshot_skipped", False) and listing.get_parent():
@@ -5697,7 +5712,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.motion_animation.reset()
         self.advance_motion(0)
         places = self.painted_places()
-        strip.motion = motion_offsets(old, places)
+        # A card whose column filled after the render shows at its place at once.
+        strip.motion = {identity: offset for identity, offset in motion_offsets(old, places).items() if identity not in self.late_cards}
         if strip.motion:
             strip.clear_hover(copy_tag=False)
             self.motion_columns = list({self.focus_widgets[identity].get_parent() for identity in strip.motion})
@@ -6606,6 +6622,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.column_pixel_width = max(1, (width - 8 - 12 * (self.columns - 1)) // self.columns)
         self.actual_columns = len(parts)
         self.row_order = [row["id"] for row in rows]
+        self.column_parts = parts
+        self.row_columns = {row["id"]: number for number, part in enumerate(parts) for row in part}
         drawer = sum(bool(row.get("drawer")) and (not row.get("archived") or self.archived)
                      for row in self.dashboard.get("threads", []))
         empty_text = "The drawer is empty. Put an unread session in it to get it out of the way." if self.drawer_view and not drawer \
@@ -6636,24 +6654,24 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.release_row(self.row_cache.pop(identity))
             self.focus_widgets.pop(identity, None)
             self.open_errors.pop(identity, None)
-        for row in rows:
-            widget = self.row_cache.get(row["id"])
-            if widget is None:
-                self.row_cache[row["id"]] = self.session_row(row)
-            else:
-                self.update_session_row(widget, row)
-                if row["id"] not in self.focus_widgets:
-                    if getattr(widget, "asb_open_signature", None) != (
-                            row["id"] in getattr(self, "opening", ()), self.open_errors.get(row["id"], "")):
-                        widget.asb_time_signature = None
-                    self.update_row_text(widget)
-                    self.update_card_actions(widget)
-                elif narrow != (self.column_pixel_width < 190):
-                    self.update_card_actions(widget)
-        visible_widgets = {row["id"]: self.row_cache[row["id"]] for row in rows}
+        # Only the columns near the view get cards: the columns that touch it after the scroll restore, and one on each side.
+        # The columns of the focused card, the card to focus, and the open row panel also fill, so none loses its card.
+        old_filled = set() if repack else self.filled_columns
+        step = self.column_pixel_width + 12
+        page = self.scroll.get_hadjustment().get_page_size() or width
+        first, last = self.column_range(min(position, max(0, len(parts) * step - 4 - page)), page)
+        panel = getattr(self, "context_menu", None)
+        kept = (self.row_columns.get(identity) for identity in (focused, self.focus_key(), getattr(panel, "asb_identity", None)))
+        filled = {number for number in (*old_filled, *range(first, last), *kept) if number is not None and number < len(parts)}
+        self.filled_columns = frozenset(filled)
+        for number in sorted(filled):
+            for row in parts[number]:
+                self.prepare_card(row, narrow != (self.column_pixel_width < 190))
+        visible_widgets = {row["id"]: self.row_cache[row["id"]] for row in rows if self.row_columns[row["id"]] in filled}
         if repack or reorder:
             self.layout_signature = layout_signature
-        if repack:
+            self.late_cards = frozenset()
+            # A card whose column empties leaves its column here or in the moves below.
             for identity, widget in self.focus_widgets.items():
                 if identity not in visible_widgets:
                     self.clear_read_feedback(widget)
@@ -6682,7 +6700,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 child = following
             # Each column moves only the cards outside its longest run in target order; all removals come before the inserts.
             # The cards of a column come from the widget tree, which is what GTK draws.
-            targets = [[self.focus_widgets[row["id"]] for row in parts[number]] if number < len(parts) else [] for number in range(len(listings))]
+            targets = [[self.focus_widgets[row["id"]] for row in parts[number]] if number in filled else [] for number in range(len(listings))]
             focus_row = self.focus_widgets.get(self.focus_key())
             detached = self.mend_columns(listings, targets)
             moves = [(listing, *column_moves(column_cards(listing), target)) for listing, target in zip(listings, targets)]
@@ -6711,6 +6729,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 empty.set_hexpand(True)
                 empty.set_margin_top(24)
                 self.list_body.append(empty)
+        else:
+            for number in sorted(filled - old_filled):
+                self.attach_column(number)
         cache_limit = (len(dashboard_ids) + self.capacity - 1) // self.capacity
         listings = getattr(self, "list_columns", [])
         retained = listings[:cache_limit]
@@ -6735,12 +6756,75 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if self.card_limit and not self.show_all_cards and len(self.row_cache) > 2 * self.card_limit + 1 and self.row_cache_trim is None:
             self.row_cache_trim = GLib.idle_add(self.trim_row_cache)
 
+    def prepare_card(self, row, narrow_changed=False):
+        """The card of a row from the cache, up to date, or a new card."""
+        widget = self.row_cache.get(row["id"])
+        if widget is None:
+            widget = self.row_cache[row["id"]] = self.session_row(row)
+        else:
+            self.update_session_row(widget, row)
+            if row["id"] not in self.focus_widgets:
+                if getattr(widget, "asb_open_signature", None) != (
+                        row["id"] in getattr(self, "opening", ()), self.open_errors.get(row["id"], "")):
+                    widget.asb_time_signature = None
+                self.update_row_text(widget)
+                self.update_card_actions(widget)
+            elif narrow_changed:
+                self.update_card_actions(widget)
+        return widget
+
+    def attach_column(self, number):
+        listing = self.list_columns[number]
+        for row in self.column_parts[number]:
+            widget = self.focus_widgets[row["id"]]
+            if widget.get_parent():
+                widget.get_parent().remove(widget)
+            listing.append(widget)
+
+    def column_range(self, value=None, page=None):
+        """The first and the end column index of the columns that touch the view, with one column on each side."""
+        adjustment = self.scroll.get_hadjustment()
+        value = adjustment.get_value() if value is None else value
+        page = (adjustment.get_page_size() or (self.geometry or (0, 0))[0]) if page is None else page
+        step = self.column_pixel_width + 12
+        return max(0, int(value // step) - 1), int((value + page) // step) + 2
+
+    def fill_columns(self, numbers):
+        """Build and attach the cards of the columns that have none yet. Returns True when a column filled."""
+        numbers = sorted({number for number in numbers if 0 <= number < len(self.column_parts)} - self.filled_columns)
+        if not numbers or self.closed or len(getattr(self, "list_columns", [])) < len(self.column_parts):
+            return False
+        cards = {row["id"]: self.prepare_card(row) for number in numbers for row in self.column_parts[number]}
+        self.filled_columns = self.filled_columns | set(numbers)
+        # Board order, as the number keys need it.
+        self.focus_widgets = {identity: self.row_cache[identity] for identity in self.row_order
+                              if self.row_columns[identity] in self.filled_columns}
+        self.late_cards = self.late_cards | cards.keys()
+        for number in numbers:
+            self.attach_column(number)
+        self.queue_number_keys()
+        return True
+
+    def fill_visible_columns(self, *_args):
+        if self.column_parts and not self.closed:
+            self.fill_columns(range(*self.column_range()))
+
+    def card_for(self, identity):
+        """The card of a visible row. A row with no card yet gets its column filled, with the column on each side."""
+        widget = self.focus_widgets.get(identity)
+        number = self.row_columns.get(identity)
+        if widget is None and number is not None:
+            self.fill_columns((number - 1, number, number + 1))
+            widget = self.focus_widgets.get(identity)
+        return widget
+
     def trim_row_cache(self):
         self.row_cache_trim = None
         if self.closed or not self.card_limit or self.show_all_cards or len(self.row_cache) <= 2 * self.card_limit + 1:
             return False
         # The row keeps its other state (open errors): a new card for it shows that state.
-        for identity in self.row_cache.keys() - self.focus_widgets.keys() - {MORE_ID}:
+        # The cards of the shown rows stay, also in columns that have no cards yet.
+        for identity in self.row_cache.keys() - self.focus_widgets.keys() - self.row_columns.keys() - {MORE_ID}:
             self.release_row(self.row_cache.pop(identity))
         return False
 
@@ -6752,24 +6836,32 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     and panel_focus.get_visible() and panel_focus.get_sensitive():
                 # The repack moved the row with its open panel; the focus goes back to the panel control.
                 self.set_focus(panel_focus)
-            elif focused in self.focus_widgets:
-                row = self.focus_widgets[focused]
+            elif (row := self.card_for(focused)) is not None:
                 control = getattr(row, "asb_" + str(focused_action) + "_button", None)
                 self.set_focus(control if control and control.get_visible() and control.get_sensitive() else row)
             adjustment = self.scroll.get_hadjustment()
             adjustment.set_value(min(position, max(0, adjustment.get_upper() - adjustment.get_page_size())))
-            if reveal_focus and focused in self.focus_widgets:
+            if reveal_focus and self.card_for(focused) is not None:
                 self.reveal_row(focused)
                 self.list_body.add_tick_callback(self.reveal_after_layout, focused)
         return False
 
     def reveal_after_layout(self, _widget, _clock, identity):
+        widget = self.row_cache.get(identity)
+        if widget is not None:
+            widget.asb_reveal_due = False
         GLib.idle_add(self.reveal_row, identity)
         return False
 
     def reveal_row(self, identity):
-        widget = self.focus_widgets.get(identity)
-        if not widget or self.closed or not widget.get_width():
+        widget = self.card_for(identity)
+        if not widget or self.closed:
+            return False
+        if not widget.get_width():
+            # A card that has just got its column has no place before the next layout.
+            if widget.get_mapped() and not getattr(widget, "asb_reveal_due", False):
+                widget.asb_reveal_due = True
+                self.list_body.add_tick_callback(self.reveal_after_layout, identity)
             return False
         found, bounds = widget.compute_bounds(self.list_body)
         if found:
@@ -7604,14 +7696,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     focus.activate()
                 return True
         if key == Gdk.KEY_Menu or (key == Gdk.KEY_F10 and _state & Gdk.ModifierType.SHIFT_MASK):
-            self.show_context(self.focus_widgets[identity])
+            self.show_context(self.card_for(identity))
             return True
         if key not in (Gdk.KEY_Up, Gdk.KEY_Down, Gdk.KEY_Left, Gdk.KEY_Right, Gdk.KEY_Home, Gdk.KEY_End):
             return False
         index = self.row_order.index(identity)
         delta = {Gdk.KEY_Up: -1, Gdk.KEY_Down: 1, Gdk.KEY_Left: -self.capacity, Gdk.KEY_Right: self.capacity}.get(key, 0)
         target = 0 if key == Gdk.KEY_Home else len(self.row_order) - 1 if key == Gdk.KEY_End else max(0, min(len(self.row_order) - 1, index + delta))
-        self.focus_widgets[self.row_order[target]].grab_focus()
+        self.card_for(self.row_order[target]).grab_focus()
         self.reveal_row(self.row_order[target])
         return True
 
@@ -7791,7 +7883,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         panel = getattr(self, "context_menu", None)
         if not panel or self.closed:
             return
-        widget = self.focus_widgets.get(panel.asb_identity)
+        widget = self.card_for(panel.asb_identity)
         if widget is None or widget is not panel.get_parent():
             panel.popdown()
         else:
@@ -7883,7 +7975,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         panel = button.get_ancestor(Gtk.Popover)
         if panel.asb_identity in self.session_actions:
             return
-        widget = self.focus_widgets.get(panel.asb_identity)
+        widget = self.card_for(panel.asb_identity)
         panel.popdown()
         if widget:
             self.open_row(None, widget)
@@ -7913,7 +8005,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.session_action(identity, "move-pin", body)
         elif name == "discard-result":
             # An Idle card arms the next task. A Working card sends no body, so a late click on it still fails when its task is over.
-            card = self.focus_widgets.get(identity)
+            card = self.card_for(identity)
             self.session_action(identity, name, {"next": True} if card and card.asb_thread.get("state") == "idle" else None)
         else:
             self.session_action(identity, name)

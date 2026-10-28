@@ -3205,7 +3205,7 @@ class MessageChecks(unittest.TestCase):
     def test_dashboards_keep_message_state_apart_from_the_dashboard(self):
         window = object.__new__(Window)
         window.list_body = SimpleNamespace(flights=[], add_tick_callback=Mock())
-        window.focus_widgets = {"a": 1, "b": 1}
+        window.focus_widgets, window.row_columns = {"a": 1, "b": 1}, {"a": 0, "b": 0}
         at = SCOPE["time"].time() * 1000
         window.play_messages([{"from": "a", "to": "b", "atMs": at}])
         window.list_body.add_tick_callback.assert_not_called()
@@ -5607,7 +5607,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.focus_widgets, window.row_cache, window.open_errors = {}, {}, {}
         window.list_body, window.count = Box(), Box()
         window.geometry, window.column_width, window.row_height, window.view = (500, 100), 240, 22, "compact"
-        window.scroll = SimpleNamespace(get_hadjustment=lambda: SimpleNamespace(get_value=lambda: 0))
+        window.scroll = SimpleNamespace(get_hadjustment=lambda: SimpleNamespace(get_page_size=lambda: 10000, get_value=lambda: 0))
         window.visible_rows = lambda: SCOPE["filtered_rows"](window.dashboard)
         gtk = SimpleNamespace(ListBox=Column, SelectionMode=SimpleNamespace(NONE=0), Align=SimpleNamespace(START=0))
         with patch.dict(SCOPE, {"Gtk": gtk, "GLib": SimpleNamespace(idle_add=Mock()), "label": text}):
@@ -5635,7 +5635,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.focus_widgets, window.row_cache, window.list_body, window.count = {}, {}, Box(), Box()
         window.open_errors = {"b": "Cannot change this session."}
         window.geometry, window.column_width, window.row_height, window.view = (500, 100), 240, 22, "compact"
-        adjustment = SimpleNamespace(get_value=lambda: 0, get_upper=lambda: 500, get_page_size=lambda: 300, set_value=Mock())
+        adjustment = SimpleNamespace(get_value=lambda: 0, get_upper=lambda: 500, get_page_size=lambda: 10000, set_value=Mock())
         window.scroll = SimpleNamespace(get_hadjustment=lambda: adjustment)
         window.set_focus = Mock()
         window.search = SimpleNamespace(query="", get_text=lambda: window.search.query)
@@ -5733,7 +5733,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.opening, window.open_errors, window.session_actions = set(), {}, set()
         window.refresh = Mock()
         window.list_body, window.count = Box(), Box()
-        window.scroll = SimpleNamespace(get_hadjustment=lambda: SimpleNamespace(get_value=lambda: 0))
+        window.scroll = SimpleNamespace(get_hadjustment=lambda: SimpleNamespace(get_page_size=lambda: 10000, get_value=lambda: 0))
         widget = Box()
         widget.asb_thread, widget.asb_view, widget.asb_time_signature = dict(row), "compact", None
         widget.asb_read_timer, widget.asb_handlers = None, []
@@ -5891,7 +5891,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.list_body.remove = Mock(wraps=window.list_body.remove)
         window.list_body.append = Mock(wraps=window.list_body.append)
         window.geometry, window.column_width, window.row_height, window.view = (500, 100), 240, 22, "compact"
-        window.scroll = SimpleNamespace(get_hadjustment=lambda: SimpleNamespace(get_value=lambda: 32))
+        window.scroll = SimpleNamespace(get_hadjustment=lambda: SimpleNamespace(get_page_size=lambda: 10000, get_value=lambda: 32))
         window.visible_rows = lambda: SCOPE["filtered_rows"](window.dashboard)
         def create(row):
             widget = Box()
@@ -6045,7 +6045,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.list_body, window.count = Box(), Box()
         window.list_body.remove = Mock(wraps=window.list_body.remove)
         window.geometry, window.column_width, window.row_height, window.view = (800, 60), 240, 22, "compact"
-        window.scroll = SimpleNamespace(get_hadjustment=lambda: SimpleNamespace(get_value=lambda: 0))
+        window.scroll = SimpleNamespace(get_hadjustment=lambda: SimpleNamespace(get_page_size=lambda: 10000, get_value=lambda: 0))
         window.visible_rows = lambda: list(window.dashboard["threads"])
         def create(row):
             widget = Box()
@@ -6099,7 +6099,7 @@ class NativeLogicChecks(unittest.TestCase):
                 window.opening, window.session_actions = set(), set()
                 window.list_body, window.count = Box(), Box()
                 window.drawer_only, window.drawer_dot = Mock(), Mock()
-                window.scroll = SimpleNamespace(get_hadjustment=lambda: SimpleNamespace(get_value=lambda: 0))
+                window.scroll = SimpleNamespace(get_hadjustment=lambda: SimpleNamespace(get_page_size=lambda: 10000, get_value=lambda: 0))
                 window.visible_rows = lambda: [row for row in window.dashboard["threads"] if not window.drawer_view or row["drawer"]]
                 controls = []
                 def create(row):

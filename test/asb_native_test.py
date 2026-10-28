@@ -438,6 +438,12 @@ class WidgetCheck(unittest.TestCase):
         # The same method that the motion controller of the card calls on notify::contains-pointer.
         window.row_hover(SimpleNamespace(contains_pointer=lambda: inside, get_widget=lambda: card))
 
+    @staticmethod
+    def fill_board(window):
+        """Build the cards of all columns, for checks that read every card. The board builds only the columns near the view."""
+        window.fill_columns(range(len(window.column_parts)))
+        return window.focus_widgets
+
     def widget_rows(self, window):
         column = window.list_body.get_first_child()
         while column:
@@ -2667,6 +2673,7 @@ class WidgetCheck(unittest.TestCase):
                 self.assertIsInstance(window, asb.Adw.ApplicationWindow)
                 self.assertEqual((window.get_width(), window.get_height()), (width, 800))
                 self.assertEqual(window.columns, columns)
+                self.fill_board(window); self.drain()
                 self.assertEqual(len(window.focus_widgets), 106,
                                  (window.search.get_text(), window.states, window.pending))
                 self.assertEqual(self.poll_calls.call_args.args[0], 2)
@@ -3621,7 +3628,7 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual(window.columns, 6)
             self.assertFalse(window.layout_path.exists())
             self.assertEqual(window.row_order, order)
-            self.assertEqual(len(window.focus_widgets), 106)
+            self.assertEqual(len(window.row_columns), 106)
             self.assertEqual(window.focus_key(), focused)
             self.assertAlmostEqual(adjustment.get_value(), 100, delta=1)
             widths = []
@@ -3953,7 +3960,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(order, ["sample-31", "sample-30", "sample-32"])
         activate("sample-30", "Unpin")
         self.assertEqual(order, ["sample-31", "sample-32"])
-        self.assertEqual(len(window.focus_widgets), 106)
+        self.assertEqual(len(window.row_columns), 106)
         if output:
             window.search.grab_focus()
             self.drain(.2)
@@ -3978,6 +3985,7 @@ class WidgetCheck(unittest.TestCase):
                 window.present(); self.drain(.3); window.check_geometry(); self.drain()
                 self.assertEqual((window.get_width(), window.get_height()), (width, height))
                 self.assertIsInstance(window.filters_pill, asb.Gtk.Button)
+                self.fill_board(window); self.drain()
                 self.assertEqual(len(window.focus_widgets), 106)
                 toolbar_height = window.window_handle.get_height()
                 order = list(window.row_order)
@@ -3998,6 +4006,7 @@ class WidgetCheck(unittest.TestCase):
                     else:
                         self.assertAlmostEqual(adjustment.get_value(), min(position, max(0, adjustment.get_upper() - adjustment.get_page_size())), delta=1)
                     self.assertEqual(window.window_handle.get_height(), toolbar_height)
+                    self.fill_board(window); self.drain()
                     self.assertEqual(len(window.focus_widgets), 106)
                     vertical = window.scroll.get_vadjustment()
                     self.assertAlmostEqual(vertical.get_upper(), vertical.get_page_size(), delta=1)
@@ -4065,7 +4074,8 @@ class WidgetCheck(unittest.TestCase):
                     self.assertEqual(window.columns, 2)
                     column = window.list_body.get_first_child()
                     while column:
-                        row = column.get_first_child()
+                        # A column far from the view has no cards.
+                        row = column.get_first_child() or window.focus_widgets[focused]
                         self.assertEqual(row.get_height(), 68)
                         self.assertLessEqual(row.get_allocated_width(), 180)
                         self.assertLessEqual(row.get_child().get_child().get_last_child().get_allocated_width(), row.get_allocated_width())
@@ -4120,7 +4130,7 @@ class WidgetCheck(unittest.TestCase):
                     self.capture(window, Path(output) / "view-comfortable-custom.png")
                 window.set_palette(None)
                 same = copy.deepcopy(dashboard); same["generatedAtMs"] += 30_000
-                original = window.focus_widgets["sample-15"]
+                original = window.card_for("sample-15")
                 window.apply_dashboard(same, None)
                 self.assertIs(window.focus_widgets["sample-15"], original)
                 window.close(); self.drain(.03)
@@ -4883,6 +4893,7 @@ class WidgetCheck(unittest.TestCase):
                                 for index, value in enumerate(painted)), (bytes(painted).hex(), displayed))
         # A reorder to the top moves only the cards that change column or order; every card keeps its widget.
         hooks = list(window.popover_hooks)
+        self.fill_board(window); self.drain()
         widgets = dict(window.focus_widgets)
         parents = {identity: widget.get_parent() for identity, widget in widgets.items()}
         last = window.row_order[-1]
@@ -4918,6 +4929,140 @@ class WidgetCheck(unittest.TestCase):
         quiet.popdown(); quiet.unparent(); self.drain()
         window.close(); self.drain()
         self.assertEqual(window.popover_hooks, [])
+
+    def lazy_board(self, count=300, width=420, height=600):
+        dashboard = {"generatedAtMs": NOW, "providers": [], "threads": board_rows(count), "persistentUnread": False}
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(width, height)
+        window.present(); self.drain(.3); window.check_geometry(); self.drain()
+        return window, dashboard
+
+    def assert_columns_filled(self, window):
+        """Each filled column lists the cards of its rows in order, each other column is empty, and only filled cards are in focus_widgets."""
+        parts, filled = window.column_parts, window.filled_columns
+        for number, part in enumerate(parts):
+            cards = board_children(window.list_columns[number])
+            self.assertEqual([card.asb_focus_key for card in cards], [row["id"] for row in part] if number in filled else [])
+            self.assertEqual(board_listed(window.list_columns[number]), cards)
+        self.assertEqual(list(window.focus_widgets), [identity for identity in window.row_order if window.row_columns[identity] in filled])
+
+    def test_board_builds_only_the_cards_of_the_columns_near_the_view(self):
+        window, _dashboard = self.lazy_board()
+        parts = window.column_parts
+        self.assertGreater(len(parts), 10)
+        first, last = window.column_range()
+        self.assertEqual(window.filled_columns, set(range(first, last)))
+        self.assertLess(len(window.focus_widgets), 6 * window.capacity)
+        self.assert_columns_filled(window)
+        self.assertEqual(len(window.row_order), 300)
+        # An empty column keeps its width, so the scroll range is the one of a board with all cards.
+        # Each column after the first has a 1 px divider.
+        self.assertEqual({listing.get_width() for listing in window.list_columns[1:len(parts)]}, {window.column_pixel_width - 1})
+        adjustment = window.scroll.get_hadjustment()
+        width, upper = window.list_body.get_width(), adjustment.get_upper()
+        window.fill_columns(range(len(parts))); self.drain()
+        self.assertEqual(len(window.focus_widgets), 300)
+        self.assert_columns_filled(window)
+        self.assertEqual((window.list_body.get_width(), adjustment.get_upper()), (width, upper))
+
+    def test_columns_get_their_cards_before_they_paint(self):
+        window, _dashboard = self.lazy_board()
+        adjustment, viewport = window.scroll.get_hadjustment(), window.scroll.get_child()
+        painted, empty = [], []
+        def after_paint(_clock):
+            for number, listing in enumerate(window.list_columns[:len(window.column_parts)]):
+                found, bounds = listing.compute_bounds(viewport)
+                if found and bounds.origin.x < viewport.get_width() and bounds.origin.x + bounds.size.width > 0:
+                    painted.append(number)
+                    if len(board_children(listing)) != len(window.column_parts[number]):
+                        empty.append((number, adjustment.get_value()))
+        clock = window.get_frame_clock()
+        handler = clock.connect("after-paint", after_paint)
+        self.addCleanup(clock.disconnect, handler)
+        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size()); self.drain(.3)
+        self.assertIn(len(window.column_parts) - 1, painted)
+        # A wheel spring back toward the start, and a wider window, show more columns.
+        for _notch in range(4):
+            window.scroll_horizontal(None, 0, -1); self.drain(.05)
+        end = time.monotonic() + 6
+        while window.scroll_target is not None and time.monotonic() < end:
+            self.drain(.02)
+        window.set_default_size(1100, 600); self.drain(.4); window.check_geometry(); self.drain(.3)
+        adjustment.set_value(adjustment.get_upper() / 2); self.drain(.3)
+        self.assertEqual(empty, [])
+        self.assertGreater(len(set(painted)), 4)
+        self.assert_columns_filled(window)
+
+    def test_keyboard_moves_reach_cards_in_columns_with_no_cards_yet(self):
+        window, dashboard = self.lazy_board(600)
+        order, capacity = window.row_order, window.capacity
+        first, last = order[0], order[-1]
+        self.assertNotIn(last, window.focus_widgets)
+        window.focus_widgets[first].grab_focus()
+        window.row_key(None, asb.Gdk.KEY_End, 0, 0, first); self.drain(.3)
+        self.assertEqual(window.focus_key(), last)
+        self.assertIs(window.get_focus(), window.focus_widgets[last])
+        self.assert_focus_visible(window, last)
+        window.row_key(None, asb.Gdk.KEY_Home, 0, 0, last); self.drain(.3)
+        self.assertEqual(window.focus_key(), first)
+        self.assert_focus_visible(window, first)
+        identity = first
+        for step in range(1, 6):
+            window.row_key(None, asb.Gdk.KEY_Right, 0, 0, identity); self.drain(.1)
+            identity = order[step * capacity]
+            self.assertEqual(window.focus_key(), identity)
+        self.drain(.2)
+        self.assert_focus_visible(window, identity)
+        self.assert_columns_filled(window)
+        # Tab from the last column with cards goes to the first card of the next column.
+        number = min(number for number in window.filled_columns if number + 1 not in window.filled_columns | {len(window.column_parts)})
+        window.focus_widgets[window.column_parts[number][-1]["id"]].grab_focus(); self.drain(.2)
+        self.assertTrue(window.child_focus(asb.Gtk.DirectionType.TAB_FORWARD)); self.drain(.2)
+        self.assertEqual(window.focus_key(), window.column_parts[number + 1][0]["id"])
+        self.assert_columns_filled(window)
+        # A refresh after the scroll keeps the focus on the far card, also when a new row moves every card.
+        window.row_key(None, asb.Gdk.KEY_End, 0, 0, identity); self.drain(.3)
+        changed = copy.deepcopy(dashboard)
+        changed["threads"][300]["title"] = "A changed made-up title"
+        window.apply_dashboard(changed, None); self.drain(.3)
+        self.assertIs(window.get_focus(), window.focus_widgets[last])
+        changed = copy.deepcopy(changed)
+        changed["threads"].insert(0, {**changed["threads"][7], "id": "s-new", "title": "A new made-up session", "updatedAtMs": NOW + 1})
+        window.apply_dashboard(changed, None); self.drain(.3)
+        self.assertEqual(window.row_order[-1], last)
+        self.assertIs(window.get_focus(), window.focus_widgets[last])
+        self.assert_columns_filled(window)
+
+    def test_show_all_search_and_escape_keep_the_card_order_and_the_shown_cards(self):
+        window, _dashboard = self.lazy_board()
+        window.card_limit = 20
+        window.render(); self.drain(.3)
+        self.assertEqual(window.row_order[-1], asb.MORE_ID)
+        window.open_row(None, window.card_for(asb.MORE_ID)); self.drain(.3)
+        self.assertEqual(len(window.row_order), 300)
+        self.assertLess(len(window.focus_widgets), len(window.row_order))
+        self.assert_columns_filled(window)
+        window.scroll.get_hadjustment().set_value(2000); self.drain(.3)
+        self.assert_columns_filled(window)
+        released = []
+        original = window.release_row
+        def release(widget):
+            released.append(widget.asb_focus_key)
+            original(widget)
+        with patch.object(window, "release_row", side_effect=release):
+            window.search.set_text("session 1"); self.drain(.3)
+            self.assertEqual(window.row_order, [row["id"] for row in window.visible_rows()])
+            self.assertTrue(all("session 1" in window.row_cache[identity].asb_thread["title"].lower() for identity in window.focus_widgets))
+            self.assert_columns_filled(window)
+            self.assertTrue(window.clear_search()); self.drain(.4)
+        self.assertFalse(window.show_all_cards)
+        self.assertEqual(len(window.row_order), 21)
+        self.assert_columns_filled(window)
+        self.assertTrue(released)
+        self.assertFalse(set(released) & window.row_columns.keys())
+        self.assertLessEqual(len(window.row_cache), 2 * window.card_limit + 1)
+        self.assertTrue(window.row_columns.keys() <= window.row_cache.keys())
 
     def test_scrollbar_below_viewport_sets_capacity(self):
         settings = asb.Gtk.Settings.get_default()
@@ -4963,7 +5108,7 @@ class WidgetCheck(unittest.TestCase):
         adjustment = window.scroll.get_hadjustment()
         vertical = window.scroll.get_vadjustment()
         self.assertAlmostEqual(vertical.get_upper(), vertical.get_page_size(), delta=1)
-        self.assertEqual([row.asb_thread["id"] for row in self.widget_rows(window)], window.row_order)
+        self.assertEqual([row.asb_thread["id"] for row in self.widget_rows(window)], list(window.focus_widgets))
         self.assertEqual(len(set(window.row_order)), 106)
         self.assertEqual(window.actual_columns, (106 + window.capacity - 1) // window.capacity)
         self.assertGreater(adjustment.get_upper(), adjustment.get_page_size())
@@ -5004,8 +5149,10 @@ class WidgetCheck(unittest.TestCase):
         window.column_drag_end()
         self.assertEqual(window.column_width, 200)
         self.assertEqual(window.row_order, order)
-        self.assertEqual(len(window.focus_widgets), 106)
+        self.assertEqual(len(window.row_columns), 106)
         with patch.object(window, "session_action") as action:
+            # The drag source and the drop target are on the cards, so both cards exist.
+            window.card_for("sample-10"); window.card_for("sample-11")
             self.assertIsNotNone(window.pin_drag_prepare(None, 0, 0, "sample-10"))
             self.assertTrue(window.pin_drop(None, "asb-pin:sample-10", 0, 60, "sample-11"))
             self.assertEqual(action.call_args.args[2]["placement"], "after")
@@ -5048,7 +5195,7 @@ class WidgetCheck(unittest.TestCase):
         window.present(); self.drain(.3)
         window.view_filter.set_selected(1); self.drain(.3); window.check_geometry(); self.drain()
         last = window.row_order[-1]
-        window.focus_widgets[last].grab_focus(); self.drain()
+        window.card_for(last).grab_focus(); self.drain()
         self.assertEqual(window.focus_key(), last)
         # Hold the queued restore so that GTK lays out a frame first, as on a slow display.
         held = []
@@ -5332,7 +5479,7 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual((strip.motion, window.motion_columns, window.motion_from), ({}, [], None))
             self.assertNotEqual(motion.get_state(), playing)
             self.assertNotEqual(spring.get_state(), playing)
-            self.assertEqual([row.asb_thread["id"] for row in self.widget_rows(window)], window.row_order)
+            self.assertEqual([row.asb_thread["id"] for row in self.widget_rows(window)], list(window.focus_widgets))
             self.assertEqual({row.get_height() for row in self.widget_rows(window)}, {22})
             for column in columns():
                 self.assertIn(column.get_width(), (window.column_pixel_width, window.column_pixel_width - 1))  # 1 px divider.
@@ -5356,7 +5503,7 @@ class WidgetCheck(unittest.TestCase):
         wait(lambda: len(frames) >= 3 and len(columns()) == 6 and columns()[0].get_width() == window.column_pixel_width
              and window.motion_from is None)
         # The icon-only toolbar is as tall at 1080px as at narrow widths, so a column has room for 21 cards.
-        self.assertEqual((window.columns, window.capacity, len(window.focus_widgets)), (4, 21, 116))
+        self.assertEqual((window.columns, window.capacity, len(window.row_columns)), (4, 21, 116))
         self.assertTrue(all(isinstance(column, asb.SessionColumn) for column in columns()))
         self.assertFalse(any(frame[1] for frame in frames))  # The first render and its geometry repack do not move.
         assert_rest()
@@ -5387,12 +5534,14 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual((len(staying), len(columns())), (58, 3))
         self.drain(.05)
         self.assertEqual(window.focus_key(), "s5")  # The queued focus restore survives the move of focus to a column.
-        _progress, offsets, _places = assert_glide(before, seen, staying)
-        self.assertTrue(all(offset[2] == 0 for offset in offsets.values()))
+        # A staying row whose column had no cards before the change has no old place, so it fades in.
+        _progress, offsets, _places = assert_glide(before, seen, staying & set(before))
+        self.assertTrue(all(offset[2] == 0 for identity, offset in offsets.items() if identity in before))
         self.assertGreater(len(offsets), 50)
         assert_rest()
         before, seen = change(lambda: window.search.set_text("sample"))
-        _progress, offsets, places = assert_glide(before, seen, staying)
+        # A staying row whose column is now far from the view has no card.
+        _progress, offsets, places = assert_glide(before, seen, staying & set(window.focus_widgets))
         self.assertEqual({identity for identity, offset in offsets.items() if offset[2]}, set(window.focus_widgets) - staying)
         self.assertTrue(all(places[identity][2] == 1 and offsets[identity] == (0, 0, 1) for identity in set(window.focus_widgets) - staying))
         self.assertTrue(all(place[2] == 0 for place in window.painted_places().values()))  # Full opacity at the end.
@@ -5425,7 +5574,8 @@ class WidgetCheck(unittest.TestCase):
         window.scroll_horizontal(None, 0, 1)
         self.assertEqual((adjustment.get_value(), window.scroll_target), (max(32, adjustment.get_step_increment()), None))
         settings.set_property("gtk-enable-animations", True)
-        adjustment.set_value(0)
+        # The columns that come into view get their cards at once and their size in the next layout.
+        adjustment.set_value(0); self.drain(.1)
         assert_rest()
 
         # (d) A new column count is a geometry repack: no motion.
@@ -6798,10 +6948,10 @@ class WidgetCheck(unittest.TestCase):
         xid = GdkX11.X11Surface.get_xid(window.get_surface())
         full = [row["id"] for row in asb.filtered_rows(dashboard)]
         self.assertEqual(len(full), 130)
-        more = window.focus_widgets[asb.MORE_ID]
+        more = window.card_for(asb.MORE_ID)
         def check_limited():
             self.assertEqual(window.row_order, full[:100] + [asb.MORE_ID])
-            self.assertIs(window.focus_widgets[asb.MORE_ID], more)
+            self.assertIs(window.card_for(asb.MORE_ID), more)
             self.assertNotIn("all", window.filter_chip_widgets)
             columns = [listing for listing in window.list_columns if listing.get_parent()]
             for number, listing in enumerate(columns):
@@ -6809,7 +6959,8 @@ class WidgetCheck(unittest.TestCase):
                 while card is not None:
                     cards.append(card.asb_focus_key)
                     card = listing.get_row_at_index(len(cards))
-                self.assertEqual(cards, window.row_order[number * window.capacity:(number + 1) * window.capacity])
+                self.assertEqual(cards, window.row_order[number * window.capacity:(number + 1) * window.capacity]
+                                 if number in window.filled_columns else [])
         def check_all(first_focus=None):
             self.assertTrue(window.show_all_cards)
             self.assertEqual(window.row_order, full)
@@ -6863,7 +7014,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(window.pin_drop(None, "asb-pin:" + asb.MORE_ID, 0, 0, full[0]))
         # Comfortable: the folder line, the arrow after Show all, the age, and no action corner.
         window.view_filter.set_selected(1); self.drain(.6); window.check_geometry(); self.drain(.3)
-        self.assertIs(window.focus_widgets[asb.MORE_ID], more)
+        self.assertIs(window.card_for(asb.MORE_ID), more)
         check_limited()
         self.assertEqual((more.asb_folder.get_label(), more.asb_age_label.get_label(), more.asb_state_label.get_label(),
                           more.asb_title_label.get_label(), more.asb_where_label.get_visible()),
@@ -6933,6 +7084,7 @@ class WidgetCheck(unittest.TestCase):
         setting.set_selected(0); self.drain(.3)
         self.assertEqual((window.card_limit, window.show_all_cards, asb.read_layout(layout_path)["cardLimit"]), (50, False, 50))
         self.assertEqual(window.row_order, full[:50] + [asb.MORE_ID])
+        self.assertIs(window.card_for(asb.MORE_ID), more)
         self.assertEqual(more.asb_folder.get_label(), "After the first 50")
         setting.set_selected(2); self.drain(.3)
         self.assertEqual((window.card_limit, json.loads(layout_path.read_text())["cardLimit"]), (200, 200))
