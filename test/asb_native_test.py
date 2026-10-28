@@ -8966,6 +8966,137 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertIsNone(window.scroll_tick)
         self.assertIsNone(window.scroll_target)
 
+    def long_thread(self):
+        """70 made-up messages of 2,000 characters on 3 days between icons and lint, which have no sample messages; the thread shows 60."""
+        text = "Check the parser notes and keep the release steps in order before the next build. " * 25
+        now = self.sample["nowMs"]
+        self.extra = [[f"m-long-{index:02d}", ("icons", "lint")[index % 3 == 0], ("lint", "icons")[index % 3 == 0],
+                       now - (70 - index) * 3_600_000, "accepted", "", f"{index}: {text}"[:2000]] for index in range(70)]
+        return [record[0] for record in self.extra[-60:]]
+
+    def next_frame(self, window):
+        """Run the main loop up to the end of the next painted frame, and no further."""
+        painted = []
+        clock = window.get_frame_clock()
+        handler = clock.connect("after-paint", lambda *_args: painted.append(True))
+        context, end = asb.GLib.MainContext.default(), time.monotonic() + 2
+        while not painted and time.monotonic() < end:
+            if not context.iteration(False):
+                time.sleep(.002)
+        clock.disconnect(handler)
+        self.assertTrue(painted)
+
+    def steps_done(self, window):
+        return window.thread_idle is None and window.scroll_tick is None
+
+    def place(self, window, widget):
+        """The bounds of a widget in the thread view: the page slides in, so the window bounds move while it slides."""
+        found, bounds = widget.compute_bounds(window.thread_scroll)
+        self.assertTrue(found)
+        return (bounds.get_x(), bounds.get_y(), bounds.get_width(), bounds.get_height())
+
+    def view_top(self, window, widget):
+        """The top of a widget in the thread view, and the view height."""
+        adjustment = window.thread_scroll.get_vadjustment()
+        found, point = widget.compute_point(window.thread_list, asb.Graphene.Point().init(0, 0))
+        self.assertTrue(found)
+        return point.y - adjustment.get_value(), adjustment.get_page_size()
+
+    def test_a_long_thread_shows_the_newest_blocks_first_and_builds_the_others_in_steps(self):
+        window = self.window()
+        ids = self.long_thread()
+        window.refresh(); self.drain(.3)
+        window.open_thread("pair", ("icons", "lint"))
+        self.next_frame(window)
+        built = list(window.thread_blocks)
+        self.assertLess(len(built), 60)
+        self.assertEqual(built, ids[-len(built):])
+        # The blocks fill the view plus one block: all but the oldest built block fill it, and the newest without the next oldest do not.
+        oldest, second = window.thread_blocks[built[0]], window.thread_blocks[built[1]]
+        top, page = self.view_top(window, oldest)
+        self.assertLessEqual(top + oldest.get_height(), 1)
+        top, page = self.view_top(window, second)
+        self.assertGreater(top + second.get_height(), 0)
+        adjustment = window.thread_scroll.get_vadjustment()
+        self.assertEqual(adjustment.get_value(), adjustment.get_upper() - adjustment.get_page_size())
+        newest = window.thread_blocks[ids[-1]]
+        place = self.place(window, newest)
+        self.assertFalse(self.steps_done(window))
+        self.wait_for(lambda: self.steps_done(window) and len(window.thread_blocks) == 60, 6)
+        self.assertEqual(list(window.thread_blocks), ids)
+        self.assertEqual(self.place(window, newest), place)
+        # The rows and the children are in order: Latest 60, then each day line over the first block of its day.
+        expected, day = ["Latest 60 of 70"], None
+        for record in self.extra[-60:]:
+            name = asb.day_line(record[3], self.sample["nowMs"])
+            if name != day:
+                expected.append(name)
+                day = name
+            expected.append(record[6])
+        children, child = [], window.thread_list.get_first_child()
+        while child is not None:
+            children.append(child)
+            child = child.get_next_sibling()
+        self.assertEqual([self.labels(child)[-1] if isinstance(child, asb.Gtk.Box) else child.get_label() for child in children], expected)
+        rows = [window.thread_list.query_child(child)[1] for child in children]
+        self.assertEqual(rows, list(range(len(children))))
+        self.assertGreater(len(expected), 62)
+        for record in self.extra[-60:]:
+            block = window.thread_blocks[record[0]]
+            self.assertEqual(block.get_halign(), asb.Gtk.Align.START if record[1] == "icons" else asb.Gtk.Align.END)
+            self.assertEqual(block.has_css_class("asb-msg-first"), isinstance(block.get_prev_sibling(), asb.Gtk.Label))
+        self.assertEqual(sum(child.has_css_class("asb-msg-first") for child in children), len(expected) - 61)
+
+    def test_a_recent_row_on_an_old_message_shows_it_in_the_first_frame(self):
+        window = self.window()
+        ids = self.long_thread()
+        window.refresh(); self.drain(.3)
+        record = next(record for record in window.data["messages"] if record["id"] == ids[20])
+        window.recent_clicked(None, record)
+        self.next_frame(window)
+        self.assertLess(len(window.thread_blocks), 60)
+        target = window.thread_blocks[ids[20]]
+        self.assertTrue(target.has_css_class("asb-msg-hl"))
+        top, page = self.view_top(window, target)
+        self.assertAlmostEqual(top, page / 2, delta=1)
+        place = self.place(window, target)
+        moved = []
+        clock = window.get_frame_clock()
+
+        def painted(*_args):
+            if self.place(window, target) != place:
+                moved.append(self.place(window, target))
+        handler = clock.connect("after-paint", painted)
+        self.wait_for(lambda: self.steps_done(window) and len(window.thread_blocks) == 60, 6)
+        clock.disconnect(handler)
+        self.assertEqual(list(window.thread_blocks), ids)
+        self.assertEqual(moved, [])
+
+    def test_back_or_a_new_thread_ends_the_steps_of_a_long_thread(self):
+        window = self.window()
+        self.long_thread()
+        window.refresh(); self.drain(.3)
+        window.open_thread("pair", ("icons", "lint"))
+        self.next_frame(window)
+        self.wait_for(lambda: window.thread_idle is not None, 2)
+        source = window.thread_idle
+        count = len(list(self.tree(window.thread_list)))
+        self.thread_page_back(window).emit("clicked")
+        self.assertEqual((window.thread, window.thread_idle, window.scroll_tick), (None, None, None))
+        self.assertIsNone(asb.GLib.MainContext.default().find_source_by_id(source))
+        self.drain(.5)
+        self.assertEqual(len(list(self.tree(window.thread_list))), count)
+        # A new thread during the steps shows only its own blocks.
+        window.open_thread("pair", ("icons", "lint"))
+        self.next_frame(window)
+        self.assertFalse(self.steps_done(window))
+        window.open_thread("pair", ("docs", "release-plan"))
+        self.wait_for(lambda: self.steps_done(window), 6)
+        reply = self.fetch("/api/activity/thread?period=7d&a=docs&b=release-plan")
+        self.assertEqual(list(window.thread_blocks), [record["id"] for record in reply["messages"]])
+        blocks = [child for child in self.tree(window.thread_list) if isinstance(child, asb.Gtk.Box) and child.has_css_class("asb-msg-block")]
+        self.assertEqual(blocks, list(window.thread_blocks.values()))
+
     def thread_page_back(self, window):
         head = window.ledger.get_child_by_name("thread").get_first_child()
         return head.get_first_child()

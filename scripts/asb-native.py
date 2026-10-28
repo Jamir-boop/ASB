@@ -9605,7 +9605,9 @@ class MessagesWindow(ActivityWindow):
     def __init__(self, application, base, fetch=None, clock=None):
         super().__init__(application, base, fetch=fetch, clock=clock)
         self.view = self.thread = self.thread_reply = self.thread_error = self.pending_session = self.scroll_target = self.scroll_tick = None
-        self.reply_key, self.thread_blocks = None, {}
+        self.reply_key, self.thread_blocks, self.thread_top = None, {}, None
+        self.thread_idle = self.thread_anchor = self.thread_anchor_y = None
+        self.thread_entries, self.thread_lo, self.thread_hi = [], 0, -1
         theme = Gtk.IconTheme.get_for_display(self.get_display())
         icons = str(Path(__file__).parents[1] / "assets" / "icons")
         if icons not in theme.get_search_path():
@@ -10017,7 +10019,7 @@ class MessagesWindow(ActivityWindow):
     # The thread.
     def build_thread(self):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        head = Gtk.Box(spacing=10)
+        head = self.thread_head = Gtk.Box(spacing=10)
         head.add_css_class("asb-msg-thead")
         back = Gtk.Button(icon_name="go-previous-symbolic", tooltip_text="Back to totals", valign=Gtk.Align.START)
         back.add_css_class("asb-msg-back")
@@ -10058,6 +10060,7 @@ class MessagesWindow(ActivityWindow):
     def close_thread(self):
         if self.thread is None:
             return
+        self.stop_thread_steps()
         self.thread = self.thread_reply = None
         self.update_view()
         self.ledger.set_visible_child_name("stats")
@@ -10126,8 +10129,9 @@ class MessagesWindow(ActivityWindow):
 
     def render_thread_list(self):
         thread, reply = self.thread, self.thread_reply
+        self.stop_thread_steps()
         remove_children(self.thread_list)
-        self.thread_blocks = {}
+        self.thread_blocks, self.thread_top = {}, None
         row = 0
 
         def line(text, css):
@@ -10148,52 +10152,40 @@ class MessagesWindow(ActivityWindow):
             return
         total = reply.get("total", 0)
         if total > MESSAGE_THREAD_LIMIT:
-            line(f"Latest {MESSAGE_THREAD_LIMIT} of {format_count(total)}", "asb-msg-tmore")
-        day = None
-        seats = self.view["seats"]
-        machine_index = {machine["machineId"]: index for index, machine in enumerate(self.view["machines"])}
+            self.thread_top = line(f"Latest {MESSAGE_THREAD_LIMIT} of {format_count(total)}", "asb-msg-tmore")
+        # Each message has its rows now, so a block built later goes in at its place: an empty grid row has no height.
+        entries, day = [], None
         for record in reply.get("messages") or []:
             name = day_line(record["atMs"], self.data.get("nowMs") or self.clock())
             first = name != day
-            if first:
-                day = name
-                line(name, "asb-msg-tday")
-            left, who = message_block(thread, record, seats)
-            block = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, halign=Gtk.Align.START if left else Gtk.Align.END)
-            block.set_layout_manager(ThreadBlockLayout(orientation=Gtk.Orientation.VERTICAL))
-            block.add_css_class("asb-msg-block")
-            if first:
-                block.add_css_class("asb-msg-first")
-            sender = (seats.get(record["from"]) or {}).get("machineId")
-            block.add_css_class(f"asb-msg-bg-{machine_index.get(sender, 0) % len(MACHINE_HUES)}")
-            top = Gtk.Box(spacing=6)
-            name_label = Gtk.Label(label=who, xalign=0, ellipsize=Pango.EllipsizeMode.END)
-            name_label.add_css_class("asb-msg-who")
-            top.append(name_label)
-            when = label(format_clock(record["atMs"]), "asb-msg-tiny")
-            when.add_css_class("asb-mono")
-            when.add_css_class("asb-dim")
-            top.append(when)
-            status = message_status(record)
-            if status != "accepted":
-                mark = Gtk.Box(spacing=3)
-                mark.add_css_class(f"asb-msg-stt-{status}")
-                mark.append(Gtk.Image(icon_name=ACTIVITY_STATUS_ICONS[status], pixel_size=12))
-                mark.append(label(message_status_label(record), "asb-msg-tiny"))
-                top.append(mark)
-            block.append(top)
-            body = message_text(record)
-            # A small width_chars gives GTK a cheap minimum width; without it GTK lays out each long text at its narrowest.
-            text = Gtk.Label(label=body if body is not None else "No text", xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR,
-                             width_chars=20, selectable=True)
-            text.add_css_class("asb-msg-body")
-            if body is None:
-                text.add_css_class("asb-dim")
-            block.append(text)
-            # Grid columns of 2%: a block spans 86% at the left or the right.
-            self.thread_list.attach(block, 0 if left else 7, row, 43, 1)
-            row += 1
-            self.thread_blocks[record["id"]] = block
+            day = name
+            entries.append((record, name if first else None, row + first))
+            row += 1 + first
+        self.thread_entries = entries
+        if not entries:
+            return
+        # The first frame gets only the blocks that fill the view (at the bottom, or around the target), plus one block.
+        # The others go in at idle, a few at a time, and the blocks that show stay in place.
+        # Before the first thread shows, the thread page has no size: the ledger less the list padding and the head.
+        width = self.thread_list.get_width() or self.ledger.get_width() - 36
+        height = self.thread_scroll.get_height() or self.ledger.get_height() - self.thread_head.measure(Gtk.Orientation.VERTICAL, -1)[1]
+        last = len(entries) - 1
+        index = next((index for index, entry in enumerate(entries) if entry[0]["id"] == thread.get("target")), None)
+        middle = last if index is None else index
+        self.thread_lo = self.thread_hi = middle
+        filled = self.add_thread_block(middle, True, max(width, 0))
+        if self.get_frame_clock() is None or width <= 0:
+            # No frames to wait for, or no size yet: build the whole list.
+            self.fill_thread(-1, math.inf, 0)
+            self.fill_thread(1, math.inf, 0)
+        elif index is None:
+            self.fill_thread(-1, height - filled, width)
+        else:
+            # Up to 12 blocks from the newest back to the target: all of them; else the blocks that fill the view below it.
+            self.fill_thread(1, math.inf if last - index < 12 else height / 2, width)
+            self.fill_thread(-1, height / 2, width)
+        self.order_thread_blocks()
+        self.thread_anchor = self.thread_blocks[entries[middle][0]["id"]]
         target = self.thread_blocks.get(thread.get("target"))
         if target is not None:
             thread["target"] = None
@@ -10202,33 +10194,155 @@ class MessagesWindow(ActivityWindow):
             self.scroll_thread(target)
         elif self.thread_stick:
             self.scroll_thread("bottom")
+        elif self.thread_steps_left():
+            self.watch_thread_layout()
+
+    def add_thread_block(self, index, front, width=0):
+        """Build the block of one message with its day line; with a width, return their height at that list width."""
+        thread, seats = self.thread, self.view["seats"]
+        record, day, row = self.thread_entries[index]
+        machine_index = {machine["machineId"]: number for number, machine in enumerate(self.view["machines"])}
+        left, who = message_block(thread, record, seats)
+        block = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, halign=Gtk.Align.START if left else Gtk.Align.END)
+        block.set_layout_manager(ThreadBlockLayout(orientation=Gtk.Orientation.VERTICAL))
+        block.add_css_class("asb-msg-block")
+        if day is not None:
+            block.add_css_class("asb-msg-first")
+        sender = (seats.get(record["from"]) or {}).get("machineId")
+        block.add_css_class(f"asb-msg-bg-{machine_index.get(sender, 0) % len(MACHINE_HUES)}")
+        top = Gtk.Box(spacing=6)
+        name_label = Gtk.Label(label=who, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        name_label.add_css_class("asb-msg-who")
+        top.append(name_label)
+        when = label(format_clock(record["atMs"]), "asb-msg-tiny")
+        when.add_css_class("asb-mono")
+        when.add_css_class("asb-dim")
+        top.append(when)
+        status = message_status(record)
+        if status != "accepted":
+            mark = Gtk.Box(spacing=3)
+            mark.add_css_class(f"asb-msg-stt-{status}")
+            mark.append(Gtk.Image(icon_name=ACTIVITY_STATUS_ICONS[status], pixel_size=12))
+            mark.append(label(message_status_label(record), "asb-msg-tiny"))
+            top.append(mark)
+        block.append(top)
+        body = message_text(record)
+        # A small width_chars gives GTK a cheap minimum width; without it GTK lays out each long text at its narrowest.
+        text = Gtk.Label(label=body if body is not None else "No text", xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR,
+                         width_chars=20, selectable=True)
+        text.add_css_class("asb-msg-body")
+        if body is None:
+            text.add_css_class("asb-dim")
+        block.append(text)
+        # Grid columns of 2%: a block spans 86% at the left or the right.
+        self.thread_list.attach(block, 0 if left else 7, row, 43, 1)
+        self.thread_blocks[record["id"]] = block
+        widgets = [block]
+        if day is not None:
+            widget = Gtk.Label(label=day, justify=Gtk.Justification.CENTER, wrap=True)
+            widget.add_css_class("asb-msg-tday")
+            widget.add_css_class("asb-dim")
+            self.thread_list.attach(widget, 0, row - 1, 50, 1)
+            widgets.append(widget)
+        # The children stay in the order of the rows, for Tab and the screen reader.
+        if front:
+            for widget in widgets:
+                widget.insert_after(self.thread_list, self.thread_top)
+        else:
+            for widget in reversed(widgets):
+                widget.insert_before(self.thread_list, None)
+        if not width:
+            return 0
+        return sum(widget.measure(Gtk.Orientation.VERTICAL, int(width * 43 / 50) if widget is block else width)[0] for widget in widgets)
+
+    def fill_thread(self, direction, need, width):
+        """Build blocks above (-1) or below (1) the built ones until they fill the height, plus one block."""
+        filled = False
+        while not filled:
+            index = self.thread_lo - 1 if direction < 0 else self.thread_hi + 1
+            if not 0 <= index < len(self.thread_entries):
+                return
+            if direction < 0:
+                self.thread_lo = index
+            else:
+                self.thread_hi = index
+            # The block built when the height is already filled is the one block more.
+            filled = need <= 0
+            need -= self.add_thread_block(index, direction < 0, width)
+
+    def order_thread_blocks(self):
+        self.thread_blocks = {record["id"]: self.thread_blocks[record["id"]] for record, _day, _row in self.thread_entries
+                              if record["id"] in self.thread_blocks}
+
+    def thread_steps_left(self):
+        return self.thread_lo > 0 or self.thread_hi < len(self.thread_entries) - 1
+
+    def thread_step(self):
+        """One idle step: the next newer blocks, then the older ones, up to about 2,000 characters of text.
+        A text of 2,000 characters takes about 3 ms to lay out, so one step and its frame stay short."""
+        self.thread_idle = None
+        found, point = self.thread_anchor.compute_point(self.thread_list, Graphene.Point().init(0, 0))
+        self.thread_anchor_y = point.y if found else None
+        size = 0
+        while size < 2000 and self.thread_steps_left():
+            below = self.thread_hi < len(self.thread_entries) - 1
+            if below:
+                self.thread_hi += 1
+            else:
+                self.thread_lo -= 1
+            index = self.thread_hi if below else self.thread_lo
+            self.add_thread_block(index, not below)
+            size += 300 + len(message_text(self.thread_entries[index][0]) or "")
+        self.order_thread_blocks()
+        self.watch_thread_layout()
+        return False
+
+    def stop_thread_steps(self):
+        if self.thread_idle is not None:
+            GLib.source_remove(self.thread_idle)
+        if self.scroll_tick is not None:
+            self.scroll_tick[0].disconnect(self.scroll_tick[1])
+        self.thread_idle = self.scroll_tick = self.scroll_target = self.thread_anchor = self.thread_anchor_y = None
+        self.thread_entries, self.thread_lo, self.thread_hi = [], 0, -1
 
     def scroll_thread(self, target):
         """Scroll once the new list has its layout: to the bottom, or with a message in the middle."""
         self.scroll_target = target
-        if self.scroll_tick is None:
-            self.scroll_tick = self.thread_scroll.add_tick_callback(self.scroll_step)
+        self.watch_thread_layout()
 
-    def scroll_step(self, _widget, _clock):
+    def watch_thread_layout(self):
+        """Run scroll_step after the next layout and before its paint, so that no frame shows the list at a wrong place."""
+        clock = self.get_frame_clock()
+        # A window with no frame clock has the whole list and nothing to scroll.
+        if self.scroll_tick is None and clock is not None:
+            self.scroll_tick = (clock, clock.connect_after("layout", self.scroll_step))
+            clock.request_phase(Gdk.FrameClockPhase.LAYOUT)
+
+    def scroll_step(self, _clock):
         target, adjustment = self.scroll_target, self.thread_scroll.get_vadjustment()
-        last = self.thread_list.get_last_child()
-        ready = last is None or last.get_height() > 0
-        if target != "bottom":
-            if target.get_parent() is None:
-                # A later list replaced the block: nothing to scroll to.
-                self.scroll_tick = self.scroll_target = None
-                return False
-            ready = target.get_height() > 0
-        if not ready and self.thread_list.get_mapped():
-            return True
-        if target == "bottom":
-            adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
-        else:
-            found, point = target.compute_point(self.thread_list, Graphene.Point().init(0, 0))
+        if target not in (None, "bottom") and target.get_parent() is None:
+            # A later list replaced the block: nothing to scroll to.
+            self.scroll_target = None
+        elif target is not None:
+            if (self.thread_list.get_last_child() if target == "bottom" else target).get_height() <= 0 and self.thread_list.get_mapped():
+                return
+            if target == "bottom":
+                adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+            else:
+                found, point = target.compute_point(self.thread_list, Graphene.Point().init(0, 0))
+                if found:
+                    adjustment.set_value(max(0, point.y - adjustment.get_page_size() / 2))
+            self.scroll_target = None
+        elif self.thread_anchor_y is not None:
+            # Blocks went in above the anchor: move the view by their height.
+            found, point = self.thread_anchor.compute_point(self.thread_list, Graphene.Point().init(0, 0))
             if found:
-                adjustment.set_value(max(0, point.y - adjustment.get_page_size() / 2))
-        self.scroll_tick = self.scroll_target = None
-        return False
+                adjustment.set_value(adjustment.get_value() + point.y - self.thread_anchor_y)
+            self.thread_anchor_y = None
+        self.scroll_tick[0].disconnect(self.scroll_tick[1])
+        self.scroll_tick = None
+        if self.thread_anchor is not None and self.thread_steps_left() and self.thread_idle is None:
+            self.thread_idle = GLib.idle_add(self.thread_step)
 
     def close_to_hidden(self):
         super().close_to_hidden()
@@ -10237,11 +10351,13 @@ class MessagesWindow(ActivityWindow):
         self.close_thread()
         self.table.stop_motion()
 
+    def set_period(self, key):
+        self.stop_thread_steps()
+        super().set_period(key)
+
     def finish(self):
         self.table.stop_motion()
-        if self.scroll_tick is not None:
-            self.thread_scroll.remove_tick_callback(self.scroll_tick)
-            self.scroll_tick = self.scroll_target = None
+        self.stop_thread_steps()
         return super().finish()
 
 
