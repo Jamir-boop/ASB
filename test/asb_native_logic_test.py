@@ -8314,6 +8314,7 @@ class BoardWindowsLogicChecks(unittest.TestCase):
                   b'event: show-window\ndata: {"window":"usage","clientId":7}\n\n'
                   b'event: show-window\ndata: not json\n\n'
                   b'event: show-window\ndata: {"window":"messages","clientId":"board-a"}\n\n'
+                  b'event: show-window\ndata: {"window":"board","clientId":"board-a"}\n\n'
                   b'event: dashboard\ndata: {"reason":"source-dirty"}\n\n')
         requests, done = [], threading.Event()
 
@@ -8346,7 +8347,7 @@ class BoardWindowsLogicChecks(unittest.TestCase):
                 self.assertTrue(activity_dashboards.wait(2))
                 # The bad data did not drop the connection: one request each, and the dashboard after it still came.
                 self.assertEqual(requests, ["/api/events", "/api/events"])
-                self.assertEqual(board_calls, [("usage", "board-b"), ("messages", "board-a")])
+                self.assertEqual(board_calls, [("usage", "board-b"), ("messages", "board-a"), ("board", "board-a")])
             finally:
                 done.set()
                 for stream in (board, activity):
@@ -8368,6 +8369,18 @@ class BoardWindowsLogicChecks(unittest.TestCase):
         window.closed = True
         window.show_window_event("messages", "board-a")
         application.show_activity.assert_called_once_with("usage")
+
+    def test_board_comes_to_the_front_only_for_its_own_client_id(self):
+        window = object.__new__(Window)
+        window.ui_client_id, window.closed = "board-a", False
+        application = Mock()
+        window.get_application = lambda: application
+        window.present = Mock()
+        self.assertFalse(window.show_window_event("board", "board-b"))
+        window.present.assert_not_called()
+        self.assertFalse(window.show_window_event("board", "board-a"))
+        window.present.assert_called_once_with()
+        application.show_activity.assert_not_called()
 
     def test_open_window_variable_opens_the_window_after_the_board(self):
         application = object.__new__(SCOPE["SwitchboardApplication"])

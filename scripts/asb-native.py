@@ -1967,7 +1967,7 @@ class EventStream:
                                     value = json.loads("\n".join(data))
                                 except ValueError:
                                     value = None
-                                if isinstance(value, dict) and value.get("window") in ("messages", "usage") and isinstance(value.get("clientId"), str):
+                                if isinstance(value, dict) and value.get("window") in ("board", "messages", "usage") and isinstance(value.get("clientId"), str):
                                     self.dispatch(self.on_show_window, value["window"], value["clientId"])
                             event, data = "", []
                         elif line.startswith("event:"):
@@ -4806,7 +4806,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def show_window_event(self, window, client_id):
         # Only the Board that reported last opens the window, so two Boards do not both open it.
         if client_id == self.ui_client_id and not self.closed:
-            self.get_application().show_activity(window)
+            if window == "board":
+                self.present()
+            else:
+                self.get_application().show_activity(window)
         return False
 
     def first_dashboard(self, dashboard, error, etag):

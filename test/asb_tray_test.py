@@ -102,13 +102,13 @@ class TrayLogicTest(unittest.TestCase):
         for env, board in (({"ASB_BOARD": "0"}, False), ({}, True), ({"ASB_BOARD": "1"}, True)):
             item = tray.Tray(None, settings, env)
             opened = []
-            item.open_asb = lambda: opened.append(True)
+            item.show_window = lambda kind: opened.append(kind)
             self.assertEqual(item.board, board)
             self.assertEqual(sorted(item.items), [0, 1, 2, 3, 4, 5] if board else [0, 3])
             item.method_call(None, None, "/StatusNotifierItem", None, "Activate", tray.GLib.Variant("(ii)", (0, 0)), Invocation())
             item.method_call(None, None, "/MenuBar", None, "Event",
                              tray.GLib.Variant("(isvu)", (1, "clicked", tray.GLib.Variant("s", ""), 0)), Invocation())
-            self.assertEqual(opened, [True, True] if board else [])
+            self.assertEqual(opened, ["board", "board"] if board else [])
             invocation = Invocation()
             item.method_call(None, None, "/MenuBar", None, "GetLayout", tray.GLib.Variant("(iias)", (0, -1, [])), invocation)
             self.assertEqual(invocation.value.unpack()[1], tray.menu_layout(board))
@@ -146,11 +146,28 @@ class TrayLogicTest(unittest.TestCase):
         item, _requests = self.show_window_tray({"shown": True})
         with patch.object(tray.GLib, "spawn_async") as spawn:
             self.assertIs(item.open_asb(), False)
-            item.run_action("open")
-        self.assertEqual(spawn.call_count, 2)
-        for call in spawn.call_args_list:
-            self.assertFalse(any(entry.startswith("ASB_OPEN_WINDOW=") for entry in call.kwargs["envp"]))
+        self.assertEqual(spawn.call_count, 1)
+        self.assertFalse(any(entry.startswith("ASB_OPEN_WINDOW=") for entry in spawn.call_args.kwargs["envp"]))
         self.assertIn("HOME=/home/a", spawn.call_args.kwargs["envp"])
+
+    def test_activate_and_open_show_the_open_board_and_start_a_launcher_only_without_one(self):
+        class Invocation:
+            def return_value(self, value):
+                self.value = value
+
+        clicks = (("/StatusNotifierItem", "Activate", tray.GLib.Variant("(ii)", (0, 0))),
+                  ("/MenuBar", "Event", tray.GLib.Variant("(isvu)", (1, "clicked", tray.GLib.Variant("s", ""), 0))))
+        for path, method, args in clicks:
+            for reply, spawns in (({"shown": True}, 0), ({"shown": False}, 1), (OSError("refused"), 1)):
+                item, requests = self.show_window_tray(reply)
+                with patch.object(tray.GLib, "idle_add", side_effect=lambda callback, *values: callback(*values)), \
+                        patch.object(tray.GLib, "spawn_async") as spawn:
+                    item.method_call(None, None, path, None, method, args, Invocation())
+                self.assertEqual(requests, [("POST", "/api/engine/show-window", 5, {"window": "board"})], (method, reply))
+                self.assertEqual(spawn.call_count, spawns, (method, reply))
+                if spawns:
+                    envp = spawn.call_args.kwargs["envp"]
+                    self.assertFalse(any(entry.startswith("ASB_OPEN_WINDOW=") for entry in envp), (method, reply))
 
     def test_request_posts_the_json_body_with_the_token_header(self):
         settings = (42, "http://127.0.0.1:4629", "a" * 64, "/opt/asb/bin/asb")

@@ -266,7 +266,12 @@ test('the tray menu has Messages and Usage, and Show-Window asks the engine befo
   const show = body('Show-Window([string]$kind)');
   assert.match(show, /Invoke-Engine '\/api\/engine\/show-window' \(@\{ window = \$kind \} \| ConvertTo-Json -Compress\)/);
   assert.match(show, /if \(\$reply -and \$reply\.shown -eq \$true\) \{ return \}/);
-  assert.ok(show.indexOf('.shown') < show.indexOf('$script:board.HasExited') && show.indexOf('.HasExited') < show.indexOf('Start-Launcher $kind'));
+  assert.ok(show.indexOf('.shown') < show.indexOf('$script:board.HasExited') && show.indexOf('.HasExited') < show.indexOf('Start-Launcher $window'));
+  assert.match(show, /^  \$window = if \(\$kind -eq 'board'\) \{ '' \} else \{ \$kind \}$/m);
+  // Open ASB and a left click ask the engine for the board first, so an open board comes to the front instead of a second one.
+  assert.match(script, /^function Open-Board \{ Show-Window 'board' \}$/m);
+  assert.match(script, /^\$openItem\.add_Click\(\{ Open-Board \}\)$/m);
+  assert.match(script, /\[System\.Windows\.Forms\.MouseButtons\]::Left\) \{ Open-Board \}/);
   const invoke = body('Invoke-Engine([string]$route, [string]$body = \'{}\')');
   assert.match(invoke, /-Body \$body /);
   const launcher = body("Start-Launcher([string]$Window = '')");

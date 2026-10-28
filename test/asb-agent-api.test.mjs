@@ -223,11 +223,12 @@ test('show-window needs the token, a POST, and one known window, and it goes onl
   const get = await request('/api/engine/show-window');
   assert.equal(get.status, 405);
   assert.equal(get.headers.get('allow'), 'POST');
-  for (const body of [{}, { window: 'x' }, { window: 'messages', x: 1 }, [], 'null', '"usage"', '{', ' '.repeat(1025)]) {
+  for (const body of [{}, { window: 'x' }, { window: 'Board' }, { window: 'preferences' }, { window: 'messages', x: 1 }, [], 'null', '"usage"', '{', ' '.repeat(1025)]) {
     const invalid = await show(body);
     assert.equal(invalid.status, 400, JSON.stringify(body));
     assert.deepEqual(invalid.json(), { error: 'Invalid window request.' });
   }
+  assert.deepEqual((await show({ window: 'board' })).json(), { shown: false });
   const none = await show({ window: 'usage' });
   assert.equal(none.status, 200);
   assert.equal(none.headers.get('cache-control'), 'no-store');
@@ -242,6 +243,7 @@ test('show-window needs the token, a POST, and one known window, and it goes onl
   assert.deepEqual((await show({ window: 'usage' })).json(), { shown: true });
   await post({ clientId: B, closed: true });
   assert.deepEqual((await show({ window: 'messages' })).json(), { shown: true });
+  assert.deepEqual((await show({ window: 'board' })).json(), { shown: true });
   // A new report of A after B moves A last again.
   await post({ ...report, clientId: B.replace('2', '3') });
   await post({ ...report, clientId: A });
@@ -257,7 +259,7 @@ test('show-window needs the token, a POST, and one known window, and it goes onl
   await new Promise((resolve) => setTimeout(resolve, 50));
   const events = [...reader.text.matchAll(/^event: show-window\ndata: (.*)$/gm)].map(([, data]) => data);
   assert.deepEqual(events, [`{"window":"usage","clientId":"${B}"}`, `{"window":"messages","clientId":"${A}"}`,
-    `{"window":"usage","clientId":"${A}"}`]);
+    `{"window":"board","clientId":"${A}"}`, `{"window":"usage","clientId":"${A}"}`]);
 });
 
 test('agent status reports service mode and hides internal state errors', async (t) => {

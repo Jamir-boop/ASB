@@ -181,7 +181,7 @@ class Tray:
                     return
             except Exception:
                 pass
-            GLib.idle_add(self.open_asb, kind)
+            GLib.idle_add(self.open_asb, None if kind == "board" else kind)
         self.in_background(work)
 
     def quit_engine(self):
@@ -196,7 +196,7 @@ class Tray:
 
     def run_action(self, action):
         if action == "open":
-            self.open_asb()
+            self.show_window("board")
         elif action in ("messages", "usage"):
             self.show_window(action)
         elif action == "quit":
@@ -257,7 +257,7 @@ class Tray:
         args = parameters.unpack()
         if method == "Activate":
             if self.board:
-                self.open_asb()
+                self.show_window("board")
         elif method == "GetLayout":
             invocation.return_value(GLib.Variant("(u(ia{sv}av))", (1, layout_value(menu_layout(self.board)))))
             return

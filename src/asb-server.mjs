@@ -317,7 +317,7 @@ export function createAsbServer({
       }
       let body;
       try { body = await readBody(request, 1024); } catch { body = null; }
-      if (!exactKeys(body, ['window']) || !['messages', 'usage'].includes(body.window)) {
+      if (!exactKeys(body, ['window']) || !['board', 'messages', 'usage'].includes(body.window)) {
         sendJson(response, 400, { error: 'Invalid window request.' });
         return;
       }

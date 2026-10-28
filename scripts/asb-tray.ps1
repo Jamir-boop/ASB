@@ -56,12 +56,8 @@ function Start-Engine {
 Start-Engine
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 
-# Nothing happens while an earlier launcher runs.
-function Open-Board {
-  if ($script:board -and -not $script:board.HasExited) { return }
-  try { $script:board = Start-Launcher }
-  catch { $icon.ShowBalloonTip(5000, 'ASB', 'ASB cannot open its window.', [System.Windows.Forms.ToolTipIcon]::Warning) }
-}
+# An open board comes to the front; without one, a new board opens.
+function Open-Board { Show-Window 'board' }
 
 function Read-Runtime {
   $file = Join-Path $env:LOCALAPPDATA 'asb\run\service.json'
@@ -81,7 +77,9 @@ function Show-Window([string]$kind) {
   if ($reply -and $reply.shown -eq $true) { return }
   # A board that starts now reports soon.
   if ($script:board -and -not $script:board.HasExited) { return }
-  try { $script:board = Start-Launcher $kind }
+  # The board kind starts the launcher with no window.
+  $window = if ($kind -eq 'board') { '' } else { $kind }
+  try { $script:board = Start-Launcher $window }
   catch { $icon.ShowBalloonTip(5000, 'ASB', 'ASB cannot open its window.', [System.Windows.Forms.ToolTipIcon]::Warning) }
 }
 
