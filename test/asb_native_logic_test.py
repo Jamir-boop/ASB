@@ -2542,33 +2542,43 @@ class DataChecks(unittest.TestCase):
             window.sync_filter_chips()
             self.assertEqual(set(window.filter_chip_widgets), {"archive"})
 
-    def test_escape_collapses_search_at_every_width_and_keeps_filters(self):
+    def test_escape_clears_search_and_all_filters_at_every_width(self):
         window = object.__new__(Window)
-        window.search_expanded, window.wide_controls, window.context_menu = True, False, None
-        window.cancel_scroll, window.number_key_pressed = Mock(), Mock(return_value=None)
-        window.search_popover, window.search_button = Mock(), Mock()
-        window.apps, window.states = {"codex"}, {"waiting"}
-        text = ["cl: example"]
+        window.search_expanded, window.context_menu, window.open_popovers = True, None, set()
+        window.number_key_pressed = Mock(return_value=None)
+        window.search_row, window.search_button, window.menu_button = Mock(), Mock(), Mock()
+        window.search_row.set_reveal_child.side_effect = lambda value: setattr(window, "search_expanded", value)
+        window.drawer_only = Mock()
+        window.filter_changed = Mock()
+        text = [""]
         window.search = SimpleNamespace(get_text=lambda: text[0], set_text=lambda value: text.__setitem__(0, value),
                                         grab_focus=Mock(), set_position=Mock())
         window.get_focus = lambda: None
-        window.present = Mock()
         with patch.dict(SCOPE, {"Gdk": SimpleNamespace(KEY_Escape=27, KEY_space=32, KEY_Return=13, KEY_KP_Enter=14,
                               keyval_to_unicode=lambda key: key), "SHORTCUT_MASK": 0,
                               "Gtk": SimpleNamespace(Editable=type("Editable", (), {}), TextView=type("TextView", (), {}))}):
-            self.assertTrue(window.window_key(None, 27, 0, 0))
-            self.assertEqual((text[0], window.search_expanded), ("", False))
-            self.assertEqual((window.apps, window.states), ({"codex"}, {"waiting"}))
-            window.search_popover.popdown.assert_called_once_with()
-            self.assertTrue(window.window_key(None, ord("x"), 0, 0))
-            self.assertEqual((text[0], window.search_expanded), ("x", True))
-            window.search_popover.popup.assert_called_once_with()
-            # The wide Board has no search field in the toolbar: typing and Escape use the popover too.
-            window.wide_controls = True
-            self.assertTrue(window.window_key(None, ord("a"), 0, 0))
-            self.assertEqual((text[0], window.search_expanded, window.search_popover.popup.call_count), ("xa", True, 2))
-            self.assertTrue(window.window_key(None, 27, 0, 0))
-            self.assertEqual((text[0], window.search_expanded, window.search_popover.popdown.call_count), ("", False, 2))
+            for wide, tiny in ((False, False), (True, False), (False, True)):
+                with self.subTest(wide=wide, tiny=tiny):
+                    window.wide_controls, window.tiny_controls = wide, tiny
+                    text[0] = "cl: example"
+                    window.pending, window.archived, window.show_all_cards, window.drawer_view = True, True, True, True
+                    window.states, window.profiles = {"waiting"}, {"|codex"}
+                    window.filter_changed.reset_mock()
+                    self.assertTrue(window.window_key(None, 27, 0, 0))
+                    self.assertEqual((text[0], window.search_expanded), ("", False))
+                    self.assertEqual((window.pending, window.archived, window.show_all_cards, window.drawer_view), (False,) * 4)
+                    self.assertEqual((window.states, window.profiles), (set(), set()))
+                    window.drawer_only.set_active.assert_called_with(False)
+                    window.filter_changed.assert_called_once_with()
+                    (window.menu_button if tiny else window.search_button).grab_focus.assert_called()
+                    self.assertFalse(window.window_key(None, 27, 0, 0))
+                    self.assertTrue(window.window_key(None, ord("x"), 0, 0))
+                    self.assertEqual((text[0], window.search_expanded), ("x", True))
+                    self.assertTrue(window.window_key(None, 27, 0, 0))
+                    # Filters alone also make Escape reset the view.
+                    window.pending = True
+                    self.assertTrue(window.window_key(None, 27, 0, 0))
+                    self.assertFalse(window.pending)
 
     def test_chip_clear_restores_keyboard_focus_and_preferences_search_raises_main(self):
         window = object.__new__(Window)
@@ -2653,7 +2663,7 @@ class DataChecks(unittest.TestCase):
         window.filter_row_toggled(SimpleNamespace(get_active=lambda: False), "profile:|codex")
         self.assertEqual(window.profiles, set())
 
-    def test_toolbar_presentation_keeps_fixed_corners_and_the_search_in_its_popover(self):
+    def test_toolbar_presentation_keeps_fixed_corners_and_the_search_in_its_inline_row(self):
         class Control(Box):
             visible = True
             def prepend(self, child):
@@ -2670,7 +2680,7 @@ class DataChecks(unittest.TestCase):
             set_icon_name = Mock()
             popdown = Mock()
         window = object.__new__(Window)
-        window.toolbar_center, window.toolbar_end, window.search_popover = Control(), Control(), Control()
+        window.toolbar_center, window.toolbar_end, window.search_row = Control(), Control(), Control()
         window.search, window.search_button, window.app_mark, window.toolbar_scroll = Control(), Control(), Control(), Control()
         window.preferences_refresh_row, window.refresh_button = Control(), Control()
         window.menu_button, window.window_controls = Control(), Control()
@@ -2679,15 +2689,15 @@ class DataChecks(unittest.TestCase):
         window.toolbar_end.append(window.menu_button)
         window.toolbar_end.append(window.window_controls)
         window.preferences_refresh_row.append(window.refresh_button)
-        window.search_popover.set_child(window.search)
+        window.search_row.set_child(window.search)
         window.get_focus = lambda: None
         window.update_toolbar_presentation()
-        self.assertIs(window.search.get_parent(), window.search_popover)
+        self.assertIs(window.search.get_parent(), window.search_row)
         self.assertIs(window.refresh_button.get_parent(), window.preferences_refresh_row)
         self.assertTrue(window.search_button.visible)
         window.wide_controls = True
         window.update_toolbar_presentation()
-        self.assertIs(window.search.get_parent(), window.search_popover)
+        self.assertIs(window.search.get_parent(), window.search_row)
         self.assertIs(window.refresh_button.get_parent(), window.toolbar_end)
         self.assertEqual(window.toolbar_end.children[:2], [window.refresh_button, window.menu_button])
         self.assertTrue(window.search_button.visible)
@@ -2698,7 +2708,7 @@ class DataChecks(unittest.TestCase):
         window.update_toolbar_presentation()
         self.assertFalse(window.app_mark.visible)
         self.assertFalse(window.search_button.visible)
-        self.assertIs(window.search.get_parent(), window.search_popover)
+        self.assertIs(window.search.get_parent(), window.search_row)
         self.assertIs(window.menu_button.get_parent(), window.toolbar_end)
         self.assertIs(window.window_controls.get_parent(), window.toolbar_end)
 
@@ -5640,7 +5650,7 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertTrue(widget.asb_thread["unread"])
             self.assertEqual(widget.asb_read_button.asb_action, "win.mark-read")
 
-    def test_clear_search_uses_one_native_change_signal(self):
+    def test_reset_view_guards_native_changes_and_renders_once(self):
         window = object.__new__(Window)
         window.cancel_scroll, window.render = Mock(), Mock()
         window.list_body = Box()
@@ -5650,8 +5660,11 @@ class NativeLogicChecks(unittest.TestCase):
             if value != text:
                 text = value
                 window.filter_changed()
-        window.search = SimpleNamespace(set_text=set_text)
-        window.search_popover, window.search_button = Mock(), Mock()
+        window.search = SimpleNamespace(get_text=lambda: text, set_text=set_text)
+        window.search_expanded = False
+        window.search_row, window.search_button, window.drawer_only = Mock(), Mock(), Mock()
+        window.drawer_only.set_active.side_effect = lambda _value: window.drawer_toggled()
+        window.sync_filter_chips = Mock()
         window.clear_search()
         window.render.assert_called_once_with()
         window.clear_search()
@@ -7255,7 +7268,7 @@ class NativeLogicChecks(unittest.TestCase):
                               Editable=type("Editable", (), {}), TextView=type("TextView", (), {}), ScrollUnit=None)
         window = object.__new__(Window)
         window.closed, window.context_menu, window.focus_generation = False, None, 0
-        window.search_popover, other_popup = popover(), popover()
+        other_popup = popover()
         active, focus = [True], [None]
         window.is_active, window.get_focus = lambda: active[0], lambda: focus[0]
         window.list_body, window.open_row = Mock(), Mock()
@@ -7297,8 +7310,8 @@ class NativeLogicChecks(unittest.TestCase):
             cards["r3"].asb_number_label.set_label.assert_called_with("3")
             cards["r3"].update_property.assert_called_with([7], ["Control+3"])
             cards["r1"].asb_number_label.set_label.assert_not_called()
-            # Ctrl+3 and keypad 3 open the third card, also from the search entry and the narrow search popover.
-            for key, where in ((0x33, None), (0xffb3, entry()), (0x33, entry(window.search_popover))):
+            # Ctrl+3 and keypad 3 open the third card, also from the inline search entry.
+            for key, where in ((0x33, None), (0xffb3, entry())):
                 focus[0] = where
                 window.open_row.reset_mock()
                 self.assertTrue(window.window_key(None, key, 0, control))

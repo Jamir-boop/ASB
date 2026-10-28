@@ -1023,6 +1023,8 @@ class WidgetCheck(unittest.TestCase):
         window.set_default_size(1040, 400)
         window.present(); self.drain(.4)
         self.assertTrue(window.wide_controls)
+        window.open_search(); window.search.set_text("ac"); self.drain(.3)
+        self.assertTrue(window.search_row.get_reveal_child())
         self.assertLessEqual(window.measure(asb.Gtk.Orientation.HORIZONTAL, -1)[0], 360)
         border_width = window.get_default_size().width - window.get_width()
         window.set_default_size(400 + border_width, 400); self.drain(.4)
@@ -1047,7 +1049,7 @@ class WidgetCheck(unittest.TestCase):
         toggle_profile(window, "|claude-desktop-code")
         window.set_archived(True); self.drain(.4)
         self.assertEqual(len(window.filter_chip_widgets), 6)
-        self.assertEqual(window.search.get_max_width_chars(), 22)
+        self.assertEqual(window.search.get_size_request().width, -1)
         for pill in (window.drawer_only, window.filters_pill):
             self.assertGreaterEqual(pill.get_allocated_width(), pill.measure(asb.Gtk.Orientation.HORIZONTAL, -1)[1])
 
@@ -3335,8 +3337,8 @@ class WidgetCheck(unittest.TestCase):
             window.render()
             self.assertTrue(window.visible_rows())
             self.assertTrue(all(row["provider"] == "claude-desktop-code" for row in window.visible_rows()))
-            # The search field is in its popover at this width too: Escape there stops the search.
-            self.assertTrue(window.search_popover.get_visible())
+            # Escape in the inline entry resets the view at this width too.
+            self.assertTrue(window.search_row.get_reveal_child())
             window.search.emit("stop-search")
             self.assertEqual(window.search.get_text(), "")
             window.set_pending(True)
@@ -3344,9 +3346,9 @@ class WidgetCheck(unittest.TestCase):
             window.set_archived(True)
             window.search.set_text("cx: build")
             window.window_key(None, asb.Gdk.KEY_Escape, 0, 0)
-            self.assertTrue(window.pending)
-            self.assertEqual(window.states, {"idle"})
-            self.assertTrue(window.archived)
+            self.assertFalse(window.pending)
+            self.assertEqual(window.states, set())
+            self.assertFalse(window.archived)
             window.filters_pill.grab_focus()
             self.assertFalse(window.window_key(None, asb.Gdk.KEY_space, 0, 0))
             self.assertFalse(window.window_key(None, asb.Gdk.KEY_Return, 0, 0))
@@ -4444,15 +4446,20 @@ class WidgetCheck(unittest.TestCase):
         def keys(*args, wait=.1):
             subprocess.run(["xdotool", *args], check=True)
             self.drain(wait)
-        window.set_default_size(420, 400); self.drain(.3); window.check_geometry(); self.drain()
+        window.set_default_size(420, 850); self.drain(.3); window.check_geometry(); self.drain()
         subprocess.run(["xdotool", "windowfocus", str(window.get_surface().get_xid())], check=True); self.drain(.3)
-        # The narrow search popover gets the keys itself; the number keys work there and keep the search focus.
+        # The inline entry keeps the focus while the window handles the number keys.
         window.open_search(); self.drain(.3)
-        self.assertTrue(window.search_popover.get_visible())
+        self.assertTrue(window.search_row.get_reveal_child())
         keys("keydown", "Control_L", wait=.45)
         self.assertTrue(window.numbers_shown)
-        keys("key", "3")
-        self.assertEqual(opened, [window.number_keys[2]])
+        self.assertEqual(len(window.number_keys), 9)
+        expected = []
+        for number in range(1, 10):
+            if number <= len(window.number_keys):
+                expected.append(window.number_keys[number - 1])
+            keys("key", str(number))
+        self.assertEqual(opened, expected)
         self.assertTrue(window.get_focus().is_ancestor(window.search))
         keys("keyup", "Control_L", wait=.2)
         self.assertFalse(window.numbers_shown)
@@ -4464,7 +4471,7 @@ class WidgetCheck(unittest.TestCase):
         quiet.popup(); self.drain(.2)
         self.assertFalse(window.numbers_shown)
         keys("key", "3")
-        self.assertEqual(len(opened), 1)
+        self.assertEqual(opened, expected)
         keys("keyup", "Control_L", wait=.2)
         quiet.popdown(); quiet.unparent(); self.drain()
         # A popover that takes the keys misses the release; closing it shows nothing, and a new hold works.
@@ -4891,7 +4898,10 @@ class WidgetCheck(unittest.TestCase):
             self.addCleanup(patcher.stop)
         window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
         self.addCleanup(window.close)
-        window.set_default_size(1000, 500)
+        # Keep the inline row open so query changes test card motion, not a viewport resize.
+        window.search.set_text("sample")
+        search_height = window.search.measure(asb.Gtk.Orientation.VERTICAL, -1)[1]
+        window.set_default_size(1000, 500 + search_height)
         window.present()
         strip, motion, spring = window.list_body, window.motion_animation, window.scroll_animation
         playing = asb.Adw.AnimationState.PLAYING
@@ -4982,7 +4992,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(all(offset[2] == 0 for offset in offsets.values()))
         self.assertGreater(len(offsets), 50)
         assert_rest()
-        before, seen = change(lambda: window.search.set_text(""))
+        before, seen = change(lambda: window.search.set_text("sample"))
         _progress, offsets, places = assert_glide(before, seen, staying)
         self.assertEqual({identity for identity, offset in offsets.items() if offset[2]}, set(window.focus_widgets) - staying)
         self.assertTrue(all(places[identity][2] == 1 and offsets[identity] == (0, 0, 1) for identity in set(window.focus_widgets) - staying))
@@ -5009,7 +5019,7 @@ class WidgetCheck(unittest.TestCase):
         settings = window.get_settings()
         settings.set_property("gtk-enable-animations", False)
         self.addCleanup(settings.set_property, "gtk-enable-animations", True)
-        for action in (lambda: mark("s3", False), lambda: window.search.set_text("needle"), lambda: window.search.set_text("")):
+        for action in (lambda: mark("s3", False), lambda: window.search.set_text("needle"), lambda: window.search.set_text("sample")):
             _before, seen = change(action, False)
             self.assertFalse(any(frame[0] or frame[1] for frame in seen))
         adjustment = window.scroll.get_hadjustment()
@@ -7912,7 +7922,7 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
             self.drain(.15)
             self.capture(widget, Path(self.output) / name)
 
-    def test_toolbar_is_icon_only_and_search_uses_its_popover_at_every_width(self):
+    def test_toolbar_is_icon_only_and_search_uses_inline_row_at_every_width(self):
         window = self.board()
         heights = set()
         for width in (900, 500, 300):
@@ -7921,7 +7931,8 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
                 heights.add(window.window_handle.get_height())
                 self.assertEqual([widget for widget in descendants(window.tools)
                                   if isinstance(widget, asb.Gtk.SearchEntry) and widget.get_ancestor(asb.Gtk.Popover) is None], [])
-                self.assertIs(window.search.get_ancestor(asb.Gtk.Popover), window.search_popover)
+                self.assertIsNone(window.search.get_ancestor(asb.Gtk.Popover))
+                self.assertIs(window.search.get_parent(), window.search_row)
                 # The pills show only their glyphs; their names stay for screen readers and in the tooltips.
                 for pill in (window.drawer_only, window.filters_pill):
                     self.assertEqual([widget.get_label() for widget in descendants(pill) if isinstance(widget, asb.Gtk.Label) and widget.get_mapped()], [])
@@ -7939,28 +7950,166 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
                 if width < 320:
                     continue
                 window.search_button.emit("clicked"); self.drain(.3)
-                self.assertTrue(window.search_popover.get_visible())
+                self.assertTrue(window.search_row.get_reveal_child())
                 self.assertTrue(window.get_focus().is_ancestor(window.search) or window.get_focus() is window.search)
                 window.search.emit("stop-search"); self.drain(.2)
-                self.assertFalse(window.search_popover.get_visible())
-                # Typing on the Board starts a search in the popover.
+                self.assertFalse(window.search_row.get_reveal_child())
+                # Typing on the board reveals the inline search row.
                 card = window.focus_widgets[window.row_order[0]]
                 card.grab_focus(); self.drain(.1)
                 self.assertTrue(window.window_key(None, asb.Gdk.KEY_a, 0, 0)); self.drain(.3)
-                self.assertTrue(window.search_popover.get_visible())
+                self.assertTrue(window.search_row.get_reveal_child())
                 self.assertEqual(window.search.get_text(), "a")
                 window.search.emit("stop-search"); self.drain(.2)
-                self.assertEqual((window.search.get_text(), window.search_popover.get_visible()), ("", False))
+                self.assertEqual((window.search.get_text(), window.search_row.get_reveal_child()), ("", False))
                 if self.REAL_KEYS:
                     self.focus(window)
                     card.grab_focus(); self.drain(.1)
                     self.keys("key", "a", wait=.3)
-                    self.assertTrue(window.search_popover.get_visible())
+                    self.assertTrue(window.search_row.get_reveal_child())
                     self.assertEqual(window.search.get_text(), "a")
                     self.keys("key", "Escape", wait=.3)
-                    self.assertEqual((window.search.get_text(), window.search_popover.get_visible()), ("", False))
+                    self.assertEqual((window.search.get_text(), window.search_row.get_reveal_child()), ("", False))
         # One toolbar height at every width: the wide toolbar has no search field that makes it taller.
         self.assertEqual(len(heights), 1, heights)
+
+    def held_click(self, widget, window):
+        from gi.repository import GdkX11
+        position = subprocess.run(["xdotool", "getmouselocation", "--shell"], check=True, capture_output=True, text=True).stdout
+        x, y = [line.split("=")[1] for line in position.splitlines()[:2]]
+        self.addCleanup(self.keys, "mousemove", x, y)
+        found, bounds = widget.compute_bounds(window)
+        self.assertTrue(found)
+        left, top = window.get_surface_transform()
+        self.keys("mousemove", "--window", str(GdkX11.X11Surface.get_xid(window.get_surface())),
+                  str(int(bounds.origin.x + bounds.size.width / 2 + left)),
+                  str(int(bounds.origin.y + bounds.size.height / 2 + top)))
+        self.keys("mousedown", "1", wait=.12)
+        self.keys("mouseup", "1", wait=.3)
+
+    @unittest.skipUnless(REAL_KEYS, "Real pointer clicks need xdotool and DISPLAY=:9 or :10")
+    def test_one_pointer_click_opens_a_matching_card_while_searching(self):
+        activation = patch.object(asb.SwitchboardWindow, "open_row", autospec=True, side_effect=asb.SwitchboardWindow.open_row)
+        activated = activation.start()
+        self.addCleanup(activation.stop)
+        window = self.board()
+        self.resize(window, 900)
+        self.focus(window)
+        window.set_focus(None)
+        self.keys("key", "a", "c", wait=.3)
+        self.assertEqual(window.search.get_text(), "ac")
+        self.assertTrue(window.row_order)
+        card = window.focus_widgets[window.row_order[0]]
+        self.assertTrue(card.get_parent().get_activate_on_single_click())
+        with patch.object(asb, "request_async") as opened:
+            self.held_click(card.asb_title_label, window)
+            requests = [call for call in opened.call_args_list if call.args[1].endswith("/open")]
+            self.assertEqual(len(requests), 1, "One click on a matching card must open it")
+            self.assertEqual(requests[0].args[1], "/api/threads/" + card.asb_thread["id"] + "/open")
+            activated.assert_called_once_with(window, card.get_parent(), card)
+        self.assertEqual(window.search.get_text(), "ac")
+        self.assertTrue(window.search_row.get_reveal_child())
+
+    @unittest.skipUnless(REAL_KEYS, "Real pointer clicks need xdotool and DISPLAY=:9 or :10")
+    def test_clear_icon_resets_search_and_all_filters_with_one_render(self):
+        window = self.board()
+        self.resize(window, 900)
+        self.focus(window)
+        window.pending, window.archived, window.show_all_cards = True, True, True
+        window.states, window.profiles = {"waiting"}, {"|codex"}
+        window.open_search()
+        window.search.set_text("ac"); self.drain(.4)
+        clear = next(child for child in descendants(window.search)
+                     if isinstance(child, asb.Gtk.Image) and child.get_icon_name() == "edit-clear-symbolic")
+        self.assertTrue(clear.get_mapped())
+        with patch.object(window, "render", wraps=window.render) as rendered:
+            self.held_click(clear, window)
+            self.assertEqual(rendered.call_count, 1)
+        self.assertEqual(window.search.get_text(), "")
+        self.assertFalse(window.search_expanded or window.search_row.get_reveal_child())
+        self.assertFalse(window.filters_active() or window.show_all_cards or window.drawer_view or window.drawer_only.get_active())
+        self.assertIs(window.get_focus(), window.search_button)
+
+    @unittest.skipUnless(REAL_KEYS, "Real keys need xdotool and DISPLAY=:9 or :10")
+    def test_escape_resets_filters_but_editing_and_popover_escape_do_not(self):
+        window = self.board()
+        self.focus(window)
+        # Filters alone, All cards alone, and Drawer alone also make Escape reset.
+        for field, value in (("pending", True), ("states", {"working"}), ("profiles", {"|codex"}),
+                             ("archived", True), ("show_all_cards", True), ("drawer_view", True)):
+            with self.subTest(field=field):
+                setattr(window, field, value)
+                window.drawer_only.set_active(window.drawer_view)
+                window.filter_changed(); self.drain(.2)
+                self.assertFalse(window.search.get_text() or window.search_expanded)
+                with patch.object(window, "render", wraps=window.render) as rendered:
+                    self.keys("key", "Escape")
+                    rendered.assert_called_once_with()
+                self.assertFalse(window.filters_active() or window.show_all_cards or window.drawer_view)
+                self.assertFalse(window.drawer_only.get_active())
+        window.pending, window.archived, window.show_all_cards = True, True, True
+        window.states, window.profiles = {"waiting"}, {"|codex"}
+        window.open_search()
+        self.keys("key", "a")
+        self.keys("key", "BackSpace")
+        self.assertEqual(window.search.get_text(), "")
+        self.assertTrue(window.pending and window.archived and window.show_all_cards)
+        self.assertEqual((window.states, window.profiles), ({"waiting"}, {"|codex"}))
+        self.assertTrue(window.search_expanded)
+        self.keys("key", "a")
+        window.open_filters_popover(); self.drain(.2)
+        self.keys("key", "Escape")
+        self.assertFalse(window.filter_popover.get_visible())
+        self.assertEqual(window.search.get_text(), "a")
+        self.assertTrue(window.pending and window.archived and window.show_all_cards)
+        self.assertEqual((window.states, window.profiles), ({"waiting"}, {"|codex"}))
+        for popup in (lambda: window.menu_button.popup(),
+                      lambda: window.show_context(window.focus_widgets[window.row_order[0]])):
+            popup(); self.drain(.2)
+            self.keys("key", "Escape")
+            self.assertFalse(window.menu_button.get_popover().get_visible())
+            self.assertTrue(window.context_menu is None or not window.context_menu.get_visible())
+            self.assertEqual(window.search.get_text(), "a")
+            self.assertTrue(window.pending and window.archived and window.show_all_cards)
+            self.assertEqual((window.states, window.profiles), ({"waiting"}, {"|codex"}))
+        window.open_search(); self.drain(.1)
+        with patch.object(window, "render", wraps=window.render) as rendered:
+            self.keys("key", "Escape")
+            rendered.assert_called_once_with()
+        self.assertEqual(window.search.get_text(), "")
+        self.assertFalse(window.search_expanded or window.filters_active() or window.show_all_cards)
+        self.assertFalse(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0))
+
+    def test_inline_search_visibility_follows_query_and_focus_and_preferences(self):
+        window = self.board()
+        self.assertIsNone(window.get_focus())
+        self.assertFalse(window.search_expanded or window.search_row.get_reveal_child())
+        self.assertEqual(window.search_row.get_transition_duration(), 150)
+        self.assertEqual(window.search_row.get_transition_type(), asb.Gtk.RevealerTransitionType.NONE)
+        self.assertIs(window.window_handle.get_next_sibling(), window.search_row)
+        self.assertIs(window.search_row.get_next_sibling(), window.notice)
+        self.assertEqual((window.search.get_margin_start(), window.search.get_margin_end(),
+                          window.search.get_margin_top(), window.search.get_margin_bottom()), (4, 4, 0, 4))
+        window.open_search(); self.drain(.2)
+        self.assertTrue(window.search_expanded and window.search_focus.contains_focus())
+        window.search_button.grab_focus(); self.drain(.2)
+        self.assertFalse(window.search_expanded)
+        window.open_search(); window.search.set_text("ac"); self.drain(.2)
+        window.search_button.grab_focus(); self.drain(.2)
+        self.assertTrue(window.search_expanded)
+        window.search.set_text(""); self.drain(.2)
+        self.assertFalse(window.search_expanded)
+        window.open_preferences(); self.drain(.2)
+        window.open_search_from_preferences(); self.drain(.2)
+        self.assertFalse(window.preferences_window.get_visible())
+        self.assertTrue(window.search_expanded and window.search_focus.contains_focus())
+        self.resize(window, 300)
+        window.reset_view(); self.drain(.2)
+        self.assertTrue(window.get_focus().is_ancestor(window.menu_button))
+        settings = window.get_settings()
+        settings.set_property("gtk-enable-animations", True)
+        animated = self.board()
+        self.assertEqual(animated.search_row.get_transition_type(), asb.Gtk.RevealerTransitionType.SLIDE_DOWN)
 
     def test_main_menu_has_messages_usage_and_preferences_with_their_keys(self):
         window = self.board()
@@ -8037,6 +8186,16 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
         application.activity_windows["messages"].close(); self.drain(.3)
         self.focus(window)
         window.open_search(); self.drain(.3)
+        self.keys("key", "ctrl+u", wait=.4)
+        self.assertIn("usage", application.activity_windows)
+        application.activity_windows["usage"].close(); self.drain(.3)
+        self.focus(window)
+        window.open_search(); self.drain(.2)
+        self.keys("key", "ctrl+comma", wait=.4)
+        self.assertTrue(window.preferences_window.get_visible())
+        window.preferences_window.set_visible(False); self.drain(.2)
+        self.focus(window)
+        window.open_search(); self.drain(.2)
         self.keys("key", "ctrl+shift+u", wait=.3)
         self.keys("key", "Escape", "Escape", wait=.3)
         self.assertNotIn("usage", application.activity_windows)

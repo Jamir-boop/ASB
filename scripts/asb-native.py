@@ -4469,7 +4469,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.set_palette(None)
         self.refresh_button = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Refresh sessions")
         self.refresh_button.connect("clicked", lambda *_: self.refresh(True))
-        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.tools = tools = Gtk.Box(spacing=4, margin_start=4, margin_end=4, margin_top=2)
         tools.add_css_class("asb-toolbar")
         self.app_mark = Gtk.Image(icon_name=APP_ID, pixel_size=16, tooltip_text="ASB")
@@ -4481,29 +4481,33 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         tools.append(self.toolbar_center)
         self.search = Gtk.SearchEntry(placeholder_text="Find a session or folder", hexpand=True)
         self.search.set_search_delay(0)
-        self.search.set_max_width_chars(22)
+        self.search.set_margin_start(4)
+        self.search.set_margin_end(4)
+        self.search.set_margin_bottom(4)
         self.search.set_tooltip_text("Search title or folder. cl: or claude: selects Claude; cx: or codex: selects Codex; "
                                      "oc: or opencode: selects OpenCode.")
         self.search.connect("search-changed", self.filter_changed)
         self.search.connect("stop-search", self.clear_search)
-        # No arrow: the custom 1px popover edge is on the contents node only.
-        self.search_popover = Gtk.Popover(position=Gtk.PositionType.BOTTOM, has_arrow=False)
-        self.search_popover.set_parent(self.toolbar_center)
-        self.search_popover.set_child(self.search)
-        self.search.set_size_request(240, -1)
-        self.search_popover.connect("closed", lambda *_args: setattr(self, "search_expanded", False))
-        # The search popover gets its own key events; the number keys work there as on the board.
-        popover_keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
-        popover_keys.connect("key-pressed", lambda _controller, key, _code, modifiers: bool(self.number_key_pressed(key, modifiers)))
-        popover_keys.connect("key-released", self.window_key_released)
-        self.search_popover.add_controller(popover_keys)
-        # The window shortcuts do not see the keys of the popover surface, so the application keys also work in the search field.
-        popover_shortcuts = Gtk.ShortcutController(propagation_phase=Gtk.PropagationPhase.CAPTURE)
-        for action in ("app.messages", "app.usage", "win.preferences"):
-            for accel in application.get_accels_for_action(action):
-                popover_shortcuts.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string(accel), Gtk.NamedAction.new(action)))
-        self.search_popover.add_controller(popover_shortcuts)
-        # Any other popover blocks the number keys, also one that does not take the focus.
+        self.search_row = Gtk.Revealer(child=self.search, transition_duration=150,
+                                      transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN
+                                      if self.get_settings().get_property("gtk-enable-animations") else Gtk.RevealerTransitionType.NONE)
+        self.search_row.connect("notify::reveal-child", lambda row, _param: setattr(self, "search_expanded", row.get_reveal_child()))
+        self.search_focus = Gtk.EventControllerFocus()
+        self.search_focus.connect("notify::contains-focus", self.sync_search_visibility)
+        self.search.add_controller(self.search_focus)
+        child = self.search.get_first_child()
+        while child:
+            if isinstance(child, Gtk.Image) and child.get_icon_name() == "edit-clear-symbolic":
+                clear = Gtk.GestureClick(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+                clear.connect("released", self.reset_view)
+                child.add_controller(clear)
+                # Share GTK's gesture claim so both release handlers run.
+                for controller in child.observe_controllers():
+                    if isinstance(controller, Gtk.GestureClick) and controller is not clear:
+                        clear.group(controller)
+                break
+            child = child.get_next_sibling()
+        # Any popover blocks the number keys, also one that does not take the focus.
         self.open_popovers = set()
         self.popover_hooks = [(name, GObject.add_emission_hook(Gtk.Popover, name, self.popover_visibility, name))
                               for name in ("map", "unmap")]
@@ -4652,8 +4656,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.toolbar_end.append(menu)
         self.window_controls = Gtk.WindowControls(side=Gtk.PackType.END, decoration_layout=":close")
         self.toolbar_end.append(self.window_controls)
-        self.window_handle = Gtk.WindowHandle(child=tools)
+        self.window_handle = Gtk.WindowHandle(child=tools, margin_bottom=3)
         body.append(self.window_handle)
+        body.append(self.search_row)
         self.toolbar_strip = Gtk.Box(spacing=4)
         self.toolbar_center.append(self.toolbar_strip)
         self.chip_box = Gtk.Box(spacing=4)
@@ -4701,6 +4706,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.notice.set_wrap(True)
         self.notice.set_margin_start(10)
         self.notice.set_margin_end(10)
+        self.notice.set_margin_bottom(3)
         self.notice.add_css_class("warning")
         self.notice.set_visible(False)
         body.append(self.notice)
@@ -5739,16 +5745,31 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.show_copy_tag(old, False)
             self.copy_focus_button = None
 
+    def reset_view(self, *_args):
+        self.resetting_view = True
+        try:
+            self.pending, self.archived, self.show_all_cards = False, False, False
+            self.states, self.profiles = set(), set()
+            self.drawer_only.set_active(False)
+            self.drawer_view = False
+            self.search.set_text("")
+            self.search_row.set_reveal_child(False)
+            (self.menu_button if self.tiny_controls else self.search_button).grab_focus()
+        finally:
+            self.resetting_view = False
+        self.filter_changed()
+
     def clear_search(self, *_args):
-        self.cancel_scroll()
-        self.search.set_text("")
-        self.search_popover.popdown()
-        self.search_expanded = False
-        (self.menu_button if self.tiny_controls else self.search_button).grab_focus()
+        if self.search.get_text() or self.search_expanded or self.filters_active() or self.show_all_cards or self.drawer_view:
+            self.reset_view()
+            return True
+        return False
+
+    def sync_search_visibility(self, *_args):
+        self.search_row.set_reveal_child(bool(self.search.get_text()) or self.search_focus.contains_focus())
 
     def open_search(self, *_args):
-        self.search_expanded = True
-        self.search_popover.popup()
+        self.search_row.set_reveal_child(True)
         self.search.grab_focus()
 
     def open_search_from_preferences(self, *_args):
@@ -5758,7 +5779,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def popover_visibility(self, widget, name):
         # The hook runs for every widget that maps; only the popovers of this window count.
-        if isinstance(widget, Gtk.Popover) and widget is not self.search_popover and widget.get_root() is self:
+        if isinstance(widget, Gtk.Popover) and widget.get_root() is self:
             if name == "map":
                 self.open_popovers.add(widget)
                 self.hide_numbers()
@@ -5767,13 +5788,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return True
 
     def numbers_blocked(self):
-        # The search popover is part of the board; the row panel and every other popup block the numbers.
+        # The row panel and every other popup block the numbers.
         if not self.is_active() or (self.context_menu and self.context_menu.get_visible()) \
                 or any(popover.get_mapped() for popover in self.open_popovers):
             return True
         focus = self.get_focus()
         popover = focus.get_ancestor(Gtk.Popover) if focus else None
-        return popover is not None and popover is not self.search_popover
+        return popover is not None
 
     def number_key_pressed(self, key, modifiers):
         """Hold Ctrl alone to show the numbers; Ctrl+1 to Ctrl+9 open a card. None keeps the usual key handling."""
@@ -5893,10 +5914,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if focus and focus.get_ancestor(Gtk.Popover):
             return False
         if key == Gdk.KEY_Escape:
-            if self.search.get_text() or self.search_expanded:
-                self.clear_search()
-                return True
-            return False
+            if any(popover.get_mapped() for popover in self.open_popovers):
+                return False
+            return self.clear_search()
         if isinstance(focus, (Gtk.Editable, Gtk.TextView)) \
                 or key in (Gdk.KEY_space, Gdk.KEY_Return, Gdk.KEY_KP_Enter):
             return False
@@ -5914,6 +5934,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                           self.card_limit, self.show_all_cards)
 
     def filter_changed(self, *_args):
+        if getattr(self, "resetting_view", False):
+            return
+        if _args and _args[0] is self.search:
+            self.sync_search_visibility()
         self.sync_filter_chips()
         self.cancel_scroll()
         self.list_body.clear_hover()
@@ -5953,6 +5977,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.filter_changed()
 
     def drawer_toggled(self, *_args):
+        if getattr(self, "resetting_view", False):
+            return
         self.drawer_view = self.drawer_only.get_active()
         if self.drawer_view and self.pending:
             self.pending = False
@@ -7857,8 +7883,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.closed = True
         self.report_ui_closed()
         self.pending_messages = []
-        if getattr(self, "search_popover", None):
-            self.search_popover.unparent()
         if getattr(self, "preferences_window", None):
             self.preferences_window.dispose()
         self.cancel_scroll()
