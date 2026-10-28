@@ -4967,6 +4967,17 @@ class WidgetCheck(unittest.TestCase):
         self.assert_columns_filled(window)
         self.assertEqual((window.list_body.get_width(), adjustment.get_upper()), (width, upper))
 
+    def test_column_range_uses_the_allocated_edges_and_one_side_column(self):
+        window, _dashboard = self.lazy_board()
+        window.column_pixel_width = 268
+        cases = ((0, 1400, (0, 6)), (280, 1400, (0, 7)), (560, 560, (1, 5)),
+                 (840, 280, (2, 5)), (100, 1400, (0, 7)), (300, 560, (0, 5)),
+                 (272, 12, (0, 2)), (271, 14, (0, 3)), (284, 268, (0, 3)),
+                 (552, 12, (1, 3)), (564, 280, (1, 4)))
+        for value, page, expected in cases:
+            with self.subTest(value=value, page=page):
+                self.assertEqual(window.column_range(value, page), expected)
+
     def test_columns_get_their_cards_before_they_paint(self):
         window, _dashboard = self.lazy_board()
         adjustment, viewport = window.scroll.get_hadjustment(), window.scroll.get_child()

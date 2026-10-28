@@ -6839,7 +6839,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         value = adjustment.get_value() if value is None else value
         page = (adjustment.get_page_size() or (self.geometry or (0, 0))[0]) if page is None else page
         step = self.column_pixel_width + 12
-        return max(0, int(value // step) - 1), int((value + page) // step) + 2
+        start = self.list_body.get_margin_start()
+        gap = self.list_body.get_spacing()
+        return max(0, math.floor((value - start + gap) / step) - 1), math.ceil((value + page - start) / step) + 1
 
     def fill_columns(self, numbers):
         """Build and attach the cards of the columns that have none yet. Returns True when a column filled."""
