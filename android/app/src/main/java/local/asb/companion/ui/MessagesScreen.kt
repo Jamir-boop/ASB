@@ -310,7 +310,7 @@ private class Flight(val message: ActivityMessage, val startNanos: Long) {
 fun MessagesScreen(api: AsbApi, engine: String, selected: String?, onSelect: (String?) -> Unit, onBack: () -> Unit) {
     BackHandler(onBack = onBack)
     val colors = activityColors()
-    var period by rememberSaveable { mutableStateOf("7d") }
+    var period by rememberSaveable { mutableStateOf("24h") }
     var reply by remember(engine, period) { mutableStateOf<ActivityMessages?>(null) }
     var error by remember(engine, period) { mutableStateOf<String?>(null) }
     var previous by remember(engine, period) { mutableStateOf<Set<String>?>(null) }

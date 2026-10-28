@@ -129,7 +129,7 @@ private fun axisLabel(value: Double, metric: Metric): String {
 fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
     BackHandler(onBack = onBack)
     val colors = activityColors()
-    var period by rememberSaveable { mutableStateOf("30d") }
+    var period by rememberSaveable { mutableStateOf("all") }
     var metric by rememberSaveable { mutableStateOf(Metric.COST) }
     var byMachine by rememberSaveable { mutableStateOf(false) }
     var off by rememberSaveable { mutableStateOf(listOf<String>()) }

@@ -589,6 +589,9 @@ class AsbApiTest {
     @Test fun anOlderGatewayWithoutAllTimeAsksForAnUpdate() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(400).setBody("""{"error":"Invalid period."}"""))
         assertEquals("This PC runs an older ASB. Update ASB on the PC to see All time.", failure { api().activityUsage("all", "") }.message)
+        // After the default All time fails, the user can select a period that the PC knows.
+        server.enqueue(MockResponse().setBody("""{"period":"30d"}"""))
+        assertEquals("30d", api().activityUsage("30d", "").period)
         server.enqueue(MockResponse().setResponseCode(400).setBody("""{"error":"Invalid period."}"""))
         assertEquals("Invalid period.", failure { api().activityUsage("30d", "") }.message)
         server.enqueue(MockResponse().setResponseCode(500).setBody("""{"error":"No access"}"""))
