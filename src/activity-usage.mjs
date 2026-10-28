@@ -79,7 +79,7 @@ async function listTranscripts(root, app, files, pause, fileName) {
 export function createActivityUsage({ readSources = async () => [], machine = {}, cacheDir = defaultCacheDir(), now = Date.now,
   fetch = globalThis.fetch, homeDir = os.homedir(), env = process.env, platform = process.platform, refreshMs = REFRESH_MS,
   log = console.error, maxCacheFiles = MAX_CACHE_FILES, ledgerFile = '', members = null, busy = () => false, timers = { setTimeout, clearTimeout } } = {}) {
-  const cacheFile = path.join(cacheDir, 'usage', 'usage-cache.json');
+  const cacheFile = path.join(cacheDir, 'usage', 'usage-cache.json.gz');
   const stats = { bytesRead: 0, scans: 0, saves: 0, openCodeQueries: 0, openCodePages: 0, partBuilds: 0, parts: 0, ledgerSaves: 0, releases: 0, memberBuilds: 0 };
   const progress = { complete: false, files: 0, scannedFiles: 0 };
   let cache = null;

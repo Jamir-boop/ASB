@@ -1,3 +1,4 @@
+import { gzipSync, gunzipSync } from 'node:zlib';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
@@ -108,14 +109,14 @@ test('version 1 pruned caches rebuild an unchanged file and recover its old reco
   await fs.writeFile(transcript, text);
   const entry = await scanFile(transcript, await fs.stat(transcript), undefined, 'claude');
   entry.records = [];
-  const file = path.join(root, 'cache', 'usage', 'usage-cache.json');
+  const file = path.join(root, 'cache', 'usage', 'usage-cache.json.gz');
   await saveUsageCache(file, new Map([[pathKey(transcript), entry]]));
-  const oldCache = JSON.parse(await fs.readFile(file, 'utf8'));
+  const oldCache = JSON.parse(gunzipSync(await fs.readFile(file)).toString('utf8'));
   oldCache.version = 1;
-  await fs.writeFile(file, JSON.stringify(oldCache));
+  await fs.writeFile(file, gzipSync(JSON.stringify(oldCache)));
   const usage = service();
   await usage.refresh();
   assert.ok(usage.stats.bytesRead >= Buffer.byteLength(text));
   assert.deepEqual(usage.report('all').records[0].tokens, tokens);
-  assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).version, 2);
+  assert.equal(JSON.parse(gunzipSync(await fs.readFile(file)).toString('utf8')).version, 2);
 });

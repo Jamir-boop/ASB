@@ -110,7 +110,7 @@ test('the ledger waits for the cached local Working rows without loading the das
   const due = pending.shift();
   assert.equal(due.delayMs, 600_000);
   await due.callback();
-  await assert.rejects(access(path.join(cacheDir, 'usage', 'usage-cache.json')), { code: 'ENOENT' });
+  await assert.rejects(access(path.join(cacheDir, 'usage', 'usage-cache.json.gz')), { code: 'ENOENT' });
   assert.equal(loads, 1);
   assert.equal(pending[0].delayMs, 60_000);
   // Archived local rows and Working member rows do not keep the tick waiting.
@@ -119,7 +119,7 @@ test('the ledger waits for the cached local Working rows without loading the das
   await server.dashboardForRequest();
   assert.equal(loads, 2);
   await pending.shift().callback();
-  await access(path.join(cacheDir, 'usage', 'usage-cache.json'));
+  await access(path.join(cacheDir, 'usage', 'usage-cache.json.gz'));
   assert.equal(loads, 2);
   await server.usageLedger.stop();
 });
@@ -128,6 +128,6 @@ test('creating the switchboard server starts no usage scan and no price download
   const { fetches, cacheDir } = await setup(t);
   await delay(100);
   assert.equal(fetches.length, 0);
-  await assert.rejects(access(path.join(cacheDir, 'usage', 'usage-cache.json')), { code: 'ENOENT' });
+  await assert.rejects(access(path.join(cacheDir, 'usage', 'usage-cache.json.gz')), { code: 'ENOENT' });
   await assert.rejects(access(path.join(cacheDir, 'usage')), { code: 'ENOENT' });
 });

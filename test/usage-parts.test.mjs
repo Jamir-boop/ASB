@@ -63,7 +63,7 @@ test('summed parts give the same report and localHourly records as the single pa
     readSources: async () => [{ enabled: true, provider: 'claude-desktop-code', projectsDir: projects }, { enabled: true, provider: 'opencode', dataDir: openCodeDir }] });
   t.after(() => Promise.all([usage.idle(), usage.pricesIdle()]));
   await usage.refresh();
-  const parts = singleParts(await loadUsageCache(path.join(cacheDir, 'usage', 'usage-cache.json')), await readOpenCodeUsage(openCodeDir, 0));
+  const parts = singleParts(await loadUsageCache(path.join(cacheDir, 'usage', 'usage-cache.json.gz')), await readOpenCodeUsage(openCodeDir, 0));
   assert.equal(parts.filter((part) => part.app === 'claude').length, 84);
   assert.equal(parts.filter((part) => part.app === 'opencode').length, 7);
   let zones = 0;

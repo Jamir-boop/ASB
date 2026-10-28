@@ -6,6 +6,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { constants, createReadStream, promises as fs } from 'node:fs';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import * as zlib from 'node:zlib';
 import { claudeUsageFormat } from './usage-claude.mjs';
@@ -19,6 +20,8 @@ export const MAX_CACHE_FILES = 10_000;
 export const GUARD_LENGTH = 64;
 export const QUARTER_HOUR_MS = 15 * 60 * 1000;
 const CHUNK_BYTES = 1024 * 1024;
+// The usage cache text goes to gzip in slices, so a save holds no Buffer copy of the whole text.
+export const CACHE_SLICE_CHARS = 1024 * 1024;
 const YIELD_AFTER_MS = 25;
 // The usage scan rests 3 times the CPU time of its work, so it uses at most about a third of one core; one rest is at most MAX_REST_MS.
 export const SCAN_REST_RATIO = 3;
@@ -206,28 +209,54 @@ export function decodeScanCache(document) {
 
 const owned = (info, platform) => platform === 'win32' || !process.getuid || info.uid === process.getuid();
 
-// A missing, foreign, link, or broken file gives null; the next write replaces it.
-export async function readPrivateJson(file, { platform = process.platform } = {}) {
+// Read only a regular private file of this user.
+async function readPrivateFile(file, { platform = process.platform } = {}, read = (handle) => handle.readFile()) {
+  const folder = await fs.lstat(path.dirname(file));
+  if (!folder.isDirectory() || !owned(folder, platform) || (platform !== 'win32' && (folder.mode & 0o777) !== 0o700)) return null;
+  if (platform === 'win32' && (await fs.lstat(file)).isSymbolicLink()) return null;
+  const handle = await fs.open(file, platform === 'win32' ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
-    const folder = await fs.lstat(path.dirname(file));
-    if (!folder.isDirectory() || !owned(folder, platform) || (platform !== 'win32' && (folder.mode & 0o777) !== 0o700)) return null;
-    if (platform === 'win32' && (await fs.lstat(file)).isSymbolicLink()) return null;
-    const handle = await fs.open(file, platform === 'win32' ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    try {
-      const info = await handle.stat();
-      if (!info.isFile() || !owned(info, platform) || (platform !== 'win32' && (info.mode & 0o777) !== 0o600)) return null;
-      return JSON.parse(await handle.readFile('utf8'));
-    } finally { await handle.close(); }
-  } catch { return null; }
+    const info = await handle.stat();
+    if (!info.isFile() || !owned(info, platform) || (platform !== 'win32' && (info.mode & 0o777) !== 0o600)) return null;
+    return await read(handle);
+  } finally { await handle.close(); }
 }
 
-export const loadUsageCache = async (file, options) => decodeScanCache(await readPrivateJson(file, options));
-// shortcut: the cache is one JSON document, so a save or a load blocks the event loop for about 35 ms now and about 150 ms at the
-// 10,000-file cap; write one JSON line per file with yields if that matters.
-export const saveUsageCache = (file, cache, options) => writePrivateJson(file, encodeScanCache(cache), options);
+export async function readPrivateJson(file, options) {
+  try { return JSON.parse(await readPrivateFile(file, options)); } catch { return null; }
+}
+
+export async function loadUsageCache(file, options) {
+  try { return decodeScanCache(JSON.parse(await readPrivateFile(file, options, gunzipText))); } catch (error) {
+    if (error.code === 'ENOENT') return decodeScanCache(await readPrivateJson(file.replace(/\.gz$/, ''), options));
+    return new Map();
+  }
+}
+
+// The chunks are joined once and decoded once. At the 10,000-file cap, a string for each chunk cost about 33 MiB more RSS,
+// and 16 KiB chunks about 10 MiB more than 1 MiB chunks.
+async function gunzipText(handle) {
+  const chunks = [];
+  await pipeline(handle.createReadStream({ autoClose: false, highWaterMark: 1024 * 1024 }), zlib.createGunzip({ chunkSize: 1024 * 1024 }), async (source) => { for await (const chunk of source) chunks.push(chunk); });
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function* slices(text) {
+  for (let at = 0; at < text.length; at += CACHE_SLICE_CHARS) yield text.slice(at, at + CACHE_SLICE_CHARS);
+}
+
+// shortcut: the cache is one JSON document, so its encoding and parsing still block; use JSON lines with yields if that matters.
+export async function saveUsageCache(file, cache, options) {
+  const text = JSON.stringify(encodeScanCache(cache));
+  await writePrivateFile(file, () => Readable.from(slices(text)).pipe(zlib.createGzip()), options);
+  await fs.rm(file.replace(/\.gz$/, ''), { force: true });
+}
 
 // Mode 0600 in a 0700 folder, written atomically (a temporary file and a rename).
-export async function writePrivateJson(file, value, { platform = process.platform } = {}) {
+export const writePrivateJson = async (file, value, options) => writePrivateFile(file, JSON.stringify(value), options);
+
+// The data is a string, or a function that gives a stream (made only when the folder checks passed).
+async function writePrivateFile(file, data, { platform = process.platform } = {}) {
   const directory = path.dirname(file);
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const folder = await fs.lstat(directory);
@@ -235,7 +264,8 @@ export async function writePrivateJson(file, value, { platform = process.platfor
   if (platform !== 'win32' && (folder.mode & 0o777) !== 0o700) await fs.chmod(directory, 0o700);
   const temporary = `${file}.${randomBytes(6).toString('hex')}.tmp`;
   try {
-    await fs.writeFile(temporary, JSON.stringify(value), { flag: 'wx', mode: 0o600 });
+    await fs.writeFile(temporary, typeof data === 'function' ? data() : data, { flag: platform === 'win32' ? 'wx'
+      : constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, mode: 0o600 });
     await fs.rename(temporary, file);
   } finally { await fs.rm(temporary, { force: true }); }
 }

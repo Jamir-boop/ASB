@@ -1,9 +1,10 @@
+import { gzipSync, gunzipSync } from 'node:zlib';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createYielder, decodeScanCache, encodeScanCache, loadUsageCache, MAX_REST_MS, pathKey, saveUsageCache, scanFile, SCAN_REST_RATIO } from '../src/usage-scan-cache.mjs';
+import { CACHE_SLICE_CHARS, createYielder, decodeScanCache, encodeScanCache, loadUsageCache, MAX_REST_MS, pathKey, saveUsageCache, scanFile, SCAN_REST_RATIO } from '../src/usage-scan-cache.mjs';
 
 const posix = process.platform !== 'win32';
 const at = Date.parse('2026-10-20T10:00:00Z');
@@ -79,13 +80,15 @@ test('the disk cache is private, keyed by hashes, and has no path, title, or tex
   const cache = new Map();
   cache.set(pathKey(transcript), await scanFile(transcript, await fs.stat(transcript), undefined, 'codex'));
   cache.set(pathKey(claude), await scanFile(claude, await fs.stat(claude), undefined, 'claude'));
-  const file = path.join(dir, 'cache', 'usage', 'usage-cache.json');
+  const file = path.join(dir, 'cache', 'usage', 'usage-cache.json.gz');
   await saveUsageCache(file, cache);
   if (posix) {
     assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
     assert.equal((await fs.stat(path.dirname(file))).mode & 0o777, 0o700);
   }
-  const bytes = await fs.readFile(file, 'utf8');
+  const compressed = await fs.readFile(file);
+  assert.deepEqual([...compressed.subarray(0, 2)], [0x1f, 0x8b]);
+  const bytes = gunzipSync(compressed).toString('utf8');
   for (const secret of ['SECRET', dir, os.tmpdir(), 'rollout', '.jsonl', 'session-1']) assert.ok(!bytes.includes(secret), secret);
   assert.deepEqual(Object.keys(JSON.parse(bytes).files).sort(), [pathKey(transcript), pathKey(claude)].sort());
   for (const key of Object.keys(JSON.parse(bytes).files)) assert.match(key, /^[0-9a-f]{64}$/);
@@ -93,9 +96,21 @@ test('the disk cache is private, keyed by hashes, and has no path, title, or tex
   assert.equal((await fs.readdir(path.dirname(file))).length, 1, 'no temporary file is left');
 });
 
+test('a cache larger than one gzip slice saves and loads equal', async (t) => {
+  const file = path.join(await folder(t), 'usage', 'usage-cache.json.gz');
+  const state = { model: 'gpt-test-1', lastUsageSignature: null, lastCumulativeUsage: null, malformedRecords: 0, sawSessionMeta: false,
+    suppressingForkCopies: false, forkCopyAnchorMs: 0 };
+  const cache = new Map(Array.from({ length: 8000 }, (_, index) => [pathKey(`made-up-${index}`), { app: 'codex', size: index, mtimeMs: index,
+    offset: index, guardLength: 0, guardHash: 'a'.repeat(32), state,
+    records: Array.from({ length: 10 }, (_, row) => [index + row, `gpt-test-${row % 3}`, row, 2, 3, index, `key-${index}-${row}`]) }]));
+  assert.ok(JSON.stringify(encodeScanCache(cache)).length > 2 * CACHE_SLICE_CHARS);
+  await saveUsageCache(file, cache);
+  assert.deepEqual(await loadUsageCache(file), cache);
+});
+
 test('a broken or unsafe cache file is ignored and replaced', async (t) => {
   const dir = await folder(t);
-  const file = path.join(dir, 'usage', 'usage-cache.json');
+  const file = path.join(dir, 'usage', 'usage-cache.json.gz');
   await fs.mkdir(path.dirname(file), { mode: 0o700 });
   await fs.writeFile(file, '{"version":1,"models":[', { mode: 0o600 });
   assert.equal((await loadUsageCache(file)).size, 0);
@@ -112,6 +127,67 @@ test('a broken or unsafe cache file is ignored and replaced', async (t) => {
     await fs.chmod(file, 0o644);
     assert.equal((await loadUsageCache(file)).size, 0);
   }
+});
+
+test('a plain cache loads only without gzip and is removed only after a successful compressed save', async (t) => {
+  const dir = await folder(t);
+  const transcript = path.join(dir, 'a.jsonl');
+  await fs.writeFile(transcript, `${turn('gpt-test-1')}\n${count(usage(10, 2), usage(10, 2))}\n`);
+  const cache = new Map([[pathKey(transcript), await scanFile(transcript, await fs.stat(transcript), undefined, 'codex')]]);
+  const file = path.join(dir, 'usage', 'usage-cache.json.gz');
+  const old = file.slice(0, -3);
+  await fs.mkdir(path.dirname(file), { mode: 0o700 });
+  await fs.writeFile(old, JSON.stringify(encodeScanCache(cache)), { mode: 0o600 });
+  assert.deepEqual(await loadUsageCache(file), cache);
+  await fs.mkdir(file);
+  await assert.rejects(saveUsageCache(file, cache));
+  assert.deepEqual(JSON.parse(await fs.readFile(old, 'utf8')), encodeScanCache(cache));
+  await fs.rmdir(file);
+  await saveUsageCache(file, cache);
+  await assert.rejects(fs.stat(old), { code: 'ENOENT' });
+  assert.deepEqual(await loadUsageCache(file), cache);
+  // A broken gzip must not fall back to an obsolete plain cache.
+  await fs.writeFile(old, JSON.stringify(encodeScanCache(cache)), { mode: 0o600 });
+  await fs.writeFile(file, 'not gzip');
+  assert.equal((await loadUsageCache(file)).size, 0);
+});
+
+test('gzip caches reject links, foreign files, unsafe modes, and broken JSON', async (t) => {
+  const dir = await folder(t);
+  const transcript = path.join(dir, 'a.jsonl');
+  await fs.writeFile(transcript, `${turn('gpt-test-1')}\n${count(usage(10, 2), usage(10, 2))}\n`);
+  const cache = new Map([[pathKey(transcript), await scanFile(transcript, await fs.stat(transcript), undefined, 'codex')]]);
+  const file = path.join(dir, 'usage', 'usage-cache.json.gz');
+  await saveUsageCache(file, cache);
+  assert.deepEqual([...((await fs.readFile(file)).subarray(0, 2))], [0x1f, 0x8b]);
+  assert.deepEqual(await loadUsageCache(file), cache);
+  const target = `${file}.target`;
+  await fs.rename(file, target);
+  if (posix) {
+    await fs.symlink(target, file);
+    assert.equal((await loadUsageCache(file)).size, 0);
+    await fs.unlink(file);
+  }
+  await fs.rename(target, file);
+  if (posix) {
+    const open = fs.open;
+    const mock = t.mock.method(fs, 'open', async (...args) => {
+      const handle = await open(...args);
+      const stat = handle.stat.bind(handle);
+      handle.stat = async () => ({ ...await stat(), isFile: () => true, uid: process.getuid() + 1 });
+      return handle;
+    });
+    assert.equal((await loadUsageCache(file)).size, 0);
+    mock.mock.restore();
+    await fs.chmod(file, 0o644);
+    assert.equal((await loadUsageCache(file)).size, 0);
+    await fs.chmod(file, 0o600);
+    await fs.chmod(path.dirname(file), 0o755);
+    assert.equal((await loadUsageCache(file)).size, 0);
+    await fs.chmod(path.dirname(file), 0o700);
+  }
+  await fs.writeFile(file, gzipSync('{broken JSON'));
+  assert.equal((await loadUsageCache(file)).size, 0);
 });
 
 test('array parsers keep every record in order and both new formats survive the disk encoding', async (t) => {

@@ -1,3 +1,4 @@
+import { gzipSync, gunzipSync } from 'node:zlib';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
@@ -143,7 +144,7 @@ test('report and localHourly match the contract shapes, with dedupe, cost, and U
   assert.deepEqual(after.records.map((record) => record.app).sort(), ['claude', 'opencode']);
   assert.equal(after.prices.status, 'cached');
   assert.equal(fetches.length, 1, 'rates younger than 24 hours come from the disk cache');
-  const saved = JSON.parse(await fs.readFile(path.join(root, 'cache', 'usage', 'usage-cache.json'), 'utf8'));
+  const saved = JSON.parse(gunzipSync(await fs.readFile(path.join(root, 'cache', 'usage', 'usage-cache.json.gz'))).toString('utf8'));
   assert.equal(Object.keys(saved.files).length, 2);
 });
 

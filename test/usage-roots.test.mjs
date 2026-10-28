@@ -1,3 +1,4 @@
+import { gzipSync, gunzipSync } from 'node:zlib';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
@@ -90,7 +91,7 @@ test('scan cache and report never retain message text or transcript paths', { sk
   await usage.refresh();
   const report = usage.report('7d');
   assert.equal(report.records.length, 3);
-  const cache = await fs.readFile(path.join(root, 'cache', 'usage', 'usage-cache.json'), 'utf8');
+  const cache = gunzipSync(await fs.readFile(path.join(root, 'cache', 'usage', 'usage-cache.json.gz'))).toString('utf8');
   for (const value of [cache, JSON.stringify(report)]) {
     assert.equal(value.includes(secret), false);
     assert.equal(value.includes(root), false);
