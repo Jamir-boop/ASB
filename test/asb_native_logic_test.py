@@ -59,6 +59,8 @@ Marker = SCOPE["SourceMarker"]
 REQUEST_ASYNC = SCOPE["request_async"]
 # The real set_icon() loads a Gio.FileIcon; the GTK suite checks the files.
 SCOPE["set_icon"] = Mock()
+# The heap trim test sets its own malloc_trim; the GLib stubs of the other tests have no timers for it.
+SCOPE["MALLOC_TRIM"] = None
 asb = SimpleNamespace(**SCOPE)
 FIXTURE_PATH = Path(__file__).with_name("asb_native_test.py")
 FIXTURE_TREE = ast.parse(FIXTURE_PATH.read_text())
@@ -6983,6 +6985,71 @@ class NativeLogicChecks(unittest.TestCase):
                 self.assertIsNone(window.row_cache_trim)
                 window.release_row.assert_not_called()
                 self.assertEqual(len(window.row_cache), cards)
+
+    def test_a_list_reply_trims_the_heap_once_a_minute_on_linux(self):
+        find = SCOPE["find_malloc_trim"]
+        trim = Mock()
+        ctypes = SimpleNamespace(CDLL=Mock(return_value=SimpleNamespace(malloc_trim=trim)))
+        with patch.dict(sys.modules, {"ctypes": ctypes}):
+            self.assertIs(find("linux"), trim)
+            ctypes.CDLL.assert_called_once_with(None)
+            for system in ("win32", "darwin"):
+                self.assertIsNone(find(system))
+            ctypes.CDLL.assert_called_once_with(None)
+        for libc in (SimpleNamespace(), SimpleNamespace(malloc_trim=None)):
+            with patch.dict(sys.modules, {"ctypes": SimpleNamespace(CDLL=Mock(return_value=libc))}):
+                self.assertIsNone(find("linux"))
+        with patch.dict(sys.modules, {"ctypes": SimpleNamespace(CDLL=Mock(side_effect=OSError("No C library")))}):
+            self.assertIsNone(find("linux"))
+
+        timers = {}
+        def timeout(seconds, callback):
+            timers[len(timers) + 1] = (seconds, callback)
+            return len(timers)
+        glib = SimpleNamespace(timeout_add_seconds=Mock(side_effect=timeout), source_remove=Mock(), idle_add=Mock())
+        def board():
+            window = object.__new__(Window)
+            window.preferences_window = None
+            window.closed = window.refresh_queued = window.snapshot_pending = False
+            window.dashboard, window.signature = {}, []
+            window.refresh_interval_ms, window.timer = 5000, None
+            window.refresh_button = SimpleNamespace(set_sensitive=Mock())
+            window.set_notice = window.sync_unread_setting = window.update_clock = window.report_ui = Mock()
+            return window
+        window = board()
+        with patch.dict(SCOPE, {"GLib": glib, "MALLOC_TRIM": trim}):
+            # A 304 (no list) and an error start no timer.
+            window.apply_dashboard(None, None)
+            window.apply_dashboard(None, "Cannot load sessions")
+            self.assertEqual(timers, {})
+            # Two lists in one minute start one timer.
+            window.apply_dashboard({"threads": []}, None)
+            window.apply_dashboard({"threads": []}, None)
+            self.assertEqual(list(timers), [1])
+            self.assertEqual(timers[1][0], 60)
+            self.assertEqual(window.heap_trim, 1)
+            self.assertFalse(timers[1][1]())
+            trim.assert_called_once_with(0)
+            self.assertIsNone(window.heap_trim)
+            window.apply_dashboard(None, None)
+            self.assertEqual(list(timers), [1])
+            window.apply_dashboard({"threads": []}, None)
+            self.assertEqual((list(timers), window.heap_trim), ([1, 2], 2))
+            # Closing the window removes the pending timer.
+            window.events, window.get_display, window.css, window.badge_css = Mock(), Mock(), object(), object()
+            window.list_body = Mock()
+            window.clock_timer = window.geometry_idle = window.notice_timer = window.surface_signal = window.context_menu = None
+            window.focus_widgets, window.row_cache = {}, {}
+            with patch.dict(SCOPE, {"Gtk": SimpleNamespace(StyleContext=Mock())}):
+                self.assertFalse(window.on_close())
+            glib.source_remove.assert_any_call(2)
+            self.assertIsNone(window.heap_trim)
+        trim.assert_called_once_with(0)
+        # Without malloc_trim (another system or C library) a list starts no timer.
+        window = board()
+        with patch.dict(SCOPE, {"GLib": glib, "MALLOC_TRIM": None}):
+            window.apply_dashboard({"threads": []}, None)
+        self.assertEqual((list(timers), window.heap_trim), ([1, 2], None))
 
     def test_pending_and_confirmed_controls_keep_native_pointer_targets_and_exclude_pin_drag(self):
         read, pin = Mock(), Mock()

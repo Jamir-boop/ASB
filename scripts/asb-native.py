@@ -62,6 +62,20 @@ MACHINE_BRIDGE_PHRASES = {"ready": "ready", "update": "old version", "hooks": "h
 PROFILE_CONFLICT = "This profile changed outside this dialog. Your edits are kept. Select Cancel, open the profile again, then edit and save."
 
 
+def find_malloc_trim(system=sys.platform):
+    """glibc malloc_trim on Linux, else None: glibc keeps the freed blocks of a list render and gives back only the top of the heap."""
+    if system != "linux":
+        return None
+    try:
+        import ctypes
+        return getattr(ctypes.CDLL(None), "malloc_trim", None)
+    except (AttributeError, OSError):
+        return None
+
+
+MALLOC_TRIM = find_malloc_trim()
+
+
 def bridge_state_line(app):
     state = app.get("state")
     text = BRIDGE_STATES.get(state, BRIDGE_STATES["unknown"])[0]
@@ -4869,7 +4883,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     pending_messages = ()
     engine_generation = 0
     number_hold = number_idle = number_scroll = number_pressed = None
-    row_cache_trim = None
+    row_cache_trim = heap_trim = None
     # The rows of each column, the column of each visible row, and the columns that have their cards (all replaced, never changed in place).
     column_parts, row_columns, filled_columns = (), {}, frozenset()
     side_fill_tick, side_fill_frame = None, None
@@ -5799,6 +5813,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.report_ui()
         if dashboard is None:
             return False
+        if MALLOC_TRIM is not None and self.heap_trim is None:
+            # One trim a minute at most, and none while no list comes.
+            self.heap_trim = GLib.timeout_add_seconds(60, self.trim_heap)
         interval = refresh_interval(dashboard)
         if interval != self.refresh_interval_ms:
             self.refresh_interval_ms = interval
@@ -5816,6 +5833,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if self.snapshot_pending:
             self.snapshot_pending = False
             self.add_tick_callback(SnapshotWatch(os.environ["ASB_SNAPSHOT"]).tick)
+        return False
+
+    def trim_heap(self):
+        self.heap_trim = None
+        MALLOC_TRIM(0)
         return False
 
     def play_messages(self, messages):
@@ -8749,7 +8771,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.list_body.clear_flights()
         self.events.close()
         self.cancel_side_fill()
-        for name in ("timer", "clock_timer", "geometry_idle", "notice_timer", "row_cache_trim"):
+        for name in ("timer", "clock_timer", "geometry_idle", "notice_timer", "row_cache_trim", "heap_trim"):
             source = getattr(self, name)
             if source:
                 GLib.source_remove(source)
