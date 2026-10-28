@@ -12,8 +12,6 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SOURCE_REVISION = /^[a-f0-9]{64}$/;
 const SOURCE_ID = /^[a-z0-9][a-z0-9-]{0,79}$/;
 const ACTIVITY_PERIODS = Object.keys(USAGE_PERIODS);
-// A seat ID of the activity routes: a dashboard row ID or unknown:<machine ID>, with no control character.
-const SEAT = /^[^\x00-\x1f\x7f]{1,512}$/;
 // The sending task of an exact send: exactly its runtime session ID and its absolute config folder.
 const validCaller = (caller) => Boolean(caller) && typeof caller === 'object' && !Array.isArray(caller)
   && Object.keys(caller).sort().join(',') === 'configDir,runtimeSessionId'
@@ -144,7 +142,7 @@ export function createAsbServer({
     const relayRoute = machineRelay && url.pathname.match(machineRelay.sendReceipt ? /^\/api\/relay\/(homes|remote-peers|send|receipt)$/
       : /^\/api\/relay\/(homes|remote-peers|send)$/)?.[1];
     // The activity reads (contract 2); each exists only when the engine gives its service.
-    const activityRoute = url.pathname.match(/^\/api\/activity\/(messages|thread|usage)$/)?.[1];
+    const activityRoute = url.pathname.match(/^\/api\/activity\/(messages|usage)$/)?.[1];
     const activityReady = activityRoute === 'usage' ? Boolean(activityUsage) : Boolean(activityRoute) && Boolean(activityMessages);
     const panelRoute = Boolean(panelMachines) && url.pathname === '/api/panel';
     const usageExportRoute = typeof activityUsage?.exportAll === 'function' && url.pathname === '/api/usage/export';
@@ -213,21 +211,9 @@ export function createAsbServer({
         sendJson(response, 400, { error: 'Invalid query.' });
         return;
       }
-      let query = null;
-      if (activityRoute === 'thread') {
-        const names = [...new Set(params.keys())].filter((name) => name !== 'period').sort().join(',');
-        const seat = (name) => params.getAll(name).length === 1 && SEAT.test(params.get(name));
-        query = names === 'seat' && seat('seat') ? { seat: params.get('seat') } : names === 'a,b' && seat('a') && seat('b')
-          ? { a: params.get('a'), b: params.get('b') } : null;
-        if (!query) {
-          sendJson(response, 400, { error: 'Invalid session.' });
-          return;
-        }
-      }
       // Read-only: the bridge databases, the cached rows, and the member replies.
       try {
         sendJson(response, 200, activityRoute === 'usage' ? await activityUsage.report(period)
-          : activityRoute === 'thread' ? await activityMessages.thread(period, query)
           : textless ? await activityMessages.report(period, { text: false }) : await activityMessages.report(period));
       } catch { sendJson(response, 500, { error: 'Cannot read the ASB activity.' }); }
       return;

@@ -15,7 +15,6 @@ const MESSAGE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DAY_MS = 86_400_000;
 const KEEP_MS = 30 * DAY_MS;
 const MAX_FILES = 2_000;
-const THREAD_SIZE = 60;
 const TEXT_LIMIT = 2_000;
 const APPS = { codex: 'codex', 'claude-desktop-code': 'claude', opencode: 'opencode' };
 const NO_SCAN = { complete: true, files: 0, scannedFiles: 0 };
@@ -245,16 +244,6 @@ export function createActivityMessages({ readSources = async () => [], dashboard
       return { period, nowMs, buckets, machines, seats: seatsOf(ids, rows, machines, self),
         messages: kept.map(({ files, hash, claudeRecord, textId, text: _text, fromLabel, toLabel, ...item }) => (texts
           ? { ...item, fromLabel, toLabel, text: texts.get(item.id) ?? null } : item)), truncated: kept.length < messages.length };
-    },
-
-    async thread(period, { a, b, seat } = {}) {
-      const { messages } = await merged(period);
-      const all = messages.filter((item) => seat !== undefined ? item.from === seat || item.to === seat
-        : (item.from === a && item.to === b) || (item.from === b && item.to === a));
-      const shown = all.slice(-THREAD_SIZE);
-      const texts = await textsFor(shown);
-      return { total: all.length, messages: shown.map(({ id, from, to, atMs, status, reason }) => ({ id, from, to, atMs, status, reason,
-        text: texts.get(id) ?? null })) };
     },
 
     localRecords,
