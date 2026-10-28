@@ -8699,16 +8699,27 @@ class UsageRound(Gtk.Widget):
         self.update_property([Gtk.AccessibleProperty.LABEL], ["Usage by machine and app"])
         self.arcs, self.total_text, self.sub_text, self.format = [], "", "", str
         self.hover, self.raised = None, 0
+        self.pointer = None
         motion = Gtk.EventControllerMotion()
-        motion.connect("motion", lambda _controller, x, y: self.set_hover(self.arc_at(x, y)))
-        motion.connect("leave", lambda *_: self.set_hover(None))
+        motion.connect("motion", self.pointer_motion)
+        motion.connect("leave", self.pointer_leave)
         self.add_controller(motion)
         self.animation = Adw.TimedAnimation.new(self, 0, 1, 150, Adw.CallbackAnimationTarget.new(self.advance))
         self.animation.set_easing(Adw.Easing.EASE_OUT_CUBIC)
 
+    def pointer_motion(self, _controller, x, y):
+        self.pointer = (x, y)
+        self.set_hover(self.arc_at(x, y))
+
+    def pointer_leave(self, *_args):
+        self.pointer = None
+        self.set_hover(None)
+
     def set_arcs(self, arcs, total_text, sub_text, format_value):
         self.arcs, self.total_text, self.sub_text, self.format = arcs, total_text, sub_text, format_value
         self.hover = None
+        if self.pointer is not None:
+            self.set_hover(self.arc_at(*self.pointer))
         self.queue_draw()
 
     def set_size(self, size):
@@ -8799,12 +8810,21 @@ class UsageChart(Gtk.Widget):
         self.step, self.axis, self.format = 1, [], str
         self.targets, self.starts, self.progress = {}, {}, 1
         self.hover = self.tip = None
+        self.pointer = None
         motion = Gtk.EventControllerMotion()
-        motion.connect("motion", lambda _controller, x, y: self.set_hover(self.bar_at(x, y)))
-        motion.connect("leave", lambda *_: self.set_hover(None))
+        motion.connect("motion", self.pointer_motion)
+        motion.connect("leave", self.pointer_leave)
         self.add_controller(motion)
         self.animation = Adw.TimedAnimation.new(self, 0, 1, 220, Adw.CallbackAnimationTarget.new(self.advance))
         self.animation.set_easing(Adw.Easing.LINEAR)
+
+    def pointer_motion(self, _controller, x, y):
+        self.pointer = (x, y)
+        self.set_hover(self.bar_at(x, y))
+
+    def pointer_leave(self, *_args):
+        self.pointer = None
+        self.set_hover(None)
 
     def y(self, value):
         return self.BOTTOM - (self.BOTTOM - self.TOP) * value / (self.step * 3)
@@ -8827,6 +8847,8 @@ class UsageChart(Gtk.Widget):
         self.progress = 0 if animate else 1
         if animate:
             self.animation.play()
+        if self.pointer is not None:
+            self.set_hover(self.bar_at(*self.pointer))
         self.queue_draw()
 
     def advance(self, value):

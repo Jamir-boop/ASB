@@ -7287,6 +7287,37 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertIsNone(chart.tip)
         self.assert_no_new_warnings()
 
+    def test_usage_hover_survives_changed_numbers_and_clears_on_leave(self):
+        window = self.window()
+        chart, ring = window.chart, window.round
+        chart_motion = next(c for c in chart.observe_controllers() if isinstance(c, asb.Gtk.EventControllerMotion))
+        gap, width = chart.geometry()
+        chart_motion.emit("motion", chart.LEFT + 2 * (width + gap) + width / 2, 150.)
+        self.assertEqual(chart.hover, 2)
+        bars = [{key: value * 2 for key, value in bar.items()} for bar in chart.bars]
+        chart.set_data(chart.series, bars, chart.buckets, chart.format, "cost", False)
+        self.assertEqual(chart.hover, 2)
+        self.assertEqual(chart.tip["total_text"], asb.format_cost(sum(bars[2].values())))
+        chart_motion.emit("leave")
+        chart.set_data(chart.series, bars, chart.buckets, chart.format, "cost", False)
+        self.assertIsNone(chart.hover)
+        self.assertIsNone(chart.tip)
+        ring_motion = next(c for c in ring.observe_controllers() if isinstance(c, asb.Gtk.EventControllerMotion))
+        arc = ring.arcs[1]
+        radius, angle = (arc["r0"] + arc["r1"]) / 2, math.radians((arc["a0"] + arc["a1"]) / 2)
+        scale = ring.size / ring.SIZE
+        ring_motion.emit("motion", (160 + radius * math.cos(angle)) * scale, (160 + radius * math.sin(angle)) * scale)
+        self.assertIs(ring.hover, arc)
+        arcs = [dict(a, value=a["value"] * 2) for a in ring.arcs]
+        ring.set_arcs(arcs, "new total", "new subtitle", asb.format_cost)
+        self.assertIs(ring.hover, arcs[1])
+        self.assertEqual(ring.center(), (asb.format_cost(arcs[1]["value"]), arcs[1]["label"]))
+        ring_motion.emit("leave")
+        ring.set_arcs(arcs, "new total", "new subtitle", asb.format_cost)
+        self.assertIsNone(ring.hover)
+        self.assertEqual(ring.center(), ("new total", "new subtitle"))
+        self.assert_no_new_warnings()
+
     def test_the_models_table(self):
         window = self.window()
         rows = self.model_rows(window)
