@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFileSync, renameSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { promises as fs, appendFileSync, renameSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { readClaudeAppApprovals, readLiveClaudeRegistry } from '../src/claude-registry.mjs';
@@ -12,19 +12,23 @@ const PIPE = `\\\\.\\pipe\\LOCAL\\cc-msg-${'ab'.repeat(16)}`;
 const LIVE = new Set([101, 102, 103, 104, 105, 106, 107, 108, 109]);
 const isAlive = (pid) => LIVE.has(pid);
 
-test('the Windows rules keep a live pipe record with its recorded start and drop everything else', async () => {
+test('the Windows rules keep a live pipe record with its recorded start and drop everything else', async (t) => {
   const root = mkdtempSync(path.join(tmpdir(), 'asb-registry-'));
+  const allocations = [];
+  const alloc = Buffer.alloc;
+  t.mock.method(Buffer, 'alloc', (size, ...args) => { allocations.push(size); return alloc(size, ...args); });
   const write = (pid, fields = {}) => writeFileSync(path.join(root, `${pid}.json`), JSON.stringify({ pid, sessionId: SESSION, name: 'synthetic',
     procStart: '133000000000000000', peerProtocol: 1, messagingSocketPath: PIPE, entrypoint: 'cli', ...fields }));
   try {
     write(101);
+    const recordBytes = (await fs.stat(path.join(root, '101.json'))).size;
     write(102, { messagingSocketPath: '/synthetic/s/102.sock' });
     write(103, { messagingSocketPath: PIPE, peerProtocol: 2 });
     write(200);
     write(104, { procStart: 133000000000000000 });
     write(105, { procStart: '13300000000000000x' });
     write(106, { procStart: '1'.repeat(21) });
-    writeFileSync(path.join(root, '107.json'), JSON.stringify({ pid: 107, sessionId: SESSION, name: 'x'.repeat(256 * 1024), procStart: '1' }));
+    writeFileSync(path.join(root, '107.json'), JSON.stringify({ pid: 107, sessionId: SESSION, name: 'synthetic', procStart: '1' }) + ' '.repeat(256 * 1024));
     mkdirSync(path.join(root, '108.json'));
     // A link to a valid record outside the folder. Symbolic links need extra rights on Windows.
     if (process.platform !== 'win32') {
@@ -36,8 +40,29 @@ test('the Windows rules keep a live pipe record with its recorded start and drop
     const records = await readLiveClaudeRegistry([root], { windows: true, isAlive, listPipes: async () => [PIPE.slice(9)] });
     assert.deepEqual(records.map((record) => [record.pid, record.procStart, record.messagingSocketPath]).sort(),
       [[101, '133000000000000000', PIPE], [102, '133000000000000000', undefined], [103, '133000000000000000', undefined]]);
+    assert.ok(allocations.includes(recordBytes + 1));
+    assert.ok(!allocations.includes(256 * 1024 + 1));
     if (process.platform === 'win32') assert.deepEqual(await readLiveClaudeRegistry([root], { isAlive }), []);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a registry record that grows after its stat is refused', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'asb-registry-growth-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, '101.json');
+  writeFileSync(file, JSON.stringify({ pid: 101, sessionId: SESSION, name: 'synthetic', procStart: '1' }));
+  const open = fs.open;
+  t.mock.method(fs, 'open', async (...args) => {
+    const handle = await open(...args);
+    const stat = handle.stat.bind(handle);
+    t.mock.method(handle, 'stat', async () => {
+      const info = await stat();
+      appendFileSync(file, ' ');
+      return info;
+    });
+    return handle;
+  });
+  assert.deepEqual(await readLiveClaudeRegistry([root], { windows: true, isAlive, listPipes: async () => [] }), []);
 });
 
 test('on Windows a record with a message pipe counts only while its pipe is listed, and a list failure keeps the PID rule', async (t) => {

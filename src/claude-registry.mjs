@@ -32,14 +32,14 @@ async function readRecord(file, windows = false) {
   try {
     const info = await handle.stat();
     if (!info.isFile() || (!windows && info.uid !== process.getuid()) || info.size > MAX_RECORD_BYTES) return null;
-    const buffer = Buffer.alloc(MAX_RECORD_BYTES + 1);
+    const buffer = Buffer.alloc(info.size + 1);
     let size = 0;
     while (size < buffer.length) {
       const { bytesRead } = await handle.read(buffer, size, buffer.length - size, size);
       if (!bytesRead) break;
       size += bytesRead;
     }
-    return size > MAX_RECORD_BYTES ? null : JSON.parse(buffer.subarray(0, size));
+    return size > info.size ? null : JSON.parse(buffer.subarray(0, size));
   } catch { return null; } finally { await handle.close(); }
 }
 
