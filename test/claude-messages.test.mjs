@@ -31,14 +31,16 @@ test('sends accept all tool name forms and skip subagents, empty bodies, and cop
   events[1].message.content[0].input.session_id = `local_${uuid(2)}`;
   delete events[1].message.content[0].input.to;
   events.push(sent('skip-main', 'SendMessage', 'main'), sent('skip-agent', 'SendMessage', 'a0123456789abcdef'), sent('skip-empty', 'SendMessage', 'beta-helper', ' '),
-    { ...sent('skip-blob'), type: 'api-request-blob' }, { ...sent('skip-shape'), type: 'api-request-shape' });
+    { ...sent('skip-blob'), type: 'api-request-blob' }, { ...sent('skip-shape'), type: 'api-request-shape' },
+    sent('call-3', 'SendMessage', 'uds:/run/user/1000/cc-socks/synthetic.sock'));
   await writeFile(file, lines(events));
   const subagents = path.join(folder, uuid(1), 'subagents');
   await mkdir(subagents, { recursive: true });
   await writeFile(path.join(subagents, 'agent-synthetic.jsonl'), lines([sent('skip-deep')]));
   const rows = await reader.records(nowMs - 60_000);
-  assert.deepEqual(rows.map((row) => row.id), ['claude:call-0', 'claude:call-1', 'claude:call-2']);
-  assert.deepEqual(rows.map((row) => row.label), ['beta-helper', '', 'beta-helper']);
+  assert.deepEqual(rows.map((row) => row.id), ['claude:call-0', 'claude:call-1', 'claude:call-2', 'claude:call-3']);
+  assert.deepEqual(rows.map((row) => row.label), ['beta-helper', '', 'beta-helper', '']);
+  assert.deepEqual(rows.map((row) => row.to), ['beta-helper', `local_${uuid(2)}`, 'beta-helper', 'uds:']);
   assert.equal(await reader.text(rows[0]), 'Synthetic body.');
 });
 

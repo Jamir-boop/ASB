@@ -24,7 +24,8 @@ function messages(event, owner) {
       && typeof (item.input.to ?? item.input.session_id) === 'string').flatMap((item) => {
       const to = item.input.to ?? item.input.session_id;
       if (!to || to === 'main' || /^a[0-9a-f]{16}$/.test(to)) return [];
-      return [{ id: `claude:${item.id}`, direction: 'out', from: session, to,
+      // A socket address changes with each start and names no session: keep only its kind, so no path goes to the group.
+      return [{ id: `claude:${item.id}`, direction: 'out', from: session, to: to.startsWith('uds:') ? 'uds:' : to,
         label: SESSION.test(to) || to.startsWith('uds:') ? '' : to.slice(0, 120), atMs,
         body: item.input.message.trim(), status: 'accepted', reason: '' }];
     });
