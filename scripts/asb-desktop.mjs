@@ -26,6 +26,12 @@ function forgetBoard() {
   catch (error) { console.warn(`Cannot clear the saved board check: ${error.message}`); }
 }
 
+// On Windows, Node puts a child that is not detached into a job object that ends the child when the launcher exits.
+// A detached board does not share the console of the launcher, which ends with the launcher, so its output goes nowhere.
+export function boardSpawnOptions(windows) {
+  return windows ? { stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true, detached: true } : { stdio: ['pipe', 'inherit', 'inherit'] };
+}
+
 async function start() {
   const windows = process.platform === 'win32';
   const engine = windows ? startWindowsEngine() : startEngine();
@@ -53,9 +59,7 @@ async function start() {
   if (stopping) return;
   // The window starts while the engine starts, so that its slow GTK import overlaps the engine start. The argument "-" tells it to read the
   // engine URL and the source token from stdin: JSON lines, written when the engine is ready or restarts. Neither goes into an argument or a file.
-  window = spawn(board.python, [fileURLToPath(new URL('./asb-board.py', import.meta.url)), '-'], {
-    stdio: ['pipe', 'inherit', 'inherit'], ...(windows ? { windowsHide: true } : {}),
-  });
+  window = spawn(board.python, [fileURLToPath(new URL('./asb-board.py', import.meta.url)), '-'], boardSpawnOptions(windows));
   window.once('error', (error) => {
     console.error(`Cannot open the native ASB window: ${error.message}. Use system Python 3 or npm start for the web view.`);
     forgetBoard();

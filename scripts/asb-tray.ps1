@@ -25,7 +25,7 @@ function Start-Launcher([string]$Window = '') {
 
 if ($Open) {
   $launcher = Start-Launcher
-  # Exit code 3: the launcher found no way to open the board (see asb doctor). An open board keeps the launcher running.
+  # Exit code 3: the launcher found no way to open the board (see asb doctor). The launcher ends about 30 s after the board opens; a code 3 comes before that.
   if ($launcher.WaitForExit(30000) -and $launcher.ExitCode -eq 3) {
     Add-Type -AssemblyName System.Windows.Forms
     [void][System.Windows.Forms.MessageBox]::Show('ASB has no window on this PC. Run asb doctor.', 'ASB', 'OK', 'Warning')

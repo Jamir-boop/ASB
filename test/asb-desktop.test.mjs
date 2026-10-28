@@ -111,12 +111,11 @@ for (const platform of ['linux', 'win32']) test(`on ${platform} the launcher pic
     console: { log() {}, error() {}, warn() {} },
     spawn: (program, args, options) => { spawned = [program, args, options]; return native; },
   });
-  // Windows starts the engine through its tray and registers no icon; Linux spawn options have no windowsHide.
+  // Windows starts the engine through its tray and registers no icon; Linux spawn options have no windowsHide or detached.
   assert.deepEqual(calls, windows ? ['startWindowsEngine'] : ['startEngine', 'registerAppIcon']);
-  assert.deepEqual(Object.keys(spawned[2]).sort(), windows ? ['stdio', 'windowsHide'] : ['stdio']);
+  assert.deepEqual(JSON.parse(JSON.stringify(spawned[2])), desktop.boardSpawnOptions(windows));
   assert.equal(spawned[1][1], '-');
   assert.deepEqual(native.stdin.written, [addressLine]);
-  if (windows) assert.equal(spawned[2].windowsHide, true);
   assert.equal(watch.callbacks.length, 1);
   native.emit('exit', 0, null);
   assert.deepEqual(watch.cleared, ['timer-1']);
@@ -418,6 +417,50 @@ test('30 s after the address line the launcher ends stdin, lets the board run, a
   native.emit('exit', 3, null);
   assert.deepEqual(native.kills, []);
   assert.deepEqual(forgotten, []);
+  assert.equal(owner.exitCode, 0);
+});
+
+test('the Windows board starts detached with no launcher console, and the Linux board shares the launcher output', () => {
+  assert.deepEqual(desktop.boardSpawnOptions(true), { stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true, detached: true });
+  assert.deepEqual(desktop.boardSpawnOptions(false), { stdio: ['pipe', 'inherit', 'inherit'] });
+  assert.equal('detached' in desktop.boardSpawnOptions(false), false);
+});
+
+// On Windows the board starts detached; the 30 s timer and a stop in the first 30 s work as on Linux.
+async function openWindowsBoard() {
+  const owner = launcherProcess();
+  owner.platform = 'win32';
+  owner.env = {};
+  const watch = timers();
+  const native = fakeWindow(null);
+  let options;
+  await vm.runInNewContext(launcher, { ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
+    startWindowsEngine: async () => engine, console: { log() {}, error() {}, warn() {} },
+    spawn: (program, args, given) => { options = JSON.parse(JSON.stringify(given)); return native; },
+  });
+  assert.deepEqual(options, { stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true, detached: true });
+  assert.deepEqual(native.stdin.written, [addressLine]);
+  return { owner, watch, native };
+}
+
+test('30 s after the address line the Windows launcher lets its detached board run and exits 0', async () => {
+  const { owner, watch, native } = await openWindowsBoard();
+  watch.callbacks[0]();
+  assert.equal(native.stdin.ended, true);
+  assert.equal(native.unrefs, 1);
+  assert.equal(native.listenerCount('exit'), 0);
+  owner.emit('exit', 0);
+  assert.deepEqual(native.kills, []);
+  assert.equal(owner.exitCode, 0);
+});
+
+test('a stop in the first 30 s on Windows still ends the detached board', async () => {
+  const { owner, watch, native } = await openWindowsBoard();
+  owner.emit('SIGTERM');
+  assert.deepEqual(native.kills, ['SIGTERM']);
+  assert.deepEqual(watch.cleared, ['timer-1']);
+  assert.equal(native.stdin.ended, true);
+  native.emit('exit', null, 'SIGTERM');
   assert.equal(owner.exitCode, 0);
 });
 
