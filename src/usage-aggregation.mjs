@@ -19,9 +19,7 @@ export function periodBuckets(period, nowMs, firstMs = null) {
       endMs: new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime() };
   }
   if (unit === 'hour') {
-    const hour = new Date(nowMs);
-    hour.setMinutes(0, 0, 0);
-    const last = hour.getTime();
+    const last = nowMs - ((now.getMinutes() * 60 + now.getSeconds()) * 1000 + now.getMilliseconds());
     return { unit, startsMs: Array.from({ length: count }, (_, index) => last - (count - 1 - index) * HOUR_MS), endMs: last + HOUR_MS };
   }
   const day = (offset) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset).getTime();

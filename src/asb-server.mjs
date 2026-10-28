@@ -5,12 +5,13 @@ import http from 'node:http';
 import path from 'node:path';
 import { DashboardSnapshot } from './dashboard-snapshot.mjs';
 import { DEFAULT_PUBLIC_DIR, exactKeys, parseBooleanSearchParam, readJsonBody, sendJson, serveStatic, threadNotFound } from './local-http.mjs';
+import { USAGE_PERIODS } from './usage-aggregation.mjs';
 
 const PALETTE_KEYS = ['background', 'text', 'accent', 'muted', 'divider', 'success', 'warning'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SOURCE_REVISION = /^[a-f0-9]{64}$/;
 const SOURCE_ID = /^[a-z0-9][a-z0-9-]{0,79}$/;
-const ACTIVITY_PERIODS = ['24h', '7d', '30d', '90d', 'all'];
+const ACTIVITY_PERIODS = Object.keys(USAGE_PERIODS);
 // A seat ID of the activity routes: a dashboard row ID or unknown:<machine ID>, with no control character.
 const SEAT = /^[^\x00-\x1f\x7f]{1,512}$/;
 // The sending task of an exact send: exactly its runtime session ID and its absolute config folder.

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { createPeerPoller, exportBody, exportLocalSessions, MAX_ACTIVITY_BYTES, mergePeerRows, peerRequest, validActivity } from './machine-peers.mjs';
 import { phoneSettingsPath, privateIPv4, tailscaleIPv4 } from './phone-gateway.mjs';
 import { localMachineName } from './switchboard.mjs';
+import { USAGE_PERIODS } from './usage-aggregation.mjs';
 
 export const GROUP_SCHEMA = 1;
 export const MAX_MEMBERS = 32;
@@ -196,7 +197,7 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
   const peerStates = () => [...pollers.values()].map((poller) => poller.state);
   // The last activity reply of each member and period (contract 4), kept 30 s; an offline member keeps its last reply.
   const activityReplies = new Map();
-  const ACTIVITY_PERIODS = ['24h', '7d', '30d', '90d', 'all'];
+  const ACTIVITY_PERIODS = Object.keys(USAGE_PERIODS);
   async function memberActivity(state, period) {
     const key = `${state.member.machineId}\0${period}`;
     const entry = activityReplies.get(key) || { checkedAtMs: -Infinity, online: false, reply: null, lastReportAtMs: 0, pending: null };

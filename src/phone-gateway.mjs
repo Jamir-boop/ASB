@@ -11,6 +11,7 @@ import { createGzip } from 'node:zlib';
 import { sendJson } from './local-http.mjs';
 import { configDir } from './platform-paths.mjs';
 import { scopeInput } from './session-references.mjs';
+import { USAGE_PERIODS } from './usage-aggregation.mjs';
 
 export const PHONE_API_VERSION = 1;
 export const DEFAULT_PHONE_PORT = 4630;
@@ -22,7 +23,7 @@ const fields = (value, names) => value !== null && typeof value === 'object' && 
 const defaults = () => ({ schema: 2, enabled: false, bindAddresses: [], port: DEFAULT_PHONE_PORT, devices: [] });
 const KINDS = ['lan', 'zerotier', 'tailscale'];
 // The periods of the activity routes; the message routes take the first three.
-const ACTIVITY_PERIODS = ['24h', '7d', '30d', '90d', 'all'];
+const ACTIVITY_PERIODS = Object.keys(USAGE_PERIODS);
 const validPort = (port) => Number.isInteger(port) && port >= 1024 && port <= 65535;
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const equal = (left, right) => left.length === right.length && timingSafeEqual(left, right);

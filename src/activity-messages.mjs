@@ -5,31 +5,20 @@ import path from 'node:path';
 import { querySqliteJson } from './codex-data.mjs';
 import { MAX_ACTIVITY_MESSAGES, rowKeyLookup } from './machine-peers.mjs';
 import { defaultOpenCodeStateDir } from './opencode-data.mjs';
+import { periodBuckets, USAGE_PERIODS as PERIODS } from './usage-aggregation.mjs';
+
+export { periodBuckets, PERIODS };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // A message ID that can go into the text query.
 const MESSAGE_ID = /^[A-Za-z0-9_-]{1,128}$/;
-const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
 const KEEP_MS = 30 * DAY_MS;
 const MAX_FILES = 2_000;
 const THREAD_SIZE = 60;
 const TEXT_LIMIT = 2_000;
-export const PERIODS = { '24h': { unit: 'hour', count: 24 }, '7d': { unit: 'day', count: 7 }, '30d': { unit: 'day', count: 30 }, '90d': { unit: 'day', count: 90 } };
 const APPS = { codex: 'codex', 'claude-desktop-code': 'claude', opencode: 'opencode' };
 const NO_SCAN = { complete: true, files: 0, scannedFiles: 0 };
-
-// Contract 1: local buckets, oldest first. Hours step in real time from the local hour of now; days are local midnights (DST safe).
-export function periodBuckets(period, nowMs) {
-  const { unit, count } = PERIODS[period];
-  const now = new Date(nowMs);
-  const hourMs = nowMs - ((now.getMinutes() * 60 + now.getSeconds()) * 1000 + now.getMilliseconds());
-  const startsMs = [];
-  for (let back = count - 1; back >= 0; back -= 1) {
-    startsMs.push(unit === 'hour' ? hourMs - back * HOUR_MS : new Date(now.getFullYear(), now.getMonth(), now.getDate() - back).getTime());
-  }
-  return { unit, startsMs };
-}
 
 // Contract 2.1: the status group of one bridge row. The Codex app-server host writes `accepted` into in rows.
 export function statusGroup(status, direction) {
