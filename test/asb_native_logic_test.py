@@ -8785,6 +8785,38 @@ class BoardLauncherChecks(unittest.TestCase):
         self.assertLess(names.index("prefer_cairo"), names.index("exec"))
         self.assertEqual(ast.unparse(calls[names.index("prefer_cairo")].value), "prefer_cairo(os.environ)")
 
+    def test_linux_limits_malloc_arenas_unless_the_user_set_a_rule(self):
+        tree = ast.parse(self.SOURCE.read_text())
+        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "limit_malloc_arenas")
+        scope = {"sys": SimpleNamespace(platform="linux")}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), str(self.SOURCE), "exec"), scope)
+        rule = scope["limit_malloc_arenas"]
+        for system, environ, enabled in (
+                ("linux", {}, True), ("win32", {}, False), ("darwin", {}, False),
+                ("linux", {"MALLOC_ARENA_MAX": "4"}, False), ("linux", {"MALLOC_ARENA_MAX": ""}, False),
+                ("linux", {"GLIBC_TUNABLES": "glibc.malloc.arena_max=4"}, False),
+                ("linux", {"GLIBC_TUNABLES": ""}, False), ("linux", {"GLIBC_TUNABLES": "glibc.cpu.hwcaps=-AVX2"}, False)):
+            libc = SimpleNamespace(mallopt=Mock(return_value=1))
+            ctypes = SimpleNamespace(CDLL=Mock(return_value=libc), c_int=object())
+            with self.subTest(system=system, environ=environ), patch.dict(sys.modules, {"ctypes": ctypes}):
+                before = dict(environ)
+                rule(environ, system)
+                self.assertEqual(environ, before)
+                self.assertEqual(libc.mallopt.call_args_list, [call(-8, 2)] if enabled else [])
+                self.assertEqual(ctypes.CDLL.call_args_list, [call(None)] if enabled else [])
+        for libc in (SimpleNamespace(), SimpleNamespace(mallopt=None)):
+            ctypes = SimpleNamespace(CDLL=Mock(return_value=libc), c_int=object())
+            with self.subTest(libc=libc), patch.dict(sys.modules, {"ctypes": ctypes}):
+                rule({})
+        ctypes = SimpleNamespace(CDLL=Mock(side_effect=OSError("No C library")), c_int=object())
+        with patch.dict(sys.modules, {"ctypes": ctypes}):
+            rule({})
+        calls = [node.value for node in tree.body if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)]
+        names = [getattr(node.func, "id", None) for node in calls]
+        self.assertEqual(names.count("limit_malloc_arenas"), 1)
+        self.assertEqual(ast.unparse(calls[names.index("limit_malloc_arenas")]), "limit_malloc_arenas(os.environ)")
+        self.assertLess(names.index("limit_malloc_arenas"), names.index("exec"))
+
     def test_app_id_is_set_only_on_windows(self):
         function = next(node for node in ast.parse(self.SOURCE.read_text()).body
                         if isinstance(node, ast.FunctionDef) and node.name == "use_app_id")
@@ -8804,7 +8836,7 @@ class BoardLauncherChecks(unittest.TestCase):
         names = [getattr(node.func, "id", None) for node in calls]
         self.assertEqual(names.count("use_app_id"), 1)
         self.assertEqual(ast.unparse(calls[names.index("use_app_id")]), "use_app_id()")
-        self.assertEqual(names.index("use_app_id"), names.index("prefer_cairo") + 1)
+        self.assertEqual(names.index("use_app_id"), names.index("limit_malloc_arenas") + 1)
         self.assertLess(names.index("use_app_id"), names.index("exec"))
 
 

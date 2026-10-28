@@ -18,6 +18,20 @@ def prefer_cairo(environ, system=os.name):
             environ["GDK_DISABLE"] = "gl,vulkan"
 
 
+def limit_malloc_arenas(environ, system=sys.platform):
+    """Keep glibc at two malloc arenas: each request thread can otherwise keep its own arena after it ends.
+    A user setting wins; another system or C library does nothing."""
+    if system != "linux" or "MALLOC_ARENA_MAX" in environ or "GLIBC_TUNABLES" in environ:
+        return
+    try:
+        import ctypes
+        mallopt = getattr(ctypes.CDLL(None), "mallopt", None)
+        if mallopt is not None:
+            mallopt(-8, 2)  # M_ARENA_MAX
+    except (AttributeError, OSError):
+        return
+
+
 def use_app_id(system=os.name):
     """On Windows, python.exe runs the board, so Windows puts the board window under Python and shows the Python icon on the taskbar.
     An own AppUserModelID gives the board its own taskbar button with the window icon. It is APP_ID of asb-native.py."""
@@ -27,8 +41,9 @@ def use_app_id(system=os.name):
 
 
 # Set renderer defaults before GTK starts: Cairo avoids a failed GL start on Windows and reduces memory and repaint work on X11.
-# Windows also reads the AppUserModelID before the first window opens.
+# The arena limit runs before the board starts a request thread. Windows also reads the AppUserModelID before the first window opens.
 prefer_cairo(os.environ)
+limit_malloc_arenas(os.environ)
 use_app_id()
 source = Path(__file__).with_name("asb-native.py")
 spec = importlib.util.spec_from_file_location("asb_native", source)
