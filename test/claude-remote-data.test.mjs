@@ -625,6 +625,26 @@ test('cloud receipts a little ahead of the PC clock still count', async (t) => {
   assert.equal(buildSwitchboardDashboard(result.threads, [], now).threads[0].state, 'working');
 });
 
+test('an unchanged trusted remote cache skips its reads but keeps future and skew time rules', async (t) => {
+  const appDir = await temp(t);
+  await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions?limit=100', JSON.stringify({ data: [row('cse_01Old')], resume_token: cursor(now) }));
+  await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions/watch?include_trigger_sessions=true',
+    watch([row('cse_01Future')], now + 5 * 60_000 + 1_000));
+  const root = path.join(appDir, 'Cache', 'Cache_Data');
+  const fileScan = { canReuse: () => true, unchanged: (target) => target === root };
+  const calls = [];
+  const stat = fs.stat;
+  t.mock.method(fs, 'stat', (target, ...args) => { calls.push(String(target)); return stat(target, ...args); });
+  const ids = async (nowMs, scan) => (await loadClaudeRemoteThreads({ appDir, nowMs, fileScan: scan })).threads.map((thread) => thread.externalId);
+  assert.deepEqual(await ids(now), ['cse_01Old']);
+  calls.length = 0;
+  assert.deepEqual(await ids(now + 1_000, fileScan), await ids(now + 1_000));
+  calls.length = 0;
+  assert.deepEqual(await ids(now + 2_000, fileScan), ['cse_01Future']);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(await ids(now + 2_000), ['cse_01Future']);
+});
+
 test('a watch receipt a little after the PC clock keeps its changes', async (t) => {
   const appDir = await temp(t);
   await cacheFile(appDir, '1/0/https://claude.ai/v1/code/sessions?limit=100', JSON.stringify({

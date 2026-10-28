@@ -453,6 +453,7 @@ export async function loadSwitchboardDashboard({
   machine,
   workingStarts,
   rowCache = null,
+  loaderCache = null,
 } = {}) {
   const inputs = sources ? numberAppSources(sources) : [
     { id: 'codex', provider: 'codex', label: 'Codex', enabled: true },
@@ -462,11 +463,21 @@ export async function loadSwitchboardDashboard({
   // The reads that the loaders of one scan share: the registry folders and the Claude project indexes.
   const registryReads = new Map();
   const statusFiles = { codex: new Map(), claude: new Map() };
-  const fileScan = (source) => ({ canReuse: () => false, ...sourceScans[source], statusFiles: statusFiles[source] });
+  if (loaderCache) for (const key of loaderCache.keys()) if (!inputs.some((source) => source.id === key)) loaderCache.delete(key);
+  const fileScan = (provider, source) => {
+    const key = JSON.stringify(source);
+    let cached = loaderCache?.get(source.id);
+    if (loaderCache && cached?.key !== key) { cached = { key, loads: new Map() }; loaderCache.set(source.id, cached); }
+    return { canReuse: () => false, ...sourceScans[provider], statusFiles: statusFiles[provider], loaderCache: cached?.loads };
+  };
   const results = await Promise.allSettled(inputs.map(async (source) => {
     if (!source.enabled) return null;
+    const providerScan = fileScan(source.provider === 'codex' ? 'codex' : 'claude', source);
+    const keptOptions = providerScan.loaderCache?.get('source-options');
     let sourceOptions = {};
-    if (sources) {
+    if (sources && keptOptions && providerScan.unchanged?.(source.provider === 'codex' ? source.dataDir
+      : path.join(source.dataDir, 'claude-code-sessions'))) sourceOptions = keptOptions;
+    else if (sources) {
       // A Claude source also lists the Claude Code CLI sessions of its transcript folder, so its app folder can be absent (a PC with only the CLI).
       const info = await fs.stat(source.dataDir).catch((error) => {
         if (source.provider === 'claude-desktop-code' && error.code === 'ENOENT') return null;
@@ -481,16 +492,17 @@ export async function loadSwitchboardDashboard({
         : { appDir: source.dataDir, projectsDir: source.projectsDir || path.join(os.homedir(), '.claude', 'projects') };
       sourceOptions.cacheScope = sourceCacheScope(source);
       if (source.provider === 'codex' && loadCodex === loadCodexDashboard) await fs.stat(sourceOptions.databasePath);
+      providerScan.loaderCache?.set('source-options', sourceOptions);
     }
     if (source.provider === 'opencode') return loadOpenCode({ ...sourceOptions, nowMs, maxCount: 5000 });
     return source.provider === 'codex' ? loadCodex({
-      ...codexOptions, ...sourceOptions, nowMs, fileScan: fileScan('codex'),
+      ...codexOptions, ...sourceOptions, nowMs, fileScan: providerScan,
       codexNativeReadEnabled: true,
       maxRollouts: 5000,
       rolloutThreadFilter: isSwitchboardRoot,
       initialRolloutBytes: 64 * 1024,
       maxRolloutBytes: 256 * 1024,
-    }) : loadClaude({ ...claudeOptions, ...sourceOptions, nowMs, fileScan: fileScan('claude'), registryReads, maxCount: 5000, strictMetadataRead: true });
+    }) : loadClaude({ ...claudeOptions, ...sourceOptions, nowMs, fileScan: providerScan, registryReads, maxCount: 5000, strictMetadataRead: true });
   }));
   const providers = results.map((result, index) => {
     const source = inputs[index];
@@ -935,6 +947,7 @@ export function createSwitchboardServer(options = {}) {
   const workingStarts = new Map();
   // Row ID -> the last built row and its inputs, so a scan builds only the rows that changed (buildSwitchboardDashboard keeps it).
   const rowCache = new Map();
+  const loaderCache = new Map();
   const open = options.openThread || openSwitchboardThread;
   const registry = options.sourceRegistry || new AppSourceRegistry();
   const registeredLoad = !options.loadDashboard || Boolean(options.sourceRegistry);
@@ -1058,7 +1071,7 @@ export function createSwitchboardServer(options = {}) {
       const machine = options.machineIdentity?.() || { machineId: '', machineName: localMachineName() };
       // Only the engine passes reader positions: the first scan waits for their load, and each scan can save them.
       await options.readerPositions?.ready();
-      const loaded = await load({ ...(sources ? { sources } : {}), machine, sourceScans, workingStarts, rowCache });
+      const loaded = await load({ ...(sources ? { sources } : {}), machine, sourceScans, workingStarts, rowCache, loaderCache });
       options.readerPositions?.scanDone();
       options.onScanDone?.();
       // The npm start server has no machine identity, so its rows get no full reference.

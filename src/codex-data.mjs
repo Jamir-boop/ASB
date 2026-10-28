@@ -1098,8 +1098,21 @@ export async function loadCodexDashboard(options = {}) {
   const nowMs = options.nowMs || Date.now();
   const databasePath = options.databasePath || await discoverCodexStateDatabase();
   const rows = await readThreadRows({ ...options, databasePath });
-  const sessionIndex = await readSessionIndex(options.sessionIndexPath || DEFAULT_SESSION_INDEX, options.cacheScope);
-  const globalState = await readCodexGlobalState(options.globalStatePath || DEFAULT_GLOBAL_STATE, options.cacheScope).catch(() => ({}));
+  const sessionIndexValue = await readSessionIndex(options.sessionIndexPath || DEFAULT_SESSION_INDEX, options.cacheScope);
+  const globalStateValue = await readCodexGlobalState(options.globalStatePath || DEFAULT_GLOBAL_STATE, options.cacheScope).catch(() => ({}));
+  // The inputs come from caches keyed by file signatures, so the same objects mean unchanged files.
+  const key = 'codex';
+  const kept = options.fileScan?.loaderCache?.get(key);
+  const settings = JSON.stringify([databasePath, options.sessionIndexPath, options.globalStatePath, options.maxRollouts,
+    options.initialRolloutBytes, options.maxRolloutBytes, options.codexNativeReadEnabled]);
+  if (kept && kept.settings === settings && kept.rows === rows && kept.sessionIndex === sessionIndexValue && kept.globalState === globalStateValue
+    && kept.filter === options.rolloutThreadFilter && nowMs >= kept.atMs && nowMs < kept.untilMs
+    && options.fileScan.unchanged?.(path.dirname(databasePath)) && [...kept.files.keys()].every(options.fileScan.canReuse)) {
+    for (const [file, info] of kept.files) options.fileScan.statusFiles.set(file, info);
+    return kept.result;
+  }
+  const sessionIndex = sessionIndexValue;
+  const globalState = globalStateValue;
   // The kept rows are read only: the sort gets a copy of the list, and the threads are new objects.
   const threads = enrichThreads([...rows].sort((a, b) => threadRowUpdatedAtMs(b) - threadRowUpdatedAtMs(a)), nowMs, sessionIndex);
   if (options.codexNativeReadEnabled) {
@@ -1120,6 +1133,14 @@ export async function loadCodexDashboard(options = {}) {
     incoming.set(to, [...(incoming.get(to) || []), { from, atMs }]);
   }
   for (const thread of enriched) if (incoming.has(thread.id)) thread.incomingMessages = incoming.get(thread.id);
-  return { generatedAtMs: nowMs, threads: enriched,
+  const result = { generatedAtMs: nowMs, threads: enriched,
     ...(logsUnreadable ? { provider: { installed: true, status: 'warning', message: ROLLOUT_UNREADABLE_MESSAGE } } : {}) };
+  // The Codex runtime windows of `enrichThreads`: 15 min fresh, then six hours warm or running.
+  const untilMs = Math.min(...enriched.flatMap((thread) => [Number(thread.updatedAtMs || 0) + 15 * 60_000,
+    ...[thread.updatedAtMs, thread.agentActivityAtMs, thread.latestUserMessageAtMs, thread.currentTurnStartedAtMs, thread.rateLimitActivityAtMs]
+      .map((time) => Number(time || 0) + 6 * 60 * 60_000),
+    ...(thread.incomingMessages || []).flatMap((message) => [message.atMs - 5_000, message.atMs + SESSION_MESSAGE_WINDOW_MS])]).map((time) => time + 1).filter((time) => time > nowMs));
+  options.fileScan?.loaderCache?.set(key, { result, settings, rows, sessionIndex, globalState, filter: options.rolloutThreadFilter, atMs: nowMs, untilMs,
+    files: new Map(options.fileScan.statusFiles) });
+  return result;
 }

@@ -2,7 +2,7 @@
 // They are view-only cards. Titles come from the registry name or the title records, never from prompt text.
 import path from 'node:path';
 import { applyLiveClaudeStatus, baseClaudeThread, claudeFileStat, claudeTitle, currentClaudeRoot, DEFAULT_CLAUDE_PROJECTS_DIR, DEFAULT_MAX_JSONL_BYTES,
-  indexClaudeProjectFiles, liveClaudeRecord, mapWithConcurrency, projectNameFromCwd, readClaudeRootSignals, SIGNAL_CONCURRENCY } from './claude-data.mjs';
+  indexClaudeProjectFiles, liveClaudeRecord, rememberClaudeLoad, reuseClaudeLoad, mapWithConcurrency, projectNameFromCwd, readClaudeRootSignals, SIGNAL_CONCURRENCY } from './claude-data.mjs';
 import { readLiveClaudeRegistryFolder } from './claude-registry.mjs';
 
 const RECENT_MS = 7 * 24 * 60 * 60 * 1000;
@@ -12,6 +12,12 @@ const PROCESS_START_GRACE_MS = 10_000;
 export async function loadClaudeCliThreads({ projectsDir = DEFAULT_CLAUDE_PROJECTS_DIR, desktopSessionIds = new Set(), nowMs = Date.now(),
   maxCount = 500, maxBytes = DEFAULT_MAX_JSONL_BYTES, cacheScope = '', platform = process.platform, registryReads = null, fileScan = null } = {}) {
   const registryDir = path.join(path.dirname(projectsDir), 'sessions');
+  const options = { fileScan, registryReads, nowMs };
+  const key = JSON.stringify(['cli', projectsDir, maxCount, maxBytes, platform, [...desktopSessionIds].sort()]);
+  const desktopOnly = (file, index) => !index && [...desktopSessionIds].some((id) => path.basename(file, '.jsonl') === id
+    || file.includes(`${path.sep}${id}${path.sep}`));
+  const kept = reuseClaudeLoad(key, [projectsDir, registryDir], options, desktopOnly);
+  if (kept) return kept;
   // `registry` is null when no registry shows which processes live: an old CLI has no folder, macOS has no reader, and a read can fail.
   const registry = platform === 'linux' || platform === 'win32'
     ? await readLiveClaudeRegistryFolder(registryDir, { windows: platform === 'win32', registryReads, fileScan }).catch(() => null) : null;
@@ -83,5 +89,5 @@ export async function loadClaudeCliThreads({ projectsDir = DEFAULT_CLAUDE_PROJEC
     const deadline = Number(row.transcriptActivityAtMs || 0) + PROCESS_START_GRACE_MS;
     return nowMs > deadline ? { ...row, cliProcessEnded: true } : { ...row, cliProcessCheckAtMs: deadline };
   });
-  return { threads };
+  return rememberClaudeLoad(key, { threads }, options);
 }

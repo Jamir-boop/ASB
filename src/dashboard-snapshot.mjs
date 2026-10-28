@@ -240,8 +240,9 @@ export class DashboardSnapshot {
               const canReuse = reuseCheck({ platform: dashboardPlatform, changed: [...files.keys()],
                 directories: watched.map(([root]) => root),
                 recursive: watched.filter(([, entry]) => entry.spec.recursive && !entry.spec.manualRecursive).map(([root]) => root) });
-              sourceScans[source] = trusted ? { canReuse, unchanged: (root) => canReuse(root)
-                && ![...files.keys()].some((file) => file.startsWith(`${root}${path.sep}`)) } : null;
+              sourceScans[source] = trusted ? { canReuse, unchanged: (root, ignore = () => false) =>
+                (canReuse(root) || dashboardWatchFailures.get(root) === false)
+                && ![...files].some(([file, index]) => (file === root || file.startsWith(`${root}${path.sep}`)) && !ignore(file, index)) } : null;
             }
             const dashboard = await loadDashboard({ sourceScans });
             for (const source of ['codex', 'claude']) if (!sourceScans[source]) {
@@ -489,6 +490,8 @@ export class DashboardSnapshot {
                 await attachDirectories(spec.path, spec);
               }
             }
+            // A new optional root had no events before its watch, so the next scan is full.
+            if (reuse && failedPaths.has(spec.path)) dashboardWatchEpoch += 1;
             recovered = true;
           } catch (error) {
             dashboardWatchFailures.set(spec.path, !(spec.optional && error.code === 'ENOENT'));

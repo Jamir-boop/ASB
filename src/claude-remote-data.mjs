@@ -510,7 +510,7 @@ export function claudeRemoteStatus(thread, nowMs = Date.now()) {
   return { state: 'unknown', reason: 'The cached remote worker state is not known.' };
 }
 
-export async function loadClaudeRemoteThreads({ appDir = defaultClaudeAppDir(), nowMs = Date.now(), platform = process.platform } = {}) {
+export async function loadClaudeRemoteThreads({ appDir = defaultClaudeAppDir(), nowMs = Date.now(), platform = process.platform, fileScan = null } = {}) {
   const root = path.join(appDir, 'Cache', 'Cache_Data');
   // Windows Claude uses the Chromium blockfile cache, not the simple cache that this reader parses (spike S2).
   if (platform === 'win32') {
@@ -523,11 +523,12 @@ export async function loadClaudeRemoteThreads({ appDir = defaultClaudeAppDir(), 
     caches.set(root, cache);
     if (caches.size > 32) caches.delete(caches.keys().next().value);
   }
-  if (!cache.read) cache.read = scanCache(root, cache, nowMs).catch((error) => {
+  if (!cache.read && (!cache.directorySignature || !fileScan?.unchanged?.(root))) cache.read = scanCache(root, cache, nowMs).catch((error) => {
     if (error.code !== 'ENOENT') throw error;
     cache.keys.clear(); cache.responses.clear(); cache.directorySignature = '';
   }).finally(() => { cache.read = null; });
   await cache.read;
+  boundedResponses(cache, nowMs);
   const snapshot = currentSnapshot(cache.responses.values(), nowMs);
   const threads = snapshot.records.map((record) => {
     const thread = {

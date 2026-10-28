@@ -1333,6 +1333,28 @@ function claudeAgentLogs(entries) {
   return agentLogs;
 }
 
+// These results belong to one engine and source. The rows are read-only inputs to the board build.
+export function reuseClaudeLoad(key, roots, { fileScan, registryReads, nowMs }, ignore) {
+  const kept = fileScan?.loaderCache?.get(key);
+  if (!kept || nowMs < kept.atMs || nowMs >= kept.untilMs || !roots.every((root) => fileScan.unchanged?.(root, ignore))) return null;
+  for (const [file, info] of kept.files) if (!fileScan.statusFiles.has(file)) fileScan.statusFiles.set(file, info);
+  if (registryReads) for (const [root, records] of kept.records) (registryReads.liveRecords ||= new Map()).set(root, records);
+  return kept.result;
+}
+
+export function rememberClaudeLoad(key, result, { fileScan, registryReads, nowMs }) {
+  if (!fileScan?.loaderCache) return result;
+  const times = result.threads.flatMap((thread) => [thread.approvalCheckAtMs, thread.childEndGraceAtMs, thread.cliProcessCheckAtMs,
+    ...[thread.agentActivityAtMs, thread.latestLifecycleAtMs, thread.pendingToolAtMs, thread.latestBlockingQuestionAtMs]
+      .map((time) => Number(time || 0) + 6 * 60 * 60 * 1000),
+    thread.source === 'claude-cli' ? Number(thread.transcriptActivityAtMs || thread.updatedAtMs || 0) + 7 * 24 * 60 * 60 * 1000 : 0,
+    ...(thread.incomingMessages || []).flatMap((message) => [message.atMs - 5_000, message.atMs + 2 * 60 * 1000])]);
+  if (fileScan.loaderCache.size >= 4 && !fileScan.loaderCache.has(key)) fileScan.loaderCache.delete(fileScan.loaderCache.keys().next().value);
+  fileScan.loaderCache.set(key, { result, atMs: nowMs, untilMs: Math.min(...times.map((time) => Number(time || 0) + 1).filter((time) => time > nowMs)),
+    files: new Map(fileScan.statusFiles), records: new Map(registryReads?.liveRecords) });
+  return result;
+}
+
 // Old option names (asbMode, usageCache, fileIndexCacheTtlMs, todayStartMs, projectFiles) are accepted and ignored.
 export async function loadClaudeDesktopCodeThreads({
   appDir = DEFAULT_CLAUDE_APP_DIR,
@@ -1347,6 +1369,10 @@ export async function loadClaudeDesktopCodeThreads({
   registryReads = null,
 } = {}) {
   const root = path.join(appDir, 'claude-code-sessions');
+  const options = { fileScan, registryReads, nowMs };
+  const key = JSON.stringify(['desktop', appDir, projectsDir, maxCount, maxBytes, strictMetadataRead, platform]);
+  const kept = reuseClaudeLoad(key, [root, projectsDir, path.join(path.dirname(projectsDir), 'sessions'), path.join(appDir, 'logs')], options);
+  if (kept) return kept;
   if (strictMetadataRead) await fs.stat(root);
   let metadataReadErrors = 0;
   // waiting-input/ holds the messages that wait for a busy session under its ID: not a session record.
@@ -1387,7 +1413,7 @@ export async function loadClaudeDesktopCodeThreads({
   const status = metadataReadErrors ? (threads.length ? 'warning' : 'error') : files.length ? 'desktop' : 'missing';
   const formatWarning = approvals.formatChanged === true && status !== 'error';
 
-  return {
+  return rememberClaudeLoad(key, {
     provider: {
       ...CLAUDE_DESKTOP_CODE_PROVIDER,
       installed: files.length > 0,
@@ -1400,7 +1426,7 @@ export async function loadClaudeDesktopCodeThreads({
       threadCount: threads.length,
     },
     threads,
-  };
+  }, options);
 }
 
 export async function openClaudeThread(thread, {

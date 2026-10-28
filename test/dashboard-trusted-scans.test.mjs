@@ -9,6 +9,8 @@ import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { createHash } from 'node:crypto';
+import * as zlib from 'node:zlib';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DashboardSnapshot, reuseCheck } from '../src/dashboard-snapshot.mjs';
 import { loadClaudeDesktopCodeThreads, invalidateClaudeData } from '../src/claude-data.mjs';
@@ -79,6 +81,8 @@ async function fixture(t, { codexCount = 3, claudeCount = 3, serviceMode = true,
   const watches = [];
   const timers = [];
   const scans = [];
+  const loaderCache = new Map();
+  const rowCache = new Map();
   let failLoad = false;
   const snapshot = new DashboardSnapshot({
     serviceMode, now: () => clock, dashboardPlatform: 'linux',
@@ -98,7 +102,7 @@ async function fixture(t, { codexCount = 3, claudeCount = 3, serviceMode = true,
     async loadDashboard({ sourceScans } = {}) {
       if (failLoad) { failLoad = false; throw new Error('Made-up scan failure'); }
       scans.push({ at: clock - start, sourceScans });
-      const dashboard = await loadSwitchboardDashboard({ sources, nowMs: clock, sourceScans, loadClaude });
+      const dashboard = await loadSwitchboardDashboard({ sources, nowMs: clock, sourceScans, loadClaude, loaderCache, rowCache });
       return Number.isFinite(statusAfterMs) ? { ...dashboard, nextStatusCheckAtMs: clock < start + statusAfterMs ? start + statusAfterMs : Infinity } : dashboard;
     },
   });
@@ -470,6 +474,73 @@ function resolvingReuseCheck({ platform, changed, directories, recursive }) {
         || recursiveKeys.some((root) => target.startsWith(`${root}${path.sep}`)));
   };
 }
+
+test('60 trusted scans with skipped loaders equal full builds across remote clock, session, and child changes', async (t) => {
+  let remoteFile, child;
+  const f = await fixture(t, { codexCount: 2, claudeCount: 2, loadClaude: loadSwitchboardClaudeThreads,
+    async setup({ dir, transcripts, clock }) {
+      const appDir = path.join(dir, 'app');
+      const key = '1/0/https://claude.ai/v1/code/sessions/watch?include_trigger_sessions=true';
+      const keyBytes = Buffer.from(key);
+      const header = Buffer.alloc(24); header.writeBigUInt64LE(0xfcfb6d1ba7725c30n); header.writeUInt32LE(5, 8); header.writeUInt32LE(keyBytes.length, 12);
+      const footer = Buffer.alloc(24); footer.writeBigUInt64LE(0xf4fa6f45970d41d8n);
+      const headers = Buffer.from('HTTP/1.1 200 OK\0');
+      const tail = Buffer.alloc(24); tail.writeBigUInt64LE(0xf4fa6f45970d41d8n); tail.writeUInt32LE(2, 8); tail.writeUInt32LE(headers.length, 16);
+      const event = { id: 'cse_01Remote', title: 'Remote task', created_at: new Date(clock).toISOString(), updated_at: new Date(clock).toISOString(),
+        last_event_at: new Date(clock).toISOString(), environment_kind: 'anthropic_cloud', status: 'active', worker_status: 'running' };
+      const body = `event: added\ndata: ${JSON.stringify(event)}\n\nevent: sync\nid: ${Buffer.from(String(BigInt(clock + 300_500) * 1_000_000n)).toString('base64')}\ndata: {}\n\n`;
+      remoteFile = path.join(appDir, 'Cache', 'Cache_Data', `${createHash('sha1').update(keyBytes).digest().subarray(0, 8).reverse().toString('hex')}_0`);
+      await fs.mkdir(path.dirname(remoteFile), { recursive: true });
+      await fs.writeFile(remoteFile, Buffer.concat([header, keyBytes, zlib.gzipSync(body), footer, headers, createHash('sha256').update(keyBytes).digest(), tail]));
+      child = path.join(path.dirname(transcripts[0]), uuid(0), 'subagents', 'agent-kid.jsonl');
+      await fs.mkdir(path.dirname(child), { recursive: true });
+      await fs.writeFile(transcripts[0], jsonl({ type: 'user', timestamp: new Date(clock).toISOString(), message: { content: 'Made-up task' } },
+        { type: 'assistant', timestamp: new Date(clock + 1).toISOString(), message: { content: [{ type: 'tool_use', id: 'kid', name: 'Agent', input: {} }] } },
+        { type: 'user', timestamp: new Date(clock + 2).toISOString(), message: { content: [{ type: 'tool_result', tool_use_id: 'kid' }] },
+          toolUseResult: { status: 'async_launched', isAsync: true, agentId: 'kid' } }));
+      await fs.writeFile(child, jsonl({ type: 'user', timestamp: new Date(clock).toISOString(), message: { content: 'Made-up child' } }));
+    } });
+  const full = async (nowMs) => {
+    return loadSwitchboardDashboard({ sources: [
+      { id: 'codex', provider: 'codex', label: 'Codex', enabled: true, builtin: true, dataDir: f.codexDir },
+      { id: 'claude-desktop-code', provider: 'claude-desktop-code', label: 'Claude', enabled: true, builtin: true, dataDir: f.appDir, projectsDir: f.projectsDir },
+    ], nowMs, loadClaude: loadSwitchboardClaudeThreads });
+  };
+  const hidden = (dashboard) => [dashboard.nextStatusCheckAtMs, dashboard[Object.getOwnPropertySymbols(dashboard)[0]],
+    dashboard.threads.map((row) => Object.getOwnPropertySymbols(row).map((symbol) => [symbol.description, row[symbol]]))];
+  // Folder stats come from the watcher walk; the loaders stat session files.
+  let skipped = 0;
+  for (let scan = 0; scan < 60; scan += 1) {
+    f.advance(scan === 20 ? 301_000 : 3_000);
+    if (scan === 10) {
+      const file = path.join(f.project, `${uuid(10)}.jsonl`);
+      await fs.writeFile(file, jsonl({ type: 'user', entrypoint: 'cli', timestamp: new Date(f.snapshot.cachedDashboard().generatedAtMs + 1_000).toISOString(), message: { content: 'New CLI task' } }));
+      f.emit(file, 'rename');
+    } else if (scan === 30) {
+      await f.claudeEdit(1);
+      await fs.appendFile(f.transcripts[1], jsonl({ type: 'result', timestamp: new Date().toISOString(), subtype: 'success' }));
+      f.emit(f.transcripts[1]);
+    } else if (scan === 40) {
+      await fs.appendFile(child, jsonl({ type: 'result', timestamp: new Date().toISOString(), subtype: 'success' }));
+      f.emit(child);
+    } else if (scan % 7 === 0) {
+      await f.codexEdit(scan % 2, scan % 14 ? 'task_started' : 'task_complete');
+      f.emit(f.rollouts[scan % 2]);
+    } else await f.snapshot.invalidateDashboard('peer-sessions', { hard: false });
+    f.reset();
+    const kept = await f.snapshot.loadSharedDashboard();
+    if (scan % 7 && ![10, 20, 30, 40].includes(scan) && f.scans.at(-1).sourceScans.claude) {
+      skipped += 1;
+      assert.equal(stats.filter((file) => !file.startsWith(f.codexDir) && (path.extname(file) || file === remoteFile)).length + reads.filter((file) => file === remoteFile).length, 0, `scan ${scan} read Claude files: ${stats.join(', ')}`);
+    }
+    const built = await full(kept.generatedAtMs);
+    assert.deepEqual(JSON.parse(JSON.stringify(kept)), JSON.parse(JSON.stringify(built)), `scan ${scan}`);
+    assert.deepEqual(hidden(kept), hidden(built), `hidden fields of scan ${scan}`);
+  }
+  assert.ok(f.scans.slice(1).some((scan) => scan.sourceScans.claude));
+  assert.ok(f.scans.at(-1).sourceScans.claude);
+  assert.ok(skipped >= 30);
+});
 
 test('the reuse check gives the answers of a check that resolves each path, and resolves no normal POSIX path', (t) => {
   const watch = {
