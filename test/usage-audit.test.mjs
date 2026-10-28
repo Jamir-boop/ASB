@@ -63,3 +63,38 @@ test('two members with different names keep separate usage', async (t) => {
   assert.deepEqual(usage.report('all', members).records.map(({ machineId, tokens }) => [machineId, tokens.uncached]), [[OLD, 1], [MEMBER, 2]]);
   assert.deepEqual((await usage.exportAll(members)).machines.slice(1).map(({ name }) => name), ['member-0', 'member-1']);
 });
+
+test('a Codex archive race counts a rollout once in each scan and the saved ledger', async (t) => {
+  const sources = [];
+  const { usage, root, ledgerFile } = await setup(t, { readSources: async () => sources });
+  const dataDir = path.join(root, 'codex');
+  const sessions = path.join(dataDir, 'sessions');
+  const archived = path.join(dataDir, 'archived_sessions');
+  await fs.mkdir(sessions, { recursive: true });
+  await fs.mkdir(archived);
+  sources.push({ provider: 'codex', enabled: true, dataDir });
+  const name = 'rollout-synthetic.jsonl';
+  await fs.writeFile(path.join(sessions, name), [
+    { type: 'turn_context', timestamp: new Date(HOUR).toISOString(), payload: { model: 'gpt-test-1' } },
+    { type: 'event_msg', timestamp: new Date(HOUR).toISOString(), payload: { type: 'token_count', info: {
+      last_token_usage: { input_tokens: 1000, cached_input_tokens: 0, output_tokens: 100, total_tokens: 1100 },
+      total_token_usage: { input_tokens: 1000, cached_input_tokens: 0, output_tokens: 100, total_tokens: 1100 },
+    } } },
+  ].map(JSON.stringify).join('\n') + '\n');
+  await usage.refresh();
+  const readdir = fs.readdir;
+  let moved = false;
+  t.mock.method(fs, 'readdir', async (folder, ...args) => {
+    if (folder === archived && !moved) { moved = true; await fs.rename(path.join(sessions, name), path.join(archived, name)); }
+    return readdir(folder, ...args);
+  });
+  const check = () => assert.deepEqual(usage.localHourly('all').usage.map(({ tokens }) => tokens), [tokens(1000, 0, 0, 100)]);
+  await usage.refresh();
+  assert.equal(moved, true);
+  check();
+  await usage.refresh();
+  check();
+  await usage.flush();
+  const saved = JSON.parse(await fs.readFile(ledgerFile, 'utf8'));
+  assert.deepEqual(saved.self.records, [row(1000, 0, 0, 100)]);
+});

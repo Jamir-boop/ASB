@@ -120,8 +120,16 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     }
     if (ledgerFile) await ensureLedger();
     const { roots, databases } = usageRoots(await readSources(), homeDir, env);
-    const files = [];
+    let files = [];
     for (const { root, app, fileName } of roots) await listTranscripts(root, app, files, pause, fileName);
+    // Archiving can move a rollout between the two root listings; the archived path owns that file name.
+    const codexFiles = new Map();
+    for (const entry of files) {
+      if (entry.app !== 'codex') continue;
+      const name = path.basename(entry.file).replace(/\.zst$/, '');
+      if (!codexFiles.has(name) || entry.file.split(path.sep).includes('archived_sessions')) codexFiles.set(name, entry);
+    }
+    files = files.filter((entry) => entry.app !== 'codex' || codexFiles.get(path.basename(entry.file).replace(/\.zst$/, '')) === entry);
     // shortcut: only the 10,000 newest transcript files count, so the scan and the cache stay bounded; raise MAX_CACHE_FILES if All time needs more.
     files.sort((a, b) => b.info.mtimeMs - a.info.mtimeMs || a.file.localeCompare(b.file));
     files.splice(maxCacheFiles);
