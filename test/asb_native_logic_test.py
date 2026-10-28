@@ -87,6 +87,12 @@ class Box:
     def get_spacing(self):
         return 12
 
+    def add_tick_callback(self, *_args):
+        return 1
+
+    def remove_tick_callback(self, _handler):
+        pass
+
     def append(self, child):
         self.children.append(child)
         child.parent = self
@@ -5723,6 +5729,21 @@ class NativeLogicChecks(unittest.TestCase):
         window.cancel_motion()
         self.assertIsNone(window.motion_from)
 
+    def test_a_side_card_filled_during_a_glide_appears_at_its_place(self):
+        window = object.__new__(Window)
+        window.closed, window.motion_from, window.late_cards = False, {}, {"side"}
+        window.redraw_visible_columns, window.advance_motion, window.motion_animation = Mock(), Mock(), Mock()
+        window.list_body = Mock()
+        window.painted_places = lambda: {"visible": (4, 0, 0), "side": (284, 0, 0)}
+        window.focus_widgets = {"visible": Mock(), "side": Mock()}
+        window.focus_widgets["visible"].get_width.return_value = 268
+        window.focus_widgets["visible"].get_height.return_value = 68
+        adjustment = SimpleNamespace(get_value=lambda: 0)
+        window.scroll = SimpleNamespace(get_hadjustment=lambda: adjustment)
+        window.start_motion()
+        self.assertEqual(window.list_body.motion, {"visible": (0, 0, 1)})
+        window.motion_animation.play.assert_called_once_with()
+
     def test_row_actions_keep_the_target_and_post_to_the_session_route(self):
         window = object.__new__(Window)
         window.base = "http://127.0.0.1:1"
@@ -6214,6 +6235,39 @@ class NativeLogicChecks(unittest.TestCase):
             window.render_board = lambda: setattr(window, "closed", True)
             window.render()
             self.assertEqual((window.popover_hooks, gobject.add_emission_hook.call_count), ([], 4))
+
+    def test_side_fill_cancels_at_each_stage_and_fills_one_column_per_idle(self):
+        window = object.__new__(Window)
+        window.list_body, window.fill_columns, window.closed = Mock(), Mock(), False
+        clock = Mock()
+        clock.connect.return_value = 42
+        idle, remove = Mock(return_value=91), Mock()
+        with patch.dict(SCOPE, {"GLib": SimpleNamespace(idle_add=idle, source_remove=remove)}):
+            window.side_fill_tick, window.side_columns = 17, (2, 7)
+            window.cancel_side_fill()
+            window.list_body.remove_tick_callback.assert_called_once_with(17)
+            self.assertEqual(window.side_columns, ())
+            window.side_columns = (2, 7)
+            self.assertFalse(window.side_fill_after_frame(None, clock))
+            callback = clock.connect.call_args.args[1]
+            window.cancel_side_fill()
+            clock.disconnect.assert_called_once_with(42)
+            idle.assert_not_called()
+            window.side_columns = (2, 7)
+            window.side_fill_after_frame(None, clock)
+            callback = clock.connect.call_args.args[1]
+            callback(clock)
+            idle.assert_called_once_with(window.fill_side_column)
+            window.cancel_side_fill()
+            remove.assert_called_once_with(91)
+            window.side_columns = (2, 7)
+            self.assertFalse(window.fill_side_column())
+            window.fill_columns.assert_called_once_with((2,))
+            self.assertEqual(window.side_columns, (7,))
+            self.assertFalse(window.fill_side_column())
+            self.assertEqual([call.args for call in window.fill_columns.call_args_list], [((2,),), ((7,),)])
+            self.assertEqual(window.side_columns, ())
+            self.assertIsNone(window.side_fill_idle)
 
     def test_card_actions_set_a_tooltip_only_when_its_text_changes(self):
         def button():

@@ -4496,6 +4496,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     row_cache_trim = None
     # The rows of each column, the column of each visible row, and the columns that have their cards (all replaced, never changed in place).
     column_parts, row_columns, filled_columns = (), {}, frozenset()
+    side_fill_tick, side_fill_frame, side_fill_idle = None, None, None
+    side_columns = ()
     # Cards whose column filled after the last render: a glide that starts now does not fade them in.
     late_cards = frozenset()
     numbers_shown = False
@@ -6660,6 +6662,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def render_board(self, preserve_focus=None, reveal_focus=False, preserve_action=None):
         if self.dashboard is None or self.closed:
             return
+        self.cancel_side_fill()
         focused = preserve_focus or self.focus_key()
         focus_widget = self.get_focus()
         focused_action = preserve_action or getattr(focus_widget, "asb_card_action", None)
@@ -6706,12 +6709,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.release_row(self.row_cache.pop(identity))
             self.focus_widgets.pop(identity, None)
             self.open_errors.pop(identity, None)
-        # Only the columns near the view get cards: the columns that touch it after the scroll restore, and one on each side.
+        # The columns that touch the view after the scroll restore get cards now; the side columns follow after the frame.
         # The columns of the focused card, the card to focus, and the open row panel also fill, so none loses its card.
         old_filled = set() if repack else self.filled_columns
         step = self.column_pixel_width + 12
         page = self.scroll.get_hadjustment().get_page_size() or width
-        first, last = self.column_range(min(position, max(0, len(parts) * step - 4 - page)), page)
+        restored = min(position, max(0, len(parts) * step - 4 - page))
+        first, last = self.column_range(restored, page, sides=False)
         panel = getattr(self, "context_menu", None)
         kept = (self.row_columns.get(identity) for identity in (focused, self.focus_key(), getattr(panel, "asb_identity", None)))
         filled = {number for number in (*old_filled, *range(first, last), *kept) if number is not None and number < len(parts)}
@@ -6807,6 +6811,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         # Hidden cards stay cached for a quick return, up to twice the card limit (+1 is the More card); an idle step releases the rest after the frame.
         if self.card_limit and not self.show_all_cards and len(self.row_cache) > 2 * self.card_limit + 1 and self.row_cache_trim is None:
             self.row_cache_trim = GLib.idle_add(self.trim_row_cache)
+        self.side_columns = tuple(number for number in range(*self.column_range(restored, page))
+                                  if 0 <= number < len(parts) and number not in self.filled_columns)
+        if self.side_columns:
+            self.side_fill_tick = self.list_body.add_tick_callback(self.side_fill_after_frame)
 
     def prepare_card(self, row, narrow_changed=False):
         """The card of a row from the cache, up to date, or a new card."""
@@ -6833,7 +6841,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 widget.get_parent().remove(widget)
             listing.append(widget)
 
-    def column_range(self, value=None, page=None):
+    def column_range(self, value=None, page=None, sides=True):
         """The first and the end column index of the columns that touch the view, with one column on each side."""
         adjustment = self.scroll.get_hadjustment()
         value = adjustment.get_value() if value is None else value
@@ -6841,7 +6849,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         step = self.column_pixel_width + 12
         start = self.list_body.get_margin_start()
         gap = self.list_body.get_spacing()
-        return max(0, math.floor((value - start + gap) / step) - 1), math.ceil((value + page - start) / step) + 1
+        first, last = math.floor((value - start + gap) / step), math.ceil((value + page - start) / step)
+        return max(0, first - int(sides)), last + int(sides)
 
     def fill_columns(self, numbers):
         """Build and attach the cards of the columns that have none yet. Returns True when a column filled."""
@@ -6858,6 +6867,39 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.attach_column(number)
         self.queue_number_keys()
         return True
+
+    def cancel_side_fill(self):
+        if self.side_fill_tick:
+            self.list_body.remove_tick_callback(self.side_fill_tick)
+            self.side_fill_tick = None
+        if self.side_fill_frame:
+            clock, handler = self.side_fill_frame
+            clock.disconnect(handler)
+            self.side_fill_frame = None
+        if self.side_fill_idle:
+            GLib.source_remove(self.side_fill_idle)
+            self.side_fill_idle = None
+        self.side_columns = ()
+
+    def side_fill_after_frame(self, _widget, clock):
+        self.side_fill_tick = None
+        def after_paint(clock):
+            clock.disconnect(self.side_fill_frame[1])
+            self.side_fill_frame = None
+            self.side_fill_idle = GLib.idle_add(self.fill_side_column)
+        self.side_fill_frame = clock, clock.connect("after-paint", after_paint)
+        return False
+
+    def fill_side_column(self):
+        self.side_fill_idle = None
+        if self.closed or not self.side_columns:
+            return False
+        number, *remaining = self.side_columns
+        self.side_columns = tuple(remaining)
+        self.fill_columns((number,))
+        if self.side_columns:
+            self.side_fill_idle = GLib.idle_add(self.fill_side_column)
+        return False
 
     def fill_visible_columns(self, *_args):
         if self.column_parts and not self.closed:
@@ -8258,6 +8300,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.list_body.clear_hover()
         self.list_body.clear_flights()
         self.events.close()
+        self.cancel_side_fill()
         for name in ("timer", "clock_timer", "geometry_idle", "notice_timer", "row_cache_trim"):
             source = getattr(self, name)
             if source:

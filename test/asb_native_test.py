@@ -5071,6 +5071,51 @@ class WidgetCheck(unittest.TestCase):
             with self.subTest(value=value, page=page):
                 self.assertEqual(window.column_range(value, page), expected)
 
+    def test_side_columns_fill_one_at_a_time_after_the_first_paint(self):
+        window, _dashboard = self.lazy_board(300, width=1400, height=900)
+        window.set_focus(None)
+        window.layout_signature = None
+        window.render()
+        touching = set(range(*window.column_range(sides=False)))
+        nearby = set(range(*window.column_range()))
+        self.assertEqual(window.filled_columns, touching)
+        self.assertTrue(nearby - touching)
+        first_paint, fills = [], []
+        clock = window.get_frame_clock()
+        handler = clock.connect("after-paint", lambda _clock: first_paint.append(set(window.filled_columns)))
+        self.addCleanup(clock.disconnect, handler)
+        fill = window.fill_columns
+        def record(numbers):
+            fills.append(tuple(numbers))
+            self.assertTrue(first_paint)
+            return fill(numbers)
+        with patch.object(window, "fill_columns", record):
+            self.drain(.4)
+        self.assertEqual(first_paint[0], touching)
+        self.assertEqual(window.filled_columns, nearby)
+        self.assertEqual(fills, [(number,) for number in sorted(nearby - touching)])
+        self.assertIsNone(window.side_fill_idle)
+        self.assertIsNone(window.side_fill_frame)
+        self.assertIsNone(window.side_fill_tick)
+
+    def test_a_new_render_cancels_a_side_fill_waiting_for_its_frame(self):
+        window, _dashboard = self.lazy_board(300, width=1400, height=900)
+        window.set_focus(None)
+        window.layout_signature = None
+        window.render()
+        tick = window.side_fill_tick
+        self.assertIsNotNone(tick)
+        with patch.object(window.list_body, "remove_tick_callback", wraps=window.list_body.remove_tick_callback) as remove:
+            window.search.set_text("no matching made-up title")
+            window.render()
+            remove.assert_any_call(tick)
+        self.drain(.4)
+        self.assertEqual(window.side_columns, ())
+        self.assertIsNone(window.side_fill_tick)
+        self.assertIsNone(window.side_fill_frame)
+        self.assertIsNone(window.side_fill_idle)
+        self.assertEqual(window.focus_widgets, {})
+
     def test_columns_get_their_cards_before_they_paint(self):
         window, _dashboard = self.lazy_board()
         adjustment, viewport = window.scroll.get_hadjustment(), window.scroll.get_child()
@@ -5085,7 +5130,14 @@ class WidgetCheck(unittest.TestCase):
         clock = window.get_frame_clock()
         handler = clock.connect("after-paint", after_paint)
         self.addCleanup(clock.disconnect, handler)
-        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size()); self.drain(.3)
+        # A scroll before the queued side fill must fill its destination synchronously.
+        window.set_focus(None)
+        window.layout_signature = None
+        window.render()
+        self.assertIsNotNone(window.side_fill_tick)
+        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+        self.assertIn(len(window.column_parts) - 1, window.filled_columns)
+        self.drain(.3)
         self.assertIn(len(window.column_parts) - 1, painted)
         # A wheel spring back toward the start, and a wider window, show more columns.
         for _notch in range(4):
@@ -5378,8 +5430,10 @@ class WidgetCheck(unittest.TestCase):
         """Each column holds its target cards in the target order, as widget children and in the internal list of GTK."""
         shown = [column for column in window.list_columns if column.get_parent()]
         self.assertEqual(len(shown), window.actual_columns)
+        self.assertTrue(set(range(*window.column_range(sides=False))) & set(range(len(shown))) <= window.filled_columns)
         for number, column in enumerate(shown):
-            target = [window.focus_widgets[identity] for identity in window.row_order[number * window.capacity:(number + 1) * window.capacity]]
+            identities = window.row_order[number * window.capacity:(number + 1) * window.capacity]
+            target = [window.focus_widgets[identity] for identity in identities] if number in window.filled_columns else []
             self.assertEqual(board_children(column), target)
             self.assertEqual(board_listed(column), target)
             if laid_out:
@@ -5616,6 +5670,8 @@ class WidgetCheck(unittest.TestCase):
                 child = child.get_next_sibling()
             return found
         def assert_rest():
+            wait(lambda: window.side_fill_tick is None and window.side_fill_frame is None and window.side_fill_idle is None
+                 and all(row.get_height() for row in self.widget_rows(window)))
             self.assertEqual((strip.motion, window.motion_columns, window.motion_from), ({}, [], None))
             self.assertNotEqual(motion.get_state(), playing)
             self.assertNotEqual(spring.get_state(), playing)
@@ -5681,9 +5737,12 @@ class WidgetCheck(unittest.TestCase):
         assert_rest()
         before, seen = change(lambda: window.search.set_text("sample"))
         # A staying row whose column is now far from the view has no card.
-        _progress, offsets, places = assert_glide(before, seen, staying & set(window.focus_widgets))
-        self.assertEqual({identity for identity, offset in offsets.items() if offset[2]}, set(window.focus_widgets) - staying)
-        self.assertTrue(all(places[identity][2] == 1 and offsets[identity] == (0, 0, 1) for identity in set(window.focus_widgets) - staying))
+        # A side card that fills after the first frame appears at its place.
+        animated = set(window.focus_widgets) - window.late_cards
+        _progress, offsets, places = assert_glide(before, seen, staying & animated)
+        self.assertFalse(window.late_cards & set(offsets))
+        self.assertEqual({identity for identity, offset in offsets.items() if offset[2]}, animated - staying)
+        self.assertTrue(all(places[identity][2] == 1 and offsets[identity] == (0, 0, 1) for identity in animated - staying))
         self.assertTrue(all(place[2] == 0 for place in window.painted_places().values()))  # Full opacity at the end.
         self.assertEqual(window.painted_places(), full)
         assert_rest()
