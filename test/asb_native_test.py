@@ -5113,6 +5113,33 @@ class WidgetCheck(unittest.TestCase):
         self.drain(.3)
         self.assert_board_columns(window, laid_out=True)
 
+    def test_view_change_does_not_animate_card_height(self):
+        provider = asb.Gtk.CssProvider()
+        provider.load_from_data(b"row.activatable { transition: all 75ms ease-in-out; }")
+        display = asb.Gdk.Display.get_default()
+        asb.Gtk.StyleContext.add_provider_for_display(display, provider, asb.Gtk.STYLE_PROVIDER_PRIORITY_THEME)
+        self.addCleanup(asb.Gtk.StyleContext.remove_provider_for_display, display, provider)
+        window = self.snapshot_window()
+        window.dashboard = {"generatedAtMs": NOW, "providers": [], "threads": board_rows(48)}
+        window.render()
+        window.set_default_size(700, 600)
+        window.present(); self.drain(.5)
+        repacks = []
+        render = window.render
+        def counted(*args, **kwargs):
+            repacks.append(window.row_height)
+            return render(*args, **kwargs)
+        with patch.object(window, "render", side_effect=counted):
+            window.view_filter.set_selected(1)
+            self.drain(.5)
+        self.assertEqual(repacks, [asb.COMFORTABLE_ROW_HEIGHT])
+        self.assertEqual({card.get_height() for card in window.focus_widgets.values()}, {asb.COMFORTABLE_ROW_HEIGHT})
+        repacks.clear()
+        with patch.object(window, "render", side_effect=counted):
+            window.view_filter.set_selected(0)
+            self.drain(.5)
+        self.assertEqual(repacks, [asb.ROW_HEIGHT])
+
     def test_card_motion_wheel_spring_and_column_width(self):
         threads = [{"id": f"s{n}", "provider": "codex", "providerLabel": "Codex",
                     "title": f"Sample session {n} " + ("needle " if n % 2 else "") + "with a long synthetic title " * 7,

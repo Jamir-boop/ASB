@@ -4880,7 +4880,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def set_palette(self, colors):
         base = ".asb-column-flow"
         css = f"""
-{base} .asb-session {{ min-height: {ROW_HEIGHT}px; padding: 0; border-radius: 3px; font-size: 13px; }}
+{base} .asb-session {{ min-height: {ROW_HEIGHT}px; transition-property: background-color, color; padding: 0; border-radius: 3px; font-size: 13px; }}
 {base}.asb-comfortable .asb-session {{ min-height: {COMFORTABLE_ROW_HEIGHT}px; }}
 {base}.asb-comfortable .asb-session.asb-hover-paint:not(:focus-within) {{ background: transparent; }}
 {base} .asb-filter-pill {{ min-height: 24px; border-radius: 99px; padding: 2px 8px; font-size: 11px; }}
