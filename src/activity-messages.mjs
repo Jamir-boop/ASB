@@ -60,9 +60,13 @@ export function messageText(text) {
 
 export function createActivityMessages({ readSources = async () => [], dashboard = async () => ({ threads: [] }),
   claudeMessages = null, machine = () => ({ machineId: '', name: '' }), group = null, activityUsage = null, now = Date.now,
-  openCodeStateDir = defaultOpenCodeStateDir, query = querySqliteJson } = {}) {
+  openCodeStateDir = defaultOpenCodeStateDir, query = querySqliteJson, busy = () => false, changes = null } = {}) {
   // Per bridge database: the size and change time of the file and its WAL, and its message rows of the last 30 days. Oldest entry goes first.
   const files = new Map();
+  let messagesCache = null;
+  const recordsCache = new Map();
+  const reusable = (cached, sinceMs) => typeof changes === 'function' && cached && cached.sinceMs <= sinceMs
+    && (now() - cached.atMs < 10_000 || (!busy() && changes() === cached.changes && now() - cached.atMs < 5 * 60_000));
 
   async function readRows(filePath, sinceMs) {
     const [main, wal] = await Promise.all([fs.stat(filePath), fs.stat(`${filePath}-wal`).catch(() => null)]);
@@ -102,6 +106,8 @@ export function createActivityMessages({ readSources = async () => [], dashboard
 
   // This machine's records since sinceMs: one per message ID from all its rows. The receiver row gives the status, the sender row the time.
   async function localMessages(sinceMs) {
+    if (reusable(messagesCache, sinceMs)) return messagesCache.records.filter((row) => row.atMs >= sinceMs);
+    const atMs = now(), change = changes?.();
     const read = await Promise.all((await bridgeFiles()).map(({ filePath, owner }) =>
       readRows(filePath, now() - KEEP_MS).then((rows) => ({ filePath, owner, rows }), () => null)));
     const byId = new Map();
@@ -114,10 +120,12 @@ export function createActivityMessages({ readSources = async () => [], dashboard
         record.files.push(entry.filePath);
       }
     }
-    return [...byId.values()].map(({ id, in: received, out: sent, files: paths }) => ({ id, from: (sent || received).from, to: (sent || received).to,
+    const records = [...byId.values()].map(({ id, in: received, out: sent, files: paths }) => ({ id, from: (sent || received).from, to: (sent || received).to,
       atMs: (sent || received).atMs, status: (received || sent).status, reason: (received || sent).reason,
       direction: received && sent ? 'both' : received ? 'in' : 'out', hash: (sent || received).hash, label: '', files: paths }))
       .concat((await claudeMessages?.records(sinceMs) || []).map((row) => ({ ...row, claudeRecord: row, files: [] })));
+    if (typeof changes === 'function') messagesCache = { atMs, sinceMs, changes: change, records };
+    return records;
   }
 
   const byTime = (left, right) => left.atMs - right.atMs || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
@@ -147,10 +155,16 @@ export function createActivityMessages({ readSources = async () => [], dashboard
   async function localRecords(period) {
     if (period === 'all') return [];
     const span = Math.min(PERIODS[period].unit === 'hour' ? DAY_MS : PERIODS[period].count * DAY_MS, KEEP_MS);
-    const records = (await localMessages(now() - span)).sort(byTime).slice(-MAX_ACTIVITY_MESSAGES);
+    const sinceMs = now() - span;
+    const cached = recordsCache.get(period);
+    if (reusable(cached, sinceMs)) return cached.records.filter((row) => row.atMs >= sinceMs);
+    const atMs = now(), change = changes?.();
+    const records = (await localMessages(sinceMs)).sort(byTime).slice(-MAX_ACTIVITY_MESSAGES);
     const texts = await textsFor(records.slice(-200));
-    return records.map(({ id, from, to, atMs, status, reason, direction, hash, label }) =>
+    const result = records.map(({ id, from, to, atMs, status, reason, direction, hash, label }) =>
       ({ id, from, to, atMs, status, reason, direction, hash, label, text: texts.get(id) ?? null }));
+    if (typeof changes === 'function') recordsCache.set(period, { atMs, sinceMs, changes: change, records: result });
+    return result;
   }
 
   // All records of the period over the group, mapped to seats, oldest first.

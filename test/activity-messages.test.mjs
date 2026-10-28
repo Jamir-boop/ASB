@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createActivityMessages, messageText, periodBuckets, statusGroup, statusReason } from '../src/activity-messages.mjs';
@@ -557,4 +558,85 @@ test('validActivity keeps only valid hashes, labels, bounded code point text and
   for (const label of ['x'.repeat(121), null, 7]) assert.equal(read({ label }).label, '');
   for (const text of ['😀'.repeat(2002), null, 7]) assert.equal(read({ text }).text, null);
   assert.deepEqual(read({}), { ...base, label: '', text: null });
+});
+
+async function cachedMessages(t, { tracked = true } = {}) {
+  const fixture = await claudeFixture(t);
+  await fixture.write([fixture.send('cached-send', 'Kept transcript body.')]);
+  await fixture.bridge('codex', X, [{ id: msg(730), peer: Y, direction: 'out', status: 'delivered', text: 'Kept bridge body.' }]);
+  let ms = nowMs, counter = 0, working = false;
+  const calls = { queries: 0, records: 0, texts: 0, lists: 0, stats: 0 };
+  const reader = createClaudeMessages({ readSources: async () => fixture.sources, now: () => ms });
+  for (const [method, key] of [['readdir', 'lists'], ['stat', 'stats']]) {
+    const original = fs[method];
+    t.mock.method(fs, method, (...args) => { calls[key] += 1; return original(...args); });
+  }
+  const activity = fixture.service({ now: () => ms, busy: () => working, ...(tracked ? { changes: () => counter } : {}),
+    claudeMessages: { records: (sinceMs) => { calls.records += 1; return reader.records(sinceMs); },
+      text: (record) => { calls.texts += 1; return reader.text(record); } },
+    query: (file, sql) => { calls.queries += 1; return querySqliteJson(file, sql); } });
+  return { activity, calls, advance: (delta) => { ms += delta; }, change: () => { counter += 1; }, busy: () => { working = true; } };
+}
+
+test('unchanged idle reports and member replies reuse records and texts for five minutes', async (t) => {
+  const { activity, calls, advance, change } = await cachedMessages(t);
+  await activity.report('24h');
+  const first = await activity.memberReply('24h');
+  const before = { ...calls };
+  assert.ok(before.queries > 0 && before.records > 0 && before.texts > 0 && before.lists > 0 && before.stats > 0);
+  advance(30_000);
+  await activity.report('24h');
+  assert.deepEqual((await activity.memberReply('24h')).messages, first.messages);
+  assert.deepEqual(calls, before);
+  change();
+  await activity.report('24h');
+  await activity.memberReply('24h');
+  assert.ok(calls.records > before.records && calls.queries > before.queries && calls.texts > before.texts);
+  const changed = { ...calls };
+  advance(5 * 60_000);
+  await activity.report('24h');
+  await activity.memberReply('24h');
+  assert.ok(calls.records > changed.records && calls.queries > changed.queries && calls.texts > changed.texts);
+});
+
+test('busy message reads reuse records only within ten seconds, even after a local change', async (t) => {
+  const { activity, calls, advance, change, busy } = await cachedMessages(t);
+  busy();
+  await activity.report('24h');
+  await activity.memberReply('24h');
+  const first = { ...calls };
+  advance(9999);
+  change();
+  await activity.report('24h');
+  await activity.memberReply('24h');
+  assert.deepEqual(calls, first);
+  advance(1);
+  await activity.report('24h');
+  await activity.memberReply('24h');
+  assert.ok(calls.records > first.records && calls.queries > first.queries && calls.texts > first.texts);
+});
+
+test('a longer Messages period reads again and a cached Claude record still gives its thread text', async (t) => {
+  const { activity, calls, advance } = await cachedMessages(t);
+  await activity.report('24h');
+  await activity.memberReply('24h');
+  const first = { ...calls };
+  advance(30_000);
+  await activity.report('7d');
+  await activity.memberReply('7d');
+  assert.ok(calls.records > first.records && calls.queries > first.queries && calls.texts > first.texts);
+  const beforeThread = calls.records;
+  const thread = await activity.thread('7d', { seat: X });
+  assert.equal(calls.records, beforeThread);
+  assert.deepEqual(thread.messages.map((row) => row.text).sort(), ['Kept bridge body.', 'Kept transcript body.']);
+});
+
+test('without a change counter every Messages request still reads local records and member texts', async (t) => {
+  const { activity, calls } = await cachedMessages(t, { tracked: false });
+  await activity.report('24h');
+  await activity.memberReply('24h');
+  const first = { ...calls };
+  await activity.report('24h');
+  await activity.memberReply('24h');
+  assert.ok(calls.records >= first.records + 2 && calls.queries > first.queries && calls.texts > first.texts);
 });
