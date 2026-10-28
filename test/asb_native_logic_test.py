@@ -6297,8 +6297,8 @@ class NativeLogicChecks(unittest.TestCase):
         window.list_body.add_tick_callback.return_value = 17
         clock = Mock()
         clock.connect.return_value = 42
-        idle, remove = Mock(), Mock()
-        with patch.dict(SCOPE, {"GLib": SimpleNamespace(idle_add=idle, source_remove=remove)}):
+        idle, remove = Mock(return_value=64), Mock()
+        with patch.dict(SCOPE, {"GLib": SimpleNamespace(idle_add=idle, source_remove=remove, SOURCE_REMOVE=False)}):
             window.side_fill_tick, window.side_columns = 17, (2, 7)
             window.cancel_side_fill()
             window.list_body.remove_tick_callback.assert_called_once_with(17)
@@ -6312,6 +6312,16 @@ class NativeLogicChecks(unittest.TestCase):
             window.side_fill_after_frame(None, clock)
             callback = clock.connect.call_args.args[1]
             callback(clock)
+            window.fill_columns.assert_not_called()
+            self.assertEqual(window.side_fill_idle, 64)
+            window.cancel_side_fill()
+            remove.assert_called_once_with(64)
+            self.assertIsNone(window.side_fill_idle)
+            window.side_columns = (2, 7)
+            window.side_fill_after_frame(None, clock)
+            clock.connect.call_args.args[1](clock)
+            self.assertFalse(idle.call_args.args[0]())
+            self.assertIsNone(window.side_fill_idle)
             window.fill_columns.assert_called_once_with((2,))
             self.assertEqual(window.side_columns, (7,))
             self.assertEqual(window.side_fill_tick, 17)
@@ -6323,8 +6333,8 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertFalse(window.fill_side_column())
             self.assertEqual(window.fill_columns.call_args_list, [call((2,)), call((7,))])
             self.assertEqual(window.side_columns, ())
-            idle.assert_not_called()
-            remove.assert_not_called()
+            self.assertEqual(idle.call_count, 2)
+            remove.assert_called_once_with(64)
 
     def test_card_actions_set_a_tooltip_only_when_its_text_changes(self):
         def button():

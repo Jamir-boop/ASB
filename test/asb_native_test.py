@@ -5312,7 +5312,7 @@ class WidgetCheck(unittest.TestCase):
         window.render()
         def wait_for_fill():
             end = time.monotonic() + 6
-            while (window.side_fill_tick or window.side_fill_frame) and time.monotonic() < end:
+            while (window.side_fill_tick or window.side_fill_frame or window.side_fill_idle) and time.monotonic() < end:
                 self.drain(.02)
         first, last = window.column_range(sides=False)
         self.assertEqual(last - first, 5)
@@ -5358,7 +5358,7 @@ class WidgetCheck(unittest.TestCase):
             return fill(numbers)
         with patch.object(window, "fill_columns", record):
             end = time.monotonic() + 6
-            while (window.side_fill_tick or window.side_fill_frame) and time.monotonic() < end:
+            while (window.side_fill_tick or window.side_fill_frame or window.side_fill_idle) and time.monotonic() < end:
                 self.drain(.02)
         self.assertTrue(fills)
         self.assertTrue(all(len(numbers) == 1 for numbers in fills))
@@ -5384,7 +5384,7 @@ class WidgetCheck(unittest.TestCase):
             self.assertIn(2, window.filled_columns)
             self.assertIs(window.get_focus(), window.focus_widgets[target])
             end = time.monotonic() + 6
-            while (window.side_fill_tick or window.side_fill_frame) and time.monotonic() < end:
+            while (window.side_fill_tick or window.side_fill_frame or window.side_fill_idle) and time.monotonic() < end:
                 self.drain(.02)
         self.assertEqual(fills.count(2), 1)
         self.assert_columns_filled(window)
@@ -5396,7 +5396,7 @@ class WidgetCheck(unittest.TestCase):
         window.render()
         def wait_for_fill():
             end = time.monotonic() + 6
-            while (window.side_fill_tick or window.side_fill_frame) and time.monotonic() < end:
+            while (window.side_fill_tick or window.side_fill_frame or window.side_fill_idle) and time.monotonic() < end:
                 self.drain(.02)
         wait_for_fill()
         adjustment = window.scroll.get_hadjustment()
@@ -5426,6 +5426,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(all(len(numbers) == 1 for _frame, numbers in fills))
         self.assertIsNone(window.side_fill_tick)
         self.assertIsNone(window.side_fill_frame)
+        self.assertIsNone(window.side_fill_idle)
         self.assertEqual(window.side_columns, ())
         self.assert_columns_filled(window)
 
@@ -5438,7 +5439,7 @@ class WidgetCheck(unittest.TestCase):
         window.view_filter.set_selected(1); self.drain(.3); window.check_geometry(); self.drain()
         def wait_for_fill():
             end = time.monotonic() + 6
-            while (window.scroll_target is not None or window.side_fill_tick or window.side_fill_frame) and time.monotonic() < end:
+            while (window.scroll_target is not None or window.side_fill_tick or window.side_fill_frame or window.side_fill_idle) and time.monotonic() < end:
                 self.drain(.02)
         wait_for_fill()
         fills, fill = [], window.fill_columns
@@ -5487,14 +5488,72 @@ class WidgetCheck(unittest.TestCase):
             return fill(numbers)
         with patch.object(window, "fill_columns", record):
             end = time.monotonic() + 6
-            while (window.side_fill_tick or window.side_fill_frame) and time.monotonic() < end:
+            while (window.side_fill_tick or window.side_fill_frame or window.side_fill_idle) and time.monotonic() < end:
                 self.drain(.02)
         self.assertEqual(first_paint[0], initial)
         self.assertEqual(window.filled_columns, nearby)
         queued = sorted(nearby - initial, key=lambda number: max(min(touching) - number, number - max(touching), 0))
         self.assertEqual(fills, [(number,) for number in queued])
         self.assertIsNone(window.side_fill_frame)
+        self.assertIsNone(window.side_fill_idle)
         self.assertIsNone(window.side_fill_tick)
+
+    def test_side_fill_runs_in_an_idle_turn_after_paint(self):
+        window, _dashboard = self.lazy_board(300, width=1400, height=900)
+        window.set_focus(None)
+        window.layout_signature = None
+        window.render()
+        window.list_body.remove_tick_callback(window.side_fill_tick)
+        initial, number = window.filled_columns, window.side_columns[0]
+        clock = Mock()
+        window.side_fill_after_frame(window.list_body, clock)
+        after_paint = clock.connect.call_args.args[1]
+        after_paint(clock)
+        clock.disconnect.assert_called_once_with(clock.connect.return_value)
+        self.assertIsNone(window.side_fill_frame)
+        self.assertEqual(window.filled_columns, initial)
+        self.assertIsNotNone(window.side_fill_idle)
+        fill = window.fill_side_column
+        def record():
+            self.assertIsNone(window.side_fill_idle)
+            return fill()
+        with patch.object(window, "fill_side_column", record):
+            context = asb.GLib.MainContext.default()
+            end = time.monotonic() + 2
+            while window.side_fill_idle and time.monotonic() < end:
+                context.iteration(True)
+        self.assertIsNone(window.side_fill_idle)
+        self.assertEqual(window.filled_columns, initial | {number})
+
+    def test_side_fill_idle_is_cancelled_before_its_turn(self):
+        for action in ("cancel", "render", "close"):
+            with self.subTest(action=action):
+                window, _dashboard = self.lazy_board(300, width=1400, height=900)
+                window.set_focus(None)
+                window.layout_signature = None
+                window.render()
+                window.list_body.remove_tick_callback(window.side_fill_tick)
+                clock = Mock()
+                window.side_fill_after_frame(window.list_body, clock)
+                clock.connect.call_args.args[1](clock)
+                idle = window.side_fill_idle
+                self.assertIsNotNone(idle)
+                with patch.object(asb.GLib, "source_remove", wraps=asb.GLib.source_remove) as remove:
+                    if action == "render":
+                        window.search.set_text("no matching made-up title")
+                        window.render()
+                    elif action == "close":
+                        window.close()
+                    else:
+                        window.cancel_side_fill()
+                    remove.assert_any_call(idle)
+                self.assertIsNone(window.side_fill_idle)
+                with patch.object(window, "fill_side_column") as fill:
+                    self.drain(.1)
+                    fill.assert_not_called()
+                self.assertIsNone(window.side_fill_tick)
+                self.assertIsNone(window.side_fill_frame)
+                self.assertEqual(window.side_columns, ())
 
     def test_a_new_render_cancels_a_side_fill_waiting_for_its_frame(self):
         window, _dashboard = self.lazy_board(300, width=1400, height=900)
@@ -5511,6 +5570,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(window.side_columns, ())
         self.assertIsNone(window.side_fill_tick)
         self.assertIsNone(window.side_fill_frame)
+        self.assertIsNone(window.side_fill_idle)
         self.assertEqual(window.focus_widgets, {})
 
     def test_columns_get_their_cards_before_they_paint(self):
@@ -5951,7 +6011,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(more, {True, False})
         self.assertGreater(doubled, 20)
         end = time.monotonic() + 6
-        while (window.side_fill_tick or window.side_fill_frame) and time.monotonic() < end:
+        while (window.side_fill_tick or window.side_fill_frame or window.side_fill_idle) and time.monotonic() < end:
             self.drain(.02)
         self.drain(.3)
         self.assert_board_columns(window, laid_out=True)
@@ -6112,7 +6172,7 @@ class WidgetCheck(unittest.TestCase):
                 child = child.get_next_sibling()
             return found
         def assert_rest():
-            wait(lambda: window.side_fill_tick is None and window.side_fill_frame is None
+            wait(lambda: window.side_fill_tick is None and window.side_fill_frame is None and window.side_fill_idle is None
                  and all(row.get_height() for row in self.widget_rows(window)))
             self.assertEqual((strip.motion, window.motion_columns, window.motion_from), ({}, [], None))
             self.assertNotEqual(motion.get_state(), playing)

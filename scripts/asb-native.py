@@ -4923,7 +4923,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     row_cache_trim = heap_trim = None
     # The rows of each column, the column of each visible row, and the columns that have their cards (all replaced, never changed in place).
     column_parts, row_columns, filled_columns = (), {}, frozenset()
-    side_fill_tick, side_fill_frame = None, None
+    side_fill_tick, side_fill_frame, side_fill_idle = None, None, None
     side_columns, fill_view = (), None
     # Cards whose column filled after the last render: a glide that starts now does not fade them in.
     late_cards = frozenset()
@@ -7315,6 +7315,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return True
 
     def cancel_side_fill(self):
+        if self.side_fill_idle:
+            GLib.source_remove(self.side_fill_idle)
+            self.side_fill_idle = None
         if self.side_fill_tick:
             self.list_body.remove_tick_callback(self.side_fill_tick)
             self.side_fill_tick = None
@@ -7329,7 +7332,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         def after_paint(clock):
             clock.disconnect(self.side_fill_frame[1])
             self.side_fill_frame = None
+            self.side_fill_idle = GLib.idle_add(fill)
+        def fill():
+            self.side_fill_idle = None
             self.fill_side_column()
+            return GLib.SOURCE_REMOVE
         self.side_fill_frame = clock, clock.connect("after-paint", after_paint)
         return False
 
