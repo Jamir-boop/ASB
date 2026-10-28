@@ -1139,7 +1139,8 @@ class WidgetCheck(unittest.TestCase):
         window.view_filter.set_selected(1); self.drain(.4)
         gone = ["sample-1", "sample-2", "sample-3"]
         hidden = ["sample-40", "sample-41"]
-        cards = [window.row_cache[identity] for identity in gone + hidden]
+        # A card of a column far outside the view gets its Comfortable content when its column fills.
+        cards = [window.card_for(identity) for identity in gone + hidden]
         self.assertTrue(all(getattr(card, "asb_copy_button", None) is not None for card in cards))
         references = [weakref.ref(card) for card in cards]
         del cards
