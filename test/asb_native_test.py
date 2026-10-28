@@ -5265,6 +5265,91 @@ class WidgetCheck(unittest.TestCase):
             with self.subTest(value=value, page=page):
                 self.assertEqual(window.column_range(value, page), expected)
 
+    def test_five_columns_in_view_fill_two_now_then_one_per_painted_frame(self):
+        window, _dashboard = self.lazy_board(300, width=1400, height=900)
+        window.view_filter.set_selected(1); self.drain()
+        window.set_focus(None)
+        window.layout_signature = None
+        window.render()
+        def wait_for_fill():
+            end = time.monotonic() + 6
+            while (window.side_fill_tick or window.side_fill_frame) and time.monotonic() < end:
+                self.drain(.02)
+        first, last = window.column_range(sides=False)
+        self.assertEqual(last - first, 5)
+        self.assertEqual(window.filled_columns, {first, first + 1})
+        paints, fills = [], []
+        clock = window.get_frame_clock()
+        handler = clock.connect("after-paint", lambda clock: paints.append((clock.get_frame_counter(), set(window.filled_columns))))
+        self.addCleanup(clock.disconnect, handler)
+        fill = window.fill_columns
+        def record(numbers):
+            numbers = tuple(numbers)
+            self.assertEqual(len(numbers), 1)
+            self.assertTrue(paints)
+            fills.append((clock.get_frame_counter(), numbers[0]))
+            return fill(numbers)
+        with patch.object(window, "fill_columns", record):
+            wait_for_fill()
+        self.assertEqual(paints[0][1], {first, first + 1})
+        self.assertTrue(set(range(first, last)) <= paints[3][1])
+        self.assertEqual(len({frame for frame, _number in fills}), len(fills))
+        self.assertEqual([number for _frame, number in fills[:3]], list(range(first + 2, last)))
+        self.assert_columns_filled(window)
+
+    def test_view_change_scroll_clamp_keeps_the_remaining_columns_queued(self):
+        window, _dashboard = self.lazy_board(300, width=1400, height=900)
+        window.card_limit = 100
+        window.view_filter.set_selected(1); self.drain()
+        window.render(); self.drain(.3)
+        adjustment = window.scroll.get_hadjustment()
+        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+        window.set_focus(None)
+        window.focused_id = None
+        window.view_filter.set_selected(0)
+        initial = set(window.filled_columns)
+        self.assertEqual(initial, {0})
+        # The new Compact strip fits the viewport, so allocation clamps the old scroll to zero.
+        adjustment.set_value(0)
+        window.fill_visible_columns()
+        self.assertEqual(window.filled_columns, initial)
+        fills, fill = [], window.fill_columns
+        def record(numbers):
+            fills.append(tuple(numbers))
+            return fill(numbers)
+        with patch.object(window, "fill_columns", record):
+            end = time.monotonic() + 6
+            while (window.side_fill_tick or window.side_fill_frame) and time.monotonic() < end:
+                self.drain(.02)
+        self.assertTrue(fills)
+        self.assertTrue(all(len(numbers) == 1 for numbers in fills))
+        self.assert_columns_filled(window)
+
+    def test_arrow_into_a_queued_column_fills_it_once(self):
+        window, _dashboard = self.lazy_board(300, width=1400, height=900)
+        window.view_filter.set_selected(1); self.drain()
+        window.set_focus(None)
+        window.layout_signature = None
+        window.render()
+        identity = window.column_parts[1][0]["id"]
+        target = window.column_parts[2][0]["id"]
+        self.assertNotIn(2, window.filled_columns)
+        fills, fill = [], window.fill_columns
+        def record(numbers):
+            missing = set(numbers) - window.filled_columns
+            fills.extend(missing)
+            return fill(numbers)
+        with patch.object(window, "fill_columns", record):
+            window.focus_widgets[identity].grab_focus()
+            self.assertTrue(window.row_key(None, asb.Gdk.KEY_Right, 0, 0, identity))
+            self.assertIn(2, window.filled_columns)
+            self.assertIs(window.get_focus(), window.focus_widgets[target])
+            end = time.monotonic() + 6
+            while (window.side_fill_tick or window.side_fill_frame) and time.monotonic() < end:
+                self.drain(.02)
+        self.assertEqual(fills.count(2), 1)
+        self.assert_columns_filled(window)
+
     def test_side_columns_fill_one_at_a_time_after_the_first_paint(self):
         window, _dashboard = self.lazy_board(300, width=1400, height=900)
         window.set_focus(None)
@@ -5272,7 +5357,9 @@ class WidgetCheck(unittest.TestCase):
         window.render()
         touching = set(range(*window.column_range(sides=False)))
         nearby = set(range(*window.column_range()))
-        self.assertEqual(window.filled_columns, touching)
+        # The board of lazy_board is Compact, which starts with one column.
+        initial = set(sorted(touching)[:1])
+        self.assertEqual(window.filled_columns, initial)
         self.assertTrue(nearby - touching)
         first_paint, fills = [], []
         clock = window.get_frame_clock()
@@ -5285,10 +5372,11 @@ class WidgetCheck(unittest.TestCase):
             return fill(numbers)
         with patch.object(window, "fill_columns", record):
             self.drain(.4)
-        self.assertEqual(first_paint[0], touching)
+        self.assertEqual(first_paint[0], initial)
         self.assertEqual(window.filled_columns, nearby)
-        self.assertEqual(fills, [(number,) for number in sorted(nearby - touching)])
-        self.assertIsNone(window.side_fill_idle)
+        queued = [number for number in (*sorted(touching), min(touching) - 1, max(touching) + 1)
+                  if number in nearby - initial]
+        self.assertEqual(fills, [(number,) for number in queued])
         self.assertIsNone(window.side_fill_frame)
         self.assertIsNone(window.side_fill_tick)
 
@@ -5307,7 +5395,6 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(window.side_columns, ())
         self.assertIsNone(window.side_fill_tick)
         self.assertIsNone(window.side_fill_frame)
-        self.assertIsNone(window.side_fill_idle)
         self.assertEqual(window.focus_widgets, {})
 
     def test_columns_get_their_cards_before_they_paint(self):
@@ -5339,7 +5426,10 @@ class WidgetCheck(unittest.TestCase):
         end = time.monotonic() + 6
         while window.scroll_target is not None and time.monotonic() < end:
             self.drain(.02)
+        self.assertEqual(empty, [])
+        # A resize spreads its visible columns across frames; check the next scroll after they settle.
         window.set_default_size(1100, 600); self.drain(.4); window.check_geometry(); self.drain(.3)
+        empty.clear()
         adjustment.set_value(adjustment.get_upper() / 2); self.drain(.3)
         self.assertEqual(empty, [])
         self.assertGreater(len(set(painted)), 4)
@@ -5624,7 +5714,9 @@ class WidgetCheck(unittest.TestCase):
         """Each column holds its target cards in the target order, as widget children and in the internal list of GTK."""
         shown = [column for column in window.list_columns if column.get_parent()]
         self.assertEqual(len(shown), window.actual_columns)
-        self.assertTrue(set(range(*window.column_range(sides=False))) & set(range(len(shown))) <= window.filled_columns)
+        # Columns in view that are not filled yet wait for their painted frame; after layout every one has its cards.
+        needed = set(range(*window.column_range(sides=False))) & set(range(len(shown)))
+        self.assertTrue(needed <= window.filled_columns | (set() if laid_out else set(window.side_columns)))
         for number, column in enumerate(shown):
             identities = window.row_order[number * window.capacity:(number + 1) * window.capacity]
             target = [window.focus_widgets[identity] for identity in identities] if number in window.filled_columns else []
@@ -5742,6 +5834,9 @@ class WidgetCheck(unittest.TestCase):
             more.add(asb.MORE_ID in window.row_order)
         self.assertEqual(more, {True, False})
         self.assertGreater(doubled, 20)
+        end = time.monotonic() + 6
+        while (window.side_fill_tick or window.side_fill_frame) and time.monotonic() < end:
+            self.drain(.02)
         self.drain(.3)
         self.assert_board_columns(window, laid_out=True)
 
@@ -5864,7 +5959,7 @@ class WidgetCheck(unittest.TestCase):
                 child = child.get_next_sibling()
             return found
         def assert_rest():
-            wait(lambda: window.side_fill_tick is None and window.side_fill_frame is None and window.side_fill_idle is None
+            wait(lambda: window.side_fill_tick is None and window.side_fill_frame is None
                  and all(row.get_height() for row in self.widget_rows(window)))
             self.assertEqual((strip.motion, window.motion_columns, window.motion_from), ({}, [], None))
             self.assertNotEqual(motion.get_state(), playing)
@@ -5925,9 +6020,10 @@ class WidgetCheck(unittest.TestCase):
         self.drain(.05)
         self.assertEqual(window.focus_key(), "s5")  # The queued focus restore survives the move of focus to a column.
         # A staying row whose column had no cards before the change has no old place, so it fades in.
-        _progress, offsets, _places = assert_glide(before, seen, staying & set(before))
+        # A Compact render glides the cards of its first column; a column that fills on a later frame shows its cards there.
+        _progress, offsets, _places = assert_glide(before, seen, (staying & set(before)) - window.late_cards)
         self.assertTrue(all(offset[2] == 0 for identity, offset in offsets.items() if identity in before))
-        self.assertGreater(len(offsets), 50)
+        self.assertGreaterEqual(len(offsets), window.capacity - 1)
         assert_rest()
         before, seen = change(lambda: window.search.set_text("sample"))
         # A staying row whose column is now far from the view has no card.

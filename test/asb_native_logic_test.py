@@ -5900,6 +5900,7 @@ class NativeLogicChecks(unittest.TestCase):
             Window.release_row(window, widget)
         window.release_row = release
         window.render()
+        window.fill_columns(range(len(window.column_parts)))
         widgets, columns = dict(window.focus_widgets), list(window.list_body.children)
         self.assertEqual(len(created), 113)
         self.assertNotIn("archived", window.row_cache)
@@ -5907,6 +5908,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.scroll_direction = 1
         board["threads"][0]["updatedAtMs"] = 30
         window.render()
+        window.fill_columns(range(len(window.column_parts)))
         self.assertEqual(window.focus_widgets, widgets)
         self.assertEqual(window.list_body.children, columns)
         self.assertEqual(len(created), 113)
@@ -5914,6 +5916,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.scroll_animation.reset.assert_not_called()
         board["threads"][1].update(pinned=True, pinIndex=0)
         window.render()
+        window.fill_columns(range(len(window.column_parts)))
         self.assertEqual(window.scroll_target, 32)
         window.scroll_animation.reset.assert_not_called()
         self.assertEqual(window.list_body.children, columns)
@@ -5924,6 +5927,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.focus_key = lambda: "a"
         window.search.query = "Unique match"
         window.render()
+        window.fill_columns(range(len(window.column_parts)))
         # The repack takes the other rows out and leaves the focused row in its place, so render does not set the focus again.
         self.assertEqual(window.list_body.children[0].children, [widgets["a"]])
         window.set_focus.assert_not_called()
@@ -5945,13 +5949,17 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(window.update_row_text.call_count, 1)
         window.search.query = ""
         window.render()
+        window.fill_columns(range(len(window.column_parts)))
         self.assertEqual(window.focus_widgets, widgets)
         self.assertEqual((len(created), len(released)), (113, 0))
         window.search.query = "Unique match"
         window.render()
+        window.fill_columns(range(len(window.column_parts)))
         board["threads"] = [row for row in board["threads"] if row["id"] != "b"]
         window.render()
+        window.fill_columns(range(len(window.column_parts)))
         window.render()
+        window.fill_columns(range(len(window.column_parts)))
         self.assertEqual(released, [widgets["b"]])
         self.assertNotIn("b", window.row_cache)
         self.assertFalse(window.open_errors)
@@ -6244,12 +6252,13 @@ class NativeLogicChecks(unittest.TestCase):
             window.render()
             self.assertEqual((window.popover_hooks, gobject.add_emission_hook.call_count), ([], 4))
 
-    def test_side_fill_cancels_at_each_stage_and_fills_one_column_per_idle(self):
+    def test_side_fill_cancels_at_each_stage_and_fills_one_column_per_frame(self):
         window = object.__new__(Window)
         window.list_body, window.fill_columns, window.closed = Mock(), Mock(), False
+        window.list_body.add_tick_callback.return_value = 17
         clock = Mock()
         clock.connect.return_value = 42
-        idle, remove = Mock(return_value=91), Mock()
+        idle, remove = Mock(), Mock()
         with patch.dict(SCOPE, {"GLib": SimpleNamespace(idle_add=idle, source_remove=remove)}):
             window.side_fill_tick, window.side_columns = 17, (2, 7)
             window.cancel_side_fill()
@@ -6257,25 +6266,26 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertEqual(window.side_columns, ())
             window.side_columns = (2, 7)
             self.assertFalse(window.side_fill_after_frame(None, clock))
-            callback = clock.connect.call_args.args[1]
             window.cancel_side_fill()
             clock.disconnect.assert_called_once_with(42)
-            idle.assert_not_called()
+            window.fill_columns.assert_not_called()
             window.side_columns = (2, 7)
             window.side_fill_after_frame(None, clock)
             callback = clock.connect.call_args.args[1]
             callback(clock)
-            idle.assert_called_once_with(window.fill_side_column)
-            window.cancel_side_fill()
-            remove.assert_called_once_with(91)
-            window.side_columns = (2, 7)
-            self.assertFalse(window.fill_side_column())
             window.fill_columns.assert_called_once_with((2,))
             self.assertEqual(window.side_columns, (7,))
+            self.assertEqual(window.side_fill_tick, 17)
+            window.list_body.add_tick_callback.assert_called_once_with(window.side_fill_after_frame)
+            window.cancel_side_fill()
+            self.assertEqual(window.list_body.remove_tick_callback.call_args_list, [call(17), call(17)])
+            # A synchronous key fill leaves no duplicate work for the next painted frame.
+            window.side_columns, window.filled_columns = (2, 7), frozenset({2})
             self.assertFalse(window.fill_side_column())
-            self.assertEqual([call.args for call in window.fill_columns.call_args_list], [((2,),), ((7,),)])
+            self.assertEqual(window.fill_columns.call_args_list, [call((2,)), call((7,))])
             self.assertEqual(window.side_columns, ())
-            self.assertIsNone(window.side_fill_idle)
+            idle.assert_not_called()
+            remove.assert_not_called()
 
     def test_card_actions_set_a_tooltip_only_when_its_text_changes(self):
         def button():
@@ -6335,11 +6345,13 @@ class NativeLogicChecks(unittest.TestCase):
         with patch.dict(SCOPE, {"Gtk": gtk, "GLib": SimpleNamespace(idle_add=Mock())}):
             window.dashboard = {"threads": [{"id": name, "state": "idle"} for name in "abcde"]}
             window.render()
+            window.fill_columns(range(len(window.column_parts)))
             self.assertEqual((window.capacity, len(window.list_body.children)), (2, 3))
             columns, widgets = list(window.list_body.children), dict(window.focus_widgets)
             for order in itertools.permutations("abcde"):
                 window.dashboard = {"threads": [{"id": name, "state": "idle"} for name in order]}
                 window.render()
+                window.fill_columns(range(len(window.column_parts)))
                 self.assertEqual([[child.asb_thread["id"] for child in column.children] for column in columns],
                                  [list(order[0:2]), list(order[2:4]), list(order[4:5])])
                 self.assertEqual(window.focus_widgets, widgets)
@@ -6360,6 +6372,8 @@ class NativeLogicChecks(unittest.TestCase):
                     def insert(self, child, position):
                         operations["insert"] += 1
                         super().insert(child, position)
+                    def append(self, child):
+                        self.insert(child, len(self.children))
                     def disconnect(self, handler):
                         self_test.assertIsNone(self.get_parent())
                         self_test.assertIsNone(self.get_first_child())
@@ -6401,10 +6415,12 @@ class NativeLogicChecks(unittest.TestCase):
                 with patch.dict(SCOPE, {"Gtk": gtk, "GLib": SimpleNamespace(idle_add=Mock(), source_remove=Mock()),
                                        "label": lambda *_args: Mock()}):
                     window.render()
+                    window.fill_columns(range(len(window.column_parts)))
                     columns, widgets = list(window.list_body.children), dict(window.focus_widgets)
                     self.assertEqual((window.capacity, len(columns), operations["columns"]), (3, 40, 40))
                     window.drawer_view = True
                     window.render()
+                    window.fill_columns(range(len(window.column_parts)))
                     self.assertEqual(window.list_body.children, columns[:2])
                     self.assertEqual(len(window.row_cache), 120)
                     self.assertEqual(window.list_columns, columns)
@@ -6415,36 +6431,45 @@ class NativeLogicChecks(unittest.TestCase):
                         control.reset_mock()
                     window.drawer_view = False
                     window.render()
+                    window.fill_columns(range(len(window.column_parts)))
                     self.assertEqual(window.list_body.children, columns)
                     self.assertEqual(window.focus_widgets, widgets)
                     self.assertEqual(window.session_row.call_count, 120)
-                    self.assertEqual(operations, {"columns": 0, "remove": 0, "insert": 115})
+                    # A Compact render fills only its first column: the two cards of the second column leave and return a frame later.
+                    self.assertEqual(operations, {"columns": 0, "remove": 0, "insert": 115} if view == "comfortable"
+                                     else {"columns": 0, "remove": 2, "insert": 117})
                     self.assertEqual(sum(len(control.mock_calls) for control in controls), 5)  # Only the five peek classes change.
                     self.assertEqual([[row.asb_thread["id"] for row in column.children] for column in columns],
                                      [[f"s{index}" for index in range(start, start + 3)] for start in range(0, 120, 3)])
                     window.geometry = (800, height * 3 + 4)
                     window.render()
+                    window.fill_columns(range(len(window.column_parts)))
                     self.assertEqual(window.list_body.children, columns)
                     self.assertTrue(all(column.size_request == (window.column_pixel_width, -1) for column in columns))
                     window.drawer_view = True
                     window.render()
+                    window.fill_columns(range(len(window.column_parts)))
                     window.dashboard["threads"] = window.dashboard["threads"][:15]
                     window.render()  # The filtered set is unchanged, but the full dashboard lost IDs.
                     self.assertEqual(window.list_columns, columns[:5])
                     self.assertEqual(len(disconnected), 35)
                     window.drawer_view = False
                     window.render()
+                    window.fill_columns(range(len(window.column_parts)))
                     self.assertEqual(window.list_body.children, columns[:5])
                     window.geometry = (800, height * 6 + 4)
                     window.render()
+                    window.fill_columns(range(len(window.column_parts)))
                     self.assertEqual((window.capacity, window.list_columns), (6, columns[:3]))
                     self.assertEqual(len(disconnected), 37)
                     window.dashboard["threads"] = window.dashboard["threads"][:3]
                     window.render()
+                    window.fill_columns(range(len(window.column_parts)))
                     self.assertEqual(window.list_columns, columns[:1])
                     self.assertEqual((len(disconnected), len(window.row_cache)), (39, 3))
                     window.dashboard["threads"] = []
                     window.render()
+                    window.fill_columns(range(len(window.column_parts)))
                     self.assertEqual((window.list_columns, window.row_cache), ([], {}))
                     self.assertEqual(len(disconnected), 40)
 

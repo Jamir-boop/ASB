@@ -4872,8 +4872,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     row_cache_trim = None
     # The rows of each column, the column of each visible row, and the columns that have their cards (all replaced, never changed in place).
     column_parts, row_columns, filled_columns = (), {}, frozenset()
-    side_fill_tick, side_fill_frame, side_fill_idle = None, None, None
-    side_columns = ()
+    side_fill_tick, side_fill_frame = None, None
+    side_columns, fill_view = (), None
     # Cards whose column filled after the last render: a glide that starts now does not fade them in.
     late_cards = frozenset()
     numbers_shown = False
@@ -7091,7 +7091,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.release_row(self.row_cache.pop(identity))
             self.focus_widgets.pop(identity, None)
             self.open_errors.pop(identity, None)
-        # The columns that touch the view after the scroll restore get cards now; the side columns follow after the frame.
+        # Start with at most two columns; the rest of the view and its side columns follow one per painted frame.
         # The columns of the focused card, the card to focus, and the open row panel also fill, so none loses its card.
         old_filled = set() if repack else self.filled_columns
         step = self.column_pixel_width + 12
@@ -7100,7 +7100,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         first, last = self.column_range(restored, page, sides=False)
         panel = getattr(self, "context_menu", None)
         kept = (self.row_columns.get(identity) for identity in (focused, self.focus_key(), getattr(panel, "asb_identity", None)))
-        filled = {number for number in (*old_filled, *range(first, last), *kept) if number is not None and number < len(parts)}
+        # A Compact column holds about three Comfortable columns of cards, and a view change replaces card content: both start with one.
+        view_changed = self.layout_signature is not None and self.layout_signature[4] != self.view
+        initial = min(last, first + (2 if self.view == "comfortable" and not view_changed else 1))
+        filled = {number for number in (*old_filled, *range(first, initial), *kept) if number is not None and number < len(parts)}
         self.filled_columns = frozenset(filled)
         for number in sorted(filled):
             for row in parts[number]:
@@ -7193,10 +7196,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         # Hidden cards stay cached for a quick return, up to twice the card limit (+1 is the More card); an idle step releases the rest after the frame.
         if self.card_limit and not self.show_all_cards and len(self.row_cache) > 2 * self.card_limit + 1 and self.row_cache_trim is None:
             self.row_cache_trim = GLib.idle_add(self.trim_row_cache)
-        self.side_columns = tuple(number for number in range(*self.column_range(restored, page))
-                                  if 0 <= number < len(parts) and number not in self.filled_columns)
-        if self.side_columns:
-            self.side_fill_tick = self.list_body.add_tick_callback(self.side_fill_after_frame)
+        self.queue_column_fill(restored, page)
 
     def prepare_card(self, row, narrow_changed=False):
         """The card of a row from the cache, up to date, or a new card."""
@@ -7258,9 +7258,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             clock, handler = self.side_fill_frame
             clock.disconnect(handler)
             self.side_fill_frame = None
-        if self.side_fill_idle:
-            GLib.source_remove(self.side_fill_idle)
-            self.side_fill_idle = None
         self.side_columns = ()
 
     def side_fill_after_frame(self, _widget, clock):
@@ -7268,24 +7265,36 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         def after_paint(clock):
             clock.disconnect(self.side_fill_frame[1])
             self.side_fill_frame = None
-            self.side_fill_idle = GLib.idle_add(self.fill_side_column)
+            self.fill_side_column()
         self.side_fill_frame = clock, clock.connect("after-paint", after_paint)
         return False
 
+    def queue_column_fill(self, value=None, page=None):
+        self.cancel_side_fill()
+        first, last = self.fill_view = self.column_range(value, page, sides=False)
+        sides = (first - 1, last)
+        self.side_columns = tuple(number for number in (*range(first, last), *sides)
+                                  if 0 <= number < len(self.column_parts) and number not in self.filled_columns)
+        if self.side_columns:
+            self.side_fill_tick = self.list_body.add_tick_callback(self.side_fill_after_frame)
+
     def fill_side_column(self):
-        self.side_fill_idle = None
+        self.side_columns = tuple(number for number in self.side_columns if number not in self.filled_columns)
         if self.closed or not self.side_columns:
             return False
         number, *remaining = self.side_columns
         self.side_columns = tuple(remaining)
         self.fill_columns((number,))
         if self.side_columns:
-            self.side_fill_idle = GLib.idle_add(self.fill_side_column)
+            self.side_fill_tick = self.list_body.add_tick_callback(self.side_fill_after_frame)
         return False
 
     def fill_visible_columns(self, *_args):
         if self.column_parts and not self.closed:
-            self.fill_columns(range(*self.column_range()))
+            # GTK clamps the old scroll position during a repack; that planned view must keep its frame-paced fill.
+            if self.column_range(sides=False) != self.fill_view:
+                self.fill_columns(range(*self.column_range()))
+            self.queue_column_fill()
 
     def card_for(self, identity):
         """The card of a visible row. A row with no card yet gets its column filled, with the column on each side."""
