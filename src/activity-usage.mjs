@@ -164,11 +164,11 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
         return `${path.basename(database)}:${info.join('|')}`;
       }))).join('/');
       let last = openCodeReads.get(dataDir);
-      if (last?.signature !== signature) {
+      if (last?.signature !== signature && (!last || now() - last.readAtMs >= 60_000)) {
         let records = [];
         try { records = await readOpenCodeUsage(dataDir, 0, { stats, pause }); } catch { /* No database or another schema: no usage. */ }
         stats.openCodeQueries += 1;
-        last = { signature, records };
+        last = { signature, records, readAtMs: now() };
         openCodeChanged = true;
       }
       queried.set(dataDir, last);

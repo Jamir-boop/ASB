@@ -268,12 +268,14 @@ test('the OpenCode query runs again only when the database or its WAL changed', 
   db.prepare('insert into session_message values (?, ?, ?, ?, ?, ?, ?)').run('x', 's', 'assistant', 0, NOW - HOUR, NOW - HOUR,
     JSON.stringify({ tokens: { input: 1, output: 2, reasoning: 0, cache: { read: 0, write: 0 } }, model: 'oc-test' }));
   db.close();
-  const usage = service();
+  let clock = NOW;
+  const usage = service({ now: () => clock });
   await usage.refresh();
   await usage.refresh();
   assert.equal(usage.stats.openCodeQueries, 1);
   assert.equal(usage.report('7d').records.find((record) => record.app === 'opencode').tokens.output, 2);
   await fs.writeFile(`${database}-wal`, '');
+  clock += 60_000;
   await usage.refresh();
   assert.equal(usage.stats.openCodeQueries, 2);
   assert.equal(usage.report('7d').records.find((record) => record.app === 'opencode').tokens.output, 2);

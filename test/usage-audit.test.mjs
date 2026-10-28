@@ -123,3 +123,34 @@ test('an import rejects when the ledger is blocked', async (t) => {
   await assert.rejects(usage.importAll(document([{ machineId: OLD, name: 'retired', records: [row(1000)] }])), SAVE_ERROR);
   assert.equal((await fs.lstat(ledgerFile)).isDirectory(), true);
 });
+
+test('a busy OpenCode folder reads once until the first scan after sixty seconds', async (t) => {
+  const { DatabaseSync } = await import('node:sqlite').catch(() => ({}));
+  if (!DatabaseSync) { t.skip('node:sqlite is not available'); return; }
+  const sources = [];
+  const { usage, root, clock } = await setup(t, { readSources: async () => sources });
+  const dataDir = path.join(root, 'opencode');
+  await fs.mkdir(dataDir);
+  const file = path.join(dataDir, 'opencode.db');
+  const db = new DatabaseSync(file);
+  try {
+    db.exec('create table session_message (id text, type text, time_created integer, data text)');
+    const add = db.prepare('insert into session_message values (?, ?, ?, ?)');
+    const data = JSON.stringify({ model: 'gpt-test-1', tokens: { input: 100, output: 10 } });
+    add.run('one', 'assistant', HOUR, data);
+    sources.push({ provider: 'opencode', enabled: true, dataDir });
+    await usage.refresh();
+    assert.equal(usage.stats.openCodeQueries, 1);
+    assert.deepEqual(usage.localHourly('all').usage.map(({ tokens }) => tokens), [tokens(100, 0, 0, 10)]);
+    add.run('two', 'assistant', HOUR, data);
+    await fs.utimes(file, new Date(NOW + 10000), new Date(NOW + 10000));
+    clock.ms += 10000;
+    await usage.refresh();
+    assert.equal(usage.stats.openCodeQueries, 1);
+    assert.deepEqual(usage.localHourly('all').usage.map(({ tokens }) => tokens), [tokens(100, 0, 0, 10)]);
+    clock.ms = NOW + 61000;
+    await usage.refresh();
+    assert.equal(usage.stats.openCodeQueries, 2);
+    assert.deepEqual(usage.localHourly('all').usage.map(({ tokens }) => tokens), [tokens(200, 0, 0, 20)]);
+  } finally { db.close(); }
+});

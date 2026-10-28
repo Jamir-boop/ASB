@@ -101,9 +101,12 @@ test('OpenCode refresh detects new, changed, and removed named databases', { ski
   const { root, service } = await setup(t);
   const dataDir = path.join(root, 'opencode');
   await fs.mkdir(dataDir);
-  const usage = service({ readSources: async () => [{ enabled: true, provider: 'opencode', dataDir }] });
+  let clock = NOW;
+  const usage = service({ now: () => clock, readSources: async () => [{ enabled: true, provider: 'opencode', dataDir }] });
   await usage.refresh();
   assert.equal(usage.localHourly('24h').usage.length, 0);
+  // A changed folder is read again at most once a minute.
+  clock += 60_000;
   const file = path.join(dataDir, 'opencode-beta.db');
   const db = new sqlite.DatabaseSync(file);
   db.exec('pragma journal_mode = WAL; pragma wal_autocheckpoint = 0; create table message (id text, data text)');
@@ -116,10 +119,12 @@ test('OpenCode refresh detects new, changed, and removed named databases', { ski
   await usage.refresh();
   assert.equal(usage.stats.openCodePages, pages);
   insert.run('m2', data);
+  clock += 60_000;
   await usage.refresh();
   assert.equal(usage.localHourly('24h').usage[0].tokens.uncached, 2);
   db.close();
   await fs.rm(file);
+  clock += 60_000;
   await usage.refresh();
   assert.equal(usage.localHourly('24h').usage.length, 0);
 });
