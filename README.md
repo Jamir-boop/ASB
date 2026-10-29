@@ -1,6 +1,6 @@
 # ASB
 
-**Agent Switch Board** is a native switch board with GTK 4 and Libadwaita: GNOME on Linux, and Windows with MSYS2. It lists your Codex and Claude Desktop Code chats and opens a chat in its own app; it also lists OpenCode 2 sessions and shows Claude Code CLI and Codex CLI sessions (view only). An optional machine group shows sessions from your other computers, an optional Android app shows them on your phone, and the optional ASB Bridge lets sessions message each other. The Messages window shows the newest messages that your agents send each other on all machines, with their text, and the Usage window shows the tokens and the API price of the agents on all machines. ASB reads the app stores read-only and makes no model calls.
+**Agent Switch Board** is a native switch board with GTK 4 and Libadwaita, for GNOME on Linux and for Windows. It lists your Codex and Claude Desktop Code chats and opens a chat in its own app. It also shows your OpenCode 2, Claude Code CLI, and Codex CLI sessions (view only). ASB reads the app stores read-only and makes no model calls.
 
 ![ASB banner](docs/media/asb-banner.png)
 
@@ -8,22 +8,24 @@ https://github.com/user-attachments/assets/c85742f4-d1b0-4ffc-9497-144069fec36b
 
 ## What it does
 
-- List Codex and Claude Desktop Code chats and open them in their own app.
-- List OpenCode 2 sessions and show Claude Code CLI and Codex CLI sessions (view only).
-- Show Pending attention, unread marks, pins, and a drawer for sessions.
-- Show sessions from your other computers in an optional machine group.
-- Show sessions and notifications on Android, with an Android 16 Live update chip and Pending counts first.
-- Let sessions message each other through ASB Bridge, also by session reference; Claude Code uses resolved send names.
-- Show the messages that your agents send each other on all machines in the Messages window (first opens on `24 hours`): a round table of the machines and sessions, the totals, and the thread of a pair or a session with the text (Claude Code messages and ASB Bridge messages).
-- Show the tokens and the API price of the Codex, Claude Code, OpenCode, Antigravity, Grok, and Pi agents on all machines in the Usage window (first opens on `All time`). Usage downloads the LiteLLM price list (prices only) while you use it, and keeps it for a day.
-- Keep the usage history of your machines, also after the apps delete old transcripts. ASB saves a backup file of the usage of every machine each day and keeps the last 5. Move the usage to another machine with **Export…** and **Import…** in Preferences > Usage, or with `asb usage export` and `asb usage import`.
-- Show in the GNOME top bar how many sessions need you, how many work, and how many your machines have, with an optional GNOME Shell extension.
-- Play Done, Needs input, and Failed sounds on the PC.
-- Read the app stores read-only and make no model calls.
+- **One board:** all your sessions in one window, with Pending attention, unread marks, pins, a drawer, and Done, Needs input, and Failed sounds.
+- **All your machines:** an optional machine group adds the sessions of your other computers.
+- **Your phone:** an optional Android app shows your sessions and notifications.
+- **Messages:** the Messages window shows the messages that your agents send each other on all machines, with their text. The optional ASB Bridge lets Codex, Claude Code, and OpenCode sessions send messages to each other.
+- **Usage:** the Usage window shows the tokens and the API price of your Codex, Claude Code, OpenCode, Antigravity, Grok, and Pi agents on all machines. ASB keeps this history with daily backups, also after the apps delete old transcripts. For the prices, the window downloads the LiteLLM price list (prices only) while you use it.
+- **GNOME top bar:** an optional extension shows how many sessions need you, how many work, and how many there are.
 
-When a session sends a message to another session, a light flies from its card to the card of the other session:
+When a session sends a message to another session, a light flies from its card to the other card:
 
 ![ASB board: a light flies from one session card to three other cards, and back from each](docs/media/board-message-light.svg)
+
+The Messages window shows the messages between your sessions on all machines:
+
+![ASB Messages window: three messages arrive, a light flies along each chord, and the counts update](docs/media/messages-window.svg)
+
+The Usage window shows the cost and the tokens by machine, app, and day:
+
+![ASB Usage window: the view switches from cost to tokens, and a pointer reads the daily chart and the round chart](docs/media/usage-window.svg)
 
 ## Support by app
 
@@ -51,33 +53,24 @@ npm install -g --install-links github:Jamir-boop/ASB
 asb setup
 ```
 
-Keep `--install-links`: npm 11 needs it to keep the install working.
-`asb setup` asks what to set up: the board and ASB Bridge, the board only (`--only board`), or the bridge only (`--only bridge`).
-See the [full install guide](docs/INSTALL.md) for system checks, distribution packages, release packages, and engine-only use.
+Keep `--install-links`: npm 11 needs it. `asb setup` asks what to set up: the board, ASB Bridge, or both (`--only board`, `--only bridge`).
+The [full install guide](docs/INSTALL.md) has the system checks, the distribution and release packages, and engine-only use.
 
 ## Install on Windows
 
-Windows needs Node.js `22.13` or later and uses the same npm commands.
-ASB runs the engine and the GTK window on Windows. The window needs MSYS2 Python, PyGObject, GTK `>=4.12`, and Libadwaita `>=1.4`.
-See [Windows setup](docs/INSTALL.md#install-on-windows) for the packages and commands.
+Use the same npm commands with Node.js `22.13` or later. The board window needs MSYS2 Python with PyGObject, GTK `>=4.12`, and Libadwaita `>=1.4`. See [Windows setup](docs/INSTALL.md#install-on-windows).
 
-## Android companion (optional)
+## Optional parts
 
-The optional Android app shows your sessions and notifications on your phone; phone access is off by default.
-The [live notification](android/README.md#live-notification) shows Pending counts first and can be an Android 16 Live update, so HyperOS can show it in its island; in-app messages show in a small dark pill over the toolbar.
-The [Messages and Usage screens](android/README.md#messages-and-usage) show the counts and statuses of the agent messages (no text) and the token usage of all machines.
-See the [Android guide](android/README.md) for pairing, building, and installing the app.
-
-## ASB Bridge (optional)
-
-The ASB `1.13.0` packages have ASB Bridge `0.8.0`, with OpenCode 2 support and sends by session reference (`asb:1/...`) from Codex and OpenCode.
-Claude Code sessions run `asb agent resolve-session <reference>` to get the `SendMessage` name (`Send name:`); `asb bridge status` says when an installed skill is out of date and which `asb bridge install` target updates it.
-See the [bridge guide](bridge/README.md) and [setup and recovery](docs/INSTALL.md#asb-bridge-optional).
+- [Android app](android/README.md): your sessions, notifications, message counts, and usage on your phone. Phone access is off by default.
+- [ASB Bridge](bridge/README.md): messages between Codex, Claude Code, and OpenCode sessions. The ASB `1.13.0` packages have ASB Bridge `0.8.0`. See [setup and recovery](docs/INSTALL.md#asb-bridge-optional).
 
 [User guide](ASB.md) · [Privacy](docs/PRIVACY.md) · [Source setup](ASB.md#start-and-stop) · [Contributing](CONTRIBUTING.md) · [Install guide](docs/INSTALL.md)
 
-ASB Bridge is based on claude-uds-bridge by Leon Kohli (MIT). See [bridge/LICENSE](bridge/LICENSE).
+## Credits
 
-ASB plays Done, Needs input, and Failed sounds on the PC. The sounds are audio from opencode, commit `fe87944b6ae85422db64c751b6d6ee488b0d7f1c` (MIT, Copyright (c) 2025 opencode). The PC copies in `assets/sounds/` are louder than the originals: a gain of 8 to 19 dB and a limiter at about −1 dB peak, because the originals are too quiet on PC speakers. The Android app uses the original files. See [assets/sounds/opencode-LICENSE.txt](assets/sounds/opencode-LICENSE.txt).
+- Based on [Agent Mission Control 0.6.0](https://github.com/forxidian/agent-mission-control/releases/tag/v0.6.0) by **forxidian**.
+- ASB Bridge is based on claude-uds-bridge by Leon Kohli (MIT). See [bridge/LICENSE](bridge/LICENSE).
+- The sounds are audio from opencode, commit `fe87944b6ae85422db64c751b6d6ee488b0d7f1c` (MIT, Copyright (c) 2025 opencode). The PC copies in `assets/sounds/` are louder than the originals; the Android app uses the original files. See [assets/sounds/opencode-LICENSE.txt](assets/sounds/opencode-LICENSE.txt).
 
-Based on [Agent Mission Control 0.6.0](https://github.com/forxidian/agent-mission-control/releases/tag/v0.6.0) by **forxidian**. [MIT license](LICENSE).
+[MIT license](LICENSE).

@@ -41,12 +41,18 @@ REMOTION_BROWSER_EXECUTABLE=/absolute/path/to/chromium FFMPEG_EXECUTABLE=/absolu
 | Local app switching video, `out/asb-demo-app-switching.mp4` | 22 seconds, 1280 × 720, 30 fps, H.264, silent |
 | [Video poster](../docs/media/asb-demo-poster.png) | 1280 × 720 PNG |
 | [Board message light](../docs/media/board-message-light.svg) | 11.5-second loop, 962 × 252, animated SVG |
+| [Messages window](../docs/media/messages-window.svg) | 8.4-second loop, 968 × 760, animated SVG |
+| [Usage window](../docs/media/usage-window.svg) | 12-second loop, 948 × 700, animated SVG |
 
 The GIF uses a 128-color palette to limit its download size. Use the MP4 for full motion quality. Use the static banner or poster when animation is unsuitable.
 
 ## Board message light
 
 `node message-light.mjs` writes `../docs/media/board-message-light.svg`. It needs no packages. The SVG shows the message light of the board: one Codex session sends a message to three Claude sessions, and each one answers. The sessions are made up. The SVG uses SMIL, so it moves in a README, and it shows no motion when the system asks for reduced motion.
+
+## Messages and Usage windows
+
+`node messages-window.mjs` writes `../docs/media/messages-window.svg`, and `node usage-window.mjs` writes `../docs/media/usage-window.svg`. They need no packages. Each one draws a scene file: `messages-window.json` and `usage-window.json` have the geometry, the texts, and the colors of the real GTK windows, measured with the made-up data of `test/fixtures/activity/`. In the Messages SVG, three messages arrive: a light flies along each chord, and the counts and the Recent list change. In the Usage SVG, a pointer switches from Cost to Tokens, reads the daily chart and the round chart, and switches back. Both use SMIL, so they move in a README. When the system asks for reduced motion, they show the window at rest.
 
 ## Story
 
