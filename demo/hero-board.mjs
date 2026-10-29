@@ -84,6 +84,7 @@ const lastAt = (list, t) => list.findLast(x => x.t <= t);
  * Render one board per SVG; call boardDefs once and use hero-smil.css for reduced motion.
  * boxAt(id, ms) returns {x,y,w,h}, markAt/controlAt return [x,y]. Absent cards or controls return null.
  * Hover/copy events require a measured variant of that card's current state; unknown variants fail at build time.
+ * Gliding cards are opaque, and the card that jumps forward in the order paints on top of the others.
  * Reset fades the current cards out, then the reset cards in, in equal halves; frame and toolbar stay fixed.
  * The returned svg is .motion. Put boardStill('S4') in a sibling .still group for reduced motion.
  */
@@ -137,6 +138,13 @@ export function renderBoard({ tl, events, start = 'S0' }) {
         if (!moves.has(id)) moves.set(id, []);
         moves.get(id).push(move);
       }
+      // The lead: the card present in both states whose order index drops most; ties go to the earlier new index.
+      let lead = null, drop = 0;
+      if (model.active) for (const [index, id] of after.order.entries()) {
+        const old = before.order.indexOf(id);
+        if (old >= 0 && old - index > drop) { drop = old - index; lead = id; }
+      }
+      if (lead) offsets.find(([id]) => id === lead)[1].lead = true;
       model.state = event.state;
     }
     if (event.active !== undefined) { assert.equal(typeof event.active, 'boolean'); model.active = event.active; }
@@ -240,16 +248,21 @@ export function renderBoard({ tl, events, start = 'S0' }) {
       segment(`${id}:footer`, t, end, cardItems(items.filter(it => footerRoles.has(it.role))), m.copied[id] > t);
     }
   }
-  function drawSegments(list, footer = false) {
+  // within: [start, end] keeps only segments that overlap it; fades still read the full list.
+  function drawSegments(list, footer = false, within = null) {
     return list.map((s, i) => {
-      if (!s.svg) return '';
+      if (!s.svg || within && !(s.start < within[1] && s.end > within[0])) return '';
       const fadeIn = footer && i > 0 && list[i - 1].end === s.start && list[i - 1].feedback !== s.feedback;
       const fadeOut = footer && i + 1 < list.length && list[i + 1].start === s.end && list[i + 1].feedback !== s.feedback;
       const end = Math.min(tl.loop, s.end + (fadeOut ? 100 : 0));
       return `<g visibility="hidden">${tl.visibility([[s.start, end]])}${fadeIn || fadeOut ? tl.animate('opacity', [[0, fadeIn ? 0 : 1], ...(fadeIn ? [[s.start, 0], [Math.min(s.start + 100, s.end), 1]] : []), ...(fadeOut ? [[s.end, 1], [end, 0]] : [])]) : ''}${s.svg}</g>`;
     }).join('');
   }
-  let cards = '';
+  let cards = '', leads = '', entering = '';
+  const glideWindow = (list, i) => [list[i].t, Math.min(list[i].t + list[i].ms, list[i + 1]?.t ?? tl.loop, tl.loop)];
+  const opaque = (card, window) => `<rect width="${n(card.w)}" height="${n(card.h)}" rx="${n(scene.hover.radius)}" fill="${scene.frame.c}" visibility="hidden">${tl.visibility([window])}</rect>`;
+  // Opacity, not visibility: the segments set their own visibility, which would override a hidden parent.
+  const shownIn = windows => tl.animate('opacity', [[0, 0], ...windows.flatMap(([a, b]) => [[a, 1], [b, 0]])], { discrete: true });
   for (const [id, list] of moves) {
     const keys = [], alpha = [];
     for (let i = 0; i < list.length; i++) {
@@ -262,7 +275,22 @@ export function renderBoard({ tl, events, start = 'S0' }) {
       if (keys.length) { keys.push([m.t, keys.at(-1)[1]]); alpha.push([m.t, alpha.at(-1)[1]]); }
       keys.push(...sample.map(([t, p]) => [t, p.xy])); alpha.push(...sample.map(([t, p]) => [t, p.a]));
     }
-    cards += `<g>${tl.transform('translate', keys)}${tl.animate('opacity', alpha)}${drawSegments(layers.get(`${id}:body`) ?? [])}${drawSegments(layers.get(`${id}:footer`) ?? [], true)}${tagAnimation(id)}${providerLights(id)}</g>`;
+    const motion = `${tl.transform('translate', keys)}${tl.animate('opacity', alpha)}`;
+    const copy = (m, window) => `<g opacity="0">${shownIn([window])}<g>${motion}${opaque(m.card, window)}${drawSegments(layers.get(`${id}:body`) ?? [], false, window)}${drawSegments(layers.get(`${id}:footer`) ?? [], true, window)}</g></g>`;
+    const glides = list.map((m, i) => m.ms > 0 ? opaque(m.card, glideWindow(list, i)) : '').join('');
+    // A card that fades in paints under all cards while it fades: on top, its half-transparent rect would show a gliding card's text.
+    const fading = list.flatMap((m, i) => m.ms > 0 && m.fade > 0 ? [[m, glideWindow(list, i)]] : []);
+    for (const [m, window] of fading) entering += copy(m, window);
+    for (const [i, m] of list.entries()) if (m.lead) leads += copy(m, glideWindow(list, i));
+    let base = `<g>${motion}${glides}${drawSegments(layers.get(`${id}:body`) ?? [])}${drawSegments(layers.get(`${id}:footer`) ?? [], true)}${tagAnimation(id)}${providerLights(id)}</g>`;
+    if (fading.length) {
+      const hidden = fading.map(([, w]) => w), shown = [];
+      let from = 0;
+      for (const [a, b] of hidden) { if (a > from) shown.push([from, a]); from = b; }
+      if (from < tl.loop) shown.push([from, tl.loop]);
+      base = `<g>${tl.animate('opacity', [[0, shown[0]?.[0] === 0 ? 1 : 0], ...shown.flatMap(([a, b]) => [[a, 1], [b, 0]])], { discrete: true })}${base}</g>`;
+    }
+    cards += base;
   }
 
   function tagAnimation(id) {
@@ -325,7 +353,7 @@ export function renderBoard({ tl, events, start = 'S0' }) {
     hoverBox = to; hoverValue = target ? 1 : 0;
   }
   const hoverSvg = hoverAlpha.length ? `<rect rx="${scene.hover.radius}" fill="${scene.hover.c}" opacity="0">${hoverKeys.map(({ key, values }) => tl.animate({ w: 'width', h: 'height' }[key] ?? key, values)).join('')}${tl.animate('opacity', hoverAlpha)}</rect>` : '';
-  let content = `${drawSegments(layers.get('decorations'))}${hoverSvg}${cards}${flights()}`;
+  let content = `${drawSegments(layers.get('decorations'))}${hoverSvg}${entering}${cards}${leads}${flights()}`;
   for (const reset of resets) {
     const middle = reset.t + reset.ms / 2;
     content = `<g class="board-reset-out">${tl.animate('opacity', [[0, 1], [reset.t, 1], [middle, 0, 'in']])}${content}</g><g class="board-reset-in" opacity="0">${tl.animate('opacity', [[0, 0], [middle, 0], [reset.t + reset.ms, 1, 'out']])}${stillCards(stateOf(reset.reset))}</g>`;
