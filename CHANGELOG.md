@@ -5,6 +5,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 ## Unreleased
 
 - Removed the AlmaLinux 9 rows (`alma-9`) from the Distros workflow. Their package downloads from the AlmaLinux mirror were often very slow: on the release commit of 1.13.0, the check job stopped at its 30-minute limit, and its rerun was cancelled after 26 minutes. So CI no longer checks the board and Preferences with GTK 4.12 and Libadwaita 1.4, the oldest versions that ASB supports. The last check of them passed on the source of ASB 1.13.0.
+- Added an animation of the board message light to the README. On a board with made-up sessions, one Codex session sends a message to three Claude sessions, and each one answers. The file is an animated SVG (`docs/media/board-message-light.svg`, 962 × 252, an 11.5-second loop). It uses SMIL, so it moves in the README on GitHub, and it shows no motion when the system asks for reduced motion. `node demo/message-light.mjs` makes it again and needs no packages.
 
 ## ASB 1.13.0 - 2026-10-28
 

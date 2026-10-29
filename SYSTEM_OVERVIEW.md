@@ -245,7 +245,7 @@ The package whitelist (`RUNTIME_FILES`) names 108 runtime files in ASB `1.13.0`:
 | `test/asb_native_logic_test.py` | Native data, layout, theme, search/filter, scheduling, and row-reuse checks with no GTK display, the machine texts, join link summary, and group requests, and the renderer rule of `scripts/asb-board.py`. |
 | `test/asb_native_test.py` | Native GTK checks on a hidden display, including the Preferences pages, the Machines page flows and dialogs, the Usage page, and the narrow section list. |
 | `docs/status-mapping.html` | App support table, rename notes, and status mapping worksheet; update it when app support, a state, an icon, or a Pending rule changes. `README.md` has the same support table; `test/asb-docs.test.mjs` keeps it equal to the `FEATURES` and `SUPPORT` lists of the page, so change both. |
-| `demo/` | Separate Remotion project with synthetic public demo data. |
+| `demo/` | Separate Remotion project with synthetic public demo data. `demo/message-light.mjs` (Node.js, no packages) writes the README animation `docs/media/board-message-light.svg`: the board message light, with made-up sessions, as an animated SVG (SMIL; no motion with reduced motion). |
 
 ## Sources and list scope
 
