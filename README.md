@@ -4,7 +4,7 @@
 
 ![ASB banner](docs/media/asb-banner.png)
 
-https://github.com/user-attachments/assets/c85742f4-d1b0-4ffc-9497-144069fec36b
+![ASB board with made-up sessions: prompts in Claude Code, the Codex tab of ChatGPT, and OpenCode make their cards Working, the sessions of two other machines join, a card copies its relative and then its absolute session reference, lights fly between sessions, and a click opens a chat in ChatGPT](docs/media/asb-hero.svg)
 
 ## What it does
 

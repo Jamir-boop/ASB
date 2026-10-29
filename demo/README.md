@@ -43,6 +43,7 @@ REMOTION_BROWSER_EXECUTABLE=/absolute/path/to/chromium FFMPEG_EXECUTABLE=/absolu
 | [Board message light](../docs/media/board-message-light.svg) | 11.5-second loop, 962 × 252, animated SVG |
 | [Messages window](../docs/media/messages-window.svg) | 8.4-second loop, 968 × 760, animated SVG |
 | [Usage window](../docs/media/usage-window.svg) | 12-second loop, 948 × 700, animated SVG |
+| [README hero](../docs/media/asb-hero.svg) | 30-second loop, 960 × 540, animated SVG |
 
 The GIF uses a 128-color palette to limit its download size. Use the MP4 for full motion quality. Use the static banner or poster when animation is unsuitable.
 
@@ -53,6 +54,16 @@ The GIF uses a 128-color palette to limit its download size. Use the MP4 for ful
 ## Messages and Usage windows
 
 `node messages-window.mjs` writes `../docs/media/messages-window.svg`, and `node usage-window.mjs` writes `../docs/media/usage-window.svg`. They need no packages. Each one draws a scene file: `messages-window.json` and `usage-window.json` have the geometry, the texts, and the colors of the real GTK windows, measured with the made-up data of `test/fixtures/activity/`. In the Messages SVG, three messages arrive: a light flies along each chord, and the counts and the Recent list change. In the Usage SVG, a pointer switches from Cost to Tokens, reads the daily chart and the round chart, and switches back. Both use SMIL, so they move in a README. When the system asks for reduced motion, they show the window at rest.
+
+## README hero
+
+`node hero.mjs` writes `../docs/media/asb-hero.svg`, the animation at the top of the README. It needs no packages. It uses three modules:
+
+- `hero-board.mjs` draws the scene file `hero-board.json`: the geometry, the texts, and the colors of the real GTK board in the Comfortable view, measured with made-up sessions. A card that glides is opaque, so the texts of two cards do not show on top of each other.
+- `hero-apps.mjs` draws illustrated app windows: the Code view of the Claude app, the Codex tab of the ChatGPT app, and OpenCode. It also draws the pointer.
+- `hero-smil.mjs` has the SMIL helpers: the timeline, the camera, and the size and safety checks.
+
+In the animation, a prompt in each app makes its card Working. The sessions of two other machines join the board. The copy button of a card copies a relative and then an absolute session reference, and the absolute reference goes into a Claude chat. Lights fly between sessions. A click on a card that asks a question opens its chat in ChatGPT. The SVG uses SMIL, so it moves in a README. When the system asks for reduced motion, it shows the board at rest.
 
 ## Story
 

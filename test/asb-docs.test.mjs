@@ -16,7 +16,7 @@ const FLAKE = 'nix profile install github:Jamir-boop/ASB';
 const familyBlocks = (markdown) => [...markdown.matchAll(/\(family `([a-z]+)`\)\n\n```bash\n([^`]*)```/g)]
   .map(([, name, body]) => [name, body.trimEnd().split('\n')]);
 
-test('documents ASB installation, video, privacy limits, and upstream credit', async () => {
+test('documents ASB installation, the hero animation, privacy limits, and upstream credit', async () => {
   const [readme, install, guide, privacy, changelog] = await Promise.all([
     text('../README.md'),
     text('../docs/INSTALL.md'),
@@ -32,7 +32,7 @@ test('documents ASB installation, video, privacy limits, and upstream credit', a
   assert.match(readme, /native switch board with GTK 4 and Libadwaita/);
   assert.match(readme, /opens a chat in its own app/);
   assert.match(readme, /makes no model calls/);
-  assert.match(readme, /^https:\/\/github\.com\/user-attachments\/assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/mi);
+  assert.match(readme, /!\[[^\]]*\]\(docs\/media\/asb-hero\.svg\)/);
   assert.match(privacy, /banner and Remotion demo use synthetic chats and folders/);
   assert.match(privacy, /not a capture of local conversations/);
   assert.match(privacy, /^\| `~\/\.cache\/asb\/readers\/positions\.json` \| Engine reader positions\. For each Codex session log and each Claude transcript larger than 8 MiB:.*No message text, title, path, or folder name\. Mode `0600` in a `0700` folder\./m);
