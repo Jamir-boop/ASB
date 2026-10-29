@@ -37,7 +37,7 @@ The window start keeps the last good result of the Python check in `board-check.
 
 Each block has the commands that `asb doctor` prints on a system with nothing installed. The first command installs what ASB needs. The second command installs the optional packages: the QR code of the phone pairing, and a sound player. Use `doas` in place of `sudo` when your system has `doas` and no `sudo`.
 
-On every push, CI installs ASB and starts its engine on Debian 13 and 12, Ubuntu 26.04, 24.04, and 22.04, Fedora 43 and 44, AlmaLinux 10 and 9, openSUSE Tumbleweed and Leap 16.0, Arch Linux, Alpine 3.24, and Void. It also builds the Nix flake. Gentoo, Solus, and the image-based systems get the same checks and commands, but CI does not run them.
+On every push, CI installs ASB and starts its engine on Debian 13 and 12, Ubuntu 26.04, 24.04, and 22.04, Fedora 43 and 44, AlmaLinux 10, openSUSE Tumbleweed and Leap 16.0, Arch Linux, Alpine 3.24, and Void. It also builds the Nix flake. Gentoo, Solus, and the image-based systems get the same checks and commands, but CI does not run them.
 
 **Debian, Ubuntu, and their derivatives** (family `debian`)
 

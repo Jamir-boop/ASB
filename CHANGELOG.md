@@ -4,6 +4,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Removed the AlmaLinux 9 rows (`alma-9`) from the Distros workflow. Their package downloads from the AlmaLinux mirror often took longer than the 30-minute job limit. So CI no longer checks the board and Preferences with GTK 4.12 and Libadwaita 1.4, the oldest versions that ASB supports. The last check of them passed on the source of ASB 1.13.0.
+
 ## ASB 1.13.0 - 2026-10-28
 
 - ASB Bridge is still `0.8.0` in this release.

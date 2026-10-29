@@ -24,7 +24,6 @@ jobs:
           - { job: fedora-44, image: 'fedora:44', runner: ubuntu-latest, family: fedora, tier: board, node: repository }
           # EL10 has no Xvfb: the probe still checks GTK, Libadwaita, and D-Bus, but not the window.
           - { job: alma-10, image: 'almalinux:10', runner: ubuntu-latest, family: fedora, tier: board, node: repository, window: skip }
-          - { job: alma-9, image: 'almalinux:9', runner: ubuntu-latest, family: fedora, tier: board, node: module }
           - { job: tumbleweed, image: 'opensuse/tumbleweed', runner: ubuntu-latest, family: opensuse, tier: board, node: repository }
           - { job: leap-16, image: 'opensuse/leap:16.0', runner: ubuntu-latest, family: opensuse, tier: board, node: repository }
           - { job: arch, image: 'archlinux:latest', runner: ubuntu-latest, family: arch, tier: board, node: repository }
@@ -112,8 +111,6 @@ jobs:
           - { job: fedora-44, image: 'fedora:44', runner: ubuntu-latest, family: fedora, tier: board, node: repository, package: rpm }
           # EL10 has no Xvfb: the check still proves that GTK and Libadwaita load, but it does not open the window.
           - { job: alma-10, image: 'almalinux:10', runner: ubuntu-latest, family: fedora, tier: board, node: repository, window: skip, package: rpm }
-          # PyGObject 3.40 cannot give a render node back to GTK, so the board cannot save its image here: step 7 waits for UI: verified instead.
-          - { job: alma-9, image: 'almalinux:9', runner: ubuntu-latest, family: fedora, tier: board, node: module, snapshot: skip, package: rpm, preferences: check }
           - { job: tumbleweed, image: 'opensuse/tumbleweed', runner: ubuntu-latest, family: opensuse, tier: board, node: repository, package: rpm }
           - { job: leap-16, image: 'opensuse/leap:16.0', runner: ubuntu-latest, family: opensuse, tier: board, node: repository, package: rpm }
           - { job: arch, image: 'archlinux:latest', runner: ubuntu-latest, family: arch, tier: board, node: repository, package: pkgbuild }
