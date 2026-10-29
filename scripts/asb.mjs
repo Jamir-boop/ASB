@@ -4,7 +4,7 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 export const NODE_HINT = 'ASB needs Node.js 20 or later and built-in SQLite or the sqlite3 command. Node.js 22.13 or later is recommended. '
-  + 'Set ASB_NODE to its absolute executable path. Install help: https://github.com/Jamir-boop/ASB#nodejs';
+  + 'Set ASB_NODE to its absolute executable path. Install help: https://github.com/Jamir-boop/ASB/blob/main/docs/INSTALL.md#nodejs';
 export const WINDOWS_USAGE = 'Usage: asb [engine|agent|bridge|group|network|phone|usage|setup|doctor] ...';
 export const LINUX_USAGE = 'Usage: asb [engine|agent|bridge|group|network|phone|usage|setup|service|doctor] ... With no command, asb opens the board.';
 

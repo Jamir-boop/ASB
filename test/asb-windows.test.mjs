@@ -451,8 +451,10 @@ test('on Linux only no command opens the board; an unknown command prints the us
 
 test('the POSIX launcher prints the same Node.js message as the dispatcher', async () => {
   const launcher = await readFile(new URL('../scripts/asb', import.meta.url), 'utf8');
-  assert.ok(NODE_HINT.endsWith(' Install help: https://github.com/Jamir-boop/ASB#nodejs'));
+  assert.ok(NODE_HINT.endsWith(' Install help: https://github.com/Jamir-boop/ASB/blob/main/docs/INSTALL.md#nodejs'));
   assert.ok(launcher.includes(`printf '%s\\n' '${NODE_HINT}' >&2`));
+  // The link target: the anchor #nodejs comes from this heading.
+  assert.match(await readFile(new URL('../docs/INSTALL.md', import.meta.url), 'utf8'), /^## Node\.js$/m);
 });
 
 test('the asb entry hides only the SQLite ExperimentalWarning and prints other warnings', async () => {

@@ -21,5 +21,5 @@ for ASB_CANDIDATE in "${ASB_NODE:-}" "$(command -v node || true)" "$HOME/.local/
     exec "$ASB_CANDIDATE" "$ASB_ROOT/scripts/asb.mjs" "$@"
   fi
 done
-printf '%s\n' 'ASB needs Node.js 20 or later and built-in SQLite or the sqlite3 command. Node.js 22.13 or later is recommended. Set ASB_NODE to its absolute executable path. Install help: https://github.com/Jamir-boop/ASB#nodejs' >&2
+printf '%s\n' 'ASB needs Node.js 20 or later and built-in SQLite or the sqlite3 command. Node.js 22.13 or later is recommended. Set ASB_NODE to its absolute executable path. Install help: https://github.com/Jamir-boop/ASB/blob/main/docs/INSTALL.md#nodejs' >&2
 exit 1
