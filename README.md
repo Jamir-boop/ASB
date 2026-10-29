@@ -21,6 +21,10 @@ https://github.com/user-attachments/assets/c85742f4-d1b0-4ffc-9497-144069fec36b
 - Play Done, Needs input, and Failed sounds on the PC.
 - Read the app stores read-only and make no model calls.
 
+When a session sends a message to another session, a light flies from its card to the card of the other session:
+
+![ASB board: a light flies from one session card to three other cards, and back from each](docs/media/board-message-light.svg)
+
 ## Support by app
 
 | App | Cards | Status | Questions | Approvals | Open | Messages | Rename | Archive | Windows |

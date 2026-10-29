@@ -40,8 +40,13 @@ REMOTION_BROWSER_EXECUTABLE=/absolute/path/to/chromium FFMPEG_EXECUTABLE=/absolu
 | Prior local session handoff video, `out/asb-demo-session-switching.mp4` | 28.5 seconds, 1280 × 720, 30 fps, H.264, silent |
 | Local app switching video, `out/asb-demo-app-switching.mp4` | 22 seconds, 1280 × 720, 30 fps, H.264, silent |
 | [Video poster](../docs/media/asb-demo-poster.png) | 1280 × 720 PNG |
+| [Board message light](../docs/media/board-message-light.svg) | 11.5-second loop, 962 × 252, animated SVG |
 
 The GIF uses a 128-color palette to limit its download size. Use the MP4 for full motion quality. Use the static banner or poster when animation is unsuitable.
+
+## Board message light
+
+`node message-light.mjs` writes `../docs/media/board-message-light.svg`. It needs no packages. The SVG shows the message light of the board: one Codex session sends a message to three Claude sessions, and each one answers. The sessions are made up. The SVG uses SMIL, so it moves in a README, and it shows no motion when the system asks for reduced motion.
 
 ## Story
 
