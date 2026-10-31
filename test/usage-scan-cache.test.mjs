@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { CACHE_SLICE_CHARS, createYielder, decodeScanCache, encodeScanCache, loadUsageCache, MAX_REST_MS, pathKey, saveUsageCache, scanFile, SCAN_REST_RATIO } from '../src/usage-scan-cache.mjs';
+import { CACHE_SLICE_CHARS, createYielder, decodeScanCache, encodeScanCache, loadUsageCache, MAX_REST_MS, pathKey, saveUsageCache, scanFile, SCAN_REST_RATIO, writePrivateJson } from '../src/usage-scan-cache.mjs';
 
 const posix = process.platform !== 'win32';
 const at = Date.parse('2026-10-20T10:00:00Z');
@@ -237,4 +237,41 @@ test('the scan yielder rests 3 times the CPU time of its work, at most 200 ms, o
   assert.deepEqual(waits, [75, 150, 200]);
   // A test or a command that waits for a scan may have nothing else running.
   assert.equal(unrefs, 0);
+});
+
+test('private files sync to disk before the rename, and a failed write leaves no temporary file', async (t) => {
+  const dir = await folder(t);
+  const file = path.join(dir, 'usage', 'ledger.json');
+  const steps = [];
+  let fail = null;
+  const open = fs.open;
+  const rename = fs.rename;
+  t.mock.method(fs, 'rename', async (...args) => { steps.push('rename'); return rename(...args); });
+  t.mock.method(fs, 'open', async (target, ...rest) => {
+    const handle = await open(target, ...rest);
+    if (!String(target).endsWith('.tmp')) return handle;
+    steps.push(`open ${rest[1]}`);
+    for (const name of ['writeFile', 'sync', 'close']) {
+      const original = handle[name].bind(handle);
+      handle[name] = async (...args) => {
+        steps.push(name);
+        if (name === 'writeFile' && fail) throw fail;
+        return original(...args);
+      };
+    }
+    return handle;
+  });
+  await writePrivateJson(file, { a: 1 });
+  assert.deepEqual(steps, [`open ${0o600}`, 'writeFile', 'sync', 'close', 'rename']);
+  assert.equal(await fs.readFile(file, 'utf8'), '{"a":1}');
+  if (posix) assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
+  steps.length = 0;
+  await saveUsageCache(path.join(dir, 'usage', 'usage-cache.json.gz'), new Map());
+  assert.deepEqual(steps, [`open ${0o600}`, 'writeFile', 'sync', 'close', 'rename']);
+  steps.length = 0;
+  fail = Object.assign(new Error('synthetic'), { code: 'ENOSPC' });
+  await assert.rejects(writePrivateJson(file, { a: 2 }), { code: 'ENOSPC' });
+  assert.deepEqual(steps, [`open ${0o600}`, 'writeFile', 'close']);
+  assert.deepEqual((await fs.readdir(path.dirname(file))).sort(), ['ledger.json', 'usage-cache.json.gz']);
+  assert.equal(await fs.readFile(file, 'utf8'), '{"a":1}');
 });

@@ -103,10 +103,10 @@ const SAVE_ERROR = { statusCode: 500, message: 'ASB could not save the usage led
 
 test('an import rejects when the ledger write fails and a retry saves the data', async (t) => {
   const { usage, ledgerFile } = await setup(t, { log: () => {} });
-  const writeFile = fs.writeFile;
-  const mock = t.mock.method(fs, 'writeFile', async (file, ...args) => {
-    if (file.startsWith(`${ledgerFile}.`)) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
-    return writeFile(file, ...args);
+  const open = fs.open;
+  const mock = t.mock.method(fs, 'open', async (file, ...args) => {
+    if (String(file).startsWith(`${ledgerFile}.`)) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    return open(file, ...args);
   });
   const input = document([{ machineId: OLD, name: 'retired', records: [row(1000)] }]);
   try {

@@ -29,6 +29,26 @@ const until = async (condition) => {
   assert.ok(condition());
 };
 const mode = async (file) => (await fs.stat(file)).mode & 0o777;
+// Wraps fs.open: the handles of temporary files log writeFile, sync, and close, and writeFile can fail.
+function watchTemporaryWrites(t, steps, fail = null) {
+  const open = fs.open;
+  const rename = fs.rename;
+  t.mock.method(fs, 'rename', async (...args) => { steps.push('rename'); return rename(...args); });
+  return t.mock.method(fs, 'open', async (file, ...rest) => {
+    const handle = await open(file, ...rest);
+    if (!String(file).endsWith('.tmp')) return handle;
+    steps.push(`open ${rest[0]} ${rest[1]}`);
+    for (const name of ['writeFile', 'sync', 'close']) {
+      const original = handle[name].bind(handle);
+      handle[name] = async (...args) => {
+        steps.push(name);
+        if (name === 'writeFile' && fail) throw fail;
+        return original(...args);
+      };
+    }
+    return handle;
+  });
+}
 
 async function setup(t, extra = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'asb-usage-backup-'));
@@ -198,7 +218,12 @@ test('the file name, the content, the modes, and a custom folder that is never m
   await fs.mkdir(custom);
   if (!windows) await fs.chmod(custom, 0o755);
   await backup.saveSettings({ enabled: true, time: '03:00', keep: 5, folder: custom });
+  const steps = [];
+  const watch = watchTemporaryWrites(t, steps);
   const made = (await backup.runNow()).made;
+  watch.mock.restore();
+  fs.rename.mock.restore();
+  assert.deepEqual(steps, [`open wx ${0o600}`, 'writeFile', 'sync', 'close', 'rename']);
   assert.equal(made.path, path.join(custom, fileName()));
   assert.deepEqual(await fs.readdir(custom), [fileName()]);
   if (!windows) {
@@ -334,11 +359,14 @@ test('write errors use the exact user reason, and leave no temporary file', asyn
   // Inject error codes, not modes: the test must also work as root.
   for (const [code, why] of [['EACCES', 'no permission'], ['EPERM', 'no permission'], ['ENOSPC', 'the disk is full'],
     ['EROFS', 'the disk is read-only'], ['EIO', 'error EIO'], [undefined, 'an error']]) {
-    const mock = t.mock.method(fs, 'writeFile', async () => { throw Object.assign(new Error('synthetic'), { code }); });
+    const steps = [];
+    const mock = watchTemporaryWrites(t, steps, Object.assign(new Error('synthetic'), { code }));
     const message = `ASB cannot write the backup to ${defaultFolder}: ${why}.`;
     await assert.rejects(backup.runNow(), (error) => error.statusCode === 500 && error.message === message);
     assert.deepEqual((await backup.status()).lastError, { atMs: clock.ms, message });
     mock.mock.restore();
+    fs.rename.mock.restore();
+    assert.deepEqual(steps.slice(1), ['writeFile', 'close']);
     assert.deepEqual(await fs.readdir(defaultFolder), []);
   }
   await backup.runNow();

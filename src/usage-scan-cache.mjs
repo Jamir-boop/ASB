@@ -265,8 +265,13 @@ async function writePrivateFile(file, data, { platform = process.platform } = {}
   if (platform !== 'win32' && (folder.mode & 0o777) !== 0o700) await fs.chmod(directory, 0o700);
   const temporary = `${file}.${randomBytes(6).toString('hex')}.tmp`;
   try {
-    await fs.writeFile(temporary, typeof data === 'function' ? data() : data, { flag: platform === 'win32' ? 'wx'
-      : constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, mode: 0o600 });
+    const handle = await fs.open(temporary, platform === 'win32' ? 'wx'
+      : constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    // The sync before the rename: after a power cut the new name must not hold zeros.
+    try {
+      await handle.writeFile(typeof data === 'function' ? data() : data);
+      await handle.sync();
+    } finally { await handle.close(); }
     await fs.rename(temporary, file);
   } finally { await fs.rm(temporary, { force: true }); }
 }

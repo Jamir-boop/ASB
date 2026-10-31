@@ -124,7 +124,11 @@ export function createUsageBackup({ settingsFile, exportAll, machineId = () => '
           // A custom folder is the user's: it is never made and its mode stays.
           const temporary = `${file}.${randomBytes(6).toString('hex')}.tmp`;
           try {
-            await fs.writeFile(temporary, JSON.stringify(document), { flag: 'wx', mode: 0o600 });
+            const handle = await fs.open(temporary, 'wx', 0o600);
+            try {
+              await handle.writeFile(JSON.stringify(document));
+              await handle.sync();
+            } finally { await handle.close(); }
             await fs.rename(temporary, file);
           } finally { await fs.rm(temporary, { force: true }); }
         }
