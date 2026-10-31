@@ -50,7 +50,7 @@ export function messageBody(text) {
   if (lines[0]?.startsWith('<cross-session-message')) lines.shift();
   if (lines.at(-1) === '' && lines.at(-2)?.trim() === '</cross-session-message>') lines.pop();
   if (lines.length && lines.at(-1).trim() === '</cross-session-message>') lines.pop();
-  return lines.join('\n');
+  return lines.join('\n').trim();
 }
 
 export function messageText(text) {
@@ -191,6 +191,12 @@ export function createActivityMessages({ readSources = async () => [], dashboard
     for (const item of local) add(item, self.machineId, item.files);
     for (const member of members) for (const item of member.messages) add(item, member.machineId, []);
     const ordered = [...records.values()].sort(byTime);
+    const lookup = rowKeyLookup(board);
+    const rows = new Map((board.threads || []).map((row) => [row.id, row]));
+    const seat = (key, origin) => {
+      const rowId = lookup.get(key);
+      return rowId && rows.has(rowId) ? rowId : `unknown:${origin}`;
+    };
     const free = new Map();
     for (const record of ordered) if (record.sender && !record.receiver && record.hash) {
       if (!free.has(record.hash)) free.set(record.hash, []);
@@ -198,7 +204,14 @@ export function createActivityMessages({ readSources = async () => [], dashboard
     }
     for (const received of ordered.filter((record) => record.receiver && !record.sender && record.hash)) {
       const senders = free.get(received.hash);
-      const index = senders?.findLastIndex((record) => record.atMs <= received.atMs + 120_000 && received.atMs <= record.atMs + DAY_MS);
+      const from = seat(received.from, received.fromOrigin);
+      // Two senders can send the same text in the window: a known sender must match.
+      const sameSender = (record) => {
+        const sender = seat(record.from, record.fromOrigin);
+        return sender === from || sender.startsWith('unknown:') || from.startsWith('unknown:');
+      };
+      const index = senders?.findLastIndex((record) => record.atMs <= received.atMs + 120_000 && received.atMs <= record.atMs + DAY_MS
+        && sameSender(record));
       if (index === undefined || index < 0) continue;
       const [sent] = senders.splice(index, 1);
       Object.assign(sent, { to: received.to, toOrigin: received.toOrigin, fromLabel: received.fromLabel,
@@ -208,12 +221,6 @@ export function createActivityMessages({ readSources = async () => [], dashboard
       if (!sent.files.length && received.files.length) { sent.files = received.files; sent.textId = received.id; }
       records.delete(received.id);
     }
-    const lookup = rowKeyLookup(board);
-    const rows = new Map((board.threads || []).map((row) => [row.id, row]));
-    const seat = (key, origin) => {
-      const rowId = lookup.get(key);
-      return rowId && rows.has(rowId) ? rowId : `unknown:${origin}`;
-    };
     const messages = [...records.values()].filter((record) => record.atMs >= startMs).sort(byTime)
       .map((record) => {
         const from = seat(record.from, record.fromOrigin), to = seat(record.to, record.toOrigin);

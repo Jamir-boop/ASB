@@ -478,6 +478,37 @@ test('a bridge out row pairs with a Claude delivery using the envelope-free body
   assert.deepEqual((await activity().thread('7d', { a: X, b: Y })).messages.map((item) => item.text), ['Mixed body.']);
 });
 
+test('a receipt joins the newest send of its own sender, not a newer send of the same text from another sender', async (t) => {
+  const { send, receive, write, activity } = await claudeFixture(t);
+  // X sends "Done." to Y, and 30 s later Y sends "Done." to X.
+  const back = receive(uuid(731), 'Done.', nowMs - 29_000);
+  back.sessionId = X;
+  back.message.content = back.message.content.replace(`from-session="${X}"`, `from-session="${Y}"`);
+  await write([send('first-done', 'Done.', 'beta-helper', nowMs - 60_000), receive(uuid(730), 'Done.', nowMs - 59_000),
+    { ...send('second-done', 'Done.', 'alpha-helper', nowMs - 30_000), sessionId: Y }, back]);
+  const report = await activity().report('7d');
+  assert.deepEqual(report.messages.map(({ id, from, to, status }) => [id, from, to, status]),
+    [['claude:first-done', X, Y, 'accepted'], ['claude:second-done', Y, X, 'accepted']]);
+});
+
+test('a send from an unknown sender still joins a receipt of the same text', async (t) => {
+  const { send, receive, write, activity } = await claudeFixture(t);
+  await write([{ ...send('stranger-done', 'Done.'), sessionId: STRANGER }, receive(uuid(732), 'Done.')]);
+  const report = await activity().report('7d');
+  assert.deepEqual(report.messages.map(({ id, from, to, status }) => [id, from, to, status]),
+    [['claude:stranger-done', `unknown:${A.machineId}`, Y, 'accepted']]);
+});
+
+test('a bridge text with a final new line pairs with its Claude delivery as one message', async (t) => {
+  const { bridge, receive, write, activity } = await claudeFixture(t);
+  await bridge('codex', X, [{ id: msg(733), peer: CLI, direction: 'out', status: 'socket-written',
+    text: '<cross-session-message from="Synthetic">\nHello.\n\n</cross-session-message>' }]);
+  await write([receive(uuid(734), 'Hello.')]);
+  const report = await activity().report('7d');
+  assert.deepEqual(report.messages.map(({ id, from, to, status }) => [id, from, to, status]), [[msg(733), X, Y, 'accepted']]);
+  assert.deepEqual((await activity().thread('7d', { a: X, b: Y })).messages.map((item) => item.text), ['Hello.']);
+});
+
 test('reports have no text and member replies put text on only the newest 200 of 205 records', async (t) => {
   const { send, write, activity } = await claudeFixture(t);
   await write(Array.from({ length: 205 }, (_, i) => send(`limit-${String(i).padStart(3, '0')}`, `Body ${i}.`, 'beta-helper', nowMs - (205 - i) * 1000)));
