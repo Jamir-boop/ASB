@@ -388,8 +388,11 @@ export class DashboardSnapshot {
     const structureChanged = (spec, event, rawFilename, targetPath) => {
       if (dashboardClosed || event !== 'rename' || rawFilename == null) return;
       const filePath = path.join(targetPath, String(rawFilename));
-      // A removed or replaced watch root reports its own name; only a full walk can follow it.
-      if (targetPath === spec.path && String(rawFilename) === path.basename(targetPath)) dashboardWatchWalkedAtMs = -Infinity;
+      // A removed or replaced watch root reports its own name; only a full walk can follow it, and a dirty scan starts that walk.
+      if (targetPath === spec.path && String(rawFilename) === path.basename(targetPath)) {
+        dashboardWatchWalkedAtMs = -Infinity;
+        scheduleDashboardInvalidation('file-change');
+      }
       if (!spec.manualRecursive || path.dirname(filePath) !== targetPath || dashboardWatchWalkedAtMs === -Infinity) return;
       // A large burst needs one full walk, with no unbounded structure queue.
       if (dashboardWatchStructure.size >= 64) { dashboardWatchStructure.clear(); dashboardWatchWalkedAtMs = -Infinity; }

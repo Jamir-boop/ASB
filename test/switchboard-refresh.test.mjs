@@ -250,8 +250,6 @@ test('watch failures use active fallback, retry missing stores, and follow atomi
   for (const spec of f.paths) if (spec.path.startsWith(`${old.target}${path.sep}`)) await mkdir(spec.path, { recursive: true });
   // A moved or removed watch root reports its own name, as inotify does.
   old.callback('rename', path.basename(old.target));
-  // The Codex root filter drops its own name: a state file event makes the load dirty.
-  f.change();
   await f.scan();
   assert.equal(old.watcher.closed, true);
   assert.ok(f.watches.length > f.paths.length);
