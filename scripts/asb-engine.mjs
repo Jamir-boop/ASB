@@ -1,6 +1,6 @@
 import { execFile as execFileCallback, spawn as spawnProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { closeSync, createWriteStream, mkdirSync, openSync, readFileSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -94,6 +94,24 @@ export const shouldStartTray = (env, platform = process.platform) => platform ==
 export const trayLauncher = (env) => typeof env.ASB_INSTALLED_LAUNCHER === 'string' && path.isAbsolute(env.ASB_INSTALLED_LAUNCHER)
   ? env.ASB_INSTALLED_LAUNCHER : fileURLToPath(new URL('./asb', import.meta.url));
 export const engineLogPath = (env, platform = process.platform) => path.join(stateDir(env, platform), 'engine.log');
+// Each engine start keeps the log of the engine before it.
+const keepPreviousLog = (log) => { try { renameSync(log, `${log}.1`); } catch {} };
+
+// The output of a Windows tray engine goes to its log. Node writes a fatal error to the real stderr, not through process.stderr.write,
+// so the monitor writes the stack too.
+export function logToFile(log) {
+  mkdirSync(path.dirname(log), { recursive: true });
+  keepPreviousLog(log);
+  const fd = openSync(log, 'w');
+  const write = (chunk, encoding, callback) => {
+    try { writeSync(fd, typeof chunk === 'string' ? Buffer.from(chunk, Buffer.isEncoding(encoding) ? encoding : 'utf8') : chunk); } catch {}
+    (typeof encoding === 'function' ? encoding : callback)?.();
+    return true;
+  };
+  process.stdout.write = write;
+  process.stderr.write = write;
+  process.on('uncaughtExceptionMonitor', (error, origin) => writeSync(fd, `${origin}: ${error?.stack ?? error}\n`));
+}
 // The folders that the Windows engine limits to the user with icacls.
 export const engineFolders = (env, platform = process.platform) => [configDir(env, platform), stateDir(env, platform), runtimeDir(env, platform),
   cacheDir(env, platform)];
@@ -259,6 +277,7 @@ export async function startEngine({ env = process.env, execFile = execFileAsync,
   if (!enabled || skipped) {
     const log = engineLogPath(env);
     mkdirSync(path.dirname(log), { recursive: true, mode: 0o700 });
+    keepPreviousLog(log);
     const fd = openSync(log, 'w', 0o600);
     try {
       const child = spawn(process.execPath, [...ENGINE_NODE_FLAGS, fileURLToPath(import.meta.url), 'run'],
@@ -330,12 +349,7 @@ async function startMenuLink({ env, execFile, log, root, node, remove = false })
 async function windowsMain(command, { env, execFile, spawn, find, log, root, node, timeoutMs }) {
   if (command === 'run') {
     // The messages of a tray engine go to the engine log, as a detached Linux engine does.
-    if (writesEngineLog(env)) {
-      const log = engineLogPath(env, 'win32');
-      mkdirSync(path.dirname(log), { recursive: true });
-      const file = createWriteStream(log, { flags: 'w' });
-      for (const stream of [process.stdout, process.stderr]) stream.write = file.write.bind(file);
-    }
+    if (writesEngineLog(env)) logToFile(engineLogPath(env, 'win32'));
     await runEngine({ env, platform: 'win32', execFile });
     return 0;
   }

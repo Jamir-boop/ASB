@@ -24,6 +24,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Fixed the end of a Codex task on Windows, which sent no end notices. The ASB Bridge SessionEnd hook now sends the `expired` notices of held messages and the `exited` idle notices before it stops the receiver, and each sender gets each notice one time.
 - Fixed the migration from claude-uds-bridge, which could make a state folder that ASB Bridge refused: when the old state folder is missing, the migration now makes it private (mode 0700).
 - Fixed a second `asb` start, or a start from the Windows Start menu, which opened a second board while one was open. ASB now shows the open board, as the tray does.
+- Fixed the Windows engine log, which lost the reason for a crash, and each engine start, which emptied the log. The log now keeps the crash stack, and the log of the start before stays as `engine.log.1`.
 
 ## ASB 1.13.0 - 2026-10-28
 

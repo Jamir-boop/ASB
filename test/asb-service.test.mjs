@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { setImmediate as turn } from 'node:timers/promises';
 import { autostartEntry, autostartMode, findRunningService, main as serviceMain, readServiceRuntime, serviceUnit } from '../scripts/asb-service.mjs';
 import { engineLogPath, shouldStartTray, startEngine, trayLauncher } from '../scripts/asb-engine.mjs';
+const engineUrl = new URL('../scripts/asb-engine.mjs', import.meta.url).href;
 import { createSwitchboardServer } from '../src/switchboard.mjs';
 import { RUNTIME_FILES } from '../scripts/asb-package.mjs';
 import { main as usage } from '../scripts/asb-usage.mjs';
@@ -576,6 +577,8 @@ test('engine start uses the enabled user service, a detached engine, or the runn
   assert.equal((await stat(log)).mode & 0o777, 0o600);
   await writeFile(log, 'old output');
   await assert.rejects(startEngine({ ...fake({ answerAt: -1 }).options, timeoutMs: 50 }), { message: `ASB cannot start its engine. See ${log}.` });
+  // The previous log stays as engine.log.1.
+  assert.equal(await readFile(`${log}.1`, 'utf8'), 'old output');
   assert.equal(await readFile(log, 'utf8'), '');
   await assert.rejects(startEngine(fake({ enabled: true, startFails: true }).options),
     { message: 'ASB cannot start its engine. See journalctl --user -u asb.service.' });
@@ -588,6 +591,27 @@ test('engine start uses the enabled user service, a detached engine, or the runn
     assert.equal(await startEngine({ ...fallback.options, env: { ...env, XDG_RUNTIME_DIR } }), runtime);
     assert.deepEqual(fallback.calls, []);
   }
+});
+
+test('the Windows engine log keeps the output and the crash stack, and the next start keeps it as engine.log.1', { timeout: 20_000 }, async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'asb-engine-log-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const log = path.join(home, 'state', 'engine.log');
+  const run = async (line) => {
+    // The child imports only the engine module: it starts no engine, and a timer throws after one line of output.
+    // As in the tray, the node:sqlite warning of Node.js 22 stays out of the log.
+    const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', '--input-type=module', '-e', `import { logToFile } from ${JSON.stringify(engineUrl)};
+logToFile(process.argv[1]); console.log(${JSON.stringify(line)}); setTimeout(() => { throw new Error('log test failure'); }, 0);`, log],
+    { stdio: 'ignore', env: { PATH: process.env.PATH, HOME: home, XDG_RUNTIME_DIR: home } });
+    const [code] = await once(child, 'exit');
+    assert.notEqual(code, 0);
+    return readFile(log, 'utf8');
+  };
+  const first = await run('first run');
+  assert.match(first, /^first run\nuncaughtException: Error: log test failure\n {4}at /);
+  const second = await run('second run');
+  assert.match(second, /^second run\nuncaughtException: Error: log test failure\n/);
+  assert.equal(await readFile(`${log}.1`, 'utf8'), first);
 });
 
 test('the engine stop route needs the token, a local POST, and an empty body, then the engine exits 0', { timeout: 15_000 }, async (t) => {

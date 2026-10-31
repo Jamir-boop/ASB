@@ -415,7 +415,7 @@ Installed packages launch with `asb` or the ASB Applications entry. On Linux, `a
 npm run desktop
 ```
 
-The initial window is about 420×900 pixels. The window is a view of the ASB engine, which runs the server and phone access. When no engine runs, `asb` starts one: through `asb.service` when that user service is enabled, else as a detached `asb engine run` process that writes its output to `~/.local/state/asb/engine.log`. The window opens when the engine answers. When the window cannot run on the system (engine only: the Window checks of `asb doctor` fail, for example GTK older than 4.12 on Debian 12 or Ubuntu 22.04), `asb` writes no desktop entry, prints `ASB runs without its window on this system: <reason> The engine runs for the phone and your other machines. Run asb doctor for details.`, and exits with code 3; the engine keeps running. The per-user install then also writes no desktop entry or icon. If the engine does not answer in 10 s, `asb` prints `ASB cannot start its engine. See <log>.` and exits; a busy port is the usual cause. Closing the window keeps the engine and phone access running. When the engine stops (Quit ASB in the tray, `asb engine stop`, or a restart of `asb.service`), open windows close. To stop them, select **Quit ASB** in Preferences > Sessions or in the tray icon menu. An icon registration error stays visible, but the window still opens. A source run keeps an installed GNOME entry and reports the conflict. It replaces a source-run entry, including one from another checkout. ASB attaches only to its own engine, not to another server. Use `PORT=4729 npm run desktop` to select a different port.
+The initial window is about 420×900 pixels. The window is a view of the ASB engine, which runs the server and phone access. When no engine runs, `asb` starts one: through `asb.service` when that user service is enabled, else as a detached `asb engine run` process that writes its output to `~/.local/state/asb/engine.log` (the previous log stays as `engine.log.1`). The window opens when the engine answers. When the window cannot run on the system (engine only: the Window checks of `asb doctor` fail, for example GTK older than 4.12 on Debian 12 or Ubuntu 22.04), `asb` writes no desktop entry, prints `ASB runs without its window on this system: <reason> The engine runs for the phone and your other machines. Run asb doctor for details.`, and exits with code 3; the engine keeps running. The per-user install then also writes no desktop entry or icon. If the engine does not answer in 10 s, `asb` prints `ASB cannot start its engine. See <log>.` and exits; a busy port is the usual cause. Closing the window keeps the engine and phone access running. When the engine stops (Quit ASB in the tray, `asb engine stop`, or a restart of `asb.service`), open windows close. To stop them, select **Quit ASB** in Preferences > Sessions or in the tray icon menu. An icon registration error stays visible, but the window still opens. A source run keeps an installed GNOME entry and reports the conflict. It replaces a source-run entry, including one from another checkout. ASB attaches only to its own engine, not to another server. Use `PORT=4729 npm run desktop` to select a different port.
 
 | Command | Effect |
 | --- | --- |
@@ -434,7 +434,7 @@ ASB uses two ports. The ASB server uses `4629` on `127.0.0.1`, or the `PORT` val
 
 ### User service
 
-The optional `asb.service` systemd user service runs the ASB engine, so the engine starts with the graphical session. When no systemd user manager runs a graphical session, `asb service install` uses an XDG autostart entry instead (see below). Without the service, `asb` starts a detached engine, which writes its output to `~/.local/state/asb/engine.log`. From a source checkout, use `scripts/asb service` in place of `asb service`.
+The optional `asb.service` systemd user service runs the ASB engine, so the engine starts with the graphical session. When no systemd user manager runs a graphical session, `asb service install` uses an XDG autostart entry instead (see below). Without the service, `asb` starts a detached engine, which writes its output to `~/.local/state/asb/engine.log` (the previous log stays as `engine.log.1`). From a source checkout, use `scripts/asb service` in place of `asb service`.
 
 | Command | Effect |
 | --- | --- |
@@ -541,7 +541,7 @@ On Linux, `asb setup` prints the checks of [`asb doctor`](#system-check) in step
 | File | Path |
 | --- | --- |
 | Settings, the colors and layout of the window (`theme.json`, `layout.json`), phone settings, the certificate, and the group | `%APPDATA%\asb` |
-| Marks, pins, and `engine.log` | `%LOCALAPPDATA%\asb\state` |
+| Marks, pins, `engine.log`, and `engine.log.1` | `%LOCALAPPDATA%\asb\state` |
 | The engine runtime file (`service.json`) | `%LOCALAPPDATA%\asb\run` |
 | The reader positions, the saved window check (`board-check.json`), and the compiled window code (`pycache`) | `%LOCALAPPDATA%\asb\cache` |
 
