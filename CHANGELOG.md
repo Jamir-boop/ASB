@@ -4,8 +4,11 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+## ASB 1.14.0 - 2026-10-31
+
+- ASB Bridge is now `0.8.1`. It has the ASB Bridge fixes below.
 - Added **Pets** to Preferences > Appearance: Off (the default), Crab, Pigeon, or Cat. With a pet on, a message on the board shows as a pixel pet instead of the light: the pet climbs out of the sender card, walks to the receiver card, tosses the envelope into its provider icon, and dives into the card. Comfortable shows the pets at 2×, Compact at 1×. When a card is out of view, the light plays. With GNOME animations off, both icons show the accent color for 2 s, as before. Pets also play on GTK 4.12. `layout.json` keeps `pet` only when it is not Off.
-- Made the engine wake less at rest. When all source folders are watched, it no longer checks them every 5 s: a failed watch retries after 5 s, a missing optional folder after 60 s, and a moved or removed folder starts a new scan. The message relay now starts Bun with one garbage-collector thread instead of one for each core. On a Windows test PC, the idle relay went from 65 to 4 context switches a second, and from 70 MB to 50 MB of private memory.
+- Made the engine wake less at rest. When all source folders are watched, it no longer checks them every 5 s: a failed watch retries after 5 s, a missing optional folder after 60 s, and a moved or removed folder starts a new scan. The message relay now starts Bun with one garbage-collector thread instead of one for each core. On a Windows test PC, an idle Bun process with this setting went from 65 to 4 context switches a second, and the installed relay at rest ran about 7 threads instead of 12.
 - Made the board wake less. While the engine sends each list change on the event stream, the board stops its 5 s timer. On Linux, the board also gives memory back to the system 10 s after Messages or Usage hides.
 - On Windows, the board now plays the Done, Needs input, and Failed sounds (Python `winsound`). The engine no longer starts a hidden PowerShell sound player, which held about 60 MB for 5 minutes after each sound. As before, sounds play only while a board is open.
 - The trays no longer poll. The Windows tray uses process exit events instead of a 1 s timer. The Linux tray asks the kernel to stop it with the engine (`PR_SET_PDEATHSIG`) instead of a 5 s check. Also fixed the Windows tray, which stayed open after it showed `ASB stopped after repeated failures.`
@@ -34,6 +37,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - CI now runs the board widget tests (`test/asb_native_test.py`) in Xvfb on Debian 13.
 - Fixed the XDG autostart entry, which started a launcher that `./uninstall.sh` had removed at each login: the entry now has `TryExec`. The uninstall message now names the commands that remove the start at login and ASB Bridge, and the install guide has an Uninstall section.
 - The install, the user service, and `asb bridge` now give the same messages for a linked path and for a file that changed during the command.
+
+See [ASB 1.14.0 release notes](docs/releases/v1.14.0.md) for downloads, upgrades, and check limits.
 
 ## ASB 1.13.0 - 2026-10-28
 

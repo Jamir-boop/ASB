@@ -69,7 +69,7 @@ Use the same npm commands with Node.js `22.13` or later. The board window needs 
 ## Optional parts
 
 - [Android app](android/README.md): your sessions, notifications, message counts, and usage on your phone. Phone access is off by default.
-- [ASB Bridge](bridge/README.md): messages between Codex, Claude Code, and OpenCode sessions. The ASB `1.13.0` packages have ASB Bridge `0.8.0`. See [setup and recovery](docs/INSTALL.md#asb-bridge-optional).
+- [ASB Bridge](bridge/README.md): messages between Codex, Claude Code, and OpenCode sessions. The ASB `1.14.0` packages have ASB Bridge `0.8.1`. See [setup and recovery](docs/INSTALL.md#asb-bridge-optional).
 
 [User guide](ASB.md) · [Privacy](docs/PRIVACY.md) · [Source setup](ASB.md#start-and-stop) · [Contributing](CONTRIBUTING.md) · [Install guide](docs/INSTALL.md)
 
