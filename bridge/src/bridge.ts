@@ -794,7 +794,7 @@ export class Bridge {
     this.db.close();
   }
 
-  private async finishSession(address: string) {
+  async finishSession(address: string) {
     const outgoing = new Map<string, { reference: Message | Subscription; frames: unknown[]; subscriptions: string[] }>();
     const add = (reference: Message | Subscription, fields: Record<string, unknown>) => {
       if (!reference.peer_address) return;

@@ -125,6 +125,96 @@ posix('session hooks own one receiver per task, restore it after resume and clea
   }
 }, 15000);
 
+// stopped: the receiver cannot run its own close() before the hook's kill, as on Windows, where SIGTERM ends a process at once.
+posix.each(['running', 'stopped'] as const)('SessionEnd with a %s receiver sends one exited idle notice and one expired notice', async receiverState => {
+  const root = mkdtempSync('/tmp/uds-end-');
+  const codexHome = join(root, 'codex');
+  const configDir = join(root, 'claude');
+  mkdirSync(join(configDir, 'sessions'), { recursive: true, mode: 0o700 });
+  mkdirSync(codexHome, { mode: 0o700 });
+  const desktop = await desktopReceiver('idle', false, false, codexHome);
+  const threadId = desktop.threadId;
+  const hook = async (hook_event_name: 'SessionStart' | 'SessionEnd', expectedError?: string) => {
+    const child = Bun.spawn([process.execPath, join(import.meta.dir, '../src/hook.ts')], {
+      env: { ...process.env, CODEX_HOME: codexHome, CLAUDE_CONFIG_DIR: configDir, XDG_RUNTIME_DIR: root, CLAUDE_CODE_TMPDIR: root },
+      stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
+    });
+    child.stdin.write(JSON.stringify({ session_id: threadId, cwd: root, hook_event_name }));
+    child.stdin.end();
+    const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    if (expectedError) expect({ code, err }).toEqual({ code: 1, err: `${expectedError}\n` });
+    else expect({ code, out, err }).toEqual({ code: 0, out: '', err: '' });
+  };
+  // Two agents with an inbox each: one sends a held message, the other waits for an idle notice.
+  const agents: { frames: Record<string, unknown>[]; address: string; close: () => Promise<void> }[] = [];
+  for (const name of ['held', 'waiting']) {
+    const folder = join(root, name);
+    mkdirSync(folder, { mode: 0o700 });
+    const child = Bun.spawn(['cat'], { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' });
+    const frames: Record<string, unknown>[] = [];
+    const box = await inbox(folder, frame => { frames.push(frame as Record<string, unknown>); }, `${child.pid}.sock`);
+    writeFileSync(join(configDir, 'sessions', `${child.pid}.json`), JSON.stringify({ pid: child.pid, sessionId: randomUUID(),
+      messagingSocketPath: socketPath(box.address), cwd: '/tmp', peerProtocol: 1, peerFeatures: ['notify_idle'],
+      procStart: await processStart(child.pid) }), { mode: 0o600 });
+    agents.push({ frames, address: box.address, close: async () => { await box.close(); child.kill(); } });
+  }
+  const [heldAgent, waitingAgent] = agents as [typeof agents[0], typeof agents[0]];
+  const transmit = async (from: string, frame: Record<string, unknown>) => {
+    const path = peers(configDir).find(peer => peer.sessionId === threadId)?.messagingSocketPath;
+    if (!path) throw new Error('No receiver');
+    const socket = net.createConnection(path);
+    await once(socket, 'connect');
+    socket.end(JSON.stringify({ msgV: 1, from, ...frame }) + '\n');
+    await once(socket, 'close');
+  };
+  const db = () => new Database(join(codexHome, 'plugin-state', 'asb-bridge', `${threadId}.sqlite`));
+  const until = async (condition: () => boolean) => {
+    const deadline = Date.now() + 3000;
+    while (!condition() && Date.now() < deadline) await Bun.sleep(10);
+    expect(condition()).toBe(true);
+  };
+  try {
+    await hook('SessionStart');
+    const state = db();
+    try {
+      state.run("UPDATE inbound_policy SET policy='hold' WHERE singleton=1");
+      const messageId = randomUUID();
+      await transmit(heldAgent.address, { type: 'user', msg_id: messageId, session_id: threadId,
+        message: { role: 'user', content: '<cross-session-message from-mode="prompting">hello</cross-session-message>' } });
+      await until(() => state.query("SELECT 1 FROM messages WHERE id=? AND status='held'").get(messageId) !== null);
+      const subscription = randomUUID();
+      await transmit(waitingAgent.address, { type: 'control', action: 'notify_when_idle', msg_id: subscription, from_mode: 'prompting' });
+      await until(() => state.query("SELECT 1 FROM idle_requests WHERE id=? AND status='waiting'").get(subscription) !== null);
+      const notices = (frames: Record<string, unknown>[], action: string) => frames.filter(frame => frame.action === action);
+      const receiverPid = peers(configDir).find(peer => peer.sessionId === threadId)?.pid;
+      if (!receiverPid) throw new Error('No receiver');
+      if (receiverState === 'stopped') {
+        process.kill(receiverPid, 'SIGSTOP');
+        await hook('SessionEnd', 'Receiver did not stop');
+        // The hook alone sent the notices; the receiver's close() runs after SIGCONT and must not repeat them.
+        await until(() => notices(waitingAgent.frames, 'peer_idle_notice').length === 1
+          && notices(heldAgent.frames, 'peer_message_status').length === 2);
+        process.kill(receiverPid, 'SIGCONT');
+        await until(() => !peers(configDir).some(peer => peer.sessionId === threadId));
+      } else await hook('SessionEnd');
+      expect(peers(configDir).some(peer => peer.sessionId === threadId)).toBe(false);
+      await Bun.sleep(200);
+      expect(notices(waitingAgent.frames, 'peer_idle_notice')).toHaveLength(1);
+      expect(notices(waitingAgent.frames, 'peer_idle_notice')[0]).toMatchObject({ orig_msg_id: subscription, state: 'exited' });
+      // The held receipt came at once; the end adds exactly one expired notice.
+      expect(notices(heldAgent.frames, 'peer_message_status').map(frame => [frame.orig_msg_id, frame.status]))
+        .toEqual([[messageId, 'held'], [messageId, 'expired']]);
+      expect(notices(heldAgent.frames, 'peer_idle_notice')).toHaveLength(0);
+      expect(notices(waitingAgent.frames, 'peer_message_status')).toHaveLength(0);
+    } finally { state.close(); }
+  } finally {
+    for (const peer of peers(configDir)) if (peer.sessionId === threadId) { process.kill(peer.pid, 'SIGTERM'); process.kill(peer.pid, 'SIGCONT'); }
+    for (const agent of agents) await agent.close();
+    await desktop.close(false);
+    rmSync(root, { recursive: true });
+  }
+}, 15000);
+
 // A fake session: a live placeholder process, a private socket in its own folder, and its registry row.
 async function fakeSession(configDir: string, folder: string, entrypoint?: string) {
   mkdirSync(folder, { mode: 0o700 });

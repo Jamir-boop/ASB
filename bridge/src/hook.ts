@@ -5,7 +5,7 @@ import { mkdirSync, readdirSync, unlinkSync } from 'node:fs';
 import { Database } from 'bun:sqlite';
 import { z } from 'zod';
 import { Bridge } from './bridge';
-import { nativePeer, peers, privateDirectory, processStart, removeReceiverFiles, removeStaleReceivers, uuid } from './claude';
+import { nativePeer, peerAddress, peers, privateDirectory, processStart, removeReceiverFiles, removeStaleReceivers, uuid } from './claude';
 import { appServerSocket, codexIpcPath, discoverTarget, readCodexCwd, watchCodex } from './codex';
 import { isWindows, keyName } from './platform';
 import { loadedAppServerThreads } from './app-server';
@@ -95,6 +95,9 @@ async function runHook(event: Event) {
         throw error;
       }
       if (await processStart(owner.pid) !== owner.proc_start) return;
+      // Windows ends the receiver at once, so its own close() cannot send the end notices.
+      const active = receiver(event.session_id);
+      if (active) await state.finishSession(peerAddress(active.messagingSocketPath));
       process.kill(owner.pid, 'SIGTERM');
       const deadline = Date.now() + 2000;
       while (receiver(event.session_id) && Date.now() < deadline) await Bun.sleep(25);
