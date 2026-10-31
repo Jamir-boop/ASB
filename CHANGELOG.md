@@ -17,6 +17,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Fixed a Claude Desktop Code chat that stayed Working for six hours when the Claude app quit, updated, or crashed during a task. On Linux and Windows, the card now shows Unknown, as a Claude Code CLI card does in this case. The reason of both is now `The Claude Code process ended during a task.`
 - Made the engine do less work: the Codex reader no longer runs again 15 minutes and 6 hours after each change only to refresh old status fields that nothing showed. After the update, ASB reads the Codex session logs again one time.
 - Fixed a power cut during a save that could leave the usage ledger or the usage cache full of zeros, so that ASB set the ledger aside and started an empty one. ASB now syncs each private usage file and each backup to disk before it replaces the old file.
+- Fixed Usage counting this machine two times after an import of a backup made before `asb group reset-identity`: an imported copy with the name of this machine now joins this machine.
 
 ## ASB 1.13.0 - 2026-10-28
 

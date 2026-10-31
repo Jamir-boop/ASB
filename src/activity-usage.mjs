@@ -212,7 +212,8 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     ledgerVersion += 1;
     ledgerDirty ||= dirty;
   }
-  // The ledger keeps the current machine ID and name; an imported copy of this machine joins its own records.
+  // The ledger keeps the current machine ID and name; an imported copy of this machine joins its own records: a copy with
+  // its ID, and a copy with its export name (this machine under an old ID, from before `asb group reset-identity`).
   function adoptSelf() {
     const { machineId, name } = self();
     if (!machineId) return;
@@ -220,10 +221,12 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       Object.assign(ledger.self, { machineId, name });
       changeLedger();
     }
-    const copy = ledger.machines.get(machineId);
-    if (copy) {
+    // The export name of this machine (exportAll); a copy with that name is this machine from before an identity reset.
+    const exportName = (validName(name) ? name : suggestName(name)).toLowerCase();
+    for (const [id, copy] of ledger.machines) {
+      if (id !== machineId && copy.name.toLowerCase() !== exportName) continue;
       mergeRecords(ledger.self.records, copy.records.values());
-      ledger.machines.delete(machineId);
+      ledger.machines.delete(id);
       changeLedger();
     }
   }
@@ -564,6 +567,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
             changeLedger();
           }
         }
+        adoptSelf();
         await saveLedger();
         if (ledgerBlocked || ledgerDirty) throw Object.assign(new Error('ASB could not save the usage ledger. Keep the export file and try again.'), { statusCode: 500, expose: true });
         return { machines: machines.map(({ machineId, name, records }) => ({ machineId, name, hours: records.size })) };

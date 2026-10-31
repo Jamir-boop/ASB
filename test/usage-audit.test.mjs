@@ -99,6 +99,33 @@ test('a Codex archive race counts a rollout once in each scan and the saved ledg
   assert.deepEqual(saved.self.records, [row(1000, 0, 0, 100)]);
 });
 
+const total = (report) => report.records.reduce((sum, record) => sum + Object.values(record.tokens).reduce((a, b) => a + b, 0), 0);
+
+test('an import of this machine under an old ID (before an identity reset) counts once', async (t) => {
+  const { usage } = await setup(t);
+  await usage.importAll(document([{ machineId: SELF, name: 'desk', records: [row(1000)] }]));
+  await usage.importAll(document([{ machineId: OLD, name: 'Desk', records: [row(1000)] }]));
+  await usage.refresh();
+  const report = usage.report('all');
+  assert.deepEqual(report.machines.map(({ machineId, self }) => [machineId, self]), [[SELF, true]]);
+  assert.equal(total(report), 1000);
+  assert.deepEqual((await usage.exportAll()).machines, [{ machineId: SELF, name: 'desk', records: [row(1000)] }]);
+});
+
+test('a saved copy of this machine under an old ID joins this machine at the next load', async (t) => {
+  const { usage: other, root, ledgerFile } = await setup(t, { machine: { machineId: SELF, name: 'atlas' } });
+  await other.importAll(document([{ machineId: OLD, name: 'desk', records: [row(1000)] }]));
+  await other.stop();
+  const usage = createActivityUsage({ machine: { machineId: SELF, name: 'desk' }, homeDir: root, env: {},
+    cacheDir: path.join(root, 'cache'), ledgerFile, now: () => NOW, fetch: async () => new Response('{}') });
+  t.after(async () => { await usage.stop(); await usage.pricesIdle(); });
+  await usage.ready();
+  await usage.refresh();
+  const report = usage.report('all');
+  assert.deepEqual(report.machines.map(({ machineId, self }) => [machineId, self]), [[SELF, true]]);
+  assert.deepEqual(report.records.map(({ machineId, tokens }) => [machineId, tokens]), [[SELF, tokens(1000)]]);
+});
+
 const SAVE_ERROR = { statusCode: 500, message: 'ASB could not save the usage ledger. Keep the export file and try again.' };
 
 test('an import rejects when the ledger write fails and a retry saves the data', async (t) => {
