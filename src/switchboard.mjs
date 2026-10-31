@@ -14,7 +14,7 @@ import { createActivityMessages } from './activity-messages.mjs';
 import { createClaudeMessages } from './claude-messages.mjs';
 import { createActivityUsage } from './activity-usage.mjs';
 import { createUsageBackup } from './usage-backup.mjs';
-import { createSoundPlayer, createSoundWatcher } from './asb-sounds.mjs';
+import { createSoundPlayer, createSoundWatcher, SOUND_FILES } from './asb-sounds.mjs';
 import { openThreadInCodex, scopedCommand } from './session-opener.mjs';
 import { AppSourceRegistry, appSourcesRevision, numberAppSources, sourceName, validateSourceLauncher } from './app-sources.mjs';
 import { cacheDir, stateDir } from './platform-paths.mjs';
@@ -953,7 +953,11 @@ export function createSwitchboardServer(options = {}) {
   // Only real entry points pass a player, so tests and imports stay silent.
   // The engine plays sounds only while a native window reports itself; the npm start web view keeps playing them.
   let boardOpen = () => false;
-  const sound = options.playSound ? createSoundWatcher(options.playSound, () => !options.serviceMode || boardOpen()) : null;
+  let playBoardSound = () => false;
+  // The board runs while sounds play, and a PowerShell player costs about 60 MB for 5 minutes after each sound.
+  const boardPlays = options.serviceMode && (options.platform ?? process.platform) === 'win32';
+  const sound = options.playSound ? createSoundWatcher(boardPlays ? (kind) => playBoardSound(SOUND_FILES[kind]) : options.playSound,
+    () => !options.serviceMode || boardOpen()) : null;
   // The scope tag of each registered source, made again only when the sources or the machine identity change.
   let scopes = { revision: null, tagger: null, tags: new Map() };
   const sourceScopes = (sources, tagger) => {
@@ -1188,6 +1192,7 @@ export function createSwitchboardServer(options = {}) {
     activityUsage,
   });
   boardOpen = () => server.boardOpen();
+  playBoardSound = (file) => server.playBoardSound(file);
   // The member route GET /peer/v1/bridge (src/phone-gateway.mjs).
   server.bridgeReport = () => bridgeCoverage ? bridgeCoverage.report() : Promise.resolve({ status: 404, body: { error: 'Route is not available.' } });
   // The member route GET /peer/v1/activity (src/phone-gateway.mjs): local records only, no text.

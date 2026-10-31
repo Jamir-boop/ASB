@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, spawn as spawnProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import http from 'node:http';
 import { promisify } from 'node:util';
 import { BIT_DONE, BIT_FAILED, BIT_INPUT, SOUND_DIR, WINDOWS_PLAYER_ARGS, createSoundPlayer, createSoundWatcher, soundBaseline, soundBits, soundEvents } from '../src/asb-sounds.mjs';
 import { mergePeerRows } from '../src/machine-peers.mjs';
@@ -369,6 +370,93 @@ for (const reported of [false, true]) test(`the engine plays a completion sound 
   await scan();
   assert.ok(loads >= 2);
   assert.deepEqual(played, reported ? [BIT_DONE] : []);
+});
+
+// A service-mode engine on `platform` with the given UI clients; `to(threads)` scans until the rows are there.
+async function boardSoundServer(t, { platform, serviceMode = true, clients = [] }) {
+  let clock = now;
+  let threads = [{ id: 'a', state: 'working', nativeUnread: null, completionAtMs: 0 }];
+  const played = [];
+  const server = createSwitchboardServer({ serviceMode, platform, sourceToken: 'window-token', now: () => clock, pendingStatePath: false,
+    dashboardWatchPaths: [], playSound: (kind) => played.push(kind),
+    loadDashboard: async () => ({ generatedAtMs: clock, providers: [], threads }) });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const reader = { text: '' };
+  await new Promise((resolve, reject) => {
+    const client = http.get(`${base}/api/events`, { agent: false }, (response) => {
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => { reader.text += chunk; if (reader.text.includes('event: connected')) resolve(); });
+    });
+    client.on('error', (error) => { if (!reader.closed) reject(error); });
+    t.after(() => { reader.closed = true; client.destroy(); });
+  });
+  const scan = () => fetch(`${base}/api/dashboard`).then((response) => response.json());
+  assert.equal((await scan()).threads[0].state, 'working');
+  for (const clientId of clients) {
+    const report = { clientId, sourcesRevision: null, profilesRevision: null, profilesVisible: false, dirty: false };
+    const response = await fetch(`${base}/api/agent/ui`, { method: 'POST', body: JSON.stringify(report),
+      headers: { origin: base, 'content-type': 'application/json', 'x-asb-source-token': 'window-token' } });
+    assert.equal(response.status, 200);
+    clock += 1;
+  }
+  const to = async (next) => {
+    threads = next.map((thread) => ({ nativeUnread: null, completionAtMs: 0, ...thread }));
+    for (let step = 0; step < 2; step += 1) { clock += 2_000; await scan(); }
+  };
+  const sounds = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return [...reader.text.matchAll(/^event: sound\ndata: (.*)$/gm)].map(([, data]) => data);
+  };
+  return { server, to, played, sounds, done: () => to([{ id: 'a', state: 'idle', completionAtMs: clock }]) };
+}
+
+const CLIENT_A = '123e4567-e89b-12d3-a456-426614174000';
+const CLIENT_B = '223e4567-e89b-12d3-a456-426614174000';
+
+test('the Windows engine sends a Done sound to the reporting board and does not play it', async (t) => {
+  const { server, played, sounds, done } = await boardSoundServer(t, { platform: 'win32', clients: [CLIENT_A] });
+  await done();
+  assert.equal(server.playBoardSound(undefined), false);
+  assert.deepEqual(await sounds(), [`{"file":"opencode_staplebops_01.wav","clientId":"${CLIENT_A}"}`]);
+  assert.deepEqual(played, []);
+});
+
+test('the Windows engine sends its sound to the board that reported last', async (t) => {
+  const { played, sounds, done } = await boardSoundServer(t, { platform: 'win32', clients: [CLIENT_A, CLIENT_B] });
+  await done();
+  assert.deepEqual(await sounds(), [`{"file":"opencode_staplebops_01.wav","clientId":"${CLIENT_B}"}`]);
+  assert.deepEqual(played, []);
+});
+
+test('the Windows engine sends the Needs input file first, then the Failed file', async (t) => {
+  const { to, played, sounds } = await boardSoundServer(t, { platform: 'win32', clients: [CLIENT_A] });
+  await to([{ id: 'a', state: 'waiting', questionPending: true }, { id: 'b', state: 'idle', failedAtMs: now + 1 }, { id: 'c', state: 'working' }]);
+  await to([{ id: 'a', state: 'waiting', questionPending: true }, { id: 'b', state: 'idle', failedAtMs: now + 1 },
+    { id: 'c', state: 'idle', failedAtMs: now + 2 }]);
+  assert.deepEqual(await sounds(), [`{"file":"opencode_staplebops_02.wav","clientId":"${CLIENT_A}"}`,
+    `{"file":"opencode_nope_03.wav","clientId":"${CLIENT_A}"}`]);
+  assert.deepEqual(played, []);
+});
+
+test('the Windows engine sends no sound without a reporting board', async (t) => {
+  const { server, played, sounds, done } = await boardSoundServer(t, { platform: 'win32' });
+  await done();
+  assert.equal(server.playBoardSound('opencode_staplebops_01.wav'), false);
+  assert.deepEqual([await sounds(), played], [[], []]);
+});
+
+test('the Linux engine plays its sound itself and sends no sound event', async (t) => {
+  const { played, sounds, done } = await boardSoundServer(t, { platform: 'linux', clients: [CLIENT_A] });
+  await done();
+  assert.deepEqual([await sounds(), played], [[], [BIT_DONE]]);
+});
+
+test('Windows without service mode keeps the injected player', async (t) => {
+  const { played, sounds, done } = await boardSoundServer(t, { platform: 'win32', serviceMode: false });
+  await done();
+  assert.deepEqual([await sounds(), played], [[], [BIT_DONE]]);
 });
 
 test('the first rows of a member machine are its baseline; its later rows play', () => {

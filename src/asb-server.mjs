@@ -803,6 +803,13 @@ export function createAsbServer({
   });
   snapshot.attach(server);
   server.boardOpen = () => { expireUiClients(); return uiClients.size > 0; };
+  // The newest board plays the engine's sound (the same client choice as show-window).
+  server.playBoardSound = (file) => {
+    expireUiClients();
+    if (!file || !uiClients.size) return false;
+    snapshot.broadcastEvent('sound', { file, clientId: [...uiClients.keys()].at(-1) });
+    return true;
+  };
   // The machine group reads the dashboard for its export and refreshes it after a member's new rows.
   server.dashboardForRequest = dashboardForRequest;
   server.invalidateDashboard = invalidateDashboard;
